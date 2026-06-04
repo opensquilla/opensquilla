@@ -96,8 +96,8 @@ async def maybe_handle_approval(
                 if elevated_state is not None:
                     elevated_state["mode"] = "bypass"
                 suffix = (
-                    " — session now in [red]bypass[/red] mode. "
-                    "Sensitive paths still blocked. Use /elevated off to revert."
+                    " — session now uses the legacy [red]bypass[/red] alias "
+                    "for Trusted-Sandbox. Use /elevated off to revert."
                 )
             elif allow_always:
                 suffix = " — future similar intents auto-approve."

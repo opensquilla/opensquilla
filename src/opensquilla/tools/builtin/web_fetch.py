@@ -13,12 +13,11 @@ import httpx
 import structlog
 from cachetools import TTLCache
 
-from opensquilla.env import trust_env as _trust_env
 from opensquilla.result_budget import (
     DEFAULT_TOOL_RUN_BUDGET_POLICY,
     ToolRunBudgetPolicy,
 )
-from opensquilla.sandbox.integration import sandboxed
+from opensquilla.sandbox.integration import managed_network_httpx_kwargs, sandboxed
 from opensquilla.tools.registry import tool
 from opensquilla.tools.ssrf import validate_http_url_for_fetch
 from opensquilla.tools.types import SSRFBlockedError, current_tool_context
@@ -96,7 +95,10 @@ def _markdown_to_text(markdown: str) -> str:
 async def _try_firecrawl(url: str, api_key: str) -> tuple[str, str] | None:
     """Try Firecrawl API. Returns (content, extractor) or None."""
     try:
-        async with httpx.AsyncClient(timeout=30.0, trust_env=_trust_env()) as client:
+        async with httpx.AsyncClient(
+            timeout=30.0,
+            **managed_network_httpx_kwargs(),
+        ) as client:
             resp = await client.post(
                 "https://api.firecrawl.dev/v1/scrape",
                 headers={"Authorization": f"Bearer {api_key}"},
@@ -235,8 +237,8 @@ async def web_fetch(
         async with httpx.AsyncClient(
             timeout=30.0,
             follow_redirects=False,
-            trust_env=_trust_env(),
             headers=headers,
+            **managed_network_httpx_kwargs(),
         ) as client:
             current_url = url
             for _redirect_count in range(_MAX_REDIRECTS + 1):

@@ -48,6 +48,7 @@ from opensquilla.provider.image_generation import (
 from opensquilla.tools.path_aliases import resolve_workspace_alias
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
+from opensquilla.tools.run_mode import full_host_access_active
 from opensquilla.tools.ssrf import validate_http_url_for_fetch
 from opensquilla.tools.types import (
     CallerKind,
@@ -244,9 +245,8 @@ def _resolve_media_path(path: str) -> Path:
 
 def _sensitive_media_path_block(tool_name: str, resolved: Path, original_path: str) -> dict | None:
     from opensquilla.sandbox.sensitive_paths import build_block_envelope, is_sensitive_path
-    from opensquilla.tools.builtin.shell import _context_elevated_mode
 
-    if _context_elevated_mode() == "full":
+    if full_host_access_active():
         return None
     sensitive = is_sensitive_path(str(resolved))
     if sensitive is None:

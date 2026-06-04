@@ -37,11 +37,18 @@ import os
 import shutil
 import signal
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, cast
 
 from opensquilla.sandbox.backend.base import Backend
+from opensquilla.sandbox.backend.linux_proxy_bridge import (
+    ENV_PROXY_PORT,
+    ENV_PROXY_UDS,
+    PROXY_ENV_KEYS,
+    LinuxProxyBridgeHost,
+)
 from opensquilla.sandbox.types import (
     MountSpec,
     NetworkMode,
@@ -56,6 +63,14 @@ log = logging.getLogger(__name__)
 _BWRAP_BINARY = "bwrap"
 _OUTPUT_BYTE_CAP = 1_048_576  # 1 MiB per stream
 _TERMINATE_GRACE_S = 2.0
+_DEFAULT_BRIDGE_UDS_PATH = Path("/tmp/opensquilla-sandbox-proxy.sock")
+_DEFAULT_BRIDGE_SCRIPT_NAME = "inner_bridge.py"
+_BWRAP_PYTHON_CANDIDATES: tuple[Path, ...] = (
+    Path("/usr/bin/python3"),
+    Path("/bin/python3"),
+    Path("/usr/bin/python"),
+    Path("/bin/python"),
+)
 _HOST_RO_PATHS: tuple[Path, ...] = (
     Path("/usr"),
     Path("/bin"),
@@ -112,13 +127,73 @@ def _env_args(policy: SandboxPolicy, override_env: dict[str, str]) -> list[str]:
             )
             continue
         resolved[key] = value
+    workspace_mount = next((m for m in policy.mounts if m.sandbox_path == Path("/workspace")), None)
+    if workspace_mount is not None and "HOME" in allowlist:
+        resolved["HOME"] = str(workspace_mount.sandbox_path)
     args: list[str] = []
     for key, value in resolved.items():
         args.extend(["--setenv", key, value])
     return args
 
 
-def build_bwrap_argv(request: SandboxRequest, *, binary: str = _BWRAP_BINARY) -> list[str]:
+def _dir_chain_args(path: Path) -> list[str]:
+    _validate_mount_path(path, kind="sandbox")
+    args: list[str] = []
+    current = Path("/")
+    for part in path.parts[1:]:
+        current /= part
+        args.extend(["--dir", str(current)])
+    return args
+
+
+def _proxy_env_args(uds_path: Path, port: int) -> list[str]:
+    proxy_url = f"http://127.0.0.1:{port}"
+    pairs = [
+        (ENV_PROXY_UDS, str(uds_path)),
+        (ENV_PROXY_PORT, str(port)),
+        *((key, proxy_url) for key in PROXY_ENV_KEYS),
+    ]
+    args: list[str] = []
+    for key, value in pairs:
+        args.extend(["--setenv", key, value])
+    return args
+
+
+def _bridge_python_path() -> Path:
+    for candidate in _BWRAP_PYTHON_CANDIDATES:
+        if candidate.exists():
+            return candidate
+    raise SandboxBackendError(
+        "NetworkMode.PROXY_ALLOWLIST requires a system Python mounted "
+        "inside the bubblewrap sandbox"
+    )
+
+
+def _default_bridge_script_path(uds_path: Path) -> Path:
+    return uds_path.parent / _DEFAULT_BRIDGE_SCRIPT_NAME
+
+
+def _proxy_bridge_child_argv(
+    request: SandboxRequest,
+    *,
+    bridge_script_path: Path,
+) -> list[str]:
+    return [
+        str(_bridge_python_path()),
+        str(bridge_script_path),
+        "--",
+        *request.argv,
+    ]
+
+
+def build_bwrap_argv(
+    request: SandboxRequest,
+    *,
+    binary: str = _BWRAP_BINARY,
+    bridge_uds_path: Path | None = None,
+    bridge_script_path: Path | None = None,
+    bridge_port: int | None = None,
+) -> list[str]:
     """Return the ``bwrap`` argv for ``request``.
 
     Factored out so unit tests can assert argv shape without running bwrap.
@@ -128,6 +203,9 @@ def build_bwrap_argv(request: SandboxRequest, *, binary: str = _BWRAP_BINARY) ->
     """
     policy = request.policy
     argv: list[str] = [binary]
+    proxy_bridge_uds_path: Path | None = None
+    proxy_bridge_script_path: Path | None = None
+    proxy_bridge_port: int | None = None
 
     # Structural flags first — these describe the process and namespace
     # posture and are safe to accumulate before any mount flags.
@@ -145,12 +223,22 @@ def build_bwrap_argv(request: SandboxRequest, *, binary: str = _BWRAP_BINARY) ->
     if policy.network == NetworkMode.NONE:
         argv.append("--unshare-net")
     elif policy.network == NetworkMode.PROXY_ALLOWLIST:
-        # Reserved — the proxy path is not implemented in this pass; fail
-        # loudly rather than silently widen network scope.
-        raise SandboxBackendError(
-            "NetworkMode.PROXY_ALLOWLIST is reserved and not yet supported "
-            "by the bubblewrap backend"
+        if policy.network_proxy is None:
+            raise SandboxBackendError(
+                "NetworkMode.PROXY_ALLOWLIST requires a network proxy "
+                "for the bubblewrap backend"
+            )
+        argv.append("--unshare-net")
+        proxy_bridge_uds_path = bridge_uds_path or _DEFAULT_BRIDGE_UDS_PATH
+        proxy_bridge_script_path = (
+            bridge_script_path or _default_bridge_script_path(proxy_bridge_uds_path)
         )
+        proxy_bridge_port = bridge_port or policy.network_proxy.port
+        if proxy_bridge_port <= 0 or proxy_bridge_port > 65535:
+            raise SandboxBackendError(
+                "NetworkMode.PROXY_ALLOWLIST requires a valid proxy port "
+                "for the bubblewrap backend"
+            )
 
     # Base filesystem skeleton. Use tmpfs as root so synthetic mount points
     # such as /workspace can be created even when the host root lacks them.
@@ -174,6 +262,19 @@ def build_bwrap_argv(request: SandboxRequest, *, binary: str = _BWRAP_BINARY) ->
         argv += _mount_args(spec)
 
     argv += _env_args(policy, request.env)
+    if proxy_bridge_uds_path is not None and proxy_bridge_port is not None:
+        bridge_dir = proxy_bridge_uds_path.parent
+        _validate_mount_path(bridge_dir, kind="proxy bridge")
+        if proxy_bridge_script_path is None:  # pragma: no cover - paired assignment above
+            raise SandboxBackendError("missing linux proxy bridge script path")
+        _validate_mount_path(proxy_bridge_script_path, kind="proxy bridge script")
+        if proxy_bridge_script_path.parent != bridge_dir:
+            raise SandboxBackendError(
+                "linux proxy bridge script must be in the mounted bridge directory"
+            )
+        argv += _dir_chain_args(bridge_dir)
+        argv += ["--bind", str(bridge_dir), str(bridge_dir)]
+        argv += _proxy_env_args(proxy_bridge_uds_path, proxy_bridge_port)
 
     # Working directory inside the sandbox — default to the workspace mount
     # point when one exists, otherwise the host cwd mapped through.
@@ -190,7 +291,15 @@ def build_bwrap_argv(request: SandboxRequest, *, binary: str = _BWRAP_BINARY) ->
         argv += ["--chdir", str(request.cwd)]
 
     argv.append("--")
-    argv.extend(request.argv)
+    if proxy_bridge_script_path is not None:
+        argv.extend(
+            _proxy_bridge_child_argv(
+                request,
+                bridge_script_path=proxy_bridge_script_path,
+            )
+        )
+    else:
+        argv.extend(request.argv)
     return argv
 
 
@@ -213,56 +322,82 @@ class BubblewrapBackend(Backend):
                 "bubblewrap backend unavailable: missing 'bwrap' binary on PATH"
             )
 
-        argv = build_bwrap_argv(request, binary=self._binary)
-        log.info(
-            "sandbox.bwrap_spawn: action=%s level=%s network=%s argv_len=%d",
-            request.action_kind,
-            request.policy.level.label,
-            request.policy.network.value,
-            len(argv),
-        )
-
-        wall = request.policy.limits.wall_timeout_s
-        started = time.monotonic()
+        bridge: LinuxProxyBridgeHost | None = None
+        bridge_tmp: tempfile.TemporaryDirectory[str] | None = None
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
-                stdin=asyncio.subprocess.PIPE if request.stdin is not None else None,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                start_new_session=True,
+            bridge_uds_path: Path | None = None
+            if request.policy.network == NetworkMode.PROXY_ALLOWLIST:
+                if request.policy.network_proxy is not None:
+                    bridge_tmp = tempfile.TemporaryDirectory(
+                        prefix="opensquilla-bwrap-proxy-bridge-"
+                    )
+                    bridge_uds_path = Path(bridge_tmp.name) / "proxy.sock"
+                    bridge = LinuxProxyBridgeHost(
+                        bridge_uds_path,
+                        request.policy.network_proxy.host,
+                        request.policy.network_proxy.port,
+                    )
+                    await bridge.start()
+
+            argv = build_bwrap_argv(
+                request,
+                binary=self._binary,
+                bridge_uds_path=bridge_uds_path,
             )
-        except FileNotFoundError as exc:
-            raise SandboxBackendError(f"bwrap launch failed: {exc}") from exc
-        except OSError as exc:
-            raise SandboxBackendError(f"bwrap launch failed: {exc}") from exc
-
-        timed_out = False
-        try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(input=request.stdin), timeout=wall
+            log.info(
+                "sandbox.bwrap_spawn: action=%s level=%s network=%s argv_len=%d",
+                request.action_kind,
+                request.policy.level.label,
+                request.policy.network.value,
+                len(argv),
             )
-        except TimeoutError:
-            timed_out = True
-            stdout_bytes, stderr_bytes = await _terminate_process_group(proc)
 
-        elapsed = time.monotonic() - started
+            wall = request.policy.limits.wall_timeout_s
+            started = time.monotonic()
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *argv,
+                    stdin=asyncio.subprocess.PIPE if request.stdin is not None else None,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    start_new_session=True,
+                )
+            except FileNotFoundError as exc:
+                raise SandboxBackendError(f"bwrap launch failed: {exc}") from exc
+            except OSError as exc:
+                raise SandboxBackendError(f"bwrap launch failed: {exc}") from exc
 
-        stdout, trunc_out = _decode_capped(stdout_bytes)
-        stderr, trunc_err = _decode_capped(stderr_bytes)
+            timed_out = False
+            try:
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    proc.communicate(input=request.stdin), timeout=wall
+                )
+            except TimeoutError:
+                timed_out = True
+                stdout_bytes, stderr_bytes = await _terminate_process_group(proc)
 
-        returncode = proc.returncode if proc.returncode is not None else -1
-        return SandboxResult(
-            returncode=returncode,
-            stdout=stdout,
-            stderr=stderr,
-            wall_time_s=elapsed,
-            backend_used=self.name,
-            policy_used=request.policy.summary(),
-            truncated_stdout=trunc_out,
-            truncated_stderr=trunc_err,
-            timed_out=timed_out,
-        )
+            elapsed = time.monotonic() - started
+
+            stdout, trunc_out = _decode_capped(stdout_bytes)
+            stderr, trunc_err = _decode_capped(stderr_bytes)
+
+            returncode = proc.returncode if proc.returncode is not None else -1
+            return SandboxResult(
+                returncode=returncode,
+                stdout=stdout,
+                stderr=stderr,
+                wall_time_s=elapsed,
+                backend_used=self.name,
+                policy_used=request.policy.summary(),
+                truncated_stdout=trunc_out,
+                truncated_stderr=trunc_err,
+                timed_out=timed_out,
+            )
+        finally:
+            if bridge is not None:
+                await bridge.stop()
+            if bridge_tmp is not None:
+                bridge_tmp.cleanup()
 
 
 def _decode_capped(raw: bytes | None) -> tuple[str, bool]:

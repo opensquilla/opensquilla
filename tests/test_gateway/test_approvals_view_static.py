@@ -1,72 +1,72 @@
 from pathlib import Path
 
+APP_JS = Path("src/opensquilla/gateway/static/js/app.js")
+APPROVAL_MONITOR_JS = Path("src/opensquilla/gateway/static/js/approval_monitor.js")
 APPROVALS_CSS = Path("src/opensquilla/gateway/static/css/views/approvals.css")
 APPROVALS_JS = Path("src/opensquilla/gateway/static/js/views/approvals.js")
+SANDBOX_CSS = Path("src/opensquilla/gateway/static/css/views/sandbox.css")
+SANDBOX_JS = Path("src/opensquilla/gateway/static/js/views/sandbox.js")
+TEMPLATE = Path("src/opensquilla/gateway/templates/index.html")
 
 
-def test_approvals_radio_indicator_keeps_visible_keyboard_focus() -> None:
-    css = APPROVALS_CSS.read_text(encoding="utf-8")
-    indicator_start = css.index(".ap-radio__indicator {")
-    indicator_rule = css[indicator_start : css.index("}", indicator_start)]
-    focus_start = css.index(".ap-radio input:focus-visible + .ap-radio__indicator {")
-    focus_rule = css[focus_start : css.index("}", focus_start)]
-
-    assert "transition: border-color var(--transition), box-shadow var(--transition)" in (
-        indicator_rule
-    )
-    assert "border-color: var(--accent)" in focus_rule
-    assert "box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent)" in (
-        focus_rule
-    )
+def test_standalone_approvals_page_assets_stay_removed() -> None:
+    assert not APPROVALS_JS.exists()
+    assert not APPROVALS_CSS.exists()
 
 
-def test_approvals_radio_markup_keeps_indicator_after_input() -> None:
-    js = APPROVALS_JS.read_text(encoding="utf-8")
-    input_start = js.index('<input type="radio" name="ap-mode"')
-    indicator_start = js.index('<span class="ap-radio__indicator"></span>')
-    between_input_and_indicator = js[js.index("/>", input_start) + 2 : indicator_start]
+def test_sandbox_replaces_approvals_page_route_and_assets() -> None:
+    app = APP_JS.read_text(encoding="utf-8")
+    template = TEMPLATE.read_text(encoding="utf-8")
 
-    assert input_start < indicator_start
-    assert between_input_and_indicator.strip() == ""
-
-
-def test_approvals_active_radio_label_uses_accessible_accent_text() -> None:
-    css = APPROVALS_CSS.read_text(encoding="utf-8")
-    start = css.index(".ap-radio.is-active .ap-radio__label {")
-    rule = css[start : css.index("}", start)]
-
-    assert "color: var(--accent-hover)" in rule
+    assert "Router.register('/sandbox'" in app
+    assert "Router.register('/approvals'" not in app
+    assert 'data-path="/sandbox"' in app
+    assert 'data-path="/approvals"' not in app
+    assert "/static/js/views/sandbox.js" in template
+    assert "/static/css/views/sandbox.css" in template
+    assert "/static/js/views/approvals.js" not in template
+    assert "/static/css/views/approvals.css" not in template
 
 
-def test_approval_card_metadata_wraps_long_runtime_identifiers() -> None:
-    css = APPROVALS_CSS.read_text(encoding="utf-8")
+def test_sandbox_view_keeps_control_sections_read_oriented() -> None:
+    js = SANDBOX_JS.read_text(encoding="utf-8")
 
-    assert ".ap-card__meta span {" in css
-    meta_start = css.index(".ap-card__meta {")
-    meta_rule = css[meta_start : css.index("}", meta_start)]
-    meta_item_start = css.index(".ap-card__meta span {")
-    meta_item_rule = css[meta_item_start : css.index("}", meta_item_start)]
-    code_start = css.index(".ap-card__meta code {")
-    code_rule = css[code_start : css.index("}", code_start)]
-
-    assert "min-width: 0" in meta_rule
-    assert "overflow-wrap: anywhere" in meta_rule
-    assert "max-width: 100%" in meta_item_rule
-    assert "min-width: 0" in meta_item_rule
-    assert "overflow-wrap: anywhere" in meta_item_rule
-    assert "white-space: normal" in code_rule
-    assert "overflow-wrap: anywhere" in code_rule
+    assert "App.getRpc()" in js
+    assert "sandbox.status" in js
+    assert "sandbox.explain" in js
+    assert "sandbox.run_context.get" in js
+    assert "Status" in js
+    assert "Workspace & Mounts" in js
+    assert "Managed Network" in js
+    assert "Sandbox Rules" in js
+    assert "Approval activity" not in js
 
 
-def test_approvals_view_separates_strategy_from_effective_execution_mode() -> None:
-    js = APPROVALS_JS.read_text(encoding="utf-8")
+def test_sandbox_metadata_wraps_long_runtime_identifiers() -> None:
+    css = SANDBOX_CSS.read_text(encoding="utf-8")
 
-    assert "Effective execution mode" in js
-    assert "cfg?.permissions?.default_mode" in js
-    assert "localStorage.getItem(ELEVATED_MODE_KEY)" in js
-    assert "_executionModeSummary('Session', sessionMode)" in js
-    assert "_executionModeSummary('Global', globalMode)" in js
-    assert "const label = `${scope} ${String(mode).toUpperCase()}`;" in js
-    assert "Approval prompts are currently bypassed by the global permission mode." in js
-    assert "Approval prompts are currently bypassed for this browser chat session." in js
-    assert "Risky tool calls will open approval prompts." in js
+    assert ".sandbox-detail-list strong," in css
+    assert ".sandbox-list__main," in css
+    assert ".sandbox-list__sub" in css
+    wrap_start = css.index(".sandbox-detail-list strong,")
+    wrap_rule = css[wrap_start : css.index("}", wrap_start)]
+    detail_start = css.index(".sandbox-detail-list__row,\n.sandbox-rule-list__row {")
+    detail_rule = css[detail_start : css.index("}", detail_start)]
+    chip_start = css.index(".sandbox-chip {")
+    chip_rule = css[chip_start : css.index("}", chip_start)]
+
+    assert "min-width: 0" in wrap_rule
+    assert "overflow-wrap: anywhere" in wrap_rule
+    assert "minmax(0, 1fr)" in detail_rule
+    assert "min-height: 22px" in chip_rule
+
+
+def test_approval_monitor_inline_button_polls_instead_of_deleted_page() -> None:
+    source = APPROVAL_MONITOR_JS.read_text(encoding="utf-8")
+    start = source.index("inline.addEventListener('click'")
+    handler = source[start : source.index("});", start) + 3]
+
+    assert "Router.navigate('/approvals')" not in source
+    assert "_resetPollBackoff();" in handler
+    assert "_poll();" in handler
+    assert "_modal" in handler

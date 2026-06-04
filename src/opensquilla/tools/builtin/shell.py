@@ -28,19 +28,33 @@ from opensquilla.sandbox.backend.seatbelt import (
     build_seatbelt_argv,
     render_seatbelt_profile,
 )
+from opensquilla.sandbox.escalation import (
+    build_path_approval_params,
+    current_tool_mounts,
+    grant_temporary_mount_for_current_tool,
+    request_sandbox_approval,
+)
 from opensquilla.sandbox.governance import action_fingerprint
 from opensquilla.sandbox.integration import (
     build_request,
     escalate_backend_denial,
     gate_action,
     get_runtime,
+    preflight_subprocess_managed_network,
     run_under_backend,
 )
-from opensquilla.sandbox.policy import build_policy, select_level
+from opensquilla.sandbox.operation_profile import OperationProfile, classify_command
+from opensquilla.sandbox.path_validation import MountDecision, decide_path_access
+from opensquilla.sandbox.policy import LevelHints, build_policy, select_level
 from opensquilla.sandbox.types import DenialReason, DenialResult, SandboxPolicy, SandboxRequest
 from opensquilla.tools.builtin.shell_policy import check_safe_bin
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
+from opensquilla.tools.run_mode import (
+    current_run_mode,
+    full_host_access_active,
+    trusted_sandbox_active,
+)
 from opensquilla.tools.types import (
     CallerKind,
     InteractionMode,
@@ -115,14 +129,14 @@ class _SpawnedBackgroundProcess:
     cleanup_callbacks: list[Callable[[], None]] = field(default_factory=list)
 
 
-# Task-local flag: set inside _check_exec_approval when the user actually
-# approved (once / always / auto-approve / intent-cache). Implies
-# "permission to run this specific call on the host", bypassing the sandbox
-# backend for the current tool invocation. Does NOT leak to subsequent
-# tool calls — contextvars are async-task scoped.
-_elevate_current_call: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "_elevate_current_call", default=False
+# Task-local flag for a single host rerun after the sandbox backend itself
+# denied execution and the operator approved that host-once escalation.
+_host_once_current_call: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_host_once_current_call", default=False
 )
+# Legacy private alias for tests/callers that reset the task-local grant.
+# Semantics are now host-once, not ordinary approval elevation.
+_elevate_current_call = _host_once_current_call
 
 
 def _audit_command(command: str) -> str:
@@ -144,38 +158,47 @@ def _append_sandbox_network_hint(text: str, *, force: bool = False) -> str:
     return text.rstrip() + "\n" + _SANDBOX_NETWORK_HINT + "\n"
 
 
+def _profile_shell_command(command: str) -> OperationProfile:
+    return classify_command(("sh", "-lc", command))
+
+
+def _level_hints_for_shell_profile(
+    profile: OperationProfile,
+    *,
+    warnlist_handled: bool = False,
+) -> LevelHints:
+    return LevelHints(
+        needs_network=profile.needs_network,
+        high_impact=profile.high_impact and not warnlist_handled,
+    )
+
+
 def _sandbox_effectively_off() -> bool:
     runtime = get_runtime()
     effective = getattr(runtime, "effective", None) if runtime is not None else None
     return runtime is None or not bool(getattr(effective, "sandbox_enabled", False))
 
 
+def _context_run_mode() -> str | None:
+    return current_run_mode()
+
+
 def _context_elevated_mode() -> str | None:
-    ctx = current_tool_context.get()
-    if ctx is None:
-        return None
-    if ctx.elevated in ("on", "bypass", "full"):
-        return ctx.elevated
-    if ctx.session_key:
-        with contextlib.suppress(Exception):
-            mode = get_approval_queue().get_elevated_mode(ctx.session_key)
-            if mode in ("on", "bypass", "full"):
-                ctx.elevated = mode
-                return mode
-    return None
+    """Legacy compatibility: only Full Host Access counts as elevated."""
+    return "full" if full_host_access_active() else None
 
 
-def _elevated_mode() -> str | None:
-    """Return the active elevation, preferring the per-call approval grant.
+def _consume_host_once_current_call() -> bool:
+    if not _host_once_current_call.get():
+        return False
+    _host_once_current_call.set(False)
+    return True
 
-    Precedence (highest first):
-    1. Approval-granted elevation (per-call contextvar)
-    2. ``ToolContext.elevated`` (``/elevated on|full`` slash command)
-    """
-    if _elevate_current_call.get():
-        _elevate_current_call.set(False)
-        return "on"
-    return _context_elevated_mode()
+
+def _host_execution_allowed() -> bool:
+    if _consume_host_once_current_call():
+        return True
+    return full_host_access_active()
 
 
 def _without_shell_null_redirections(command: str) -> str:
@@ -261,6 +284,151 @@ def _path_inside_any_root(path: Path, roots: list[Path]) -> bool:
     return False
 
 
+def _path_access_required_envelope(
+    decision: MountDecision,
+    *,
+    approval_id: str | None = None,
+) -> dict[str, object]:
+    ctx = current_tool_context.get()
+    workspace_root = _workspace_root_for_path_access()
+    approval = build_path_approval_params(
+        decision,
+        session_key=getattr(ctx, "session_key", None) if ctx is not None else None,
+        workspace=str(workspace_root) if workspace_root is not None else None,
+    )
+    if approval is None:
+        return {
+            "status": "path_access_required",
+            "path": decision.normalized_path,
+            "access": decision.access,
+            "message": _path_access_message(workspace_root),
+        }
+    return request_sandbox_approval(
+        approval,
+        approval_id=approval_id,
+        message=_path_access_message(workspace_root),
+        denied_message=_path_access_denied_message(workspace_root),
+    )
+
+
+def _path_access_message(workspace_root: Path | None) -> str:
+    workspace = str(workspace_root) if workspace_root is not None else "the configured workspace"
+    return (
+        f"The requested path is outside the current workspace ({workspace}). "
+        "Ask the user whether to add this path as read-only or read/write access."
+    )
+
+
+def _path_access_denied_message(workspace_root: Path | None) -> str:
+    workspace = str(workspace_root) if workspace_root is not None else "the configured workspace"
+    return (
+        "The user denied access outside the current workspace. "
+        "Do not ask for the same access again in this turn. "
+        "Explain that the requested path cannot be inspected from the current "
+        f"workspace ({workspace}) unless the user approves access or changes run mode. "
+        "Do not substitute details from other repositories or prior comparison context."
+    )
+
+
+def _path_access_blocked_envelope(decision: MountDecision) -> dict[str, object]:
+    return {
+        "status": "blocked",
+        "reason": "sensitive_path",
+        "path": decision.normalized_path,
+        "message": decision.reason,
+    }
+
+
+def _sandbox_path_access_enabled() -> bool:
+    runtime = get_runtime()
+    if runtime is None or not runtime.effective.sandbox_enabled:
+        return False
+    return not full_host_access_active()
+
+
+def _workspace_root_for_path_access() -> Path | None:
+    ctx = current_tool_context.get()
+    if ctx is not None and ctx.workspace_dir:
+        return Path(ctx.workspace_dir).expanduser().resolve(strict=False)
+    runtime = get_runtime()
+    if runtime is not None:
+        return runtime.workspace.expanduser().resolve(strict=False)
+    return None
+
+
+def _active_sandbox_mounts() -> list[dict[str, object]]:
+    return current_tool_mounts()
+
+
+def _sandbox_workdir_access_envelope(
+    workdir: str | None,
+    *,
+    approval_id: str | None = None,
+) -> dict[str, object] | None:
+    if not workdir or not _sandbox_path_access_enabled():
+        return None
+    decision = decide_path_access(
+        workdir,
+        workspace=_workspace_root_for_path_access(),
+        mounts=_active_sandbox_mounts(),
+        write=True,
+    )
+    if decision.status == "allowed":
+        return None
+    if decision.status == "blocked":
+        return _path_access_blocked_envelope(decision)
+    return _path_access_required_envelope(decision, approval_id=approval_id)
+
+
+def _sandbox_read_path_access_envelope(
+    profile: OperationProfile,
+    workdir: str | None,
+    *,
+    approval_id: str | None = None,
+) -> dict[str, object] | None:
+    if not profile.requested_paths or not _sandbox_path_access_enabled():
+        return None
+    for raw_path in profile.requested_paths:
+        decision = decide_path_access(
+            _resolve_shell_write_target(raw_path, workdir),
+            workspace=_workspace_root_for_path_access(),
+            mounts=_active_sandbox_mounts(),
+            write=False,
+        )
+        if decision.status == "allowed":
+            continue
+        if decision.status == "blocked":
+            return _path_access_blocked_envelope(decision)
+        if trusted_sandbox_active() and grant_temporary_mount_for_current_tool(decision):
+            continue
+        return _path_access_required_envelope(decision, approval_id=approval_id)
+    return None
+
+
+def _sandbox_write_path_access_envelope(
+    profile: OperationProfile,
+    workdir: str | None,
+    *,
+    approval_id: str | None = None,
+) -> dict[str, object] | None:
+    write_paths = getattr(profile, "requested_write_paths", ())
+    if not write_paths or not _sandbox_path_access_enabled():
+        return None
+    for raw_path in write_paths:
+        decision = decide_path_access(
+            _resolve_shell_write_target(raw_path, workdir),
+            workspace=_workspace_root_for_path_access(),
+            mounts=_active_sandbox_mounts(),
+            write=True,
+        )
+        if decision.status == "allowed":
+            continue
+        if decision.status == "blocked":
+            return _path_access_blocked_envelope(decision)
+        return _path_access_required_envelope(decision, approval_id=approval_id)
+    return None
+
+
 def _resolve_shell_write_target(raw_target: str, workdir: str | None) -> Path:
     cleaned = raw_target.strip().strip("'\"")
     path = Path(cleaned).expanduser()
@@ -338,11 +506,11 @@ def _workspace_write_deny_shell_block(
 
 
 def _approval_elevation_state() -> bool:
-    return _elevate_current_call.get()
+    return _host_once_current_call.get()
 
 
 def _restore_approval_elevation(value: bool) -> None:
-    _elevate_current_call.set(value)
+    _host_once_current_call.set(value)
 
 
 def _resolve_exec_timeout(timeout: float | int | None) -> float:
@@ -589,6 +757,43 @@ async def _await_bg_output_task(output_task: asyncio.Task[None]) -> None:
             await output_task
 
 
+async def _run_host_shell_command(
+    command: str,
+    *,
+    cwd: str | None,
+    env: dict[str, str],
+    timeout: float,
+) -> str:
+    try:
+        with tempfile.TemporaryFile() as output_file:
+            subprocess_kwargs: dict[str, Any] = {
+                "stdout": output_file,
+                "stderr": asyncio.subprocess.STDOUT,
+                "cwd": cwd,
+                "env": env,
+            }
+            if os.name == "posix":
+                subprocess_kwargs["start_new_session"] = True
+            else:
+                creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                if creationflags:
+                    subprocess_kwargs["creationflags"] = creationflags
+
+            proc = await asyncio.create_subprocess_shell(command, **subprocess_kwargs)
+            if not await _wait_exec_process(proc, timeout):
+                await _terminate_exec_process_tree(proc)
+                return f"[timeout after {timeout}s]\ncommand: {command}"
+            if os.name == "posix":
+                _signal_exec_process_tree(proc, signal.SIGTERM)
+
+            output_file.flush()
+            output_file.seek(0)
+            output = output_file.read().decode("utf-8", errors="replace")
+            return f"exit_code={proc.returncode}\n{output}"
+    except Exception as e:
+        return f"[error] {e}"
+
+
 @tool(
     name="exec_command",
     description="Execute a shell command and return stdout/stderr with exit code.",
@@ -622,6 +827,7 @@ async def exec_command(
 
     result = check_safe_bin(command)
     cwd = _effective_workdir(workdir)
+    profile = _profile_shell_command(command)
 
     # Denylist: hard-block, never bypassable
     if not result.allowed:
@@ -630,6 +836,15 @@ async def exec_command(
     sensitive_block = _sensitive_shell_block("exec_command", command, workdir=cwd)
     if sensitive_block is not None:
         return sensitive_block
+    path_access = _sandbox_workdir_access_envelope(cwd, approval_id=approval_id)
+    if path_access is not None:
+        return json.dumps(path_access, ensure_ascii=False)
+    path_access = _sandbox_read_path_access_envelope(profile, cwd, approval_id=approval_id)
+    if path_access is not None:
+        return json.dumps(path_access, ensure_ascii=False)
+    path_access = _sandbox_write_path_access_envelope(profile, cwd, approval_id=approval_id)
+    if path_access is not None:
+        return json.dumps(path_access, ensure_ascii=False)
     lockdown_block = _workspace_lockdown_shell_block("exec_command", command, cwd)
     if lockdown_block is not None:
         return json.dumps(lockdown_block, ensure_ascii=False)
@@ -660,19 +875,19 @@ async def exec_command(
         merged_env.update(env)
     effective_timeout = _resolve_exec_timeout(timeout)
 
-    # /elevated on|bypass|full — route exec around the sandbox backend so host
-    # paths are actually reachable. Approval is still handled above (elevated
-    # on still goes through approval; bypass and full skip it at
-    # _check_exec_approval).
-    elevated_bypass = _elevated_mode() in ("on", "bypass", "full")
+    host_execution = _host_execution_allowed()
 
     runtime = get_runtime()
-    if runtime is not None and runtime.effective.sandbox_enabled and not elevated_bypass:
+    if runtime is not None and runtime.effective.sandbox_enabled and not host_execution:
         decision, policy, request = await gate_action(
             action_kind="shell.exec",
             argv=("exec_command", command),
             cwd=Path(workdir) if workdir else None,
             env=merged_env,
+            hints=_level_hints_for_shell_profile(
+                profile,
+                warnlist_handled=result.needs_approval,
+            ),
         )
         if isinstance(decision, DenialResult):
             return json.dumps(decision.to_dict())
@@ -683,8 +898,13 @@ async def exec_command(
             policy=request.policy,
             stdin=None,
             env=dict(merged_env),
-            reason=request.reason,
+            reason=getattr(request, "reason", ""),
         )
+        preflight = await preflight_subprocess_managed_network(backend_request, runtime)
+        if isinstance(preflight, DenialResult):
+            return json.dumps(preflight.to_dict())
+        if isinstance(preflight, dict):
+            return json.dumps(preflight)
         try:
             sandbox_result = await run_under_backend(backend_request, runtime=runtime)
         except Exception as exc:
@@ -695,63 +915,32 @@ async def exec_command(
             )
             if isinstance(escalation, DenialResult):
                 return json.dumps(escalation.to_dict())
+            _host_once_current_call.set(True)
+            _consume_host_once_current_call()
             try:
-                proc = await asyncio.create_subprocess_shell(
+                return await _run_host_shell_command(
                     command,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
                     cwd=cwd,
                     env=merged_env,
+                    timeout=effective_timeout,
                 )
-                try:
-                    stdout_bytes, _ = await asyncio.wait_for(
-                        proc.communicate(), timeout=effective_timeout
-                    )
-                except TimeoutError:
-                    proc.kill()
-                    await proc.communicate()
-                    return f"[timeout after {effective_timeout}s]\ncommand: {command}"
-                output = stdout_bytes.decode("utf-8", errors="replace")
-                return f"exit_code={proc.returncode}\n{output}"
-            except Exception as e:
-                return f"[error] {e}"
+            finally:
+                _host_once_current_call.set(False)
         output = sandbox_result.stdout
         if sandbox_result.stderr:
             output += sandbox_result.stderr
         output = _append_sandbox_network_hint(output)
         return f"exit_code={sandbox_result.returncode}\n{output}"
 
-    if elevated_bypass:
-        log.info("shell_exec_elevated_host", command=_audit_command(command))
+    if host_execution:
+        log.info("shell_exec_host", command=_audit_command(command), run_mode=_context_run_mode())
 
-    try:
-        with tempfile.TemporaryFile() as output_file:
-            subprocess_kwargs: dict[str, Any] = {
-                "stdout": output_file,
-                "stderr": asyncio.subprocess.STDOUT,
-                "cwd": cwd,
-                "env": merged_env,
-            }
-            if os.name == "posix":
-                subprocess_kwargs["start_new_session"] = True
-            else:
-                creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                if creationflags:
-                    subprocess_kwargs["creationflags"] = creationflags
-
-            proc = await asyncio.create_subprocess_shell(command, **subprocess_kwargs)
-            if not await _wait_exec_process(proc, effective_timeout):
-                await _terminate_exec_process_tree(proc)
-                return f"[timeout after {effective_timeout}s]\ncommand: {command}"
-            if os.name == "posix":
-                _signal_exec_process_tree(proc, signal.SIGTERM)
-
-            output_file.flush()
-            output_file.seek(0)
-            output = output_file.read().decode("utf-8", errors="replace")
-            return f"exit_code={proc.returncode}\n{output}"
-    except Exception as e:
-        return f"[error] {e}"
+    return await _run_host_shell_command(
+        command,
+        cwd=cwd,
+        env=merged_env,
+        timeout=effective_timeout,
+    )
 
 
 @tool(
@@ -779,11 +968,21 @@ async def background_process(
 ) -> str:
     result = check_safe_bin(command)
     cwd = _effective_workdir(workdir)
+    profile = _profile_shell_command(command)
     if not result.allowed:
         raise ToolError(result.reason)
     sensitive_block = _sensitive_shell_block("background_process", command, workdir=cwd)
     if sensitive_block is not None:
         return sensitive_block
+    path_access = _sandbox_workdir_access_envelope(cwd, approval_id=approval_id)
+    if path_access is not None:
+        return json.dumps(path_access, ensure_ascii=False)
+    path_access = _sandbox_read_path_access_envelope(profile, cwd, approval_id=approval_id)
+    if path_access is not None:
+        return json.dumps(path_access, ensure_ascii=False)
+    path_access = _sandbox_write_path_access_envelope(profile, cwd, approval_id=approval_id)
+    if path_access is not None:
+        return json.dumps(path_access, ensure_ascii=False)
     lockdown_block = _workspace_lockdown_shell_block("background_process", command, cwd)
     if lockdown_block is not None:
         return json.dumps(lockdown_block, ensure_ascii=False)
@@ -815,27 +1014,37 @@ async def background_process(
                 )
             return json.dumps(approval_response)
 
-    elevated_bypass = _elevated_mode() in ("on", "bypass", "full")
+    host_execution = _host_execution_allowed()
 
     runtime = get_runtime()
-    if runtime is not None and runtime.effective.sandbox_enabled and not elevated_bypass:
+    if runtime is not None and runtime.effective.sandbox_enabled and not host_execution:
         decision, policy, request = await gate_action(
             action_kind="shell.background",
             argv=("background_process", command),
             cwd=Path(workdir) if workdir else None,
             env=dict(os.environ),
+            hints=_level_hints_for_shell_profile(
+                profile,
+                warnlist_handled=result.needs_approval,
+            ),
         )
         if isinstance(decision, DenialResult):
             return json.dumps(decision.to_dict())
+        backend_request = SandboxRequest(
+            argv=("sh", "-lc", command),
+            cwd=request.cwd,
+            action_kind=request.action_kind,
+            policy=policy,
+            env=dict(os.environ),
+        )
+        preflight = await preflight_subprocess_managed_network(backend_request, runtime)
+        if isinstance(preflight, DenialResult):
+            return json.dumps(preflight.to_dict())
+        if isinstance(preflight, dict):
+            return json.dumps(preflight)
         spawned = await _spawn_sandboxed_background_process(
             runtime=runtime,
-            request=SandboxRequest(
-                argv=("sh", "-lc", command),
-                cwd=request.cwd,
-                action_kind=request.action_kind,
-                policy=policy,
-                env=dict(os.environ),
-            ),
+            request=backend_request,
         )
         session_id = str(uuid.uuid4())[:8]
         ctx = current_tool_context.get()
@@ -867,8 +1076,12 @@ async def background_process(
         session.collector_task = asyncio.create_task(_collect_restricted())
         return _background_process_result(session)
 
-    if elevated_bypass:
-        log.info("background_process_elevated_host", command=_audit_command(command))
+    if host_execution:
+        log.info(
+            "background_process_host",
+            command=_audit_command(command),
+            run_mode=_context_run_mode(),
+        )
 
     session_id = str(uuid.uuid4())[:8]
 
@@ -1239,18 +1452,6 @@ def _wait_for_inline_browser_approval(background: bool) -> bool:
     return ctx is not None and ctx.caller_kind is CallerKind.WEB
 
 
-def _apply_approval_elevated_mode(entry: object) -> None:
-    params = getattr(entry, "params", None)
-    if not isinstance(params, dict):
-        return
-    mode = params.get("elevatedMode")
-    if mode not in ("on", "bypass", "full"):
-        return
-    ctx = current_tool_context.get()
-    if ctx is not None and ctx.is_owner:
-        ctx.elevated = mode
-
-
 async def _check_exec_approval(
     tool_name: str,
     command: str,
@@ -1271,16 +1472,14 @@ async def _check_exec_approval(
         "mode": "background" if background else "foreground",
     }
 
-    elevated_mode = _context_elevated_mode()
-    elevated_full = elevated_mode == "full"
-    elevated_bypass = elevated_mode == "bypass"
-    sandbox_off_requires_approval = (
-        _sandbox_effectively_off() and not elevated_full and not elevated_bypass
-    )
+    run_mode = _context_run_mode()
+    run_mode_full = run_mode == "full"
+    run_mode_trusted = run_mode == "trusted"
+    sandbox_off_requires_approval = _sandbox_effectively_off() and not run_mode_full
 
     # Sensitive-path hard block. Only /elevated full bypasses; ordinary
     # approval cannot override.
-    if not elevated_full:
+    if not run_mode_full:
         from opensquilla.sandbox.sensitive_paths import (
             build_block_envelope,
             sensitive_target_in_command,
@@ -1321,27 +1520,24 @@ async def _check_exec_approval(
         )
         return deny_block
 
-    # /elevated full — trusted operator has taken explicit responsibility.
-    # Approvals are skipped entirely.
-    if elevated_full:
+    # Full Host Access — trusted operator has taken explicit responsibility.
+    # Approvals are skipped entirely and later execution is allowed on host.
+    if run_mode_full:
         log.info(
-            "shell_approval_skipped_elevated_full",
+            "shell_approval_skipped_run_mode_full",
             command=_audit_command(command),
             tool=tool_name,
         )
-        _elevate_current_call.set(True)
         return None
 
-    # /elevated bypass — auto-approve all warned commands, but the sensitive
-    # path block above still applies (so SSH keys, /etc, etc. remain
-    # protected). This is the user-friendly "trust me for normal stuff" mode.
-    if elevated_bypass:
+    # Trusted-Sandbox skips routine warnlist approval, while still executing
+    # through the sandbox when the runtime has a backend enabled.
+    if run_mode_trusted and not sandbox_off_requires_approval:
         log.info(
-            "shell_approval_skipped_elevated_bypass",
+            "shell_approval_skipped_run_mode_trusted",
             command=_audit_command(command),
             tool=tool_name,
         )
-        _elevate_current_call.set(True)
         return None
 
     if settings.mode == "auto-deny":
@@ -1359,11 +1555,10 @@ async def _check_exec_approval(
             command=_audit_command(command),
             tool=tool_name,
             mode=settings.mode,
-            elevated_mode=elevated_mode,
+            run_mode=run_mode,
         )
 
     if settings.mode == "auto-approve" and not sandbox_off_requires_approval:
-        _elevate_current_call.set(True)
         return None
 
     if ctx is not None and ctx.interaction_mode is InteractionMode.UNATTENDED:
@@ -1385,7 +1580,6 @@ async def _check_exec_approval(
                 command=_audit_command(command),
                 tool=tool_name,
             )
-            _elevate_current_call.set(True)
             return None
 
     if approval_id is None:
@@ -1397,7 +1591,6 @@ async def _check_exec_approval(
                 pass
             entry = queue.get(approval_id)
             if entry.approved:
-                _apply_approval_elevated_mode(entry)
                 try:
                     queue.consume(approval_id)
                 except ValueError as exc:
@@ -1408,7 +1601,6 @@ async def _check_exec_approval(
                     command=_audit_command(command),
                     inline=True,
                 )
-                _elevate_current_call.set(True)
                 return None
             return {
                 "status": "approval_denied",
@@ -1474,12 +1666,8 @@ async def _check_exec_approval(
             "message": "Approval was denied.",
         }
     try:
-        _apply_approval_elevated_mode(entry)
         queue.consume(approval_id)
     except ValueError as exc:
         raise ToolError(str(exc)) from exc
     log.info("shell_approval_granted", approval_id=approval_id, command=_audit_command(command))
-    # User explicitly approved this call — grant per-call host execution so
-    # the approved rm/destructive op can actually reach the host target.
-    _elevate_current_call.set(True)
     return None

@@ -152,6 +152,7 @@ from opensquilla.router_control import (
 )
 from opensquilla.router_tiers import HIGHEST_TEXT_TIER, normalize_text_tier, tier_index
 from opensquilla.safety import injection_guard, permission_matrix, sandbox, tool_tiers
+from opensquilla.sandbox.run_mode import RunMode, display_name, execution_target, normalize_run_mode
 from opensquilla.session.compaction_lifecycle import (
     COMPACTION_CHUNK_SUMMARIZED_EVENT,
     COMPACTION_PERSISTED_EVENT,
@@ -3286,9 +3287,31 @@ class TurnRunner:
 
     @staticmethod
     def _extra_context_for_tool_context(ctx: ToolContext | None) -> dict[str, str]:
-        if ctx is None or ctx.caller_kind is not CallerKind.SUBAGENT:
+        if ctx is None:
             return {}
-        return {"Subagent Task Protocol": _SUBAGENT_TASK_PROTOCOL}
+        extra: dict[str, str] = {}
+        run_mode = getattr(ctx, "run_mode", None)
+        if run_mode:
+            try:
+                normalized_run_mode = normalize_run_mode(run_mode)
+            except ValueError:
+                normalized_run_mode = None
+            if normalized_run_mode is not None:
+                sandbox_line = (
+                    "Sandbox: disabled for tool execution"
+                    if normalized_run_mode is RunMode.FULL
+                    else "Sandbox: enabled for tool execution"
+                )
+                extra["Execution Context"] = "\n".join(
+                    [
+                        f"Run mode: {display_name(normalized_run_mode)}",
+                        f"Execution target: {execution_target(normalized_run_mode)}",
+                        sandbox_line,
+                    ]
+                )
+        if ctx.caller_kind is CallerKind.SUBAGENT:
+            extra["Subagent Task Protocol"] = _SUBAGENT_TASK_PROTOCOL
+        return extra
 
     @staticmethod
     def _merge_extra_prompt_context(

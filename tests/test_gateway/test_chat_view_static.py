@@ -686,9 +686,12 @@ def test_chat_stream_seq_drops_only_seen_duplicates_not_late_unique_events() -> 
 
 def test_chat_new_session_uses_current_agent_namespace() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
-    click_start = source.index("newBtn.addEventListener('click', () => {")
+    click_start = source.index("newBtn.addEventListener('click'")
     click_end = source.index("    // Export", click_start)
     click_body = source[click_start:click_end]
+    helper_start = source.index("function _startNewChatSession(source)")
+    helper_end = source.index("  /* ── Event Bindings", helper_start)
+    helper_body = source[helper_start:helper_end]
     slash_start = source.index("      case 'new_chat':")
     slash_end = source.index("      case 'reset_session':", slash_start)
     slash_body = source[slash_start:slash_end]
@@ -697,6 +700,10 @@ def test_chat_new_session_uses_current_agent_namespace() -> None:
     assert "return _webchatSessionKey(_agentIdFromSessionKey(_sessionKey)," in source
     assert 'title="New chat session in the current agent"' in source
     assert "New chat session in the current agent: " in source
+    assert "_startNewChatSession('new_chat')" in click_body
+    assert "const key = _genKey();" in helper_body
+    assert "_updateSessionChip(key);" in helper_body
+    assert "_persistSession(key);" in helper_body
     assert "_loadHistory(" not in click_body
     assert "_loadHistory(" not in slash_body
 
@@ -864,7 +871,8 @@ def test_chat_switching_existing_session_does_not_mark_new_chat_intent() -> None
     switch_body = source[switch_start:switch_end]
 
     assert "_pendingSessionIntent = 'new_chat'" not in switch_body
-    assert source.count("_pendingSessionIntent = 'new_chat'") == 2
+    assert source.count("_pendingSessionIntent = 'new_chat'") == 1
+    assert "_startNewChatSession('new_chat')" in source
     assert "params.intent = _pendingSessionIntent;" in source
 
 
@@ -3148,16 +3156,17 @@ def test_approval_monitor_sends_auth_headers() -> None:
     assert "headers: _authHeaders({ 'Content-Type': 'application/json' })" in source
 
 
-def test_approvals_view_sends_auth_headers() -> None:
-    source = Path("src/opensquilla/gateway/static/js/views/approvals.js").read_text(
+def test_approval_monitor_inline_button_opens_existing_modal_instead_of_page() -> None:
+    source = Path("src/opensquilla/gateway/static/js/approval_monitor.js").read_text(
         encoding="utf-8"
     )
+    start = source.index("inline.addEventListener('click'")
+    handler = source[start : source.index("});", start) + 3]
 
-    assert "function _authHeaders(extra)" in source
-    assert "App.getAuthToken" in source
-    assert "headers['Authorization'] = `Bearer ${token}`;" in source
-    assert "fetch('/api/approvals', { headers: _authHeaders() })" in source
-    assert "headers: _authHeaders({ 'Content-Type': 'application/json' })" in source
+    assert "Router.navigate('/approvals')" not in source
+    assert "_openModal(pending[0], data.mode || 'prompt');" in source
+    assert "_resetPollBackoff();" in handler
+    assert "_poll();" in handler
 
 
 def test_session_api_token_totals_load_independently_of_token_widget() -> None:

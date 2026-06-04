@@ -13,6 +13,7 @@ from opensquilla.identity.workspace import BOOTSTRAP_FILENAMES
 from opensquilla.sandbox.integration import sandboxed
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
+from opensquilla.tools.run_mode import full_host_access_active
 from opensquilla.tools.types import ToolError, current_tool_context
 from opensquilla.tools.write_tracking import record_workspace_file_write
 
@@ -255,15 +256,12 @@ def _patch_approval_plan(
 
     from opensquilla.sandbox.sensitive_paths import build_block_envelope, sensitive_path_marker
     from opensquilla.tools.builtin import filesystem
-    from opensquilla.tools.builtin.shell import _context_elevated_mode
     from opensquilla.tools.write_policy import (
         match_workspace_write_deny,
         workspace_write_deny_block,
     )
 
-    elevated_mode = _context_elevated_mode()
-    elevated_full = elevated_mode == "full"
-    elevated_bypass = elevated_mode == "bypass"
+    elevated_full = full_host_access_active()
     op_summary: list[dict[str, str]] = []
     outside_paths: list[str] = []
     workspace = filesystem._workspace_root()
@@ -299,11 +297,7 @@ def _patch_approval_plan(
 
         outside_workspace = filesystem._is_outside_workspace(resolved)
         memory_source_path = filesystem._memory_source_rel_path(resolved)
-        if (
-            not (elevated_full or elevated_bypass)
-            and outside_workspace
-            and memory_source_path is None
-        ):
+        if not elevated_full and outside_workspace and memory_source_path is None:
             outside_paths.append(str(resolved))
 
     if not outside_paths:

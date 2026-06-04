@@ -10,6 +10,8 @@ from opensquilla.sandbox.integration import (
     escalate_backend_denial,
     reset_runtime,
 )
+from opensquilla.sandbox.run_context import RunContext
+from opensquilla.sandbox.run_mode import RunMode
 from opensquilla.sandbox.types import (
     ALLOW,
     DenialReason,
@@ -22,6 +24,7 @@ from opensquilla.sandbox.types import (
     SandboxResult,
     SecurityLevel,
 )
+from opensquilla.tools.types import ToolContext, current_tool_context
 
 
 def _policy(workspace: Path) -> SandboxPolicy:
@@ -95,7 +98,106 @@ async def test_escalate_routes_to_approval_gate_with_require_approval(tmp_path: 
 
     assert decision is ALLOW
     assert queue.last_params is not None
-    assert "sandbox denied" in queue.last_params["reason"]
+    assert queue.last_params["approvalKind"] == "host_once"
+    assert [choice["id"] for choice in queue.last_params["choices"]] == [
+        "host_once",
+        "host_switch_chat_full",
+        "deny",
+    ]
+    assert "host once requested after sandbox denied" in queue.last_params["reason"]
+
+
+@pytest.mark.asyncio
+async def test_full_host_access_does_not_route_backend_failure_to_host_once(
+    tmp_path: Path,
+) -> None:
+    queue = _ApproveQueue(approve=True)
+    configure_runtime(
+        SandboxSettings(
+            sandbox=False,
+            backend="noop",
+            security_grading=False,
+            run_mode="full",
+        ),
+        approval_queue=queue,
+        workspace=tmp_path,
+    )
+    policy = _policy(tmp_path)
+    request = _request(tmp_path, policy)
+    result = _result_with_notes(("execve.denied: sandbox blocked execve of /bin/sh",))
+
+    decision = await escalate_backend_denial(result, request, policy)
+
+    assert isinstance(decision, DenialResult)
+    assert queue.last_params is None
+
+
+@pytest.mark.asyncio
+async def test_current_run_context_full_host_access_skips_backend_host_once(
+    tmp_path: Path,
+) -> None:
+    queue = _ApproveQueue(approve=True)
+    configure_runtime(
+        SandboxSettings(
+            sandbox=True,
+            backend="noop",
+            security_grading=True,
+            run_mode="standard",
+        ),
+        approval_queue=queue,
+        workspace=tmp_path,
+    )
+    token = current_tool_context.set(
+        ToolContext(
+            workspace_dir=str(tmp_path),
+            sandbox_run_context=RunContext(run_mode=RunMode.FULL),
+        )
+    )
+    try:
+        policy = _policy(tmp_path)
+        request = _request(tmp_path, policy)
+        result = _result_with_notes(("execve.denied: sandbox blocked execve of /bin/sh",))
+
+        decision = await escalate_backend_denial(result, request, policy)
+    finally:
+        current_tool_context.reset(token)
+
+    assert isinstance(decision, DenialResult)
+    assert queue.last_params is None
+
+
+@pytest.mark.asyncio
+async def test_current_tool_context_full_host_access_skips_backend_host_once(
+    tmp_path: Path,
+) -> None:
+    queue = _ApproveQueue(approve=True)
+    configure_runtime(
+        SandboxSettings(
+            sandbox=True,
+            backend="noop",
+            security_grading=True,
+            run_mode="standard",
+        ),
+        approval_queue=queue,
+        workspace=tmp_path,
+    )
+    token = current_tool_context.set(
+        ToolContext(
+            workspace_dir=str(tmp_path),
+            run_mode="full",
+        )
+    )
+    try:
+        policy = _policy(tmp_path)
+        request = _request(tmp_path, policy)
+        result = _result_with_notes(("execve.denied: sandbox blocked execve of /bin/sh",))
+
+        decision = await escalate_backend_denial(result, request, policy)
+    finally:
+        current_tool_context.reset(token)
+
+    assert isinstance(decision, DenialResult)
+    assert queue.last_params is None
 
 
 @pytest.mark.asyncio

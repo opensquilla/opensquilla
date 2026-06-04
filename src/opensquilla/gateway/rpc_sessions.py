@@ -30,6 +30,12 @@ from opensquilla.gateway.session_services import (
 )
 from opensquilla.gateway.session_streams import get_session_streams
 from opensquilla.paths import media_root_from_config
+from opensquilla.sandbox.run_context import (
+    get_run_context,
+    run_context_from_origin_payload,
+    set_run_mode,
+)
+from opensquilla.sandbox.run_mode import RunMode, normalize_run_mode
 from opensquilla.session.compaction import (
     build_compaction_config_from_provider,
     call_compact_with_optional_config,
@@ -56,7 +62,8 @@ from opensquilla.session.terminal_reply import build_terminal_reply, sanitize_ag
 
 _d = get_dispatcher()
 log = structlog.get_logger(__name__)
-_ELEVATED_MODES = frozenset({"on", "bypass", "full"})
+_ELEVATED_MODES = frozenset({"full"})
+_TRUSTED_ELEVATED_ALIASES = frozenset({"on", "bypass"})
 
 _ALLOWED_MEDIA_TYPES = _attachment_ingest.ALLOWED_MEDIA_TYPES
 _MAX_ATTACHMENT_BYTES = _attachment_ingest.MAX_ATTACHMENT_BYTES
@@ -166,6 +173,45 @@ def _trusted_elevated_hint(ctx: RpcContext, source_hint: dict[str, Any]) -> str 
     if isinstance(value, str) and value in _ELEVATED_MODES and ctx.principal.is_owner:
         return value
     return None
+
+
+def _trusted_run_mode_hint(ctx: RpcContext, source_hint: dict[str, Any]) -> Any | None:
+    value = source_hint.get("runMode") or source_hint.get("run_mode")
+    if isinstance(value, str) and ctx.principal.is_owner:
+        return normalize_run_mode(value)
+
+    elevated = source_hint.get("elevated")
+    if not isinstance(elevated, str) or not ctx.principal.is_owner:
+        return None
+    if elevated in _TRUSTED_ELEVATED_ALIASES:
+        return RunMode.TRUSTED
+    if elevated == "full":
+        return RunMode.FULL
+    return None
+
+
+def _apply_run_context_route_metadata(
+    route_envelope: Any,
+    run_context: Any,
+    *,
+    principal_is_owner: bool,
+) -> None:
+    run_context_payload = run_context.to_origin_payload()
+    filtered_run_context = run_context_from_origin_payload(
+        run_context_payload,
+        source="route_metadata",
+        preserve_materialized_user_grants=True,
+    )
+    route_envelope.metadata["run_mode"] = run_context.run_mode.value
+    route_envelope.metadata["sandbox_mounts"] = (
+        filtered_run_context.to_origin_payload()["mounts"]
+        if filtered_run_context is not None
+        else []
+    )
+    route_envelope.metadata["sandbox_run_context"] = run_context_payload
+    object.__setattr__(route_envelope, "sandbox_run_context_fresh", True)
+    if run_context.run_mode.value == "full" and principal_is_owner:
+        route_envelope.metadata["elevated"] = "full"
 
 
 def _normalize_session_send_source_hint(params: dict[str, Any]) -> dict[str, Any]:
@@ -972,12 +1018,31 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
     if display_text is not None and not isinstance(display_text, str):
         display_text = None
 
+    from opensquilla.agents.scope import resolve_agent_workspace_dir
     from opensquilla.gateway.routing import (
         build_cli_route_envelope,
         build_web_route_envelope,
     )
 
     agent_id = _effective_agent_id_for_session(session, key)
+    workspace_path = resolve_agent_workspace_dir(agent_id, ctx.config)
+    workspace_dir = str(workspace_path) if workspace_path is not None else None
+    run_mode_hint = _trusted_run_mode_hint(ctx, source_hint)
+    if run_mode_hint is not None:
+        run_context = await set_run_mode(
+            ctx.session_manager,
+            key,
+            run_mode_hint,
+            config=ctx.config,
+            workspace=workspace_dir,
+        )
+    else:
+        run_context = await get_run_context(
+            ctx.session_manager,
+            key,
+            config=ctx.config,
+            workspace=workspace_dir,
+        )
     if source_hint.get("caller_kind") == "cli" or source_hint.get("channel_kind") == "cli":
         route_envelope = build_cli_route_envelope(
             session_key=key,
@@ -987,6 +1052,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
             sender_id=source_hint.get("sender_id"),
             session_id=getattr(session, "session_id", None),
             principal_is_owner=ctx.principal.is_owner,
+            run_mode=run_context.run_mode.value,
         )
     else:
         route_envelope = build_web_route_envelope(
@@ -1000,6 +1066,11 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
             session_id=getattr(session, "session_id", None),
             principal_is_owner=ctx.principal.is_owner,
         )
+    _apply_run_context_route_metadata(
+        route_envelope,
+        run_context,
+        principal_is_owner=ctx.principal.is_owner,
+    )
     elevated_hint = _trusted_elevated_hint(ctx, source_hint)
     if elevated_hint is not None:
         route_envelope.metadata["elevated"] = elevated_hint
@@ -1221,19 +1292,17 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                 )
                 return
 
-            from opensquilla.agents.scope import resolve_agent_workspace_dir
             from opensquilla.engine.stream_wrappers import wrap_stream
             from opensquilla.gateway.routing import tool_context_from_envelope
             from opensquilla.permissions import configured_default_elevated
 
-            workspace_dir = resolve_agent_workspace_dir(agent_id, ctx.config)
             workspace_strict = getattr(ctx.config, "workspace_strict", None)
             if not isinstance(workspace_strict, bool):
                 workspace_strict = bool(workspace_dir)
             tool_ctx = tool_context_from_envelope(
                 route_envelope,
                 is_owner=ctx.principal.is_owner,
-                workspace_dir=str(workspace_dir),
+                workspace_dir=workspace_dir,
                 workspace_strict=workspace_strict,
                 default_elevated=configured_default_elevated(ctx.config),
             )

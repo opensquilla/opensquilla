@@ -11,11 +11,43 @@ from opensquilla.application.approval_rpc import (
     approval_resolve_rpc_payload,
     approval_settings_rpc_payload,
     approval_snapshot_rpc_payload,
+    approval_status_rpc_payload,
     approval_wait_decision_rpc_payload,
 )
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
+from opensquilla.sandbox.escalation import (
+    apply_sandbox_approval_choice,
+    deny_matching_pending_sandbox_approvals,
+    is_sandbox_approval_kind,
+    remember_sandbox_approval_denial,
+    validate_sandbox_approval_choice,
+)
 
 _d = get_dispatcher()
+
+
+def _complete_sandbox_resolution_claim(
+    queue: Any,
+    approval_id: str,
+    claim_token: str,
+    *,
+    allow_always: bool,
+    remember_intent: bool,
+) -> None:
+    try:
+        queue.complete_claimed_resolution(
+            approval_id,
+            claim_token,
+            allow_always=allow_always,
+            remember_intent=remember_intent,
+        )
+    except Exception:
+        queue.complete_claimed_resolution(
+            approval_id,
+            claim_token,
+            allow_always=allow_always,
+            remember_intent=remember_intent,
+        )
 
 
 @_d.method("exec.approvals.get", scope="operator.approvals")
@@ -130,18 +162,70 @@ async def _handle_exec_approval_resolve(params: dict | None, ctx: RpcContext) ->
         raise ValueError("params.approved is required")
     allow_always = bool(params.get("allowAlways", False))
     remember_intent = bool(params.get("rememberIntent", False))
-    elevated_mode = params.get("elevatedMode")
-    if elevated_mode not in ("on", "bypass", "full") or not ctx.principal.is_owner:
-        elevated_mode = None
+    choice = params.get("choice")
     queue = get_approval_queue()
-    return approval_resolve_rpc_payload(
-        queue,
+    approved = bool(params["approved"])
+    pending = queue.get(params["id"])
+    normalized_choice = str(choice).strip() if isinstance(choice, str) and choice.strip() else None
+    sandbox_approval = is_sandbox_approval_kind(pending.params.get("approvalKind"))
+
+    validate_sandbox_approval_choice(
+        pending.params,
+        choice=normalized_choice,
+        approved=approved,
+    )
+
+    if sandbox_approval and approved:
+        claim_token = queue.claim_resolution(params["id"])
+        try:
+            queue.finalize_claimed_resolution(
+                params["id"],
+                claim_token,
+                approved,
+                allow_always=allow_always,
+                remember_intent=remember_intent,
+                elevated_mode=None,
+            )
+        except Exception:
+            queue.release_resolution_claim(params["id"], claim_token)
+            raise
+        try:
+            await apply_sandbox_approval_choice(
+                pending.params,
+                choice=normalized_choice,
+                approved=True,
+                session_manager=ctx.session_manager,
+                config=ctx.config,
+            )
+        except Exception:
+            queue.reopen_resolved_approval(params["id"], expected_approved=True)
+            raise
+        _complete_sandbox_resolution_claim(
+            queue,
+            params["id"],
+            claim_token,
+            allow_always=allow_always,
+            remember_intent=remember_intent,
+        )
+        return approval_status_rpc_payload(queue, params["id"], queue.get_settings().mode)
+
+    queue.resolve(
         params["id"],
-        bool(params["approved"]),
+        approved,
         allow_always=allow_always,
         remember_intent=remember_intent,
-        elevated_mode=elevated_mode,
+        elevated_mode=None,
+        allow_idempotent=not sandbox_approval,
     )
+    if sandbox_approval and not approved:
+        remember_sandbox_approval_denial(pending.params, params["id"])
+        deny_matching_pending_sandbox_approvals(
+            queue,
+            pending.params,
+            exclude_approval_id=params["id"],
+        )
+
+    return approval_status_rpc_payload(queue, params["id"], queue.get_settings().mode)
 
 
 @_d.method("plugin.approval.request", scope="operator.approvals")

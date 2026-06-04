@@ -4,25 +4,48 @@ from __future__ import annotations
 
 from typing import Any
 
+from opensquilla.sandbox.default_allowlist import default_allowlist_payload
+from opensquilla.sandbox.package_bundles import PACKAGE_BUNDLES
+from opensquilla.sandbox.run_mode import config_run_mode, display_name, execution_target
+
 
 def posture(config: Any) -> str:
-    sandbox_enabled = bool(config.sandbox.sandbox)
-    grading_enabled = bool(config.sandbox.security_grading)
-    default_mode = str(config.permissions.default_mode)
-    if sandbox_enabled and grading_enabled and default_mode == "off":
-        return "on"
-    if not sandbox_enabled and not grading_enabled and default_mode in {"bypass", "full"}:
-        return default_mode
-    return "custom"
+    return config_run_mode(config).value
 
 
 def status_payload(config: Any, *, restart_required: bool = False) -> dict[str, Any]:
+    run_mode = config_run_mode(config)
+    sandbox_cfg = config.sandbox
+    network_default = str(getattr(sandbox_cfg, "network_default", "none"))
+    target = execution_target(run_mode)
+    managed_network = (
+        "ready"
+        if target == "sandbox"
+        and bool(sandbox_cfg.sandbox)
+        and network_default == "proxy_allowlist"
+        else "inactive" if target == "host" else "blocked"
+    )
     return {
-        "posture": posture(config),
+        "run_mode": run_mode.value,
+        "run_mode_label": display_name(run_mode),
+        "execution_target": target,
+        "posture": run_mode.value,
+        "backend": str(getattr(sandbox_cfg, "backend", "auto")),
+        "managed_network": managed_network,
         "sandbox": {
-            "sandbox": bool(config.sandbox.sandbox),
-            "security_grading": bool(config.sandbox.security_grading),
+            "sandbox": bool(sandbox_cfg.sandbox),
+            "security_grading": bool(sandbox_cfg.security_grading),
+            "network_default": network_default,
         },
+        "default_allowlist": default_allowlist_payload(),
+        "bundle_catalog": [
+            {
+                "bundle_id": bundle_id,
+                "domains": list(domains),
+                "enabled_by_default": True,
+            }
+            for bundle_id, domains in PACKAGE_BUNDLES.items()
+        ],
         "permissions": {
             "default_mode": str(config.permissions.default_mode),
         },

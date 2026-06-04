@@ -64,13 +64,22 @@ class NetworkMode(StrEnum):
     ``NONE`` is a real restriction (the Linux backend unshares the network
     namespace); ``HOST`` is only valid when the sandbox is disabled entirely
     or the caller has explicitly opted in via a future allowlist path.
-    ``PROXY_ALLOWLIST`` is reserved — the abstraction is shaped to accept
-    allowlist config later without widening the contract.
+    ``PROXY_ALLOWLIST`` routes egress through a local managed proxy so the
+    backend can keep raw network access unavailable while applying domain
+    allowlist decisions before forwarding.
     """
 
     NONE = "none"
     PROXY_ALLOWLIST = "proxy_allowlist"
     HOST = "host"
+
+
+@dataclass(frozen=True)
+class NetworkProxySpec:
+    """Local proxy endpoint assigned to a managed-network sandbox."""
+
+    host: str
+    port: int
 
 
 MountMode = Literal["ro", "rw"]
@@ -134,12 +143,19 @@ class SandboxPolicy:
     env_allowlist: tuple[str, ...]
     require_approval: bool
     description: str = ""
+    network_proxy: NetworkProxySpec | None = None
 
     def summary(self) -> dict[str, object]:
         """Flat structured summary used in log lines and debug output."""
+        network_proxy = (
+            {"host": self.network_proxy.host, "port": self.network_proxy.port}
+            if self.network_proxy is not None
+            else None
+        )
         return {
             "level": self.level.label,
             "network": self.network.value,
+            "network_proxy": network_proxy,
             "mounts": [
                 {"host": str(m.host_path), "sandbox": str(m.sandbox_path), "mode": m.mode}
                 for m in self.mounts
@@ -317,6 +333,7 @@ __all__ = [
     "MountMode",
     "MountSpec",
     "NetworkMode",
+    "NetworkProxySpec",
     "ResourceLimits",
     "SandboxBackendError",
     "SandboxPolicy",

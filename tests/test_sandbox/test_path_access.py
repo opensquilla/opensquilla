@@ -530,7 +530,7 @@ async def test_grep_search_does_not_follow_workspace_symlink_to_unmounted_path(
 
 
 @pytest.mark.asyncio
-async def test_shell_workdir_outside_workspace_requests_rw_mount(
+async def test_shell_read_only_workdir_outside_workspace_requests_ro_mount(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -557,7 +557,7 @@ async def test_shell_workdir_outside_workspace_requests_rw_mount(
     assert payload["status"] == "approval_required"
     approval_id = str(payload["approval_id"])
     assert payload["path"] == str(outside.resolve(strict=False))
-    assert payload["access"] == "rw"
+    assert payload["access"] == "ro"
     assert payload["approvalKind"] == "sandbox_path"
     assert backend_calls == []
 
@@ -568,6 +568,38 @@ async def test_shell_workdir_outside_workspace_requests_rw_mount(
 
     assert pending["status"] == "approval_pending"
     assert pending["approval_id"] == approval_id
+    assert backend_calls == []
+
+
+@pytest.mark.asyncio
+async def test_shell_workdir_relative_write_requests_rw_mount(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    backend_calls: list[object] = []
+
+    async def fail_backend(request: object, *, runtime: object = None) -> object:
+        backend_calls.append(request)
+        raise AssertionError("backend should not run before path access is granted")
+
+    monkeypatch.setattr(shell, "run_under_backend", fail_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    with tool_context(workspace):
+        payload = json.loads(await shell.exec_command("echo ok > out.txt", workdir=str(outside)))
+
+    assert payload["status"] == "approval_required"
+    assert payload["path"] == str(outside.resolve(strict=False))
+    assert payload["access"] == "rw"
+    assert payload["approvalKind"] == "sandbox_path"
     assert backend_calls == []
 
 

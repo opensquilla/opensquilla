@@ -363,6 +363,7 @@ def _active_sandbox_mounts() -> list[dict[str, object]]:
 def _sandbox_workdir_access_envelope(
     workdir: str | None,
     *,
+    write: bool = False,
     approval_id: str | None = None,
 ) -> dict[str, object] | None:
     if not workdir or not _sandbox_path_access_enabled():
@@ -371,7 +372,7 @@ def _sandbox_workdir_access_envelope(
         workdir,
         workspace=_workspace_root_for_path_access(),
         mounts=_active_sandbox_mounts(),
-        write=True,
+        write=write,
     )
     if decision.status == "allowed":
         return None
@@ -438,6 +439,15 @@ def _resolve_shell_write_target(raw_target: str, workdir: str | None) -> Path:
     return path.resolve(strict=False)
 
 
+def _shell_target_is_relative(raw_target: str) -> bool:
+    cleaned = raw_target.strip().strip("'\"")
+    if not cleaned:
+        return False
+    if re.match(r"^[A-Za-z]:[\\/]", cleaned):
+        return False
+    return not Path(cleaned).expanduser().is_absolute()
+
+
 def _shell_write_targets(command: str) -> list[str]:
     targets: list[str] = []
     redirection_pattern = r"(?:^|\s)(?:\d?>{1,2}|&>{1,2})\s*(['\"]?)([^'\"\s|&;]+)\1"
@@ -445,6 +455,16 @@ def _shell_write_targets(command: str) -> list[str]:
     tee_pattern = r"(?:^|\s)tee(?:\s+-[A-Za-z]+)*\s+(['\"]?)([^'\"\s|&;]+)\1"
     targets.extend(match.group(2) for match in re.finditer(tee_pattern, command))
     return targets
+
+
+def _shell_workdir_requires_write(command: str, profile: OperationProfile) -> bool:
+    for target in _shell_write_targets(command):
+        if _shell_target_is_relative(target):
+            return True
+    for target in getattr(profile, "requested_write_paths", ()):
+        if _shell_target_is_relative(str(target)):
+            return True
+    return False
 
 
 def _workspace_lockdown_shell_block(
@@ -836,7 +856,11 @@ async def exec_command(
     sensitive_block = _sensitive_shell_block("exec_command", command, workdir=cwd)
     if sensitive_block is not None:
         return sensitive_block
-    path_access = _sandbox_workdir_access_envelope(cwd, approval_id=approval_id)
+    path_access = _sandbox_workdir_access_envelope(
+        cwd,
+        write=_shell_workdir_requires_write(command, profile),
+        approval_id=approval_id,
+    )
     if path_access is not None:
         return json.dumps(path_access, ensure_ascii=False)
     path_access = _sandbox_read_path_access_envelope(profile, cwd, approval_id=approval_id)
@@ -974,7 +998,11 @@ async def background_process(
     sensitive_block = _sensitive_shell_block("background_process", command, workdir=cwd)
     if sensitive_block is not None:
         return sensitive_block
-    path_access = _sandbox_workdir_access_envelope(cwd, approval_id=approval_id)
+    path_access = _sandbox_workdir_access_envelope(
+        cwd,
+        write=_shell_workdir_requires_write(command, profile),
+        approval_id=approval_id,
+    )
     if path_access is not None:
         return json.dumps(path_access, ensure_ascii=False)
     path_access = _sandbox_read_path_access_envelope(profile, cwd, approval_id=approval_id)

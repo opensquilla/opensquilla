@@ -2203,8 +2203,8 @@ async def test_apply_network_choice_persists_chat_domain_grant(tmp_path):
         apply_sandbox_approval_choice,
         build_network_approval_params,
     )
-    from opensquilla.sandbox.run_context import get_run_context
     from opensquilla.sandbox.network_guard import NetworkDecision
+    from opensquilla.sandbox.run_context import get_run_context
 
     manager = _SessionManager()
     workspace = tmp_path / "workspace"
@@ -2287,8 +2287,8 @@ async def test_apply_network_choice_persists_user_domain_grant_with_workspace_sc
         apply_sandbox_approval_choice,
         build_network_approval_params,
     )
-    from opensquilla.sandbox.run_context import get_run_context
     from opensquilla.sandbox.network_guard import NetworkDecision
+    from opensquilla.sandbox.run_context import get_run_context
 
     manager = _SessionManager()
     workspace = tmp_path / "workspace"
@@ -2425,8 +2425,8 @@ async def test_apply_network_once_choice_stays_transient_and_updates_overlay(tmp
         build_network_approval_params,
         resolved_run_context_overlay,
     )
-    from opensquilla.sandbox.run_context import get_run_context
     from opensquilla.sandbox.network_guard import NetworkDecision
+    from opensquilla.sandbox.run_context import get_run_context
 
     manager = _SessionManager()
     workspace = tmp_path / "workspace"
@@ -2471,8 +2471,8 @@ async def test_apply_path_choice_persists_requested_mount(tmp_path):
         apply_sandbox_approval_choice,
         build_path_approval_params,
     )
-    from opensquilla.sandbox.run_context import get_run_context
     from opensquilla.sandbox.path_validation import MountDecision
+    from opensquilla.sandbox.run_context import get_run_context
 
     manager = _SessionManager()
     workspace = tmp_path / "workspace"

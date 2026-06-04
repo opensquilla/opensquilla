@@ -32,8 +32,10 @@ def test_windows_auto_backend_selects_appcontainer_when_available(
     tmp_path: Path,
 ) -> None:
     from opensquilla.sandbox import backend as backend_mod
-    from opensquilla.sandbox.backend import WindowsAppContainerBackend
-    from opensquilla.sandbox.backend import WindowsRestrictedTokenBackend
+    from opensquilla.sandbox.backend import (
+        WindowsAppContainerBackend,
+        WindowsRestrictedTokenBackend,
+    )
 
     monkeypatch.setattr(backend_mod.sys, "platform", "win32")
     monkeypatch.setattr(WindowsAppContainerBackend, "available", lambda self: True)
@@ -57,8 +59,10 @@ def test_windows_auto_backend_falls_back_to_restricted_token_when_appcontainer_u
     tmp_path: Path,
 ) -> None:
     from opensquilla.sandbox import backend as backend_mod
-    from opensquilla.sandbox.backend import WindowsAppContainerBackend
-    from opensquilla.sandbox.backend import WindowsRestrictedTokenBackend
+    from opensquilla.sandbox.backend import (
+        WindowsAppContainerBackend,
+        WindowsRestrictedTokenBackend,
+    )
 
     monkeypatch.setattr(backend_mod.sys, "platform", "win32")
     monkeypatch.setattr(WindowsAppContainerBackend, "available", lambda self: False)
@@ -78,8 +82,10 @@ def test_windows_auto_backend_fails_closed_when_unavailable(
     tmp_path: Path,
 ) -> None:
     from opensquilla.sandbox import backend as backend_mod
-    from opensquilla.sandbox.backend import WindowsAppContainerBackend
-    from opensquilla.sandbox.backend import WindowsRestrictedTokenBackend
+    from opensquilla.sandbox.backend import (
+        WindowsAppContainerBackend,
+        WindowsRestrictedTokenBackend,
+    )
 
     monkeypatch.setattr(backend_mod.sys, "platform", "win32")
     monkeypatch.setattr(WindowsAppContainerBackend, "available", lambda self: False)

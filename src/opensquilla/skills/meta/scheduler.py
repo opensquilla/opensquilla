@@ -25,6 +25,7 @@ import structlog
 from opensquilla.engine.types import (
     AgentEvent,
     MetaRunAnnouncedEvent,
+    MetaStepStateEvent,
     ToolResultEvent,
     ToolUseStartEvent,
 )
@@ -126,6 +127,28 @@ def _build_clarify_skip_summary(
         "trigger_message": trigger_message,
         "hint_action": "reply 'change' to redo",
     }
+
+
+def _default_status_text(step: MetaStep, effective_skill: str) -> str:
+    """Default ``status_text`` per step kind (design §3.3).
+
+    The WebUI ribbon shows this string under the currently running chip.
+    Returned per-kind so the scheduler does not duplicate prompt-shaped
+    copy at each emission site.
+    """
+    if step.kind == "llm_chat":
+        return "起草中…"
+    if step.kind == "llm_classify":
+        return "分类中…"
+    if step.kind == "agent":
+        return f"调用 {effective_skill} 中…"
+    if step.kind == "skill_exec":
+        return f"执行 {effective_skill} 中…"
+    if step.kind == "tool_call":
+        return f"调用 {step.tool}…"
+    if step.kind == "user_input":
+        return "等待你回复表单"
+    return "运行中…"
 
 
 async def run_dag(
@@ -377,6 +400,15 @@ async def run_dag(
             )
             step_use_id = f"meta_step_{step.id}"
             step_tool_name = f"meta-step:{step.id}"
+            await event_queue.put((
+                step.id,
+                MetaStepStateEvent(
+                    run_id=_run_id,
+                    step_id=step.id,
+                    state="running",
+                    status_text=_default_status_text(step, effective_skill),
+                ),
+            ))
             await event_queue.put(
                 (
                     step.id,
@@ -458,6 +490,14 @@ async def run_dag(
                     ),
                 ),
             )
+            await event_queue.put((
+                step.id,
+                MetaStepStateEvent(
+                    run_id=_run_id,
+                    step_id=step.id,
+                    state="succeeded",
+                ),
+            ))
             await event_queue.put((step.id, _StepDone(text=final_text)))
         except MetaPaused as paused:
             # Pause is not failure. Stash on the queue so the main loop

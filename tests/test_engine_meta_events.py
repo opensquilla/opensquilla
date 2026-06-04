@@ -66,3 +66,16 @@ def test_meta_run_completed_minimal():
     )
     assert ev.kind == "meta_run_completed"
     assert ev.outcome == "ok"
+
+
+def test_meta_step_state_event_is_in_agent_event_union():
+    """Ensure later tasks can yield MetaStepStateEvent through AgentEvent
+    typed iterators without an isinstance fallback."""
+    from typing import get_args
+
+    from opensquilla.engine.types import AgentEvent
+
+    members = get_args(AgentEvent)
+    assert MetaRunAnnouncedEvent in members
+    assert MetaStepStateEvent in members
+    assert MetaRunCompletedEvent in members

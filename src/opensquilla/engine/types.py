@@ -240,7 +240,9 @@ class MetaStepStateEvent:
     kind: Literal["meta_step_state"] = field(default="meta_step_state", init=False)
     run_id: str = ""
     step_id: str = ""
-    state: str = "pending"
+    state: Literal[
+        "pending", "running", "succeeded", "failed", "skipped", "substituted"
+    ] = "pending"
     status_text: str | None = None
     error: str | None = None
     substitute_for: str | None = None
@@ -255,7 +257,7 @@ class MetaRunCompletedEvent:
 
     kind: Literal["meta_run_completed"] = field(default="meta_run_completed", init=False)
     run_id: str = ""
-    outcome: str = "ok"
+    outcome: Literal["ok", "failed", "cancelled"] = "ok"
     completed_steps: list[str] = field(default_factory=list)
     failed_steps: list[str] = field(default_factory=list)
     skipped_steps: list[str] = field(default_factory=list)
@@ -315,6 +317,9 @@ AgentEvent = (
     | CompactionEvent
     | WarningEvent
     | RouterDecisionEvent
+    | MetaRunAnnouncedEvent
+    | MetaStepStateEvent
+    | MetaRunCompletedEvent
 )
 
 

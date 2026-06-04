@@ -1,0 +1,125 @@
+/* MetaSkill run progress ribbon — design §2, §8.3. */
+
+.meta-ribbon {
+  border: 1px solid var(--border-subtle, #d0d7de);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin: 8px 0;
+  background: var(--surface-1, #f6f8fa);
+  font-size: 0.9em;
+}
+
+.meta-ribbon-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.meta-ribbon-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  font-size: 1em;
+  color: inherit;
+}
+
+.meta-ribbon-title {
+  font-weight: 600;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.meta-ribbon-counter {
+  color: var(--text-subtle, #57606a);
+  font-variant-numeric: tabular-nums;
+}
+
+.meta-ribbon-chips {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scroll-behavior: smooth;
+}
+
+.meta-ribbon-chips .chip {
+  flex: 0 0 auto;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--chip-bg, #e7ebf0);
+  color: var(--text-subtle, #57606a);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 120ms, color 120ms;
+}
+
+.meta-ribbon-chips .chip.pending { opacity: 0.6; }
+.meta-ribbon-chips .chip.running {
+  background: var(--accent-soft, #ddf4ff);
+  color: var(--accent, #0969da);
+  font-weight: 600;
+}
+.meta-ribbon-chips .chip.succeeded {
+  background: var(--success-soft, #dafbe1);
+  color: var(--success, #1a7f37);
+}
+.meta-ribbon-chips .chip.failed {
+  background: var(--danger-soft, #ffebe9);
+  color: var(--danger, #cf222e);
+  font-weight: 600;
+}
+.meta-ribbon-chips .chip.skipped {
+  opacity: 0.4;
+  text-decoration: line-through;
+}
+.meta-ribbon-chips .chip.substituted {
+  background: var(--warn-soft, #fff8c5);
+  color: var(--warn, #9a6700);
+}
+
+.meta-ribbon-chips .chip.running::after {
+  content: " ●";
+  animation: meta-ribbon-pulse 1.2s infinite;
+}
+
+@keyframes meta-ribbon-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.meta-ribbon-status {
+  margin-top: 6px;
+  color: var(--text-subtle, #57606a);
+  min-height: 1.2em;
+}
+
+.meta-ribbon[data-collapsed="true"] .meta-ribbon-chips,
+.meta-ribbon[data-collapsed="true"] .meta-ribbon-actions {
+  display: none;
+}
+
+.meta-ribbon-actions {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.meta-ribbon-actions button {
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle, #d0d7de);
+  background: var(--surface-2, #fff);
+  cursor: pointer;
+  font-size: 0.9em;
+}
+
+.meta-ribbon-actions button:hover {
+  background: var(--accent-soft, #ddf4ff);
+}

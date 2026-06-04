@@ -22,12 +22,16 @@ export interface RpcFrame {
 }
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected';
+export type RpcEventHandler = {
+  bivarianceHack(...args: unknown[]): void;
+}['bivarianceHack'];
+type RpcClientError = Error & { code?: string; details?: unknown };
 
 export class RpcClient {
   private _ws: WebSocket | null = null;
   private _reqId = 0;
   private _pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
-  private _listeners = new Map<string, Set<(...args: any[]) => void>>();
+  private _listeners = new Map<string, Set<RpcEventHandler>>();
   private _state: ConnectionState = 'disconnected';
   private _url = '';
   private _token: string | null = null;
@@ -78,7 +82,7 @@ export class RpcClient {
     });
   }
 
-  on(event: string, handler: (...args: any[]) => void): () => void {
+  on(event: string, handler: RpcEventHandler): () => void {
     if (!this._listeners.has(event)) this._listeners.set(event, new Set());
     this._listeners.get(event)!.add(handler);
     return () => this._listeners.get(event)?.delete(handler);
@@ -193,10 +197,10 @@ export class RpcClient {
               typeof err === 'string'
                 ? err
                 : (err && (err.message || err.code)) || 'RPC error';
-            const error = new Error(message);
+            const error = new Error(message) as RpcClientError;
             if (err && typeof err === 'object') {
-              (error as any).code = err.code;
-              (error as any).details = err.details;
+              error.code = err.code;
+              error.details = err.details;
             }
             p.reject(error);
           }

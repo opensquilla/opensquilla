@@ -1,20 +1,21 @@
 <template>
-  <div class="health-layout health-stage">
-    <header class="health-stage__header">
-      <div class="health-stage__title-block">
-        <span class="health-eyebrow">Control &middot; Health</span>
-        <h2>OpenSquilla Health</h2>
-        <p>{{ summaryText }}</p>
+  <div class="health-layout health-stage control-stage control-stage--spacious">
+    <header class="health-stage__header control-stage__header">
+      <div class="health-stage__title-block control-stage__title-block">
+        <h2 class="health-stage__title control-stage__title">Health</h2>
+        <p class="health-stage__subtitle control-stage__subtitle">{{ summaryText }}</p>
       </div>
-      <button
-        class="btn btn--ghost"
-        title="Refresh health report"
-        :disabled="loading"
-        @click="refresh"
-      >
-        <Icon name="refresh" :size="16" />
-        <span>Refresh</span>
-      </button>
+      <div class="health-stage__actions control-stage__actions">
+        <button
+          class="btn btn--ghost"
+          title="Refresh health report"
+          :disabled="loading"
+          @click="refresh"
+        >
+          <Icon name="refresh" :size="16" />
+          <span>Refresh</span>
+        </button>
+      </div>
     </header>
 
     <section
@@ -22,10 +23,10 @@
       :class="stripClass"
       aria-label="Health summary"
     >
-      <div class="health-score">
-        <span class="health-score__label">Readiness</span>
-        <strong>{{ statusLabelText }}</strong>
-        <span class="health-score__summary">{{ statusSummary }}</span>
+      <div class="health-score control-stat control-stat--hero">
+        <span class="health-score__label control-stat__label">Readiness</span>
+        <strong class="control-stat__value">{{ statusLabelText }}</strong>
+        <span class="health-score__summary control-stat__hint">{{ statusSummary }}</span>
         <div v-if="contextItems.length" class="health-report-context" aria-label="Health report context">
           <span v-for="([label, value], idx) in contextItems" :key="idx" class="health-report-context__item">
             <b>{{ label }}</b>
@@ -34,31 +35,31 @@
         </div>
       </div>
       <div class="health-count-grid">
-        <div class="health-count" :class="`is-${classToken('blocks_ready')}`">
-          <span>Needs action</span>
-          <strong>{{ impactCounts.blocks_ready || 0 }}</strong>
+        <div class="health-count control-stat" :class="`is-${classToken('blocks_ready')}`">
+          <span class="control-stat__label">Needs action</span>
+          <strong class="control-stat__value">{{ impactCounts.blocks_ready || 0 }}</strong>
         </div>
-        <div class="health-count" :class="`is-${classToken('degrades')}`">
-          <span>Degraded</span>
-          <strong>{{ impactCounts.degrades || 0 }}</strong>
+        <div class="health-count control-stat" :class="`is-${classToken('degrades')}`">
+          <span class="control-stat__label">Degraded</span>
+          <strong class="control-stat__value">{{ impactCounts.degrades || 0 }}</strong>
         </div>
-        <div class="health-count" :class="`is-${classToken('optional')}`">
-          <span>Optional</span>
-          <strong>{{ impactCounts.optional || 0 }}</strong>
+        <div class="health-count control-stat" :class="`is-${classToken('optional')}`">
+          <span class="control-stat__label">Optional</span>
+          <strong class="control-stat__value">{{ impactCounts.optional || 0 }}</strong>
         </div>
-        <div class="health-count" :class="`is-${classToken('none')}`">
-          <span>Ready</span>
-          <strong>{{ impactCounts.none || 0 }}</strong>
+        <div class="health-count control-stat" :class="`is-${classToken('none')}`">
+          <span class="control-stat__label">Ready</span>
+          <strong class="control-stat__value">{{ impactCounts.none || 0 }}</strong>
         </div>
       </div>
     </section>
 
     <section class="health-findings" aria-label="Health findings">
       <template v-if="loading">
-        <article class="health-empty">Loading health report</article>
+        <article class="health-empty control-card">Loading health report</article>
       </template>
       <template v-else-if="groupedFindings.length === 0">
-        <article class="health-empty">No findings returned.</article>
+        <article class="health-empty control-card">No findings returned.</article>
       </template>
       <template v-else>
         <section
@@ -76,7 +77,7 @@
           <article
             v-for="(finding, fIdx) in group.findings"
             :key="finding.id || fIdx"
-            class="health-finding"
+            class="health-finding control-card"
             :class="`is-${findingTone(findingGroupKind(finding))}`"
           >
             <div class="health-finding__marker" aria-hidden="true">
@@ -562,65 +563,6 @@ function findingBadgeClass(finding: Finding): string {
 </script>
 
 <style scoped>
-.health-layout,
-.health-stage {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-5);
-  max-width: none;
-  position: relative;
-}
-
-.health-stage__header {
-  align-items: flex-end;
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-4);
-  justify-content: space-between;
-  padding-top: var(--sp-3);
-}
-
-.health-stage__title-block {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.health-stage__header h2 {
-  font-size: clamp(1.625rem, 1.2rem + 1vw, 2.25rem);
-  font-weight: 700;
-  letter-spacing: 0;
-  line-height: 1.05;
-  margin: 0;
-  position: relative;
-}
-
-.health-stage__header h2::after {
-  background: linear-gradient(90deg, var(--accent), transparent);
-  border-radius: 2px;
-  bottom: -8px;
-  content: "";
-  height: 2px;
-  left: 0;
-  position: absolute;
-  width: 36px;
-}
-
-.health-stage__header p {
-  color: var(--text-muted);
-  font-size: var(--fs-sm);
-  margin: var(--sp-3) 0 0;
-}
-
-.health-eyebrow {
-  color: var(--text-dim);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-
 .health-status__rail {
   display: grid;
   gap: var(--sp-3);
@@ -1055,22 +997,6 @@ function findingBadgeClass(finding: Finding): string {
   padding: var(--sp-4);
 }
 
-.health-finding.is-error {
-  border-color: color-mix(in srgb, var(--danger) 42%, var(--border));
-}
-
-.health-finding.is-warn {
-  border-color: color-mix(in srgb, var(--warn) 42%, var(--border));
-}
-
-.health-finding.is-info {
-  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
-}
-
-.health-finding.is-ok {
-  border-color: color-mix(in srgb, var(--ok) 42%, var(--border));
-}
-
 @media (max-width: 980px) {
   .health-status__rail {
     grid-template-columns: 1fr;
@@ -1078,16 +1004,6 @@ function findingBadgeClass(finding: Finding): string {
 }
 
 @media (max-width: 760px) {
-  .health-stage__header {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .health-stage__header .btn {
-    align-self: flex-start;
-    width: auto;
-  }
-
   .health-count-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

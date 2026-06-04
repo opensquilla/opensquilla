@@ -5,6 +5,7 @@ import { router } from './router'
 import { useAppStore } from './stores/app'
 import { useRpcStore } from './stores/rpc'
 import './assets/base.css'
+import './styles/control-visual-system.css'
 
 const app = createApp(App)
 app.use(createPinia())

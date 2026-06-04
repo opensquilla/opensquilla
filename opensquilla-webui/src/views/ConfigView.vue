@@ -285,11 +285,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
+import { useConfigTooltip } from '@/composables/config/useConfigTooltip'
 import { useDocumentEvent } from '@/composables/useDocumentEvent'
 import Icon from '@/components/Icon.vue'
+import { summariseDiffValue } from '@/utils/config/diff'
+import { objectSummary, searchBlob } from '@/utils/config/summary'
+import { objToYaml } from '@/utils/config/yaml'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -347,9 +351,6 @@ const HELP: Record<string, string> = {
   auth_mode: 'Gateway auth scheme. "token" requires a static bearer token; "none" is open (loopback only); other modes per deployment.',
 }
 
-const SECRET_KEY_RE = /key|token|secret|password/i
-const STR_TRUNC = 40
-
 // ---------------------------------------------------------------------------
 // Stores & Router
 // ---------------------------------------------------------------------------
@@ -374,14 +375,19 @@ const searchText = ref('')
 const diffOpen = ref(false)
 const passwordVisible = ref<Record<string, boolean>>({})
 
-// Tooltip state
-const activeTooltipKey = ref<string | null>(null)
-const tooltipRef = ref<HTMLElement | null>(null)
-const tooltipPlacement = ref<'bottom' | 'top'>('bottom')
-const tooltipStyle = ref<Record<string, string>>({})
-const tooltipArrowStyle = ref<Record<string, string>>({})
-let tooltipLocked = false
-let tooltipHideTimeout: ReturnType<typeof setTimeout> | null = null
+const {
+  activeTooltipKey,
+  tooltipRef,
+  tooltipPlacement,
+  tooltipStyle,
+  tooltipArrowStyle,
+  helpFor,
+  showTooltip,
+  toggleTooltip,
+  hideTooltipDelayed,
+  onDocClickForTooltip,
+  onDocKeyForTooltip,
+} = useConfigTooltip(HELP)
 
 // ---------------------------------------------------------------------------
 // Computed
@@ -569,172 +575,6 @@ function onJsonInput(key: string, text: string, _original: unknown) {
     onFieldChange(key, newVal, 'json')
   } catch {
     invalidJson.value[key] = true
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Object summary
-// ---------------------------------------------------------------------------
-
-function formatPreviewValue(key: string, value: unknown): string {
-  if (SECRET_KEY_RE.test(key)) return '"***"'
-  if (value === null) return 'null'
-  if (value === undefined) return 'undefined'
-  if (typeof value === 'boolean' || typeof value === 'number') return String(value)
-  if (typeof value === 'string') {
-    const trimmed = value.length > STR_TRUNC ? value.slice(0, STR_TRUNC - 1) + '…' : value
-    return JSON.stringify(trimmed)
-  }
-  if (Array.isArray(value)) return `[${value.length}]`
-  if (typeof value === 'object') return `{${Object.keys(value as object).length}}`
-  return JSON.stringify(value)
-}
-
-function objectSummary(value: unknown): string {
-  if (Array.isArray(value)) {
-    const len = value.length
-    if (len === 0) return 'JSON · empty list'
-    const preview = value.slice(0, 2).map(v => formatPreviewValue('item', v)).join(', ')
-    const more = len > 2 ? ', …' : ''
-    return `JSON · ${len} ${len === 1 ? 'item' : 'items'} · [${preview}${more}]`
-  }
-  if (value && typeof value === 'object') {
-    const keys = Object.keys(value)
-    if (keys.length === 0) return 'JSON · empty object'
-    const previewKeys = keys.slice(0, 2)
-    const parts = previewKeys.map(k => `${k}: ${formatPreviewValue(k, (value as Record<string, unknown>)[k])}`)
-    const more = keys.length > previewKeys.length ? ', …' : ''
-    return `JSON · ${keys.length} ${keys.length === 1 ? 'key' : 'keys'} · {${parts.join(', ')}${more}}`
-  }
-  return 'JSON · value'
-}
-
-function searchBlob(value: unknown): string {
-  if (value === null || value === undefined) return ''
-  if (typeof value === 'object') {
-    try { return JSON.stringify(value).toLowerCase() }
-    catch { return '' }
-  }
-  return String(value).toLowerCase()
-}
-
-// ---------------------------------------------------------------------------
-// Diff helpers
-// ---------------------------------------------------------------------------
-
-function summariseDiffValue(v: unknown): string {
-  const s = JSON.stringify(v)
-  if (s === undefined) return String(v)
-  return s.length > 120 ? s.slice(0, 117) + '…' : s
-}
-
-// ---------------------------------------------------------------------------
-// YAML serialization
-// ---------------------------------------------------------------------------
-
-function objToYaml(obj: unknown, indent = 0): string {
-  const pad = '  '.repeat(indent)
-  if (obj === null || obj === undefined) return 'null'
-  if (typeof obj === 'boolean') return String(obj)
-  if (typeof obj === 'number') return String(obj)
-  if (typeof obj === 'string') {
-    if (/[\n:#\[\]{}&*!|>'"%@`]/.test(obj) || obj.trim() !== obj) {
-      return JSON.stringify(obj)
-    }
-    return obj
-  }
-  if (Array.isArray(obj)) {
-    if (obj.length === 0) return '[]'
-    return '\n' + obj.map(item => pad + '- ' + objToYaml(item, indent + 1)).join('\n')
-  }
-  if (typeof obj === 'object') {
-    const keys = Object.keys(obj as object)
-    if (keys.length === 0) return '{}'
-    return '\n' + keys.map(k => {
-      const val = (obj as Record<string, unknown>)[k]
-      const rendered = objToYaml(val, indent + 1)
-      const inline = typeof val !== 'object' || val === null
-      return pad + k + ': ' + (inline ? rendered : rendered.trimStart())
-    }).join('\n')
-  }
-  return String(obj)
-}
-
-// ---------------------------------------------------------------------------
-// Tooltips
-// ---------------------------------------------------------------------------
-
-function helpFor(key: string): string {
-  if (key in HELP) return HELP[key]
-  return 'No description yet — see the docs.'
-}
-
-function showTooltip(event: Event, key: string) {
-  activeTooltipKey.value = key
-  tooltipLocked = false
-  nextTick(() => positionTooltip(event.target as HTMLElement))
-}
-
-function toggleTooltip(event: Event, key: string) {
-  if (activeTooltipKey.value === key) {
-    hideTooltip()
-    return
-  }
-  activeTooltipKey.value = key
-  tooltipLocked = true
-  nextTick(() => positionTooltip(event.target as HTMLElement))
-}
-
-function hideTooltip() {
-  activeTooltipKey.value = null
-  tooltipLocked = false
-}
-
-function hideTooltipDelayed(_event: Event, key: string) {
-  if (tooltipHideTimeout) clearTimeout(tooltipHideTimeout)
-  tooltipHideTimeout = setTimeout(() => {
-    if (activeTooltipKey.value === key && !tooltipLocked) {
-      hideTooltip()
-    }
-  }, 80)
-}
-
-function positionTooltip(anchor: HTMLElement) {
-  const tip = tooltipRef.value
-  if (!tip) return
-  const rect = anchor.getBoundingClientRect()
-  const tipRect = tip.getBoundingClientRect()
-  const margin = 8
-  let left = rect.left + rect.width / 2 - tipRect.width / 2
-  left = Math.max(margin, Math.min(left, window.innerWidth - tipRect.width - margin))
-  let top = rect.bottom + 8
-  let placement: 'bottom' | 'top' = 'bottom'
-  if (top + tipRect.height + margin > window.innerHeight) {
-    top = rect.top - tipRect.height - 8
-    placement = 'top'
-  }
-  tooltipPlacement.value = placement
-  tooltipStyle.value = {
-    left: `${Math.round(left)}px`,
-    top: `${Math.round(top)}px`,
-    position: 'fixed',
-  }
-  const cx = rect.left + rect.width / 2 - left
-  tooltipArrowStyle.value = {
-    left: `${Math.max(12, Math.min(cx, tipRect.width - 12))}px`,
-  }
-}
-
-function onDocClickForTooltip(e: MouseEvent) {
-  if (!activeTooltipKey.value) return
-  const tip = tooltipRef.value
-  if (tip && tip.contains(e.target as Node)) return
-  hideTooltip()
-}
-
-function onDocKeyForTooltip(e: KeyboardEvent) {
-  if (e.key === 'Escape' && activeTooltipKey.value) {
-    hideTooltip()
   }
 }
 

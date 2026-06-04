@@ -1,0 +1,308 @@
+/* Shared Control UI primitives. Overview and Skills define the visual baseline. */
+
+.control-stage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+  max-width: none;
+  position: relative;
+}
+
+.control-stage--spacious {
+  gap: var(--sp-6);
+}
+
+.control-stage__header {
+  align-items: flex-end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  justify-content: space-between;
+  padding-top: var(--sp-3);
+}
+
+.control-stage__title-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.control-stage__title {
+  font-size: clamp(1.625rem, 1.2rem + 1vw, 2.25rem);
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1.05;
+  margin: 0;
+  position: relative;
+}
+
+.control-stage__title::after {
+  background: linear-gradient(90deg, var(--accent), transparent);
+  border-radius: 2px;
+  bottom: -8px;
+  content: "";
+  height: 2px;
+  left: 0;
+  position: absolute;
+  width: 36px;
+}
+
+.control-stage__subtitle {
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  margin: var(--sp-3) 0 0;
+  max-width: 60ch;
+}
+
+.control-stage__actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+@media (min-width: 769px) {
+  .main:not(.docked) .control-stage__header {
+    padding-top: calc(36px + var(--sp-2));
+  }
+}
+
+.control-stat-grid {
+  display: grid;
+  gap: var(--sp-3);
+  grid-template-columns: repeat(auto-fit, minmax(var(--control-stat-min, 200px), 1fr));
+}
+
+.control-stat-grid--fixed {
+  grid-template-columns: repeat(var(--control-stat-columns, 4), minmax(0, 1fr));
+}
+
+.control-stat {
+  animation: control-fade-up 360ms ease both;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  font: inherit;
+  gap: 4px;
+  overflow: hidden;
+  padding: var(--sp-4);
+  position: relative;
+  text-align: left;
+  transition: border-color var(--transition), box-shadow var(--transition), transform 200ms ease;
+}
+
+.control-stat--clickable {
+  cursor: pointer;
+}
+
+.control-stat--static {
+  cursor: default;
+}
+
+.control-stat--accent::before,
+.control-stat--hero::before {
+  background: var(--accent);
+  bottom: 0;
+  content: "";
+  left: 0;
+  position: absolute;
+  top: 0;
+  width: 3px;
+}
+
+.control-stat--warn::before {
+  background: var(--warn);
+}
+
+.control-stat--hero::after,
+.control-card--accent::after {
+  background: radial-gradient(circle at 0% 0%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 62%);
+  border-radius: inherit;
+  content: "";
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+.control-stat--clickable:hover,
+.control-card--interactive:hover {
+  border-color: var(--border-focus);
+  box-shadow: 0 8px 24px -16px rgba(0, 0, 0, 0.4);
+  transform: translateY(-1px);
+}
+
+.control-stat--static:hover {
+  box-shadow: none;
+  transform: none;
+}
+
+.control-stat--selected,
+.control-card--selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.control-stat__icon {
+  align-items: center;
+  color: var(--accent);
+  display: inline-flex;
+  height: 24px;
+  justify-content: center;
+  opacity: 0.85;
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  width: 24px;
+}
+
+.control-stat__label {
+  color: var(--text-dim);
+  display: block;
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  line-height: 1.25;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.control-stat__value {
+  align-items: center;
+  color: var(--text);
+  display: flex;
+  font-size: 1.75rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  gap: 8px;
+  letter-spacing: 0;
+  line-height: 1.18;
+}
+
+.control-stat__value--mono {
+  font-family: var(--font-mono);
+  font-size: 1.375rem;
+  line-height: 1.3;
+}
+
+.control-stat__hint {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  margin-top: 6px;
+}
+
+.control-stat--clickable:hover .control-stat__hint {
+  color: var(--text);
+}
+
+.control-card-grid {
+  display: grid;
+  gap: var(--sp-3);
+  grid-template-columns: repeat(auto-fill, minmax(var(--control-card-min, 260px), 1fr));
+}
+
+.control-card {
+  animation: control-fade-up 360ms ease both;
+  appearance: none;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  font: inherit;
+  gap: var(--sp-3);
+  overflow: hidden;
+  padding: var(--sp-4);
+  position: relative;
+  text-align: left;
+  transition: border-color var(--transition), box-shadow var(--transition), transform 150ms ease;
+}
+
+.control-card--compact {
+  border-radius: var(--radius-md);
+  gap: 6px;
+  padding: var(--sp-3);
+}
+
+.control-card--interactive {
+  cursor: pointer;
+}
+
+.control-card--accent {
+  border-color: color-mix(in srgb, var(--accent) 25%, var(--border));
+}
+
+.control-panel {
+  animation: control-fade-up 380ms ease both;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5);
+}
+
+.control-panel__head {
+  align-items: flex-start;
+  display: flex;
+  gap: var(--sp-3);
+  justify-content: space-between;
+}
+
+.control-panel__eyebrow {
+  color: var(--text-dim);
+  display: block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  margin-bottom: 2px;
+  text-transform: uppercase;
+}
+
+.control-panel__title {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  letter-spacing: 0;
+  margin: 0;
+}
+
+.control-fade-item {
+  animation: control-fade-up 360ms ease both;
+  animation-delay: calc(var(--i, 0) * 40ms);
+}
+
+@keyframes control-fade-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .control-card,
+  .control-fade-item,
+  .control-panel,
+  .control-stat {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media (max-width: 760px) {
+  .control-stage__header {
+    align-items: stretch;
+  }
+
+  .control-stage__actions {
+    width: 100%;
+  }
+
+  .control-stat-grid,
+  .control-stat-grid--fixed,
+  .control-card-grid {
+    grid-template-columns: 1fr;
+  }
+}

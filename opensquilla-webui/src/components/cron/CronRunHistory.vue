@@ -37,6 +37,7 @@
 
 <script setup lang="ts">
 import Icon from '@/components/Icon.vue'
+import { relTime } from '@/utils/cron/time'
 
 interface CronRunHistoryJob {
   id: string
@@ -76,29 +77,6 @@ function stringField(source: Record<string, unknown>, key: string): string {
   return typeof value === 'string' ? value : ''
 }
 
-function humanCountdownPast(date: Date): string {
-  const diff = Date.now() - date.getTime()
-  if (diff < 0) return 'in ' + formatDuration(-diff)
-  if (diff < 1000) return 'just now'
-  return formatDuration(diff) + ' ago'
-}
-
-function formatDuration(ms: number): string {
-  const s = Math.floor(ms / 1000)
-  if (s < 60) return s + 's'
-  const m = Math.floor(s / 60)
-  if (m < 60) return m + 'm ' + (s % 60) + 's'
-  const h = Math.floor(m / 60)
-  if (h < 24) return h + 'h ' + (m % 60) + 'm'
-  const d = Math.floor(h / 24)
-  return d + 'd ' + (h % 24) + 'h'
-}
-
-function relTime(ts: string): string {
-  const date = new Date(ts)
-  if (isNaN(date.getTime())) return '—'
-  return humanCountdownPast(date)
-}
 </script>
 
 <style scoped>

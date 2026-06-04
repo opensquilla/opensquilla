@@ -29,7 +29,7 @@ from opensquilla.gateway.session_services import (
     set_session_epoch,
 )
 from opensquilla.gateway.session_streams import get_session_streams
-from opensquilla.gateway.session_view import build_session_view_item
+from opensquilla.gateway.session_view import build_session_view_item, derive_transcript_title
 from opensquilla.paths import media_root_from_config
 from opensquilla.session.compaction import (
     build_compaction_config_from_provider,
@@ -657,6 +657,52 @@ async def _list_task_rows_by_session(
     return {key: await _list_task_rows(ctx, storage, key) for key in keys}
 
 
+async def _list_transcript_titles(storage: Any, sessions: list[Any]) -> dict[str, str]:
+    session_ids = [str(getattr(session, "session_id", "") or "") for session in sessions]
+    session_ids = [session_id for session_id in session_ids if session_id]
+    if not session_ids:
+        return {}
+
+    title_inputs: dict[str, list[str]] = {session_id: [] for session_id in session_ids}
+    storage_batch = getattr(storage, "list_user_transcript_content_batch", None)
+    if callable(storage_batch):
+        try:
+            grouped = await storage_batch(session_ids, limit_per_session=3)
+            title_inputs.update({
+                str(session_id): [str(value) for value in values if value]
+                for session_id, values in grouped.items()
+            })
+        except Exception:
+            log.warning("sessions.transcript_title_batch_failed", exc_info=True)
+
+    if not any(title_inputs.values()):
+        storage_get_transcript = getattr(storage, "get_transcript", None)
+        if callable(storage_get_transcript):
+            for session_id in session_ids:
+                try:
+                    entries = await storage_get_transcript(session_id, limit=8)
+                except Exception:
+                    log.warning(
+                        "sessions.transcript_title_read_failed",
+                        session_id=session_id,
+                    )
+                    continue
+                title_inputs[session_id] = [
+                    str(getattr(entry, "content", "") or "")
+                    for entry in entries
+                    if str(getattr(entry, "role", "") or "").lower() == "user"
+                ][:3]
+
+    titles: dict[str, str] = {}
+    for session_id, values in title_inputs.items():
+        for value in values:
+            title = derive_transcript_title(value)
+            if title:
+                titles[session_id] = title
+                break
+    return titles
+
+
 def _create_session_key(agent_id: str, kind: object = None) -> str:
     short_id = uuid.uuid4().hex[:8]
     normalized_kind = str(kind or "").strip().lower().replace("_", "-")
@@ -748,6 +794,7 @@ async def _handle_sessions_list(params: dict | None, ctx: RpcContext) -> dict:
         storage,
         [s.session_key for s in sessions],
     )
+    transcript_titles = await _list_transcript_titles(storage, sessions)
 
     # Batch transcript counts in one round-trip to avoid N+1 against
     # count_transcript_entries. Storage layers that don't implement the batch
@@ -815,6 +862,7 @@ async def _handle_sessions_list(params: dict | None, ctx: RpcContext) -> dict:
             entry_count=entry_count,
             task_rows=task_rows,
             now_ms=now_ms,
+            transcript_title=transcript_titles.get(s.session_id, ""),
         )
         row.update(task_summary)
         row.update(view_fields)

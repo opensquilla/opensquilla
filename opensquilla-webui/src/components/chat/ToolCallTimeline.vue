@@ -17,7 +17,7 @@
           <span class="step-body">
             <span class="step-title-row">
               <span class="step-title">{{ item.group.label }}</span>
-              <span v-if="item.group.calls.length > 1" class="step-count">{{ item.group.calls.length }} 次</span>
+              <span v-if="item.group.calls.length > 1" class="step-count">{{ item.group.calls.length }} calls</span>
               <span v-if="item.group.secondary" class="step-secondary">{{ item.group.secondary }}</span>
             </span>
           </span>

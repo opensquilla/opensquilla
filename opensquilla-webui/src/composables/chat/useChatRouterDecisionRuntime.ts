@@ -70,7 +70,7 @@ export function useChatRouterDecisionRuntime(options: UseChatRouterDecisionRunti
     if (!decision) return
     if (options.isStreaming.value && options.streamBubble.value && !options.streamHasVisibleOutput.value) {
       const model = shortModelName(decision.model || decision.routed_model || '')
-      options.setStreamActivity(model ? `模型路由完成 · ${model}` : '模型路由完成')
+      options.setStreamActivity(model ? `Router selected · ${model}` : 'Router selected')
     }
     pendingRouterDecision.value = { payload, decision }
     appendRouterDecision(payload, decision)

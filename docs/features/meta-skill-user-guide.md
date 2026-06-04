@@ -498,6 +498,20 @@ Only analyze. Do not create, assemble, preview, or persist any meta-skill
 proposal.
 ```
 
+## Run Progress Ribbon
+
+While a MetaSkill runs, the WebUI shows a horizontal ribbon at the top
+of the agent reply listing every step in the workflow. The currently
+running chip is highlighted; succeeded steps show ✓, skipped ↷, failed
+✗, and `on_failure` substitutes show ⇄. Click any chip to scroll to
+that step's tool card. If a step fails, the ribbon also surfaces
+"Retry run", "Switch meta-skill", and "Show error detail" actions
+inline.
+
+The ribbon survives disconnects: when the browser reconnects, the gateway
+replays the announce → state → completed events so the ribbon rebuilds
+to the latest state.
+
 ## Reading the Result
 
 A strong MetaSkill result should explain:

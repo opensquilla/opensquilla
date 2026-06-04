@@ -249,6 +249,41 @@ document conversion or report generation.
     html: "{{ outputs.report | truncate(12000) }}"
 ```
 
+## Step Labels and Progress
+
+Two optional step-level fields drive the WebUI run progress ribbon
+(see [`../features/meta-skill-user-guide.md`](../features/meta-skill-user-guide.md)
+"Run Progress Ribbon"):
+
+- `label`: a short, human-readable name for the step. The ribbon renders
+  this as the chip text. If omitted, the WebUI humanizes the step `id`
+  (e.g. `intake` → `Intake`).
+- `progress_emits`: whether the step's executor may publish live
+  `status_text` updates to the ribbon. Defaults by kind:
+  - `agent` / `skill_exec`: `true`
+  - `tool_call`: `false`
+  - `llm_chat` / `llm_classify` / `user_input`: ignored
+
+Example:
+
+```yaml
+composition:
+  steps:
+    - id: intake
+      kind: llm_chat
+      label: 意图提取
+      with: { ... }
+    - id: search
+      kind: agent
+      skill: web-research
+      label: 检索证据
+      progress_emits: true
+      with: { ... }
+```
+
+Keep labels short (2-6 chars in CJK, 1-2 words in English). Long labels
+get truncated in the ribbon header.
+
 ## Dependencies and Parallelism
 
 Steps without dependencies may run in parallel. A step with `depends_on` waits

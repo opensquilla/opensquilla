@@ -89,6 +89,33 @@ class FakeStorage:
     async def delete_transcript(self, session_id: str) -> None:
         self._transcripts.pop(session_id, None)
 
+    async def get_transcript(
+        self, session_id: str, limit: int | None = None, offset: int = 0
+    ) -> list[Any]:
+        rows = list(self._transcripts.get(session_id, []))
+        if offset:
+            rows = rows[offset:]
+        if limit is not None:
+            rows = rows[:limit]
+        return rows
+
+    async def list_user_transcript_content_batch(
+        self,
+        session_ids: list[str],
+        *,
+        limit_per_session: int = 3,
+    ) -> dict[str, list[str]]:
+        result: dict[str, list[str]] = {}
+        for session_id in session_ids:
+            values = [
+                str(getattr(row, "content", "") or "")
+                for row in self._transcripts.get(session_id, [])
+                if str(getattr(row, "role", "") or "").lower() == "user"
+                and getattr(row, "content", None)
+            ]
+            result[session_id] = values[:limit_per_session]
+        return result
+
     async def list_agent_tasks(
         self,
         session_key: str | None = None,
@@ -699,6 +726,46 @@ class TestSessionsList:
         assert row["messageCount"] == row["message_count"]
         assert row["runStatus"] == "idle"
         assert row["interactive"] is True
+
+    @pytest.mark.asyncio
+    async def test_list_webchat_title_uses_first_user_message(self, dispatcher):
+        session = FakeSession(
+            session_key="agent:main:webchat:semantic-title",
+            display_name="WebChat",
+        )
+        manager = FakeSessionManager([session])
+        manager._storage._transcripts[session.session_id] = [
+            SimpleNamespace(role="system", content="runtime note"),
+            SimpleNamespace(
+                role="user",
+                content="[2026-06-04T19:25+08:00 Thu Asia/Shanghai]\nLLM位置编码方式",
+            ),
+        ]
+        ctx = make_ctx(session_manager=manager)
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        assert row["display_name"] == "WebChat"
+        assert row["title"] == "LLM位置编码方式"
+
+    @pytest.mark.asyncio
+    async def test_list_webchat_title_extracts_json_text(self, dispatcher):
+        session = FakeSession(session_key="agent:main:webchat:json-title")
+        manager = FakeSessionManager([session])
+        manager._storage._transcripts[session.session_id] = [
+            SimpleNamespace(
+                role="user",
+                content=json.dumps({"text": "Agent PM面试清单"}, ensure_ascii=False),
+            ),
+        ]
+        ctx = make_ctx(session_manager=manager)
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        assert res.payload["sessions"][0]["title"] == "Agent PM面试清单"
 
     @pytest.mark.asyncio
     async def test_list_contract_cli_current_tui_compatible_row(self, dispatcher):

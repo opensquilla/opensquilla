@@ -220,16 +220,16 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
     if (!stream.isStreaming.value) return
     if (to === 'thinking') {
       if (stream.streamBubble.value && !stream.streamHasVisibleOutput.value) {
-        stream.setStreamActivity('正在组织下一步')
+        stream.setStreamActivity('Planning next step')
       } else if (!stream.streamBubble.value) {
         stream.showThinkingIndicator()
       }
     } else if (to === 'streaming' && stream.streamBubble.value && !stream.streamHasVisibleOutput.value) {
-      stream.setStreamActivity('模型正在生成')
+      stream.setStreamActivity('Model is generating')
     } else if ((to === 'tool_calling' || to === 'tool_use') && stream.streamBubble.value && !stream.streamHasVisibleOutput.value) {
-      stream.setStreamActivity('正在准备工具调用')
+      stream.setStreamActivity('Preparing tool call')
     } else if (to && stream.streamBubble.value && !stream.streamHasVisibleOutput.value) {
-      stream.setStreamActivity('仍在运行')
+      stream.setStreamActivity('Still running')
     }
   }
 
@@ -240,7 +240,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
     if (!stream.isStreaming.value) stream.startStreaming()
     stream.resetStreamIdleTimer()
     if (stream.streamBubble.value && !stream.streamHasVisibleOutput.value) {
-      stream.setStreamActivity('正在组织下一步')
+      stream.setStreamActivity('Planning next step')
     } else if (!stream.streamBubble.value) {
       stream.showThinkingIndicator()
     }

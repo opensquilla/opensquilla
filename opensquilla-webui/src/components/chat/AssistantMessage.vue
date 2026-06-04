@@ -226,11 +226,63 @@ const legacyTimelineItems = computed<ChatStreamTimelineItem[]>(() => {
   gap: 0.5rem;
   font-size: 0.8125rem;
   line-height: 1.35;
-  color: var(--text-muted, #8a8a8a);
+  color: rgba(82, 88, 81, 0.56);
+}
+
+.msg-ai-meta > span:not(.savings-indicator) {
+  opacity: 0.72;
+  transition: opacity 0.16s ease, color 0.16s ease;
+}
+
+.msg-ai:hover .msg-ai-meta > span:not(.savings-indicator) {
+  opacity: 0.88;
 }
 
 .savings-indicator {
-  color: #047857;
-  font-weight: 500;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.25rem;
+  padding: 0 0.45rem;
+  overflow: hidden;
+  border: 1px solid rgba(184, 68, 4, 0.18);
+  border-radius: 999px;
+  background:
+    linear-gradient(135deg, rgba(255, 247, 237, 0.96), rgba(255, 255, 255, 0.78) 48%, rgba(240, 253, 244, 0.9)),
+    radial-gradient(circle at 18% 0%, rgba(251, 191, 36, 0.34), transparent 42%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    0 5px 14px rgba(184, 68, 4, 0.08);
+  color: #9a4b00;
+  font-weight: 650;
+  isolation: isolate;
+}
+
+.savings-indicator::after {
+  content: '';
+  position: absolute;
+  inset: -40% auto -40% -60%;
+  width: 42%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.82), transparent);
+  transform: skewX(-18deg);
+  animation: savingsSweep 3.4s ease-in-out infinite;
+  opacity: 0.72;
+  pointer-events: none;
+}
+
+@keyframes savingsSweep {
+  0%, 42% {
+    left: -60%;
+  }
+  72%, 100% {
+    left: 118%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .savings-indicator::after {
+    animation: none;
+    display: none;
+  }
 }
 </style>

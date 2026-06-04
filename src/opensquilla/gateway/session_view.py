@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 
 from opensquilla.session.keys import derive_chat_type, parse_agent_id
@@ -18,6 +20,11 @@ _CHANNEL_SURFACES = frozenset(
         "telegram",
     }
 )
+_TIME_PREFIX_RE = re.compile(
+    r"^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}[+\-]\d{2}:\d{2} "
+    r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) "
+    r"[A-Za-z0-9_+\-/]+\]\n"
+)
 
 
 def build_session_view_item(
@@ -26,6 +33,7 @@ def build_session_view_item(
     entry_count: int,
     task_rows: list[Any],
     now_ms: int,
+    transcript_title: str | None = None,
 ) -> dict[str, Any]:
     """Return additive Web UI contract fields for one session row."""
 
@@ -45,7 +53,14 @@ def build_session_view_item(
         "surface": surface,
         "conversationKind": conversation_kind,
         "thread": _thread(session, key),
-        "title": _title(session, key, effective_agent_id, session_kind, surface),
+        "title": _title(
+            session,
+            key,
+            effective_agent_id,
+            session_kind,
+            surface,
+            transcript_title,
+        ),
         "subtitle": _subtitle(
             session,
             key,
@@ -156,11 +171,21 @@ def _title(
     effective_agent_id: str,
     session_kind: str,
     surface: str,
+    transcript_title: str | None = None,
 ) -> str:
     for attr in ("display_name", "derived_title", "subject"):
         value = _display(getattr(session, attr, None))
         if value:
+            if (
+                session_kind == "chat"
+                and surface == "webchat"
+                and transcript_title
+                and _is_generic_webchat_title(value, effective_agent_id)
+            ):
+                continue
             return value
+    if transcript_title:
+        return transcript_title
     if session_kind == "chat" and surface == "webchat":
         if effective_agent_id != "main":
             return _humanize(effective_agent_id)
@@ -359,3 +384,71 @@ def _parent_label(key: str) -> str:
 def _humanize(value: str) -> str:
     cleaned = value.replace("_", " ").replace("-", " ").strip()
     return cleaned[:1].upper() + cleaned[1:] if cleaned else ""
+
+
+def derive_transcript_title(content: Any, *, max_chars: int = 34) -> str:
+    text = _content_text(content)
+    if not text:
+        return ""
+    text = _TIME_PREFIX_RE.sub("", text, count=1)
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    cleaned = cleaned.strip("\"'` ")
+    if not cleaned:
+        return ""
+    if len(cleaned) <= max_chars:
+        return cleaned
+    return cleaned[: max_chars - 3].rstrip() + "..."
+
+
+def _content_text(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        raw = content.strip()
+        if not raw:
+            return ""
+        if raw[0] in "[{":
+            try:
+                return _content_text(json.loads(raw))
+            except Exception:
+                return raw
+        return raw
+    if isinstance(content, dict):
+        for key in (
+            "text",
+            "message",
+            "semantic_message",
+            "prompt",
+            "query",
+            "content",
+        ):
+            value = content.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        for value in content.values():
+            nested = _content_text(value)
+            if nested:
+                return nested
+        return ""
+    if isinstance(content, list):
+        for value in content:
+            nested = _content_text(value)
+            if nested:
+                return nested
+    return ""
+
+
+def _is_generic_webchat_title(value: str, effective_agent_id: str) -> bool:
+    normalized = value.strip().lower().replace("_", " ").replace("-", " ")
+    generic = {
+        "",
+        "chat",
+        "current session",
+        "direct chat",
+        "new chat",
+        "web chat",
+        "webchat",
+    }
+    if normalized in generic:
+        return True
+    return normalized == effective_agent_id.strip().lower()

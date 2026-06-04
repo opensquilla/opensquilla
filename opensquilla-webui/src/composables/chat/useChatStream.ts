@@ -29,7 +29,7 @@ import {
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 210000
 const THINKING_DELAY_MS = 400
 const THINKING_TTL_MS = 60000
-const SQUILLA_VERBS = ['正在组织下一步', '正在梳理上下文', '正在等待模型响应', '正在准备输出']
+const SQUILLA_VERBS = ['Planning next step', 'Reading context', 'Waiting for model', 'Preparing output']
 const SQUILLA_DWELL_MS = 2500
 
 export interface UseChatStreamOptions {
@@ -63,7 +63,7 @@ export function useChatStream(options: UseChatStreamOptions) {
       streamArtifacts.value.length > 0
   })
 
-  const streamActivity = ref({ label: '正在发送', startedAt: 0 })
+  const streamActivity = ref({ label: 'Sending', startedAt: 0 })
   const streamActivityTick = ref(0)
   let streamActivityTimer: ReturnType<typeof setInterval> | null = null
 
@@ -77,8 +77,8 @@ export function useChatStream(options: UseChatStreamOptions) {
     streamActivityTick.value
     const startedAt = streamActivity.value.startedAt || Date.now()
     const seconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
-    const base = seconds >= 10 && streamActivity.value.label === '正在组织下一步'
-      ? '仍在等待模型响应'
+    const base = seconds >= 10 && streamActivity.value.label === 'Planning next step'
+      ? 'Still waiting for model'
       : streamActivity.value.label
     return `${base} · ${seconds}s`
   })
@@ -141,7 +141,7 @@ export function useChatStream(options: UseChatStreamOptions) {
     streamToolGroupSeq = 0
     streamBubble.value = true
     streamShowHeader.value = options.lastHeaderRole.value !== 'assistant'
-    setStreamActivity('正在发送')
+    setStreamActivity('Sending')
     options.autoScroll.value = true
     resetStreamIdleTimer()
   }
@@ -189,7 +189,7 @@ export function useChatStream(options: UseChatStreamOptions) {
     streamToolGroupSeq = 0
     streamBubble.value = true
     streamShowHeader.value = options.lastHeaderRole.value !== 'assistant'
-    setStreamActivity('正在切换模型')
+    setStreamActivity('Switching model')
     clearRenderTimer()
   }
 
@@ -240,7 +240,7 @@ export function useChatStream(options: UseChatStreamOptions) {
 
   function showThinkingIndicator() {
     if (streamBubble.value) {
-      if (!streamHasVisibleOutput.value) setStreamActivity('正在组织下一步')
+      if (!streamHasVisibleOutput.value) setStreamActivity('Planning next step')
       return
     }
     if (thinkingVisible.value || thinkingDelayTimer) return
@@ -344,7 +344,7 @@ export function useChatStream(options: UseChatStreamOptions) {
   function appendToolDelta(payload: ToolDeltaPayload) {
     if (!payload || options.aborted.value) return
     if (isStreaming.value && streamBubble.value && !streamHasVisibleOutput.value) {
-      setStreamActivity('正在接收工具参数')
+      setStreamActivity('Receiving tool arguments')
     }
     const toolId = payload.tool_use_id || payload.toolUseId || payload.id || ''
     const fragment = payload.json_fragment ?? payload.jsonFragment ?? payload.fragment ?? ''

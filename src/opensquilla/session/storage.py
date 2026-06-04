@@ -1185,6 +1185,49 @@ class SessionStorage:
             result.setdefault(sid, 0)
         return result
 
+    async def list_user_transcript_content_batch(
+        self,
+        session_ids: list[str],
+        *,
+        limit_per_session: int = 3,
+    ) -> dict[str, list[str]]:
+        """Return early user transcript content for many sessions.
+
+        ``sessions.list`` uses this to render semantic conversation titles
+        without issuing one transcript query per session row.
+        """
+        if not session_ids:
+            return {}
+        chunk = 300
+        result: dict[str, list[str]] = {sid: [] for sid in session_ids}
+        for i in range(0, len(session_ids), chunk):
+            batch = session_ids[i : i + chunk]
+            placeholders = ",".join(["?"] * len(batch))
+            sql = f"""
+                SELECT session_id, content
+                FROM (
+                    SELECT
+                        session_id,
+                        content,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY session_id
+                            ORDER BY created_at ASC, id ASC
+                        ) AS rn
+                    FROM transcript_entries
+                    WHERE session_id IN ({placeholders})
+                        AND role = 'user'
+                        AND COALESCE(content, '') != ''
+                )
+                WHERE rn <= ?
+                ORDER BY session_id ASC, rn ASC
+            """
+            async with self.conn.execute(sql, [*batch, limit_per_session]) as cur:
+                rows = await cur.fetchall()
+            for sid, content in rows:
+                if isinstance(content, str):
+                    result.setdefault(sid, []).append(content)
+        return result
+
     async def delete_transcript(self, session_id: str) -> None:
         await self.conn.execute(
             "DELETE FROM transcript_entries WHERE session_id = ?", (session_id,)

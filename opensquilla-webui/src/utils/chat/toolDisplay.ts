@@ -100,15 +100,15 @@ export function toolOperationKey(name: string): string {
 
 export function toolActionLabel(name: string): string {
   const key = toolOperationKey(name)
-  if (key === 'web.search') return '搜索网页'
-  if (key === 'web.read') return '读取网页'
-  if (key === 'code.python') return '运行 Python 代码'
-  if (key === 'command.run') return '运行命令'
-  if (key === 'file.inspect') return '查看文件'
-  if (key === 'file.write') return '写入文件'
-  if (key === 'file.edit') return '修改文件'
-  if (key === 'artifact.create') return '生成文件'
-  if (key === 'memory.search') return '检索记忆'
+  if (key === 'web.search') return 'Search web'
+  if (key === 'web.read') return 'Read web page'
+  if (key === 'code.python') return 'Run Python'
+  if (key === 'command.run') return 'Run command'
+  if (key === 'file.inspect') return 'Inspect files'
+  if (key === 'file.write') return 'Write file'
+  if (key === 'file.edit') return 'Edit file'
+  if (key === 'artifact.create') return 'Create file'
+  if (key === 'memory.search') return 'Search memory'
   return name.replace(/[_-]+/g, ' ')
 }
 
@@ -124,9 +124,9 @@ export function summarizeToolGroup(calls: ChatToolCall[]): string {
   const failed = calls.filter(toolCall => toolCall.status === 'error').length
   const sample = calls.map(toolCall => toolSecondaryText(toolCall)).find(Boolean)
   const parts = []
-  if (running) parts.push(`${running} 个运行中`)
-  if (done) parts.push(`${done} 个完成`)
-  if (failed) parts.push(`${failed} 个失败`)
+  if (running) parts.push(`${running} running`)
+  if (done) parts.push(`${done} done`)
+  if (failed) parts.push(`${failed} failed`)
   if (sample) parts.push(sample)
   return parts.join(' · ')
 }
@@ -193,20 +193,20 @@ export function toolResultIsError(payload: unknown): boolean {
 }
 
 export function toolStatusText(toolCall: ChatToolCall): string {
-  if (toolCall.isRunning) return '运行中'
-  if (toolCall.status === 'error') return '失败'
+  if (toolCall.isRunning) return 'Running'
+  if (toolCall.status === 'error') return 'Failed'
   const count = toolResultCount(toolCall.result)
-  if (count !== null) return `${count} 个结果`
-  if (toolCall.status === 'success') return '完成'
-  return '等待'
+  if (count !== null) return `${count} results`
+  if (toolCall.status === 'success') return 'Done'
+  return 'Pending'
 }
 
 export function toolGroupStatusText(group: ChatToolCallGroup): string {
-  if (group.isRunning) return '运行中'
-  if (group.isError) return '失败'
+  if (group.isRunning) return 'Running'
+  if (group.isError) return 'Failed'
   const counts = group.calls.map(toolCall => toolResultCount(toolCall.result)).filter((count): count is number => count !== null)
-  if (counts.length && group.calls.length === 1) return `${counts[0]} 个结果`
-  if (counts.length) return `${counts.reduce((sum, count) => sum + count, 0)} 个结果`
-  if (group.status === 'success') return '完成'
-  return '等待'
+  if (counts.length && group.calls.length === 1) return `${counts[0]} results`
+  if (counts.length) return `${counts.reduce((sum, count) => sum + count, 0)} results`
+  if (group.status === 'success') return 'Done'
+  return 'Pending'
 }

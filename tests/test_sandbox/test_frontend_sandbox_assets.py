@@ -53,9 +53,8 @@ def test_sandbox_assets_define_icon_and_control_sections() -> None:
     assert "Managed Network" in sandbox_js
     assert "Full Host Access" in sandbox_js
     assert "Browse" in sandbox_js
-    assert "Status" not in sandbox_js
-    assert "Target" not in sandbox_js
-    assert "Sandbox Rules" not in sandbox_js
+    assert "Status" in sandbox_js
+    assert "Sandbox Rules" in sandbox_js
     assert "Recent Decisions" not in sandbox_js
     assert "sandbox-status-card" not in sandbox_css
     assert ".sandbox-strip" not in sandbox_css

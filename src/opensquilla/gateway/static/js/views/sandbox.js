@@ -51,8 +51,8 @@ const SandboxView = (() => {
         <section class="sandbox-panel sandbox-panel--run-mode" aria-labelledby="sandbox-run-mode-title">
           <div class="sandbox-panel__head">
             <div>
-              <span class="sandbox-panel__eyebrow">Execution</span>
-              <h3 class="sandbox-panel__title" id="sandbox-run-mode-title">Run Mode</h3>
+              <span class="sandbox-panel__eyebrow">Run Mode</span>
+              <h3 class="sandbox-panel__title" id="sandbox-run-mode-title">Status</h3>
             </div>
             <span class="sandbox-panel__meta" id="sandbox-session-label">Session</span>
           </div>
@@ -106,7 +106,12 @@ const SandboxView = (() => {
       await _withTimeout(rpc.waitForConnection(), 2500);
       const sessionKey = _activeSessionKey();
       const status = await rpc.call('sandbox.status', {});
+      let explanation = null;
       let runContext = null;
+
+      try {
+        explanation = await rpc.call('sandbox.explain', sessionKey ? { sessionKey } : {});
+      } catch {}
 
       if (sessionKey) {
         try {
@@ -115,7 +120,12 @@ const SandboxView = (() => {
       }
 
       if (!_isCurrent(root, rpc, generation)) return;
-      _renderLoaded(root, { status, runContext, sessionKey });
+      _renderLoaded(root, {
+        status: explanation?.status || status,
+        runContext: runContext || explanation?.runContext,
+        sessionKey,
+        explanation,
+      });
     } catch (err) {
       if (!_isCurrent(root, rpc, generation)) return;
       _renderError(root, err);
@@ -138,6 +148,8 @@ const SandboxView = (() => {
     const status = data.status || {};
     const runContext = _normalizeRunContext(status, data.runContext || {});
     _lastData = { ...data, runContext };
+
+    _renderExplanation(root, data.explanation);
 
     const summary = root.querySelector('#sandbox-summary');
     if (summary) summary.textContent = _summary(runContext, data.sessionKey);
@@ -166,6 +178,17 @@ const SandboxView = (() => {
     if (runMode) runMode.innerHTML = _renderEmpty('Connect to the gateway to load run mode');
     const controls = root.querySelector('#sandbox-controls');
     if (controls) controls.innerHTML = _renderEmpty(message);
+  }
+
+  function _renderExplanation(root, explanation) {
+    const messages = Array.isArray(explanation?.messages) ? explanation.messages : [];
+    const text = messages.map(item => item?.message).filter(Boolean).join(' ');
+    if (!text) {
+      _setNotice(root, '', '');
+      return;
+    }
+    const hasBlocked = messages.some(item => String(item?.message || '').toLowerCase().includes('blocked'));
+    _setNotice(root, text, hasBlocked ? 'warn' : 'ok');
   }
 
   function _renderRunMode(runContext, sessionKey) {
@@ -211,6 +234,36 @@ const SandboxView = (() => {
           </div>
           <div id="sandbox-network">${_renderNetwork(status, runContext, sessionKey)}</div>
         </section>
+
+        <section class="sandbox-panel" aria-labelledby="sandbox-rules-title">
+          <div class="sandbox-panel__head">
+            <div>
+              <span class="sandbox-panel__eyebrow">Policy</span>
+              <h3 class="sandbox-panel__title" id="sandbox-rules-title">Sandbox Rules</h3>
+            </div>
+          </div>
+          ${_renderRules(status, runContext)}
+        </section>
+      </div>`;
+  }
+
+  function _renderRules(status, runContext) {
+    const managedNetwork = status.managed_network || status.managedNetwork || 'blocked';
+    const executionTarget = runContext.executionTarget || status.execution_target || status.executionTarget || 'sandbox';
+    return `
+      <div class="sandbox-rule-list">
+        <div class="sandbox-rule-list__row">
+          <span>Execution target</span>
+          <strong>${_esc(executionTarget)}</strong>
+        </div>
+        <div class="sandbox-rule-list__row">
+          <span>Run mode</span>
+          <strong>${_esc(runContext.runModeLabel || _runModeLabel(runContext.runMode))}</strong>
+        </div>
+        <div class="sandbox-rule-list__row">
+          <span>Managed network</span>
+          <strong>${_esc(managedNetwork)}</strong>
+        </div>
       </div>`;
   }
 

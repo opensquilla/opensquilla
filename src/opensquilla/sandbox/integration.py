@@ -528,6 +528,27 @@ def _current_run_context_for_network_proxy() -> RunContext | None:
     return current_tool_run_context()
 
 
+def _network_grant_workspace(request: SandboxRequest, runtime: SandboxRuntime) -> str:
+    try:
+        from opensquilla.tools.types import current_tool_context
+
+        ctx = current_tool_context.get()
+    except Exception:  # pragma: no cover - defensive
+        ctx = None
+    if ctx is not None:
+        workspace = str(getattr(ctx, "workspace_dir", None) or "").strip()
+        if workspace:
+            return workspace
+        run_context = getattr(ctx, "sandbox_run_context", None)
+        if isinstance(run_context, RunContext) and run_context.workspace:
+            return run_context.workspace
+
+    context = _current_run_context_for_network_proxy()
+    if context is not None and context.workspace:
+        return context.workspace
+    return str(getattr(runtime, "workspace", None) or request.cwd)
+
+
 def _current_sandbox_persistence_handles() -> tuple[Any | None, Any | None]:
     try:
         from opensquilla.tools.builtin import sessions as sessions_mod
@@ -554,7 +575,7 @@ async def _persist_auto_trusted_host_if_available(
     session_manager, config = _current_sandbox_persistence_handles()
     if session_manager is None or config is None:
         return
-    workspace = str(request.cwd)
+    workspace = _network_grant_workspace(request, runtime)
     try:
         context = await auto_add_trusted_domain_grant(
             session_manager,
@@ -640,6 +661,7 @@ async def prepare_subprocess_managed_network_proxy(
             "the managed network proxy"
         )
     fingerprint = action_fingerprint(request)
+    grant_workspace = _network_grant_workspace(request, rt)
     context = context_with_temporary_network_grants(
         context,
         fingerprint=fingerprint,
@@ -659,7 +681,7 @@ async def prepare_subprocess_managed_network_proxy(
         ):
             consume_temporary_network_grant(
                 session_key=_resolve_session_id(rt, None),
-                workspace=str(request.cwd),
+                workspace=grant_workspace,
                 host=decision.normalized_host,
                 fingerprint=fingerprint,
             )
@@ -681,7 +703,7 @@ async def prepare_subprocess_managed_network_proxy(
         for host in consumed_hosts:
             await consume_persisted_temporary_network_grant(
                 session_key=_resolve_session_id(rt, None),
-                workspace=str(request.cwd),
+                workspace=grant_workspace,
                 host=host,
                 fingerprint=fingerprint,
             )
@@ -925,6 +947,7 @@ async def _prepare_in_process_managed_network(
             "in-process network tools; provider search actions cannot safely "
             "be constrained without provider-specific plumbing.",
         )
+    grant_workspace = _network_grant_workspace(request, runtime)
     for host in targets:
         decision = decide_network_access(host, effective_context)
         if decision.status == "allow":
@@ -933,7 +956,7 @@ async def _prepare_in_process_managed_network(
             params = build_network_approval_params(
                 decision,
                 session_key=_resolve_session_id(runtime, None),
-                workspace=str(request.cwd),
+                workspace=grant_workspace,
                 fingerprint=fingerprint,
             )
             if params is not None:
@@ -968,13 +991,13 @@ async def _prepare_in_process_managed_network(
         ):
             consume_temporary_network_grant(
                 session_key=_resolve_session_id(runtime, None),
-                workspace=str(request.cwd),
+                workspace=grant_workspace,
                 host=host,
                 fingerprint=fingerprint,
             )
             await consume_persisted_temporary_network_grant(
                 session_key=_resolve_session_id(runtime, None),
-                workspace=str(request.cwd),
+                workspace=grant_workspace,
                 host=host,
                 fingerprint=fingerprint,
             )
@@ -1010,10 +1033,12 @@ async def preflight_subprocess_managed_network(
         )
 
     fingerprint = action_fingerprint(request)
+    original_context = context
     effective_context = context_with_temporary_network_grants(
         context,
         fingerprint=fingerprint,
     )
+    grant_workspace = _network_grant_workspace(request, runtime)
     for host in targets:
         decision = decide_network_access(host, effective_context)
         if decision.status == "allow":
@@ -1022,7 +1047,7 @@ async def preflight_subprocess_managed_network(
             params = build_network_approval_params(
                 decision,
                 session_key=_resolve_session_id(runtime, None),
-                workspace=str(request.cwd),
+                workspace=grant_workspace,
                 fingerprint=fingerprint,
             )
             if params is not None:
@@ -1049,6 +1074,24 @@ async def preflight_subprocess_managed_network(
                 f"target {host!r}: {decision.reason}."
             ),
         )
+    for host in targets:
+        if has_temporary_network_grant(
+            original_context,
+            host=host,
+            fingerprint=fingerprint,
+        ):
+            consume_temporary_network_grant(
+                session_key=_resolve_session_id(runtime, None),
+                workspace=grant_workspace,
+                host=host,
+                fingerprint=fingerprint,
+            )
+            await consume_persisted_temporary_network_grant(
+                session_key=_resolve_session_id(runtime, None),
+                workspace=grant_workspace,
+                host=host,
+                fingerprint=fingerprint,
+            )
     return None
 
 

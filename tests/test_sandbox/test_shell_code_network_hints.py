@@ -10,8 +10,8 @@ import pytest
 
 from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
 from opensquilla.sandbox.config import SandboxSettings
-from opensquilla.sandbox.integration import configure_runtime, reset_runtime
-from opensquilla.sandbox.run_context import DomainGrant, RunContext
+from opensquilla.sandbox.integration import configure_runtime, get_runtime, reset_runtime
+from opensquilla.sandbox.run_context import DomainGrant, RunContext, TemporaryGrant
 from opensquilla.sandbox.run_mode import RunMode
 from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
 
@@ -242,6 +242,132 @@ async def test_shell_unknown_explicit_url_queues_network_approval_before_proxy_r
     pending = get_approval_queue().list_pending("exec")
     assert len(pending) == 1
     assert pending[0]["params"]["host"] == "unknown.test"
+
+
+@pytest.mark.asyncio
+async def test_subprocess_network_approval_uses_session_workspace_for_external_cwd(
+    managed_runtime: Path,
+) -> None:
+    from opensquilla.sandbox import integration as integration_mod
+    from opensquilla.sandbox.types import (
+        NetworkMode,
+        ResourceLimits,
+        SandboxPolicy,
+        SandboxRequest,
+        SecurityLevel,
+    )
+
+    external = managed_runtime.parent / f"{managed_runtime.name}-external"
+    external.mkdir()
+    runtime = get_runtime()
+    assert runtime is not None
+    request = SandboxRequest(
+        argv=("sh", "-lc", "curl https://unknown.test/path"),
+        cwd=external,
+        action_kind="shell.exec",
+        policy=SandboxPolicy(
+            level=SecurityLevel.STANDARD,
+            network=NetworkMode.PROXY_ALLOWLIST,
+            mounts=(),
+            workspace_rw=True,
+            tmp_writable=True,
+            limits=ResourceLimits(),
+            env_allowlist=("PATH",),
+            require_approval=False,
+        ),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="s1",
+            run_mode="standard",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.STANDARD,
+                workspace=str(managed_runtime),
+            ),
+        )
+    )
+    try:
+        payload = await integration_mod.preflight_subprocess_managed_network(
+            request,
+            runtime,
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert isinstance(payload, dict)
+    assert payload["status"] == "approval_required"
+    pending = get_approval_queue().list_pending("exec")
+    assert len(pending) == 1
+    assert pending[0]["params"]["workspace"] == str(managed_runtime)
+    assert pending[0]["params"]["workspace"] != str(external)
+
+
+@pytest.mark.asyncio
+async def test_subprocess_network_once_grant_consumes_from_session_workspace(
+    managed_runtime: Path,
+) -> None:
+    from opensquilla.sandbox import integration as integration_mod
+    from opensquilla.sandbox.types import (
+        NetworkMode,
+        ResourceLimits,
+        SandboxPolicy,
+        SandboxRequest,
+        SecurityLevel,
+    )
+
+    external = managed_runtime.parent / f"{managed_runtime.name}-external"
+    external.mkdir()
+    runtime = get_runtime()
+    assert runtime is not None
+    request = SandboxRequest(
+        argv=("sh", "-lc", "curl https://unknown.test/path"),
+        cwd=external,
+        action_kind="shell.exec",
+        policy=SandboxPolicy(
+            level=SecurityLevel.STANDARD,
+            network=NetworkMode.PROXY_ALLOWLIST,
+            mounts=(),
+            workspace_rw=True,
+            tmp_writable=True,
+            limits=ResourceLimits(),
+            env_allowlist=("PATH",),
+            require_approval=False,
+        ),
+    )
+    grant = TemporaryGrant(
+        kind="domain",
+        value="unknown.test",
+        fingerprint=integration_mod.action_fingerprint(request),
+    )
+    ctx = ToolContext(
+        is_owner=True,
+        caller_kind=CallerKind.CLI,
+        workspace_dir=str(managed_runtime),
+        session_key="s1",
+        run_mode="standard",
+        sandbox_run_context=RunContext(
+            run_mode=RunMode.STANDARD,
+            workspace=str(managed_runtime),
+            temporary_grants=(grant,),
+        ),
+    )
+
+    token = current_tool_context.set(ctx)
+    try:
+        payload = await integration_mod.preflight_subprocess_managed_network(
+            request,
+            runtime,
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert payload is None
+    assert isinstance(ctx.sandbox_run_context, RunContext)
+    assert ctx.sandbox_run_context.temporary_grants == ()
 
 
 @pytest.mark.asyncio

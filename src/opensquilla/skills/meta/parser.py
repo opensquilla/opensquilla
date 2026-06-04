@@ -136,6 +136,26 @@ def parse_meta_plan(spec: SkillSpec) -> MetaPlan | None:
                 f"for kind=user_input",
             )
 
+        label_raw = raw.get("label", "")
+        if not isinstance(label_raw, str):
+            raise MetaPlanError(
+                f"meta-skill {spec.name!r}: step {step_id!r} label must be "
+                f"a string (or omitted)",
+            )
+        label = label_raw
+
+        progress_emits_raw = raw.get("progress_emits")
+        if progress_emits_raw is None:
+            # Defaults by kind: tool_call → False; everything else → True.
+            progress_emits = kind != "tool_call"
+        elif isinstance(progress_emits_raw, bool):
+            progress_emits = progress_emits_raw
+        else:
+            raise MetaPlanError(
+                f"meta-skill {spec.name!r}: step {step_id!r} progress_emits "
+                f"must be a boolean (or omitted)",
+            )
+
         steps.append(
             MetaStep(
                 id=step_id,
@@ -151,6 +171,8 @@ def parse_meta_plan(spec: SkillSpec) -> MetaPlan | None:
                 tool_allowlist=tool_allowlist,
                 on_failure=on_failure,
                 clarify_config=clarify_config,
+                label=label,
+                progress_emits=progress_emits,
             ),
         )
 

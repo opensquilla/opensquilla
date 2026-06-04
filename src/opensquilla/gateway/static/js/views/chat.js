@@ -4700,6 +4700,72 @@ const ChatView = (() => {
       _appendToolResult(payload);
     }));
 
+    // MetaSkill run progress ribbon — design §8.
+    // 3 handlers + 1 action delegate. Ribbon lives in window.MetaRibbon
+    // (loaded as a classic script before chat.js, see index.html).
+    const _metaRibbonState = new Map();   // run_id → ribbon state
+    const _metaRibbonEl = new Map();      // run_id → DOM section element
+
+    _unsubs.push(_rpc.on('session.event.meta_run_announced', (payload) => {
+      if (_dropForeignSessionPayload('event.meta_run_announced', payload)) return;
+      if (!window.MetaRibbon) return;
+      const state = window.MetaRibbon.createRibbon(payload);
+      if (!state.runId) return;
+      _metaRibbonState.set(state.runId, state);
+      const el = document.createElement('section');
+      el.dataset.runId = state.runId;
+      const host = _thread || document.body;
+      host.appendChild(el);
+      _metaRibbonEl.set(state.runId, el);
+      window.MetaRibbon.renderRibbon(el, state);
+    }));
+
+    _unsubs.push(_rpc.on('session.event.meta_step_state', (payload) => {
+      if (_dropForeignSessionPayload('event.meta_step_state', payload)) return;
+      if (!window.MetaRibbon) return;
+      const state = _metaRibbonState.get(payload.run_id);
+      const el = _metaRibbonEl.get(payload.run_id);
+      if (!state || !el) return;
+      window.MetaRibbon.updateStep(state, payload);
+      window.MetaRibbon.renderRibbon(el, state);
+    }));
+
+    _unsubs.push(_rpc.on('session.event.meta_run_completed', (payload) => {
+      if (_dropForeignSessionPayload('event.meta_run_completed', payload)) return;
+      if (!window.MetaRibbon) return;
+      const state = _metaRibbonState.get(payload.run_id);
+      const el = _metaRibbonEl.get(payload.run_id);
+      if (!state || !el) return;
+      window.MetaRibbon.completeRun(state, payload);
+      window.MetaRibbon.renderRibbon(el, state);
+    }));
+
+    // Action chip delegate (retry / switch-skill / show-detail). Listens on
+    // document so dynamically-rendered ribbons all flow through one handler.
+    const _onMetaRibbonAction = (ev) => {
+      const { action, stepId } = (ev && ev.detail) || {};
+      if (action === 'retry-run') {
+        // Simple retry: focus the composer so the user can re-send. A full
+        // "resend last user_message" hook lives in P0-5 (failure rescue).
+        if (_textarea && typeof _textarea.focus === 'function') _textarea.focus();
+      } else if (action === 'switch-skill') {
+        if (_textarea) {
+          _textarea.placeholder = '想换哪个 meta-skill？例如：Use meta-skill `meta-web-research-to-report`';
+          _textarea.focus();
+        }
+      } else if (action === 'show-detail' && stepId) {
+        const card = document.querySelector(`[data-tool-use-id="meta_step_${stepId}"]`);
+        if (card) {
+          card.setAttribute('data-expanded', 'true');
+          if (typeof card.scrollIntoView === 'function') {
+            card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          }
+        }
+      }
+    };
+    document.addEventListener('meta-ribbon-action', _onMetaRibbonAction);
+    _unsubs.push(() => document.removeEventListener('meta-ribbon-action', _onMetaRibbonAction));
+
     _unsubs.push(_rpc.on('session.event.artifact', (payload) => {
       if (_dropForeignSessionPayload('event.artifact', payload)) return;
       if (_isStaleEpoch(payload)) {

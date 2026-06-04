@@ -52,6 +52,7 @@
         :class="{ 'is-active': $route.path === route.path }"
         :title="route.title"
         :aria-label="route.title"
+        :data-tooltip="route.title"
         @click="handleNavClick"
       >
         <Icon :name="route.icon" :size="18" />
@@ -111,13 +112,12 @@
                   :key="item.key"
                   class="sidebar-history-item"
                   :class="{ 'is-current': isCurrentSession(item.key) }"
-                  :title="item.key"
+                  :title="item.title"
                   @click="switchToSession(item.key)"
                 >
                   <span class="sidebar-history-dot" :class="`status--${item.runStatus}`" />
                   <span class="sidebar-history-key">
                     <span class="sidebar-history-title">{{ item.title }}</span>
-                    <span class="sidebar-history-meta">{{ item.meta }}</span>
                   </span>
                   <span v-if="item.hasContractGaps" class="sidebar-history-gap" title="Backend session-list-v1 contract fields are missing">Gap</span>
                   <span v-if="item.runStatus !== 'idle'" class="sidebar-history-run">{{ item.runLabel }}</span>
@@ -139,6 +139,7 @@
         :class="{ 'is-active': $route.path === route.path }"
         :title="route.title"
         :aria-label="route.title"
+        :data-tooltip="route.title"
         @click="handleNavClick"
       >
         <Icon :name="route.icon" :size="16" />
@@ -264,7 +265,6 @@ interface SidebarConversationItem {
   effectiveAgentId: string
   sourceFamily: SidebarFamilyId
   localGroupLabel: string
-  meta: string
   runStatus: string
   runLabel: string
   updatedAt: number
@@ -322,13 +322,9 @@ function humanize(value: string): string {
   return cleaned ? cleaned.charAt(0).toUpperCase() + cleaned.slice(1) : ''
 }
 
-function conversationMeta(item: Pick<SessionItem, 'surface' | 'conversationKind' | 'threadLabel' | 'effectiveAgentId' | 'messageCount'>): string {
-  const parts = [humanize(item.surface), humanize(item.conversationKind)]
-    .filter(value => value && value !== 'unknown')
-  if (item.threadLabel) parts.push(item.threadLabel)
-  if (item.effectiveAgentId && item.effectiveAgentId !== 'unknown') parts.push(agentDisplayName(item.effectiveAgentId))
-  if (item.messageCount != null) parts.push(`${item.messageCount} msg${item.messageCount === 1 ? '' : 's'}`)
-  return parts.join(' · ') || 'Session'
+function sidebarConversationTitle(item: SessionItem): string {
+  const title = item.title.trim()
+  return title || item.key || 'Untitled session'
 }
 
 function sourceFamilyForSession(item: SessionItem): SidebarFamilyId | null {
@@ -416,10 +412,9 @@ const sidebarConversations = computed((): SidebarConversationItem[] => {
     result.push({
       key,
       effectiveAgentId: item.effectiveAgentId,
-      title: item.title,
+      title: sidebarConversationTitle(item),
       sourceFamily,
       localGroupLabel: localGroupLabelForSession(item, sourceFamily),
-      meta: conversationMeta(item),
       runStatus: item.runStatus,
       runLabel: item.runLabel,
       updatedAt: item.updatedAt,
@@ -434,7 +429,6 @@ const sidebarConversations = computed((): SidebarConversationItem[] => {
       sourceFamily: 'chats',
       title: local.title || 'New chat',
       localGroupLabel: agentDisplayName(local.effectiveAgentId),
-      meta: `Webchat · Direct · ${agentDisplayName(local.effectiveAgentId)}`,
       runStatus: 'idle',
       runLabel: 'Idle',
       updatedAt: local.updatedAt,
@@ -442,16 +436,17 @@ const sidebarConversations = computed((): SidebarConversationItem[] => {
     })
   }
   if (currentSessionKey.value && !seen.has(currentSessionKey.value) && !localChatSessions.value[currentSessionKey.value]) {
+    const currentAgentId = normalizeAgentId(currentSessionKey.value.split(':')[1] || 'main')
+    const currentUpdatedAt = Date.now()
     result.push({
       key: currentSessionKey.value,
-      effectiveAgentId: normalizeAgentId(currentSessionKey.value.split(':')[1] || 'main'),
+      effectiveAgentId: currentAgentId,
       sourceFamily: 'chats',
       title: 'Current session',
-      localGroupLabel: agentDisplayName(normalizeAgentId(currentSessionKey.value.split(':')[1] || 'main')),
-      meta: 'Webchat · Direct',
+      localGroupLabel: agentDisplayName(currentAgentId),
       runStatus: 'idle',
       runLabel: 'Idle',
-      updatedAt: Date.now(),
+      updatedAt: currentUpdatedAt,
       hasContractGaps: true,
     })
   }

@@ -628,7 +628,7 @@ def _trusted_fake_ip_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6N
     try:
         from opensquilla.tools.ssrf import get_trusted_fake_ip_cidrs
 
-        values = get_trusted_fake_ip_cidrs()
+        values: tuple[str, ...] = tuple(get_trusted_fake_ip_cidrs())
     except Exception:
         values = ()
     networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []

@@ -24,7 +24,7 @@ _KEY_FIELDS = {
 
 
 def load_user_grants_payload() -> dict[str, list[dict[str, Any]]]:
-    payload = {kind: [] for kind in _KINDS}
+    payload: dict[str, list[dict[str, Any]]] = {kind: [] for kind in _KINDS}
     with closing(_connect()) as conn:
         for row in conn.execute(
             "SELECT kind, payload FROM sandbox_user_grants ORDER BY rowid"

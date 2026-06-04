@@ -482,7 +482,10 @@ def consume_temporary_network_grant(
     except Exception:  # pragma: no cover - defensive
         return consumed
 
-    if ctx is None or not isinstance(getattr(ctx, "sandbox_run_context", None), RunContext):
+    if ctx is None:
+        return consumed
+    run_context = getattr(ctx, "sandbox_run_context", None)
+    if not isinstance(run_context, RunContext):
         return consumed
     if (
         _normalize_workspace(getattr(ctx, "workspace_dir", None))
@@ -492,11 +495,11 @@ def consume_temporary_network_grant(
     ):
         return consumed
     updated = _without_matching_temporary_network_grants(
-        ctx.sandbox_run_context,
+        run_context,
         host=host,
         fingerprint=fingerprint,
     )
-    if updated is ctx.sandbox_run_context:
+    if updated is run_context:
         return consumed
     ctx.sandbox_run_context = updated
     return True

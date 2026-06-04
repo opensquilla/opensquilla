@@ -1245,15 +1245,20 @@ async def test_rpc_search_query_allows_search_provider_endpoint_under_managed_ne
 
 
 @pytest.mark.asyncio
-async def test_rpc_search_query_without_runtime_fails_closed(
+async def test_rpc_search_query_without_runtime_uses_provider_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     reset_runtime()
 
-    async def fail_search(*args: object, **kwargs: object) -> dict[str, object]:
-        raise AssertionError("search provider should not run without sandbox runtime")
+    async def fake_search(*args: object, **kwargs: object) -> dict[str, object]:
+        return {
+            "ok": True,
+            "query": "python packages",
+            "provider": "fake",
+            "results": [{"title": "PyPI", "url": "https://pypi.org", "snippet": "python"}],
+        }
 
-    monkeypatch.setattr(rpc_tools, "run_web_search_payload", fail_search)
+    monkeypatch.setattr(rpc_tools, "run_web_search_payload", fake_search)
     ctx = RpcContext(
         conn_id="c",
         principal=Principal(
@@ -1266,9 +1271,10 @@ async def test_rpc_search_query_without_runtime_fails_closed(
 
     result = await rpc_tools._handle_search_query({"query": "python packages"}, ctx)
 
-    assert result["ok"] is False
-    assert result["results"] == []
-    assert result["error"]["kind"] == "runtime_unconfigured"
+    assert result["ok"] is True
+    assert result["results"] == [
+        {"title": "PyPI", "url": "https://pypi.org", "snippet": "python"}
+    ]
 
 
 @pytest.mark.asyncio

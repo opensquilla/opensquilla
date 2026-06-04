@@ -300,6 +300,7 @@ def _session_mounts_for_policy(workspace: Path) -> tuple[MountSpec, ...]:
         ctx = None
 
     run_context = current_tool_run_context()
+    source_items: list[dict[str, Any]]
     if isinstance(run_context, RunContext):
         source_items = [
             {
@@ -325,7 +326,7 @@ def _session_mounts_for_policy(workspace: Path) -> tuple[MountSpec, ...]:
                     }
                 )
 
-    merged_items: dict[str, dict[str, object]] = {}
+    merged_items: dict[str, dict[str, Any]] = {}
     for item in source_items:
         raw_path = item.get("path")
         if not isinstance(raw_path, str) or not raw_path.strip():
@@ -652,7 +653,7 @@ def current_managed_network_proxy_url() -> str | None:
     return _MANAGED_NETWORK_PROXY_URL.get()
 
 
-def managed_network_httpx_kwargs() -> dict[str, object]:
+def managed_network_httpx_kwargs() -> dict[str, Any]:
     """Return httpx proxy kwargs for the current managed-network context.
 
     When a sandboxed in-process network tool is running under
@@ -1108,10 +1109,13 @@ async def run_in_process_network_action(
     through a registered tool decorator. This helper gives those paths the
     same fail-closed and managed-proxy behavior as :func:`sandboxed`.
     """
+    rt = runtime or get_runtime()
+    if rt is None:
+        return await callback()
     decision, policy, request = await gate_action(
         action_kind=action_kind,
         argv=argv,
-        runtime=runtime,
+        runtime=rt,
     )
     if isinstance(decision, DenialResult):
         return decision

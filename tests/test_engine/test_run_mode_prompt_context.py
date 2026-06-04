@@ -8,7 +8,7 @@ def test_full_host_access_tool_context_is_visible_to_model_prompt() -> None:
     ctx = ToolContext(
         caller_kind=CallerKind.WEB,
         run_mode="full",
-        workspace_dir="/home/lrk/.opensquilla/workspace",
+        workspace_dir="/workspace/.opensquilla/workspace",
     )
 
     extra = TurnRunner._extra_context_for_tool_context(ctx)

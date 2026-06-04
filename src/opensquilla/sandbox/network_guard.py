@@ -55,11 +55,15 @@ def decide_network_access(host: str, context: RunContext) -> NetworkDecision:
     disabled_bundle_ids = {
         grant.bundle_id for grant in context.bundles if grant.source == "disabled"
     }
-    for grant in context.domains:
-        if domain_matches(grant.domain, normalized_host):
-            grant_validation = validate_domain_pattern(grant.domain)
-            reason = "system_domain_grant" if grant.source == "system" else "domain_grant"
-            source_prefix = "system" if grant.source == "system" else "domain"
+    for domain_grant in context.domains:
+        if domain_matches(domain_grant.domain, normalized_host):
+            grant_validation = validate_domain_pattern(domain_grant.domain)
+            reason = (
+                "system_domain_grant"
+                if domain_grant.source == "system"
+                else "domain_grant"
+            )
+            source_prefix = "system" if domain_grant.source == "system" else "domain"
             return NetworkDecision(
                 status="allow",
                 normalized_host=normalized_host,
@@ -67,16 +71,16 @@ def decide_network_access(host: str, context: RunContext) -> NetworkDecision:
                 source=f"{source_prefix}:{grant_validation.normalized}",
             )
 
-    for grant in context.bundles:
-        if grant.source == "disabled":
+    for bundle_grant in context.bundles:
+        if bundle_grant.source == "disabled":
             continue
-        for bundled_domain in expand_package_bundle(grant.bundle_id):
+        for bundled_domain in expand_package_bundle(bundle_grant.bundle_id):
             if domain_matches(bundled_domain, normalized_host):
                 return NetworkDecision(
                     status="allow",
                     normalized_host=normalized_host,
                     reason="package_bundle",
-                    source=f"bundle:{grant.bundle_id}",
+                    source=f"bundle:{bundle_grant.bundle_id}",
                 )
 
     if context.run_mode == RunMode.TRUSTED and _is_recognized_default_host(

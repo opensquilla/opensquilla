@@ -265,7 +265,7 @@ class ApprovalGate:
             )
             return ALLOW
 
-        params = {
+        params: dict[str, object] = {
             "action_kind": request.action_kind,
             "argv": list(request.argv),
             "cwd": str(request.cwd),

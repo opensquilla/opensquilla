@@ -406,6 +406,8 @@ def tool_context_from_envelope(
         run_mode = None
     if run_mode == RunMode.FULL and is_owner:
         elevated = "full"
+    elif legacy_elevated in ("on", "bypass") and is_owner:
+        elevated = legacy_elevated
     sandbox_run_context_fresh = bool(
         getattr(envelope, "sandbox_run_context_fresh", False)
     )

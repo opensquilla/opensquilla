@@ -148,11 +148,11 @@ def test_workspace_read_tracks_obvious_path_arguments() -> None:
 
 def test_copy_command_tracks_source_read_and_destination_write_paths() -> None:
     profile = classify_command(
-        ("cp", "/home/lrk/opensquilla/LICENSE", "/workspace/opensquilla-license.txt")
+        ("cp", "/workspace-src/opensquilla/LICENSE", "/workspace/opensquilla-license.txt")
     )
 
     assert profile.name == "path_transfer"
-    assert profile.requested_paths == ("/home/lrk/opensquilla/LICENSE",)
+    assert profile.requested_paths == ("/workspace-src/opensquilla/LICENSE",)
     assert profile.requested_write_paths == ("/workspace/opensquilla-license.txt",)
 
 
@@ -172,11 +172,11 @@ def test_shell_wrapper_preserves_workspace_read_path_arguments() -> None:
 
 def test_shell_wrapper_preserves_copy_source_and_destination_paths() -> None:
     profile = classify_command(
-        ("sh", "-lc", "cp /home/lrk/opensquilla/LICENSE /workspace/license.txt")
+        ("sh", "-lc", "cp /workspace-src/opensquilla/LICENSE /workspace/license.txt")
     )
 
     assert profile.name == "path_transfer"
-    assert profile.requested_paths == ("/home/lrk/opensquilla/LICENSE",)
+    assert profile.requested_paths == ("/workspace-src/opensquilla/LICENSE",)
     assert profile.requested_write_paths == ("/workspace/license.txt",)
 
 

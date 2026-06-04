@@ -100,13 +100,14 @@ def _validate_workspace_param(workspace: str) -> str:
 
 
 def _path_entry_payload(path: Any) -> dict[str, Any]:
+    name = str(path.name or str(path))
     payload = {
-        "name": path.name or str(path),
+        "name": name,
         "path": str(path),
         "kind": "directory" if path.is_dir() else "file",
         "selectable": True,
     }
-    if payload["name"].startswith("."):
+    if name.startswith("."):
         payload["hidden"] = True
     return payload
 

@@ -211,6 +211,57 @@ class RouterDecisionEvent:
 
 
 @dataclass
+class MetaRunAnnouncedEvent:
+    """Emitted once when a MetaSkill run starts and its plan has been
+    compiled. WebUI uses this to seed the step ribbon with all declared
+    step ids, labels, kinds, and dependency edges. `parent_run_id` is
+    reserved for nested meta-skill rollouts (always None today).
+    """
+
+    kind: Literal["meta_run_announced"] = field(default="meta_run_announced", init=False)
+    run_id: str = ""
+    meta_skill_name: str = ""
+    steps: list[dict[str, Any]] = field(default_factory=list)
+    total: int = 0
+    parent_run_id: str | None = None
+
+
+@dataclass
+class MetaStepStateEvent:
+    """One state transition for a single MetaSkill step within a run.
+
+    `state` is one of pending / running / succeeded / failed / skipped /
+    substituted. `status_text` is an optional short human-readable label
+    shown under the active chip; `error` carries the failure message when
+    `state == "failed"`; `substitute_for` is set on the substitute step
+    yielded after an `on_failure` branch fires.
+    """
+
+    kind: Literal["meta_step_state"] = field(default="meta_step_state", init=False)
+    run_id: str = ""
+    step_id: str = ""
+    state: str = "pending"
+    status_text: str | None = None
+    error: str | None = None
+    substitute_for: str | None = None
+
+
+@dataclass
+class MetaRunCompletedEvent:
+    """Terminal event for a MetaSkill run. `outcome` is one of
+    ok / failed / cancelled. The three step-id lists let the WebUI freeze
+    the final ribbon state without scanning back through the stream.
+    """
+
+    kind: Literal["meta_run_completed"] = field(default="meta_run_completed", init=False)
+    run_id: str = ""
+    outcome: str = "ok"
+    completed_steps: list[str] = field(default_factory=list)
+    failed_steps: list[str] = field(default_factory=list)
+    skipped_steps: list[str] = field(default_factory=list)
+
+
+@dataclass
 class WarningEvent:
     """Non-persistent user-facing warning surfaced at the end of a turn.
 

@@ -80,6 +80,14 @@ class MetaStep:
     # All other step kinds keep this as None and the executor layer
     # ignores it. Frozen at parse time; the orchestrator never mutates.
     clarify_config: ClarifyStepConfig | None = None
+    # New in P0-1: human-readable label for the step ribbon chip.
+    # Empty string ⇒ frontend humanizes ``id``.
+    label: str = ""
+    # New in P0-1: whether the executor may emit per-step ``status_text``
+    # updates via the run-progress event channel. ``tool_call`` defaults
+    # to False (single deterministic call); ``agent`` / ``skill_exec``
+    # default to True; ``llm_chat`` / ``llm_classify`` ignore this flag.
+    progress_emits: bool = True
 
 
 @dataclass(frozen=True)

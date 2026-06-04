@@ -29,6 +29,10 @@ from opensquilla.sandbox.types import (
 from opensquilla.tools.types import current_tool_context
 
 _UNSET = object()
+_BWRAP_PROXY_BRIDGE_LINUX_ONLY = pytest.mark.skipif(
+    sys.platform.startswith("win"),
+    reason="bubblewrap proxy bridge uses Linux mount and Unix socket paths",
+)
 
 
 def _proxy_spec(host: str = "127.0.0.1", port: int = 8080) -> NetworkProxySpec:
@@ -114,6 +118,7 @@ def test_seatbelt_proxy_allowlist_without_proxy_fails_closed(
         render_seatbelt_profile(_request(_policy(tmp_path), tmp_path))
 
 
+@_BWRAP_PROXY_BRIDGE_LINUX_ONLY
 def test_bubblewrap_proxy_allowlist_with_proxy_builds_bridge_argv(
     tmp_path: Path,
 ) -> None:
@@ -147,6 +152,7 @@ def test_bubblewrap_proxy_allowlist_with_proxy_builds_bridge_argv(
     assert "http://127.0.0.1:8080" in argv
 
 
+@_BWRAP_PROXY_BRIDGE_LINUX_ONLY
 def test_bubblewrap_proxy_allowlist_proxy_env_overrides_user_input(
     tmp_path: Path,
 ) -> None:
@@ -197,6 +203,7 @@ def test_bubblewrap_sets_home_to_workspace_when_workspace_is_mounted(
     assert "/home/lrk" not in argv[home_index : home_index + 2]
 
 
+@_BWRAP_PROXY_BRIDGE_LINUX_ONLY
 @pytest.mark.asyncio
 async def test_bubblewrap_run_starts_and_stops_proxy_bridge(
     monkeypatch: pytest.MonkeyPatch,

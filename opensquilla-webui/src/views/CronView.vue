@@ -96,7 +96,10 @@
     <!-- Jobs list -->
     <section class="cron-jobs">
       <div class="cron-jobs__head">
-        <h3 class="cron-jobs__title" v-html="jobsTitle" />
+        <h3 class="cron-jobs__title">
+          <template v-if="searchText">Matching schedules <span class="cron-jobs__count">{{ filteredSortedJobs.length }} of {{ jobs.length }}</span></template>
+          <template v-else>All schedules <span class="cron-jobs__count">{{ filteredSortedJobs.length }}</span></template>
+        </h3>
         <div class="cron-view-toggle" role="tablist" aria-label="View mode">
           <button
             class="cron-view-toggle__btn"
@@ -309,40 +312,14 @@
       </div>
 
       <!-- Detail panel (run history) -->
-      <div v-if="selectedId && selectedJob" class="cron-detail">
-        <div class="cron-detail__head">
-          <div>
-            <span class="cron-detail__eyebrow">Run history</span>
-            <strong class="cron-detail__name">{{ selectedJob.name || selectedJob.id }}</strong>
-          </div>
-          <button class="cron-iconbtn" aria-label="Close" @click="selectedId = null">
-            <Icon name="x" :size="16" />
-          </button>
-        </div>
-        <div class="cron-detail__runs">
-          <p v-if="runsLoading" class="cron-muted">Loading&hellip;</p>
-          <p v-else-if="runs.length === 0" class="cron-muted">No run history yet.</p>
-          <table v-else class="cron-runs">
-            <thead>
-              <tr><th>Time</th><th>Status</th><th>Duration</th><th>Delivery</th><th>Reply</th><th /></tr>
-            </thead>
-            <tbody>
-              <tr v-for="r in runs" :key="r.started_at">
-                <td class="cron-mono">{{ r.started_at ? relTime(r.started_at) : '—' }}</td>
-                <td><span :class="`status status--${r.status === 'ok' ? 'ok' : 'err'}`">{{ r.status || 'unknown' }}</span></td>
-                <td class="cron-mono">{{ r.duration_ms != null ? r.duration_ms + 'ms' : '—' }}</td>
-                <td>{{ deliveryStatusText(r) }}</td>
-                <td class="cron-runs__reply">{{ r.summary ? r.summary.substring(0, 120) : '—' }}</td>
-                <td>
-                  <button v-if="r.sessionKey" class="cron-link cron-run-chat-link" @click="router.push('/chat?session=' + encodeURIComponent(r.sessionKey))">
-                    &rarr; Chat
-                  </button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <CronRunHistory
+        v-if="selectedId && selectedJob"
+        :job="selectedJob"
+        :runs="runs"
+        :loading="runsLoading"
+        @close="selectedId = null"
+        @open-chat="openRunChat"
+      />
     </section>
 
     <!-- Slide-in edit/add panel -->
@@ -589,6 +566,7 @@ import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
 import Icon from '@/components/Icon.vue'
+import CronRunHistory from '@/components/cron/CronRunHistory.vue'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -820,15 +798,6 @@ const filteredSortedJobs = computed(() => {
   })
 })
 
-const jobsTitle = computed(() => {
-  const count = filteredSortedJobs.value.length
-  const total = jobs.value.length
-  if (searchText.value) {
-    return `Matching schedules <span class="cron-jobs__count">${count} of ${total}</span>`
-  }
-  return `All schedules <span class="cron-jobs__count">${count}</span>`
-})
-
 const selectedJob = computed(() => jobs.value.find(j => j.id === selectedId.value) || null)
 
 const tableCols = [
@@ -970,6 +939,10 @@ function onHorizonClick(id: string) {
     const card = document.querySelector(`[data-cron-row="${CSS.escape(id)}"]`)
     if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' })
   })
+}
+
+function openRunChat(sessionKey: string) {
+  router.push('/chat?session=' + encodeURIComponent(sessionKey))
 }
 
 function onSort(col: string) {
@@ -1348,14 +1321,6 @@ function isImminent(j: CronJob) {
   return left > 0 && left < 60_000
 }
 
-function deliveryStatusText(r: CronRun) {
-  const ds = r.deliveryStatus || r.delivery_status
-  if (ds && typeof ds === 'object') {
-    return `ch: ${(ds as Record<string, string>).channel || '-'}, ws: ${(ds as Record<string, string>).ws || '-'}`
-  }
-  return (ds as string) || '—'
-}
-
 function horizonLeft(ts: number) {
   const span = 12 * 3600 * 1000
   const left = ((ts - Date.now()) / span) * 100
@@ -1600,12 +1565,6 @@ function humanTime(date: Date): string {
   if (date >= today && date < tomorrow) return `today ${t}`
   if (date >= tomorrow && date < dayAfter) return `tomorrow ${t}`
   return date.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }) + ' ' + t
-}
-
-function relTime(ts: string): string {
-  const date = new Date(ts)
-  if (isNaN(date.getTime())) return '—'
-  return humanCountdownPast(date)
 }
 
 // ---------------------------------------------------------------------------
@@ -2413,70 +2372,6 @@ function jobSessionKey(job: CronJob | null): string {
 .cron-empty-hint span {
   color: var(--text-muted);
   font-size: var(--fs-sm);
-}
-
-/* Detail panel */
-.cron-detail {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  margin-top: var(--sp-3);
-  overflow: hidden;
-}
-
-.cron-detail__head {
-  align-items: center;
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  gap: var(--sp-3);
-  justify-content: space-between;
-  padding: var(--sp-4);
-}
-
-.cron-detail__eyebrow {
-  color: var(--text-dim);
-  display: block;
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-}
-
-.cron-detail__name {
-  color: var(--text);
-  font-size: var(--fs-md);
-}
-
-.cron-detail__runs {
-  padding: var(--sp-4);
-}
-
-.cron-runs {
-  border-collapse: collapse;
-  font-size: var(--fs-sm);
-  width: 100%;
-}
-
-.cron-runs th,
-.cron-runs td {
-  border-bottom: 1px solid var(--border);
-  padding: 8px 10px;
-  text-align: left;
-}
-
-.cron-runs th {
-  color: var(--text-dim);
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-}
-
-.cron-runs__reply {
-  color: var(--text-muted);
-  max-width: 240px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* Panel */

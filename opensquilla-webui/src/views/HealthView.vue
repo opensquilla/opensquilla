@@ -145,6 +145,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRpcStore } from '@/stores/rpc'
+import { copyTextWithFallback } from '@/utils/browser'
 import Icon from '@/components/Icon.vue'
 
 // ---------------------------------------------------------------------------
@@ -419,19 +420,7 @@ function shellArg(value: string | undefined | null): string {
 }
 
 function copyText(text: string): Promise<void> {
-  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-    return navigator.clipboard.writeText(text)
-  }
-  const ta = document.createElement('textarea')
-  ta.value = text
-  ta.setAttribute('readonly', '')
-  ta.style.position = 'fixed'
-  ta.style.left = '-9999px'
-  document.body.appendChild(ta)
-  ta.select()
-  const ok = document.execCommand('copy')
-  document.body.removeChild(ta)
-  return ok ? Promise.resolve() : Promise.reject(new Error('Copy command failed'))
+  return copyTextWithFallback(text)
 }
 
 // ---------------------------------------------------------------------------

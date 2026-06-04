@@ -3,6 +3,10 @@ import { defineStore } from 'pinia'
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 
+type FeatureWindow = Window & {
+  OPENSQUILLA_FEATURES?: Record<string, boolean>
+}
+
 export const useAppStore = defineStore('app', () => {
   const theme = ref<ThemeMode>('system')
   const sidebarOpen = ref(true)
@@ -48,13 +52,13 @@ export const useAppStore = defineStore('app', () => {
       systemDark.value = e.matches
     }
     if (mq.addEventListener) mq.addEventListener('change', mqHandler)
-    else if ((mq as any).addListener) (mq as any).addListener(mqHandler)
+    else if (mq.addListener) mq.addListener(mqHandler)
   }
 
   function destroyTheme() {
     if (mq && mqHandler) {
       if (mq.removeEventListener) mq.removeEventListener('change', mqHandler)
-      else if ((mq as any).removeListener) (mq as any).removeListener(mqHandler)
+      else if (mq.removeListener) mq.removeListener(mqHandler)
     }
     mq = null
     mqHandler = null
@@ -95,7 +99,7 @@ export const useAppStore = defineStore('app', () => {
 
   const features = ref<Record<string, boolean>>({
     tokenViz: false,
-    ...((window as any).OPENSQUILLA_FEATURES || {}),
+    ...((window as FeatureWindow).OPENSQUILLA_FEATURES || {}),
   })
 
   return {

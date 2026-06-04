@@ -235,7 +235,9 @@
         <div v-if="confirmOpen" class="modal-overlay" @click="confirmOpen = false">
           <div class="modal" @click.stop>
             <h3 class="modal__title">{{ confirmTitle }}</h3>
-            <div class="modal__body" v-html="confirmBody" />
+            <div class="modal__body">
+              <p>{{ confirmBody }}</p>
+            </div>
             <div class="modal__footer">
               <button :class="['btn', confirmPrimaryClass]" @click="onConfirmPrimary">{{ confirmPrimaryLabel }}</button>
               <button class="btn btn--ghost" @click="confirmOpen = false">Cancel</button>
@@ -445,10 +447,10 @@ async function onInlineAdd() {
     newId.value = ''
     newName.value = ''
     await loadData()
-  } catch (err: any) {
-    const code = err?.code || ''
+  } catch (err: unknown) {
+    const code = rpcErrorCode(err)
     if (code === 'agent.exists') console.warn(`Agent "${id}" already exists`)
-    else console.warn('Failed to create agent: ' + (err?.message || String(err)))
+    else console.warn('Failed to create agent: ' + errorMessage(err))
   }
 }
 
@@ -555,9 +557,9 @@ async function onSave() {
       systemPromptHint.value = !!(updated.system_prompt || updated.systemPrompt)
     }
     drawerMode.value = 'view'
-  } catch (err: any) {
-    const code = err?.code || ''
-    const msg = err?.message || String(err)
+  } catch (err: unknown) {
+    const code = rpcErrorCode(err)
+    const msg = errorMessage(err)
     let friendly = 'Failed to save: ' + msg
     if (code === 'agent.not_found') friendly = `Agent "${drawerAgentId.value}" no longer exists.`
     if (code === 'agent.builtin_immutable') friendly = `"${drawerAgentId.value}" is a built-in agent and cannot be modified.`
@@ -586,7 +588,7 @@ async function deleteAgent(id?: string) {
   if (!id) return
   const ok = await confirmModal(
     'Delete agent',
-    `Delete agent <strong>${escHtml(id)}</strong>? Existing chats with this agent will keep working but become unmanaged.`,
+    `Delete agent ${id}? Existing chats with this agent will keep working but become unmanaged.`,
     'Delete',
     'btn--danger'
   )
@@ -595,8 +597,8 @@ async function deleteAgent(id?: string) {
     await rpc.call('agents.delete', { id })
     console.warn('Agent deleted: ' + id)
     await loadData()
-  } catch (err: any) {
-    console.warn('Failed to delete agent: ' + (err?.message || String(err)))
+  } catch (err: unknown) {
+    console.warn('Failed to delete agent: ' + errorMessage(err))
   }
 }
 
@@ -604,10 +606,10 @@ async function deleteAgent(id?: string) {
 // Confirm helpers
 // ---------------------------------------------------------------------------
 
-function confirmModal(title: string, bodyHtml: string, primaryLabel = 'Confirm', primaryCls = 'btn--danger'): Promise<boolean> {
+function confirmModal(title: string, bodyText: string, primaryLabel = 'Confirm', primaryCls = 'btn--danger'): Promise<boolean> {
   return new Promise((resolve) => {
     confirmTitle.value = title
-    confirmBody.value = bodyHtml
+    confirmBody.value = bodyText
     confirmPrimaryLabel.value = primaryLabel
     confirmPrimaryClass.value = primaryCls
     confirmOpen.value = true
@@ -626,18 +628,20 @@ function onConfirmPrimary() {
 function confirmDiscard(): Promise<boolean> {
   return confirmModal(
     'Discard unsaved changes?',
-    '<p>You have unsaved edits. Closing now will lose them.</p>',
+    'You have unsaved edits. Closing now will lose them.',
     'Discard',
     'btn--danger'
   )
 }
 
-function escHtml(s: string): string {
-  return String(s ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+function rpcErrorCode(err: unknown): string {
+  if (!err || typeof err !== 'object' || !('code' in err)) return ''
+  const code = (err as { code?: unknown }).code
+  return typeof code === 'string' ? code : ''
 }
 </script>
 

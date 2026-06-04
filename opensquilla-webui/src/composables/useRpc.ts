@@ -1,11 +1,12 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRpcStore } from '@/stores/rpc'
+import type { RpcEventHandler } from '@/lib/rpc'
 
 /**
  * Composable for subscribing to RPC events within a Vue component lifecycle.
  * Automatically unsubscribes on component unmount.
  */
-export function useRpcEvent(event: string, handler: (...args: any[]) => void) {
+export function useRpcEvent(event: string, handler: RpcEventHandler) {
   const rpc = useRpcStore()
   let unsub: (() => void) | null = null
 
@@ -45,8 +46,8 @@ export function useRpcCall<T = unknown>(
     error.value = null
     try {
       data.value = await rpc.call<T>(method, params)
-    } catch (e: any) {
-      error.value = e?.message || String(e)
+    } catch (e: unknown) {
+      error.value = e instanceof Error ? e.message : String(e)
       throw e
     } finally {
       loading.value = false

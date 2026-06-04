@@ -356,8 +356,8 @@ export function useSessions() {
       const data = await rpc.call<SessionsListResponse>('sessions.list', { limit: 200, view: SESSION_LIST_VIEW })
       const raw = data?.sessions || data?.keys || []
       sessionsList.value = raw.filter(s => !!itemKey(s))
-    } catch (err: any) {
-      console.error('[useSessions] sessions.list error:', err?.message || err)
+    } catch (err: unknown) {
+      console.error('[useSessions] sessions.list error:', err instanceof Error ? err.message : err)
       sessionListError.value = true
     } finally {
       isLoading.value = false

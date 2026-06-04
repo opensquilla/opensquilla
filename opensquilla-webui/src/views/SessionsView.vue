@@ -63,7 +63,10 @@
 
     <section class="sess-list">
       <div class="sess-list__head">
-        <h3 class="sess-list__title" v-html="listTitle"></h3>
+        <h3 class="sess-list__title">
+          <template v-if="searchVal">Matching sessions <span class="sess-list__count">{{ filtered.length }} of {{ allSessions.length }}</span></template>
+          <template v-else>All sessions <span class="sess-list__count">{{ allSessions.length }}</span></template>
+        </h3>
         <div class="sess-list__controls">
           <label class="sess-page-size">
             <span>Show</span>
@@ -291,6 +294,7 @@ import {
   sessionMatches,
   type SessionItem,
 } from '@/composables/useSessions'
+import type { RawSessionListEntry } from '@/types/rpc'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -309,7 +313,7 @@ interface AgentsListData {
 }
 
 interface SessionsListData {
-  sessions?: any[]
+  sessions?: RawSessionListEntry[]
 }
 
 interface DeleteResponse {
@@ -356,14 +360,6 @@ const slice = computed(() => {
 
 const allOnPageSelected = computed(() => {
   return slice.value.length > 0 && slice.value.every(s => selected.value.has(s.key))
-})
-
-const listTitle = computed(() => {
-  const total = allSessions.value.length
-  if (searchVal.value) {
-    return `Matching sessions <span class="sess-list__count">${filtered.value.length} of ${total}</span>`
-  }
-  return `All sessions <span class="sess-list__count">${total}</span>`
 })
 
 const totalSessions = computed(() => allSessions.value.length)

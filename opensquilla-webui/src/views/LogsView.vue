@@ -108,7 +108,15 @@
           <span v-if="line.ts" class="lg-line__ts">{{ String(line.ts).slice(0, 23) }}</span>
           <span v-else class="lg-line__ts lg-line__ts--empty"></span>
           <span :class="['lg-line__lvl', `lg-line__lvl--${(line.level || 'info').toLowerCase()}`]">{{ line.level }}</span>
-          <span class="lg-line__msg" v-html="highlight(line.message)"></span>
+          <span class="lg-line__msg">
+            <template
+              v-for="(part, partIndex) in highlightParts(line.message)"
+              :key="`${idx}-${partIndex}`"
+            >
+              <mark v-if="part.match" class="lg-line__match">{{ part.text }}</mark>
+              <template v-else>{{ part.text }}</template>
+            </template>
+          </span>
         </div>
       </div>
     </section>
@@ -118,6 +126,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRpcStore } from '@/stores/rpc'
+import { downloadText } from '@/utils/browser'
 import Icon from '@/components/Icon.vue'
 
 // ---------------------------------------------------------------------------
@@ -340,13 +349,7 @@ function exportLogs() {
     const ts = line.ts ? String(line.ts).slice(0, 23) + ' ' : ''
     return `${ts}[${line.level}] ${line.message}`
   }).join('\n')
-  const blob = new Blob([text], { type: 'text/plain' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = 'opensquilla-logs.txt'
-  a.click()
-  URL.revokeObjectURL(url)
+  downloadText('opensquilla-logs.txt', 'text/plain', text)
 }
 
 // ---------------------------------------------------------------------------
@@ -363,25 +366,25 @@ function guessLevel(line: string): string {
   return 'INFO'
 }
 
-function highlight(message: string): string {
-  const safe = esc(message)
+function highlightParts(message: string): Array<{ text: string; match: boolean }> {
   const term = searchText.value
-  if (!term) return safe
+  if (!term) return [{ text: message, match: false }]
   const re = new RegExp(`(${escRegex(term)})`, 'gi')
-  return safe.replace(re, '<mark class="lg-line__match">$1</mark>')
+  const parts: Array<{ text: string; match: boolean }> = []
+  let lastIndex = 0
+  for (const match of message.matchAll(re)) {
+    const index = match.index ?? 0
+    if (index > lastIndex) parts.push({ text: message.slice(lastIndex, index), match: false })
+    parts.push({ text: match[0], match: true })
+    lastIndex = index + match[0].length
+  }
+  if (lastIndex < message.length) parts.push({ text: message.slice(lastIndex), match: false })
+  return parts.length ? parts : [{ text: message, match: false }]
 }
 
 function scrollToBottom() {
   const el = displayRef.value
   if (el) el.scrollTop = el.scrollHeight
-}
-
-function esc(s: string): string {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
 }
 
 function escRegex(s: string): string {

@@ -25,6 +25,7 @@ import structlog
 from opensquilla.engine.types import (
     AgentEvent,
     MetaRunAnnouncedEvent,
+    MetaRunCompletedEvent,
     MetaStepStateEvent,
     ToolResultEvent,
     ToolUseStartEvent,
@@ -244,6 +245,20 @@ async def run_dag(
         total=len(match.plan.steps),
         parent_run_id=None,
     )
+
+    # Terminal-state tracking for the final MetaRunCompletedEvent.
+    _succeeded_step_ids: set[str] = set()
+    _failed_step_ids: set[str] = set()
+    _skipped_step_ids: set[str] = set()
+
+    def _yield_completion(outcome: str) -> MetaRunCompletedEvent:
+        return MetaRunCompletedEvent(
+            run_id=_run_id,
+            outcome=outcome,
+            completed_steps=sorted(_succeeded_step_ids),
+            failed_steps=sorted(_failed_step_ids),
+            skipped_steps=sorted(_skipped_step_ids),
+        )
 
     steps_by_id: dict[str, MetaStep] = {s.id: s for s in ordered}
     pending_deps: dict[str, set[str]] = {
@@ -546,6 +561,7 @@ async def run_dag(
                     ),
                 ),
             )
+            _failed_step_ids.add(step.id)
             await event_queue.put((
                 step.id,
                 MetaStepStateEvent(
@@ -585,6 +601,7 @@ async def run_dag(
 
     _spawn_ready()
     if not running:
+        yield _yield_completion("failed")
         yield MetaResult(
             ok=False,
             error="no runnable steps (all blocked by dependencies)",
@@ -617,6 +634,10 @@ async def run_dag(
                 task = running.pop(step_id, None)
                 if task is not None and not task.done():
                     await task
+                if item.status == "skipped":
+                    _skipped_step_ids.add(step_id)
+                else:
+                    _succeeded_step_ids.add(step_id)
                 if on_step_finish is not None:
                     try:
                         await on_step_finish(step_id, item.status, item.text, None)
@@ -729,6 +750,7 @@ async def run_dag(
                         task.cancel()
                 if running:
                     await asyncio.gather(*running.values(), return_exceptions=True)
+                yield _yield_completion("cancelled")
                 yield MetaResult(
                     ok=False,
                     paused=True,
@@ -818,6 +840,7 @@ async def run_dag(
             )
 
     if failure is not None:
+        yield _yield_completion("failed")
         yield MetaResult(
             ok=False,
             step_outputs=outputs,
@@ -826,6 +849,7 @@ async def run_dag(
         )
         return
 
+    yield _yield_completion("failed" if _failed_step_ids else "ok")
     yield MetaResult(
         ok=True,
         final_text=outputs.get(last_step_id, ""),

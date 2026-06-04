@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from opensquilla.engine.types import MetaStepStateEvent
+from opensquilla.engine.types import MetaRunCompletedEvent, MetaStepStateEvent
 from opensquilla.skills.meta.events import _StepDone
 from opensquilla.skills.meta.types import MetaMatch, MetaPlan, MetaStep
 
@@ -166,3 +166,18 @@ def test_failed_then_substituted(
     ]
     assert ("search", "failed", None) in states
     assert ("search_fallback", "substituted", "search") in states
+
+
+def test_run_completed_emitted_at_end(
+    make_two_step_match, fake_dispatch_stream, fake_preface,
+):
+    events = asyncio.run(_collect_all_events(
+        make_two_step_match, fake_dispatch_stream, fake_preface,
+    ))
+    completed = next(
+        (e for e in events if isinstance(e, MetaRunCompletedEvent)), None,
+    )
+
+    assert completed is not None
+    assert completed.outcome == "ok"
+    assert sorted(completed.completed_steps) == ["intake", "summary"]

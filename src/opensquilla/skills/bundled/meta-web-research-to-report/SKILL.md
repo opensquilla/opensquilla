@@ -53,6 +53,7 @@ metadata:
 composition:
   steps:
     - id: preferences
+      label: "偏好提取"
       kind: llm_chat
       with:
         system: "You infer report requirements. Return only the requested contract."
@@ -82,6 +83,7 @@ composition:
           ASSUMPTIONS:
             - <assumption>
     - id: report_clarify
+      label: "报告澄清"
       kind: user_input
       depends_on: [preferences]
       when: "'NEEDS_CLARIFICATION: yes' in outputs.preferences"
@@ -113,6 +115,7 @@ composition:
         cancel_keywords: ["算了", "取消", "cancel", "stop", "abort"]
         timeout_hours: 24
     - id: report_mode
+      label: "报告模式"
       kind: llm_classify
       depends_on: [preferences, report_clarify]
       output_choices:
@@ -144,6 +147,7 @@ composition:
           - EXPORT_DOCX: user explicitly asks for a Word/docx/file/report
             artifact export.
     - id: source_seed
+      label: "源头种子"
       kind: llm_chat
       depends_on: [preferences, report_mode]
       with:
@@ -177,6 +181,7 @@ composition:
           SOURCE_TARGETS:
             - <title> — <URL or no URL> — verification target, not live-checked
     - id: search
+      label: "检索"
       kind: skill_exec
       skill: multi-search-engine
       depends_on: [preferences, report_clarify, report_mode, source_seed]
@@ -186,6 +191,7 @@ composition:
         engines: [brave, tavily, duckduckgo]
         max_results: 20
     - id: search_fallback
+      label: "检索兜底"
       kind: llm_chat
       with:
         system: "You summarize that live web search was unavailable without exposing runtime details."
@@ -200,6 +206,7 @@ composition:
           Request:
           {{ inputs.user_message | xml_escape | truncate(2500) }}
     - id: source_quality
+      label: "源质量"
       kind: llm_chat
       depends_on: [search, source_seed]
       with:
@@ -244,6 +251,7 @@ composition:
           indirect sources support causal, benchmark, cost, or adoption claims
           without an explicit caveat.
     - id: research
+      label: "研究"
       skill: deep-research
       depends_on: [source_quality]
       when: "outputs.report_mode in ('DEEP_REPORT', 'EXPORT_DOCX')"
@@ -252,6 +260,7 @@ composition:
         sources: "{{ outputs.source_quality }}"
         rounds: 2
     - id: outline
+      label: "大纲"
       kind: llm_chat
       depends_on: [source_quality, research]
       with:
@@ -274,6 +283,7 @@ composition:
           Research:
           {{ outputs.research | truncate(8000) }}
     - id: report_draft
+      label: "报告初稿"
       kind: llm_chat
       depends_on: [outline]
       with:
@@ -298,6 +308,7 @@ composition:
           Research:
           {{ outputs.research }}
     - id: source_to_claim
+      label: "源到论断"
       kind: llm_chat
       depends_on: [report_draft, source_quality]
       when: "outputs.report_mode != 'QUICK_DECISION_MEMO'"
@@ -320,6 +331,7 @@ composition:
           Draft:
           {{ outputs.report_draft | truncate(8000) }}
     - id: quality_gate
+      label: "质量门"
       kind: llm_chat
       depends_on: [report_draft, source_quality, source_to_claim]
       when: "outputs.report_mode != 'QUICK_DECISION_MEMO'"
@@ -350,6 +362,7 @@ composition:
           Draft:
           {{ outputs.report_draft | truncate(8000) }}
     - id: final_report
+      label: "终稿"
       kind: llm_chat
       depends_on: [quality_gate, source_quality, source_to_claim]
       with:
@@ -431,6 +444,7 @@ composition:
             memo requests, the final chat reply must contain the complete memo
             body inline.
     - id: final_report_audit
+      label: "终稿审稿"
       kind: llm_chat
       depends_on: [preferences, report_mode, source_quality, final_report]
       with:
@@ -486,6 +500,7 @@ composition:
           - Do not create, save, export, attach, or claim a file for ordinary
             memo requests.
     - id: export
+      label: "导出"
       skill: docx
       depends_on: [final_report]
       when: "outputs.report_mode == 'EXPORT_DOCX'"

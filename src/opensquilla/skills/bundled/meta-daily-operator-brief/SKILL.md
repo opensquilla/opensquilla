@@ -48,6 +48,7 @@ metadata:
 composition:
   steps:
     - id: intake
+      label: "意图提取"
       kind: llm_chat
       with:
         system: "You extract a daily operating brief contract without asking unless the date or timezone is unusable."
@@ -74,6 +75,7 @@ composition:
           assume local timezone from the timestamp, use ASSUMED: local and
           MISSING_FIELDS must be exactly "- none".
     - id: clarify
+      label: "澄清"
       kind: user_input
       depends_on: [intake]
       when: "'NEEDS_CLARIFICATION: yes' in outputs.intake and '- none' not in outputs.intake"
@@ -98,6 +100,7 @@ composition:
         cancel_keywords: ["取消", "算了", "cancel", "stop"]
         timeout_hours: 24
     - id: memory_recall
+      label: "记忆召回"
       kind: tool_call
       tool: memory_search
       tool_allowlist: [memory_search]
@@ -107,6 +110,7 @@ composition:
         query: "daily priorities open loops preferences {{ outputs.intake | truncate(400) }}"
         max_results: 8
     - id: memory_recall_fallback
+      label: "记忆召回兜底"
       kind: llm_chat
       with:
         system: "You produce a no-memory fallback note for a daily operating brief."
@@ -121,6 +125,7 @@ composition:
           Intake:
           {{ outputs.intake | truncate(1000) }}
     - id: weather_check
+      label: "天气查询"
       kind: skill_exec
       skill: weather
       depends_on: [intake, clarify]
@@ -129,6 +134,7 @@ composition:
         location: "{{ outputs.intake | truncate(400) }}"
         days: 2
     - id: weather_check_fallback
+      label: "天气兜底"
       kind: llm_chat
       with:
         system: "You produce a no-live-weather fallback note for a daily brief."
@@ -140,6 +146,7 @@ composition:
           Request:
           {{ inputs.user_message | xml_escape | truncate(2500) }}
     - id: context_digest
+      label: "上下文摘要"
       kind: llm_chat
       depends_on: [intake, clarify]
       with:
@@ -159,6 +166,7 @@ composition:
           Intake:
           {{ outputs.intake | truncate(1000) }}
     - id: news_scan
+      label: "新闻扫描"
       kind: skill_exec
       skill: multi-search-engine
       depends_on: [intake]
@@ -168,6 +176,7 @@ composition:
         engines: [duckduckgo, brave]
         max_results: 8
     - id: news_scan_fallback
+      label: "新闻扫描兜底"
       kind: llm_chat
       with:
         system: "You produce a no-live-news/search fallback note for a daily brief."
@@ -179,6 +188,7 @@ composition:
           Request:
           {{ inputs.user_message | xml_escape | truncate(2500) }}
     - id: final_brief
+      label: "简报终稿"
       kind: llm_chat
       depends_on: [memory_recall, weather_check, context_digest, news_scan]
       with:
@@ -232,6 +242,7 @@ composition:
           News/search:
           {{ outputs.news_scan | truncate(3000) }}
     - id: final_brief_audit
+      label: "简报审稿"
       kind: llm_chat
       depends_on: [final_brief, intake, weather_check, context_digest, news_scan]
       with:

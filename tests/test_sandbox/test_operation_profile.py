@@ -230,6 +230,15 @@ def test_shell_wrapper_with_url_detects_network() -> None:
     assert profile.requested_domains == ("example.com",)
 
 
+def test_shell_wrapper_preserves_paths_when_network_command_follows() -> None:
+    profile = classify_command(("sh", "-lc", "cat /mnt/data/input && curl https://example.com"))
+
+    assert profile.name == "url_fetch"
+    assert profile.needs_network is True
+    assert profile.requested_domains == ("example.com",)
+    assert profile.requested_paths == ("/mnt/data/input",)
+
+
 def test_shell_wrapper_with_url_text_is_not_network() -> None:
     profile = classify_command(("sh", "-lc", "echo https://example.com"))
     assert profile.name == "unknown_shell"

@@ -805,6 +805,37 @@ async def test_shell_copy_to_outside_workspace_requests_rw_mount_before_backend(
 
 
 @pytest.mark.asyncio
+async def test_shell_absolute_redirection_requests_rw_mount_before_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    target = tmp_path / "outside" / "out.txt"
+    backend_calls: list[object] = []
+
+    async def fail_backend(request: object, *, runtime: object = None) -> object:
+        backend_calls.append(request)
+        raise AssertionError("backend should not run before redirection target is granted")
+
+    monkeypatch.setattr(shell, "run_under_backend", fail_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    with tool_context(workspace, run_mode="standard"):
+        payload = json.loads(await shell.exec_command(f"echo hi > {target}"))
+
+    assert payload["status"] == "approval_required"
+    assert payload["path"] == str(target.resolve(strict=False))
+    assert payload["access"] == "rw"
+    assert payload["approvalKind"] == "sandbox_path"
+    assert backend_calls == []
+
+
+@pytest.mark.asyncio
 async def test_shell_simple_read_path_full_host_access_does_not_request_mount(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

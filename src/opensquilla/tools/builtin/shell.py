@@ -425,10 +425,11 @@ def _sandbox_read_path_access_envelope(
 def _sandbox_write_path_access_envelope(
     profile: OperationProfile,
     workdir: str | None,
+    command: str,
     *,
     approval_id: str | None = None,
 ) -> dict[str, object] | None:
-    write_paths = getattr(profile, "requested_write_paths", ())
+    write_paths = _shell_write_access_targets(command, profile)
     if not write_paths or not _sandbox_path_access_enabled():
         return None
     for raw_path in write_paths:
@@ -444,6 +445,14 @@ def _sandbox_write_path_access_envelope(
             return _path_access_blocked_envelope(decision)
         return _path_access_required_envelope(decision, approval_id=approval_id)
     return None
+
+
+def _shell_write_access_targets(command: str, profile: OperationProfile) -> tuple[str, ...]:
+    targets: list[str] = []
+    for target in (*_shell_write_targets(command), *getattr(profile, "requested_write_paths", ())):
+        if target not in targets:
+            targets.append(target)
+    return tuple(targets)
 
 
 def _resolve_shell_write_target(raw_target: str, workdir: str | None) -> Path:
@@ -882,7 +891,12 @@ async def exec_command(
     path_access = _sandbox_read_path_access_envelope(profile, cwd, approval_id=approval_id)
     if path_access is not None:
         return json.dumps(path_access, ensure_ascii=False)
-    path_access = _sandbox_write_path_access_envelope(profile, cwd, approval_id=approval_id)
+    path_access = _sandbox_write_path_access_envelope(
+        profile,
+        cwd,
+        command,
+        approval_id=approval_id,
+    )
     if path_access is not None:
         return json.dumps(path_access, ensure_ascii=False)
     lockdown_block = _workspace_lockdown_shell_block("exec_command", command, cwd)
@@ -1024,7 +1038,12 @@ async def background_process(
     path_access = _sandbox_read_path_access_envelope(profile, cwd, approval_id=approval_id)
     if path_access is not None:
         return json.dumps(path_access, ensure_ascii=False)
-    path_access = _sandbox_write_path_access_envelope(profile, cwd, approval_id=approval_id)
+    path_access = _sandbox_write_path_access_envelope(
+        profile,
+        cwd,
+        command,
+        approval_id=approval_id,
+    )
     if path_access is not None:
         return json.dumps(path_access, ensure_ascii=False)
     lockdown_block = _workspace_lockdown_shell_block("background_process", command, cwd)

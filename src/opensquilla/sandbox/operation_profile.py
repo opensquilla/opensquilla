@@ -211,16 +211,32 @@ def _shell_tokens(script: str) -> tuple[str, ...]:
 def _classify_shell_script(parts: tuple[str, ...]) -> OperationProfile:
     requested_paths: list[str] = []
     requested_write_paths: list[str] = []
+    requested_domains: list[str] = []
+    network_profile: OperationProfile | None = None
     for command_parts in _shell_commands(parts):
         profile = classify_command(command_parts)
         if profile.needs_network:
-            return profile
+            if network_profile is None:
+                network_profile = profile
+            for domain in profile.requested_domains:
+                if domain not in requested_domains:
+                    requested_domains.append(domain)
         for path in profile.requested_paths:
             if path not in requested_paths:
                 requested_paths.append(path)
         for path in profile.requested_write_paths:
             if path not in requested_write_paths:
                 requested_write_paths.append(path)
+    if network_profile is not None:
+        return OperationProfile(
+            network_profile.name,
+            needs_network=True,
+            package_manager=network_profile.package_manager,
+            requested_domains=tuple(requested_domains),
+            requested_paths=tuple(requested_paths),
+            requested_write_paths=tuple(requested_write_paths),
+            high_impact=network_profile.high_impact,
+        )
     if requested_paths or requested_write_paths:
         return OperationProfile(
             "path_transfer" if requested_write_paths else "workspace_read",

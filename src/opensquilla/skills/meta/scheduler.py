@@ -546,6 +546,15 @@ async def run_dag(
                     ),
                 ),
             )
+            await event_queue.put((
+                step.id,
+                MetaStepStateEvent(
+                    run_id=_run_id,
+                    step_id=step.id,
+                    state="failed",
+                    error=str(exc),
+                ),
+            ))
             if has_substitute:
                 # Soft failure — defer to the substitute. The main loop
                 # will dispatch ``step.on_failure`` and alias its output
@@ -669,6 +678,15 @@ async def run_dag(
                     and item.substitute_step_id not in running
                 ):
                     unstarted.add(item.substitute_step_id)
+                await event_queue.put((
+                    item.substitute_step_id,
+                    MetaStepStateEvent(
+                        run_id=_run_id,
+                        step_id=item.substitute_step_id,
+                        state="substituted",
+                        substitute_for=item.failed_step_id,
+                    ),
+                ))
                 _spawn_ready()
                 continue
             if isinstance(item, MetaPaused):

@@ -172,6 +172,20 @@ async def test_url_shaped_inprocess_network_action_sets_context_proxy_without_en
     monkeypatch.setenv("NO_PROXY", "*")
     monkeypatch.delenv("no_proxy", raising=False)
     monkeypatch.setenv("OPENSQUILLA_TRUST_ENV", "0")
+    expected_env = {
+        key: os.environ.get(key)
+        for key in (
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+            "NO_PROXY",
+            "no_proxy",
+            "OPENSQUILLA_TRUST_ENV",
+        )
+    }
 
     @sandboxed(
         "network.http",
@@ -196,15 +210,11 @@ async def test_url_shaped_inprocess_network_action_sets_context_proxy_without_en
     }
     assert seen["trust_env"] is False
     assert events == ["proxy.init", "proxy.start", "proxy.stop"]
-    assert os.environ["HTTP_PROXY"] == "http://user.invalid:1"
-    assert "HTTPS_PROXY" not in os.environ
-    assert os.environ["http_proxy"] == "http://user-lower.invalid:1"
-    assert "https_proxy" not in os.environ
-    assert os.environ["ALL_PROXY"] == "http://all.invalid:1"
-    assert "all_proxy" not in os.environ
-    assert os.environ["NO_PROXY"] == "*"
-    assert "no_proxy" not in os.environ
-    assert os.environ["OPENSQUILLA_TRUST_ENV"] == "0"
+    for key, expected in expected_env.items():
+        if expected is None:
+            assert key not in os.environ
+        else:
+            assert os.environ[key] == expected
     assert integration_mod.current_managed_network_proxy_url() is None
 
 

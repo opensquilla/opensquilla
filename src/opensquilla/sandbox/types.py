@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Literal
 
 
@@ -83,6 +83,15 @@ class NetworkProxySpec:
 
 
 MountMode = Literal["ro", "rw"]
+SANDBOX_WORKSPACE_PATH = PurePosixPath("/workspace")
+
+
+def sandbox_path_text(path: str | PurePath) -> str:
+    """Return the sandbox-side path as POSIX text regardless of host OS."""
+
+    if isinstance(path, PurePath):
+        return path.as_posix()
+    return str(path).replace("\\", "/")
 
 
 @dataclass(frozen=True)
@@ -96,7 +105,7 @@ class MountSpec:
     """
 
     host_path: Path
-    sandbox_path: Path
+    sandbox_path: PurePath
     mode: MountMode = "ro"
     required: bool = True
 
@@ -157,7 +166,11 @@ class SandboxPolicy:
             "network": self.network.value,
             "network_proxy": network_proxy,
             "mounts": [
-                {"host": str(m.host_path), "sandbox": str(m.sandbox_path), "mode": m.mode}
+                {
+                    "host": str(m.host_path),
+                    "sandbox": sandbox_path_text(m.sandbox_path),
+                    "mode": m.mode,
+                }
                 for m in self.mounts
             ],
             "workspace_rw": self.workspace_rw,
@@ -335,10 +348,12 @@ __all__ = [
     "NetworkMode",
     "NetworkProxySpec",
     "ResourceLimits",
+    "SANDBOX_WORKSPACE_PATH",
     "SandboxBackendError",
     "SandboxPolicy",
     "SandboxRequest",
     "SandboxResult",
     "SecurityLevel",
     "SuggestedNextStep",
+    "sandbox_path_text",
 ]

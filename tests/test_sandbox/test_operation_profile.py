@@ -170,6 +170,12 @@ def test_shell_wrapper_preserves_workspace_read_path_arguments() -> None:
     assert profile.requested_paths == ("/tmp/outside",)
 
 
+def test_shell_wrapper_preserves_windows_read_path_arguments() -> None:
+    profile = classify_command(("sh", "-lc", r"ls C:\workspace\outside"))
+    assert profile.name == "workspace_read"
+    assert profile.requested_paths == (r"C:\workspace\outside",)
+
+
 def test_shell_wrapper_preserves_copy_source_and_destination_paths() -> None:
     profile = classify_command(
         ("sh", "-lc", "cp /workspace-src/opensquilla/LICENSE /workspace/license.txt")
@@ -178,6 +184,22 @@ def test_shell_wrapper_preserves_copy_source_and_destination_paths() -> None:
     assert profile.name == "path_transfer"
     assert profile.requested_paths == ("/workspace-src/opensquilla/LICENSE",)
     assert profile.requested_write_paths == ("/workspace/license.txt",)
+
+
+def test_shell_wrapper_preserves_windows_copy_paths() -> None:
+    profile = classify_command(
+        (
+            "sh",
+            "-lc",
+            r"cp C:\workspace\outside\notes.txt C:\workspace\target\notes.txt",
+        )
+    )
+
+    assert profile.name == "path_transfer"
+    assert profile.requested_paths == (r"C:\workspace\outside\notes.txt",)
+    assert profile.requested_write_paths == (
+        r"C:\workspace\target\notes.txt",
+    )
 
 
 def test_shell_wrapper_preserves_move_write_paths() -> None:

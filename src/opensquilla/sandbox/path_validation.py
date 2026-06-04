@@ -5,13 +5,14 @@ from __future__ import annotations
 import os
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Any, Literal
 
 from opensquilla.sandbox.sensitive_paths import sensitive_path_marker
 
 MountAccess = Literal["ro", "rw"]
 MountStatus = Literal["allowed", "request", "blocked"]
+DecisionPath = Path | PurePosixPath
 
 
 @dataclass(frozen=True)
@@ -55,7 +56,19 @@ def normalize_path(path: str | os.PathLike[str]) -> Path:
     return Path(path).expanduser().resolve(strict=False)
 
 
-def is_relative_to_path(candidate: Path, root: Path) -> bool:
+def _looks_like_posix_rooted_text(path: str) -> bool:
+    return os.name == "nt" and path.startswith("/") and not path.startswith("//")
+
+
+def _normalize_decision_path(path: str | os.PathLike[str]) -> DecisionPath:
+    if isinstance(path, str) and _looks_like_posix_rooted_text(path):
+        return PurePosixPath(path)
+    if isinstance(path, PurePosixPath) and not isinstance(path, Path):
+        return path
+    return normalize_path(path)
+
+
+def is_relative_to_path(candidate: PurePath, root: PurePath) -> bool:
     try:
         candidate.relative_to(root)
         return True
@@ -73,9 +86,24 @@ def decide_path_access(
     """Return whether *path* is visible in the active sandbox mount view."""
 
     access: MountAccess = "rw" if write else "ro"
-    normalized = normalize_path(path)
+    normalized = _normalize_decision_path(path)
     normalized_text = str(normalized)
-    workspace_path = normalize_path(workspace) if workspace is not None else None
+    workspace_path = _normalize_decision_path(workspace) if workspace is not None else None
+
+    if workspace_path is not None and is_relative_to_path(normalized, workspace_path):
+        marker = sensitive_path_marker(normalized_text, workspace=str(workspace_path))
+        if marker is not None:
+            return MountDecision(
+                status="blocked",
+                normalized_path=normalized_text,
+                access=access,
+                reason="sensitive_path",
+            )
+        return MountDecision(
+            status="allowed",
+            normalized_path=normalized_text,
+            access=access,
+        )
 
     if _is_blocked_path(normalized, workspace_path):
         return MountDecision(
@@ -83,13 +111,6 @@ def decide_path_access(
             normalized_path=normalized_text,
             access=access,
             reason="sensitive_path",
-        )
-
-    if workspace_path is not None and is_relative_to_path(normalized, workspace_path):
-        return MountDecision(
-            status="allowed",
-            normalized_path=normalized_text,
-            access=access,
         )
 
     matching_mounts = [
@@ -123,7 +144,7 @@ def decide_path_access(
     )
 
 
-def _iter_mount_roots(mounts: Iterable[Any]) -> Iterable[tuple[Path, MountAccess]]:
+def _iter_mount_roots(mounts: Iterable[Any]) -> Iterable[tuple[DecisionPath, MountAccess]]:
     for item in mounts:
         raw_path: Any
         raw_access: Any
@@ -136,16 +157,19 @@ def _iter_mount_roots(mounts: Iterable[Any]) -> Iterable[tuple[Path, MountAccess
         if not isinstance(raw_path, (str, os.PathLike)):
             continue
         try:
-            root = normalize_path(raw_path)
+            root = _normalize_decision_path(raw_path)
         except (OSError, RuntimeError):
             continue
         yield root, normalize_mount_access(raw_access)
 
 
-def _is_blocked_path(path: Path, workspace: Path | None) -> bool:
+def _is_blocked_path(path: PurePath, workspace: PurePath | None) -> bool:
     if _is_filesystem_root(path):
         return True
-    marker = sensitive_path_marker(str(path), workspace=workspace)
+    marker = sensitive_path_marker(
+        str(path),
+        workspace=str(workspace) if workspace is not None else None,
+    )
     if marker is not None:
         return True
     normalized = str(path).replace("\\", "/")
@@ -155,9 +179,11 @@ def _is_blocked_path(path: Path, workspace: Path | None) -> bool:
     return _is_windows_sensitive_path(str(path))
 
 
-def _is_filesystem_root(path: Path) -> bool:
+def _is_filesystem_root(path: PurePath) -> bool:
     try:
-        return path == Path(path.anchor)
+        if not path.anchor:
+            return False
+        return path == type(path)(path.anchor)
     except (OSError, RuntimeError, ValueError):
         return False
 

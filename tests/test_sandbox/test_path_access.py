@@ -100,6 +100,26 @@ def test_workspace_child_is_allowed(tmp_path: Path) -> None:
     assert decision.access == "ro"
 
 
+def test_default_container_workspace_child_is_allowed_before_root_block() -> None:
+    workspace = "/root/.opensquilla/workspace"
+    target = "/root/.opensquilla/workspace/project/src/app.py"
+
+    decision = decide_path_access(target, workspace=workspace)
+
+    assert decision.status == "allowed"
+    assert decision.access == "ro"
+
+
+def test_sensitive_file_inside_default_container_workspace_stays_blocked() -> None:
+    workspace = "/root/.opensquilla/workspace"
+    target = "/root/.opensquilla/workspace/project/.env.local"
+
+    decision = decide_path_access(target, workspace=workspace)
+
+    assert decision.status == "blocked"
+    assert decision.reason == "sensitive_path"
+
+
 def test_write_request_asks_for_rw_mount(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     sibling = tmp_path / "sibling" / "notes.txt"

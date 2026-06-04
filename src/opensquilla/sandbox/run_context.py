@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Any
 
 from opensquilla.sandbox.domain_validation import validate_domain_pattern
@@ -148,18 +149,36 @@ def normalize_scope(scope: Any, default: str = "chat") -> str:
 
 def _is_filesystem_root(path: str) -> bool:
     try:
-        normalized = Path(path)
-        return normalized == Path(normalized.anchor)
+        normalized = _workspace_path_view(path)
+        if not normalized.anchor:
+            return False
+        return normalized == type(normalized)(normalized.anchor)
     except (OSError, RuntimeError, ValueError):
         return False
 
 
 def _is_relative_to_path(candidate: str, root: str) -> bool:
     try:
-        Path(candidate).relative_to(Path(root))
+        _workspace_path_view(candidate).relative_to(_workspace_path_view(root))
         return True
     except (OSError, RuntimeError, ValueError):
         return False
+
+
+def _looks_like_posix_rooted_text(path: str) -> bool:
+    return os.name == "nt" and path.startswith("/") and not path.startswith("//")
+
+
+def _workspace_path_view(path: str) -> PurePath:
+    if _looks_like_posix_rooted_text(path):
+        return PurePosixPath(path)
+    return Path(path)
+
+
+def _normalize_workspace_candidate(workspace: str) -> str:
+    if _looks_like_posix_rooted_text(workspace):
+        return PurePosixPath(workspace).as_posix()
+    return str(normalize_path(workspace))
 
 
 def _has_sensitive_workspace_parts(parts: tuple[str, ...]) -> bool:
@@ -175,7 +194,7 @@ def _has_sensitive_workspace_parts(parts: tuple[str, ...]) -> bool:
 
 def _has_sensitive_workspace_components(path: str) -> bool:
     try:
-        path_value = Path(path)
+        path_value = _workspace_path_view(path)
         parts = tuple(
             part.casefold()
             for part in path_value.parts
@@ -192,7 +211,10 @@ def _is_sensitive_default_workspace_target(path: str, workspace: str) -> bool:
         return True
     try:
         relative_parts = tuple(
-            part.casefold() for part in Path(path).relative_to(Path(workspace)).parts
+            part.casefold()
+            for part in _workspace_path_view(path)
+            .relative_to(_workspace_path_view(workspace))
+            .parts
         )
     except (OSError, RuntimeError, ValueError):
         return True
@@ -204,14 +226,14 @@ def normalize_workspace_path(value: Any) -> str:
     if workspace is None:
         raise ValueError("empty_workspace_path")
     try:
-        normalized_workspace = str(normalize_path(workspace))
+        normalized_workspace = _normalize_workspace_candidate(workspace)
     except (OSError, RuntimeError, ValueError):
         raise ValueError("invalid_workspace_path")
     if _is_filesystem_root(normalized_workspace):
         raise ValueError("sensitive_path")
     if _has_sensitive_workspace_components(normalized_workspace):
         raise ValueError("sensitive_path")
-    default_root_workspace = str(normalize_path(DEFAULT_ROOT_WORKSPACE))
+    default_root_workspace = _normalize_workspace_candidate(DEFAULT_ROOT_WORKSPACE)
     if _is_relative_to_path(normalized_workspace, default_root_workspace):
         if _is_sensitive_default_workspace_target(
             normalized_workspace,

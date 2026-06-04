@@ -26,6 +26,10 @@ _MOVE_PATH_COMMANDS = frozenset({"mv", "move", "ren", "rename"})
 _ASSIGNMENT_RE = re.compile(r"[a-z_][a-z0-9_]*=.*")
 _TRAILING_URL_PUNCTUATION = ".,;:!?)]}\"'`>"
 _WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"^[a-z]:[\\/]", re.IGNORECASE)
+_WINDOWS_ABSOLUTE_PATH_IN_SCRIPT_RE = re.compile(
+    r"(?<![a-z0-9_])[a-z]:[\\/]",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -187,7 +191,11 @@ def _shell_script_is_destructive(lowered: tuple[str, ...]) -> bool:
 
 def _shell_tokens(script: str) -> tuple[str, ...]:
     try:
-        lexer = shlex.shlex(script, posix=True, punctuation_chars=";&|")
+        lexer = shlex.shlex(
+            script,
+            posix=_WINDOWS_ABSOLUTE_PATH_IN_SCRIPT_RE.search(script) is None,
+            punctuation_chars=";&|",
+        )
         lexer.whitespace_split = True
         return tuple(lexer)
     except ValueError:

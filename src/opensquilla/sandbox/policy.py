@@ -19,6 +19,7 @@ from pathlib import Path
 
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.types import (
+    SANDBOX_WORKSPACE_PATH,
     MountSpec,
     NetworkMode,
     ResourceLimits,
@@ -179,7 +180,7 @@ def _collect_mounts(
     mounts.append(
         MountSpec(
             host_path=workspace,
-            sandbox_path=Path("/workspace"),
+            sandbox_path=SANDBOX_WORKSPACE_PATH,
             mode="rw" if workspace_rw else "ro",
             required=True,
         )

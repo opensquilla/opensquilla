@@ -22,7 +22,7 @@ import tempfile
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, cast
 
 from opensquilla.sandbox.backend.base import Backend
@@ -64,7 +64,7 @@ def _sandbox_exec_binary(binary: str | None = None) -> str | None:
     return shutil.which(_SANDBOX_EXEC_NAME)
 
 
-def _validate_mount_path(path: Path, *, kind: str) -> None:
+def _validate_mount_path(path: PurePath, *, kind: str) -> None:
     if not path.is_absolute():
         raise SandboxBackendError(f"{kind} path must be absolute: {path!r}")
     if any(part == ".." for part in path.parts):

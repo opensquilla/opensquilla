@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 
 import pytest
@@ -71,6 +71,33 @@ def _request(policy: SandboxPolicy, cwd: Path) -> SandboxRequest:
         policy=policy,
         env={"PATH": "/bin"},
     )
+
+
+def test_bubblewrap_treats_sandbox_paths_as_posix_on_windows(
+    tmp_path: Path,
+) -> None:
+    policy = SandboxPolicy(
+        level=SecurityLevel.STANDARD,
+        network=NetworkMode.NONE,
+        mounts=(
+            MountSpec(
+                host_path=tmp_path,
+                sandbox_path=PureWindowsPath("/workspace"),
+                mode="rw",
+                required=True,
+            ),
+        ),
+        workspace_rw=True,
+        tmp_writable=True,
+        limits=ResourceLimits(wall_timeout_s=0.1),
+        env_allowlist=("PATH",),
+        require_approval=False,
+    )
+
+    argv = build_bwrap_argv(_request(policy, tmp_path), binary="bwrap")
+
+    assert "/workspace" in argv
+    assert "\\workspace" not in argv
 
 
 def test_bubblewrap_proxy_allowlist_without_proxy_fails_closed(
@@ -232,6 +259,10 @@ async def test_bubblewrap_run_starts_and_stops_proxy_bridge(
     assert any(str(arg).endswith("/inner_bridge.py") for arg in argv)
 
 
+@pytest.mark.skipif(
+    sys.platform.startswith("win"),
+    reason="asyncio Unix domain sockets are unavailable on Windows",
+)
 @pytest.mark.asyncio
 async def test_linux_proxy_bridge_host_writes_and_removes_inner_script(
     tmp_path: Path,

@@ -39,7 +39,7 @@ import signal
 import sys
 import tempfile
 import time
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Any, cast
 
 from opensquilla.sandbox.backend.base import Backend
@@ -50,12 +50,14 @@ from opensquilla.sandbox.backend.linux_proxy_bridge import (
     LinuxProxyBridgeHost,
 )
 from opensquilla.sandbox.types import (
+    SANDBOX_WORKSPACE_PATH,
     MountSpec,
     NetworkMode,
     SandboxBackendError,
     SandboxPolicy,
     SandboxRequest,
     SandboxResult,
+    sandbox_path_text,
 )
 
 log = logging.getLogger(__name__)
@@ -96,11 +98,21 @@ def _validate_mount_path(path: Path, *, kind: str) -> None:
         raise SandboxBackendError(f"{kind} mount path contains '..': {path!r}")
 
 
+def _validate_sandbox_path(path: str | PurePath, *, kind: str) -> str:
+    text = sandbox_path_text(path)
+    if not text.startswith("/"):
+        raise SandboxBackendError(f"{kind} mount path must be absolute: {path!r}")
+    parts = PurePosixPath(text).parts
+    if any(part == ".." for part in parts):
+        raise SandboxBackendError(f"{kind} mount path contains '..': {path!r}")
+    return PurePosixPath(text).as_posix()
+
+
 def _mount_args(spec: MountSpec) -> list[str]:
     _validate_mount_path(spec.host_path, kind="host")
-    _validate_mount_path(spec.sandbox_path, kind="sandbox")
+    sandbox_path = _validate_sandbox_path(spec.sandbox_path, kind="sandbox")
     flag = "--bind" if spec.mode == "rw" else "--ro-bind"
-    return [flag, str(spec.host_path), str(spec.sandbox_path)]
+    return [flag, str(spec.host_path), sandbox_path]
 
 
 def _env_args(policy: SandboxPolicy, override_env: dict[str, str]) -> list[str]:
@@ -127,22 +139,29 @@ def _env_args(policy: SandboxPolicy, override_env: dict[str, str]) -> list[str]:
             )
             continue
         resolved[key] = value
-    workspace_mount = next((m for m in policy.mounts if m.sandbox_path == Path("/workspace")), None)
+    workspace_mount = next(
+        (
+            m
+            for m in policy.mounts
+            if sandbox_path_text(m.sandbox_path) == SANDBOX_WORKSPACE_PATH.as_posix()
+        ),
+        None,
+    )
     if workspace_mount is not None and "HOME" in allowlist:
-        resolved["HOME"] = str(workspace_mount.sandbox_path)
+        resolved["HOME"] = sandbox_path_text(workspace_mount.sandbox_path)
     args: list[str] = []
     for key, value in resolved.items():
         args.extend(["--setenv", key, value])
     return args
 
 
-def _dir_chain_args(path: Path) -> list[str]:
-    _validate_mount_path(path, kind="sandbox")
+def _dir_chain_args(path: str | PurePath) -> list[str]:
+    sandbox_path = _validate_sandbox_path(path, kind="sandbox")
     args: list[str] = []
-    current = Path("/")
-    for part in path.parts[1:]:
+    current = PurePosixPath("/")
+    for part in PurePosixPath(sandbox_path).parts[1:]:
         current /= part
-        args.extend(["--dir", str(current)])
+        args.extend(["--dir", current.as_posix()])
     return args
 
 
@@ -258,7 +277,7 @@ def build_bwrap_argv(
         if not spec.host_path.exists():
             log.debug("sandbox.mount_skipped: %s (not present)", spec.host_path)
             continue
-        argv += ["--dir", str(spec.sandbox_path)]
+        argv += ["--dir", _validate_sandbox_path(spec.sandbox_path, kind="sandbox")]
         argv += _mount_args(spec)
 
     argv += _env_args(policy, request.env)
@@ -278,15 +297,22 @@ def build_bwrap_argv(
 
     # Working directory inside the sandbox — default to the workspace mount
     # point when one exists, otherwise the host cwd mapped through.
-    workspace_mount = next((m for m in policy.mounts if m.sandbox_path == Path("/workspace")), None)
+    workspace_mount = next(
+        (
+            m
+            for m in policy.mounts
+            if sandbox_path_text(m.sandbox_path) == SANDBOX_WORKSPACE_PATH.as_posix()
+        ),
+        None,
+    )
     if workspace_mount is not None:
         try:
             rel = request.cwd.relative_to(workspace_mount.host_path)
         except ValueError:
             argv += ["--chdir", str(request.cwd)]
         else:
-            sandbox_cwd = workspace_mount.sandbox_path / rel
-            argv += ["--chdir", str(sandbox_cwd)]
+            sandbox_cwd = PurePosixPath(sandbox_path_text(workspace_mount.sandbox_path))
+            argv += ["--chdir", sandbox_cwd.joinpath(*rel.parts).as_posix()]
     else:
         argv += ["--chdir", str(request.cwd)]
 

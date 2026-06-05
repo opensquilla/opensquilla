@@ -401,46 +401,107 @@ Run several OpenSquilla agents on the same host without sharing locks,
 sockets, or state files. Each profile gets its own `config.toml`,
 `state/`, `logs/`, and `.env` under a common profiles root.
 
-**Set the profiles root once (Windows PowerShell):**
+#### Environment variables (Windows)
+
+Two variables drive profile mode. Set both; `PROFILE` alone without
+`PROFILES_DIR` is a no-op.
+
+| Variable | Required? | Default | What it does |
+|---|---|---|---|
+| `OPENSQUILLA_PROFILES_DIR` | yes (to enable) | `$HOME/.opensquilla/profiles` | Parent directory that contains every profile home. Setting this is the one switch that turns multi-instance mode on. |
+| `OPENSQUILLA_PROFILE` | no | `default` | Name of the active profile. Must match `^[a-z0-9][a-z0-9_-]{0,63}$`. |
+| `OPENSQUILLA_STATE_DIR` | no | _unset_ | **Full override** that bypasses profile mode entirely. Leave unset when running multiple profiles — it forces a single hard-coded home. |
+
+**Permanent (per-user, survives reboot)**:
 
 ```powershell
+# Required: enable multi-instance mode
 [System.Environment]::SetEnvironmentVariable(
     "OPENSQUILLA_PROFILES_DIR", "D:\ai\opensquilla\profiles", "User")
+
+# Optional: pin this shell to a specific profile
+[System.Environment]::SetEnvironmentVariable(
+    "OPENSQUILLA_PROFILE", "coder", "User")
 ```
 
-On macOS / Linux, drop the same line into your shell rc:
+Reopen PowerShell after `SetEnvironmentVariable` so the new value is
+inherited by the process.
 
-```sh
-export OPENSQUILLA_PROFILES_DIR="$HOME/opensquilla/profiles"
+**Temporary (current session only)**:
+
+```powershell
+$env:OPENSQUILLA_PROFILES_DIR = "D:\ai\opensquilla\profiles"
+$env:OPENSQUILLA_PROFILE      = "coder"     # omit to use "default"
+opensquilla gateway start --port 18792
 ```
 
-**Use it:**
+This is the right form for per-shell or per-task overrides, e.g. one
+PowerShell window per profile with a different port.
 
-```sh
-# each profile is a sibling directory under the profiles root
-opensquilla --profile coder   init
-opensquilla --profile coder   gateway start --port 18792
+**Verify**:
 
-opensquilla --profile agent-1 init
-opensquilla --profile agent-1 gateway start --port 18793
-
-# `default` is the implicit name when --profile is omitted
-opensquilla gateway start --port 18791
+```powershell
+echo $env:OPENSQUILLA_PROFILES_DIR
+echo $env:OPENSQUILLA_PROFILE
+# Expected:
+#   D:\ai\opensquilla\profiles
+#   coder    (or empty if you only set PROFILES_DIR)
 ```
 
-Resolution precedence (see `src/opensquilla/paths.py`):
+**Resolution precedence** (see `src/opensquilla/paths.py`):
 
-1. `OPENSQUILLA_STATE_DIR` — full override; bypasses profile mode.
+1. `OPENSQUILLA_STATE_DIR` — full override; bypasses profile mode. Do
+   **not** set this when running multiple profiles.
 2. `OPENSQUILLA_PROFILES_DIR` + `OPENSQUILLA_PROFILE` — multi-instance.
-3. `$HOME/.opensquilla` — single-instance default (unchanged on disk).
+   Resolves to `<PROFILES_DIR>/<PROFILE>/`, e.g.
+   `D:\ai\opensquilla\profiles\coder\`.
+3. `$HOME/.opensquilla` — single-instance default (unchanged on disk
+   for existing deployments).
 
-Profile names must match `^[a-z0-9][a-z0-9_-]{0,63}$` to prevent
-path-traversal escapes. The CLI rejects bad names up front.
+#### Common patterns
 
-**Auto-start every profile at user logon (Windows):**
+| Scenario | What to set |
+|---|---|
+| Run a single `coder` instance | `OPENSQUILLA_PROFILES_DIR` permanent, `$env:OPENSQUILLA_PROFILE = "coder"` per shell |
+| Run the `default` instance | `OPENSQUILLA_PROFILES_DIR` permanent, **omit** `OPENSQUILLA_PROFILE` (default is `default`) |
+| Run `coder` + `agent-1` side by side | `OPENSQUILLA_PROFILES_DIR` permanent; open two PowerShells, each with its own `$env:OPENSQUILLA_PROFILE` and a different `--port` |
+| Disable multi-instance for one command | `unset OPENSQUILLA_PROFILES_DIR` in that shell (or use `OPENSQUILLA_STATE_DIR=...` to pin a legacy home) |
+| Bootstrap a new profile | `opensquilla --profile <name> init` — does not require any env var; the CLI's `--profile` flag wins over the env var |
 
-The `scripts/supervisor/` PowerShell scripts wrap the CLI for multi-profile
-lifecycle without touching core OpenSquilla code:
+#### macOS / Linux
+
+The same two variables, set via the shell rc of choice:
+
+```sh
+# ~/.zshrc or ~/.bashrc
+export OPENSQUILLA_PROFILES_DIR="$HOME/opensquilla/profiles"
+# export OPENSQUILLA_PROFILE="coder"     # optional, defaults to "default"
+```
+
+#### Cross-platform path layout
+
+Whichever OS you set `OPENSQUILLA_PROFILES_DIR` for, each profile lives as
+a direct child of that root. The CLI uses `pathlib` for the join, so
+backslashes, forward slashes, and tildes all work transparently.
+
+```
+D:\ai\opensquilla\profiles\         ← OPENSQUILLA_PROFILES_DIR (Windows)
+├── default\    ← OPENSQUILLA_PROFILE=default   (or flag omitted)
+├── coder\      ← OPENSQUILLA_PROFILE=coder
+└── agent-1\    ← OPENSQUILLA_PROFILE=agent-1
+```
+
+```
+/home/you/opensquilla/profiles/     ← OPENSQUILLA_PROFILES_DIR (Linux/macOS)
+├── default/
+├── coder/
+└── agent-1/
+```
+
+#### Auto-start every profile at user logon (Windows)
+
+The `scripts/supervisor/` PowerShell scripts wrap the CLI for
+multi-profile lifecycle without touching core OpenSquilla code:
 
 ```powershell
 # start every profile, in series, with stable per-profile port assignment
@@ -465,6 +526,13 @@ they call `opensquilla --profile <name> gateway start/stop/status` for
 each discovered subdirectory of the profiles root, so they pick up
 configuration, health checks, and PID locking for free from the existing
 CLI.
+
+#### Profile name validation
+
+Profile names must match `^[a-z0-9][a-z0-9_-]{0,63}$` to prevent
+path-traversal escapes. The CLI rejects bad names up front with a clear
+error. Valid examples: `default`, `coder`, `agent-1`, `dev_env`. Invalid
+examples: `../escape`, `With Spaces`, `中文`, `a`×65.
 
 ### Run
 

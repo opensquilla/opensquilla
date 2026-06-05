@@ -100,6 +100,7 @@ from opensquilla.session.compaction_lifecycle import (
     new_compaction_id,
 )
 from opensquilla.session.terminal_reply import build_terminal_reply
+from opensquilla.skills.meta.semantic_guards import semantic_meta_skill_allowed
 from opensquilla.tool_boundary import AgentToolHandler as ToolHandler
 from opensquilla.tools.registry import ToolRegistry
 from opensquilla.tools.types import ToolContext, current_tool_context
@@ -5176,6 +5177,30 @@ class Agent:
                     tool_use_id=tc.tool_use_id,
                     tool_name="meta_invoke",
                     content=f"meta_invoke: {name!r} is not available for model invocation",
+                    is_error=True,
+                    terminates_turn=False,
+                )
+                return
+
+            matched_name = self._matched_meta_skill_name_from_metadata()
+            current_user_message = (
+                getattr(self, "_current_turn_message", "")
+                or metadata.get("user_message", "")
+                or ""
+            )
+            if (
+                isinstance(current_user_message, str)
+                and current_user_message
+                and matched_name != name
+                and not semantic_meta_skill_allowed(name, current_user_message)
+            ):
+                yield ToolResult(
+                    tool_use_id=tc.tool_use_id,
+                    tool_name="meta_invoke",
+                    content=(
+                        f"meta_invoke: {name!r} does not match the current "
+                        "user request closely enough for model invocation"
+                    ),
                     is_error=True,
                     terminates_turn=False,
                 )

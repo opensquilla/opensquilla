@@ -8,7 +8,7 @@ final_text_mode: "step:final_response"
 triggers:
   - "新增 meta 技能"
   - "组合现有 skill 成 meta-skill"
-  - "create a meta-skill that orchestrates"
+  - "create a meta-skill"
   - "new meta-skill"
   - "orchestrates existing skills"
   - "compose existing skills"

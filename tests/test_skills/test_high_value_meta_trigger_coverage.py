@@ -68,6 +68,11 @@ def test_high_value_meta_skills_match_natural_user_prompts(tmp_path: Path) -> No
                 expected_meta_skill="meta-skill-creator",
             ),
             TriggerCase(
+                name="creator_plain_meta_skill_request",
+                user_message="Create a meta-skill for my weekly research pipeline.",
+                expected_meta_skill="meta-skill-creator",
+            ),
+            TriggerCase(
                 name="migration_cjs_to_esm_natural",
                 user_message=(
                     "We're planning to migrate a small frontend package from "
@@ -127,6 +132,11 @@ def test_stable_bundled_meta_skills_do_not_match_neighboring_prompts(
                 expected_meta_skill=None,
             ),
             TriggerCase(
+                name="kid_project_science_fair_explanation",
+                user_message="Explain the science fair format.",
+                expected_meta_skill=None,
+            ),
+            TriggerCase(
                 name="paper_long_form_non_research",
                 user_message=(
                     "Write a long-form paper airplane guide for a craft blog."
@@ -137,7 +147,7 @@ def test_stable_bundled_meta_skills_do_not_match_neighboring_prompts(
                 name="creator_historical_orchestrates_search",
                 user_message=(
                     "This old workflow orchestrates search and summarize; "
-                    "analyze it, but do not create a meta-skill."
+                    "analyze its failure modes."
                 ),
                 expected_meta_skill=None,
             ),

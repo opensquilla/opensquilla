@@ -7,7 +7,7 @@ always: false
 final_text_mode: "step:project_pack_audit"
 triggers:
   - "plan my child's school project"
-  - "science fair"
+  - "plan my child's science fair project"
   - "kid science"
   - "孩子做项目"
   - "孩子做一个安全手工项目"

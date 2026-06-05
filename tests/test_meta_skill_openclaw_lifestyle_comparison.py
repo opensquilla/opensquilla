@@ -636,6 +636,71 @@ def test_english_lifestyle_prompts_trigger_target_meta_skills(tmp_path: Path) ->
         assert case.prompt
 
 
+def test_chinese_contract_renewal_prompt_triggers_document_decision_meta_skill(
+    tmp_path: Path,
+) -> None:
+    from opensquilla.engine.steps.meta_resolution import _trigger_matches
+
+    prompt = """
+请帮我判断这份供应商续费材料：这个合同要不要签、拒绝还是谈判，并给我一份决策表。
+
+合同摘录：
+- 服务期：2026-07-01 到 2027-06-30
+- 价格：每月 $4,800，较上一年上涨 38%
+- 终止：需提前 90 天书面通知，否则自动续约一年
+- SLA：99.0%，但赔偿上限为当月费用的 5%
+- 数据导出：终止后 7 天内可导出，之后供应商可删除
+- 付款：年付预付，不可退款
+""".lower()
+    loader = SkillLoader(
+        bundled_dir=Path("src/opensquilla/skills/bundled"),
+        snapshot_path=tmp_path / "snapshot.json",
+    )
+    target = loader.get_by_name("meta-document-to-decision")
+
+    assert target is not None
+    assert any(
+        _trigger_matches(trigger, prompt)
+        for trigger in (target.triggers or [])
+    ), "Chinese service renewal contract decision prompt should trigger document decision"
+
+
+def test_chinese_contract_renewal_prompt_forces_meta_invoke(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from opensquilla.engine.steps.meta_resolution import meta_resolution
+
+    prompt = """
+请帮我判断这份供应商续费材料：这个合同要不要签、拒绝还是谈判，并给我一份决策表。
+
+合同摘录：
+- 服务期：2026-07-01 到 2027-06-30
+- 价格：每月 $4,800，较上一年上涨 38%
+- 终止：需提前 90 天书面通知，否则自动续约一年
+- SLA：99.0%，但赔偿上限为当月费用的 5%
+- 数据导出：终止后 7 天内可导出，之后供应商可删除
+- 付款：年付预付，不可退款
+"""
+    loader = SkillLoader(
+        bundled_dir=Path("src/opensquilla/skills/bundled"),
+        snapshot_path=tmp_path / "snapshot.json",
+    )
+    ctx = SimpleNamespace(
+        message=prompt,
+        semantic_message=prompt,
+        metadata={"skill_loader": loader},
+    )
+
+    out = asyncio.run(meta_resolution(ctx))  # type: ignore[arg-type]
+
+    match = out.metadata["meta_match"]
+    assert match.plan.name == "meta-document-to-decision"
+    assert out.metadata["meta_match_tool_choice"] == {
+        "type": "function",
+        "function": {"name": "meta_invoke"},
+    }
+
+
 def test_competitive_intel_outranks_daily_brief_for_competitor_followup_prompts(
     tmp_path: Path,
 ) -> None:

@@ -16,7 +16,7 @@ import sys
 import tempfile
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -99,6 +99,9 @@ _BACKGROUND_TERMINATE_TIMEOUT = 1.0
 _BACKGROUND_KILL_TIMEOUT = 1.0
 _EXEC_TERMINATE_TIMEOUT = 0.25
 _EXEC_KILL_TIMEOUT = 0.25
+_EXEC_STDIN_WRITE_CHUNK_BYTES = 64 * 1024
+_EXEC_STDIN_GUARD_CHUNK_CHARS = 64 * 1024
+_EXEC_STDIN_GUARD_OVERLAP_CHARS = 1024
 _COMMAND_AUDIT_MAX_CHARS = 4096
 _SANDBOX_NETWORK_HINT = (
     "Hint: sandboxed shell/code has no direct network. Use sandbox_network approval "
@@ -267,11 +270,26 @@ def _workdir_is_configured_workspace(workdir: str | None) -> bool:
         return False
 
 
+def _iter_stdin_guard_chunks(text: str) -> Iterator[str]:
+    if len(text) <= _EXEC_STDIN_GUARD_CHUNK_CHARS:
+        yield text
+        return
+    step = _EXEC_STDIN_GUARD_CHUNK_CHARS - _EXEC_STDIN_GUARD_OVERLAP_CHARS
+    start = 0
+    while start < len(text):
+        end = min(len(text), start + _EXEC_STDIN_GUARD_CHUNK_CHARS)
+        yield text[start:end]
+        if end >= len(text):
+            break
+        start += step
+
+
 def _sensitive_shell_block(
     tool_name: str,
     command: str,
     *,
     workdir: str | None = None,
+    stdin: str | None = None,
 ) -> str | None:
     if _context_elevated_mode() == "full":
         return None
@@ -305,6 +323,30 @@ def _sensitive_shell_block(
     marker = _sensitive_body_marker(checked_text)
     if marker is not None:
         return _sensitive_body_block(tool_name, marker)
+    if stdin is None:
+        return None
+
+    for stdin_chunk in _iter_stdin_guard_chunks(stdin):
+        marker = sensitive_path_in_text(stdin_chunk, workspace=workspace)
+        if marker is not None:
+            return json.dumps(
+                build_block_envelope(
+                    f"{checked_command}\n[stdin omitted]",
+                    marker,
+                    tool_name=tool_name,
+                ),
+                ensure_ascii=False,
+            )
+    for stdin_chunk in _iter_stdin_guard_chunks(stdin):
+        for token in stdin_chunk.split():
+            stripped = token.strip("'\"")
+            if stripped.startswith(("http://", "https://")):
+                marker = _sensitive_url_marker(stripped)
+                if marker is not None:
+                    return _sensitive_body_block(tool_name, marker)
+        marker = _sensitive_body_marker(stdin_chunk)
+        if marker is not None:
+            return _sensitive_body_block(tool_name, marker)
     return None
 
 
@@ -861,12 +903,13 @@ def _sandbox_write_path_access_envelope(
     workdir: str | None,
     command: str,
     *,
+    stdin: str | None = None,
     approval_id: str | None = None,
 ) -> dict[str, object] | None:
-    write_paths = _shell_write_access_targets(command, profile)
+    write_paths = _shell_write_access_targets(command, profile, stdin=stdin)
     if not write_paths or not _sandbox_path_access_enabled():
         return None
-    shell_file_targets = frozenset(_shell_write_targets(command))
+    shell_file_targets = frozenset(_shell_write_targets_from_inputs(command, stdin))
     for raw_path in write_paths:
         decision = decide_path_access(
             _resolve_shell_write_target(raw_path, workdir),
@@ -887,9 +930,17 @@ def _sandbox_write_path_access_envelope(
     return None
 
 
-def _shell_write_access_targets(command: str, profile: OperationProfile) -> tuple[str, ...]:
+def _shell_write_access_targets(
+    command: str,
+    profile: OperationProfile,
+    *,
+    stdin: str | None = None,
+) -> tuple[str, ...]:
     targets: list[str] = []
-    for target in (*_shell_write_targets(command), *getattr(profile, "requested_write_paths", ())):
+    for target in (
+        *_shell_write_targets_from_inputs(command, stdin),
+        *getattr(profile, "requested_write_paths", ()),
+    ):
         if target not in targets:
             targets.append(target)
     return tuple(targets)
@@ -932,8 +983,20 @@ def _shell_write_targets(command: str) -> list[str]:
     return targets
 
 
-def _shell_workdir_requires_write(command: str, profile: OperationProfile) -> bool:
-    for target in _shell_write_targets(command):
+def _shell_write_targets_from_inputs(command: str, stdin: str | None = None) -> list[str]:
+    targets = _shell_write_targets(command)
+    if stdin is not None:
+        for stdin_chunk in _iter_stdin_guard_chunks(stdin):
+            targets.extend(_shell_write_targets(stdin_chunk))
+    return targets
+
+
+def _shell_workdir_requires_write(
+    command: str,
+    profile: OperationProfile,
+    stdin: str | None = None,
+) -> bool:
+    for target in _shell_write_targets_from_inputs(command, stdin):
         if _shell_target_is_relative(target):
             return True
     for target in getattr(profile, "requested_write_paths", ()):
@@ -946,11 +1009,13 @@ def _workspace_lockdown_shell_block(
     tool_name: str,
     command: str,
     workdir: str | None,
+    *,
+    stdin: str | None = None,
 ) -> dict[str, object] | None:
     roots = _workspace_lockdown_roots()
     if not roots:
         return None
-    for target in _shell_write_targets(command):
+    for target in _shell_write_targets_from_inputs(command, stdin):
         resolved = _resolve_shell_write_target(target, workdir)
         if _path_inside_any_root(resolved, roots):
             continue
@@ -975,6 +1040,8 @@ def _workspace_write_deny_shell_block(
     tool_name: str,
     command: str,
     workdir: str | None,
+    *,
+    stdin: str | None = None,
 ) -> dict[str, object] | None:
     from opensquilla.tools.write_policy import (
         match_workspace_write_deny,
@@ -987,7 +1054,7 @@ def _workspace_write_deny_shell_block(
         if ctx is not None and ctx.workspace_dir
         else None
     )
-    for target in _shell_write_targets(command):
+    for target in _shell_write_targets_from_inputs(command, stdin):
         resolved = _resolve_shell_write_target(target, workdir)
         deny_match = match_workspace_write_deny(
             resolved,
@@ -1252,6 +1319,20 @@ async def _terminate_exec_process_tree(proc: Any) -> None:
         log.warning("exec_command_termination_timeout", pid=proc.pid)
 
 
+async def _write_exec_stdin(proc: Any, stdin_bytes: bytes | None) -> None:
+    if stdin_bytes is None or proc.stdin is None:
+        return
+    try:
+        for offset in range(0, len(stdin_bytes), _EXEC_STDIN_WRITE_CHUNK_BYTES):
+            proc.stdin.write(stdin_bytes[offset : offset + _EXEC_STDIN_WRITE_CHUNK_BYTES])
+            await proc.stdin.drain()
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+    finally:
+        if proc.stdin is not None and not proc.stdin.is_closing():
+            proc.stdin.close()
+
+
 async def _await_bg_output_task(output_task: asyncio.Task[None]) -> None:
     try:
         await asyncio.wait_for(output_task, timeout=_BACKGROUND_KILL_TIMEOUT)
@@ -1266,11 +1347,13 @@ async def _run_host_shell_command(
     *,
     cwd: str | None,
     env: dict[str, str],
-    timeout: float,
+    stdin_bytes: bytes | None,
+    effective_timeout: float,
 ) -> str:
     try:
         with tempfile.TemporaryFile() as output_file:
             subprocess_kwargs: dict[str, Any] = {
+                "stdin": asyncio.subprocess.PIPE if stdin_bytes is not None else None,
                 "stdout": output_file,
                 "stderr": asyncio.subprocess.STDOUT,
                 "cwd": cwd,
@@ -1283,10 +1366,25 @@ async def _run_host_shell_command(
                 if creationflags:
                     subprocess_kwargs["creationflags"] = creationflags
 
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + effective_timeout
+            timeout_result = f"[timeout after {effective_timeout}s]\ncommand: {command}"
+
             proc = await asyncio.create_subprocess_shell(command, **subprocess_kwargs)
-            if not await _wait_exec_process(proc, timeout):
+            remaining = deadline - loop.time()
+            if remaining <= 0:
                 await _terminate_exec_process_tree(proc)
-                return f"[timeout after {timeout}s]\ncommand: {command}"
+                return timeout_result
+            try:
+                await asyncio.wait_for(_write_exec_stdin(proc, stdin_bytes), timeout=remaining)
+            except TimeoutError:
+                await _terminate_exec_process_tree(proc)
+                return timeout_result
+
+            remaining = deadline - loop.time()
+            if remaining <= 0 or not await _wait_exec_process(proc, remaining):
+                await _terminate_exec_process_tree(proc)
+                return timeout_result
             if os.name == "posix":
                 _signal_exec_process_tree(proc, signal.SIGTERM)
 
@@ -1310,6 +1408,10 @@ async def _run_host_shell_command(
             "description": "Extra environment variable overrides.",
             "additionalProperties": {"type": "string"},
         },
+        "stdin": {
+            "type": "string",
+            "description": "Data to write to the command's standard input.",
+        },
         "approval_id": {
             "type": "string",
             "description": "Approval record to consume for warned commands.",
@@ -1325,6 +1427,7 @@ async def exec_command(
     workdir: str | None = None,
     timeout: float = _DEFAULT_EXEC_TIMEOUT,
     env: dict[str, str] | None = None,
+    stdin: str | None = None,
     approval_id: str | None = None,
 ) -> str:
     import os
@@ -1337,12 +1440,14 @@ async def exec_command(
     if not result.allowed:
         raise ToolError(result.reason)
 
-    sensitive_block = _sensitive_shell_block("exec_command", command, workdir=cwd)
+    sensitive_block = _sensitive_shell_block(
+        "exec_command", command, workdir=cwd, stdin=stdin
+    )
     if sensitive_block is not None:
         return sensitive_block
     path_access = _sandbox_workdir_access_envelope(
         cwd,
-        write=_shell_workdir_requires_write(command, profile),
+        write=_shell_workdir_requires_write(command, profile, stdin=stdin),
         approval_id=approval_id,
     )
     if path_access is not None:
@@ -1354,14 +1459,19 @@ async def exec_command(
         profile,
         cwd,
         command,
+        stdin=stdin,
         approval_id=approval_id,
     )
     if path_access is not None:
         return json.dumps(path_access, ensure_ascii=False)
-    lockdown_block = _workspace_lockdown_shell_block("exec_command", command, cwd)
+    lockdown_block = _workspace_lockdown_shell_block(
+        "exec_command", command, cwd, stdin=stdin
+    )
     if lockdown_block is not None:
         return json.dumps(lockdown_block, ensure_ascii=False)
-    deny_block = _workspace_write_deny_shell_block("exec_command", command, cwd)
+    deny_block = _workspace_write_deny_shell_block(
+        "exec_command", command, cwd, stdin=stdin
+    )
     if deny_block is not None:
         return json.dumps(deny_block, ensure_ascii=False)
 
@@ -1387,6 +1497,7 @@ async def exec_command(
     if env:
         merged_env.update(env)
     effective_timeout = _resolve_exec_timeout(timeout)
+    stdin_bytes = stdin.encode("utf-8") if stdin is not None else None
 
     host_execution = _host_execution_allowed()
 
@@ -1409,7 +1520,7 @@ async def exec_command(
             cwd=_sandbox_shell_backend_cwd(cwd, request),
             action_kind=request.action_kind,
             policy=request.policy,
-            stdin=None,
+            stdin=stdin_bytes,
             env=dict(merged_env),
             reason=getattr(request, "reason", ""),
         )
@@ -1427,7 +1538,7 @@ async def exec_command(
                 command,
                 backend_request,
                 sandbox_result.backend_notes,
-                write_default=_shell_workdir_requires_write(command, profile),
+                write_default=_shell_workdir_requires_write(command, profile, stdin=stdin),
             )
             if retry_request is not None:
                 try:
@@ -1448,7 +1559,8 @@ async def exec_command(
                         command,
                         cwd=cwd,
                         env=merged_env,
-                        timeout=effective_timeout,
+                        stdin_bytes=stdin_bytes,
+                        effective_timeout=effective_timeout,
                     )
                 finally:
                     _host_once_current_call.set(False)
@@ -1564,7 +1676,8 @@ async def exec_command(
         command,
         cwd=cwd,
         env=merged_env,
-        timeout=effective_timeout,
+        stdin_bytes=stdin_bytes,
+        effective_timeout=effective_timeout,
     )
 
 

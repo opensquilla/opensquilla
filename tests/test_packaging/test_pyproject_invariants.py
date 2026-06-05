@@ -117,3 +117,35 @@ def test_readme_points_at_user_facing_file(project_table: dict) -> None:
     assert project_table["readme"] == "README.md", (
         "readme should point at the canonical README.md after the 0.1.0 refactor"
     )
+
+
+def test_html_coder_reference_files_are_packaged() -> None:
+    """html-coder's SKILL.md links to local references that must survive wheels."""
+
+    data = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
+    force_include = data["tool"]["hatch"]["build"]["targets"]["wheel"][
+        "force-include"
+    ]
+    references_dir = (
+        PYPROJECT.parent
+        / "src"
+        / "opensquilla"
+        / "skills"
+        / "bundled"
+        / "html-coder"
+        / "references"
+    )
+    expected_sources = {
+        path.relative_to(PYPROJECT.parent).as_posix()
+        for path in references_dir.glob("*.md")
+    }
+
+    missing_sources = expected_sources - set(force_include)
+    assert not missing_sources, (
+        "html-coder reference files must be force-included in wheels: "
+        f"{sorted(missing_sources)}"
+    )
+    for source in expected_sources:
+        assert (
+            force_include[source] == source.removeprefix("src/")
+        ), f"{source} should be packaged at its import-time skill path"

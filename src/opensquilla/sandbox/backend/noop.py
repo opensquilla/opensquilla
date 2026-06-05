@@ -34,7 +34,12 @@ def _limits_from_policy(request: SandboxRequest) -> SandboxLimits:
 
 
 def _run_request_sync(request: SandboxRequest, limits: SandboxLimits):
-    return run_sandboxed(list(request.argv), limits, env=request.env)
+    return run_sandboxed(
+        list(request.argv),
+        limits,
+        stdin=request.stdin,
+        env=request.env,
+    )
 
 
 class NoopBackend(Backend):

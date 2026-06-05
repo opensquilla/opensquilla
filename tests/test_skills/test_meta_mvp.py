@@ -522,6 +522,31 @@ async def test_meta_resolution_ignores_triggers_inside_pasted_webchat_dump() -> 
 
 
 @pytest.mark.asyncio
+async def test_meta_resolution_invokes_explicit_named_meta_skill_request() -> None:
+    spec = _make_meta_spec(
+        name="AwesomeWebpageMetaSkill",
+        composition={"steps": [{"id": "a", "skill": "summarize"}]},
+        triggers=["AwesomeWebpageMetaSkill"],
+        priority=50,
+    )
+    loader = _FakeLoader([spec])
+    ctx = SimpleNamespace(
+        message="invoke AwesomeWebpageMetaSkill to create a webpage",
+        semantic_message="invoke AwesomeWebpageMetaSkill to create a webpage",
+        system_prompt=("base prompt", ""),
+        metadata={"skill_loader": loader},
+    )
+
+    out = await meta_resolution(ctx)  # type: ignore[arg-type]
+
+    assert out.metadata["meta_match"].plan.name == "AwesomeWebpageMetaSkill"
+    assert out.metadata["meta_match_tool_choice"] == {
+        "type": "function",
+        "function": {"name": "meta_invoke"},
+    }
+
+
+@pytest.mark.asyncio
 async def test_meta_resolution_still_matches_current_cjk_intent() -> None:
     spec = _make_meta_spec(
         name="meta-household-calendar-test",
@@ -1448,6 +1473,52 @@ async def test_orchestrator_skill_exec_rejects_cwd_outside_workspace(
     assert result.failed_step_id == "x"
     assert result.error and "cwd" in result.error
     assert result.error and "escapes allowed root" in result.error
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_skill_exec_creates_missing_workspace_dir(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / "cwd_skill"
+    skill_dir.mkdir()
+    script = skill_dir / "echo_cwd.py"
+    script.write_text(
+        "from pathlib import Path\n"
+        "print(Path.cwd())\n",
+        encoding="utf-8",
+    )
+
+    workspace = tmp_path / "missing" / "workspace"
+    assert not workspace.exists()
+
+    fake_spec = _make_skill_spec("cwd-skill", content="x")
+    fake_spec.base_dir = str(skill_dir)
+    fake_spec.entrypoint = {"command": "python {baseDir}/echo_cwd.py"}
+
+    plan_spec = _make_meta_spec(
+        composition={
+            "steps": [
+                {"id": "x", "kind": "skill_exec", "skill": "cwd-skill"},
+            ],
+        },
+    )
+    plan = parse_meta_plan(plan_spec)
+    assert plan is not None
+
+    async def runner(_s: str, _u: str) -> AsyncIterator[AgentEvent]:
+        raise AssertionError("no sub-Agent")
+        yield  # pragma: no cover
+
+    orch = MetaOrchestrator(
+        agent_runner=runner,
+        skill_loader=_FakeLoader([fake_spec]),
+        workspace_dir=str(workspace),
+    )
+    result = await orch.run(MetaMatch(plan=plan, inputs={}))
+
+    assert result.ok, result.error
+    assert workspace.exists()
+    assert Path(result.step_outputs["x"]) == workspace
 
 
 @pytest.mark.asyncio

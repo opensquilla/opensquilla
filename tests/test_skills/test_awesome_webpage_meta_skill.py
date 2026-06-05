@@ -236,9 +236,13 @@ def test_awesome_webpage_media_strategy_covers_video_and_required_modalities() -
         steps["media_search"]["with"]["query"]
     )
     assert "include_images" in steps["media_search"]["when"]
+    assert "search_first" in steps["media_search"]["when"]
+    assert "search_modalities" in steps["media_search"]["when"]
     assert "media_search_cn" not in steps
 
     assert steps["media_strategy"]["depends_on"] == ["media_search", "media_slots_normalize"]
+    assert "search_first" in media_strategy["with"]["text"]
+    assert "search_modalities" in media_strategy["with"]["text"]
     assert steps["video_aigc"]["skill"] == "openrouter-video-generator"
     assert steps["audio_script"]["kind"] == "llm_chat"
     assert steps["audio_script"]["depends_on"] == [
@@ -366,6 +370,49 @@ def test_awesome_webpage_media_strategy_covers_video_and_required_modalities() -
     assert "image_download" in image_payload
     assert "include_images" in image_payload
     assert "visual_style" in image_payload
+
+
+def test_awesome_webpage_media_search_respects_configured_strategy() -> None:
+    fm = _frontmatter()
+    steps = {step["id"]: step for step in fm["composition"]["steps"]}
+    when = steps["media_search"]["when"]
+    base_inputs = {
+        "collected": {
+            "ask_images": {"include_images": "YES"},
+        },
+    }
+
+    assert evaluate_when(when, inputs=base_inputs, outputs={})
+    assert not evaluate_when(
+        when,
+        inputs={
+            **base_inputs,
+            "config": {
+                "awesome_webpage": {
+                    "media_strategy": {
+                        "search_first": False,
+                        "search_modalities": ["images"],
+                    },
+                },
+            },
+        },
+        outputs={},
+    )
+    assert not evaluate_when(
+        when,
+        inputs={
+            **base_inputs,
+            "config": {
+                "awesome_webpage": {
+                    "media_strategy": {
+                        "search_first": True,
+                        "search_modalities": [],
+                    },
+                },
+            },
+        },
+        outputs={},
+    )
 
 
 def test_image_aigc_runs_when_search_download_produces_no_images() -> None:
@@ -964,7 +1011,7 @@ def test_webpage_source_validate_marks_malformed_non_empty_source_invalid(
     assert "WEBPAGE_SOURCE_INVALID" in output
 
 
-def test_awesome_webpage_media_steps_forward_configured_openrouter_api_key() -> None:
+def test_awesome_webpage_media_steps_forward_configured_openrouter_settings() -> None:
     fm = _frontmatter()
     steps = {step["id"]: step for step in fm["composition"]["steps"]}
     inputs = {
@@ -973,6 +1020,12 @@ def test_awesome_webpage_media_steps_forward_configured_openrouter_api_key() -> 
             "awesome_webpage": {
                 "openrouter": {
                     "api_key": "sk-configured",
+                    "base_url": "https://openrouter.example/v1",
+                    "models": {
+                        "image_generation": "provider/custom-image",
+                        "audio_generation": "provider/custom-audio",
+                        "video_generation": "provider/custom-video",
+                    },
                 },
             },
         },
@@ -993,9 +1046,16 @@ def test_awesome_webpage_media_steps_forward_configured_openrouter_api_key() -> 
         "audio_script": "demo narration",
     }
 
-    for step_id in ["image_aigc", "audio_aigc", "video_aigc"]:
+    expected_models = {
+        "image_aigc": "provider/custom-image",
+        "audio_aigc": "provider/custom-audio",
+        "video_aigc": "provider/custom-video",
+    }
+    for step_id, model in expected_models.items():
         rendered = render_with_args(steps[step_id]["with"], inputs=inputs, outputs=outputs)
         assert rendered["api_key"] == "sk-configured"
+        assert rendered["base_url"] == "https://openrouter.example/v1"
+        assert rendered["model"] == model
 
 
 def test_awesome_webpage_media_bind_validate_is_deterministic() -> None:

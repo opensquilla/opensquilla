@@ -3,8 +3,8 @@ name: filesystem
 description: Advanced filesystem operations - listing, searching, batch processing, and directory analysis for Clawdbot
 homepage: https://clawhub.ai/gtrusler/clawdbot-filesystem
 provenance:
-  origin: clawhub-mit0
-  license: MIT-0
+  origin: clawhub-mit
+  license: MIT
   upstream_url: https://clawhub.ai/gtrusler/clawdbot-filesystem
   maintained_by: OpenSquilla
 metadata:

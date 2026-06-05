@@ -119,17 +119,17 @@ composition:
           Resolved awesome_webpage config for this run:
           provider: openrouter
           openrouter.api_key_env: OPENROUTER_API_KEY
-          openrouter.models.page_generation: moonshotai/kimi-k2.6
-          openrouter.models.image_generation: google/gemini-3-pro-image-preview
-          openrouter.models.audio_generation: openai/gpt-audio-mini
-          openrouter.models.video_generation: bytedance/seedance-2.0-fast
+          openrouter.models.page_generation: {{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('models', {}).get('page_generation', 'moonshotai/kimi-k2.6') }}
+          openrouter.models.image_generation: {{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('models', {}).get('image_generation', 'google/gemini-3-pro-image-preview') }}
+          openrouter.models.audio_generation: {{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('models', {}).get('audio_generation', 'openai/gpt-audio-mini') }}
+          openrouter.models.video_generation: {{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('models', {}).get('video_generation', 'bytedance/seedance-2.0-fast') }}
           output_dir: {{ inputs.workspace_dir }}/awesome-webpage-output
           This resolved output_dir is configured and must not be reported as CONFIG_NEEDED.
-          media_strategy.search_first: true
-          media_strategy.search_modalities: images only
-          media_strategy.direct_aigc_modalities: audio, video
-          media_strategy.aigc_fallback_when_search_empty: true
-          media_strategy.allow_remote_embeds: false
+          media_strategy.search_first: {{ inputs.get('config', {}).get('awesome_webpage', {}).get('media_strategy', {}).get('search_first', true) }}
+          media_strategy.search_modalities: {{ inputs.get('config', {}).get('awesome_webpage', {}).get('media_strategy', {}).get('search_modalities', ['images']) | join(', ') }}
+          media_strategy.direct_aigc_modalities: {{ inputs.get('config', {}).get('awesome_webpage', {}).get('media_strategy', {}).get('direct_aigc_modalities', ['audio', 'video']) | join(', ') }}
+          media_strategy.aigc_fallback_when_search_empty: {{ inputs.get('config', {}).get('awesome_webpage', {}).get('media_strategy', {}).get('aigc_fallback_when_search_empty', true) }}
+          media_strategy.allow_remote_embeds: {{ inputs.get('config', {}).get('awesome_webpage', {}).get('media_strategy', {}).get('allow_remote_embeds', false) }}
 
           User request:
           {{ inputs.user_message | xml_escape | truncate(1600) }}
@@ -356,7 +356,7 @@ composition:
       kind: agent
       skill: web-search
       depends_on: [media_slots_normalize]
-      when: "inputs.get('collected', {}).get('ask_images', {}).get('include_images', 'YES') == 'YES'"
+      when: "inputs.get('collected', {}).get('ask_images', {}).get('include_images', 'YES') == 'YES' and inputs.get('config', {}).get('awesome_webpage', {}).get('media_strategy', {}).get('search_first', True) and 'images' in inputs.get('config', {}).get('awesome_webpage', {}).get('media_strategy', {}).get('search_modalities', ['images'])"
       with:
         query: |
           Search only for reusable webpage image candidates for this plan.
@@ -406,7 +406,11 @@ composition:
 
           Fast media policy:
           - Use the confirmed interactive choices as the source of truth.
-          - Search is image-only. Audio and video must not be evaluated through web search.
+          - Search is image-only and only runs when config.awesome_webpage.media_strategy.search_first
+            is true and `images` is present in search_modalities.
+          - When image search is disabled by config, ignore media_search output and choose
+            NEEDS_AIGC_IMAGE for requested images so the direct image generator handles them.
+          - Audio and video must not be evaluated through web search.
           - If include_images is NO, choose IMAGE_SEARCH_READY.
           - If include_images is YES, evaluate only image candidates from web-search.
           - Choose NEEDS_AIGC_IMAGE when image search is empty, unusable, off-topic,
@@ -422,6 +426,11 @@ composition:
 
           If search is empty and config.awesome_webpage.media_strategy.aigc_fallback_when_search_empty is true,
           choose NEEDS_AIGC_IMAGE. Do not choose a model here; model choice belongs to config.
+
+          Resolved media strategy:
+          search_first: {{ inputs.get('config', {}).get('awesome_webpage', {}).get('media_strategy', {}).get('search_first', true) }}
+          search_modalities: {{ inputs.get('config', {}).get('awesome_webpage', {}).get('media_strategy', {}).get('search_modalities', ['images']) | join(', ') }}
+          aigc_fallback_when_search_empty: {{ inputs.get('config', {}).get('awesome_webpage', {}).get('media_strategy', {}).get('aigc_fallback_when_search_empty', true) }}
 
           Requirement framing:
           {{ outputs.requirement_framing | truncate(2000) }}
@@ -525,8 +534,8 @@ composition:
       depends_on: [media_strategy, image_download, media_slots_normalize]
       when: "inputs.get('collected', {}).get('ask_images', {}).get('include_images', 'YES') == 'YES' and (outputs.media_strategy == 'NEEDS_AIGC_IMAGE' or 'IMAGE_DOWNLOAD_INCOMPLETE:' in outputs.get('image_download', '') or (outputs.media_strategy == 'IMAGE_SEARCH_READY' and 'IMAGE_READY:' not in outputs.get('image_download', '')))"
       with:
-        model: google/gemini-3-pro-image-preview
-        base_url: https://openrouter.ai/api/v1
+        model: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('models', {}).get('image_generation', 'google/gemini-3-pro-image-preview') }}"
+        base_url: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('base_url', 'https://openrouter.ai/api/v1') }}"
         api_key: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('api_key', '') }}"
         output_dir: "{{ inputs.workspace_dir }}/awesome-webpage-output/{{ outputs.project_slug | slugify }}/project/assets/images"
         filename: "{{ outputs.project_slug | slugify }}.png"
@@ -549,8 +558,8 @@ composition:
       depends_on: [audio_script]
       when: "inputs.get('collected', {}).get('ask_audio', {}).get('include_audio', 'YES') == 'YES'"
       with:
-        model: openai/gpt-audio-mini
-        base_url: https://openrouter.ai/api/v1
+        model: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('models', {}).get('audio_generation', 'openai/gpt-audio-mini') }}"
+        base_url: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('base_url', 'https://openrouter.ai/api/v1') }}"
         api_key: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('api_key', '') }}"
         output_dir: "{{ inputs.workspace_dir }}/awesome-webpage-output/{{ outputs.project_slug | slugify }}/project/assets/audio"
         filename: "{{ outputs.project_slug | slugify }}-narration.wav"
@@ -601,8 +610,8 @@ composition:
       depends_on: [page_outline]
       when: "inputs.get('collected', {}).get('ask_video', {}).get('include_video', 'YES') == 'YES'"
       with:
-        model: bytedance/seedance-2.0-fast
-        base_url: https://openrouter.ai/api/v1
+        model: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('models', {}).get('video_generation', 'bytedance/seedance-2.0-fast') }}"
+        base_url: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('base_url', 'https://openrouter.ai/api/v1') }}"
         api_key: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('api_key', '') }}"
         output_dir: "{{ inputs.workspace_dir }}/awesome-webpage-output/{{ outputs.project_slug | slugify }}/project/assets/video"
         filename: "{{ outputs.project_slug | slugify }}-intro.mp4"

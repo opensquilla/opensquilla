@@ -78,6 +78,7 @@ DEFAULTS = {
 } | AUDIO_DEFAULTS
 PROMPT_DEFAULTS_WITHOUT_AUDIO_TOOLS = DEFAULTS - AUDIO_DEFAULTS
 INTERNAL_HELPERS = {
+    "awesome-webpage-image-download",
     "awesome-webpage-research",
     "nano-banana-pro-openrouter",
     "openrouter-video-generator",

@@ -203,10 +203,16 @@ def _json_value(value: Any) -> Any:
         return value
     if not isinstance(value, str) or not value.strip():
         return None
-    try:
-        return json.loads(value)
-    except json.JSONDecodeError:
-        return None
+    text = value.strip()
+    candidates = [text]
+    if text.startswith("exit_code=0\n"):
+        candidates.append(text.split("\n", 1)[1].strip())
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+    return None
 
 
 def _slot_text(raw: dict[str, Any], *keys: str) -> str:

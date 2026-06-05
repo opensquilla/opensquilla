@@ -144,6 +144,38 @@ def test_target_slots_prefers_explicit_media_slots_json() -> None:
     ]
 
 
+def test_target_slots_accepts_exec_command_wrapped_media_slots_json() -> None:
+    mod = _module()
+    media_slots = json.dumps(
+        {
+            "slots": [
+                {
+                    "slot_id": "normalized-cn-visual",
+                    "modality": "图片",
+                    "subject": "规范化后的中文图片槽位",
+                }
+            ]
+        }
+    )
+
+    slots = mod._target_slots(
+        {
+            "media_slots": f"exit_code=0\n{media_slots}\n",
+            "page_outline": "no parseable image slot here",
+        },
+        6,
+    )
+
+    assert slots == [
+        {
+            "slot_id": "normalized-cn-visual",
+            "subject": "规范化后的中文图片槽位",
+            "prompt_hint": "",
+            "keywords": "",
+        }
+    ]
+
+
 def test_target_slots_synthesizes_fallback_when_requested_images_have_no_slots() -> None:
     mod = _module()
 

@@ -51,7 +51,7 @@ export const useRpcStore = defineStore('rpc', () => {
       console.warn('[RPC] Sequence gap detected:', detail)
     })
 
-    // Auto-connect on init
+    // Auto-connect on init. Desktop shells use the local gateway serving this UI.
     const { url, token } = loadConnectionSettings()
     if (rpc.state === 'disconnected') {
       rpc.connect(url, token || undefined)

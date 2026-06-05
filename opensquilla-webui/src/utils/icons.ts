@@ -4,12 +4,12 @@ export type IconName =
   | 'chat' | 'home' | 'channels' | 'sessions' | 'usage' | 'cron'
   | 'config' | 'logs' | 'skills' | 'agents' | 'approvals'
   | 'sun' | 'moon' | 'monitor' | 'x' | 'copy' | 'check'
-  | 'send' | 'stop' | 'paperclip' | 'plus' | 'share' | 'trash'
-  | 'refresh' | 'download' | 'menu' | 'user' | 'search'
+  | 'send' | 'stop' | 'paperclip' | 'plus' | 'trash'
+  | 'refresh' | 'download' | 'save' | 'menu' | 'user' | 'search'
   | 'edit' | 'info' | 'settings' | 'gear' | 'regenerate'
   | 'pencil' | 'chevronDown' | 'chevronRight' | 'arrowUp'
   | 'panel-left-open' | 'panel-left-close' | 'clock'
-  | 'fileText' | 'fileCode' | 'image' | 'table';
+  | 'cloud' | 'fileText' | 'fileCode' | 'image' | 'table';
 
 interface IconDef {
   path: string;
@@ -43,6 +43,7 @@ const ICONS: Record<IconName, IconDef> = {
   trash:      { path: '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>' },
   refresh:    { path: '<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>' },
   download:   { path: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>' },
+  save:       { path: '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>' },
   menu:       { path: '<line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/>' },
   user:       { path: '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>' },
   search:     { path: '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>' },
@@ -59,6 +60,7 @@ const ICONS: Record<IconName, IconDef> = {
   'panel-left-open':  { path: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M14 9l6 6-6 6"/>' },
   'panel-left-close': { path: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M20 9l-6 6 6 6"/>' },
   clock: { path: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>' },
+  cloud: { path: '<path d="M17.5 19H8a6 6 0 1 1 1.03-11.91A7 7 0 0 1 22 12.5 4.5 4.5 0 0 1 17.5 19z"/>', strokeWidth: 1.5 },
   fileText: { path: '<path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7z"/><path d="M14 2v5h5"/><path d="M9 13h6"/><path d="M9 17h4"/>', strokeWidth: 1.5 },
   fileCode: { path: '<path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7z"/><path d="M14 2v5h5"/><path d="m10 13-2 2 2 2"/><path d="m14 13 2 2-2 2"/>', strokeWidth: 1.5 },
   image: { path: '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10.5" r="1.5"/><path d="m21 15-4.5-4.5L6 19"/>', strokeWidth: 1.5 },

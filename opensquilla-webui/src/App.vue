@@ -249,6 +249,7 @@ import Icon from './components/Icon.vue'
 import ErrorBoundary from './components/ErrorBoundary.vue'
 import { useDocumentEvent } from './composables/useDocumentEvent'
 import type { AgentOption, AgentsListResponse } from './types/rpc'
+import { useNavigation } from './app/useNavigation'
 import { newWebchatSessionKey, normalizeAgentId } from './utils/chat/sessionKeys'
 
 const appStore = useAppStore()
@@ -256,6 +257,7 @@ const rpcStore = useRpcStore()
 const $route = useRoute()
 const router = useRouter()
 const { allSessions, sessionListError, isLoading, loadSessions } = useSessions()
+const { quickRoutes, bottomRoutes } = useNavigation()
 
 type SidebarFamilyId = 'chats' | 'channels' | 'automations'
 
@@ -366,25 +368,6 @@ function familyIcon(id: SidebarFamilyId): IconName {
   if (id === 'channels') return 'channels'
   return 'cron'
 }
-
-// Main function routes (visible in sidebar) — Chat is accessed via history, not a dedicated button
-const quickRoutes = computed(() => [
-  { path: '/overview', title: 'Overview', icon: 'home' as const },
-  { path: '/health', title: 'Health', icon: 'logs' as const },
-  { path: '/agents', title: 'Agents', icon: 'agents' as const },
-  { path: '/skills', title: 'Skills', icon: 'skills' as const },
-  { path: '/channels', title: 'Channels', icon: 'channels' as const },
-  { path: '/cron', title: 'Cron', icon: 'cron' as const },
-  { path: '/sessions', title: 'Sessions', icon: 'sessions' as const },
-  { path: '/usage', title: 'Usage', icon: 'usage' as const },
-])
-
-// Bottom routes (secondary)
-const bottomRoutes = computed(() => [
-  { path: '/config', title: 'Config', icon: 'config' as const },
-  { path: '/logs', title: 'Logs', icon: 'logs' as const },
-  { path: '/approvals', title: 'Approvals', icon: 'approvals' as const },
-])
 
 const selectableAgents = computed(() => {
   const map = new Map<string, AgentOption>()

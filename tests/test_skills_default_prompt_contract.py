@@ -246,6 +246,61 @@ async def test_hybrid_filter_hides_competitive_intel_for_single_company_profile(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("skill_name", "prompt"),
+    [
+        (
+            "meta-daily-operator-brief",
+            "Today plan: remind me to call Alex at 4pm.",
+        ),
+        (
+            "meta-short-drama",
+            "Write a short script idea, not a video or MP4.",
+        ),
+        (
+            "meta-kid-project-planner",
+            "帮我设计一个成人手工 logo 展示方案，不是孩子作业。",
+        ),
+    ],
+)
+async def test_hybrid_filter_hides_neighboring_meta_workflows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    skill_name: str,
+    prompt: str,
+) -> None:
+    loader = SkillLoader(bundled_dir=BUNDLED, snapshot_path=tmp_path / "snapshot.json")
+
+    class FakeRetriever:
+        def retrieve(self, skills, query: str, top_k: int = 5):
+            assert query == prompt
+            by_name = {s.name: s for s in skills}
+            return [by_name[skill_name]][:top_k]
+
+    monkeypatch.setattr(skills_filter_step, "_get_retriever", lambda _cfg: FakeRetriever())
+
+    ctx = await filter_skills(
+        _ctx(
+            loader,
+            message=prompt,
+            skills_config=SimpleNamespace(
+                filter_enabled=True,
+                filter_top_k=5,
+                filter_strategy="hybrid",
+                filter_lexical_top_n=20,
+                filter_semantic_top_n=20,
+                filter_rrf_k=60,
+                filter_embedding_model="BAAI/bge-small-zh-v1.5",
+                max_skills_prompt_chars=100_000,
+                injection_mode="system",
+            ),
+        )
+    )
+
+    assert skill_name not in ctx.metadata["filtered_skill_ids"]
+
+
+@pytest.mark.asyncio
 async def test_meta_skill_disabled_hides_meta_prompt_without_hiding_normal_skills(
     tmp_path: Path,
 ) -> None:

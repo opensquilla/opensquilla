@@ -465,6 +465,72 @@ async def test_meta_resolution_semantic_fallback_blocks_competitive_intel_withou
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("skill_name", "prompt"),
+    [
+        (
+            "meta-skill-creator",
+            "Create a normal standalone skill for weather lookup, not a meta-skill.",
+        ),
+        (
+            "meta-document-to-decision",
+            "Summarize this contract excerpt generally; I am not deciding whether to sign.",
+        ),
+        (
+            "meta-web-research-to-report",
+            "Who founded Inception Labs? Just answer briefly, no report.",
+        ),
+        (
+            "meta-paper-write",
+            "Summarize this paper and list the main claims.",
+        ),
+    ],
+)
+async def test_meta_resolution_semantic_fallback_blocks_neighboring_meta_intents(
+    monkeypatch: pytest.MonkeyPatch,
+    skill_name: str,
+    prompt: str,
+) -> None:
+    import importlib
+    meta_resolution_module = importlib.import_module(
+        "opensquilla.engine.steps.meta_resolution",
+    )
+
+    spec = _make_meta_spec(
+        name=skill_name,
+        composition={"steps": [{"id": "a", "skill": "summarize"}]},
+        triggers=["specific workflow trigger"],
+        priority=80,
+    )
+    loader = _FakeLoader([spec])
+
+    class FakeRetriever:
+        def __init__(self, **kwargs: Any) -> None:
+            assert kwargs["strategy"] == "hybrid"
+
+        def retrieve(self, skills: list[SkillSpec], query: str, top_k: int = 1) -> list[SkillSpec]:
+            assert query == prompt
+            assert top_k == 1
+            return [skills[0]]
+
+    monkeypatch.setattr(meta_resolution_module, "HybridRetriever", FakeRetriever)
+
+    ctx = SimpleNamespace(
+        message=prompt,
+        semantic_message=prompt,
+        session_key=f"{skill_name}-neighboring-intent-session",
+        metadata={"skill_loader": loader},
+        system_prompt=("base prompt", ""),
+        config=SimpleNamespace(skills=SimpleNamespace(filter_strategy="lexical")),
+    )
+
+    out = await meta_resolution(ctx)  # type: ignore[arg-type]
+
+    assert "meta_match" not in out.metadata
+    assert "meta_match_source" not in out.metadata
+
+
+@pytest.mark.asyncio
 async def test_meta_resolution_soft_hint_directs_meta_invoke_not_skill_view() -> None:
     spec = _make_meta_spec(
         composition={"steps": [{"id": "a", "skill": "summarize"}]},

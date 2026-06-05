@@ -106,6 +106,21 @@ _NEGATIVE_CUES_BY_SKILL = {
         "不是儿童",
         "不是孩子作业",
     ),
+    "meta-job-search-pipeline": (
+        "career advice",
+        "better resume in general",
+        "generic resume",
+        "without a target role",
+        "without a jd",
+        "no target role",
+        "no jd",
+        "what does career application mean",
+        "职业建议",
+        "泛泛简历建议",
+        "通用简历建议",
+        "没有岗位",
+        "没有 jd",
+    ),
 }
 
 _POSITIVE_CUES_BY_SKILL = {
@@ -229,6 +244,23 @@ _POSITIVE_CUES_BY_SKILL = {
         "课外动手项目",
         "儿童项目",
         "孩子作业",
+    ),
+    "meta-job-search-pipeline": (
+        "tailor my resume",
+        "tailor my resume to this job",
+        "job application pack",
+        "application pack for this role",
+        "interview prep for",
+        "application tracker",
+        "pasted jd",
+        "target role",
+        "target company",
+        "根据jd改简历",
+        "根据岗位改简历",
+        "针对这个岗位",
+        "求职投递包",
+        "求职申请追踪",
+        "岗位改简历",
     ),
 }
 

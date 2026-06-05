@@ -11,6 +11,7 @@ from opensquilla.engine.steps.skills_filter import filter_skills
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.skills.eligibility import EligibilityContext
 from opensquilla.skills.loader import SkillLoader
+from opensquilla.skills.meta.semantic_guards import semantic_meta_skill_allowed
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLED = ROOT / "src" / "opensquilla" / "skills" / "bundled"
@@ -82,6 +83,56 @@ INTERNAL_HELPERS = {
     "stack-trace-python-probe",
     "stack-trace-rust-probe",
 }
+STABLE_META_BOUNDARY_CASES = [
+    (
+        "meta-competitive-intel",
+        "Build a competitive intelligence brief for these two named competitors.",
+        (
+            "inception labs,创始团队和核心员工有哪些？现在估值，"
+            "核心技术路线和进展是啥？然后每一轮交割大概节奏和估值股东等信息列出来。"
+        ),
+    ),
+    (
+        "meta-daily-operator-brief",
+        "Create my daily operating brief from calendar, tasks, weather, and open loops.",
+        "Today plan: remind me to call Alex at 4pm.",
+    ),
+    (
+        "meta-document-to-decision",
+        "Analyze this contract excerpt for a decision: sign, reject, or negotiate.",
+        "Summarize this contract excerpt generally; I am not deciding whether to sign.",
+    ),
+    (
+        "meta-job-search-pipeline",
+        "Tailor my resume to this job using the pasted JD and build a job application pack.",
+        "Give me career advice and better resume tips in general, without a target role.",
+    ),
+    (
+        "meta-kid-project-planner",
+        "Help my kid build a child science fair school project with safe materials.",
+        "帮我设计一个成人手工 logo 展示方案，不是孩子作业。",
+    ),
+    (
+        "meta-paper-write",
+        "Draft a paper as a LaTeX manuscript with citations and experiment placeholders.",
+        "Summarize this paper and list the main claims; do not draft a manuscript.",
+    ),
+    (
+        "meta-short-drama",
+        "Generate a short drama from this topic and render the shot list to final MP4.",
+        "Write a short script idea, not a video or MP4.",
+    ),
+    (
+        "meta-skill-creator",
+        "Create a meta-skill that orchestrates existing skills for PDF digest workflows.",
+        "Create a normal standalone skill, not a meta-skill.",
+    ),
+    (
+        "meta-web-research-to-report",
+        "Write a cited research report with sources, key findings, and risks.",
+        "Who founded Inception Labs? Just answer briefly, no report.",
+    ),
+]
 
 
 def _ctx(
@@ -145,6 +196,19 @@ def test_skill_filter_defaults_are_release_safe(monkeypatch: pytest.MonkeyPatch)
 
     assert cfg.skills.filter_enabled is False
     assert cfg.skills.filter_strategy == "lexical"
+
+
+@pytest.mark.parametrize(
+    ("skill_name", "positive_prompt", "negative_prompt"),
+    STABLE_META_BOUNDARY_CASES,
+)
+def test_semantic_guards_cover_stable_bundled_meta_skill_boundaries(
+    skill_name: str,
+    positive_prompt: str,
+    negative_prompt: str,
+) -> None:
+    assert semantic_meta_skill_allowed(skill_name, positive_prompt)
+    assert not semantic_meta_skill_allowed(skill_name, negative_prompt)
 
 
 @pytest.mark.asyncio
@@ -298,6 +362,85 @@ async def test_hybrid_filter_hides_neighboring_meta_workflows(
     )
 
     assert skill_name not in ctx.metadata["filtered_skill_ids"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("skill_name", "positive_prompt", "negative_prompt"),
+    STABLE_META_BOUNDARY_CASES,
+)
+async def test_hybrid_filter_applies_stable_meta_boundary_guards_both_directions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    skill_name: str,
+    positive_prompt: str,
+    negative_prompt: str,
+) -> None:
+    monkeypatch.setattr(
+        skills_filter_step,
+        "_elig_ctx",
+        EligibilityContext(
+            os_name="linux",
+            has_bin_cache={
+                "bibtex": True,
+                "codex": True,
+                "curl": True,
+                "ffmpeg": True,
+                "ffprobe": True,
+                "xelatex": True,
+                "nano-pdf": True,
+                "python": True,
+                "python3": True,
+                "tmux": True,
+            },
+        ),
+    )
+    loader = SkillLoader(bundled_dir=BUNDLED, snapshot_path=tmp_path / "snapshot.json")
+
+    class FakeRetriever:
+        prompt = positive_prompt
+
+        def retrieve(self, skills, query: str, top_k: int = 5):
+            assert query == self.prompt
+            by_name = {s.name: s for s in skills}
+            return [by_name[skill_name]][:top_k]
+
+    retriever = FakeRetriever()
+    monkeypatch.setattr(skills_filter_step, "_get_retriever", lambda _cfg: retriever)
+
+    def skills_config() -> SimpleNamespace:
+        return SimpleNamespace(
+            filter_enabled=True,
+            filter_top_k=5,
+            filter_strategy="hybrid",
+            filter_lexical_top_n=20,
+            filter_semantic_top_n=20,
+            filter_rrf_k=60,
+            filter_embedding_model="BAAI/bge-small-zh-v1.5",
+            max_skills_prompt_chars=100_000,
+            injection_mode="system",
+        )
+
+    positive_ctx = await filter_skills(
+        _ctx(
+            loader,
+            message=positive_prompt,
+            skills_config=skills_config(),
+        )
+    )
+
+    assert skill_name in positive_ctx.metadata["filtered_skill_ids"]
+
+    retriever.prompt = negative_prompt
+    negative_ctx = await filter_skills(
+        _ctx(
+            loader,
+            message=negative_prompt,
+            skills_config=skills_config(),
+        )
+    )
+
+    assert skill_name not in negative_ctx.metadata["filtered_skill_ids"]
 
 
 @pytest.mark.asyncio

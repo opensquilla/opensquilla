@@ -215,9 +215,8 @@ async def test_cancelled_error_propagates_unchanged():
     """If the DAO call is cancelled mid-call, the executor must not swallow
     the CancelledError — the scheduler relies on it to tear down siblings.
 
-    `try_claim_awaiting` is a SYNCHRONOUS method on MetaRunWriter; the
-    executor wraps it with asyncio.to_thread. We simulate the raise by
-    giving the MagicMock a sync `side_effect`."""
+    `try_claim_awaiting` is a SYNCHRONOUS method on MetaRunWriter. We
+    simulate the raise by giving the MagicMock a sync `side_effect`."""
     dao = MagicMock()
     dao.try_claim_awaiting = MagicMock(side_effect=asyncio.CancelledError())
 

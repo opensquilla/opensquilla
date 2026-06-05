@@ -13,7 +13,9 @@ Behavior (design §8.1):
 
 The executor itself is async to fit the scheduler's contract; DAO calls
 are sync (MetaRunWriter holds a sync sqlite3 connection) and run off
-the event loop via `asyncio.to_thread`.
+the short sqlite CAS directly; the writer owns locking, and keeping the
+call in the current task avoids thread-pool wake-up stalls on App/native-hook
+surfaces.
 """
 
 from __future__ import annotations
@@ -293,8 +295,7 @@ async def run_user_input_step(
     # no broad ``TypeError`` swallow here, otherwise a legitimate
     # call-site signature mismatch silently dumps the prefill.
     try:
-        claimed = await asyncio.to_thread(
-            dao.try_claim_awaiting,
+        claimed = dao.try_claim_awaiting(
             run_id=run_id,
             step_id=step.id,
             schema_json=schema_json,

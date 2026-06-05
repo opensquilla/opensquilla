@@ -31,7 +31,7 @@ import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import structlog
 
@@ -334,6 +334,41 @@ def _append_artifact_verification_notice(text: str, report: dict[str, Any]) -> s
     return f"{text.rstrip()}\n\n---\n\n" + "\n".join(lines)
 
 
+def _step_usage_from_tracker(
+    usage_tracker: Any | None,
+    *,
+    session_key: str | None,
+    usage_scope_prefix: str,
+    step_id: str,
+) -> dict[str, Any] | None:
+    if usage_tracker is None or not session_key:
+        return None
+    get_scope = getattr(usage_tracker, "get_scope", None)
+    if not callable(get_scope):
+        return None
+    scoped = get_scope(session_key, f"{usage_scope_prefix}:{step_id}")
+    if scoped is None:
+        return None
+    input_tokens = int(getattr(scoped, "input_tokens", 0) or 0)
+    output_tokens = int(getattr(scoped, "output_tokens", 0) or 0)
+    cache_read_tokens = int(getattr(scoped, "cache_read_tokens", 0) or 0)
+    cache_write_tokens = int(getattr(scoped, "cache_write_tokens", 0) or 0)
+    if not (input_tokens or output_tokens or cache_read_tokens or cache_write_tokens):
+        return None
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+        "cache_read_tokens": cache_read_tokens,
+        "cache_write_tokens": cache_write_tokens,
+        "cost_usd": round(float(getattr(scoped, "total_cost", 0.0) or 0.0), 6),
+        "billed_cost_usd": round(float(getattr(scoped, "billed_cost", 0.0) or 0.0), 6),
+        "estimated_cost_usd": round(float(getattr(scoped, "cost", 0.0) or 0.0), 6),
+        "cost_source": str(getattr(scoped, "cost_source", "") or ""),
+        "model": str(getattr(scoped, "model_id", "") or ""),
+    }
+
+
 def _metadata_for_meta_subagent(base_config: AgentConfig) -> dict[str, Any]:
     metadata = dict(getattr(base_config, "metadata", {}) or {})
     for key in _SUBAGENT_METADATA_BLOCKLIST:
@@ -421,6 +456,96 @@ class MetaOrchestrator:
         # .persistence.memory_persist_enabled for the wiring.
         self._memory_persist_enabled = memory_persist_enabled
 
+    def _step_persistence_hooks(
+        self,
+        *,
+        run_id: str | None,
+        plan: MetaPlan,
+        writer: MetaRunWriter | None,
+        usage_scope_prefix: str,
+    ) -> tuple[
+        Callable[[str, str, dict[str, Any]], Awaitable[None]] | None,
+        Callable[[str, str, str | None, str | None], Awaitable[None]] | None,
+        Callable[[str, str, str], Awaitable[None]] | None,
+    ]:
+        """Build scheduler hooks that persist step lifecycle and scoped usage."""
+        if run_id is None or writer is None:
+            return None, None, None
+
+        async def on_step_begin(
+            step_id: str,
+            effective_skill: str,
+            rendered_inputs: dict[str, Any],
+        ) -> None:
+            step = next((s for s in plan.steps if s.id == step_id), None)
+            if step is None:
+                return
+            writer.begin_step_sync(
+                run_id=run_id,
+                step=step,
+                effective_skill=effective_skill,
+                rendered_inputs=rendered_inputs,
+            )
+
+        async def on_step_finish(
+            step_id: str,
+            status: str,
+            output_text: str | None,
+            error: str | None,
+        ) -> None:
+            usage = _step_usage_from_tracker(
+                self._usage_tracker,
+                session_key=self._session_key,
+                usage_scope_prefix=usage_scope_prefix,
+                step_id=step_id,
+            )
+            writer.finish_step_sync(
+                run_id=run_id,
+                step_id=step_id,
+                status=cast(Literal["ok", "failed", "substituted"], status),
+                output_text=output_text,
+                error=error,
+                usage=usage,
+            )
+
+        async def on_step_failover(
+            failed_step_id: str,
+            substitute_step_id: str,
+            error: str,
+        ) -> None:
+            usage = _step_usage_from_tracker(
+                self._usage_tracker,
+                session_key=self._session_key,
+                usage_scope_prefix=usage_scope_prefix,
+                step_id=failed_step_id,
+            )
+            writer.on_step_failover_sync(
+                run_id=run_id,
+                failed_step_id=failed_step_id,
+                substitute_step_id=substitute_step_id,
+                error=error,
+                usage=usage,
+            )
+
+        return on_step_begin, on_step_finish, on_step_failover
+
+    def _finish_resumed_awaiting_step(
+        self,
+        *,
+        writer: MetaRunWriter | None,
+        run_id: str,
+        step_id: str,
+        output_text: str,
+    ) -> None:
+        if writer is None or not step_id:
+            return
+        writer.finish_step_sync(
+            run_id=run_id,
+            step_id=step_id,
+            status="ok",
+            output_text=output_text,
+        )
+
     async def run(self, match: MetaMatch) -> MetaResult:
         """Execute the plan, draining the streaming generator for the final result.
 
@@ -497,57 +622,14 @@ class MetaOrchestrator:
             except Exception as exc:  # noqa: BLE001
                 log.warning("orchestrator.begin_run_failed: %s", exc)
 
-        # Build the three writer hooks (no-op if writer absent or
-        # begin_run failed to assign a run_id).
-        async def on_step_begin(
-            step_id: str,
-            effective_skill: str,
-            rendered_inputs: dict[str, Any],
-        ) -> None:
-            if run_id is None or self._run_writer is None:
-                return
-            step = next((s for s in match.plan.steps if s.id == step_id), None)
-            if step is None:
-                return
-            await _to_thread(
-                self._run_writer.begin_step_sync,
+        on_step_begin, on_step_finish, on_step_failover = (
+            self._step_persistence_hooks(
                 run_id=run_id,
-                step=step,
-                effective_skill=effective_skill,
-                rendered_inputs=rendered_inputs,
+                plan=match.plan,
+                writer=self._run_writer,
+                usage_scope_prefix=run_id or f"meta:{match.plan.name}:{id(match)}",
             )
-
-        async def on_step_finish(
-            step_id: str,
-            status: str,
-            output_text: str | None,
-            error: str | None,
-        ) -> None:
-            if run_id is None or self._run_writer is None:
-                return
-            await _to_thread(
-                self._run_writer.finish_step_sync,
-                run_id=run_id,
-                step_id=step_id,
-                status=status,
-                output_text=output_text,
-                error=error,
-            )
-
-        async def on_step_failover(
-            failed_step_id: str,
-            substitute_step_id: str,
-            error: str,
-        ) -> None:
-            if run_id is None or self._run_writer is None:
-                return
-            await _to_thread(
-                self._run_writer.on_step_failover_sync,
-                run_id=run_id,
-                failed_step_id=failed_step_id,
-                substitute_step_id=substitute_step_id,
-                error=error,
-            )
+        )
 
         final_result: MetaResult | None = None
         cancelled = False
@@ -564,9 +646,9 @@ class MetaOrchestrator:
                 dispatch_step_stream=self._dispatch_step_stream,
                 yield_skill_view_preface=self._yield_skill_view_preface,
                 max_parallelism=self._max_parallelism,
-                on_step_begin=on_step_begin if self._run_writer else None,
-                on_step_finish=on_step_finish if self._run_writer else None,
-                on_step_failover=on_step_failover if self._run_writer else None,
+                on_step_begin=on_step_begin,
+                on_step_finish=on_step_finish,
+                on_step_failover=on_step_failover,
                 usage_tracker=self._usage_tracker,
                 session_key=self._session_key,
                 usage_scope_prefix=run_id or f"meta:{match.plan.name}:{id(match)}",
@@ -967,8 +1049,7 @@ class MetaOrchestrator:
                 error="MetaOrchestrator has no DAO; resume requires PR2",
             )
 
-        payload = await asyncio.to_thread(
-            self._dao.try_claim_resume,
+        payload = self._dao.try_claim_resume(
             run_id=run_id,
             session_id=session_id,
         )
@@ -1030,8 +1111,22 @@ class MetaOrchestrator:
         outputs[payload.awaiting_step_id] = render_clarify_summary(
             schema=cfg, filled=filled_clean,
         )
+        self._finish_resumed_awaiting_step(
+            writer=self._dao,
+            run_id=run_id,
+            step_id=payload.awaiting_step_id,
+            output_text=outputs[payload.awaiting_step_id],
+        )
 
         match = MetaMatch(plan=plan, inputs=inputs, run_id=run_id)
+        on_step_begin, on_step_finish, on_step_failover = (
+            self._step_persistence_hooks(
+                run_id=run_id,
+                plan=plan,
+                writer=self._dao,
+                usage_scope_prefix=run_id,
+            )
+        )
 
         final: MetaResult | None = None
         previous_run_id = self._current_run_id
@@ -1042,6 +1137,13 @@ class MetaOrchestrator:
                 dispatch_step_stream=dispatch_step_stream,
                 yield_skill_view_preface=yield_skill_view_preface,
                 seed_outputs=outputs,
+                max_parallelism=self._max_parallelism,
+                on_step_begin=on_step_begin,
+                on_step_finish=on_step_finish,
+                on_step_failover=on_step_failover,
+                usage_tracker=self._usage_tracker,
+                session_key=self._session_key,
+                usage_scope_prefix=run_id,
             ):
                 if isinstance(ev, MetaResult):
                     final = ev
@@ -1054,12 +1156,10 @@ class MetaOrchestrator:
         # try_claim_awaiting has already moved the row back to
         # 'awaiting_user' — calling finish_run_sync would corrupt state.
         if not final.paused:
-            from typing import Literal
             finish_status: Literal["ok", "failed", "cancelled"] = (
                 "ok" if final.ok else "failed"
             )
-            await asyncio.to_thread(
-                self._dao.finish_run_sync,
+            self._dao.finish_run_sync(
                 run_id=run_id,
                 result=final,
                 status=finish_status,
@@ -1112,8 +1212,22 @@ class MetaOrchestrator:
         outputs[payload.awaiting_step_id] = render_clarify_summary(
             schema=cfg, filled=filled_clean,
         )
+        self._finish_resumed_awaiting_step(
+            writer=self._dao,
+            run_id=run_id,
+            step_id=payload.awaiting_step_id,
+            output_text=outputs[payload.awaiting_step_id],
+        )
 
         match = MetaMatch(plan=plan, inputs=inputs, run_id=run_id)
+        on_step_begin, on_step_finish, on_step_failover = (
+            self._step_persistence_hooks(
+                run_id=run_id,
+                plan=plan,
+                writer=self._dao,
+                usage_scope_prefix=run_id,
+            )
+        )
 
         previous_run_id = self._current_run_id
         self._current_run_id = run_id
@@ -1125,6 +1239,9 @@ class MetaOrchestrator:
                 yield_skill_view_preface=self._yield_skill_view_preface,
                 seed_outputs=outputs,
                 max_parallelism=self._max_parallelism,
+                on_step_begin=on_step_begin,
+                on_step_finish=on_step_finish,
+                on_step_failover=on_step_failover,
                 usage_tracker=self._usage_tracker,
                 session_key=self._session_key,
                 usage_scope_prefix=run_id,
@@ -1169,12 +1286,10 @@ class MetaOrchestrator:
         # try_claim_awaiting has already moved the row back to
         # 'awaiting_user' — calling finish_run_sync would corrupt state.
         if final is not None and not final.paused:
-            from typing import Literal
             finish_status: Literal["ok", "failed", "cancelled"] = (
                 "ok" if final.ok else "failed"
             )
-            await asyncio.to_thread(
-                self._dao.finish_run_sync,
+            self._dao.finish_run_sync(
                 run_id=run_id,
                 result=final,
                 status=finish_status,

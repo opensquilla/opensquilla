@@ -404,6 +404,33 @@ async def test_meta_resolution_matches_trigger() -> None:
 
 
 @pytest.mark.asyncio
+async def test_meta_resolution_threads_preference_metadata_into_match_inputs() -> None:
+    spec = _make_meta_spec(
+        composition={"steps": [{"id": "a", "skill": "summarize"}]},
+        triggers=["pdf briefing"],
+        priority=10,
+    )
+    loader = _FakeLoader([spec])
+    ctx = SimpleNamespace(
+        message="please make me a PDF briefing on rust",
+        semantic_message="please make me a PDF briefing on rust",
+        metadata={
+            "skill_loader": loader,
+            "meta_preferences": {"briefing_depth": "compact"},
+            "meta_audience": "executives",
+            "meta_language": "zh-CN",
+        },
+    )
+
+    out = await meta_resolution(ctx)  # type: ignore[arg-type]
+
+    match = out.metadata["meta_match"]
+    assert match.inputs["audience"] == "executives"
+    assert match.inputs["language"] == "zh-CN"
+    assert match.inputs["preferences"]["briefing_depth"] == "compact"
+
+
+@pytest.mark.asyncio
 async def test_meta_resolution_ignores_trigger_inside_raw_page_dump() -> None:
     spec = _make_meta_spec(
         composition={"steps": [{"id": "a", "skill": "summarize"}]},

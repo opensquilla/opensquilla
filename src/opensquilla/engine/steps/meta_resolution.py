@@ -37,7 +37,10 @@ import structlog
 from opensquilla.engine.pipeline import TurnContext
 from opensquilla.skills.meta.clarify_nl_extract import extract as _nl_extract
 from opensquilla.skills.meta.clarify_text import parse_clarify_reply
-from opensquilla.skills.meta.inputs import make_meta_inputs
+from opensquilla.skills.meta.inputs import (
+    make_meta_inputs,
+    meta_input_overrides_from_metadata,
+)
 from opensquilla.skills.meta.parser import MetaPlanError, parse_meta_plan
 from opensquilla.skills.meta.types import MetaMatch
 from opensquilla.skills.retrieval import HybridRetriever
@@ -1242,6 +1245,7 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
         inputs=make_meta_inputs(
             user_message=semantic_text,
             system_prompt=getattr(ctx, "system_prompt", ""),
+            **meta_input_overrides_from_metadata(getattr(ctx, "metadata", {})),
         ),
     )
     ctx.metadata["meta_match"] = match

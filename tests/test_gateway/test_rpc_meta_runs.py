@@ -102,6 +102,15 @@ def test_meta_runs_list_rpc_returns_summary(tmp_path: Path) -> None:
     assert "steps" not in payload["runs"][0]
     assert "output_text" not in payload["runs"][0]["summary"]["steps"][0]
     assert "rendered_inputs_json" not in payload["runs"][0]["summary"]["steps"][0]
+    assert payload["runs"][0]["validation"] == {
+        "available": True,
+        "request_template": True,
+        "output_contract": True,
+        "eval_baseline": True,
+        "field_count": 2,
+        "required_field_count": 2,
+        "eval_prompt_count": 1,
+    }
 
 
 def test_meta_runs_failures_rpc_returns_summary_only(tmp_path: Path) -> None:
@@ -299,8 +308,23 @@ def test_meta_runs_diff_rpc_compares_runs(tmp_path: Path) -> None:
     assert diff["steps"][0]["step_id"] == "s1"
 
 
-def test_meta_runs_cost_rpc_reports_unavailable_usage_honestly(tmp_path: Path) -> None:
+def test_meta_runs_cost_rpc_aggregates_persisted_step_usage(tmp_path: Path) -> None:
     writer, run_id = _seed_writer(tmp_path)
+    writer.finish_step_sync(
+        run_id=run_id,
+        step_id="s1",
+        status="ok",
+        output_text="done",
+        usage={
+            "input_tokens": 50,
+            "output_tokens": 10,
+            "total_tokens": 60,
+            "cost_usd": 0.0123,
+            "billed_cost_usd": 0.0123,
+            "cost_source": "provider_billed",
+            "model": "gpt-test",
+        },
+    )
     try:
         ctx = RpcContext(conn_id="test", meta_run_writer=writer)
         payload = asyncio.run(_handle_meta_runs_cost({"limit": 5}, ctx))
@@ -308,9 +332,14 @@ def test_meta_runs_cost_rpc_reports_unavailable_usage_honestly(tmp_path: Path) -
         writer.close()
 
     assert payload["aggregate"]["run_count"] == 1
-    assert payload["aggregate"]["usage"]["available"] is False
+    assert payload["aggregate"]["usage"]["available"] is True
+    assert payload["aggregate"]["usage"]["input_tokens"] == 50
+    assert payload["aggregate"]["usage"]["total_tokens"] == 60
+    assert payload["aggregate"]["usage"]["cost_usd"] == pytest.approx(0.0123)
+    assert payload["aggregate"]["usage"]["cost_source"] == "provider_billed"
     assert payload["runs"][0]["run_id"] == run_id
-    assert payload["runs"][0]["steps"][0]["usage"]["available"] is False
+    assert payload["runs"][0]["usage"]["available"] is True
+    assert payload["runs"][0]["steps"][0]["usage"]["model"] == "gpt-test"
 
 
 def test_meta_runs_validate_rpc_exposes_spec_metadata(tmp_path: Path) -> None:

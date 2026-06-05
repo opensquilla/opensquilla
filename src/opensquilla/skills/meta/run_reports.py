@@ -242,9 +242,45 @@ def _unavailable_usage() -> dict[str, Any]:
     }
 
 
+def _aggregate_summaries_usage(summaries: list[dict[str, Any]]) -> dict[str, Any]:
+    usages: list[dict[str, Any]] = []
+    for summary in summaries:
+        raw_usage = summary.get("usage")
+        if isinstance(raw_usage, dict) and raw_usage.get("available") is True:
+            usages.append(raw_usage)
+    if not usages:
+        return _unavailable_usage()
+    cost_sources = {
+        str(usage.get("cost_source") or "").strip()
+        for usage in usages
+        if str(usage.get("cost_source") or "").strip()
+    }
+
+    def int_total(key: str) -> int:
+        return sum(int(usage.get(key) or 0) for usage in usages)
+
+    def float_total(key: str) -> float:
+        return round(sum(float(usage.get(key) or 0.0) for usage in usages), 6)
+
+    return {
+        "available": True,
+        "input_tokens": int_total("input_tokens"),
+        "output_tokens": int_total("output_tokens"),
+        "total_tokens": int_total("total_tokens"),
+        "cache_read_tokens": int_total("cache_read_tokens"),
+        "cache_write_tokens": int_total("cache_write_tokens"),
+        "cost_usd": float_total("cost_usd"),
+        "billed_cost_usd": float_total("billed_cost_usd"),
+        "estimated_cost_usd": float_total("estimated_cost_usd"),
+        "cost_source": next(iter(cost_sources)) if len(cost_sources) == 1 else "mixed",
+        "run_count": len(usages),
+    }
+
+
 def build_cost_summary(records: list[RunRecord]) -> dict[str, Any]:
     by_status: dict[str, int] = {}
     by_meta_skill: dict[str, int] = {}
+    summaries = [summarize_run_record(record) for record in records]
     for record in records:
         by_status[record.status] = by_status.get(record.status, 0) + 1
         by_meta_skill[record.meta_skill_name] = by_meta_skill.get(record.meta_skill_name, 0) + 1
@@ -253,7 +289,7 @@ def build_cost_summary(records: list[RunRecord]) -> dict[str, Any]:
             "run_count": len(records),
             "by_status": by_status,
             "by_meta_skill": by_meta_skill,
-            "usage": _unavailable_usage(),
+            "usage": _aggregate_summaries_usage(summaries),
         },
         "runs": [
             {
@@ -261,18 +297,18 @@ def build_cost_summary(records: list[RunRecord]) -> dict[str, Any]:
                 "meta_skill_name": record.meta_skill_name,
                 "status": record.status,
                 "started_at_ms": record.started_at_ms,
-                "usage": summarize_run_record(record)["usage"],
+                "usage": summary["usage"],
                 "steps": [
                     {
                         "step_id": step.step_id,
                         "status": step.status,
                         "effective_skill": step.effective_skill,
-                        "usage": summarize_run_record(record)["steps"][index]["usage"],
+                        "usage": summary["steps"][index]["usage"],
                     }
                     for index, step in enumerate(record.steps)
                 ],
             }
-            for record in records
+            for record, summary in zip(records, summaries, strict=True)
         ],
     }
 
@@ -301,6 +337,35 @@ def build_validation_summary(record: RunRecord) -> dict[str, Any]:
             "declared": bool(multimodal),
             "modalities": multimodal if isinstance(multimodal, list) else [],
         },
+    }
+
+
+def build_validation_availability(record: RunRecord) -> dict[str, Any]:
+    try:
+        plan = deserialize_plan(record)
+    except Exception:  # noqa: BLE001 - list views should fail open
+        return {
+            "available": False,
+            "request_template": False,
+            "output_contract": False,
+            "eval_baseline": False,
+            "field_count": 0,
+            "required_field_count": 0,
+            "eval_prompt_count": 0,
+            "reason": "plan snapshot could not be parsed",
+        }
+    request_template = dict(plan.request_template)
+    fields = template_fields(request_template)
+    output_contract = dict(plan.output_contract)
+    eval_prompt_count = len(plan.eval_prompts)
+    return {
+        "available": bool(request_template or output_contract or eval_prompt_count),
+        "request_template": bool(request_template),
+        "output_contract": bool(output_contract),
+        "eval_baseline": eval_prompt_count > 0,
+        "field_count": len(fields),
+        "required_field_count": len(required_template_field_names(request_template)),
+        "eval_prompt_count": eval_prompt_count,
     }
 
 

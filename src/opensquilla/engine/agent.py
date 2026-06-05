@@ -5100,7 +5100,10 @@ class Agent:
         import opensquilla.skills.creator  # noqa: F401
         from opensquilla.skills.creator.runtime_e2e import make_runtime_e2e_context
         from opensquilla.skills.meta.enabled import is_meta_skill_enabled
-        from opensquilla.skills.meta.inputs import make_meta_inputs
+        from opensquilla.skills.meta.inputs import (
+            make_meta_inputs,
+            meta_input_overrides_from_metadata,
+        )
         from opensquilla.skills.meta.orchestrator import (
             MetaOrchestrator,
             make_agent_runner_from_parent,
@@ -5335,6 +5338,7 @@ class Agent:
                         or metadata.get("user_message", "")
                     ),
                     system_prompt=system_prompt,
+                    **meta_input_overrides_from_metadata(metadata),
                 ),
             )
 

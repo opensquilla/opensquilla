@@ -66,6 +66,46 @@ async def _drive_orchestrator(writer, plan: MetaPlan, outputs: dict[str, str]) -
     return final or MetaResult(ok=False, error="no result")
 
 
+async def _drive_orchestrator_with_usage(writer, plan: MetaPlan) -> MetaResult:
+    from opensquilla.engine.usage import UsageTracker
+    from opensquilla.skills.meta.events import _StepDone
+    from opensquilla.skills.meta.orchestrator import MetaOrchestrator
+
+    tracker = UsageTracker()
+    orch = MetaOrchestrator(
+        agent_runner=lambda *a, **kw: None,
+        skill_loader=lambda: None,
+        run_writer=writer,
+        triggered_by="soft_meta_invoke",
+        session_key="sess-test",
+        turn_id="turn-test",
+        usage_tracker=tracker,
+    )
+
+    async def dispatch(step, effective_skill, inputs, outputs_so_far):
+        tracker.add(
+            "sess-test",
+            input_tokens=31,
+            output_tokens=7,
+            model_id="usage-model",
+            billed_cost=0.019,
+        )
+        yield _StepDone(text="usage-output")
+
+    async def empty_preface(step_id, effective_skill):
+        if False:
+            yield None
+        return
+
+    orch._dispatch_step_stream = dispatch  # type: ignore[assignment]
+    orch._yield_skill_view_preface = empty_preface  # type: ignore[assignment]
+    final: MetaResult | None = None
+    async for item in orch.iter_events(MetaMatch(plan=plan, inputs={"user_message": "hi"})):
+        if isinstance(item, MetaResult):
+            final = item
+    return final or MetaResult(ok=False, error="no result")
+
+
 @pytest.mark.asyncio
 async def test_linear_success_writes_run_and_steps(writer_db) -> None:
     plan = MetaPlan(
@@ -92,6 +132,33 @@ async def test_linear_success_writes_run_and_steps(writer_db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_live_run_persists_scoped_step_usage(writer_db) -> None:
+    plan = MetaPlan(
+        name="usage-linear",
+        triggers=("t",),
+        priority=10,
+        steps=(MetaStep(id="s1", skill="alpha", kind="agent"),),
+    )
+    result = await _drive_orchestrator_with_usage(writer_db, plan)
+    assert result.ok
+
+    [row] = writer_db.list_runs(name="usage-linear")
+    run = writer_db.get_run(row.run_id)
+    assert run is not None
+    summary = writer_db.hydrate_runs([row])[0]
+    assert summary.run_id == run.run_id
+
+    from opensquilla.persistence.meta_run_writer import summarize_run_record
+
+    run_summary = summarize_run_record(run)
+    assert run_summary["usage"]["available"] is True
+    assert run_summary["usage"]["input_tokens"] == 31
+    assert run_summary["usage"]["output_tokens"] == 7
+    assert run_summary["usage"]["cost_usd"] == pytest.approx(0.019)
+    assert run_summary["steps"][0]["usage"]["model"] == "usage-model"
+
+
+@pytest.mark.asyncio
 async def test_on_failure_records_substituted(writer_db) -> None:
     """C3: original step gets status='substituted', substitute gets own ok."""
     plan = MetaPlan(
@@ -111,6 +178,80 @@ async def test_on_failure_records_substituted(writer_db) -> None:
     assert by_id["primary"].status == "substituted"
     assert by_id["primary"].substitute_step_id == "backup"
     assert by_id["backup"].status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_on_failure_persists_failed_step_usage(writer_db) -> None:
+    from opensquilla.engine.usage import UsageTracker
+    from opensquilla.skills.meta.events import _StepDone
+    from opensquilla.skills.meta.orchestrator import MetaOrchestrator
+
+    plan = MetaPlan(
+        name="failover-usage",
+        triggers=("t",),
+        priority=10,
+        steps=(
+            MetaStep(id="primary", skill="alpha", kind="agent", on_failure="backup"),
+            MetaStep(id="backup", skill="beta", kind="agent"),
+        ),
+    )
+    tracker = UsageTracker()
+    orch = MetaOrchestrator(
+        agent_runner=lambda *a, **kw: None,
+        skill_loader=lambda: None,
+        run_writer=writer_db,
+        triggered_by="soft_meta_invoke",
+        session_key="sess-test",
+        turn_id="turn-test",
+        usage_tracker=tracker,
+    )
+
+    async def dispatch(step, effective_skill, inputs, outputs_so_far):
+        if step.id == "primary":
+            tracker.add(
+                "sess-test",
+                input_tokens=40,
+                output_tokens=4,
+                model_id="primary-model",
+                billed_cost=0.04,
+            )
+            raise RuntimeError("primary exploded after tokens")
+        tracker.add(
+            "sess-test",
+            input_tokens=5,
+            output_tokens=1,
+            model_id="backup-model",
+            billed_cost=0.005,
+        )
+        yield _StepDone(text="backup-ok")
+
+    async def empty_preface(step_id, effective_skill):
+        if False:
+            yield None
+        return
+
+    orch._dispatch_step_stream = dispatch  # type: ignore[assignment]
+    orch._yield_skill_view_preface = empty_preface  # type: ignore[assignment]
+
+    async for _ in orch.iter_events(MetaMatch(plan=plan, inputs={"user_message": "hi"})):
+        pass
+
+    [row] = writer_db.list_runs(name="failover-usage")
+    run = writer_db.get_run(row.run_id)
+    assert run is not None
+    from opensquilla.persistence.meta_run_writer import summarize_run_record
+
+    run_summary = summarize_run_record(run)
+    status_by_step = {step.step_id: step.status for step in run.steps}
+    by_step = {
+        step["step_id"]: step["usage"]
+        for step in run_summary["steps"]
+    }
+    assert status_by_step["primary"] == "substituted"
+    assert by_step["primary"]["available"] is True
+    assert by_step["primary"]["input_tokens"] == 40
+    assert by_step["primary"]["model"] == "primary-model"
+    assert run_summary["usage"]["cost_usd"] == pytest.approx(0.045)
 
 
 @pytest.mark.asyncio

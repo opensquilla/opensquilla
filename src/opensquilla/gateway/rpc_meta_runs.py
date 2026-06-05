@@ -28,6 +28,7 @@ from opensquilla.skills.meta.run_reports import (
     build_eval_baseline,
     build_replay_request,
     build_run_diff,
+    build_validation_availability,
     build_validation_summary,
     confirmation_message,
     deserialize_plan,
@@ -82,6 +83,7 @@ def _serialize_record_summary(record: RunRecord) -> dict[str, Any]:
         "error_present": bool(record.error),
         "truncated_fields": list(record.truncated_fields),
         "summary": summarize_run_record(record),
+        "validation": build_validation_availability(record),
     }
 
 

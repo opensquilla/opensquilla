@@ -63,6 +63,11 @@
   function renderRun(run) {
     const summary = run.summary || {};
     const usage = summary.usage || {};
+    const validation = run.validation || {};
+    const validationAvailable = validation.available === true;
+    const validationTitle = validationAvailable
+      ? 'Validation available'
+      : (validation.reason || 'Validation unavailable');
     const cost = usage.available && usage.cost_usd != null
       ? ` · $${Number(usage.cost_usd || 0).toFixed(4)}`
       : '';
@@ -76,7 +81,12 @@
         <button data-action="diff" data-run-id="${escapeAttr(run.run_id || '')}">Diff</button>
         <button data-action="replay" data-run-id="${escapeAttr(run.run_id || '')}">Replay</button>
         <button data-action="cost" data-run-id="${escapeAttr(run.run_id || '')}">Cost</button>
-        <button data-action="validate" data-run-id="${escapeAttr(run.run_id || '')}">Validate</button>
+        <button
+          class="meta-run-history__validate ${validationAvailable ? 'is-available' : 'is-unavailable'}"
+          data-action="validate"
+          data-run-id="${escapeAttr(run.run_id || '')}"
+          title="${escapeAttr(validationTitle)}"
+        >Validate</button>
       </li>
     `;
   }

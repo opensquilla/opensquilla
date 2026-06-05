@@ -121,6 +121,11 @@ def test_meta_run_history_module_exists():
         assert f"function {name}" in text
     assert "showRunError" in text
     assert "catch (err)" in text
+    assert "run.validation || {}" in text
+    assert "validation.available === true" in text
+    assert "Validation available" in text
+    assert "Validation unavailable" in text
+    assert "meta-run-history__validate" in text
     for action in ("diff", "replay", "failures", "cost", "validate"):
         assert f"data-action=\"{action}\"" in text
 

@@ -49,7 +49,7 @@ if (-not (Get-Command schtasks.exe -ErrorAction SilentlyContinue)) {
 }
 
 # Resolve and persist the profiles root. We pass it on the start-all
-# invocation so the task is independent of $env:OPENSQUILLA_PROFILES_DIR
+# invocation so the task is independent of $env:OPENSQUILLA_HOME
 # at logon time.
 $root = Get-ProfilesRoot -Override $ProfilesRoot
 $startAll = Join-Path $PSScriptRoot 'start-all.ps1'

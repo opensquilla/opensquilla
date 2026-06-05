@@ -70,12 +70,12 @@ def test_default_profile_name_empty_string_falls_back(monkeypatch) -> None:
 
 
 def test_default_profiles_root_uses_env(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("OPENSQUILLA_PROFILES_DIR", str(tmp_path / "profiles"))
+    monkeypatch.setenv("OPENSQUILLA_HOME", str(tmp_path / "profiles"))
     assert default_profiles_root() == tmp_path / "profiles"
 
 
 def test_default_profiles_root_returns_none_when_unset(monkeypatch) -> None:
-    monkeypatch.delenv("OPENSQUILLA_PROFILES_DIR", raising=False)
+    monkeypatch.delenv("OPENSQUILLA_HOME", raising=False)
     assert default_profiles_root() is None
 
 
@@ -83,18 +83,18 @@ def test_default_profiles_root_expands_tilde(monkeypatch, tmp_path) -> None:
     # `~` should resolve against $HOME so the same env var is portable across
     # shells (the CLI / .env may pass either a literal path or a tilde).
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("OPENSQUILLA_PROFILES_DIR", "~/my-profiles")
+    monkeypatch.setenv("OPENSQUILLA_HOME", "~/my-profiles")
     assert default_profiles_root() == tmp_path / "my-profiles"
 
 
 def test_profile_home_validates_name(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("OPENSQUILLA_PROFILES_DIR", str(tmp_path / "profiles"))
+    monkeypatch.setenv("OPENSQUILLA_HOME", str(tmp_path / "profiles"))
     monkeypatch.setenv("OPENSQUILLA_PROFILE", "agent-a")
     assert profile_home() == tmp_path / "profiles" / "agent-a"
 
 
 def test_profile_home_rejects_path_traversal(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("OPENSQUILLA_PROFILES_DIR", str(tmp_path / "profiles"))
+    monkeypatch.setenv("OPENSQUILLA_HOME", str(tmp_path / "profiles"))
     monkeypatch.setenv("OPENSQUILLA_PROFILE", "../escape")
     # is_valid_profile_name returns False, so profile_home() must NOT
     # silently construct a path that escapes the profiles root.
@@ -109,7 +109,7 @@ def test_default_opensquilla_home_state_dir_overrides_profile(
     state_path = tmp_path / "pinned"
     profile_root = tmp_path / "profiles"
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(state_path))
-    monkeypatch.setenv("OPENSQUILLA_PROFILES_DIR", str(profile_root))
+    monkeypatch.setenv("OPENSQUILLA_HOME", str(profile_root))
     monkeypatch.setenv("OPENSQUILLA_PROFILE", "agent-a")
 
     assert default_opensquilla_home() == state_path
@@ -120,7 +120,7 @@ def test_default_opensquilla_home_resolves_via_profile(
 ) -> None:
     monkeypatch.delenv("OPENSQUILLA_STATE_DIR", raising=False)
     profile_root = tmp_path / "profiles"
-    monkeypatch.setenv("OPENSQUILLA_PROFILES_DIR", str(profile_root))
+    monkeypatch.setenv("OPENSQUILLA_HOME", str(profile_root))
     monkeypatch.setenv("OPENSQUILLA_PROFILE", "agent-b")
 
     assert default_opensquilla_home() == profile_root / "agent-b"
@@ -131,7 +131,7 @@ def test_default_opensquilla_home_falls_back_to_legacy_single_instance(
 ) -> None:
     """No STATE_DIR, no PROFILES_DIR, no PROFILE → legacy $HOME/.opensquilla."""
     monkeypatch.delenv("OPENSQUILLA_STATE_DIR", raising=False)
-    monkeypatch.delenv("OPENSQUILLA_PROFILES_DIR", raising=False)
+    monkeypatch.delenv("OPENSQUILLA_HOME", raising=False)
     monkeypatch.delenv("OPENSQUILLA_PROFILE", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
 
@@ -144,7 +144,7 @@ def test_state_dir_under_profile_isolated_between_profiles(
     """Two profiles must not share state/logs even when run from the same cwd."""
     profile_root = tmp_path / "profiles"
     monkeypatch.delenv("OPENSQUILLA_STATE_DIR", raising=False)
-    monkeypatch.setenv("OPENSQUILLA_PROFILES_DIR", str(profile_root))
+    monkeypatch.setenv("OPENSQUILLA_HOME", str(profile_root))
 
     monkeypatch.setenv("OPENSQUILLA_PROFILE", "agent-a")
     state_a = state_dir("agents", "main", "memory.db")
@@ -167,7 +167,7 @@ def test_profile_siblings_share_profiles_root(
     """
     profile_root = tmp_path / "profiles"
     monkeypatch.delenv("OPENSQUILLA_STATE_DIR", raising=False)
-    monkeypatch.setenv("OPENSQUILLA_PROFILES_DIR", str(profile_root))
+    monkeypatch.setenv("OPENSQUILLA_HOME", str(profile_root))
 
     monkeypatch.setenv("OPENSQUILLA_PROFILE", "default")
     default_home = default_opensquilla_home()
@@ -195,7 +195,7 @@ def test_profile_home_uses_forward_slashes_in_posix_paths(
 
     profile_root = tmp_path / "profiles"
     monkeypatch.delenv("OPENSQUILLA_STATE_DIR", raising=False)
-    monkeypatch.setenv("OPENSQUILLA_PROFILES_DIR", str(profile_root))
+    monkeypatch.setenv("OPENSQUILLA_HOME", str(profile_root))
     monkeypatch.setenv("OPENSQUILLA_PROFILE", "coder")
 
     home = default_opensquilla_home()
@@ -208,12 +208,12 @@ def test_profile_home_uses_forward_slashes_in_posix_paths(
 
 
 def test_default_profile_name_explicit_default_matches_legacy(monkeypatch, tmp_path) -> None:
-    """`OPENSQUILLA_PROFILE=default` WITHOUT `OPENSQUILLA_PROFILES_DIR` should
+    """`OPENSQUILLA_PROFILE=default` WITHOUT `OPENSQUILLA_HOME` should
     still land in the legacy `~/.opensquilla/` home — profile mode is opt-in
     via PROFILES_DIR, so PROFILE alone does not move the on-disk location.
     """
     monkeypatch.delenv("OPENSQUILLA_STATE_DIR", raising=False)
-    monkeypatch.delenv("OPENSQUILLA_PROFILES_DIR", raising=False)
+    monkeypatch.delenv("OPENSQUILLA_HOME", raising=False)
     monkeypatch.setenv("OPENSQUILLA_PROFILE", "default")
     monkeypatch.setenv("HOME", str(tmp_path))
 

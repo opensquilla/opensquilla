@@ -80,7 +80,7 @@ def _profile_callback(
         envvar="OPENSQUILLA_PROFILE",
         help=(
             "Profile name for multi-instance mode. Resolved to "
-            "$OPENSQUILLA_PROFILES_DIR/<profile>/ (default: "
+            "$OPENSQUILLA_HOME/<profile>/ (default: "
             "~/.opensquilla/profiles/). When set, isolates state/logs/config "
             "from other instances sharing the same host. Ignored if "
             "OPENSQUILLA_STATE_DIR is set (full override)."

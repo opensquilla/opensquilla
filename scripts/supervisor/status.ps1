@@ -42,7 +42,7 @@ if (-not $entries -or $entries.Count -eq 0) {
 $rows = @()
 foreach ($entry in $entries) {
     $port = Get-ProfilePort -Name $entry.Name -BasePort $BasePort -ProfilesRoot $root
-    $env:OPENSQUILLA_PROFILES_DIR = $root
+    $env:OPENSQUILLA_HOME = $root
     $env:OPENSQUILLA_PROFILE = $entry.Name
     Push-Location -LiteralPath $repo
     try {

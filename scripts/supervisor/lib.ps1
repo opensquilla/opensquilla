@@ -34,12 +34,12 @@ $Script:OPENSQUILLA_REPO = 'D:\ai\opensquilla\opensquilla'
 
 function Get-ProfilesRoot {
     <#
-    .SYNOPSIS Resolve the profiles root directory (OPENSQUILLA_PROFILES_DIR or default).
+    .SYNOPSIS Resolve the profiles root directory (OPENSQUILLA_HOME or default).
     #>
     param([string]$Override)
-    $candidate = if ($Override) { $Override } elseif ($env:OPENSQUILLA_PROFILES_DIR) { $env:OPENSQUILLA_PROFILES_DIR } else { $Script:DEFAULT_PROFILES_DIR }
+    $candidate = if ($Override) { $Override } elseif ($env:OPENSQUILLA_HOME) { $env:OPENSQUILLA_HOME } else { $Script:DEFAULT_PROFILES_DIR }
     if (-not $candidate) {
-        throw 'Profiles root is empty. Pass -ProfilesRoot or set $env:OPENSQUILLA_PROFILES_DIR.'
+        throw 'Profiles root is empty. Pass -ProfilesRoot or set $env:OPENSQUILLA_HOME.'
     }
     if (-not (Test-Path -LiteralPath $candidate)) {
         throw "Profiles root does not exist: $candidate"
@@ -152,7 +152,7 @@ function Invoke-Opensquilla {
     .SYNOPSIS Run an `opensquilla` subcommand inside a profile.
 
     .DESCRIPTION
-    Centralises the env setup (OPENSQUILLA_PROFILES_DIR + OPENSQUILLA_PROFILE)
+    Centralises the env setup (OPENSQUILLA_HOME + OPENSQUILLA_PROFILE)
     and the working directory so the user-facing scripts don't have to repeat
     the boilerplate. Returns the process exit code.
 
@@ -169,7 +169,7 @@ function Invoke-Opensquilla {
     )
     $profileLeaf = Split-Path -Leaf $Profile
     $profileRoot = Split-Path -Parent $Profile
-    $env:OPENSQUILLA_PROFILES_DIR = $profileRoot
+    $env:OPENSQUILLA_HOME = $profileRoot
     $env:OPENSQUILLA_PROFILE = $profileLeaf
     Push-Location -LiteralPath $Repo
     try {

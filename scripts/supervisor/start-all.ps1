@@ -14,7 +14,7 @@
 
 .PARAMETER ProfilesRoot
     Override the profiles-root directory. Defaults to
-    $env:OPENSQUILLA_PROFILES_DIR or the script's built-in default.
+    $env:OPENSQUILLA_HOME or the script's built-in default.
 
 .PARAMETER BasePort
     First port in the allocation sequence. Each subsequent profile (in

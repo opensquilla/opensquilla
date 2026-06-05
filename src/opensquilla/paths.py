@@ -8,8 +8,8 @@ Resolution precedence for the home directory:
 1. ``OPENSQUILLA_STATE_DIR`` environment variable (expanded for ``~``/``$HOME``)
    — full override; bypasses profile resolution for back-compat with
    single-instance deployments and CI scripts that pin a specific path.
-2. ``$OPENSQUILLA_PROFILES_DIR/$OPENSQUILLA_PROFILE`` — multi-instance mode.
-   Set ``OPENSQUILLA_PROFILES_DIR`` to the parent directory (default
+2. ``$OPENSQUILLA_HOME/$OPENSQUILLA_PROFILE`` — multi-instance mode.
+   Set ``OPENSQUILLA_HOME`` to the parent directory (default
    ``$HOME/.opensquilla/profiles``) and ``OPENSQUILLA_PROFILE`` (default
    ``"default"``) to select one. Profile names must match
    ``^[a-z0-9][a-z0-9_-]{0,63}$`` to prevent path-traversal escapes.
@@ -36,7 +36,7 @@ __all__ = [
     "state_dir",
 ]
 
-_PROFILES_DIR_ENV = "OPENSQUILLA_PROFILES_DIR"
+_PROFILES_DIR_ENV = "OPENSQUILLA_HOME"
 _PROFILE_ENV = "OPENSQUILLA_PROFILE"
 _STATE_DIR_ENV = "OPENSQUILLA_STATE_DIR"
 _PROFILE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -71,7 +71,7 @@ def is_valid_profile_name(name: str) -> bool:
 def default_profiles_root() -> Path | None:
     """Return the directory that contains all OpenSquilla profile homes.
 
-    Honors ``OPENSQUILLA_PROFILES_DIR`` (trimmed, ``~``/``$HOME`` expanded).
+    Honors ``OPENSQUILLA_HOME`` (trimmed, ``~``/``$HOME`` expanded).
     Returns ``None`` when unset or empty — that signals "profile mode is
     not active" and :func:`default_opensquilla_home` falls back to the
     legacy single-instance home (``$HOME/.opensquilla``).
@@ -135,8 +135,8 @@ def default_opensquilla_home() -> Path:
 
     * ``OPENSQUILLA_STATE_DIR`` wins when set (back-compat with
       single-instance deployments that pin a specific path).
-    * ``OPENSQUILLA_PROFILES_DIR`` set + ``OPENSQUILLA_PROFILE`` set →
-      ``$OPENSQUILLA_PROFILES_DIR/$OPENSQUILLA_PROFILE`` (multi-instance).
+    * ``OPENSQUILLA_HOME`` set + ``OPENSQUILLA_PROFILE`` set →
+      ``$OPENSQUILLA_HOME/$OPENSQUILLA_PROFILE`` (multi-instance).
     * Otherwise the legacy ``$HOME/.opensquilla`` home (unchanged).
     """
     override = os.environ.get(_STATE_DIR_ENV, "").strip()

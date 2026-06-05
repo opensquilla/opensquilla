@@ -408,7 +408,7 @@ Two variables drive profile mode. Set both; `PROFILE` alone without
 
 | Variable | Required? | Default | What it does |
 |---|---|---|---|
-| `OPENSQUILLA_PROFILES_DIR` | yes (to enable) | `$HOME/.opensquilla/profiles` | Parent directory that contains every profile home. Setting this is the one switch that turns multi-instance mode on. |
+| `OPENSQUILLA_HOME` | yes (to enable) | `$HOME/.opensquilla/profiles` | Parent directory that contains every profile home. Setting this is the one switch that turns multi-instance mode on. |
 | `OPENSQUILLA_PROFILE` | no | `default` | Name of the active profile. Must match `^[a-z0-9][a-z0-9_-]{0,63}$`. |
 | `OPENSQUILLA_STATE_DIR` | no | _unset_ | **Full override** that bypasses profile mode entirely. Leave unset when running multiple profiles — it forces a single hard-coded home. |
 
@@ -417,7 +417,7 @@ Two variables drive profile mode. Set both; `PROFILE` alone without
 ```powershell
 # Required: enable multi-instance mode
 [System.Environment]::SetEnvironmentVariable(
-    "OPENSQUILLA_PROFILES_DIR", "D:\ai\opensquilla\profiles", "User")
+    "OPENSQUILLA_HOME", "D:\ai\opensquilla\profiles", "User")
 
 # Optional: pin this shell to a specific profile
 [System.Environment]::SetEnvironmentVariable(
@@ -430,7 +430,7 @@ inherited by the process.
 **Temporary (current session only)**:
 
 ```powershell
-$env:OPENSQUILLA_PROFILES_DIR = "D:\ai\opensquilla\profiles"
+$env:OPENSQUILLA_HOME = "D:\ai\opensquilla\profiles"
 $env:OPENSQUILLA_PROFILE      = "coder"     # omit to use "default"
 opensquilla gateway start --port 18792
 ```
@@ -441,7 +441,7 @@ PowerShell window per profile with a different port.
 **Verify**:
 
 ```powershell
-echo $env:OPENSQUILLA_PROFILES_DIR
+echo $env:OPENSQUILLA_HOME
 echo $env:OPENSQUILLA_PROFILE
 # Expected:
 #   D:\ai\opensquilla\profiles
@@ -452,7 +452,7 @@ echo $env:OPENSQUILLA_PROFILE
 
 1. `OPENSQUILLA_STATE_DIR` — full override; bypasses profile mode. Do
    **not** set this when running multiple profiles.
-2. `OPENSQUILLA_PROFILES_DIR` + `OPENSQUILLA_PROFILE` — multi-instance.
+2. `OPENSQUILLA_HOME` + `OPENSQUILLA_PROFILE` — multi-instance.
    Resolves to `<PROFILES_DIR>/<PROFILE>/`, e.g.
    `D:\ai\opensquilla\profiles\coder\`.
 3. `$HOME/.opensquilla` — single-instance default (unchanged on disk
@@ -462,10 +462,10 @@ echo $env:OPENSQUILLA_PROFILE
 
 | Scenario | What to set |
 |---|---|
-| Run a single `coder` instance | `OPENSQUILLA_PROFILES_DIR` permanent, `$env:OPENSQUILLA_PROFILE = "coder"` per shell |
-| Run the `default` instance | `OPENSQUILLA_PROFILES_DIR` permanent, **omit** `OPENSQUILLA_PROFILE` (default is `default`) |
-| Run `coder` + `agent-1` side by side | `OPENSQUILLA_PROFILES_DIR` permanent; open two PowerShells, each with its own `$env:OPENSQUILLA_PROFILE` and a different `--port` |
-| Disable multi-instance for one command | `unset OPENSQUILLA_PROFILES_DIR` in that shell (or use `OPENSQUILLA_STATE_DIR=...` to pin a legacy home) |
+| Run a single `coder` instance | `OPENSQUILLA_HOME` permanent, `$env:OPENSQUILLA_PROFILE = "coder"` per shell |
+| Run the `default` instance | `OPENSQUILLA_HOME` permanent, **omit** `OPENSQUILLA_PROFILE` (default is `default`) |
+| Run `coder` + `agent-1` side by side | `OPENSQUILLA_HOME` permanent; open two PowerShells, each with its own `$env:OPENSQUILLA_PROFILE` and a different `--port` |
+| Disable multi-instance for one command | `unset OPENSQUILLA_HOME` in that shell (or use `OPENSQUILLA_STATE_DIR=...` to pin a legacy home) |
 | Bootstrap a new profile | `opensquilla --profile <name> init` — does not require any env var; the CLI's `--profile` flag wins over the env var |
 
 #### macOS / Linux
@@ -474,25 +474,25 @@ The same two variables, set via the shell rc of choice:
 
 ```sh
 # ~/.zshrc or ~/.bashrc
-export OPENSQUILLA_PROFILES_DIR="$HOME/opensquilla/profiles"
+export OPENSQUILLA_HOME="$HOME/opensquilla/profiles"
 # export OPENSQUILLA_PROFILE="coder"     # optional, defaults to "default"
 ```
 
 #### Cross-platform path layout
 
-Whichever OS you set `OPENSQUILLA_PROFILES_DIR` for, each profile lives as
+Whichever OS you set `OPENSQUILLA_HOME` for, each profile lives as
 a direct child of that root. The CLI uses `pathlib` for the join, so
 backslashes, forward slashes, and tildes all work transparently.
 
 ```
-D:\ai\opensquilla\profiles\         ← OPENSQUILLA_PROFILES_DIR (Windows)
+D:\ai\opensquilla\profiles\         ← OPENSQUILLA_HOME (Windows)
 ├── default\    ← OPENSQUILLA_PROFILE=default   (or flag omitted)
 ├── coder\      ← OPENSQUILLA_PROFILE=coder
 └── agent-1\    ← OPENSQUILLA_PROFILE=agent-1
 ```
 
 ```
-/home/you/opensquilla/profiles/     ← OPENSQUILLA_PROFILES_DIR (Linux/macOS)
+/home/you/opensquilla/profiles/     ← OPENSQUILLA_HOME (Linux/macOS)
 ├── default/
 ├── coder/
 └── agent-1/

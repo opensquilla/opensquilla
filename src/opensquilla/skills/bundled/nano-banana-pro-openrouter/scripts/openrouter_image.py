@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -353,6 +354,16 @@ def _api_url(base_url: str, path: str) -> str:
     return base_url + path
 
 
+def _resolve_url(url: str, *, base_url: str) -> str:
+    return urllib.parse.urljoin(f"{base_url.rstrip('/')}/", url)
+
+
+def _same_origin(url: str, *, base_url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    base = urllib.parse.urlparse(base_url)
+    return parsed.scheme == base.scheme and parsed.netloc == base.netloc
+
+
 def _extract_image_url(data: dict[str, Any]) -> str | None:
     for choice in data.get("choices") or []:
         message = choice.get("message") or {}
@@ -373,15 +384,21 @@ def _extract_image_url(data: dict[str, Any]) -> str | None:
     return None
 
 
-def _decode_image(url: str, api_key: str) -> tuple[str, bytes]:
+def _decode_image(url: str, api_key: str, *, base_url: str) -> tuple[str, bytes]:
     if url.startswith("data:"):
         prefix, sep, encoded = url.partition(",")
         if not sep or ";base64" not in prefix:
             raise RuntimeError("unsupported_data_url")
         mime = prefix.removeprefix("data:").split(";", 1)[0] or "image/png"
         return mime, base64.b64decode(encoded)
-    if url.startswith(("http://", "https://")):
-        req = urllib.request.Request(url, headers={"Authorization": "Bearer " + api_key})
+    resolved_url = _resolve_url(url, base_url=base_url)
+    if resolved_url.startswith(("http://", "https://")):
+        headers = (
+            {"Authorization": "Bearer " + api_key}
+            if _same_origin(resolved_url, base_url=base_url)
+            else {}
+        )
+        req = urllib.request.Request(resolved_url, headers=headers)
         with urllib.request.urlopen(req, timeout=45) as resp:
             mime = resp.headers.get_content_type() or "image/png"
             return mime, resp.read()
@@ -460,7 +477,7 @@ def _generate_one(
         image_url = _extract_image_url(data)
         if not image_url:
             raise RuntimeError("provider_returned_no_image")
-        mime, image_bytes = _decode_image(image_url, api_key)
+        mime, image_bytes = _decode_image(image_url, api_key, base_url=base_url)
         if not mime.startswith("image/") or len(image_bytes) < 1024:
             raise RuntimeError("invalid_image_payload")
         ext = _extension_for_mime(mime)

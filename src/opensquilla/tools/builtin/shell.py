@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -61,6 +61,9 @@ _BACKGROUND_TERMINATE_TIMEOUT = 1.0
 _BACKGROUND_KILL_TIMEOUT = 1.0
 _EXEC_TERMINATE_TIMEOUT = 0.25
 _EXEC_KILL_TIMEOUT = 0.25
+_EXEC_STDIN_WRITE_CHUNK_BYTES = 64 * 1024
+_EXEC_STDIN_GUARD_CHUNK_CHARS = 64 * 1024
+_EXEC_STDIN_GUARD_OVERLAP_CHARS = 1024
 _COMMAND_AUDIT_MAX_CHARS = 4096
 _SANDBOX_NETWORK_HINT = (
     "Hint: sandboxed shell/code has no network. Use http_request or web_fetch, "
@@ -197,11 +200,45 @@ def _workdir_is_configured_workspace(workdir: str | None) -> bool:
         return False
 
 
+def _sensitive_payload_block(tool_name: str, text: str) -> str | None:
+    from opensquilla.tools.builtin.web import (
+        _sensitive_body_block,
+        _sensitive_body_marker,
+        _sensitive_url_marker,
+    )
+
+    for token in text.split():
+        stripped = token.strip("'\"")
+        if stripped.startswith(("http://", "https://")):
+            marker = _sensitive_url_marker(stripped)
+            if marker is not None:
+                return _sensitive_body_block(tool_name, marker)
+    marker = _sensitive_body_marker(text)
+    if marker is not None:
+        return _sensitive_body_block(tool_name, marker)
+    return None
+
+
+def _iter_stdin_guard_chunks(text: str) -> Iterator[str]:
+    if len(text) <= _EXEC_STDIN_GUARD_CHUNK_CHARS:
+        yield text
+        return
+    step = _EXEC_STDIN_GUARD_CHUNK_CHARS - _EXEC_STDIN_GUARD_OVERLAP_CHARS
+    start = 0
+    while start < len(text):
+        end = min(len(text), start + _EXEC_STDIN_GUARD_CHUNK_CHARS)
+        yield text[start:end]
+        if end >= len(text):
+            break
+        start += step
+
+
 def _sensitive_shell_block(
     tool_name: str,
     command: str,
     *,
     workdir: str | None = None,
+    stdin: str | None = None,
 ) -> str | None:
     if _context_elevated_mode() == "full":
         return None
@@ -220,21 +257,27 @@ def _sensitive_shell_block(
             ensure_ascii=False,
         )
 
-    from opensquilla.tools.builtin.web import (
-        _sensitive_body_block,
-        _sensitive_body_marker,
-        _sensitive_url_marker,
-    )
+    payload_block = _sensitive_payload_block(tool_name, checked_text)
+    if payload_block is not None:
+        return payload_block
+    if stdin is None:
+        return None
 
-    for token in checked_text.split():
-        stripped = token.strip("'\"")
-        if stripped.startswith(("http://", "https://")):
-            marker = _sensitive_url_marker(stripped)
-            if marker is not None:
-                return _sensitive_body_block(tool_name, marker)
-    marker = _sensitive_body_marker(checked_text)
-    if marker is not None:
-        return _sensitive_body_block(tool_name, marker)
+    for stdin_chunk in _iter_stdin_guard_chunks(stdin):
+        marker = sensitive_path_in_text(stdin_chunk, workspace=workspace)
+        if marker is not None:
+            return json.dumps(
+                build_block_envelope(
+                    f"{checked_command}\n[stdin omitted]",
+                    marker,
+                    tool_name=tool_name,
+                ),
+                ensure_ascii=False,
+            )
+    for stdin_chunk in _iter_stdin_guard_chunks(stdin):
+        payload_block = _sensitive_payload_block(tool_name, stdin_chunk)
+        if payload_block is not None:
+            return payload_block
     return None
 
 
@@ -279,15 +322,25 @@ def _shell_write_targets(command: str) -> list[str]:
     return targets
 
 
+def _shell_write_targets_from_inputs(command: str, stdin: str | None) -> list[str]:
+    targets = _shell_write_targets(command)
+    if stdin is not None:
+        for stdin_chunk in _iter_stdin_guard_chunks(stdin):
+            targets.extend(_shell_write_targets(stdin_chunk))
+    return targets
+
+
 def _workspace_lockdown_shell_block(
     tool_name: str,
     command: str,
     workdir: str | None,
+    *,
+    stdin: str | None = None,
 ) -> dict[str, object] | None:
     roots = _workspace_lockdown_roots()
     if not roots:
         return None
-    for target in _shell_write_targets(command):
+    for target in _shell_write_targets_from_inputs(command, stdin):
         resolved = _resolve_shell_write_target(target, workdir)
         if _path_inside_any_root(resolved, roots):
             continue
@@ -312,6 +365,8 @@ def _workspace_write_deny_shell_block(
     tool_name: str,
     command: str,
     workdir: str | None,
+    *,
+    stdin: str | None = None,
 ) -> dict[str, object] | None:
     from opensquilla.tools.write_policy import (
         match_workspace_write_deny,
@@ -324,7 +379,7 @@ def _workspace_write_deny_shell_block(
         if ctx is not None and ctx.workspace_dir
         else None
     )
-    for target in _shell_write_targets(command):
+    for target in _shell_write_targets_from_inputs(command, stdin):
         resolved = _resolve_shell_write_target(target, workdir)
         deny_match = match_workspace_write_deny(
             resolved,
@@ -584,15 +639,14 @@ async def _write_exec_stdin(proc: Any, stdin_bytes: bytes | None) -> None:
     if stdin_bytes is None or proc.stdin is None:
         return
     try:
-        proc.stdin.write(stdin_bytes)
-        await proc.stdin.drain()
+        for offset in range(0, len(stdin_bytes), _EXEC_STDIN_WRITE_CHUNK_BYTES):
+            proc.stdin.write(stdin_bytes[offset : offset + _EXEC_STDIN_WRITE_CHUNK_BYTES])
+            await proc.stdin.drain()
     except (BrokenPipeError, ConnectionResetError):
         pass
     finally:
         if proc.stdin is not None and not proc.stdin.is_closing():
             proc.stdin.close()
-            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
-                await proc.stdin.wait_closed()
 
 
 async def _run_host_shell_command(
@@ -619,11 +673,25 @@ async def _run_host_shell_command(
                 if creationflags:
                     subprocess_kwargs["creationflags"] = creationflags
 
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + effective_timeout
+            timeout_result = f"[timeout after {effective_timeout}s]\ncommand: {command}"
+
             proc = await asyncio.create_subprocess_shell(command, **subprocess_kwargs)
-            await _write_exec_stdin(proc, stdin_bytes)
-            if not await _wait_exec_process(proc, effective_timeout):
+            remaining = deadline - loop.time()
+            if remaining <= 0:
                 await _terminate_exec_process_tree(proc)
-                return f"[timeout after {effective_timeout}s]\ncommand: {command}"
+                return timeout_result
+            try:
+                await asyncio.wait_for(_write_exec_stdin(proc, stdin_bytes), timeout=remaining)
+            except TimeoutError:
+                await _terminate_exec_process_tree(proc)
+                return timeout_result
+
+            remaining = deadline - loop.time()
+            if remaining <= 0 or not await _wait_exec_process(proc, remaining):
+                await _terminate_exec_process_tree(proc)
+                return timeout_result
             if os.name == "posix":
                 _signal_exec_process_tree(proc, signal.SIGTERM)
 
@@ -687,13 +755,19 @@ async def exec_command(
     if not result.allowed:
         raise ToolError(result.reason)
 
-    sensitive_block = _sensitive_shell_block("exec_command", command, workdir=cwd)
+    sensitive_block = _sensitive_shell_block(
+        "exec_command", command, workdir=cwd, stdin=stdin
+    )
     if sensitive_block is not None:
         return sensitive_block
-    lockdown_block = _workspace_lockdown_shell_block("exec_command", command, cwd)
+    lockdown_block = _workspace_lockdown_shell_block(
+        "exec_command", command, cwd, stdin=stdin
+    )
     if lockdown_block is not None:
         return json.dumps(lockdown_block, ensure_ascii=False)
-    deny_block = _workspace_write_deny_shell_block("exec_command", command, cwd)
+    deny_block = _workspace_write_deny_shell_block(
+        "exec_command", command, cwd, stdin=stdin
+    )
     if deny_block is not None:
         return json.dumps(deny_block, ensure_ascii=False)
 

@@ -496,6 +496,8 @@ def _get_or_create_chat_app(
             input_header=_input_header_fragments,
         )
         _chat_applications[surface] = cached
+    else:
+        cached.reset_session_state()
     return cached
 
 

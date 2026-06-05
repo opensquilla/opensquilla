@@ -42,7 +42,6 @@ dependencies = [
     "croniter>=2.0",
     "tomli-w>=1.0",
     "yoyo-migrations>=8.2",
-    "prompt-toolkit>=3.0",
     "questionary>=2.0",
     "python-docx>=1.1.0",
     "python-pptx>=1.0.0",
@@ -135,6 +134,7 @@ markers = [
     "agent_context_boundary: agent context budget and compaction boundary tests",
     "local_golden: local opt-in synthetic complex-task golden tests",
     "webui_browser: real browser Web UI tests driven by Playwright",
+    "tui_real_terminal: real terminal TUI integration tests driven through tmux or PTY",
     "live_channel: marks tests that hit a real channel platform (deselect with '-m \"not live_channel\"')",
 ]
 

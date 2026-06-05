@@ -52,6 +52,7 @@ from .types import (
     ModelInfo,
     ProviderHeartbeatEvent,
     QuotaStatus,
+    ReasoningDeltaEvent,
     StreamEvent,
     TextDeltaEvent,
     ToolDefinition,
@@ -103,6 +104,7 @@ __all__ = [
     # Types
     "StreamEvent",
     "TextDeltaEvent",
+    "ReasoningDeltaEvent",
     "ToolUseStartEvent",
     "ToolUseDeltaEvent",
     "ToolUseEndEvent",

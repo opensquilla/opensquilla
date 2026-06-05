@@ -21,6 +21,22 @@ class TextDeltaEvent:
 
 
 @dataclass
+class ReasoningDeltaEvent:
+    """A chunk of model reasoning/thinking, streamed in real time.
+
+    Distinct from TextDeltaEvent: reasoning is the model's private thinking,
+    not the final answer. Emitting it as its own event lets every layer keep
+    the two apart from the source, so the renderer never has to guess a block's
+    identity after the fact. The concatenation of these deltas equals
+    DoneEvent.reasoning_content, which remains the source of truth for non-TUI
+    consumers (signature replay, persistence, compaction, cost).
+    """
+
+    kind: Literal["reasoning_delta"] = field(default="reasoning_delta", init=False)
+    text: str = ""
+
+
+@dataclass
 class ToolUseStartEvent:
     """LLM begins a tool call."""
 
@@ -121,6 +137,7 @@ class ModelCapabilities:
 
 StreamEvent = (
     TextDeltaEvent
+    | ReasoningDeltaEvent
     | ToolUseStartEvent
     | ToolUseDeltaEvent
     | ToolUseEndEvent

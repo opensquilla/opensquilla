@@ -530,9 +530,9 @@ scheduling, and long-running tool work:
   and applies imports from existing OpenClaw/Hermes homes, including memory,
   persona files, skills, MCP/channel config, conflict handling, and migration
   reports.
-- **Usable chat CLI** — `opensquilla chat` now has a persistent terminal UI,
-  streaming output, queued input, slash-mode discovery, tool/status strips, and
-  more deterministic live prompt behavior.
+- **Usable chat CLI** — `opensquilla chat` has a stable terminal UI, streaming
+  output, queued input, slash-mode discovery, tool/status strips, and more
+  deterministic live prompt behavior.
 - **Cross-surface cron automation** — cron jobs now cover structured schedules,
   timezone-aware exact/every/cron runs, channel or webhook delivery, failure
   destinations, manual runs, and WebUI/CLI/RPC parity.

@@ -17,7 +17,8 @@ GATEWAY_SLASH_ADAPTER = (
 STANDALONE_SLASH_ADAPTER = (
     PROJECT_ROOT / "src/opensquilla/cli/tui/adapters/slash_standalone.py"
 )
-TUI_APPROVAL_ADAPTER = "opensquilla.cli.tui.terminal.approval"
+OPENTUI_RENDERER = "opensquilla.cli.tui.opentui.renderer"
+REMOVED_TERMINAL_BRIDGE = "terminal" + "_bridge"
 
 
 def _imports_name_from_module(path: Path, module: str, name: str) -> bool:
@@ -91,7 +92,7 @@ def _module_aliases(path: Path, module_alias: str) -> dict[str, str]:
     return aliases
 
 
-def test_chat_cmd_does_not_import_terminal_renderer_or_approval_handler() -> None:
+def test_chat_cmd_does_not_import_legacy_renderer_or_approval_handler() -> None:
     assert not _imports_name_from_module(
         CHAT_CMD,
         "opensquilla.cli.repl.stream",
@@ -121,7 +122,7 @@ def test_chat_cmd_does_not_import_raw_slash_adapters_or_context() -> None:
     )
 
 
-def test_chat_cmd_does_not_import_raw_runtime_or_terminal_bridges() -> None:
+def test_chat_cmd_does_not_import_raw_runtime_or_removed_bridges() -> None:
     assert not _imports_module_from_package(
         CHAT_CMD,
         "opensquilla.cli.repl",
@@ -135,7 +136,7 @@ def test_chat_cmd_does_not_import_raw_runtime_or_terminal_bridges() -> None:
     assert not _imports_module_from_package(
         CHAT_CMD,
         "opensquilla.cli.repl",
-        "terminal_bridge",
+        REMOVED_TERMINAL_BRIDGE,
     )
 
 
@@ -231,7 +232,7 @@ def test_chat_cmd_does_not_import_launch_presentation_details() -> None:
     assert not _imports_name_from_module(CHAT_CMD, "opensquilla.cli.ui", "ACCENT")
 
 
-def test_chat_cmd_does_not_import_terminal_presentation_defaults() -> None:
+def test_chat_cmd_does_not_import_cli_presentation_defaults() -> None:
     assert not _imports_from_module(CHAT_CMD, "opensquilla.cli.ui")
 
 
@@ -263,7 +264,7 @@ def test_turn_stream_does_not_import_raw_input_assets() -> None:
     )
 
 
-def test_turn_stream_does_not_import_terminal_default_dependencies() -> None:
+def test_turn_stream_does_not_import_frontend_default_dependencies() -> None:
     assert not _imports_module_from_package(
         TURN_STREAM,
         "opensquilla.cli.repl",
@@ -280,7 +281,7 @@ def test_turn_stream_does_not_import_terminal_default_dependencies() -> None:
     )
     assert not _imports_from_module(
         TURN_STREAM,
-        "opensquilla.cli.repl.terminal_bridge",
+        f"opensquilla.cli.repl.{REMOVED_TERMINAL_BRIDGE}",
     )
     assert not _imports_from_module(
         TURN_STREAM,
@@ -308,11 +309,11 @@ def test_turn_bridge_does_not_import_concrete_streaming_renderer() -> None:
     )
 
 
-def test_turn_stream_defaults_uses_tui_approval_adapter() -> None:
+def test_turn_stream_defaults_uses_opentui_renderer_default() -> None:
     assert _imports_name_from_module(
         TURN_STREAM_DEFAULTS,
-        TUI_APPROVAL_ADAPTER,
-        "maybe_handle_approval",
+        OPENTUI_RENDERER,
+        "OpenTuiStreamRenderer",
     )
     assert not _imports_name_from_module(
         TURN_STREAM_DEFAULTS,
@@ -328,8 +329,8 @@ def test_turn_bridge_delegates_tui_approval_defaults() -> None:
     )
     assert not _imports_name_from_module(
         TURN_BRIDGE,
-        TUI_APPROVAL_ADAPTER,
-        "maybe_handle_approval",
+        OPENTUI_RENDERER,
+        "OpenTuiStreamRenderer",
     )
 
 

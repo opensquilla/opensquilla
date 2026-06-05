@@ -46,9 +46,11 @@ class SlashCategory(Enum):
 
 
 # Destructive commands clear pending work AND cancel the active turn before
-# their handler runs. The plan locks these to the three context-rewriting
-# slash words.
-DESTRUCTIVE_SLASH_WORDS: frozenset[str] = frozenset({"/clear", "/reset", "/compact"})
+# their handler runs. The plan locks these to the context-rewriting slash
+# words; /cmp is the /compact alias and shares its destructive semantics.
+DESTRUCTIVE_SLASH_WORDS: frozenset[str] = frozenset(
+    {"/clear", "/reset", "/compact", "/cmp"}
+)
 
 # Exit commands drain the pending queue and then terminate the loop, mirroring
 # the Ctrl-D / EOF path. They MUST NOT discard queued user work.

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import opensquilla.cli.tui.adapters.input_bridge as _input_bridge
 from opensquilla.cli.chat.session_state import ChatSessionState
@@ -18,6 +18,9 @@ from opensquilla.cli.tui.adapters import runtime_bridge as _runtime_bridge
 from opensquilla.cli.tui.adapters import slash_bridge as _slash_bridge
 from opensquilla.cli.tui.backend.contracts import TuiOutputHandle
 from opensquilla.engine.commands import Surface
+
+if TYPE_CHECKING:
+    from opensquilla.engine.agent_injection import PendingInputProvider
 
 CLI_ALLOWED_FILE_MIMES = _input_bridge.CLI_ALLOWED_FILE_MIMES
 CLI_INLINE_THRESHOLD_BYTES = _input_bridge.CLI_INLINE_THRESHOLD_BYTES
@@ -378,6 +381,7 @@ async def stream_response_turnrunner(
     timeout: float | None = None,
     *,
     tui_output: TuiOutputHandle | None = None,
+    pending_input_provider: PendingInputProvider | None = None,
 ) -> TurnResult:
     return await _turn_bridge.stream_response_turnrunner(
         turn_runner,
@@ -389,6 +393,7 @@ async def stream_response_turnrunner(
         timeout=timeout,
         tui_output=tui_output,
         deps=default_turn_stream_dependencies(),
+        pending_input_provider=pending_input_provider,
     )
 
 
@@ -402,6 +407,7 @@ async def handle_image_command_turnrunner(
     timeout: float | None = None,
     *,
     tui_output: TuiOutputHandle | None = None,
+    pending_input_provider: PendingInputProvider | None = None,
 ) -> TurnResult:
     return await _turn_bridge.handle_image_command_turnrunner(
         turn_runner,
@@ -413,4 +419,5 @@ async def handle_image_command_turnrunner(
         timeout=timeout,
         tui_output=tui_output,
         deps=default_turn_stream_dependencies(),
+        pending_input_provider=pending_input_provider,
     )

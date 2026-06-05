@@ -436,7 +436,7 @@ class MatrixChannel:
         )
 
     async def _on_room_message_media(self, room: Any, event: Any) -> None:
-        """Surface inbound media as a textual placeholder.
+        """Surface inbound media as a text placeholder.
 
         Image / audio / video / file events arrive as nio
         ``RoomMessageMedia`` subclasses. The adapter turns each into an

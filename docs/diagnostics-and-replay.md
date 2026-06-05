@@ -64,6 +64,22 @@ Use replay when:
 - a bug report needs concise reproduction evidence;
 - you want to compare transcript output with diagnostics and cost data.
 
+## TUI Replay Benchmarks
+
+Developers can replay deterministic terminal-chat fixtures without a live
+provider:
+
+```sh
+uv run python scripts/bench_tui_replay.py --renderer opentui --fixture long-stream --summary-json .artifacts/tui/opentui-long-stream.json
+uv run python scripts/bench_tui_replay.py --renderer opentui --fixture dense-history --summary-json .artifacts/tui/opentui-dense-history.json
+```
+
+Benchmark summaries include renderer availability, event counts, text size,
+tool and router-decision counts, wall time, flush counts, maximum buffered text,
+coalescing ratio, transcript item counts, visible viewport counts, expanded tool
+counts, viewport projection time, final text match status, plugin error count,
+and errors.
+
 ## Pair Replay With Sessions
 
 Find the session first:

@@ -2128,7 +2128,10 @@ async def _run_turn_batch_path(
                     await event_bridge.emit(
                         session_key,
                         "session.event.text_delta",
-                        {"text": event.text},
+                        {
+                            "text": event.text,
+                            "presentation": getattr(event, "presentation", "answer"),
+                        },
                     )
             elif artifact := _artifact_event_payload(event):
                 artifacts.append(artifact)
@@ -2292,7 +2295,10 @@ async def _run_turn_streaming_path(
                     await event_bridge.emit(
                         session_key,
                         "session.event.text_delta",
-                        {"text": event.text},
+                        {
+                            "text": event.text,
+                            "presentation": getattr(event, "presentation", "answer"),
+                        },
                     )
             elif artifact := _artifact_event_payload(event):
                 artifacts.append(artifact)

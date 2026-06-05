@@ -5,6 +5,53 @@ kind: meta
 meta_priority: 72
 always: false
 final_text_mode: "step:intel_brief_audit"
+request_template:
+  outcome: "Competitive-intel brief with current signals, evidence, and recommended actions."
+  fields:
+    - name: target_companies
+      required: true
+    - name: time_window
+      required: false
+      default: "recent/current"
+    - name: focus_areas
+      required: false
+      default: "pricing, product, leadership, hiring, partnerships, funding, news"
+    - name: baseline_context
+      required: false
+    - name: audience
+      required: false
+      default: "sales, BD, or strategy stakeholder"
+    - name: language
+      required: false
+      default: "match the user's language"
+  assumptions:
+    - "Use public/current evidence when browsing is available."
+    - "Do not treat stale pasted examples as current facts."
+output_contract:
+  required_sections:
+    - "Executive summary"
+    - "Signal table with evidence"
+    - "Risks and unknowns"
+    - "Recommended follow-up actions"
+  assumptions:
+    - "Currentness depends on available browsing/source access."
+  unverified:
+    - "Private pricing, roadmap, and non-public account data."
+  artifacts: []
+eval_prompts:
+  - name: "competitive-intel-baseline"
+    prompt: "Prepare a competitive-intel brief on two named competitors over the last month for a sales lead."
+    rubric:
+      - "Executive summary"
+      - "Signal table with evidence"
+      - "Risks and unknowns"
+      - "Recommended follow-up actions"
+preference_keys:
+  - preferred_language
+  - audience_profile
+policy_tags:
+  - public-data-only
+  - no-private-account-data
 triggers:
   - "competitive intelligence"
   - "watch this account"
@@ -56,6 +103,7 @@ metadata:
 composition:
   steps:
     - id: preferences
+      label: "偏好提取"
       kind: llm_chat
       with:
         system: "You extract competitive-intel preferences. Return only the requested contract."
@@ -81,6 +129,7 @@ composition:
           ASSUMPTIONS:
             - <assumption>
     - id: intel_clarify
+      label: "情报澄清"
       kind: user_input
       depends_on: [preferences]
       when: "'NEEDS_CLARIFICATION: yes' in outputs.preferences"
@@ -122,6 +171,7 @@ composition:
         cancel_keywords: ["算了", "取消", "cancel", "stop", "abort"]
         timeout_hours: 24
     - id: depth
+      label: "深度判断"
       kind: llm_classify
       depends_on: [preferences, intel_clarify]
       output_choices:
@@ -151,6 +201,7 @@ composition:
           - EXEC_BRIEF: user asks for a 5-bullet executive-style summary
             for someone else to skim; minimise raw research dump.
     - id: intel_context
+      label: "情报上下文"
       kind: llm_chat
       depends_on: [depth, intel_clarify]
       with:
@@ -195,11 +246,13 @@ composition:
           - If account or dimension names are visible in the raw user request,
             do not ask for them again.
     - id: recall_baseline
+      label: "基线召回"
       kind: agent
       skill: memory
       depends_on: [depth, intel_context, intel_clarify]
       on_failure: recall_baseline_fallback
     - id: recall_baseline_fallback
+      label: "基线召回兜底"
       kind: llm_chat
       with:
         system: "You produce a no-memory fallback note for competitive intel."
@@ -208,6 +261,7 @@ composition:
           baseline text and current visible research evidence. Do not mention
           runtime errors to the user.
     - id: search_strategy
+      label: "检索策略"
       kind: llm_chat
       depends_on: [depth, intel_context]
       with:
@@ -247,6 +301,7 @@ composition:
             company news, product/pricing pages, funding, hiring, and
             partnership announcements.
     - id: web_research
+      label: "网页研究"
       kind: skill_exec
       skill: multi-search-engine
       depends_on: [depth, intel_context, search_strategy]
@@ -256,6 +311,7 @@ composition:
         engines: [brave, tavily, duckduckgo]
         max_results: 15
     - id: web_research_fallback
+      label: "网页研究兜底"
       kind: llm_chat
       with:
         system: "You produce a no-web fallback note for competitive intel."
@@ -269,6 +325,7 @@ composition:
           Request:
           {{ inputs.user_message | xml_escape | truncate(3500) }}
     - id: target_search_query_1
+      label: "目标1检索词"
       kind: llm_chat
       depends_on: [intel_context, search_strategy]
       with:
@@ -295,6 +352,7 @@ composition:
             comparables.
           - Use plain search text, not YAML or JSON.
     - id: web_research_target_1
+      label: "目标1研究"
       kind: skill_exec
       skill: multi-search-engine
       depends_on: [target_search_query_1]
@@ -305,6 +363,7 @@ composition:
         engines: [duckduckgo, brave, tavily]
         max_results: 8
     - id: web_research_target_1_fallback
+      label: "目标1研究兜底"
       kind: llm_chat
       with:
         system: "You produce a source-unavailable fallback note for one target search."
@@ -313,6 +372,7 @@ composition:
           external signals as not verified. Do not expose tool names, paths,
           stack traces, connector wording, or runtime failures.
     - id: target_search_query_2
+      label: "目标2检索词"
       kind: llm_chat
       depends_on: [intel_context, search_strategy]
       with:
@@ -339,6 +399,7 @@ composition:
             comparables.
           - Use plain search text, not YAML or JSON.
     - id: web_research_target_2
+      label: "目标2研究"
       kind: skill_exec
       skill: multi-search-engine
       depends_on: [target_search_query_2]
@@ -349,6 +410,7 @@ composition:
         engines: [duckduckgo, brave, tavily]
         max_results: 8
     - id: web_research_target_2_fallback
+      label: "目标2研究兜底"
       kind: llm_chat
       with:
         system: "You produce a source-unavailable fallback note for one target search."
@@ -357,6 +419,7 @@ composition:
           external signals as not verified. Do not expose tool names, paths,
           stack traces, connector wording, or runtime failures.
     - id: target_search_query_3
+      label: "目标3检索词"
       kind: llm_chat
       depends_on: [intel_context, search_strategy]
       with:
@@ -383,6 +446,7 @@ composition:
             comparables.
           - Use plain search text, not YAML or JSON.
     - id: web_research_target_3
+      label: "目标3研究"
       kind: skill_exec
       skill: multi-search-engine
       depends_on: [target_search_query_3]
@@ -393,6 +457,7 @@ composition:
         engines: [duckduckgo, brave, tavily]
         max_results: 8
     - id: web_research_target_3_fallback
+      label: "目标3研究兜底"
       kind: llm_chat
       with:
         system: "You produce a source-unavailable fallback note for one target search."
@@ -401,6 +466,7 @@ composition:
           external signals as not verified. Do not expose tool names, paths,
           stack traces, connector wording, or runtime failures.
     - id: research_status
+      label: "研究状态"
       kind: llm_classify
       depends_on:
         - web_research
@@ -440,6 +506,7 @@ composition:
             most engines failed, returned request errors, missing-key errors,
             parse failures, or the output is a no-web fallback.
     - id: search_retry_query
+      label: "重试检索词"
       kind: llm_chat
       depends_on: [research_status, search_strategy, intel_context]
       when: "outputs.get('research_status', '') != 'SEARCH_OK'"
@@ -465,6 +532,7 @@ composition:
             terms.
           - Do not mention tool failures or internal execution.
     - id: web_research_retry
+      label: "重试研究"
       kind: skill_exec
       skill: multi-search-engine
       depends_on: [search_retry_query]
@@ -475,6 +543,7 @@ composition:
         engines: [duckduckgo, brave, tavily]
         max_results: 10
     - id: web_research_retry_fallback
+      label: "重试研究兜底"
       kind: llm_chat
       with:
         system: "You produce a source-unavailable fallback note for competitive intel."
@@ -483,6 +552,7 @@ composition:
           not verified. Do not expose tool names, paths, stack traces,
           connector wording, or runtime failures.
     - id: research_status_final
+      label: "最终状态"
       kind: llm_classify
       depends_on:
         - research_status
@@ -527,6 +597,7 @@ composition:
             both passes failed, were skipped into fallback, returned only
             request/key/parse errors, or yielded no result objects.
     - id: summarize_web
+      label: "网页摘要"
       kind: llm_chat
       depends_on:
         - web_research
@@ -585,6 +656,7 @@ composition:
           - Do not expose tool names, search errors, connector wording,
             workspace paths, or runtime details.
     - id: deep_dive
+      label: "深度挖掘"
       kind: skill_exec
       skill: deep-research
       depends_on: [depth, intel_context, search_strategy]
@@ -594,6 +666,7 @@ composition:
         depth: "deep"
         max_rounds: 3
     - id: enrich_accounts
+      label: "账户补全"
       kind: llm_chat
       depends_on: [depth, web_research, web_research_retry, research_status_final, summarize_web, intel_context, intel_clarify]
       with:
@@ -628,6 +701,7 @@ composition:
             - <bullet, source>
           HIRING_SIGNAL: <ACCELERATING|FLAT|SLOWING|UNKNOWN>
     - id: extract_signals
+      label: "信号提取"
       kind: llm_chat
       depends_on:
         - depth
@@ -695,6 +769,7 @@ composition:
           vague ("unconfirmed", "rumour") unless the row is one of the
           requested no-verified-new-signal placeholder rows.
     - id: baseline_diff
+      label: "基线对比"
       kind: llm_chat
       depends_on: [extract_signals, recall_baseline, depth, intel_context, intel_clarify]
       when: "outputs.depth == 'DIFF_VS_BASELINE' or 'BASELINE_TEXT_PRESENT: yes' in outputs.preferences or (inputs.get('collected', {}).get('intel_clarify', {}).get('baseline_text', '') | length) > 0 or (outputs.get('recall_baseline', '') | length) > 0"
@@ -737,6 +812,7 @@ composition:
           - Still list unchanged baseline claims under Shifted/Unchanged
             wording when useful for the user's requested comparison.
     - id: verdict
+      label: "结论"
       kind: llm_classify
       depends_on: [extract_signals, baseline_diff]
       output_choices:
@@ -767,6 +843,7 @@ composition:
             incident at the monitored target that the user can take
             advantage of OR must defend against).
     - id: recommend_actions
+      label: "行动建议"
       kind: llm_chat
       depends_on: [verdict, extract_signals, baseline_diff, intel_context, intel_clarify]
       with:
@@ -794,6 +871,7 @@ composition:
           If the verdict is NO_NEW_SIGNAL, the only bullet should be
           "Continue monitoring — re-run in <time_window>".
     - id: signals_xlsx
+      label: "信号表格"
       kind: skill_exec
       skill: xlsx
       depends_on: [extract_signals, verdict, intel_clarify]
@@ -809,6 +887,7 @@ composition:
             from_markdown: "{{ outputs.get('baseline_diff', '') }}"
         output_path: "/tmp/competitive_intel_signals_{{ inputs.get('collected', {}).get('intel_clarify', {}).get('accounts', 'untitled') | slugify | truncate(60) }}.xlsx"
     - id: deliver_intel_brief
+      label: "情报交付"
       kind: llm_chat
       depends_on:
         - preferences
@@ -877,6 +956,7 @@ composition:
           End with a single line:
           INTEL_VERDICT: {{ outputs.verdict }}
     - id: intel_brief_audit
+      label: "情报审稿"
       kind: llm_chat
       depends_on:
         - deliver_intel_brief
@@ -971,11 +1051,13 @@ composition:
           End with:
           INTEL_VERDICT: {{ outputs.verdict }}
     - id: store_brief
+      label: "存储简报"
       kind: agent
       skill: memory
       depends_on: [intel_brief_audit, intel_clarify, verdict]
       on_failure: store_brief_fallback
     - id: store_brief_fallback
+      label: "存储简报兜底"
       kind: llm_chat
       with:
         system: "You produce an internal no-op fallback when competitive-intel memory persistence is unavailable."
@@ -984,6 +1066,7 @@ composition:
           MEMORY_STORE_SKIPPED
           Do not mention this to the user.
     - id: export_docx
+      label: "导出 DOCX"
       kind: skill_exec
       skill: docx
       depends_on: [intel_brief_audit, intel_clarify]

@@ -5,6 +5,54 @@ kind: meta
 meta_priority: 50
 always: false
 final_text_mode: "step:deliver_paper"
+request_template:
+  outcome: "Academic manuscript draft or repair pass with citation and compilation checks as requested."
+  fields:
+    - name: paper_topic_or_manuscript
+      required: true
+    - name: mode
+      required: false
+      default: "compact draft unless full/PDF/long-form is explicit"
+    - name: target_venue_or_style
+      required: false
+    - name: citation_requirements
+      required: false
+    - name: audience
+      required: false
+      default: "academic reader or target venue"
+    - name: language
+      required: false
+      default: "match the user's language"
+  assumptions:
+    - "Do not fabricate citations or experimental results."
+    - "Use compact output unless the request explicitly asks for full manuscript artifacts."
+output_contract:
+  required_sections:
+    - "Manuscript or repair output"
+    - "Citation and source status"
+    - "Known gaps"
+    - "Next validation step"
+  assumptions:
+    - "Draft mode and artifact generation follow the user's explicit request."
+  unverified:
+    - "Claims without supplied data or verified citations."
+  artifacts:
+    - name: "paper_artifact"
+      required: false
+eval_prompts:
+  - name: "paper-write-baseline"
+    prompt: "Draft a compact research-paper outline with citation status and known gaps for a supplied topic."
+    rubric:
+      - "Manuscript or repair output"
+      - "Citation and source status"
+      - "Known gaps"
+      - "Next validation step"
+preference_keys:
+  - preferred_language
+  - citation_style
+policy_tags:
+  - no-fabricated-citations
+  - no-fabricated-results
 triggers:
   - "draft a paper"
   - "write a research paper"
@@ -30,6 +78,7 @@ metadata:
 composition:
   steps:
     - id: paper_collect
+      label: "论文收集"
       kind: llm_chat
       with:
         system: "You extract paper requirements and decide whether clarification is required."
@@ -89,6 +138,7 @@ composition:
           ASSUMPTIONS:
             - <assumption or none>
     - id: paper_clarify
+      label: "论文澄清"
       kind: user_input
       depends_on: [paper_collect]
       when: "'NEEDS_CLARIFICATION: yes' in outputs.paper_collect"
@@ -135,6 +185,7 @@ composition:
         cancel_keywords: ["算了", "取消", "cancel", "stop", "abort"]
         timeout_hours: 24
     - id: paper_contract
+      label: "论文契约"
       kind: llm_chat
       depends_on: [paper_collect, paper_clarify]
       with:
@@ -164,6 +215,7 @@ composition:
           ASSUMPTIONS:
             - <assumption or none>
     - id: paper_preferences
+      label: "论文偏好"
       kind: llm_chat
       depends_on: [paper_contract]
       with:
@@ -192,6 +244,7 @@ composition:
           ASSUMPTIONS:
             - <assumption>
     - id: search_query_translation
+      label: "检索翻译"
       kind: llm_chat
       depends_on: [paper_contract]
       when: "'PAPER_MODE: COMPILE_ONLY' not in outputs.paper_contract"
@@ -216,6 +269,7 @@ composition:
           Topic (may be Chinese, Japanese, or English):
           TOPIC: {{ outputs.paper_contract | truncate(1200) }}, MODE: {{ outputs.paper_contract | truncate(400) }}, PAGES: {{ outputs.paper_contract | truncate(400) }}
     - id: search_papers
+      label: "论文检索"
       kind: skill_exec
       skill: multi-search-engine
       depends_on: [paper_preferences, search_query_translation]
@@ -231,6 +285,7 @@ composition:
         # readers don't need to re-discover the limit.
         max_results: 20
     - id: refbib
+      label: "参考文献"
       kind: skill_exec
       skill: paper-refbib-stub
       depends_on: [search_papers]
@@ -238,6 +293,7 @@ composition:
       with:
         search_results: "{{ outputs.search_papers | truncate(8000) }}"
     - id: source_pack
+      label: "来源包"
       kind: llm_chat
       depends_on: [search_papers, refbib]
       when: "'PAPER_MODE: COMPILE_ONLY' not in outputs.paper_contract"
@@ -268,6 +324,7 @@ composition:
           COVERAGE_GAPS:
             - <gap or none>
     - id: experiment_design
+      label: "实验设计"
       kind: llm_chat
       depends_on: [paper_preferences, source_pack]
       when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_contract or 'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_contract"
@@ -358,6 +415,7 @@ composition:
           - cite_key fields must reference IDs that exist in source_pack;
             do not invent new ref keys here.
     - id: figure_placeholders
+      label: "图占位"
       kind: llm_chat
       depends_on: [experiment_design]
       when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_contract or 'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_contract"
@@ -407,6 +465,7 @@ composition:
           \end{figure}
           % END_FIGURE_PLACEHOLDERS
     - id: table_placeholders
+      label: "表占位"
       kind: llm_chat
       depends_on: [experiment_design]
       when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_contract or 'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_contract"
@@ -452,6 +511,7 @@ composition:
           ... (repeat per TABLE_PLAN entry)
           % END_TABLE_PLACEHOLDERS
     - id: analysis_outline
+      label: "分析大纲"
       kind: llm_chat
       depends_on: [experiment_design, figure_placeholders, table_placeholders]
       when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_contract or 'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_contract"
@@ -499,6 +559,7 @@ composition:
           ... (repeat per ANALYSIS_DIMENSION)
           % END_ANALYSIS_OUTLINE
     - id: outline
+      label: "大纲"
       kind: llm_chat
       depends_on: [source_pack, experiment_design]
       when: "'PAPER_MODE: COMPILE_ONLY' not in outputs.paper_contract"
@@ -524,6 +585,7 @@ composition:
           Cite keys hint:
           {{ outputs.refbib | truncate(8000) }}
     - id: citation_plan
+      label: "引用计划"
       kind: llm_chat
       depends_on: [outline, source_pack, refbib]
       when: "'PAPER_MODE: COMPILE_ONLY' not in outputs.paper_contract"
@@ -556,6 +618,7 @@ composition:
     # The explicit full path writes section-by-section, unifies the manuscript,
     # runs quality gates, compiles a PDF, and delivers the artifact.
     - id: writing_plan
+      label: "写作计划"
       kind: llm_chat
       depends_on: [paper_preferences, outline, citation_plan, experiment_design, figure_placeholders, table_placeholders, analysis_outline, refbib]
       when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_contract"
@@ -736,6 +799,7 @@ composition:
           use this same phrase in abstract, experiments, discussion, and
           conclusion. Do not invent empirical numbers.>
     - id: section_abstract
+      label: "摘要段"
       kind: agent
       skill: paper-section-author
       depends_on: [writing_plan]
@@ -768,6 +832,7 @@ composition:
             expand it just to satisfy the long-form page target.
           - Only output the LaTeX fragment. No commentary, no fences.
     - id: section_introduction
+      label: "引言段"
       kind: agent
       skill: paper-section-author
       depends_on: [writing_plan, section_abstract]
@@ -807,6 +872,7 @@ composition:
             undersized section.
           - Output ONLY the LaTeX fragment for this section. No fences.
     - id: section_related_work
+      label: "相关工作"
       kind: agent
       skill: paper-section-author
       depends_on: [writing_plan, section_introduction]
@@ -847,6 +913,7 @@ composition:
             section.
           - Output ONLY the LaTeX fragment. No fences, no preamble.
     - id: section_method
+      label: "方法段"
       kind: agent
       skill: paper-section-author
       depends_on: [writing_plan, section_related_work, figure_placeholders]
@@ -892,6 +959,7 @@ composition:
             not return an undersized section.
           - Output ONLY the LaTeX fragment. No fences.
     - id: section_experiments
+      label: "实验段"
       kind: agent
       skill: paper-section-author
       depends_on: [writing_plan, section_method, figure_placeholders, table_placeholders]
@@ -944,6 +1012,7 @@ composition:
             section.
           - Output ONLY the LaTeX fragment. No fences.
     - id: section_discussion
+      label: "讨论段"
       kind: agent
       skill: paper-section-author
       depends_on: [writing_plan, section_experiments, analysis_outline]
@@ -987,6 +1056,7 @@ composition:
             not return an undersized section.
           - Output ONLY the LaTeX fragment.
     - id: section_conclusion
+      label: "结论段"
       kind: agent
       skill: paper-section-author
       depends_on: [writing_plan, section_discussion, section_abstract]
@@ -1022,6 +1092,7 @@ composition:
             not return an undersized section.
           - Output ONLY the LaTeX fragment.
     - id: persist_sections
+      label: "保存章节"
       kind: tool_call
       tool: exec_command
       tool_allowlist: [exec_command]
@@ -1077,6 +1148,7 @@ composition:
           SEC_DISCUSSION:  "{{ outputs.section_discussion }}"
           SEC_CONCLUSION:  "{{ outputs.section_conclusion }}"
     - id: assemble_manuscript_tex
+      label: "组装 TEX"
       kind: tool_call
       tool: exec_command
       tool_allowlist: [exec_command]
@@ -1217,6 +1289,7 @@ composition:
           WRITING_PLAN:    "{{ outputs.writing_plan }}"
           TOPIC:           "{{ outputs.paper_contract | truncate(400) }}"
     - id: consistency_pass
+      label: "一致性检查"
       kind: llm_chat
       depends_on: [writing_plan, assemble_manuscript_tex]
       when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_contract"
@@ -1254,6 +1327,7 @@ composition:
           CONTEXT_POLICY: artifact-only; full manuscript omitted from prompt/output
 
     - id: final_manuscript_package
+      label: "终稿打包"
       kind: llm_chat
       depends_on: [paper_contract, outline, citation_plan, refbib, figure_placeholders, table_placeholders, analysis_outline]
       when: "'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_contract or 'PAPER_MODE: REPAIR_EXISTING' in outputs.paper_contract"
@@ -1404,6 +1478,7 @@ composition:
           COMPILE_NOTES:
           - <short note about figure/reference assumptions>
     - id: citation_map
+      label: "引用映射"
       kind: tool_call
       tool: exec_command
       tool_allowlist: [exec_command]
@@ -1495,6 +1570,7 @@ composition:
           MANIFEST: "{{ outputs.get('consistency_pass') or outputs.get('assemble_manuscript_tex') or outputs.get('final_manuscript_package', '') }}"
           REFBIB: "{{ outputs.refbib }}"
     - id: paper_length_gate
+      label: "篇幅门禁"
       kind: llm_chat
       depends_on: [final_manuscript_package, consistency_pass, assemble_manuscript_tex]
       when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_contract or 'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_contract or 'PAPER_MODE: REPAIR_EXISTING' in outputs.paper_contract"
@@ -1518,6 +1594,7 @@ composition:
           WARNINGS:
             - <warning or none>
     - id: citation_integrity_gate
+      label: "引用门禁"
       kind: llm_chat
       depends_on: [final_manuscript_package, consistency_pass, assemble_manuscript_tex, citation_plan, refbib, citation_map, paper_length_gate]
       when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_contract or 'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_contract or 'PAPER_MODE: REPAIR_EXISTING' in outputs.paper_contract"
@@ -1561,6 +1638,7 @@ composition:
           WARNINGS:
             - <warning or none>
     - id: latex_sanitizer
+      label: "LaTeX 清理"
       kind: llm_chat
       depends_on: [citation_integrity_gate]
       when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_contract or 'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_contract or 'PAPER_MODE: REPAIR_EXISTING' in outputs.paper_contract or 'PAPER_MODE: COMPILE_ONLY' in outputs.paper_contract"
@@ -1577,6 +1655,7 @@ composition:
           Citation gate:
           {{ outputs.citation_integrity_gate | truncate(2000) }}
     - id: compile_latex
+      label: "编译 LaTeX"
       kind: llm_chat
       depends_on: [latex_sanitizer]
       when: "'PAPER_MODE: COMPILE_ONLY' in outputs.paper_contract"
@@ -1597,6 +1676,7 @@ composition:
           BLOCKERS:
             - <blocker or none>
     - id: compile_pdf
+      label: "编译 PDF"
       kind: tool_call
       tool: exec_command
       tool_allowlist: [exec_command]
@@ -1758,6 +1838,7 @@ composition:
         env:
           MANUSCRIPT_PKG: "{{ outputs.get('consistency_pass') or outputs.get('assemble_manuscript_tex') or outputs.get('final_manuscript_package', '') }}"
     - id: publish_pdf
+      label: "发布 PDF"
       kind: tool_call
       tool: publish_artifact
       tool_allowlist: [publish_artifact]
@@ -1768,6 +1849,7 @@ composition:
         name: "paper.pdf"
         mime: "application/pdf"
     - id: deliver_paper
+      label: "论文交付"
       kind: llm_chat
       depends_on: [final_manuscript_package, compile_pdf, publish_pdf, citation_map]
       when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_contract or 'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_contract or 'PAPER_MODE: REPAIR_EXISTING' in outputs.paper_contract"

@@ -1268,6 +1268,7 @@ const ChatView = (() => {
                         aria-label="Message to send"></textarea>
             </div>
             <button class="btn btn--icon btn--ghost" id="chat-btn-mic" title="Record voice input" aria-label="Record voice input">${icons.microphone ? icons.microphone() : icons.chat()}</button>
+            <button class="btn btn--icon btn--ghost" id="chat-btn-meta-history" title="MetaSkill run history" aria-label="MetaSkill run history">${icons.logs ? icons.logs() : icons.chat()}</button>
             <button class="btn btn--icon btn--ghost" id="chat-btn-new" title="New chat session in the current agent" aria-label="New chat session in the current agent">${icons.plus()}</button>
             <button class="btn btn--icon btn--ghost" id="chat-btn-export" title="Export as Markdown" aria-label="Export as Markdown">${icons.download()}</button>
             <button class="btn btn--icon btn--primary" id="chat-btn-send" title="Send (queues while streaming)" aria-label="Send message">${icons.send()}</button>
@@ -4703,8 +4704,114 @@ const ChatView = (() => {
     // MetaSkill run progress ribbon — design §8.
     // 3 handlers + 1 action delegate. Ribbon lives in window.MetaRibbon
     // (loaded as a classic script before chat.js, see index.html).
+    const _metaPreflightEl = new Map();  // run_id → DOM section element
     const _metaRibbonState = new Map();   // run_id → ribbon state
     const _metaRibbonEl = new Map();      // run_id → DOM section element
+
+    function _openMetaRunHistory() {
+      if (!window.MetaRunHistory || typeof window.MetaRunHistory.openRunHistory !== 'function') {
+        UI.toast('Meta run history is not available', 'warn', 2000);
+        return;
+      }
+      window.MetaRunHistory.openRunHistory({
+        rpc: _rpc,
+        sessionKey: _sessionKey,
+      });
+    }
+
+    const metaHistoryBtn = _el.querySelector('#chat-btn-meta-history');
+    if (metaHistoryBtn) {
+      metaHistoryBtn.addEventListener('click', _openMetaRunHistory);
+      _unsubs.push(() => metaHistoryBtn.removeEventListener('click', _openMetaRunHistory));
+    }
+
+    document.addEventListener('meta-run-history-open', _openMetaRunHistory);
+    _unsubs.push(() => document.removeEventListener(
+      'meta-run-history-open',
+      _openMetaRunHistory,
+    ));
+
+    function _insertMetaRibbonElement(el) {
+      const runId = el && el.dataset ? el.dataset.runId : '';
+      const preflight = runId ? _metaPreflightEl.get(runId) : null;
+      if (
+        preflight
+        && preflight.parentNode
+        && preflight.parentNode === (_thread || preflight.parentNode)
+      ) {
+        preflight.parentNode.insertBefore(el, preflight.nextSibling);
+        return;
+      }
+      const host = _thread || document.body;
+      if (_thread && _streamBubble && _streamBubble.parentNode === _thread) {
+        _thread.insertBefore(el, _streamBubble);
+        return;
+      }
+      const liveUserAnchor = _currentSessionLiveUserAnchor(_sessionKey || '');
+      if (_thread && liveUserAnchor && liveUserAnchor.parentNode === _thread) {
+        _thread.insertBefore(el, liveUserAnchor.nextSibling);
+        return;
+      }
+      host.insertBefore(el, host.firstChild || null);
+    }
+
+    function _insertMetaPreflightElement(el) {
+      _insertMetaRibbonElement(el);
+    }
+
+    function _findRibbonUserMessage(ribbonEl) {
+      let node = ribbonEl ? ribbonEl.previousElementSibling : null;
+      while (node) {
+        if (node.matches && (
+          node.matches('.msg.user')
+          || node.getAttribute('data-history-role') === 'user'
+        )) return node;
+        node = node.previousElementSibling;
+      }
+      return null;
+    }
+
+    function _latestUserMessageText() {
+      for (let i = _messages.length - 1; i >= 0; i--) {
+        if (_messages[i] && _messages[i].role === 'user') {
+          return _messages[i].text || '';
+        }
+      }
+      const userBubbles = _thread
+        ? Array.from(_thread.querySelectorAll(':scope > .msg.user, :scope > .msg[data-history-role="user"]'))
+        : [];
+      const last = userBubbles[userBubbles.length - 1];
+      return last ? _extractBubbleText(last) : '';
+    }
+
+    function _retryMetaRibbonRun(ribbonEl) {
+      if (_isStreaming) {
+        UI.toast('Wait for the current response to finish', 'warn', 2000);
+        return;
+      }
+      const userBubble = _findRibbonUserMessage(ribbonEl);
+      const text = userBubble ? _extractBubbleText(userBubble) : _latestUserMessageText();
+      if (!text) {
+        UI.toast('No previous message to retry', 'info', 2000);
+        return;
+      }
+      if (!_textarea) return;
+      _textarea.value = text;
+      _autoResizeTextarea();
+      _onSend();
+    }
+
+    _unsubs.push(_rpc.on('session.event.meta_preflight', (payload) => {
+      if (_dropForeignSessionPayload('event.meta_preflight', payload)) return;
+      if (!window.MetaPreflight) return;
+      const state = window.MetaPreflight.createPreflight(payload);
+      if (!state.runId) return;
+      const el = document.createElement('section');
+      el.dataset.runId = state.runId;
+      _insertMetaPreflightElement(el);
+      _metaPreflightEl.set(state.runId, el);
+      window.MetaPreflight.renderPreflight(el, state);
+    }));
 
     _unsubs.push(_rpc.on('session.event.meta_run_announced', (payload) => {
       if (_dropForeignSessionPayload('event.meta_run_announced', payload)) return;
@@ -4714,8 +4821,7 @@ const ChatView = (() => {
       _metaRibbonState.set(state.runId, state);
       const el = document.createElement('section');
       el.dataset.runId = state.runId;
-      const host = _thread || document.body;
-      host.appendChild(el);
+      _insertMetaRibbonElement(el);
       _metaRibbonEl.set(state.runId, el);
       window.MetaRibbon.renderRibbon(el, state);
     }));
@@ -4744,15 +4850,21 @@ const ChatView = (() => {
     // document so dynamically-rendered ribbons all flow through one handler.
     const _onMetaRibbonAction = (ev) => {
       const { action, stepId } = (ev && ev.detail) || {};
-      if (action === 'retry-run') {
-        // Simple retry: focus the composer so the user can re-send. A full
-        // "resend last user_message" hook lives in P0-5 (failure rescue).
-        if (_textarea && typeof _textarea.focus === 'function') _textarea.focus();
-      } else if (action === 'switch-skill') {
+      if (
+        action === 'retry-run'
+        || action === 'retry-step'
+        || action === 'retry-with-partial-context'
+      ) {
+        _retryMetaRibbonRun(ev && ev.target ? ev.target.closest('.meta-ribbon') : null);
+      } else if (action === 'switch-skill' || action === 'switch-meta-skill') {
         if (_textarea) {
           _textarea.placeholder = '想换哪个 meta-skill？例如：Use meta-skill `meta-web-research-to-report`';
           _textarea.focus();
         }
+      } else if (action === 'install-dependency') {
+        UI.toast('Install the missing dependency, then retry this MetaSkill run.', 'info', 3000);
+      } else if (action === 'continue-text-only') {
+        UI.toast('Continue with text outputs only, then retry if an artifact is still needed.', 'info', 3000);
       } else if (action === 'show-detail' && stepId) {
         const card = document.querySelector(`[data-tool-use-id="meta_step_${stepId}"]`);
         if (card) {
@@ -4765,6 +4877,40 @@ const ChatView = (() => {
     };
     document.addEventListener('meta-ribbon-action', _onMetaRibbonAction);
     _unsubs.push(() => document.removeEventListener('meta-ribbon-action', _onMetaRibbonAction));
+
+    const _onMetaPreflightAction = (ev) => {
+      const detail = (ev && ev.detail) || {};
+      const card = ev && ev.target ? ev.target.closest('.meta-preflight') : null;
+      if (detail.action === 'dismiss') {
+        if (card) card.remove();
+        if (detail.runId) _metaPreflightEl.delete(detail.runId);
+        return;
+      }
+      if (detail.action === 'continue' && _textarea) {
+        if (card) card.remove();
+        if (detail.runId) _metaPreflightEl.delete(detail.runId);
+        _textarea.value = `${detail.interpretedRequest || ''}\n\n<!-- opensquilla:meta_preflight_confirmed=1 -->`;
+        _autoResizeTextarea();
+        _onSend();
+        return;
+      }
+      if (detail.action === 'edit' && _textarea) {
+        const fields = Array.isArray(detail.missingFields)
+          ? detail.missingFields.filter(Boolean)
+          : [];
+        const suffix = fields.length > 0
+          ? `\n\n补充：${fields.join('、')} = `
+          : '\n\n补充：';
+        _textarea.value = `${detail.interpretedRequest || ''}${suffix}`;
+        _autoResizeTextarea();
+        _textarea.focus();
+      }
+    };
+    document.addEventListener('meta-preflight-action', _onMetaPreflightAction);
+    _unsubs.push(() => document.removeEventListener(
+      'meta-preflight-action',
+      _onMetaPreflightAction,
+    ));
 
     _unsubs.push(_rpc.on('session.event.artifact', (payload) => {
       if (_dropForeignSessionPayload('event.artifact', payload)) return;
@@ -8346,6 +8492,13 @@ const ChatView = (() => {
 
   function _renderArtifacts(artifacts) {
     if (!Array.isArray(artifacts) || artifacts.length === 0) return '';
+    if (window.ArtifactCard && typeof window.ArtifactCard.renderArtifacts === 'function') {
+      return window.ArtifactCard.renderArtifacts(artifacts, {
+        origin: window.location.origin,
+        sessionKey: _sessionKey,
+        token: (App.getAuthToken && App.getAuthToken()) || '',
+      });
+    }
     let html = '<div class="msg-artifacts">';
     let openGroup = '';
     const token = (App.getAuthToken && App.getAuthToken()) || '';

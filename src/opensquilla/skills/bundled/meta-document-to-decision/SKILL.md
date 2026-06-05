@@ -5,6 +5,53 @@ kind: meta
 meta_priority: 67
 always: false
 final_text_mode: "step:decision_brief_audit"
+request_template:
+  outcome: "Decision-ready brief with recommendation, evidence table, risks, and questions."
+  fields:
+    - name: document_or_excerpt
+      required: true
+    - name: decision_question
+      required: true
+    - name: decision_criteria
+      required: false
+    - name: deadline
+      required: false
+    - name: audience
+      required: false
+      default: "decision owner"
+    - name: language
+      required: false
+      default: "match the user's language"
+  assumptions:
+    - "Do not make legal or financial claims beyond the provided evidence."
+    - "If criteria are missing, use risk, cost, reversibility, and urgency as defaults."
+output_contract:
+  required_sections:
+    - "Recommendation"
+    - "Evidence table"
+    - "Risks and tradeoffs"
+    - "Questions to ask"
+    - "Next action"
+  assumptions:
+    - "Criteria may be inferred when the user does not provide them."
+  unverified:
+    - "Facts outside the supplied documents unless tools can verify them."
+  artifacts: []
+eval_prompts:
+  - name: "document-decision-baseline"
+    prompt: "Analyze a vendor renewal excerpt and recommend whether to sign, reject, or negotiate."
+    rubric:
+      - "Recommendation"
+      - "Evidence table"
+      - "Risks and tradeoffs"
+      - "Questions to ask"
+      - "Next action"
+preference_keys:
+  - preferred_language
+  - decision_risk_tolerance
+policy_tags:
+  - user-supplied-evidence
+  - no-legal-financial-advice
 triggers:
   - "document decision"
   - "vendor renewal"

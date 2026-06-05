@@ -188,6 +188,36 @@ def parse_meta_plan(spec: SkillSpec) -> MetaPlan | None:
     final_text_mode = str(
         getattr(spec, "final_text_mode", "auto") or "auto",
     ).strip() or "auto"
+    request_template_raw = getattr(spec, "request_template", {}) or {}
+    request_template = (
+        dict(request_template_raw)
+        if isinstance(request_template_raw, dict)
+        else {}
+    )
+    output_contract_raw = getattr(spec, "output_contract", {}) or {}
+    output_contract = (
+        dict(output_contract_raw)
+        if isinstance(output_contract_raw, dict)
+        else {}
+    )
+    eval_prompts_raw = getattr(spec, "eval_prompts", []) or []
+    eval_prompts = (
+        [dict(item) for item in eval_prompts_raw if isinstance(item, dict)]
+        if isinstance(eval_prompts_raw, list)
+        else []
+    )
+    preference_keys_raw = getattr(spec, "preference_keys", []) or []
+    preference_keys = (
+        tuple(str(item) for item in preference_keys_raw if str(item).strip())
+        if isinstance(preference_keys_raw, list)
+        else ()
+    )
+    policy_tags_raw = getattr(spec, "policy_tags", []) or []
+    policy_tags = (
+        tuple(str(item) for item in policy_tags_raw if str(item).strip())
+        if isinstance(policy_tags_raw, list)
+        else ()
+    )
 
     return MetaPlan(
         name=spec.name,
@@ -196,6 +226,11 @@ def parse_meta_plan(spec: SkillSpec) -> MetaPlan | None:
         steps=tuple(steps),
         fallback_body=fallback_body,
         final_text_mode=final_text_mode,
+        request_template=request_template,
+        output_contract=output_contract,
+        eval_prompts=eval_prompts,
+        preference_keys=preference_keys,
+        policy_tags=policy_tags,
     )
 
 

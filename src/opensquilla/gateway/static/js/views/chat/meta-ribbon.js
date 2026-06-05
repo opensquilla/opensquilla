@@ -14,6 +14,14 @@
     skipped: '↷',
     substituted: '⇄',
   };
+  const RESCUE_ACTION_IDS = new Set([
+    'retry-run',
+    'retry-step',
+    'retry-with-partial-context',
+    'switch-meta-skill',
+    'install-dependency',
+    'continue-text-only',
+  ]);
 
   function humanizeStepId(id) {
     if (!id) return '';
@@ -33,6 +41,7 @@
         statusText: '',
         error: '',
         substituteFor: null,
+        rescue: {},
       })),
       total: announce.total || 0,
       collapsed: false,
@@ -48,6 +57,7 @@
     if (stepStateEvent.status_text != null) step.statusText = stepStateEvent.status_text;
     if (stepStateEvent.error) step.error = stepStateEvent.error;
     if (stepStateEvent.substitute_for) step.substituteFor = stepStateEvent.substitute_for;
+    if (stepStateEvent.rescue) step.rescue = stepStateEvent.rescue;
     state.currentIndex = Math.max(
       state.currentIndex,
       state.steps.findIndex((s) => s.id === step.id),
@@ -57,6 +67,22 @@
 
   function completeRun(state, completedEvent) {
     state.runOutcome = completedEvent.outcome;
+    const completed = new Set(completedEvent.completed_steps || []);
+    const failed = new Set(completedEvent.failed_steps || []);
+    const recovered = new Set(completedEvent.recovered_steps || []);
+    const skipped = new Set(completedEvent.skipped_steps || []);
+    state.steps.forEach((step) => {
+      if (recovered.has(step.id)) {
+        step.state = 'substituted';
+        step.statusText = step.statusText || '已由替代步骤恢复';
+      } else if (failed.has(step.id)) {
+        step.state = 'failed';
+      } else if (skipped.has(step.id)) {
+        step.state = 'skipped';
+      } else if (completed.has(step.id)) {
+        step.state = 'succeeded';
+      }
+    });
     return state;
   }
 
@@ -90,7 +116,7 @@
           <li class="chip ${s.state}" data-step-id="${escapeAttr(s.id)}"
               tabindex="0"
               aria-label="step ${i + 1} of ${state.total}: ${escapeAttr(s.label)} ${s.state}">
-            ${STATE_GLYPH[s.state] || '○'} ${escapeHtml(s.label)}
+            ${stepGlyph(s)} ${escapeHtml(s.label)}
           </li>
         `).join('')}
       </ol>
@@ -108,18 +134,38 @@
   }
 
   function shouldShowActions(state) {
-    return state.steps.some((s) => s.state === 'failed');
+    return state.runOutcome === 'failed' && state.steps.some((s) => s.state === 'failed');
+  }
+
+  function stepGlyph(step) {
+    return step.substituteFor ? STATE_GLYPH.substituted : (STATE_GLYPH[step.state] || '○');
   }
 
   function renderActions(state) {
     const failedStep = state.steps.find((s) => s.state === 'failed');
     const errText = failedStep ? failedStep.error || '步骤失败' : '';
+    const rescueActions = failedStep
+      && failedStep.rescue
+      && Array.isArray(failedStep.rescue.actions)
+      ? failedStep.rescue.actions.filter((action) => (
+        action && RESCUE_ACTION_IDS.has(action.id)
+      ))
+      : [];
+    const dynamicActions = rescueActions.length > 0
+      ? rescueActions.map((action) => `
+        <button data-action="${escapeAttr(action.id || '')}" data-step-id="${escapeAttr(failedStep.id)}">
+          ${escapeHtml(action.label || humanizeStepId(action.id || 'action'))}
+        </button>
+      `).join('')
+      : `
+        <button data-action="retry-run">重试整个 run</button>
+        <button data-action="switch-skill">切换 meta-skill…</button>
+      `;
     return `
       <span class="meta-ribbon-fail-summary">
         ✗ ${escapeHtml(failedStep.label)} 失败 · ${escapeHtml(truncate(errText, 80))}
       </span>
-      <button data-action="retry-run">重试整个 run</button>
-      <button data-action="switch-skill">切换 meta-skill…</button>
+      ${dynamicActions}
       <button data-action="show-detail" data-step-id="${escapeAttr(failedStep.id)}">查看错误详情</button>
     `;
   }

@@ -26,6 +26,7 @@ def _example_plan() -> MetaPlan:
                 id="classify",
                 skill="classify",
                 kind="llm_classify",
+                label="分类",
                 output_choices=("A", "B"),
                 with_args={"text": "{{ inputs.user_message }}"},
             ),
@@ -33,6 +34,8 @@ def _example_plan() -> MetaPlan:
                 id="handle",
                 skill="summarize",
                 kind="agent",
+                label="处理",
+                progress_emits=False,
                 depends_on=("classify",),
                 route=(RouteCase(when="outputs.classify == 'A'", to="writer"),),
                 with_args={"request": "{{ inputs.user_message }}"},
@@ -40,6 +43,24 @@ def _example_plan() -> MetaPlan:
         ),
         fallback_body="body",
         final_text_mode="step:handle",
+        request_template={
+            "outcome": "Decision memo",
+            "fields": [{"name": "decision_criteria", "required": True}],
+            "assumptions": ["Use public evidence only"],
+        },
+        output_contract={
+            "required_sections": ["Recommendation", "Evidence"],
+            "assumptions": ["Criteria inferred from request"],
+            "unverified": ["Live prices not verified"],
+            "artifacts": [{"name": "decision_memo.md", "required": False}],
+        },
+        eval_prompts=[{
+            "name": "happy-path",
+            "prompt": "Write a decision memo for project X",
+            "rubric": ["Recommendation", "Evidence"],
+        }],
+        preference_keys=("preferred_language", "briefing_depth"),
+        policy_tags=("public-data-only", "no-pii"),
     )
 
 
@@ -53,6 +74,16 @@ def test_to_jsonable_produces_versioned_envelope():
     assert plan_obj["priority"] == 5
     assert len(plan_obj["steps"]) == 2
     assert plan_obj["steps"][0]["kind"] == "llm_classify"
+    assert plan_obj["steps"][0]["label"] == "分类"
+    assert plan_obj["steps"][1]["progress_emits"] is False
+    assert plan_obj["request_template"]["outcome"] == "Decision memo"
+    assert plan_obj["output_contract"]["required_sections"] == [
+        "Recommendation",
+        "Evidence",
+    ]
+    assert plan_obj["eval_prompts"][0]["name"] == "happy-path"
+    assert plan_obj["preference_keys"] == ["preferred_language", "briefing_depth"]
+    assert plan_obj["policy_tags"] == ["public-data-only", "no-pii"]
 
 
 def test_to_jsonable_is_json_dumpable():
@@ -70,6 +101,11 @@ def test_from_jsonable_round_trip():
     assert len(restored.steps) == len(original.steps)
     assert restored.fallback_body == original.fallback_body
     assert restored.final_text_mode == original.final_text_mode
+    assert restored.request_template == original.request_template
+    assert restored.output_contract == original.output_contract
+    assert restored.eval_prompts == original.eval_prompts
+    assert restored.preference_keys == original.preference_keys
+    assert restored.policy_tags == original.policy_tags
 
 
 def test_from_jsonable_tolerates_legacy_envelope():
@@ -81,6 +117,17 @@ def test_from_jsonable_tolerates_legacy_envelope():
     restored = from_jsonable(legacy_dict)
     assert restored.name == original.name
     assert restored.priority == original.priority
+
+
+def test_from_jsonable_legacy_tool_call_progress_default_false():
+    restored = from_jsonable({
+        "name": "legacy",
+        "steps": [
+            {"id": "save", "kind": "tool_call", "tool": "memory_save"},
+        ],
+    })
+
+    assert restored.steps[0].progress_emits is False
 
 
 def test_future_version_rejected():

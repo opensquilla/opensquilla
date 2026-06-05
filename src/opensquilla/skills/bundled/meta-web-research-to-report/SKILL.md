@@ -5,6 +5,56 @@ kind: meta
 meta_priority: 80
 always: false
 final_text_mode: "step:final_report_audit"
+request_template:
+  outcome: "Source-backed research report or decision memo with citations and tradeoffs."
+  fields:
+    - name: research_question
+      required: true
+    - name: output_format
+      required: false
+      default: "brief report or decision memo inferred from request"
+    - name: source_constraints
+      required: false
+    - name: time_window
+      required: false
+    - name: audience
+      required: false
+      default: "decision maker or report reader"
+    - name: language
+      required: false
+      default: "match the user's language"
+  assumptions:
+    - "Use current sources when browsing is available."
+    - "Separate evidence, assumptions, and recommendations."
+output_contract:
+  required_sections:
+    - "Key findings"
+    - "Source-backed evidence"
+    - "Tradeoffs and risks"
+    - "Recommendation or synthesis"
+    - "Unverified assumptions"
+  assumptions:
+    - "Currentness depends on browsing/source availability."
+  unverified:
+    - "Claims from inaccessible or paywalled sources."
+  artifacts:
+    - name: "research_report"
+      required: false
+eval_prompts:
+  - name: "web-research-report-baseline"
+    prompt: "Research a current product decision and produce a source-backed report with recommendation and assumptions."
+    rubric:
+      - "Key findings"
+      - "Source-backed evidence"
+      - "Tradeoffs and risks"
+      - "Recommendation or synthesis"
+      - "Unverified assumptions"
+preference_keys:
+  - preferred_language
+  - report_depth
+policy_tags:
+  - cite-sources
+  - separate-assumptions
 triggers:
   - "调研报告"
   - "research report"

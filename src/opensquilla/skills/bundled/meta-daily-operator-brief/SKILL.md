@@ -5,6 +5,52 @@ kind: meta
 meta_priority: 64
 always: false
 final_text_mode: "step:final_brief_audit"
+request_template:
+  outcome: "Practical daily operating brief with priorities, schedule risks, and next actions."
+  fields:
+    - name: date_or_window
+      required: false
+      default: "today or tomorrow from the user's request"
+    - name: calendar_or_tasks
+      required: false
+    - name: location
+      required: false
+    - name: constraints
+      required: false
+    - name: audience
+      required: false
+      default: "the operator themself"
+    - name: language
+      required: false
+      default: "match the user's language"
+  assumptions:
+    - "Use pasted context first; memory/weather only enrich the brief when available."
+    - "Avoid creating reminders unless the user explicitly asks."
+output_contract:
+  required_sections:
+    - "Top priorities"
+    - "Schedule or timing risks"
+    - "Concrete next actions"
+    - "Assumptions and missing context"
+  assumptions:
+    - "Calendar/task completeness depends on what the user supplied."
+  unverified:
+    - "External events not represented in pasted context or available tools."
+  artifacts: []
+eval_prompts:
+  - name: "daily-brief-baseline"
+    prompt: "Create a morning operator brief from a pasted task list, calendar snippets, and a location."
+    rubric:
+      - "Top priorities"
+      - "Schedule or timing risks"
+      - "Concrete next actions"
+      - "Assumptions and missing context"
+preference_keys:
+  - preferred_language
+  - daily_brief_style
+policy_tags:
+  - user-context-first
+  - no-unrequested-reminders
 triggers:
   - "daily brief"
   - "morning brief"

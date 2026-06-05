@@ -17,6 +17,10 @@ _EXPLICIT_ENGLISH_RE = re.compile(
     r"\b(?:in|to|into|as)\s+english\b|\benglish[- ]only\b|\benglish\b",
     re.IGNORECASE,
 )
+_PREFLIGHT_CONFIRMED_RE = re.compile(
+    r"\s*<!--\s*opensquilla:meta_preflight_confirmed=1\s*-->\s*",
+    re.IGNORECASE,
+)
 
 
 def system_prompt_input(system_prompt: Any) -> str:
@@ -78,14 +82,19 @@ def language_instruction_for_user_message(user_message: str) -> str:
 def make_meta_inputs(*, user_message: str, system_prompt: Any = "") -> dict[str, Any]:
     """Build the common input map visible to meta-skill Jinja templates."""
 
-    user_language = detect_user_language(user_message)
-    return {
-        "user_message": user_message,
+    meta_preflight_confirmed = bool(_PREFLIGHT_CONFIRMED_RE.search(user_message or ""))
+    clean_user_message = _PREFLIGHT_CONFIRMED_RE.sub("\n", user_message or "").strip()
+    user_language = detect_user_language(clean_user_message)
+    inputs: dict[str, Any] = {
+        "user_message": clean_user_message,
         "user_language": user_language,
-        "language_instruction": language_instruction_for_user_message(user_message),
+        "language_instruction": language_instruction_for_user_message(clean_user_message),
         "system_prompt": system_prompt_input(system_prompt),
         # Populated by MetaOrchestrator.resume() in PR3; downstream
         # template authors address structured user_input values as
         # `inputs.collected.<step_id>.<field>` (see design §5.3).
         "collected": {},
     }
+    if meta_preflight_confirmed:
+        inputs["meta_preflight_confirmed"] = True
+    return inputs

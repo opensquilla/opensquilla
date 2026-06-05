@@ -24,7 +24,7 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from opensquilla.skills.meta.types import MetaPlan, MetaResult, MetaStep
@@ -133,6 +133,79 @@ class ResumePayload:
     awaiting_step_id: str
     awaiting_schema_json: str
     awaiting_filled_json: str
+
+
+def summarize_step_record(step: StepRecord) -> dict[str, Any]:
+    """Return a stable read-side summary for one persisted step."""
+    duration_ms = (
+        max(0, step.ended_at_ms - step.started_at_ms)
+        if step.ended_at_ms is not None
+        else None
+    )
+    output_chars = len(step.output_text or "")
+    return {
+        "step_id": step.step_id,
+        "kind": step.step_kind,
+        "declared_skill": step.declared_skill,
+        "effective_skill": step.effective_skill,
+        "status": step.status,
+        "started_at_ms": step.started_at_ms,
+        "ended_at_ms": step.ended_at_ms,
+        "duration_ms": duration_ms,
+        "output_chars": output_chars,
+        "error_present": bool(step.error),
+        "substitute_step_id": step.substitute_step_id,
+        "truncated_fields": list(step.truncated_fields),
+        "usage": _unavailable_usage_summary(),
+    }
+
+
+def summarize_run_record(record: RunRecord) -> dict[str, Any]:
+    """Return a stable P1 run detail summary for history UIs and CLI JSON.
+
+    Historical meta-run tables do not persist usage rows yet. The summary
+    therefore reports deterministic execution facts and explicitly marks
+    usage/cost unavailable instead of manufacturing zeros that look billed.
+    """
+    duration_ms = (
+        max(0, record.ended_at_ms - record.started_at_ms)
+        if record.ended_at_ms is not None
+        else None
+    )
+    step_summaries = [summarize_step_record(step) for step in record.steps]
+    return {
+        "run_id": record.run_id,
+        "meta_skill_name": record.meta_skill_name,
+        "status": record.status,
+        "started_at_ms": record.started_at_ms,
+        "ended_at_ms": record.ended_at_ms,
+        "duration_ms": duration_ms,
+        "step_count": len(record.steps),
+        "completed_step_count": sum(
+            1 for step in record.steps if step.status in {"ok", "substituted"}
+        ),
+        "failed_step_count": sum(1 for step in record.steps if step.status == "failed"),
+        "running_step_count": sum(1 for step in record.steps if step.status == "running"),
+        "final_text_chars": len(record.final_text or ""),
+        "step_output_chars": sum(len(step.output_text or "") for step in record.steps),
+        "failed_step_id": record.failed_step_id,
+        "error_present": bool(record.error),
+        "truncated_fields": list(record.truncated_fields),
+        "usage": _unavailable_usage_summary(),
+        "steps": step_summaries,
+    }
+
+
+def _unavailable_usage_summary() -> dict[str, Any]:
+    return {
+        "available": False,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "cost_usd": 0.0,
+        "cost_source": "unavailable",
+        "reason": "meta run persistence does not store historical usage yet",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -468,6 +541,40 @@ class MetaRunWriter:
             return []
         return [self._row_to_step(r) for r in rows]
 
+    def get_steps_for_runs(self, run_ids: list[str]) -> dict[str, tuple[StepRecord, ...]]:
+        """Bulk read steps for a set of runs, grouped by run_id."""
+        ids = [run_id for run_id in run_ids if run_id]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        try:
+            with self._lock:
+                rows = self._conn.execute(
+                    "SELECT * FROM meta_skill_run_steps "
+                    f"WHERE run_id IN ({placeholders}) "
+                    "ORDER BY run_id ASC, started_at_ms ASC, step_id ASC",
+                    ids,
+                ).fetchall()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("meta_run_writer.get_steps_for_runs_failed: %s", exc)
+            return {}
+        grouped: dict[str, list[StepRecord]] = {}
+        for row in rows:
+            step = self._row_to_step(row)
+            grouped.setdefault(step.run_id, []).append(step)
+        return {run_id: tuple(steps) for run_id, steps in grouped.items()}
+
+    def hydrate_runs(self, rows: list[RunRecord]) -> list[RunRecord]:
+        """Attach steps to shallow list_runs rows using one bulk step query."""
+        missing = [row.run_id for row in rows if not row.steps]
+        if not missing:
+            return rows
+        by_run = self.get_steps_for_runs(missing)
+        return [
+            row if row.steps else replace(row, steps=by_run.get(row.run_id, ()))
+            for row in rows
+        ]
+
     def list_runs(
         self,
         *,
@@ -510,10 +617,15 @@ class MetaRunWriter:
         *,
         name: str | None = None,
         since_ms: int | None = None,
+        session_key: str | None = None,
         limit: int = 50,
     ) -> list[RunRecord]:
         return self.list_runs(
-            name=name, status="failed", since_ms=since_ms, limit=limit,
+            name=name,
+            status="failed",
+            session_key=session_key,
+            since_ms=since_ms,
+            limit=limit,
         )
 
     def peek_awaiting(self, *, session_id: str) -> AwaitingPeek | None:

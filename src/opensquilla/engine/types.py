@@ -211,6 +211,23 @@ class RouterDecisionEvent:
 
 
 @dataclass
+class MetaPreflightEvent:
+    """Emitted before a MetaSkill run begins when the plan declares a
+    ``request_template``. This is a non-blocking preview of the interpreted
+    request and declared assumptions; the scheduler continues after emitting it.
+    """
+
+    kind: Literal["meta_preflight"] = field(default="meta_preflight", init=False)
+    run_id: str = ""
+    meta_skill_name: str = ""
+    request_template: dict[str, Any] = field(default_factory=dict)
+    interpreted_request: str = ""
+    missing_fields: list[str] = field(default_factory=list)
+    assumptions: list[str] = field(default_factory=list)
+    can_skip: bool = True
+
+
+@dataclass
 class MetaRunAnnouncedEvent:
     """Emitted once when a MetaSkill run starts and its plan has been
     compiled. WebUI uses this to seed the step ribbon with all declared
@@ -246,6 +263,7 @@ class MetaStepStateEvent:
     status_text: str | None = None
     error: str | None = None
     substitute_for: str | None = None
+    rescue: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -253,6 +271,8 @@ class MetaRunCompletedEvent:
     """Terminal event for a MetaSkill run. `outcome` is one of
     ok / failed / cancelled. The three step-id lists let the WebUI freeze
     the final ribbon state without scanning back through the stream.
+    `recovered_steps` keeps the audit trail for failed steps whose
+    on-failure substitute completed successfully.
     """
 
     kind: Literal["meta_run_completed"] = field(default="meta_run_completed", init=False)
@@ -260,6 +280,7 @@ class MetaRunCompletedEvent:
     outcome: Literal["ok", "failed", "cancelled"] = "ok"
     completed_steps: list[str] = field(default_factory=list)
     failed_steps: list[str] = field(default_factory=list)
+    recovered_steps: list[str] = field(default_factory=list)
     skipped_steps: list[str] = field(default_factory=list)
 
 
@@ -317,6 +338,7 @@ AgentEvent = (
     | CompactionEvent
     | WarningEvent
     | RouterDecisionEvent
+    | MetaPreflightEvent
     | MetaRunAnnouncedEvent
     | MetaStepStateEvent
     | MetaRunCompletedEvent

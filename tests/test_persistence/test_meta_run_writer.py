@@ -18,9 +18,10 @@ from opensquilla.persistence.meta_run_writer import (
     _serialize_plan,
     _truncate,
     open_meta_run_writer,
+    summarize_run_record,
 )
 from opensquilla.persistence.migrator import apply_pending
-from opensquilla.skills.meta.types import MetaPlan, MetaStep
+from opensquilla.skills.meta.types import MetaPlan, MetaResult, MetaStep
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[1].parent / "migrations"
 
@@ -115,6 +116,52 @@ def test_step_lifecycle(writer: MetaRunWriter) -> None:
     assert steps[0].status == "ok"
     assert steps[0].output_text == "alpha-output"
     assert steps[0].effective_skill == "alpha"
+
+
+def test_run_summary_reports_step_counts_duration_and_unavailable_cost(
+    writer: MetaRunWriter,
+) -> None:
+    plan = _make_plan()
+    run_id = writer.begin_run_sync(
+        meta_skill_name=plan.name,
+        meta_plan=plan,
+        triggered_by="soft_meta_invoke",
+        inputs={"user_message": "summarize"},
+        session_key="sess-1",
+        turn_id="turn-1",
+    )
+    writer.begin_step_sync(
+        run_id=run_id,
+        step=plan.steps[0],
+        effective_skill="alpha",
+        rendered_inputs={"q": "x"},
+    )
+    writer.finish_step_sync(
+        run_id=run_id,
+        step_id="s1",
+        status="ok",
+        output_text="alpha-output",
+    )
+    writer.finish_run_sync(
+        run_id=run_id,
+        status="ok",
+        result=MetaResult(ok=True, final_text="done"),
+    )
+
+    record = writer.get_run(run_id)
+    assert record is not None
+    summary = summarize_run_record(record)
+
+    assert summary["run_id"] == run_id
+    assert summary["step_count"] == 1
+    assert summary["completed_step_count"] == 1
+    assert summary["failed_step_count"] == 0
+    assert summary["duration_ms"] is not None
+    assert summary["final_text_chars"] == 4
+    assert summary["step_output_chars"] == len("alpha-output")
+    assert summary["usage"]["available"] is False
+    assert summary["usage"]["cost_source"] == "unavailable"
+    assert summary["steps"][0]["output_chars"] == len("alpha-output")
 
 
 def test_llm_chat_step_lifecycle(writer: MetaRunWriter) -> None:

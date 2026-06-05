@@ -5,6 +5,56 @@ kind: meta
 meta_priority: 90
 always: false
 final_text_mode: "step:final_response"
+request_template:
+  outcome: "Proposed meta-skill spec or saved proposal with trigger, DAG, tests, and validation notes."
+  fields:
+    - name: meta_skill_goal
+      required: true
+    - name: existing_skills_to_orchestrate
+      required: false
+    - name: save_or_preview
+      required: false
+      default: "preview unless the user asks to persist"
+    - name: constraints
+      required: false
+    - name: audience
+      required: false
+      default: "meta-skill author"
+    - name: language
+      required: false
+      default: "match the user's language"
+  assumptions:
+    - "Create a meta-skill only when orchestration is explicitly requested."
+    - "Check trigger collisions and lint before presenting a proposal."
+output_contract:
+  required_sections:
+    - "Intent summary"
+    - "Proposed DAG"
+    - "Trigger and collision notes"
+    - "Validation results"
+    - "Save or next-step status"
+  assumptions:
+    - "Preview mode is used unless persistence is explicit."
+  unverified:
+    - "Live runtime smoke results when execution gates are unavailable."
+  artifacts:
+    - name: "meta_skill_proposal"
+      required: false
+eval_prompts:
+  - name: "meta-skill-creator-baseline"
+    prompt: "Draft a meta-skill that orchestrates search, synthesis, validation, and proposal persistence."
+    rubric:
+      - "Intent summary"
+      - "Proposed DAG"
+      - "Trigger and collision notes"
+      - "Validation results"
+      - "Save or next-step status"
+preference_keys:
+  - preferred_language
+  - meta_authoring_style
+policy_tags:
+  - trigger-collision-check
+  - lint-before-enable
 triggers:
   - "新增 meta 技能"
   - "组合现有 skill 成 meta-skill"
@@ -21,6 +71,7 @@ provenance:
 composition:
   steps:
     - id: clarify_intent
+      label: "意图澄清"
       kind: llm_chat
       with:
         system: |
@@ -57,6 +108,7 @@ composition:
           CLARIFY_REASON: <one concise reason, or none>
 
     - id: creator_clarify
+      label: "创建澄清"
       kind: user_input
       depends_on: [clarify_intent]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower) and 'needs_clarification: yes' in (outputs.clarify_intent | lower)"
@@ -88,6 +140,7 @@ composition:
         timeout_hours: 24
 
     - id: normal_skill_exit
+      label: "普通技能退出"
       kind: tool_call
       depends_on: [clarify_intent]
       when: "'route: normal-skill' in (outputs.clarify_intent | lower)"
@@ -99,6 +152,7 @@ composition:
           before proposal assembly or persistence.
 
     - id: creator_mode
+      label: "创建模式"
       kind: llm_classify
       depends_on: [clarify_intent, creator_clarify]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower)"
@@ -134,6 +188,7 @@ composition:
             decision.
 
     - id: harvest
+      label: "需求采集"
       kind: skill_exec
       skill: history-explorer
       depends_on: [clarify_intent, creator_clarify]
@@ -148,12 +203,14 @@ composition:
         include: [co_occurrences, meta_usage, router_fixtures]
 
     - id: harvest_empty
+      label: "空采集兜底"
       kind: tool_call
       tool: emit_text
       tool_args:
         text: "no history available; downstream should rely on user intent only"
 
     - id: pick_pattern
+      label: "模式选择"
       kind: llm_classify
       depends_on: [creator_mode, harvest]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower)"
@@ -168,6 +225,7 @@ composition:
           {{ outputs.clarify_intent | truncate(1000) }}
 
     - id: fill_slots
+      label: "填充槽位"
       kind: tool_call
       depends_on: [pick_pattern]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower)"
@@ -183,6 +241,7 @@ composition:
           {{ outputs.clarify_intent | truncate(1000) }}
 
     - id: assemble
+      label: "组装"
       kind: tool_call
       depends_on: [fill_slots]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower)"
@@ -192,6 +251,7 @@ composition:
         slots_json: "{{ outputs.fill_slots }}"
 
     - id: collision_check
+      label: "冲突检查"
       kind: llm_chat
       depends_on: [assemble]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower)"
@@ -210,6 +270,7 @@ composition:
           {{ outputs.assemble | truncate(8000) }}
 
     - id: lint
+      label: "Lint 检查"
       kind: tool_call
       depends_on: [collision_check]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower)"
@@ -219,6 +280,7 @@ composition:
         gates: "G1,G2"
 
     - id: risk_classify
+      label: "风险分类"
       kind: llm_chat
       depends_on: [lint]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower)"
@@ -244,6 +306,7 @@ composition:
           {{ outputs.lint | truncate(2000) }}
 
     - id: single_model_baseline
+      label: "单模基线"
       kind: llm_chat
       depends_on: [creator_mode]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower) and outputs.creator_mode == 'FULL_GATED'"
@@ -287,6 +350,7 @@ composition:
           later when the new meta-skill is invoked.
 
     - id: acceptance_compare
+      label: "验收对比"
       kind: llm_chat
       depends_on: [assemble, single_model_baseline]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower) and outputs.creator_mode == 'FULL_GATED'"
@@ -337,6 +401,7 @@ composition:
           workflow and are evaluated from the creator's gate outputs.
 
     - id: smoke
+      label: "冒烟测试"
       kind: tool_call
       depends_on: [risk_classify]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower) and outputs.creator_mode != 'PREVIEW_ONLY'"
@@ -347,6 +412,7 @@ composition:
         classifier_model: openrouter/auto
 
     - id: runtime_e2e
+      label: "运行时 E2E"
       kind: tool_call
       depends_on: [assemble, smoke]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower) and outputs.creator_mode == 'FULL_GATED'"
@@ -360,6 +426,7 @@ composition:
         eval_prompts: ""
 
     - id: preview
+      label: "预览"
       kind: llm_chat
       depends_on: [smoke, acceptance_compare, runtime_e2e]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower)"
@@ -400,6 +467,7 @@ composition:
           {{ outputs.runtime_e2e | truncate(2000) }}
 
     - id: persist
+      label: "保存"
       kind: tool_call
       depends_on: [preview]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower) and outputs.creator_mode != 'PREVIEW_ONLY'"
@@ -415,6 +483,7 @@ composition:
         risk_result: "{{ outputs.risk_classify }}"
 
     - id: final_response
+      label: "最终回复"
       kind: tool_call
       depends_on: [preview, normal_skill_exit]
       tool: emit_text

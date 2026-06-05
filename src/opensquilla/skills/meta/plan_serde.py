@@ -33,6 +33,11 @@ def to_jsonable(plan: MetaPlan) -> dict[str, Any]:
         "priority": plan.priority,
         "fallback_body": plan.fallback_body,
         "final_text_mode": plan.final_text_mode,
+        "request_template": dict(plan.request_template),
+        "output_contract": dict(plan.output_contract),
+        "eval_prompts": [dict(item) for item in plan.eval_prompts],
+        "preference_keys": list(plan.preference_keys),
+        "policy_tags": list(plan.policy_tags),
         "steps": [
             {
                 "id": s.id,
@@ -48,6 +53,8 @@ def to_jsonable(plan: MetaPlan) -> dict[str, Any]:
                 "tool_allowlist": list(s.tool_allowlist),
                 "on_failure": s.on_failure,
                 "clarify_config": clarify_config_to_jsonable(s.clarify_config),
+                "label": s.label,
+                "progress_emits": s.progress_emits,
             }
             for s in plan.steps
         ],
@@ -98,6 +105,31 @@ def from_jsonable(payload: dict[str, Any]) -> MetaPlan:
         steps=tuple(steps),
         fallback_body=str(plan_dict.get("fallback_body", "") or ""),
         final_text_mode=str(plan_dict.get("final_text_mode", "auto") or "auto"),
+        request_template=(
+            dict(plan_dict.get("request_template") or {})
+            if isinstance(plan_dict.get("request_template"), dict)
+            else {}
+        ),
+        output_contract=(
+            dict(plan_dict.get("output_contract") or {})
+            if isinstance(plan_dict.get("output_contract"), dict)
+            else {}
+        ),
+        eval_prompts=(
+            [dict(item) for item in plan_dict.get("eval_prompts", []) if isinstance(item, dict)]
+            if isinstance(plan_dict.get("eval_prompts", []), list)
+            else []
+        ),
+        preference_keys=(
+            tuple(str(item) for item in plan_dict.get("preference_keys", []) or [])
+            if isinstance(plan_dict.get("preference_keys", []), list)
+            else ()
+        ),
+        policy_tags=(
+            tuple(str(item) for item in plan_dict.get("policy_tags", []) or [])
+            if isinstance(plan_dict.get("policy_tags", []), list)
+            else ()
+        ),
     )
 
 
@@ -111,6 +143,14 @@ def _step_from_jsonable(raw: dict[str, Any], index: int) -> MetaStep:
         if isinstance(r, dict) and "when" in r and "to" in r
     )
 
+    kind = str(raw.get("kind", "agent"))
+    progress_emits_raw = raw.get("progress_emits")
+    progress_emits = (
+        bool(progress_emits_raw)
+        if isinstance(progress_emits_raw, bool)
+        else kind != "tool_call"
+    )
+
     return MetaStep(
         id=str(raw.get("id", "")),
         skill=str(raw.get("skill", "")),
@@ -118,7 +158,7 @@ def _step_from_jsonable(raw: dict[str, Any], index: int) -> MetaStep:
         depends_on=tuple(str(d) for d in raw.get("depends_on", []) or []),
         when=str(raw.get("when", "") or ""),
         route=route,
-        kind=str(raw.get("kind", "agent")),
+        kind=kind,
         output_choices=tuple(str(c) for c in raw.get("output_choices", []) or []),
         tool=str(raw.get("tool", "") or ""),
         tool_args=dict(raw.get("tool_args", {}) or {}),
@@ -127,6 +167,8 @@ def _step_from_jsonable(raw: dict[str, Any], index: int) -> MetaStep:
         ),
         on_failure=str(raw.get("on_failure", "") or ""),
         clarify_config=clarify_config_from_jsonable(raw.get("clarify_config")),
+        label=str(raw.get("label", "") or ""),
+        progress_emits=progress_emits,
     )
 
 

@@ -15,12 +15,16 @@ def test_action_row_renders_three_buttons():
     assert 'data-action="retry-run"' in text
     assert 'data-action="switch-skill"' in text
     assert 'data-action="show-detail"' in text
+    assert "rescue.actions" in text
+    assert "retry-step" in text
+    assert "install-dependency" in text
 
 
 def test_action_row_only_when_failed_step_present():
     text = RIBBON_JS.read_text()
     assert "shouldShowActions" in text
-    # The boolean comes from any step with state === 'failed'
+    # The boolean is gated by terminal failed outcome, not by a recovered failover.
+    assert "runOutcome === 'failed'" in text
     assert "'failed'" in text
 
 
@@ -28,3 +32,20 @@ def test_fail_summary_shows_error_truncated():
     text = RIBBON_JS.read_text()
     # 错误文本走 truncate(errText, 80)
     assert "truncate(errText, 80)" in text
+
+
+def test_substitute_glyph_survives_later_success_state():
+    text = RIBBON_JS.read_text()
+    assert "function stepGlyph" in text
+    assert "step.substituteFor ? STATE_GLYPH.substituted" in text
+
+
+def test_complete_run_reconciles_terminal_step_lists():
+    text = RIBBON_JS.read_text()
+    body = text[text.index("function completeRun"):text.index("function renderRibbon")]
+    for field in ("completed_steps", "failed_steps", "recovered_steps", "skipped_steps"):
+        assert field in body
+    assert "step.state = 'substituted'" in body
+    assert "step.state = 'succeeded'" in body
+    assert "step.state = 'skipped'" in body
+    assert "step.state = 'failed'" in body

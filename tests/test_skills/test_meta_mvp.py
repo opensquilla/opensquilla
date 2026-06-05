@@ -16,17 +16,22 @@ from opensquilla.engine.types import (
     DoneEvent,
     TextDeltaEvent,
 )
+from opensquilla.persistence.meta_run_writer import open_meta_run_writer
+from opensquilla.persistence.migrator import apply_pending
 from opensquilla.skills.loader import SkillLoader
 from opensquilla.skills.meta.inputs import make_meta_inputs
 from opensquilla.skills.meta.orchestrator import (
     MetaOrchestrator,
+    _append_output_contract_block,
+    _audit_output_contract,
+    _verify_declared_artifacts,
     format_step_prompt,
     make_llm_chat_from_provider,
     render_with_args,
     resolve_route,
 )
 from opensquilla.skills.meta.parser import MetaPlanError, parse_meta_plan
-from opensquilla.skills.meta.types import MetaMatch, MetaResult, RouteCase
+from opensquilla.skills.meta.types import MetaMatch, MetaPlan, MetaResult, MetaStep, RouteCase
 from opensquilla.skills.types import SkillLayer, SkillSpec
 
 # ---------------------------------------------------------------------------
@@ -43,6 +48,7 @@ def _make_meta_spec(
     priority: int = 0,
     content: str = "fallback body text",
     final_text_mode: str = "raw",
+    output_contract: dict[str, Any] | None = None,
 ) -> SkillSpec:
     # Default to "raw" in the test fixture so legacy unit tests that
     # count llm_chat calls don't get an extra invocation from the auto
@@ -59,12 +65,54 @@ def _make_meta_spec(
         meta_priority=priority,
         composition_raw=composition,
         final_text_mode=final_text_mode,
+        output_contract=output_contract or {},
     )
 
 
 def test_parser_returns_none_for_regular_skill() -> None:
     spec = _make_meta_spec(kind="skill", composition=None)
     assert parse_meta_plan(spec) is None
+
+
+@pytest.mark.asyncio
+async def test_preflight_pause_finalizes_persisted_run_as_cancelled(
+    tmp_path: Path,
+) -> None:
+    async def unused_runner(_prompt: str, _config: AgentConfig) -> str:
+        raise AssertionError("preflight pause should not dispatch steps")
+
+    db_path = str(tmp_path / "meta-runs.db")
+    migrations_dir = Path(__file__).resolve().parents[2] / "migrations"
+    apply_pending(db_path, migrations_dir)
+    writer = open_meta_run_writer(db_path)
+    plan = MetaPlan(
+        name="meta-preflight-required",
+        triggers=("fake",),
+        priority=0,
+        steps=(MetaStep(id="draft", skill="draft", kind="llm_chat"),),
+        request_template={
+            "mode": "confirm",
+            "fields": [{"name": "audience", "required": True}],
+        },
+        final_text_mode="raw",
+    )
+    orch = MetaOrchestrator(
+        agent_runner=unused_runner,
+        skill_loader=SimpleNamespace(),
+        run_writer=writer,  # type: ignore[arg-type]
+    )
+
+    try:
+        result = await orch.run(
+            MetaMatch(plan=plan, inputs={"user_message": "write a brief"}),
+        )
+        rows = writer.list_runs(limit=5)
+    finally:
+        writer.close()
+
+    assert result.paused is True
+    assert len(rows) == 1
+    assert rows[0].status == "cancelled"
 
 
 def test_parser_happy_path() -> None:
@@ -296,6 +344,19 @@ def test_make_meta_inputs_marks_chinese_requests_as_simplified_chinese() -> None
 
     assert inputs["user_language"] == "zh"
     assert "Simplified Chinese" in inputs["language_instruction"]
+
+
+def test_make_meta_inputs_extracts_preflight_confirmation_marker() -> None:
+    inputs = make_meta_inputs(
+        user_message=(
+            "Please build a launch brief.\n\n"
+            "<!-- opensquilla:meta_preflight_confirmed=1 -->"
+        ),
+    )
+
+    assert inputs["meta_preflight_confirmed"] is True
+    assert inputs["user_message"] == "Please build a launch brief."
+    assert "meta_preflight_confirmed" not in inputs["language_instruction"]
 
 
 # ---------------------------------------------------------------------------
@@ -1966,6 +2027,166 @@ async def test_orchestrator_final_text_auto_prepends_llm_summary_to_raw() -> Non
     assert "Markdown summary" in summary_system
     assert "meta-x" in summary_user
     assert "raw-last-step-output-with-id-42abc" in summary_user
+
+
+def test_output_contract_block_appends_stable_summary() -> None:
+    text = _append_output_contract_block(
+        "Decision: negotiate.",
+        {
+            "required_sections": ["Recommendation", "Evidence"],
+            "assumptions": ["Criteria inferred from request"],
+            "unverified": ["Live pricing was not checked"],
+            "artifacts": [{"name": "decision_memo.md", "required": False}],
+        },
+    )
+
+    assert text.startswith("Decision: negotiate.")
+    for heading in ("声明的输出契约", "必需部分", "假设", "未验证", "生成的 artifact"):
+        assert heading in text
+    assert "已覆盖" not in text
+    assert "Recommendation" in text
+    assert "Criteria inferred from request" in text
+    assert "Live pricing was not checked" in text
+    assert "decision_memo.md" in text
+
+
+def test_output_contract_block_reports_required_section_presence() -> None:
+    text = _append_output_contract_block(
+        "## Recommendation\nShip the narrow version.",
+        {
+            "required_sections": ["Recommendation", "Evidence"],
+        },
+    )
+
+    assert "### 确定性检查" in text
+    assert "- 已出现: Recommendation" in text
+    assert "- 缺失: Evidence" in text
+
+
+def test_output_contract_block_can_render_english_headings() -> None:
+    text = _append_output_contract_block(
+        "## Recommendation\nShip the narrow version.",
+        {"required_sections": ["Recommendation"]},
+        language="en",
+    )
+
+    assert "## Declared Output Contract" in text
+    assert "### Required Sections" in text
+    assert "### Deterministic Check" in text
+    assert "- Present: Recommendation" in text
+    assert "声明的输出契约" not in text
+
+
+def test_output_contract_audit_reports_pass_warn_and_fail() -> None:
+    passed = _audit_output_contract(
+        "## Recommendation\nShip.\n\n## Evidence\nFact.",
+        {"required_sections": ["Recommendation", "Evidence"]},
+    )
+    missing = _audit_output_contract(
+        "## Recommendation\nShip.",
+        {"required_sections": ["Recommendation", "Evidence"]},
+    )
+    forbidden = _audit_output_contract(
+        "## Recommendation\nShip.\n\nNo risk exists.",
+        {
+            "required_sections": ["Recommendation"],
+            "do_not": ["No risk exists"],
+        },
+    )
+
+    assert passed["status"] == "pass"
+    assert missing["status"] == "fail"
+    assert missing["missing_required_sections"] == ["Evidence"]
+    assert forbidden["status"] == "fail"
+    assert forbidden["forbidden_terms_found"] == ["No risk exists"]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_result_metadata_includes_output_contract_audit() -> None:
+    spec = _make_meta_spec(
+        composition={
+            "steps": [
+                {"id": "final", "skill": "summarize"},
+            ],
+        },
+        final_text_mode="raw",
+        output_contract={"required_sections": ["Recommendation", "Evidence"]},
+    )
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+
+    async def stub_runner(system_prompt: str, user_message: str) -> AsyncIterator[AgentEvent]:
+        yield TextDeltaEvent(text="## Recommendation\nShip.")
+
+    orch = MetaOrchestrator(
+        skill_loader=_FakeLoader([_make_skill_spec("summarize", "")]),
+        agent_runner=stub_runner,
+    )
+    result = await orch.run(MetaMatch(plan=plan, inputs={"user_message": "u"}))
+
+    assert result.metadata["output_contract_audit"]["status"] == "fail"
+    assert result.metadata["output_contract_audit"]["missing_required_sections"] == ["Evidence"]
+
+
+def test_verify_declared_artifacts_reports_ok_empty_and_missing(tmp_path: Path) -> None:
+    ok = tmp_path / "ok.md"
+    empty = tmp_path / "empty.md"
+    missing = tmp_path / "missing.md"
+    ok.write_text("artifact body")
+    empty.write_text("")
+
+    report = _verify_declared_artifacts(
+        {
+            "artifacts": [
+                {"name": "ok", "path": str(ok), "required": True},
+                {"name": "empty", "path": str(empty), "required": True},
+                {"name": "missing", "path": str(missing), "required": True},
+            ],
+        },
+        workspace_dir=str(tmp_path),
+    )
+
+    by_name = {item["name"]: item for item in report["artifacts"]}
+    assert report["status"] == "fail"
+    assert by_name["ok"]["status"] == "ok"
+    assert by_name["ok"]["size"] == len("artifact body")
+    assert len(by_name["ok"]["sha256"]) == 64
+    assert by_name["empty"]["status"] == "empty"
+    assert by_name["missing"]["status"] == "missing"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_appends_artifact_verification_failure_notice(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.md"
+    spec = _make_meta_spec(
+        composition={
+            "steps": [
+                {"id": "final", "skill": "summarize"},
+            ],
+        },
+        final_text_mode="raw",
+        output_contract={
+            "artifacts": [
+                {"name": "decision memo", "path": str(missing), "required": True},
+            ],
+        },
+    )
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+
+    async def stub_runner(system_prompt: str, user_message: str) -> AsyncIterator[AgentEvent]:
+        yield TextDeltaEvent(text="## Recommendation\nShip.")
+
+    orch = MetaOrchestrator(
+        skill_loader=_FakeLoader([_make_skill_spec("summarize", "")]),
+        agent_runner=stub_runner,
+        workspace_dir=str(tmp_path),
+    )
+    result = await orch.run(MetaMatch(plan=plan, inputs={"user_message": "u"}))
+
+    assert result.metadata["artifact_verification"]["status"] == "fail"
+    assert "Artifact verification failed" in result.final_text
+    assert "decision memo" in result.final_text
 
 
 @pytest.mark.asyncio

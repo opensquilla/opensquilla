@@ -5,6 +5,56 @@ kind: meta
 meta_priority: 60
 always: false
 final_text_mode: "step:project_pack_audit"
+request_template:
+  outcome: "Age-appropriate project plan with materials, safety notes, and guardian guidance."
+  fields:
+    - name: project_topic
+      required: true
+    - name: age_band
+      required: false
+      default: "early grade"
+    - name: deadline_days
+      required: false
+    - name: budget_or_material_constraints
+      required: false
+    - name: audience
+      required: false
+      default: "child plus guardian"
+    - name: language
+      required: false
+      default: "match the user's language"
+  assumptions:
+    - "Refuse unsafe or age-inappropriate projects."
+    - "Default to modest materials and light guardian supervision when unspecified."
+output_contract:
+  required_sections:
+    - "Feasibility verdict"
+    - "Step-by-step plan"
+    - "Materials and substitutions"
+    - "Safety notes"
+    - "Guardian learning objectives"
+  assumptions:
+    - "Age band and supervision level may be defaulted when absent."
+  unverified:
+    - "Local material availability and school-specific rubric details."
+  artifacts:
+    - name: "project_pack"
+      required: false
+eval_prompts:
+  - name: "kid-project-baseline"
+    prompt: "Plan a safe age-appropriate science fair project for an elementary-school child with a small budget."
+    rubric:
+      - "Feasibility verdict"
+      - "Step-by-step plan"
+      - "Materials and substitutions"
+      - "Safety notes"
+      - "Guardian learning objectives"
+preference_keys:
+  - preferred_language
+  - guardian_supervision_level
+policy_tags:
+  - child-safety
+  - age-appropriate
 triggers:
   - "school project"
   - "science fair"
@@ -44,6 +94,7 @@ metadata:
 composition:
   steps:
     - id: preferences
+      label: "偏好提取"
       kind: llm_chat
       with:
         system: "You extract kid-project preferences. Return only the requested contract. Refuse to plan projects that are clearly unsafe (firearms, fireworks, drugs, sharp-weapon making, etc.) by setting PROJECT_SAFE: no."
@@ -79,6 +130,7 @@ composition:
           ASSUMPTIONS:
             - <assumption>
     - id: project_clarify
+      label: "项目澄清"
       kind: user_input
       depends_on: [preferences]
       when: "'NEEDS_CLARIFICATION: yes' in outputs.preferences and 'PROJECT_SAFE: yes' in outputs.preferences and 'MISSING_FIELDS:\n  - none' not in outputs.preferences"
@@ -122,6 +174,7 @@ composition:
         cancel_keywords: ["算了", "换个项目", "cancel", "stop"]
         timeout_hours: 48
     - id: feasibility
+      label: "可行性"
       kind: llm_classify
       depends_on: [preferences, project_clarify]
       output_choices:
@@ -158,6 +211,7 @@ composition:
           - STRAIGHTFORWARD: child can complete the bulk of the project
             with the declared PARENT_SUPERVISION level.
     - id: redirect_unsafe
+      label: "安全改写"
       kind: llm_chat
       depends_on: [preferences, feasibility]
       when: "'PROJECT_SAFE: no' in outputs.preferences or outputs.feasibility == 'INAPPROPRIATE'"
@@ -183,12 +237,14 @@ composition:
           End with a single line:
           UNSAFE_REDIRECT: yes
     - id: recall_past_projects
+      label: "项目召回"
       kind: agent
       skill: memory
       depends_on: [feasibility, project_clarify]
       when: "outputs.feasibility != 'INAPPROPRIATE' and 'PROJECT_SAFE: yes' in outputs.preferences"
       on_failure: recall_past_projects_fallback
     - id: recall_past_projects_fallback
+      label: "项目召回兜底"
       kind: llm_chat
       with:
         system: "You produce a no-memory fallback note for child project planning."
@@ -197,6 +253,7 @@ composition:
           child age, deadline, materials, budget, supervision, location, and
           project context. Do not mention runtime errors to the user.
     - id: web_research
+      label: "网页研究"
       kind: skill_exec
       skill: multi-search-engine
       depends_on: [feasibility]
@@ -207,6 +264,7 @@ composition:
         engines: [brave, tavily, duckduckgo]
         max_results: 8
     - id: web_research_fallback
+      label: "网页研究兜底"
       kind: llm_chat
       with:
         system: "You produce a no-web fallback note for child project planning."
@@ -220,6 +278,7 @@ composition:
           Request:
           {{ inputs.user_message | xml_escape | truncate(3500) }}
     - id: weather_check
+      label: "天气检查"
       kind: skill_exec
       skill: weather
       depends_on: [feasibility, project_clarify]
@@ -229,6 +288,7 @@ composition:
         location: "{{ inputs.user_message | xml_escape | truncate(60) }}"
         days: 7
     - id: weather_check_fallback
+      label: "天气兜底"
       kind: llm_chat
       with:
         system: "You produce a no-live-weather fallback note for child project planning."
@@ -242,6 +302,7 @@ composition:
           Request:
           {{ inputs.user_message | xml_escape | truncate(2000) }}
     - id: project_fact_ledger
+      label: "项目事实台账"
       kind: llm_chat
       depends_on: [preferences, project_clarify, recall_past_projects, weather_check]
       when: "outputs.feasibility != 'INAPPROPRIATE' and 'PROJECT_SAFE: yes' in outputs.preferences"
@@ -303,6 +364,7 @@ composition:
           - Never invent sample measurements, dates, allergies, school rules,
             or local forecasts.
     - id: deep_research
+      label: "深度研究"
       kind: skill_exec
       skill: deep-research
       depends_on: [feasibility]
@@ -312,6 +374,7 @@ composition:
         depth: "standard"
         max_rounds: 1
     - id: outline_steps
+      label: "步骤大纲"
       kind: llm_chat
       depends_on: [feasibility, web_research, recall_past_projects, weather_check, project_clarify, preferences]
       when: "outputs.feasibility != 'INAPPROPRIATE' and 'PROJECT_SAFE: yes' in outputs.preferences"
@@ -355,6 +418,7 @@ composition:
 
           Language: match preferences (default mixed).
     - id: material_list
+      label: "材料清单"
       kind: llm_chat
       depends_on: [outline_steps, project_clarify, web_research]
       when: "outputs.feasibility != 'INAPPROPRIATE' and 'PROJECT_SAFE: yes' in outputs.preferences"
@@ -375,6 +439,7 @@ composition:
           Add at the end a bullet line "Likely you have at home:" listing
           items the household probably already owns.
     - id: safety_notes
+      label: "安全提示"
       kind: llm_chat
       depends_on: [feasibility, outline_steps, project_clarify]
       when: "outputs.feasibility != 'INAPPROPRIATE' and 'PROJECT_SAFE: yes' in outputs.preferences"
@@ -403,6 +468,7 @@ composition:
 
           Language: match preferences (default mixed).
     - id: learning_objectives
+      label: "学习目标"
       kind: llm_chat
       depends_on: [outline_steps, preferences, project_clarify]
       when: "outputs.feasibility != 'INAPPROPRIATE' and 'PROJECT_SAFE: yes' in outputs.preferences"
@@ -431,6 +497,7 @@ composition:
           Language: match preferences (parent-facing — usually adult
           register).
     - id: kid_deck
+      label: "儿童卡片"
       kind: skill_exec
       skill: pptx
       depends_on: [outline_steps, material_list, safety_notes, project_clarify, feasibility]
@@ -449,6 +516,7 @@ composition:
             body: "{{ outputs.get('safety_notes', '') | truncate(600) }}"
         output_path: "kid_project_{{ inputs.get('collected', {}).get('project_clarify', {}).get('topic', 'untitled') | slugify }}.pptx"
     - id: vocab_cards
+      label: "词汇卡"
       kind: llm_chat
       depends_on: [outline_steps, material_list, project_clarify, feasibility, preferences]
       when: "outputs.feasibility != 'INAPPROPRIATE' and 'PROJECT_SAFE: yes' in outputs.preferences and ('vocab' in (inputs.user_message | lower) or 'word card' in (inputs.user_message | lower) or 'bilingual' in (inputs.user_message | lower) or '英语' in inputs.user_message or '双语' in inputs.user_message or '单词' in inputs.user_message)"
@@ -474,6 +542,7 @@ composition:
 
           Output as a markdown numbered list.
     - id: deliver_project_pack
+      label: "项目包交付"
       kind: llm_chat
       depends_on:
         - preferences
@@ -641,6 +710,7 @@ composition:
           End with a single line:
           PACK_DELIVERED: {{ outputs.feasibility }}
     - id: project_pack_audit
+      label: "项目包审稿"
       kind: llm_chat
       depends_on:
         - deliver_project_pack
@@ -787,6 +857,7 @@ composition:
           End with:
           PACK_DELIVERED: {{ outputs.feasibility }}
     - id: store_project
+      label: "存储项目"
       kind: agent
       skill: memory
       depends_on: [project_pack_audit, project_clarify, feasibility]

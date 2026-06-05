@@ -25,10 +25,12 @@ large_outputs/artifact_ref, retries, when conditions, persistence to
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -56,7 +58,14 @@ from opensquilla.skills.meta.templating import (
     render_with_args,  # noqa: F401 — re-exported in __all__
     resolve_route,  # noqa: F401 — re-exported in __all__
 )
-from opensquilla.skills.meta.types import MetaMatch, MetaPlan, MetaResult, MetaStep
+from opensquilla.skills.meta.types import (
+    MetaMatch,
+    MetaPaused,
+    MetaPlan,
+    MetaPreflightRequired,
+    MetaResult,
+    MetaStep,
+)
 
 if TYPE_CHECKING:
     from opensquilla.persistence.meta_run_writer import MetaRunWriter
@@ -90,6 +99,239 @@ _SUBAGENT_METADATA_BLOCKLIST = {
     "meta_match_tool_choice",
     "meta_match_tool_surface_restricted",
 }
+
+
+def _contract_items(raw: Any) -> list[str]:
+    if isinstance(raw, str) and raw.strip():
+        return [raw.strip()]
+    if not isinstance(raw, list):
+        return []
+    items: list[str] = []
+    for item in raw:
+        if isinstance(item, dict):
+            name = item.get("name") or item.get("title") or item.get("path")
+            if name is not None and str(name).strip():
+                suffix = ""
+                if item.get("required") is True:
+                    suffix = " (required)"
+                items.append(f"{str(name).strip()}{suffix}")
+            continue
+        text = str(item).strip()
+        if text:
+            items.append(text)
+    return items
+
+
+def _format_contract_list(items: list[str], *, none_label: str = "无") -> str:
+    if not items:
+        return f"- {none_label}"
+    return "\n".join(f"- {item}" for item in items)
+
+
+def _required_section_presence(text: str, sections: list[str]) -> tuple[list[str], list[str]]:
+    haystack = text.casefold()
+    present: list[str] = []
+    missing: list[str] = []
+    for section in sections:
+        if section.casefold() in haystack:
+            present.append(section)
+        else:
+            missing.append(section)
+    return present, missing
+
+
+def _audit_output_contract(text: str, output_contract: dict[str, Any]) -> dict[str, Any]:
+    """Deterministically audit the parts of an output contract we can prove."""
+
+    sections = _contract_items(output_contract.get("required_sections"))
+    present, missing = _required_section_presence(text, sections)
+    forbidden_terms = (
+        _contract_items(output_contract.get("do_not"))
+        or _contract_items(output_contract.get("forbidden_terms"))
+        or _contract_items(output_contract.get("must_not_include"))
+    )
+    haystack = text.casefold()
+    forbidden_found = [
+        term for term in forbidden_terms if term.casefold() in haystack
+    ]
+    status = "pass"
+    if missing or forbidden_found:
+        status = "fail"
+    elif output_contract.get("unverified") or output_contract.get("assumptions"):
+        status = "warn"
+    return {
+        "status": status,
+        "present_required_sections": present,
+        "missing_required_sections": missing,
+        "forbidden_terms_found": forbidden_found,
+    }
+
+
+def _format_presence_line(label: str, items: list[str], *, none_label: str = "无") -> str:
+    if not items:
+        return f"- {label}: {none_label}"
+    return f"- {label}: {', '.join(items)}"
+
+
+def _contract_labels(language: str | None) -> dict[str, str]:
+    if str(language or "").lower() == "en":
+        return {
+            "title": "Declared Output Contract",
+            "required": "Required Sections",
+            "check": "Deterministic Check",
+            "status": "Status",
+            "present": "Present",
+            "missing": "Missing",
+            "assumptions": "Assumptions",
+            "unverified": "Unverified",
+            "artifacts": "Generated Artifacts",
+            "none": "none",
+        }
+    return {
+        "title": "声明的输出契约",
+        "required": "必需部分",
+        "check": "确定性检查",
+        "status": "状态",
+        "present": "已出现",
+        "missing": "缺失",
+        "assumptions": "假设",
+        "unverified": "未验证",
+        "artifacts": "生成的 artifact",
+        "none": "无",
+    }
+
+
+def _append_output_contract_block(
+    text: str,
+    output_contract: dict[str, Any],
+    *,
+    language: str | None = None,
+) -> str:
+    """Append the deterministic P0-3 contract summary block.
+
+    This is intentionally metadata-only: it states the declared contract
+    and a cheap required-section presence check without pretending to run
+    a full LLM audit. The future audit/self-repair loop can replace or
+    enrich this block while preserving the same headings.
+    """
+
+    if not output_contract:
+        return text
+    sections = _contract_items(output_contract.get("required_sections"))
+    assumptions = _contract_items(output_contract.get("assumptions"))
+    unverified = _contract_items(output_contract.get("unverified"))
+    artifacts = _contract_items(output_contract.get("artifacts"))
+    audit = _audit_output_contract(text, output_contract)
+    present = list(audit["present_required_sections"])
+    missing = list(audit["missing_required_sections"])
+    labels = _contract_labels(language)
+    block = (
+        f"## {labels['title']}\n\n"
+        f"### {labels['required']}\n"
+        f"{_format_contract_list(sections, none_label=labels['none'])}\n\n"
+        f"### {labels['check']}\n"
+        f"- {labels['status']}: {audit['status']}\n"
+        f"{_format_presence_line(labels['present'], present, none_label=labels['none'])}\n"
+        f"{_format_presence_line(labels['missing'], missing, none_label=labels['none'])}\n\n"
+        f"### {labels['assumptions']}\n"
+        f"{_format_contract_list(assumptions, none_label=labels['none'])}\n\n"
+        f"### {labels['unverified']}\n"
+        f"{_format_contract_list(unverified, none_label=labels['none'])}\n\n"
+        f"### {labels['artifacts']}\n"
+        f"{_format_contract_list(artifacts, none_label=labels['none'])}"
+    )
+    if not text.strip():
+        return block
+    return f"{text.rstrip()}\n\n---\n\n{block}"
+
+
+def _verify_declared_artifacts(
+    output_contract: dict[str, Any],
+    *,
+    workspace_dir: str,
+) -> dict[str, Any]:
+    """Verify declared local artifacts without reading outside the workspace."""
+
+    raw_artifacts = output_contract.get("artifacts")
+    if not isinstance(raw_artifacts, list) or not raw_artifacts:
+        return {"status": "none", "artifacts": []}
+
+    workspace = Path(workspace_dir or ".").expanduser().resolve()
+    results: list[dict[str, Any]] = []
+    failed = False
+    for index, item in enumerate(raw_artifacts):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("title") or f"artifact-{index + 1}")
+        required = item.get("required") is True
+        raw_path = item.get("path")
+        result: dict[str, Any] = {
+            "name": name,
+            "required": required,
+        }
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            result["status"] = "no_path"
+            if required:
+                failed = True
+            results.append(result)
+            continue
+        path = Path(raw_path).expanduser()
+        if not path.is_absolute():
+            path = workspace / path
+        resolved = path.resolve()
+        result["path"] = str(resolved)
+        try:
+            resolved.relative_to(workspace)
+        except ValueError:
+            result["status"] = "outside_workspace"
+            failed = True
+            results.append(result)
+            continue
+        if not resolved.exists():
+            result["status"] = "missing"
+            if required:
+                failed = True
+            results.append(result)
+            continue
+        if not resolved.is_file():
+            result["status"] = "not_file"
+            failed = True
+            results.append(result)
+            continue
+        size = resolved.stat().st_size
+        result["size"] = size
+        if not size:
+            result["status"] = "empty"
+            failed = True
+            results.append(result)
+            continue
+        digest = hashlib.sha256()
+        with resolved.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                digest.update(chunk)
+        result["sha256"] = digest.hexdigest()
+        result["status"] = "ok"
+        results.append(result)
+
+    status = "fail" if failed else "ok"
+    return {"status": status, "artifacts": results}
+
+
+def _append_artifact_verification_notice(text: str, report: dict[str, Any]) -> str:
+    if report.get("status") != "fail":
+        return text
+    failures = [
+        item for item in report.get("artifacts", [])
+        if isinstance(item, dict) and item.get("status") != "ok"
+    ]
+    if not failures:
+        return text
+    lines = ["## Artifact verification failed"]
+    for item in failures:
+        lines.append(
+            f"- {item.get('name', 'artifact')}: {item.get('status', 'failed')}"
+        )
+    return f"{text.rstrip()}\n\n---\n\n" + "\n".join(lines)
 
 
 def _metadata_for_meta_subagent(base_config: AgentConfig) -> dict[str, Any]:
@@ -234,10 +476,12 @@ class MetaOrchestrator:
             )
 
         run_id: str | None = None
-        loop = asyncio.get_running_loop()
-
         async def _to_thread(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-            return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
+            # Persistence writes are small sqlite calls guarded by
+            # MetaRunWriter's own lock. Keeping them synchronous avoids
+            # executor wake-up stalls on native-hook/App surfaces while
+            # preserving the async hook contract.
+            return fn(*args, **kwargs)
 
         if self._run_writer is not None:
             try:
@@ -310,8 +554,13 @@ class MetaOrchestrator:
         previous_run_id = self._current_run_id
         self._current_run_id = run_id
         try:
+            scheduler_match = MetaMatch(
+                plan=match.plan,
+                inputs=match.inputs,
+                run_id=run_id or "",
+            )
             async for item in run_dag(
-                match,
+                scheduler_match,
                 dispatch_step_stream=self._dispatch_step_stream,
                 yield_skill_view_preface=self._yield_skill_view_preface,
                 max_parallelism=self._max_parallelism,
@@ -342,6 +591,25 @@ class MetaOrchestrator:
                             match.inputs,
                             item.final_text,
                         )
+                        if match.plan.output_contract:
+                            item.metadata["output_contract_audit"] = _audit_output_contract(
+                                item.final_text,
+                                match.plan.output_contract,
+                            )
+                            item.metadata["artifact_verification"] = _verify_declared_artifacts(
+                                match.plan.output_contract,
+                                workspace_dir=self._workspace_dir
+                                or str(match.inputs.get("workspace_dir") or ""),
+                            )
+                            item.final_text = _append_artifact_verification_notice(
+                                item.final_text,
+                                item.metadata["artifact_verification"],
+                            )
+                        item.final_text = _append_output_contract_block(
+                            item.final_text,
+                            match.plan.output_contract,
+                            language=str(match.inputs.get("user_language") or ""),
+                        )
                     final_result = item
                 yield item
         except asyncio.CancelledError:
@@ -351,15 +619,28 @@ class MetaOrchestrator:
             self._current_run_id = previous_run_id
             if run_id is not None and self._run_writer is not None:
                 try:
-                    # A paused MetaResult means a user_input step
-                    # successfully claimed awaiting_user state — do NOT
-                    # overwrite that with status='failed' / 'cancelled'.
-                    # The next user message will resume via try_claim_resume.
+                    # A user_input pause successfully claimed awaiting_user
+                    # state — do NOT overwrite that with a terminal status.
+                    # Preflight pauses are client-side confirmation gates,
+                    # so finalise them as cancelled to avoid orphaned
+                    # running rows in run history.
                     if (
                         final_result is not None
                         and getattr(final_result, "paused", False)
+                        and isinstance(final_result.paused_payload, MetaPaused)
                     ):
                         pass
+                    elif (
+                        final_result is not None
+                        and getattr(final_result, "paused", False)
+                        and isinstance(final_result.paused_payload, MetaPreflightRequired)
+                    ):
+                        await _to_thread(
+                            self._run_writer.finish_run_sync,
+                            run_id=run_id,
+                            status="cancelled",
+                            result=final_result,
+                        )
                     elif cancelled:
                         await _to_thread(
                             self._run_writer.finish_run_sync,
@@ -750,7 +1031,7 @@ class MetaOrchestrator:
             schema=cfg, filled=filled_clean,
         )
 
-        match = MetaMatch(plan=plan, inputs=inputs)
+        match = MetaMatch(plan=plan, inputs=inputs, run_id=run_id)
 
         final: MetaResult | None = None
         previous_run_id = self._current_run_id
@@ -832,7 +1113,7 @@ class MetaOrchestrator:
             schema=cfg, filled=filled_clean,
         )
 
-        match = MetaMatch(plan=plan, inputs=inputs)
+        match = MetaMatch(plan=plan, inputs=inputs, run_id=run_id)
 
         previous_run_id = self._current_run_id
         self._current_run_id = run_id
@@ -859,6 +1140,25 @@ class MetaOrchestrator:
                         ev.final_text = await self._repair_final_text_language(
                             inputs,
                             ev.final_text,
+                        )
+                        if plan.output_contract:
+                            ev.metadata["output_contract_audit"] = _audit_output_contract(
+                                ev.final_text,
+                                plan.output_contract,
+                            )
+                            ev.metadata["artifact_verification"] = _verify_declared_artifacts(
+                                plan.output_contract,
+                                workspace_dir=self._workspace_dir
+                                or str(inputs.get("workspace_dir") or ""),
+                            )
+                            ev.final_text = _append_artifact_verification_notice(
+                                ev.final_text,
+                                ev.metadata["artifact_verification"],
+                            )
+                        ev.final_text = _append_output_contract_block(
+                            ev.final_text,
+                            plan.output_contract,
+                            language=str(inputs.get("user_language") or ""),
                         )
                     final = ev
                 yield ev

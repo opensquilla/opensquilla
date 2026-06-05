@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from opensquilla.engine.types import (
+    MetaPreflightEvent,
     MetaRunAnnouncedEvent,
     ToolUseStartEvent,
 )
@@ -26,6 +27,14 @@ def make_two_step_match():
             ),
         ),
         final_text_mode="raw",
+        request_template={
+            "outcome": "Short summary",
+            "fields": [
+                {"name": "topic", "required": True},
+                {"name": "tone", "required": False, "default": "concise"},
+            ],
+            "assumptions": ["Use the user's current message as the topic"],
+        },
     )
     return MetaMatch(plan=plan, inputs={"user_message": "hi"})
 
@@ -51,14 +60,18 @@ async def _collect_events(match, dispatch, preface, *, limit=None):
     from opensquilla.skills.meta.scheduler import run_dag
 
     events = []
-    async for ev in run_dag(
+    agen = run_dag(
         match,
         dispatch_step_stream=dispatch,
         yield_skill_view_preface=preface,
-    ):
-        events.append(ev)
-        if limit is not None and len(events) >= limit:
-            break
+    )
+    try:
+        async for ev in agen:
+            events.append(ev)
+            if limit is not None and len(events) >= limit:
+                break
+    finally:
+        await agen.aclose()
     return events
 
 
@@ -83,9 +96,27 @@ def test_announces_plan_before_first_tool_use(
     assert first_tool is None or first_announce < first_tool
 
 
+def test_preflight_precedes_run_announce(
+    make_two_step_match, fake_dispatch_stream, fake_preface,
+):
+    events = asyncio.run(_collect_events(
+        make_two_step_match, fake_dispatch_stream, fake_preface, limit=2,
+    ))
+
+    assert isinstance(events[0], MetaPreflightEvent)
+    assert isinstance(events[1], MetaRunAnnouncedEvent)
+    assert events[0].run_id == events[1].run_id
+    assert events[0].meta_skill_name == "meta-fake"
+    assert events[0].request_template["outcome"] == "Short summary"
+    assert events[0].interpreted_request == "hi"
+    assert events[0].missing_fields == ["topic"]
+    assert events[0].assumptions == ["Use the user's current message as the topic"]
+    assert events[0].can_skip is True
+
+
 def test_announce_payload_lists_all_steps(make_two_step_match, fake_dispatch_stream, fake_preface):
     events = asyncio.run(_collect_events(
-        make_two_step_match, fake_dispatch_stream, fake_preface, limit=1,
+        make_two_step_match, fake_dispatch_stream, fake_preface, limit=2,
     ))
     announce = next(
         (e for e in events if isinstance(e, MetaRunAnnouncedEvent)), None,
@@ -97,3 +128,21 @@ def test_announce_payload_lists_all_steps(make_two_step_match, fake_dispatch_str
     assert ids == ["intake", "summary"]
     assert announce.steps[0]["label"] == "意图提取"
     assert announce.steps[1]["depends_on"] == ["intake"]
+
+
+def test_announce_uses_match_run_id(make_two_step_match, fake_dispatch_stream, fake_preface):
+    match = MetaMatch(
+        plan=make_two_step_match.plan,
+        inputs=make_two_step_match.inputs,
+        run_id="persisted-run-123",
+    )
+
+    events = asyncio.run(_collect_events(
+        match, fake_dispatch_stream, fake_preface, limit=2,
+    ))
+    announce = next(
+        (e for e in events if isinstance(e, MetaRunAnnouncedEvent)), None,
+    )
+
+    assert announce is not None
+    assert announce.run_id == "persisted-run-123"

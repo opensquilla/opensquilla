@@ -93,6 +93,8 @@ def test_runs_show(runner: CliRunner, seeded_db) -> None:
     data = json.loads(result.output)
     assert data["meta_skill_name"] == "alpha-skill"
     assert data["status"] == "ok"
+    assert data["summary"]["step_count"] == 1
+    assert data["summary"]["usage"]["available"] is False
 
 
 def test_runs_steps(runner: CliRunner, seeded_db) -> None:
@@ -125,6 +127,18 @@ def test_runs_replay_dry_run(runner: CliRunner, seeded_db) -> None:
     assert data["meta_skill_name"] == "alpha-skill"
     assert data["plan_source"] == "historical_snapshot"
     assert len(data["steps"]) == 1
+
+
+def test_runs_draft_json(runner: CliRunner, seeded_db) -> None:
+    result = runner.invoke(
+        cli_app, ["skills", "meta", "runs", "draft", seeded_db["rid_ok"], "--json"],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["source_run"]["run_id"] == seeded_db["rid_ok"]
+    assert data["name"] == "alpha-skill-draft"
+    assert data["composition"]["steps"][0]["id"] == "s1"
+    assert data["trigger_candidates"]
 
 
 def test_runs_show_bad_id(runner: CliRunner, seeded_db) -> None:

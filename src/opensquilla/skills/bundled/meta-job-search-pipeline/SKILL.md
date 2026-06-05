@@ -5,6 +5,54 @@ kind: meta
 meta_priority: 65
 always: false
 final_text_mode: "step:deliver_jobpack_audit"
+request_template:
+  outcome: "Reviewable job-search pack tailored to the target role or interview."
+  fields:
+    - name: target_role_or_jd
+      required: true
+    - name: resume_or_background
+      required: false
+    - name: workflow_goal
+      required: false
+      default: "tailor application materials or prepare for interview"
+    - name: constraints
+      required: false
+    - name: audience
+      required: false
+      default: "candidate and hiring reviewer"
+    - name: language
+      required: false
+      default: "match the user's language"
+  assumptions:
+    - "Never auto-apply or contact employers."
+    - "Preserve truthful experience; flag gaps instead of inventing claims."
+output_contract:
+  required_sections:
+    - "Target-role fit"
+    - "Tailored material or prep pack"
+    - "Gaps and risks"
+    - "Next application step"
+  assumptions:
+    - "Resume/background truthfulness is constrained to provided user context."
+  unverified:
+    - "Employer requirements not present in the JD or supplied tracker."
+  artifacts:
+    - name: "application_pack"
+      required: false
+eval_prompts:
+  - name: "job-search-baseline"
+    prompt: "Tailor an application pack for a pasted product manager job description and a short resume summary."
+    rubric:
+      - "Target-role fit"
+      - "Tailored material or prep pack"
+      - "Gaps and risks"
+      - "Next application step"
+preference_keys:
+  - preferred_language
+  - job_search_material_style
+policy_tags:
+  - truthful-experience-only
+  - no-auto-apply
 triggers:
   - "tailor my resume"
   - "tailor my resume to this job"
@@ -50,6 +98,7 @@ metadata:
 composition:
   steps:
     - id: preferences
+      label: "偏好提取"
       kind: llm_chat
       with:
         system: "You extract job-search-pipeline preferences. Return only the requested contract."
@@ -75,6 +124,7 @@ composition:
           ASSUMPTIONS:
             - <assumption>
     - id: job_clarify
+      label: "求职澄清"
       kind: user_input
       depends_on: [preferences]
       when: "'NEEDS_CLARIFICATION: yes' in outputs.preferences"
@@ -116,6 +166,7 @@ composition:
         cancel_keywords: ["算了", "取消", "cancel", "stop", "abort"]
         timeout_hours: 24
     - id: mode
+      label: "模式判断"
       kind: llm_classify
       depends_on: [preferences, job_clarify]
       output_choices:
@@ -149,12 +200,14 @@ composition:
           - STATUS_DIGEST: user pasted a list of in-flight applications
             and wants a ranked next-action summary.
     - id: recall_company
+      label: "公司召回"
       kind: agent
       skill: memory
       depends_on: [mode, job_clarify]
       when: "outputs.mode in ['TAILOR_NEW', 'INTERVIEW_PREP', 'COMPARE_ROLES']"
       on_failure: recall_company_fallback
     - id: recall_company_fallback
+      label: "公司召回兜底"
       kind: llm_chat
       with:
         system: "You produce a no-memory fallback note for job-search preparation."
@@ -163,6 +216,7 @@ composition:
           the pasted JD, resume, ledger, and interview context. Do not mention
           runtime errors to the user.
     - id: web_research
+      label: "网页研究"
       kind: skill_exec
       skill: multi-search-engine
       depends_on: [mode]
@@ -173,6 +227,7 @@ composition:
         engines: [brave, tavily, duckduckgo]
         max_results: 10
     - id: web_research_fallback
+      label: "网页研究兜底"
       kind: llm_chat
       with:
         system: "You produce a no-web fallback note for job-search preparation."
@@ -186,6 +241,7 @@ composition:
           Request:
           {{ inputs.user_message | xml_escape | truncate(3500) }}
     - id: enrich_company
+      label: "公司补全"
       kind: llm_chat
       depends_on: [mode, web_research, recall_company, job_clarify]
       when: "outputs.mode in ['TAILOR_NEW', 'INTERVIEW_PREP', 'COMPARE_ROLES']"
@@ -212,6 +268,7 @@ composition:
           POTENTIAL_RED_FLAGS:
             - <none|or one-line concern grounded in sources>
     - id: deep_research
+      label: "深度研究"
       kind: skill_exec
       skill: deep-research
       depends_on: [mode]
@@ -221,6 +278,7 @@ composition:
         depth: "standard"
         max_rounds: 2
     - id: source_fact_ledger
+      label: "事实台账"
       kind: llm_chat
       depends_on: [mode, job_clarify]
       when: "outputs.mode == 'TAILOR_NEW'"
@@ -265,6 +323,7 @@ composition:
             dialogue records, accuracy evaluation, or fake/pretend user
             research.
     - id: tailor_resume
+      label: "简历定制"
       kind: llm_chat
       depends_on: [mode, enrich_company, job_clarify, source_fact_ledger]
       when: "outputs.mode == 'TAILOR_NEW'"
@@ -329,6 +388,7 @@ composition:
           section at the end (max 5 bullets) calling out what you
           reordered or rephrased and why.
     - id: cover_letter
+      label: "求职信"
       kind: llm_chat
       depends_on: [tailor_resume, enrich_company, job_clarify, mode, source_fact_ledger]
       when: "outputs.mode == 'TAILOR_NEW'"
@@ -371,6 +431,7 @@ composition:
           is verified, a concrete JD requirement. End with one specific ask
           (a 30-minute conversation about <topic>).
     - id: interview_qs
+      label: "面试问题"
       kind: llm_chat
       depends_on: [mode, web_research, deep_research, enrich_company, job_clarify]
       when: "outputs.mode == 'INTERVIEW_PREP'"
@@ -399,6 +460,7 @@ composition:
           ## Reverse interview — what to ask THEM (3 — ground these in
              red-flags or recent_moves from the brief)
     - id: study_brief
+      label: "学习简报"
       kind: llm_chat
       depends_on: [interview_qs, job_clarify]
       when: "outputs.mode == 'INTERVIEW_PREP'"
@@ -418,6 +480,7 @@ composition:
           Each item must reference a specific question from the
           interview_qs output, not be generic.
     - id: interview_deck
+      label: "面试卡片"
       kind: skill_exec
       skill: pptx
       depends_on: [interview_qs, study_brief, enrich_company, job_clarify]
@@ -438,6 +501,7 @@ composition:
             body: "{{ outputs.get('interview_qs', '') | truncate(400) }}"
         output_path: "/tmp/interview_prep_{{ inputs.get('collected', {}).get('job_clarify', {}).get('target_company', 'untitled') | slugify }}.pptx"
     - id: compare_matrix
+      label: "对比矩阵"
       kind: llm_chat
       depends_on: [mode, enrich_company, job_clarify]
       when: "outputs.mode == 'COMPARE_ROLES'"
@@ -457,6 +521,7 @@ composition:
           paragraph "If I had to pick today" with one recommendation
           grounded in the rows above.
     - id: ledger_summary
+      label: "台账摘要"
       kind: llm_chat
       depends_on: [mode]
       when: "outputs.mode == 'STATUS_DIGEST'"
@@ -478,6 +543,7 @@ composition:
           Output: a markdown table sorted by urgency. Below the table,
           list the top 3 nudges with a one-line draft message each.
     - id: tracker_xlsx
+      label: "跟踪表格"
       kind: skill_exec
       skill: xlsx
       depends_on: [ledger_summary]
@@ -491,6 +557,7 @@ composition:
             from_markdown: "{{ outputs.ledger_summary }}"
         output_path: "/tmp/application_tracker.xlsx"
     - id: deliver_jobpack
+      label: "求职包交付"
       kind: llm_chat
       depends_on:
         - mode
@@ -608,6 +675,7 @@ composition:
           End with a single line:
           PACK_MODE: {{ outputs.mode }}
     - id: deliver_jobpack_audit
+      label: "求职包审稿"
       kind: llm_chat
       depends_on: [deliver_jobpack, source_fact_ledger, mode, preferences]
       with:
@@ -650,10 +718,12 @@ composition:
             available fact.
           - Remove internal sentinels such as PACK_MODE.
     - id: store_pack
+      label: "存储求职包"
       kind: agent
       skill: memory
       depends_on: [deliver_jobpack_audit, mode, job_clarify]
     - id: export_docx
+      label: "导出 DOCX"
       kind: skill_exec
       skill: docx
       depends_on: [deliver_jobpack_audit, job_clarify]

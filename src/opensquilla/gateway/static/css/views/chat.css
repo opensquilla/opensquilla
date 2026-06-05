@@ -1447,6 +1447,13 @@
   font-size: var(--fs-xs);
 }
 
+.msg-artifact-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
 .msg-artifact-card__action {
   align-self: flex-start;
   border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));

@@ -17,12 +17,15 @@ from typing import Any
 import typer
 
 from opensquilla.paths import state_dir
+from opensquilla.persistence.meta_run_query import parse_since_ms
 from opensquilla.persistence.meta_run_writer import (
     MetaRunWriter,
     RunRecord,
     StepRecord,
     open_meta_run_writer,
+    summarize_run_record,
 )
+from opensquilla.skills.meta.author_seed import draft_meta_skill_seed
 from opensquilla.skills.meta.parser import parse_meta_plan
 from opensquilla.skills.meta.types import MetaPlan
 
@@ -76,30 +79,34 @@ def _open_writer() -> MetaRunWriter:
 
 
 def _parse_since(value: str | None) -> int | None:
-    if value is None:
-        return None
-    now_ms = int(time.time() * 1000)
-    unit = value[-1]
-    if unit in "hH":
-        n = int(value[:-1])
-        return now_ms - n * 3600 * 1000
-    if unit in "dD":
-        n = int(value[:-1])
-        return now_ms - n * 86400 * 1000
-    if unit in "mM":
-        n = int(value[:-1])
-        return now_ms - n * 60 * 1000
-    raise typer.BadParameter("--since must end in m/h/d (e.g., 5m, 24h, 7d)")
+    try:
+        return parse_since_ms(value)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
 
 def _serialize_record(rec: RunRecord) -> dict[str, Any]:
     d = asdict(rec)
     d["steps"] = [asdict(s) for s in rec.steps]
+    d["summary"] = summarize_run_record(rec)
     return d
 
 
 def _serialize_step(step: StepRecord) -> dict[str, Any]:
     return asdict(step)
+
+
+def _hydrate_records(writer: MetaRunWriter, rows: list[RunRecord]) -> list[RunRecord]:
+    return writer.hydrate_runs(rows)
+
+
+def _loaded_specs_for_conflicts() -> list[Any]:
+    try:
+        from opensquilla.skills.loader import SkillLoader
+
+        return SkillLoader().load_all()
+    except Exception:  # noqa: BLE001 - author draft should remain usable
+        return []
 
 
 def _print_runs_table(rows: list[RunRecord]) -> None:
@@ -138,6 +145,11 @@ def runs_list(
         writer.close()
 
     if json_out:
+        writer = _open_writer()
+        try:
+            rows = _hydrate_records(writer, rows)
+        finally:
+            writer.close()
         typer.echo(json.dumps([_serialize_record(r) for r in rows], default=str))
     else:
         _print_runs_table(rows)
@@ -216,6 +228,39 @@ def runs_steps(
         )
 
 
+@runs_app.command("draft")
+def runs_draft(
+    run_id: str = typer.Argument(...),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """Draft a meta-skill authoring seed from a historical run."""
+    writer = _open_writer()
+    try:
+        rec = writer.get_run(run_id)
+    finally:
+        writer.close()
+    if rec is None:
+        typer.echo(f"run not found: {run_id}", err=True)
+        raise typer.Exit(2)
+
+    seed = draft_meta_skill_seed(rec, existing_specs=_loaded_specs_for_conflicts())
+    if json_out:
+        typer.echo(json.dumps(seed, default=str))
+        return
+
+    typer.echo(f"name:          {seed['name']}")
+    typer.echo(f"description:   {seed['description']}")
+    typer.echo("triggers:")
+    for trigger in seed.get("trigger_candidates", []):
+        typer.echo(f"  - {trigger}")
+    conflicts = seed.get("trigger_conflicts", [])
+    if conflicts:
+        typer.echo("trigger_conflicts:")
+        for item in conflicts:
+            typer.echo(f"  - {item['trigger']} -> {item['skill']}")
+    typer.echo(f"steps:         {len(seed.get('composition', {}).get('steps', []))}")
+
+
 @runs_app.command("failures")
 def runs_failures(
     name: str | None = typer.Option(None, "--name"),
@@ -232,6 +277,11 @@ def runs_failures(
     finally:
         writer.close()
     if json_out:
+        writer = _open_writer()
+        try:
+            rows = _hydrate_records(writer, rows)
+        finally:
+            writer.close()
         typer.echo(json.dumps([_serialize_record(r) for r in rows], default=str))
     else:
         _print_runs_table(rows)

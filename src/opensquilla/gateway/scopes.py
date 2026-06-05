@@ -130,6 +130,8 @@ METHOD_SCOPES: dict[str, str] = {
     "cron.unsubscribe": READ_SCOPE,  # OpenSquilla-only; classified read.
     "usage.status": READ_SCOPE,
     "usage.cost": READ_SCOPE,
+    "meta.runs.list": READ_SCOPE,
+    "meta.runs.failures": READ_SCOPE,
     # OpenSquilla-only — onboarding catalog and status are operator-readable.
     "onboarding.status": READ_SCOPE,
     "onboarding.catalog": READ_SCOPE,
@@ -188,6 +190,8 @@ METHOD_SCOPES: dict[str, str] = {
     "skills.update": ADMIN_SCOPE,
     "skills.uninstall": ADMIN_SCOPE,
     "skills.deps.install": ADMIN_SCOPE,
+    "meta.runs.show": ADMIN_SCOPE,
+    "meta.runs.draft": ADMIN_SCOPE,
     # Proposal mutation changes the managed skill layer or unattended
     # synthesis state, so require authenticated admin rather than remote
     # no-auth operator.proposals.

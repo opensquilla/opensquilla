@@ -178,6 +178,19 @@ class MetaPaused(Exception):  # noqa: N818
 
 
 @dataclass(frozen=True)
+class MetaPreflightRequired:
+    """Control payload for a blocking request-template preflight gate."""
+
+    run_id: str
+    meta_skill_name: str
+    request_template: dict[str, Any]
+    interpreted_request: str = ""
+    missing_fields: list[str] = field(default_factory=list)
+    assumptions: list[str] = field(default_factory=list)
+    can_skip: bool = True
+
+
+@dataclass(frozen=True)
 class MetaPlan:
     """Parsed composition plan for a Meta-Skill."""
 
@@ -197,6 +210,20 @@ class MetaPlan:
     #   "step:<step_id>": return outputs[step_id] verbatim. Use to point
     #     at a specific deliverable step that is not the last.
     final_text_mode: str = "auto"
+    # Optional request scaffold used by the P0-2 pre-flight preview
+    # surface. Shape is intentionally manifest-owned so individual
+    # meta-skills can evolve their fields without a schema migration.
+    request_template: dict[str, Any] = field(default_factory=dict)
+    # Optional final-answer contract. Deterministic UX layers read this
+    # today; future audit/self-repair steps can consume the same manifest
+    # field without changing plan persistence.
+    output_contract: dict[str, Any] = field(default_factory=dict)
+    # Optional P1-4 regression baseline prompts and judge rubrics.
+    eval_prompts: list[dict[str, Any]] = field(default_factory=list)
+    # Optional P2 preference/policy declarations. These are static authoring
+    # metadata only; runtime memory/policy integration remains separate.
+    preference_keys: tuple[str, ...] = ()
+    policy_tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -205,6 +232,7 @@ class MetaMatch:
 
     plan: MetaPlan
     inputs: dict[str, Any] = field(default_factory=dict)
+    run_id: str = ""
 
 
 @dataclass
@@ -223,4 +251,5 @@ class MetaResult:
     failed_step_id: str | None = None
     # New in PR3 (design §8.1, §8.3): pause signal vs failure distinction.
     paused: bool = False
-    paused_payload: MetaPaused | None = None
+    paused_payload: MetaPaused | MetaPreflightRequired | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)

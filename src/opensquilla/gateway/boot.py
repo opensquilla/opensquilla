@@ -2775,6 +2775,7 @@ async def start_gateway_server(
         subscription_manager=subscription_manager,
         channel_manager=channel_manager,
         usage_tracker=svc.usage_tracker,
+        meta_run_writer=svc.meta_run_writer,
         skill_loader=svc.skill_loader,
         cron_scheduler=svc.cron_scheduler,
         turn_runner=turn_runner,

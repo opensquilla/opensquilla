@@ -1,5 +1,23 @@
 <template>
-  <div class="msg-ai" :data-message-id="message.messageId">
+  <div
+    class="msg-ai"
+    :class="{ 'msg-ai--share-mode': shareMode, 'msg-ai--share-selected': shareSelected }"
+    :data-message-id="message.messageId"
+    :data-share-message-id="shareMessageId"
+    :data-share-selected="shareSelected ? 'true' : undefined"
+    @click="onMessageClick"
+  >
+    <button
+      v-if="shareMode"
+      type="button"
+      class="chat-share-picker"
+      :class="{ 'is-selected': shareSelected }"
+      :aria-pressed="shareSelected"
+      :title="shareSelected ? 'Remove from share image' : 'Add to share image'"
+      @click.stop="emit('toggleShare', shareMessageId)"
+    >
+      <Icon :name="shareSelected ? 'check' : 'plus'" :size="13" />
+    </button>
     <div class="msg-ai-avatar">
       <img class="msg-ai-avatar__img" :src="assistantAvatarUrl" alt="" aria-hidden="true" />
     </div>
@@ -80,6 +98,9 @@ import type { ArtifactPayload } from '@/types/rpc'
 const props = defineProps<{
   message: ChatRenderedMessage
   index: number
+  shareMode: boolean
+  shareSelected: boolean
+  shareMessageId: string
   assistantAvatarUrl: string
   renderMarkdown: (text: string) => string
   fmtTok: (value: number) => string
@@ -91,9 +112,10 @@ const props = defineProps<{
   toolSecondaryText: (call: ChatToolCallRenderItem) => string
 }>()
 
-defineEmits<{
+const emit = defineEmits<{
   copy: [message: ChatRenderedMessage]
   regenerate: [message: ChatRenderedMessage]
+  toggleShare: [messageId: string]
   downloadArtifact: [artifact: ArtifactPayload]
   toggleToolGroup: [groupId: string]
   toggleToolItem: [renderKey: string]
@@ -109,10 +131,17 @@ const legacyTimelineItems = computed<ChatStreamTimelineItem[]>(() => {
     group,
   }))
 })
+
+function onMessageClick(event: MouseEvent) {
+  if (!props.shareMode) return
+  if ((event.target as HTMLElement | null)?.closest('button,a,input,textarea,select')) return
+  emit('toggleShare', props.shareMessageId)
+}
 </script>
 
 <style scoped>
 .msg-ai {
+  position: relative;
   display: flex;
   gap: 0.625rem;
   width: min(calc(100% - 48px), 980px);
@@ -120,6 +149,56 @@ const legacyTimelineItems = computed<ChatStreamTimelineItem[]>(() => {
   padding: 0.5rem 0;
   align-items: flex-start;
   max-width: calc(100% - 48px);
+}
+
+.msg-ai--share-mode {
+  cursor: pointer;
+  width: min(calc(100% - 16px), 1012px);
+  max-width: calc(100% - 16px);
+  box-sizing: border-box;
+  padding: 0.5rem 1rem 0.5rem 2.5rem;
+  border-radius: 0.875rem;
+  transition: background 0.16s ease, box-shadow 0.16s ease;
+}
+
+.msg-ai--share-mode:hover {
+  background: rgba(184, 68, 4, 0.045);
+}
+
+.msg-ai--share-selected {
+  background: rgba(184, 68, 4, 0.07);
+  box-shadow: inset 0 0 0 1px rgba(184, 68, 4, 0.16);
+}
+
+.chat-share-picker {
+  position: absolute;
+  left: 0.45rem;
+  top: 0.65rem;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.45rem;
+  height: 1.45rem;
+  border: 1px solid rgba(32, 39, 34, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #6b716a;
+  box-shadow: 0 6px 18px rgba(31, 35, 40, 0.08);
+  cursor: pointer;
+  transition: transform 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+
+.chat-share-picker:hover {
+  transform: translateY(-1px);
+  border-color: rgba(184, 68, 4, 0.35);
+  color: #b84404;
+}
+
+.chat-share-picker.is-selected {
+  border-color: rgba(184, 68, 4, 0.45);
+  background: #b84404;
+  color: #fff;
 }
 
 .msg-ai-avatar {
@@ -283,6 +362,18 @@ const legacyTimelineItems = computed<ChatStreamTimelineItem[]>(() => {
   .savings-indicator::after {
     animation: none;
     display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .msg-ai--share-mode {
+    width: min(calc(100% - 12px), 1012px);
+    max-width: calc(100% - 12px);
+    padding: 0.5rem 0.75rem 0.5rem 2.25rem;
+  }
+
+  .chat-share-picker {
+    left: 0.35rem;
   }
 }
 </style>

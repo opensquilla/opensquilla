@@ -280,10 +280,20 @@ requested_degraded = {
     for kind, items in degraded_by_kind.items()
     if required[kind] and items
 }
+partial_generation_failures = {
+    kind: items
+    for kind, items in fatal_generation_failures_by_kind.items()
+    if required[kind] and assets_by_kind[kind] and items
+}
+reported_degraded = {
+    kind: requested_degraded.get(kind, []) + partial_generation_failures.get(kind, [])
+    for kind in assets_by_kind
+    if requested_degraded.get(kind) or partial_generation_failures.get(kind)
+}
 
 report = {
     "status": "MEDIA_BIND_FAILED" if failures else (
-        "MEDIA_BIND_DEGRADED" if requested_degraded else "MEDIA_BIND_OK"
+        "MEDIA_BIND_DEGRADED" if reported_degraded else "MEDIA_BIND_OK"
     ),
     "requested": required,
     "ready_counts": {kind: len(items) for kind, items in assets_by_kind.items()},
@@ -292,7 +302,8 @@ report = {
         for kind, items in assets_by_kind.items()
     },
     "patched_assets": [asset["src"] for asset in repair_map.values()],
-    "degraded": requested_degraded,
+    "degraded": reported_degraded,
+    "partial_generation_failures": partial_generation_failures,
     "generation_failures": generation_failures,
     "failures": failures,
 }

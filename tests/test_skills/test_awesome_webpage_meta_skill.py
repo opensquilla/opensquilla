@@ -828,6 +828,42 @@ def test_media_bind_validate_degrades_when_requested_audio_needs_config(
     assert "requested_modality_has_no_ready_asset" not in output
 
 
+def test_media_bind_validate_degrades_when_requested_image_partially_fails(
+    tmp_path: Path,
+) -> None:
+    result = _run_media_bind_step(
+        tmp_path,
+        assets=[
+            {"kind": "image", "src": "assets/images/hero.png"},
+            {"kind": "audio", "src": "assets/audio/narration.wav"},
+            {"kind": "video", "src": "assets/video/intro.mp4"},
+        ],
+        index_html=(
+            '<main><img src="assets/images/hero.png">'
+            '<audio controls src="assets/audio/narration.wav"></audio>'
+            '<video controls src="assets/video/intro.mp4"></video></main>'
+        ),
+        image_aigc=(
+            "IMAGE_GENERATION_FAILED: "
+            + json.dumps(
+                {
+                    "slot_id": "missing-gallery-card",
+                    "reason": "provider_timeout",
+                },
+                separators=(",", ":"),
+            )
+        ),
+    )
+
+    output = result.stdout.decode("utf-8") + result.stderr.decode("utf-8")
+    assert result.returncode == 0, output
+    report = json.loads(result.stdout.decode("utf-8"))
+    partial_image = report["partial_generation_failures"]["image"][0]
+    assert report["status"] == "MEDIA_BIND_DEGRADED"
+    assert partial_image["label"] == "IMAGE_GENERATION_FAILED"
+    assert partial_image["reason"] == "provider_timeout"
+
+
 def test_media_bind_validate_skips_modalities_user_declined(
     tmp_path: Path,
 ) -> None:

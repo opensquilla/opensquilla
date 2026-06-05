@@ -1,5 +1,23 @@
 <template>
-  <div class="msg-user" :data-message-id="message.messageId">
+  <div
+    class="msg-user"
+    :class="{ 'msg-user--share-mode': shareMode, 'msg-user--share-selected': shareSelected }"
+    :data-message-id="message.messageId"
+    :data-share-message-id="shareMessageId"
+    :data-share-selected="shareSelected ? 'true' : undefined"
+    @click="onMessageClick"
+  >
+    <button
+      v-if="shareMode"
+      type="button"
+      class="chat-share-picker"
+      :class="{ 'is-selected': shareSelected }"
+      :aria-pressed="shareSelected"
+      :title="shareSelected ? 'Remove from share image' : 'Add to share image'"
+      @click.stop="emit('toggleShare', shareMessageId)"
+    >
+      <Icon :name="shareSelected ? 'check' : 'plus'" :size="13" />
+    </button>
     <div class="msg-user-bubble" :class="{ 'msg-user-bubble--has-attachments': message.hasAttachments }">
       <template v-if="message.text">
         {{ stripTimePrefix(message.text) }}
@@ -35,19 +53,30 @@
 import Icon from '@/components/Icon.vue'
 import type { ChatRenderedMessage } from '@/types/chat'
 
-defineProps<{
+const props = defineProps<{
   message: ChatRenderedMessage
+  shareMode: boolean
+  shareSelected: boolean
+  shareMessageId: string
   stripTimePrefix: (text: string) => string
 }>()
 
-defineEmits<{
+const emit = defineEmits<{
   copy: [message: ChatRenderedMessage]
   edit: [message: ChatRenderedMessage]
+  toggleShare: [messageId: string]
 }>()
+
+function onMessageClick(event: MouseEvent) {
+  if (!props.shareMode) return
+  if ((event.target as HTMLElement | null)?.closest('button,a,input,textarea,select')) return
+  emit('toggleShare', props.shareMessageId)
+}
 </script>
 
 <style scoped>
 .msg-user {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -55,6 +84,56 @@ defineEmits<{
   margin: 0 auto;
   padding: 0.5rem 0;
   max-width: calc(100% - 48px);
+}
+
+.msg-user--share-mode {
+  cursor: pointer;
+  width: min(calc(100% - 16px), 1012px);
+  max-width: calc(100% - 16px);
+  box-sizing: border-box;
+  padding: 0.5rem 2.5rem 0.5rem 1rem;
+  border-radius: 0.875rem;
+  transition: background 0.16s ease, box-shadow 0.16s ease;
+}
+
+.msg-user--share-mode:hover {
+  background: rgba(184, 68, 4, 0.045);
+}
+
+.msg-user--share-selected {
+  background: rgba(184, 68, 4, 0.07);
+  box-shadow: inset 0 0 0 1px rgba(184, 68, 4, 0.16);
+}
+
+.chat-share-picker {
+  position: absolute;
+  right: 0.45rem;
+  top: 0.65rem;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.45rem;
+  height: 1.45rem;
+  border: 1px solid rgba(32, 39, 34, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #6b716a;
+  box-shadow: 0 6px 18px rgba(31, 35, 40, 0.08);
+  cursor: pointer;
+  transition: transform 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+
+.chat-share-picker:hover {
+  transform: translateY(-1px);
+  border-color: rgba(184, 68, 4, 0.35);
+  color: #b84404;
+}
+
+.chat-share-picker.is-selected {
+  border-color: rgba(184, 68, 4, 0.45);
+  background: #b84404;
+  color: #fff;
 }
 
 .msg-user-bubble {
@@ -135,6 +214,16 @@ defineEmits<{
 }
 
 @media (max-width: 640px) {
+  .msg-user--share-mode {
+    width: min(calc(100% - 12px), 1012px);
+    max-width: calc(100% - 12px);
+    padding: 0.5rem 2.25rem 0.5rem 0.75rem;
+  }
+
+  .chat-share-picker {
+    right: 0.35rem;
+  }
+
   .msg-user-bubble {
     max-width: 90%;
   }

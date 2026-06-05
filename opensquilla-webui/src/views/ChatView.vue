@@ -14,6 +14,33 @@
         </button>
       </div>
       <div class="chat-header-right">
+        <div v-if="shareMode" class="chat-share-controls" role="group" aria-label="Share selected messages">
+          <span class="chat-share-count">{{ selectedShareCount }} selected</span>
+          <button
+            type="button"
+            class="chat-share-btn chat-share-btn--save"
+            :disabled="selectedShareCount === 0 || shareSaving"
+            title="Save selected bubbles as PNG"
+            @click="saveShareImage"
+          >
+            <Icon name="download" :size="14" />
+            <span>{{ shareSaving ? 'Saving...' : 'Save PNG' }}</span>
+          </button>
+          <button type="button" class="chat-share-btn" title="Cancel share selection" @click="endShareMode">
+            Cancel
+          </button>
+        </div>
+        <button
+          v-else
+          type="button"
+          class="chat-share-btn"
+          :disabled="shareableMessageCount === 0"
+          :title="shareableMessageCount === 0 ? 'Send or open a chat with bubbles to share' : 'Select bubbles to save as a share image'"
+          @click="startShareMode"
+        >
+          <Icon name="share" :size="14" />
+          <span>Share</span>
+        </button>
         <span class="chip" :class="runStatusChipClass" :title="runStatusTitle">{{ runStatusLabel }}</span>
       </div>
     </div>
@@ -39,6 +66,8 @@
 
         <ChatMessageList
           :messages="renderedMessages"
+          :share-mode="shareMode"
+          :selected-message-ids="selectedShareMessageIds"
           :assistant-avatar-url="assistantAvatarUrl"
           :strip-time-prefix="stripTimePrefix"
           :render-markdown="renderMarkdown"
@@ -54,6 +83,7 @@
           @copy-message="copyMessage"
           @edit-message="editMessage"
           @regenerate-message="regenerateMessage"
+          @toggle-share-message="toggleShareMessage"
           @download-artifact="downloadArtifact"
           @toggle-tool-group="toggleToolGroup"
           @toggle-tool-item="toggleToolItem"
@@ -182,6 +212,7 @@ import { useChatFeatureToggles } from '@/composables/chat/useChatFeatureToggles'
 import { useChatHistory } from '@/composables/chat/useChatHistory'
 import { useChatMessageActions } from '@/composables/chat/useChatMessageActions'
 import { useChatPendingQueue } from '@/composables/chat/useChatPendingQueue'
+import { useChatShareExport } from '@/composables/chat/useChatShareExport'
 import { useMediaQuery } from '@/composables/chat/useMediaQuery'
 import {
   fmtTok,
@@ -217,6 +248,7 @@ import {
   toolSecondaryText,
   toolStatusText,
 } from '@/utils/chat/toolDisplay'
+import { isShareableChatMessage } from '@/utils/chat/messageIdentity'
 
 /* ── Types ─────────────────────────────────────────────────────────── */
 
@@ -294,6 +326,9 @@ const messages = ref<Message[]>([])
 const lastHeaderRole = ref('')
 const lastHeaderDay = ref('')
 const threadDragOver = ref(false)
+const shareMode = ref(false)
+const shareSaving = ref(false)
+const selectedShareMessageIds = ref<Set<string>>(new Set())
 
 const chatElevatedMode = useChatElevatedMode({
   sessionKey,
@@ -478,6 +513,11 @@ const chatRenderedMessages = useChatRenderedMessages({
   isSubagentCompletionMessage,
 })
 const { renderedMessages } = chatRenderedMessages
+
+const chatShareExport = useChatShareExport({
+  threadRef,
+  filename: shareFilename,
+})
 
 const chatHistory = useChatHistory({
   rpc,
@@ -711,6 +751,9 @@ const currentChatTitle = computed(() => {
   return `Chat ${suffix}`
 })
 
+const shareableMessageCount = computed(() => renderedMessages.value.filter(isShareableChatMessage).length)
+const selectedShareCount = computed(() => selectedShareMessageIds.value.size)
+
 /* ── Helpers ───────────────────────────────────────────────────────── */
 
 function normalizeRunStatus(status: string): ChatRunStatusState {
@@ -791,6 +834,49 @@ function copySessionKey() {
   copyTextWithFallback(sessionKey.value).catch(() => {})
 }
 
+/* ── Share export ──────────────────────────────────────────────────── */
+
+function startShareMode() {
+  if (shareableMessageCount.value === 0) return
+  shareMode.value = true
+  selectedShareMessageIds.value = new Set()
+}
+
+function endShareMode() {
+  shareMode.value = false
+  selectedShareMessageIds.value = new Set()
+}
+
+function toggleShareMessage(messageId: string) {
+  const next = new Set(selectedShareMessageIds.value)
+  if (next.has(messageId)) next.delete(messageId)
+  else next.add(messageId)
+  selectedShareMessageIds.value = next
+}
+
+async function saveShareImage() {
+  if (selectedShareMessageIds.value.size === 0 || shareSaving.value) return
+  shareSaving.value = true
+  try {
+    await nextTick()
+    await chatShareExport.exportSelectedMessages(selectedShareMessageIds.value)
+    endShareMode()
+  } catch (err) {
+    console.warn('Share image export failed:', err)
+  } finally {
+    shareSaving.value = false
+  }
+}
+
+function shareFilename(): string {
+  const title = currentChatTitle.value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 36) || 'chat'
+  return `opensquilla-chat-${title}-${new Date().toISOString().slice(0, 10)}.png`
+}
+
 /* ── Streaming ─────────────────────────────────────────────────────── */
 
 function scrollToBottom() {
@@ -846,6 +932,12 @@ function onDocumentPaste(e: ClipboardEvent) {
 function onDocumentKeydown(e: KeyboardEvent) {
   if (e.key !== 'Escape') return
   if (e.defaultPrevented) return
+
+  if (shareMode.value) {
+    e.preventDefault()
+    endShareMode()
+    return
+  }
 
   if (isStreaming.value) {
     e.preventDefault()
@@ -930,6 +1022,14 @@ watch(() => [route.query.newChat, route.query.new], () => {
   if (hasNewChatRouteSignal()) {
     consumeNewChatRouteSignal()
   }
+})
+
+watch(sessionKey, () => {
+  if (shareMode.value) endShareMode()
+})
+
+watch(shareableMessageCount, (count) => {
+  if (count === 0 && shareMode.value) endShareMode()
 })
 </script>
 

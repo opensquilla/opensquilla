@@ -9,14 +9,21 @@
     <UserMessage
       v-else-if="message.displayRole === 'user'"
       :message="message"
+      :share-mode="shareMode"
+      :share-selected="selectedMessageIds.has(chatMessageKey(message, index))"
+      :share-message-id="chatMessageKey(message, index)"
       :strip-time-prefix="stripTimePrefix"
       @copy="$emit('copyMessage', $event)"
       @edit="$emit('editMessage', $event)"
+      @toggle-share="$emit('toggleShareMessage', $event)"
     />
     <AssistantMessage
       v-else-if="message.displayRole === 'assistant'"
       :message="message"
       :index="index"
+      :share-mode="shareMode"
+      :share-selected="selectedMessageIds.has(chatMessageKey(message, index))"
+      :share-message-id="chatMessageKey(message, index)"
       :assistant-avatar-url="assistantAvatarUrl"
       :render-markdown="renderMarkdown"
       :fmt-tok="fmtTok"
@@ -28,6 +35,7 @@
       :tool-secondary-text="toolSecondaryText"
       @copy="$emit('copyMessage', $event)"
       @regenerate="$emit('regenerateMessage', $event)"
+      @toggle-share="$emit('toggleShareMessage', $event)"
       @download-artifact="$emit('downloadArtifact', $event)"
       @toggle-tool-group="$emit('toggleToolGroup', $event)"
       @toggle-tool-item="$emit('toggleToolItem', $event)"
@@ -53,9 +61,12 @@ import type {
   ChatToolCallRenderItem,
 } from '@/types/chat'
 import type { ArtifactPayload } from '@/types/rpc'
+import { chatMessageKey } from '@/utils/chat/messageIdentity'
 
 defineProps<{
   messages: ChatRenderedMessage[]
+  shareMode: boolean
+  selectedMessageIds: Set<string>
   assistantAvatarUrl: string
   stripTimePrefix: (text: string) => string
   renderMarkdown: (text: string) => string
@@ -74,6 +85,7 @@ defineEmits<{
   copyMessage: [message: ChatRenderedMessage]
   editMessage: [message: ChatRenderedMessage]
   regenerateMessage: [message: ChatRenderedMessage]
+  toggleShareMessage: [messageId: string]
   downloadArtifact: [artifact: ArtifactPayload]
   toggleToolGroup: [groupId: string]
   toggleToolItem: [renderKey: string]

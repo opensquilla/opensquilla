@@ -522,6 +522,31 @@ async def test_meta_resolution_ignores_triggers_inside_pasted_webchat_dump() -> 
 
 
 @pytest.mark.asyncio
+async def test_meta_resolution_invokes_explicit_named_meta_skill_request() -> None:
+    spec = _make_meta_spec(
+        name="AwesomeWebpageMetaSkill",
+        composition={"steps": [{"id": "a", "skill": "summarize"}]},
+        triggers=["AwesomeWebpageMetaSkill"],
+        priority=50,
+    )
+    loader = _FakeLoader([spec])
+    ctx = SimpleNamespace(
+        message="invoke AwesomeWebpageMetaSkill to create a webpage",
+        semantic_message="invoke AwesomeWebpageMetaSkill to create a webpage",
+        system_prompt=("base prompt", ""),
+        metadata={"skill_loader": loader},
+    )
+
+    out = await meta_resolution(ctx)  # type: ignore[arg-type]
+
+    assert out.metadata["meta_match"].plan.name == "AwesomeWebpageMetaSkill"
+    assert out.metadata["meta_match_tool_choice"] == {
+        "type": "function",
+        "function": {"name": "meta_invoke"},
+    }
+
+
+@pytest.mark.asyncio
 async def test_meta_resolution_still_matches_current_cjk_intent() -> None:
     spec = _make_meta_spec(
         name="meta-household-calendar-test",

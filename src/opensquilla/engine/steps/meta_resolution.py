@@ -417,7 +417,6 @@ _META_SKILL_DISCUSSION_CUES = (
     "bad quality",
     "called",
     "invoked",
-    "invoke",
     "why",
     "how",
     "explain",

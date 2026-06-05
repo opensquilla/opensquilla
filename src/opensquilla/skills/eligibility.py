@@ -130,16 +130,19 @@ def _is_declared(spec: SkillSpec) -> bool:
     declaration. ``requires.config`` is excluded — reserved/future,
     doesn't currently affect eligibility.
     """
-    return (
-        spec.metadata is not None
-        and spec.metadata.requires is not None
-        and bool(
-            spec.metadata.requires.bins
-            or spec.metadata.requires.any_bins
-            or spec.metadata.requires.env
-            or spec.metadata.requires.env_any
+    if spec.metadata is None:
+        return False
+    requires = spec.metadata.requires
+    requires_declared = bool(
+        requires
+        and (
+            requires.bins
+            or requires.any_bins
+            or requires.env
+            or requires.env_any
         )
     )
+    return requires_declared or bool(spec.metadata.install)
 
 
 def _render_install_command(spec: SkillInstallSpec) -> str:

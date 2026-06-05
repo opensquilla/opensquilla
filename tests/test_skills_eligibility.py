@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 from opensquilla.skills.eligibility import EligibilityContext, diagnose_eligibility
-from opensquilla.skills.types import SkillLayer, SkillPlatformMeta, SkillRequires, SkillSpec
+from opensquilla.skills.types import (
+    SkillInstallSpec,
+    SkillLayer,
+    SkillPlatformMeta,
+    SkillRequires,
+    SkillSpec,
+)
 
 
 def _env_any_skill() -> SkillSpec:
@@ -44,3 +50,30 @@ def test_env_any_missing_when_no_alternative_exists() -> None:
     assert (
         "Need one env var from: OPENROUTER_API_KEY, ARK_API_KEY" in report.reasons
     )
+
+
+def test_install_metadata_counts_as_declared_dependencies() -> None:
+    spec = SkillSpec(
+        name="package-only-skill",
+        description="Synthetic skill with package-only install metadata.",
+        layer=SkillLayer.BUNDLED,
+        always=False,
+        triggers=[],
+        content="# body",
+        metadata=SkillPlatformMeta(
+            install=[
+                SkillInstallSpec(
+                    kind="uv",
+                    id="pillow",
+                    label="Install Pillow",
+                    package="pillow",
+                    module="PIL",
+                )
+            ]
+        ),
+    )
+
+    report = diagnose_eligibility(spec, EligibilityContext(os_name="linux"))
+
+    assert report.eligible is True
+    assert report.declared is True

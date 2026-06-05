@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import tempfile
 import textwrap
 from pathlib import Path
 
@@ -97,12 +98,15 @@ def _run_skills_view_harness(assertion_script: str) -> str:
         }});
         """
     )
-    result = subprocess.run(
-        ["node", "-e", script],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    with tempfile.TemporaryDirectory() as tmp:
+        script_path = Path(tmp) / "skills-view-harness.js"
+        script_path.write_text(script, encoding="utf-8")
+        result = subprocess.run(
+            ["node", str(script_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
     if result.returncode != 0:
         raise AssertionError(result.stderr or result.stdout)
     return result.stdout

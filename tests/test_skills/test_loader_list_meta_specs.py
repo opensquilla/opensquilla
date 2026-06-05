@@ -37,6 +37,7 @@ def test_list_meta_specs_includes_compiled_meta_sop(loader: SkillLoader) -> None
 def test_list_meta_specs_includes_known_meta_bundles(loader: SkillLoader) -> None:
     names = {s.name for s in loader.list_meta_specs()}
     assert names == {
+        "AwesomeWebpageMetaSkill",
         "meta-competitive-intel",
         "meta-daily-operator-brief",
         "meta-document-to-decision",

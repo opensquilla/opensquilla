@@ -2,7 +2,7 @@
 
 Runs a wrapped-CLI skill via its ``entrypoint`` manifest — no LLM, no
 sub-Agent. Resolves ``skill.entrypoint`` from the injected ``skill_loader``,
-renders ``command`` / ``args`` (and optional ``stdin`` / ``assemble``
+renders ``command`` / ``args`` (and optional ``env`` / ``stdin`` / ``assemble``
 templates) against ``inputs`` + ``outputs`` + ``with`` (the step's
 rendered ``with_args``), then ``asyncio.create_subprocess_exec``\\s the
 process. Stdout is interpreted per ``parse`` (``text`` | ``json`` |
@@ -48,6 +48,9 @@ async def run_skill_exec_step(
 
     Optional features:
 
+    * ``entrypoint.env`` — Jinja-rendered environment override keys and
+      values. Empty rendered values are ignored so parent environment
+      fallbacks survive.
     * ``entrypoint.stdin`` — Jinja-rendered template (with ``{baseDir}``
       substitution) piped to the subprocess's stdin.
     * ``entrypoint.assemble`` — a list of ``{into, from_template}``
@@ -149,6 +152,7 @@ async def run_skill_exec_step(
                 f"{resolved_workdir!s} escapes allowed root "
                 f"{allowed_root!s}",
             )
+        resolved_workdir.mkdir(parents=True, exist_ok=True)
         workdir = str(resolved_workdir)
 
     # Optional assemble: render templated files to disk before exec.
@@ -231,6 +235,31 @@ async def run_skill_exec_step(
         timeout = 60.0
     parse_mode = str(entrypoint.get("parse", "text"))
 
+    raw_env = entrypoint.get("env") or {}
+    if raw_env and not isinstance(raw_env, dict):
+        raise RuntimeError(
+            f"step {step.id!r}: entrypoint.env must be a mapping",
+        )
+    child_env = os.environ.copy()
+    if isinstance(raw_env, dict):
+        for key, value in raw_env.items():
+            if not isinstance(key, str) or not key:
+                raise RuntimeError(
+                    f"step {step.id!r}: entrypoint.env keys must be non-empty strings",
+                )
+            if not isinstance(value, str):
+                raise RuntimeError(
+                    f"step {step.id!r}: entrypoint.env[{key!r}] must be a string template",
+                )
+            rendered_key = _render(key.replace("{baseDir}", base_dir))
+            if not rendered_key:
+                raise RuntimeError(
+                    f"step {step.id!r}: entrypoint.env key rendered empty",
+                )
+            rendered_value = _render(value.replace("{baseDir}", base_dir))
+            if rendered_value:
+                child_env[rendered_key] = rendered_value
+
     # Optional stdin: render Jinja template and pipe to the subprocess.
     stdin_raw = entrypoint.get("stdin")
     stdin_bytes: bytes | None = None
@@ -270,6 +299,7 @@ async def run_skill_exec_step(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=workdir,
+            env=child_env,
         )
     except FileNotFoundError as exc:
         raise RuntimeError(

@@ -22,13 +22,17 @@ AUDIO_DEFAULTS = {
     "voiceover-studio",
 }
 DEFAULTS = {
+    "AwesomeWebpageMetaSkill",
     "ai-video-script",
+    "audio-cog",
     "cron",
     "deep-research",
     "docx",
+    "filesystem",
     "git-diff",
     "github",
     "history-explorer",
+    "html-coder",
     "html-to-pdf",
     "http-fetch",
     "latex-compile",
@@ -69,10 +73,15 @@ DEFAULTS = {
     "video-merger",
     "video-still-animator",
     "weather",
+    "web-search",
     "xlsx",
 } | AUDIO_DEFAULTS
 PROMPT_DEFAULTS_WITHOUT_AUDIO_TOOLS = DEFAULTS - AUDIO_DEFAULTS
 INTERNAL_HELPERS = {
+    "awesome-webpage-image-download",
+    "awesome-webpage-research",
+    "nano-banana-pro-openrouter",
+    "openrouter-video-generator",
     "skill-creator-linter",
     "skill-creator-proposals",
     "skill-creator-smoke-test",

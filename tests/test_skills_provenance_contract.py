@@ -21,6 +21,7 @@ def test_default_bundled_skills_have_release_provenance(tmp_path: Path) -> None:
             "opensquilla-original",
             "bundled-derived",
             "openclaw-derived",
+            "clawhub-mit",
             "clawhub-mit0",
         }
         assert provenance.maintained_by == "OpenSquilla"
@@ -33,6 +34,9 @@ def test_default_bundled_skills_have_release_provenance(tmp_path: Path) -> None:
         elif provenance.origin == "clawhub-mit0":
             assert provenance.upstream_url.startswith("https://clawhub.ai/")
             assert provenance.license == "MIT-0"
+        elif provenance.origin == "clawhub-mit":
+            assert provenance.upstream_url.startswith("https://clawhub.ai/")
+            assert provenance.license == "MIT"
         else:
             assert provenance.license == "Apache-2.0"
 

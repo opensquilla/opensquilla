@@ -82,6 +82,68 @@ async def test_skill_exec_pipes_rendered_stdin_to_subprocess(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_skill_exec_renders_entrypoint_env_to_subprocess(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = tmp_path / "env_probe.py"
+    script.write_text(
+        "import os\n"
+        "print(os.environ.get('CUSTOM_OPENROUTER_KEY', ''))\n",
+        encoding="utf-8",
+    )
+    skill = SkillSpec(
+        name="env-skill",
+        description="d",
+        layer=SkillLayer.BUNDLED,
+        always=False,
+        triggers=[],
+        content="x",
+        kind="skill",
+        base_dir=str(tmp_path),
+        entrypoint={
+            "command": "python {baseDir}/env_probe.py",
+            "args": [],
+            "env": {
+                "{{ with.api_key_env | default('OPENROUTER_API_KEY') }}": (
+                    "{{ with.api_key | default('') }}"
+                )
+            },
+            "parse": "text",
+        },
+    )
+    plan_spec = _meta_spec(
+        [
+            {
+                "id": "p",
+                "kind": "skill_exec",
+                "skill": "env-skill",
+                "with": {
+                    "api_key": "sk-rendered",
+                    "api_key_env": "CUSTOM_OPENROUTER_KEY",
+                },
+            },
+        ],
+    )
+    plan = parse_meta_plan(plan_spec)
+    assert plan is not None
+
+    async def runner(_s: str, _u: str) -> AsyncIterator[AgentEvent]:
+        raise AssertionError("no sub-Agent")
+        yield  # pragma: no cover
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-parent")
+    orch = MetaOrchestrator(agent_runner=runner, skill_loader=_Loader([skill]))
+    final: MetaResult | None = None
+    async for ev in orch.iter_events(MetaMatch(plan=plan, inputs={})):
+        if isinstance(ev, MetaResult):
+            final = ev
+
+    assert final is not None and final.ok, final.error if final else "no result"
+    assert final.step_outputs["p"] == "sk-rendered"
+
+
+@pytest.mark.asyncio
 async def test_skill_exec_assemble_writes_template_files_before_exec(
     tmp_path: Path,
 ) -> None:

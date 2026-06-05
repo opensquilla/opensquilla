@@ -98,9 +98,20 @@ def _filtered_env(whitelist: Sequence[str]) -> dict[str, str]:
     return {key: parent[key] for key in whitelist if key in parent}
 
 
+def _decode_stream(value: bytes | str | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
 def run_sandboxed(
     cmd: Sequence[str],
     limits: SandboxLimits | None = None,
+    *,
+    stdin: bytes | None = None,
+    env: dict[str, str] | None = None,
 ) -> SandboxResult:
     """Run ``cmd`` under ``limits`` and return a :class:`SandboxResult`.
 
@@ -126,16 +137,21 @@ def run_sandboxed(
             limits=effective,
         )
 
-    env = _filtered_env(effective.env_whitelist)
+    child_env = _filtered_env(effective.env_whitelist)
+    if env:
+        allowlist = set(effective.env_whitelist)
+        child_env.update(
+            {key: value for key, value in env.items() if key in allowlist}
+        )
 
     try:
         proc = subprocess.Popen(  # noqa: S603 — cmd is caller-controlled
             list(cmd),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            env=env,
+            stdin=subprocess.PIPE if stdin is not None else None,
+            env=child_env,
             preexec_fn=_preexec(effective),  # noqa: PLW1509 — POSIX setrlimit
-            text=True,
         )
     except (OSError, ValueError) as exc:
         return SandboxResult(
@@ -147,14 +163,14 @@ def run_sandboxed(
         )
 
     try:
-        stdout, stderr = proc.communicate(timeout=effective.wall_seconds)
+        stdout, stderr = proc.communicate(input=stdin, timeout=effective.wall_seconds)
     except subprocess.TimeoutExpired:
         proc.kill()
         stdout, stderr = proc.communicate()
         return SandboxResult(
             returncode=proc.returncode if proc.returncode is not None else -1,
-            stdout=stdout or "",
-            stderr=stderr or "",
+            stdout=_decode_stream(stdout),
+            stderr=_decode_stream(stderr),
             reason=REASON_WALL_LIMIT,
             limits=effective,
         )
@@ -170,8 +186,8 @@ def run_sandboxed(
 
     return SandboxResult(
         returncode=proc.returncode,
-        stdout=stdout or "",
-        stderr=stderr or "",
+        stdout=_decode_stream(stdout),
+        stderr=_decode_stream(stderr),
         reason=reason,
         limits=effective,
     )

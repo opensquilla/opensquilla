@@ -39,3 +39,16 @@ def test_standard_shell_and_code_exec_keep_network_none(tmp_path: Path) -> None:
 
     assert shell_policy.network is NetworkMode.NONE
     assert code_policy.network is NetworkMode.NONE
+
+
+def test_shell_exec_policy_allows_meta_skill_workspace_env(tmp_path: Path) -> None:
+    policy = build_policy(
+        SecurityLevel.STANDARD,
+        "shell.exec",
+        tmp_path,
+        SandboxSettings(),
+        trusted=True,
+    )
+
+    assert "WORKSPACE_DIR" in policy.env_allowlist
+    assert "PROJECT_ROOT" in policy.env_allowlist

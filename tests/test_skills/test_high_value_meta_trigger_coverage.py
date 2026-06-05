@@ -194,4 +194,4 @@ def test_competitive_intel_description_avoids_single_company_research_pull(
     assert "leadership, hiring, partnerships, funding" not in description
     assert "competitive-intel monitoring" in description
     assert "baseline" in description
-    assert "ordinary company profiles" in description
+    assert "ordinary company profiles" not in description

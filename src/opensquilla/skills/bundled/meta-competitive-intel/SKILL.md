@@ -1,6 +1,6 @@
 ---
 name: meta-competitive-intel
-description: "Use this meta-skill instead of answering directly when the current user asks for competitive-intel monitoring over named competitors, market rivals, account sets, prospects, or partners with a time window, comparative baseline, or sales/BD/strategy follow-up. It is for current competitive movement briefs: pricing/product changes, go-to-market signals, partnership moves, account signals, baseline diff, and recommended follow-ups. Do not use it for ordinary company profiles, generic daily plans, generic research reports, product comparison without named target companies, or pasted old competitive-intel examples."
+description: "Use this meta-skill instead of answering directly when the current user asks for competitive-intel monitoring over named competitors, market rivals, account sets, prospects, or partners with a time window, comparative baseline, or sales/BD/strategy follow-up. It is for current competitive movement briefs: pricing/product changes, go-to-market signals, partnership moves, account signals, baseline diff, and recommended follow-ups. Do not use it for generic daily plans, generic research reports, product comparison without named target companies, or pasted old competitive-intel examples."
 kind: meta
 meta_priority: 72
 always: false

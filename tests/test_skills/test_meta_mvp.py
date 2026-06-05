@@ -417,6 +417,54 @@ async def test_meta_resolution_semantic_fallback_matches_without_trigger(
 
 
 @pytest.mark.asyncio
+async def test_meta_resolution_semantic_fallback_blocks_competitive_intel_without_cue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib
+    meta_resolution_module = importlib.import_module(
+        "opensquilla.engine.steps.meta_resolution",
+    )
+
+    spec = _make_meta_spec(
+        name="meta-competitive-intel",
+        composition={"steps": [{"id": "a", "skill": "summarize"}]},
+        triggers=["competitive intel"],
+        priority=72,
+    )
+    loader = _FakeLoader([spec])
+    prompt = (
+        "帮我调研 inception labs,创始团队和核心员工有哪些？现在估值，"
+        "核心技术路线和进展是啥？然后每一轮交割大概节奏和"
+        "估值股东等信息列出来。"
+    )
+
+    class FakeRetriever:
+        def __init__(self, **kwargs: Any) -> None:
+            assert kwargs["strategy"] == "hybrid"
+
+        def retrieve(self, skills: list[SkillSpec], query: str, top_k: int = 1) -> list[SkillSpec]:
+            assert query == prompt
+            assert top_k == 1
+            return [skills[0]]
+
+    monkeypatch.setattr(meta_resolution_module, "HybridRetriever", FakeRetriever)
+
+    ctx = SimpleNamespace(
+        message=prompt,
+        semantic_message=prompt,
+        session_key="single-company-profile-session",
+        metadata={"skill_loader": loader},
+        system_prompt=("base prompt", ""),
+        config=SimpleNamespace(skills=SimpleNamespace(filter_strategy="lexical")),
+    )
+
+    out = await meta_resolution(ctx)  # type: ignore[arg-type]
+
+    assert "meta_match" not in out.metadata
+    assert "meta_match_source" not in out.metadata
+
+
+@pytest.mark.asyncio
 async def test_meta_resolution_soft_hint_directs_meta_invoke_not_skill_view() -> None:
     spec = _make_meta_spec(
         composition={"steps": [{"id": "a", "skill": "summarize"}]},

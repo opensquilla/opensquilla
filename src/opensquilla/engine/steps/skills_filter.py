@@ -9,6 +9,7 @@ import structlog
 
 from opensquilla.engine.pipeline import TurnContext
 from opensquilla.skills.eligibility import EligibilityContext, check_eligibility
+from opensquilla.skills.meta.semantic_guards import semantic_meta_skill_allowed
 from opensquilla.skills.retrieval import HybridRetriever, Strategy
 from opensquilla.skills.types import SkillSpec
 
@@ -179,6 +180,10 @@ async def filter_skills(ctx: TurnContext) -> TurnContext:
         # HybridRetriever — see opensquilla.skills.retrieval.HybridRetriever.
         retriever = _get_retriever(skills_cfg)
         filtered = retriever.retrieve(filterable, semantic_message, top_k=top_k)
+        filtered = [
+            s for s in filtered
+            if semantic_meta_skill_allowed(str(getattr(s, "name", "")), str(semantic_message))
+        ]
     else:
         filtered = filterable
 

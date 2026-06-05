@@ -201,6 +201,51 @@ async def test_default_prompt_prefers_matching_meta_skills_over_direct_answers(
 
 
 @pytest.mark.asyncio
+async def test_hybrid_filter_hides_competitive_intel_for_single_company_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loader = SkillLoader(bundled_dir=BUNDLED, snapshot_path=tmp_path / "snapshot.json")
+    prompt = (
+        "inception labs,创始团队和核心员工有哪些？现在估值，"
+        "核心技术路线和进展是啥？然后每一轮交割大概节奏和"
+        "估值股东等信息列出来。"
+    )
+
+    class FakeRetriever:
+        def retrieve(self, skills, query: str, top_k: int = 5):
+            assert query == prompt
+            by_name = {s.name: s for s in skills}
+            return [
+                by_name["meta-competitive-intel"],
+                by_name["meta-web-research-to-report"],
+            ][:top_k]
+
+    monkeypatch.setattr(skills_filter_step, "_get_retriever", lambda _cfg: FakeRetriever())
+
+    ctx = await filter_skills(
+        _ctx(
+            loader,
+            message=prompt,
+            skills_config=SimpleNamespace(
+                filter_enabled=True,
+                filter_top_k=5,
+                filter_strategy="hybrid",
+                filter_lexical_top_n=20,
+                filter_semantic_top_n=20,
+                filter_rrf_k=60,
+                filter_embedding_model="BAAI/bge-small-zh-v1.5",
+                max_skills_prompt_chars=100_000,
+                injection_mode="system",
+            ),
+        )
+    )
+
+    assert "meta-competitive-intel" not in ctx.metadata["filtered_skill_ids"]
+    assert "meta-web-research-to-report" in ctx.metadata["filtered_skill_ids"]
+
+
+@pytest.mark.asyncio
 async def test_meta_skill_disabled_hides_meta_prompt_without_hiding_normal_skills(
     tmp_path: Path,
 ) -> None:

@@ -283,3 +283,47 @@ PATH note:
   Or open a new PowerShell window.
 "@ | Write-Host
 }
+
+# Surface the multi-instance profile env var (read-only here — the
+# installer does not create the home directory; 'opensquilla --profile
+# <name> init' does that later). Show the active value so the operator
+# can confirm what their next command will resolve to.
+if ($env:OPENSQUILLA_HOME) {
+    @"
+
+Multi-instance profile mode is active:
+  OPENSQUILLA_HOME=$($env:OPENSQUILLA_HOME)
+
+  Per-profile homes live under `$env:OPENSQUILLA_HOME\<profile>\. The default
+  profile (no --profile flag) lands at:
+    $($env:OPENSQUILLA_HOME)\default\
+
+  Bootstrap one:
+    `$env:OPENSQUILLA_HOME = "$($env:OPENSQUILLA_HOME)"
+    `$env:OPENSQUILLA_PROFILE = "coder"
+    opensquilla --profile coder init
+    opensquilla --profile coder gateway start --port 18792
+
+"@ | Write-Host
+} else {
+    @"
+
+OPENSQUILLA_HOME is not set, so multi-instance mode is OFF and OpenSquilla
+falls back to the legacy single-instance home:
+    `$env:USERPROFILE\.opensquilla\
+
+  This is the unchanged behaviour for existing deployments. To run several
+  agents on this host, set OPENSQUILLA_HOME before 'opensquilla init':
+
+    [System.Environment]::SetEnvironmentVariable(
+        "OPENSQUILLA_HOME", "D:\ai\opensquilla\home", "User")
+    `$env:OPENSQUILLA_HOME = "D:\ai\opensquilla\home"
+    `$env:OPENSQUILLA_PROFILE = "coder"
+    opensquilla --profile coder init
+    opensquilla --profile coder gateway start --port 18792
+
+  (Note: an empty OPENSQUILLA_HOME is treated the same as unset, so the
+  fall-through is intentional and back-compatible.)
+
+"@ | Write-Host
+}

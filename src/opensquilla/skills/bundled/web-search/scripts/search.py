@@ -7,7 +7,7 @@ Search the web using DuckDuckGo's search API. Supports web search, news,
 images, and videos with various output formats.
 
 Requirements:
-    pip install duckduckgo-search
+    duckduckgo-search, declared by the OpenSquilla project dependencies
 """
 
 import argparse
@@ -21,7 +21,7 @@ try:
     from duckduckgo_search import DDGS
 except ImportError as e:
     print(f"Error: Missing required dependency: {e}", file=sys.stderr)
-    print("Install with: pip install duckduckgo-search", file=sys.stderr)
+    print("Sync or reinstall the OpenSquilla project dependencies.", file=sys.stderr)
     sys.exit(1)
 
 

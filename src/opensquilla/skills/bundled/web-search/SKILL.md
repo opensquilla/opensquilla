@@ -33,13 +33,9 @@ Use this skill when users request:
 
 ## Prerequisites
 
-Install the required dependency:
-
-```bash
-pip install duckduckgo-search
-```
-
-This library provides a simple Python interface to DuckDuckGo's search API without requiring API keys or authentication.
+OpenSquilla declares the required `duckduckgo-search` Python package as a runtime dependency.
+For source checkouts, run the normal project dependency sync before invoking this bundled skill.
+The library provides a simple Python interface to DuckDuckGo's search API without requiring API keys or authentication.
 
 ## Core Capabilities
 
@@ -461,7 +457,7 @@ python scripts/search.py --help
 
 **Common issues:**
 
-- **"Missing required dependency"**: Run `pip install duckduckgo-search`
+- **"Missing required dependency"**: Sync or reinstall the OpenSquilla project dependencies
 - **No results found**: Try broader search terms or remove time filters
 - **Timeout errors**: The search service may be temporarily unavailable; retry after a moment
 - **Rate limiting**: Space out searches if making many requests

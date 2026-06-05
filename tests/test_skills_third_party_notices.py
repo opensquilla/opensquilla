@@ -11,6 +11,7 @@ ORIGINALS = {
     "advanced-dubbing-studio",
     "cron",
     "AwesomeWebpageMetaSkill",
+    "awesome-webpage-image-download",
     "awesome-webpage-research",
     "deep-research",
     "docx",

@@ -35,14 +35,16 @@ entrypoint:
     - "{{ with.model | default('openai/gpt-audio-mini') }}"
     - --base-url
     - "{{ with.base_url | default('https://openrouter.ai/api/v1') }}"
-    - --api-key
-    - "{{ with.api_key | default('') }}"
+    - --api-key-env
+    - "{{ with.api_key_env | default('OPENROUTER_API_KEY') }}"
     - --output-dir
     - "{{ with.output_dir }}"
     - --filename
     - "{{ with.filename | default('narration.wav') }}"
     - --voice
     - "{{ with.voice | default('cedar') }}"
+  env:
+    "{{ with.api_key_env | default('OPENROUTER_API_KEY') }}": "{{ with.api_key | default('') }}"
   stdin: "{{ with.payload | default(with.prompt | default(inputs.user_message)) }}"
   parse: text
   timeout: 240
@@ -55,8 +57,8 @@ Create professional audio with AI — voiceovers, music, sound effects, and pers
 
 Meta-skills should run this skill as `skill_exec` when they need OpenRouter
 audio. The entrypoint is a deterministic Python adapter: it uses an explicit
-`with.api_key`/`--api-key` value when provided, otherwise reads
-`OPENROUTER_API_KEY` from the child process environment, calls the configured
+`with.api_key` value by injecting it into the configured `with.api_key_env`
+child process environment variable, calls the configured
 OpenRouter audio model, writes a browser-playable WAV file under the supplied
 output directory, and prints either `AUDIO_READY:` or a single failure label.
 Do not spawn an LLM sub-agent just to generate audio.

@@ -96,7 +96,7 @@ def _download(
         headers["Authorization"] = f"Bearer {key}"
     req = Request(resolved_url, headers=headers, method="GET")
     with urlopen(req, timeout=timeout) as resp:
-        return resp.read()
+        return bytes(resp.read())
 
 
 def main() -> int:
@@ -104,6 +104,7 @@ def main() -> int:
     parser.add_argument("--model", required=True)
     parser.add_argument("--base-url", default="https://openrouter.ai/api/v1")
     parser.add_argument("--api-key", default="")
+    parser.add_argument("--api-key-env", default="OPENROUTER_API_KEY")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--filename", default="intro.mp4")
     parser.add_argument("--duration", type=int, default=10)
@@ -117,10 +118,11 @@ def main() -> int:
     if not prompt:
         prompt = "Create a short browser-playable video for this webpage."
 
-    key = args.api_key.strip() or os.environ.get("OPENROUTER_API_KEY")
+    api_key_env = args.api_key_env.strip() or "OPENROUTER_API_KEY"
+    key = str(args.api_key.strip() or os.environ.get(api_key_env, ""))
     missing = []
     if not key:
-        missing.append("OPENROUTER_API_KEY")
+        missing.append(api_key_env)
     if not args.model:
         missing.append("awesome_webpage.openrouter.models.video_generation")
     if not args.output_dir:

@@ -111,6 +111,7 @@ def run_sandboxed(
     limits: SandboxLimits | None = None,
     *,
     stdin: bytes | None = None,
+    env: dict[str, str] | None = None,
 ) -> SandboxResult:
     """Run ``cmd`` under ``limits`` and return a :class:`SandboxResult`.
 
@@ -136,7 +137,12 @@ def run_sandboxed(
             limits=effective,
         )
 
-    env = _filtered_env(effective.env_whitelist)
+    child_env = _filtered_env(effective.env_whitelist)
+    if env:
+        allowlist = set(effective.env_whitelist)
+        child_env.update(
+            {key: value for key, value in env.items() if key in allowlist}
+        )
 
     try:
         proc = subprocess.Popen(  # noqa: S603 — cmd is caller-controlled
@@ -144,7 +150,7 @@ def run_sandboxed(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.PIPE if stdin is not None else None,
-            env=env,
+            env=child_env,
             preexec_fn=_preexec(effective),  # noqa: PLW1509 — POSIX setrlimit
         )
     except (OSError, ValueError) as exc:

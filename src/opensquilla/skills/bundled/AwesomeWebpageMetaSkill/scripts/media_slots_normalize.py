@@ -1,13 +1,37 @@
 import json
 import os
 import re
+import sys
 
-outline = os.environ.get("PAGE_OUTLINE", "")
-requirement = os.environ.get("REQUIREMENT_FRAMING", "")
-visual_style = os.environ.get("VISUAL_STYLE", "")
+
+def load_payload():
+    raw = sys.stdin.read().strip()
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+payload = load_payload()
+
+outline = str(payload.get("page_outline") or os.environ.get("PAGE_OUTLINE", ""))
+requirement = str(
+    payload.get("requirement_framing") or os.environ.get("REQUIREMENT_FRAMING", "")
+)
+visual_style = str(payload.get("visual_style") or os.environ.get("VISUAL_STYLE", ""))
+
 
 def wants(name):
-    value = os.environ.get(name, "YES").strip().lower()
+    payload_name = {
+        "INCLUDE_IMAGE": "include_image",
+        "INCLUDE_AUDIO": "include_audio",
+        "INCLUDE_VIDEO": "include_video",
+    }.get(name)
+    raw = payload.get(payload_name) if payload_name else None
+    value = str(raw if raw is not None else os.environ.get(name, "YES")).strip().lower()
     return value not in {"no", "false", "0", "n", "否", "不要", "不需要"}
 
 include_image = wants("INCLUDE_IMAGE")
@@ -20,6 +44,7 @@ if include_audio:
     allowed.add("audio")
 if include_video:
     allowed.add("video")
+
 
 def clean_slot(raw, fallback):
     text = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(raw or "").strip()).strip("-").lower()
@@ -95,8 +120,8 @@ def cell(cells, index):
         return ""
     return cells[index].strip().strip("`\"'")
 
-slots = []
-seen = set()
+slots: list[dict[str, object]] = []
+seen: set[str] = set()
 
 matches = list(re.finditer(r"slot_id\s*[:：]\s*([a-zA-Z0-9][a-zA-Z0-9_-]{0,80})", outline, re.I))
 for index, match in enumerate(matches):
@@ -115,7 +140,7 @@ for index, match in enumerate(matches):
         load_bearing=truthy(field(block, "load_bearing", "required", "必要")),
     )
 
-headers = None
+headers: list[str] | None = None
 for raw_line in outline.splitlines():
     cells = split_table_row(raw_line)
     if not cells:
@@ -151,10 +176,10 @@ for line in outline.splitlines():
     kind = modality(line)
     if not kind:
         continue
-    match = re.search(r"slot[_\s-]*id\s*[:：=]\s*([a-zA-Z0-9][a-zA-Z0-9_-]{0,80})", line, re.I)
-    if not match:
+    line_match = re.search(r"slot[_\s-]*id\s*[:：=]\s*([a-zA-Z0-9][a-zA-Z0-9_-]{0,80})", line, re.I)
+    if not line_match:
         continue
-    append(slots, seen, slot_id=match.group(1), kind=kind, subject=line[:500], prompt_hint=line[:500])
+    append(slots, seen, slot_id=line_match.group(1), kind=kind, subject=line[:500], prompt_hint=line[:500])
 
 def topic():
     text = re.sub(r"[#*_`|>{}\[\]\"]+", " ", requirement + "\n" + outline)
@@ -165,7 +190,7 @@ def topic():
             return match.group(1).strip()[:160]
     return (text[:160] if text else "requested webpage topic")
 
-synthesized = []
+synthesized: list[str] = []
 image_count = sum(1 for slot in slots if slot["modality"] == "image")
 if include_image and image_count == 0:
     base = topic()

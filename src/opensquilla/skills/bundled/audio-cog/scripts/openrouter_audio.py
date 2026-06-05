@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import wave
+from collections.abc import Iterable
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -111,9 +112,9 @@ def _failure_reason(exc: BaseException) -> str:
     return exc.__class__.__name__
 
 
-def _iter_sse_audio_chunks(response: object) -> bytes:
+def _iter_sse_audio_chunks(response: Iterable[bytes]) -> bytes:
     pcm = bytearray()
-    for raw in response:  # type: ignore[operator]
+    for raw in response:
         line = raw.decode("utf-8", "replace").strip()
         if not line.startswith("data:"):
             continue
@@ -139,6 +140,7 @@ def main() -> int:
     parser.add_argument("--model", required=True)
     parser.add_argument("--base-url", default="https://openrouter.ai/api/v1")
     parser.add_argument("--api-key", default="")
+    parser.add_argument("--api-key-env", default="OPENROUTER_API_KEY")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--filename", default="narration.wav")
     parser.add_argument("--voice", default="cedar")
@@ -147,10 +149,11 @@ def main() -> int:
     filename = _safe_filename(args.filename, "narration.wav")
     messages, script_text = _audio_messages(sys.stdin.read())
 
-    key = args.api_key.strip() or os.environ.get("OPENROUTER_API_KEY")
+    api_key_env = args.api_key_env.strip() or "OPENROUTER_API_KEY"
+    key = str(args.api_key.strip() or os.environ.get(api_key_env, ""))
     missing = []
     if not key:
-        missing.append("OPENROUTER_API_KEY")
+        missing.append(api_key_env)
     if not args.model:
         missing.append("awesome_webpage.openrouter.models.audio_generation")
     if not args.output_dir:

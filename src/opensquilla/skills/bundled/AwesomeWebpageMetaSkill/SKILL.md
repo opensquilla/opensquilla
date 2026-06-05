@@ -123,7 +123,7 @@ composition:
           openrouter.models.image_generation: {{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('models', {}).get('image_generation', 'google/gemini-3-pro-image-preview') }}
           openrouter.models.audio_generation: {{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('models', {}).get('audio_generation', 'openai/gpt-audio-mini') }}
           openrouter.models.video_generation: {{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('models', {}).get('video_generation', 'bytedance/seedance-2.0-fast') }}
-          output_dir: {{ inputs.workspace_dir }}/awesome-webpage-output
+          output_dir: {{ inputs.get('config', {}).get('awesome_webpage', {}).get('output_dir') or (inputs.workspace_dir ~ '/awesome-webpage-output') }}
           This resolved output_dir is configured and must not be reported as CONFIG_NEEDED.
           media_strategy.search_first: {{ inputs.get('config', {}).get('awesome_webpage', {}).get('media_strategy', {}).get('search_first', true) }}
           media_strategy.search_modalities: {{ inputs.get('config', {}).get('awesome_webpage', {}).get('media_strategy', {}).get('search_modalities', ['images']) | join(', ') }}
@@ -344,13 +344,13 @@ composition:
         command: |
           python -m opensquilla.skills.bundled.AwesomeWebpageMetaSkill.scripts.media_slots_normalize
         timeout: 20
-        env:
-          PAGE_OUTLINE: "{{ outputs.page_outline }}"
-          REQUIREMENT_FRAMING: "{{ outputs.requirement_framing }}"
-          INCLUDE_IMAGE: "{{ inputs.get('collected', {}).get('ask_images', {}).get('include_images', 'YES') }}"
-          INCLUDE_AUDIO: "{{ inputs.get('collected', {}).get('ask_audio', {}).get('include_audio', 'YES') }}"
-          INCLUDE_VIDEO: "{{ inputs.get('collected', {}).get('ask_video', {}).get('include_video', 'YES') }}"
-          VISUAL_STYLE: "{{ inputs.get('collected', {}).get('ask_style', {}).get('visual_style', '') }}"
+        stdin: |
+          {"page_outline": {{ outputs.page_outline | tojson }},
+           "requirement_framing": {{ outputs.requirement_framing | tojson }},
+           "include_image": {{ inputs.get('collected', {}).get('ask_images', {}).get('include_images', 'YES') | tojson }},
+           "include_audio": {{ inputs.get('collected', {}).get('ask_audio', {}).get('include_audio', 'YES') | tojson }},
+           "include_video": {{ inputs.get('collected', {}).get('ask_video', {}).get('include_video', 'YES') | tojson }},
+           "visual_style": {{ inputs.get('collected', {}).get('ask_style', {}).get('visual_style', '') | tojson }}}
 
     - id: media_search
       kind: agent
@@ -451,82 +451,16 @@ composition:
           {{ outputs.media_search | truncate(3500) }}
 
     - id: image_download
-      kind: agent
-      skill: filesystem
+      kind: skill_exec
+      skill: awesome-webpage-image-download
       depends_on: [media_strategy, media_slots_normalize]
       when: "inputs.get('collected', {}).get('ask_images', {}).get('include_images', 'YES') == 'YES' and outputs.media_strategy == 'IMAGE_SEARCH_READY'"
       with:
-        task: |
-          Download searched image candidates to local disk. The normalized
-          media slots below define image SLOTS by semantic key (slot_id) and subject —
-          NOT by filename. Save each downloaded file as `<slot_id>.<ext>`
-          so the later media collection step can bind by slot_id match.
-
-          ABSOLUTE_IMAGE_DIR = {{ inputs.workspace_dir }}/awesome-webpage-output/{{ outputs.project_slug | slugify }}/project/assets/images
-
-          Steps:
-          1. `mkdir -p` ABSOLUTE_IMAGE_DIR.
-          2. Read MEDIA_SLOTS_JSON below and extract `slots[]` entries where
-             `modality` is `image`. Each entry has:
-                slot_id (kebab-case key, e.g. `hero-ocean`)
-                subject (one-sentence description)
-                search_keywords (3-6 keywords)
-             This is your shopping list. Do NOT invent new slot_ids and do
-             NOT rename outline slot_ids.
-          3. For each image slot, scan the candidate URL lists below and
-             pick ONE direct image URL whose title/subject best matches the
-             slot's subject + search_keywords. Skip search-result pages,
-             login walls, and data: URIs. Stay within the URL set; do not
-             call web_search.
-          4. Save each picked URL using the slot_id as filename plus an
-             extension matching the URL or Content-Type
-             (`<slot_id>.jpg` / `.png` / `.webp`). Example: slot_id
-             `hero-ocean` + JPEG URL → `hero-ocean.jpg`. Do NOT prefix
-             with an index, do NOT pluralize.
-          5. Download with
-             `curl -L --fail --max-time 20 -o <abs_path> <url>`.
-             Run up to 4 in parallel via `xargs -P 4` or backgrounded `&`
-             followed by `wait`.
-          6. After all downloads complete, `ls -la` ABSOLUTE_IMAGE_DIR.
-          7. Validate every file is a real image:
-             `file --mime-type <abs_path>` and drop anything not
-             `image/jpeg|image/png|image/webp|image/gif`. HTML pages
-             masquerading as `.jpg` count as failed downloads.
-          8. Return one JSON object:
-             {downloaded: [{slot_id, url, local_path, bytes}],
-              unfilled: [{slot_id, reason}],
-              skipped: [{url, reason}]}.
-             `unfilled` lists outline slot_ids that no candidate covered;
-             the downstream image_aigc step handles missing image slots.
-          9. After the JSON object, emit one `IMAGE_READY:` line per
-             surviving file so media collection and the webpage generator can
-             pick them up:
-             `IMAGE_READY: {"local_path": "project/assets/images/<slot_id>.<ext>", "mime": "<mime>", "bytes": <int>, "slot_id": "<slot_id>", "subject": "<subject from outline>"}`
-             `local_path` MUST be the relative `project/assets/images/...`
-             form. Never an absolute path.
-          10. If no image survives validation OR any outline image slot remains
-              unfilled, emit one final single-line marker:
-              `IMAGE_DOWNLOAD_INCOMPLETE: {"reason": "<short reason>", "unfilled_slot_ids": ["<slot_id>", "..."]}`.
-              This marker lets the next step generate only the missing image
-              slots instead of leaving load-bearing replacement slots.
-
-          Hard rules:
-          - Total budget 90 s. If wall-clock exceeds this, stop and return
-            whatever is on disk; do not retry.
-          - Do not call web_search, web_fetch, or any LLM tool here. Just curl.
-          - Do not read image bytes back. Trust `curl --fail` exit codes and
-            on-disk presence as evidence.
-          - URLs that return non-2xx are dropped silently — do not retry,
-            and do not perform AIGC inside this step. The downstream image_aigc
-            step handles fallback when `IMAGE_DOWNLOAD_INCOMPLETE:` is present
-            or when no `IMAGE_READY:` line was produced.
-
-          MEDIA_SLOTS_JSON (extract `modality: image` slots — slot_ids are
-          authoritative):
-          {{ outputs.media_slots_normalize | truncate(3500) }}
-
-          Primary search URLs:
-          {{ outputs.media_search | truncate(3000) }}
+        output_dir: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('output_dir') or (inputs.workspace_dir ~ '/awesome-webpage-output') }}/{{ outputs.project_slug | slugify }}/project/assets/images"
+        local_path_prefix: project/assets/images
+        payload: |
+          {"media_slots": {{ outputs.media_slots_normalize | tojson }},
+           "media_search": {{ outputs.media_search | tojson }}}
 
     - id: image_aigc
       kind: skill_exec
@@ -537,10 +471,11 @@ composition:
         model: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('models', {}).get('image_generation', 'google/gemini-3-pro-image-preview') }}"
         base_url: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('base_url', 'https://openrouter.ai/api/v1') }}"
         api_key: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('api_key', '') }}"
-        output_dir: "{{ inputs.workspace_dir }}/awesome-webpage-output/{{ outputs.project_slug | slugify }}/project/assets/images"
+        api_key_env: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('api_key_env', 'OPENROUTER_API_KEY') }}"
+        output_dir: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('output_dir') or (inputs.workspace_dir ~ '/awesome-webpage-output') }}/{{ outputs.project_slug | slugify }}/project/assets/images"
         filename: "{{ outputs.project_slug | slugify }}.png"
         resolution: "1K"
-        max_images: "6"
+        max_images: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('media_strategy', {}).get('target_assets', {}).get('images', 6) }}"
         local_path_prefix: project/assets/images
         payload: |
           {
@@ -561,7 +496,8 @@ composition:
         model: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('models', {}).get('audio_generation', 'openai/gpt-audio-mini') }}"
         base_url: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('base_url', 'https://openrouter.ai/api/v1') }}"
         api_key: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('api_key', '') }}"
-        output_dir: "{{ inputs.workspace_dir }}/awesome-webpage-output/{{ outputs.project_slug | slugify }}/project/assets/audio"
+        api_key_env: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('api_key_env', 'OPENROUTER_API_KEY') }}"
+        output_dir: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('output_dir') or (inputs.workspace_dir ~ '/awesome-webpage-output') }}/{{ outputs.project_slug | slugify }}/project/assets/audio"
         filename: "{{ outputs.project_slug | slugify }}-narration.wav"
         voice: cedar
         payload: |
@@ -613,7 +549,8 @@ composition:
         model: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('models', {}).get('video_generation', 'bytedance/seedance-2.0-fast') }}"
         base_url: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('base_url', 'https://openrouter.ai/api/v1') }}"
         api_key: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('api_key', '') }}"
-        output_dir: "{{ inputs.workspace_dir }}/awesome-webpage-output/{{ outputs.project_slug | slugify }}/project/assets/video"
+        api_key_env: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('api_key_env', 'OPENROUTER_API_KEY') }}"
+        output_dir: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('output_dir') or (inputs.workspace_dir ~ '/awesome-webpage-output') }}/{{ outputs.project_slug | slugify }}/project/assets/video"
         filename: "{{ outputs.project_slug | slugify }}-intro.mp4"
         duration: "10"
         aspect_ratio: "16:9"
@@ -645,7 +582,7 @@ composition:
           python -m opensquilla.skills.bundled.AwesomeWebpageMetaSkill.scripts.media_assets_collect
         timeout: 30
         env:
-          PROJECT_ROOT: "{{ inputs.workspace_dir }}/awesome-webpage-output/{{ outputs.project_slug | slugify }}/project"
+          PROJECT_ROOT: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('output_dir') or (inputs.workspace_dir ~ '/awesome-webpage-output') }}/{{ outputs.project_slug | slugify }}/project"
           IMAGE_DOWNLOAD: "{{ outputs.get('image_download', '') }}"
           IMAGE_AIGC: "{{ outputs.get('image_aigc', '') }}"
           AUDIO_AIGC: "{{ outputs.get('audio_aigc', '') }}"
@@ -821,7 +758,7 @@ composition:
         stdin: "{{ (outputs.get('webpage_generation_retry', '') or outputs.webpage_generation) | tojson }}"
         env:
           WORKSPACE_DIR: "{{ inputs.workspace_dir }}"
-          PROJECT_ROOT: "{{ inputs.workspace_dir }}/awesome-webpage-output/{{ outputs.project_slug | slugify }}"
+          PROJECT_ROOT: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('output_dir') or (inputs.workspace_dir ~ '/awesome-webpage-output') }}/{{ outputs.project_slug | slugify }}"
 
     - id: media_bind_validate
       kind: tool_call
@@ -833,7 +770,7 @@ composition:
           python -m opensquilla.skills.bundled.AwesomeWebpageMetaSkill.scripts.media_bind_validate
         timeout: 30
         env:
-          PROJECT_ROOT: "{{ inputs.workspace_dir }}/awesome-webpage-output/{{ outputs.project_slug | slugify }}"
+          PROJECT_ROOT: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('output_dir') or (inputs.workspace_dir ~ '/awesome-webpage-output') }}/{{ outputs.project_slug | slugify }}"
           IMAGE_DOWNLOAD: "{{ outputs.get('image_download', '') }}"
           IMAGE_AIGC: "{{ outputs.get('image_aigc', '') }}"
           AUDIO_AIGC: "{{ outputs.get('audio_aigc', '') }}"
@@ -852,7 +789,7 @@ composition:
 
           Fixed ClawHub skill URL: https://clawhub.ai/gtrusler/clawdbot-filesystem
           Use only the per-project root:
-          {{ inputs.workspace_dir }}/awesome-webpage-output/{{ outputs.project_slug | slugify }}
+          {{ inputs.get('config', {}).get('awesome_webpage', {}).get('output_dir') or (inputs.workspace_dir ~ '/awesome-webpage-output') }}/{{ outputs.project_slug | slugify }}
           Do not choose a new output directory and do not install another filesystem skill.
 
           Expected tree:
@@ -903,7 +840,7 @@ composition:
           {{ inputs.language_instruction }}
 
           Write a delivery guide containing:
-          - output project path from config.awesome_webpage.output_dir: {{ inputs.workspace_dir }}/awesome-webpage-output/{{ outputs.project_slug | slugify }}/project
+          - output project path from config.awesome_webpage.output_dir: {{ inputs.get('config', {}).get('awesome_webpage', {}).get('output_dir') or (inputs.workspace_dir ~ '/awesome-webpage-output') }}/{{ outputs.project_slug | slugify }}/project
           - how to open project/index.html locally
           - how to replace images, audio, and video assets
           - how to edit content in index.html, style.css, and script.js

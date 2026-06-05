@@ -71,6 +71,7 @@ are released under OpenSquilla's repository license (Apache-2.0; see `LICENSE`):
 
 - `cron`
 - `AwesomeWebpageMetaSkill`
+- `awesome-webpage-image-download`
 - `awesome-webpage-research`
 - `deep-research`
 - `docx`

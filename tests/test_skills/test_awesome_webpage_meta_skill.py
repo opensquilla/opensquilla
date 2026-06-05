@@ -71,6 +71,16 @@ def _load_openrouter_image_module():
     return module
 
 
+def _load_awesome_image_download_module():
+    script = BUNDLED / "awesome-webpage-image-download" / "scripts" / "image_download.py"
+    spec = importlib.util.spec_from_file_location("awesome_image_download", script)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_awesome_webpage_meta_skill_loads_and_references_fixed_skills(tmp_path: Path) -> None:
     loader = SkillLoader(bundled_dir=BUNDLED, snapshot_path=tmp_path / "snapshot.json")
     loader.invalidate_cache()
@@ -84,6 +94,7 @@ def test_awesome_webpage_meta_skill_loads_and_references_fixed_skills(tmp_path: 
     refs = {step.skill for step in plan.steps if step.kind in {"agent", "skill_exec"}}
     assert {
         "awesome-webpage-research",
+        "awesome-webpage-image-download",
         "web-search",
         "html-coder",
         "nano-banana-pro-openrouter",
@@ -342,22 +353,17 @@ def test_awesome_webpage_media_strategy_covers_video_and_required_modalities() -
 
     assert "image_download" in steps
     image_download = steps["image_download"]
-    assert image_download["kind"] == "agent"
-    assert image_download["skill"] == "filesystem"
+    assert image_download["kind"] == "skill_exec"
+    assert image_download["skill"] == "awesome-webpage-image-download"
     assert image_download["depends_on"] == ["media_strategy", "media_slots_normalize"]
     assert "outputs.media_strategy == 'IMAGE_SEARCH_READY'" in image_download["when"]
     assert "include_images" in image_download["when"]
     assert "image_download" in steps["media_assets_collect"]["depends_on"]
     assert "image_download" not in steps["webpage_generation"]["depends_on"]
-    assert "curl -L --fail" in image_download["with"]["task"]
-    assert "Do not call web_search" in image_download["with"]["task"]
-    download_task = image_download["with"]["task"]
-    assert "MEDIA_SLOTS_JSON" in download_task
-    assert "outputs.media_slots_normalize | truncate(3500)" in download_task
-    assert "shopping list" in download_task
-    assert "slot_id as filename" in download_task
-    assert "IMAGE_DOWNLOAD_INCOMPLETE:" in download_task
-    assert "downstream image_aigc" in download_task
+    assert "curl" not in str(image_download)
+    assert "outputs.media_slots_normalize | tojson" in image_download["with"]["payload"]
+    assert "outputs.media_search | tojson" in image_download["with"]["payload"]
+    assert "get('config', {})" in image_download["with"]["output_dir"]
 
     assert steps["image_aigc"]["depends_on"] == [
         "media_strategy",
@@ -477,21 +483,23 @@ def test_media_slots_normalize_synthesizes_image_slots_when_outline_has_no_slots
 ) -> None:
     fm = _frontmatter()
     steps = {step["id"]: step for step in fm["composition"]["steps"]}
-    command = steps["media_slots_normalize"]["tool_args"]["command"]
-    env = os.environ.copy()
-    env.update(
+    tool_args = steps["media_slots_normalize"]["tool_args"]
+    command = tool_args["command"]
+    assert "env" not in tool_args
+    assert "PAGE_OUTLINE" not in str(tool_args)
+    stdin = json.dumps(
         {
-            "PAGE_OUTLINE": """
+            "page_outline": """
             | section_id | title | purpose |
             | --- | --- | --- |
             | hero | 海洋塑料污染 | establish urgency |
             | impact | 食物链影响 | explain microplastics |
             """,
-            "REQUIREMENT_FRAMING": "主题: 海洋塑料污染科普网页，包含音频、视频和图片",
-            "INCLUDE_IMAGE": "YES",
-            "INCLUDE_AUDIO": "YES",
-            "INCLUDE_VIDEO": "YES",
-            "VISUAL_STYLE": "纪录片风，清晰可信",
+            "requirement_framing": "主题: 海洋塑料污染科普网页，包含音频、视频和图片",
+            "include_image": "YES",
+            "include_audio": "YES",
+            "include_video": "YES",
+            "visual_style": "纪录片风，清晰可信",
         }
     )
 
@@ -499,7 +507,7 @@ def test_media_slots_normalize_synthesizes_image_slots_when_outline_has_no_slots
         command,
         shell=True,
         cwd=tmp_path,
-        env=env,
+        input=stdin,
         capture_output=True,
         text=True,
         check=False,
@@ -530,12 +538,24 @@ def test_awesome_webpage_media_entrypoints_are_code_backed(tmp_path: Path) -> No
     assert image is not None
     assert image.entrypoint is not None
     assert image.entrypoint["command"] == "python {baseDir}/scripts/openrouter_image.py"
-    assert "--api-key" in image.entrypoint["args"]
+    assert "--api-key" not in image.entrypoint["args"]
+    assert "--api-key-env" in image.entrypoint["args"]
+    assert image.entrypoint["env"][
+        "{{ with.api_key_env | default('OPENROUTER_API_KEY') }}"
+    ] == (
+        "{{ with.api_key | default('') }}"
+    )
 
     assert audio is not None
     assert audio.entrypoint is not None
     assert audio.entrypoint["command"] == "python {baseDir}/scripts/openrouter_audio.py"
-    assert "--api-key" in audio.entrypoint["args"]
+    assert "--api-key" not in audio.entrypoint["args"]
+    assert "--api-key-env" in audio.entrypoint["args"]
+    assert audio.entrypoint["env"][
+        "{{ with.api_key_env | default('OPENROUTER_API_KEY') }}"
+    ] == (
+        "{{ with.api_key | default('') }}"
+    )
     assert audio.entrypoint["parse"] == "text"
 
     assert video is not None
@@ -543,7 +563,13 @@ def test_awesome_webpage_media_entrypoints_are_code_backed(tmp_path: Path) -> No
     assert video.entrypoint["command"] == (
         "python {baseDir}/scripts/openrouter_video.py"
     )
-    assert "--api-key" in video.entrypoint["args"]
+    assert "--api-key" not in video.entrypoint["args"]
+    assert "--api-key-env" in video.entrypoint["args"]
+    assert video.entrypoint["env"][
+        "{{ with.api_key_env | default('OPENROUTER_API_KEY') }}"
+    ] == (
+        "{{ with.api_key | default('') }}"
+    )
     assert video.entrypoint["parse"] == "text"
 
 
@@ -562,6 +588,82 @@ def test_web_search_uses_bundled_script_entrypoint(tmp_path: Path) -> None:
     )
     assert "python scripts/search.py" not in body
     assert "python {baseDir}/scripts/search.py" in body
+
+
+def test_awesome_image_downloader_emits_ready_record(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    module = _load_awesome_image_download_module()
+    image_bytes = (
+        b"\x89PNG\r\n\x1a\n"
+        b"\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x02\x00\x00\x00"
+    )
+
+    class FakeResponse:
+        headers = {"Content-Type": "image/png"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            del args
+            return None
+
+        def read(self, *_args: object) -> bytes:
+            return image_bytes
+
+        def geturl(self) -> str:
+            return "https://cdn.example/hero.png"
+
+    def fake_urlopen(*_args: object, **_kwargs: object) -> FakeResponse:
+        return FakeResponse()
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "media_slots": json.dumps(
+                        {
+                            "slots": [
+                                {
+                                    "slot_id": "hero-visual",
+                                    "modality": "image",
+                                    "subject": "hero ocean",
+                                    "search_keywords": ["hero", "ocean"],
+                                }
+                            ]
+                        }
+                    ),
+                    "media_search": "candidate https://cdn.example/hero.png",
+                }
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "image_download.py",
+            "--output-dir",
+            str(tmp_path),
+            "--local-path-prefix",
+            "project/assets/images",
+        ],
+    )
+
+    assert module.main() == 0
+
+    out = capsys.readouterr().out
+    assert (tmp_path / "hero-visual.png").read_bytes() == image_bytes
+    assert "IMAGE_READY" in out
+    assert "project/assets/images/hero-visual.png" in out
 
 
 def test_audio_cog_json_payload_builds_exact_transcript_messages() -> None:
@@ -1020,6 +1122,7 @@ def test_awesome_webpage_media_steps_forward_configured_openrouter_settings() ->
             "awesome_webpage": {
                 "openrouter": {
                     "api_key": "sk-configured",
+                    "api_key_env": "CUSTOM_OPENROUTER_KEY",
                     "base_url": "https://openrouter.example/v1",
                     "models": {
                         "image_generation": "provider/custom-image",
@@ -1054,6 +1157,7 @@ def test_awesome_webpage_media_steps_forward_configured_openrouter_settings() ->
     for step_id, model in expected_models.items():
         rendered = render_with_args(steps[step_id]["with"], inputs=inputs, outputs=outputs)
         assert rendered["api_key"] == "sk-configured"
+        assert rendered["api_key_env"] == "CUSTOM_OPENROUTER_KEY"
         assert rendered["base_url"] == "https://openrouter.example/v1"
         assert rendered["model"] == model
 
@@ -1422,6 +1526,12 @@ def test_awesome_webpage_rendered_steps_resolve_output_dir(tmp_path: Path) -> No
             "ask_video": {"include_video": "YES"},
             "ask_style": {"visual_style": "纪录片风，清晰、可信、适合科普"},
         },
+        "config": {
+            "awesome_webpage": {
+                "output_dir": "/tmp/custom-awesome-output",
+                "media_strategy": {"target_assets": {"images": 2}},
+            },
+        },
     }
     outputs = {
         key: key
@@ -1453,22 +1563,46 @@ def test_awesome_webpage_rendered_steps_resolve_output_dir(tmp_path: Path) -> No
 
     for step_id in [
         "requirement_framing",
+        "image_download",
+        "image_aigc",
+        "audio_aigc",
+        "video_aigc",
         "quick_validate",
         "delivery_guide",
     ]:
         step = next(step for step in plan.steps if step.id == step_id)
         rendered = render_with_args(step.with_args, inputs=inputs, outputs=outputs)
         text = "\n".join(str(value) for value in rendered.values())
-        assert "/tmp/osq-workspace/awesome-webpage-output" in text
+        assert "/tmp/custom-awesome-output" in text
+        assert "/tmp/osq-workspace/awesome-webpage-output" not in text
+
+    fm_steps = {step["id"]: step for step in _frontmatter()["composition"]["steps"]}
+    for step_id in ["media_assets_collect", "webpage_write", "media_bind_validate"]:
+        rendered = render_with_args(
+            fm_steps[step_id]["tool_args"],
+            inputs=inputs,
+            outputs=outputs,
+        )
+        text = "\n".join(str(value) for value in rendered.values())
+        assert "/tmp/custom-awesome-output" in text
+        assert "/tmp/osq-workspace/awesome-webpage-output" not in text
 
     for step_id in ["quick_validate", "delivery_guide"]:
         step = next(step for step in plan.steps if step.id == step_id)
         rendered = render_with_args(step.with_args, inputs=inputs, outputs=outputs)
         text = "\n".join(str(value) for value in rendered.values())
-        assert "/tmp/osq-workspace/awesome-webpage-output/project_slug" in text
+        assert "/tmp/custom-awesome-output/project_slug" in text
 
     for step_id in ["delivery_guide"]:
         step = next(step for step in plan.steps if step.id == step_id)
         rendered = render_with_args(step.with_args, inputs=inputs, outputs=outputs)
         text = "\n".join(str(value) for value in rendered.values())
-        assert "/tmp/osq-workspace/awesome-webpage-output/project_slug/project" in text
+        assert "/tmp/custom-awesome-output/project_slug/project" in text
+
+    image_step = next(step for step in plan.steps if step.id == "image_aigc")
+    rendered_image = render_with_args(
+        image_step.with_args,
+        inputs=inputs,
+        outputs=outputs,
+    )
+    assert rendered_image["max_images"] == "2"

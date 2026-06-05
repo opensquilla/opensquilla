@@ -546,6 +546,7 @@ def main() -> int:
     parser.add_argument("--model", required=True)
     parser.add_argument("--base-url", default="https://openrouter.ai/api/v1")
     parser.add_argument("--api-key", default="")
+    parser.add_argument("--api-key-env", default="OPENROUTER_API_KEY")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--filename", default="image.png")
     parser.add_argument("--resolution", choices=["1K", "2K", "4K"], default="1K")
@@ -553,7 +554,8 @@ def main() -> int:
     parser.add_argument("--local-path-prefix", default="project/assets/images")
     args = parser.parse_args()
 
-    api_key = args.api_key.strip() or os.environ.get("OPENROUTER_API_KEY", "")
+    api_key_env = args.api_key_env.strip() or "OPENROUTER_API_KEY"
+    api_key = args.api_key.strip() or os.environ.get(api_key_env, "")
     replacement_slot = (
         f"{args.local_path_prefix.rstrip('/')}/replace-with-generated-image.png"
     )
@@ -571,7 +573,7 @@ def main() -> int:
         _emit(
             "IMAGE_CONFIG_NEEDED",
             {
-                "missing": ["OPENROUTER_API_KEY"],
+                "missing": [api_key_env],
                 "reason": "missing_api_key",
                 "replacement_slot": replacement_slot,
             },

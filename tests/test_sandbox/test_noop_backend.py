@@ -30,6 +30,21 @@ def _policy(workspace: Path) -> SandboxPolicy:
     )
 
 
+def _policy_with_env(workspace: Path) -> SandboxPolicy:
+    policy = _policy(workspace)
+    return SandboxPolicy(
+        level=policy.level,
+        network=policy.network,
+        mounts=policy.mounts,
+        workspace_rw=policy.workspace_rw,
+        tmp_writable=policy.tmp_writable,
+        limits=policy.limits,
+        env_allowlist=("PATH", "VISIBLE_REQUEST_ENV"),
+        require_approval=policy.require_approval,
+        description=policy.description,
+    )
+
+
 @pytest.mark.skipif(not HAS_RESOURCE, reason="noop backend safety runner is POSIX-only")
 @pytest.mark.asyncio
 async def test_noop_backend_preserves_request_stdin(tmp_path: Path) -> None:
@@ -70,3 +85,31 @@ async def test_noop_backend_preserves_binary_request_stdin(tmp_path: Path) -> No
 
     assert result.returncode == 0
     assert result.stdout.splitlines() == ["ff00616263"]
+
+
+@pytest.mark.skipif(not HAS_RESOURCE, reason="noop backend safety runner is POSIX-only")
+@pytest.mark.asyncio
+async def test_noop_backend_forwards_allowlisted_request_env(tmp_path: Path) -> None:
+    request = SandboxRequest(
+        argv=(
+            sys.executable,
+            "-c",
+            (
+                "import os; "
+                "print(os.environ.get('VISIBLE_REQUEST_ENV', '')); "
+                "print(os.environ.get('HIDDEN_REQUEST_ENV', 'missing'))"
+            ),
+        ),
+        cwd=tmp_path,
+        action_kind="shell.exec",
+        policy=_policy_with_env(tmp_path),
+        env={
+            "VISIBLE_REQUEST_ENV": "visible",
+            "HIDDEN_REQUEST_ENV": "hidden",
+        },
+    )
+
+    result = await NoopBackend().run(request)
+
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == ["visible", "missing"]

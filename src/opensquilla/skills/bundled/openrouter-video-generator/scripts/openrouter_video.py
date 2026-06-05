@@ -11,6 +11,7 @@ import sys
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
+from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
 
 TERMINAL_STATUSES = {"completed", "failed", "cancelled", "expired"}
@@ -66,8 +67,28 @@ def _request_json(
     return parsed
 
 
-def _download(url: str, *, key: str, timeout: float = 120.0) -> bytes:
-    req = Request(url, headers={"Authorization": f"Bearer {key}"}, method="GET")
+def _resolve_url(url: str, *, base_url: str) -> str:
+    return urljoin(f"{base_url.rstrip('/')}/", url)
+
+
+def _same_origin(url: str, *, base_url: str) -> bool:
+    parsed = urlparse(url)
+    base = urlparse(base_url)
+    return parsed.scheme == base.scheme and parsed.netloc == base.netloc
+
+
+def _download(
+    url: str,
+    *,
+    key: str,
+    base_url: str,
+    timeout: float = 120.0,
+) -> bytes:
+    resolved_url = _resolve_url(url, base_url=base_url)
+    headers = {}
+    if _same_origin(resolved_url, base_url=base_url):
+        headers["Authorization"] = f"Bearer {key}"
+    req = Request(resolved_url, headers=headers, method="GET")
     with urlopen(req, timeout=timeout) as resp:
         return resp.read()
 
@@ -131,7 +152,10 @@ def main() -> int:
         return 0
 
     job_id = str(submit.get("id") or "")
-    poll_url = str(submit.get("polling_url") or f"{base_url}/videos/{job_id}")
+    poll_url = _resolve_url(
+        str(submit.get("polling_url") or f"videos/{job_id}"),
+        base_url=base_url,
+    )
     last = submit
     status = str(last.get("status") or "pending")
     deadline = time.time() + max(1.0, args.max_wait)
@@ -169,7 +193,8 @@ def main() -> int:
         return 0
 
     try:
-        body = _download(str(urls[0]), key=key)
+        download_url = _resolve_url(str(urls[0]), base_url=base_url)
+        body = _download(download_url, key=key, base_url=base_url)
     except HTTPError as exc:
         _failure(
             "VIDEO_GENERATION_FAILED",

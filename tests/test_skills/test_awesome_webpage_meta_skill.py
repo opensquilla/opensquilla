@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import re
@@ -28,6 +29,21 @@ def _frontmatter() -> dict:
     data = yaml.safe_load(match.group(1))
     assert isinstance(data, dict)
     return data
+
+
+def _load_openrouter_video_module():
+    script = (
+        BUNDLED
+        / "openrouter-video-generator"
+        / "scripts"
+        / "openrouter_video.py"
+    )
+    spec = importlib.util.spec_from_file_location("openrouter_video", script)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_awesome_webpage_meta_skill_loads_and_references_fixed_skills(tmp_path: Path) -> None:
@@ -454,6 +470,112 @@ def test_audio_cog_json_payload_builds_exact_transcript_messages() -> None:
     assert "Do not acknowledge" in messages[0]["content"]
     assert "Speak this exact narration transcript and no other words" in messages[1]["content"]
     assert "雨水花园会截留雨水" in messages[1]["content"]
+
+
+def test_openrouter_video_resolves_relative_polling_url(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _load_openrouter_video_module()
+    requests: list[tuple[str, str]] = []
+
+    def fake_request_json(
+        url: str,
+        *,
+        key: str,
+        method: str = "GET",
+        body: dict[str, object] | None = None,
+        timeout: float = 60.0,
+    ) -> dict[str, object]:
+        del body, timeout
+        assert key == "sk-or-test"
+        requests.append((method, url))
+        if method == "POST":
+            return {
+                "id": "job-abc123",
+                "status": "queued",
+                "polling_url": "/api/v1/videos/job-abc123",
+            }
+        return {
+            "status": "completed",
+            "unsigned_urls": ["https://storage.example/video.mp4"],
+        }
+
+    def fake_download(
+        url: str,
+        *,
+        key: str,
+        base_url: str,
+        timeout: float = 120.0,
+    ) -> bytes:
+        del key, base_url, timeout
+        assert url == "https://storage.example/video.mp4"
+        return b"video-bytes"
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setattr(module, "_request_json", fake_request_json)
+    monkeypatch.setattr(module, "_download", fake_download)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("make a short video"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "openrouter_video.py",
+            "--model",
+            "bytedance/seedance-2.0-fast",
+            "--output-dir",
+            str(tmp_path),
+            "--filename",
+            "sample.mp4",
+        ],
+    )
+
+    assert module.main() == 0
+
+    assert ("GET", "https://openrouter.ai/api/v1/videos/job-abc123") in requests
+    assert (tmp_path / "sample.mp4").read_bytes() == b"video-bytes"
+
+
+def test_openrouter_video_download_auth_stays_on_openrouter_origin(monkeypatch) -> None:
+    module = _load_openrouter_video_module()
+    opened_headers: list[dict[str, str]] = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b"video-bytes"
+
+    def fake_urlopen(req, timeout: float = 120.0):
+        del timeout
+        opened_headers.append({key.lower(): value for key, value in req.header_items()})
+        return FakeResponse()
+
+    monkeypatch.setattr(module, "urlopen", fake_urlopen)
+
+    assert (
+        module._download(
+            "https://storage.example/video.mp4",
+            key="sk-or-secret",
+            base_url="https://openrouter.ai/api/v1",
+        )
+        == b"video-bytes"
+    )
+    assert "authorization" not in opened_headers[-1]
+
+    assert (
+        module._download(
+            "https://openrouter.ai/api/v1/videos/job-abc123/content",
+            key="sk-or-secret",
+            base_url="https://openrouter.ai/api/v1",
+        )
+        == b"video-bytes"
+    )
+    assert opened_headers[-1]["authorization"] == "Bearer sk-or-secret"
 
 
 def test_openrouter_media_entrypoints_return_config_needed_without_key(

@@ -580,6 +580,61 @@ async def _terminate_exec_process_tree(proc: Any) -> None:
         log.warning("exec_command_termination_timeout", pid=proc.pid)
 
 
+async def _write_exec_stdin(proc: Any, stdin_bytes: bytes | None) -> None:
+    if stdin_bytes is None or proc.stdin is None:
+        return
+    try:
+        proc.stdin.write(stdin_bytes)
+        await proc.stdin.drain()
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+    finally:
+        if proc.stdin is not None and not proc.stdin.is_closing():
+            proc.stdin.close()
+            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                await proc.stdin.wait_closed()
+
+
+async def _run_host_shell_command(
+    command: str,
+    *,
+    cwd: str | None,
+    env: dict[str, str],
+    stdin_bytes: bytes | None,
+    effective_timeout: float,
+) -> str:
+    try:
+        with tempfile.TemporaryFile() as output_file:
+            subprocess_kwargs: dict[str, Any] = {
+                "stdin": asyncio.subprocess.PIPE if stdin_bytes is not None else None,
+                "stdout": output_file,
+                "stderr": asyncio.subprocess.STDOUT,
+                "cwd": cwd,
+                "env": env,
+            }
+            if os.name == "posix":
+                subprocess_kwargs["start_new_session"] = True
+            else:
+                creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                if creationflags:
+                    subprocess_kwargs["creationflags"] = creationflags
+
+            proc = await asyncio.create_subprocess_shell(command, **subprocess_kwargs)
+            await _write_exec_stdin(proc, stdin_bytes)
+            if not await _wait_exec_process(proc, effective_timeout):
+                await _terminate_exec_process_tree(proc)
+                return f"[timeout after {effective_timeout}s]\ncommand: {command}"
+            if os.name == "posix":
+                _signal_exec_process_tree(proc, signal.SIGTERM)
+
+            output_file.flush()
+            output_file.seek(0)
+            output = output_file.read().decode("utf-8", errors="replace")
+            return f"exit_code={proc.returncode}\n{output}"
+    except Exception as e:
+        return f"[error] {e}"
+
+
 async def _await_bg_output_task(output_task: asyncio.Task[None]) -> None:
     try:
         await asyncio.wait_for(output_task, timeout=_BACKGROUND_KILL_TIMEOUT)
@@ -701,27 +756,13 @@ async def exec_command(
             )
             if isinstance(escalation, DenialResult):
                 return json.dumps(escalation.to_dict())
-            try:
-                proc = await asyncio.create_subprocess_shell(
-                    command,
-                    stdin=asyncio.subprocess.PIPE if stdin_bytes is not None else None,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
-                    cwd=cwd,
-                    env=merged_env,
-                )
-                try:
-                    stdout_bytes, _ = await asyncio.wait_for(
-                        proc.communicate(input=stdin_bytes), timeout=effective_timeout
-                    )
-                except TimeoutError:
-                    proc.kill()
-                    await proc.communicate()
-                    return f"[timeout after {effective_timeout}s]\ncommand: {command}"
-                output = stdout_bytes.decode("utf-8", errors="replace")
-                return f"exit_code={proc.returncode}\n{output}"
-            except Exception as e:
-                return f"[error] {e}"
+            return await _run_host_shell_command(
+                command,
+                cwd=cwd,
+                env=merged_env,
+                stdin_bytes=stdin_bytes,
+                effective_timeout=effective_timeout,
+            )
         output = sandbox_result.stdout
         if sandbox_result.stderr:
             output += sandbox_result.stderr
@@ -731,45 +772,13 @@ async def exec_command(
     if elevated_bypass:
         log.info("shell_exec_elevated_host", command=_audit_command(command))
 
-    try:
-        with tempfile.TemporaryFile() as output_file:
-            subprocess_kwargs: dict[str, Any] = {
-                "stdin": asyncio.subprocess.PIPE if stdin_bytes is not None else None,
-                "stdout": output_file,
-                "stderr": asyncio.subprocess.STDOUT,
-                "cwd": cwd,
-                "env": merged_env,
-            }
-            if os.name == "posix":
-                subprocess_kwargs["start_new_session"] = True
-            else:
-                creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                if creationflags:
-                    subprocess_kwargs["creationflags"] = creationflags
-
-            proc = await asyncio.create_subprocess_shell(command, **subprocess_kwargs)
-            if stdin_bytes is None:
-                if not await _wait_exec_process(proc, effective_timeout):
-                    await _terminate_exec_process_tree(proc)
-                    return f"[timeout after {effective_timeout}s]\ncommand: {command}"
-            else:
-                try:
-                    await asyncio.wait_for(
-                        proc.communicate(input=stdin_bytes),
-                        timeout=effective_timeout,
-                    )
-                except TimeoutError:
-                    await _terminate_exec_process_tree(proc)
-                    return f"[timeout after {effective_timeout}s]\ncommand: {command}"
-            if os.name == "posix":
-                _signal_exec_process_tree(proc, signal.SIGTERM)
-
-            output_file.flush()
-            output_file.seek(0)
-            output = output_file.read().decode("utf-8", errors="replace")
-            return f"exit_code={proc.returncode}\n{output}"
-    except Exception as e:
-        return f"[error] {e}"
+    return await _run_host_shell_command(
+        command,
+        cwd=cwd,
+        env=merged_env,
+        stdin_bytes=stdin_bytes,
+        effective_timeout=effective_timeout,
+    )
 
 
 @tool(

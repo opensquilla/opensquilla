@@ -8,10 +8,12 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pytest
 import structlog.testing
 
+from opensquilla.sandbox.types import SandboxResult
 from opensquilla.tools.builtin import shell
 from opensquilla.tools.types import CallerKind, ToolContext, ToolError, current_tool_context
 
@@ -181,6 +183,57 @@ async def test_exec_command_writes_optional_stdin() -> None:
     exit_line, stdout = result.split("\n", 1)
     assert exit_line == "exit_code=0"
     assert stdout.splitlines() == ["STDIN:payload"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="POSIX shell quoting is required")
+async def test_exec_command_sandbox_escalation_stdin_returns_when_shell_exits(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = SimpleNamespace(effective=SimpleNamespace(sandbox_enabled=True))
+    child_script = "import time; time.sleep(5)"
+    parent_script = (
+        "import subprocess, sys; "
+        "sys.stdin.read(); "
+        "subprocess.Popen([sys.executable, '-c', "
+        f"{child_script!r}], stdout=sys.stdout, stderr=sys.stderr)"
+    )
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(parent_script)}"
+
+    async def fake_gate_action(**kwargs: object):
+        request = SimpleNamespace(
+            cwd=tmp_path,
+            action_kind="shell.exec",
+            policy=SimpleNamespace(),
+            reason="test",
+        )
+        return object(), SimpleNamespace(), request
+
+    async def fake_run_under_backend(*args: object, **kwargs: object) -> SandboxResult:
+        return SandboxResult(
+            returncode=1,
+            stdout="",
+            stderr="",
+            wall_time_s=0.0,
+            backend_used="seatbelt",
+            backend_notes=("sandbox denied",),
+        )
+
+    async def fake_escalate_backend_denial(*args: object, **kwargs: object) -> object:
+        return object()
+
+    monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(shell, "gate_action", fake_gate_action)
+    monkeypatch.setattr(shell, "run_under_backend", fake_run_under_backend)
+    monkeypatch.setattr(shell, "escalate_backend_denial", fake_escalate_backend_denial)
+
+    started = time.monotonic()
+    result = await shell.exec_command(command, stdin="payload", timeout=0.5)
+    elapsed = time.monotonic() - started
+
+    assert result.startswith("exit_code=0\n")
+    assert elapsed < 0.5
 
 
 @pytest.mark.asyncio

@@ -54,6 +54,8 @@ GEMINI.md
 # and the WebUI static asset path so the gateway page renders the mark.
 !/assets/*.png
 !/src/opensquilla/gateway/static/img/*.png
+!/opensquilla-webui/public/opensquilla-mark.png
+!/src/opensquilla/gateway/static/dist/opensquilla-mark.png
 site/
 /plugins/
 crontab-*

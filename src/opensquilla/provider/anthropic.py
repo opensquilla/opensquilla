@@ -440,9 +440,14 @@ class AnthropicProvider:
                         return
 
                     async for line in response.aiter_lines():
-                        if not line.startswith("data: "):
+                        # SSE spec: a single optional space after the colon
+                        # is part of the field syntax. Some gateways emit
+                        # "data:{...}" without the space — accept both.
+                        if not line.startswith("data:"):
                             continue
-                        data_str = line[6:]
+                        data_str = line[5:]
+                        if data_str.startswith(" "):
+                            data_str = data_str[1:]
                         if data_str == "[DONE]":
                             break
                         try:

@@ -4,7 +4,7 @@ export type IconName =
   | 'chat' | 'home' | 'channels' | 'sessions' | 'usage' | 'cron'
   | 'config' | 'logs' | 'skills' | 'agents' | 'approvals'
   | 'sun' | 'moon' | 'monitor' | 'x' | 'copy' | 'check'
-  | 'send' | 'stop' | 'paperclip' | 'plus' | 'trash'
+  | 'send' | 'stop' | 'paperclip' | 'plus' | 'share' | 'trash'
   | 'refresh' | 'download' | 'save' | 'menu' | 'user' | 'search'
   | 'edit' | 'info' | 'settings' | 'gear' | 'regenerate'
   | 'pencil' | 'chevronDown' | 'chevronRight' | 'arrowUp'
@@ -39,6 +39,7 @@ const ICONS: Record<IconName, IconDef> = {
   stop:       { path: '<rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>' },
   paperclip:  { path: '<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>' },
   plus:       { path: '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>' },
+  share:      { path: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.59 13.51l6.83 3.98"/><path d="M15.41 6.51 8.59 10.49"/>', strokeWidth: 1.8 },
   trash:      { path: '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>' },
   refresh:    { path: '<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>' },
   download:   { path: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>' },

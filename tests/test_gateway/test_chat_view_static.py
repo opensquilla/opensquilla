@@ -37,9 +37,9 @@ def test_chat_suppresses_internal_provider_retry_warning_toasts() -> None:
     assert "const silentWarningCodes = new Set([" in warning_handler
     assert "'provider_reasoning_only_retry'" in warning_handler
     assert "if (silentWarningCodes.has(code)) return;" in warning_handler
-    assert warning_handler.index("if (silentWarningCodes.has(code)) return;") < warning_handler.index(
-        "UI.toast(msg, 'warn', 5000);"
-    )
+    silent_warning_index = warning_handler.index("if (silentWarningCodes.has(code)) return;")
+    toast_index = warning_handler.index("UI.toast(msg, 'warn', 5000);")
+    assert silent_warning_index < toast_index
 
 
 def test_chat_toolbar_has_no_tool_compress_selector() -> None:

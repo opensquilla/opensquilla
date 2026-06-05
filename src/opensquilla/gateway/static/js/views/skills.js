@@ -1055,6 +1055,9 @@ const SkillsView = (() => {
   function _renderDependencySuggestions(skill, summary) {
     const suggestions = [];
     const actionableInstalls = _actionableInstallEntries(skill);
+    const hasPackageSetupAction = actionableInstalls.some(install =>
+      _isActionablePythonPackageInstall(install, summary, skill)
+    );
     const hasMissing = summary.missing.count > 0
       || summary.missing.binaries.all.length > 0
       || summary.missing.binaries.any.length > 0
@@ -1072,7 +1075,7 @@ const SkillsView = (() => {
       });
     });
 
-    if (hasMissing) {
+    if (hasMissing || hasPackageSetupAction) {
       (summary.declared.python_packages || []).forEach(pkg => {
         const pkgName = pkg.package || pkg.module || pkg.label || '';
         if (!pkgName) return;
@@ -1264,14 +1267,35 @@ const SkillsView = (() => {
     const summary = _dependencySummary(skill);
     const missingAll = new Set(summary.missing.binaries.all || []);
     const missingAny = Array.isArray(summary.missing.binaries.any) ? summary.missing.binaries.any : [];
-    if (missingAll.size === 0 && missingAny.length === 0) return [];
     return installs.filter(install => {
+      if (_isActionablePythonPackageInstall(install, summary, skill)) return true;
       const bins = Array.isArray(install?.bins) ? install.bins.filter(Boolean) : [];
+      if (missingAll.size === 0 && missingAny.length === 0) return false;
       if (!bins.length) return true;
       if (bins.some(bin => missingAll.has(bin))) return true;
       return missingAny.some(group =>
         Array.isArray(group) && group.some(bin => bins.includes(bin))
       );
+    });
+  }
+
+  function _isActionablePythonPackageInstall(install, summary, skill) {
+    if (!install || String(install.kind || '').toLowerCase() !== 'uv') return false;
+    const status = String(skill?.status || '').toLowerCase();
+    if (status === 'ready' || status === 'enabled') return false;
+    const bins = Array.isArray(install.bins) ? install.bins.filter(Boolean) : [];
+    if (bins.length) return false;
+    const packages = summary.declared.python_packages || [];
+    if (!packages.length) return false;
+    const installKeys = [install.id, install.install_id, install.package, install.module, install.label]
+      .filter(Boolean)
+      .map(value => String(value));
+    if (!installKeys.length) return false;
+    return packages.some(pkg => {
+      const packageKeys = [pkg.install_id, pkg.package, pkg.module, pkg.label]
+        .filter(Boolean)
+        .map(value => String(value));
+      return packageKeys.some(key => installKeys.includes(key));
     });
   }
 

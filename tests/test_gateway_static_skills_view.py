@@ -424,6 +424,71 @@ def test_skills_view_dialog_suggests_missing_dependency_next_steps() -> None:
     )
 
 
+def test_skills_view_dialog_exposes_package_only_install_actions() -> None:
+    _run_skills_view_harness(
+        """
+        const detail = {
+          name: 'package-only',
+          description: 'Needs a Python package setup action',
+          layer: 'managed',
+          status: 'not_declared',
+          dependency_summary: {
+            declared: {
+              binaries: { all: [], any: [] },
+              python_packages: [
+                {
+                  install_id: 'py-dep',
+                  label: 'Install package dependency',
+                  package: 'package-dep',
+                  module: 'package_dep',
+                },
+              ],
+              api_env: { all: [], any: [] },
+            },
+            missing: {
+              binaries: { all: [], any: [] },
+              api_env: { all: [], any: [] },
+              count: 0,
+            },
+            inferred: { python_imports: [], api_env: [], scan_errors: [] },
+            sub_skill_dependencies: {
+              skills: [],
+              missing_count: 0,
+              inferred_count: 0,
+              missing_references: [],
+            },
+          },
+          install: [
+            {
+              id: 'py-dep',
+              kind: 'uv',
+              label: 'Install package dependency',
+            },
+          ],
+        };
+        const rpc = {
+          async call(method, payload) {
+            if (method !== 'skills.get' || payload.name !== 'package-only') {
+              throw new Error(`unexpected rpc call ${method}`);
+            }
+            return detail;
+          },
+        };
+
+        SkillsView.__test.setState({ el, rpc, allSkills: [] });
+        await SkillsView.__test.openSkillDialog(detail);
+
+        const html = body.innerHTML;
+        if (!html.includes('data-install-deps-id="py-dep"')) {
+          throw new Error(`missing package-only install action: ${html}`);
+        }
+        if (!html.includes('uv pip install package-dep')) {
+          throw new Error(`missing package-only install command: ${html}`);
+        }
+        """
+    )
+
+
 def test_skills_view_dialog_ignores_stale_fetch_and_hides_optional_installs() -> None:
     _run_skills_view_harness(
         """

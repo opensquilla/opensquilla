@@ -483,6 +483,14 @@ class GatewayLifecycleManager:
         ]
         if self.config_path:
             argv.extend(["--config", self.config_path])
+        # Forward the active profile so the gateway subprocess resolves the
+        # same home/state/logs dirs as the parent. Typer reads the env var
+        # directly, so we only need to plumb it through argv when the parent
+        # was actually pinned to a profile (env var propagates automatically
+        # via `os.environ.copy()` in `_spawn_gateway`).
+        active_profile = os.environ.get("OPENSQUILLA_PROFILE", "").strip()
+        if active_profile:
+            argv.extend(["--profile", active_profile])
         return argv
 
     def _spawn_gateway(self, argv: list[str]) -> subprocess.Popen[Any]:

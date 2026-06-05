@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import typer
 
 from opensquilla.env import load_env, warn_if_proxy_ignored
+from opensquilla.paths import is_valid_profile_name
 
 # Populate os.environ from .env files before any submodule import reads keys.
 # Precedence: os.environ > $CWD/.env > $CWD/.env.test > ~/.opensquilla/.env.
@@ -64,6 +66,43 @@ app.command("init")(init_command)
 app.command("doctor")(doctor_command)
 app.add_typer(onboard_app, name="onboard")
 app.command("configure")(configure_command)
+
+
+# ── Global options ────────────────────────────────────────────────────────────
+
+
+@app.callback(invoke_without_command=True)
+def _profile_callback(
+    ctx: typer.Context,
+    profile: str | None = typer.Option(
+        None,
+        "--profile",
+        envvar="OPENSQUILLA_PROFILE",
+        help=(
+            "Profile name for multi-instance mode. Resolved to "
+            "$OPENSQUILLA_PROFILES_DIR/<profile>/ (default: "
+            "~/.opensquilla/profiles/). When set, isolates state/logs/config "
+            "from other instances sharing the same host. Ignored if "
+            "OPENSQUILLA_STATE_DIR is set (full override)."
+        ),
+    ),
+) -> None:
+    """OpenSquilla global options."""
+    # Preserve `no_args_is_help` — only act when a subcommand is invoked.
+    if ctx.invoked_subcommand is None:
+        return
+    name = (profile or "").strip()
+    if not name:
+        return
+    if not is_valid_profile_name(name):
+        raise typer.BadParameter(
+            f"Invalid profile name {name!r}; must match "
+            f"^[a-z0-9][a-z0-9_-]{{0,63}}$."
+        )
+    # Export so subprocesses (e.g. `gateway start` spawning `gateway run`)
+    # inherit the active profile and so any code path that reads
+    # `os.environ["OPENSQUILLA_PROFILE"]` directly sees the CLI choice.
+    os.environ["OPENSQUILLA_PROFILE"] = name
 
 
 # ── memory sub-app ────────────────────────────────────────────────────────────

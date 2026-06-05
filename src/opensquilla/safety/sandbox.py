@@ -101,6 +101,8 @@ def _filtered_env(whitelist: Sequence[str]) -> dict[str, str]:
 def run_sandboxed(
     cmd: Sequence[str],
     limits: SandboxLimits | None = None,
+    *,
+    stdin: bytes | None = None,
 ) -> SandboxResult:
     """Run ``cmd`` under ``limits`` and return a :class:`SandboxResult`.
 
@@ -133,6 +135,7 @@ def run_sandboxed(
             list(cmd),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            stdin=subprocess.PIPE if stdin is not None else None,
             env=env,
             preexec_fn=_preexec(effective),  # noqa: PLW1509 — POSIX setrlimit
             text=True,
@@ -147,7 +150,8 @@ def run_sandboxed(
         )
 
     try:
-        stdout, stderr = proc.communicate(timeout=effective.wall_seconds)
+        stdin_text = stdin.decode("utf-8", errors="replace") if stdin is not None else None
+        stdout, stderr = proc.communicate(input=stdin_text, timeout=effective.wall_seconds)
     except subprocess.TimeoutExpired:
         proc.kill()
         stdout, stderr = proc.communicate()

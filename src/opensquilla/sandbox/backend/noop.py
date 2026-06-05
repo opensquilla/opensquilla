@@ -57,7 +57,7 @@ class NoopBackend(Backend):
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
-            functools.partial(run_sandboxed, list(request.argv), limits),
+            functools.partial(run_sandboxed, list(request.argv), limits, stdin=request.stdin),
         )
         elapsed = time.monotonic() - started
         timed_out = result.reason == "wall_limit"

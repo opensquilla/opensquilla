@@ -658,6 +658,9 @@ def _run_media_bind_step(
     include_image: str = "YES",
     include_audio: str = "YES",
     include_video: str = "YES",
+    image_aigc: str = "",
+    audio_aigc: str = "",
+    video_aigc: str = "",
 ) -> subprocess.CompletedProcess[bytes]:
     fm = _frontmatter()
     steps = {step["id"]: step for step in fm["composition"]["steps"]}
@@ -696,9 +699,9 @@ def _run_media_bind_step(
         {
             "PROJECT_ROOT": str(project_root),
             "IMAGE_DOWNLOAD": "\n".join(ready_lines["image"]),
-            "IMAGE_AIGC": "",
-            "AUDIO_AIGC": "\n".join(ready_lines["audio"]),
-            "VIDEO_AIGC": "\n".join(ready_lines["video"]),
+            "IMAGE_AIGC": image_aigc,
+            "AUDIO_AIGC": "\n".join(ready_lines["audio"] + [audio_aigc]),
+            "VIDEO_AIGC": "\n".join(ready_lines["video"] + [video_aigc]),
             "INCLUDE_IMAGE": include_image,
             "INCLUDE_AUDIO": include_audio,
             "INCLUDE_VIDEO": include_video,
@@ -785,6 +788,44 @@ def test_media_bind_validate_fails_when_requested_audio_has_no_ready_asset(
     assert result.returncode != 0
     assert "MEDIA_BIND_FAILED" in output
     assert "requested_modality_has_no_ready_asset" in output
+
+
+def test_media_bind_validate_degrades_when_requested_audio_needs_config(
+    tmp_path: Path,
+) -> None:
+    result = _run_media_bind_step(
+        tmp_path,
+        assets=[
+            {"kind": "image", "src": "assets/images/hero.png"},
+            {"kind": "video", "src": "assets/video/intro.mp4"},
+        ],
+        index_html=(
+            '<main><img src="assets/images/hero.png">'
+            '<video controls src="assets/video/intro.mp4"></video></main>'
+        ),
+        audio_aigc=(
+            "AUDIO_CONFIG_NEEDED: "
+            + json.dumps(
+                {
+                    "missing": ["OPENROUTER_API_KEY"],
+                    "replacement_slot": "project/assets/audio/narration.wav",
+                    "reason": "missing_api_key",
+                },
+                separators=(",", ":"),
+            )
+        ),
+    )
+
+    output = result.stdout.decode("utf-8") + result.stderr.decode("utf-8")
+    assert result.returncode == 0, output
+    report = json.loads(result.stdout.decode("utf-8"))
+    degraded_audio = report["degraded"]["audio"][0]
+    assert report["status"] == "MEDIA_BIND_DEGRADED"
+    assert degraded_audio["label"] == "AUDIO_CONFIG_NEEDED"
+    assert degraded_audio["reason"] == "missing_api_key"
+    assert degraded_audio["missing"] == ["OPENROUTER_API_KEY"]
+    assert degraded_audio["replacement_src"] == "assets/audio/narration.wav"
+    assert "requested_modality_has_no_ready_asset" not in output
 
 
 def test_media_bind_validate_skips_modalities_user_declined(

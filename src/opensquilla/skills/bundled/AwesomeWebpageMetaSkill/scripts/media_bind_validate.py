@@ -67,11 +67,15 @@ def collect_assets():
                 payload = json.loads(match.group(3))
             except json.JSONDecodeError:
                 payload = {}
+            replacement_src, _ = normalize_path(payload.get("replacement_slot"))
             generation_failures.append({
                 "kind": match.group(1).lower(),
                 "label": f"{match.group(1)}_{match.group(2)}",
                 "source_step": source,
                 "reason": payload.get("reason") or payload.get("status") or payload.get("phase"),
+                "missing": payload.get("missing", []),
+                "replacement_slot": payload.get("replacement_slot"),
+                "replacement_src": replacement_src,
             })
     return assets, generation_failures
 
@@ -244,12 +248,24 @@ lower_html = index_html.lower()
 assets_by_kind = {"image": [], "audio": [], "video": []}
 for asset in assets:
     assets_by_kind[asset["kind"]].append(asset)
+degraded_by_kind = {"image": [], "audio": [], "video": []}
+fatal_generation_failures_by_kind = {"image": [], "audio": [], "video": []}
+for failure in generation_failures:
+    kind = failure.get("kind")
+    label = str(failure.get("label") or "")
+    if kind in degraded_by_kind:
+        if label.endswith(("_CONFIG_NEEDED", "_MODEL_UNSUPPORTED")):
+            degraded_by_kind[kind].append(failure)
+        else:
+            fatal_generation_failures_by_kind[kind].append(failure)
 
 required = {"image": requested("image"), "audio": requested("audio"), "video": requested("video")}
 for kind, is_required in required.items():
     if not is_required:
         continue
     if not assets_by_kind[kind]:
+        if degraded_by_kind[kind] and not fatal_generation_failures_by_kind[kind]:
+            continue
         failures.append({"kind": kind, "reason": "requested_modality_has_no_ready_asset"})
         continue
     for asset in assets_by_kind[kind]:
@@ -259,9 +275,16 @@ for kind, is_required in required.items():
         failures.append({"kind": kind, "reason": "audio_control_missing_or_unbound"})
     if kind == "video" and ("<video" not in lower_html or not any(a["src"] in index_html for a in assets_by_kind[kind])):
         failures.append({"kind": kind, "reason": "video_control_missing_or_unbound"})
+requested_degraded = {
+    kind: items
+    for kind, items in degraded_by_kind.items()
+    if required[kind] and items
+}
 
 report = {
-    "status": "MEDIA_BIND_OK" if not failures else "MEDIA_BIND_FAILED",
+    "status": "MEDIA_BIND_FAILED" if failures else (
+        "MEDIA_BIND_DEGRADED" if requested_degraded else "MEDIA_BIND_OK"
+    ),
     "requested": required,
     "ready_counts": {kind: len(items) for kind, items in assets_by_kind.items()},
     "referenced": {
@@ -269,6 +292,7 @@ report = {
         for kind, items in assets_by_kind.items()
     },
     "patched_assets": [asset["src"] for asset in repair_map.values()],
+    "degraded": requested_degraded,
     "generation_failures": generation_failures,
     "failures": failures,
 }

@@ -860,6 +860,52 @@ def test_cli_skills_inspect_prints_compiled_dag(tmp_path: Path) -> None:
     assert "tiny-runner" in output
 
 
+def test_cli_skills_inspect_finds_managed_layer_skill(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """`inspect` (no explicit bundled_dir) must see managed-layer meta-skills.
+
+    Regression: the helper used to build SkillLoader(bundled_dir=...) only,
+    leaving managed_dir=None, so a user meta-skill installed under
+    ~/.opensquilla/skills was always reported "not loaded".
+    """
+
+    managed = tmp_path / "managed"
+    (managed / "meta-managed").mkdir(parents=True)
+    (managed / "meta-managed" / "SKILL.md").write_text(
+        "---\n"
+        "name: meta-managed\n"
+        "description: d\n"
+        "kind: meta\n"
+        "triggers: [m]\n"
+        "composition:\n"
+        "  steps:\n"
+        "    - id: only\n"
+        "      kind: llm_chat\n"
+        "      with:\n"
+        "        system: s\n"
+        "        task: t\n"
+        "---\n"
+        "# body\n",
+    )
+
+    from opensquilla.skills import paths as paths_mod
+    from opensquilla.skills.paths import SkillLayerDirs
+
+    monkeypatch.setattr(
+        paths_mod,
+        "resolve_skill_layer_dirs",
+        lambda **_kw: SkillLayerDirs(bundled_dir=None, managed_dir=managed),
+    )
+
+    from opensquilla.cli.skills_cmd import inspect_compiled_dag
+
+    output = inspect_compiled_dag(name="meta-managed")
+    assert "not loaded" not in output, output
+    assert "only" in output
+    assert "llm_chat" in output
+
+
 # ---------------------------------------------------------------------------
 # Acceptance test
 # ---------------------------------------------------------------------------

@@ -163,7 +163,38 @@ def inspect_compiled_dag(*, name: str, bundled_dir: Path | None = None) -> str:
 
     from opensquilla.skills.loader import SkillLoader
 
-    loader = SkillLoader(bundled_dir=bundled_dir)
+    if bundled_dir is not None:
+        # Explicit bundled_dir keeps the test-friendly single-layer path.
+        loader = SkillLoader(bundled_dir=bundled_dir)
+    else:
+        # Resolve every skill layer so managed/workspace meta-skills (e.g.
+        # user-installed ones under ~/.opensquilla/skills) are inspectable,
+        # matching `skills list`.
+        import os as _os
+
+        from opensquilla.gateway.config import GatewayConfig
+        from opensquilla.skills.paths import resolve_skill_layer_dirs
+
+        config = GatewayConfig.load(_os.environ.get("OPENSQUILLA_GATEWAY_CONFIG_PATH"))
+        workspace_root = Path(config.workspace_dir) if config.workspace_dir else None
+        workspace_override = (
+            Path(config.skills.workspace_dir) if config.skills.workspace_dir else None
+        )
+        layer_dirs = resolve_skill_layer_dirs(
+            allow_bundled=config.skills.allow_bundled,
+            workspace_root=workspace_root,
+            workspace_override=workspace_override,
+            managed_override=config.skills.managed_dir,
+            extra_dirs=[Path(d) for d in config.skills.extra_dirs],
+        )
+        loader = SkillLoader(
+            bundled_dir=layer_dirs.bundled_dir,
+            workspace_dir=layer_dirs.workspace_dir,
+            managed_dir=layer_dirs.managed_dir,
+            personal_agents_dir=layer_dirs.personal_agents_dir,
+            project_agents_dir=layer_dirs.project_agents_dir,
+            extra_dirs=layer_dirs.extra_dirs,
+        )
     loader.invalidate_cache()
     loader.load_all()
     spec = loader.get_by_name(name)

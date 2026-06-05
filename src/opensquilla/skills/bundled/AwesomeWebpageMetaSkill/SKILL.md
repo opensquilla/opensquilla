@@ -371,8 +371,9 @@ composition:
           - Do NOT run any local Python script (no `python scripts/search.py`,
             no `duckduckgo-search`, no `pip install`).
           - Do NOT call `web_fetch`. Snippets from `web_search` are enough.
-          - Issue at most 2 `web_search` calls, each with `type=images` and
-            `max_results=6`, grouped by visual theme — do not search per asset.
+          - Issue at most 2 `web_search` calls, each using only the supported
+            arguments `query` and `max_results=6`; include image intent in the
+            query text itself, grouped by visual theme — do not search per asset.
           - Stop as soon as you have ~4-6 usable candidates total.
           - If results are empty, unusable, off-topic, or licensing is unclear,
             stop immediately and return:

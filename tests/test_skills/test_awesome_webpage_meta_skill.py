@@ -179,9 +179,12 @@ def test_awesome_webpage_media_strategy_covers_video_and_required_modalities() -
     )
     assert "Search is image-only" in media_strategy["with"]["text"]
     assert "Audio and video are direct AIGC modalities" in media_strategy["with"]["text"]
-    assert "Do not search for audio or video" in steps["media_search"]["with"]["query"]
-    assert "at most 2 `web_search` calls" in steps["media_search"]["with"]["query"]
-    assert "NO_USABLE_IMAGE_CANDIDATES" in steps["media_search"]["with"]["query"]
+    media_search_query = steps["media_search"]["with"]["query"]
+    assert "Do not search for audio or video" in media_search_query
+    assert "at most 2 `web_search` calls" in media_search_query
+    assert "arguments `query` and `max_results=6`" in media_search_query
+    assert "type=images" not in media_search_query
+    assert "NO_USABLE_IMAGE_CANDIDATES" in media_search_query
     assert steps["media_slots_normalize"]["kind"] == "tool_call"
     assert steps["media_slots_normalize"]["depends_on"] == ["page_outline"]
     assert steps["media_slots_normalize"]["tool_args"]["command"].strip() == (

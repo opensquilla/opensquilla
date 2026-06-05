@@ -27,6 +27,8 @@ entrypoint:
     - "{{ with.model | default('bytedance/seedance-2.0-fast') }}"
     - --base-url
     - "{{ with.base_url | default('https://openrouter.ai/api/v1') }}"
+    - --api-key
+    - "{{ with.api_key | default('') }}"
     - --output-dir
     - "{{ with.output_dir }}"
     - --filename
@@ -49,7 +51,8 @@ choose providers or invent model ids.
 ## Meta-Skill Entrypoint
 
 Meta-skills should run this skill as `skill_exec`. The entrypoint is a
-deterministic Python adapter around OpenRouter's async video endpoint; it reads
+deterministic Python adapter around OpenRouter's async video endpoint; it uses
+an explicit `with.api_key`/`--api-key` value when provided, otherwise reads
 `OPENROUTER_API_KEY` inside the child process, writes the MP4 under the supplied
 output directory, and prints either `VIDEO_READY:` or a single failure label.
 Do not spawn an LLM sub-agent just to generate video.

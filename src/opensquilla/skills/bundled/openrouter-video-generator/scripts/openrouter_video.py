@@ -103,6 +103,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
     parser.add_argument("--base-url", default="https://openrouter.ai/api/v1")
+    parser.add_argument("--api-key", default="")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--filename", default="intro.mp4")
     parser.add_argument("--duration", type=int, default=10)
@@ -116,7 +117,7 @@ def main() -> int:
     if not prompt:
         prompt = "Create a short browser-playable video for this webpage."
 
-    key = os.environ.get("OPENROUTER_API_KEY")
+    key = args.api_key.strip() or os.environ.get("OPENROUTER_API_KEY")
     missing = []
     if not key:
         missing.append("OPENROUTER_API_KEY")

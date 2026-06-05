@@ -11,6 +11,18 @@ metadata:
   opensquilla:
     risk: medium
     capabilities: [network-read]
+entrypoint:
+  command: python {baseDir}/scripts/search.py
+  args:
+    - "{{ with.query | default(inputs.user_message) }}"
+    - --type
+    - "{{ with.type | default('web') }}"
+    - --max-results
+    - "{{ with.max_results | default('10') }}"
+    - --format
+    - "{{ with.format | default('text') }}"
+  parse: text
+  timeout: 45
 ---
 
 # Web Search
@@ -44,12 +56,12 @@ The library provides a simple Python interface to DuckDuckGo's search API withou
 Search for web pages and information:
 
 ```bash
-python scripts/search.py "<query>"
+python {baseDir}/scripts/search.py "<query>"
 ```
 
 **Example:**
 ```bash
-python scripts/search.py "python asyncio tutorial"
+python {baseDir}/scripts/search.py "python asyncio tutorial"
 ```
 
 Returns the top 10 web results with titles, URLs, and descriptions in a clean text format.
@@ -59,12 +71,12 @@ Returns the top 10 web results with titles, URLs, and descriptions in a clean te
 Control the number of results returned:
 
 ```bash
-python scripts/search.py "<query>" --max-results <N>
+python {baseDir}/scripts/search.py "<query>" --max-results <N>
 ```
 
 **Example:**
 ```bash
-python scripts/search.py "machine learning frameworks" --max-results 20
+python {baseDir}/scripts/search.py "machine learning frameworks" --max-results 20
 ```
 
 Useful for:
@@ -77,7 +89,7 @@ Useful for:
 Filter results by recency:
 
 ```bash
-python scripts/search.py "<query>" --time-range <d|w|m|y>
+python {baseDir}/scripts/search.py "<query>" --time-range <d|w|m|y>
 ```
 
 **Time range options:**
@@ -88,7 +100,7 @@ python scripts/search.py "<query>" --time-range <d|w|m|y>
 
 **Example:**
 ```bash
-python scripts/search.py "artificial intelligence news" --time-range w
+python {baseDir}/scripts/search.py "artificial intelligence news" --time-range w
 ```
 
 Great for:
@@ -101,12 +113,12 @@ Great for:
 Search specifically for news articles:
 
 ```bash
-python scripts/search.py "<query>" --type news
+python {baseDir}/scripts/search.py "<query>" --type news
 ```
 
 **Example:**
 ```bash
-python scripts/search.py "climate change" --type news --time-range w --max-results 15
+python {baseDir}/scripts/search.py "climate change" --type news --time-range w --max-results 15
 ```
 
 News results include:
@@ -121,37 +133,37 @@ News results include:
 Search for images:
 
 ```bash
-python scripts/search.py "<query>" --type images
+python {baseDir}/scripts/search.py "<query>" --type images
 ```
 
 **Example:**
 ```bash
-python scripts/search.py "sunset over mountains" --type images --max-results 20
+python {baseDir}/scripts/search.py "sunset over mountains" --type images --max-results 20
 ```
 
 **Image filtering options:**
 
 Size filters:
 ```bash
-python scripts/search.py "landscape photos" --type images --image-size Large
+python {baseDir}/scripts/search.py "landscape photos" --type images --image-size Large
 ```
 Options: `Small`, `Medium`, `Large`, `Wallpaper`
 
 Color filters:
 ```bash
-python scripts/search.py "abstract art" --type images --image-color Blue
+python {baseDir}/scripts/search.py "abstract art" --type images --image-color Blue
 ```
 Options: `color`, `Monochrome`, `Red`, `Orange`, `Yellow`, `Green`, `Blue`, `Purple`, `Pink`, `Brown`, `Black`, `Gray`, `Teal`, `White`
 
 Type filters:
 ```bash
-python scripts/search.py "icons" --type images --image-type transparent
+python {baseDir}/scripts/search.py "icons" --type images --image-type transparent
 ```
 Options: `photo`, `clipart`, `gif`, `transparent`, `line`
 
 Layout filters:
 ```bash
-python scripts/search.py "wallpapers" --type images --image-layout Wide
+python {baseDir}/scripts/search.py "wallpapers" --type images --image-layout Wide
 ```
 Options: `Square`, `Tall`, `Wide`
 
@@ -167,25 +179,25 @@ Image results include:
 Search for videos:
 
 ```bash
-python scripts/search.py "<query>" --type videos
+python {baseDir}/scripts/search.py "<query>" --type videos
 ```
 
 **Example:**
 ```bash
-python scripts/search.py "python tutorial" --type videos --max-results 15
+python {baseDir}/scripts/search.py "python tutorial" --type videos --max-results 15
 ```
 
 **Video filtering options:**
 
 Duration filters:
 ```bash
-python scripts/search.py "cooking recipes" --type videos --video-duration short
+python {baseDir}/scripts/search.py "cooking recipes" --type videos --video-duration short
 ```
 Options: `short`, `medium`, `long`
 
 Resolution filters:
 ```bash
-python scripts/search.py "documentary" --type videos --video-resolution high
+python {baseDir}/scripts/search.py "documentary" --type videos --video-resolution high
 ```
 Options: `high`, `standard`
 
@@ -202,7 +214,7 @@ Video results include:
 Search with region-specific results:
 
 ```bash
-python scripts/search.py "<query>" --region <region-code>
+python {baseDir}/scripts/search.py "<query>" --region <region-code>
 ```
 
 **Common region codes:**
@@ -216,7 +228,7 @@ python scripts/search.py "<query>" --region <region-code>
 
 **Example:**
 ```bash
-python scripts/search.py "local news" --region us-en --type news
+python {baseDir}/scripts/search.py "local news" --region us-en --type news
 ```
 
 ### 8. Safe Search Control
@@ -224,7 +236,7 @@ python scripts/search.py "local news" --region us-en --type news
 Control safe search filtering:
 
 ```bash
-python scripts/search.py "<query>" --safe-search <on|moderate|off>
+python {baseDir}/scripts/search.py "<query>" --safe-search <on|moderate|off>
 ```
 
 **Options:**
@@ -234,7 +246,7 @@ python scripts/search.py "<query>" --safe-search <on|moderate|off>
 
 **Example:**
 ```bash
-python scripts/search.py "medical information" --safe-search on
+python {baseDir}/scripts/search.py "medical information" --safe-search on
 ```
 
 ### 9. Output Formats
@@ -243,21 +255,21 @@ Choose how results are formatted:
 
 **Text format (default):**
 ```bash
-python scripts/search.py "quantum computing"
+python {baseDir}/scripts/search.py "quantum computing"
 ```
 
 Clean, readable plain text with numbered results.
 
 **Markdown format:**
 ```bash
-python scripts/search.py "quantum computing" --format markdown
+python {baseDir}/scripts/search.py "quantum computing" --format markdown
 ```
 
 Formatted markdown with headers, bold text, and links.
 
 **JSON format:**
 ```bash
-python scripts/search.py "quantum computing" --format json
+python {baseDir}/scripts/search.py "quantum computing" --format json
 ```
 
 Structured JSON data for programmatic processing.
@@ -267,14 +279,14 @@ Structured JSON data for programmatic processing.
 Save search results to a file:
 
 ```bash
-python scripts/search.py "<query>" --output <file-path>
+python {baseDir}/scripts/search.py "<query>" --output <file-path>
 ```
 
 **Example:**
 ```bash
-python scripts/search.py "artificial intelligence" --output ai_results.txt
-python scripts/search.py "AI news" --type news --format markdown --output ai_news.md
-python scripts/search.py "AI research" --format json --output ai_data.json
+python {baseDir}/scripts/search.py "artificial intelligence" --output ai_results.txt
+python {baseDir}/scripts/search.py "AI news" --type news --format markdown --output ai_news.md
+python {baseDir}/scripts/search.py "AI research" --format json --output ai_data.json
 ```
 
 The file format is determined by the `--format` flag, not the file extension.
@@ -331,13 +343,13 @@ Gather comprehensive information about a subject:
 
 ```bash
 # Get overview from web
-python scripts/search.py "machine learning basics" --max-results 15 --output ml_web.txt
+python {baseDir}/scripts/search.py "machine learning basics" --max-results 15 --output ml_web.txt
 
 # Get recent news
-python scripts/search.py "machine learning" --type news --time-range m --output ml_news.txt
+python {baseDir}/scripts/search.py "machine learning" --type news --time-range m --output ml_news.txt
 
 # Find tutorial videos
-python scripts/search.py "machine learning tutorial" --type videos --max-results 10 --output ml_videos.txt
+python {baseDir}/scripts/search.py "machine learning tutorial" --type videos --max-results 10 --output ml_videos.txt
 ```
 
 ### Current Events Monitoring
@@ -345,7 +357,7 @@ python scripts/search.py "machine learning tutorial" --type videos --max-results
 Track news on specific topics:
 
 ```bash
-python scripts/search.py "climate summit" --type news --time-range d --format markdown --output daily_climate_news.md
+python {baseDir}/scripts/search.py "climate summit" --type news --time-range d --format markdown --output daily_climate_news.md
 ```
 
 ### Finding Visual Resources
@@ -353,7 +365,7 @@ python scripts/search.py "climate summit" --type news --time-range d --format ma
 Search for images with specific criteria:
 
 ```bash
-python scripts/search.py "data visualization examples" --type images --image-type photo --image-size Large --max-results 25 --output viz_images.txt
+python {baseDir}/scripts/search.py "data visualization examples" --type images --image-type photo --image-size Large --max-results 25 --output viz_images.txt
 ```
 
 ### Fact-Checking
@@ -361,7 +373,7 @@ python scripts/search.py "data visualization examples" --type images --image-typ
 Verify information with recent sources:
 
 ```bash
-python scripts/search.py "specific claim to verify" --time-range w --max-results 20
+python {baseDir}/scripts/search.py "specific claim to verify" --time-range w --max-results 20
 ```
 
 ### Academic Research
@@ -369,7 +381,7 @@ python scripts/search.py "specific claim to verify" --time-range w --max-results
 Find resources on scholarly topics:
 
 ```bash
-python scripts/search.py "quantum entanglement research" --time-range y --max-results 30 --output quantum_research.txt
+python {baseDir}/scripts/search.py "quantum entanglement research" --time-range y --max-results 30 --output quantum_research.txt
 ```
 
 ### Market Research
@@ -377,8 +389,8 @@ python scripts/search.py "quantum entanglement research" --time-range y --max-re
 Gather information about products or companies:
 
 ```bash
-python scripts/search.py "electric vehicle market 2025" --max-results 20 --format markdown --output ev_market.md
-python scripts/search.py "EV news" --type news --time-range m --output ev_news.txt
+python {baseDir}/scripts/search.py "electric vehicle market 2025" --max-results 20 --format markdown --output ev_market.md
+python {baseDir}/scripts/search.py "EV news" --type news --time-range m --output ev_news.txt
 ```
 
 ## Implementation Approach
@@ -416,7 +428,7 @@ When users request web searches:
 
 **Command structure:**
 ```bash
-python scripts/search.py "<query>" [options]
+python {baseDir}/scripts/search.py "<query>" [options]
 ```
 
 **Essential options:**
@@ -440,7 +452,7 @@ python scripts/search.py "<query>" [options]
 
 **Get full help:**
 ```bash
-python scripts/search.py --help
+python {baseDir}/scripts/search.py --help
 ```
 
 ## Best Practices
@@ -479,13 +491,13 @@ Gather comprehensive information by combining search types:
 
 ```bash
 # Web overview
-python scripts/search.py "topic" --max-results 15 --output topic_web.txt
+python {baseDir}/scripts/search.py "topic" --max-results 15 --output topic_web.txt
 
 # Recent news
-python scripts/search.py "topic" --type news --time-range w --output topic_news.txt
+python {baseDir}/scripts/search.py "topic" --type news --time-range w --output topic_news.txt
 
 # Images
-python scripts/search.py "topic" --type images --max-results 20 --output topic_images.txt
+python {baseDir}/scripts/search.py "topic" --type images --max-results 20 --output topic_images.txt
 ```
 
 ### Programmatic Processing
@@ -493,7 +505,7 @@ python scripts/search.py "topic" --type images --max-results 20 --output topic_i
 Use JSON output for automated processing:
 
 ```bash
-python scripts/search.py "research topic" --format json --output results.json
+python {baseDir}/scripts/search.py "research topic" --format json --output results.json
 # Then process with another script
 python analyze_results.py results.json
 ```
@@ -504,9 +516,9 @@ Create searchable documentation from web results:
 
 ```bash
 # Search multiple related topics
-python scripts/search.py "topic1" --format markdown --output kb/topic1.md
-python scripts/search.py "topic2" --format markdown --output kb/topic2.md
-python scripts/search.py "topic3" --format markdown --output kb/topic3.md
+python {baseDir}/scripts/search.py "topic1" --format markdown --output kb/topic1.md
+python {baseDir}/scripts/search.py "topic2" --format markdown --output kb/topic2.md
+python {baseDir}/scripts/search.py "topic3" --format markdown --output kb/topic3.md
 ```
 
 ## Resources

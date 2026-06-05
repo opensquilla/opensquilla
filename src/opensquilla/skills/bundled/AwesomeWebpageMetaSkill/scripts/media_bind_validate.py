@@ -38,38 +38,91 @@ def normalize_browser_src(value):
     return src or None
 
 
+def srcset_sources(value):
+    sources = []
+    for part in str(value or "").split(","):
+        candidate = part.strip().split()
+        if not candidate:
+            continue
+        src = normalize_browser_src(candidate[0])
+        if src:
+            sources.append(src)
+    return sources
+
+
+def css_url_sources(value):
+    sources = []
+    for match in re.finditer(r"url\(\s*['\"]?([^'\"\)]+)['\"]?\s*\)", str(value or ""), re.I):
+        src = normalize_browser_src(match.group(1))
+        if src:
+            sources.append(src)
+    return sources
+
+
 class MediaSourceParser(HTMLParser):
     def __init__(self):
         super().__init__()
-        self.sources = {"audio": set(), "video": set()}
+        self.sources = {"image": set(), "audio": set(), "video": set()}
         self.media_stack = []
+        self.picture_depth = 0
+        self.style_depth = 0
+        self.style_chunks = []
+
+    def add_sources(self, kind, *values):
+        for value in values:
+            src = normalize_browser_src(value)
+            if src:
+                self.sources[kind].add(src)
+
+    def add_srcset_sources(self, kind, value):
+        for src in srcset_sources(value):
+            self.sources[kind].add(src)
 
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
         attr_map = {name.lower(): value for name, value in attrs}
-        if tag in self.sources:
+        for src in css_url_sources(attr_map.get("style")):
+            self.sources["image"].add(src)
+        if tag == "style":
+            self.style_depth += 1
+        elif tag == "picture":
+            self.picture_depth += 1
+        elif tag == "img":
+            self.add_sources("image", attr_map.get("src"))
+            self.add_srcset_sources("image", attr_map.get("srcset"))
+        elif tag in {"audio", "video"}:
             self.media_stack.append(tag)
-            src = normalize_browser_src(attr_map.get("src"))
-            if src:
-                self.sources[tag].add(src)
+            self.add_sources(tag, attr_map.get("src"))
         elif tag == "source" and self.media_stack:
-            src = normalize_browser_src(attr_map.get("src"))
-            if src:
-                self.sources[self.media_stack[-1]].add(src)
+            self.add_sources(self.media_stack[-1], attr_map.get("src"))
+        elif tag == "source" and self.picture_depth:
+            self.add_sources("image", attr_map.get("src"))
+            self.add_srcset_sources("image", attr_map.get("srcset"))
+
+    def handle_data(self, data):
+        if self.style_depth:
+            self.style_chunks.append(data)
 
     def handle_endtag(self, tag):
         tag = tag.lower()
-        if tag not in self.sources:
-            return
-        for idx in range(len(self.media_stack) - 1, -1, -1):
-            if self.media_stack[idx] == tag:
-                del self.media_stack[idx:]
-                return
+        if tag == "style" and self.style_depth:
+            self.style_depth -= 1
+        elif tag == "picture" and self.picture_depth:
+            self.picture_depth -= 1
+        elif tag in {"audio", "video"}:
+            for idx in range(len(self.media_stack) - 1, -1, -1):
+                if self.media_stack[idx] == tag:
+                    del self.media_stack[idx:]
+                    return
 
 
-def media_sources_by_kind(index_html):
+def rendered_sources_by_kind(index_html, style_css):
     parser = MediaSourceParser()
     parser.feed(index_html)
+    for src in css_url_sources(style_css):
+        parser.sources["image"].add(src)
+    for src in css_url_sources("\n".join(parser.style_chunks)):
+        parser.sources["image"].add(src)
     return parser.sources
 
 
@@ -142,19 +195,23 @@ style_css = style_path.read_text(encoding="utf-8")
 script_js = script_path.read_text(encoding="utf-8")
 combined = "\n".join([index_html, style_css, script_js])
 lower_html = index_html.lower()
-media_sources = media_sources_by_kind(index_html)
+rendered_sources = rendered_sources_by_kind(index_html, style_css)
 
 repair_map = {}
 for asset in assets:
     if asset["src"] not in combined:
         repair_map[(asset["kind"], asset["src"])] = asset
+image_assets = [asset for asset in assets if asset["kind"] == "image"]
 audio_assets = [asset for asset in assets if asset["kind"] == "audio"]
 video_assets = [asset for asset in assets if asset["kind"] == "video"]
+for asset in image_assets:
+    if asset["src"] not in rendered_sources["image"]:
+        repair_map[(asset["kind"], asset["src"])] = asset
 for asset in audio_assets:
-    if asset["src"] not in media_sources["audio"]:
+    if asset["src"] not in rendered_sources["audio"]:
         repair_map[(asset["kind"], asset["src"])] = asset
 for asset in video_assets:
-    if asset["src"] not in media_sources["video"]:
+    if asset["src"] not in rendered_sources["video"]:
         repair_map[(asset["kind"], asset["src"])] = asset
 
 if repair_map:
@@ -291,7 +348,7 @@ style_css = style_path.read_text(encoding="utf-8")
 script_js = script_path.read_text(encoding="utf-8")
 combined = "\n".join([index_html, style_css, script_js])
 lower_html = index_html.lower()
-media_sources = media_sources_by_kind(index_html)
+rendered_sources = rendered_sources_by_kind(index_html, style_css)
 assets_by_kind = {"image": [], "audio": [], "video": []}
 for asset in assets:
     assets_by_kind[asset["kind"]].append(asset)
@@ -318,9 +375,17 @@ for kind, is_required in required.items():
     for asset in assets_by_kind[kind]:
         if asset["src"] not in combined:
             failures.append({"kind": kind, "reason": "asset_not_referenced_by_page", "src": asset["src"]})
+    if kind == "image":
+        for asset in assets_by_kind[kind]:
+            if asset["src"] not in rendered_sources[kind]:
+                failures.append({
+                    "kind": kind,
+                    "reason": "image_render_missing_or_unbound",
+                    "src": asset["src"],
+                })
     if kind in {"audio", "video"}:
         for asset in assets_by_kind[kind]:
-            if asset["src"] not in media_sources[kind]:
+            if asset["src"] not in rendered_sources[kind]:
                 failures.append({
                     "kind": kind,
                     "reason": f"{kind}_control_missing_or_unbound",

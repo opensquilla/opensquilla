@@ -527,6 +527,7 @@ composition:
       with:
         model: google/gemini-3-pro-image-preview
         base_url: https://openrouter.ai/api/v1
+        api_key: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('api_key', '') }}"
         output_dir: "{{ inputs.workspace_dir }}/awesome-webpage-output/{{ outputs.project_slug | slugify }}/project/assets/images"
         filename: "{{ outputs.project_slug | slugify }}.png"
         resolution: "1K"
@@ -550,6 +551,7 @@ composition:
       with:
         model: openai/gpt-audio-mini
         base_url: https://openrouter.ai/api/v1
+        api_key: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('api_key', '') }}"
         output_dir: "{{ inputs.workspace_dir }}/awesome-webpage-output/{{ outputs.project_slug | slugify }}/project/assets/audio"
         filename: "{{ outputs.project_slug | slugify }}-narration.wav"
         voice: cedar
@@ -601,6 +603,7 @@ composition:
       with:
         model: bytedance/seedance-2.0-fast
         base_url: https://openrouter.ai/api/v1
+        api_key: "{{ inputs.get('config', {}).get('awesome_webpage', {}).get('openrouter', {}).get('api_key', '') }}"
         output_dir: "{{ inputs.workspace_dir }}/awesome-webpage-output/{{ outputs.project_slug | slugify }}/project/assets/video"
         filename: "{{ outputs.project_slug | slugify }}-intro.mp4"
         duration: "10"

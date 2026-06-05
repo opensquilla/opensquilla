@@ -138,6 +138,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
     parser.add_argument("--base-url", default="https://openrouter.ai/api/v1")
+    parser.add_argument("--api-key", default="")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--filename", default="narration.wav")
     parser.add_argument("--voice", default="cedar")
@@ -146,7 +147,7 @@ def main() -> int:
     filename = _safe_filename(args.filename, "narration.wav")
     messages, script_text = _audio_messages(sys.stdin.read())
 
-    key = os.environ.get("OPENROUTER_API_KEY")
+    key = args.api_key.strip() or os.environ.get("OPENROUTER_API_KEY")
     missing = []
     if not key:
         missing.append("OPENROUTER_API_KEY")

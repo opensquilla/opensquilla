@@ -28,6 +28,8 @@ entrypoint:
     - "{{ with.model | default('google/gemini-3-pro-image-preview') }}"
     - --base-url
     - "{{ with.base_url | default('https://openrouter.ai/api/v1') }}"
+    - --api-key
+    - "{{ with.api_key | default('') }}"
     - --output-dir
     - "{{ with.output_dir }}"
     - --filename
@@ -50,7 +52,8 @@ intended for meta-skill `skill_exec` use, not as an open-ended agent surface.
 
 ## Contract
 
-- Reads `OPENROUTER_API_KEY` from the child process environment.
+- Uses an explicit `with.api_key`/`--api-key` value when provided, otherwise
+  reads `OPENROUTER_API_KEY` from the child process environment.
 - Does not read `.env` files, prompt for credentials, print credentials, or
   write credentials to disk.
 - Uses only the model, base URL, output directory, and local path prefix passed

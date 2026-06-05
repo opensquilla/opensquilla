@@ -395,6 +395,77 @@ both default homes. Add `--migrate-secrets` only after reviewing the dry-run
 report. See [`MIGRATION.md`](MIGRATION.md) for custom paths and conflict
 handling.
 
+### Multi-instance profiles
+
+Run several OpenSquilla agents on the same host without sharing locks,
+sockets, or state files. Each profile gets its own `config.toml`,
+`state/`, `logs/`, and `.env` under a common profiles root.
+
+**Set the profiles root once (Windows PowerShell):**
+
+```powershell
+[System.Environment]::SetEnvironmentVariable(
+    "OPENSQUILLA_PROFILES_DIR", "D:\ai\opensquilla\profiles", "User")
+```
+
+On macOS / Linux, drop the same line into your shell rc:
+
+```sh
+export OPENSQUILLA_PROFILES_DIR="$HOME/opensquilla/profiles"
+```
+
+**Use it:**
+
+```sh
+# each profile is a sibling directory under the profiles root
+opensquilla --profile coder   init
+opensquilla --profile coder   gateway start --port 18792
+
+opensquilla --profile agent-1 init
+opensquilla --profile agent-1 gateway start --port 18793
+
+# `default` is the implicit name when --profile is omitted
+opensquilla gateway start --port 18791
+```
+
+Resolution precedence (see `src/opensquilla/paths.py`):
+
+1. `OPENSQUILLA_STATE_DIR` — full override; bypasses profile mode.
+2. `OPENSQUILLA_PROFILES_DIR` + `OPENSQUILLA_PROFILE` — multi-instance.
+3. `$HOME/.opensquilla` — single-instance default (unchanged on disk).
+
+Profile names must match `^[a-z0-9][a-z0-9_-]{0,63}$` to prevent
+path-traversal escapes. The CLI rejects bad names up front.
+
+**Auto-start every profile at user logon (Windows):**
+
+The `scripts/supervisor/` PowerShell scripts wrap the CLI for multi-profile
+lifecycle without touching core OpenSquilla code:
+
+```powershell
+# start every profile, in series, with stable per-profile port assignment
+.\scripts\supervisor\start-all.ps1
+
+# show one-row-per-profile status
+.\scripts\supervisor\status.ps1
+
+# stop them all
+.\scripts\supervisor\stop-all.ps1
+
+# register a logon task so the next Windows login auto-starts everything
+.\scripts\supervisor\install-autostart.ps1
+
+# remove the logon task
+.\scripts\supervisor\uninstall-autostart.ps1
+```
+
+Per-profile port is `BasePort + sorted-index` (default 18791). Pass
+`-BasePort` to shift the range. The supervisor scripts are thin wrappers:
+they call `opensquilla --profile <name> gateway start/stop/status` for
+each discovered subdirectory of the profiles root, so they pick up
+configuration, health checks, and PID locking for free from the existing
+CLI.
+
 ### Run
 
 ```sh

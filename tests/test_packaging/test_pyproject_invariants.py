@@ -136,7 +136,7 @@ def test_html_coder_reference_files_are_packaged() -> None:
         / "references"
     )
     expected_sources = {
-        str(path.relative_to(PYPROJECT.parent))
+        path.relative_to(PYPROJECT.parent).as_posix()
         for path in references_dir.glob("*.md")
     }
 

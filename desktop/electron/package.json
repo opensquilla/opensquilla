@@ -1,0 +1,63 @@
+{
+  "name": "@opensquilla/desktop-electron",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Electron desktop shell for the OpenSquilla Control UI.",
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:gateway": "node scripts/build-gateway.mjs",
+    "build:web": "cd ../../opensquilla-webui && npm run build",
+    "dev": "npm run build && electron .",
+    "dist:local": "npm run build:web && npm run build:gateway && npm run dist",
+    "pack:local": "npm run build:web && npm run build:gateway && npm run pack",
+    "start": "electron .",
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "electron": "^42.3.3",
+    "electron-builder": "^26.8.1",
+    "playwright": "^1.60.0",
+    "typescript": "^6.0.3"
+  },
+  "build": {
+    "appId": "ai.opensquilla.desktop",
+    "productName": "OpenSquilla",
+    "directories": {
+      "output": "../../dist/desktop-electron"
+    },
+    "files": [
+      "dist/**",
+      "assets/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "src/boot.html",
+        "to": "boot.html"
+      },
+      {
+        "from": "runtime",
+        "to": "runtime",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "assets/icon.icns",
+      "identity": null,
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "dmg": {
+      "icon": "assets/icon.icns"
+    }
+  }
+}

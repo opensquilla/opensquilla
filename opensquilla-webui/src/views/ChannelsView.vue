@@ -85,9 +85,9 @@
           Channel provisioning stays in guided setup and the CLI so credentials, dependency extras, webhook URLs, and restart requirements stay explicit.
         </p>
         <div class="ch-empty__actions">
-          <button class="btn btn--primary" type="button" @click="router.push('/setup')">
-            <Icon name="config" :size="16" />
-            <span>Guided setup</span>
+          <button class="btn btn--primary" type="button" @click="openProvisioning">
+            <Icon :name="provisioningIcon" :size="16" />
+            <span>{{ provisioningLabel }}</span>
           </button>
         </div>
         <code class="ch-empty__code">opensquilla onboard configure channels &middot; opensquilla channels list</code>
@@ -138,6 +138,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
 import Icon from '@/components/Icon.vue'
+import type { IconName } from '@/utils/icons'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -189,6 +190,20 @@ let unsubStatus: (() => void) | null = null
 // ---------------------------------------------------------------------------
 
 const total = computed(() => channels.value.length)
+
+const provisioningRoute = computed(() => {
+  if (router.hasRoute('setup')) return '/setup'
+  if (router.hasRoute('settings')) return '/settings'
+  return '/overview'
+})
+
+const provisioningLabel = computed(() => {
+  if (provisioningRoute.value === '/setup') return 'Guided setup'
+  if (provisioningRoute.value === '/settings') return 'Desktop settings'
+  return 'Open Overview'
+})
+
+const provisioningIcon = computed<IconName>(() => provisioningRoute.value === '/settings' ? 'settings' : 'config')
 
 const connected = computed(() =>
   channels.value.filter(c => c.status === 'running' || c.status === 'connected').length
@@ -259,6 +274,10 @@ async function loadData() {
   } catch (err) {
     console.warn('Failed to load channels: ' + (err instanceof Error ? err.message : String(err)))
   }
+}
+
+function openProvisioning(): void {
+  void router.push(provisioningRoute.value)
 }
 
 // ---------------------------------------------------------------------------

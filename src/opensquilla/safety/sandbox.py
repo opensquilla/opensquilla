@@ -98,6 +98,14 @@ def _filtered_env(whitelist: Sequence[str]) -> dict[str, str]:
     return {key: parent[key] for key in whitelist if key in parent}
 
 
+def _decode_stream(value: bytes | str | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
 def run_sandboxed(
     cmd: Sequence[str],
     limits: SandboxLimits | None = None,
@@ -138,7 +146,6 @@ def run_sandboxed(
             stdin=subprocess.PIPE if stdin is not None else None,
             env=env,
             preexec_fn=_preexec(effective),  # noqa: PLW1509 — POSIX setrlimit
-            text=True,
         )
     except (OSError, ValueError) as exc:
         return SandboxResult(
@@ -150,15 +157,14 @@ def run_sandboxed(
         )
 
     try:
-        stdin_text = stdin.decode("utf-8", errors="replace") if stdin is not None else None
-        stdout, stderr = proc.communicate(input=stdin_text, timeout=effective.wall_seconds)
+        stdout, stderr = proc.communicate(input=stdin, timeout=effective.wall_seconds)
     except subprocess.TimeoutExpired:
         proc.kill()
         stdout, stderr = proc.communicate()
         return SandboxResult(
             returncode=proc.returncode if proc.returncode is not None else -1,
-            stdout=stdout or "",
-            stderr=stderr or "",
+            stdout=_decode_stream(stdout),
+            stderr=_decode_stream(stderr),
             reason=REASON_WALL_LIMIT,
             limits=effective,
         )
@@ -174,8 +180,8 @@ def run_sandboxed(
 
     return SandboxResult(
         returncode=proc.returncode,
-        stdout=stdout or "",
-        stderr=stderr or "",
+        stdout=_decode_stream(stdout),
+        stderr=_decode_stream(stderr),
         reason=reason,
         limits=effective,
     )

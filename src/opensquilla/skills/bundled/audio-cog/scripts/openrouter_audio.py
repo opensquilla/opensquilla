@@ -105,6 +105,12 @@ def _failure(label: str, filename: str, **extra: object) -> None:
     _print_record(label, payload)
 
 
+def _failure_reason(exc: BaseException) -> str:
+    if isinstance(exc, URLError):
+        return exc.reason.__class__.__name__
+    return exc.__class__.__name__
+
+
 def _iter_sse_audio_chunks(response: object) -> bytes:
     pcm = bytearray()
     for raw in response:  # type: ignore[operator]
@@ -183,8 +189,8 @@ def main() -> int:
     except HTTPError as exc:
         _failure("AUDIO_GENERATION_FAILED", filename, status=exc.code)
         return 0
-    except URLError as exc:
-        _failure("AUDIO_GENERATION_FAILED", filename, reason=exc.reason.__class__.__name__)
+    except (URLError, TimeoutError) as exc:
+        _failure("AUDIO_GENERATION_FAILED", filename, reason=_failure_reason(exc))
         return 0
 
     if not pcm:

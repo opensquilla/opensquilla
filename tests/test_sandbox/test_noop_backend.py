@@ -49,3 +49,24 @@ async def test_noop_backend_preserves_request_stdin(tmp_path: Path) -> None:
 
     assert result.returncode == 0
     assert result.stdout.splitlines() == ["STDIN:payload"]
+
+
+@pytest.mark.skipif(not HAS_RESOURCE, reason="noop backend safety runner is POSIX-only")
+@pytest.mark.asyncio
+async def test_noop_backend_preserves_binary_request_stdin(tmp_path: Path) -> None:
+    request = SandboxRequest(
+        argv=(
+            sys.executable,
+            "-c",
+            "import sys; print(sys.stdin.buffer.read().hex())",
+        ),
+        cwd=tmp_path,
+        action_kind="shell.exec",
+        policy=_policy(tmp_path),
+        stdin=b"\xff\x00abc",
+    )
+
+    result = await NoopBackend().run(request)
+
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == ["ff00616263"]

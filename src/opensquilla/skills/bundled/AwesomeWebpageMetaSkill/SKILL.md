@@ -733,15 +733,28 @@ composition:
           Media assets:
           {{ outputs.media_assets_collect | truncate(6000) }}
 
+    - id: webpage_source_validate
+      kind: tool_call
+      tool: exec_command
+      tool_allowlist: [exec_command]
+      depends_on: [webpage_generation]
+      tool_args:
+        command: |
+          python -m opensquilla.skills.bundled.AwesomeWebpageMetaSkill.scripts.webpage_source_validate
+        timeout: 15
+        stdin: "{{ outputs.webpage_generation | tojson }}"
+
     - id: webpage_generation_retry
       kind: llm_chat
-      depends_on: [webpage_generation, media_slots_normalize]
-      when: "not outputs.get('webpage_generation', '').strip()"
+      depends_on: [webpage_generation, webpage_source_validate, media_slots_normalize]
+      when: >-
+        not outputs.get('webpage_generation', '').strip() or
+        'WEBPAGE_SOURCE_INVALID:' in outputs.get('webpage_source_validate', '')
       with:
         system: |
           You are the fallback Webpage Source Authoring stage for
           AwesomeWebpageMetaSkill. The primary source authoring step returned
-          empty output. Produce compact source JSON only.
+          empty or invalid output. Produce compact source JSON only.
         task: |
           {{ inputs.language_instruction }}
 
@@ -788,7 +801,7 @@ composition:
       kind: tool_call
       tool: exec_command
       tool_allowlist: [exec_command]
-      depends_on: [webpage_generation, webpage_generation_retry]
+      depends_on: [webpage_generation, webpage_source_validate, webpage_generation_retry]
       tool_args:
         command: |
           python -m opensquilla.skills.bundled.AwesomeWebpageMetaSkill.scripts.webpage_write

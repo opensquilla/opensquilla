@@ -2,6 +2,7 @@ import html
 import json
 import os
 import re
+from html.parser import HTMLParser
 from pathlib import Path
 
 project_root = Path(os.environ["PROJECT_ROOT"]).expanduser().resolve()
@@ -27,6 +28,50 @@ def normalize_path(value):
         if not src.startswith(("assets/images/", "assets/audio/", "assets/video/")):
             return None, None
     return src, disk
+
+
+def normalize_browser_src(value):
+    src = str(value or "").strip().replace("\\", "/")
+    while src.startswith("./"):
+        src = src[2:]
+    src = src.split("?", 1)[0].split("#", 1)[0]
+    return src or None
+
+
+class MediaSourceParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.sources = {"audio": set(), "video": set()}
+        self.media_stack = []
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        attr_map = {name.lower(): value for name, value in attrs}
+        if tag in self.sources:
+            self.media_stack.append(tag)
+            src = normalize_browser_src(attr_map.get("src"))
+            if src:
+                self.sources[tag].add(src)
+        elif tag == "source" and self.media_stack:
+            src = normalize_browser_src(attr_map.get("src"))
+            if src:
+                self.sources[self.media_stack[-1]].add(src)
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag not in self.sources:
+            return
+        for idx in range(len(self.media_stack) - 1, -1, -1):
+            if self.media_stack[idx] == tag:
+                del self.media_stack[idx:]
+                return
+
+
+def media_sources_by_kind(index_html):
+    parser = MediaSourceParser()
+    parser.feed(index_html)
+    return parser.sources
+
 
 def collect_assets():
     ready_re = re.compile(r"^(IMAGE|AUDIO|VIDEO)_READY:\s*(\{.*\})\s*$", re.M)
@@ -97,6 +142,7 @@ style_css = style_path.read_text(encoding="utf-8")
 script_js = script_path.read_text(encoding="utf-8")
 combined = "\n".join([index_html, style_css, script_js])
 lower_html = index_html.lower()
+media_sources = media_sources_by_kind(index_html)
 
 repair_map = {}
 for asset in assets:
@@ -104,11 +150,11 @@ for asset in assets:
         repair_map[(asset["kind"], asset["src"])] = asset
 audio_assets = [asset for asset in assets if asset["kind"] == "audio"]
 video_assets = [asset for asset in assets if asset["kind"] == "video"]
-if audio_assets and ("<audio" not in lower_html or not any(asset["src"] in index_html for asset in audio_assets)):
-    for asset in audio_assets:
+for asset in audio_assets:
+    if asset["src"] not in media_sources["audio"]:
         repair_map[(asset["kind"], asset["src"])] = asset
-if video_assets and ("<video" not in lower_html or not any(asset["src"] in index_html for asset in video_assets)):
-    for asset in video_assets:
+for asset in video_assets:
+    if asset["src"] not in media_sources["video"]:
         repair_map[(asset["kind"], asset["src"])] = asset
 
 if repair_map:
@@ -245,6 +291,7 @@ style_css = style_path.read_text(encoding="utf-8")
 script_js = script_path.read_text(encoding="utf-8")
 combined = "\n".join([index_html, style_css, script_js])
 lower_html = index_html.lower()
+media_sources = media_sources_by_kind(index_html)
 assets_by_kind = {"image": [], "audio": [], "video": []}
 for asset in assets:
     assets_by_kind[asset["kind"]].append(asset)
@@ -271,10 +318,14 @@ for kind, is_required in required.items():
     for asset in assets_by_kind[kind]:
         if asset["src"] not in combined:
             failures.append({"kind": kind, "reason": "asset_not_referenced_by_page", "src": asset["src"]})
-    if kind == "audio" and ("<audio" not in lower_html or not any(a["src"] in index_html for a in assets_by_kind[kind])):
-        failures.append({"kind": kind, "reason": "audio_control_missing_or_unbound"})
-    if kind == "video" and ("<video" not in lower_html or not any(a["src"] in index_html for a in assets_by_kind[kind])):
-        failures.append({"kind": kind, "reason": "video_control_missing_or_unbound"})
+    if kind in {"audio", "video"}:
+        for asset in assets_by_kind[kind]:
+            if asset["src"] not in media_sources[kind]:
+                failures.append({
+                    "kind": kind,
+                    "reason": f"{kind}_control_missing_or_unbound",
+                    "src": asset["src"],
+                })
 requested_degraded = {
     kind: items
     for kind, items in degraded_by_kind.items()

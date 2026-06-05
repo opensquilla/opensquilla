@@ -46,6 +46,16 @@ def _load_openrouter_video_module():
     return module
 
 
+def _load_openrouter_audio_module():
+    script = BUNDLED / "audio-cog" / "scripts" / "openrouter_audio.py"
+    spec = importlib.util.spec_from_file_location("openrouter_audio", script)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_awesome_webpage_meta_skill_loads_and_references_fixed_skills(tmp_path: Path) -> None:
     loader = SkillLoader(bundled_dir=BUNDLED, snapshot_path=tmp_path / "snapshot.json")
     loader.invalidate_cache()
@@ -245,15 +255,26 @@ def test_awesome_webpage_media_strategy_covers_video_and_required_modalities() -
     assert "media_slots_normalize" in steps["webpage_generation"]["depends_on"]
     assert "media_manifest_normalize" not in steps["webpage_generation"]["depends_on"]
     assert "media_assets_collect" in steps["webpage_generation"]["depends_on"]
+    assert steps["webpage_source_validate"]["kind"] == "tool_call"
+    assert steps["webpage_source_validate"]["depends_on"] == ["webpage_generation"]
+    assert steps["webpage_source_validate"]["tool_args"]["command"].strip() == (
+        f"python -m {AWESOME_MODULE}.webpage_source_validate"
+    )
+    assert steps["webpage_source_validate"]["tool_args"]["stdin"] == (
+        "{{ outputs.webpage_generation | tojson }}"
+    )
     assert steps["webpage_generation_retry"]["depends_on"] == [
         "webpage_generation",
+        "webpage_source_validate",
         "media_slots_normalize",
     ]
     assert steps["webpage_generation_retry"]["when"] == (
-        "not outputs.get('webpage_generation', '').strip()"
+        "not outputs.get('webpage_generation', '').strip() "
+        "or 'WEBPAGE_SOURCE_INVALID:' in outputs.get('webpage_source_validate', '')"
     )
     assert steps["webpage_write"]["depends_on"] == [
         "webpage_generation",
+        "webpage_source_validate",
         "webpage_generation_retry",
     ]
     assert "WEBPAGE_SOURCE_JSON" not in steps["webpage_write"]["tool_args"]["env"]
@@ -578,6 +599,81 @@ def test_openrouter_video_download_auth_stays_on_openrouter_origin(monkeypatch) 
     assert opened_headers[-1]["authorization"] == "Bearer sk-or-secret"
 
 
+def test_openrouter_audio_timeout_reports_generation_failed(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    module = _load_openrouter_audio_module()
+
+    def fake_urlopen(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise TimeoutError("timed out")
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setattr(module, "urlopen", fake_urlopen)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("short narration"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "openrouter_audio.py",
+            "--model",
+            "openai/gpt-audio-mini",
+            "--output-dir",
+            str(tmp_path),
+            "--filename",
+            "sample.wav",
+        ],
+    )
+
+    assert module.main() == 0
+
+    out = capsys.readouterr().out
+    assert "AUDIO_GENERATION_FAILED" in out
+    assert "TimeoutError" in out
+
+
+def test_openrouter_video_submit_timeout_reports_generation_failed(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    module = _load_openrouter_video_module()
+
+    def fake_urlopen(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise TimeoutError("timed out")
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setattr(module, "urlopen", fake_urlopen)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("short video prompt"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "openrouter_video.py",
+            "--model",
+            "bytedance/seedance-2.0-fast",
+            "--output-dir",
+            str(tmp_path),
+            "--filename",
+            "sample.mp4",
+            "--poll-interval",
+            "1",
+            "--max-wait",
+            "1",
+        ],
+    )
+
+    assert module.main() == 0
+
+    out = capsys.readouterr().out
+    assert "VIDEO_GENERATION_FAILED" in out
+    assert '"phase":"submit"' in out
+    assert "TimeoutError" in out
+
+
 def test_openrouter_media_entrypoints_return_config_needed_without_key(
     tmp_path: Path,
     monkeypatch,
@@ -752,6 +848,27 @@ def test_webpage_write_accepts_prose_wrapped_fenced_json(tmp_path: Path) -> None
     assert (project_dir / "script.js").read_text(encoding="utf-8") == source["script_js"]
 
 
+def test_webpage_source_validate_marks_malformed_non_empty_source_invalid(
+    tmp_path: Path,
+) -> None:
+    fm = _frontmatter()
+    steps = {step["id"]: step for step in fm["composition"]["steps"]}
+    command = steps["webpage_source_validate"]["tool_args"]["command"]
+
+    result = subprocess.run(
+        command,
+        shell=True,
+        cwd=tmp_path,
+        input=json.dumps("not json {broken").encode("utf-8"),
+        capture_output=True,
+        check=False,
+    )
+
+    output = result.stdout.decode("utf-8") + result.stderr.decode("utf-8")
+    assert result.returncode == 0, output
+    assert "WEBPAGE_SOURCE_INVALID" in output
+
+
 def test_awesome_webpage_media_bind_validate_is_deterministic() -> None:
     fm = _frontmatter()
     steps = {step["id"]: step for step in fm["composition"]["steps"]}
@@ -885,6 +1002,37 @@ def test_media_bind_validate_repairs_when_requested_audio_is_unbound(
     output = result.stdout.decode("utf-8") + result.stderr.decode("utf-8")
     assert result.returncode == 0
     assert "MEDIA_BIND_OK" in output
+    index_html = (
+        tmp_path
+        / "awesome-webpage-output"
+        / "demo"
+        / "project"
+        / "index.html"
+    ).read_text(encoding="utf-8")
+    assert '<audio controls preload="metadata" src="assets/audio/narration.wav">' in index_html
+
+
+def test_media_bind_validate_repairs_audio_when_asset_path_is_not_control_src(
+    tmp_path: Path,
+) -> None:
+    assets = [
+        {"kind": "image", "src": "assets/images/hero.png"},
+        {"kind": "audio", "src": "assets/audio/narration.wav"},
+        {"kind": "video", "src": "assets/video/intro.mp4"},
+    ]
+    result = _run_media_bind_step(
+        tmp_path,
+        assets=assets,
+        index_html=(
+            '<main><img src="assets/images/hero.png">'
+            '<audio controls></audio>'
+            '<p>assets/audio/narration.wav</p>'
+            '<video controls src="assets/video/intro.mp4"></video></main>'
+        ),
+    )
+
+    output = result.stdout.decode("utf-8") + result.stderr.decode("utf-8")
+    assert result.returncode == 0, output
     index_html = (
         tmp_path
         / "awesome-webpage-output"

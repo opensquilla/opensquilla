@@ -43,6 +43,12 @@ def _failure(label: str, filename: str, **extra: object) -> None:
     _print_record(label, payload)
 
 
+def _failure_reason(exc: BaseException) -> str:
+    if isinstance(exc, URLError):
+        return exc.reason.__class__.__name__
+    return exc.__class__.__name__
+
+
 def _request_json(
     url: str,
     *,
@@ -142,12 +148,12 @@ def main() -> int:
     except HTTPError as exc:
         _failure("VIDEO_GENERATION_FAILED", filename, phase="submit", status=exc.code)
         return 0
-    except (URLError, ValueError) as exc:
+    except (URLError, TimeoutError, ValueError) as exc:
         _failure(
             "VIDEO_GENERATION_FAILED",
             filename,
             phase="submit",
-            reason=exc.__class__.__name__,
+            reason=_failure_reason(exc),
         )
         return 0
 
@@ -172,12 +178,12 @@ def main() -> int:
                 job_id=job_id,
             )
             return 0
-        except (URLError, ValueError) as exc:
+        except (URLError, TimeoutError, ValueError) as exc:
             _failure(
                 "VIDEO_GENERATION_FAILED",
                 filename,
                 phase="poll",
-                reason=exc.__class__.__name__,
+                reason=_failure_reason(exc),
                 job_id=job_id,
             )
             return 0
@@ -204,12 +210,12 @@ def main() -> int:
             job_id=job_id,
         )
         return 0
-    except URLError as exc:
+    except (URLError, TimeoutError) as exc:
         _failure(
             "VIDEO_GENERATION_FAILED",
             filename,
             phase="download",
-            reason=exc.reason.__class__.__name__,
+            reason=_failure_reason(exc),
             job_id=job_id,
         )
         return 0

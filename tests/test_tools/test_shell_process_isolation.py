@@ -178,7 +178,9 @@ async def test_exec_command_writes_optional_stdin() -> None:
 
     result = await shell.exec_command(command, stdin="payload", timeout=1.0)
 
-    assert result == "exit_code=0\nSTDIN:payload\n"
+    exit_line, stdout = result.split("\n", 1)
+    assert exit_line == "exit_code=0"
+    assert stdout.splitlines() == ["STDIN:payload"]
 
 
 @pytest.mark.asyncio

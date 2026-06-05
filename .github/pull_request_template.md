@@ -1,6 +1,8 @@
 ## Checklist
 
 - [ ] This pull request targets `dev`, unless a maintainer asked for a `main` release/hotfix/documentation PR.
+- [ ] Linked issues are declared with `Fixes #...`, `Refs #...`, or `None`.
+- [ ] Release impact is declared: `user-visible`, `internal`, `docs`, or `none`.
 - [ ] I ran `uv run ruff check src tests`.
 - [ ] I ran `uv run pytest -q`.
 - [ ] I ran `uv build --wheel`.

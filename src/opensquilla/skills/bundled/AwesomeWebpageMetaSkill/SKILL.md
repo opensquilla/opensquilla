@@ -792,10 +792,10 @@ composition:
         command: |
           python -m opensquilla.skills.bundled.AwesomeWebpageMetaSkill.scripts.webpage_write
         timeout: 30
+        stdin: "{{ (outputs.get('webpage_generation_retry', '') or outputs.webpage_generation) | tojson }}"
         env:
           WORKSPACE_DIR: "{{ inputs.workspace_dir }}"
           PROJECT_ROOT: "{{ inputs.workspace_dir }}/awesome-webpage-output/{{ outputs.project_slug | slugify }}"
-          WEBPAGE_SOURCE_JSON: "{{ (outputs.get('webpage_generation_retry', '') or outputs.webpage_generation) | tojson }}"
 
     - id: media_bind_validate
       kind: tool_call

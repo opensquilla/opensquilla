@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import shlex
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -13,6 +14,13 @@ import structlog.testing
 
 from opensquilla.tools.builtin import shell
 from opensquilla.tools.types import CallerKind, ToolContext, ToolError, current_tool_context
+
+
+def _python_shell_command(script: str) -> str:
+    argv = [sys.executable, "-c", script]
+    if os.name == "nt":
+        return subprocess.list2cmdline(argv)
+    return " ".join(shlex.quote(part) for part in argv)
 
 
 class _FakeStdin:
@@ -160,6 +168,17 @@ async def test_exec_command_timeout_still_stops_foreground_process() -> None:
 
     assert "[timeout after 0.1s]" in result
     assert elapsed < 1.0
+
+
+@pytest.mark.asyncio
+async def test_exec_command_writes_optional_stdin() -> None:
+    command = _python_shell_command(
+        "import sys; data = sys.stdin.read(); print('STDIN:' + data)"
+    )
+
+    result = await shell.exec_command(command, stdin="payload", timeout=1.0)
+
+    assert result == "exit_code=0\nSTDIN:payload\n"
 
 
 @pytest.mark.asyncio

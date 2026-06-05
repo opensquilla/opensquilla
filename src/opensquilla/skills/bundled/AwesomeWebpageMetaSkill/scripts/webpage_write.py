@@ -1,17 +1,21 @@
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
 workspace = Path(os.environ["WORKSPACE_DIR"]).expanduser().resolve()
 project_root = Path(os.environ["PROJECT_ROOT"]).expanduser().resolve()
 project_root.relative_to(workspace)
 
-raw_env = os.environ.get("WEBPAGE_SOURCE_JSON", "")
+raw_env = os.environ.get("WEBPAGE_SOURCE_JSON")
+raw_payload_source = raw_env if raw_env is not None else (
+    "" if sys.stdin.isatty() else sys.stdin.read()
+)
 try:
-    raw_payload = json.loads(raw_env)
+    raw_payload = json.loads(raw_payload_source)
 except json.JSONDecodeError as exc:
-    raise SystemExit(f"WEBPAGE_WRITE_FAILED: invalid env JSON: {exc}") from exc
+    raise SystemExit(f"WEBPAGE_WRITE_FAILED: invalid source JSON payload: {exc}") from exc
 
 def require_object(value):
     if isinstance(value, dict):

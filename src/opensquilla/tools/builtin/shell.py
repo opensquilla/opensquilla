@@ -601,6 +601,10 @@ async def _await_bg_output_task(output_task: asyncio.Task[None]) -> None:
             "description": "Extra environment variable overrides.",
             "additionalProperties": {"type": "string"},
         },
+        "stdin": {
+            "type": "string",
+            "description": "Data to write to the command's standard input.",
+        },
         "approval_id": {
             "type": "string",
             "description": "Approval record to consume for warned commands.",
@@ -616,6 +620,7 @@ async def exec_command(
     workdir: str | None = None,
     timeout: float = _DEFAULT_EXEC_TIMEOUT,
     env: dict[str, str] | None = None,
+    stdin: str | None = None,
     approval_id: str | None = None,
 ) -> str:
     import os
@@ -659,6 +664,7 @@ async def exec_command(
     if env:
         merged_env.update(env)
     effective_timeout = _resolve_exec_timeout(timeout)
+    stdin_bytes = stdin.encode("utf-8") if stdin is not None else None
 
     # /elevated on|bypass|full — route exec around the sandbox backend so host
     # paths are actually reachable. Approval is still handled above (elevated
@@ -681,7 +687,7 @@ async def exec_command(
             cwd=request.cwd,
             action_kind=request.action_kind,
             policy=request.policy,
-            stdin=None,
+            stdin=stdin_bytes,
             env=dict(merged_env),
             reason=request.reason,
         )
@@ -698,6 +704,7 @@ async def exec_command(
             try:
                 proc = await asyncio.create_subprocess_shell(
                     command,
+                    stdin=asyncio.subprocess.PIPE if stdin_bytes is not None else None,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
                     cwd=cwd,
@@ -705,7 +712,7 @@ async def exec_command(
                 )
                 try:
                     stdout_bytes, _ = await asyncio.wait_for(
-                        proc.communicate(), timeout=effective_timeout
+                        proc.communicate(input=stdin_bytes), timeout=effective_timeout
                     )
                 except TimeoutError:
                     proc.kill()
@@ -727,6 +734,7 @@ async def exec_command(
     try:
         with tempfile.TemporaryFile() as output_file:
             subprocess_kwargs: dict[str, Any] = {
+                "stdin": asyncio.subprocess.PIPE if stdin_bytes is not None else None,
                 "stdout": output_file,
                 "stderr": asyncio.subprocess.STDOUT,
                 "cwd": cwd,
@@ -740,9 +748,19 @@ async def exec_command(
                     subprocess_kwargs["creationflags"] = creationflags
 
             proc = await asyncio.create_subprocess_shell(command, **subprocess_kwargs)
-            if not await _wait_exec_process(proc, effective_timeout):
-                await _terminate_exec_process_tree(proc)
-                return f"[timeout after {effective_timeout}s]\ncommand: {command}"
+            if stdin_bytes is None:
+                if not await _wait_exec_process(proc, effective_timeout):
+                    await _terminate_exec_process_tree(proc)
+                    return f"[timeout after {effective_timeout}s]\ncommand: {command}"
+            else:
+                try:
+                    await asyncio.wait_for(
+                        proc.communicate(input=stdin_bytes),
+                        timeout=effective_timeout,
+                    )
+                except TimeoutError:
+                    await _terminate_exec_process_tree(proc)
+                    return f"[timeout after {effective_timeout}s]\ncommand: {command}"
             if os.name == "posix":
                 _signal_exec_process_tree(proc, signal.SIGTERM)
 

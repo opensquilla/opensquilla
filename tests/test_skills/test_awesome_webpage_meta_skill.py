@@ -237,7 +237,8 @@ def test_awesome_webpage_media_strategy_covers_video_and_required_modalities() -
         "webpage_generation",
         "webpage_generation_retry",
     ]
-    assert steps["webpage_write"]["tool_args"]["env"]["WEBPAGE_SOURCE_JSON"] == (
+    assert "WEBPAGE_SOURCE_JSON" not in steps["webpage_write"]["tool_args"]["env"]
+    assert steps["webpage_write"]["tool_args"]["stdin"] == (
         "{{ (outputs.get('webpage_generation_retry', '') or outputs.webpage_generation) | tojson }}"
     )
 
@@ -604,7 +605,6 @@ def test_webpage_write_accepts_prose_wrapped_fenced_json(tmp_path: Path) -> None
         {
             "WORKSPACE_DIR": str(tmp_path),
             "PROJECT_ROOT": str(project_root),
-            "WEBPAGE_SOURCE_JSON": json.dumps(wrapped_source),
         }
     )
 
@@ -613,6 +613,7 @@ def test_webpage_write_accepts_prose_wrapped_fenced_json(tmp_path: Path) -> None
         shell=True,
         cwd=tmp_path,
         env=env,
+        input=json.dumps(wrapped_source).encode("utf-8"),
         capture_output=True,
         check=False,
     )

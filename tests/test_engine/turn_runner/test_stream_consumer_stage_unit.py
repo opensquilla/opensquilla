@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from opensquilla.engine.agent_injection import ListPendingInputProvider
 from opensquilla.engine.turn_runner.stream_consumer_stage import (
     _SUPPRESS,
     StreamConsumerStage,
@@ -61,6 +62,7 @@ class _RecordingAgentRun:
         turn_input: str,
         extra_messages: list[Any] | None,
         semantic_message: str | None,
+        pending_input_provider: Any | None = None,
     ) -> AsyncIterator[Any]:
         self.received.append(
             {
@@ -68,6 +70,7 @@ class _RecordingAgentRun:
                 "turn_input": turn_input,
                 "extra_messages": extra_messages,
                 "semantic_message": semantic_message,
+                "pending_input_provider": pending_input_provider,
             }
         )
         events = list(self.events)
@@ -198,6 +201,7 @@ def _make_input(
     private_memory_allowed: bool = True,
     sync_manager: Any | None = None,
     input_provenance: dict[str, Any] | None = None,
+    pending_input_provider: Any | None = None,
 ) -> StreamConsumerStageInput:
     return StreamConsumerStageInput(
         agent=SimpleNamespace(),
@@ -218,6 +222,7 @@ def _make_input(
         router_cfg=None,
         session_manager_present=session_manager_present,
         state=state if state is not None else _make_state(),
+        pending_input_provider=pending_input_provider,
     )
 
 
@@ -265,6 +270,17 @@ async def _drain(stage: StreamConsumerStage, inp: StreamConsumerStageInput) -> l
     async for event in stage.run(inp):
         yielded.append(event)
     return yielded
+
+
+@pytest.mark.asyncio
+async def test_stream_consumer_forwards_pending_input_provider_to_agent_run() -> None:
+    pending = ListPendingInputProvider()
+    pending.append("interrupt while tool runs")
+    stage, recordings = _make_stage()
+
+    await _drain(stage, _make_input(pending_input_provider=pending))
+
+    assert recordings["agent_run"].received[0]["pending_input_provider"] is pending
 
 
 # ---------------------------------------------------------------------------

@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
+from opensquilla.cli.tui.backend.domain_events import TuiDomainEvent
+
 
 @runtime_checkable
 class TuiApplication(Protocol):
@@ -53,7 +55,9 @@ class TuiOutputHandle(Protocol):
 class TuiRenderer(Protocol):
     """Async renderer API a future full-screen renderer can implement."""
 
-    async def aappend_text(self, delta: str) -> None: ...
+    async def aappend_text(self, delta: str, *, presentation: str = "answer") -> None: ...
+
+    async def aappend_reasoning(self, delta: str) -> None: ...
 
     async def atool_start(
         self,
@@ -69,6 +73,7 @@ class TuiRenderer(Protocol):
         success: bool,
         elapsed: float | None = None,
         error: str | None = None,
+        result: object | None = None,
     ) -> None: ...
 
     async def astatus(self, message: str, *, style: str = "dim") -> None: ...
@@ -93,6 +98,7 @@ def _default_classify_input(_user_input: str) -> TuiInputKind:
 
 
 type TuiDispatch = Callable[[str], Awaitable[bool]]
+type TuiDomainEventSink = Callable[[TuiDomainEvent], None]
 type TuiSurfaceFactory = Callable[
     ...,
     AbstractAsyncContextManager[TuiSurface],
@@ -157,6 +163,7 @@ class TuiRuntimeConfig:
 
     task_name: str
     queue_max_size: int = 8
+    concurrent_input_during_turn: bool = True
     classify_input: Callable[[str], TuiInputKind] = _default_classify_input
     install_signal_handlers: TuiSignalInstaller = _noop_install_signal_handlers
     event_sink: Any | None = None

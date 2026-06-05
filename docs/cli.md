@@ -58,7 +58,13 @@ opensquilla chat
 opensquilla chat --model gpt-5.4-mini
 opensquilla chat --session <session-key>
 opensquilla chat --standalone --workspace /path/to/project
+OPENSQUILLA_TUI_BACKEND=opentui opensquilla chat
 ```
+
+Terminal chat uses OpenTUI by default. Unset or empty `OPENSQUILLA_TUI_BACKEND`
+selects OpenTUI, and legacy backend values are rejected before launch. Read
+[`features/tui-frontend.md`](features/tui-frontend.md) for the streaming plane,
+plugin slots, Router HUD, and replay benchmark workflow.
 
 One-shot automation:
 

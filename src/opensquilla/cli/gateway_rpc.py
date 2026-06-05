@@ -21,6 +21,14 @@ def default_gateway_url() -> str:
         return normalize_gateway_url(gateway_url)
     if config_path := os.environ.get("OPENSQUILLA_GATEWAY_CONFIG_PATH"):
         return gateway_url_from_config(config_path)
+    try:
+        from opensquilla.onboarding.config_store import resolve_config_path
+
+        implicit_config_path, _source = resolve_config_path(None)
+        if implicit_config_path.is_file():
+            return gateway_url_from_config(implicit_config_path)
+    except Exception:  # noqa: BLE001 - fall back to release default.
+        pass
     return normalize_gateway_url("ws://localhost:18791/ws")
 
 

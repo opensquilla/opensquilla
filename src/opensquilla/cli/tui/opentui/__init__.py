@@ -1,0 +1,2 @@
+"""OpenTUI footer backend integration."""
+

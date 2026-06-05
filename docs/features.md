@@ -22,6 +22,13 @@ and reserve expensive models for work that needs them.
 
 Read: [`features/squilla-router.md`](features/squilla-router.md)
 
+### TUI Frontend
+
+Terminal chat uses a streaming plane for token deltas and a structured UI plane
+for plugin snapshots such as the Router HUD.
+
+Read: [`features/tui-frontend.md`](features/tui-frontend.md)
+
 ### Tool Compression
 
 Large tool outputs are projected into compact provider-visible previews while

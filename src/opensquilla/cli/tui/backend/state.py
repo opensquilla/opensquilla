@@ -38,6 +38,11 @@ class TuiRuntimeState:
         self._pending.clear()
         return dropped
 
+    def drain_pending(self) -> list[str]:
+        """Return and clear queued inputs for in-turn agent injection."""
+
+        return list(self.clear_pending())
+
     def mark_turn_started(self, user_input: str) -> None:
         self.active_input = user_input
 

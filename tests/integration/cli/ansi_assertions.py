@@ -6,8 +6,8 @@ combined stream, slash-handler, approval-suspend, and resume window.
 
 The helpers here operate on raw byte streams (not Rich renderables) so
 they catch the actual escape sequences the terminal would see, including
-any sequences emitted directly by prompt-toolkit's renderer or by Rich's
-Console under the hood.
+any sequences emitted directly by the frontend renderer or by Rich's Console
+under the hood.
 
 Sequence reference:
 

@@ -1,6 +1,6 @@
 ---
 name: meta-paper-write
-description: "Use this meta-skill instead of answering directly when the current user asks to draft, repair, compile, or produce an academic/research paper or LaTeX manuscript. It uses multi-skill orchestration for manuscript workflows that need source search, citation planning, experiment or figure/table placeholders, drafting, length checks, citation integrity, and LaTeX/PDF compilation. Ordinary paper requests use a compact draft path; explicit full/PDF/long-form requests use the full manuscript path. Do not use it for web research reports, slide decks, document decisions, or generic plotting."
+description: "Use this meta-skill instead of answering directly when the current user asks to draft, repair, compile, or produce an academic/research paper or LaTeX manuscript. It uses multi-skill orchestration for manuscript workflows that need source search, citation planning, experiment or figure/table placeholders, drafting, length checks, citation integrity, and LaTeX/PDF compilation. Ordinary paper requests use a compact draft path; explicit full/PDF/long-form research-paper requests use the full manuscript path. Do not use it for web research reports, blog posts, paper summaries, literature-search-only requests, slide decks, document decisions, or generic plotting."
 kind: meta
 meta_priority: 50
 always: false
@@ -11,7 +11,7 @@ triggers:
   - "academic manuscript"
   - "research manuscript"
   - "latex manuscript"
-  - "long-form paper"
+  - "long-form research paper"
   - "写篇论文"
   - "写一篇论文"
   - "撰写论文"

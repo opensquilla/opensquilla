@@ -1,6 +1,6 @@
 ---
 name: meta-document-to-decision
-description: "Use this meta-skill instead of answering directly when the current user provides or references a document, contract, quote, spreadsheet, notice, or paperwork and asks for a decision-ready analysis: sign/reject/negotiate, renewal risk, evidence table, questions to ask, or concrete next action. It may inspect PDF/DOCX/XLSX/pasted excerpts. Do not use it for generic summarization, generic report writing, standalone sales emails, or document text that is merely quoted as historical context."
+description: "Use this meta-skill instead of answering directly when the current user provides or references a document, contract, quote, spreadsheet, notice, or paperwork and asks for a decision-ready analysis: sign/reject/negotiate, renewal risk, evidence table, questions to ask, or concrete next action. It may inspect PDF/DOCX/XLSX/pasted excerpts. Do not use it for generic summarization, generic report writing, standalone sales emails, generic contract-term explanations, or document text that is merely quoted as historical context."
 kind: meta
 meta_priority: 67
 always: false
@@ -9,7 +9,7 @@ triggers:
   - "document decision"
   - "vendor renewal"
   - "analyze renewal materials"
-  - "contract excerpt"
+  - "analyze this contract excerpt for a decision"
   - "decide whether to sign this document"
   - "decide tomorrow whether to sign"
   - "sign, reject, or negotiate"
@@ -20,7 +20,7 @@ triggers:
   - "合同风险"
   - "报价单分析"
   - "文件里我该注意什么"
-  - "读完告诉我怎么做"
+  - "读完这份合同告诉我签不签"
   - "供应商续费"
   - "续费材料"
   - "这份报价单要不要接受"

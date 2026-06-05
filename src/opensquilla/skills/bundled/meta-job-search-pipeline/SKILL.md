@@ -13,9 +13,9 @@ triggers:
   - "求职投递包"
   - "job application pack"
   - "interview prep for"
-  - "求职准备"
+  - "针对这个岗位做求职准备"
   - "求职申请追踪"
-  - "career application"
+  - "job application pack for this role"
 provenance:
   origin: opensquilla-original
   license: Apache-2.0

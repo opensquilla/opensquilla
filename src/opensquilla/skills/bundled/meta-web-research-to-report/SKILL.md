@@ -1,32 +1,32 @@
 ---
 name: meta-web-research-to-report
-description: "Use this meta-skill instead of answering directly when the current user asks for a source-backed web research deliverable: cited research report, market or technical briefing, decision memo with sources, or a researched writeup after web lookup. It uses multi-skill orchestration for preference inference, search/research, drafting, review, and optional export. Do not use it for generic summarization, academic manuscript writing, document-decision analysis, or isolated fact lookup that does not require a report."
+description: "Use this meta-skill instead of answering directly when the current user asks for a source-backed web research deliverable: cited research report, market or technical briefing, source-backed decision memo, or a researched writeup after current-source lookup. It uses multi-skill orchestration for preference inference, search/research, drafting, review, and optional export. Do not use it for generic summarization, ordinary writing from supplied notes, academic manuscript writing, document-decision analysis, or isolated fact lookup that does not require a cited report."
 kind: meta
 meta_priority: 80
 always: false
 final_text_mode: "step:final_report_audit"
 triggers:
-  - "调研报告"
-  - "research report"
-  - "decision memo"
+  - "带来源的调研报告"
+  - "source-backed research report"
+  - "cited research report"
+  - "source-backed decision memo"
   - "decision memo with sources"
-  - "short decision memo"
+  - "short source-backed decision memo"
   - "source-backed key findings"
   - "research tradeoffs and risks"
   - "travel esim research report"
   - "carrier roaming vs local sim report"
   - "mobile data plan decision memo"
   - "research what i should order"
-  - "写一份报告"
-  - "write up the findings"
+  - "查资料并写带来源的报告"
+  - "write up the sourced findings"
   - "source-backed writeup"
-  - "technical briefing"
-  - "market briefing"
+  - "technical briefing with sources"
+  - "market briefing with sources"
   - "cited report"
-  - "查一下并写报告"
-  - "查一下并写"
-  - "决策 memo"
-  - "决策备忘"
+  - "查一下并写带来源"
+  - "决策 memo 带来源"
+  - "带来源的决策备忘"
   - "来源、关键发现"
 provenance:
   origin: opensquilla-original

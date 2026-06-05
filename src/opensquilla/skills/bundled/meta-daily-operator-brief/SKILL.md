@@ -1,19 +1,20 @@
 ---
 name: meta-daily-operator-brief
-description: "Use this meta-skill instead of answering directly when the current user asks for a practical today/tomorrow operating brief, morning plan, daily priority list, or day schedule that may combine pasted calendar/task context, weather, memory, and optional reminders. Do not use it for account monitoring, family-only logistics, generic productivity advice, or isolated scheduling/reminder requests that a single tool can handle."
+description: "Use this meta-skill instead of answering directly when the current user asks for a practical today/tomorrow operating brief, morning plan, daily priority list, or day schedule that combines pasted calendar/task context, weather, memory, open loops, or optional reminders. Do not use it for account monitoring, family-only logistics, generic productivity advice, setting one reminder, moving one meeting, or isolated scheduling requests that a single tool can handle."
 kind: meta
 meta_priority: 64
 always: false
 final_text_mode: "step:final_brief_audit"
 triggers:
+  - "daily operating brief"
   - "daily brief"
   - "morning brief"
-  - "today plan"
-  - "今天安排"
+  - "today operating plan"
+  - "今天优先级和时间块"
   - "今日简报"
   - "早上简报"
   - "今天先做什么"
-  - "今天先帮我排一下"
+  - "今天先帮我排一下优先级"
   - "今天前三优先级"
   - "今天时间块"
   - "今天工作该跟进谁"

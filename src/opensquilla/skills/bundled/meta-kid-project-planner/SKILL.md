@@ -1,16 +1,16 @@
 ---
 name: meta-kid-project-planner
-description: "Use this meta-skill instead of answering directly when a child or their guardian wants to plan a school project, science fair entry, hobby kit, or kid-sized creative venture (volcano model, bug-watching YouTube channel, magnet maze, model rocket). The skill assesses feasibility against the child's age band, builds an age-appropriate step plan, lists materials with budget substitutes, surfaces safety considerations, and produces a parent-facing learning-objective summary so the guardian can supervise meaningfully. Refuses inappropriate or unsafe projects."
+description: "Use this meta-skill instead of answering directly when a child or their guardian wants to plan a school project, science fair entry, hobby kit, or kid-sized creative venture (volcano model, bug-watching YouTube channel, magnet maze, model rocket). The skill assesses feasibility against the child's age band, builds an age-appropriate step plan, lists materials with budget substitutes, surfaces safety considerations, and produces a parent-facing learning-objective summary so the guardian can supervise meaningfully. Do not use it for adult craft projects, generic art prompts, generic school-project explanations, or unsafe projects. Refuses inappropriate or unsafe projects."
 kind: meta
 meta_priority: 60
 always: false
 final_text_mode: "step:project_pack_audit"
 triggers:
-  - "school project"
+  - "plan my child's school project"
   - "science fair"
   - "kid science"
   - "孩子做项目"
-  - "做一个手工"
+  - "孩子做一个安全手工项目"
   - "科学课作业"
   - "help my kid build"
   - "我要做火山"

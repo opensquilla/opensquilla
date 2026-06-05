@@ -7,7 +7,7 @@ always: false
 final_text_mode: "step:intel_brief_audit"
 triggers:
   - "competitive intelligence"
-  - "watch this account"
+  - "watch this account for competitive intel"
   - "monitor these competitor accounts"
   - "竞品监控"
   - "竞品情报"
@@ -15,7 +15,7 @@ triggers:
   - "本周对手动作"
   - "对标公司动态"
   - "competitor brief"
-  - "track these companies"
+  - "track these companies for competitive intel"
   - "盯一下这两个对手"
   - "盯一下这些对手"
   - "竞品最近有没有值得提醒老板的动作"

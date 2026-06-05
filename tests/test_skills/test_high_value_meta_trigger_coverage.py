@@ -157,6 +157,15 @@ def test_stable_bundled_meta_skills_do_not_match_neighboring_prompts(
                 expected_meta_skill=None,
             ),
             TriggerCase(
+                name="competitive_intel_single_company_profile_cn",
+                user_message=(
+                    "inception labs,创始团队和核心员工有哪些？现在估值，"
+                    "核心技术路线和进展是啥？然后每一轮交割大概节奏和"
+                    "估值股东等信息列出来。"
+                ),
+                expected_meta_skill=None,
+            ),
+            TriggerCase(
                 name="short_drama_script_only",
                 user_message="Write a short script idea, not a video or MP4.",
                 expected_meta_skill=None,
@@ -166,3 +175,23 @@ def test_stable_bundled_meta_skills_do_not_match_neighboring_prompts(
 
     failures = [case for case in report["cases"] if not case["passed"]]
     assert failures == []
+
+
+def test_competitive_intel_description_avoids_single_company_research_pull(
+    tmp_path: Path,
+) -> None:
+    loader = SkillLoader(
+        bundled_dir=BUNDLED,
+        snapshot_path=tmp_path / "competitive-intel-description-snap.json",
+    )
+    loader.invalidate_cache()
+    spec = loader.get_by_name("meta-competitive-intel")
+    assert spec is not None
+
+    description = (spec.description or "").lower()
+
+    assert "defined company" not in description
+    assert "leadership, hiring, partnerships, funding" not in description
+    assert "competitive-intel monitoring" in description
+    assert "baseline" in description
+    assert "ordinary company profiles" in description

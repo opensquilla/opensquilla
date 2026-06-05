@@ -105,6 +105,13 @@ exclude = [
 
 [tool.hatch.build.targets.wheel.force-include]
 "migrations/" = "opensquilla/_migrations/"
+"src/opensquilla/skills/bundled/html-coder/references/add-css-style.md" = "opensquilla/skills/bundled/html-coder/references/add-css-style.md"
+"src/opensquilla/skills/bundled/html-coder/references/add-javascript.md" = "opensquilla/skills/bundled/html-coder/references/add-javascript.md"
+"src/opensquilla/skills/bundled/html-coder/references/attributes.md" = "opensquilla/skills/bundled/html-coder/references/attributes.md"
+"src/opensquilla/skills/bundled/html-coder/references/essentials.md" = "opensquilla/skills/bundled/html-coder/references/essentials.md"
+"src/opensquilla/skills/bundled/html-coder/references/global-attributes.md" = "opensquilla/skills/bundled/html-coder/references/global-attributes.md"
+"src/opensquilla/skills/bundled/html-coder/references/glossary.md" = "opensquilla/skills/bundled/html-coder/references/glossary.md"
+"src/opensquilla/skills/bundled/html-coder/references/standards.md" = "opensquilla/skills/bundled/html-coder/references/standards.md"
 "src/opensquilla/skills/bundled/pptx/references/pptxgenjs.md" = "opensquilla/skills/bundled/pptx/references/pptxgenjs.md"
 "src/opensquilla/skills/bundled/pptx/references/python_pptx.md" = "opensquilla/skills/bundled/pptx/references/python_pptx.md"
 

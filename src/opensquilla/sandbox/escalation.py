@@ -31,6 +31,9 @@ _RESOLVED_RUN_CONTEXT_OVERLAYS: dict[tuple[str, str | None], RunContext] = {}
 _RESOLVED_RUN_CONTEXT_PERSISTORS: dict[tuple[str, str | None], tuple[Any, Any]] = {}
 _DENIED_SANDBOX_APPROVALS: dict[str, str] = {}
 _DURABLE_TEMPORARY_GRANT_SOURCES = frozenset({"saved", "route_metadata", "metadata"})
+_LEGACY_APPROVED_SANDBOX_CHOICES = frozenset(
+    {"allow_user", "allow_public_user", "mount_ro_user"}
+)
 
 
 def _choice(
@@ -67,10 +70,8 @@ def build_network_approval_params(
         "fingerprint": fingerprint,
         "choices": [
             _choice("allow_once", "Allow once", style="primary"),
-            _choice("allow_chat", "Allow this domain for this chat"),
-            _choice("allow_user", "Allow this domain for this user"),
-            _choice("allow_public_chat", "Allow normal public network for this chat"),
-            _choice("allow_public_user", "Allow normal public network for this user"),
+            _choice("allow_chat", "Allow this network target"),
+            _choice("allow_public_chat", "Allow network access"),
             _choice("deny", "Deny", approved=False, style="danger"),
         ],
     }
@@ -93,7 +94,7 @@ def build_path_approval_params(
         choices = [
             _choice(
                 "mount_rw_chat",
-                "Allow read/write for this chat",
+                "Allow read/write",
                 style="primary",
                 description="OpenSquilla can read and modify files under this path.",
             ),
@@ -103,7 +104,7 @@ def build_path_approval_params(
         choices = [
             _choice(
                 "mount_ro_chat",
-                "Allow read for this chat",
+                "Allow read",
                 style="primary",
                 description=(
                     "OpenSquilla can read/list this path and copy files into "
@@ -112,13 +113,8 @@ def build_path_approval_params(
             ),
             _choice(
                 "mount_rw_chat",
-                "Allow read/write for this chat",
+                "Allow read/write",
                 description="OpenSquilla can read and modify files under this path.",
-            ),
-            _choice(
-                "mount_ro_user",
-                "Remember read access",
-                description="Allow future chats for this user to read this path.",
             ),
             _choice("deny", "Deny", approved=False, style="danger"),
         ]
@@ -178,21 +174,36 @@ def request_sandbox_approval(
             approval_id = denied_approval_id
             status = "approval_denied"
         else:
-            approval_id = queue.request(namespace="exec", params=params)
-            status = "approval_required"
+            approval_id = pending_sandbox_approval_id(queue, params)
+            if approval_id is not None:
+                status = "approval_pending"
+            else:
+                approval_id = queue.request(namespace="exec", params=params)
+                status = "approval_required"
     else:
         entry = queue.get(approval_id)
         if entry.namespace != "exec":
             raise ValueError(f"Approval does not belong to exec namespace: {approval_id}")
-        _validate_matching_approval_params(entry.params, params)
+        matching_approval = True
+        try:
+            _validate_matching_approval_params(entry.params, params)
+        except ValueError:
+            matching_approval = False
         if not entry.resolved:
             status = "approval_pending"
         elif not entry.approved:
             remember_sandbox_approval_denial(params, approval_id)
             status = "approval_denied"
-        else:
+        elif matching_approval:
             approval_id = queue.request(namespace="exec", params=params)
             status = "approval_required"
+        else:
+            approval_id = pending_sandbox_approval_id(queue, params)
+            if approval_id is not None:
+                status = "approval_pending"
+            else:
+                approval_id = queue.request(namespace="exec", params=params)
+                status = "approval_required"
     if status == "approval_denied":
         message = denied_message or _default_denied_sandbox_approval_message()
     return _approval_payload(status, approval_id, params, message=message)
@@ -221,6 +232,19 @@ def denied_sandbox_approval_id(params: dict[str, Any] | None) -> str | None:
     if key is None:
         return None
     return _DENIED_SANDBOX_APPROVALS.get(key)
+
+
+def pending_sandbox_approval_id(queue: Any, params: dict[str, Any] | None) -> str | None:
+    key = _pending_sandbox_approval_key(params)
+    if key is None:
+        return None
+    for pending in queue.list_pending("exec"):
+        approval_id = str(pending.get("id") or "")
+        if not approval_id:
+            continue
+        if _pending_sandbox_approval_key(pending.get("params")) == key:
+            return approval_id
+    return None
 
 
 def clear_sandbox_approval_denials(session_key: str | None = None) -> None:
@@ -284,6 +308,8 @@ def validate_sandbox_approval_choice(
             if bool(choice_payload.get("approved", True)) != approved:
                 raise ValueError("choice_approved_mismatch")
             return choice_payload
+    if approved and choice_id in _LEGACY_APPROVED_SANDBOX_CHOICES:
+        return {"id": choice_id, "approved": True, "legacy": True}
     raise ValueError(f"unknown_sandbox_choice:{choice_id}")
 
 
@@ -859,6 +885,27 @@ def _sandbox_approval_key(params: dict[str, Any] | None) -> str | None:
     elif approval_kind == "sandbox_network":
         fields["host"] = str(params.get("host") or "").strip().casefold()
         fields["fingerprint"] = str(params.get("fingerprint") or "").strip()
+    elif approval_kind == "host_once":
+        fields["fallback"] = "host_once"
+    return json.dumps(fields, ensure_ascii=False, sort_keys=True)
+
+
+def _pending_sandbox_approval_key(params: dict[str, Any] | None) -> str | None:
+    if not isinstance(params, dict):
+        return None
+    approval_kind = str(params.get("approvalKind") or "").strip()
+    if approval_kind not in SANDBOX_APPROVAL_KINDS:
+        return None
+    fields: dict[str, object] = {
+        "kind": approval_kind,
+        "sessionKey": str(params.get("sessionKey") or "").strip(),
+        "workspace": _normalize_workspace(str(params.get("workspace") or "").strip()),
+    }
+    if approval_kind == "sandbox_path":
+        fields["path"] = str(params.get("path") or "").strip()
+        fields["access"] = str(params.get("access") or "").strip()
+    elif approval_kind == "sandbox_network":
+        fields["network"] = "public"
     elif approval_kind == "host_once":
         fields["fallback"] = "host_once"
     return json.dumps(fields, ensure_ascii=False, sort_keys=True)

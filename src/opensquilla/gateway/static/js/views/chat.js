@@ -12,7 +12,7 @@ const ChatView = (() => {
   let _sessionKey = '';
   let _pendingSessionIntent = null;
 
-  const _RUN_MODE_DEFAULT = 'full';
+  const _RUN_MODE_DEFAULT = 'standard';
   const _RUN_MODE_LABELS = {
     standard: 'Standard-Sandbox',
     trusted: 'Trusted-Sandbox',
@@ -2284,6 +2284,7 @@ const ChatView = (() => {
 
   function _normalizeRunMode(mode) {
     const value = String(mode || '').trim().toLowerCase().replace(/_/g, '-');
+    if (value === 'standard' || value === 'standard-sandbox') return 'standard';
     if (value === 'trusted' || value === 'trust' || value === 'trusted-sandbox') return 'trusted';
     if (value === 'full' || value === 'full-host-access' || value === 'host') return 'full';
     return _RUN_MODE_DEFAULT;

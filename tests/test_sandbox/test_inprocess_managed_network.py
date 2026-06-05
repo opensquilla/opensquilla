@@ -295,9 +295,7 @@ async def test_unknown_explicit_target_queues_sandbox_network_approval(
     assert [choice["id"] for choice in payload["choices"]] == [
         "allow_once",
         "allow_chat",
-        "allow_user",
         "allow_public_chat",
-        "allow_public_user",
         "deny",
     ]
     pending = get_approval_queue().list_pending("exec")
@@ -309,11 +307,38 @@ async def test_unknown_explicit_target_queues_sandbox_network_approval(
     assert [choice["id"] for choice in params["choices"]] == [
         "allow_once",
         "allow_chat",
-        "allow_user",
         "allow_public_chat",
-        "allow_public_user",
         "deny",
     ]
+
+
+@pytest.mark.asyncio
+async def test_parallel_unknown_network_targets_share_pending_approval(
+    managed_context: ToolContext,
+) -> None:
+    @sandboxed(
+        "network.http",
+        argv_factory=lambda a: ("http_request", "GET", str(a["url"])),
+        record_payload=False,
+    )
+    async def dummy_http_request(url: str) -> str:
+        return "ok"
+
+    first, second = await asyncio.gather(
+        dummy_http_request("http://first-unknown.test/path"),
+        dummy_http_request("http://second-unknown.test/path"),
+    )
+
+    first_payload = json.loads(first)
+    second_payload = json.loads(second)
+
+    assert first_payload["status"] == "approval_required"
+    assert second_payload["status"] == "approval_pending"
+    assert second_payload["approval_id"] == first_payload["approval_id"]
+    assert second_payload["host"] == "second-unknown.test"
+    pending = get_approval_queue().list_pending("exec")
+    assert len(pending) == 1
+    assert pending[0]["id"] == first_payload["approval_id"]
 
 
 @pytest.mark.asyncio
@@ -481,9 +506,10 @@ async def test_allow_once_resolve_allows_one_retry_then_expires_for_explicit_tar
     finally:
         current_tool_context.reset(token)
 
-    assert fresh_attempt["status"] == "approval_required"
+    assert fresh_attempt["status"] == "approval_pending"
     assert fresh_attempt["approvalKind"] == "sandbox_network"
     assert fresh_attempt["host"] == "unknown.test"
+    assert fresh_attempt["approval_id"] == second["approval_id"]
 
 
 @pytest.mark.asyncio
@@ -1379,7 +1405,7 @@ async def test_web_search_shaped_inprocess_action_uses_search_provider_endpoint_
 
 
 @pytest.mark.asyncio
-async def test_inprocess_network_action_with_network_none_fails_closed(
+async def test_inprocess_network_action_with_network_none_asks_for_explicit_target(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1427,7 +1453,149 @@ async def test_inprocess_network_action_with_network_none_fails_closed(
         current_tool_context.reset(token)
 
     payload = json.loads(result)
-    assert payload["status"] == "denied"
-    assert payload["reason"] == "policy_denied"
-    assert "network is disabled" in payload["message"]
+    assert payload["status"] == "approval_required"
+    assert payload["approval_id"]
+    assert payload["approvalKind"] == "sandbox_network"
+    assert payload["host"] == "example.com"
     assert called is False
+
+
+@pytest.mark.asyncio
+async def test_inprocess_network_action_with_network_none_uses_granted_explicit_target(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    reset_runtime()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    configure_runtime(
+        SandboxSettings(
+            run_mode="standard",
+            backend="noop",
+            allow_legacy_mode=True,
+            network_default="none",
+        ),
+        workspace=workspace,
+    )
+    ctx = ToolContext(
+        is_owner=True,
+        caller_kind=CallerKind.CLI,
+        workspace_dir=str(tmp_path),
+        session_key="s1",
+        run_mode="standard",
+        sandbox_run_context=RunContext(
+            run_mode=RunMode.STANDARD,
+            domains=(
+                DomainGrant(
+                    domain="example.com",
+                    scope="chat",
+                    source="user",
+                ),
+            ),
+        ),
+    )
+    token = current_tool_context.set(ctx)
+    seen: dict[str, object] = {}
+
+    class FakeProxy:
+        host = "127.0.0.1"
+        port = 28080
+
+        def __init__(self, decide: object) -> None:
+            self._decide = decide
+
+        async def start(self) -> None:
+            decision = self._decide("example.com")
+            assert isinstance(decision, NetworkDecision)
+            seen["decision"] = decision.status
+
+        async def stop(self) -> None:
+            seen["stopped"] = True
+
+    monkeypatch.setattr(integration_mod, "SandboxProxyServer", FakeProxy)
+
+    @sandboxed(
+        "network.http",
+        argv_factory=lambda a: ("http_request", "GET", str(a["url"])),
+        record_payload=False,
+    )
+    async def dummy_http_request(url: str) -> str:
+        seen["called"] = True
+        return "ok"
+
+    try:
+        result = await dummy_http_request("http://example.com/path")
+    finally:
+        current_tool_context.reset(token)
+
+    assert result == "ok"
+    assert seen == {"decision": "allow", "called": True, "stopped": True}
+
+
+@pytest.mark.asyncio
+async def test_trusted_network_none_auto_allows_unknown_explicit_public_target(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    reset_runtime()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    configure_runtime(
+        SandboxSettings(
+            run_mode="trusted",
+            backend="noop",
+            allow_legacy_mode=True,
+            network_default="none",
+        ),
+        workspace=workspace,
+    )
+    ctx = ToolContext(
+        is_owner=True,
+        caller_kind=CallerKind.CLI,
+        workspace_dir=str(tmp_path),
+        session_key="s1",
+        run_mode="trusted",
+        sandbox_run_context=RunContext(run_mode=RunMode.TRUSTED),
+    )
+    token = current_tool_context.set(ctx)
+    seen: dict[str, object] = {}
+
+    class FakeProxy:
+        host = "127.0.0.1"
+        port = 28080
+
+        def __init__(self, decide: object) -> None:
+            self._decide = decide
+
+        async def start(self) -> None:
+            decision = self._decide("new-public.example")
+            assert isinstance(decision, NetworkDecision)
+            seen["decision"] = decision.status
+            seen["reason"] = decision.reason
+
+        async def stop(self) -> None:
+            seen["stopped"] = True
+
+    monkeypatch.setattr(integration_mod, "SandboxProxyServer", FakeProxy)
+
+    @sandboxed(
+        "network.http",
+        argv_factory=lambda a: ("http_request", "GET", str(a["url"])),
+        record_payload=False,
+    )
+    async def dummy_http_request(url: str) -> str:
+        seen["called"] = True
+        return "ok"
+
+    try:
+        result = await dummy_http_request("http://new-public.example/path")
+    finally:
+        current_tool_context.reset(token)
+
+    assert result == "ok"
+    assert seen == {
+        "decision": "allow",
+        "reason": "auto_trusted",
+        "called": True,
+        "stopped": True,
+    }

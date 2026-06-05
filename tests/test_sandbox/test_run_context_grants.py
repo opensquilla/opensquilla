@@ -2281,6 +2281,104 @@ def test_request_sandbox_approval_reissues_matching_approved_approval() -> None:
     reset_approval_queue()
 
 
+def test_request_sandbox_approval_reuses_pending_network_class_approval() -> None:
+    from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
+    from opensquilla.sandbox.escalation import (
+        build_network_approval_params,
+        request_sandbox_approval,
+    )
+    from opensquilla.sandbox.network_guard import NetworkDecision
+
+    reset_approval_queue()
+    first_params = build_network_approval_params(
+        NetworkDecision(
+            status="ask",
+            normalized_host="first.example",
+            reason="unknown_domain",
+            source=None,
+        ),
+        session_key="agent:main:webchat:abc",
+        workspace="/tmp/ws",
+        fingerprint="fp-first",
+    )
+    second_params = build_network_approval_params(
+        NetworkDecision(
+            status="ask",
+            normalized_host="second.example",
+            reason="unknown_domain",
+            source=None,
+        ),
+        session_key="agent:main:webchat:abc",
+        workspace="/tmp/ws",
+        fingerprint="fp-second",
+    )
+    assert first_params is not None
+    assert second_params is not None
+
+    first = request_sandbox_approval(first_params, message="Resolve this approval and retry.")
+    second = request_sandbox_approval(second_params, message="Resolve this approval and retry.")
+
+    assert first["status"] == "approval_required"
+    assert second["status"] == "approval_pending"
+    assert second["approval_id"] == first["approval_id"]
+    assert second["host"] == "second.example"
+    assert len(get_approval_queue().list_pending("exec")) == 1
+
+    reset_approval_queue()
+
+
+def test_reused_network_approval_reissues_after_narrow_approval_mismatch() -> None:
+    from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
+    from opensquilla.sandbox.escalation import (
+        build_network_approval_params,
+        request_sandbox_approval,
+    )
+    from opensquilla.sandbox.network_guard import NetworkDecision
+
+    reset_approval_queue()
+    first_params = build_network_approval_params(
+        NetworkDecision(
+            status="ask",
+            normalized_host="first.example",
+            reason="unknown_domain",
+            source=None,
+        ),
+        session_key="agent:main:webchat:abc",
+        workspace="/tmp/ws",
+        fingerprint="fp-first",
+    )
+    second_params = build_network_approval_params(
+        NetworkDecision(
+            status="ask",
+            normalized_host="second.example",
+            reason="unknown_domain",
+            source=None,
+        ),
+        session_key="agent:main:webchat:abc",
+        workspace="/tmp/ws",
+        fingerprint="fp-second",
+    )
+    assert first_params is not None
+    assert second_params is not None
+
+    first = request_sandbox_approval(first_params, message="Resolve this approval and retry.")
+    approval_id = str(first["approval_id"])
+    queue = get_approval_queue()
+    queue.resolve(approval_id, True)
+
+    second = request_sandbox_approval(
+        second_params,
+        approval_id=approval_id,
+        message="Resolve this approval and retry.",
+    )
+
+    assert second["status"] == "approval_required"
+    assert second["approval_id"] != approval_id
+    assert len(queue.list_pending("exec")) == 1
+
+    reset_approval_queue()
+
+
 @pytest.mark.asyncio
 async def test_apply_network_choice_persists_user_domain_grant_with_workspace_scope(tmp_path):
     from opensquilla.sandbox.escalation import (

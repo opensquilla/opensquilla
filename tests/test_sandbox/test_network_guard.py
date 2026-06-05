@@ -182,17 +182,13 @@ def test_unknown_domain_builds_structured_network_escalation_choices() -> None:
     assert [choice["id"] for choice in proposal["choices"]] == [
         "allow_once",
         "allow_chat",
-        "allow_user",
         "allow_public_chat",
-        "allow_public_user",
         "deny",
     ]
     assert [choice["label"] for choice in proposal["choices"]] == [
         "Allow once",
-        "Allow this domain for this chat",
-        "Allow this domain for this user",
-        "Allow normal public network for this chat",
-        "Allow normal public network for this user",
+        "Allow this network target",
+        "Allow network access",
         "Deny",
     ]
 

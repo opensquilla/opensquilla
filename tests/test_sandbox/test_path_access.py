@@ -153,7 +153,7 @@ def test_request_path_builds_structured_mount_escalation_choices(tmp_path: Path)
         "deny",
     ]
     assert [choice["label"] for choice in proposal["choices"]] == [
-        "Allow read/write for this chat",
+        "Allow read/write",
         "Deny",
     ]
     assert proposal["choices"][0]["style"] == "primary"
@@ -273,7 +273,6 @@ async def test_filesystem_read_outside_workspace_requests_ro_mount(tmp_path: Pat
     assert [choice["id"] for choice in payload["choices"]] == [
         "mount_ro_chat",
         "mount_rw_chat",
-        "mount_ro_user",
         "deny",
     ]
     assert "outside the current workspace" in payload["message"]
@@ -386,9 +385,9 @@ async def test_denied_sandbox_path_request_clears_duplicate_pending_prompts(
         second = json.loads(await fs.list_dir(str(outside)))
 
     assert first["status"] == "approval_required"
-    assert second["status"] == "approval_required"
-    assert first["approval_id"] != second["approval_id"]
-    assert len(get_approval_queue().list_pending("exec")) == 2
+    assert second["status"] == "approval_pending"
+    assert second["approval_id"] == first["approval_id"]
+    assert len(get_approval_queue().list_pending("exec")) == 1
 
     await _handle_exec_approval_resolve(
         {"id": first["approval_id"], "approved": False, "choice": "deny"},
@@ -396,9 +395,6 @@ async def test_denied_sandbox_path_request_clears_duplicate_pending_prompts(
     )
 
     assert get_approval_queue().list_pending("exec") == []
-    duplicate = get_approval_queue().get(second["approval_id"])
-    assert duplicate.resolved is True
-    assert duplicate.approved is False
 
 
 @pytest.mark.asyncio

@@ -835,12 +835,19 @@ def sandboxed(
                             retryable=False,
                         ).to_dict()
                     )
-                denial = await _managed_in_process_denial(
-                    request,
-                    rt,
-                    "Sandbox network is disabled for this in-process network tool.",
+                prepared = await _prepare_network_none_in_process_action(request, rt)
+                if isinstance(prepared, DenialResult):
+                    return json.dumps(prepared.to_dict())
+                if isinstance(prepared, dict):
+                    return json.dumps(prepared)
+                return await _run_in_process_with_managed_network(
+                    fn,
+                    args,
+                    kwargs,
+                    request=request,
+                    runtime=rt,
+                    context=prepared,
                 )
-                return json.dumps(denial.to_dict())
 
             if policy.network == NetworkMode.PROXY_ALLOWLIST:
                 rt = get_runtime()
@@ -1004,6 +1011,93 @@ async def _prepare_in_process_managed_network(
     return effective_context
 
 
+async def _prepare_network_none_in_process_action(
+    request: SandboxRequest,
+    runtime: SandboxRuntime,
+) -> RunContext | DenialResult | dict[str, object]:
+    context = _current_run_context_for_network_proxy()
+    if context is None:
+        return await _managed_in_process_denial(
+            request,
+            runtime,
+            "Network-disabled in-process tools require Run Context grants before "
+            "they can request or use network approvals.",
+        )
+    fingerprint = action_fingerprint(request)
+    original_context = context
+    context = context_with_temporary_network_grants(
+        context,
+        fingerprint=fingerprint,
+    )
+    system_domains = _system_domain_grants_for_request(request)
+    effective_context = _context_with_system_domain_grants(context, system_domains)
+    targets = _explicit_network_target_hosts(request.action_kind, request.argv)
+    if not targets:
+        if system_domains:
+            return effective_context
+        return await _managed_in_process_denial(
+            request,
+            runtime,
+            "Network-disabled in-process tools require an explicit URL target "
+            "before a network approval can be requested.",
+        )
+    grant_workspace = _network_grant_workspace(request, runtime)
+    for host in targets:
+        decision = decide_network_access(host, effective_context)
+        if decision.status == "allow":
+            continue
+        if decision.status == "ask":
+            params = build_network_approval_params(
+                decision,
+                session_key=_resolve_session_id(runtime, None),
+                workspace=grant_workspace,
+                fingerprint=fingerprint,
+            )
+            if params is not None:
+                return request_sandbox_approval(
+                    params,
+                    message=(
+                        "This network target is outside the current managed-network grants. "
+                        "Resolve this approval and retry."
+                    ),
+                )
+            return await _managed_in_process_denial(
+                request,
+                runtime,
+                (
+                    "Network-disabled in-process tool could not request approval for "
+                    f"target {host!r}: {decision.reason}."
+                ),
+            )
+        return await _managed_in_process_denial(
+            request,
+            runtime,
+            (
+                "Network-disabled in-process tool denied target "
+                f"{host!r}: {decision.reason}."
+            ),
+        )
+    for host in targets:
+        if has_temporary_network_grant(
+            original_context,
+            host=host,
+            fingerprint=fingerprint,
+        ):
+            consume_temporary_network_grant(
+                session_key=_resolve_session_id(runtime, None),
+                workspace=grant_workspace,
+                host=host,
+                fingerprint=fingerprint,
+            )
+            await consume_persisted_temporary_network_grant(
+                session_key=_resolve_session_id(runtime, None),
+                workspace=grant_workspace,
+                host=host,
+                fingerprint=fingerprint,
+            )
+    return effective_context
+
+
 async def preflight_subprocess_managed_network(
     request: SandboxRequest,
     runtime: SandboxRuntime,
@@ -1102,7 +1196,7 @@ async def _managed_in_process_denial(
 ) -> DenialResult:
     denial = DenialResult(
         reason=DenialReason.POLICY_DENIED,
-        suggested_next_step=SuggestedNextStep.REPLAN,
+        suggested_next_step=SuggestedNextStep.ASK_USER,
         level=request.policy.level,
         action_fingerprint=action_fingerprint(request),
         message=message,
@@ -1112,6 +1206,7 @@ async def _managed_in_process_denial(
         _resolve_session_id(runtime, None),
         denial.action_fingerprint,
         denial.reason,
+        threshold_eligible=False,
     )
     return denial
 
@@ -1226,10 +1321,18 @@ async def run_in_process_network_action(
                 ),
                 retryable=False,
             )
-        return await _managed_in_process_denial(
-            request,
-            rt,
-            "Sandbox network is disabled for this in-process network tool.",
+        prepared = await _prepare_network_none_in_process_action(request, rt)
+        if isinstance(prepared, DenialResult):
+            return prepared
+        if isinstance(prepared, dict):
+            return prepared
+        return await _run_in_process_with_managed_network(
+            callback,
+            (),
+            {},
+            request=request,
+            runtime=rt,
+            context=prepared,
         )
 
     if policy.network != NetworkMode.PROXY_ALLOWLIST:

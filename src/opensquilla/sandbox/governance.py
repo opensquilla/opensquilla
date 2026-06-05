@@ -109,6 +109,7 @@ class _ApprovalQueueLike(Protocol):
 class _SessionState:
     counts: dict[str, int] = field(default_factory=dict)
     total: int = 0
+    threshold_total: int = 0
     autonomous_paused: bool = False
     last_fingerprint: str | None = None
     last_reason: DenialReason | None = None
@@ -154,6 +155,8 @@ class DenialLedger:
         session_id: str,
         fingerprint: str,
         reason: DenialReason,
+        *,
+        threshold_eligible: bool = True,
     ) -> None:
         """Increment counters and purge any cached success for ``fingerprint``.
 
@@ -164,6 +167,8 @@ class DenialLedger:
             state = self._state(session_id)
             state.counts[fingerprint] = state.counts.get(fingerprint, 0) + 1
             state.total += 1
+            if threshold_eligible:
+                state.threshold_total += 1
             state.last_fingerprint = fingerprint
             state.last_reason = reason
         await self._cache.purge(session_id, fingerprint)
@@ -195,7 +200,7 @@ class DenialLedger:
     async def threshold_reached(self, session_id: str) -> bool:
         async with self._lock:
             state = self._sessions.get(session_id)
-            return bool(state and state.total >= self._threshold)
+            return bool(state and state.threshold_total >= self._threshold)
 
     async def reset_session(self, session_id: str) -> None:
         """Drop all ledger state for a session (e.g. on session end)."""
@@ -213,6 +218,7 @@ _HUMAN_REJECTED_NEXT_STEP = SuggestedNextStep.LOWER_PRIVILEGE
 _THRESHOLD_NEXT_STEP = SuggestedNextStep.ASK_USER
 _REPEAT_INTENT_NEXT_STEP = SuggestedNextStep.NARROWER_APPROVAL
 _POLICY_DENY_NEXT_STEP = SuggestedNextStep.REPLAN
+_NETWORK_ACTION_PREFIXES = ("network.", "web.")
 
 
 class ApprovalGate:
@@ -417,7 +423,12 @@ async def gate_execution(
         level=policy.level,
     )
     if isinstance(guard, DenialResult):
-        await ledger.record_denial(session_id, guard.action_fingerprint, guard.reason)
+        await ledger.record_denial(
+            session_id,
+            guard.action_fingerprint,
+            guard.reason,
+            threshold_eligible=_counts_toward_pause_threshold(request, guard.reason),
+        )
         # After recording, re-check threshold: a guard denial counts.
         if await ledger.threshold_reached(session_id):
             return await _pause_and_deny(request, policy, session_id=session_id, ledger=ledger)
@@ -425,10 +436,25 @@ async def gate_execution(
 
     decision = await approval_gate.gate(request, policy, session_id=session_id)
     if isinstance(decision, DenialResult):
-        await ledger.record_denial(session_id, decision.action_fingerprint, decision.reason)
+        await ledger.record_denial(
+            session_id,
+            decision.action_fingerprint,
+            decision.reason,
+            threshold_eligible=_counts_toward_pause_threshold(request, decision.reason),
+        )
         if await ledger.threshold_reached(session_id):
             return await _pause_and_deny(request, policy, session_id=session_id, ledger=ledger)
     return decision
+
+
+def _counts_toward_pause_threshold(request: SandboxRequest, reason: DenialReason) -> bool:
+    if request.action_kind.startswith(_NETWORK_ACTION_PREFIXES) and reason in {
+        DenialReason.POLICY_DENIED,
+        DenialReason.REPEATED_SAME_INTENT,
+        DenialReason.RUNTIME_UNCONFIGURED,
+    }:
+        return False
+    return True
 
 
 def _pause_denial(request: SandboxRequest, policy: SandboxPolicy, session_id: str) -> DenialResult:

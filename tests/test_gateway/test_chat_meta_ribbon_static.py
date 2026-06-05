@@ -106,12 +106,23 @@ def test_meta_run_history_module_exists():
     assert META_RUN_HISTORY_JS.exists()
     text = META_RUN_HISTORY_JS.read_text()
     assert "root.MetaRunHistory" in text or "window.MetaRunHistory" in text
-    for method in ("meta.runs.list", "meta.runs.show", "meta.runs.draft"):
+    for method in (
+        "meta.runs.list",
+        "meta.runs.show",
+        "meta.runs.draft",
+        "meta.runs.diff",
+        "meta.runs.replay",
+        "meta.runs.failures",
+        "meta.runs.cost",
+        "meta.runs.validate",
+    ):
         assert method in text
     for name in ("renderRunHistoryPanel", "openRunHistory"):
         assert f"function {name}" in text
     assert "showRunError" in text
     assert "catch (err)" in text
+    for action in ("diff", "replay", "failures", "cost", "validate"):
+        assert f"data-action=\"{action}\"" in text
 
 
 def test_chat_js_renders_stream_artifacts_with_artifact_card_module():
@@ -129,6 +140,13 @@ def test_chat_js_references_meta_run_history_launcher():
     assert "chat-btn-meta-history" in text
     assert "MetaSkill run history" in text
     assert "metaHistoryBtn.addEventListener('click', _openMetaRunHistory)" in text
+
+
+def test_chat_js_uses_server_preflight_confirmation_rpc():
+    text = CHAT_JS.read_text()
+    assert "meta.runs.confirm_preflight" in text
+    assert "_confirmMetaPreflight" in text
+    assert "confirmed.message" in text
 
 
 def test_chat_js_dispatches_meta_events():
@@ -161,4 +179,6 @@ def test_chat_js_handles_ribbon_action_events():
     ):
         assert action in text, f"chat.js missing action {action}"
     assert "_retryMetaRibbonRun" in text
+    assert "_replayMetaRibbonRun" in text
+    assert "meta.runs.replay" in text
     assert "_onSend();" in text

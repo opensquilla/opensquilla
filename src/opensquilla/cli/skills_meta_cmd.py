@@ -1,6 +1,7 @@
 """`opensquilla skills meta ...` subcommand tree.
 
-Currently exposes ``runs {list, show, steps, failures, replay}``. The
+Currently exposes ``runs {list, show, steps, failures, replay, diff,
+cost, validate, eval-baseline}``. The
 ``meta_app`` container is forward-compatible with P0 #2 (which will add
 ``list``/``show``/``validate`` siblings); this PR ships only ``runs``.
 """
@@ -285,6 +286,132 @@ def runs_failures(
         typer.echo(json.dumps([_serialize_record(r) for r in rows], default=str))
     else:
         _print_runs_table(rows)
+
+
+@runs_app.command("diff")
+def runs_diff(
+    left_run_id: str = typer.Argument(...),
+    right_run_id: str = typer.Argument(...),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """Compare two meta-skill runs."""
+    from opensquilla.skills.meta.run_reports import build_run_diff
+
+    writer = _open_writer()
+    try:
+        left = writer.get_run(left_run_id)
+        right = writer.get_run(right_run_id)
+    finally:
+        writer.close()
+    if left is None:
+        typer.echo(f"run not found: {left_run_id}", err=True)
+        raise typer.Exit(2)
+    if right is None:
+        typer.echo(f"run not found: {right_run_id}", err=True)
+        raise typer.Exit(2)
+    diff = build_run_diff(left, right)
+    if json_out:
+        typer.echo(json.dumps(diff, default=str))
+        return
+    typer.echo(f"left:                 {left_run_id}")
+    typer.echo(f"right:                {right_run_id}")
+    typer.echo(f"status_changed:       {diff['status_changed']}")
+    typer.echo(f"failed_step_changed:  {diff['failed_step_changed']}")
+    typer.echo(f"final_text_delta:     {diff['final_text_chars_delta']}")
+    typer.echo(f"step_count_delta:     {diff['step_count_delta']}")
+
+
+@runs_app.command("cost")
+def runs_cost(
+    name: str | None = typer.Option(None, "--name"),
+    status: str | None = typer.Option(None, "--status"),
+    session: str | None = typer.Option(None, "--session"),
+    since: str | None = typer.Option(None, "--since"),
+    limit: int = typer.Option(50, "--limit"),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """Summarize meta-skill run usage and cost telemetry."""
+    from opensquilla.skills.meta.run_reports import build_cost_summary
+
+    writer = _open_writer()
+    try:
+        rows = writer.list_runs(
+            name=name,
+            status=status,
+            session_key=session,
+            since_ms=_parse_since(since),
+            limit=limit,
+        )
+        rows = _hydrate_records(writer, rows)
+    finally:
+        writer.close()
+    summary = build_cost_summary(rows)
+    if json_out:
+        typer.echo(json.dumps(summary, default=str))
+        return
+    usage = summary["aggregate"]["usage"]
+    typer.echo(f"runs:          {summary['aggregate']['run_count']}")
+    typer.echo(f"usage:         {'available' if usage['available'] else 'unavailable'}")
+    typer.echo(f"cost_usd:      {usage['cost_usd']:.4f}")
+    if not usage["available"]:
+        typer.echo(f"reason:        {usage['reason']}")
+
+
+@runs_app.command("validate")
+def runs_validate(
+    run_id: str = typer.Argument(...),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """Show validation metadata for a historical run."""
+    from opensquilla.skills.meta.run_reports import build_validation_summary
+
+    writer = _open_writer()
+    try:
+        rec = writer.get_run(run_id)
+    finally:
+        writer.close()
+    if rec is None:
+        typer.echo(f"run not found: {run_id}", err=True)
+        raise typer.Exit(2)
+    summary = build_validation_summary(rec)
+    if json_out:
+        typer.echo(json.dumps(summary, default=str))
+        return
+    typer.echo(f"meta_skill:      {summary['meta_skill_name']}")
+    typer.echo(
+        "required_fields: "
+        + ", ".join(summary["request_template"]["required_fields"])
+    )
+    typer.echo(f"eval_prompts:    {len(summary['eval_prompts'])}")
+    typer.echo(f"policy_tags:     {', '.join(summary['policy_tags'])}")
+
+
+@runs_app.command("eval-baseline")
+def runs_eval_baseline(
+    run_id: str = typer.Argument(...),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """Show deterministic eval baseline metadata for a historical run."""
+    from opensquilla.skills.meta.run_reports import build_eval_baseline
+
+    writer = _open_writer()
+    try:
+        rec = writer.get_run(run_id)
+    finally:
+        writer.close()
+    if rec is None:
+        typer.echo(f"run not found: {run_id}", err=True)
+        raise typer.Exit(2)
+    baseline = build_eval_baseline(rec)
+    if json_out:
+        typer.echo(json.dumps(baseline, default=str))
+        return
+    typer.echo(f"available:    {baseline['available']}")
+    for item in baseline["items"]:
+        typer.echo(
+            f"- {item['name']}: {len(item['rubric'])} rubric items "
+            f"({item['judge']['status']})"
+        )
 
 
 def _deserialize_plan(snapshot_json: str) -> MetaPlan:

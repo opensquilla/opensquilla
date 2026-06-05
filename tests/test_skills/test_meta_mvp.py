@@ -350,11 +350,13 @@ def test_make_meta_inputs_extracts_preflight_confirmation_marker() -> None:
     inputs = make_meta_inputs(
         user_message=(
             "Please build a launch brief.\n\n"
-            "<!-- opensquilla:meta_preflight_confirmed=1 -->"
+            "<!-- opensquilla:meta_preflight_confirmed=1 -->\n"
+            "<!-- opensquilla:meta_preflight_run_id=01ABC -->"
         ),
     )
 
     assert inputs["meta_preflight_confirmed"] is True
+    assert inputs["meta_preflight_run_id"] == "01ABC"
     assert inputs["user_message"] == "Please build a launch brief."
     assert "meta_preflight_confirmed" not in inputs["language_instruction"]
 

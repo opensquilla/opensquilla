@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
-from opensquilla.gateway.protocol import ERROR_UNAUTHORIZED
+from opensquilla.gateway.protocol import (
+    ERROR_INVALID_REQUEST,
+    ERROR_NOT_FOUND,
+    ERROR_UNAUTHORIZED,
+)
 from opensquilla.gateway.rpc import (
     RpcContext,
     RpcHandlerError,
@@ -19,6 +23,17 @@ from opensquilla.persistence.meta_run_writer import (
     summarize_run_record,
 )
 from opensquilla.skills.meta.author_seed import draft_meta_skill_seed
+from opensquilla.skills.meta.run_reports import (
+    build_cost_summary,
+    build_eval_baseline,
+    build_replay_request,
+    build_run_diff,
+    build_validation_summary,
+    confirmation_message,
+    deserialize_plan,
+    filter_template_fields,
+    missing_required_fields,
+)
 
 _d = get_dispatcher()
 
@@ -133,6 +148,20 @@ def _existing_specs(ctx: RpcContext) -> list[Any]:
         return []
 
 
+def _record_or_404(writer: Any, run_id: str) -> RunRecord:
+    record = writer.get_run(run_id)
+    if record is None:
+        raise RpcHandlerError(ERROR_NOT_FOUND, f"meta run not found: {run_id}")
+    return cast(RunRecord, record)
+
+
+def _run_id_param(params: dict[str, Any]) -> str:
+    run_id = str(params.get("runId") or params.get("run_id") or "")
+    if not run_id:
+        raise RpcHandlerError(ERROR_INVALID_REQUEST, "runId is required")
+    return run_id
+
+
 @_d.method("meta.runs.list", scope="operator.read")
 async def _handle_meta_runs_list(params: Any, ctx: RpcContext) -> dict[str, Any]:
     writer = _writer_from_context(ctx)
@@ -197,3 +226,92 @@ async def _handle_meta_runs_draft(params: Any, ctx: RpcContext) -> dict[str, Any
             existing_specs=_existing_specs(ctx),
         ),
     }
+
+
+@_d.method("meta.runs.confirm_preflight", scope="operator.admin")
+async def _handle_meta_runs_confirm_preflight(params: Any, ctx: RpcContext) -> dict[str, Any]:
+    writer = _writer_from_context(ctx)
+    p = params if isinstance(params, dict) else {}
+    record = _record_or_404(writer, _run_id_param(p))
+    plan = deserialize_plan(record)
+    fields_raw = p.get("fields") or p.get("confirmedFields") or {}
+    fields = (
+        filter_template_fields(plan.request_template, dict(fields_raw))
+        if isinstance(fields_raw, dict)
+        else {}
+    )
+    missing = missing_required_fields(plan.request_template, fields)
+    if missing:
+        raise RpcHandlerError(
+            ERROR_INVALID_REQUEST,
+            f"required preflight fields are missing: {', '.join(missing)}",
+            details={"missing_fields": missing},
+        )
+    interpreted_request = str(p.get("interpretedRequest") or p.get("interpreted_request") or "")
+    return {
+        "confirmed": True,
+        "run_id": record.run_id,
+        "meta_skill_name": record.meta_skill_name,
+        "fields": fields,
+        "message": confirmation_message(
+            record=record,
+            interpreted_request=interpreted_request,
+            fields=fields,
+        ),
+    }
+
+
+@_d.method("meta.runs.diff", scope="operator.admin")
+async def _handle_meta_runs_diff(params: Any, ctx: RpcContext) -> dict[str, Any]:
+    writer = _writer_from_context(ctx)
+    p = params if isinstance(params, dict) else {}
+    left_id = str(p.get("leftRunId") or p.get("left_run_id") or "")
+    right_id = str(p.get("rightRunId") or p.get("right_run_id") or "")
+    if not left_id or not right_id:
+        raise RpcHandlerError(ERROR_INVALID_REQUEST, "leftRunId and rightRunId are required")
+    return {
+        "diff": build_run_diff(
+            _record_or_404(writer, left_id),
+            _record_or_404(writer, right_id),
+        )
+    }
+
+
+@_d.method("meta.runs.replay", scope="operator.admin")
+async def _handle_meta_runs_replay(params: Any, ctx: RpcContext) -> dict[str, Any]:
+    writer = _writer_from_context(ctx)
+    p = params if isinstance(params, dict) else {}
+    record = _record_or_404(writer, _run_id_param(p))
+    mode = str(p.get("mode") or "run")
+    return {"replay": build_replay_request(record, mode=mode)}
+
+
+@_d.method("meta.runs.cost", scope="operator.read")
+async def _handle_meta_runs_cost(params: Any, ctx: RpcContext) -> dict[str, Any]:
+    writer = _writer_from_context(ctx)
+    p = params if isinstance(params, dict) else {}
+    session_key = _session_key_for_history(p, ctx)
+    rows = writer.list_runs(
+        name=p.get("name"),
+        status=p.get("status"),
+        session_key=session_key,
+        since_ms=_parse_since_param(p.get("since")),
+        limit=_bounded_limit(p.get("limit")),
+    )
+    return build_cost_summary(_hydrate_records(writer, rows))
+
+
+@_d.method("meta.runs.validate", scope="operator.admin")
+async def _handle_meta_runs_validate(params: Any, ctx: RpcContext) -> dict[str, Any]:
+    writer = _writer_from_context(ctx)
+    p = params if isinstance(params, dict) else {}
+    record = _record_or_404(writer, _run_id_param(p))
+    return {"validation": build_validation_summary(record)}
+
+
+@_d.method("meta.runs.eval_baseline", scope="operator.admin")
+async def _handle_meta_runs_eval_baseline(params: Any, ctx: RpcContext) -> dict[str, Any]:
+    writer = _writer_from_context(ctx)
+    p = params if isinstance(params, dict) else {}
+    record = _record_or_404(writer, _run_id_param(p))
+    return {"baseline": build_eval_baseline(record)}

@@ -4801,6 +4801,39 @@ const ChatView = (() => {
       _onSend();
     }
 
+    async function _replayMetaRibbonRun(ribbonEl, mode) {
+      if (_isStreaming) {
+        UI.toast('Wait for the current response to finish', 'warn', 2000);
+        return;
+      }
+      const runId = ribbonEl && ribbonEl.dataset ? ribbonEl.dataset.runId : '';
+      if (!runId || !_textarea) {
+        UI.toast('No MetaSkill run selected to replay', 'info', 2000);
+        return;
+      }
+      try {
+        const payload = await _rpc.call('meta.runs.replay', {
+          runId,
+          mode: mode || 'failed-step',
+        });
+        const replay = payload && payload.replay ? payload.replay : payload;
+        _textarea.value = replay && replay.message ? replay.message : '';
+        _autoResizeTextarea();
+        if (_textarea.value) _onSend();
+      } catch (err) {
+        UI.toast(err && err.message ? err.message : 'MetaSkill replay failed', 'warn', 3000);
+      }
+    }
+
+    async function _confirmMetaPreflight(detail) {
+      const confirmed = await _rpc.call('meta.runs.confirm_preflight', {
+        runId: detail.runId || '',
+        interpretedRequest: detail.interpretedRequest || '',
+        fields: detail.confirmedFields || {},
+      });
+      return confirmed || {};
+    }
+
     _unsubs.push(_rpc.on('session.event.meta_preflight', (payload) => {
       if (_dropForeignSessionPayload('event.meta_preflight', payload)) return;
       if (!window.MetaPreflight) return;
@@ -4850,12 +4883,14 @@ const ChatView = (() => {
     // document so dynamically-rendered ribbons all flow through one handler.
     const _onMetaRibbonAction = (ev) => {
       const { action, stepId } = (ev && ev.detail) || {};
-      if (
-        action === 'retry-run'
-        || action === 'retry-step'
-        || action === 'retry-with-partial-context'
-      ) {
+      if (action === 'retry-run') {
         _retryMetaRibbonRun(ev && ev.target ? ev.target.closest('.meta-ribbon') : null);
+      } else if (action === 'retry-step' || action === 'retry-with-partial-context') {
+        const mode = action === 'retry-step' ? 'failed-step' : 'partial-context';
+        _replayMetaRibbonRun(
+          ev && ev.target ? ev.target.closest('.meta-ribbon') : null,
+          mode,
+        );
       } else if (action === 'switch-skill' || action === 'switch-meta-skill') {
         if (_textarea) {
           _textarea.placeholder = '想换哪个 meta-skill？例如：Use meta-skill `meta-web-research-to-report`';
@@ -4878,7 +4913,7 @@ const ChatView = (() => {
     document.addEventListener('meta-ribbon-action', _onMetaRibbonAction);
     _unsubs.push(() => document.removeEventListener('meta-ribbon-action', _onMetaRibbonAction));
 
-    const _onMetaPreflightAction = (ev) => {
+    const _onMetaPreflightAction = async (ev) => {
       const detail = (ev && ev.detail) || {};
       const card = ev && ev.target ? ev.target.closest('.meta-preflight') : null;
       if (detail.action === 'dismiss') {
@@ -4887,11 +4922,16 @@ const ChatView = (() => {
         return;
       }
       if (detail.action === 'continue' && _textarea) {
-        if (card) card.remove();
-        if (detail.runId) _metaPreflightEl.delete(detail.runId);
-        _textarea.value = `${detail.interpretedRequest || ''}\n\n<!-- opensquilla:meta_preflight_confirmed=1 -->`;
-        _autoResizeTextarea();
-        _onSend();
+        try {
+          const confirmed = await _confirmMetaPreflight(detail);
+          if (card) card.remove();
+          if (detail.runId) _metaPreflightEl.delete(detail.runId);
+          _textarea.value = confirmed.message || `${detail.interpretedRequest || ''}\n\n<!-- opensquilla:meta_preflight_confirmed=1 -->`;
+          _autoResizeTextarea();
+          _onSend();
+        } catch (err) {
+          UI.toast(err && err.message ? err.message : 'MetaSkill confirmation failed', 'warn', 3000);
+        }
         return;
       }
       if (detail.action === 'edit' && _textarea) {

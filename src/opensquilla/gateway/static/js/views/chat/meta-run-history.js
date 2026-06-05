@@ -41,6 +41,7 @@
     rootEl.innerHTML = `
       <header class="meta-run-history__head">
         <strong>MetaSkill runs</strong>
+        <button data-action="failures">Failures</button>
         <button data-action="close" aria-label="Close MetaSkill run history">×</button>
       </header>
       <div class="meta-run-history__body">${body}</div>
@@ -72,6 +73,10 @@
         </button>
         <span>${escapeHtml(run.status || 'unknown')}${cost}</span>
         <button data-action="draft" data-run-id="${escapeAttr(run.run_id || '')}">Draft</button>
+        <button data-action="diff" data-run-id="${escapeAttr(run.run_id || '')}">Diff</button>
+        <button data-action="replay" data-run-id="${escapeAttr(run.run_id || '')}">Replay</button>
+        <button data-action="cost" data-run-id="${escapeAttr(run.run_id || '')}">Cost</button>
+        <button data-action="validate" data-run-id="${escapeAttr(run.run_id || '')}">Validate</button>
       </li>
     `;
   }
@@ -85,6 +90,18 @@
           rootEl.remove();
           return;
         }
+        if (action === 'failures' && rpc) {
+          try {
+            const payload = await rpc.call('meta.runs.failures', {
+              sessionKey,
+              limit: 20,
+            });
+            showRunDetail(rootEl, payload || {});
+          } catch (err) {
+            showRunError(rootEl, err && err.message ? err.message : String(err || 'Action failed'));
+          }
+          return;
+        }
         if (!rpc || !runId) return;
         try {
           if (action === 'show') {
@@ -93,12 +110,47 @@
           } else if (action === 'draft') {
             const payload = await rpc.call('meta.runs.draft', { runId, sessionKey });
             showRunDraft(rootEl, payload.draft || payload);
+          } else if (action === 'diff') {
+            const previousRunId = previousRunIdFor(rootEl, runId);
+            if (!previousRunId) {
+              showRunError(rootEl, 'No previous run to diff against.');
+              return;
+            }
+            const payload = await rpc.call('meta.runs.diff', {
+              leftRunId: previousRunId,
+              rightRunId: runId,
+            });
+            showRunDetail(rootEl, payload.diff || payload);
+          } else if (action === 'replay') {
+            const payload = await rpc.call('meta.runs.replay', {
+              runId,
+              mode: 'failed-step',
+            });
+            showRunReplay(rootEl, payload.replay || payload);
+          } else if (action === 'cost') {
+            const payload = await rpc.call('meta.runs.cost', {
+              sessionKey,
+              limit: 20,
+            });
+            showRunDetail(rootEl, payload || {});
+          } else if (action === 'validate') {
+            const payload = await rpc.call('meta.runs.validate', { runId });
+            showRunDetail(rootEl, payload.validation || payload);
           }
         } catch (err) {
           showRunError(rootEl, err && err.message ? err.message : String(err || 'Action failed'));
         }
       });
     });
+  }
+
+  function previousRunIdFor(rootEl, runId) {
+    const items = Array.from(rootEl.querySelectorAll('[data-run-id]'))
+      .map((el) => el.getAttribute('data-run-id') || '')
+      .filter(Boolean);
+    const unique = items.filter((item, index) => items.indexOf(item) === index);
+    const index = unique.indexOf(runId);
+    return index >= 0 ? unique[index + 1] || '' : '';
   }
 
   function showRunDetail(rootEl, run) {
@@ -112,6 +164,13 @@
     const detail = document.createElement('pre');
     detail.className = 'meta-run-history__draft';
     detail.textContent = JSON.stringify(draft || {}, null, 2);
+    rootEl.querySelector('.meta-run-history__body').appendChild(detail);
+  }
+
+  function showRunReplay(rootEl, replay) {
+    const detail = document.createElement('pre');
+    detail.className = 'meta-run-history__replay';
+    detail.textContent = JSON.stringify(replay || {}, null, 2);
     rootEl.querySelector('.meta-run-history__body').appendChild(detail);
   }
 

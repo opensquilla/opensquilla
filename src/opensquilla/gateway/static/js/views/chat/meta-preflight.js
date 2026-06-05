@@ -12,6 +12,7 @@
       interpretedRequest: payload.interpreted_request || '',
       missingFields: payload.missing_fields || [],
       assumptions: payload.assumptions || [],
+      fields: Array.isArray(template.fields) ? template.fields : [],
       outcome: template.outcome || template.deliverable || '',
       canSkip: payload.can_skip !== false,
     };
@@ -68,12 +69,22 @@
             runId: state.runId,
             interpretedRequest: state.interpretedRequest,
             missingFields: state.missingFields,
+            confirmedFields: defaultFieldValues(state.fields),
           },
         }));
       });
     });
 
     return rootEl;
+  }
+
+  function defaultFieldValues(fields) {
+    const out = {};
+    (Array.isArray(fields) ? fields : []).forEach((field) => {
+      if (!field || !field.name) return;
+      if (field.default != null) out[field.name] = field.default;
+    });
+    return out;
   }
 
   function escapeHtml(s) {
@@ -87,5 +98,6 @@
   root.MetaPreflight = {
     createPreflight,
     renderPreflight,
+    defaultFieldValues,
   };
 }(typeof window !== 'undefined' ? window : globalThis));

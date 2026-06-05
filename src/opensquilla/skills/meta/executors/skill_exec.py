@@ -4,8 +4,8 @@ Runs a wrapped-CLI skill via its ``entrypoint`` manifest — no LLM, no
 sub-Agent. Resolves ``skill.entrypoint`` from the injected ``skill_loader``,
 renders ``command`` / ``args`` (and optional ``env`` / ``stdin`` / ``assemble``
 templates) against ``inputs`` + ``outputs`` + ``with`` (the step's
-rendered ``with_args``), then ``asyncio.create_subprocess_exec``\\s the
-process. Stdout is interpreted per ``parse`` (``text`` | ``json`` |
+rendered ``with_args``), then runs the subprocess in a worker thread.
+Stdout is interpreted per ``parse`` (``text`` | ``json`` |
 ``lines``) and returned as the step output.
 """
 
@@ -17,6 +17,7 @@ import os
 import shlex
 import subprocess
 import sys
+import threading
 from pathlib import Path as _Path
 from typing import Any
 
@@ -42,8 +43,8 @@ async def run_skill_exec_step(
 
     Resolves ``skill.entrypoint`` from the loader, renders ``command`` /
     ``args`` against ``inputs`` + ``outputs`` + ``with`` (the step's
-    rendered ``with_args``), then ``asyncio.create_subprocess_exec``\\s
-    the process. Stdout is interpreted per ``parse`` (``text`` |
+    rendered ``with_args``), then runs the subprocess in a worker thread.
+    Stdout is interpreted per ``parse`` (``text`` |
     ``json`` | ``lines``) and returned as the step output.
 
     Optional features:
@@ -288,44 +289,52 @@ async def run_skill_exec_step(
         stdin_bytes=len(stdin_bytes) if stdin_bytes is not None else 0,
     )
 
-    # Use asyncio.create_subprocess_exec so the gateway's event loop stays
-    # responsive while the wrapped CLI runs (some skills poll remote APIs for
-    # minutes — a synchronous subprocess.run would freeze the entire HTTP
-    # surface, including /healthz and /control/, until the call returned).
-    try:
-        proc = await asyncio.create_subprocess_exec(  # noqa: S603 - argv is manifest-authored and pre-split.
-            *argv,
-            stdin=subprocess.PIPE if stdin_bytes is not None else None,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=workdir,
-            env=child_env,
-        )
-    except FileNotFoundError as exc:
-        raise RuntimeError(
-            f"skill {effective_skill!r} command not found: {argv[0]!r}",
-        ) from exc
+    # Run subprocess.run in a dedicated thread. This avoids asyncio
+    # child-watcher flakiness across repeated pytest event loops without
+    # blocking the gateway event loop for long-running wrapped CLIs.
+    completed_box: dict[str, Any] = {}
+    error_box: dict[str, BaseException] = {}
 
-    try:
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            proc.communicate(input=stdin_bytes),
-            timeout=timeout,
-        )
-    except TimeoutError as exc:
-        # Kill the still-running child so we don't leak a process.
+    def _run_sync() -> None:
         try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=5)
-        except TimeoutError:
-            pass
-        raise RuntimeError(
-            f"skill {effective_skill!r} timed out after {timeout}s",
-        ) from exc
+            completed_box["completed"] = subprocess.run(  # noqa: S603 - argv is manifest-authored and pre-split.
+                argv,
+                input=stdin_bytes,
+                capture_output=True,
+                cwd=workdir,
+                env=child_env,
+                timeout=timeout,
+                check=False,
+            )
+        except BaseException as exc:  # noqa: BLE001 - re-raised on event-loop thread
+            error_box["error"] = exc
 
-    returncode = proc.returncode if proc.returncode is not None else -1
+    thread = threading.Thread(
+        target=_run_sync,
+        name=f"meta-skill-exec-{step.id}",
+        daemon=True,
+    )
+    thread.start()
+    while thread.is_alive():
+        await asyncio.sleep(0.05)
+
+    if "error" in error_box:
+        err = error_box["error"]
+        if isinstance(err, FileNotFoundError):
+            raise RuntimeError(
+                f"skill {effective_skill!r} command not found: {argv[0]!r}",
+            ) from err
+        if isinstance(err, subprocess.TimeoutExpired):
+            raise RuntimeError(
+                f"skill {effective_skill!r} timed out after {timeout}s",
+            ) from err
+        raise err
+
+    completed = completed_box["completed"]
+
+    returncode = completed.returncode
+    stdout_bytes = completed.stdout
+    stderr_bytes = completed.stderr
     stdout_text = (stdout_bytes or b"").decode("utf-8", errors="replace")
     stderr_text = (stderr_bytes or b"").decode("utf-8", errors="replace")
     if returncode != 0:

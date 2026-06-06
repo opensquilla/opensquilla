@@ -26,6 +26,7 @@ _STATIC_FALLBACK: dict[str, tuple[int, int]] = {
     "gpt-5.4-mini": (128_000, 400_000),
     "gpt-5.5": (128_000, 1_000_000),
     "minimax/minimax-m2.7": (8192, 196_608),
+    "minimax/MiniMax-M3": (8192, 200_000),
     "stepfun/step-3.5-flash": (16_384, 256_000),
     "z-ai/glm-4.5-air": (98_304, 131_072),
     "minimax/minimax-m2.5": (65_536, 196_608),
@@ -177,6 +178,27 @@ class ModelCatalog:
                 supports_tools=True,
                 supports_vision=model_l.startswith(("kimi-k2.5", "kimi-k2.6")),
                 reasoning_format="moonshot" if supports_reasoning else "none",
+            )
+        if provider_id in {"minimax", "minimax_openai", "minimax_cn", "minimax_global"}:
+            # The MiniMax M-series (M2.5, M2.7, M3) all support the
+            # provider's native reasoning stream on the anthropic-compat
+            # endpoint; the openai-compat endpoint degrades to non-
+            # reasoning. Caller's `reasoning_format` still flows from
+            # the openrouter catalog when it is available.
+            #
+            # `model_l` is the lowercased catalog id, which on the
+            # OpenRouter namespace looks like `minimax/MiniMax-M3` (note
+            # the dual prefix). The native M-series slug for direct
+            # `provider_name="minimax"` calls is the plain `MiniMax-M3`
+            # (no slash). Match both forms with `endswith` so the rule
+            # is robust to whichever provider the caller routed through.
+            m_series_slugs = ("minimax-m2.5", "minimax-m2.7", "minimax-m3")
+            supports_reasoning = any(model_l.endswith(s) for s in m_series_slugs)
+            return ModelCapabilities(
+                supports_reasoning=supports_reasoning,
+                supports_tools=True,
+                supports_vision=supports_reasoning,
+                reasoning_format="minimax" if supports_reasoning else "none",
             )
         if provider_id in {"volcengine", "byteplus"}:
             supports_reasoning = (

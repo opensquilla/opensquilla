@@ -5330,17 +5330,30 @@ class Agent:
                 if self._context is not None
                 else self.config.system_prompt or ""
             )
-            match = MetaMatch(
-                plan=plan,
-                inputs=make_meta_inputs(
-                    user_message=(
-                        getattr(self, "_current_turn_message", "")
-                        or metadata.get("user_message", "")
+            resolved_match = metadata.get("meta_match")
+            if (
+                isinstance(resolved_match, MetaMatch)
+                and getattr(resolved_match.plan, "name", "") == plan.name
+            ):
+                match_inputs = dict(resolved_match.inputs)
+                match_inputs.setdefault("system_prompt", system_prompt)
+                match = MetaMatch(
+                    plan=plan,
+                    inputs=match_inputs,
+                    run_id=resolved_match.run_id,
+                )
+            else:
+                match = MetaMatch(
+                    plan=plan,
+                    inputs=make_meta_inputs(
+                        user_message=(
+                            getattr(self, "_current_turn_message", "")
+                            or metadata.get("user_message", "")
+                        ),
+                        system_prompt=system_prompt,
+                        **meta_input_overrides_from_metadata(metadata),
                     ),
-                    system_prompt=system_prompt,
-                    **meta_input_overrides_from_metadata(metadata),
-                ),
-            )
+                )
 
             result: MetaResult | None = None
             from opensquilla.skills.creator.proposer import (

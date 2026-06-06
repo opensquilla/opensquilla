@@ -7,23 +7,49 @@ always: false
 final_text_mode: "step:deliver_jobpack_audit"
 request_template:
   outcome: "Reviewable job-search pack tailored to the target role or interview."
+  outcome_zh: "面向目标岗位或面试的可审阅求职材料包。"
+  outcome_en: "Reviewable job-search pack tailored to the target role or interview."
   fields:
     - name: target_role_or_jd
+      label_zh: "目标岗位或 JD"
+      label_en: "Target role or JD"
       required: true
     - name: resume_or_background
+      label_zh: "简历或背景"
+      label_en: "Resume or background"
       required: false
     - name: workflow_goal
+      label_zh: "工作流目标"
+      label_en: "Workflow goal"
       required: false
       default: "tailor application materials or prepare for interview"
+      default_zh: "定制申请材料或准备面试"
+      default_en: "tailor application materials or prepare for interview"
     - name: constraints
+      label_zh: "限制条件"
+      label_en: "Constraints"
       required: false
     - name: audience
+      label_zh: "受众"
+      label_en: "Audience"
       required: false
       default: "candidate and hiring reviewer"
+      default_zh: "候选人和招聘评审者"
+      default_en: "candidate and hiring reviewer"
     - name: language
+      label_zh: "输出语言"
+      label_en: "Output language"
       required: false
       default: "match the user's language"
+      default_zh: "跟随用户语言"
+      default_en: "match the user's language"
   assumptions:
+    - "Never auto-apply or contact employers."
+    - "Preserve truthful experience; flag gaps instead of inventing claims."
+  assumptions_zh:
+    - "不会自动投递，也不会联系雇主。"
+    - "保持经历真实；发现空缺时标注风险，不编造经历。"
+  assumptions_en:
     - "Never auto-apply or contact employers."
     - "Preserve truthful experience; flag gaps instead of inventing claims."
 output_contract:
@@ -99,6 +125,7 @@ composition:
   steps:
     - id: preferences
       label: "偏好提取"
+      label_en: "Preference extraction"
       kind: llm_chat
       with:
         system: "You extract job-search-pipeline preferences. Return only the requested contract."
@@ -125,6 +152,7 @@ composition:
             - <assumption>
     - id: job_clarify
       label: "求职澄清"
+      label_en: "Job-search clarification"
       kind: user_input
       depends_on: [preferences]
       when: "'NEEDS_CLARIFICATION: yes' in outputs.preferences"
@@ -132,41 +160,56 @@ composition:
         mode: form
         intro: |
           求职准备还差关键信息，麻烦补齐 / Need a few details to build the application pack.
+        intro_zh: "求职准备还差关键信息，麻烦补齐后我会继续生成申请材料包。"
+        intro_en: "Need a few details to build the application pack."
         nl_extract: true
         fields:
           - name: job_posting
             type: string
             required: true
             prompt: "目标岗位 JD 全文（粘贴）/ Job posting (paste)"
+            prompt_zh: "目标岗位 JD 全文（直接粘贴）"
+            prompt_en: "Job posting (paste the full text)"
             max_chars: 4000
           - name: resume_text
             type: string
             required: true
             prompt: "现有简历正文（粘贴；可省略 PII）/ Current resume text"
+            prompt_zh: "现有简历正文（可省略隐私信息）"
+            prompt_en: "Current resume text (PII may be omitted)"
             max_chars: 4000
           - name: target_company
             type: string
             prompt: "目标公司（如果 JD 没写）/ Target company (if not in JD)"
+            prompt_zh: "目标公司（如果 JD 里没写）"
+            prompt_en: "Target company (if not in the JD)"
             max_chars: 80
           - name: candidate_level
             type: enum
             choices: [ENTRY, MID, SENIOR, STAFF]
             default: MID
             prompt: "本人 seniority / Level"
+            prompt_zh: "候选人级别"
+            prompt_en: "Candidate level"
           - name: language
             type: enum
             choices: [en, zh, mixed]
             default: en
             prompt: "输出语言 / Output language"
+            prompt_zh: "输出语言"
+            prompt_en: "Output language"
           - name: export_docx
             type: enum
             choices: ["YES", "NO"]
             default: "NO"
             prompt: "是否要 DOCX 导出 / Export to DOCX"
+            prompt_zh: "是否导出 DOCX"
+            prompt_en: "Export to DOCX?"
         cancel_keywords: ["算了", "取消", "cancel", "stop", "abort"]
         timeout_hours: 24
     - id: mode
       label: "模式判断"
+      label_en: "Mode decision"
       kind: llm_classify
       depends_on: [preferences, job_clarify]
       output_choices:
@@ -201,6 +244,7 @@ composition:
             and wants a ranked next-action summary.
     - id: recall_company
       label: "公司召回"
+      label_en: "Company recall"
       kind: agent
       skill: memory
       depends_on: [mode, job_clarify]
@@ -208,6 +252,7 @@ composition:
       on_failure: recall_company_fallback
     - id: recall_company_fallback
       label: "公司召回兜底"
+      label_en: "Company recall fallback"
       kind: llm_chat
       with:
         system: "You produce a no-memory fallback note for job-search preparation."
@@ -217,6 +262,7 @@ composition:
           runtime errors to the user.
     - id: web_research
       label: "网页研究"
+      label_en: "Web research"
       kind: skill_exec
       skill: multi-search-engine
       depends_on: [mode]
@@ -228,6 +274,7 @@ composition:
         max_results: 10
     - id: web_research_fallback
       label: "网页研究兜底"
+      label_en: "Web research fallback"
       kind: llm_chat
       with:
         system: "You produce a no-web fallback note for job-search preparation."
@@ -242,6 +289,7 @@ composition:
           {{ inputs.user_message | xml_escape | truncate(3500) }}
     - id: enrich_company
       label: "公司补全"
+      label_en: "Company completion"
       kind: llm_chat
       depends_on: [mode, web_research, recall_company, job_clarify]
       when: "outputs.mode in ['TAILOR_NEW', 'INTERVIEW_PREP', 'COMPARE_ROLES']"
@@ -269,6 +317,7 @@ composition:
             - <none|or one-line concern grounded in sources>
     - id: deep_research
       label: "深度研究"
+      label_en: "Deep research"
       kind: skill_exec
       skill: deep-research
       depends_on: [mode]
@@ -279,6 +328,7 @@ composition:
         max_rounds: 2
     - id: source_fact_ledger
       label: "事实台账"
+      label_en: "Fact ledger"
       kind: llm_chat
       depends_on: [mode, job_clarify]
       when: "outputs.mode == 'TAILOR_NEW'"
@@ -324,6 +374,7 @@ composition:
             research.
     - id: tailor_resume
       label: "简历定制"
+      label_en: "Resume tailoring"
       kind: llm_chat
       depends_on: [mode, enrich_company, job_clarify, source_fact_ledger]
       when: "outputs.mode == 'TAILOR_NEW'"
@@ -389,6 +440,7 @@ composition:
           reordered or rephrased and why.
     - id: cover_letter
       label: "求职信"
+      label_en: "Cover letter"
       kind: llm_chat
       depends_on: [tailor_resume, enrich_company, job_clarify, mode, source_fact_ledger]
       when: "outputs.mode == 'TAILOR_NEW'"
@@ -432,6 +484,7 @@ composition:
           (a 30-minute conversation about <topic>).
     - id: interview_qs
       label: "面试问题"
+      label_en: "Interview questions"
       kind: llm_chat
       depends_on: [mode, web_research, deep_research, enrich_company, job_clarify]
       when: "outputs.mode == 'INTERVIEW_PREP'"
@@ -461,6 +514,7 @@ composition:
              red-flags or recent_moves from the brief)
     - id: study_brief
       label: "学习简报"
+      label_en: "Learning brief"
       kind: llm_chat
       depends_on: [interview_qs, job_clarify]
       when: "outputs.mode == 'INTERVIEW_PREP'"
@@ -481,6 +535,7 @@ composition:
           interview_qs output, not be generic.
     - id: interview_deck
       label: "面试卡片"
+      label_en: "Interview cards"
       kind: skill_exec
       skill: pptx
       depends_on: [interview_qs, study_brief, enrich_company, job_clarify]
@@ -502,6 +557,7 @@ composition:
         output_path: "/tmp/interview_prep_{{ inputs.get('collected', {}).get('job_clarify', {}).get('target_company', 'untitled') | slugify }}.pptx"
     - id: compare_matrix
       label: "对比矩阵"
+      label_en: "Comparison matrix"
       kind: llm_chat
       depends_on: [mode, enrich_company, job_clarify]
       when: "outputs.mode == 'COMPARE_ROLES'"
@@ -522,6 +578,7 @@ composition:
           grounded in the rows above.
     - id: ledger_summary
       label: "台账摘要"
+      label_en: "Ledger summary"
       kind: llm_chat
       depends_on: [mode]
       when: "outputs.mode == 'STATUS_DIGEST'"
@@ -544,6 +601,7 @@ composition:
           list the top 3 nudges with a one-line draft message each.
     - id: tracker_xlsx
       label: "跟踪表格"
+      label_en: "Tracking table"
       kind: skill_exec
       skill: xlsx
       depends_on: [ledger_summary]
@@ -558,6 +616,7 @@ composition:
         output_path: "/tmp/application_tracker.xlsx"
     - id: deliver_jobpack
       label: "求职包交付"
+      label_en: "Job-search package delivery"
       kind: llm_chat
       depends_on:
         - mode
@@ -676,6 +735,7 @@ composition:
           PACK_MODE: {{ outputs.mode }}
     - id: deliver_jobpack_audit
       label: "求职包审稿"
+      label_en: "Job-search package review"
       kind: llm_chat
       depends_on: [deliver_jobpack, source_fact_ledger, mode, preferences]
       with:
@@ -719,11 +779,13 @@ composition:
           - Remove internal sentinels such as PACK_MODE.
     - id: store_pack
       label: "存储求职包"
+      label_en: "Store job-search package"
       kind: agent
       skill: memory
       depends_on: [deliver_jobpack_audit, mode, job_clarify]
     - id: export_docx
       label: "导出 DOCX"
+      label_en: "Export DOCX"
       kind: skill_exec
       skill: docx
       depends_on: [deliver_jobpack_audit, job_clarify]

@@ -225,6 +225,7 @@ class MetaPreflightEvent:
     missing_fields: list[str] = field(default_factory=list)
     assumptions: list[str] = field(default_factory=list)
     can_skip: bool = True
+    requires_confirmation: bool = False
 
 
 @dataclass

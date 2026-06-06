@@ -513,8 +513,11 @@ def test_document_decision_final_audit_removes_legal_and_date_overreach(
     assert "do not call it oral or verbal" in audit_text
     assert "Do not say an email promise is legally invalid" in audit_text
     assert "Use these exact section titles" in audit_text
-    assert "Bottom-line recommendation / 底线推荐" in audit_text
-    assert "What to do next in 24 hours / 接下来 24 小时" in audit_text
+    assert "底线推荐" in audit_text
+    assert "接下来 24 小时" in audit_text
+    assert "Bottom-line recommendation" in audit_text
+    assert "What to do next in 24 hours" in audit_text
+    assert "English headings only" in audit_text
     assert "效力弱于合同" in audit_text
     assert "书面条款优先" in audit_text
 

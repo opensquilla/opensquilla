@@ -143,6 +143,11 @@ def parse_meta_plan(spec: SkillSpec) -> MetaPlan | None:
                 f"a string (or omitted)",
             )
         label = label_raw
+        label_by_language: dict[str, str] = {}
+        for lang in ("zh", "en"):
+            localized_label = raw.get(f"label_{lang}")
+            if isinstance(localized_label, str) and localized_label.strip():
+                label_by_language[lang] = localized_label.strip()
 
         progress_emits_raw = raw.get("progress_emits")
         if progress_emits_raw is None:
@@ -172,6 +177,7 @@ def parse_meta_plan(spec: SkillSpec) -> MetaPlan | None:
                 on_failure=on_failure,
                 clarify_config=clarify_config,
                 label=label,
+                label_by_language=label_by_language,
                 progress_emits=progress_emits,
             ),
         )
@@ -655,12 +661,23 @@ def _parse_clarify_field(
             f"meta-skill {skill_name!r}: step {step_id!r} clarify.fields[{index}] "
             f"{name!r}: prompt must be a string",
         )
+    prompt_by_language: dict[str, str] = {}
+    for lang in ("zh", "en"):
+        localized_prompt = raw.get(f"prompt_{lang}", "")
+        if localized_prompt and not isinstance(localized_prompt, str):
+            raise MetaPlanError(
+                f"meta-skill {skill_name!r}: step {step_id!r} "
+                f"clarify.fields[{index}] {name!r}: prompt_{lang} must be a string",
+            )
+        if isinstance(localized_prompt, str) and localized_prompt.strip():
+            prompt_by_language[lang] = localized_prompt
 
     return ClarifyField(
         name=name,
         type=type_,
         required=required,
         prompt=prompt,
+        prompt_by_language=prompt_by_language,
         choices=choices,
         default=default,
         min=min_v,
@@ -751,6 +768,16 @@ def _parse_clarify_config(
             f"meta-skill {skill_name!r}: step {step_id!r} clarify.intro "
             f"must be a string",
         )
+    intro_by_language: dict[str, str] = {}
+    for lang in ("zh", "en"):
+        localized_intro = raw.get(f"intro_{lang}", "")
+        if localized_intro and not isinstance(localized_intro, str):
+            raise MetaPlanError(
+                f"meta-skill {skill_name!r}: step {step_id!r} "
+                f"clarify.intro_{lang} must be a string",
+            )
+        if isinstance(localized_intro, str) and localized_intro.strip():
+            intro_by_language[lang] = localized_intro
 
     nl_extract = raw.get("nl_extract", False)
     if not isinstance(nl_extract, bool):
@@ -774,6 +801,7 @@ def _parse_clarify_config(
         cancel_keywords=cancel_keywords,
         timeout_hours=timeout_hours,
         intro=intro,
+        intro_by_language=intro_by_language,
         nl_extract=nl_extract,
         nl_extract_tier=nl_extract_tier,
     )

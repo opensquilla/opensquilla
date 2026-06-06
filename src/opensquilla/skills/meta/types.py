@@ -83,6 +83,9 @@ class MetaStep:
     # New in P0-1: human-readable label for the step ribbon chip.
     # Empty string ⇒ frontend humanizes ``id``.
     label: str = ""
+    # Optional localized labels keyed by language bucket (for example
+    # ``{"zh": "风险审查", "en": "Risk review"}``).
+    label_by_language: dict[str, str] = field(default_factory=dict)
     # New in P0-1: whether the executor may emit per-step ``status_text``
     # updates via the run-progress event channel. ``tool_call`` defaults
     # to False (single deterministic call); ``agent`` / ``skill_exec``
@@ -104,6 +107,7 @@ class ClarifyField:
     type: str  # "string" | "enum" | "int" | "bool"
     required: bool = False
     prompt: str = ""
+    prompt_by_language: dict[str, str] = field(default_factory=dict)
     choices: tuple[str, ...] = ()
     default: Any = None
     min: int | None = None
@@ -126,6 +130,7 @@ class ClarifyStepConfig:
     cancel_keywords: tuple[str, ...] = ()
     timeout_hours: int = 24
     intro: str = ""
+    intro_by_language: dict[str, str] = field(default_factory=dict)
     nl_extract: bool = False
     nl_extract_tier: str = ""  # "" ⇒ lowest configured router tier
 
@@ -188,6 +193,7 @@ class MetaPreflightRequired:
     missing_fields: list[str] = field(default_factory=list)
     assumptions: list[str] = field(default_factory=list)
     can_skip: bool = True
+    requires_confirmation: bool = True
 
 
 @dataclass(frozen=True)

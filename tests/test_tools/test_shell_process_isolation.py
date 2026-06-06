@@ -71,6 +71,12 @@ def _ctx(
     )
 
 
+def _process_test_python() -> str:
+    if os.path.exists("/usr/bin/python3"):
+        return "/usr/bin/python3"
+    return sys.executable
+
+
 @pytest.fixture(autouse=True)
 def _reset_bg_sessions():
     previous = dict(shell._bg_sessions)
@@ -121,13 +127,14 @@ def test_background_process_result_surfaces_local_http_server_url() -> None:
 @pytest.mark.skipif(os.name != "posix", reason="process group behavior is POSIX-specific")
 @pytest.mark.asyncio
 async def test_exec_command_returns_when_shell_exits_even_if_descendant_holds_pipe() -> None:
+    python = _process_test_python()
     child_script = "import time; time.sleep(5)"
     parent_script = (
         "import subprocess, sys; "
         "subprocess.Popen([sys.executable, '-c', "
-        f"{child_script!r}], stdout=sys.stdout, stderr=sys.stderr)"
+            f"{child_script!r}], stdout=sys.stdout, stderr=sys.stderr)"
     )
-    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(parent_script)}"
+    command = f"{shlex.quote(python)} -c {shlex.quote(parent_script)}"
 
     started = time.monotonic()
     result = await shell.exec_command(command, timeout=1.0)
@@ -140,6 +147,7 @@ async def test_exec_command_returns_when_shell_exits_even_if_descendant_holds_pi
 @pytest.mark.skipif(os.name != "posix", reason="process group behavior is POSIX-specific")
 @pytest.mark.asyncio
 async def test_exec_command_cleans_descendant_after_shell_exits(tmp_path) -> None:
+    python = _process_test_python()
     marker = tmp_path / "descendant-ran"
     child_script = (
         "import pathlib, time; "
@@ -148,9 +156,9 @@ async def test_exec_command_cleans_descendant_after_shell_exits(tmp_path) -> Non
     parent_script = (
         "import subprocess, sys; "
         "subprocess.Popen([sys.executable, '-c', "
-        f"{child_script!r}])"
+            f"{child_script!r}])"
     )
-    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(parent_script)}"
+    command = f"{shlex.quote(python)} -c {shlex.quote(parent_script)}"
 
     result = await shell.exec_command(command, timeout=1.0)
     await asyncio.sleep(0.8)
@@ -162,7 +170,8 @@ async def test_exec_command_cleans_descendant_after_shell_exits(tmp_path) -> Non
 @pytest.mark.asyncio
 @pytest.mark.skipif(os.name != "posix", reason="POSIX shell quoting is required")
 async def test_exec_command_timeout_still_stops_foreground_process() -> None:
-    command = f"{shlex.quote(sys.executable)} -c {shlex.quote('import time; time.sleep(5)')}"
+    python = _process_test_python()
+    command = f"{shlex.quote(python)} -c {shlex.quote('import time; time.sleep(5)')}"
 
     started = time.monotonic()
     result = await shell.exec_command(command, timeout=0.1)

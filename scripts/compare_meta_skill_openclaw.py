@@ -16,10 +16,9 @@ import textwrap
 import time
 import uuid
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-
 
 REPORT_DIR = Path(
     os.environ.get("OPENSQUILLA_COMPARE_REPORT_DIR", ".reports/meta-skill-comparison")
@@ -112,53 +111,200 @@ def criterion(
 
 SKILL_RUBRICS: dict[str, tuple[RubricCriterion, ...]] = {
     "meta-web-research-to-report": (
-        criterion("question_framing", "States assumptions and decision context.", r"assumption", r"decision"),
-        criterion("source_quality", "Separates sources from claims.", r"source", r"citation", r"https?://"),
+        criterion(
+            "question_framing",
+            "States assumptions and decision context.",
+            r"assumption",
+            r"decision",
+        ),
+        criterion(
+            "source_quality", "Separates sources from claims.", r"source", r"citation", r"https?://"
+        ),
         criterion("claim_mapping", "Maps findings to evidence.", r"evidence", r"finding", r"claim"),
-        criterion("risk_tradeoff", "Names risks and tradeoffs.", r"risk", r"trade[- ]?off", r"limitation"),
-        criterion("memo_ready", "Produces a compact decision-memo artifact.", r"memo", r"recommendation", r"summary"),
+        criterion(
+            "risk_tradeoff", "Names risks and tradeoffs.", r"risk", r"trade[- ]?off", r"limitation"
+        ),
+        criterion(
+            "memo_ready",
+            "Produces a compact decision-memo artifact.",
+            r"memo",
+            r"recommendation",
+            r"summary",
+        ),
     ),
     "meta-paper-write": (
-        criterion("paper_sections", "Includes canonical manuscript sections.", r"abstract", r"introduction", r"method", r"evaluation"),
-        criterion("latex_ready", "Provides LaTeX or BibTeX-safe structure.", r"latex", r"\\begin", r"bib"),
-        criterion("citation_integrity", "Avoids fabricated citations by marking placeholders.", r"placeholder", r"citation", r"reference"),
-        criterion("length_plan", "Explains how the draft scales to a full paper.", r"page", r"expand", r"full version"),
-        criterion("limitations", "Includes limitations and threats to validity.", r"limitation", r"threat"),
+        criterion(
+            "paper_sections",
+            "Includes canonical manuscript sections.",
+            r"abstract",
+            r"introduction",
+            r"method",
+            r"evaluation",
+        ),
+        criterion(
+            "latex_ready", "Provides LaTeX or BibTeX-safe structure.", r"latex", r"\\begin", r"bib"
+        ),
+        criterion(
+            "citation_integrity",
+            "Avoids fabricated citations by marking placeholders.",
+            r"placeholder",
+            r"citation",
+            r"reference",
+        ),
+        criterion(
+            "length_plan",
+            "Explains how the draft scales to a full paper.",
+            r"page",
+            r"expand",
+            r"full version",
+        ),
+        criterion(
+            "limitations", "Includes limitations and threats to validity.", r"limitation", r"threat"
+        ),
     ),
     "meta-pdf-intelligence": (
-        criterion("page_traceability", "Preserves page-level evidence.", r"page\s+\d+", r"p\.\s*\d+"),
-        criterion("fact_digest", "Extracts facts rather than generic summary.", r"fact", r"key finding", r"digest"),
-        criterion("open_questions", "Lists open questions or missing evidence.", r"open question", r"unknown", r"missing"),
-        criterion("memory_index", "Builds a reusable memory/index structure.", r"memory index", r"index", r"tag"),
-        criterion("no_hallucinated_pdf", "Acknowledges missing document limits.", r"provided excerpt", r"cannot verify", r"upload"),
+        criterion(
+            "page_traceability", "Preserves page-level evidence.", r"page\s+\d+", r"p\.\s*\d+"
+        ),
+        criterion(
+            "fact_digest",
+            "Extracts facts rather than generic summary.",
+            r"fact",
+            r"key finding",
+            r"digest",
+        ),
+        criterion(
+            "open_questions",
+            "Lists open questions or missing evidence.",
+            r"open question",
+            r"unknown",
+            r"missing",
+        ),
+        criterion(
+            "memory_index",
+            "Builds a reusable memory/index structure.",
+            r"memory index",
+            r"index",
+            r"tag",
+        ),
+        criterion(
+            "no_hallucinated_pdf",
+            "Acknowledges missing document limits.",
+            r"provided excerpt",
+            r"cannot verify",
+            r"upload",
+        ),
     ),
     "meta-stack-trace-investigator": (
-        criterion("frame_parsing", "Identifies failing frame, exception, and data shape.", r"KeyError", r"frame", r"parse"),
-        criterion("root_cause", "Provides ranked root-cause hypotheses.", r"root cause", r"hypothesis", r"likely"),
+        criterion(
+            "frame_parsing",
+            "Identifies failing frame, exception, and data shape.",
+            r"KeyError",
+            r"frame",
+            r"parse",
+        ),
+        criterion(
+            "root_cause",
+            "Provides ranked root-cause hypotheses.",
+            r"root cause",
+            r"hypothesis",
+            r"likely",
+        ),
         criterion("repo_search", "Gives concrete repo search targets.", r"rg ", r"grep", r"search"),
-        criterion("reproduction", "Gives a reproduction or focused check.", r"repro", r"fixture", r"minimal"),
-        criterion("verification", "Gives exact verification commands.", r"pytest", r"command", r"verify"),
+        criterion(
+            "reproduction",
+            "Gives a reproduction or focused check.",
+            r"repro",
+            r"fixture",
+            r"minimal",
+        ),
+        criterion(
+            "verification", "Gives exact verification commands.", r"pytest", r"command", r"verify"
+        ),
     ),
     "meta-travel-planner": (
-        criterion("constraint_capture", "Captures dates, party, pace, budget, and interests.", r"assumption", r"constraint", r"budget"),
-        criterion("geo_grouping", "Groups activities by neighborhood/transit.", r"neighborhood", r"transit", r"route"),
-        criterion("daily_schedule", "Produces day-by-day itinerary.", r"day\s+1", r"day\s+2", r"schedule"),
-        criterion("weather_backup", "Includes rain or weather backup plan.", r"rain", r"weather", r"backup"),
-        criterion("variants", "Includes variants or alternatives.", r"variant", r"alternative", r"swap"),
+        criterion(
+            "constraint_capture",
+            "Captures dates, party, pace, budget, and interests.",
+            r"assumption",
+            r"constraint",
+            r"budget",
+        ),
+        criterion(
+            "geo_grouping",
+            "Groups activities by neighborhood/transit.",
+            r"neighborhood",
+            r"transit",
+            r"route",
+        ),
+        criterion(
+            "daily_schedule", "Produces day-by-day itinerary.", r"day\s+1", r"day\s+2", r"schedule"
+        ),
+        criterion(
+            "weather_backup",
+            "Includes rain or weather backup plan.",
+            r"rain",
+            r"weather",
+            r"backup",
+        ),
+        criterion(
+            "variants", "Includes variants or alternatives.", r"variant", r"alternative", r"swap"
+        ),
     ),
     "meta-skill-creator": (
         criterion("trigger_inputs", "Defines triggers and inputs.", r"trigger", r"input"),
-        criterion("step_graph", "Defines a workflow graph or ordered steps.", r"step", r"graph", r"workflow"),
-        criterion("skill_preview", "Shows a SKILL.md-style preview.", r"SKILL\.md", r"```", r"name:"),
-        criterion("collision_risk", "Checks collisions with existing skills.", r"collision", r"overlap", r"existing"),
-        criterion("gates", "Defines lint, smoke, safety, or install gates.", r"gate", r"lint", r"smoke"),
+        criterion(
+            "step_graph",
+            "Defines a workflow graph or ordered steps.",
+            r"step",
+            r"graph",
+            r"workflow",
+        ),
+        criterion(
+            "skill_preview", "Shows a SKILL.md-style preview.", r"SKILL\.md", r"```", r"name:"
+        ),
+        criterion(
+            "collision_risk",
+            "Checks collisions with existing skills.",
+            r"collision",
+            r"overlap",
+            r"existing",
+        ),
+        criterion(
+            "gates", "Defines lint, smoke, safety, or install gates.", r"gate", r"lint", r"smoke"
+        ),
     ),
     "meta-migration-assistant": (
-        criterion("migration_scope", "Identifies source and target migration states.", r"CommonJS", r"ESM", r"from", r"to"),
-        criterion("breaking_changes", "Names breaking changes.", r"breaking", r"interop", r"compat"),
-        criterion("grep_patterns", "Provides grep/search patterns.", r"rg ", r"grep", r"require\(", r"module\.exports"),
-        criterion("validation_commands", "Provides validation commands.", r"test", r"build", r"command", r"verify"),
-        criterion("rollout_risk", "Includes staged rollout risks.", r"rollout", r"risk", r"rollback"),
+        criterion(
+            "migration_scope",
+            "Identifies source and target migration states.",
+            r"CommonJS",
+            r"ESM",
+            r"from",
+            r"to",
+        ),
+        criterion(
+            "breaking_changes", "Names breaking changes.", r"breaking", r"interop", r"compat"
+        ),
+        criterion(
+            "grep_patterns",
+            "Provides grep/search patterns.",
+            r"rg ",
+            r"grep",
+            r"require\(",
+            r"module\.exports",
+        ),
+        criterion(
+            "validation_commands",
+            "Provides validation commands.",
+            r"test",
+            r"build",
+            r"command",
+            r"verify",
+        ),
+        criterion(
+            "rollout_risk", "Includes staged rollout risks.", r"rollout", r"risk", r"rollback"
+        ),
     ),
 }
 
@@ -229,9 +375,9 @@ COMPARISON_CASES: list[ComparisonCase] = [
         prompt=(
             "Can you investigate this stack trace from our agent runtime?\n"
             "Traceback (most recent call last):\n"
-            "  File \"src/agent/runtime.py\", line 88, in run_step\n"
+            '  File "src/agent/runtime.py", line 88, in run_step\n'
             "    payload = parse_tool_result(raw)\n"
-            "  File \"src/agent/tools.py\", line 41, in parse_tool_result\n"
+            '  File "src/agent/tools.py", line 41, in parse_tool_result\n'
             "    return json.loads(raw)['result']\n"
             "KeyError: 'result'\n\n"
             "I need root-cause hypotheses, repo search targets, related checks, "
@@ -451,8 +597,7 @@ COMPARISON_CASES.extend(
                 "and preserve provenance in the output."
             ),
             optimization_if_not_better=(
-                "Add a multi-document excerpt mode that renders evidence matrices "
-                "before synthesis."
+                "Add a multi-document excerpt mode that renders evidence matrices before synthesis."
             ),
             failure_modes=(
                 "Merges Doc A and Doc B without provenance.",
@@ -475,8 +620,7 @@ COMPARISON_CASES.extend(
                 "diagnostic collection plan."
             ),
             optimization_if_not_better=(
-                "Improve ambiguous-error mode with evidence requirements before root "
-                "cause claims."
+                "Improve ambiguous-error mode with evidence requirements before root cause claims."
             ),
             failure_modes=(
                 "Claims a single root cause without evidence.",
@@ -576,8 +720,7 @@ COMPARISON_CASES.extend(
                 "drafting a new meta-skill."
             ),
             optimization_if_not_better=(
-                "Add stronger no-new-skill and collision-first gates to the creator "
-                "workflow."
+                "Add stronger no-new-skill and collision-first gates to the creator workflow."
             ),
             failure_modes=(
                 "Creates a full skill without collision analysis.",
@@ -624,8 +767,7 @@ COMPARISON_CASES.extend(
                 "migration guide."
             ),
             optimization_if_not_better=(
-                "Improve repo-evidence gating and make unsupported assumptions show "
-                "up as blockers."
+                "Improve repo-evidence gating and make unsupported assumptions show up as blockers."
             ),
             failure_modes=(
                 "Invents repository files.",
@@ -648,8 +790,7 @@ COMPARISON_CASES.extend(
                 "risk controls instead of only syntax changes."
             ),
             optimization_if_not_better=(
-                "Strengthen rollout-risk handling for migrations that affect "
-                "downstream consumers."
+                "Strengthen rollout-risk handling for migrations that affect downstream consumers."
             ),
             failure_modes=(
                 "Only describes import/export syntax.",
@@ -745,11 +886,7 @@ def score_generic_response(text: str) -> ResponseScore:
             ),
         ),
     }
-    notes = [
-        name
-        for name, value in dimensions.items()
-        if value <= 1
-    ]
+    notes = [name for name, value in dimensions.items() if value <= 1]
     return ResponseScore(total=sum(dimensions.values()), dimensions=dimensions, notes=notes)
 
 
@@ -779,9 +916,7 @@ def response_excerpt(text: str, *, max_chars: int = 12000) -> str:
     head = max_chars // 2
     tail = max_chars - head
     return (
-        stripped[:head]
-        + "\n\n[... middle truncated for judge prompt ...]\n\n"
-        + stripped[-tail:]
+        stripped[:head] + "\n\n[... middle truncated for judge prompt ...]\n\n" + stripped[-tail:]
     )
 
 
@@ -799,10 +934,7 @@ def build_judge_prompt(
     opensquilla: EndpointResult,
     openclaw: EndpointResult,
 ) -> str:
-    rubric = "\n".join(
-        f"- {item.name}: {item.description}"
-        for item in rubric_for_case(case)
-    )
+    rubric = "\n".join(f"- {item.name}: {item.description}" for item in rubric_for_case(case))
     failure_modes = "\n".join(f"- {item}" for item in case.failure_modes) or "- None listed"
     return textwrap.dedent(
         f"""
@@ -986,7 +1118,9 @@ def _load_json_object(text: str) -> dict[str, Any]:
     if fallback:
         return fallback
     excerpt = text.strip().replace("\n", " ")[:500]
-    raise ValueError(f"judge response was not parseable JSON: {'; '.join(errors[:3])}; excerpt={excerpt!r}")
+    raise ValueError(
+        f"judge response was not parseable JSON: {'; '.join(errors[:3])}; excerpt={excerpt!r}"
+    )
 
 
 def _load_json_object_from_fields(text: str) -> dict[str, Any] | None:
@@ -1070,18 +1204,12 @@ def extract_text_from_events(events: list[dict[str, Any]]) -> str:
             continue
         is_toolish = _is_tool_or_meta_step_event(event, payload)
         message = payload.get("message")
-        if (
-            isinstance(message, dict)
-            and message.get("role") == "assistant"
-            and not is_toolish
-        ):
+        if isinstance(message, dict) and message.get("role") == "assistant" and not is_toolish:
             assistant_candidates.extend(texts)
             continue
         if not is_toolish:
             fallback_candidates.extend(texts)
-            delta_candidates.extend(
-                text for text in delta_texts if text not in texts
-            )
+            delta_candidates.extend(text for text in delta_texts if text not in texts)
 
     for candidates in (terminal_candidates, assistant_candidates, fallback_candidates):
         if candidates:
@@ -1299,9 +1427,7 @@ class OpenSquillaRunner:
         session_key: str | None = None,
     ) -> dict[str, Any]:
         req_id = str(uuid.uuid4())
-        await ws.send(
-            json.dumps({"type": "req", "id": req_id, "method": method, "params": params})
-        )
+        await ws.send(json.dumps({"type": "req", "id": req_id, "method": method, "params": params}))
         while True:
             frame = json.loads(await ws.recv())
             if frame.get("type") == "event":
@@ -1475,9 +1601,7 @@ class OpenClawRunner:
         session_key: str | None = None,
     ) -> dict[str, Any]:
         req_id = str(uuid.uuid4())
-        await ws.send(
-            json.dumps({"type": "req", "id": req_id, "method": method, "params": params})
-        )
+        await ws.send(json.dumps({"type": "req", "id": req_id, "method": method, "params": params}))
         while True:
             frame = json.loads(await ws.recv())
             if frame.get("type") == "event":
@@ -1648,9 +1772,7 @@ def _latest_opensquilla_transcript_text(session_key: str) -> str:
 
     if not session_key:
         return ""
-    state_db = Path(
-        os.environ.get("OPENSQUILLA_STATE_DB", "/root/.opensquilla/state/sessions.db")
-    )
+    state_db = Path(os.environ.get("OPENSQUILLA_STATE_DB", "/root/.opensquilla/state/sessions.db"))
     if not state_db.exists():
         return ""
     try:
@@ -1672,9 +1794,7 @@ def _latest_opensquilla_transcript_text(session_key: str) -> str:
 def _latest_opensquilla_meta_final_text(session_key: str) -> str:
     if not session_key:
         return ""
-    state_db = Path(
-        os.environ.get("OPENSQUILLA_STATE_DB", "/root/.opensquilla/state/sessions.db")
-    )
+    state_db = Path(os.environ.get("OPENSQUILLA_STATE_DB", "/root/.opensquilla/state/sessions.db"))
     if not state_db.exists():
         return ""
     try:
@@ -1785,9 +1905,7 @@ async def _wait_for_openclaw_session_file_events(
         await asyncio.sleep(interval_s)
 
 
-def _resolve_openclaw_session_path(
-    session_file: Any, state_dir: Path | None
-) -> Path | None:
+def _resolve_openclaw_session_path(session_file: Any, state_dir: Path | None) -> Path | None:
     if not isinstance(session_file, str) or not session_file.strip():
         return None
     if state_dir is not None and session_file.startswith("$OPENCLAW_STATE_DIR/"):
@@ -1947,7 +2065,7 @@ async def run_live(args: argparse.Namespace) -> list[dict[str, Any]]:
         )
 
     rows: list[dict[str, Any]] = []
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     for case in selected:
         print(f"running {case.case_id} ...", flush=True)
         sq_result, claw_result = await asyncio.gather(
@@ -1989,7 +2107,7 @@ async def judge_existing(args: argparse.Namespace) -> list[dict[str, Any]]:
         if line.strip()
     ]
     judged_rows: list[dict[str, Any]] = []
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     for row in rows:
         case = case_from_row(row)
         opensquilla = endpoint_from_row(row, "opensquilla")
@@ -2052,7 +2170,9 @@ def apply_judge_result(
     updated["winner"] = winner
     updated["score_basis"] = "llm_judge"
     updated["opensquilla_better"] = winner == "opensquilla"
-    updated["recommended_optimization"] = None if winner == "opensquilla" else case.optimization_if_not_better
+    updated["recommended_optimization"] = (
+        None if winner == "opensquilla" else case.optimization_if_not_better
+    )
     updated.pop("judge_error", None)
     return updated
 
@@ -2184,7 +2304,7 @@ def case_to_dict(case: ComparisonCase) -> dict[str, Any]:
 def write_reports(rows: list[dict[str, Any]], stamp: str | None = None) -> None:
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     if stamp is None:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     jsonl_path = REPORT_DIR / f"openclaw_vs_opensquilla_meta_skill_{stamp}.jsonl"
     md_path = REPORT_DIR / f"openclaw_vs_opensquilla_meta_skill_{stamp}.md"
     prompts_path = REPORT_DIR / f"openclaw_vs_opensquilla_meta_skill_prompts_{stamp}.md"
@@ -2224,24 +2344,26 @@ def render_markdown(rows: list[dict[str, Any]], jsonl_path: Path) -> str:
     if judged:
         lines.append(f"Final winner uses LLM judge for {len(judged)}/{total} rows.")
     else:
-        lines.append("Final winner uses deterministic rubric scoring; no LLM judge rows are present.")
+        lines.append(
+            "Final winner uses deterministic rubric scoring; no LLM judge rows are present."
+        )
     if failed:
         lines.append(f"Cases with endpoint errors/timeouts: {', '.join(failed)}.")
     else:
         lines.append("No endpoint errors or timeouts were recorded.")
     if claw_wins or ties or failed:
-        lines.append(
-            "Rows that do not show an OpenSquilla win include an optimization note."
-        )
+        lines.append("Rows that do not show an OpenSquilla win include an optimization note.")
     else:
         lines.append("All completed cases favored OpenSquilla under this rubric.")
-    lines.extend([
-        "",
-        "## Score Table",
-        "",
-        "| Case | OpenSquilla | OpenClaw | Baseline | Judge | Winner | Optimization |",
-        "| --- | ---: | ---: | --- | --- | --- | --- |",
-    ])
+    lines.extend(
+        [
+            "",
+            "## Score Table",
+            "",
+            "| Case | OpenSquilla | OpenClaw | Baseline | Judge | Winner | Optimization |",
+            "| --- | ---: | ---: | --- | --- | --- | --- |",
+        ]
+    )
     for row in rows:
         opt = row["recommended_optimization"] or ""
         judge = row.get("judge") if isinstance(row.get("judge"), dict) else None
@@ -2299,7 +2421,10 @@ def render_markdown(rows: list[dict[str, Any]], jsonl_path: Path) -> str:
             scores = judge.get("scores") if isinstance(judge.get("scores"), dict) else {}
             risks = judge.get("risks") if isinstance(judge.get("risks"), list) else []
             lines.append(
-                "- Judge: winner={winner}, scores={sq}-{claw}, confidence={confidence}, model={model}".format(
+                (
+                    "- Judge: winner={winner}, scores={sq}-{claw}, "
+                    "confidence={confidence}, model={model}"
+                ).format(
                     winner=judge.get("winner"),
                     sq=scores.get("opensquilla"),
                     claw=scores.get("openclaw"),

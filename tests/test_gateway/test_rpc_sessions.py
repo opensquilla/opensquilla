@@ -943,6 +943,50 @@ class TestSessionsSend:
         assert runtime.enqueue_calls[0]["fresh_user_session"] is False
 
     @pytest.mark.asyncio
+    async def test_send_strips_hidden_preflight_payload_before_task_runtime(
+        self, dispatcher, session
+    ):
+        class RecordingTaskRuntime:
+            def __init__(self) -> None:
+                self.enqueue_calls: list[dict[str, Any]] = []
+
+            async def enqueue(self, envelope, message: str, **kwargs: Any):
+                self.enqueue_calls.append(
+                    {"envelope": envelope, "message": message, **kwargs}
+                )
+                return SimpleNamespace(
+                    task_id="task-1",
+                    session_key=envelope.session_key,
+                    status="queued",
+                )
+
+        runtime = RecordingTaskRuntime()
+        manager = FakeSessionManager([session])
+        ctx = make_ctx(session_manager=manager, task_runtime=runtime)
+        hidden_message = (
+            "Original visible request\n\n"
+            "Confirmed request fields:\n"
+            "- audience: decision owner\n\n"
+            "<!-- opensquilla:meta_preflight_confirmed=1 -->\n"
+            "<!-- opensquilla:meta_preflight_run_id=01KTCQUEUE -->"
+        )
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.send",
+            {
+                "key": session.session_key,
+                "message": hidden_message,
+                "_source": {"caller_kind": "web", "channel_kind": "webchat"},
+            },
+            ctx,
+        )
+
+        assert res.ok is True
+        assert runtime.enqueue_calls[0]["message"] == "Original visible request"
+        assert runtime.enqueue_calls[0]["semantic_message"] == hidden_message
+
+    @pytest.mark.asyncio
     async def test_send_marks_direct_runner_empty_transcript_as_fresh_user_session(
         self, dispatcher
     ):
@@ -1172,6 +1216,137 @@ class TestSessionsSend:
         assert cli_persisted["text"] == "Describe these attachments"
         assert "display_text" not in cli_persisted
         assert cli_runner.run_calls[0]["message"] == "Describe these attachments"
+
+    @pytest.mark.asyncio
+    async def test_send_persists_web_display_text_without_attachments(
+        self,
+        dispatcher,
+    ):
+        session = FakeSession(
+            session_key="agent:main:webchat:hidden-confirmation",
+            session_id="hidden-confirmation",
+        )
+        manager = FakeSessionManager([session])
+        runner = _RecordingTurnRunner()
+        ctx = make_ctx(session_manager=manager, turn_runner=runner)
+        hidden_message = (
+            "Confirmed request fields:\n"
+            "- audience: decision owner\n\n"
+            "<!-- opensquilla:meta_preflight_confirmed=1 -->"
+        )
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.send",
+            {
+                "key": session.session_key,
+                "message": hidden_message,
+                "displayText": "请帮我判断这份供应商续费材料",
+                "_source": {"caller_kind": "web", "channel_kind": "webchat"},
+            },
+            ctx,
+        )
+        task = get_agent_task_registry().get(session.session_key)
+        if task is not None:
+            await task
+
+        assert res.ok is True
+        persisted = json.loads(manager.created_messages[0][2])
+        assert persisted["text"] == hidden_message
+        assert persisted["display_text"] == "请帮我判断这份供应商续费材料"
+        assert persisted["attachments"] == []
+        assert runner.run_calls[0]["message"] == ""
+        assert runner.run_calls[0]["semantic_message"] == hidden_message
+
+    @pytest.mark.asyncio
+    async def test_send_sanitizes_legacy_web_preflight_confirmation_display_text(
+        self,
+        dispatcher,
+    ):
+        session = FakeSession(
+            session_key="agent:main:webchat:legacy-hidden-confirmation",
+            session_id="legacy-hidden-confirmation",
+        )
+        manager = FakeSessionManager([session])
+        runner = _RecordingTurnRunner()
+        ctx = make_ctx(session_manager=manager, turn_runner=runner)
+        original = (
+            "请帮我判断这份供应商续费材料：这个合同要不要签、拒绝还是谈判，并给我一份决策表。\n\n"
+            "合同摘录：\n"
+            "- 服务期：2026-07-01 到 2027-06-30\n"
+            "- 价格：每月 $4,800，较上一年上涨 38%"
+        )
+        hidden_message = (
+            "请帮我判断这份供应商续费材料：这个合同要不要签、拒绝还是谈判，并给我一份决策表。\n\n"
+            f"{original}\n\n"
+            "Confirmed request fields:\n"
+            "- audience: decision owner\n"
+            "- decision_question: 签不签合同\n\n"
+            "<!-- opensquilla:meta_preflight_confirmed=1 -->\n"
+            "<!-- opensquilla:meta_preflight_run_id=01KTC2NFJ4ZXB20PSNTJEKYPS7 -->\n"
+            "<!-- opensquilla:meta_preflight_fields=abc -->"
+        )
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.send",
+            {
+                "key": session.session_key,
+                "message": hidden_message,
+                "_source": {"caller_kind": "web", "channel_kind": "webchat"},
+            },
+            ctx,
+        )
+        task = get_agent_task_registry().get(session.session_key)
+        if task is not None:
+            await task
+
+        assert res.ok is True
+        persisted = json.loads(manager.created_messages[0][2])
+        assert persisted["text"] == hidden_message
+        assert persisted["display_text"] == original
+        assert "Confirmed request fields" not in persisted["display_text"]
+        assert "opensquilla:meta_preflight_confirmed" not in persisted["display_text"]
+        assert runner.run_calls[0]["message"] == original
+        assert runner.run_calls[0]["semantic_message"] == hidden_message
+
+    @pytest.mark.asyncio
+    async def test_send_hides_marker_only_web_preflight_confirmation_display_text(
+        self,
+        dispatcher,
+    ):
+        session = FakeSession(
+            session_key="agent:main:webchat:marker-only-hidden-confirmation",
+            session_id="marker-only-hidden-confirmation",
+        )
+        manager = FakeSessionManager([session])
+        runner = _RecordingTurnRunner()
+        ctx = make_ctx(session_manager=manager, turn_runner=runner)
+        hidden_message = (
+            "<!-- opensquilla:meta_preflight_confirmed=1 -->\n"
+            "<!-- opensquilla:meta_preflight_run_id=01KTCMARKERONLY -->"
+        )
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.send",
+            {
+                "key": session.session_key,
+                "message": hidden_message,
+                "_source": {"caller_kind": "web", "channel_kind": "webchat"},
+            },
+            ctx,
+        )
+        task = get_agent_task_registry().get(session.session_key)
+        if task is not None:
+            await task
+
+        assert res.ok is True
+        persisted = json.loads(manager.created_messages[0][2])
+        assert persisted["text"] == hidden_message
+        assert persisted["display_text"] == ""
+        assert runner.run_calls[0]["message"] == ""
+        assert runner.run_calls[0]["semantic_message"] == hidden_message
 
     @pytest.mark.asyncio
     async def test_web_large_paste_is_normalized_before_turn_runner(
@@ -1440,6 +1615,47 @@ class TestSessionsSend:
         persisted = json.loads(chat_manager.created_messages[0][2])
         assert persisted["text"] == placeholder
         assert persisted["display_text"] == ""
+
+    @pytest.mark.asyncio
+    async def test_chat_send_forwards_display_text_without_attachments(
+        self,
+        dispatcher,
+    ):
+        assert rpc_chat._handle_chat_send is not None
+        chat_session = FakeSession(
+            session_key="agent:main:webchat:chat-hidden-confirmation",
+            session_id="chat-hidden-confirmation",
+        )
+        chat_manager = FakeSessionManager([chat_session])
+        chat_runner = _RecordingTurnRunner()
+        chat_ctx = make_ctx(session_manager=chat_manager, turn_runner=chat_runner)
+        hidden_message = (
+            "Confirmed request fields:\n"
+            "- audience: decision owner\n\n"
+            "<!-- opensquilla:meta_preflight_confirmed=1 -->"
+        )
+
+        res = await dispatcher.dispatch(
+            "r-chat-hidden-confirmation",
+            "chat.send",
+            {
+                "sessionKey": chat_session.session_key,
+                "message": hidden_message,
+                "displayText": "请帮我判断这份供应商续费材料",
+            },
+            chat_ctx,
+        )
+        chat_task = get_agent_task_registry().get(chat_session.session_key)
+        if chat_task is not None:
+            await chat_task
+
+        assert res.ok is True
+        persisted = json.loads(chat_manager.created_messages[0][2])
+        assert persisted["text"] == hidden_message
+        assert persisted["display_text"] == "请帮我判断这份供应商续费材料"
+        assert persisted["attachments"] == []
+        assert chat_runner.run_calls[0]["message"] == ""
+        assert chat_runner.run_calls[0]["semantic_message"] == hidden_message
 
     @pytest.mark.asyncio
     async def test_chat_send_client_normalized_paste_preserves_provenance(

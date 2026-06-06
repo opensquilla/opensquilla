@@ -76,36 +76,48 @@ def _english_field_prompt(field: ClarifyField) -> str:
     return prompt
 
 
+def _language_key(inputs: Mapping[str, Any]) -> str:
+    raw = str(inputs.get("user_language") or "").strip().lower()
+    if raw.startswith("zh") or raw in {"chinese", "中文"}:
+        return "zh"
+    if raw.startswith("en") or raw in {"english", "英文"}:
+        return "en"
+    return ""
+
+
 def _localize_clarify_config(
     cfg: ClarifyStepConfig,
     inputs: dict[str, Any],
 ) -> ClarifyStepConfig:
-    if str(inputs.get("user_language") or "").lower() != "en":
+    language = _language_key(inputs)
+    if not language:
         return cfg
     fields = tuple(
-        ClarifyField(
-            name=field.name,
-            type=field.type,
-            required=field.required,
-            prompt=_english_field_prompt(field),
-            choices=field.choices,
-            default=field.default,
-            min=field.min,
-            max=field.max,
-            max_chars=field.max_chars,
+        replace(
+            field,
+            prompt=(
+                field.prompt_by_language.get(language)
+                or (_english_field_prompt(field) if language == "en" else field.prompt)
+            ),
         )
         for field in cfg.fields
     )
     intro = cfg.intro
-    if not intro.strip() or _contains_cjk(intro):
+    if cfg.intro_by_language.get(language):
+        intro = cfg.intro_by_language[language]
+    elif language == "en" and (not intro.strip() or _contains_cjk(intro)):
         intro = _EN_INTRO
+    cancel_keywords = cfg.cancel_keywords
+    if language == "en":
+        cancel_keywords = tuple(kw for kw in cfg.cancel_keywords if not _contains_cjk(kw))
     return ClarifyStepConfig(
         mode=cfg.mode,
         fields=fields,
         skip_if=cfg.skip_if,
-        cancel_keywords=tuple(kw for kw in cfg.cancel_keywords if not _contains_cjk(kw)),
+        cancel_keywords=cancel_keywords,
         timeout_hours=cfg.timeout_hours,
         intro=intro,
+        intro_by_language=cfg.intro_by_language,
         nl_extract=cfg.nl_extract,
         nl_extract_tier=cfg.nl_extract_tier,
     )
@@ -191,8 +203,8 @@ async def run_user_input_step(
             log.info("meta_user_input.skipped", step=step.id)
             return ""
 
-    rendered_cfg = _render_clarify_config(cfg, inputs=inputs, outputs=outputs)
-    rendered_cfg = _localize_clarify_config(rendered_cfg, inputs)
+    localized_cfg = _localize_clarify_config(cfg, inputs)
+    rendered_cfg = _render_clarify_config(localized_cfg, inputs=inputs, outputs=outputs)
 
     # Step c: pre-fill scan — pull field values out of the context the
     # user already supplied (original_user_message,

@@ -13,6 +13,8 @@
     failed: '✗',
     skipped: '↷',
     substituted: '⇄',
+    paused: 'Ⅱ',
+    cancelled: '−',
   };
   const RESCUE_ACTION_IDS = new Set([
     'retry-run',
@@ -53,7 +55,7 @@
   function updateStep(state, stepStateEvent) {
     const step = state.steps.find((s) => s.id === stepStateEvent.step_id);
     if (!step) return state;
-    step.state = stepStateEvent.state;
+    step.state = normalizeStateClass(stepStateEvent.state);
     if (stepStateEvent.status_text != null) step.statusText = stepStateEvent.status_text;
     if (stepStateEvent.error) step.error = stepStateEvent.error;
     if (stepStateEvent.substitute_for) step.substituteFor = stepStateEvent.substitute_for;
@@ -66,7 +68,7 @@
   }
 
   function completeRun(state, completedEvent) {
-    state.runOutcome = completedEvent.outcome;
+    state.runOutcome = normalizeRunOutcome(completedEvent.outcome);
     const completed = new Set(completedEvent.completed_steps || []);
     const failed = new Set(completedEvent.failed_steps || []);
     const recovered = new Set(completedEvent.recovered_steps || []);
@@ -104,25 +106,58 @@
 
     const currentStep = runningIndex >= 0 ? state.steps[runningIndex] : null;
     const statusText = currentStep ? currentStep.statusText || '运行中…' : '';
+    const currentLabel = currentStep
+      ? currentStep.label
+      : (state.runOutcome ? humanizeStepId(state.runOutcome) : 'Preparing steps');
+    const progressPercent = state.total > 0
+      ? Math.max(0, Math.min(100, Math.round((headerIndex / state.total) * 100)))
+      : 0;
+    const overallState = normalizeStateClass(
+      currentStep ? currentStep.state : (state.runOutcome || 'pending'),
+    );
+    const counterText = `Step ${headerIndex} of ${state.total}`;
+    const stepsId = `meta-ribbon-steps-${state.runId || 'current'}`;
 
     rootEl.innerHTML = `
-      <header class="meta-ribbon-head">
-        <button class="meta-ribbon-toggle" aria-label="折叠/展开 ribbon">${state.collapsed ? '▶' : '▼'}</button>
-        <span class="meta-ribbon-title">${escapeHtml(state.metaSkillName)}</span>
-        <span class="meta-ribbon-counter">${headerIndex}/${state.total}</span>
-      </header>
-      <ol class="meta-ribbon-chips" aria-live="polite">
-        ${state.steps.map((s, i) => `
-          <li class="chip ${s.state}" data-step-id="${escapeAttr(s.id)}"
-              tabindex="0"
-              aria-label="step ${i + 1} of ${state.total}: ${escapeAttr(s.label)} ${s.state}">
-            ${stepGlyph(s)} ${escapeHtml(s.label)}
-          </li>
-        `).join('')}
-      </ol>
-      <div class="meta-ribbon-status">${escapeHtml(statusText)}</div>
-      <div class="meta-ribbon-actions" ${shouldShowActions(state) ? '' : 'hidden'}>
-        ${shouldShowActions(state) ? renderActions(state) : ''}
+      <div class="meta-ribbon-shell">
+        <header class="meta-ribbon-head">
+          <span class="meta-ribbon-icon ${overallState}" aria-label="${escapeAttr(humanizeStepId(overallState))}">
+            ${escapeHtml(stateIcon(overallState))}
+          </span>
+          <span class="meta-ribbon-title">${escapeHtml(state.metaSkillName)}</span>
+          <span class="meta-ribbon-counter">${escapeHtml(counterText)}</span>
+          <button class="meta-ribbon-toggle"
+                  aria-label="折叠/展开步骤"
+                  aria-controls="${escapeAttr(stepsId)}"
+                  aria-expanded="${String(!state.collapsed)}">${state.collapsed ? '展开' : '收起'}</button>
+        </header>
+        <div class="meta-ribbon-main" aria-live="polite">
+          <div class="meta-ribbon-current">${escapeHtml(currentLabel)}</div>
+          <div class="meta-ribbon-status">${escapeHtml(statusText)}</div>
+        </div>
+        <div class="meta-ribbon-track"
+             role="progressbar"
+             aria-label="${escapeAttr(`${state.metaSkillName} run progress`)}"
+             aria-valuenow="${progressPercent}"
+             aria-valuemin="0"
+             aria-valuemax="100">
+          <div class="meta-ribbon-fill" style="width: ${progressPercent}%"></div>
+        </div>
+        <ol class="meta-ribbon-chips" id="${escapeAttr(stepsId)}" aria-live="polite">
+          ${state.steps.map((s, i) => {
+            const safeStepState = normalizeStateClass(s.state);
+            return `
+            <li class="chip ${safeStepState}" data-step-id="${escapeAttr(s.id)}"
+                tabindex="0"
+                aria-label="step ${i + 1} of ${state.total}: ${escapeAttr(s.label)} ${safeStepState}">
+              ${stepGlyph(s)} ${escapeHtml(s.label)}
+            </li>
+          `;
+          }).join('')}
+        </ol>
+        <div class="meta-ribbon-actions" ${shouldShowActions(state) ? '' : 'hidden'}>
+          ${shouldShowActions(state) ? renderActions(state) : ''}
+        </div>
       </div>
     `;
 
@@ -133,12 +168,41 @@
     return rootEl;
   }
 
+  function normalizeStateClass(value) {
+    const state = String(value || 'pending').toLowerCase();
+    return [
+      'pending',
+      'running',
+      'succeeded',
+      'failed',
+      'skipped',
+      'substituted',
+      'paused',
+      'cancelled',
+    ]
+      .includes(state)
+      ? state
+      : 'pending';
+  }
+
+  function normalizeRunOutcome(value) {
+    const outcome = String(value || '').toLowerCase();
+    if (outcome === 'ok' || outcome === 'success' || outcome === 'completed') return 'succeeded';
+    if (outcome === 'canceled') return 'cancelled';
+    return normalizeStateClass(outcome || 'pending');
+  }
+
   function shouldShowActions(state) {
     return state.runOutcome === 'failed' && state.steps.some((s) => s.state === 'failed');
   }
 
   function stepGlyph(step) {
-    return step.substituteFor ? STATE_GLYPH.substituted : (STATE_GLYPH[step.state] || '○');
+    const state = normalizeStateClass(step.state);
+    return step.substituteFor ? STATE_GLYPH.substituted : (STATE_GLYPH[state] || '○');
+  }
+
+  function stateIcon(state) {
+    return STATE_GLYPH[state] || '○';
   }
 
   function renderActions(state) {

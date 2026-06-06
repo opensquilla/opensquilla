@@ -32,6 +32,7 @@ from opensquilla.engine.types import (
     ToolUseStartEvent,
 )
 from opensquilla.engine.usage import usage_scope
+from opensquilla.meta_preflight_protocol import strip_preflight_confirmation_protocol_text
 from opensquilla.skills.meta.events import _FailoverTriggered, _StepDone
 from opensquilla.skills.meta.parser import topological_order
 from opensquilla.skills.meta.templating import (
@@ -49,7 +50,6 @@ from opensquilla.skills.meta.types import (
 
 log = structlog.get_logger(__name__)
 
-
 # Surface-side hint copy that ships in every clarify_skip_summary so a
 # renderer always has a sensible default label. Surfaces are free to
 # replace it with localised copy via the ``label`` key.
@@ -57,6 +57,14 @@ _CLARIFY_SKIP_DEFAULT_LABEL = (
     "We inferred the answers below from earlier context. "
     "Confirm to continue, or reply 'change <field>' to redo."
 )
+_CLARIFY_SKIP_LABEL_BY_LANGUAGE = {
+    "zh": "已从前文推断出下面信息。确认即可继续；如需修改，请回复“修改 <字段>”。",
+    "en": _CLARIFY_SKIP_DEFAULT_LABEL,
+}
+_CLARIFY_SKIP_HINT_BY_LANGUAGE = {
+    "zh": "回复“修改 <字段>”重新填写",
+    "en": "reply 'change <field>' to redo",
+}
 
 # How many characters of each upstream context excerpt to ship to the
 # surface. Bounded so a 4 KB step output doesn't bloat every tool
@@ -97,8 +105,74 @@ def _preflight_missing_fields(
     return missing
 
 
-def _preflight_assumptions(request_template: dict[str, Any]) -> list[str]:
-    raw = request_template.get("assumptions", [])
+def _language_suffix(language: object) -> str:
+    return "zh" if str(language).lower().startswith("zh") else "en"
+
+
+def _localized_scalar(mapping: dict[str, Any], key: str, language: str) -> Any:
+    suffix = _language_suffix(language)
+    for candidate in (f"{key}_{suffix}", f"{key}_{suffix.upper()}"):
+        value = mapping.get(candidate)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, list):
+            return value
+    value = mapping.get(key)
+    if isinstance(value, dict):
+        localized = value.get(suffix) or value.get(suffix.upper()) or value.get("default")
+        if isinstance(localized, str) and localized.strip():
+            return localized.strip()
+        if isinstance(localized, list):
+            return localized
+    return value
+
+
+def _localized_request_template(
+    request_template: dict[str, Any],
+    language: str,
+) -> dict[str, Any]:
+    localized = dict(request_template)
+    for key in ("outcome", "deliverable", "title", "intro"):
+        value = _localized_scalar(request_template, key, language)
+        if isinstance(value, str) and value.strip():
+            localized[key] = value
+
+    assumptions = _preflight_assumptions(request_template, language)
+    if assumptions:
+        localized["assumptions"] = assumptions
+
+    fields = request_template.get("fields", [])
+    if isinstance(fields, list):
+        localized_fields: list[Any] = []
+        for field in fields:
+            if not isinstance(field, dict):
+                localized_fields.append(field)
+                continue
+            item = dict(field)
+            for key in ("label", "title", "prompt", "description", "help", "hint", "default"):
+                value = _localized_scalar(field, key, language)
+                if isinstance(value, str) and value.strip():
+                    item[key] = value
+            localized_fields.append(item)
+        localized["fields"] = localized_fields
+    return localized
+
+
+def _localized_step_label(step: MetaStep, language: str) -> str:
+    if not str(language).strip():
+        return step.label
+    suffix = _language_suffix(language)
+    localized = step.label_by_language.get(suffix)
+    if localized:
+        return localized
+    return step.label
+
+
+def _preflight_assumptions(
+    request_template: dict[str, Any],
+    language: str = "",
+) -> list[str]:
+    raw = _localized_scalar(request_template, "assumptions", language)
     if isinstance(raw, str) and raw.strip():
         return [raw.strip()]
     if isinstance(raw, list):
@@ -106,16 +180,31 @@ def _preflight_assumptions(request_template: dict[str, Any]) -> list[str]:
     return []
 
 
-def _preflight_is_confirmed(inputs: dict[str, Any]) -> bool:
-    return bool(
+def _preflight_is_confirmed(inputs: dict[str, Any], expected_run_id: str) -> bool:
+    marker_present = bool(
         inputs.get("meta_preflight_confirmed")
         or inputs.get("preflight_confirmed")
         or inputs.get("_meta_preflight_confirmed")
     )
+    if not marker_present:
+        return False
+    confirmed_run_id = str(
+        inputs.get("meta_preflight_run_id")
+        or inputs.get("preflight_run_id")
+        or inputs.get("_meta_preflight_run_id")
+        or ""
+    ).strip()
+    return bool(confirmed_run_id and confirmed_run_id == expected_run_id)
 
 
 def _preflight_requires_confirmation(request_template: dict[str, Any]) -> bool:
     mode = str(request_template.get("mode") or "").strip().lower()
+    if (
+        request_template.get("preflight_required") is False
+        or request_template.get("requires_confirmation") is False
+        or mode in {"preview", "soft", "advisory", "informational"}
+    ):
+        return False
     return bool(
         request_template.get("preflight_required") is True
         or request_template.get("requires_confirmation") is True
@@ -269,14 +358,16 @@ def _build_clarify_skip_summary(
     if cfg is None:
         return None
 
+    language = _language_suffix(inputs.get("user_language", ""))
     field_payload: list[dict[str, Any]] = []
     for field in cfg.fields:
         entry: dict[str, Any] = {
             "name": field.name,
             "required": bool(field.required),
         }
-        if getattr(field, "prompt", None):
-            entry["prompt"] = field.prompt
+        prompt = field.prompt_by_language.get(language) or field.prompt
+        if prompt:
+            entry["prompt"] = prompt
         field_payload.append(entry)
 
     inferred_from: list[dict[str, str]] = []
@@ -292,17 +383,18 @@ def _build_clarify_skip_summary(
     trigger_message = ""
     raw_message = inputs.get("user_message")
     if isinstance(raw_message, str) and raw_message.strip():
-        trigger_message = raw_message.strip()
+        visible_message = strip_preflight_confirmation_protocol_text(raw_message) or raw_message
+        trigger_message = visible_message.strip()
         if len(trigger_message) > _CLARIFY_SKIP_EXCERPT_CHARS:
             trigger_message = trigger_message[:_CLARIFY_SKIP_EXCERPT_CHARS] + "...[truncated]"
 
     return {
-        "label": _CLARIFY_SKIP_DEFAULT_LABEL,
+        "label": _CLARIFY_SKIP_LABEL_BY_LANGUAGE[language],
         "step_id": step.id,
         "fields": field_payload,
         "inferred_from": inferred_from,
         "trigger_message": trigger_message,
-        "hint_action": "reply 'change' to redo",
+        "hint_action": _CLARIFY_SKIP_HINT_BY_LANGUAGE[language],
     }
 
 
@@ -404,12 +496,20 @@ async def run_dag(
     # passes its persisted run_id when available; direct/unit callers may
     # still rely on the local fallback for non-persistent runs.
     _run_id = getattr(match, "run_id", "") or f"{match.plan.name}:{id(match)}"
+    template_language = str(match.inputs.get("user_language") or "").strip()
     if match.plan.request_template:
+        request_template = _localized_request_template(
+            match.plan.request_template,
+            template_language,
+        )
         missing_fields = _preflight_missing_fields(
             match.plan.request_template,
             match.inputs,
         )
-        assumptions = _preflight_assumptions(match.plan.request_template)
+        assumptions = _preflight_assumptions(
+            match.plan.request_template,
+            template_language,
+        )
         requires_confirmation = _preflight_requires_confirmation(
             match.plan.request_template,
         )
@@ -417,13 +517,14 @@ async def run_dag(
         yield MetaPreflightEvent(
             run_id=_run_id,
             meta_skill_name=match.plan.name,
-            request_template=dict(match.plan.request_template),
+            request_template=request_template,
             interpreted_request=str(match.inputs.get("user_message") or "").strip(),
             missing_fields=missing_fields,
             assumptions=assumptions,
             can_skip=can_skip,
+            requires_confirmation=requires_confirmation,
         )
-        preflight_confirmed = _preflight_is_confirmed(match.inputs)
+        preflight_confirmed = _preflight_is_confirmed(match.inputs, _run_id)
         if requires_confirmation and (missing_fields or not preflight_confirmed):
             yield MetaResult(
                 ok=False,
@@ -431,11 +532,12 @@ async def run_dag(
                 paused_payload=MetaPreflightRequired(
                     run_id=_run_id,
                     meta_skill_name=match.plan.name,
-                    request_template=dict(match.plan.request_template),
+                    request_template=request_template,
                     interpreted_request=str(match.inputs.get("user_message") or "").strip(),
                     missing_fields=missing_fields,
                     assumptions=assumptions,
                     can_skip=can_skip,
+                    requires_confirmation=requires_confirmation,
                 ),
             )
             return
@@ -445,7 +547,7 @@ async def run_dag(
         steps=[
             {
                 "id": s.id,
-                "label": s.label,
+                "label": _localized_step_label(s, template_language),
                 "kind": s.kind,
                 "depends_on": list(s.depends_on),
             }

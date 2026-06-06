@@ -971,6 +971,21 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
     display_text = params.get("displayText") if source_hint.get("caller_kind") == "web" else None
     if display_text is not None and not isinstance(display_text, str):
         display_text = None
+    if display_text is None and source_hint.get("caller_kind") == "web":
+        from opensquilla.meta_preflight_protocol import (
+            display_text_from_preflight_confirmation,
+        )
+
+        display_text = display_text_from_preflight_confirmation(message_text)
+    provider_message_text = message_text
+    if source_hint.get("caller_kind") == "web":
+        from opensquilla.meta_preflight_protocol import (
+            strip_preflight_confirmation_protocol_text,
+        )
+
+        stripped_message = strip_preflight_confirmation_protocol_text(message_text)
+        if stripped_message is not None:
+            provider_message_text = stripped_message.strip()
 
     from opensquilla.gateway.routing import (
         build_cli_route_envelope,
@@ -1031,13 +1046,13 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
         get_transcript = getattr(ctx.session_manager, "get_transcript", None)
         if callable(get_transcript):
             fresh_user_session = not bool(await get_transcript(key))
-        if raw_attachments:
+        if raw_attachments or display_text is not None:
             from opensquilla.gateway.transcripts import (
                 build_transcript_attachment_envelope,
             )
 
             # Stamp up-front so both the stored envelope and the LLM path agree.
-            if hasattr(ctx.session_manager, "stamp_user_text"):
+            if raw_attachments and hasattr(ctx.session_manager, "stamp_user_text"):
                 _stamped = ctx.session_manager.stamp_user_text(message_text)
                 if isinstance(_stamped, str):
                     message_text = _stamped
@@ -1101,10 +1116,10 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
         )
         runtime_mode = "interrupt" if requested_mode == "steer" else requested_mode
         try:
-            handle = await start_turn_via_runtime(
-                task_runtime,
-                route_envelope,
-                message_text,
+                handle = await start_turn_via_runtime(
+                    task_runtime,
+                    route_envelope,
+                    provider_message_text,
                 attachments=raw_attachments,
                 mode=runtime_mode,
                 run_kind=run_kind,
@@ -1238,7 +1253,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                 default_elevated=configured_default_elevated(ctx.config),
             )
             raw_stream = ctx.turn_runner.run(
-                message_text,
+                provider_message_text,
                 key,
                 tool_context=tool_ctx,
                 agent_id=agent_id,

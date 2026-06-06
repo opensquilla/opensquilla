@@ -54,6 +54,7 @@ def to_jsonable(plan: MetaPlan) -> dict[str, Any]:
                 "on_failure": s.on_failure,
                 "clarify_config": clarify_config_to_jsonable(s.clarify_config),
                 "label": s.label,
+                "label_by_language": dict(s.label_by_language),
                 "progress_emits": s.progress_emits,
             }
             for s in plan.steps
@@ -168,6 +169,11 @@ def _step_from_jsonable(raw: dict[str, Any], index: int) -> MetaStep:
         on_failure=str(raw.get("on_failure", "") or ""),
         clarify_config=clarify_config_from_jsonable(raw.get("clarify_config")),
         label=str(raw.get("label", "") or ""),
+        label_by_language={
+            str(key): str(value)
+            for key, value in dict(raw.get("label_by_language", {}) or {}).items()
+            if str(key).strip() and str(value).strip()
+        },
         progress_emits=progress_emits,
     )
 
@@ -189,6 +195,7 @@ def clarify_config_to_jsonable(cfg: Any) -> dict[str, Any] | None:
                 "type": f.type,
                 "required": f.required,
                 "prompt": f.prompt,
+                "prompt_by_language": dict(f.prompt_by_language),
                 "choices": list(f.choices),
                 "default": f.default,
                 "min": f.min,
@@ -201,6 +208,7 @@ def clarify_config_to_jsonable(cfg: Any) -> dict[str, Any] | None:
         "cancel_keywords": list(cfg.cancel_keywords),
         "timeout_hours": cfg.timeout_hours,
         "intro": cfg.intro,
+        "intro_by_language": dict(cfg.intro_by_language),
         "nl_extract": cfg.nl_extract,
         "nl_extract_tier": cfg.nl_extract_tier,
     }
@@ -220,6 +228,11 @@ def clarify_config_from_jsonable(raw: Any) -> Any:
             type=str(f.get("type", "string")),
             required=bool(f.get("required", False)),
             prompt=str(f.get("prompt", "") or ""),
+            prompt_by_language={
+                str(key): str(value)
+                for key, value in dict(f.get("prompt_by_language", {}) or {}).items()
+                if str(key).strip() and str(value).strip()
+            },
             choices=tuple(str(c) for c in f.get("choices", []) or []),
             default=f.get("default"),
             min=f.get("min"),
@@ -235,6 +248,11 @@ def clarify_config_from_jsonable(raw: Any) -> Any:
         cancel_keywords=tuple(str(k) for k in raw.get("cancel_keywords", []) or []),
         timeout_hours=int(raw.get("timeout_hours", 24) or 24),
         intro=str(raw.get("intro", "") or ""),
+        intro_by_language={
+            str(key): str(value)
+            for key, value in dict(raw.get("intro_by_language", {}) or {}).items()
+            if str(key).strip() and str(value).strip()
+        },
         nl_extract=bool(raw.get("nl_extract", False)),
         nl_extract_tier=str(raw.get("nl_extract_tier", "") or ""),
     )

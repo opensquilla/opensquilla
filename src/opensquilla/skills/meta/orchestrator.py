@@ -74,6 +74,38 @@ log = structlog.get_logger(__name__)
 slog = structlog.get_logger(__name__)
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 
+
+def _preflight_confirmation_run_id(inputs: dict[str, Any]) -> str:
+    marker_present = bool(
+        inputs.get("meta_preflight_confirmed")
+        or inputs.get("preflight_confirmed")
+        or inputs.get("_meta_preflight_confirmed")
+    )
+    if not marker_present:
+        return ""
+    return str(
+        inputs.get("meta_preflight_run_id")
+        or inputs.get("preflight_run_id")
+        or inputs.get("_meta_preflight_run_id")
+        or ""
+    ).strip()
+
+
+def _is_confirmable_preflight_run(
+    record: Any,
+    *,
+    plan_name: str,
+    session_key: str | None,
+) -> bool:
+    return bool(
+        record is not None
+        and record.meta_skill_name == plan_name
+        and record.session_key == session_key
+        and record.status == "cancelled"
+        and record.error == "preflight_required"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Injected-dependency protocols
 # ---------------------------------------------------------------------------
@@ -600,7 +632,7 @@ class MetaOrchestrator:
                 str(match.inputs.get("user_message") or ""),
             )
 
-        run_id: str | None = None
+        run_id: str | None = (match.run_id or "").strip() or None
         async def _to_thread(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
             # Persistence writes are small sqlite calls guarded by
             # MetaRunWriter's own lock. Keeping them synchronous avoids
@@ -609,18 +641,48 @@ class MetaOrchestrator:
             return fn(*args, **kwargs)
 
         if self._run_writer is not None:
-            try:
-                run_id = await _to_thread(
-                    self._run_writer.begin_run_sync,
-                    meta_skill_name=match.plan.name,
-                    meta_plan=match.plan,
-                    triggered_by=self._triggered_by,
-                    inputs=match.inputs,
+            if run_id is not None:
+                try:
+                    existing = await _to_thread(self._run_writer.get_run, run_id)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("orchestrator.lookup_supplied_run_failed: %s", exc)
+                    existing = None
+                if not _is_confirmable_preflight_run(
+                    existing,
+                    plan_name=match.plan.name,
                     session_key=self._session_key,
-                    turn_id=self._turn_id,
-                )
-            except Exception as exc:  # noqa: BLE001
-                log.warning("orchestrator.begin_run_failed: %s", exc)
+                ):
+                    run_id = None
+            if run_id is None:
+                confirmed_run_id = _preflight_confirmation_run_id(match.inputs)
+                if confirmed_run_id:
+                    try:
+                        existing = await _to_thread(
+                            self._run_writer.get_run,
+                            confirmed_run_id,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("orchestrator.lookup_preflight_run_failed: %s", exc)
+                        existing = None
+                    if _is_confirmable_preflight_run(
+                        existing,
+                        plan_name=match.plan.name,
+                        session_key=self._session_key,
+                    ):
+                        run_id = confirmed_run_id
+            if run_id is None:
+                try:
+                    run_id = await _to_thread(
+                        self._run_writer.begin_run_sync,
+                        meta_skill_name=match.plan.name,
+                        meta_plan=match.plan,
+                        triggered_by=self._triggered_by,
+                        inputs=match.inputs,
+                        session_key=self._session_key,
+                        turn_id=self._turn_id,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("orchestrator.begin_run_failed: %s", exc)
 
         on_step_begin, on_step_finish, on_step_failover = (
             self._step_persistence_hooks(
@@ -717,6 +779,7 @@ class MetaOrchestrator:
                         and getattr(final_result, "paused", False)
                         and isinstance(final_result.paused_payload, MetaPreflightRequired)
                     ):
+                        final_result.error = final_result.error or "preflight_required"
                         await _to_thread(
                             self._run_writer.finish_run_sync,
                             run_id=run_id,

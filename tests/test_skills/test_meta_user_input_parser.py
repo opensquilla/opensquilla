@@ -45,6 +45,45 @@ def test_user_input_kind_is_accepted_by_parser():
     assert plan.steps[0].clarify_config.fields[0].name == "destination"
 
 
+def test_user_input_accepts_localized_intro_and_prompts():
+    spec = _spec([
+        {
+            "id": "collect",
+            "kind": "user_input",
+            "skill": "collect",
+            "clarify": {
+                "mode": "form",
+                "intro": "补充信息 / Add details",
+                "intro_zh": "请补充信息。",
+                "intro_en": "Please add details.",
+                "fields": [
+                    {
+                        "name": "topic",
+                        "type": "string",
+                        "required": True,
+                        "prompt": "主题 / Topic",
+                        "prompt_zh": "主题",
+                        "prompt_en": "Topic",
+                    },
+                ],
+            },
+        },
+    ])
+
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+    cfg = plan.steps[0].clarify_config
+    assert cfg is not None
+    assert cfg.intro_by_language == {
+        "zh": "请补充信息。",
+        "en": "Please add details.",
+    }
+    assert cfg.fields[0].prompt_by_language == {
+        "zh": "主题",
+        "en": "Topic",
+    }
+
+
 def test_user_input_requires_clarify_block():
     spec = _spec([{"id": "collect", "kind": "user_input", "skill": "collect"}])
     with pytest.raises(MetaPlanError, match="user_input.*requires.*clarify"):

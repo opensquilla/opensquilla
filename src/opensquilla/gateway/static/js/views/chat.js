@@ -333,6 +333,8 @@ const ChatView = (() => {
   //   - in-memory only; localStorage + cross-tab sync are follow-ups
   const _MAX_PENDING = 5;
   let _pendingQueue = []; // [{text, attachments, intent}]
+  let _sendTextOverride = null;
+  let _sendDisplayTextOverride = null;
   let _pendingDrainAfterTerminalTimer = null;
   let _compactInFlight = false;
   let _compactInFlightKey = '';
@@ -4917,33 +4919,37 @@ const ChatView = (() => {
       const detail = (ev && ev.detail) || {};
       const card = ev && ev.target ? ev.target.closest('.meta-preflight') : null;
       if (detail.action === 'dismiss') {
-        if (card) card.remove();
+        if (card && window.MetaPreflight && window.MetaPreflight.renderCollapsed) {
+          window.MetaPreflight.renderCollapsed(card, detail, 'cancelled');
+        } else if (card) {
+          card.remove();
+        }
         if (detail.runId) _metaPreflightEl.delete(detail.runId);
         return;
       }
-      if (detail.action === 'continue' && _textarea) {
+      if ((detail.action === 'continue' || detail.action === 'defaults') && _textarea) {
         try {
+          if (card && window.MetaPreflight && window.MetaPreflight.setSubmitting) {
+            window.MetaPreflight.setSubmitting(card, true);
+          }
           const confirmed = await _confirmMetaPreflight(detail);
-          if (card) card.remove();
+          if (card && window.MetaPreflight && window.MetaPreflight.renderCollapsed) {
+            window.MetaPreflight.renderCollapsed(card, detail, 'running');
+          } else if (card) {
+            card.remove();
+          }
           if (detail.runId) _metaPreflightEl.delete(detail.runId);
-          _textarea.value = confirmed.message || `${detail.interpretedRequest || ''}\n\n<!-- opensquilla:meta_preflight_confirmed=1 -->`;
-          _autoResizeTextarea();
-          _onSend();
+          _sendHiddenMetaPreflightConfirmation(confirmed, detail);
         } catch (err) {
+          if (card && window.MetaPreflight && window.MetaPreflight.setSubmitting) {
+            window.MetaPreflight.setSubmitting(card, false);
+          }
+          if (card && window.MetaPreflight && window.MetaPreflight.setError) {
+            window.MetaPreflight.setError(card, err);
+          }
           UI.toast(err && err.message ? err.message : 'MetaSkill confirmation failed', 'warn', 3000);
         }
         return;
-      }
-      if (detail.action === 'edit' && _textarea) {
-        const fields = Array.isArray(detail.missingFields)
-          ? detail.missingFields.filter(Boolean)
-          : [];
-        const suffix = fields.length > 0
-          ? `\n\n补充：${fields.join('、')} = `
-          : '\n\n补充：';
-        _textarea.value = `${detail.interpretedRequest || ''}${suffix}`;
-        _autoResizeTextarea();
-        _textarea.focus();
       }
     };
     document.addEventListener('meta-preflight-action', _onMetaPreflightAction);
@@ -6321,12 +6327,45 @@ const ChatView = (() => {
 
   /* ── Send Message ───────────────────────────────────────────────────── */
 
+  function _metaPreflightFallbackMessage(detail) {
+    const interpreted = (detail && detail.interpretedRequest) || '';
+    const runId = (detail && detail.runId) || '';
+    const lines = [
+      interpreted,
+      '',
+      '<!-- opensquilla:meta_preflight_confirmed=1 -->',
+    ];
+    if (runId) lines.push(`<!-- opensquilla:meta_preflight_run_id=${runId} -->`);
+    return lines.join('\n');
+  }
+
+  function _metaPreflightDisplayText(detail) {
+    const interpreted = detail && typeof detail.interpretedRequest === 'string'
+      ? detail.interpretedRequest.trim()
+      : '';
+    return interpreted || '已确认，开始运行。';
+  }
+
+  function _sendHiddenMetaPreflightConfirmation(confirmed, detail) {
+    _sendTextOverride = confirmed && confirmed.message
+      ? confirmed.message
+      : _metaPreflightFallbackMessage(detail);
+    _sendDisplayTextOverride = _metaPreflightDisplayText(detail);
+    _onSend();
+  }
+
   async function _onSend() {
-    let text = _textarea.value.trim();
-    let hasPayload = text || _pendingAttachments.length > 0;
+    const textOverride = _sendTextOverride;
+    const displayTextOverride = _sendDisplayTextOverride;
+    _sendTextOverride = null;
+    _sendDisplayTextOverride = null;
+    let text = (textOverride !== null ? textOverride : _textarea.value).trim();
+    let attachmentsForSend = textOverride !== null ? [] : _pendingAttachments;
+    const sessionIntentForSend = textOverride !== null ? null : _pendingSessionIntent;
+    let hasPayload = text || attachmentsForSend.length > 0;
     let isLiteralSlash = false;
 
-    if (_hasPendingAttachmentWork()) {
+    if (textOverride === null && _hasPendingAttachmentWork()) {
       UI.toast('Wait for file attachment processing to finish', 'warn', 2500);
       return;
     }
@@ -6334,18 +6373,18 @@ const ChatView = (() => {
     if (text.startsWith('//')) {
       isLiteralSlash = true;
       text = text.slice(1);
-      hasPayload = text || _pendingAttachments.length > 0;
+      hasPayload = text || attachmentsForSend.length > 0;
     }
     const isSlashCommand = !isLiteralSlash && text.startsWith('/')
       && !!(await _lookupSlashCommand(text));
     const normalized = await _normalizeOutgoingComposerPayload(
       text,
-      _pendingAttachments,
+      attachmentsForSend,
       { allowSlashCommand: isSlashCommand },
     );
     if (!normalized) return;
     text = normalized.text;
-    _pendingAttachments = normalized.attachments;
+    attachmentsForSend = normalized.attachments;
 
     // While a turn is streaming, Send enqueues. Use ESC or the
     // Stop button to actually halt the current response. Manual compaction uses
@@ -6368,7 +6407,10 @@ const ChatView = (() => {
         _isCompactInFlightForCurrentSession()
           ? 'context compaction'
           : 'the current response',
-        _pendingAttachments,
+        attachmentsForSend,
+        displayTextOverride,
+        sessionIntentForSend,
+        textOverride !== null,
       );
       return;
     }
@@ -6388,7 +6430,7 @@ const ChatView = (() => {
 
     // Record message for export
     const now = new Date().toISOString();
-    const userText = text;
+    const userText = displayTextOverride !== null ? displayTextOverride : text;
     const providerText = text || 'Describe these attachments';
     _messages.push({ role: 'user', text: userText, ts: now });
 
@@ -6397,11 +6439,11 @@ const ChatView = (() => {
     _stampHistoryElement(userDiv, '', 'user', userText);
     const userBody = userDiv.querySelector('.msg-body');
     let userHtml = _esc(userText);
-    if (_pendingAttachments.length > 0) {
+    if (attachmentsForSend.length > 0) {
       userBody.classList.add('msg-body--has-attachments');
       userHtml = userText ? `<div class="msg-attachment-text">${_esc(userText)}</div>` : '';
       userHtml += '<div class="msg-attachments">';
-      _pendingAttachments.forEach((a) => { userHtml += _renderMessageAttachmentHtml(a); });
+      attachmentsForSend.forEach((a) => { userHtml += _renderMessageAttachmentHtml(a); });
       userHtml += '</div>';
     }
     userBody.innerHTML = userHtml;
@@ -6413,28 +6455,32 @@ const ChatView = (() => {
     const params = { message: providerText, sessionKey: _sessionKey };
     const elevatedMode = _normalizeElevatedMode(_elevatedMode);
     if (elevatedMode) params._source = { elevated: elevatedMode };
-    if (_pendingSessionIntent) {
-      params.intent = _pendingSessionIntent;
-      _pendingSessionIntent = null;
+    if (sessionIntentForSend) {
+      params.intent = sessionIntentForSend;
+      if (textOverride === null) _pendingSessionIntent = null;
     }
-    if (_pendingAttachments.length > 0) {
+    if (userText !== providerText || attachmentsForSend.length > 0) {
       params.displayText = userText;
-      params.attachments = _pendingAttachments.map((a) => {
+    }
+    if (attachmentsForSend.length > 0) {
+      params.attachments = attachmentsForSend.map((a) => {
         if (a.kind === 'staged') {
           return { type: a.mime, file_uuid: a.file_uuid, mime: a.mime, name: a.name };
         }
         return { type: a.mime || 'image/png', data: a.data, mime: a.mime, name: a.name };
       });
     }
-    const normalizationProvenance = _inputNormalizationProvenanceFromAttachments(_pendingAttachments);
+    const normalizationProvenance = _inputNormalizationProvenanceFromAttachments(attachmentsForSend);
     if (normalizationProvenance) params.inputProvenance = normalizationProvenance;
     const routerFxRequestKind = _routerFxRequestKindFromAttachments(params.attachments || []);
 
     // Clear input and attachments
-    _textarea.value = '';
-    _autoResizeTextarea();
-    _pendingAttachments = [];
-    _renderAttachmentPreview();
+    if (textOverride === null) {
+      _textarea.value = '';
+      _autoResizeTextarea();
+      _pendingAttachments = [];
+      _renderAttachmentPreview();
+    }
 
     // Start streaming UI. Delay the routing scan briefly so request-time
     // compaction can claim the turn without a competing one-frame router flash.
@@ -9437,7 +9483,7 @@ const ChatView = (() => {
     }
     html += `</div><div class="chat-pending-chips">`;
     _pendingQueue.forEach((p, i) => {
-      const raw = p.text || (p.attachments && p.attachments.length ? '(attachment only)' : '');
+      const raw = p.displayText || p.text || (p.attachments && p.attachments.length ? '(attachment only)' : '');
       const preview = _esc(raw.slice(0, 30)) + (raw.length > 30 ? '…' : '');
       const attChip = p.attachments && p.attachments.length > 0
         ? ` <span class="chat-pending-attch">📎${p.attachments.length}</span>` : '';
@@ -9457,6 +9503,9 @@ const ChatView = (() => {
     toastMessage = null,
     waitReason = 'the current response',
     attachmentsOverride = null,
+    displayTextOverride = null,
+    intentOverride = undefined,
+    preserveComposer = false,
   ) {
     if (_pendingQueue.length >= _MAX_PENDING) {
       UI.toast(
@@ -9469,15 +9518,19 @@ const ChatView = (() => {
     const queuedAttachments = attachmentsOverride || _pendingAttachments;
     _pendingQueue.push({
       text,
+      displayText: displayTextOverride,
       attachments: queuedAttachments.map((a) => ({ ...a })),
-      intent: _pendingSessionIntent,
+      intent: intentOverride === undefined ? _pendingSessionIntent : intentOverride,
+      hiddenControl: preserveComposer === true,
     });
-    _textarea.value = '';
-    _pendingAttachments = [];
-    _pendingSessionIntent = null;
-    _renderAttachmentPreview();
+    if (!preserveComposer) {
+      _textarea.value = '';
+      _pendingAttachments = [];
+      if (intentOverride === undefined) _pendingSessionIntent = null;
+      _renderAttachmentPreview();
+      _autoResizeTextarea();
+    }
     _renderPendingQueue();
-    _autoResizeTextarea();
     UI.toast(toastMessage || `Queued (${_pendingQueue.length}/${_MAX_PENDING})`, 'info', 1500);
     return true;
   }
@@ -9492,11 +9545,18 @@ const ChatView = (() => {
       const draftText = _textarea.value;
       const draftAttachments = _pendingAttachments.map(att => ({ ...att }));
       const draftIntent = _pendingSessionIntent;
-      _textarea.value = head.text || '';
-      _pendingAttachments = head.attachments || [];
-      _pendingSessionIntent = head.intent || null;
-      _renderAttachmentPreview();
-      _onSend();
+      if (head.hiddenControl) {
+        _sendTextOverride = head.text || '';
+        _sendDisplayTextOverride = typeof head.displayText === 'string' ? head.displayText : null;
+        _onSend();
+      } else {
+        _textarea.value = head.text || '';
+        _sendDisplayTextOverride = typeof head.displayText === 'string' ? head.displayText : null;
+        _pendingAttachments = head.attachments || [];
+        _pendingSessionIntent = head.intent || null;
+        _renderAttachmentPreview();
+        _onSend();
+      }
       if (draftText.trim() || draftAttachments.length || draftIntent) {
         _textarea.value = draftText;
         _pendingAttachments = draftAttachments;
@@ -9510,7 +9570,9 @@ const ChatView = (() => {
   function _popPendingTail() {
     if (_pendingQueue.length === 0) return false;
     const tail = _pendingQueue.pop();
-    _textarea.value = tail.text || '';
+    _textarea.value = tail.hiddenControl
+      ? (tail.displayText || '')
+      : (tail.text || '');
     _pendingAttachments = tail.attachments || [];
     _pendingSessionIntent = tail.intent || null;
     _renderAttachmentPreview();
@@ -9547,7 +9609,10 @@ const ChatView = (() => {
     _clearPendingDrainAfterTerminalTimer();
     if (!_textarea || _pendingQueue.length === 0) return false;
     const queuedTexts = _pendingQueue
-      .map((p) => (typeof p.text === 'string' ? p.text : ''))
+      .map((p) => {
+        if (typeof p.displayText === 'string') return p.displayText;
+        return typeof p.text === 'string' ? p.text : '';
+      })
       .filter(Boolean);
     const queuedAttachments = _pendingQueue.flatMap((p) => p.attachments || []);
     const headIntent = _pendingQueue[0] && _pendingQueue[0].intent;

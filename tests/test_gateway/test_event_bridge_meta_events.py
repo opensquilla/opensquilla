@@ -20,8 +20,10 @@ def test_meta_preflight_event_name():
         meta_skill_name="x",
         request_template={"outcome": "Decision memo"},
         interpreted_request="Help me decide",
+        requires_confirmation=True,
     )
     assert bridge_event_name(ev) == "session.event.meta_preflight"
+    assert ev.requires_confirmation is True
 
 
 def test_meta_step_state_event_name():

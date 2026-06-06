@@ -24,21 +24,136 @@ def test_ribbon_module_exists():
 def test_ribbon_exposes_window_global():
     text = RIBBON_JS.read_text()
     assert "root.MetaRibbon" in text or "window.MetaRibbon" in text
+
+
+def test_ribbon_state_classes_are_normalized():
+    text = RIBBON_JS.read_text()
+
+    assert "step.state = normalizeStateClass(stepStateEvent.state);" in text
+    assert "state.runOutcome = normalizeRunOutcome(completedEvent.outcome);" in text
+    assert "function normalizeRunOutcome" in text
+    assert "outcome === 'ok'" in text
+    assert "const safeStepState = normalizeStateClass(s.state);" in text
+    assert 'class="chip ${safeStepState}"' in text
+    assert "STATE_GLYPH[state]" in text
+    assert "'substituted'," in text
+    assert "paused: 'Ⅱ'" in text
+    assert "cancelled: '−'" in text
     for name in ("createRibbon", "updateStep", "completeRun", "renderRibbon"):
         assert name in text, f"window.MetaRibbon missing {name}"
 
 
 def test_ribbon_glyph_table_covers_all_states():
     text = RIBBON_JS.read_text()
-    for state in ("pending", "running", "succeeded", "failed", "skipped", "substituted"):
+    for state in (
+        "pending",
+        "running",
+        "succeeded",
+        "failed",
+        "skipped",
+        "substituted",
+        "paused",
+        "cancelled",
+    ):
         assert f"{state}:" in text, f"STATE_GLYPH missing {state}"
 
 
 def test_ribbon_css_has_chip_state_classes():
     text = RIBBON_CSS.read_text()
-    for cls in ("chip.pending", "chip.running", "chip.succeeded",
-                "chip.failed", "chip.skipped", "chip.substituted"):
+    for cls in (
+        "chip.pending",
+        "chip.running",
+        "chip.succeeded",
+        "chip.failed",
+        "chip.skipped",
+        "chip.substituted",
+        "chip.paused",
+        "chip.cancelled",
+    ):
         assert cls in text, f"CSS missing {cls}"
+
+
+def test_ribbon_renders_accessible_compact_run_bar():
+    js = RIBBON_JS.read_text()
+    css = RIBBON_CSS.read_text()
+    for token in (
+        "meta-ribbon-shell",
+        "meta-ribbon-icon",
+        "meta-ribbon-current",
+        "meta-ribbon-track",
+        "meta-ribbon-fill",
+        "progressPercent",
+        "role=\"progressbar\"",
+        "aria-valuenow",
+        "aria-valuemin=\"0\"",
+        "aria-valuemax=\"100\"",
+        "aria-live=\"polite\"",
+        "aria-expanded",
+    ):
+        assert token in js, f"ribbon render missing {token}"
+    assert "MetaSkill</span>" not in js
+    assert "Step ${headerIndex} of ${state.total}" in js
+    for token in (
+        "max-width: min(760px, 100%)",
+        "margin: 10px auto",
+        ".meta-ribbon-track",
+        ".meta-ribbon-fill",
+        "height: 2px",
+        "box-shadow: 0 1px 2px",
+        "prefers-reduced-motion: reduce",
+    ):
+        assert token in css, f"ribbon CSS missing polished progress treatment {token}"
+    assert "min-width: 6px" not in css, "0% progress should not render a fake leading fill"
+
+
+def test_preflight_uses_checkpoint_language_not_generic_confirmation():
+    text = PREFLIGHT_JS.read_text()
+    assert "我准备运行" in text
+    assert "开始运行" in text
+    assert "Confirmation" not in text
+
+
+def test_preflight_chrome_follows_request_language():
+    text = PREFLIGHT_JS.read_text()
+    for token in (
+        "detectLanguage",
+        "preflightCopy",
+        "state.language",
+        "Before running",
+        "I understood",
+        "Start",
+        "Cancel",
+        "Use defaults",
+        "Required",
+        "Please fill this in.",
+    ):
+        assert token in text, f"preflight missing localized chrome token {token}"
+
+
+def test_preflight_collects_missing_fields_inline_instead_of_editing_composer():
+    preflight = PREFLIGHT_JS.read_text()
+    chat = CHAT_JS.read_text()
+    for token in (
+        "renderMissingFields",
+        "collectFieldValues",
+        "validateRequiredFields",
+        "renderCollapsed",
+        "setSubmitting",
+        "setError",
+        "meta-preflight-field",
+        "data-field-name",
+        "使用默认值运行",
+        "取消",
+        "知道了",
+        "Dismiss",
+    ):
+        assert token in preflight, f"preflight missing inline field behavior {token}"
+    assert 'data-action="edit"' not in preflight
+    assert "补充到输入框" not in preflight
+    assert "补充：" not in chat
+    assert "renderCollapsed(card, detail, 'running')" in chat
+    assert "setSubmitting(card, true)" in chat
+    assert "setError(card, err" in chat
 
 
 def test_index_html_loads_ribbon_before_chat():
@@ -77,9 +192,15 @@ def test_preflight_module_exists():
     for name in ("createPreflight", "renderPreflight"):
         assert f"function {name}" in text, f"missing function {name}"
     assert "root.MetaPreflight" in text or "window.MetaPreflight" in text
-    assert "Confirmation" in text
+    assert "我准备运行" in text
     assert 'data-action="continue"' in text
     assert 'data-action="dismiss"' in text
+    assert "requiresGate: payload.requires_confirmation === true" in text
+    assert "state.requiresGate ? copy.cancel : copy.dismiss" in text
+    assert "state.requiresGate ? renderMissingFields(state) : ''" in text
+    assert "fieldOptions(field)" in text
+    assert "Array.isArray(field.choices)" in text
+    assert "input.type !== 'checkbox'" in text
 
 
 def test_chat_js_references_window_metapreflight():
@@ -89,6 +210,17 @@ def test_chat_js_references_window_metapreflight():
     assert "_insertMetaPreflightElement" in text
     assert "meta-preflight-action" in text
     assert "meta_preflight_confirmed" in text
+    assert "meta_preflight_run_id=${runId}" in text
+
+
+def test_chat_pending_queue_keeps_hidden_preflight_control_out_of_composer():
+    text = CHAT_JS.read_text()
+
+    assert "hiddenControl: preserveComposer === true" in text
+    assert "if (head.hiddenControl)" in text
+    assert "_sendTextOverride = head.text || '';" in text
+    assert "tail.hiddenControl" in text
+    assert "? (tail.displayText || '')" in text
 
 
 def test_artifact_card_module_exists():

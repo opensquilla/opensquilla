@@ -31,6 +31,7 @@ from opensquilla.skills.meta.orchestrator import (
     resolve_route,
 )
 from opensquilla.skills.meta.parser import MetaPlanError, parse_meta_plan
+from opensquilla.skills.meta.scheduler import _localized_request_template, _localized_step_label
 from opensquilla.skills.meta.types import MetaMatch, MetaPlan, MetaResult, MetaStep, RouteCase
 from opensquilla.skills.types import SkillLayer, SkillSpec
 
@@ -89,7 +90,14 @@ async def test_preflight_pause_finalizes_persisted_run_as_cancelled(
         name="meta-preflight-required",
         triggers=("fake",),
         priority=0,
-        steps=(MetaStep(id="draft", skill="draft", kind="llm_chat"),),
+        steps=(
+            MetaStep(
+                id="draft",
+                skill="draft",
+                kind="llm_chat",
+                with_args={"text": "Draft for {{ inputs.audience }}"},
+            ),
+        ),
         request_template={
             "mode": "confirm",
             "fields": [{"name": "audience", "required": True}],
@@ -113,6 +121,222 @@ async def test_preflight_pause_finalizes_persisted_run_as_cancelled(
     assert result.paused is True
     assert len(rows) == 1
     assert rows[0].status == "cancelled"
+    assert rows[0].error == "preflight_required"
+
+
+@pytest.mark.asyncio
+async def test_confirmed_preflight_reuses_paused_run_id(tmp_path: Path) -> None:
+    async def unused_runner(_prompt: str, _config: AgentConfig) -> str:
+        raise AssertionError("llm_chat step should not use the agent runner")
+
+    async def fake_llm_chat(_system: str, _user: str) -> str:
+        return "approved"
+
+    db_path = str(tmp_path / "meta-runs.db")
+    migrations_dir = Path(__file__).resolve().parents[2] / "migrations"
+    apply_pending(db_path, migrations_dir)
+    writer = open_meta_run_writer(db_path)
+    plan = MetaPlan(
+        name="meta-preflight-required",
+        triggers=("fake",),
+        priority=0,
+        steps=(
+            MetaStep(
+                id="draft",
+                skill="draft",
+                kind="llm_chat",
+                with_args={"text": "Draft for {{ inputs.audience }}"},
+            ),
+        ),
+        request_template={
+            "mode": "confirm",
+            "fields": [{"name": "audience", "required": True}],
+        },
+        final_text_mode="raw",
+    )
+    orch = MetaOrchestrator(
+        agent_runner=unused_runner,
+        skill_loader=SimpleNamespace(),
+        llm_chat=fake_llm_chat,
+        run_writer=writer,  # type: ignore[arg-type]
+        session_key="S1",
+    )
+
+    try:
+        paused = await orch.run(
+            MetaMatch(plan=plan, inputs={"user_message": "write a brief"}),
+        )
+        paused_run_id = writer.list_runs(limit=5)[0].run_id
+        result = await orch.run(
+            MetaMatch(
+                plan=plan,
+                inputs={
+                    "user_message": "write a brief",
+                    "audience": "decision owner",
+                    "meta_preflight_confirmed": True,
+                    "meta_preflight_run_id": paused_run_id,
+                },
+            ),
+        )
+        rows = writer.list_runs(limit=5)
+    finally:
+        writer.close()
+
+    assert paused.paused is True
+    assert result.ok is True
+    assert len(rows) == 1
+    assert rows[0].run_id == paused_run_id
+    assert rows[0].status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_confirmed_preflight_rejects_cross_session_run_id(tmp_path: Path) -> None:
+    async def unused_runner(_prompt: str, _config: AgentConfig) -> str:
+        raise AssertionError("cross-session confirmation must pause before steps")
+
+    db_path = str(tmp_path / "meta-runs.db")
+    migrations_dir = Path(__file__).resolve().parents[2] / "migrations"
+    apply_pending(db_path, migrations_dir)
+    writer = open_meta_run_writer(db_path)
+    plan = MetaPlan(
+        name="meta-preflight-required",
+        triggers=("fake",),
+        priority=0,
+        steps=(
+            MetaStep(
+                id="draft",
+                skill="draft",
+                kind="llm_chat",
+                with_args={"text": "Draft for {{ inputs.audience }}"},
+            ),
+        ),
+        request_template={
+            "mode": "confirm",
+            "fields": [{"name": "audience", "required": True}],
+        },
+        final_text_mode="raw",
+    )
+    first = MetaOrchestrator(
+        agent_runner=unused_runner,
+        skill_loader=SimpleNamespace(),
+        run_writer=writer,  # type: ignore[arg-type]
+        session_key="S1",
+    )
+    second = MetaOrchestrator(
+        agent_runner=unused_runner,
+        skill_loader=SimpleNamespace(),
+        run_writer=writer,  # type: ignore[arg-type]
+        session_key="S2",
+    )
+
+    try:
+        paused = await first.run(
+            MetaMatch(plan=plan, inputs={"user_message": "write a brief"}),
+        )
+        paused_run_id = writer.list_runs(limit=5)[0].run_id
+        result = await second.run(
+            MetaMatch(
+                plan=plan,
+                inputs={
+                    "user_message": "write a brief",
+                    "audience": "decision owner",
+                    "meta_preflight_confirmed": True,
+                    "meta_preflight_run_id": paused_run_id,
+                },
+            ),
+        )
+        rows = writer.list_runs(limit=5)
+    finally:
+        writer.close()
+
+    assert paused.paused is True
+    assert result.paused is True
+    assert len(rows) == 2
+    assert {row.session_key for row in rows} == {"S1", "S2"}
+    assert all(row.status == "cancelled" for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_confirmed_preflight_rejects_completed_run_id(tmp_path: Path) -> None:
+    async def unused_runner(_prompt: str, _config: AgentConfig) -> str:
+        raise AssertionError("llm_chat step should not use the agent runner")
+
+    calls = 0
+
+    async def fake_llm_chat(_system: str, _user: str) -> str:
+        nonlocal calls
+        calls += 1
+        return "approved"
+
+    db_path = str(tmp_path / "meta-runs.db")
+    migrations_dir = Path(__file__).resolve().parents[2] / "migrations"
+    apply_pending(db_path, migrations_dir)
+    writer = open_meta_run_writer(db_path)
+    plan = MetaPlan(
+        name="meta-preflight-required",
+        triggers=("fake",),
+        priority=0,
+        steps=(
+            MetaStep(
+                id="draft",
+                skill="draft",
+                kind="llm_chat",
+                with_args={"text": "Draft for {{ inputs.audience }}"},
+            ),
+        ),
+        request_template={
+            "mode": "confirm",
+            "fields": [{"name": "audience", "required": True}],
+        },
+        final_text_mode="raw",
+    )
+    orch = MetaOrchestrator(
+        agent_runner=unused_runner,
+        skill_loader=SimpleNamespace(),
+        llm_chat=fake_llm_chat,
+        run_writer=writer,  # type: ignore[arg-type]
+        session_key="S1",
+    )
+
+    try:
+        paused = await orch.run(
+            MetaMatch(plan=plan, inputs={"user_message": "write a brief"}),
+        )
+        paused_run_id = writer.list_runs(limit=5)[0].run_id
+        first = await orch.run(
+            MetaMatch(
+                plan=plan,
+                inputs={
+                    "user_message": "write a brief",
+                    "audience": "decision owner",
+                    "meta_preflight_confirmed": True,
+                    "meta_preflight_run_id": paused_run_id,
+                },
+            ),
+        )
+        second = await orch.run(
+            MetaMatch(
+                plan=plan,
+                inputs={
+                    "user_message": "write a brief",
+                    "audience": "decision owner",
+                    "meta_preflight_confirmed": True,
+                    "meta_preflight_run_id": paused_run_id,
+                },
+            ),
+        )
+        rows = writer.list_runs(limit=5)
+    finally:
+        writer.close()
+
+    assert paused.paused is True
+    assert first.ok is True
+    assert second.paused is True
+    assert calls == 1
+    assert len(rows) == 2
+    by_id = {row.run_id: row for row in rows}
+    assert by_id[paused_run_id].status == "ok"
+    assert any(row.run_id != paused_run_id and row.status == "cancelled" for row in rows)
 
 
 def test_parser_happy_path() -> None:
@@ -359,6 +583,172 @@ def test_make_meta_inputs_extracts_preflight_confirmation_marker() -> None:
     assert inputs["meta_preflight_run_id"] == "01ABC"
     assert inputs["user_message"] == "Please build a launch brief."
     assert "meta_preflight_confirmed" not in inputs["language_instruction"]
+
+
+def test_make_meta_inputs_removes_preflight_confirmed_fields_block() -> None:
+    inputs = make_meta_inputs(
+        user_message=(
+            "Please review the renewal.\n\n"
+            "Confirmed request fields:\n"
+            "- audience: decision owner\n"
+            "- language: English\n\n"
+            "<!-- opensquilla:meta_preflight_confirmed=1 -->"
+        ),
+    )
+
+    assert inputs["meta_preflight_confirmed"] is True
+    assert inputs["user_message"] == "Please review the renewal."
+    assert "Confirmed request fields" not in inputs["language_instruction"]
+
+
+def test_make_meta_inputs_language_preference_overrides_detected_user_language() -> None:
+    english = make_meta_inputs(
+        user_message="请帮我判断这份合同",
+        language="English",
+    )
+    chinese = make_meta_inputs(
+        user_message="Please review this contract",
+        preferences={"language": "中文"},
+    )
+
+    assert english["user_language"] == "en"
+    assert "English only" in english["language_instruction"]
+    assert chinese["user_language"] == "zh"
+    assert "Simplified Chinese" in chinese["language_instruction"]
+
+
+def test_preflight_request_template_localizes_for_user_language() -> None:
+    template = {
+        "outcome": "Decision memo",
+        "outcome_zh": "决策简报",
+        "outcome_en": "Decision brief",
+        "fields": [
+            {
+                "name": "decision_question",
+                "required": True,
+                "label_zh": "决策问题",
+                "label_en": "Decision question",
+                "description_zh": "你要判断什么",
+                "description_en": "What you need to decide",
+            }
+        ],
+        "assumptions": ["Use practical defaults."],
+        "assumptions_zh": ["如果缺少标准，默认按风险、成本和可逆性判断。"],
+        "assumptions_en": ["If criteria are missing, use risk, cost, and reversibility."],
+    }
+
+    zh = _localized_request_template(template, "zh")
+    en = _localized_request_template(template, "en")
+
+    assert zh["outcome"] == "决策简报"
+    assert zh["fields"][0]["label"] == "决策问题"
+    assert zh["fields"][0]["description"] == "你要判断什么"
+    assert zh["assumptions"] == ["如果缺少标准，默认按风险、成本和可逆性判断。"]
+    assert en["outcome"] == "Decision brief"
+    assert en["fields"][0]["label"] == "Decision question"
+    assert en["fields"][0]["description"] == "What you need to decide"
+    assert en["assumptions"] == ["If criteria are missing, use risk, cost, and reversibility."]
+
+
+def test_meta_step_label_localizes_for_user_language() -> None:
+    step = MetaStep(
+        id="risk_review",
+        skill="llm",
+        label="风险审查",
+        label_by_language={"zh": "风险审查", "en": "Risk review"},
+    )
+
+    assert _localized_step_label(step, "zh") == "风险审查"
+    assert _localized_step_label(step, "en") == "Risk review"
+
+
+def test_meta_step_label_without_language_metadata_uses_declared_label() -> None:
+    step = MetaStep(id="pdf_extract", skill="tool", label="PDF 抽取")
+
+    assert _localized_step_label(step, "en") == "PDF 抽取"
+
+
+def test_all_bundled_meta_skills_have_language_safe_user_visible_copy(
+    tmp_path: Path,
+) -> None:
+    def has_cjk(text: object) -> bool:
+        return any(
+            "\u3400" <= ch <= "\u9fff" or "\uf900" <= ch <= "\ufaff"
+            for ch in str(text)
+        )
+
+    def visible(value: object) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, list):
+            return " ".join(str(item) for item in value)
+        return str(value)
+
+    bundled = Path("src/opensquilla/skills/bundled").resolve()
+    loader = SkillLoader(
+        bundled_dir=bundled,
+        snapshot_path=tmp_path / "skills-snapshot.json",
+    )
+    specs = [s for s in loader.load_all() if getattr(s, "kind", "") == "meta"]
+
+    assert specs
+    issues: list[str] = []
+    for spec in specs:
+        plan = parse_meta_plan(spec)
+        assert plan is not None
+        for language in ("zh", "en"):
+            template = _localized_request_template(plan.request_template, language)
+            outcome = visible(template.get("outcome"))
+            if language == "zh" and not has_cjk(outcome):
+                issues.append(f"{spec.name}: zh outcome is not Chinese: {outcome}")
+            if language == "en" and has_cjk(outcome):
+                issues.append(f"{spec.name}: en outcome contains Chinese: {outcome}")
+            for field in template.get("fields", []) or []:
+                if not isinstance(field, dict):
+                    continue
+                label = visible(field.get("label") or field.get("name"))
+                default = visible(field.get("default"))
+                if language == "zh" and not has_cjk(label):
+                    issues.append(
+                        f"{spec.name}: zh label for {field.get('name')} is not Chinese: "
+                        f"{label}"
+                    )
+                if language == "en" and has_cjk(label):
+                    issues.append(
+                        f"{spec.name}: en label for {field.get('name')} contains "
+                        f"Chinese: {label}"
+                    )
+                if language == "en" and has_cjk(default):
+                    issues.append(
+                        f"{spec.name}: en default for {field.get('name')} contains "
+                        f"Chinese: {default}"
+                    )
+            assumptions = visible(template.get("assumptions"))
+            if language == "zh" and assumptions and not has_cjk(assumptions):
+                issues.append(f"{spec.name}: zh assumptions are not Chinese")
+            if language == "en" and has_cjk(assumptions):
+                issues.append(f"{spec.name}: en assumptions contain Chinese")
+        for step in plan.steps:
+            en_label = _localized_step_label(step, "en")
+            if has_cjk(en_label):
+                issues.append(
+                    f"{spec.name}: en label for step {step.id} contains Chinese: "
+                    f"{en_label}"
+                )
+            cfg = step.clarify_config
+            if cfg is None:
+                continue
+            if cfg.intro and not cfg.intro_by_language.get("zh"):
+                issues.append(f"{spec.name}: {step.id} missing intro_zh")
+            if cfg.intro and not cfg.intro_by_language.get("en"):
+                issues.append(f"{spec.name}: {step.id} missing intro_en")
+            for field in cfg.fields:
+                if field.prompt and not field.prompt_by_language.get("zh"):
+                    issues.append(f"{spec.name}: {step.id}.{field.name} missing prompt_zh")
+                if field.prompt and not field.prompt_by_language.get("en"):
+                    issues.append(f"{spec.name}: {step.id}.{field.name} missing prompt_en")
+
+    assert not issues, "\n".join(issues)
 
 
 # ---------------------------------------------------------------------------

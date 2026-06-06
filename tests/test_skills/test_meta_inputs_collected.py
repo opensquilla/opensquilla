@@ -45,7 +45,7 @@ def test_make_meta_inputs_surfaces_supplied_audience_and_language_preferences():
         "audience": "executive team",
         "language": "zh-CN",
     }
-    assert inputs["user_language"] == "en"
+    assert inputs["user_language"] == "zh"
     assert "Simplified Chinese" in inputs["language_instruction"]
 
 

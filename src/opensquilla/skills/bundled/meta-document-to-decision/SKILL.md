@@ -7,22 +7,46 @@ always: false
 final_text_mode: "step:decision_brief_audit"
 request_template:
   outcome: "Decision-ready brief with recommendation, evidence table, risks, and questions."
+  outcome_zh: "包含建议、证据表、风险和追问清单的决策简报。"
+  outcome_en: "Decision-ready brief with recommendation, evidence table, risks, and questions."
   fields:
     - name: document_or_excerpt
+      label_zh: "文件或摘录"
+      label_en: "Document or excerpt"
       required: true
     - name: decision_question
+      label_zh: "决策问题"
+      label_en: "Decision question"
       required: true
     - name: decision_criteria
+      label_zh: "决策标准"
+      label_en: "Decision criteria"
       required: false
     - name: deadline
+      label_zh: "截止时间"
+      label_en: "Deadline"
       required: false
     - name: audience
+      label_zh: "受众"
+      label_en: "Audience"
       required: false
       default: "decision owner"
+      default_zh: "决策负责人"
+      default_en: "decision owner"
     - name: language
+      label_zh: "输出语言"
+      label_en: "Output language"
       required: false
       default: "match the user's language"
+      default_zh: "跟随用户语言"
+      default_en: "match the user's language"
   assumptions:
+    - "Do not make legal or financial claims beyond the provided evidence."
+    - "If criteria are missing, use risk, cost, reversibility, and urgency as defaults."
+  assumptions_zh:
+    - "不超出已提供证据做法律或财务结论。"
+    - "如果用户没有给出判断标准，默认按风险、成本、可逆性和紧急程度评估。"
+  assumptions_en:
     - "Do not make legal or financial claims beyond the provided evidence."
     - "If criteria are missing, use risk, cost, reversibility, and urgency as defaults."
 output_contract:
@@ -101,6 +125,7 @@ composition:
   steps:
     - id: intake
       label: "意图提取"
+      label_en: "Intake"
       kind: llm_chat
       with:
         system: "You classify document decision requests and preserve every path, URL, excerpt, and decision question."
@@ -127,27 +152,35 @@ composition:
           exactly "- none".
     - id: clarify
       label: "澄清"
+      label_en: "Clarify"
       kind: user_input
       depends_on: [intake]
       when: "'NEEDS_CLARIFICATION: yes' in outputs.intake and '- none' not in outputs.intake"
       clarify:
         mode: form
         intro: "文档决策分析缺少材料或问题。请补齐后我会继续。"
+        intro_zh: "文档决策分析缺少材料或问题。请补齐后我会继续。"
+        intro_en: "The document decision analysis is missing source material or a decision question. Fill these in and I will continue."
         nl_extract: true
         fields:
           - name: source_material
             type: string
             required: true
             prompt: "文件路径、URL 或摘录 / Source material"
+            prompt_zh: "文件路径、URL 或摘录"
+            prompt_en: "File path, URL, or excerpt"
             max_chars: 3000
           - name: decision_question
             type: string
             prompt: "你要做的决定 / Decision question"
+            prompt_zh: "你要做的决定"
+            prompt_en: "Decision question"
             max_chars: 300
         cancel_keywords: ["取消", "算了", "cancel", "stop"]
         timeout_hours: 24
     - id: pdf_extract
       label: "PDF 抽取"
+      label_en: "Extract PDF"
       kind: skill_exec
       skill: pdf-toolkit
       depends_on: [intake, clarify]
@@ -157,6 +190,7 @@ composition:
         task: "Extract text, tables, document title, and page references for this decision analysis: {{ outputs.intake | truncate(1200) }}"
     - id: docx_extract
       label: "DOCX 抽取"
+      label_en: "Extract DOCX"
       kind: skill_exec
       skill: docx
       depends_on: [intake, clarify]
@@ -166,6 +200,7 @@ composition:
         task: "Inspect document text, headings, tracked-change hints, tables, and clauses for this decision analysis."
     - id: xlsx_extract
       label: "XLSX 抽取"
+      label_en: "Extract XLSX"
       kind: skill_exec
       skill: xlsx
       depends_on: [intake, clarify]
@@ -175,6 +210,7 @@ composition:
         task: "Inspect sheets, tables, totals, formula outputs, and anomalies for this decision analysis."
     - id: pasted_text_extract
       label: "粘贴文本抽取"
+      label_en: "Extract pasted text"
       kind: llm_chat
       depends_on: [intake, clarify]
       when: "'pasted_text' in (outputs.intake | lower) or 'unknown' in (outputs.intake | lower)"
@@ -193,6 +229,7 @@ composition:
           {{ inputs.user_message | xml_escape | truncate(6000) }}
     - id: pdf_extract_fallback
       label: "PDF 抽取兜底"
+      label_en: "PDF fallback"
       kind: llm_chat
       with:
         system: "You build a limited PDF evidence packet from only the user's pasted text and explicit file names."
@@ -203,6 +240,7 @@ composition:
           {{ inputs.user_message | xml_escape | truncate(5000) }}
     - id: docx_extract_fallback
       label: "DOCX 抽取兜底"
+      label_en: "DOCX fallback"
       kind: llm_chat
       with:
         system: "You build a limited DOCX evidence packet from only the user's pasted text and explicit file names."
@@ -213,6 +251,7 @@ composition:
           {{ inputs.user_message | xml_escape | truncate(5000) }}
     - id: xlsx_extract_fallback
       label: "XLSX 抽取兜底"
+      label_en: "XLSX fallback"
       kind: llm_chat
       with:
         system: "You build a limited spreadsheet evidence packet from only the user's pasted text and explicit file names."
@@ -223,6 +262,7 @@ composition:
           {{ inputs.user_message | xml_escape | truncate(5000) }}
     - id: risk_review
       label: "风险审查"
+      label_en: "Risk review"
       kind: llm_chat
       depends_on: [pdf_extract, docx_extract, xlsx_extract, pasted_text_extract]
       with:
@@ -257,6 +297,7 @@ composition:
           {{ outputs.pasted_text_extract | truncate(4000) }}
     - id: decision_brief
       label: "决策简报"
+      label_en: "Decision brief"
       kind: llm_chat
       depends_on: [risk_review]
       with:
@@ -315,6 +356,7 @@ composition:
           {{ outputs.risk_review | truncate(7000) }}
     - id: decision_brief_audit
       label: "简报审稿"
+      label_en: "Brief audit"
       kind: llm_chat
       depends_on: [decision_brief, risk_review]
       with:
@@ -358,18 +400,20 @@ composition:
             24 小时, and 专业复核提醒 unless they are quoted source text. For a
             Chinese request, return Simplified Chinese and do not switch to
             English section headings.
-          - Use these exact section titles for Chinese or bilingual requests
-            so the brief is easy to scan:
-            "Bottom-line recommendation / 底线推荐",
-            "Evidence table / 证据表",
-            "Risks ranked high/medium/low / 高中低风险",
-            "Questions to ask the supplier / 要问供应商的问题",
-            "What to do next in 24 hours / 接下来 24 小时",
-            and "Professional-review caveat / 专业复核提醒".
-            For English-only requests, use the English portion of each heading
-            only: Bottom-line recommendation, Evidence table, Risks ranked
-            high/medium/low, Questions to ask the supplier, What to do next in
-            24 hours, Professional-review caveat.
+          - Use these exact section titles for Chinese requests:
+            "底线推荐",
+            "证据表",
+            "高中低风险",
+            "要问供应商的问题",
+            "接下来 24 小时",
+            and "专业复核提醒".
+            For English requests, use the English headings only:
+            "Bottom-line recommendation",
+            "Evidence table",
+            "Risks ranked high/medium/low",
+            "Questions to ask the supplier",
+            "What to do next in 24 hours",
+            and "Professional-review caveat".
           - Preserve date status accurately: payment due 2026-06-03 is an
             upcoming payment deadline, not overdue. Do not infer any
             cancellation deadline from that payment due date.

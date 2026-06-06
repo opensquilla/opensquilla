@@ -10,6 +10,8 @@ from opensquilla.skills.meta.plan_serde import (
     to_jsonable,
 )
 from opensquilla.skills.meta.types import (
+    ClarifyField,
+    ClarifyStepConfig,
     MetaPlan,
     MetaStep,
     RouteCase,
@@ -27,6 +29,7 @@ def _example_plan() -> MetaPlan:
                 skill="classify",
                 kind="llm_classify",
                 label="分类",
+                label_by_language={"zh": "分类", "en": "Classify"},
                 output_choices=("A", "B"),
                 with_args={"text": "{{ inputs.user_message }}"},
             ),
@@ -39,6 +42,29 @@ def _example_plan() -> MetaPlan:
                 depends_on=("classify",),
                 route=(RouteCase(when="outputs.classify == 'A'", to="writer"),),
                 with_args={"request": "{{ inputs.user_message }}"},
+            ),
+            MetaStep(
+                id="collect",
+                skill="collect",
+                kind="user_input",
+                label="澄清",
+                clarify_config=ClarifyStepConfig(
+                    mode="form",
+                    intro="补充信息 / Add details",
+                    intro_by_language={
+                        "zh": "请补充信息。",
+                        "en": "Please add details.",
+                    },
+                    fields=(
+                        ClarifyField(
+                            name="topic",
+                            type="string",
+                            required=True,
+                            prompt="主题 / Topic",
+                            prompt_by_language={"zh": "主题", "en": "Topic"},
+                        ),
+                    ),
+                ),
             ),
         ),
         fallback_body="body",
@@ -72,10 +98,23 @@ def test_to_jsonable_produces_versioned_envelope():
     plan_obj = payload["plan"]
     assert plan_obj["name"] == "example"
     assert plan_obj["priority"] == 5
-    assert len(plan_obj["steps"]) == 2
+    assert len(plan_obj["steps"]) == 3
     assert plan_obj["steps"][0]["kind"] == "llm_classify"
     assert plan_obj["steps"][0]["label"] == "分类"
+    assert plan_obj["steps"][0]["label_by_language"] == {
+        "zh": "分类",
+        "en": "Classify",
+    }
     assert plan_obj["steps"][1]["progress_emits"] is False
+    clarify = plan_obj["steps"][2]["clarify_config"]
+    assert clarify["intro_by_language"] == {
+        "zh": "请补充信息。",
+        "en": "Please add details.",
+    }
+    assert clarify["fields"][0]["prompt_by_language"] == {
+        "zh": "主题",
+        "en": "Topic",
+    }
     assert plan_obj["request_template"]["outcome"] == "Decision memo"
     assert plan_obj["output_contract"]["required_sections"] == [
         "Recommendation",

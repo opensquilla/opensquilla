@@ -7,23 +7,49 @@ always: false
 final_text_mode: "step:final_brief_audit"
 request_template:
   outcome: "Practical daily operating brief with priorities, schedule risks, and next actions."
+  outcome_zh: "包含优先级、日程风险和下一步行动的每日行动简报。"
+  outcome_en: "Practical daily operating brief with priorities, schedule risks, and next actions."
   fields:
     - name: date_or_window
+      label_zh: "日期或时间窗口"
+      label_en: "Date or window"
       required: false
       default: "today or tomorrow from the user's request"
+      default_zh: "按用户请求中的今天或明天"
+      default_en: "today or tomorrow from the user's request"
     - name: calendar_or_tasks
+      label_zh: "日程或任务"
+      label_en: "Calendar or tasks"
       required: false
     - name: location
+      label_zh: "地点"
+      label_en: "Location"
       required: false
     - name: constraints
+      label_zh: "限制条件"
+      label_en: "Constraints"
       required: false
     - name: audience
+      label_zh: "受众"
+      label_en: "Audience"
       required: false
       default: "the operator themself"
+      default_zh: "用户本人"
+      default_en: "the operator themself"
     - name: language
+      label_zh: "输出语言"
+      label_en: "Output language"
       required: false
       default: "match the user's language"
+      default_zh: "跟随用户语言"
+      default_en: "match the user's language"
   assumptions:
+    - "Use pasted context first; memory/weather only enrich the brief when available."
+    - "Avoid creating reminders unless the user explicitly asks."
+  assumptions_zh:
+    - "优先使用用户粘贴的上下文；记忆和天气只在可用时补充简报。"
+    - "除非用户明确要求，否则不要创建提醒。"
+  assumptions_en:
     - "Use pasted context first; memory/weather only enrich the brief when available."
     - "Avoid creating reminders unless the user explicitly asks."
 output_contract:
@@ -95,6 +121,7 @@ composition:
   steps:
     - id: intake
       label: "意图提取"
+      label_en: "Intake"
       kind: llm_chat
       with:
         system: "You extract a daily operating brief contract without asking unless the date or timezone is unusable."
@@ -122,31 +149,41 @@ composition:
           MISSING_FIELDS must be exactly "- none".
     - id: clarify
       label: "澄清"
+      label_en: "Clarification"
       kind: user_input
       depends_on: [intake]
       when: "'NEEDS_CLARIFICATION: yes' in outputs.intake and '- none' not in outputs.intake"
       clarify:
         mode: form
         intro: "今天的简报缺少关键时间信息。补齐后我会继续整理优先级。"
+        intro_zh: "今天的简报缺少关键时间信息。补齐后我会继续整理优先级。"
+        intro_en: "The daily brief is missing key timing details. Fill these in and I will continue."
         nl_extract: true
         fields:
           - name: date_scope
             type: string
             required: true
             prompt: "日期范围 / Date scope"
+            prompt_zh: "日期范围"
+            prompt_en: "Date scope"
             max_chars: 80
           - name: timezone
             type: string
             prompt: "时区 / Timezone"
+            prompt_zh: "时区"
+            prompt_en: "Timezone"
             max_chars: 80
           - name: location
             type: string
             prompt: "城市 / Location"
+            prompt_zh: "城市"
+            prompt_en: "Location"
             max_chars: 80
         cancel_keywords: ["取消", "算了", "cancel", "stop"]
         timeout_hours: 24
     - id: memory_recall
       label: "记忆召回"
+      label_en: "Memory recall"
       kind: tool_call
       tool: memory_search
       tool_allowlist: [memory_search]
@@ -157,6 +194,7 @@ composition:
         max_results: 8
     - id: memory_recall_fallback
       label: "记忆召回兜底"
+      label_en: "Memory recall fallback"
       kind: llm_chat
       with:
         system: "You produce a no-memory fallback note for a daily operating brief."
@@ -172,6 +210,7 @@ composition:
           {{ outputs.intake | truncate(1000) }}
     - id: weather_check
       label: "天气查询"
+      label_en: "Weather lookup"
       kind: skill_exec
       skill: weather
       depends_on: [intake, clarify]
@@ -181,6 +220,7 @@ composition:
         days: 2
     - id: weather_check_fallback
       label: "天气兜底"
+      label_en: "Weather fallback"
       kind: llm_chat
       with:
         system: "You produce a no-live-weather fallback note for a daily brief."
@@ -193,6 +233,7 @@ composition:
           {{ inputs.user_message | xml_escape | truncate(2500) }}
     - id: context_digest
       label: "上下文摘要"
+      label_en: "Context summary"
       kind: llm_chat
       depends_on: [intake, clarify]
       with:
@@ -213,6 +254,7 @@ composition:
           {{ outputs.intake | truncate(1000) }}
     - id: news_scan
       label: "新闻扫描"
+      label_en: "News scan"
       kind: skill_exec
       skill: multi-search-engine
       depends_on: [intake]
@@ -223,6 +265,7 @@ composition:
         max_results: 8
     - id: news_scan_fallback
       label: "新闻扫描兜底"
+      label_en: "News scan fallback"
       kind: llm_chat
       with:
         system: "You produce a no-live-news/search fallback note for a daily brief."
@@ -235,6 +278,7 @@ composition:
           {{ inputs.user_message | xml_escape | truncate(2500) }}
     - id: final_brief
       label: "简报终稿"
+      label_en: "Final brief"
       kind: llm_chat
       depends_on: [memory_recall, weather_check, context_digest, news_scan]
       with:
@@ -289,6 +333,7 @@ composition:
           {{ outputs.news_scan | truncate(3000) }}
     - id: final_brief_audit
       label: "简报审稿"
+      label_en: "Brief review"
       kind: llm_chat
       depends_on: [final_brief, intake, weather_check, context_digest, news_scan]
       with:

@@ -2633,30 +2633,38 @@
 /* ── Clarify form (PR5 meta-skill user_input pause) ───────────────── */
 
 .clarify-form {
-  margin-top: var(--sp-3);
-  background: var(--bg-surface);
-  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
-  border-radius: var(--radius-md);
-  padding: var(--sp-3) var(--sp-4);
+  max-width: min(760px, 100%);
+  margin: var(--sp-3) auto 0;
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--bg-surface) 96%, var(--accent) 4%),
+    var(--bg-surface));
+  border: 1px solid color-mix(in srgb, var(--border) 84%, var(--accent) 16%);
+  border-radius: 8px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05);
+  gap: 10px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.07);
 }
 
 .clarify-form-header {
   font-size: var(--fs-sm);
-  font-weight: 600;
+  font-weight: 650;
   color: var(--text);
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
-  padding-bottom: var(--sp-2);
-  border-bottom: 1px solid var(--border);
+  gap: 8px;
+  padding-bottom: 0;
+  border-bottom: 0;
 }
 
 .clarify-form-header::before {
-  content: '📝';
+  content: '';
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 .clarify-form-intro {
@@ -2669,14 +2677,14 @@
 .clarify-form-fields {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-3);
-  margin-top: var(--sp-2);
+  gap: 10px;
+  margin-top: 2px;
 }
 
 .clarify-form-row {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
+  gap: 5px;
 }
 
 .clarify-form-label {
@@ -2704,9 +2712,9 @@
 .clarify-form-field-help-body {
   margin-top: var(--sp-1);
   padding: var(--sp-2);
-  background: color-mix(in srgb, var(--bg-surface) 88%, var(--bg-base));
+  background: color-mix(in srgb, var(--bg-base) 72%, transparent);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: 6px;
   white-space: pre-wrap;
 }
 
@@ -2740,18 +2748,18 @@ select.clarify-form-input {
 .clarify-form-actions {
   display: flex;
   justify-content: flex-end;
-  gap: var(--sp-2);
-  padding-top: var(--sp-2);
+  gap: 8px;
+  padding-top: 10px;
   border-top: 1px solid var(--border);
-  margin-top: var(--sp-2);
+  margin-top: 2px;
 }
 
 .clarify-form-submit,
 .clarify-form-cancel {
   padding: var(--sp-2) var(--sp-4);
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  border-radius: var(--radius-sm);
+  font-size: var(--fs-xs);
+  font-weight: 650;
+  border-radius: 6px;
   cursor: pointer;
   border: 1px solid transparent;
   transition: background-color var(--transition),
@@ -2814,18 +2822,19 @@ select.clarify-form-input {
 /* Progress and next-step summary shown at the top of active clarify forms. */
 .clarify-form-progress {
   display: grid;
-  gap: 6px;
-  margin: 8px 0 12px;
-  padding: 10px 12px;
-  border: 1px solid color-mix(in srgb, var(--border) 78%, var(--accent) 22%);
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--surface-2) 86%, var(--accent) 14%);
+  gap: 5px;
+  margin: 0;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 84%, var(--accent) 16%);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-base) 82%, var(--accent) 8%);
 }
 
 .clarify-form-progress-metric {
-  font-size: var(--fs-sm);
-  font-weight: 600;
+  font-size: var(--fs-xs);
+  font-weight: 700;
   color: var(--text);
+  letter-spacing: 0.01em;
 }
 
 .clarify-form-progress-next {
@@ -2848,12 +2857,12 @@ select.clarify-form-input {
  * is reviewing, not new prompts to act on.
  * ────────────────────────────────────────────────────────────────── */
 .clarify-form-prefill {
-  margin: 8px 0 12px;
-  padding: 10px 12px;
-  border: 1px solid rgba(80, 130, 200, 0.25);
-  border-radius: 6px;
-  background: rgba(80, 130, 200, 0.05);
-  font-size: 0.9em;
+  margin: 0;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, var(--accent) 18%);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-base) 78%, var(--accent) 7%);
+  font-size: var(--fs-xs);
 }
 
 .clarify-form-prefill-note {
@@ -2918,14 +2927,14 @@ select.clarify-form-input {
    * user the main chat input still works while the form is open.
    * Quiet styling on purpose — this is a permission marker, not a
    * call to action. */
-  margin: 2px 0 10px;
-  padding: 6px 10px;
-  font-size: 0.85em;
+  margin: 0;
+  padding: 7px 10px;
+  font-size: var(--fs-xs);
   line-height: 1.45;
-  color: rgba(80, 80, 120, 0.85);
-  background: rgba(120, 100, 200, 0.04);
-  border-left: 2px solid rgba(120, 100, 200, 0.35);
-  border-radius: 3px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--bg-base) 82%, var(--accent) 8%);
+  border-left: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 6px;
 }
 
 

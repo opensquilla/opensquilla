@@ -789,7 +789,7 @@ def test_chat_slash_commands_are_blocked_while_streaming_after_literal_escape() 
     assert "text = text.slice(1);" in send_prefix[literal_idx:normalize_idx]
     assert "text = normalized.text;" in send_prefix[normalize_idx:streaming_idx]
     assert (
-        "_pendingAttachments = normalized.attachments;"
+        "attachmentsForSend = normalized.attachments;"
         in send_prefix[normalize_idx:streaming_idx]
     )
     assert streaming_guard in streaming_block
@@ -895,7 +895,11 @@ def test_chat_switching_existing_session_does_not_mark_new_chat_intent() -> None
 
     assert "_pendingSessionIntent = 'new_chat'" not in switch_body
     assert source.count("_pendingSessionIntent = 'new_chat'") == 2
-    assert "params.intent = _pendingSessionIntent;" in source
+    assert (
+        "const sessionIntentForSend = textOverride !== null ? null : _pendingSessionIntent;"
+        in source
+    )
+    assert "params.intent = sessionIntentForSend;" in source
 
 
 def test_chat_regenerate_targets_clicked_assistant_bubble() -> None:
@@ -1590,7 +1594,7 @@ def test_chat_large_paste_guard_runs_before_queue_and_rpc_send() -> None:
     assert send_body.index(normalize_call) < send_body.index("const params = { message:")
     provenance_call = (
         "const normalizationProvenance = "
-        "_inputNormalizationProvenanceFromAttachments(_pendingAttachments);"
+        "_inputNormalizationProvenanceFromAttachments(attachmentsForSend);"
     )
     assert provenance_call in send_body
     assert (

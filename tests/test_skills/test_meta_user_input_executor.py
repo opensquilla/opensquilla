@@ -174,6 +174,57 @@ async def test_english_pause_filters_cjk_cancel_keywords_and_prompts():
 
 
 @pytest.mark.asyncio
+async def test_pause_uses_explicit_localized_intro_and_prompts():
+    cfg = ClarifyStepConfig(
+        mode="form",
+        fields=(
+            ClarifyField(
+                name="topic",
+                type="string",
+                required=True,
+                prompt="主题 / Topic",
+                prompt_by_language={"zh": "主题", "en": "Topic"},
+            ),
+        ),
+        intro="补充信息 / Add details",
+        intro_by_language={
+            "zh": "请补充信息。",
+            "en": "Please add details.",
+        },
+    )
+
+    dao = MagicMock()
+    dao.try_claim_awaiting.return_value = True
+    with pytest.raises(MetaPaused) as zh_exc:
+        await run_user_input_step(
+            _step(cfg),
+            inputs={"user_message": "写一份报告", "user_language": "zh", "collected": {}},
+            outputs={},
+            run_id="r1",
+            session_id="S1",
+            dao=dao,
+            now=lambda: 1700000000.0,
+        )
+
+    assert zh_exc.value.schema.intro == "请补充信息。"
+    assert zh_exc.value.schema.fields[0].prompt == "主题"
+
+    with pytest.raises(MetaPaused) as en_exc:
+        await run_user_input_step(
+            _step(cfg),
+            inputs={"user_message": "write a report", "user_language": "en", "collected": {}},
+            outputs={},
+            run_id="r2",
+            session_id="S1",
+            dao=dao,
+            now=lambda: 1700000001.0,
+        )
+
+    assert en_exc.value.schema.intro == "Please add details."
+    assert en_exc.value.schema.fields[0].prompt == "Topic"
+
+
+@pytest.mark.asyncio
 async def test_cas_failure_does_not_raise_meta_paused():
     """When the DAO rejects the claim, the executor signals a normal failure
     by raising RuntimeError. The orchestrator treats it as a regular step

@@ -7,23 +7,49 @@ always: false
 final_text_mode: "step:final_report_audit"
 request_template:
   outcome: "Source-backed research report or decision memo with citations and tradeoffs."
+  outcome_zh: "带来源引用、权衡和建议的研究报告或决策备忘录。"
+  outcome_en: "Source-backed research report or decision memo with citations and tradeoffs."
   fields:
     - name: research_question
+      label_zh: "研究问题"
+      label_en: "Research question"
       required: true
     - name: output_format
+      label_zh: "输出格式"
+      label_en: "Output format"
       required: false
       default: "brief report or decision memo inferred from request"
+      default_zh: "根据请求推断为简报、报告或决策备忘录"
+      default_en: "brief report or decision memo inferred from request"
     - name: source_constraints
+      label_zh: "来源限制"
+      label_en: "Source constraints"
       required: false
     - name: time_window
+      label_zh: "时间窗口"
+      label_en: "Time window"
       required: false
     - name: audience
+      label_zh: "受众"
+      label_en: "Audience"
       required: false
       default: "decision maker or report reader"
+      default_zh: "决策者或报告读者"
+      default_en: "decision maker or report reader"
     - name: language
+      label_zh: "输出语言"
+      label_en: "Output language"
       required: false
       default: "match the user's language"
+      default_zh: "跟随用户语言"
+      default_en: "match the user's language"
   assumptions:
+    - "Use current sources when browsing is available."
+    - "Separate evidence, assumptions, and recommendations."
+  assumptions_zh:
+    - "浏览可用时使用当前来源。"
+    - "区分证据、假设和建议。"
+  assumptions_en:
     - "Use current sources when browsing is available."
     - "Separate evidence, assumptions, and recommendations."
 output_contract:
@@ -104,6 +130,7 @@ composition:
   steps:
     - id: preferences
       label: "偏好提取"
+      label_en: "Preference extraction"
       kind: llm_chat
       with:
         system: "You infer report requirements. Return only the requested contract."
@@ -134,6 +161,7 @@ composition:
             - <assumption>
     - id: report_clarify
       label: "报告澄清"
+      label_en: "Report clarification"
       kind: user_input
       depends_on: [preferences]
       when: "'NEEDS_CLARIFICATION: yes' in outputs.preferences"
@@ -141,31 +169,42 @@ composition:
         mode: form
         intro: |
           报告主题或决策场景还不够明确。请补齐最小信息，我再继续检索和写作。
+        intro_zh: "报告主题或决策场景还不够明确。请补齐最小信息，我再继续检索和写作。"
+        intro_en: "The report topic or decision context is not clear enough. Fill in the minimum details and I will continue research and writing."
         nl_extract: true
         fields:
           - name: topic
             type: string
             required: true
             prompt: "报告主题 / Report topic"
+            prompt_zh: "报告主题"
+            prompt_en: "Report topic"
             max_chars: 240
           - name: audience
             type: string
             required: true
             prompt: "读者或受众 / Audience"
+            prompt_zh: "读者或受众"
+            prompt_en: "Audience"
             max_chars: 160
           - name: decision_context
             type: string
             required: true
             prompt: "要支持的决策或使用场景 / Decision context"
+            prompt_zh: "要支持的决策或使用场景"
+            prompt_en: "Decision or use case to support"
             max_chars: 300
           - name: source_preferences
             type: string
             prompt: "偏好的来源或范围 / Preferred sources or scope"
+            prompt_zh: "偏好的来源或范围"
+            prompt_en: "Preferred sources or scope"
             max_chars: 300
         cancel_keywords: ["算了", "取消", "cancel", "stop", "abort"]
         timeout_hours: 24
     - id: report_mode
       label: "报告模式"
+      label_en: "Report mode"
       kind: llm_classify
       depends_on: [preferences, report_clarify]
       output_choices:
@@ -198,6 +237,7 @@ composition:
             artifact export.
     - id: source_seed
       label: "源头种子"
+      label_en: "Source seeds"
       kind: llm_chat
       depends_on: [preferences, report_mode]
       with:
@@ -232,6 +272,7 @@ composition:
             - <title> — <URL or no URL> — verification target, not live-checked
     - id: search
       label: "检索"
+      label_en: "Search"
       kind: skill_exec
       skill: multi-search-engine
       depends_on: [preferences, report_clarify, report_mode, source_seed]
@@ -242,6 +283,7 @@ composition:
         max_results: 20
     - id: search_fallback
       label: "检索兜底"
+      label_en: "Search fallback"
       kind: llm_chat
       with:
         system: "You summarize that live web search was unavailable without exposing runtime details."
@@ -257,6 +299,7 @@ composition:
           {{ inputs.user_message | xml_escape | truncate(2500) }}
     - id: source_quality
       label: "源质量"
+      label_en: "Source quality"
       kind: llm_chat
       depends_on: [search, source_seed]
       with:
@@ -302,6 +345,7 @@ composition:
           without an explicit caveat.
     - id: research
       label: "研究"
+      label_en: "Research"
       skill: deep-research
       depends_on: [source_quality]
       when: "outputs.report_mode in ('DEEP_REPORT', 'EXPORT_DOCX')"
@@ -311,6 +355,7 @@ composition:
         rounds: 2
     - id: outline
       label: "大纲"
+      label_en: "Outline"
       kind: llm_chat
       depends_on: [source_quality, research]
       with:
@@ -334,6 +379,7 @@ composition:
           {{ outputs.research | truncate(8000) }}
     - id: report_draft
       label: "报告初稿"
+      label_en: "Draft report"
       kind: llm_chat
       depends_on: [outline]
       with:
@@ -359,6 +405,7 @@ composition:
           {{ outputs.research }}
     - id: source_to_claim
       label: "源到论断"
+      label_en: "Source-to-claim mapping"
       kind: llm_chat
       depends_on: [report_draft, source_quality]
       when: "outputs.report_mode != 'QUICK_DECISION_MEMO'"
@@ -382,6 +429,7 @@ composition:
           {{ outputs.report_draft | truncate(8000) }}
     - id: quality_gate
       label: "质量门"
+      label_en: "Quality gate"
       kind: llm_chat
       depends_on: [report_draft, source_quality, source_to_claim]
       when: "outputs.report_mode != 'QUICK_DECISION_MEMO'"
@@ -413,6 +461,7 @@ composition:
           {{ outputs.report_draft | truncate(8000) }}
     - id: final_report
       label: "终稿"
+      label_en: "Final draft"
       kind: llm_chat
       depends_on: [quality_gate, source_quality, source_to_claim]
       with:
@@ -495,6 +544,7 @@ composition:
             body inline.
     - id: final_report_audit
       label: "终稿审稿"
+      label_en: "Final review"
       kind: llm_chat
       depends_on: [preferences, report_mode, source_quality, final_report]
       with:
@@ -551,6 +601,7 @@ composition:
             memo requests.
     - id: export
       label: "导出"
+      label_en: "Export"
       skill: docx
       depends_on: [final_report]
       when: "outputs.report_mode == 'EXPORT_DOCX'"

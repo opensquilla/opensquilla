@@ -400,9 +400,7 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
                 session_key=session_key,
                 message=message,
                 attachments=attachments if isinstance(attachments, list) else [],
-                display_text=params.get("displayText")
-                if attachments and "displayText" in params
-                else None,
+                display_text=params.get("displayText") if "displayText" in params else None,
                 intent=cast(str, intent) if intent is not None else None,
                 extra=extra,
             ),

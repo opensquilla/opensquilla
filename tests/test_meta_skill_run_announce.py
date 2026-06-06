@@ -1,6 +1,7 @@
 """scheduler.run_dag 入口在第一个 step 派发前 yield meta_run_announced。"""
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 
@@ -10,7 +11,7 @@ from opensquilla.engine.types import (
     ToolUseStartEvent,
 )
 from opensquilla.skills.meta.events import _StepDone
-from opensquilla.skills.meta.types import MetaMatch, MetaPlan, MetaStep
+from opensquilla.skills.meta.types import MetaMatch, MetaPlan, MetaResult, MetaStep
 
 
 @pytest.fixture
@@ -36,7 +37,16 @@ def make_two_step_match():
             "assumptions": ["Use the user's current message as the topic"],
         },
     )
-    return MetaMatch(plan=plan, inputs={"user_message": "hi"})
+    return MetaMatch(
+        plan=plan,
+        inputs={
+            "user_message": "hi",
+            "topic": "hi",
+            "meta_preflight_confirmed": True,
+            "meta_preflight_run_id": "meta-fake-run",
+        },
+        run_id="meta-fake-run",
+    )
 
 
 @pytest.fixture
@@ -109,9 +119,68 @@ def test_preflight_precedes_run_announce(
     assert events[0].meta_skill_name == "meta-fake"
     assert events[0].request_template["outcome"] == "Short summary"
     assert events[0].interpreted_request == "hi"
-    assert events[0].missing_fields == ["topic"]
+    assert events[0].missing_fields == []
     assert events[0].assumptions == ["Use the user's current message as the topic"]
     assert events[0].can_skip is True
+
+
+def test_preflight_pauses_before_run_announce_until_confirmed(
+    make_two_step_match, fake_dispatch_stream, fake_preface,
+):
+    plan = replace(
+        make_two_step_match.plan,
+        request_template={
+            **make_two_step_match.plan.request_template,
+            "mode": "confirm",
+        },
+    )
+    match = MetaMatch(
+        plan=plan,
+        inputs={
+            "user_message": "hi",
+            "topic": "hi",
+        },
+    )
+    events = asyncio.run(_collect_events(
+        match, fake_dispatch_stream, fake_preface,
+    ))
+
+    assert isinstance(events[0], MetaPreflightEvent)
+    assert events[0].can_skip is True
+    assert not any(isinstance(e, MetaRunAnnouncedEvent) for e in events)
+    result = next(e for e in events if isinstance(e, MetaResult))
+    assert result.paused is True
+
+
+def test_confirmed_preflight_requires_current_run_id(
+    make_two_step_match, fake_dispatch_stream, fake_preface,
+):
+    plan = replace(
+        make_two_step_match.plan,
+        request_template={
+            **make_two_step_match.plan.request_template,
+            "mode": "confirm",
+        },
+    )
+    match = MetaMatch(
+        plan=plan,
+        inputs={
+            "user_message": "hi",
+            "topic": "hi",
+            "meta_preflight_confirmed": True,
+            "meta_preflight_run_id": "stale-run",
+        },
+        run_id="current-run",
+    )
+
+    events = asyncio.run(_collect_events(
+        match, fake_dispatch_stream, fake_preface,
+    ))
+
+    assert isinstance(events[0], MetaPreflightEvent)
+    assert not any(isinstance(e, MetaRunAnnouncedEvent) for e in events)
+    result = next(e for e in events if isinstance(e, MetaResult))
+    assert result.paused is True
 
 
 def test_announce_payload_lists_all_steps(make_two_step_match, fake_dispatch_stream, fake_preface):
@@ -133,7 +202,10 @@ def test_announce_payload_lists_all_steps(make_two_step_match, fake_dispatch_str
 def test_announce_uses_match_run_id(make_two_step_match, fake_dispatch_stream, fake_preface):
     match = MetaMatch(
         plan=make_two_step_match.plan,
-        inputs=make_two_step_match.inputs,
+        inputs={
+            **make_two_step_match.inputs,
+            "meta_preflight_run_id": "persisted-run-123",
+        },
         run_id="persisted-run-123",
     )
 

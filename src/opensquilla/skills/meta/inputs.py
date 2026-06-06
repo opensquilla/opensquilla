@@ -2,11 +2,28 @@
 
 from __future__ import annotations
 
-import base64
-import json
 import re
 from collections.abc import Mapping
 from typing import Any
+
+from opensquilla.meta_preflight_protocol import (
+    PREFLIGHT_CONFIRMED_RE as _PREFLIGHT_CONFIRMED_RE,
+)
+from opensquilla.meta_preflight_protocol import (
+    PREFLIGHT_FIELDS_RE as _PREFLIGHT_FIELDS_RE,
+)
+from opensquilla.meta_preflight_protocol import (
+    PREFLIGHT_RUN_ID_RE as _PREFLIGHT_RUN_ID_RE,
+)
+from opensquilla.meta_preflight_protocol import (
+    decode_preflight_fields as _decode_preflight_fields,
+)
+from opensquilla.meta_preflight_protocol import (
+    display_text_from_preflight_confirmation as display_text_from_preflight_confirmation,
+)
+from opensquilla.meta_preflight_protocol import (
+    strip_preflight_confirmation_protocol_text as strip_preflight_confirmation_protocol_text,
+)
 
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 _LATIN_RE = re.compile(r"[A-Za-z]")
@@ -20,18 +37,6 @@ _EXPLICIT_ENGLISH_RE = re.compile(
     r"\b(?:in|to|into|as)\s+english\b|\benglish[- ]only\b|\benglish\b",
     re.IGNORECASE,
 )
-_PREFLIGHT_CONFIRMED_RE = re.compile(
-    r"\s*<!--\s*opensquilla:meta_preflight_confirmed=1\s*-->\s*",
-    re.IGNORECASE,
-)
-_PREFLIGHT_RUN_ID_RE = re.compile(
-    r"\s*<!--\s*opensquilla:meta_preflight_run_id=([A-Za-z0-9:_-]+)\s*-->\s*",
-    re.IGNORECASE,
-)
-_PREFLIGHT_FIELDS_RE = re.compile(
-    r"\s*<!--\s*opensquilla:meta_preflight_fields=([A-Za-z0-9_\-=]+)\s*-->\s*",
-    re.IGNORECASE,
-)
 _SECRET_KEY_RE = re.compile(
     r"(?:api[_-]?key|auth|bearer|credential|password|secret|token)",
     re.IGNORECASE,
@@ -41,24 +46,6 @@ _SECRET_VALUE_RE = re.compile(
     re.IGNORECASE,
 )
 _LANGUAGE_CODE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9 _.-]{0,63}$")
-
-
-def _decode_preflight_fields(value: str) -> dict[str, Any]:
-    if not value or len(value) > 16_384:
-        return {}
-    padded = value + ("=" * (-len(value) % 4))
-    try:
-        raw = base64.urlsafe_b64decode(padded.encode("ascii"))
-        payload = json.loads(raw.decode("utf-8"))
-    except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
-        return {}
-    if not isinstance(payload, dict):
-        return {}
-    return {
-        str(key): item
-        for key, item in payload.items()
-        if key is not None and str(key).strip()
-    }
 
 
 def _clean_optional_text(value: Any) -> str:
@@ -179,6 +166,24 @@ def language_instruction_for_detected_language(language: str) -> str:
 
 
 def _language_instruction_for_preference(language: str) -> str | None:
+    preferred = _preferred_language_bucket(language)
+    if preferred in {"zh", "en"}:
+        return language_instruction_for_detected_language(preferred)
+    normalized = language.strip().lower()
+    if not normalized:
+        return None
+    if not _LANGUAGE_CODE_RE.match(language):
+        return None
+    language_label = re.sub(r"\s+", " ", language).strip()[:64]
+    return (
+        "Output language rule: write final user-facing prose, headings, "
+        f"labels, and summaries in {language_label} unless the user "
+        "explicitly asks for another language. Non-user-facing protocol "
+        "labels may stay in their required format."
+    )
+
+
+def _preferred_language_bucket(language: str) -> str | None:
     normalized = language.strip().lower()
     if not normalized:
         return None
@@ -189,18 +194,10 @@ def _language_instruction_for_preference(language: str) -> str | None:
         or "中文" in language
         or "简体" in language
     ):
-        return language_instruction_for_detected_language("zh")
+        return "zh"
     if normalized.startswith("en") or "english" in normalized:
-        return language_instruction_for_detected_language("en")
-    if not _LANGUAGE_CODE_RE.match(language):
-        return None
-    language_label = re.sub(r"\s+", " ", language).strip()[:64]
-    return (
-        "Output language rule: write final user-facing prose, headings, "
-        f"labels, and summaries in {language_label} unless the user "
-        "explicitly asks for another language. Non-user-facing protocol "
-        "labels may stay in their required format."
-    )
+        return "en"
+    return None
 
 
 def make_meta_inputs(
@@ -216,9 +213,13 @@ def make_meta_inputs(
     meta_preflight_confirmed = bool(_PREFLIGHT_CONFIRMED_RE.search(user_message or ""))
     run_id_match = _PREFLIGHT_RUN_ID_RE.search(user_message or "")
     fields_match = _PREFLIGHT_FIELDS_RE.search(user_message or "")
-    clean_user_message = _PREFLIGHT_CONFIRMED_RE.sub("\n", user_message or "")
-    clean_user_message = _PREFLIGHT_RUN_ID_RE.sub("\n", clean_user_message).strip()
-    clean_user_message = _PREFLIGHT_FIELDS_RE.sub("\n", clean_user_message).strip()
+    stripped_user_message = strip_preflight_confirmation_protocol_text(user_message or "")
+    if stripped_user_message is not None:
+        clean_user_message = stripped_user_message
+    else:
+        clean_user_message = _PREFLIGHT_CONFIRMED_RE.sub("\n", user_message or "")
+        clean_user_message = _PREFLIGHT_RUN_ID_RE.sub("\n", clean_user_message).strip()
+        clean_user_message = _PREFLIGHT_FIELDS_RE.sub("\n", clean_user_message).strip()
     user_language = detect_user_language(clean_user_message)
     preflight_fields = (
         _decode_preflight_fields(fields_match.group(1))
@@ -251,6 +252,10 @@ def make_meta_inputs(
         preference_values.setdefault("audience", audience_value)
     if language_value:
         inputs["language"] = language_value
+        preferred_language = _preferred_language_bucket(language_value)
+        if preferred_language:
+            user_language = preferred_language
+            inputs["user_language"] = user_language
         preferred_instruction = _language_instruction_for_preference(language_value)
         if preferred_instruction:
             inputs["language_instruction"] = preferred_instruction

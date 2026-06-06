@@ -114,6 +114,7 @@ def test_required_preflight_pauses_before_announcing_run(fake_dispatch_stream, f
 
     preflight = next(e for e in events if isinstance(e, MetaPreflightEvent))
     result = next(e for e in events if isinstance(e, MetaResult))
+    assert preflight.requires_confirmation is True
     assert preflight.can_skip is False
     assert preflight.missing_fields == ["audience"]
     assert not any(isinstance(e, MetaRunAnnouncedEvent) for e in events)
@@ -121,6 +122,39 @@ def test_required_preflight_pauses_before_announcing_run(fake_dispatch_stream, f
     assert result.paused is True
     assert isinstance(result.paused_payload, MetaPreflightRequired)
     assert result.paused_payload.missing_fields == ["audience"]
+
+
+def test_preview_preflight_event_does_not_pause_without_explicit_gate(
+    fake_dispatch_stream,
+    fake_preface,
+):
+    plan = MetaPlan(
+        name="meta-preflight-preview",
+        triggers=("fake",),
+        priority=0,
+        steps=(MetaStep(id="draft", skill="draft", kind="llm_chat", label="Draft"),),
+        request_template={
+            "fields": [{"name": "audience", "required": True}],
+            "assumptions": ["Use default depth unless the user says otherwise."],
+        },
+        final_text_mode="raw",
+    )
+
+    events = asyncio.run(_collect_all_events(
+        MetaMatch(plan=plan, inputs={"user_message": "write a brief"}),
+        fake_dispatch_stream,
+        fake_preface,
+    ))
+
+    preflight = next(e for e in events if isinstance(e, MetaPreflightEvent))
+    result = next(e for e in events if isinstance(e, MetaResult))
+    assert preflight.requires_confirmation is False
+    assert preflight.can_skip is True
+    assert preflight.missing_fields == ["audience"]
+    assert any(isinstance(e, MetaRunAnnouncedEvent) for e in events)
+    assert any(isinstance(e, MetaStepStateEvent) for e in events)
+    assert result.paused is False
+    assert result.ok is True
 
 
 def test_confirmed_preflight_still_pauses_when_required_fields_missing(

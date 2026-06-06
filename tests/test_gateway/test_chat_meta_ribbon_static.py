@@ -92,7 +92,7 @@ def test_ribbon_renders_accessible_compact_run_bar():
     ):
         assert token in js, f"ribbon render missing {token}"
     assert "MetaSkill</span>" not in js
-    assert "Step ${headerIndex} of ${state.total}" in js
+    assert "const counterText = copy.counter(headerIndex, state.total);" in js
     for token in (
         "max-width: min(760px, 100%)",
         "margin: 10px auto",
@@ -128,6 +128,22 @@ def test_preflight_chrome_follows_request_language():
         "Please fill this in.",
     ):
         assert token in text, f"preflight missing localized chrome token {token}"
+
+
+def test_ribbon_chrome_follows_request_language():
+    text = RIBBON_JS.read_text()
+    for token in (
+        "language: detectLanguage(announce.language",
+        "ribbonCopy(state.language)",
+        "Collapse/expand steps",
+        "Step ${index} of ${total}",
+        "第 ${index} / ${total} 步",
+        "Running…",
+        "Retry whole run",
+        "Switch meta-skill…",
+        "View error details",
+    ):
+        assert token in text, f"ribbon missing localized chrome token {token}"
 
 
 def test_preflight_collects_missing_fields_inline_instead_of_editing_composer():

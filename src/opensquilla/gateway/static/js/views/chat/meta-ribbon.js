@@ -30,10 +30,17 @@
     return id.charAt(0).toUpperCase() + id.slice(1).replace(/[_-]/g, ' ');
   }
 
+  function detectLanguage(value) {
+    const text = String(value || '').toLowerCase();
+    if (/[\u3400-\u9fff]/.test(text) || text.startsWith('zh')) return 'zh';
+    return 'en';
+  }
+
   function createRibbon(announce) {
     return {
       runId: announce.run_id,
       metaSkillName: announce.meta_skill_name,
+      language: detectLanguage(announce.language || announce.user_language || announce.meta_language),
       steps: (announce.steps || []).map((s) => ({
         id: s.id,
         label: s.label || humanizeStepId(s.id),
@@ -68,6 +75,7 @@
   }
 
   function completeRun(state, completedEvent) {
+    const copy = ribbonCopy(state.language);
     state.runOutcome = normalizeRunOutcome(completedEvent.outcome);
     const completed = new Set(completedEvent.completed_steps || []);
     const failed = new Set(completedEvent.failed_steps || []);
@@ -76,7 +84,7 @@
     state.steps.forEach((step) => {
       if (recovered.has(step.id)) {
         step.state = 'substituted';
-        step.statusText = step.statusText || '已由替代步骤恢复';
+        step.statusText = step.statusText || copy.recovered;
       } else if (failed.has(step.id)) {
         step.state = 'failed';
       } else if (skipped.has(step.id)) {
@@ -89,6 +97,7 @@
   }
 
   function renderRibbon(rootEl, state) {
+    const copy = ribbonCopy(state.language);
     const completedCount = state.steps.filter(
       (s) => s.state === 'succeeded' || s.state === 'skipped' || s.state === 'substituted',
     ).length;
@@ -105,17 +114,17 @@
     );
 
     const currentStep = runningIndex >= 0 ? state.steps[runningIndex] : null;
-    const statusText = currentStep ? currentStep.statusText || '运行中…' : '';
+    const statusText = currentStep ? currentStep.statusText || copy.running : '';
     const currentLabel = currentStep
       ? currentStep.label
-      : (state.runOutcome ? humanizeStepId(state.runOutcome) : 'Preparing steps');
+      : (state.runOutcome ? copy.outcome(state.runOutcome) : copy.preparing);
     const progressPercent = state.total > 0
       ? Math.max(0, Math.min(100, Math.round((headerIndex / state.total) * 100)))
       : 0;
     const overallState = normalizeStateClass(
       currentStep ? currentStep.state : (state.runOutcome || 'pending'),
     );
-    const counterText = `Step ${headerIndex} of ${state.total}`;
+    const counterText = copy.counter(headerIndex, state.total);
     const stepsId = `meta-ribbon-steps-${state.runId || 'current'}`;
 
     rootEl.innerHTML = `
@@ -127,9 +136,9 @@
           <span class="meta-ribbon-title">${escapeHtml(state.metaSkillName)}</span>
           <span class="meta-ribbon-counter">${escapeHtml(counterText)}</span>
           <button class="meta-ribbon-toggle"
-                  aria-label="折叠/展开步骤"
+                  aria-label="${escapeAttr(copy.toggleAria)}"
                   aria-controls="${escapeAttr(stepsId)}"
-                  aria-expanded="${String(!state.collapsed)}">${state.collapsed ? '展开' : '收起'}</button>
+                  aria-expanded="${String(!state.collapsed)}">${state.collapsed ? copy.expand : copy.collapse}</button>
         </header>
         <div class="meta-ribbon-main" aria-live="polite">
           <div class="meta-ribbon-current">${escapeHtml(currentLabel)}</div>
@@ -137,7 +146,7 @@
         </div>
         <div class="meta-ribbon-track"
              role="progressbar"
-             aria-label="${escapeAttr(`${state.metaSkillName} run progress`)}"
+             aria-label="${escapeAttr(copy.progressAria(state.metaSkillName))}"
              aria-valuenow="${progressPercent}"
              aria-valuemin="0"
              aria-valuemax="100">
@@ -149,14 +158,14 @@
             return `
             <li class="chip ${safeStepState}" data-step-id="${escapeAttr(s.id)}"
                 tabindex="0"
-                aria-label="step ${i + 1} of ${state.total}: ${escapeAttr(s.label)} ${safeStepState}">
+                aria-label="${escapeAttr(copy.stepAria(i + 1, state.total, s.label, safeStepState))}">
               ${stepGlyph(s)} ${escapeHtml(s.label)}
             </li>
           `;
           }).join('')}
         </ol>
         <div class="meta-ribbon-actions" ${shouldShowActions(state) ? '' : 'hidden'}>
-          ${shouldShowActions(state) ? renderActions(state) : ''}
+          ${shouldShowActions(state) ? renderActions(state, copy) : ''}
         </div>
       </div>
     `;
@@ -192,6 +201,67 @@
     return normalizeStateClass(outcome || 'pending');
   }
 
+  function ribbonCopy(language) {
+    if (language === 'zh') {
+      return {
+        running: '运行中…',
+        preparing: '准备步骤',
+        toggleAria: '折叠/展开步骤',
+        expand: '展开',
+        collapse: '收起',
+        recovered: '已由替代步骤恢复',
+        stepFailed: '步骤失败',
+        retryRun: '重试整个 run',
+        switchSkill: '切换 meta-skill…',
+        showDetail: '查看错误详情',
+        counter: (index, total) => `第 ${index} / ${total} 步`,
+        progressAria: (name) => `${name} 运行进度`,
+        stepAria: (index, total, label, stepState) => (
+          `第 ${index} / ${total} 步：${label}，${{
+            pending: '等待中',
+            running: '运行中',
+            succeeded: '已完成',
+            failed: '失败',
+            skipped: '已跳过',
+            substituted: '已替代',
+            paused: '已暂停',
+            cancelled: '已取消',
+          }[normalizeStateClass(stepState)] || stepState}`
+        ),
+        failedSummary: (label, errText) => `✗ ${label} 失败 · ${errText}`,
+        outcome: (value) => ({
+          pending: '等待中',
+          running: '运行中',
+          succeeded: '已完成',
+          failed: '失败',
+          skipped: '已跳过',
+          substituted: '已替代',
+          paused: '已暂停',
+          cancelled: '已取消',
+        }[normalizeStateClass(value)] || humanizeStepId(value)),
+      };
+    }
+    return {
+      running: 'Running…',
+      preparing: 'Preparing steps',
+      toggleAria: 'Collapse/expand steps',
+      expand: 'Expand',
+      collapse: 'Collapse',
+      recovered: 'Recovered by substitute step',
+      stepFailed: 'Step failed',
+      retryRun: 'Retry whole run',
+      switchSkill: 'Switch meta-skill…',
+      showDetail: 'View error details',
+      counter: (index, total) => `Step ${index} of ${total}`,
+      progressAria: (name) => `${name} run progress`,
+      stepAria: (index, total, label, stepState) => (
+        `step ${index} of ${total}: ${label} ${normalizeStateClass(stepState)}`
+      ),
+      failedSummary: (label, errText) => `✗ ${label} failed · ${errText}`,
+      outcome: (value) => humanizeStepId(normalizeStateClass(value)),
+    };
+  }
+
   function shouldShowActions(state) {
     return state.runOutcome === 'failed' && state.steps.some((s) => s.state === 'failed');
   }
@@ -205,9 +275,9 @@
     return STATE_GLYPH[state] || '○';
   }
 
-  function renderActions(state) {
+  function renderActions(state, copy) {
     const failedStep = state.steps.find((s) => s.state === 'failed');
-    const errText = failedStep ? failedStep.error || '步骤失败' : '';
+    const errText = failedStep ? failedStep.error || copy.stepFailed : '';
     const rescueActions = failedStep
       && failedStep.rescue
       && Array.isArray(failedStep.rescue.actions)
@@ -222,15 +292,15 @@
         </button>
       `).join('')
       : `
-        <button data-action="retry-run">重试整个 run</button>
-        <button data-action="switch-skill">切换 meta-skill…</button>
+        <button data-action="retry-run">${escapeHtml(copy.retryRun)}</button>
+        <button data-action="switch-skill">${escapeHtml(copy.switchSkill)}</button>
       `;
     return `
       <span class="meta-ribbon-fail-summary">
-        ✗ ${escapeHtml(failedStep.label)} 失败 · ${escapeHtml(truncate(errText, 80))}
+        ${escapeHtml(copy.failedSummary(failedStep.label, truncate(errText, 80)))}
       </span>
       ${dynamicActions}
-      <button data-action="show-detail" data-step-id="${escapeAttr(failedStep.id)}">查看错误详情</button>
+      <button data-action="show-detail" data-step-id="${escapeAttr(failedStep.id)}">${escapeHtml(copy.showDetail)}</button>
     `;
   }
 

@@ -544,6 +544,7 @@ async def run_dag(
     yield MetaRunAnnouncedEvent(
         run_id=_run_id,
         meta_skill_name=match.plan.name,
+        language=template_language,
         steps=[
             {
                 "id": s.id,

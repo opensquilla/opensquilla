@@ -239,6 +239,7 @@ class MetaRunAnnouncedEvent:
     kind: Literal["meta_run_announced"] = field(default="meta_run_announced", init=False)
     run_id: str = ""
     meta_skill_name: str = ""
+    language: str = ""
     steps: list[dict[str, Any]] = field(default_factory=list)
     total: int = 0
     parent_run_id: str | None = None

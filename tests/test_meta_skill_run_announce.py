@@ -199,6 +199,29 @@ def test_announce_payload_lists_all_steps(make_two_step_match, fake_dispatch_str
     assert announce.steps[1]["depends_on"] == ["intake"]
 
 
+def test_announce_payload_carries_user_language(
+    make_two_step_match, fake_dispatch_stream, fake_preface,
+):
+    match = MetaMatch(
+        plan=make_two_step_match.plan,
+        inputs={
+            **make_two_step_match.inputs,
+            "user_language": "zh",
+        },
+        run_id="localized-run",
+    )
+
+    events = asyncio.run(_collect_events(
+        match, fake_dispatch_stream, fake_preface, limit=2,
+    ))
+    announce = next(
+        (e for e in events if isinstance(e, MetaRunAnnouncedEvent)), None,
+    )
+
+    assert announce is not None
+    assert announce.language == "zh"
+
+
 def test_announce_uses_match_run_id(make_two_step_match, fake_dispatch_stream, fake_preface):
     match = MetaMatch(
         plan=make_two_step_match.plan,

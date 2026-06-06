@@ -16,6 +16,8 @@ def _default_model_for_provider(provider: str) -> str:
         return "deepseek/deepseek-v4-pro"
     if normalized == "deepseek":
         return "deepseek-v4-flash"
+    if normalized == "minimax":
+        return "minimax/MiniMax-M3"
     return "openai/gpt-4o-mini"
 
 
@@ -29,7 +31,7 @@ def run_init() -> None:
 
     provider = questionary.select(
         "Choose provider:",
-        choices=["openrouter", "openai", "anthropic", "deepseek", "custom"],
+        choices=["openrouter", "openai", "anthropic", "deepseek", "minimax", "custom"],
         default="openrouter",
     ).ask()
     if not provider:

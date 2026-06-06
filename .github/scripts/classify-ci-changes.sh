@@ -82,7 +82,7 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
     src/* | scripts/* | migrations/*)
       mark_runtime_changed
       ;;
-    docs/* | README.md | README.*.md | CHANGELOG.md | CODE_OF_CONDUCT.md | CONTRIBUTING.md | MIGRATION.md | SECURITY.md | SUPPORT.md | THIRD_PARTY_NOTICES.md | META_SKILL_GUIDE.md | RELEASES.md | .github/pull_request_template.md | .github/ISSUE_TEMPLATE/*)
+    docs/* | README.md | README.*.md | CHANGELOG.md | CODE_OF_CONDUCT.md | CONTRIBUTING.md | MIGRATION.md | SECURITY.md | SUPPORT.md | THIRD_PARTY_NOTICES.md | META_SKILL_GUIDE.md | .github/pull_request_template.md | .github/ISSUE_TEMPLATE/*)
       ;;
     *)
       mark_runtime_changed

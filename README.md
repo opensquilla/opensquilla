@@ -315,6 +315,37 @@ In this mode, prefix every `opensquilla` command in
 development checkout through a user-local `opensquilla` command — that
 command runs in a different Python environment.
 
+#### Editable install into the tool environment
+
+If you want the `opensquilla` command on `PATH` (so you can run it
+without `uv run`) **and** have the executable track the current
+checkout, use the dev-install wrapper instead of `uv sync`. The
+wrapper runs `uv tool install -e ".[recommended]"` from the repo
+root, so the `opensquilla` shim is editable, the SquillaRouter
+runtime is pulled in, and you don't have to remember the PEP 508
+extras form.
+
+```sh
+# macOS / Linux — default path for OpenSquilla contributors
+bash scripts/dev-install.sh
+
+# Windows PowerShell
+powershell -ExecutionPolicy Bypass -File scripts/dev-install.ps1
+```
+
+Run the wrapper again after `git pull` to re-link the shim. Both
+scripts forward extra arguments to `uv tool install`, e.g.
+`bash scripts/dev-install.sh --no-cache`.
+
+> **Why a wrapper instead of `uv tool install -e ".[recommended]"` directly?**
+> `uv tool install` does not accept a `--extra` / `--all-extras` flag —
+> it only takes `--with <pkg>` for individual packages — so the
+> PEP 508 `.[recommended]` form is the only way to bring the runtime
+> profile in from a one-liner. The wrapper centralises that so callers
+> don't have to type it by hand. A bare `uv tool install -e .` will
+> succeed but the gateway will start with "bundled ONNX router failed
+> to load" and fall back to safe-routing mode.
+
 ---
 
 ## Configuration

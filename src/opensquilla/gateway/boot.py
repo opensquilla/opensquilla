@@ -2624,10 +2624,46 @@ async def start_gateway_server(
                 agent_ids=auto_agent_ids,
             )
 
+        async def _maybe_run_router_self_learning(agent_id: str) -> None:
+            """Opportunistic router retrain, piggybacking on the dream cadence.
+
+            Gated (off by default) and run in a worker thread so the
+            subprocess-bounded LightGBM fit never blocks the event loop. Never
+            raises onto the dream hook.
+            """
+            router_cfg = getattr(config, "squilla_router", None)
+            sl_cfg = getattr(router_cfg, "self_learning", None)
+            if sl_cfg is None or not bool(getattr(sl_cfg, "enabled", False)):
+                return
+            try:
+                import anyio
+
+                from opensquilla.squilla_router.self_learning.orchestrator import (
+                    maybe_run_update_router,
+                )
+
+                result = await anyio.to_thread.run_sync(
+                    lambda: maybe_run_update_router(agent_id, router_cfg=router_cfg)
+                )
+                log.info(
+                    "router_self_learning.post_dream",
+                    agent_id=agent_id,
+                    ran=result.ran,
+                    reason=result.reason,
+                    version=result.version,
+                )
+            except Exception as exc:  # never poison the dream hook
+                log.warning(
+                    "router_self_learning.post_dream_error",
+                    agent_id=agent_id,
+                    error=str(exc),
+                )
+
         async def _post_dream_auto_propose(
             agent_id: str,
             dream_summary: str = "",
         ) -> None:
+            await _maybe_run_router_self_learning(agent_id)
             if not bool(getattr(auto_cfg, "on_dream_complete", False)):
                 return
             result = await auto_propose(

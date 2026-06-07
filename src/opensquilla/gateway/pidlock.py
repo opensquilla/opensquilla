@@ -58,6 +58,13 @@ class GatewayPidLock:
         1. If gateway.pid already exists, read it.
            - pid alive  → SystemExit(1) with STATE_DIR + pid in message.
            - pid dead   → log warning (stale), remove pid file, continue.
+        1b. If gateway.pid is missing but gateway.pid.lock exists, the
+            previous owner died without running the atexit / signal
+            cleanup (kill -9, OOM, power loss). Treat the lock as
+            stale: log it and unlink so the new instance can take
+            over instead of `gateway start` waiting the full readiness
+            timeout and reporting "another gateway is already
+            running".
         2. Acquire exclusive OS lock on gateway.pid.lock (separate file so
            gateway.pid stays freely readable while the lock is held).
            - Lock fails (race) → SystemExit(1).
@@ -88,6 +95,27 @@ class GatewayPidLock:
                 )
             try:
                 self._pid_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        elif self._lock_path.exists():
+            # ── Step 1b: orphan lock file (no pid file) ───────────
+            # The previous daemon died without running the cleanup
+            # hooks (kill -9, OOM kill, power loss). The pid file is
+            # gone, but the lock file is left behind and a fresh
+            # `gateway start` would otherwise hit the "lock fails
+            # (race)" branch below and time out. Recover the lock
+            # and surface it in the log so the operator can see why
+            # the new instance took over.
+            log.warning(
+                "gateway.pidlock.orphan_lock_recovered",
+                extra={
+                    "state_dir": str(self._state_dir),
+                    "lock_path": str(self._lock_path),
+                    "lock_age_seconds": _file_age_seconds(self._lock_path),
+                },
+            )
+            try:
+                self._lock_path.unlink(missing_ok=True)
             except OSError:
                 pass
 
@@ -231,6 +259,18 @@ def _read_pid_from_path(path: Path) -> int | None:
         return int(info["pid"])
     except Exception:  # noqa: BLE001
         return None
+
+
+def _file_age_seconds(path: Path) -> float:
+    """Return the wall-clock age of *path* in seconds, or 0.0 if it
+    is missing / unreadable. Used for the orphan-lock-recovery log
+    so the operator can see how long the dead lock was lying
+    around.
+    """
+    try:
+        return max(0.0, datetime.datetime.now().timestamp() - path.stat().st_mtime)
+    except OSError:
+        return 0.0
 
 
 def _is_alive(pid: int) -> bool:

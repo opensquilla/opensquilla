@@ -98,11 +98,13 @@ composition:
             WARN: <scanner summary; user must confirm>
             ALLOW: cleared by both gates
     - id: audit_emit
-      skill: memory
+      kind: tool_call
+      tool: memory_save
+      tool_allowlist: [memory_save]
       depends_on: [arbitrate]
-      with:
-        action: save
-        topic: "security-review"
+      tool_args:
+        path: "memory/security-review.md"
+        mode: append
         content: |
           === security review audit ===
           operation: {{ inputs.user_message | xml_escape | truncate(400) }}

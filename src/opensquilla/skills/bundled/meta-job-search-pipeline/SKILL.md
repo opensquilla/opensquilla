@@ -245,11 +245,16 @@ composition:
     - id: recall_company
       label: "公司召回"
       label_en: "Company recall"
-      kind: agent
-      skill: memory
+      kind: tool_call
+      tool: memory_search
+      tool_allowlist: [memory_search]
       depends_on: [mode, job_clarify]
       when: "outputs.mode in ['TAILOR_NEW', 'INTERVIEW_PREP', 'COMPARE_ROLES']"
       on_failure: recall_company_fallback
+      tool_args:
+        query: "job search company application interview prior context {{ outputs.get('preferences', '') | truncate(800) }} {{ inputs.user_message | xml_escape | truncate(800) }}"
+        max_results: 6
+        source: memory
     - id: recall_company_fallback
       label: "公司召回兜底"
       label_en: "Company recall fallback"
@@ -780,9 +785,27 @@ composition:
     - id: store_pack
       label: "存储求职包"
       label_en: "Store job-search package"
-      kind: agent
-      skill: memory
+      kind: tool_call
+      tool: memory_save
+      tool_allowlist: [memory_save]
       depends_on: [deliver_jobpack_audit, mode, job_clarify]
+      tool_args:
+        path: "memory/meta-job-search.md"
+        mode: append
+        content: |
+          ## Job-search meta run
+
+          Mode:
+          {{ outputs.get('mode', '') }}
+
+          Preferences:
+          {{ outputs.get('preferences', '') | truncate(1200) }}
+
+          Source fact ledger:
+          {{ outputs.get('source_fact_ledger', '') | truncate(2200) }}
+
+          Final job pack excerpt:
+          {{ outputs.get('deliver_jobpack_audit', '') | truncate(2600) }}
     - id: export_docx
       label: "导出 DOCX"
       label_en: "Export DOCX"

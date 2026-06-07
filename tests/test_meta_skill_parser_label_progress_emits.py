@@ -85,12 +85,13 @@ def test_parser_progress_emits_must_be_bool():
         ]))
 
 
-def test_parser_label_optional():
+def test_parser_label_optional_uses_readable_step_id_fallback():
     plan = parse_meta_plan(_spec_with([
-        {"id": "intake", "kind": "llm_chat"},
+        {"id": "source_digest", "kind": "llm_chat"},
     ]))
     assert plan is not None
-    assert plan.steps[0].label == ""
+    assert plan.steps[0].label == "Source Digest"
+    assert plan.steps[0].label_by_language["en"] == "Source Digest"
 
 
 def test_parser_reads_request_template_from_spec():

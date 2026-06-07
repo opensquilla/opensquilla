@@ -283,11 +283,16 @@ composition:
     - id: recall_past_projects
       label: "项目召回"
       label_en: "Project recall"
-      kind: agent
-      skill: memory
+      kind: tool_call
+      tool: memory_search
+      tool_allowlist: [memory_search]
       depends_on: [feasibility, project_clarify]
       when: "outputs.feasibility != 'INAPPROPRIATE' and 'PROJECT_SAFE: yes' in outputs.preferences"
       on_failure: recall_past_projects_fallback
+      tool_args:
+        query: "child project prior projects preferences constraints {{ outputs.get('preferences', '') | truncate(600) }} {{ inputs.user_message | xml_escape | truncate(600) }}"
+        max_results: 6
+        source: memory
     - id: recall_past_projects_fallback
       label: "项目召回兜底"
       label_en: "Project recall fallback"
@@ -919,10 +924,25 @@ composition:
     - id: store_project
       label: "存储项目"
       label_en: "Store project"
-      kind: agent
-      skill: memory
+      kind: tool_call
+      tool: memory_save
+      tool_allowlist: [memory_save]
       depends_on: [project_pack_audit, project_clarify, feasibility]
       when: "outputs.feasibility != 'INAPPROPRIATE' and 'PROJECT_SAFE: yes' in outputs.preferences"
+      tool_args:
+        path: "memory/meta-kid-projects.md"
+        mode: append
+        content: |
+          ## Kid project run
+
+          Preferences:
+          {{ outputs.get('preferences', '') | truncate(1200) }}
+
+          Fact ledger:
+          {{ outputs.get('project_fact_ledger', '') | truncate(1800) }}
+
+          Final project pack excerpt:
+          {{ outputs.get('project_pack_audit', '') | truncate(2400) }}
 ---
 
 # meta-kid-project-planner

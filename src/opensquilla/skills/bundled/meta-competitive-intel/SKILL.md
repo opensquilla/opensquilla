@@ -294,10 +294,15 @@ composition:
     - id: recall_baseline
       label: "基线召回"
       label_en: "Baseline recall"
-      kind: agent
-      skill: memory
+      kind: tool_call
+      tool: memory_search
+      tool_allowlist: [memory_search]
       depends_on: [depth, intel_context, intel_clarify]
       on_failure: recall_baseline_fallback
+      tool_args:
+        query: "competitive intel baseline prior brief competitors {{ outputs.get('intel_context', '') | truncate(1000) }} {{ inputs.user_message | xml_escape | truncate(800) }}"
+        max_results: 6
+        source: memory
     - id: recall_baseline_fallback
       label: "基线召回兜底"
       label_en: "Baseline recall fallback"
@@ -1128,10 +1133,25 @@ composition:
     - id: store_brief
       label: "存储简报"
       label_en: "Store brief"
-      kind: agent
-      skill: memory
+      kind: tool_call
+      tool: memory_save
+      tool_allowlist: [memory_save]
       depends_on: [intel_brief_audit, intel_clarify, verdict]
       on_failure: store_brief_fallback
+      tool_args:
+        path: "memory/meta-competitive-intel.md"
+        mode: append
+        content: |
+          ## Competitive intel meta run
+
+          Context:
+          {{ outputs.get('intel_context', '') | truncate(1800) }}
+
+          Verdict:
+          {{ outputs.get('verdict', '') }}
+
+          Final brief excerpt:
+          {{ outputs.get('intel_brief_audit', '') | truncate(3000) }}
     - id: store_brief_fallback
       label: "存储简报兜底"
       label_en: "Store brief fallback"

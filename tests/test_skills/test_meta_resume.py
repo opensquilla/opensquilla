@@ -39,6 +39,12 @@ def _plan_with_collect_then_summary() -> MetaPlan:
         fields=(
             ClarifyField(name="destination", type="string", required=True),
             ClarifyField(name="days", type="int", required=True, min=1, max=14),
+            ClarifyField(
+                name="additional_notes",
+                type="string",
+                required=False,
+                max_chars=2000,
+            ),
         ),
         intro="Trip info needed.",
     )
@@ -146,6 +152,64 @@ async def test_pause_then_resume_completes_dag(writer):
     assert sm["inputs_user_message"] == "I want to plan a trip"
     assert sm["inputs_collected"]["collect"]["destination"] == "Tokyo"
     assert sm["inputs_collected"]["collect"]["days"] == 5
+
+
+@pytest.mark.asyncio
+async def test_resume_injects_additional_notes_into_downstream_user_message(writer):
+    plan = _plan_with_collect_then_summary()
+    inputs = _seed_running_run(writer, plan)
+
+    dispatched_context: dict[str, dict] = {}
+
+    orch = MetaOrchestrator(
+        agent_runner=None,  # type: ignore[arg-type]
+        skill_loader=None,
+        dao=writer,
+    )
+
+    async def _dispatch(step, effective_skill, match_inputs, outputs):
+        if step.kind == "user_input":
+            async for ev in orch._dispatch_one_step(
+                step, effective_skill, match_inputs, outputs,
+                run_id="r1", session_id="S1",
+            ):
+                yield ev
+            return
+        if step.id == "summary":
+            dispatched_context["summary"] = {
+                "inputs_user_message": match_inputs.get("user_message"),
+                "inputs_collected": match_inputs.get("collected"),
+            }
+            yield _StepDone(text="summary-done", status="ok")
+
+    paused = await orch.run_once(
+        MetaMatch(plan=plan, inputs=inputs),
+        run_id="r1",
+        session_id="S1",
+        dispatch_step_stream=_dispatch,
+        yield_skill_view_preface=_sv,
+    )
+    assert paused.paused is True
+
+    await orch.resume(
+        run_id="r1",
+        session_id="S1",
+        filled_fields={
+            "destination": "Tokyo",
+            "days": 5,
+            "additional_notes": "Please avoid museums; kid wants trains.",
+        },
+        dispatch_step_stream=_dispatch,
+        yield_skill_view_preface=_sv,
+    )
+
+    sm = dispatched_context["summary"]
+    assert sm["inputs_collected"]["collect"]["additional_notes"] == (
+        "Please avoid museums; kid wants trains."
+    )
+    assert sm["inputs_user_message"].startswith("I want to plan a trip")
+    assert "Additional user notes" in sm["inputs_user_message"]
+    assert "Please avoid museums; kid wants trains." in sm["inputs_user_message"]
 
 
 @pytest.mark.asyncio

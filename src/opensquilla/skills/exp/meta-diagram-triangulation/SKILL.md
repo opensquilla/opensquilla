@@ -135,12 +135,13 @@ composition:
           Save to: `{{ inputs.workspace_dir }}/diagrams/arch.docx`. Reply
           with the absolute output path on a single line, no preamble.
     - id: persist
-      kind: agent
-      skill: memory
+      kind: tool_call
+      tool: memory_save
+      tool_allowlist: [memory_save]
       depends_on: [compose_doc]
-      with:
-        action: save
-        topic: "architecture-snapshots"
+      tool_args:
+        path: "memory/architecture-snapshots.md"
+        mode: append
         content: |
           === diagram triangulation ===
           invocation: {{ inputs.user_message | xml_escape | truncate(200) }}

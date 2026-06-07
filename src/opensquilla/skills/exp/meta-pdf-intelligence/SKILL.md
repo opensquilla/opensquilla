@@ -215,11 +215,13 @@ composition:
           Analysis:
           {{ outputs.cross_document_synthesis | truncate(6000) }}
     - id: memorize
-      skill: memory
+      kind: tool_call
+      tool: memory_save
+      tool_allowlist: [memory_save]
       depends_on: [traceable_index]
-      with:
-        action: save
-        topic: "pdf-intel"
+      tool_args:
+        path: "memory/pdf-intel.md"
+        mode: append
         content: "{{ outputs.traceable_index }}"
 ---
 

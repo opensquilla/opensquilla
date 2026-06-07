@@ -22,10 +22,41 @@ if TYPE_CHECKING:
 _SUPPORTED_KINDS = frozenset(
     {"agent", "llm_classify", "llm_chat", "tool_call", "skill_exec", "user_input"},
 )
+_BILINGUAL_SEPARATOR_RE = re.compile(r"\s+/\s+")
 
 
 class MetaPlanError(ValueError):
     """Raised when a meta-skill's composition is malformed."""
+
+
+def _fallback_label_from_step_id(step_id: str) -> str:
+    """Return a readable fallback label for older meta-skill steps."""
+
+    return step_id.replace("_", " ").replace("-", " ").strip().title() or step_id
+
+
+def _split_bilingual_text(text: str) -> dict[str, str]:
+    """Best-effort split for legacy ``中文 / English`` prompt strings."""
+
+    if not text.strip():
+        return {}
+    parts = _BILINGUAL_SEPARATOR_RE.split(text.strip(), maxsplit=1)
+    if len(parts) != 2:
+        return {}
+    left, right = (part.strip() for part in parts)
+    if not left or not right:
+        return {}
+    if re.search(r"[\u3400-\u9fff\uf900-\ufaff]", left) and re.search(
+        r"[A-Za-z]",
+        right,
+    ):
+        return {"zh": left, "en": right}
+    if re.search(r"[A-Za-z]", left) and re.search(
+        r"[\u3400-\u9fff\uf900-\ufaff]",
+        right,
+    ):
+        return {"en": left, "zh": right}
+    return {}
 
 
 def parse_meta_plan(spec: SkillSpec) -> MetaPlan | None:
@@ -142,12 +173,14 @@ def parse_meta_plan(spec: SkillSpec) -> MetaPlan | None:
                 f"meta-skill {spec.name!r}: step {step_id!r} label must be "
                 f"a string (or omitted)",
             )
-        label = label_raw
+        label = label_raw.strip() or _fallback_label_from_step_id(step_id)
         label_by_language: dict[str, str] = {}
         for lang in ("zh", "en"):
             localized_label = raw.get(f"label_{lang}")
             if isinstance(localized_label, str) and localized_label.strip():
                 label_by_language[lang] = localized_label.strip()
+        if "en" not in label_by_language:
+            label_by_language["en"] = label
 
         progress_emits_raw = raw.get("progress_emits")
         if progress_emits_raw is None:
@@ -502,6 +535,20 @@ def _ensure_acyclic(name: str, steps: list[MetaStep]) -> None:
 
 _CLARIFY_FIELD_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _CLARIFY_VALID_TYPES = frozenset({"string", "enum", "int", "bool"})
+_GENERIC_ADDITIONAL_NOTES_FIELD = ClarifyField(
+    name="additional_notes",
+    type="string",
+    required=False,
+    prompt=(
+        "其他可能有用的备注、限制或背景 / "
+        "Additional notes, constraints, or context"
+    ),
+    prompt_by_language={
+        "zh": "其他可能有用的备注、限制或背景",
+        "en": "Additional notes, constraints, or context",
+    },
+    max_chars=2000,
+)
 
 
 def _parse_clarify_field(
@@ -671,6 +718,8 @@ def _parse_clarify_field(
             )
         if isinstance(localized_prompt, str) and localized_prompt.strip():
             prompt_by_language[lang] = localized_prompt
+    if not prompt_by_language:
+        prompt_by_language.update(_split_bilingual_text(prompt))
 
     return ClarifyField(
         name=name,
@@ -721,7 +770,10 @@ def _parse_clarify_config(
         seen_names.add(cf.name)
         fields.append(cf)
 
-    max_fields = 4 if mode == "chat" else 12
+    if _GENERIC_ADDITIONAL_NOTES_FIELD.name not in seen_names:
+        fields.append(_GENERIC_ADDITIONAL_NOTES_FIELD)
+
+    max_fields = 5 if mode == "chat" else 13
     if len(fields) > max_fields:
         raise MetaPlanError(
             f"meta-skill {skill_name!r}: step {step_id!r} clarify.fields "
@@ -778,6 +830,8 @@ def _parse_clarify_config(
             )
         if isinstance(localized_intro, str) and localized_intro.strip():
             intro_by_language[lang] = localized_intro
+    if not intro_by_language:
+        intro_by_language.update(_split_bilingual_text(intro))
 
     nl_extract = raw.get("nl_extract", False)
     if not isinstance(nl_extract, bool):

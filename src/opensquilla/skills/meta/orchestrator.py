@@ -1165,6 +1165,11 @@ class MetaOrchestrator:
 
         inputs.setdefault("collected", {})
         inputs["collected"][payload.awaiting_step_id] = filled_clean
+        _inject_additional_notes_into_inputs(
+            inputs,
+            step_id=payload.awaiting_step_id,
+            filled_fields=filled_clean,
+        )
         if "language_instruction" not in inputs:
             inputs["language_instruction"] = language_instruction_for_user_message(
                 str(inputs.get("user_message") or ""),
@@ -1270,6 +1275,11 @@ class MetaOrchestrator:
 
         inputs.setdefault("collected", {})
         inputs["collected"][payload.awaiting_step_id] = filled_clean
+        _inject_additional_notes_into_inputs(
+            inputs,
+            step_id=payload.awaiting_step_id,
+            filled_fields=filled_clean,
+        )
 
         cfg = clarify_config_from_jsonable(schema_dict)
         outputs[payload.awaiting_step_id] = render_clarify_summary(
@@ -1544,6 +1554,39 @@ def _merge_clarify_defaults(
         if k in allowed:
             merged[k] = v
     return merged
+
+
+def _inject_additional_notes_into_inputs(
+    inputs: dict[str, Any],
+    *,
+    step_id: str,
+    filled_fields: dict[str, Any],
+) -> None:
+    """Expose generic clarify notes to every downstream meta step.
+
+    Most legacy meta-skill templates already read ``inputs.user_message``;
+    only some read the per-step ``inputs.collected`` payload directly.
+    The generic notes field is intentionally cross-cutting, so duplicate it
+    into the internal run message after resume while preserving the original
+    user request at the top.
+    """
+    raw_notes = filled_fields.get("additional_notes")
+    if raw_notes is None:
+        return
+    notes = str(raw_notes).strip()
+    if not notes:
+        return
+
+    original = str(inputs.get("user_message") or "").rstrip()
+    marker = "[Additional user notes]"
+    if marker in original and notes in original:
+        return
+    block = (
+        f"{marker}\n"
+        f"Clarify step: {step_id}\n"
+        f"{notes}"
+    )
+    inputs["user_message"] = f"{original}\n\n{block}" if original else block
 
 
 def make_agent_runner_from_parent(

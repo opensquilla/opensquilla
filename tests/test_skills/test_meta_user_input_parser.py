@@ -84,6 +84,70 @@ def test_user_input_accepts_localized_intro_and_prompts():
     }
 
 
+def test_user_input_splits_legacy_bilingual_intro_and_prompts():
+    spec = _spec([
+        {
+            "id": "collect",
+            "kind": "user_input",
+            "skill": "collect",
+            "clarify": {
+                "mode": "form",
+                "intro": "请补充信息 / Please add details",
+                "fields": [
+                    {
+                        "name": "topic",
+                        "type": "string",
+                        "required": True,
+                        "prompt": "主题 / Topic",
+                    },
+                ],
+            },
+        },
+    ])
+
+    plan = parse_meta_plan(spec)
+
+    assert plan is not None
+    cfg = plan.steps[0].clarify_config
+    assert cfg is not None
+    assert cfg.intro_by_language == {
+        "zh": "请补充信息",
+        "en": "Please add details",
+    }
+    assert cfg.fields[0].prompt_by_language == {
+        "zh": "主题",
+        "en": "Topic",
+    }
+
+
+def test_user_input_parser_appends_generic_additional_notes_field():
+    spec = _spec([
+        {
+            "id": "collect",
+            "kind": "user_input",
+            "skill": "collect",
+            "clarify": {
+                "mode": "form",
+                "fields": [
+                    {"name": "destination", "type": "string", "required": True},
+                ],
+            },
+        },
+    ])
+
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+    cfg = plan.steps[0].clarify_config
+    assert cfg is not None
+    notes = cfg.fields[-1]
+    assert notes.name == "additional_notes"
+    assert notes.type == "string"
+    assert notes.required is False
+    assert notes.max_chars == 2000
+    assert "备注" in notes.prompt_by_language["zh"]
+    assert "Additional" in notes.prompt_by_language["en"]
+
+
 def test_user_input_requires_clarify_block():
     spec = _spec([{"id": "collect", "kind": "user_input", "skill": "collect"}])
     with pytest.raises(MetaPlanError, match="user_input.*requires.*clarify"):

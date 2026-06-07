@@ -87,12 +87,13 @@ composition:
 
           If the digest is `DIGEST_SKIPPED`, reply: `RENDER_SKIPPED`.
     - id: persist
-      kind: agent
-      skill: memory
+      kind: tool_call
+      tool: memory_save
+      tool_allowlist: [memory_save]
       depends_on: [digest_papers, render_deck]
-      with:
-        action: save
-        topic: "arxiv-daily"
+      tool_args:
+        path: "memory/arxiv-daily.md"
+        mode: append
         content: |
           === arxiv-daily digest ===
           invocation: {{ inputs.user_message | xml_escape | truncate(200) }}

@@ -2,8 +2,7 @@
 
 Turns a session's captured runtime signals (the model's raw prediction plus the
 heuristic markers — complaint, confidence gate, anti-downgrade) into a corrected
-supervised label per turn. This is the realization of the RFC's "启发式规则为
-师，负反馈纠偏，追溯性对齐" with the guards the prototype omitted.
+supervised label per turn.
 
 Pure functions over :class:`RouterTrainSample`; no IO, no raw text (alignment
 relies only on the captured boolean/class signals), so it is fully unit-testable.

@@ -902,7 +902,6 @@ class RouterSelfLearningConfig(BaseModel):
 
     Opt-in. ``enabled`` is the master switch; capture and training each have
     their own sub-toggle so an operator can collect data without yet training.
-    See docs RFC "智能路由自学习闭环 —— 工程实现提案".
     """
 
     model_config = ConfigDict(extra="forbid")

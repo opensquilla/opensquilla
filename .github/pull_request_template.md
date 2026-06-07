@@ -8,8 +8,7 @@
 - [ ] I ran `uv build --wheel`.
 - [ ] Behavior changes include public regression tests.
 - [ ] The default test path remains offline, deterministic, credential-free, and safe for forks.
-- [ ] I did not commit secrets, local paths, private prompts, real provider transcripts, channel identifiers, or AI session artifacts.
-- [ ] I did not commit maintainer-only files from `tests/_private/` or `.omx/private-golden/`.
+- [ ] I did not commit secrets, local-only artifacts, private prompts/transcripts, channel identifiers, AI session artifacts, or non-public test fixtures.
 - [ ] Third-party origin is declared: `none`, `inspired-by`, `adapted/ported`, `vendored`, `direct dependency`, or `modified upstream`.
 - [ ] For non-`none` third-party origin, I listed the upstream URL, license, whether code/rules/fixtures/text were copied or adapted, and updated notices/provenance where required.
 

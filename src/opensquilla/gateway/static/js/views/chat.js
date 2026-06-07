@@ -8085,18 +8085,29 @@ const ChatView = (() => {
       let input;
       if (field.type === 'enum' && Array.isArray(field.choices)) {
         input = document.createElement('select');
+        const optionByValue = new Map();
+        if (Array.isArray(field.options)) {
+          field.options.forEach((option) => {
+            if (!option || typeof option !== 'object') return;
+            const value = option.value != null ? String(option.value) : '';
+            if (!value) return;
+            optionByValue.set(value, option.label != null ? String(option.label) : value);
+          });
+        }
         if (!field.required) {
           const blank = document.createElement('option');
           blank.value = '';
+          const defaultLabel = optionByValue.get(String(field.default)) || field.default;
           blank.textContent = field.default
-            ? clarifyText('(默认: ' + field.default + ')', '(default: ' + field.default + ')')
+            ? clarifyText('(默认: ' + defaultLabel + ')', '(default: ' + defaultLabel + ')')
             : clarifyText('(可选)', '(optional)');
           input.appendChild(blank);
         }
         field.choices.forEach((choice) => {
+          const choiceValue = String(choice);
           const opt = document.createElement('option');
-          opt.value = choice;
-          opt.textContent = choice;
+          opt.value = choiceValue;
+          opt.textContent = optionByValue.get(choiceValue) || choiceValue;
           if (field.default === choice) opt.selected = true;
           input.appendChild(opt);
         });

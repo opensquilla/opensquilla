@@ -219,6 +219,13 @@ def test_preflight_module_exists():
     assert "input.type !== 'checkbox'" in text
 
 
+def test_clarify_form_enum_options_display_localized_labels():
+    text = CHAT_JS.read_text()
+    assert "const optionByValue = new Map();" in text
+    assert "Array.isArray(field.options)" in text
+    assert "opt.textContent = optionByValue.get(choiceValue) || choiceValue;" in text
+
+
 def test_chat_js_references_window_metapreflight():
     text = CHAT_JS.read_text()
     assert "window.MetaPreflight" in text

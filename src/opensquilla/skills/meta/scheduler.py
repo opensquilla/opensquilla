@@ -1055,6 +1055,7 @@ async def run_dag(
                 clarify_protocol = schema_to_protocol(
                     item.schema,
                     intro_override=item.intro,
+                    language=item.language,
                     confirmed_fields=item.confirmed_fields,
                     prefill_audit=item.prefill_audit,
                 )

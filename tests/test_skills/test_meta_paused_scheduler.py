@@ -195,6 +195,13 @@ async def test_meta_paused_tool_result_carries_clarify_schema_protocol():
                          prompt="目的地"),
             ClarifyField(name="days", type="int", required=True, min=1, max=14,
                          prompt="天数"),
+            ClarifyField(
+                name="export_docx",
+                type="enum",
+                choices=("YES", "NO"),
+                default="NO",
+                prompt="是否导出 DOCX",
+            ),
         ),
         intro="需要 4 个字段",
         cancel_keywords=("cancel",),
@@ -202,7 +209,12 @@ async def test_meta_paused_tool_result_carries_clarify_schema_protocol():
 
     async def _dispatch(step, effective_skill, match_inputs, outputs):
         if step.id == "collect":
-            raise MetaPaused(run_id="r-clarify", step_id="collect", schema=cfg)
+            raise MetaPaused(
+                run_id="r-clarify",
+                step_id="collect",
+                schema=cfg,
+                language="zh",
+            )
         return
         yield  # type: ignore[unreachable]
 
@@ -235,9 +247,13 @@ async def test_meta_paused_tool_result_carries_clarify_schema_protocol():
     protocol = args["clarify_schema"]
     assert protocol["mode"] == "form"
     assert protocol["intro"] == "需要 4 个字段"
-    assert len(protocol["fields"]) == 2
+    assert len(protocol["fields"]) == 3
     assert protocol["fields"][0]["name"] == "destination"
     assert protocol["fields"][1]["min"] == 1
+    assert protocol["fields"][2]["options"] == [
+        {"value": "YES", "label": "是"},
+        {"value": "NO", "label": "否"},
+    ]
     assert protocol["cancel_keywords"] == ["cancel"]
 
 

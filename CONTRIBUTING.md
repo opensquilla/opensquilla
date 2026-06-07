@@ -13,6 +13,21 @@ latest `main` release point. When that requires replacing the active
 `dev` branch, the previous branch will be archived and contributors
 will be asked to rebase or retarget open pull requests.
 
+## Linked Issues
+
+Declare issue relationships in pull request descriptions with GitHub keywords:
+
+- Use `Fixes #123`, `Closes #123`, or `Resolves #123` when the pull request is intended to fix the issue.
+- Use `Refs #123` when the pull request is related but should not move the issue toward closure.
+- Use `None` when no public issue is linked.
+
+OpenSquilla keeps issue closure tied to the release branch. Merging a fixing
+pull request into `dev` marks the issue as `merged-to-dev` and
+`needs-verification`; the issue remains open until the fix reaches the default
+branch through a release or hotfix pull request. Maintainers may use
+`has-linked-pr` while work is still under review. If a linked pull request is
+closed without merging, the automation removes `has-linked-pr`.
+
 ## Attribution On Squash Or Replay
 
 When maintainer cleanup, replay, or squash merging collapses contributor

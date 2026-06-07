@@ -223,7 +223,9 @@ def test_clarify_form_enum_options_display_localized_labels():
     text = CHAT_JS.read_text()
     assert "const optionByValue = new Map();" in text
     assert "Array.isArray(field.options)" in text
-    assert "opt.textContent = optionByValue.get(choiceValue) || choiceValue;" in text
+    assert "localizedChoiceLabel(choiceValue, schemaLang)" in text
+    assert '"PRE_K": "学龄前（3-5 岁）"' in text
+    assert '"MODEST": "适中预算"' in text
 
 
 def test_chat_js_references_window_metapreflight():

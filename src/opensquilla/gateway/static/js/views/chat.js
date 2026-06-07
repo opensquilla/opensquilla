@@ -7852,6 +7852,55 @@ const ChatView = (() => {
     ].join('\n');
     const schemaLang = /[\u4e00-\u9fff]/.test(schemaCopy) ? 'zh' : 'en';
     const clarifyText = (zh, en) => schemaLang === 'zh' ? zh : en;
+    const zhChoiceLabels = {
+      "en": "英文",
+      "zh": "中文",
+      "ja": "日文",
+      "other": "其他",
+      "mixed": "中英混合",
+      "YES": "是",
+      "NO": "否",
+      "LAST_WEEK": "过去一周",
+      "LAST_MONTH": "过去一个月",
+      "LAST_QUARTER": "过去一个季度",
+      "ENTRY": "初级",
+      "MID": "中级",
+      "SENIOR": "高级",
+      "STAFF": "专家级",
+      "PRE_K": "学龄前（3-5 岁）",
+      "EARLY_GRADE": "小学低年级（6-9 岁）",
+      "TWEEN": "小学高年级/初中前（10-12 岁）",
+      "TEEN": "青少年（13-17 岁）",
+      "SHOESTRING": "低预算",
+      "MODEST": "适中预算",
+      "COMFORTABLE": "宽裕预算",
+      "SOLO": "孩子独立完成",
+      "LIGHT": "家长偶尔帮忙",
+      "HANDS_ON": "家长全程陪同",
+      "budget": "低预算",
+      "mid": "中等",
+      "premium": "高预算",
+      "academic": "学术读者",
+      "technical": "技术读者",
+      "business": "商业读者",
+      "general": "普通读者",
+      "FULL_MANUSCRIPT": "完整论文",
+      "COMPACT_SKELETON": "快速草稿",
+      "REPAIR_EXISTING": "修复已有稿件",
+      "COMPILE_ONLY": "仅编译",
+      "readable_pdf": "可读取 PDF",
+      "inline_excerpts_only": "仅使用粘贴摘录",
+      "reference_only": "只有引用/文件名",
+    };
+    const localizedChoiceLabel = (choice, language) => {
+      const raw = String(choice || '');
+      if (language === 'zh') return zhChoiceLabels[raw] || raw;
+      if (/^[A-Z0-9_-]+$/.test(raw)) {
+        const humanized = raw.replace(/[_-]+/g, ' ').toLowerCase();
+        return humanized.charAt(0).toUpperCase() + humanized.slice(1);
+      }
+      return raw;
+    };
 
     const card = document.createElement('div');
     card.className = 'clarify-form chat-tools-collapse';
@@ -8107,7 +8156,8 @@ const ChatView = (() => {
           const choiceValue = String(choice);
           const opt = document.createElement('option');
           opt.value = choiceValue;
-          opt.textContent = optionByValue.get(choiceValue) || choiceValue;
+          opt.textContent = optionByValue.get(choiceValue)
+            || localizedChoiceLabel(choiceValue, schemaLang);
           if (field.default === choice) opt.selected = true;
           input.appendChild(opt);
         });

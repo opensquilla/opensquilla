@@ -575,7 +575,7 @@ async def _handle_chat_clarify_submit(params: dict | None, ctx: RpcContext) -> d
         # intent (SessionIntent enum rejects unknown values). The
         # provenance tag is the observability hook for distinguishing
         # form submits from typed replies downstream.
-        "inputProvenance": "clarify_form",
+        "inputProvenance": {"kind": "clarify_form", "source": "webui"},
     }
     if isinstance(run_id, str) and run_id:
         send_params["_source"] = {

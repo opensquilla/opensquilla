@@ -145,6 +145,20 @@ def _clamp_thinking_for_meta(ctx: TurnContext) -> None:
     ctx.metadata["thinking_source"] = "meta_resolution"
 
 
+def _input_provenance_kind(ctx: TurnContext) -> str:
+    """Return normalized input provenance kind from pipeline metadata."""
+
+    metadata = getattr(ctx, "metadata", {})
+    provenance = metadata.get("input_provenance")
+    if isinstance(provenance, Mapping):
+        kind = provenance.get("kind")
+        return str(kind) if kind is not None and str(kind) else ""
+    if isinstance(provenance, str):
+        return provenance
+    kind = metadata.get("input_provenance_kind")
+    return str(kind) if kind is not None and str(kind) else ""
+
+
 def _hits_cancel_keywords(message: str, keywords: tuple[str, ...]) -> bool:
     if not keywords:
         return False
@@ -915,7 +929,8 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
             previously_filled = raw_filled
             if isinstance(prefill_audit, dict) and prefill_audit:
                 ctx.metadata["meta_clarify_prefill_audit"] = prefill_audit
-            if schema.nl_extract:
+            is_structured_clarify_form = _input_provenance_kind(ctx) == "clarify_form"
+            if schema.nl_extract and not is_structured_clarify_form:
                 # PR9+: when explicitly enabled, prefer LLM extraction over
                 # deterministic text parsing. Validators are reapplied inside
                 # extract() so prompt-injection in user_message cannot bypass
@@ -1051,7 +1066,11 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
                                 # PROCEED_NOW — resume the DAG so the
                                 # workflow moves forward on its own.
                                 parsed, errors = cumulative, []
-            if not parsed and (not schema.nl_extract or not nl_attempted):
+            if not parsed and (
+                not schema.nl_extract
+                or not nl_attempted
+                or is_structured_clarify_form
+            ):
                 # Bug-X + Bug-Y mirror for the deterministic path: the
                 # parser's ``_check_required`` only sees this turn's
                 # reply and wipes ``parsed`` to ``{}`` on any error

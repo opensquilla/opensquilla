@@ -220,6 +220,7 @@ class _TurnRunnerPipelineExecutionAdapter(PipelineExecutionPort):
             flags_text_override=request.flags_text_override,
             tool_context=request.tool_context,
             normalization_metadata=request.normalization_metadata,
+            input_provenance=request.input_provenance,
         )
 
 class _TurnRunnerRouterContextAdapter(RouterContextPort):

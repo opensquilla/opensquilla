@@ -23,6 +23,19 @@ from opensquilla.skills.meta.types import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _inline_to_thread_for_meta_resolution_tests(monkeypatch):
+    """Keep meta_resolution CAS tests deterministic in the sandbox."""
+    import importlib
+
+    mr_module = importlib.import_module("opensquilla.engine.steps.meta_resolution")
+
+    async def _inline_to_thread(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(mr_module.asyncio, "to_thread", _inline_to_thread)
+
+
 def _writer(tmp_path: Path) -> MetaRunWriter:
     db = tmp_path / "x.sqlite"
     get_backend(f"sqlite:///{db}").apply_migrations(read_migrations("migrations"))
@@ -351,6 +364,100 @@ async def test_nl_extract_preferred_when_deterministic_parser_would_succeed(tmp_
     _, parsed = out.metadata["meta_resume"]
     assert parsed == {"x": "LLM Tokyo"}
     assert llm_called["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_clarify_form_submit_uses_deterministic_fields_even_with_nl_extract(tmp_path):
+    """Structured form submissions are already field-level user input.
+
+    Do not let nl_extract reinterpret a required string like "都可以" as too
+    vague and strand the run in awaiting_user.
+    """
+    writer = _writer(tmp_path)
+    cfg = ClarifyStepConfig(
+        mode="form",
+        fields=(
+            ClarifyField(name="topic", type="string", required=True),
+            ClarifyField(
+                name="age_band",
+                type="enum",
+                required=True,
+                choices=("PRE_K", "EARLY_GRADE"),
+            ),
+        ),
+        timeout_hours=24,
+        cancel_keywords=(),
+        nl_extract=True,
+    )
+    plan = MetaPlan(
+        name="t",
+        triggers=(),
+        priority=0,
+        steps=(
+            MetaStep(
+                id="collect",
+                skill="collect",
+                kind="user_input",
+                clarify_config=cfg,
+            ),
+        ),
+    )
+    snapshot = to_jsonable(plan)
+    with writer._lock:
+        writer._conn.execute(
+            "INSERT INTO meta_skill_runs "
+            "(run_id, meta_skill_name, meta_skill_digest, plan_snapshot_json, "
+            " triggered_by, session_key, status, started_at_ms, inputs_json, "
+            " awaiting_step_id, awaiting_schema_json, awaiting_since, "
+            " awaiting_filled_json, step_outputs_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "r1",
+                "t",
+                "d",
+                json.dumps(snapshot),
+                "soft_meta_invoke",
+                "S1",
+                "awaiting_user",
+                0,
+                json.dumps({"user_message": "original trigger", "collected": {}}),
+                "collect",
+                json.dumps(snapshot["plan"]["steps"][0]["clarify_config"]),
+                time.time(),
+                "{}",
+                "{}",
+            ),
+        )
+        writer._conn.commit()
+
+    llm_called = {"count": 0}
+
+    async def _nl_chat(system, user):
+        llm_called["count"] += 1
+        return json.dumps({"age_band": "PRE_K"})
+
+    loader = MagicMock()
+    loader.load_all.return_value = []
+    ctx = SimpleNamespace(
+        message="topic: 都可以\nage_band: PRE_K",
+        session_key="S1",
+        metadata={
+            "skill_loader": loader,
+            "meta_run_writer": writer,
+            "meta_llm_chat": _nl_chat,
+            "input_provenance": {"kind": "clarify_form", "source": "webui"},
+        },
+        system_prompt="",
+        config=SimpleNamespace(squilla_router=SimpleNamespace(tiers={})),
+        surface_kind="web",
+    )
+
+    out = await meta_resolution(ctx)
+
+    assert "meta_resume" in out.metadata
+    _, parsed = out.metadata["meta_resume"]
+    assert parsed == {"topic": "都可以", "age_band": "PRE_K"}
+    assert llm_called["count"] == 0
 
 
 @pytest.mark.asyncio

@@ -1817,7 +1817,7 @@ class TurnRunner:
         length_capped_continuations: int | None = None,
         input_mode: str = "user",
         persist_input: bool = False,
-        input_provenance: dict[str, Any] | None = None,
+        input_provenance: dict[str, Any] | str | None = None,
         history_has_persisted_user: bool = True,
         fresh_user_session: bool | None = None,
         session_intent: str | None = None,
@@ -2089,6 +2089,7 @@ class TurnRunner:
                     ),
                     ingress_pipeline_steps=ingress_pipeline_steps,
                     normalization_metadata=normalization_metadata,
+                    input_provenance=input_provenance,
                 )
             )
             pa_out = pa_outcome.require_output()
@@ -3795,6 +3796,7 @@ class TurnRunner:
         flags_text_override: str | None = None,
         tool_context: ToolContext | None = None,
         normalization_metadata: dict[str, Any] | None = None,
+        input_provenance: dict[str, Any] | None = None,
     ) -> tuple[Any, Any]:
         """Run the pre-turn pipeline and re-resolve provider if model changed.
 
@@ -3898,6 +3900,15 @@ class TurnRunner:
             material_tokens = normalization_metadata.get("material_estimated_tokens")
             if type(material_tokens) is int and material_tokens > 0:
                 initial_metadata["material_estimated_tokens"] = material_tokens
+        if input_provenance:
+            if isinstance(input_provenance, dict):
+                normalized_provenance = dict(input_provenance)
+            else:
+                normalized_provenance = {"kind": str(input_provenance)}
+            initial_metadata["input_provenance"] = normalized_provenance
+            provenance_kind = self._input_provenance_kind(normalized_provenance)
+            if provenance_kind:
+                initial_metadata["input_provenance_kind"] = provenance_kind
         if ingress_pipeline_steps:
             initial_metadata["pipeline_steps"] = list(ingress_pipeline_steps)
         if prev_assistant_text:

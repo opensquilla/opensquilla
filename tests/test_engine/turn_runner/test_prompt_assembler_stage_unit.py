@@ -216,6 +216,7 @@ def _make_input(
     persist_input=False,
     fresh_user_session=False,
     ingress_pipeline_steps=None,
+    input_provenance=None,
 ):
     return PromptAssemblerStageInput(
         runtime_message=runtime_message,
@@ -236,6 +237,7 @@ def _make_input(
         persist_input=persist_input,
         fresh_user_session=fresh_user_session,
         ingress_pipeline_steps=ingress_pipeline_steps,
+        input_provenance=input_provenance,
     )
 
 
@@ -311,6 +313,18 @@ async def test_case02_with_tool_ctx_threads_into_pipeline() -> None:
     )
     await stage.run(inp)
     assert executor.requests[0].tool_context is sentinel
+
+
+@pytest.mark.asyncio
+async def test_input_provenance_threads_into_pipeline() -> None:
+    provenance = {"kind": "clarify_form", "source": "webui"}
+    executor = _RecordingPipelineExecutor(turn=_make_turn(), provider=_StubProvider())
+    stage = _make_stage(executor=executor)
+    inp = _make_input(input_provenance=provenance)
+
+    await stage.run(inp)
+
+    assert executor.requests[0].input_provenance == provenance
 
 
 @pytest.mark.asyncio

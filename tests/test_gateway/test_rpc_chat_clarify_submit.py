@@ -158,7 +158,7 @@ async def test_clarify_submit_forwards_to_chat_send(monkeypatch):
     # rejects unknown values, and meta_resolution's awaiting branch keys
     # off session_key + provenance tag, not intent.
     assert "intent" not in sp
-    assert sp["inputProvenance"] == "clarify_form"
+    assert sp["inputProvenance"] == {"kind": "clarify_form", "source": "webui"}
     src = sp["_source"]
     assert src["channel_kind"] == "webchat"
     assert src["clarify_run_id"] == "r-xyz"

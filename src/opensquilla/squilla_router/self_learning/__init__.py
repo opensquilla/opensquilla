@@ -4,7 +4,6 @@ Online side only: capture per-turn routing decisions plus the feature vectors
 the model actually computed, so an offline trainer can later realign labels
 from negative feedback and incrementally retrain the classifier.
 
-Design constraints (see docs RFC):
 * Raw prompt text is never stored. The training payload is the float16
   ``features_390`` vector the model already produced at inference time.
 * All capture is opt-in and best-effort; nothing here may break a turn.

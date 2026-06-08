@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -79,6 +81,10 @@ def _powershell() -> str:
     )
 
 
+class _WindowsShellRuntime:
+    backend = type("Backend", (), {"name": "windows_appcontainer"})()
+
+
 @pytest.mark.asyncio
 async def test_native_windows_appcontainer_blocks_write_outside_workspace(
     tmp_path: Path,
@@ -145,3 +151,54 @@ async def test_native_windows_appcontainer_echo(tmp_path: Path) -> None:
 
     assert result.returncode == 0
     assert result.stdout.strip() == "ok"
+
+
+@pytest.mark.asyncio
+async def test_native_windows_shell_can_remove_workspace_file() -> None:
+    from opensquilla.sandbox.backend.windows_appcontainer import WindowsAppContainerBackend
+    from opensquilla.tools.builtin import shell
+
+    workspace = Path.cwd() / ".tmp" / f"native-windows-shell-remove-{uuid.uuid4().hex}"
+    try:
+        workspace.mkdir(parents=True)
+        target = workspace / "delete-me.txt"
+        target.write_text("hello", encoding="utf-8")
+        argv = shell._sandbox_shell_backend_argv(
+            f"Remove-Item -LiteralPath '{target}' -Force -ErrorAction Stop",
+            _WindowsShellRuntime(),
+        )
+        request = SandboxRequest(
+            argv=argv,
+            cwd=workspace,
+            action_kind="shell.exec",
+            policy=_policy(workspace),
+            env=dict(os.environ),
+        )
+
+        result = await WindowsAppContainerBackend().run(request)
+
+        assert result.returncode == 0
+        assert result.stderr == ""
+        assert target.exists() is False
+
+        nested_target = workspace / "nested-delete-me.txt"
+        nested_target.write_text("hello", encoding="utf-8")
+        nested_argv = shell._sandbox_shell_backend_argv(
+            f"powershell -Command \"Remove-Item '{nested_target}'\"",
+            _WindowsShellRuntime(),
+        )
+        nested_request = SandboxRequest(
+            argv=nested_argv,
+            cwd=workspace,
+            action_kind="shell.exec",
+            policy=_policy(workspace),
+            env=dict(os.environ),
+        )
+
+        nested_result = await WindowsAppContainerBackend().run(nested_request)
+
+        assert nested_result.returncode == 0
+        assert nested_result.stderr == ""
+        assert nested_target.exists() is False
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)

@@ -11,6 +11,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -397,18 +398,183 @@ def _trusted_windows_powershell_path() -> str:
     return r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 
 
-def _sandbox_shell_backend_argv(command: str, runtime: object) -> tuple[str, ...]:
-    backend = getattr(runtime, "backend", None)
-    backend_name = getattr(backend, "name", "")
-    if backend_name.startswith("windows_"):
-        return (
-            _trusted_windows_powershell_path(),
+_WINDOWS_SANDBOX_SHELL_HOST_CODE = r"""
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+
+_REMOVE_ITEM_RE = re.compile(
+    r"^(?:Remove-Item|rm|del|erase)\b(?P<rest>.*)$",
+    re.IGNORECASE,
+)
+_PATH_TOKEN_RE = re.compile(
+    r"(?:-(?:LiteralPath|Path)\s+)?(?P<quote>['\"])(?P<path>.*?)(?P=quote)",
+    re.IGNORECASE,
+)
+
+
+def _strip_outer_quotes(value):
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        return value[1:-1]
+    return value
+
+
+def _split_statements(script):
+    statements = []
+    current = []
+    quote = ""
+    escaped = False
+    for char in script:
+        if escaped:
+            current.append(char)
+            escaped = False
+            continue
+        if char == "`":
+            current.append(char)
+            escaped = True
+            continue
+        if quote:
+            current.append(char)
+            if char == quote:
+                quote = ""
+            continue
+        if char in "'\"":
+            current.append(char)
+            quote = char
+            continue
+        if char == ";":
+            statement = "".join(current).strip()
+            if statement:
+                statements.append(statement)
+            current = []
+            continue
+        current.append(char)
+    statement = "".join(current).strip()
+    if statement:
+        statements.append(statement)
+    return statements
+
+
+def _nested_powershell_command(command):
+    match = re.match(
+        r"^\s*powershell(?:\.exe)?\b(?P<args>.*)$",
+        command,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return None
+    args = match.group("args")
+    command_match = re.search(
+        r"(?:^|\s)-(?:Command|c)\s+(?P<script>.+)$",
+        args,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not command_match:
+        return None
+    return _strip_outer_quotes(command_match.group("script"))
+
+
+def _remove_statement_path(statement):
+    match = _REMOVE_ITEM_RE.match(statement)
+    if not match:
+        return None
+    path_match = _PATH_TOKEN_RE.search(match.group("rest"))
+    if not path_match:
+        return None
+    return path_match.group("path")
+
+
+def _remove_path(path, *, recurse, force):
+    try:
+        if os.path.isdir(path) and not os.path.islink(path):
+            if recurse:
+                shutil.rmtree(path)
+            else:
+                os.rmdir(path)
+        else:
+            if force:
+                try:
+                    os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+                except OSError:
+                    pass
+            os.remove(path)
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        return f"{path}: {type(exc).__name__}: {exc}"
+    return None
+
+
+def _handle_remove_only(script):
+    statements = _split_statements(script)
+    if not statements:
+        return None
+    paths = []
+    recurse = False
+    force = False
+    for statement in statements:
+        path = _remove_statement_path(statement)
+        if path is None:
+            return None
+        recurse = recurse or bool(re.search(r"\s-Recurse\b", statement, re.IGNORECASE))
+        force = force or bool(re.search(r"\s-Force\b", statement, re.IGNORECASE))
+        paths.append(path)
+    errors = [
+        error
+        for path in paths
+        if (error := _remove_path(path, recurse=recurse, force=force))
+    ]
+    if errors:
+        sys.stderr.write("\n".join(errors))
+        return 1
+    return 0
+
+
+def main():
+    if len(sys.argv) != 3:
+        sys.stderr.write("windows sandbox shell host expects powershell path and command")
+        return 2
+    powershell = sys.argv[1]
+    command = sys.argv[2]
+    nested_command = _nested_powershell_command(command)
+    effective_command = nested_command if nested_command is not None else command
+    remove_result = _handle_remove_only(effective_command)
+    if remove_result is not None:
+        return remove_result
+
+    result = subprocess.run(
+        [
+            powershell,
             "-NoLogo",
             "-NoProfile",
             "-NonInteractive",
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
+            effective_command,
+        ],
+        check=False,
+    )
+    return result.returncode
+
+
+raise SystemExit(main())
+""".strip()
+
+
+def _sandbox_shell_backend_argv(command: str, runtime: object) -> tuple[str, ...]:
+    backend = getattr(runtime, "backend", None)
+    backend_name = getattr(backend, "name", "")
+    if backend_name.startswith("windows_"):
+        return (
+            sys.executable,
+            "-c",
+            _WINDOWS_SANDBOX_SHELL_HOST_CODE,
+            _trusted_windows_powershell_path(),
             command,
         )
     return ("sh", "-lc", command)

@@ -132,7 +132,7 @@ def test_appcontainer_profile_name_defaults_and_caps_length() -> None:
     assert len(profile_name) <= 64
 
 
-def test_windows_backend_shell_argv_uses_pinned_powershell(
+def test_windows_backend_shell_argv_uses_python_host_with_pinned_powershell(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from opensquilla.tools.builtin import shell
@@ -145,19 +145,14 @@ def test_windows_backend_shell_argv_uses_pinned_powershell(
 
     argv = shell._sandbox_shell_backend_argv(command, Runtime())
 
-    assert argv == (
-        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        command,
-    )
+    assert argv[0] == sys.executable
+    assert argv[1] == "-c"
+    assert "subprocess.run" in argv[2]
+    assert argv[3] == r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+    assert argv[4] == command
 
 
-def test_windows_backend_shell_argv_ignores_untrusted_comspec_for_powershell(
+def test_windows_backend_shell_argv_ignores_untrusted_comspec_for_shell_host(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from opensquilla.tools.builtin import shell
@@ -170,16 +165,9 @@ def test_windows_backend_shell_argv_ignores_untrusted_comspec_for_powershell(
 
     argv = shell._sandbox_shell_backend_argv("echo ok", Runtime())
 
-    assert argv == (
-        r"D:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        "echo ok",
-    )
+    assert argv[0] == sys.executable
+    assert argv[3] == r"D:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+    assert argv[4] == "echo ok"
 
 
 def test_non_windows_backend_shell_argv_uses_posix_shell() -> None:
@@ -243,16 +231,10 @@ async def test_exec_command_windows_backend_uses_pinned_powershell_argv(
 
     request = captured["request"]
     assert isinstance(request, SandboxRequest)
-    assert request.argv == (
-        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        "echo ok",
-    )
+    assert request.argv[0] == sys.executable
+    assert request.argv[1] == "-c"
+    assert request.argv[3] == r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+    assert request.argv[4] == "echo ok"
 
 
 @pytest.mark.asyncio
@@ -338,16 +320,10 @@ async def test_background_process_windows_backend_uses_pinned_powershell_argv(
 
     request = captured["request"]
     assert isinstance(request, SandboxRequest)
-    assert request.argv == (
-        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        "echo ok",
-    )
+    assert request.argv[0] == sys.executable
+    assert request.argv[1] == "-c"
+    assert request.argv[3] == r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+    assert request.argv[4] == "echo ok"
 
 
 def test_windows_command_line_quotes_argv() -> None:

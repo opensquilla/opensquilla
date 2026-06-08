@@ -90,6 +90,10 @@ _ONBOARDING_VERIFIED_PROVIDER_IDS = frozenset(
         "zhipu",
         "qianfan",
         "volcengine",
+        "minimax",
+        "minimax_openai",
+        "minimax_cn",
+        "minimax_global",
     }
 )
 
@@ -130,11 +134,16 @@ def _what_you_need(spec: ProviderSpec) -> tuple[str, ...]:
     return tuple(needs)
 
 
+_MINIMAX_DEFAULT_MODEL = "minimax/MiniMax-M3"
+
+
 def _default_direct_model(provider_id: str) -> str:
     if provider_id in ROUTER_TIER_PROFILE_IDS:
         tiers = _router_tier_profile_defaults(provider_id)
         tier = tiers.get("c1") or tiers.get("c0") or {}
         return str(tier.get("model") or "")
+    if provider_id in {"minimax", "minimax_openai", "minimax_cn", "minimax_global"}:
+        return _MINIMAX_DEFAULT_MODEL
     return ""
 
 

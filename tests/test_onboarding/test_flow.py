@@ -101,6 +101,10 @@ def test_interactive_provider_choice_offers_only_verified_supported_providers():
         "zhipu",
         "qianfan",
         "volcengine",
+        "minimax",
+        "minimax_openai",
+        "minimax_cn",
+        "minimax_global",
     }
 
 
@@ -122,6 +126,45 @@ def test_interactive_router_supported_provider_does_not_prompt_for_model():
 
     assert answers["model"] == ""
     assert answers["api_key_env"] == "OPENROUTER_API_KEY"
+
+
+def test_minimax_provider_variants_are_setup_verified_and_seed_M3_default() -> None:
+    """MiniMax must show up in `opensquilla configure` / `opensquilla onboard` and
+    pre-fill the model field with `minimax/MiniMax-M3` so a new operator does not
+    have to know the catalog id by heart.
+    """
+    from opensquilla.onboarding.provider_specs import (
+        get_provider_setup_spec,
+        list_provider_setup_specs,
+    )
+
+    verified_ids = {s.provider_id for s in list_provider_setup_specs()}
+
+    for variant in ("minimax", "minimax_openai", "minimax_cn", "minimax_global"):
+        assert variant in verified_ids, (
+            f"{variant} is registered but filtered out of the setup catalog"
+        )
+        spec = get_provider_setup_spec(variant)
+        assert spec.default_direct_model == "minimax/MiniMax-M3", (
+            f"{variant} default model is {spec.default_direct_model!r}, expected MiniMax-M3"
+        )
+        # Confirm the same default surfaces in the field spec, which is what
+        # `control/setup` reads.
+        model_field = next(f for f in spec.fields if f.name == "model")
+        assert model_field.default == "minimax/MiniMax-M3"
+
+
+def test_provider_catalog_payload_includes_minimax_with_M3_default() -> None:
+    """`provider_catalog_payload()` is the JSON contract the setup page
+    consumes. MiniMax must appear, with the M3 default in `defaultDirectModel`.
+    """
+    from opensquilla.onboarding.provider_specs import provider_catalog_payload
+
+    payload = {entry["providerId"]: entry for entry in provider_catalog_payload()}
+
+    assert "minimax" in payload, "minimax missing from setup catalog payload"
+    assert payload["minimax"]["defaultDirectModel"] == "minimax/MiniMax-M3"
+    assert payload["minimax"]["runtimeSupported"] is True
 
 
 def test_interactive_provider_fields_default_to_pasted_api_key(monkeypatch):

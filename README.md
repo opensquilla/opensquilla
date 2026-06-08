@@ -315,6 +315,37 @@ In this mode, prefix every `opensquilla` command in
 development checkout through a user-local `opensquilla` command — that
 command runs in a different Python environment.
 
+#### Editable install into the tool environment
+
+If you want the `opensquilla` command on `PATH` (so you can run it
+without `uv run`) **and** have the executable track the current
+checkout, use the dev-install wrapper instead of `uv sync`. The
+wrapper runs `uv tool install -e ".[recommended]"` from the repo
+root, so the `opensquilla` shim is editable, the SquillaRouter
+runtime is pulled in, and you don't have to remember the PEP 508
+extras form.
+
+```sh
+# macOS / Linux — default path for OpenSquilla contributors
+bash scripts/dev-install.sh
+
+# Windows PowerShell
+powershell -ExecutionPolicy Bypass -File scripts/dev-install.ps1
+```
+
+Run the wrapper again after `git pull` to re-link the shim. Both
+scripts forward extra arguments to `uv tool install`, e.g.
+`bash scripts/dev-install.sh --no-cache`.
+
+> **Why a wrapper instead of `uv tool install -e ".[recommended]"` directly?**
+> `uv tool install` does not accept a `--extra` / `--all-extras` flag —
+> it only takes `--with <pkg>` for individual packages — so the
+> PEP 508 `.[recommended]` form is the only way to bring the runtime
+> profile in from a one-liner. The wrapper centralises that so callers
+> don't have to type it by hand. A bare `uv tool install -e .` will
+> succeed but the gateway will start with "bundled ONNX router failed
+> to load" and fall back to safe-routing mode.
+
 ---
 
 ## Configuration
@@ -394,6 +425,175 @@ Use `opensquilla migrate --source openclaw,hermes --apply` to import
 both default homes. Add `--migrate-secrets` only after reviewing the dry-run
 report. See [`MIGRATION.md`](MIGRATION.md) for custom paths and conflict
 handling.
+
+### Multi-instance profiles
+
+Run several OpenSquilla agents on the same host without sharing locks,
+sockets, or state files. Each profile gets its own `config.toml`,
+`state/`, `logs/`, and `.env` under a common profiles root.
+
+#### Default layout and automatic migration
+
+The profiles root defaults to `$HOME/.opensquilla/profiles`, so the
+default profile lives at `$HOME/.opensquilla/profiles/default/` and
+named profiles (`--profile coder`) live at
+`$HOME/.opensquilla/profiles/coder/` — siblings, not nested. Setting
+`OPENSQUILLA_HOME=D:\ai\opensquilla\profiles` (or any other path)
+gives the same flat layout under that directory.
+
+```
+~/.opensquilla/profiles/   ← OPENSQUILLA_HOME (or its default)
+├── default/   ← OPENSQUILLA_PROFILE=default   (or flag omitted)
+├── coder/     ← OPENSQUILLA_PROFILE=coder
+└── agent-1/   ← OPENSQUILLA_PROFILE=agent-1
+```
+
+If you have an **existing** install under the legacy
+`$HOME/.opensquilla/` home (the layout the pre-profiles releases
+used), the very first CLI invocation after upgrading auto-migrates
+the canonical subpaths (`state/`, `logs/`, `workspace/`, `media/`,
+`config.toml`, `.env`) into `$HOME/.opensquilla/profiles/default/`
+so the legacy install becomes the `default` profile with no operator
+action required. The migration is one-time, atomic where possible,
+and writes a `.migrated-to-profiles-root` sentinel inside the new
+home so it never runs twice. Delete the sentinel to force a re-run.
+
+The migration is intentionally conservative — anything not in the
+canonical list (e.g. a `custom-stuff/` directory you created
+yourself) is left in place under the legacy home.
+
+#### Environment variables (Windows)
+
+Two variables drive profile mode. Set both; `PROFILE` alone without
+`PROFILES_DIR` is a no-op.
+
+| Variable | Required? | Default | What it does |
+|---|---|---|---|
+| `OPENSQUILLA_HOME` | yes (to enable) | `$HOME/.opensquilla/profiles` | Parent directory that contains every profile home. Setting this is the one switch that turns multi-instance mode on. |
+| `OPENSQUILLA_PROFILE` | no | `default` | Name of the active profile. Must match `^[a-z0-9][a-z0-9_-]{0,63}$`. |
+| `OPENSQUILLA_STATE_DIR` | no | _unset_ | **Full override** that bypasses profile mode entirely. Leave unset when running multiple profiles — it forces a single hard-coded home. |
+
+**Permanent (per-user, survives reboot)**:
+
+```powershell
+# Required: enable multi-instance mode
+[System.Environment]::SetEnvironmentVariable(
+    "OPENSQUILLA_HOME", "D:\ai\opensquilla\profiles", "User")
+
+# Optional: pin this shell to a specific profile
+[System.Environment]::SetEnvironmentVariable(
+    "OPENSQUILLA_PROFILE", "coder", "User")
+```
+
+Reopen PowerShell after `SetEnvironmentVariable` so the new value is
+inherited by the process.
+
+**Temporary (current session only)**:
+
+```powershell
+$env:OPENSQUILLA_HOME = "D:\ai\opensquilla\profiles"
+$env:OPENSQUILLA_PROFILE      = "coder"     # omit to use "default"
+opensquilla gateway start --port 18792
+```
+
+This is the right form for per-shell or per-task overrides, e.g. one
+PowerShell window per profile with a different port.
+
+**Verify**:
+
+```powershell
+echo $env:OPENSQUILLA_HOME
+echo $env:OPENSQUILLA_PROFILE
+# Expected:
+#   D:\ai\opensquilla\profiles
+#   coder    (or empty if you only set PROFILES_DIR)
+```
+
+**Resolution precedence** (see `src/opensquilla/paths.py`):
+
+1. `OPENSQUILLA_STATE_DIR` — full override; bypasses profile mode. Do
+   **not** set this when running multiple profiles.
+2. `OPENSQUILLA_HOME` + `OPENSQUILLA_PROFILE` — multi-instance.
+   Resolves to `<PROFILES_DIR>/<PROFILE>/`, e.g.
+   `D:\ai\opensquilla\profiles\coder\`.
+3. `$HOME/.opensquilla` — single-instance default (unchanged on disk
+   for existing deployments).
+
+#### Common patterns
+
+| Scenario | What to set |
+|---|---|
+| Run a single `coder` instance | `OPENSQUILLA_HOME` permanent, `$env:OPENSQUILLA_PROFILE = "coder"` per shell |
+| Run the `default` instance | `OPENSQUILLA_HOME` permanent, **omit** `OPENSQUILLA_PROFILE` (default is `default`) |
+| Run `coder` + `agent-1` side by side | `OPENSQUILLA_HOME` permanent; open two PowerShells, each with its own `$env:OPENSQUILLA_PROFILE` and a different `--port` |
+| Disable multi-instance for one command | `unset OPENSQUILLA_HOME` in that shell (or use `OPENSQUILLA_STATE_DIR=...` to pin a legacy home) |
+| Bootstrap a new profile | `opensquilla --profile <name> init` — does not require any env var; the CLI's `--profile` flag wins over the env var |
+
+#### macOS / Linux
+
+The same two variables, set via the shell rc of choice:
+
+```sh
+# ~/.zshrc or ~/.bashrc
+export OPENSQUILLA_HOME="$HOME/opensquilla/profiles"
+# export OPENSQUILLA_PROFILE="coder"     # optional, defaults to "default"
+```
+
+#### Cross-platform path layout
+
+Whichever OS you set `OPENSQUILLA_HOME` for, each profile lives as
+a direct child of that root. The CLI uses `pathlib` for the join, so
+backslashes, forward slashes, and tildes all work transparently.
+
+```
+D:\ai\opensquilla\profiles\         ← OPENSQUILLA_HOME (Windows)
+├── default\    ← OPENSQUILLA_PROFILE=default   (or flag omitted)
+├── coder\      ← OPENSQUILLA_PROFILE=coder
+└── agent-1\    ← OPENSQUILLA_PROFILE=agent-1
+```
+
+```
+/home/you/opensquilla/profiles/     ← OPENSQUILLA_HOME (Linux/macOS)
+├── default/
+├── coder/
+└── agent-1/
+```
+
+#### Auto-start every profile at user logon (Windows)
+
+The `scripts/supervisor/` PowerShell scripts wrap the CLI for
+multi-profile lifecycle without touching core OpenSquilla code:
+
+```powershell
+# start every profile, in series, with stable per-profile port assignment
+.\scripts\supervisor\start-all.ps1
+
+# show one-row-per-profile status
+.\scripts\supervisor\status.ps1
+
+# stop them all
+.\scripts\supervisor\stop-all.ps1
+
+# register a logon task so the next Windows login auto-starts everything
+.\scripts\supervisor\install-autostart.ps1
+
+# remove the logon task
+.\scripts\supervisor\uninstall-autostart.ps1
+```
+
+Per-profile port is `BasePort + sorted-index` (default 18791). Pass
+`-BasePort` to shift the range. The supervisor scripts are thin wrappers:
+they call `opensquilla --profile <name> gateway start/stop/status` for
+each discovered subdirectory of the profiles root, so they pick up
+configuration, health checks, and PID locking for free from the existing
+CLI.
+
+#### Profile name validation
+
+Profile names must match `^[a-z0-9][a-z0-9_-]{0,63}$` to prevent
+path-traversal escapes. The CLI rejects bad names up front with a clear
+error. Valid examples: `default`, `coder`, `agent-1`, `dev_env`. Invalid
+examples: `../escape`, `With Spaces`, `中文`, `a`×65.
 
 ### Run
 
@@ -612,6 +812,91 @@ opensquilla gateway restart
 ```
 
 </details>
+
+---
+
+## Per-profile logon autostart (issue #193)
+
+`opensquilla --profile <name> init --autostart` registers a per-profile
+startup entry on this host, so the gateway comes back up the next time
+the user logs in. The dispatch is platform-aware:
+
+- **Windows** — a `OpenSquilla_<profile>` Task Scheduler logon task that
+  runs `opensquilla --profile <profile> gateway start` on each
+  interactive logon. Equivalent to the per-task payload of
+  `scripts/supervisor/install-autostart.ps1`, but registered per
+  profile (that script registers one global start-all task; this
+  flag registers one task per profile so individual profiles can be
+  disabled independently).
+- **macOS** — a `~/Library/LaunchAgents/com.opensquilla.<profile>.plist`
+  LaunchAgent that `launchctl load -w`s on next login. The plist sets
+  `RunAtLoad=true` and `KeepAlive=true`.
+- **Linux** — a `~/.config/systemd/user/opensquilla-<profile>.service`
+  systemd --user unit that `systemctl --user enable --now`s the
+  service.
+
+The flag is opt-in (off by default) and best-effort: if the host
+is not one of the three above, if the `opensquilla` binary is not on
+`PATH`, or if the host tool reports a failure, the wizard prints a
+warning and continues. Use `uninstall-autostart.ps1` (Windows),
+`launchctl unload -w ~/Library/LaunchAgents/com.opensquilla.<profile>.plist`
+(macOS), or `systemctl --user disable --now opensquilla-<profile>.service`
+(Linux) to roll back.
+
+---
+
+## Initialising every profile in one go
+
+When `OPENSQUILLA_HOME` contains several profile directories
+(`default/`, `coder/`, `test/`, …) it is tedious to run
+`opensquilla --profile <name> init` for each. `opensquilla profiles
+init-all` walks `OPENSQUILLA_HOME/profiles/*/`, and for every
+uninitialised profile (no `.env` + `config.toml` pair), writes the
+same provider / API-key / model triple and (by default) registers
+the per-profile logon autostart entry from the previous section:
+
+```sh
+# Initialise every profile under $OPENSQUILLA_HOME/profiles with
+# OpenRouter; re-uses the OPENROUTER_API_KEY already in the env so
+# nothing sensitive lands in any .env.
+opensquilla profiles init-all \
+    --provider openrouter \
+    --api-key-env OPENROUTER_API_KEY
+```
+
+Useful flags:
+
+- `--provider <id>` — provider applied to every profile (required).
+- `--api-key <key>` *or* `--api-key-env <name>` — exactly one must
+  be given. The `api_key` form writes the value into each profile's
+  `.env`; the `api_key_env` form just records the env-var name the
+  gateway should read at runtime.
+- `--model <id>` — override the model id (defaults to the
+  provider's recommended model).
+- `--autostart` (on by default) / `--no-autostart` — register the
+  per-profile logon autostart entry from the previous section.
+- `--only-uninitialised` (default) / `--all` — re-write every
+  profile, including already-initialised ones.
+- `--profiles-root <path>` — override `OPENSQUILLA_HOME/profiles`.
+
+Inspect the current set first with `opensquilla profiles list`:
+
+```text
+$ opensquilla profiles list
+                       Profiles under /home/tester/profiles
+┏━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ profile   ┃ state          ┃ home                                  ┃
+┡━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ coder     │ uninitialised  │ /home/tester/profiles/coder           │
+│ default   │ ◆ ready        │ /home/tester/profiles/default          │
+│ test      │ uninitialised  │ /home/tester/profiles/test             │
+└───────────┴────────────────┴───────────────────────────────────────┘
+```
+
+Failures inside the autostart dispatcher (one host tool broken, an
+out-of-date shim path, a profile-name that triggers a system
+guard) are surfaced per-profile and do not abort the loop — the
+remaining profiles are still initialised.
 
 ---
 

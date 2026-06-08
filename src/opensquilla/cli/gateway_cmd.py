@@ -232,6 +232,156 @@ def status_gateway(
     _emit_lifecycle_result(manager.status(), json_output=json_output)
 
 
+def list_agents_gateway(
+    config_path: str | None = typer.Option(
+        None, "--config", help="Override config path (for one profile).",
+    ),
+    all_profiles: bool = typer.Option(
+        False, "--all", help="List agents for every profile under $OPENSQUILLA_HOME.",
+    ),
+    watch: bool = typer.Option(
+        False, "--watch", "-w", help="Poll and re-print every 2s (Ctrl-C to stop).",
+    ),
+    watch_interval: float = typer.Option(
+        2.0, "--interval", help="Watch poll interval in seconds.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """List agents and their sessions by reading state directly.
+
+    Reads ``state/sessions.db`` (SQLite, WAL, read-only) and the
+    ``state/agents/<id>/`` filesystem tree. Does not call the LLM
+    and does not talk to the gateway over HTTP/WS — it works even
+    when the daemon is dead, when the LLM is unreachable, or when
+    the network is down. This is the first thing to check when
+    ``gateway status`` reports unhealthy and you want to know what
+    the daemon was doing before it crashed.
+
+    Use ``--all`` to fan out across every profile under
+    ``$OPENSQUILLA_HOME/profiles/`` with the same
+    ``ThreadPoolExecutor`` shape as ``status_all``. Use ``--watch``
+    to poll every 2s (configurable via ``--interval``).
+    """
+    from opensquilla.cli.gateway_lifecycle import (
+        list_agents as _list_agents_for_profile,
+        status_all,
+    )
+    from opensquilla.paths import default_profiles_root
+
+    if all_profiles:
+        # Reuse the status_all ThreadPoolExecutor shape; we only
+        # surface the agents sub-payload so the daemon
+        # status details don't drown the user in noise.
+        results = status_all(default_profiles_root(), include_agents=True)
+        if json_output:
+            typer.echo(json.dumps(
+                [{"profile": r.details.get("profile"),
+                  "agents": r.details.get("agents", [])}
+                 for r in results],
+                ensure_ascii=False, default=str,
+            ))
+            return
+        _print_agents_table(results, header="PROFILE / AGENT  SESS  TASKS  INFL  ERRS  TURNS  MEM(KB)  LAST_UPDATE")
+        return
+
+    def snapshot() -> dict:
+        return _list_agents_for_profile(config_path=config_path)
+
+    if not watch:
+        payload = snapshot()
+        if json_output:
+            typer.echo(json.dumps(payload, ensure_ascii=False, default=str))
+        else:
+            # Wrap the single-profile payload in the same envelope the
+            # multi-profile path uses so _print_agents_table can be
+            # branch-agnostic.
+            _print_agents_table(
+                [{"details": {"profile": payload["profile"],
+                               "agents": payload["agents"]}}],
+                header="PROFILE/AGENT  SESS  TASKS  INFL  ERRS  TURNS  MEM(KB)  LAST_UPDATE",
+            )
+        return
+
+    # --watch: re-print a fresh snapshot every interval seconds. Always
+    # emit JSON in --watch mode so it's pipe-friendly.
+    import time
+    import signal
+    stop_requested = False
+
+    def _stop(_signum, _frame):
+        nonlocal stop_requested
+        stop_requested = True
+
+    if hasattr(signal, "SIGINT"):
+        signal.signal(signal.SIGINT, _stop)
+
+    while not stop_requested:
+        payload = snapshot()
+        typer.echo(json.dumps(payload, ensure_ascii=False, default=str))
+        for _ in range(int(watch_interval * 10)):
+            if stop_requested:
+                break
+            time.sleep(0.1)
+
+
+def _print_agents_table(results, *, header: str) -> None:
+    """Render a compact aligned table for the human-readable path.
+
+    Each row in ``results`` is a dict ``{"details": {"profile": ...,
+    "agents": [...]}}`` (single-profile wrap) or a
+    :class:`GatewayLifecycleResult` whose ``.details`` carries the
+    same keys (multi-profile path). Both shapes are accepted; we
+    pull ``details`` via ``getattr``/``__getitem__`` so this helper
+    is branch-agnostic.
+    """
+    rows: list[tuple[str, str, int, int, int, int, int, int, str]] = []
+    for r in results:
+        if isinstance(r, dict):
+            details = r.get("details", {})
+        else:
+            details = getattr(r, "details", {}) or {}
+        prof = details.get("profile", "?")
+        for a in details.get("agents", []):
+            sess = len(a.get("sessions", []))
+            tasks = int(a.get("task_count", 0))
+            infl = int(a.get("in_flight", 0))
+            errs = int(a.get("error_count", 0))
+            turns = int(a.get("turn_files", 0))
+            mem_kb = int(a.get("memory_bytes", 0)) // 1024
+            last = (a.get("last_task_update") or a.get("last_turn_mtime") or "")[:19]
+            rows.append((prof, a.get("agent", "?"), sess, tasks, infl, errs, turns, mem_kb, last))
+    if not rows:
+        typer.echo("(no agents found under $OPENSQUILLA_HOME)")
+        return
+    # Aligned columns.
+    widths = [max(len(str(r[i])) for r in rows) for i in range(9)]
+    widths[0] = max(widths[0], len("PROFILE/AGENT"))
+    widths[1] = max(widths[1], len("AGENT"))
+    # String columns: left-aligned with width.
+    # Numeric columns: right-aligned with width.
+    # Last column (timestamp): no width.
+    w0, w1, w2, w3, w4, w5, w6, w7 = widths[:8]
+    row_fmt = (
+        f"{{0:{w0}s}}  {{1:{w1}s}}  "
+        f"{{2:>{w2}d}}  {{3:>{w3}d}}  {{4:>{w4}d}}  {{5:>{w5}d}}  "
+        f"{{6:>{w6}d}}  {{7:>{w7}d}}  {{8}}"
+    )
+    # Header row uses the *same* numeric column widths but passes the
+    # header labels as strings — so we need a separate str-only format
+    # for it. The header strings are short, so the right-alignment of
+    # the data rows will be fine; we just keep the same separators.
+    header_strs = ["PROFILE/AGENT", "AGENT", "SESS", "TASKS", "INFL", "ERRS", "TURNS", "MEM(KB)", "LAST_UPDATE"]
+    header_fmt = (
+        f"{{0:<{w0}s}}  {{1:<{w1}s}}  "
+        f"{{2:>{w2}s}}  {{3:>{w3}s}}  {{4:>{w4}s}}  {{5:>{w5}s}}  "
+        f"{{6:>{w6}s}}  {{7:>{w7}s}}  {{8}}"
+    )
+    typer.echo(header_fmt.format(*header_strs))
+    typer.echo("-" * (w0 + w1 + w2 + w3 + w4 + w5 + w6 + w7 + 16))
+    for r in rows:
+        typer.echo(row_fmt.format(*r))
+
+
 def stop_gateway(
     port: int | None = typer.Option(18791, "--port", "-p", help="Port to stop"),
     bind: str | None = typer.Option("127.0.0.1", "--bind", "-b", help="Host to stop"),

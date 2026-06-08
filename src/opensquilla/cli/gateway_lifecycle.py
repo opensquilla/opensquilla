@@ -483,6 +483,13 @@ class GatewayLifecycleManager:
         ]
         if self.config_path:
             argv.extend(["--config", self.config_path])
+        # The active profile is forwarded to the child via env, not argv.
+        # `_spawn_gateway` does `os.environ.copy()` so the child sees
+        # OPENSQUILLA_HOME + OPENSQUILLA_PROFILE from this process.
+        # We deliberately do NOT pass --profile on the CLI: `gateway run`
+        # is served by the standalone `gateway_app` Typer instance and does
+        # not declare the --profile option. Plumbing it through env
+        # instead is both simpler and correct.
         return argv
 
     def _spawn_gateway(self, argv: list[str]) -> subprocess.Popen[Any]:
@@ -691,3 +698,232 @@ def _windows_pid_running(pid: int) -> bool:
         return int(exit_code.value) == still_active
     finally:
         kernel32.CloseHandle(handle)
+
+
+# ---------------------------------------------------------------------------
+# `gateway agents` — list agents and sessions by reading state directly.
+# This is the "what was the daemon doing before it crashed" view. It does
+# not talk to the gateway over HTTP/WS and does not call the LLM, so it
+# works even when the daemon is dead, when the LLM provider is
+# unreachable, or when the network is down. The trade-off is staleness
+# — the data is as fresh as the last time the daemon flushed SQLite /
+# wrote a turn markdown file. Acceptable for triage; not for hot loops.
+# ---------------------------------------------------------------------------
+
+_AGENT_IN_FLIGHT_STATUSES = frozenset({"in_flight", "running", "pending"})
+_TS = lambda v: datetime.fromtimestamp(int(v), UTC).isoformat() if v else None  # noqa: E731
+
+
+def _list_agents(profile_dir: Path) -> list[dict[str, Any]]:
+    """Return a per-agent diagnostic dict for ``profile_dir``.
+
+    Reads three sources, all read-only:
+
+    1. ``state/sessions.db`` (SQLite, WAL mode, opened ``mode=ro`` so we
+       never block a writer and never trigger ``SQLITE_BUSY`` even if
+       the daemon is mid-transaction or has crashed mid-write).
+    2. ``state/agents/<id>/turns/**/*.md`` filesystem scan — gives turn
+       count and the mtime of the most recent turn without parsing
+       any of the markdown content.
+    3. ``state/agents/<id>/memory.db`` size only — read via stat, not
+       opened.
+
+    Returns a list of dicts, one per agent, sorted by ``agent``. Each
+    dict has:
+
+    - ``agent``: agent id (e.g. ``"main"``)
+    - ``task_count``: total rows in ``agent_tasks`` for this agent
+    - ``in_flight``: rows whose status is in
+      :data:`_AGENT_IN_FLIGHT_STATUSES`
+    - ``last_task_update`` / ``last_task_start``: ISO timestamps
+    - ``error_class`` / ``error_count``: how many tasks ended in error
+    - ``sessions``: list of dicts from the ``sessions`` table
+      (status, model, model_provider, started_at, updated_at)
+    - ``turn_files``: count of ``*.md`` files under
+      ``state/agents/<id>/turns/``
+    - ``last_turn_mtime``: ISO timestamp of the most recent turn
+    - ``memory_bytes``: ``memory.db`` size on disk
+
+    Agents that have filesystem state but no rows in
+    ``agent_tasks`` / ``sessions`` still show up (turn_files and
+    memory_bytes only). Returns an empty list if ``state/agents/``
+    does not exist.
+    """
+    state = profile_dir / "state"
+    agents_root = state / "agents"
+    agents: dict[str, dict[str, Any]] = {}
+
+    # 1) SQLite: aggregate agent_tasks and stream sessions.
+    sessions_db = state / "sessions.db"
+    if sessions_db.is_file():
+        try:
+            import sqlite3
+
+            con = sqlite3.connect(
+                f"file:{sessions_db}?mode=ro",
+                uri=True,
+                timeout=2.0,
+            )
+            try:
+                # Aggregate per-agent task counters.
+                in_flight_marks = ",".join("?" * len(_AGENT_IN_FLIGHT_STATUSES))
+                rows = con.execute(
+                    f"""
+                    SELECT agent_id,
+                           COUNT(*) AS total,
+                           SUM(CASE WHEN status IN ({in_flight_marks}) THEN 1 ELSE 0 END) AS inflight,
+                           SUM(CASE WHEN status IN ('failed','errored','error') THEN 1 ELSE 0 END) AS errs,
+                           MAX(updated_at) AS last_update,
+                           MAX(started_at) AS last_start
+                    FROM agent_tasks
+                    GROUP BY agent_id
+                    """,
+                    tuple(_AGENT_IN_FLIGHT_STATUSES),
+                ).fetchall()
+                for agent_id, total, inflight, errs, last_update, last_start in rows:
+                    if not agent_id:
+                        continue
+                    a = agents.setdefault(
+                        agent_id,
+                        {"agent": agent_id, "sessions": []},
+                    )
+                    a["task_count"] = int(total or 0)
+                    a["in_flight"] = int(inflight or 0)
+                    a["error_count"] = int(errs or 0)
+                    a["last_task_update"] = _TS(last_update)
+                    a["last_task_start"] = _TS(last_start)
+
+                # Most-recent session rows.
+                sess_rows = con.execute(
+                    """
+                    SELECT agent_id, session_key, status, model, model_provider,
+                           started_at, updated_at
+                    FROM sessions
+                    ORDER BY updated_at DESC
+                    """
+                ).fetchall()
+                for agent_id, session_key, status, model, model_provider, started, updated in sess_rows:
+                    if not agent_id:
+                        continue
+                    a = agents.setdefault(
+                        agent_id,
+                        {"agent": agent_id, "sessions": []},
+                    )
+                    a.setdefault("sessions", []).append({
+                        "session_key": session_key,
+                        "status": status,
+                        "model": model,
+                        "model_provider": model_provider,
+                        "started_at": _TS(started),
+                        "updated_at": _TS(updated),
+                    })
+            finally:
+                con.close()
+        except (OSError, sqlite3.Error):
+            # Missing schema, corrupt WAL, or permission denied — the
+            # filesystem-based fields below still come through.
+            pass
+
+    # 2) Filesystem: turn files + memory.db size.
+    if agents_root.is_dir():
+        for agent_dir in sorted(agents_root.iterdir()):
+            if not agent_dir.is_dir():
+                continue
+            aid = agent_dir.name
+            a = agents.setdefault(
+                aid,
+                {"agent": aid, "task_count": 0, "in_flight": 0,
+                 "error_count": 0, "sessions": []},
+            )
+            turns_root = agent_dir / "turns"
+            turn_count = 0
+            latest_mtime: float | None = None
+            if turns_root.is_dir():
+                for md in turns_root.rglob("*.md"):
+                    try:
+                        st = md.stat()
+                    except OSError:
+                        continue
+                    turn_count += 1
+                    if latest_mtime is None or st.st_mtime > latest_mtime:
+                        latest_mtime = st.st_mtime
+            a["turn_files"] = turn_count
+            a["last_turn_mtime"] = (
+                _TS(latest_mtime) if latest_mtime is not None else None
+            )
+            mem = agent_dir / "memory.db"
+            try:
+                a["memory_bytes"] = mem.stat().st_size if mem.is_file() else 0
+            except OSError:
+                a["memory_bytes"] = 0
+
+    return sorted(agents.values(), key=lambda a: a["agent"])
+
+
+def list_agents(
+    config_path: str | None = None,
+) -> dict[str, Any]:
+    """Return the ``gateway agents`` payload for a single profile.
+
+    Reads ``state/agents/`` and ``state/sessions.db`` directly —
+    never starts or stops the daemon, never opens an HTTP/WS
+    connection, never calls the LLM. The profile is resolved from
+    ``--config`` if given, otherwise from the active
+    ``OPENSQUILLA_PROFILE`` / config-port pairing in the usual
+    priority order.
+    """
+    if config_path:
+        prof = Path(config_path).resolve().parent.parent
+    else:
+        # Fall back to default_profiles_root()/<OPENSQUILLA_PROFILE>
+        # — the same lookup `gateway start` uses.
+        from opensquilla.paths import default_profiles_root, default_profile_name
+        prof = default_profiles_root() / default_profile_name()
+    return {
+        "profile": prof.name,
+        "agents": _list_agents(prof),
+    }
+
+
+def status_all(
+    profiles_root: Path | None = None,
+    *,
+    bind: str = "127.0.0.1",
+    health_timeout: float = 5.0,
+    max_workers: int = 8,
+    include_agents: bool = True,
+) -> list["GatewayLifecycleResult"]:
+    """Probe every profile under ``profiles_root`` concurrently.
+
+    Each manager is built against an explicit ``pidfile`` /
+    ``log_path`` so we don't have to flip ``OPENSQUILLA_HOME`` /
+    ``OPENSQUILLA_PROFILE`` env vars across threads (which would
+    race with other readers on Windows). The actual ``status()``
+    probe is read-only — no daemon is started or stopped here.
+    When ``include_agents`` is True (the default), each result's
+    ``details["agents"]`` carries the per-agent diagnostic built
+    by :func:`_list_agents`.
+    """
+    profiles = list_profiles(profiles_root)
+    if not profiles:
+        return []
+
+    def probe(profile: Path) -> "GatewayLifecycleResult":
+        port = _read_port_from_config(profile) or 18791
+        manager = GatewayLifecycleManager(
+            host=bind,
+            port=port,
+            health_timeout=health_timeout,
+        )
+        manager.pidfile = profile / "state" / "gateway.pid"
+        manager.log_path = profile / "logs" / "debug.log"
+        result = manager.status()
+        result.action = "status-all"
+        result.details = {**result.details, "profile": profile.name}
+        if include_agents:
+            result.details["agents"] = _list_agents(profile)
+        return result
+
+    workers = max(1, min(max_workers, len(profiles)))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        return list(executor.map(probe, profiles))

@@ -483,6 +483,13 @@ class GatewayLifecycleManager:
         ]
         if self.config_path:
             argv.extend(["--config", self.config_path])
+        # The active profile is forwarded to the child via env, not argv.
+        # `_spawn_gateway` does `os.environ.copy()` so the child sees
+        # OPENSQUILLA_HOME + OPENSQUILLA_PROFILE from this process.
+        # We deliberately do NOT pass --profile on the CLI: `gateway run`
+        # is served by the standalone `gateway_app` Typer instance and does
+        # not declare the --profile option. Plumbing it through env
+        # instead is both simpler and correct.
         return argv
 
     def _spawn_gateway(self, argv: list[str]) -> subprocess.Popen[Any]:

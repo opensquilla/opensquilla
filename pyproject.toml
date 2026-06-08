@@ -54,6 +54,7 @@ dependencies = [
     "dingtalk-stream>=0.24.3,<0.25",
     "qq-botpy>=1.2.1,<1.3",
     "cryptography>=42",
+    "sqlalchemy>=2.0",
 ]
 
 [project.optional-dependencies]

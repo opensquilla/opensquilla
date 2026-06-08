@@ -309,6 +309,48 @@ class _UnavailableV4Strategy:
         )
 
 
+def _capture_flags(config: object) -> tuple[bool, bool]:
+    """Return ``(emit_train_features, emit_raw_bge)`` from self-learning config."""
+
+    sl = getattr(config, "self_learning", None)
+    if sl is None:
+        return (False, False)
+    capture = bool(getattr(sl, "enabled", False)) and bool(getattr(sl, "capture_enabled", True))
+    return (capture, bool(getattr(sl, "enable_mlp", False)))
+
+
+def _active_bundle_dir(config: object) -> str | None:
+    """Resolve a promoted self-learning bundle dir, or None to use the base.
+
+    Only consulted when self-learning is enabled, so the default install pays no
+    extra cost. Falls back to baseline on any error.
+    """
+
+    sl = getattr(config, "self_learning", None)
+    if sl is None or not getattr(sl, "enabled", False):
+        return None
+    try:
+        from opensquilla.squilla_router.self_learning.promotion import resolve_active_bundle_dir
+
+        resolved = resolve_active_bundle_dir()
+        return str(resolved) if resolved is not None else None
+    except Exception:  # noqa: BLE001 — never let pointer resolution break routing
+        return None
+
+
+def invalidate_strategy_cache() -> None:
+    """Drop the cached strategy so the next turn reloads the active bundle.
+
+    Called after a promotion/rollback swaps the active pointer in-process.
+    """
+
+    global _strategy, _strategy_key  # noqa: PLW0603
+    with _strategy_lock:
+        _strategy = None
+        _strategy_key = None
+        _history_store.clear()
+
+
 def _strategy_cache_key(config: object) -> tuple:
     strategy_name = _strategy_name(config)
     confidence = getattr(config, "confidence_threshold", 0.5)
@@ -318,6 +360,8 @@ def _strategy_cache_key(config: object) -> tuple:
         getattr(config, "v4_use_aux_head", None),
         getattr(config, "require_router_runtime", False),
         confidence,
+        _capture_flags(config),
+        _active_bundle_dir(config),
     )
 
 
@@ -356,13 +400,17 @@ def _get_strategy(config: object) -> RouterStrategy:
         from opensquilla.squilla_router.v4_phase3 import V4Phase3Strategy
 
         try:
+            emit_train_features, emit_raw_bge = _capture_flags(config)
+            bundle_dir = _active_bundle_dir(config) or getattr(config, "v4_bundle_dir", None)
             strategy = cast(
                 RouterStrategy,
                 V4Phase3Strategy(
-                    bundle_dir=getattr(config, "v4_bundle_dir", None),
+                    bundle_dir=bundle_dir,
                     confidence_threshold=getattr(config, "confidence_threshold", 0.5),
                     require_router_runtime=getattr(config, "require_router_runtime", False),
                     use_aux_head=getattr(config, "v4_use_aux_head", None),
+                    emit_train_features=emit_train_features,
+                    emit_raw_bge=emit_raw_bge,
                 ),
             )
         except Exception as exc:  # noqa: BLE001
@@ -1069,6 +1117,12 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
         ctx.metadata["routing_extra"] = extra
         thinking_mode = extra.get("thinking_mode")
         prompt_policy = extra.get("prompt_policy")
+        # Move the (large) self-learning feature vectors out of routing_extra so
+        # they never reach decision logs or accumulated routing history.
+        train_features = extra.pop("_train_features", None)
+        if train_features is not None:
+            ctx.metadata["routing_train_features"] = train_features
+            ctx.metadata["routing_train_turn_index"] = len(routing_history or [])
 
     if tier_name is None or tier_name not in tiers:
         default = normalize_text_tier(getattr(router_cfg, "default_tier", DEFAULT_TEXT_TIER))

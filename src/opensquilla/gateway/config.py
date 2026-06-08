@@ -897,6 +897,49 @@ def _router_tier_profile_defaults(profile: str | None) -> dict:
     return {name: dict(value) for name, value in profiles[normalized].items()}
 
 
+class RouterSelfLearningConfig(BaseModel):
+    """Squilla Router self-learning loop (capture + offline retrain).
+
+    Opt-in. ``enabled`` is the master switch; capture and training each have
+    their own sub-toggle so an operator can collect data without yet training.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False  # master switch; off => zero overhead on the hot path
+    capture_enabled: bool = True  # gates inference-time feature emission
+    enable_mlp: bool = False  # also store raw_bge_1536 for MLP fine-tune (phase 2)
+    store_audit_summary: bool = False  # opt-in redacted summary, audit only
+    # Trigger gating (evaluated cheaply on each post-dream hook).
+    train_min_samples: int = Field(default=200, ge=1)
+    idle_hours: float = Field(default=2.0, ge=0.0)
+    cooldown_hours: float = Field(default=72.0, ge=0.0)
+    retention_days: int = Field(default=30, ge=1)
+    # Training (LightGBM incremental) — consumed by the offline trainer/worker.
+    num_boost_round: int = Field(default=60, ge=1)
+    train_timeout_seconds: float = Field(default=900.0, gt=0.0)
+    # Promotion / rollback.
+    auto_rollback: bool = True
+    golden_eval_path: str | None = None
+    cost_tolerance_pct: float = Field(default=5.0, ge=0.0)
+    max_critical_under_routing: float = Field(default=0.30, ge=0.0, le=1.0)
+    min_golden_agreement: float = Field(default=0.5, ge=0.0, le=1.0)
+    # Online rollback monitor (M4).
+    min_monitor_samples: int = Field(default=30, ge=1)
+    complaint_regression_delta: float = Field(default=0.05, ge=0.0, le=1.0)
+    # Rolling holdout (per-agent progress metric).
+    holdout_pct: float = Field(default=0.10, ge=0.0, le=0.5)
+    holdout_repeats: int = Field(default=5, ge=1)
+    holdout_min_size: int = Field(default=30, ge=1)
+    holdout_granularity: Literal["session", "alignment_group"] = "session"
+
+
+# Resolve this model's own forward refs (Literal) before it is nested below, so
+# rebuilding the parent does not leave it "not fully defined" under the
+# unregistered-module exec path used by tests. See the rebuild note below.
+RouterSelfLearningConfig.model_rebuild()
+
+
 class SquillaRouterConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="OPENSQUILLA_SQUILLA_ROUTER_",
@@ -922,6 +965,7 @@ class SquillaRouterConfig(BaseSettings):
     require_router_runtime: bool = True
     estimated_output_savings_pct: float = 0.03
     upgrade_to_c3_compaction_enabled: bool = True
+    self_learning: RouterSelfLearningConfig = Field(default_factory=RouterSelfLearningConfig)
 
     @model_validator(mode="before")
     @classmethod
@@ -960,6 +1004,14 @@ class SquillaRouterConfig(BaseSettings):
         next_values["tier_profile"] = normalized
         next_values["tiers"] = merged
         return next_values
+
+
+# Eagerly resolve the ``self_learning: RouterSelfLearningConfig`` forward ref
+# (``from __future__ import annotations`` makes it a string). Without this the
+# model stays "not fully defined" when this file is exec'd as an unregistered
+# module (e.g. tests load it via spec_from_file_location), since pydantic falls
+# back to ``sys.modules[__module__]`` which is absent in that scenario.
+SquillaRouterConfig.model_rebuild()
 
 
 class AgentTokenSavingConfig(BaseSettings):

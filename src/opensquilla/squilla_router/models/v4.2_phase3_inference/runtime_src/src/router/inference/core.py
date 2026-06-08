@@ -65,6 +65,17 @@ class InferenceCore:
         outputs = self._run_heads(bundle)
         fused = self._fuse(outputs)
         decision = self._postprocess(fused, outputs.p_aux_lgbm, request)
+        intermediates = {
+            "bge_channels_used": bundle.bge_channels_used,
+            "asst_signal_present": bundle.asst_signal_present,
+        }
+        # Self-learning capture (opt-in): surface the feature vectors the model
+        # actually consumed so an offline trainer reuses them verbatim (no
+        # re-extraction, no train/serve skew). Gated so default runs pay nothing.
+        if self.config.get("emit_train_features"):
+            intermediates["features_390"] = bundle.features_390
+            if self.config.get("emit_raw_bge"):
+                intermediates["raw_bge_1536"] = bundle.raw_bge_1536
         return InferenceResult(
             decision=decision,
             probabilities={
@@ -72,10 +83,7 @@ class InferenceCore:
                 for idx, route_class in enumerate(ROUTE_CLASSES)
             },
             aux_decision_probs=self._aux_probs_dict(outputs.p_aux_lgbm),
-            intermediates={
-                "bge_channels_used": bundle.bge_channels_used,
-                "asst_signal_present": bundle.asst_signal_present,
-            },
+            intermediates=intermediates,
         )
 
     def _build_features(self, request: InferenceRequest):

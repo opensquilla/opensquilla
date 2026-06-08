@@ -1513,6 +1513,15 @@ const SetupView = (() => {
       if (input.type === 'checkbox') out[name] = input.checked;
       else if (input.value !== '' || input.dataset.secret !== 'true') out[name] = input.value;
     });
+    // api_key and api_key_env are mutually exclusive on the server side
+    // (configure_provider raises "configure either api_key or api_key_env,
+    // not both"). The form pre-fills api_key_env with the spec's envKey, so a
+    // user who pastes a real key into api_key would otherwise trip that
+    // guard. Prefer a freshly-pasted api_key; otherwise fall back to
+    // api_key_env.
+    if (scope === 'provider' && out.apiKey && out.apiKeyEnv) {
+      delete out.apiKeyEnv;
+    }
     return out;
   }
 

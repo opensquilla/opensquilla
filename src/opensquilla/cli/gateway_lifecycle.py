@@ -367,8 +367,9 @@ class GatewayLifecycleManager:
             managed=False,
             code=None if ok else UNMANAGED_GATEWAY_RUNNING,
             message=(
-                "A healthy gateway is already running on the requested host/port, "
-                "but OpenSquilla does not own it."
+                f"A healthy gateway is already running at {_where(self.host, self.port)}, "
+                "but OpenSquilla does not own it. "
+                "Use that URL to talk to the existing gateway, or stop it first."
             ),
             exit_code_value=3,
         )
@@ -381,9 +382,11 @@ class GatewayLifecycleManager:
         pid: int | None,
         record: dict[str, Any],
     ) -> GatewayLifecycleResult:
+        recorded_host = record.get("host") or record.get("recordedHost")
+        recorded_port = record.get("port") or record.get("recordedPort")
         details = {
-            "recordedHost": record.get("host") or record.get("recordedHost"),
-            "recordedPort": record.get("port") or record.get("recordedPort"),
+            "recordedHost": recorded_host,
+            "recordedPort": recorded_port,
             "requestedHost": self.host,
             "requestedPort": self.port,
         }
@@ -398,8 +401,10 @@ class GatewayLifecycleManager:
             managed=True,
             code=None if ok else MANAGED_GATEWAY_TARGET_MISMATCH,
             message=(
-                "A managed gateway is recorded for a different host/port. "
-                "Refusing to mutate it from this target."
+                f"A managed gateway is recorded at {_where(recorded_host, recorded_port)}, "
+                f"but this target is {_where(self.host, self.port)}. "
+                "Refusing to mutate the recorded gateway from this target. "
+                "Use the recorded target, or stop and restart the gateway on the new one."
             ),
             details=details,
             exit_code_value=3,
@@ -483,6 +488,13 @@ class GatewayLifecycleManager:
         ]
         if self.config_path:
             argv.extend(["--config", self.config_path])
+        # The active profile is forwarded to the child via env, not argv.
+        # `_spawn_gateway` does `os.environ.copy()` so the child sees
+        # OPENSQUILLA_HOME + OPENSQUILLA_PROFILE from this process.
+        # We deliberately do NOT pass --profile on the CLI: `gateway run`
+        # is served by the standalone `gateway_app` Typer instance and does
+        # not declare the --profile option. Plumbing it through env
+        # instead is both simpler and correct.
         return argv
 
     def _spawn_gateway(self, argv: list[str]) -> subprocess.Popen[Any]:
@@ -605,6 +617,19 @@ def _health_probe_host(host: str) -> str:
 
 def _http_url(host: str, port: int) -> str:
     return f"http://{_format_url_host(host)}:{port}"
+
+
+def _where(host: str | None, port: int | None) -> str:
+    """One-line "url (host=X, port=Y)" used in human error messages.
+
+    Tolerates None inputs (old pidfiles that did not record host/port)
+    by falling back to "<unknown>". Module-level (not a method on
+    GatewayLifecycleManager) so it can format arbitrary host/port pairs
+    such as the recorded target in target_mismatch.
+    """
+    if host is None or port is None:
+        return f"<unknown> (host={host}, port={port})"
+    return f"{_http_url(host, port)} (host={host}, port={port})"
 
 
 def remote_gateway_status(gateway_url: str, *, timeout: float = 0.5) -> GatewayLifecycleResult:

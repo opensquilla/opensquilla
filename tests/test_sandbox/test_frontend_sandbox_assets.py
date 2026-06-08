@@ -62,12 +62,12 @@ def test_sandbox_assets_define_icon_and_control_sections() -> None:
     assert ".sandbox-stage" in sandbox_css
 
 
-def test_frontend_defaults_to_full_host_access_when_no_session_context_exists() -> None:
+def test_frontend_defaults_to_trusted_sandbox_when_no_session_context_exists() -> None:
     chat_js = _read(CHAT_JS)
     sandbox_js = _read(SANDBOX_JS)
 
-    assert "const _RUN_MODE_DEFAULT = 'full';" in chat_js
-    assert "status.run_mode || 'full'" in sandbox_js
+    assert "const _RUN_MODE_DEFAULT = 'trusted';" in chat_js
+    assert "status.run_mode || 'trusted'" in sandbox_js
 
 
 def test_run_mode_tooltips_can_escape_execution_panel() -> None:

@@ -42,7 +42,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
-from opensquilla.sandbox.backend import Backend, NoopBackend, select_backend
+from opensquilla.sandbox.backend import Backend, NoopBackend, UnavailableBackend, select_backend
 from opensquilla.sandbox.capability_profile import capability_profile_for_command
 from opensquilla.sandbox.config import EffectiveMode, SandboxSettings
 from opensquilla.sandbox.domain_validation import validate_domain_pattern
@@ -197,7 +197,17 @@ def configure_runtime(
     if not effective.sandbox_enabled:
         backend = NoopBackend()
     else:
-        backend = select_backend(settings)
+        try:
+            backend = select_backend(settings)
+        except SandboxBackendError as exc:
+            if settings.backend != "auto":
+                raise
+            backend = UnavailableBackend(str(exc))
+            log.warning(
+                "sandbox.backend_unavailable: backend=auto reason=%s; "
+                "runtime will fail closed on sandboxed subprocess execution",
+                exc,
+            )
         if backend.name == "noop" and settings.backend != "noop":
             raise SandboxBackendError(
                 "sandbox=true requires a real backend; refusing implicit noop fallback"

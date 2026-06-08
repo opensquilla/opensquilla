@@ -217,6 +217,10 @@ class SandboxProxyServer:
     ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
         try:
             connect_host, connect_port = self._resolver(request.host, request.port)
+            connect_host, connect_port = _validate_resolver_destination(
+                connect_host,
+                connect_port,
+            )
         except Exception as exc:
             raise _ProxyDeniedError("unsafe_upstream_resolution") from exc
         upstream_reader, upstream_writer = await asyncio.open_connection(
@@ -622,6 +626,29 @@ def _resolve_validated_upstream(host: str, port: int) -> tuple[str, int]:
     if first_destination is None:
         raise ValueError(f"Cannot resolve hostname: {host}")
     return first_destination
+
+
+def _validate_resolver_destination(host: str, port: int) -> tuple[str, int]:
+    try:
+        normalized_port = int(port)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Invalid resolved port") from exc
+    if not 0 <= normalized_port <= 65535:
+        raise ValueError("Invalid resolved port")
+
+    raw_host = str(host or "").strip()
+    if not raw_host:
+        raise ValueError("Empty resolved host")
+
+    try:
+        addr = ipaddress.ip_address(raw_host.strip("[]"))
+    except ValueError:
+        return _resolve_validated_upstream(raw_host, normalized_port)
+
+    reason = _unsafe_resolved_address_reason(addr, _trusted_fake_ip_networks())
+    if reason is not None:
+        raise ValueError(f"Blocked: resolver returned {addr} ({reason})")
+    return str(addr), normalized_port
 
 
 def _trusted_fake_ip_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:

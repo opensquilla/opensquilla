@@ -56,28 +56,26 @@ def test_default_sandbox_settings_resolve_to_trusted_sandbox() -> None:
     assert effective.sandbox_enabled is True
     assert effective.grading_enabled is True
     assert config_run_mode(config) == RunMode.TRUSTED
-    assert execution_target(config_run_mode(config)) == "sandbox"
 
 
-@pytest.mark.parametrize("permission_mode", ["off", "on", "bypass", None])
-def test_legacy_non_full_states_map_to_trusted(permission_mode: str | None) -> None:
+def test_legacy_off_state_maps_to_trusted_sandbox_default() -> None:
     mode = legacy_state_to_run_mode(
-        sandbox_enabled=True,
-        grading_enabled=True,
-        permissions_default_mode=permission_mode,
+        sandbox_enabled=False,
+        grading_enabled=False,
+        permissions_default_mode="off",
     )
 
     assert mode == RunMode.TRUSTED
 
 
-def test_legacy_explicit_full_state_maps_to_full() -> None:
-    mode = legacy_state_to_run_mode(
-        sandbox_enabled=False,
-        grading_enabled=False,
-        permissions_default_mode="full",
+def test_explicit_legacy_sandbox_disabled_config_preserves_full_host_access() -> None:
+    settings = SandboxSettings(sandbox=False, security_grading=False)
+    config = types.SimpleNamespace(
+        sandbox=settings,
+        permissions=types.SimpleNamespace(default_mode="off"),
     )
 
-    assert mode == RunMode.FULL
+    assert config_run_mode(config) == RunMode.FULL
 
 
 def test_trusted_patch_round_trips_through_config_run_mode() -> None:

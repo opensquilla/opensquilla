@@ -237,6 +237,102 @@ async def test_rpc_run_context_get_includes_bundles_and_temporary_grants() -> No
 
 
 @pytest.mark.asyncio
+async def test_exec_approval_resolve_rejects_non_owner_sandbox_grant_approval() -> None:
+    from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
+    from opensquilla.gateway.rpc import RpcHandlerError
+    from opensquilla.gateway.rpc_approvals import _handle_exec_approval_resolve
+    from opensquilla.sandbox.escalation import build_network_approval_params
+    from opensquilla.sandbox.network_guard import NetworkDecision
+    from opensquilla.sandbox.run_context import get_run_context
+
+    reset_approval_queue()
+    manager = _SessionManager()
+    params = build_network_approval_params(
+        NetworkDecision(
+            status="ask",
+            normalized_host="example.com",
+            reason="unknown_domain",
+            source=None,
+        ),
+        session_key=manager.node.session_key,
+        workspace="/tmp/ws",
+        fingerprint="fp123",
+    )
+    assert params is not None
+    queue = get_approval_queue()
+    approval_id = queue.request(namespace="exec", params=params)
+
+    with pytest.raises(RpcHandlerError, match="requires owner principal"):
+        await _handle_exec_approval_resolve(
+            {"id": approval_id, "approved": True, "choice": "allow_chat"},
+            _ctx(
+                manager,
+                is_owner=False,
+                scopes=frozenset(["operator.approvals"]),
+            ),
+        )
+
+    pending = queue.get(approval_id)
+    assert pending.resolved is False
+    context = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=_ctx(manager).config,
+        workspace="/tmp/ws",
+    )
+    assert context.domains == ()
+
+    reset_approval_queue()
+
+
+@pytest.mark.asyncio
+async def test_exec_approval_resolve_allows_non_owner_sandbox_grant_denial() -> None:
+    from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
+    from opensquilla.gateway.rpc_approvals import _handle_exec_approval_resolve
+    from opensquilla.sandbox.escalation import build_network_approval_params
+    from opensquilla.sandbox.network_guard import NetworkDecision
+    from opensquilla.sandbox.run_context import get_run_context
+
+    reset_approval_queue()
+    manager = _SessionManager()
+    params = build_network_approval_params(
+        NetworkDecision(
+            status="ask",
+            normalized_host="example.com",
+            reason="unknown_domain",
+            source=None,
+        ),
+        session_key=manager.node.session_key,
+        workspace="/tmp/ws",
+        fingerprint="fp123",
+    )
+    assert params is not None
+    queue = get_approval_queue()
+    approval_id = queue.request(namespace="exec", params=params)
+
+    result = await _handle_exec_approval_resolve(
+        {"id": approval_id, "approved": False, "choice": "deny"},
+        _ctx(
+            manager,
+            is_owner=False,
+            scopes=frozenset(["operator.approvals"]),
+        ),
+    )
+
+    assert result["resolved"] is True
+    assert result["approved"] is False
+    context = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=_ctx(manager).config,
+        workspace="/tmp/ws",
+    )
+    assert context.domains == ()
+
+    reset_approval_queue()
+
+
+@pytest.mark.asyncio
 async def test_exec_approval_resolve_leaves_sandbox_approval_pending_when_mutation_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

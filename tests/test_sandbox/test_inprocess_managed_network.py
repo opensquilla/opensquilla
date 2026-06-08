@@ -815,11 +815,30 @@ async def test_trusted_inprocess_auto_trust_persists_after_safe_proxy_upstream(
     upstream_socket = next(iter(upstream.sockets or ()), None)
     assert upstream_socket is not None
     upstream_host, upstream_port = upstream_socket.getsockname()[:2]
+    public_upstream_host = "93.184.216.34"
+    real_open_connection = asyncio.open_connection
+
+    async def fake_open_connection(
+        host: str,
+        port: int,
+        *args: object,
+        **kwargs: object,
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        if str(host) == public_upstream_host and int(port) == int(upstream_port):
+            return await real_open_connection(
+                str(upstream_host),
+                int(upstream_port),
+                *args,
+                **kwargs,
+            )
+        return await real_open_connection(host, port, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "open_connection", fake_open_connection)
 
     def proxy_factory(decide: object, **kwargs: object) -> RealSandboxProxyServer:
         return RealSandboxProxyServer(
             decide,
-            resolver=lambda host, port: (str(upstream_host), int(upstream_port)),
+            resolver=lambda host, port: (public_upstream_host, int(upstream_port)),
             **kwargs,
         )
 

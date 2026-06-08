@@ -19,6 +19,34 @@ def _allow_decision(host: str) -> NetworkDecision:
     )
 
 
+def _route_public_destination_to_upstream(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    public_host: str,
+    public_port: int,
+    upstream_host: str,
+    upstream_port: int,
+) -> None:
+    real_open_connection = asyncio.open_connection
+
+    async def fake_open_connection(
+        host: str,
+        port: int,
+        *args: object,
+        **kwargs: object,
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        if str(host) == public_host and int(port) == public_port:
+            return await real_open_connection(
+                upstream_host,
+                upstream_port,
+                *args,
+                **kwargs,
+            )
+        return await real_open_connection(host, port, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "open_connection", fake_open_connection)
+
+
 async def _send_proxy_request(server: SandboxProxyServer, request: bytes) -> bytes:
     reader, writer = await asyncio.open_connection(server.host, server.port)
     try:
@@ -76,7 +104,9 @@ async def _send_proxy_request_until_eof(
         await writer.wait_closed()
 
 
-async def test_proxy_forwards_allowed_absolute_http_request_to_upstream() -> None:
+async def test_proxy_forwards_allowed_absolute_http_request_to_upstream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     seen_hosts: list[str] = []
     resolver_calls: list[tuple[str, int]] = []
     upstream_requests: list[bytes] = []
@@ -108,6 +138,14 @@ async def test_proxy_forwards_allowed_absolute_http_request_to_upstream() -> Non
     upstream_socket = next(iter(upstream.sockets or ()), None)
     assert upstream_socket is not None
     upstream_host, upstream_port = upstream_socket.getsockname()[:2]
+    public_upstream_host = "93.184.216.34"
+    _route_public_destination_to_upstream(
+        monkeypatch,
+        public_host=public_upstream_host,
+        public_port=int(upstream_port),
+        upstream_host=str(upstream_host),
+        upstream_port=int(upstream_port),
+    )
 
     def decide(host: str) -> NetworkDecision:
         seen_hosts.append(host)
@@ -115,7 +153,7 @@ async def test_proxy_forwards_allowed_absolute_http_request_to_upstream() -> Non
 
     def resolver(host: str, port: int) -> tuple[str, int]:
         resolver_calls.append((host, port))
-        return str(upstream_host), int(upstream_port)
+        return public_upstream_host, int(upstream_port)
 
     server = SandboxProxyServer(
         decide,
@@ -182,7 +220,9 @@ async def test_proxy_rejects_mismatched_host_for_absolute_http_request() -> None
     assert resolver_calls == []
 
 
-async def test_proxy_forwards_absolute_http_without_host_using_approved_host() -> None:
+async def test_proxy_forwards_absolute_http_without_host_using_approved_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     upstream_requests: list[bytes] = []
 
     async def handle_upstream(
@@ -204,10 +244,18 @@ async def test_proxy_forwards_absolute_http_without_host_using_approved_host() -
     upstream_socket = next(iter(upstream.sockets or ()), None)
     assert upstream_socket is not None
     upstream_host, upstream_port = upstream_socket.getsockname()[:2]
+    public_upstream_host = "93.184.216.34"
+    _route_public_destination_to_upstream(
+        monkeypatch,
+        public_host=public_upstream_host,
+        public_port=int(upstream_port),
+        upstream_host=str(upstream_host),
+        upstream_port=int(upstream_port),
+    )
 
     server = SandboxProxyServer(
         _allow_decision,
-        resolver=lambda host, port: (str(upstream_host), int(upstream_port)),
+        resolver=lambda host, port: (public_upstream_host, int(upstream_port)),
     )
     await server.start()
     try:
@@ -230,7 +278,9 @@ async def test_proxy_forwards_absolute_http_without_host_using_approved_host() -
     ]
 
 
-async def test_proxy_tunnels_allowed_connect_after_validated_upstream() -> None:
+async def test_proxy_tunnels_allowed_connect_after_validated_upstream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     seen_hosts: list[str] = []
     resolver_calls: list[tuple[str, int]] = []
     upstream_payloads: list[bytes] = []
@@ -250,6 +300,14 @@ async def test_proxy_tunnels_allowed_connect_after_validated_upstream() -> None:
     upstream_socket = next(iter(upstream.sockets or ()), None)
     assert upstream_socket is not None
     upstream_host, upstream_port = upstream_socket.getsockname()[:2]
+    public_upstream_host = "93.184.216.34"
+    _route_public_destination_to_upstream(
+        monkeypatch,
+        public_host=public_upstream_host,
+        public_port=int(upstream_port),
+        upstream_host=str(upstream_host),
+        upstream_port=int(upstream_port),
+    )
 
     def decide(host: str) -> NetworkDecision:
         seen_hosts.append(host)
@@ -257,7 +315,7 @@ async def test_proxy_tunnels_allowed_connect_after_validated_upstream() -> None:
 
     def resolver(host: str, port: int) -> tuple[str, int]:
         resolver_calls.append((host, port))
-        return str(upstream_host), int(upstream_port)
+        return public_upstream_host, int(upstream_port)
 
     async def on_upstream_opened(decision: NetworkDecision) -> None:
         upstream_opened.append(decision)
@@ -316,6 +374,72 @@ async def test_proxy_rejects_allowed_connect_when_resolver_denies_upstream() -> 
     assert response.startswith(b"HTTP/1.1 403")
     assert seen_hosts == ["allowed.test"]
     assert resolver_calls == [("allowed.test", 443)]
+
+
+@pytest.mark.parametrize(
+    "unsafe_destination",
+    [
+        "127.0.0.1",
+        "localhost",
+        "10.0.0.7",
+        "169.254.169.254",
+        "240.0.0.1",
+        "::1",
+    ],
+)
+async def test_proxy_rejects_allowed_http_when_custom_resolver_returns_unsafe_address(
+    monkeypatch: pytest.MonkeyPatch,
+    unsafe_destination: str,
+) -> None:
+    resolver_calls: list[tuple[str, int]] = []
+    upstream_requests: list[bytes] = []
+
+    async def handle_upstream(
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        upstream_requests.append(await reader.readuntil(b"\r\n\r\n"))
+        writer.write(
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Length: 0\r\n"
+            b"Connection: close\r\n"
+            b"\r\n"
+        )
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    upstream = await asyncio.start_server(handle_upstream, "127.0.0.1", 0)
+    upstream_socket = next(iter(upstream.sockets or ()), None)
+    assert upstream_socket is not None
+    upstream_host, upstream_port = upstream_socket.getsockname()[:2]
+    _route_public_destination_to_upstream(
+        monkeypatch,
+        public_host=unsafe_destination,
+        public_port=int(upstream_port),
+        upstream_host=str(upstream_host),
+        upstream_port=int(upstream_port),
+    )
+
+    def resolver(host: str, port: int) -> tuple[str, int]:
+        resolver_calls.append((host, port))
+        return unsafe_destination, int(upstream_port)
+
+    server = SandboxProxyServer(_allow_decision, resolver=resolver)
+    await server.start()
+    try:
+        response = await _send_proxy_request(
+            server,
+            b"GET http://Allowed.test/path HTTP/1.1\r\n\r\n",
+        )
+    finally:
+        await server.stop()
+        upstream.close()
+        await upstream.wait_closed()
+
+    assert response.startswith(b"HTTP/1.1 403")
+    assert resolver_calls == [("allowed.test", 80)]
+    assert upstream_requests == []
 
 
 async def test_proxy_rejects_oversized_content_length_without_reading_body() -> None:
@@ -444,7 +568,9 @@ async def test_proxy_returns_403_for_connect_block() -> None:
     assert seen_hosts == ["169.254.169.254"]
 
 
-async def test_proxy_forwards_allowed_origin_form_http_request_to_upstream() -> None:
+async def test_proxy_forwards_allowed_origin_form_http_request_to_upstream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     seen_hosts: list[str] = []
     upstream_requests: list[bytes] = []
 
@@ -467,6 +593,14 @@ async def test_proxy_forwards_allowed_origin_form_http_request_to_upstream() -> 
     upstream_socket = next(iter(upstream.sockets or ()), None)
     assert upstream_socket is not None
     upstream_host, upstream_port = upstream_socket.getsockname()[:2]
+    public_upstream_host = "93.184.216.34"
+    _route_public_destination_to_upstream(
+        monkeypatch,
+        public_host=public_upstream_host,
+        public_port=int(upstream_port),
+        upstream_host=str(upstream_host),
+        upstream_port=int(upstream_port),
+    )
 
     def decide(host: str) -> NetworkDecision:
         seen_hosts.append(host)
@@ -479,7 +613,7 @@ async def test_proxy_forwards_allowed_origin_form_http_request_to_upstream() -> 
 
     server = SandboxProxyServer(
         decide,
-        resolver=lambda host, port: (str(upstream_host), int(upstream_port)),
+        resolver=lambda host, port: (public_upstream_host, int(upstream_port)),
     )
     await server.start()
     try:
@@ -502,7 +636,9 @@ async def test_proxy_forwards_allowed_origin_form_http_request_to_upstream() -> 
     ]
 
 
-async def test_proxy_times_out_upstream_response_that_never_arrives() -> None:
+async def test_proxy_times_out_upstream_response_that_never_arrives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     async def handle_upstream(
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
@@ -517,10 +653,18 @@ async def test_proxy_times_out_upstream_response_that_never_arrives() -> None:
     upstream_socket = next(iter(upstream.sockets or ()), None)
     assert upstream_socket is not None
     upstream_host, upstream_port = upstream_socket.getsockname()[:2]
+    public_upstream_host = "93.184.216.34"
+    _route_public_destination_to_upstream(
+        monkeypatch,
+        public_host=public_upstream_host,
+        public_port=int(upstream_port),
+        upstream_host=str(upstream_host),
+        upstream_port=int(upstream_port),
+    )
 
     server = SandboxProxyServer(
         _allow_decision,
-        resolver=lambda host, port: (str(upstream_host), int(upstream_port)),
+        resolver=lambda host, port: (public_upstream_host, int(upstream_port)),
         response_read_timeout_seconds=0.05,
     )
     await server.start()
@@ -538,7 +682,9 @@ async def test_proxy_times_out_upstream_response_that_never_arrives() -> None:
     assert response.startswith(b"HTTP/1.1 502")
 
 
-async def test_proxy_caps_oversized_upstream_response() -> None:
+async def test_proxy_caps_oversized_upstream_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     async def handle_upstream(
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
@@ -561,10 +707,18 @@ async def test_proxy_caps_oversized_upstream_response() -> None:
     upstream_socket = next(iter(upstream.sockets or ()), None)
     assert upstream_socket is not None
     upstream_host, upstream_port = upstream_socket.getsockname()[:2]
+    public_upstream_host = "93.184.216.34"
+    _route_public_destination_to_upstream(
+        monkeypatch,
+        public_host=public_upstream_host,
+        public_port=int(upstream_port),
+        upstream_host=str(upstream_host),
+        upstream_port=int(upstream_port),
+    )
 
     server = SandboxProxyServer(
         _allow_decision,
-        resolver=lambda host, port: (str(upstream_host), int(upstream_port)),
+        resolver=lambda host, port: (public_upstream_host, int(upstream_port)),
         max_response_bytes=96,
     )
     await server.start()

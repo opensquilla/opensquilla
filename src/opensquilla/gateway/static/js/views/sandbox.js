@@ -879,8 +879,8 @@ const SandboxView = (() => {
   function _normalizeRunContext(status, runContext) {
     return {
       ...runContext,
-      runMode: runContext.runMode || status.run_mode || 'full',
-      runModeLabel: runContext.runModeLabel || status.run_mode_label || _runModeLabel(status.run_mode || 'full'),
+      runMode: runContext.runMode || status.run_mode || 'trusted',
+      runModeLabel: runContext.runModeLabel || status.run_mode_label || _runModeLabel(status.run_mode || 'trusted'),
       mounts: Array.isArray(runContext.mounts) ? runContext.mounts : [],
       domains: Array.isArray(runContext.domains) ? runContext.domains : [],
       bundles: Array.isArray(runContext.bundles) ? runContext.bundles : [],

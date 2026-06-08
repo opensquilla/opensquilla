@@ -29,6 +29,7 @@ from opensquilla.sandbox.backend.base import Backend
 from opensquilla.sandbox.backend.bubblewrap import BubblewrapBackend
 from opensquilla.sandbox.backend.noop import NoopBackend
 from opensquilla.sandbox.backend.seatbelt import SeatbeltBackend
+from opensquilla.sandbox.backend.unavailable import UnavailableBackend
 from opensquilla.sandbox.backend.windows_appcontainer import WindowsAppContainerBackend
 from opensquilla.sandbox.backend.windows_restricted_token import WindowsRestrictedTokenBackend
 from opensquilla.sandbox.config import SandboxSettings
@@ -126,6 +127,7 @@ __all__ = [
     "BubblewrapBackend",
     "NoopBackend",
     "SeatbeltBackend",
+    "UnavailableBackend",
     "WindowsAppContainerBackend",
     "WindowsRestrictedTokenBackend",
     "select_backend",

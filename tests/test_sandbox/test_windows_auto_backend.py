@@ -77,7 +77,7 @@ def test_windows_auto_backend_falls_back_to_restricted_token_when_appcontainer_u
     assert runtime.backend.name == "windows_restricted_token"
 
 
-def test_windows_auto_backend_fails_closed_when_unavailable(
+def test_windows_auto_backend_configures_unavailable_runtime_when_unavailable(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -91,12 +91,14 @@ def test_windows_auto_backend_fails_closed_when_unavailable(
     monkeypatch.setattr(WindowsAppContainerBackend, "available", lambda self: False)
     monkeypatch.setattr(WindowsRestrictedTokenBackend, "available", lambda self: False)
 
-    with pytest.raises(SandboxBackendError, match="no real sandbox backend"):
-        configure_runtime(
-            SandboxSettings(sandbox=True, security_grading=True, backend="auto"),
-            approval_queue=_FakeApprovalQueue(),
-            workspace=tmp_path,
-        )
+    runtime = configure_runtime(
+        SandboxSettings(sandbox=True, security_grading=True, backend="auto"),
+        approval_queue=_FakeApprovalQueue(),
+        workspace=tmp_path,
+    )
+
+    assert runtime.effective.sandbox_enabled is True
+    assert runtime.backend.name == "unavailable"
 
 
 def test_macos_auto_backend_selects_seatbelt_when_available(
@@ -146,7 +148,7 @@ def test_explicit_macos_seatbelt_backend_still_fails_closed(
         )
 
 
-def test_linux_auto_backend_without_real_backend_still_fails_closed(
+def test_linux_auto_backend_without_real_backend_configures_unavailable_runtime(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -159,9 +161,11 @@ def test_linux_auto_backend_without_real_backend_still_fails_closed(
         lambda self: False,
     )
 
-    with pytest.raises(SandboxBackendError, match="no real sandbox backend"):
-        configure_runtime(
-            SandboxSettings(sandbox=True, security_grading=True, backend="auto"),
-            approval_queue=_FakeApprovalQueue(),
-            workspace=tmp_path,
-        )
+    runtime = configure_runtime(
+        SandboxSettings(sandbox=True, security_grading=True, backend="auto"),
+        approval_queue=_FakeApprovalQueue(),
+        workspace=tmp_path,
+    )
+
+    assert runtime.effective.sandbox_enabled is True
+    assert runtime.backend.name == "unavailable"

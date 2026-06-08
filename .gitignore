@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+outside-sandbox-smoke.txt
 /dist/
 /build/
 .venv/

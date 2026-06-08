@@ -16,7 +16,7 @@ def _invoke(config_path: Path, *args: str):
     return runner.invoke(app, ["sandbox", *args, "--config", str(config_path)])
 
 
-def test_sandbox_status_reports_legacy_default_as_trusted_run_mode(tmp_path: Path) -> None:
+def test_sandbox_status_reports_default_trusted_sandbox(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
 
     result = runner.invoke(

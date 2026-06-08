@@ -49,6 +49,7 @@ CLOSING_KEYWORDS = frozenset(
     }
 )
 REFERENCE_KEYWORDS = frozenset({"ref", "refs", "reference", "references"})
+OPEN_PR_ACTIONS = frozenset({"opened", "reopened", "edited"})
 KEYWORD_RE = re.compile(
     r"\b(?P<keyword>close|closes|closed|fix|fixes|fixed|resolve|resolves|"
     r"resolved|ref|refs|reference|references)\s*:?\s+(?P<ref>"
@@ -233,9 +234,7 @@ def parse_linked_issues(body: str | None, *, owner: str, repo: str) -> ParsedIss
 
 
 def plan_issue_sync_actions(event: dict[str, Any]) -> tuple[IssueSyncAction, ...]:
-    if event.get("action") != "closed":
-        return ()
-
+    action = event.get("action")
     pr = event.get("pull_request") or {}
     repository = event.get("repository") or {}
     full_name = repository.get("full_name") or ""
@@ -247,8 +246,22 @@ def plan_issue_sync_actions(event: dict[str, Any]) -> tuple[IssueSyncAction, ...
     pr_url = str(pr.get("html_url") or "")
     parsed = parse_linked_issues(pr.get("body"), owner=owner, repo=repo)
 
-    if pr.get("merged") is True and (pr.get("base") or {}).get("ref") == "dev":
+    if action in OPEN_PR_ACTIONS:
         return tuple(
+            IssueSyncAction(
+                issue_number=issue_number,
+                kind="linked_pr_open",
+                pr_number=pr_number,
+                pr_url=pr_url,
+            )
+            for issue_number in parsed.all
+        )
+
+    if action != "closed":
+        return ()
+
+    if pr.get("merged") is True and (pr.get("base") or {}).get("ref") == "dev":
+        closing_actions = tuple(
             IssueSyncAction(
                 issue_number=issue_number,
                 kind="merged_to_dev",
@@ -257,6 +270,18 @@ def plan_issue_sync_actions(event: dict[str, Any]) -> tuple[IssueSyncAction, ...
             )
             for issue_number in parsed.closing
         )
+        closing_issue_numbers = set(parsed.closing)
+        reference_cleanup_actions = tuple(
+            IssueSyncAction(
+                issue_number=issue_number,
+                kind="remove_linked_pr",
+                pr_number=pr_number,
+                pr_url=pr_url,
+            )
+            for issue_number in parsed.references
+            if issue_number not in closing_issue_numbers
+        )
+        return (*closing_actions, *reference_cleanup_actions)
 
     if pr.get("merged") is not True:
         return tuple(
@@ -269,7 +294,15 @@ def plan_issue_sync_actions(event: dict[str, Any]) -> tuple[IssueSyncAction, ...
             for issue_number in parsed.all
         )
 
-    return ()
+    return tuple(
+        IssueSyncAction(
+            issue_number=issue_number,
+            kind="remove_linked_pr",
+            pr_number=pr_number,
+            pr_url=pr_url,
+        )
+        for issue_number in parsed.all
+    )
 
 
 def comment_marker(*, kind: str, pr_number: int) -> str:
@@ -291,6 +324,10 @@ def _merged_to_dev_comment(action: IssueSyncAction) -> str:
 
 
 def apply_action(client: GitHubClient, action: IssueSyncAction) -> None:
+    if action.kind == "linked_pr_open":
+        client.add_labels(action.issue_number, [HAS_LINKED_PR_LABEL])
+        return
+
     if action.kind == "merged_to_dev":
         client.add_labels(
             action.issue_number,
@@ -302,7 +339,7 @@ def apply_action(client: GitHubClient, action: IssueSyncAction) -> None:
             client.create_comment(action.issue_number, _merged_to_dev_comment(action))
         return
 
-    if action.kind == "closed_unmerged":
+    if action.kind in {"closed_unmerged", "remove_linked_pr"}:
         client.remove_label(action.issue_number, HAS_LINKED_PR_LABEL)
         return
 

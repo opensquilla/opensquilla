@@ -4,6 +4,15 @@ import importlib.util
 from pathlib import Path
 from typing import Any
 
+DUMMY_MERGED_DEV_PR = 9001
+DUMMY_CLOSED_PR = 9002
+DUMMY_OPEN_PR = 9003
+DUMMY_MERGED_MAIN_PR = 9004
+DUMMY_MERGED_DEV_PR_URL = "https://example.invalid/pulls/9001"
+DUMMY_CLOSED_PR_URL = "https://example.invalid/pulls/9002"
+DUMMY_OPEN_PR_URL = "https://example.invalid/pulls/9003"
+DUMMY_MERGED_MAIN_PR_URL = "https://example.invalid/pulls/9004"
+
 
 def _load_sync_module():
     script = Path(__file__).resolve().parents[1] / ".github" / "scripts" / "issue_link_sync.py"
@@ -76,7 +85,7 @@ def test_parse_linked_issues_deduplicates_and_ignores_pr_style_urls() -> None:
             [
                 "Fixes #100",
                 "fixes #100",
-                "Refs https://github.com/opensquilla/opensquilla/pull/203",
+                "Refs https://github.com/opensquilla/opensquilla/pull/9999",
                 "Fixes https://github.com/opensquilla/opensquilla/issues/101",
             ]
         ),
@@ -96,11 +105,11 @@ def test_plan_merged_dev_pr_updates_only_closing_issues() -> None:
         {
             "action": "closed",
             "pull_request": {
-                "number": 203,
+                "number": DUMMY_MERGED_DEV_PR,
                 "merged": True,
                 "body": "Fixes #100\nRefs #200",
                 "base": {"ref": "dev"},
-                "html_url": "https://github.com/opensquilla/opensquilla/pull/203",
+                "html_url": DUMMY_MERGED_DEV_PR_URL,
             },
             "repository": {
                 "full_name": "opensquilla/opensquilla",
@@ -112,8 +121,85 @@ def test_plan_merged_dev_pr_updates_only_closing_issues() -> None:
         sync.IssueSyncAction(
             issue_number=100,
             kind="merged_to_dev",
-            pr_number=203,
-            pr_url="https://github.com/opensquilla/opensquilla/pull/203",
+            pr_number=DUMMY_MERGED_DEV_PR,
+            pr_url=DUMMY_MERGED_DEV_PR_URL,
+        ),
+        sync.IssueSyncAction(
+            issue_number=200,
+            kind="remove_linked_pr",
+            pr_number=DUMMY_MERGED_DEV_PR,
+            pr_url=DUMMY_MERGED_DEV_PR_URL,
+        ),
+    )
+
+
+def test_plan_open_or_updated_pr_adds_linked_pr_label_to_all_linked_issues() -> None:
+    sync = _load_sync_module()
+
+    for action_name in ["opened", "reopened", "edited"]:
+        actions = sync.plan_issue_sync_actions(
+            {
+                "action": action_name,
+                "pull_request": {
+                    "number": DUMMY_OPEN_PR,
+                    "merged": False,
+                    "body": "Fixes #100\nRefs #200",
+                    "base": {"ref": "dev"},
+                    "html_url": DUMMY_OPEN_PR_URL,
+                },
+                "repository": {
+                    "full_name": "opensquilla/opensquilla",
+                },
+            }
+        )
+
+        assert actions == (
+            sync.IssueSyncAction(
+                issue_number=100,
+                kind="linked_pr_open",
+                pr_number=DUMMY_OPEN_PR,
+                pr_url=DUMMY_OPEN_PR_URL,
+            ),
+            sync.IssueSyncAction(
+                issue_number=200,
+                kind="linked_pr_open",
+                pr_number=DUMMY_OPEN_PR,
+                pr_url=DUMMY_OPEN_PR_URL,
+            ),
+        )
+
+
+def test_plan_merged_main_pr_removes_linked_pr_label_without_dev_status() -> None:
+    sync = _load_sync_module()
+
+    actions = sync.plan_issue_sync_actions(
+        {
+            "action": "closed",
+            "pull_request": {
+                "number": DUMMY_MERGED_MAIN_PR,
+                "merged": True,
+                "body": "Fixes #100\nRefs #200",
+                "base": {"ref": "main"},
+                "html_url": DUMMY_MERGED_MAIN_PR_URL,
+            },
+            "repository": {
+                "full_name": "opensquilla/opensquilla",
+            },
+        }
+    )
+
+    assert actions == (
+        sync.IssueSyncAction(
+            issue_number=100,
+            kind="remove_linked_pr",
+            pr_number=DUMMY_MERGED_MAIN_PR,
+            pr_url=DUMMY_MERGED_MAIN_PR_URL,
+        ),
+        sync.IssueSyncAction(
+            issue_number=200,
+            kind="remove_linked_pr",
+            pr_number=DUMMY_MERGED_MAIN_PR,
+            pr_url=DUMMY_MERGED_MAIN_PR_URL,
         ),
     )
 
@@ -125,11 +211,11 @@ def test_plan_closed_unmerged_pr_removes_linked_pr_label_from_all_linked_issues(
         {
             "action": "closed",
             "pull_request": {
-                "number": 204,
+                "number": DUMMY_CLOSED_PR,
                 "merged": False,
                 "body": "Fixes #100\nRefs #200",
                 "base": {"ref": "dev"},
-                "html_url": "https://github.com/opensquilla/opensquilla/pull/204",
+                "html_url": DUMMY_CLOSED_PR_URL,
             },
             "repository": {
                 "full_name": "opensquilla/opensquilla",
@@ -141,14 +227,14 @@ def test_plan_closed_unmerged_pr_removes_linked_pr_label_from_all_linked_issues(
         sync.IssueSyncAction(
             issue_number=100,
             kind="closed_unmerged",
-            pr_number=204,
-            pr_url="https://github.com/opensquilla/opensquilla/pull/204",
+            pr_number=DUMMY_CLOSED_PR,
+            pr_url=DUMMY_CLOSED_PR_URL,
         ),
         sync.IssueSyncAction(
             issue_number=200,
             kind="closed_unmerged",
-            pr_number=204,
-            pr_url="https://github.com/opensquilla/opensquilla/pull/204",
+            pr_number=DUMMY_CLOSED_PR,
+            pr_url=DUMMY_CLOSED_PR_URL,
         ),
     )
 
@@ -156,12 +242,12 @@ def test_plan_closed_unmerged_pr_removes_linked_pr_label_from_all_linked_issues(
 def test_comment_marker_is_pr_scoped_for_idempotent_merged_to_dev_comments() -> None:
     sync = _load_sync_module()
 
-    marker = sync.comment_marker(kind="merged_to_dev", pr_number=203)
+    marker = sync.comment_marker(kind="merged_to_dev", pr_number=DUMMY_MERGED_DEV_PR)
 
-    assert marker == "<!-- opensquilla-issue-link-sync:merged-to-dev:pr-203 -->"
+    assert marker == "<!-- opensquilla-issue-link-sync:merged-to-dev:pr-9001 -->"
     assert sync.has_marker([{"body": f"{marker}\nThis is already posted."}], marker)
     assert not sync.has_marker(
-        [{"body": "<!-- opensquilla-issue-link-sync:merged-to-dev:pr-202 -->"}],
+        [{"body": "<!-- opensquilla-issue-link-sync:merged-to-dev:pr-9000 -->"}],
         marker,
     )
 
@@ -171,8 +257,8 @@ def test_apply_merged_dev_action_labels_removes_open_pr_label_and_comments_once(
     action = sync.IssueSyncAction(
         issue_number=100,
         kind="merged_to_dev",
-        pr_number=203,
-        pr_url="https://github.com/opensquilla/opensquilla/pull/203",
+        pr_number=DUMMY_MERGED_DEV_PR,
+        pr_url=DUMMY_MERGED_DEV_PR_URL,
     )
     client = RecordingClient()
 
@@ -185,14 +271,14 @@ def test_apply_merged_dev_action_labels_removes_open_pr_label_and_comments_once(
         (
             "create_comment",
             100,
-            "<!-- opensquilla-issue-link-sync:merged-to-dev:pr-203 -->\n"
-            "The linked fix for this issue has merged to `dev` via #203 "
-            "(https://github.com/opensquilla/opensquilla/pull/203). "
+            "<!-- opensquilla-issue-link-sync:merged-to-dev:pr-9001 -->\n"
+            "The linked fix for this issue has merged to `dev` via #9001 "
+            f"({DUMMY_MERGED_DEV_PR_URL}). "
             "Keeping it open for verification before release.",
         ),
     ]
 
-    marker = sync.comment_marker(kind="merged_to_dev", pr_number=203)
+    marker = sync.comment_marker(kind="merged_to_dev", pr_number=DUMMY_MERGED_DEV_PR)
     client = RecordingClient(comments=[{"body": marker}])
 
     sync.apply_action(client, action)
@@ -204,13 +290,43 @@ def test_apply_merged_dev_action_labels_removes_open_pr_label_and_comments_once(
     ]
 
 
+def test_apply_open_linked_pr_action_adds_open_pr_label() -> None:
+    sync = _load_sync_module()
+    action = sync.IssueSyncAction(
+        issue_number=100,
+        kind="linked_pr_open",
+        pr_number=DUMMY_OPEN_PR,
+        pr_url=DUMMY_OPEN_PR_URL,
+    )
+    client = RecordingClient()
+
+    sync.apply_action(client, action)
+
+    assert client.calls == [("add_labels", 100, ("has-linked-pr",))]
+
+
+def test_apply_remove_linked_pr_action_only_removes_open_pr_label() -> None:
+    sync = _load_sync_module()
+    action = sync.IssueSyncAction(
+        issue_number=200,
+        kind="remove_linked_pr",
+        pr_number=DUMMY_MERGED_MAIN_PR,
+        pr_url=DUMMY_MERGED_MAIN_PR_URL,
+    )
+    client = RecordingClient()
+
+    sync.apply_action(client, action)
+
+    assert client.calls == [("remove_label", 200, "has-linked-pr")]
+
+
 def test_apply_closed_unmerged_action_only_removes_open_pr_label() -> None:
     sync = _load_sync_module()
     action = sync.IssueSyncAction(
         issue_number=200,
         kind="closed_unmerged",
-        pr_number=204,
-        pr_url="https://github.com/opensquilla/opensquilla/pull/204",
+        pr_number=DUMMY_CLOSED_PR,
+        pr_url=DUMMY_CLOSED_PR_URL,
     )
     client = RecordingClient()
 
@@ -224,7 +340,7 @@ def test_list_comments_reads_all_pages_before_idempotency_check() -> None:
     client = PaginatedGitHubClient(
         [
             [{"body": f"old comment {index}"} for index in range(100)],
-            [{"body": "<!-- opensquilla-issue-link-sync:merged-to-dev:pr-203 -->"}],
+            [{"body": "<!-- opensquilla-issue-link-sync:merged-to-dev:pr-9001 -->"}],
         ]
     )
 
@@ -232,7 +348,7 @@ def test_list_comments_reads_all_pages_before_idempotency_check() -> None:
 
     assert sync.has_marker(
         comments,
-        "<!-- opensquilla-issue-link-sync:merged-to-dev:pr-203 -->",
+        "<!-- opensquilla-issue-link-sync:merged-to-dev:pr-9001 -->",
     )
     assert client.paths == [
         "/issues/100/comments?per_page=100&page=1",

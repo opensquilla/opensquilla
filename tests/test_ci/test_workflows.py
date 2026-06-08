@@ -13,6 +13,7 @@ import yaml
 WORKFLOW_DIR = Path(".github/workflows")
 CLASSIFIER = Path(".github/scripts/classify-ci-changes.sh")
 PR_TARGET_VALIDATOR = Path(".github/scripts/validate-pr-target-branch.sh")
+PR_BODY_LINT = Path(".github/scripts/validate_pr_body.py")
 TEST_PATH_RE = re.compile(r"tests/[A-Za-z0-9_./-]+\.py")
 
 
@@ -150,7 +151,7 @@ def _validate_pr_target(
     )
 
 
-def test_default_ci_blocks_pull_requests_and_main_pushes() -> None:
+def test_default_ci_blocks_pull_requests_and_main_and_dev_pushes() -> None:
     ci_path = WORKFLOW_DIR / "ci.yml"
     if not ci_path.exists():
         return
@@ -159,7 +160,7 @@ def test_default_ci_blocks_pull_requests_and_main_pushes() -> None:
     text = ci_path.read_text(encoding="utf-8")
 
     assert {"pull_request", "push", "workflow_dispatch"} <= _trigger_keys(data)
-    assert "branches: [main]" in text
+    assert "branches: [main, dev]" in text
     assert "PYTHONPATH: ${{ github.workspace }}" in text
     assert "Configure runtime directories" in text
     assert 'OPENSQUILLA_STATE_DIR=%s/opensquilla-state\\n' in text
@@ -320,6 +321,34 @@ def test_pr_target_branch_workflow_runs_trusted_base_validator() -> None:
     assert "PR_LABELS" in text
     assert "PR_NUMBER" in text
     assert ".github/scripts/validate-pr-target-branch.sh" in text
+
+
+def test_pr_body_lint_workflow_warns_from_trusted_base() -> None:
+    data = _workflow("pr-body-lint.yml")
+    text = (WORKFLOW_DIR / "pr-body-lint.yml").read_text(encoding="utf-8")
+
+    assert _trigger_keys(data) == {"pull_request"}
+    assert "pull_request_target" not in text
+    assert "Validate PR body fields" in text
+    assert "github.event.repository.default_branch" in text
+    assert "hashFiles('.github/scripts/validate_pr_body.py') == ''" in text
+    assert "github.event.pull_request.head.sha" in text
+    assert "pull-requests: read" in text
+    assert PR_BODY_LINT.as_posix() in text
+    assert "PR_BODY_LINT_STRICT: \"0\"" in text
+
+
+def test_issue_link_sync_tracks_open_and_closed_final_prs_from_trusted_base() -> None:
+    data = _workflow("issue-link-sync.yml")
+    text = (WORKFLOW_DIR / "issue-link-sync.yml").read_text(encoding="utf-8")
+
+    pull_request_target = data["on"]["pull_request_target"]
+    assert set(pull_request_target["types"]) == {"opened", "reopened", "edited", "closed"}
+    assert pull_request_target["branches"] == ["main", "dev"]
+    assert "ref: ${{ github.event.pull_request.base.sha }}" in text
+    assert "persist-credentials: false" in text
+    assert "issues: write" in text
+    assert ".github/scripts/issue_link_sync.py" in text
 
 
 def test_ci_change_classifier_allows_root_and_docs_markdown_only(tmp_path: Path) -> None:

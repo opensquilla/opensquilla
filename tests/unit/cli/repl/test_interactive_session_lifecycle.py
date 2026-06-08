@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from prompt_toolkit.application.current import create_app_session
 from prompt_toolkit.formatted_text import to_formatted_text
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.input.base import DummyInput
@@ -62,14 +63,15 @@ async def test_cached_chat_application_can_emit_eof_after_reentry() -> None:
     """A cached production ChatApplication must not keep EOF latched forever."""
     prompt_module._chat_applications.clear()
     try:
-        app1 = prompt_module._get_or_create_chat_app(Surface.CLI_GATEWAY)
-        app1._emit_eof()
-        first = await asyncio.wait_for(app1.next_line(), timeout=0.2)
+        with create_app_session(input=DummyInput(), output=DummyOutput()):
+            app1 = prompt_module._get_or_create_chat_app(Surface.CLI_GATEWAY)
+            app1._emit_eof()
+            first = await asyncio.wait_for(app1.next_line(), timeout=0.2)
 
-        app2 = prompt_module._get_or_create_chat_app(Surface.CLI_GATEWAY)
-        same_cached_app = app1 is app2
-        app2._emit_eof()
-        second = await asyncio.wait_for(app2.next_line(), timeout=0.2)
+            app2 = prompt_module._get_or_create_chat_app(Surface.CLI_GATEWAY)
+            same_cached_app = app1 is app2
+            app2._emit_eof()
+            second = await asyncio.wait_for(app2.next_line(), timeout=0.2)
     finally:
         prompt_module._chat_applications.clear()
 

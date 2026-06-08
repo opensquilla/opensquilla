@@ -537,7 +537,12 @@ async def test_grep_search_does_not_follow_workspace_symlink_to_unmounted_path(
     outside_file = outside / "secret.txt"
     outside_file.write_text("needle secret-token\n", encoding="utf-8")
     link = workspace / "linked-secret.txt"
-    link.symlink_to(outside_file)
+    try:
+        link.symlink_to(outside_file)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("creating symlinks requires Windows developer mode or elevation")
+        raise
     monkeypatch.setattr(fs.asyncio, "get_event_loop", lambda: _InlineExecutorLoop())
 
     with tool_context(workspace):
@@ -943,7 +948,8 @@ async def test_shell_simple_read_path_full_host_access_does_not_request_mount(
         *,
         cwd: str | None,
         env: dict[str, str],
-        timeout: float,
+        stdin_bytes: bytes | None,
+        effective_timeout: float,
     ) -> str:
         host_calls.append((command, cwd))
         return "host-ran"

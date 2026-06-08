@@ -581,7 +581,11 @@ def test_github_client_detects_other_open_pull_requests_linking_issue() -> None:
         [
             [
                 {"number": DUMMY_OPEN_PR, "body": "Fixes #100"},
-                {"number": DUMMY_CLOSED_PR, "body": "Refs #200"},
+                {
+                    "number": DUMMY_CLOSED_PR,
+                    "body": "Refs #200",
+                    "base": {"ref": "dev"},
+                },
             ],
         ]
     )
@@ -590,6 +594,28 @@ def test_github_client_detects_other_open_pull_requests_linking_issue() -> None:
         client,
         issue_number=200,
         pr_number=DUMMY_OPEN_PR,
+    )
+    assert client.paths == ["/pulls?state=open&per_page=100&page=1"]
+
+
+def test_github_client_ignores_non_final_open_pull_requests_when_preserving_labels() -> None:
+    sync = _load_sync_module()
+    client = PaginatedGitHubClient(
+        [
+            [
+                {
+                    "number": DUMMY_OPEN_PR,
+                    "body": "Refs #200",
+                    "base": {"ref": "sandbox-optimization"},
+                },
+            ],
+        ]
+    )
+
+    assert not sync.GitHubClient.has_other_open_linked_pull_request(
+        client,
+        issue_number=200,
+        pr_number=DUMMY_CLOSED_PR,
     )
     assert client.paths == ["/pulls?state=open&per_page=100&page=1"]
 

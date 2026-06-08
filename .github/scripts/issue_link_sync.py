@@ -215,6 +215,8 @@ class GitHubClient:
                 continue
             if other_number == pr_number:
                 continue
+            if str((pull_request.get("base") or {}).get("ref") or "") not in FINAL_BASE_REFS:
+                continue
             parsed = parse_linked_issues(
                 pull_request.get("body"),
                 owner=owner,

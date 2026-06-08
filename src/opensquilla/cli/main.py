@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import typer
 
-from opensquilla.env import load_env, warn_if_proxy_ignored
+from opensquilla.env import warn_if_proxy_ignored
+from opensquilla.paths import default_opensquilla_home, is_valid_profile_name
 
-# Populate os.environ from .env files before any submodule import reads keys.
-# Precedence: os.environ > $CWD/.env > $CWD/.env.test > ~/.opensquilla/.env.
-load_env()
-warn_if_proxy_ignored()
+# `load_env()` is NOT called at module import time on purpose: the active
+# profile (CLI --profile + OPENSQUILLA_PROFILE env) is only known after
+# Typer parses the global callback, so loading here would always pick the
+# legacy ~/.opensquilla/.env regardless of which profile the user picked.
+# The callback below resolves the active profile, calls load_env(home=...),
+# then re-invokes warn_if_proxy_ignored() so the proxy hint is logged
+# against the post-load env. Subcommand modules are imported below;
+# they don't read env at import time, so the deferred load is safe.
 
 from opensquilla.cli.agent_cmd import run_agent_command  # noqa: E402
 from opensquilla.cli.agents_cmd import agents_app  # noqa: E402
@@ -28,6 +34,7 @@ from opensquilla.cli.memory_flush_cmd import memory_flush_session_cmd  # noqa: E
 from opensquilla.cli.migrate_cmd import migrate_app  # noqa: E402
 from opensquilla.cli.models_cmd import app as models_app  # noqa: E402
 from opensquilla.cli.onboard_cmd import configure_command, onboard_app  # noqa: E402
+from opensquilla.cli.profiles_cmd import profiles_app  # noqa: E402
 from opensquilla.cli.providers_cmd import providers_app  # noqa: E402
 from opensquilla.cli.replay import replay_app  # noqa: E402
 from opensquilla.cli.sandbox_cmd import sandbox_app  # noqa: E402
@@ -44,6 +51,7 @@ app = typer.Typer(
 
 # ── Sub-apps ─────────────────────────────────────────────────────────────────
 
+app.add_typer(profiles_app, name="profiles")
 app.add_typer(channels_app, name="channels")
 app.add_typer(agents_app, name="agents")
 app.add_typer(config_app, name="config")
@@ -64,6 +72,52 @@ app.command("init")(init_command)
 app.command("doctor")(doctor_command)
 app.add_typer(onboard_app, name="onboard")
 app.command("configure")(configure_command)
+
+
+# ── Global options ────────────────────────────────────────────────────────────
+
+
+@app.callback(invoke_without_command=True)
+def _profile_callback(
+    ctx: typer.Context,
+    profile: str | None = typer.Option(
+        None,
+        "--profile",
+        envvar="OPENSQUILLA_PROFILE",
+        help=(
+            "Profile name for multi-instance mode. Resolved to "
+            "$OPENSQUILLA_HOME/<profile>/ (default: "
+            "~/.opensquilla/profiles/). When set, isolates state/logs/config "
+            "from other instances sharing the same host. Ignored if "
+            "OPENSQUILLA_STATE_DIR is set (full override)."
+        ),
+    ),
+) -> None:
+    """OpenSquilla global options."""
+    # Preserve `no_args_is_help` — only act when a subcommand is invoked.
+    if ctx.invoked_subcommand is None:
+        return
+    name = (profile or "").strip()
+    if name:
+        if not is_valid_profile_name(name):
+            raise typer.BadParameter(
+                f"Invalid profile name {name!r}; must match "
+                f"^[a-z0-9][a-z0-9_-]{{0,63}}$."
+            )
+        # Export so subprocesses (e.g. `gateway start` spawning `gateway run`)
+        # inherit the active profile and so any code path that reads
+        # `os.environ["OPENSQUILLA_PROFILE"]` directly sees the CLI choice.
+        os.environ["OPENSQUILLA_PROFILE"] = name
+
+    # Now that the active profile is known, resolve the home and load
+    # .env from THAT home. Loading before this point would have picked
+    # the legacy ~/.opensquilla/.env regardless of --profile, which
+    # leaked keys across profile boundaries.
+    from opensquilla.env import load_env
+
+    home = default_opensquilla_home()
+    load_env(home=home)
+    warn_if_proxy_ignored()
 
 
 # ── memory sub-app ────────────────────────────────────────────────────────────
@@ -639,6 +693,44 @@ def gateway_status(
         listen=listen,
         config_path=config_path,
         gateway_url=gateway_url,
+        json_output=json_output,
+    )
+
+
+@gateway_app.command("agents")
+def gateway_agents(
+    config_path: str | None = typer.Option(
+        None, "--config", help="Override config path (for one profile).",
+    ),
+    all_profiles: bool = typer.Option(
+        False, "--all", help="List agents for every profile under $OPENSQUILLA_HOME.",
+    ),
+    watch: bool = typer.Option(
+        False, "--watch", "-w",
+        help="Poll and re-print every 2s (Ctrl-C to stop).",
+    ),
+    watch_interval: float = typer.Option(
+        2.0, "--interval", help="Watch poll interval in seconds.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """List agents and their sessions by reading state directly.
+
+    Reads ``state/sessions.db`` (SQLite, WAL, read-only) and the
+    ``state/agents/<id>/`` filesystem tree. Does not call the LLM
+    and does not talk to the gateway over HTTP/WS — it works
+    even when the daemon is dead, when the LLM is unreachable,
+    or when the network is down. This is the first thing to
+    check when ``gateway status`` reports unhealthy and you want
+    to know what the daemon was doing before it crashed.
+    """
+    from opensquilla.cli.gateway_cmd import list_agents_gateway
+
+    list_agents_gateway(
+        config_path=config_path,
+        all_profiles=all_profiles,
+        watch=watch,
+        watch_interval=watch_interval,
         json_output=json_output,
     )
 

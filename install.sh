@@ -25,6 +25,12 @@ Environment equivalents:
   OPENSQUILLA_INSTALL_PROFILE=recommended|core
   OPENSQUILLA_INSTALL_EXTRAS=matrix
   OPENSQUILLA_INSTALL_DRY_RUN=1
+  OPENSQUILLA_HOME=/path/to/opensquilla/home   # read by 'opensquilla' at runtime
+                                              # (not used by this installer; the
+                                              # install only places the wheel).
+                                              # Set it before 'opensquilla --profile
+                                              # <name> init' to enable multi-instance
+                                              # mode.
 HELP
 }
 
@@ -245,6 +251,44 @@ Do not expose the gateway on 0.0.0.0 unless it is behind a trusted reverse
 proxy or VPN.
 ----------------------------------------------------------------------------
 DONE
+
+# Surface the multi-instance profile env var (read-only here — the
+# installer does not create the home directory; 'opensquilla --profile
+# <name> init' does that later). Show the active value so the operator
+# can confirm what their next command will resolve to.
+if [[ -n "${OPENSQUILLA_HOME:-}" ]]; then
+    cat <<MULTI
+Multi-instance profile mode is active:
+  OPENSQUILLA_HOME=${OPENSQUILLA_HOME}
+
+  Per-profile homes live under \$OPENSQUILLA_HOME/<profile>/. The default
+  profile (no --profile flag) lands at:
+    ${OPENSQUILLA_HOME}/default/
+
+  Bootstrap one:
+    export OPENSQUILLA_HOME="${OPENSQUILLA_HOME}"
+    opensquilla --profile coder init
+    opensquilla --profile coder gateway start --port 18792
+
+MULTI
+else
+    cat <<SINGLE
+OPENSQUILLA_HOME is not set, so multi-instance mode is OFF and OpenSquilla
+falls back to the legacy single-instance home:
+    \$HOME/.opensquilla/
+
+  This is the unchanged behaviour for existing deployments. To run several
+  agents on this host, set OPENSQUILLA_HOME before 'opensquilla init':
+
+    export OPENSQUILLA_HOME="\$HOME/opensquilla"
+    opensquilla --profile coder init
+    opensquilla --profile coder gateway start --port 18792
+
+  (Note: an empty OPENSQUILLA_HOME is treated the same as unset, so the
+  fall-through is intentional and back-compatible.)
+
+SINGLE
+fi
 
 if [[ -n "${tool_bin_dir}" && ":${original_path}:" != *":${tool_bin_dir}:"* ]]; then
     cat <<PATHNOTE

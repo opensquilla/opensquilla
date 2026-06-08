@@ -31,6 +31,26 @@ def test_provider_request_proof_allows_payload_within_budget() -> None:
     assert proof["tool_schema_too_large"] is False
 
 
+def test_provider_request_proof_omits_empty_fallback_reason_but_preserves_string_reason() -> None:
+    payload = {"messages": [{"role": "user", "content": "small"}]}
+
+    proof_without_reason = prove_provider_payload(
+        payload,
+        projection_adapter="openai",
+        proof_budget=10_000,
+        fallback_reason=None,
+    )
+    proof_with_reason = prove_provider_payload(
+        payload,
+        projection_adapter="openai",
+        proof_budget=10_000,
+        fallback_reason="manual_fallback",
+    )
+
+    assert "fallback_reason" not in proof_without_reason
+    assert proof_with_reason["fallback_reason"] == "manual_fallback"
+
+
 def test_provider_request_proof_blocks_oversized_payload() -> None:
     with pytest.raises(ProviderRequestBudgetExceeded) as exc_info:
         prove_provider_payload(

@@ -775,11 +775,12 @@ def prove_provider_payload(
         "recent_tail_too_large": False,
         "compaction_not_smaller": False,
         "provider_window_mismatch": False,
-        "fallback_reason": fallback_reason,
         "top_contributors": _top_contributors(budget_payload),
         "retry_count": 0,
         **_payload_component_chars(budget_payload, effective_budget),
     }
+    if fallback_reason is not None:
+        proof["fallback_reason"] = fallback_reason
     if media_blocks:
         proof["media_chars_excluded"] = media_chars
         proof["media_blocks_excluded"] = media_blocks

@@ -255,6 +255,74 @@ async def test_load_history_replays_anthropic_compaction_state_as_provider_messa
 
 
 @pytest.mark.asyncio
+async def test_load_history_replays_anthropic_compaction_state_for_pi_kernel(
+    session_manager: SessionManager,
+) -> None:
+    from opensquilla.engine.agent_core import build_agent_for_kernel
+
+    key = "agent:main:pi-anthropic-native-state"
+    node = await session_manager.create(key)
+    await session_manager.append_message(key, "user", "old question")
+    await session_manager.save_context_state(
+        SessionContextState(
+            session_id=node.session_id,
+            session_key=key,
+            provider="anthropic",
+            model="claude-opus-4-7",
+            state_kind="anthropic_compaction_block",
+            payload={
+                "content": "pi native compact state",
+                "cache_control": {"type": "ephemeral"},
+            },
+            covered_through_id=7,
+            portable=False,
+            cacheable=True,
+        )
+    )
+
+    class FakePiRpcClient:
+        async def stream_prompt(self, message: str, **kwargs):
+            raise AssertionError("not used")
+
+    runner = TurnRunner(provider_selector=MagicMock(), session_manager=session_manager)
+    agent = build_agent_for_kernel(
+        runtime_config=type(
+            "RuntimeConfig",
+            (),
+            {
+                "agent_kernel": "pi",
+                "pi_agent_rpc_client": FakePiRpcClient(),
+                "allow_test_pi_rpc_client": True,
+            },
+        )(),
+        provider=_CapturingAnthropicProvider(),
+        config=AgentConfig(system_prompt="stable base", model_id="pi-history"),
+        tool_definitions=[],
+        tool_handler=None,
+        usage_tracker=None,
+        session_key=key,
+        turn_call_logger=None,
+        memory_sync_manager=None,
+        session_flush_service=None,
+        tool_registry=None,
+        tool_context=None,
+        session_manager=session_manager,
+    )
+
+    summary_context = await runner._load_history(agent, key, trim_last_user=False)
+
+    assert summary_context is None
+    assert not hasattr(agent.provider, "chat")
+    assert agent._history[0].role == "assistant"
+    assert isinstance(agent._history[0].content, list)
+    native_block = agent._history[0].content[0]
+    assert isinstance(native_block, ContentBlockCompaction)
+    assert native_block.content == "pi native compact state"
+    assert native_block.cache_control == {"type": "ephemeral"}
+    assert agent._history[1] == Message(role="user", content="old question")
+
+
+@pytest.mark.asyncio
 async def test_load_history_replays_only_latest_anthropic_compaction_state(
     session_manager: SessionManager,
 ) -> None:

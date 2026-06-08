@@ -137,6 +137,50 @@ def _install_trusted_session_handles(
     return workspace, manager, config
 
 
+def test_request_with_managed_network_proxy_env_overrides_user_proxy_env(
+    tmp_path: Path,
+) -> None:
+    policy = SandboxPolicy(
+        level=SecurityLevel.STANDARD,
+        network=NetworkMode.PROXY_ALLOWLIST,
+        mounts=(),
+        workspace_rw=True,
+        tmp_writable=True,
+        limits=ResourceLimits(),
+        env_allowlist=("PATH",),
+        require_approval=False,
+        network_proxy=integration_mod.NetworkProxySpec(host="127.0.0.1", port=18080),
+    )
+    request = integration_mod.SandboxRequest(
+        argv=("sh", "-lc", "curl https://example.com"),
+        cwd=tmp_path,
+        action_kind="shell.exec",
+        policy=policy,
+        env={
+            "PATH": "/bin",
+            "HTTP_PROXY": "http://attacker.invalid:1",
+            "http_proxy": "http://attacker.invalid:3",
+            "HTTPS_PROXY": "http://attacker.invalid:2",
+            "https_proxy": "http://attacker.invalid:4",
+            "NO_PROXY": "*",
+            "no_proxy": "*",
+        },
+    )
+
+    updated = integration_mod.request_with_managed_network_proxy_env(request)
+
+    assert updated.env["PATH"] == "/bin"
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        assert updated.env[key] == "http://127.0.0.1:18080"
+    for key in ("NO_PROXY", "no_proxy"):
+        assert updated.env[key] == ""
+    assert "http://attacker.invalid:1" not in updated.env.values()
+    assert "http://attacker.invalid:3" not in updated.env.values()
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"):
+        assert key in updated.policy.env_allowlist
+    assert request.env["HTTP_PROXY"] == "http://attacker.invalid:1"
+
+
 @pytest.mark.asyncio
 async def test_url_shaped_inprocess_network_action_sets_context_proxy_without_env_mutation(
     monkeypatch: pytest.MonkeyPatch,

@@ -317,7 +317,7 @@ def _sandbox_path_access_envelope(
         return None
     if decision.status == "blocked":
         return _path_access_blocked_envelope(decision)
-    if not write and trusted_sandbox_active():
+    if trusted_sandbox_active():
         if grant_temporary_mount_for_current_tool(decision):
             return None
     return _path_access_required_envelope(decision, approval_id=approval_id)

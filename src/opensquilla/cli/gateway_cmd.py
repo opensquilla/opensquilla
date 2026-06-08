@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import socket
 
 import typer
 
@@ -29,6 +30,26 @@ def gateway_startup_guidance(host: str, port: int, scheme: str = "http") -> tupl
         f"[bold]Debug log:[/bold] {default_opensquilla_home() / 'logs' / 'debug.log'}",
         "[dim]Keep this terminal open. Press Ctrl+C to stop.[/dim]",
     )
+
+
+def _gateway_bind_available(host: str, port: int) -> bool:
+    if port == 0:
+        return True
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        infos = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", (host, port))]
+
+    last_error: OSError | None = None
+    for family, socktype, proto, _canonname, sockaddr in infos:
+        with socket.socket(family, socktype, proto) as sock:
+            try:
+                sock.bind(sockaddr)
+            except OSError as exc:
+                last_error = exc
+                continue
+            return True
+    return False if last_error is not None else True
 
 
 def run_gateway(
@@ -61,6 +82,15 @@ def run_gateway(
     host = resolve_listen_address(explicit_flag, default=config.host or "127.0.0.1")
     resolved_port = port if port is not None else config.port
     config = config.model_copy(update={"host": host, "port": resolved_port, "debug": debug})
+
+    if not _gateway_bind_available(host, resolved_port):
+        console.print(
+            f"[red]Gateway could not start:[/red] {host}:{resolved_port} is already in use."
+        )
+        console.print(
+            f"[dim]Find the listener with: netstat -ano | findstr :{resolved_port}[/dim]"
+        )
+        raise typer.Exit(code=1)
 
     banner_host = f"[red]{host}[/red]" if is_public_bind(host) else f"[{ACCENT_MARKUP}]{host}[/]"
     console.print(

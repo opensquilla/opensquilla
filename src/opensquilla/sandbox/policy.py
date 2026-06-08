@@ -38,6 +38,22 @@ _DEFAULT_ENV_ALLOWLIST: tuple[str, ...] = (
     "LOGNAME",
     "HOSTNAME",
     "PWD",
+    "WORKSPACE_DIR",
+    "PROJECT_ROOT",
+    "COMSPEC",
+    "SystemRoot",
+    "SYSTEMROOT",
+    "WINDIR",
+    "USERPROFILE",
+    "TEMP",
+    "TMP",
+    "LOCALAPPDATA",
+    "APPDATA",
+    "PROGRAMDATA",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "PROGRAMW6432",
+    "PSModulePath",
 )
 
 

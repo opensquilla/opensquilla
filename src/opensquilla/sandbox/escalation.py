@@ -421,7 +421,7 @@ def current_tool_mounts() -> list[dict[str, object]]:
 
 
 def grant_temporary_mount_for_current_tool(decision: MountDecision) -> bool:
-    if decision.status != "request" or decision.access != "ro":
+    if decision.status != "request" or decision.access not in {"ro", "rw"}:
         return False
     try:
         from opensquilla.tools.types import current_tool_context
@@ -432,7 +432,7 @@ def grant_temporary_mount_for_current_tool(decision: MountDecision) -> bool:
     if ctx is None:
         return False
 
-    path = decision.normalized_path
+    path = _temporary_mount_path(decision)
     access = decision.access
     ctx.sandbox_mounts = [
         mount
@@ -457,6 +457,15 @@ def grant_temporary_mount_for_current_tool(decision: MountDecision) -> bool:
         updated,
     )
     return True
+
+
+def _temporary_mount_path(decision: MountDecision) -> str:
+    if decision.access != "rw":
+        return decision.normalized_path
+    candidate = Path(decision.normalized_path).expanduser().resolve(strict=False)
+    if candidate.exists() and candidate.is_dir():
+        return str(candidate)
+    return str(candidate.parent)
 
 
 def resolved_run_context_overlay(

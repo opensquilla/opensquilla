@@ -50,6 +50,28 @@ def _request(tmp_path: Path, *, wall_timeout_s: float = 5.0) -> SandboxRequest:
     )
 
 
+def test_windows_restricted_token_available_requires_enforced_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_support as support_mod
+    from opensquilla.sandbox.backend.windows_restricted_token import (
+        WindowsRestrictedTokenBackend,
+    )
+
+    monkeypatch.setattr(support_mod.sys, "platform", "win32")
+    monkeypatch.setattr(support_mod, "_ctypes_available", lambda: True)
+
+    assert WindowsRestrictedTokenBackend().available() is False
+
+    monkeypatch.setattr(support_mod, "_restricted_token_smoke_ok", lambda: True)
+    monkeypatch.setattr(support_mod, "_wfp_smoke_ok", lambda: False)
+    monkeypatch.setattr(support_mod, "_broker_smoke_ok", lambda: True)
+    assert WindowsRestrictedTokenBackend().available() is False
+
+    monkeypatch.setattr(support_mod, "_wfp_smoke_ok", lambda: True)
+    assert WindowsRestrictedTokenBackend().available() is True
+
+
 def test_windows_auto_selects_restricted_token_when_appcontainer_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -273,3 +295,45 @@ def test_helper_non_windows_fails_closed_without_subprocess_fallback(
     captured = capsys.readouterr()
     assert exc_info.value.code != 0
     assert "only runs on native Windows" in captured.err
+
+
+def test_helper_rejects_before_run_when_restricted_token_enforcement_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    from opensquilla.sandbox.backend import windows_restricted_token_helper as helper
+    from opensquilla.sandbox.backend.windows_support import WindowsSandboxSupport
+
+    def forbidden_run(payload: object) -> None:
+        raise AssertionError("helper must not run without declared enforcement")
+
+    monkeypatch.setattr(helper.sys, "platform", "win32")
+    monkeypatch.setattr(
+        helper,
+        "probe_windows_sandbox_support",
+        lambda: WindowsSandboxSupport(
+            is_windows=True,
+            ctypes_available=True,
+            appcontainer_enforced=False,
+            restricted_token_enforced=False,
+            proxy_allowlist_enforced=False,
+        ),
+    )
+    monkeypatch.setattr(helper, "_run_restricted", forbidden_run)
+    payload = json.dumps(
+        {
+            "argv": ["cmd", "/c", "echo", "ok"],
+            "cwd": str(tmp_path),
+            "env": {},
+            "policy": _policy(tmp_path).summary(),
+            "timeout": 5.0,
+        }
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        helper.main([payload])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code != 0
+    assert "cannot enforce policy on this host" in captured.err

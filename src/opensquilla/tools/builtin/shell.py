@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import contextvars
 import json
+import ntpath
 import os
 import re
 import signal
@@ -367,6 +368,50 @@ def _sandbox_shell_policy_cwd(cwd: str | None) -> Path | None:
     if cwd:
         return Path(cwd).expanduser().resolve(strict=False)
     return None
+
+
+def _trusted_windows_cmd_path() -> str:
+    comspec = os.environ.get("COMSPEC", "")
+    if _is_absolute_cmd_exe(comspec):
+        return comspec
+    system_root = os.environ.get("SystemRoot") or os.environ.get("SYSTEMROOT") or ""
+    if system_root and "\x00" not in system_root and ntpath.isabs(system_root):
+        return ntpath.join(system_root, "System32", "cmd.exe")
+    return r"C:\Windows\System32\cmd.exe"
+
+
+def _is_absolute_cmd_exe(path: str) -> bool:
+    return "\x00" not in path and ntpath.isabs(path) and ntpath.basename(path).lower() == "cmd.exe"
+
+
+def _trusted_windows_powershell_path() -> str:
+    system_root = os.environ.get("SystemRoot") or os.environ.get("SYSTEMROOT") or ""
+    if system_root and "\x00" not in system_root and ntpath.isabs(system_root):
+        return ntpath.join(
+            system_root,
+            "System32",
+            "WindowsPowerShell",
+            "v1.0",
+            "powershell.exe",
+        )
+    return r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+
+
+def _sandbox_shell_backend_argv(command: str, runtime: object) -> tuple[str, ...]:
+    backend = getattr(runtime, "backend", None)
+    backend_name = getattr(backend, "name", "")
+    if backend_name.startswith("windows_"):
+        return (
+            _trusted_windows_powershell_path(),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            command,
+        )
+    return ("sh", "-lc", command)
 
 
 def _sandbox_shell_backend_cwd(cwd: str | None, request: SandboxRequest) -> Path:
@@ -958,7 +1003,7 @@ async def exec_command(
         if isinstance(decision, DenialResult):
             return json.dumps(decision.to_dict())
         backend_request = SandboxRequest(
-            argv=("sh", "-lc", command),
+            argv=_sandbox_shell_backend_argv(command, runtime),
             cwd=_sandbox_shell_backend_cwd(cwd, request),
             action_kind=request.action_kind,
             policy=request.policy,
@@ -1106,7 +1151,7 @@ async def background_process(
         if isinstance(decision, DenialResult):
             return json.dumps(decision.to_dict())
         backend_request = SandboxRequest(
-            argv=("sh", "-lc", command),
+            argv=_sandbox_shell_backend_argv(command, runtime),
             cwd=_sandbox_shell_backend_cwd(cwd, request),
             action_kind=request.action_kind,
             policy=policy,

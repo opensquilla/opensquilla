@@ -210,14 +210,21 @@ def _append_code_exec_sandbox_network_hint(*, stdout: str, stderr: str) -> str:
 
 def _resolve_python_bin(*, sandbox_enabled: bool) -> str:
     """Resolve a Python executable that is visible from the execution mode."""
+    backend_name = ""
     if sandbox_enabled:
+        runtime = get_runtime()
+        backend = getattr(runtime, "backend", None) if runtime is not None else None
+        backend_name = str(getattr(backend, "name", "") or "")
+
+    if sandbox_enabled and backend_name == "bubblewrap":
         # The bubblewrap backend exposes host /usr and /bin inside the sandbox,
         # but not the caller's project venv. `uv run` commonly puts
         # .venv/bin/python3 first on PATH, which is invisible after isolation.
         for candidate in _SANDBOX_PYTHON_CANDIDATES:
             if candidate.is_file() and os.access(candidate, os.X_OK):
                 return str(candidate)
-    else:
+
+    if not sandbox_enabled or backend_name != "bubblewrap":
         current_python = Path(sys.executable)
         if current_python.is_file():
             return str(current_python)

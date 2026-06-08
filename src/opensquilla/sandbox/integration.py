@@ -99,6 +99,20 @@ _MANAGED_NETWORK_PROXY_URL: contextvars.ContextVar[str | None] = contextvars.Con
     "opensquilla_managed_network_proxy_url",
     default=None,
 )
+_MANAGED_PROXY_ENV_KEYS: tuple[str, ...] = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "http_proxy",
+    "https_proxy",
+)
+_MANAGED_NO_PROXY_ENV_KEYS: tuple[str, ...] = ("NO_PROXY", "no_proxy")
+_MANAGED_PROXY_ENV_ALLOWLIST: tuple[str, ...] = (
+    *_MANAGED_PROXY_ENV_KEYS,
+    *_MANAGED_NO_PROXY_ENV_KEYS,
+)
+_MANAGED_PROXY_ENV_NAMES_UPPER: frozenset[str] = frozenset(
+    key.upper() for key in _MANAGED_PROXY_ENV_ALLOWLIST
+)
 
 _IN_PROCESS_NETWORK_TAGS: frozenset[str] = frozenset(
     {"network.fetch", "network.http", "web.fetch"}
@@ -397,6 +411,73 @@ def build_request(
     )
 
 
+def _backend_name(runtime: SandboxRuntime | object | None) -> str:
+    backend = getattr(runtime, "backend", None) if runtime is not None else None
+    name = getattr(backend, "name", "")
+    return str(name or "")
+
+
+def _managed_proxy_env_keys(
+    backend_name: str | None,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    if str(backend_name or "").lower().startswith("windows_"):
+        return ("HTTP_PROXY", "HTTPS_PROXY"), ("NO_PROXY",)
+    return _MANAGED_PROXY_ENV_KEYS, _MANAGED_NO_PROXY_ENV_KEYS
+
+
+def request_with_managed_network_proxy_env(
+    request: SandboxRequest,
+    *,
+    backend_name: str | None = None,
+) -> SandboxRequest:
+    """Return ``request`` with managed proxy environment wired for subprocesses."""
+    if (
+        request.policy.network != NetworkMode.PROXY_ALLOWLIST
+        or request.policy.network_proxy is None
+    ):
+        return request
+
+    proxy = request.policy.network_proxy
+    proxy_url = f"http://{proxy.host}:{proxy.port}"
+    proxy_env_keys, no_proxy_env_keys = _managed_proxy_env_keys(backend_name)
+    env = {
+        key: value
+        for key, value in request.env.items()
+        if key.upper() not in _MANAGED_PROXY_ENV_NAMES_UPPER
+    }
+    for key in proxy_env_keys:
+        env[key] = proxy_url
+    for key in no_proxy_env_keys:
+        env[key] = ""
+
+    env_allowlist = tuple(
+        dict.fromkeys(
+            (
+                *(
+                    key
+                    for key in request.policy.env_allowlist
+                    if key.upper() not in _MANAGED_PROXY_ENV_NAMES_UPPER
+                ),
+                *proxy_env_keys,
+                *no_proxy_env_keys,
+            )
+        )
+    )
+    policy = request.policy
+    if env_allowlist != request.policy.env_allowlist:
+        policy = dataclasses.replace(request.policy, env_allowlist=env_allowlist)
+
+    return SandboxRequest(
+        argv=request.argv,
+        cwd=request.cwd,
+        action_kind=request.action_kind,
+        policy=policy,
+        stdin=request.stdin,
+        env=env,
+        reason=request.reason,
+    )
+
+
 async def gate_action(
     *,
     action_kind: str,
@@ -517,6 +598,10 @@ async def run_under_backend(
         and request.policy.network_proxy is None
     ):
         return await _run_with_managed_network_proxy(request, rt)
+    request = request_with_managed_network_proxy_env(
+        request,
+        backend_name=_backend_name(rt),
+    )
     return await rt.backend.run(request)
 
 
@@ -642,14 +727,22 @@ async def prepare_subprocess_managed_network_proxy(
     """
     if (
         request.policy.network != NetworkMode.PROXY_ALLOWLIST
-        or request.policy.network_proxy is not None
     ):
         return ManagedNetworkSubprocess(
             request=request,
             cleanup=_noop_managed_network_cleanup,
         )
-
     rt = runtime or get_runtime()
+    backend_name = _backend_name(rt)
+    if request.policy.network_proxy is not None:
+        return ManagedNetworkSubprocess(
+            request=request_with_managed_network_proxy_env(
+                request,
+                backend_name=backend_name,
+            ),
+            cleanup=_noop_managed_network_cleanup,
+        )
+
     if rt is None:
         raise SandboxBackendError(
             "Sandbox runtime is not configured; refusing to start managed network proxy"
@@ -714,7 +807,10 @@ async def prepare_subprocess_managed_network_proxy(
         network_proxy=NetworkProxySpec(host=proxy.host, port=proxy.port),
     )
     return ManagedNetworkSubprocess(
-        request=request.with_policy(policy),
+        request=request_with_managed_network_proxy_env(
+            request.with_policy(policy),
+            backend_name=backend_name,
+        ),
         cleanup=_cleanup,
     )
 
@@ -1567,6 +1663,7 @@ __all__ = [
     "ManagedNetworkSubprocess",
     "preflight_subprocess_managed_network",
     "prepare_subprocess_managed_network_proxy",
+    "request_with_managed_network_proxy_env",
     "record_success",
     "reset_runtime",
     "run_in_process_network_action",

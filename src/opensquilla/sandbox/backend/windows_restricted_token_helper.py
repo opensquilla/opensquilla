@@ -17,6 +17,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from opensquilla.sandbox.backend.windows_support import (
+    PROXY_ALLOWLIST_ENFORCED_ENV,
+    RESTRICTED_TOKEN_ENFORCED_ENV,
+    probe_windows_sandbox_support,
+)
+
 _UNENFORCEABLE = "windows_restricted_token helper cannot enforce policy on this host"
 
 
@@ -99,6 +105,15 @@ def _validate_policy_is_enforceable(policy: dict[str, Any]) -> None:
     # Restricted tokens alone are not a complete sandbox. Until this helper can
     # pair the process boundary with deny-by-default filesystem ACLs and a real
     # network restriction/allowlist story, every policy remains unenforceable.
+    support = probe_windows_sandbox_support()
+    if not support.restricted_token_available:
+        missing = []
+        if not support.restricted_token_enforced:
+            missing.append(RESTRICTED_TOKEN_ENFORCED_ENV)
+        if not support.proxy_allowlist_enforced:
+            missing.append(PROXY_ALLOWLIST_ENFORCED_ENV)
+        suffix = f" (missing {', '.join(missing)})" if missing else ""
+        raise SystemExit(f"{_UNENFORCEABLE}{suffix}")
     raise SystemExit(_UNENFORCEABLE)
 
 

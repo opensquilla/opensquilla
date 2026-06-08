@@ -15,6 +15,7 @@ import time
 from typing import Any
 
 from opensquilla.sandbox.backend.base import Backend
+from opensquilla.sandbox.backend.windows_support import probe_windows_sandbox_support
 from opensquilla.sandbox.types import SandboxBackendError, SandboxRequest, SandboxResult
 
 _HELPER_MODULE = "opensquilla.sandbox.backend.windows_restricted_token_helper"
@@ -27,19 +28,13 @@ class WindowsRestrictedTokenBackend(Backend):
     name = "windows_restricted_token"
 
     def available(self) -> bool:
-        if not sys.platform.startswith("win"):
-            return False
-        try:
-            import ctypes  # noqa: F401
-        except Exception:
-            return False
-        return True
+        return probe_windows_sandbox_support().restricted_token_available
 
     async def run(self, request: SandboxRequest) -> SandboxResult:
         if not self.available():
             raise SandboxBackendError(
                 "windows_restricted_token backend unavailable: requires native Windows "
-                "and ctypes"
+                "plus enforced restricted-token and proxy allowlist boundaries"
             )
 
         payload = _payload_for_request(request)

@@ -416,6 +416,27 @@ async def test_filesystem_write_outside_workspace_requests_rw_mount(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+async def test_trusted_sandbox_write_outside_workspace_auto_grants_rw_mount(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    outside = tmp_path / "outside" / "notes.txt"
+    monkeypatch.setattr(fs.asyncio, "get_event_loop", lambda: _InlineExecutorLoop())
+
+    with tool_context(workspace, run_mode="trusted") as ctx:
+        result = await fs.write_file(str(outside), "outside body\n")
+
+    assert "Written 13 bytes" in result
+    assert outside.read_text(encoding="utf-8") == "outside body\n"
+    assert get_approval_queue().list_pending("exec") == []
+    assert ctx.sandbox_mounts == [
+        {"path": str(outside.parent.resolve(strict=False)), "access": "rw"}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_existing_rw_mount_allows_write_file_without_legacy_approval(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -393,6 +393,7 @@ async def test_background_shell_network_spawn_receives_managed_proxy(
 
     async def _fake_spawn(*, runtime: object, request: object) -> object:
         seen["policy"] = request.policy
+        seen["env"] = request.env
         assert request.policy.network_proxy is not None
         return shell._SpawnedBackgroundProcess(process=_FakeProcess())  # type: ignore[arg-type]
 
@@ -431,6 +432,83 @@ async def test_background_shell_network_spawn_receives_managed_proxy(
         current_tool_context.reset(token)
 
     assert "policy" in seen
+    env = seen["env"]
+    assert isinstance(env, dict)
+    assert env["HTTP_PROXY"].startswith("http://127.0.0.1:")
+    assert env["HTTPS_PROXY"] == env["HTTP_PROXY"]
+    assert env["NO_PROXY"] == ""
+
+
+@pytest.mark.asyncio
+async def test_code_network_subprocess_receives_managed_proxy_env(
+    managed_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox import integration as integration_mod
+    from opensquilla.tools.builtin import code_exec, shell
+
+    monkeypatch.setattr(code_exec, "_resolve_python_bin", lambda *, sandbox_enabled: sys.executable)
+    monkeypatch.setattr(shell, "_host_execution_allowed", lambda: False)
+    seen: dict[str, object] = {}
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        managed = await integration_mod.prepare_subprocess_managed_network_proxy(
+            request,
+            runtime=runtime,
+        )
+        try:
+            seen["env"] = managed.request.env
+            seen["policy"] = managed.request.policy
+            return SimpleNamespace(
+                returncode=0,
+                stdout="ok\n",
+                stderr="",
+                timed_out=False,
+                backend_notes=(),
+            )
+        finally:
+            await managed.cleanup()
+
+    monkeypatch.setattr(code_exec, "run_under_backend", _fake_run_under_backend)
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="s1",
+            run_mode="standard",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.STANDARD,
+                domains=(DomainGrant(domain="example.com"),),
+            ),
+        )
+    )
+    try:
+        result = json.loads(
+            await code_exec.execute_code(
+                "\n".join(
+                    (
+                        "import os, socket",
+                        "url = 'https://example.com/path'",
+                        "socket.gethostname()",
+                        "print(os.environ.get('HTTP_PROXY', ''))",
+                        "print(os.environ.get('HTTPS_PROXY', ''))",
+                        "print(os.environ.get('NO_PROXY', '<missing>'))",
+                    )
+                )
+            )
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert result["exit_code"] == 0, result
+    assert result["stdout"] == "ok\n"
+    env = seen["env"]
+    assert isinstance(env, dict)
+    assert env["HTTP_PROXY"].startswith("http://127.0.0.1:")
+    assert env["HTTPS_PROXY"] == env["HTTP_PROXY"]
+    assert env["NO_PROXY"] == ""
 
 
 @pytest.mark.asyncio

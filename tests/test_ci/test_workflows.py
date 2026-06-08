@@ -239,6 +239,22 @@ def test_pr_target_validator_allows_maintainer_labeled_main_pull_requests(
         assert "Pull request targets main with maintainer approval label." in result.stdout
 
 
+def test_pr_target_validator_blocks_main_pull_requests_with_only_staging_labels(
+    tmp_path: Path,
+) -> None:
+    for label in ["maintainer-staging", "collaboration"]:
+        result = _validate_pr_target(
+            tmp_path,
+            base="main",
+            head="feature/shared-sandbox-work",
+            labels=[label],
+            changed_files=["src/opensquilla/sandbox/policy.py"],
+        )
+
+        assert result.returncode == 1
+        assert "Ordinary pull requests should target dev" in result.stderr
+
+
 def test_pr_target_validator_allows_staging_branch_pull_requests(
     tmp_path: Path,
 ) -> None:

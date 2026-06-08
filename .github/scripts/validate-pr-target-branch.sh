@@ -88,7 +88,7 @@ if [[ "${base_ref}" == "main" ]] && has_allowed_label main; then
   exit 0
 fi
 
-if is_staging_branch || has_allowed_label staging; then
+if [[ "${base_ref}" != "main" ]] && { is_staging_branch || has_allowed_label staging; }; then
   echo "Pull request targets a staging/collaboration branch."
   echo "This is not a final integration path; final integration should target dev, while release or hotfix work should target main with an approval label."
   exit 0

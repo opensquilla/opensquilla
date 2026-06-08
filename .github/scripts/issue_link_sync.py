@@ -188,6 +188,41 @@ class GitHubClient:
             payload={"body": body},
         )
 
+    def list_open_pull_requests(self) -> list[dict[str, Any]]:
+        all_pulls: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            pulls = self.request_json(
+                "GET",
+                f"/pulls?state=open&per_page=100&page={page}",
+            )
+            if not isinstance(pulls, list) or not pulls:
+                return all_pulls
+            all_pulls.extend(pulls)
+            if len(pulls) < 100:
+                return all_pulls
+            page += 1
+
+    def has_other_open_linked_pull_request(self, issue_number: int, pr_number: int) -> bool:
+        if "/" not in self._repository:
+            return False
+        owner, repo = self._repository.split("/", 1)
+        for pull_request in self.list_open_pull_requests():
+            try:
+                other_number = int(pull_request.get("number"))
+            except (TypeError, ValueError):
+                continue
+            if other_number == pr_number:
+                continue
+            parsed = parse_linked_issues(
+                pull_request.get("body"),
+                owner=owner,
+                repo=repo,
+            )
+            if issue_number in parsed.all:
+                return True
+        return False
+
 
 def _normalize_repo_ref(raw_ref: str, *, owner: str, repo: str) -> int | None:
     local = LOCAL_REF_RE.match(raw_ref)
@@ -247,7 +282,9 @@ def plan_issue_sync_actions(event: dict[str, Any]) -> tuple[IssueSyncAction, ...
     parsed = parse_linked_issues(pr.get("body"), owner=owner, repo=repo)
 
     if action in OPEN_PR_ACTIONS:
-        return tuple(
+        if pr.get("state") != "open":
+            return ()
+        open_actions = tuple(
             IssueSyncAction(
                 issue_number=issue_number,
                 kind="linked_pr_open",
@@ -256,6 +293,23 @@ def plan_issue_sync_actions(event: dict[str, Any]) -> tuple[IssueSyncAction, ...
             )
             for issue_number in parsed.all
         )
+        if action != "edited":
+            return open_actions
+
+        previous_body = ((event.get("changes") or {}).get("body") or {}).get("from")
+        previous = parse_linked_issues(previous_body, owner=owner, repo=repo)
+        current_issue_numbers = set(parsed.all)
+        remove_actions = tuple(
+            IssueSyncAction(
+                issue_number=issue_number,
+                kind="remove_linked_pr",
+                pr_number=pr_number,
+                pr_url=pr_url,
+            )
+            for issue_number in previous.all
+            if issue_number not in current_issue_numbers
+        )
+        return (*open_actions, *remove_actions)
 
     if action != "closed":
         return ()
@@ -333,14 +387,22 @@ def apply_action(client: GitHubClient, action: IssueSyncAction) -> None:
             action.issue_number,
             [MERGED_TO_DEV_LABEL, NEEDS_VERIFICATION_LABEL],
         )
-        client.remove_label(action.issue_number, HAS_LINKED_PR_LABEL)
+        if not client.has_other_open_linked_pull_request(
+            action.issue_number,
+            action.pr_number,
+        ):
+            client.remove_label(action.issue_number, HAS_LINKED_PR_LABEL)
         marker = comment_marker(kind=action.kind, pr_number=action.pr_number)
         if not has_marker(client.list_comments(action.issue_number), marker):
             client.create_comment(action.issue_number, _merged_to_dev_comment(action))
         return
 
     if action.kind in {"closed_unmerged", "remove_linked_pr"}:
-        client.remove_label(action.issue_number, HAS_LINKED_PR_LABEL)
+        if not client.has_other_open_linked_pull_request(
+            action.issue_number,
+            action.pr_number,
+        ):
+            client.remove_label(action.issue_number, HAS_LINKED_PR_LABEL)
         return
 
     raise ValueError(f"Unsupported issue sync action: {action.kind}")

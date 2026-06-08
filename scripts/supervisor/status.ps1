@@ -5,7 +5,13 @@
 .DESCRIPTION
     Runs `opensquilla --profile <name> gateway status --json` for each
     discovered profile, parses the JSON payload, and prints a compact
-    aligned table with: name, state, host, port, pid, log path.
+    aligned table with: name, state, URL, port, host, pid, log path.
+
+    The URL column shows the same `http://host:port` string that
+    `opensquilla gateway status` prints after "running:". For profiles
+    that have no running gateway we still synthesize the URL from the
+    known base port so the operator can see where the gateway *would*
+    listen once started.
 
     Profiles with no gateway running show "not_started" instead of
     failing the table render.
@@ -23,6 +29,14 @@
     of this script's directory (i.e. two levels up from
     `scripts/supervisor/`).
 
+.PARAMETER Ignore
+    Comma-separated list of profile names to skip. Mirrors the
+    `-Ignore` flag on start-all.ps1 — useful for hiding
+    intentionally-down profiles from the status table. Ignored
+    profiles are filtered out before port allocation, so the
+    remaining rows keep the same port numbers they had when
+    everyone was up.
+
 .EXAMPLE
     .\status.ps1
     .\status.ps1 -ProfilesRoot D:\work\profiles
@@ -30,9 +44,10 @@
 #>
 [CmdletBinding()]
 param(
-    [string] $ProfilesRoot,
-    [int]    $BasePort = 18791,
-    [string] $Repo
+    [string]   $ProfilesRoot,
+    [int]      $BasePort = 18791,
+    [string[]] $Ignore = @(),
+    [string]   $Repo
 )
 
 $ErrorActionPreference = 'Stop'
@@ -40,16 +55,20 @@ $ErrorActionPreference = 'Stop'
 
 $root   = Get-ProfilesRoot -Override $ProfilesRoot
 $cmd    = Get-OpensquillaCommand -Repo $Repo
-$entries = Get-ProfileEntries -ProfilesRoot $root
+$entries = Get-ProfileEntries -ProfilesRoot $root -Ignore $Ignore
 
 if (-not $entries -or $entries.Count -eq 0) {
     Write-Status "No profiles found under $root." -Level warn
     return
 }
 
+if ($Ignore -and $Ignore.Count -gt 0) {
+    Write-Status "Ignoring $($Ignore.Count) profile(s): $($Ignore -join ', ')" -Level info
+}
+
 $rows = @()
 foreach ($entry in $entries) {
-    $port = Get-ProfilePort -Name $entry.Name -BasePort $BasePort -ProfilesRoot $root
+    $port = Get-ProfilePort -Name $entry.Name -BasePort $BasePort -ProfilesRoot $root -Ignore $Ignore
     $env:OPENSQUILLA_HOME = $root
     $env:OPENSQUILLA_PROFILE = $entry.Name
     $statusArgs = @('--profile', $entry.Name, 'gateway', 'status', '--port', [string]$port, '--json')
@@ -71,6 +90,7 @@ foreach ($entry in $entries) {
         $rows += [pscustomobject]@{
             Profile = $entry.Name
             State   = [string]$parsed.state
+            Url     = if ($parsed.url) { [string]$parsed.url } else { '-' }
             Port    = [int]$parsed.port
             Host    = [string]$parsed.host
             Pid     = if ($parsed.pid) { [int]$parsed.pid } else { '-' }
@@ -80,6 +100,7 @@ foreach ($entry in $entries) {
         $rows += [pscustomobject]@{
             Profile = $entry.Name
             State   = 'unknown'
+            Url     = "http://127.0.0.1:$port"
             Port    = $port
             Host    = '-'
             Pid     = '-'
@@ -92,7 +113,7 @@ foreach ($entry in $entries) {
 # all hosts, so compute column widths explicitly.
 function Format-Table {
     param([object[]] $Data)
-    $cols = 'Profile','State','Port','Host','Pid','Log'
+    $cols = 'Profile','State','Url','Port','Host','Pid','Log'
     $widths = @{}
     foreach ($c in $cols) { $widths[$c] = $c.Length }
     foreach ($r in $Data) {

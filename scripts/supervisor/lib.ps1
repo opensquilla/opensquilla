@@ -122,17 +122,33 @@ function Get-ProfileEntries {
     discovery order is alphabetical, deterministic across hosts.
 
     Returns PSCustomObjects with: Name, Path, ConfigPath, HasConfig.
+
+    .PARAMETER ProfilesRoot
+        The directory to scan.
+
+    .PARAMETER Ignore
+        Optional list of profile names to skip. Useful for
+        `start-all.ps1 -Ignore coder,test_*` to leave a few profiles
+        down while bringing the rest of the fleet up. Filtering is
+        applied AFTER the alphabetical sort so port allocation stays
+        stable when the ignore list changes between invocations.
     #>
     param(
-        [Parameter(Mandatory)] [string] $ProfilesRoot
+        [Parameter(Mandatory)] [string]   $ProfilesRoot,
+        [string[]]                       $Ignore
     )
     if (-not (Test-Path -LiteralPath $ProfilesRoot -PathType Container)) {
         return @()
     }
     $entries = Get-ChildItem -LiteralPath $ProfilesRoot -Directory -ErrorAction SilentlyContinue |
         Sort-Object Name
+    $ignoreSet = if ($Ignore) { [System.Collections.Generic.HashSet[string]]::new(
+        [string[]]$Ignore, [System.StringComparer]::OrdinalIgnoreCase) } else { $null }
     $results = @()
     foreach ($entry in $entries) {
+        if ($ignoreSet -and $ignoreSet.Contains($entry.Name)) {
+            continue
+        }
         $configPath = Join-Path $entry.FullName 'config.toml'
         $hasConfig = Test-Path -LiteralPath $configPath -PathType Leaf
         $results += [pscustomobject]@{
@@ -147,33 +163,141 @@ function Get-ProfileEntries {
 
 # --- Port allocation -------------------------------------------------------
 
-function Get-ProfilePort {
+function Test-PortInUse {
     <#
-    .SYNOPSIS Compute the port for a profile (BasePort + index within root).
-
+    .SYNOPSIS Probe whether a TCP port is currently in use.
     .DESCRIPTION
-    Same algorithm on Windows / macOS / Linux: profile order is the sorted
-    alphabetical order of the profiles-root subdirectory listing, so the
-    port mapping is stable across reboots. Operators can override by passing
-    a different -BasePort; per-profile override lives in
-    `<profile>/config.toml` under `[gateway] port` and is read directly by
-    `opensquilla gateway start` (this script does not parse TOML itself).
+    Returns $true if a TCP connection to host:port succeeds within
+    200ms (something is listening). Returns $false otherwise (free,
+    connection refused, or unreachable). The probe is best-effort:
+    a port that is free at supervisor time can still race with
+    another process at start time. Used by Get-ProfilePort to honor
+    the port-allocation algorithm even when the algorithm's nominal
+    port is already bound.
     #>
     param(
-        [Parameter(Mandatory)] [string] $Name,
-        [Parameter(Mandatory)] [int]    $BasePort,
-        [Parameter(Mandatory)] [string] $ProfilesRoot
+        [Parameter(Mandatory)] [int]    $Port,
+        [string] $BindHost = '127.0.0.1'
     )
-    $siblings = Get-ProfileEntries -ProfilesRoot $ProfilesRoot
-    $index = 0
-    foreach ($sibling in $siblings) {
-        if ($sibling.Name -eq $Name) {
-            return [int]($BasePort + $index)
+    $client = $null
+    try {
+        $client = New-Object System.Net.Sockets.TcpClient
+        $iar = $client.BeginConnect($BindHost, $Port, $null, $null)
+        $result = $iar.AsyncWaitHandle.WaitOne(200, $false)
+        if ($result -and $client.Connected) {
+            return $true
         }
-        $index += 1
+        return $false
+    } catch {
+        return $false
+    } finally {
+        if ($client) {
+            try { $client.Close() } catch {}
+        }
     }
-    # Profile not present in root — caller is misusing. Fall back to base.
-    return [int]$BasePort
+}
+
+function Get-ProfilePort {
+    <#
+    .SYNOPSIS Compute the port for a profile, hunting forward if occupied.
+
+    .DESCRIPTION
+    Computes the algorithm's nominal port (per the rules below). If
+    that port is already bound (e.g., a stale gateway from a previous
+    session, or an app squatting on the slot), the function scans
+    forward up to $MaxPortOffset ports to find the first free port.
+    This way the operator can leave a port-hungry profile at the
+    next available slot without manually re-jigging the algorithm.
+
+    Allocation rules (same on Windows / macOS / Linux):
+
+      * The profile named `default` is anchored at exactly $BasePort
+        (default 18791). It is treated specially because operators
+        always want the "vanilla" gateway on the documented port.
+
+      * All other profiles start at $BasePort + 2 (i.e. the
+        BasePort+1 slot is intentionally left empty). Each
+        subsequent non-default profile (in alphabetical order)
+        increments by one: BasePort+2, BasePort+3, ...
+
+      * With the default BasePort=18791 that gives:
+
+            default         → 18791
+            <1st non-default> → 18793
+            <2nd non-default> → 18794
+            ...
+
+      * The order is taken from `Get-ProfileEntries`, which respects
+        the optional -Ignore list. So removing a profile from the
+        fleet does NOT cause port numbers to drift for the
+        survivors.
+
+      * PORT-HUNTING: if the algorithm's nominal port for this
+        profile is in use, the function scans forward (nominal+1,
+        nominal+2, ...) until it finds a free port. The chosen port
+        is reported via Write-Status when it differs from nominal.
+
+    .PARAMETER Ignore
+        Optional list of profile names to exclude when computing the
+        index. Forwarded to `Get-ProfileEntries`. The default
+        profile's port is unchanged regardless of the ignore list.
+
+    .PARAMETER MaxPortOffset
+        How far forward to scan before giving up. Default 50 (i.e.,
+        ports up to nominal+50 will be tried). Set to 0 to disable
+        port-hunting (return the nominal port even if it's taken).
+    #>
+    param(
+        [Parameter(Mandatory)] [string]   $Name,
+        [Parameter(Mandatory)] [int]      $BasePort,
+        [Parameter(Mandatory)] [string]   $ProfilesRoot,
+        [string[]]                       $Ignore,
+        [int]                            $MaxPortOffset = 50
+    )
+    if ($Name -eq 'default') {
+        $nominal = [int]$BasePort
+    } else {
+        $siblings = Get-ProfileEntries -ProfilesRoot $ProfilesRoot -Ignore $Ignore
+        $index = 0
+        $found = $false
+        foreach ($sibling in $siblings) {
+            if ($sibling.Name -eq 'default') {
+                continue
+            }
+            if ($sibling.Name -eq $Name) {
+                $nominal = [int]($BasePort + 2 + $index)
+                $found = $true
+                break
+            }
+            $index += 1
+        }
+        if (-not $found) {
+            # Profile not present in root (or filtered out). Fall back
+            # to the first non-default slot so a one-off query still
+            # returns a usable port.
+            $nominal = [int]($BasePort + 2)
+        }
+    }
+
+    # Port-hunt: scan forward if the nominal port is occupied.
+    for ($offset = 0; $offset -le $MaxPortOffset; $offset++) {
+        $candidate = $nominal + $offset
+        if (-not (Test-PortInUse -Port $candidate)) {
+            if ($offset -gt 0) {
+                Write-Status (
+                    "[{0}] nominal port {1} taken; using {2} (+{3})" -f $Name, $nominal, $candidate, $offset
+                ) -Level warn
+            }
+            return [int]$candidate
+        }
+    }
+
+    # No free port in the search window. Return the nominal and
+    # surface the failure so the operator sees the situation.
+    Write-Status (
+        "[{0}] no free port in {1}..{2} (nominal {3}); returning nominal" -f $Name, $nominal, ($nominal + $MaxPortOffset), $nominal
+    ) -Level err
+    return [int]$nominal
 }
 
 # --- Output helpers --------------------------------------------------------
@@ -248,5 +372,107 @@ function Invoke-Opensquilla {
         default {
             throw 'opensquilla is not on PATH and no source checkout was auto-detected next to this script. Either run `uv tool install opensquilla` (recommended) or invoke these scripts from inside a clone of opensquilla/opensquilla.'
         }
+    }
+}
+
+# --- Real task state ------------------------------------------------------
+
+function Get-GatewayState {
+    <#
+    .SYNOPSIS Query opensquilla for the REAL gateway state of a profile/port.
+
+    .DESCRIPTION
+    Runs `opensquilla --profile <name> gateway status --port <port> --json`
+    and parses the response. This is the canonical "is the agent task
+    actually busy" check — NOT a TCP probe. The supervisor's diagnostic
+    uses this to display a faithful task status; `Get-ProfilePort`
+    keeps using the lighter `Test-PortInUse` probe for port-hunting
+    because the algorithm only needs "is the socket bindable",
+    not "what is opensquilla thinking".
+
+    Returns a PSCustomObject with:
+      State   = 'running' | 'not_started' | 'unhealthy' | 'target_mismatch'
+                | 'unknown' | 'no_opensquilla'
+      Managed = $true | $false   (whether opensquilla owns the PID)
+      Pid     = process ID (or $null)
+      Url     = gateway URL
+      Error   = error message if opensquilla call failed (or $null)
+    #>
+    param(
+        [Parameter(Mandatory)] [int]    $Port,
+        [string] $Profile = $null,
+        [string] $BindHost = '127.0.0.1',
+        [string] $Repo = $null
+    )
+    $cmd = Get-OpensquillaCommand -Repo $Repo
+    if ($cmd.Mode -eq 'none') {
+        return [pscustomobject]@{
+            State   = 'no_opensquilla'
+            Managed = $false
+            Pid     = $null
+            Url     = $null
+            Error   = 'opensquilla not on PATH and no source checkout auto-detected'
+        }
+    }
+    $arguments = @()
+    if ($Profile) {
+        $arguments += @('--profile', $Profile)
+    }
+    $arguments += @('gateway', 'status', '--port', [string]$Port, '--listen', $BindHost, '--json')
+
+    $stdoutFile = [System.IO.Path]::GetTempFileName()
+    $stderrFile = [System.IO.Path]::GetTempFileName()
+    try {
+        switch ($cmd.Mode) {
+            'installed' {
+                $proc = Start-Process -FilePath $cmd.Exe `
+                    -ArgumentList $arguments `
+                    -NoNewWindow -Wait -PassThru `
+                    -RedirectStandardOutput $stdoutFile `
+                    -RedirectStandardError $stderrFile
+            }
+            'uv-run-repo' {
+                Push-Location -LiteralPath $cmd.Repo
+                try {
+                    $proc = Start-Process -FilePath 'uv' `
+                        -ArgumentList (@('run', 'opensquilla') + $arguments) `
+                        -NoNewWindow -Wait -PassThru `
+                        -RedirectStandardOutput $stdoutFile `
+                        -RedirectStandardError $stderrFile
+                } finally {
+                    Pop-Location
+                }
+            }
+        }
+        $stdout = if (Test-Path $stdoutFile) {
+            Get-Content $stdoutFile -Raw -ErrorAction SilentlyContinue
+        } else { '' }
+        $json = $stdout | ConvertFrom-Json -ErrorAction SilentlyContinue
+        if ($json) {
+            return [pscustomobject]@{
+                State   = [string]$json.state
+                Managed = [bool]$json.managed
+                Pid     = if ($json.pid) { [int]$json.pid } else { $null }
+                Url     = [string]$json.url
+                Error   = $null
+            }
+        }
+        return [pscustomobject]@{
+            State   = 'unknown'
+            Managed = $false
+            Pid     = $null
+            Url     = $null
+            Error   = 'opensquilla returned no JSON on stdout'
+        }
+    } catch {
+        return [pscustomobject]@{
+            State   = 'unknown'
+            Managed = $false
+            Pid     = $null
+            Url     = $null
+            Error   = $_.Exception.Message
+        }
+    } finally {
+        Remove-Item $stdoutFile, $stderrFile -ErrorAction SilentlyContinue
     }
 }

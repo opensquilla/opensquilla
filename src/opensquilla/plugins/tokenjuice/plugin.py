@@ -29,6 +29,18 @@ def _format_inline(summary: str, facts: dict[str, int], *, exit_code: int) -> st
     return "\n".join(part for part in parts if part).strip()
 
 
+def _truncate_inline_text(inline_text: str, max_inline_chars: int) -> str:
+    half = max(1, (max_inline_chars - 32) // 2)
+    return f"{inline_text[:half]}\n... omitted chars ...\n{inline_text[-half:]}"
+
+
+def _generic_fallback_char_cap_text(content: str, *, exit_code: int, max_inline_chars: int) -> str:
+    plain_text = _format_inline(content.strip(), {}, exit_code=exit_code)
+    if len(plain_text) <= max_inline_chars:
+        return plain_text
+    return _truncate_inline_text(plain_text, max_inline_chars)
+
+
 def reduce_tool_result(
     *,
     tool_name: str,
@@ -56,7 +68,7 @@ def reduce_tool_result(
     if rule is None:
         return None
 
-    summary, facts = reduce_with_rule(rule, content, exit_code=exit_code)
+    summary, facts = reduce_with_rule(rule, content, exit_code=exit_code, command=command)
     if not summary:
         return None
     inline_text = _format_inline(summary, facts, exit_code=exit_code)
@@ -65,8 +77,14 @@ def reduce_tool_result(
         and max_inline_chars > 0
         and len(inline_text) > max_inline_chars
     ):
-        half = max(1, (max_inline_chars - 32) // 2)
-        inline_text = f"{inline_text[:half]}\n... omitted chars ...\n{inline_text[-half:]}"
+        if rule.id == "generic/fallback":
+            inline_text = _generic_fallback_char_cap_text(
+                content,
+                exit_code=exit_code,
+                max_inline_chars=max_inline_chars,
+            )
+        else:
+            inline_text = _truncate_inline_text(inline_text, max_inline_chars)
     if len(inline_text) >= len(content):
         return None
     return Reduction(

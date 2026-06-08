@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from types import SimpleNamespace
 from typing import Any
 
@@ -71,6 +72,19 @@ def _tool_def(name: str) -> ToolDefinition:
         description=f"Mock tool {name}",
         input_schema=ToolInputSchema(properties={}, required=[]),
     )
+
+
+def _parse_fallback_ranges(text: str, section: str) -> list[tuple[int, int]]:
+    match = re.search(rf"^{section}:\n(?P<body>(?:- .+\n?)+)", text, re.MULTILINE)
+    assert match is not None
+    ranges: list[tuple[int, int]] = []
+    for line in match.group("body").splitlines():
+        if line == "- none":
+            continue
+        range_match = re.match(r"- (\d+)-(\d+)", line)
+        assert range_match is not None
+        ranges.append((int(range_match.group(1)), int(range_match.group(2))))
+    return ranges
 
 
 @pytest.mark.asyncio
@@ -330,6 +344,7 @@ def test_python_backend_reduces_pytest_output() -> None:
     assert "FAILED tests/test_api.py::test_bad" in result.inline_text
     assert "AssertionError" in result.inline_text
     assert "rootdir:" not in result.inline_text
+    assert "[generic_fallback_index]" not in result.inline_text
 
 
 @pytest.mark.asyncio
@@ -454,10 +469,56 @@ def test_python_backend_reduces_docker_build_output() -> None:
     assert result.reducer == "devops/docker-build"
     assert "ERROR: failed to solve" in result.inline_text
     assert "sha256:1234" not in result.inline_text
+    assert "[generic_fallback_index]" not in result.inline_text
 
 
-def test_python_backend_generic_fallback_head_tail() -> None:
-    output = "\n".join(f"line {index}" for index in range(60))
+def test_python_backend_reduces_rg_output_without_generic_fallback_index() -> None:
+    output = "\n".join(
+        f"src/module_{index}.py:{index + 1}:TODO marker {index}"
+        for index in range(80)
+    )
+
+    result = backend_reduce_tool_result(
+        tool_name="exec_command",
+        tool_use_id="tool-1",
+        command="rg TODO src",
+        content=output,
+        is_error=False,
+        max_inline_chars=3000,
+    )
+
+    assert result is not None
+    assert result.reducer == "search/rg"
+    assert "src/module_0.py:1:TODO marker 0" in result.inline_text
+    assert "[generic_fallback_index]" not in result.inline_text
+
+
+def test_python_backend_generic_fallback_indexes_middle_signal() -> None:
+    lines = [f"line {index:03d} normal output" for index in range(700)]
+    lines[350] = "line 350 ERROR initialize failed at zip.rb:14"
+    output = "\n".join(lines)
+
+    result = backend_reduce_tool_result(
+        tool_name="exec_command",
+        tool_use_id="tool-1",
+        command="custom-tool --verbose",
+        content=output,
+        is_error=True,
+        max_inline_chars=20_000,
+    )
+
+    assert result is not None
+    assert result.reducer == "generic/fallback"
+    assert "[generic_fallback_index]" in result.inline_text
+    assert "original_lines: 700" in result.inline_text
+    assert "shown_ranges:" in result.inline_text
+    assert "omitted_ranges:" in result.inline_text
+    assert "line 350 ERROR initialize failed at zip.rb:14" in result.inline_text
+    assert "signal: error" in result.inline_text
+
+
+def test_python_backend_generic_fallback_samples_middle_without_signals() -> None:
+    output = "\n".join(f"line {index:03d} normal output" for index in range(700))
 
     result = backend_reduce_tool_result(
         tool_name="exec_command",
@@ -465,14 +526,156 @@ def test_python_backend_generic_fallback_head_tail() -> None:
         command="custom-tool --verbose",
         content=output,
         is_error=False,
-        max_inline_chars=400,
+        max_inline_chars=20_000,
+    )
+    repeated = backend_reduce_tool_result(
+        tool_name="exec_command",
+        tool_use_id="tool-1",
+        command="custom-tool --verbose",
+        content=output,
+        is_error=False,
+        max_inline_chars=20_000,
+    )
+
+    assert result is not None
+    assert repeated is not None
+    assert result.reducer == "generic/fallback"
+    assert "[generic_fallback_index]" in result.inline_text
+    assert "head" in result.inline_text
+    assert "tail" in result.inline_text
+    assert "middle_sample" in result.inline_text
+    assert "line 350 normal output" in result.inline_text
+    assert result.inline_text == repeated.inline_text
+
+
+def test_python_backend_generic_fallback_indexes_command_keywords() -> None:
+    lines = [f"line {index:03d} normal output" for index in range(700)]
+    lines[8] = "line 008 initialize warmup mention"
+    lines[350] = "line 350 initialize target body"
+    lines[520] = "line 520 zip.rb body excerpt"
+    output = "\n".join(lines)
+
+    result = backend_reduce_tool_result(
+        tool_name="exec_command",
+        tool_use_id="tool-1",
+        command="custom-tool --target initialize /testbed/foo/zip.rb",
+        content=output,
+        is_error=False,
+        max_inline_chars=20_000,
     )
 
     assert result is not None
     assert result.reducer == "generic/fallback"
-    assert "line 0" in result.inline_text
-    assert "line 59" in result.inline_text
-    assert "omitted" in result.inline_text
+    assert "line 350 initialize target body" in result.inline_text
+    assert "line 520 zip.rb body excerpt" in result.inline_text
+    assert "signal: command-keyword initialize" in result.inline_text
+    assert "signal: command-keyword zip.rb" in result.inline_text
+
+
+def test_python_backend_generic_fallback_indexes_equals_flag_keyword() -> None:
+    lines = [f"line {index:03d} normal output" for index in range(700)]
+    lines[350] = "line 350 initialize target body"
+    output = "\n".join(lines)
+
+    result = backend_reduce_tool_result(
+        tool_name="exec_command",
+        tool_use_id="tool-1",
+        command="custom-tool --target=initialize",
+        content=output,
+        is_error=False,
+        max_inline_chars=20_000,
+    )
+
+    assert result is not None
+    assert result.reducer == "generic/fallback"
+    assert "line 350 initialize target body" in result.inline_text
+    assert "signal: command-keyword initialize" in result.inline_text
+
+
+def test_python_backend_generic_fallback_indexes_equals_flag_path_keyword() -> None:
+    lines = [f"line {index:03d} normal output" for index in range(700)]
+    lines[520] = "line 520 zip.rb body excerpt"
+    output = "\n".join(lines)
+
+    result = backend_reduce_tool_result(
+        tool_name="exec_command",
+        tool_use_id="tool-1",
+        command="custom-tool --file=/testbed/foo/zip.rb",
+        content=output,
+        is_error=False,
+        max_inline_chars=20_000,
+    )
+
+    assert result is not None
+    assert result.reducer == "generic/fallback"
+    assert "line 520 zip.rb body excerpt" in result.inline_text
+    assert "signal: command-keyword zip.rb" in result.inline_text
+
+
+def test_python_backend_generic_fallback_char_cap_uses_plain_projection() -> None:
+    lines = [f"line {index:03d} normal output with enough body text" for index in range(900)]
+    lines[450] = "line 450 ERROR initialize failed at zip.rb:14"
+    output = "\n".join(lines)
+
+    result = backend_reduce_tool_result(
+        tool_name="exec_command",
+        tool_use_id="tool-1",
+        command="custom-tool --target initialize /testbed/foo/zip.rb",
+        content=output,
+        is_error=True,
+        max_inline_chars=6_000,
+    )
+
+    assert result is not None
+    assert result.reducer == "generic/fallback"
+    assert result.raw_chars == len(output)
+    assert result.reduced_chars <= 6_000
+    assert result.inline_text.startswith("exit 1\nline 000 normal output")
+    assert "... omitted chars ..." in result.inline_text
+    assert "[generic_fallback_index]" not in result.inline_text
+    assert "shown_ranges:" not in result.inline_text
+    assert "omitted_ranges:" not in result.inline_text
+
+
+def test_python_backend_generic_fallback_short_output_noops() -> None:
+    result = backend_reduce_tool_result(
+        tool_name="exec_command",
+        tool_use_id="tool-1",
+        command="custom-tool --verbose",
+        content="short output",
+        is_error=False,
+        max_inline_chars=20_000,
+    )
+
+    assert result is None
+
+
+def test_python_backend_generic_fallback_omitted_ranges_cover_unshown_lines() -> None:
+    lines = [f"line {index:03d} normal output" for index in range(700)]
+    lines[350] = "line 350 Traceback: initialize raised from zip.rb:14"
+    output = "\n".join(lines)
+
+    result = backend_reduce_tool_result(
+        tool_name="exec_command",
+        tool_use_id="tool-1",
+        command="cat -n /testbed/foo/zip.rb",
+        content=output,
+        is_error=True,
+        max_inline_chars=20_000,
+    )
+
+    assert result is not None
+    assert result.reducer == "generic/fallback"
+
+    shown = _parse_fallback_ranges(result.inline_text, "shown_ranges")
+    omitted = _parse_fallback_ranges(result.inline_text, "omitted_ranges")
+    coverage: list[int] = []
+    for start, end in [*shown, *omitted]:
+        assert 1 <= start <= end <= 700
+        coverage.extend(range(start, end + 1))
+
+    assert sorted(coverage) == list(range(1, 701))
+    assert len(coverage) == len(set(coverage))
 
 
 def test_typescript_runtime_directory_is_not_present() -> None:

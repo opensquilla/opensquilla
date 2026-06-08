@@ -64,9 +64,6 @@ has_allowed_label() {
       main:allow-main-target | main:release | main:hotfix | main:main-sync | main:release-docs | main:sync-to-main | main:docs-preview)
         return 0
         ;;
-      staging:maintainer-staging | staging:collaboration)
-        return 0
-        ;;
     esac
   done < <(event_label_names)
 
@@ -88,7 +85,7 @@ if [[ "${base_ref}" == "main" ]] && has_allowed_label main; then
   exit 0
 fi
 
-if [[ "${base_ref}" != "main" ]] && { is_staging_branch || has_allowed_label staging; }; then
+if [[ "${base_ref}" != "main" ]] && is_staging_branch; then
   echo "Pull request targets a staging/collaboration branch."
   echo "This is not a final integration path; final integration should target dev, while release or hotfix work should target main with an approval label."
   exit 0
@@ -97,7 +94,7 @@ fi
 {
   echo "::error title=Wrong PR target::Ordinary pull requests should target dev."
   echo "Use main only for maintainer-approved release, hotfix, release-docs, or main-sync work."
-  echo "Use sandbox-*, integration/*, staging/*, release/*, or a maintainer-staging/collaboration label for maintainer collaboration PRs."
+  echo "Use sandbox-*, integration/*, staging/*, or release/* for maintainer collaboration PRs."
   echo "Retarget this pull request to dev, or ask a maintainer to add an explicit exception label."
 } >&2
 exit 1

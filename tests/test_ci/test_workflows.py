@@ -292,6 +292,22 @@ def test_pr_target_validator_allows_labeled_staging_pull_requests(
         assert "staging/collaboration" in result.stdout
 
 
+def test_pr_target_validator_blocks_label_only_unknown_collaboration_targets(
+    tmp_path: Path,
+) -> None:
+    for label in ["maintainer-staging", "collaboration"]:
+        result = _validate_pr_target(
+            tmp_path,
+            base="feature/shared-work",
+            head="feature/shared-sandbox-work",
+            labels=[label],
+            changed_files=["src/opensquilla/sandbox/policy.py"],
+        )
+
+        assert result.returncode == 1
+        assert "Ordinary pull requests should target dev" in result.stderr
+
+
 def test_pr_target_validator_blocks_unknown_target_branches(tmp_path: Path) -> None:
     result = _validate_pr_target(
         tmp_path,

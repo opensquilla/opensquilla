@@ -6,6 +6,7 @@ import ipaddress
 import re
 from dataclasses import dataclass
 from enum import StrEnum
+from urllib.parse import urlsplit
 
 from opensquilla.sandbox.capability_profile import CapabilityProfile, NetworkIntent
 from opensquilla.sandbox.dev_policy_matrix import NetworkTargetClass
@@ -49,6 +50,7 @@ _NETWORK_UNREACHABLE_MARKERS: tuple[str, ...] = (
     "no route to host",
 )
 _LOCALHOST_NAMES = {"localhost", "localhost.localdomain"}
+_URL_RE = re.compile(r"https?://[^\s'\"<>]+", re.IGNORECASE)
 
 
 def classify_network_failure(output: str) -> NetworkFailure | None:
@@ -77,14 +79,22 @@ def network_class_for_failure(
     *,
     profile: CapabilityProfile,
     default: NetworkTargetClass,
+    explicit_hosts: tuple[str, ...] = (),
 ) -> NetworkTargetClass:
     if host:
-        normalized = _clean_host(host).lower()
-        ip_class = _network_class_for_ip_literal(normalized)
-        if ip_class is not None:
-            return ip_class
-        if normalized in _LOCALHOST_NAMES or normalized.endswith(".localhost"):
-            return NetworkTargetClass.PRIVATE_OR_LOCAL
+        host_class = _network_class_for_host(host)
+        if host_class is not None:
+            return host_class
+
+    explicit_classes = tuple(
+        target_class
+        for explicit_host in explicit_hosts
+        if (target_class := _network_class_for_host(explicit_host)) is not None
+    )
+    if NetworkTargetClass.METADATA_OR_LINK_LOCAL in explicit_classes:
+        return NetworkTargetClass.METADATA_OR_LINK_LOCAL
+    if NetworkTargetClass.PRIVATE_OR_LOCAL in explicit_classes:
+        return NetworkTargetClass.PRIVATE_OR_LOCAL
 
     if profile.network_intent is NetworkIntent.PACKAGE_REGISTRY:
         return NetworkTargetClass.KNOWN_PACKAGE_REGISTRY
@@ -100,6 +110,25 @@ def network_class_for_failure(
     if host:
         return NetworkTargetClass.UNKNOWN_PUBLIC
     return default
+
+
+def explicit_network_hosts_from_command(command: str) -> tuple[str, ...]:
+    hosts: list[str] = []
+    for match in _URL_RE.finditer(command):
+        parsed = urlsplit(match.group(0))
+        if parsed.hostname:
+            hosts.append(parsed.hostname)
+    return tuple(hosts)
+
+
+def _network_class_for_host(host: str) -> NetworkTargetClass | None:
+    normalized = _clean_host(host).lower()
+    ip_class = _network_class_for_ip_literal(normalized)
+    if ip_class is not None:
+        return ip_class
+    if normalized in _LOCALHOST_NAMES or normalized.endswith(".localhost"):
+        return NetworkTargetClass.PRIVATE_OR_LOCAL
+    return None
 
 
 def _network_class_for_ip_literal(host: str) -> NetworkTargetClass | None:
@@ -131,5 +160,6 @@ __all__ = [
     "NetworkFailure",
     "RecoveryFailureKind",
     "classify_network_failure",
+    "explicit_network_hosts_from_command",
     "network_class_for_failure",
 ]

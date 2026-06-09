@@ -47,3 +47,31 @@ def test_public_package_registry_profile_becomes_known_package_registry() -> Non
         network_class_for_failure("pypi.org", profile=profile, default=NetworkTargetClass.NONE)
         is NetworkTargetClass.KNOWN_PACKAGE_REGISTRY
     )
+
+
+def test_metadata_command_target_overrides_hostless_network_failure() -> None:
+    profile = capability_profile_for_command(("sh", "-lc", "curl http://169.254.169.254/"))
+
+    assert (
+        network_class_for_failure(
+            None,
+            profile=profile,
+            default=NetworkTargetClass.UNKNOWN_PUBLIC,
+            explicit_hosts=("169.254.169.254",),
+        )
+        is NetworkTargetClass.METADATA_OR_LINK_LOCAL
+    )
+
+
+def test_private_command_target_overrides_hostless_network_failure() -> None:
+    profile = capability_profile_for_command(("sh", "-lc", "curl http://127.0.0.1:8000"))
+
+    assert (
+        network_class_for_failure(
+            None,
+            profile=profile,
+            default=NetworkTargetClass.UNKNOWN_PUBLIC,
+            explicit_hosts=("127.0.0.1",),
+        )
+        is NetworkTargetClass.PRIVATE_OR_LOCAL
+    )

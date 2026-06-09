@@ -607,6 +607,205 @@ async def test_trusted_unknown_install_network_failure_retries_once_with_managed
 
 
 @pytest.mark.asyncio
+async def test_trusted_hostless_private_network_failure_does_not_retry(
+    managed_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    backend_calls = 0
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        nonlocal backend_calls
+        backend_calls += 1
+        return SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="Network is unreachable\n",
+            backend_notes=(),
+        )
+
+    async def _fake_preflight_subprocess_managed_network(request, runtime):
+        return None
+
+    monkeypatch.setattr(shell, "run_under_backend", _fake_run_under_backend)
+    monkeypatch.setattr(shell, "_sensitive_shell_block", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        shell,
+        "preflight_subprocess_managed_network",
+        _fake_preflight_subprocess_managed_network,
+    )
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.TRUSTED,
+                workspace=str(managed_runtime),
+            ),
+        )
+    )
+    try:
+        result = await shell.exec_command(
+            "curl http://127.0.0.1:8000/",
+            workdir=str(managed_runtime),
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert backend_calls == 1
+    assert "Network is unreachable" in result
+
+
+@pytest.mark.asyncio
+async def test_trusted_recovery_rewrites_retry_policy_to_managed_proxy(
+    managed_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox import integration as integration_mod
+    from opensquilla.sandbox.types import NetworkMode
+    from opensquilla.tools.builtin import shell
+
+    class _FakeProxyServer:
+        host = "127.0.0.1"
+        port = 48123
+
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+    async def _fake_gate_action(**kwargs):
+        _, policy, request = await integration_mod.gate_action(**kwargs)
+        policy = policy.__class__(
+            level=policy.level,
+            network=NetworkMode.NONE,
+            mounts=policy.mounts,
+            workspace_rw=policy.workspace_rw,
+            tmp_writable=policy.tmp_writable,
+            limits=policy.limits,
+            env_allowlist=policy.env_allowlist,
+            require_approval=policy.require_approval,
+            description=policy.description,
+            network_proxy=policy.network_proxy,
+        )
+        request = SimpleNamespace(
+            cwd=request.cwd,
+            action_kind=request.action_kind,
+            policy=policy,
+            reason=getattr(request, "reason", ""),
+        )
+        return object(), policy, request
+
+    backend_calls = []
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        backend_calls.append(request)
+        if len(backend_calls) == 1:
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="curl: (6) Could not resolve host: pypi.org\n",
+                backend_notes=(),
+            )
+        return SimpleNamespace(returncode=0, stdout="installed\n", stderr="", backend_notes=())
+
+    monkeypatch.setattr(integration_mod, "SandboxProxyServer", _FakeProxyServer)
+    monkeypatch.setattr(shell, "gate_action", _fake_gate_action)
+    monkeypatch.setattr(shell, "run_under_backend", _fake_run_under_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.TRUSTED,
+                workspace=str(managed_runtime),
+            ),
+        )
+    )
+    try:
+        result = await shell.exec_command("pip install demo", workdir=str(managed_runtime))
+    finally:
+        current_tool_context.reset(token)
+
+    assert "installed" in result
+    assert len(backend_calls) == 2
+    assert backend_calls[0].policy.network is NetworkMode.NONE
+    assert backend_calls[1].policy.network is NetworkMode.PROXY_ALLOWLIST
+    assert backend_calls[1].env["HTTP_PROXY"] == "http://127.0.0.1:48123"
+
+
+@pytest.mark.asyncio
+async def test_trusted_successful_network_failure_text_does_not_retry(
+    managed_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    backend_calls = 0
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        nonlocal backend_calls
+        backend_calls += 1
+        return SimpleNamespace(
+            returncode=0,
+            stdout="Could not resolve host: pypi.org\n",
+            stderr="",
+            backend_notes=(),
+        )
+
+    monkeypatch.setattr(shell, "run_under_backend", _fake_run_under_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.TRUSTED,
+                workspace=str(managed_runtime),
+            ),
+        )
+    )
+    try:
+        result = await shell.exec_command("pip install demo", workdir=str(managed_runtime))
+    finally:
+        current_tool_context.reset(token)
+
+    assert backend_calls == 1
+    assert "Could not resolve host: pypi.org" in result
+
+
+@pytest.mark.asyncio
 async def test_timeout_wrapped_node_install_queues_bundle_approval_before_proxy_run(
     managed_runtime: Path,
     monkeypatch: pytest.MonkeyPatch,

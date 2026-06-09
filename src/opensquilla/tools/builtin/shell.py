@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import dataclasses
 import json
 import ntpath
 import os
@@ -58,9 +59,16 @@ from opensquilla.sandbox.path_validation import MountDecision, decide_path_acces
 from opensquilla.sandbox.policy import LevelHints, build_policy, select_level
 from opensquilla.sandbox.runtime_recovery import (
     classify_network_failure,
+    explicit_network_hosts_from_command,
     network_class_for_failure,
 )
-from opensquilla.sandbox.types import DenialReason, DenialResult, SandboxPolicy, SandboxRequest
+from opensquilla.sandbox.types import (
+    DenialReason,
+    DenialResult,
+    NetworkMode,
+    SandboxPolicy,
+    SandboxRequest,
+)
 from opensquilla.tools.builtin.shell_policy import check_safe_bin
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
@@ -1323,13 +1331,14 @@ async def exec_command(
         output = sandbox_result.stdout
         if sandbox_result.stderr:
             output += sandbox_result.stderr
-        failure = classify_network_failure(output)
+        failure = classify_network_failure(output) if sandbox_result.returncode != 0 else None
         if failure is not None:
             capability_profile = capability_profile_for_command(("sh", "-lc", command))
             network_class = network_class_for_failure(
                 failure.host,
                 profile=capability_profile,
                 default=NetworkTargetClass.UNKNOWN_PUBLIC,
+                explicit_hosts=explicit_network_hosts_from_command(command),
             )
             recovery_decision = decide_dev_recovery(
                 _context_run_mode() or "standard",
@@ -1341,8 +1350,20 @@ async def exec_command(
                 recovery_decision.kind is DevPolicyDecisionKind.AUTO
                 and recovery_decision.retry_once
             ):
+                retry_request = backend_request
+                if (
+                    recovery_decision.use_managed_proxy
+                    and retry_request.policy.network is not NetworkMode.PROXY_ALLOWLIST
+                ):
+                    retry_request = retry_request.with_policy(
+                        dataclasses.replace(
+                            retry_request.policy,
+                            network=NetworkMode.PROXY_ALLOWLIST,
+                            network_proxy=None,
+                        )
+                    )
                 managed_network = await prepare_subprocess_managed_network_proxy(
-                    backend_request,
+                    retry_request,
                     runtime=runtime,
                 )
                 try:

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from opensquilla.sandbox.capability_profile import capability_profile_for_command
-from opensquilla.sandbox.dev_policy_matrix import NetworkTargetClass
+from opensquilla.sandbox.dev_policy_matrix import NetworkTargetClass, PathTargetClass
 from opensquilla.sandbox.runtime_recovery import (
     RecoveryFailureKind,
     classify_network_failure,
+    classify_path_target,
     network_class_for_failure,
 )
 
@@ -75,3 +78,34 @@ def test_private_command_target_overrides_hostless_network_failure() -> None:
         )
         is NetworkTargetClass.PRIVATE_OR_LOCAL
     )
+
+
+def test_tmp_project_path_outside_workspace_is_normal_user_path(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    project = tmp_path / "project"
+    workspace.mkdir()
+    project.mkdir()
+
+    assert (
+        classify_path_target(project, workspace=workspace)
+        is PathTargetClass.NORMAL_USER_PATH
+    )
+
+
+def test_workspace_child_is_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    child = workspace / "child"
+
+    assert classify_path_target(child, workspace=workspace) is PathTargetClass.WORKSPACE
+
+
+def test_sensitive_paths_are_sensitive() -> None:
+    assert classify_path_target(Path("/etc/passwd"), workspace=None) is PathTargetClass.SENSITIVE
+    assert (
+        classify_path_target(Path.home() / ".ssh" / "id_rsa", workspace=None)
+        is PathTargetClass.SENSITIVE
+    )
+
+
+def test_tmp_descendant_is_temp() -> None:
+    assert classify_path_target(Path("/tmp/something"), workspace=None) is PathTargetClass.TEMP

@@ -59,12 +59,14 @@ from opensquilla.sandbox.path_validation import MountDecision, decide_path_acces
 from opensquilla.sandbox.policy import LevelHints, build_policy, select_level
 from opensquilla.sandbox.runtime_recovery import (
     classify_network_failure,
+    classify_path_target,
     explicit_network_hosts_from_command,
     network_class_for_failure,
 )
 from opensquilla.sandbox.types import (
     DenialReason,
     DenialResult,
+    MountSpec,
     NetworkMode,
     SandboxPolicy,
     SandboxRequest,
@@ -119,6 +121,7 @@ _SANDBOX_NETWORK_FAILURE_MARKERS: tuple[str, ...] = (
 _SHELL_NULL_REDIRECT_RE = re.compile(
     r"(?:(?<=^)|(?<=[\s;|&]))\d*[<>]{1,2}\s*/dev/null(?=$|[\s;|&])"
 )
+_BACKEND_NOTE_PATH_RE = re.compile(r"(?:~)?/[^\s'\"`$(){}\[\]<>;,|&]+")
 PROCESS_ACTIONS: frozenset[str] = frozenset(
     {"eof", "kill", "list", "log", "poll", "remove", "submit", "write"}
 )
@@ -697,6 +700,79 @@ def _sandbox_shell_backend_cwd(cwd: str | None, request: SandboxRequest) -> Path
 
 def _active_sandbox_mounts() -> list[dict[str, object]]:
     return current_tool_mounts()
+
+
+def _backend_denial_target_path(
+    backend_notes: tuple[str, ...],
+    fallback: Path,
+) -> Path:
+    for note in backend_notes:
+        match = _BACKEND_NOTE_PATH_RE.search(note)
+        if match is not None:
+            return Path(match.group(0).rstrip(".,:"))
+    return fallback
+
+
+def _policy_with_active_tool_mounts(policy: SandboxPolicy) -> SandboxPolicy:
+    mounts_by_path = {str(mount.host_path): mount for mount in policy.mounts}
+    for mount in _active_sandbox_mounts():
+        raw_path = mount.get("path")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            continue
+        access = str(mount.get("access") or "ro").strip()
+        mode = "rw" if access == "rw" else "ro"
+        host_path = Path(raw_path).expanduser().resolve(strict=False)
+        mounts_by_path[str(host_path)] = MountSpec(
+            host_path=host_path,
+            sandbox_path=host_path,
+            mode=mode,
+            required=False,
+        )
+    return dataclasses.replace(policy, mounts=tuple(mounts_by_path.values()))
+
+
+def _trusted_path_recovery_retry_request(
+    command: str,
+    backend_request: SandboxRequest,
+    backend_notes: tuple[str, ...],
+) -> SandboxRequest | None:
+    if not trusted_sandbox_active():
+        return None
+
+    target = _backend_denial_target_path(backend_notes, backend_request.cwd)
+    workspace = _workspace_root_for_path_access()
+    capability_profile = capability_profile_for_command(("sh", "-lc", command))
+    path_class = classify_path_target(target, workspace=workspace)
+    recovery_decision = decide_dev_recovery(
+        _context_run_mode() or "standard",
+        capability_profile,
+        path_class,
+        network_class=NetworkTargetClass.NONE,
+    )
+    if (
+        recovery_decision.kind is not DevPolicyDecisionKind.AUTO
+        or not recovery_decision.retry_once
+        or not recovery_decision.grant_rw_path
+    ):
+        return None
+
+    mount_decision = decide_path_access(
+        target,
+        workspace=workspace,
+        mounts=_active_sandbox_mounts(),
+        write=True,
+    )
+    if mount_decision.status == "blocked":
+        return None
+    if mount_decision.status == "request" and not grant_temporary_mount_for_current_tool(
+        mount_decision
+    ):
+        return None
+
+    retry_policy = _policy_with_active_tool_mounts(backend_request.policy)
+    if retry_policy.mounts == backend_request.policy.mounts:
+        return None
+    return backend_request.with_policy(retry_policy)
 
 
 def _sandbox_workdir_access_envelope(
@@ -1312,6 +1388,22 @@ async def exec_command(
         except Exception as exc:
             raise ToolError(f"Sandboxed shell execution failed: {exc}") from exc
         if sandbox_result.backend_notes:
+            retry_request = _trusted_path_recovery_retry_request(
+                command,
+                backend_request,
+                sandbox_result.backend_notes,
+            )
+            if retry_request is not None:
+                try:
+                    sandbox_result = await run_under_backend(retry_request, runtime=runtime)
+                except Exception as exc:
+                    raise ToolError(f"Sandboxed shell execution failed: {exc}") from exc
+                if not sandbox_result.backend_notes:
+                    output = sandbox_result.stdout
+                    if sandbox_result.stderr:
+                        output += sandbox_result.stderr
+                    output = _append_sandbox_network_hint(output)
+                    return f"exit_code={sandbox_result.returncode}\n{output}"
             escalation = await escalate_backend_denial(
                 sandbox_result, request, policy, runtime=runtime
             )

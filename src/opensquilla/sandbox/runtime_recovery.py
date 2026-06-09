@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import re
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from opensquilla.sandbox.capability_profile import CapabilityProfile, NetworkIntent
-from opensquilla.sandbox.dev_policy_matrix import NetworkTargetClass
+from opensquilla.sandbox.dev_policy_matrix import NetworkTargetClass, PathTargetClass
+from opensquilla.sandbox.sensitive_paths import sensitive_path_marker
 
 
 class RecoveryFailureKind(StrEnum):
@@ -51,6 +54,7 @@ _NETWORK_UNREACHABLE_MARKERS: tuple[str, ...] = (
 )
 _LOCALHOST_NAMES = {"localhost", "localhost.localdomain"}
 _URL_RE = re.compile(r"https?://[^\s'\"<>]+", re.IGNORECASE)
+_TMP_ROOT = Path("/tmp")
 
 
 def classify_network_failure(output: str) -> NetworkFailure | None:
@@ -72,6 +76,37 @@ def classify_network_failure(output: str) -> NetworkFailure | None:
         if any(marker in lowered for marker in _DNS_MARKERS):
             return NetworkFailure(RecoveryFailureKind.DNS_FAILURE, None, line)
     return None
+
+
+def classify_path_target(
+    path: Path,
+    *,
+    workspace: Path | None,
+) -> PathTargetClass:
+    try:
+        candidate = path.expanduser().resolve(strict=False)
+    except (OSError, RuntimeError):
+        return PathTargetClass.UNCLEAR
+
+    workspace_root: Path | None = None
+    if workspace is not None:
+        try:
+            workspace_root = workspace.expanduser().resolve(strict=False)
+        except (OSError, RuntimeError):
+            workspace_root = None
+    if workspace_root is not None and _is_relative_to(candidate, workspace_root):
+        return PathTargetClass.WORKSPACE
+
+    if sensitive_path_marker(str(candidate), workspace=workspace_root) is not None:
+        return PathTargetClass.SENSITIVE
+
+    if _is_user_owned_or_creatable(candidate):
+        return PathTargetClass.NORMAL_USER_PATH
+
+    if _is_relative_to(candidate, _TMP_ROOT):
+        return PathTargetClass.TEMP
+
+    return PathTargetClass.UNCLEAR
 
 
 def network_class_for_failure(
@@ -121,6 +156,29 @@ def explicit_network_hosts_from_command(command: str) -> tuple[str, ...]:
     return tuple(hosts)
 
 
+def _is_user_owned_or_creatable(path: Path) -> bool:
+    uid = getattr(os, "getuid", lambda: None)()
+    if uid is None:
+        return False
+    try:
+        if path.exists():
+            return path.stat().st_uid == uid
+        for parent in path.parents:
+            if parent.exists():
+                return parent.stat().st_uid == uid and os.access(parent, os.W_OK | os.X_OK)
+    except (OSError, RuntimeError):
+        return False
+    return False
+
+
+def _is_relative_to(candidate: Path, root: Path) -> bool:
+    try:
+        candidate.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
 def _network_class_for_host(host: str) -> NetworkTargetClass | None:
     normalized = _clean_host(host).lower()
     ip_class = _network_class_for_ip_literal(normalized)
@@ -159,6 +217,7 @@ def _clean_host(host: str) -> str:
 __all__ = [
     "NetworkFailure",
     "RecoveryFailureKind",
+    "classify_path_target",
     "classify_network_failure",
     "explicit_network_hosts_from_command",
     "network_class_for_failure",

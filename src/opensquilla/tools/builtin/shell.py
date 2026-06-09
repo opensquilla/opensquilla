@@ -1523,6 +1523,22 @@ async def exec_command(
                     return json.dumps(preflight.to_dict())
                 if isinstance(preflight, dict):
                     return json.dumps(preflight)
+                managed_network = await prepare_subprocess_managed_network_proxy(
+                    approval_request,
+                    runtime=runtime,
+                )
+                try:
+                    sandbox_result = await run_under_backend(
+                        managed_network.request,
+                        runtime=runtime,
+                    )
+                except Exception as exc:
+                    raise ToolError(f"Sandboxed shell execution failed: {exc}") from exc
+                finally:
+                    await managed_network.cleanup()
+                output = sandbox_result.stdout
+                if sandbox_result.stderr:
+                    output += sandbox_result.stderr
         output = _append_sandbox_network_hint(output)
         return f"exit_code={sandbox_result.returncode}\n{output}"
 

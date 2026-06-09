@@ -11,7 +11,12 @@ import pytest
 from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.integration import configure_runtime, get_runtime, reset_runtime
-from opensquilla.sandbox.run_context import DomainGrant, RunContext, TemporaryGrant
+from opensquilla.sandbox.run_context import (
+    DomainGrant,
+    PackageBundleGrant,
+    RunContext,
+    TemporaryGrant,
+)
 from opensquilla.sandbox.run_mode import RunMode
 from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
 
@@ -733,6 +738,91 @@ async def test_standard_runtime_network_recovery_returns_host_approval_for_expli
     pending = get_approval_queue().list_pending("exec")
     assert len(pending) == 1
     assert pending[0]["params"]["host"] == "unknown.test"
+
+
+@pytest.mark.asyncio
+async def test_standard_runtime_network_recovery_retries_once_with_approved_bundle(
+    standard_runtime_no_preflight: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.types import NetworkMode, SandboxRequest
+    from opensquilla.tools.builtin import shell
+
+    backend_calls: list[SandboxRequest] = []
+    cleanup_calls = 0
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        backend_calls.append(request)
+        if len(backend_calls) == 1:
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="curl: (6) Could not resolve host: pypi.org\n",
+                backend_notes=(),
+            )
+        return SimpleNamespace(returncode=0, stdout="installed\n", stderr="", backend_notes=())
+
+    async def _fake_prepare_subprocess_managed_network_proxy(request, *, runtime=None):
+        managed_env = dict(request.env)
+        managed_env["HTTP_PROXY"] = "http://127.0.0.1:48123"
+        managed_env["HTTPS_PROXY"] = managed_env["HTTP_PROXY"]
+        managed_request = SandboxRequest(
+            argv=request.argv,
+            cwd=request.cwd,
+            action_kind=request.action_kind,
+            policy=request.policy,
+            stdin=request.stdin,
+            env=managed_env,
+            reason=request.reason,
+        )
+
+        async def _cleanup() -> None:
+            nonlocal cleanup_calls
+            cleanup_calls += 1
+
+        return SimpleNamespace(request=managed_request, cleanup=_cleanup)
+
+    monkeypatch.setattr(shell, "run_under_backend", _fake_run_under_backend)
+    monkeypatch.setattr(
+        shell,
+        "prepare_subprocess_managed_network_proxy",
+        _fake_prepare_subprocess_managed_network_proxy,
+    )
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(standard_runtime_no_preflight),
+            session_key="s1",
+            run_mode="standard",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.STANDARD,
+                workspace=str(standard_runtime_no_preflight),
+                bundles=(PackageBundleGrant(bundle_id="python-package-install"),),
+            ),
+        )
+    )
+    try:
+        result = await shell.exec_command(
+            "pip install demo",
+            workdir=str(standard_runtime_no_preflight),
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert "installed" in result
+    assert len(backend_calls) == 2
+    assert cleanup_calls == 1
+    assert backend_calls[0].policy.network is NetworkMode.NONE
+    assert backend_calls[1].policy.network is NetworkMode.PROXY_ALLOWLIST
+    assert backend_calls[1].env["HTTP_PROXY"] == "http://127.0.0.1:48123"
+    assert get_approval_queue().list_pending("exec") == []
 
 
 @pytest.mark.asyncio

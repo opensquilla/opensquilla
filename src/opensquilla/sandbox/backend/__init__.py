@@ -37,6 +37,27 @@ from opensquilla.sandbox.types import SandboxBackendError
 log = logging.getLogger(__name__)
 
 
+def _auto_backend_failure_message() -> str:
+    message = "sandbox=true but no real sandbox backend is available for backend=auto"
+    if not sys.platform.startswith("win"):
+        return message
+
+    from opensquilla.sandbox.backend.windows_support import (
+        probe_windows_sandbox_support,
+    )
+
+    support = probe_windows_sandbox_support()
+    diagnostics = (
+        "Windows sandbox setup diagnostics: "
+        f"ctypes={'ready' if support.ctypes_available else 'missing'}, "
+        f"AppContainer={'ready' if support.appcontainer_enforced else 'not ready'}, "
+        f"Restricted Token={'ready' if support.restricted_token_enforced else 'not ready'}, "
+        f"WFP={'ready' if support.wfp_enforced else 'not ready'}, "
+        f"managed proxy={'ready' if support.managed_proxy_enforced else 'not ready'}"
+    )
+    return f"{message}; {diagnostics}"
+
+
 def _auto_backend() -> Backend:
     """Pick the strongest available backend for the current host."""
     if sys.platform.startswith("linux"):
@@ -92,9 +113,7 @@ def select_backend(settings: SandboxSettings) -> Backend:
         backend.available(),
     )
     if settings.sandbox and choice == "auto" and isinstance(backend, NoopBackend):
-        raise SandboxBackendError(
-            "sandbox=true but no real sandbox backend is available for backend=auto"
-        )
+        raise SandboxBackendError(_auto_backend_failure_message())
     if settings.sandbox and choice != "noop" and not backend.available():
         raise SandboxBackendError(
             f"sandbox backend {backend.name!r} is unavailable while sandbox=true"

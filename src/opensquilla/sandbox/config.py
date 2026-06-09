@@ -73,16 +73,16 @@ class SandboxSettings(BaseSettings):
       active. When false, the system uses a fixed ``STANDARD`` policy with no
       dynamic escalation.
 
-    Both default to ``False`` so fresh local/operator installs start in the
-    bypass posture. Invalid combinations are coerced with an explicit warning
-    via :meth:`validate_combination`; the coercion is deliberate so upgrades
-    of existing deployments do not hard-fail.
+    Both default to ``True`` so fresh local/operator installs start in the
+    Trusted-Sandbox posture. Invalid combinations are coerced with an explicit
+    warning via :meth:`validate_combination`; the coercion is deliberate so
+    upgrades of existing deployments do not hard-fail.
     """
 
     model_config = SettingsConfigDict(env_prefix="OPENSQUILLA_SANDBOX_")
 
-    sandbox: bool = False
-    security_grading: bool = False
+    sandbox: bool = True
+    security_grading: bool = True
     default_level: SecurityLevel = SecurityLevel.STANDARD
     backend: BackendName = "auto"
     allow_legacy_mode: bool = False

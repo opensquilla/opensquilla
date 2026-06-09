@@ -3510,6 +3510,8 @@ class Agent:
                         replay_event = router_control_replay_event_from_payload(result.content)
                         if replay_event is not None:
                             yield replay_event
+                        if _pending_approval_payload(result.content) is not None:
+                            turn_yielded = True
                     executed_results.append(result)
                     while self._pending_warnings:
                         yield self._pending_warnings.pop(0)

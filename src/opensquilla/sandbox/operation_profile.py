@@ -11,8 +11,13 @@ from opensquilla.sandbox.domain_validation import normalize_domain
 _PYTHON_EXE_RE = re.compile(r"python(?:\d+(?:\.\d+)*)?$")
 _URL_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
 _NODE_INSTALL_COMMANDS = frozenset({"add", "ci", "install"})
+_ENV_CREATE_OPTION_TOKENS = frozenset({"--help", "-h", "--version", "-V"})
+_ENV_CREATE_OPTIONS_WITH_VALUE = frozenset({"--prompt", "-p", "--python"})
+_PYTHON_ENV_COMMANDS = frozenset({"virtualenv"})
+_PYTHON_PROJECT_INSTALL_COMMANDS = frozenset({"poetry", "rye", "pixi"})
+_JAVA_BUILD_COMMANDS = frozenset({"mvn", "mvnw", "gradle", "gradlew"})
 _SHELL_WRAPPERS = frozenset({"bash", "dash", "fish", "ksh", "sh", "zsh"})
-_DESTRUCTIVE_COMMANDS = frozenset({"del", "erase", "format", "mkfs", "rm"})
+_DESTRUCTIVE_COMMANDS = frozenset({"del", "erase", "format", "mkfs", "remove-item", "rm"})
 _SHELL_SEPARATORS = frozenset({"&&", "||", ";", "|"})
 _URL_NETWORK_COMMANDS = frozenset({"aria2", "aria2c", "curl", "http", "httpie", "https", "wget"})
 _GIT_NETWORK_COMMANDS = frozenset(
@@ -46,8 +51,23 @@ class OperationProfile:
 def classify_command(argv: tuple[str, ...] | list[str]) -> OperationProfile:
     parts = tuple(str(p) for p in argv)
     lowered = tuple(p.lower() for p in parts)
+    unwrapped = _strip_command_wrapper(lowered)
+    if unwrapped != lowered:
+        return classify_command(unwrapped)
     if _is_python_install(lowered):
         return OperationProfile("package_install", True, "python")
+    if _is_python_env_create(lowered):
+        return OperationProfile(
+            "create_env",
+            package_manager="python",
+            requested_write_paths=_env_create_write_paths(parts),
+        )
+    if _is_python_project_install(lowered):
+        return OperationProfile("package_install", True, "python")
+    if _is_php_package_install(lowered):
+        return OperationProfile("package_install", True, "php")
+    if _is_java_package_install(lowered):
+        return OperationProfile("package_install", True, "java")
     if _is_node_install(lowered):
         return OperationProfile("package_install", True, "node")
     if _is_rust_package_install(lowered):
@@ -105,6 +125,8 @@ def package_bundle_for_manager(package_manager: str | None) -> str | None:
         "node": "node-package-install",
         "rust": "rust-package-install",
         "go": "go-package-install",
+        "java": "java-package-install",
+        "php": "php-package-install",
     }.get(package_manager or "")
 
 
@@ -118,11 +140,112 @@ def _is_python_install(lowered: tuple[str, ...]) -> bool:
         len(lowered) >= 2
         and _command_name(lowered[0]) in {"pip", "pip3"}
         and lowered[1] == "install"
+    ) or (
+        len(lowered) >= 3
+        and _command_name(lowered[0]) == "uv"
+        and lowered[1] == "pip"
+        and lowered[2] == "install"
     )
 
 
+def _is_python_env_create(lowered: tuple[str, ...]) -> bool:
+    if (
+        len(lowered) >= 4
+        and _PYTHON_EXE_RE.fullmatch(_command_name(lowered[0])) is not None
+        and lowered[1:3] == ("-m", "venv")
+    ):
+        return _env_create_path_from_argv(lowered, lowered, 3) is not None
+    if len(lowered) >= 2 and _command_name(lowered[0]) in _PYTHON_ENV_COMMANDS:
+        return _env_create_path_from_argv(lowered, lowered, 1) is not None
+    if (
+        len(lowered) >= 2
+        and _command_name(lowered[0]) == "uv"
+        and lowered[1] == "venv"
+    ):
+        return _env_create_path_from_argv(lowered, lowered, 2) is not None
+    return False
+
+
+def _env_create_write_paths(parts: tuple[str, ...]) -> tuple[str, ...]:
+    lowered = tuple(part.lower() for part in parts)
+    if (
+        len(lowered) >= 4
+        and _PYTHON_EXE_RE.fullmatch(_command_name(lowered[0])) is not None
+        and lowered[1:3] == ("-m", "venv")
+    ):
+        path = _env_create_path_from_argv(parts, lowered, 3)
+        return (path,) if path is not None else ()
+    if len(lowered) >= 2 and _command_name(lowered[0]) in _PYTHON_ENV_COMMANDS:
+        path = _env_create_path_from_argv(parts, lowered, 1)
+        return (path,) if path is not None else ()
+    if (
+        len(lowered) >= 2
+        and _command_name(lowered[0]) == "uv"
+        and lowered[1] == "venv"
+    ):
+        path = _env_create_path_from_argv(parts, lowered, 2)
+        return (path,) if path is not None else ()
+    return ()
+
+
+def _env_create_path_from_argv(
+    parts: tuple[str, ...], lowered_parts: tuple[str, ...], start: int
+) -> str | None:
+    if start >= len(parts):
+        return None
+    ignore_next = False
+    for index, part in enumerate(parts[start:], start=start):
+        if ignore_next:
+            ignore_next = False
+            continue
+        lowered = lowered_parts[index]
+        if lowered in _ENV_CREATE_OPTION_TOKENS:
+            return None
+        if lowered in _ENV_CREATE_OPTIONS_WITH_VALUE:
+            ignore_next = True
+            continue
+        if lowered.startswith("--prompt="):
+            continue
+        if part.startswith("-"):
+            continue
+        return part
+    return None
+
+
+def _is_python_project_install(lowered: tuple[str, ...]) -> bool:
+    if not lowered:
+        return False
+    command = _command_name(lowered[0])
+    if command == "poetry":
+        return len(lowered) >= 2 and lowered[1] in {"install", "sync"}
+    if command == "rye":
+        return len(lowered) >= 2 and lowered[1] in {"sync", "install"}
+    if command == "pixi":
+        return len(lowered) >= 2 and lowered[1] in {"install", "update"}
+    return False
+
+
+def _is_php_package_install(lowered: tuple[str, ...]) -> bool:
+    return (
+        len(lowered) >= 2
+        and _command_name(lowered[0]) == "composer"
+        and lowered[1] in {"install", "update", "require"}
+    )
+
+
+def _is_java_package_install(lowered: tuple[str, ...]) -> bool:
+    if len(lowered) < 2:
+        return False
+    command = _command_name(lowered[0])
+    if command in {"mvn", "mvnw"}:
+        return lowered[1] in {"package", "install", "test", "verify", "dependency:resolve"}
+    if command in {"gradle", "gradlew"}:
+        return lowered[1] in {"build", "test", "assemble", "dependencies"}
+    return False
+
+
 def _is_node_install(lowered: tuple[str, ...]) -> bool:
-    if not lowered or _command_name(lowered[0]) not in {"npm", "pnpm", "yarn"}:
+    if not lowered or _command_name(lowered[0]) not in {"bun", "npm", "pnpm", "yarn"}:
         return False
     return len(lowered) >= 2 and lowered[1] in _NODE_INSTALL_COMMANDS
 
@@ -268,6 +391,31 @@ def _strip_assignment_prefix(parts: tuple[str, ...]) -> tuple[str, ...]:
     while index < len(parts) and _ASSIGNMENT_RE.fullmatch(parts[index].lower()):
         index += 1
     return parts[index:]
+
+
+def _strip_command_wrapper(lowered: tuple[str, ...]) -> tuple[str, ...]:
+    if not lowered or _command_name(lowered[0]) != "timeout":
+        return lowered
+
+    index = 1
+    while index < len(lowered):
+        token = lowered[index]
+        if token == "--":
+            index += 1
+            break
+        if not token.startswith("-"):
+            break
+        index += 1
+        if token in {"-k", "--kill-after", "-s", "--signal"} and index < len(lowered):
+            index += 1
+
+    if index >= len(lowered):
+        return lowered
+    # GNU timeout syntax is: timeout [OPTION] DURATION COMMAND [ARG]...
+    index += 1
+    if index >= len(lowered):
+        return lowered
+    return lowered[index:]
 
 
 def _shell_script(parts: tuple[str, ...]) -> str:

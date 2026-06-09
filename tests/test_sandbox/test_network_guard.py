@@ -88,12 +88,40 @@ def test_decide_network_access_asks_for_unknown_valid_domain() -> None:
     )
 
 
+def test_standard_sandbox_unknown_public_host_still_asks() -> None:
+    decision = decide_network_access(
+        "https://new-public-example.invalid",
+        _context(run_mode=RunMode.STANDARD),
+    )
+
+    assert decision == NetworkDecision(
+        status="ask",
+        normalized_host="new-public-example.invalid",
+        reason="unknown_domain",
+        source=None,
+    )
+
+
 def test_trusted_sandbox_auto_trusts_unknown_public_host_for_this_chat() -> None:
     decision = decide_network_access("docs.example.com", _context(run_mode=RunMode.TRUSTED))
 
     assert decision == NetworkDecision(
         status="allow",
         normalized_host="docs.example.com",
+        reason="auto_trusted",
+        source="auto_trusted:chat",
+    )
+
+
+def test_trusted_sandbox_unknown_public_host_auto_trusts_for_chat() -> None:
+    decision = decide_network_access(
+        "https://new-public-example.invalid",
+        _context(run_mode=RunMode.TRUSTED),
+    )
+
+    assert decision == NetworkDecision(
+        status="allow",
+        normalized_host="new-public-example.invalid",
         reason="auto_trusted",
         source="auto_trusted:chat",
     )
@@ -182,17 +210,13 @@ def test_unknown_domain_builds_structured_network_escalation_choices() -> None:
     assert [choice["id"] for choice in proposal["choices"]] == [
         "allow_once",
         "allow_chat",
-        "allow_user",
         "allow_public_chat",
-        "allow_public_user",
         "deny",
     ]
     assert [choice["label"] for choice in proposal["choices"]] == [
         "Allow once",
-        "Allow this domain for this chat",
-        "Allow this domain for this user",
-        "Allow normal public network for this chat",
-        "Allow normal public network for this user",
+        "Allow this network target",
+        "Allow network access",
         "Deny",
     ]
 
@@ -478,6 +502,7 @@ def test_trusted_sandbox_does_not_auto_trust_unsafe_hosts() -> None:
     for host in (
         "127.0.0.1",
         "10.0.0.1",
+        "192.0.2.1",
         "localhost",
         "169.254.169.254",
         "*.example.com",

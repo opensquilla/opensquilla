@@ -15,6 +15,7 @@ import time
 from typing import Any
 
 from opensquilla.sandbox.backend.base import Backend
+from opensquilla.sandbox.backend.windows_support import probe_windows_sandbox_support
 from opensquilla.sandbox.types import SandboxBackendError, SandboxRequest, SandboxResult
 
 _HELPER_MODULE = "opensquilla.sandbox.backend.windows_appcontainer_helper"
@@ -27,19 +28,13 @@ class WindowsAppContainerBackend(Backend):
     name = "windows_appcontainer"
 
     def available(self) -> bool:
-        if not sys.platform.startswith("win"):
-            return False
-        try:
-            import ctypes  # noqa: F401
-        except Exception:
-            return False
-        return True
+        return probe_windows_sandbox_support().appcontainer_available
 
     async def run(self, request: SandboxRequest) -> SandboxResult:
         if not self.available():
             raise SandboxBackendError(
                 "windows_appcontainer backend unavailable: requires native Windows "
-                "and ctypes"
+                "plus an enforced AppContainer process boundary"
             )
 
         payload = _payload_for_request(request)
@@ -110,11 +105,30 @@ def _payload_for_request(request: SandboxRequest) -> dict[str, Any]:
         "cwd": str(request.cwd),
         "env": _allowed_env(request),
         "policy": request.policy.summary(),
+        "session_id": str(getattr(request, "session_id", "") or "default"),
         "timeout": request.policy.limits.wall_timeout_s,
     }
 
 
 def _allowed_env(request: SandboxRequest) -> dict[str, str]:
+    if sys.platform.startswith("win"):
+        source: dict[str, tuple[str, str]] = {}
+        for key, value in request.env.items():
+            if isinstance(value, str):
+                source.setdefault(key.casefold(), (key, value))
+
+        filtered: dict[str, str] = {}
+        seen: set[str] = set()
+        for allowed_key in request.policy.env_allowlist:
+            folded = allowed_key.casefold()
+            if folded in seen:
+                continue
+            if folded in source:
+                key, value = source[folded]
+                filtered[key] = value
+                seen.add(folded)
+        return filtered
+
     return {
         key: value
         for key in request.policy.env_allowlist

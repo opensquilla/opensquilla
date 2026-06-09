@@ -33,6 +33,10 @@ def _limits_from_policy(request: SandboxRequest) -> SandboxLimits:
     )
 
 
+def _run_request_sync(request: SandboxRequest, limits: SandboxLimits):
+    return run_sandboxed(list(request.argv), limits, env=request.env)
+
+
 class NoopBackend(Backend):
     """Runs commands on the host with rlimits but no isolation."""
 
@@ -57,7 +61,7 @@ class NoopBackend(Backend):
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
-            functools.partial(run_sandboxed, list(request.argv), limits),
+            functools.partial(_run_request_sync, request, limits),
         )
         elapsed = time.monotonic() - started
         timed_out = result.reason == "wall_limit"

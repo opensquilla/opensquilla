@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import dataclasses
 import json
+import ntpath
 import os
 import re
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -27,6 +30,13 @@ from opensquilla.sandbox.backend.seatbelt import (
     SeatbeltBackend,
     build_seatbelt_argv,
     render_seatbelt_profile,
+)
+from opensquilla.sandbox.capability_profile import CapabilityProfile, capability_profile_for_command
+from opensquilla.sandbox.dev_policy_matrix import (
+    DevPolicyDecisionKind,
+    NetworkTargetClass,
+    PathTargetClass,
+    decide_dev_recovery,
 )
 from opensquilla.sandbox.escalation import (
     build_path_approval_params,
@@ -47,7 +57,20 @@ from opensquilla.sandbox.integration import (
 from opensquilla.sandbox.operation_profile import OperationProfile, classify_command
 from opensquilla.sandbox.path_validation import MountDecision, decide_path_access
 from opensquilla.sandbox.policy import LevelHints, build_policy, select_level
-from opensquilla.sandbox.types import DenialReason, DenialResult, SandboxPolicy, SandboxRequest
+from opensquilla.sandbox.runtime_recovery import (
+    classify_network_failure,
+    classify_path_target,
+    explicit_network_hosts_from_command,
+    network_class_for_failure,
+)
+from opensquilla.sandbox.types import (
+    DenialReason,
+    DenialResult,
+    MountSpec,
+    NetworkMode,
+    SandboxPolicy,
+    SandboxRequest,
+)
 from opensquilla.tools.builtin.shell_policy import check_safe_bin
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
@@ -78,8 +101,10 @@ _EXEC_TERMINATE_TIMEOUT = 0.25
 _EXEC_KILL_TIMEOUT = 0.25
 _COMMAND_AUDIT_MAX_CHARS = 4096
 _SANDBOX_NETWORK_HINT = (
-    "Hint: sandboxed shell/code has no network. Use http_request or web_fetch, "
-    "or run trusted benchmark work with --permissions bypass."
+    "Hint: sandboxed shell/code has no direct network. Use sandbox_network approval "
+    "or trusted managed-network mode, then retry the shell command through the "
+    "managed proxy. Do not switch to separate web download tools for package "
+    "installs unless the user explicitly asks for an offline workaround."
 )
 _SANDBOX_NETWORK_FAILURE_MARKERS: tuple[str, ...] = (
     "could not resolve host",
@@ -95,6 +120,25 @@ _SANDBOX_NETWORK_FAILURE_MARKERS: tuple[str, ...] = (
 )
 _SHELL_NULL_REDIRECT_RE = re.compile(
     r"(?:(?<=^)|(?<=[\s;|&]))\d*[<>]{1,2}\s*/dev/null(?=$|[\s;|&])"
+)
+_BACKEND_NOTE_PATH_RE = re.compile(r"(?:~)?/[^\s'\"`$(){}\[\]<>;,|&]+")
+_BACKEND_NOTE_WRITE_MARKERS = (
+    "bind",
+    "create",
+    "mkdir",
+    "mount",
+    "rename",
+    "rmdir",
+    "truncate",
+    "unlink",
+    "write",
+)
+_BACKEND_NOTE_READ_MARKERS = (
+    "execve",
+    "filesystem.read",
+    "open",
+    "read",
+    "stat",
 )
 PROCESS_ACTIONS: frozenset[str] = frozenset(
     {"eof", "kill", "list", "log", "poll", "remove", "submit", "write"}
@@ -369,6 +413,303 @@ def _sandbox_shell_policy_cwd(cwd: str | None) -> Path | None:
     return None
 
 
+def _trusted_windows_cmd_path() -> str:
+    comspec = os.environ.get("COMSPEC", "")
+    if _is_absolute_cmd_exe(comspec):
+        return comspec
+    system_root = os.environ.get("SystemRoot") or os.environ.get("SYSTEMROOT") or ""
+    if system_root and "\x00" not in system_root and ntpath.isabs(system_root):
+        return ntpath.join(system_root, "System32", "cmd.exe")
+    return r"C:\Windows\System32\cmd.exe"
+
+
+def _is_absolute_cmd_exe(path: str) -> bool:
+    return "\x00" not in path and ntpath.isabs(path) and ntpath.basename(path).lower() == "cmd.exe"
+
+
+def _trusted_windows_powershell_path() -> str:
+    system_root = os.environ.get("SystemRoot") or os.environ.get("SYSTEMROOT") or ""
+    if system_root and "\x00" not in system_root and ntpath.isabs(system_root):
+        return ntpath.join(
+            system_root,
+            "System32",
+            "WindowsPowerShell",
+            "v1.0",
+            "powershell.exe",
+        )
+    return r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+
+
+_WINDOWS_SANDBOX_SHELL_HOST_CODE = r"""
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+
+_REMOVE_ITEM_RE = re.compile(
+    r"^(?:Remove-Item|rm|del|erase)\b(?P<rest>.*)$",
+    re.IGNORECASE,
+)
+_PATH_TOKEN_RE = re.compile(
+    r"(?:-(?:LiteralPath|Path)\s+)?(?P<quote>['\"])(?P<path>.*?)(?P=quote)",
+    re.IGNORECASE,
+)
+_EXPLICIT_BARE_PATH_RE = re.compile(
+    r"-(?:LiteralPath|Path)\s+(?P<path>(?!['\"])[^\s;{}]+)",
+    re.IGNORECASE,
+)
+_ARG_TOKEN_RE = re.compile(r'"[^"]*"|\'[^\']*\'|\S+')
+_OUTPUT_RE = re.compile(r"^(?:Write-Output|echo)\s+(?P<text>.+)$", re.IGNORECASE)
+_IF_REMOVE_RE = re.compile(
+    r"^if\s*\(.*?Test-Path.+?\)\s*\{\s*(?P<remove>Remove-Item\b.+?)\s*\}$",
+    re.IGNORECASE | re.DOTALL,
+)
+_VALUE_FLAGS = {
+    "-credential",
+    "-ea",
+    "-erroraction",
+    "-ev",
+    "-errorvariable",
+    "-exclude",
+    "-filter",
+    "-include",
+    "-ov",
+    "-outvariable",
+    "-stream",
+    "-wa",
+    "-warningaction",
+    "-wv",
+    "-warningvariable",
+}
+
+
+def _strip_outer_quotes(value):
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        return value[1:-1]
+    return value
+
+
+def _looks_like_path(value):
+    return bool(
+        re.match(r"^[A-Za-z]:[\\/]", value)
+        or value.startswith("\\\\")
+        or value.startswith(".\\")
+        or value.startswith("./")
+        or value.startswith("\\")
+        or value.startswith("/")
+    )
+
+
+def _split_statements(script):
+    statements = []
+    current = []
+    quote = ""
+    escaped = False
+    for char in script:
+        if escaped:
+            current.append(char)
+            escaped = False
+            continue
+        if char == "`":
+            current.append(char)
+            escaped = True
+            continue
+        if quote:
+            current.append(char)
+            if char == quote:
+                quote = ""
+            continue
+        if char in "'\"":
+            current.append(char)
+            quote = char
+            continue
+        if char == ";":
+            statement = "".join(current).strip()
+            if statement:
+                statements.append(statement)
+            current = []
+            continue
+        current.append(char)
+    statement = "".join(current).strip()
+    if statement:
+        statements.append(statement)
+    return statements
+
+
+def _nested_powershell_command(command):
+    match = re.match(
+        r"^\s*powershell(?:\.exe)?\b(?P<args>.*)$",
+        command,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return None
+    args = match.group("args")
+    command_match = re.search(
+        r"(?:^|\s)-(?:Command|c)\s+(?P<script>.+)$",
+        args,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not command_match:
+        return None
+    return _strip_outer_quotes(command_match.group("script"))
+
+
+def _remove_statement_path(statement):
+    match = _REMOVE_ITEM_RE.match(statement)
+    if not match:
+        return None
+    rest = match.group("rest")
+    path_match = _PATH_TOKEN_RE.search(rest)
+    if not path_match:
+        explicit_bare = _EXPLICIT_BARE_PATH_RE.search(rest)
+        if explicit_bare:
+            return explicit_bare.group("path")
+        skip_next = False
+        for token in _ARG_TOKEN_RE.findall(rest):
+            token = _strip_outer_quotes(token)
+            folded = token.lower()
+            if skip_next:
+                skip_next = False
+                continue
+            if folded in _VALUE_FLAGS:
+                skip_next = True
+                continue
+            if token.startswith("-"):
+                continue
+            if _looks_like_path(token):
+                return token
+        return None
+    return path_match.group("path")
+
+
+def _if_remove_statement_path(statement):
+    match = _IF_REMOVE_RE.match(statement)
+    if not match:
+        return None
+    return _remove_statement_path(match.group("remove"))
+
+
+def _output_statement_text(statement):
+    match = _OUTPUT_RE.match(statement)
+    if not match:
+        return None
+    text = match.group("text")
+    if re.search(r"[<>|&]", text):
+        return None
+    return _strip_outer_quotes(text)
+
+
+def _remove_path(path, *, recurse, force):
+    try:
+        if os.path.isdir(path) and not os.path.islink(path):
+            if recurse:
+                shutil.rmtree(path)
+            else:
+                os.rmdir(path)
+        else:
+            if force:
+                try:
+                    os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+                except OSError:
+                    pass
+            os.remove(path)
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        return f"{path}: {type(exc).__name__}: {exc}"
+    return None
+
+
+def _handle_simple_delete_script(script):
+    statements = _split_statements(script)
+    if not statements:
+        return None
+    operations = []
+    recurse = False
+    force = False
+    for statement in statements:
+        path = _remove_statement_path(statement)
+        if path is not None:
+            recurse = recurse or bool(re.search(r"\s-Recurse\b", statement, re.IGNORECASE))
+            force = force or bool(re.search(r"\s-Force\b", statement, re.IGNORECASE))
+            operations.append(("remove", path))
+            continue
+        path = _if_remove_statement_path(statement)
+        if path is not None:
+            recurse = recurse or bool(re.search(r"\s-Recurse\b", statement, re.IGNORECASE))
+            force = force or bool(re.search(r"\s-Force\b", statement, re.IGNORECASE))
+            operations.append(("remove", path))
+            continue
+        output = _output_statement_text(statement)
+        if output is not None:
+            operations.append(("output", output))
+            continue
+        return None
+    errors = [
+        error
+        for operation, value in operations
+        if operation == "remove"
+        if (error := _remove_path(value, recurse=recurse, force=force))
+    ]
+    if errors:
+        sys.stderr.write("\n".join(errors))
+        return 1
+    for operation, value in operations:
+        if operation == "output":
+            print(value)
+    return 0
+
+
+def main():
+    if len(sys.argv) != 3:
+        sys.stderr.write("windows sandbox shell host expects powershell path and command")
+        return 2
+    powershell = sys.argv[1]
+    command = sys.argv[2]
+    nested_command = _nested_powershell_command(command)
+    effective_command = nested_command if nested_command is not None else command
+    remove_result = _handle_simple_delete_script(effective_command)
+    if remove_result is not None:
+        return remove_result
+
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            effective_command,
+        ],
+        check=False,
+    )
+    return result.returncode
+
+
+raise SystemExit(main())
+""".strip()
+
+
+def _sandbox_shell_backend_argv(command: str, runtime: object) -> tuple[str, ...]:
+    backend = getattr(runtime, "backend", None)
+    backend_name = getattr(backend, "name", "")
+    if backend_name.startswith("windows_"):
+        return (
+            sys.executable,
+            "-c",
+            _WINDOWS_SANDBOX_SHELL_HOST_CODE,
+            _trusted_windows_powershell_path(),
+            command,
+        )
+    return ("sh", "-lc", command)
+
+
 def _sandbox_shell_backend_cwd(cwd: str | None, request: SandboxRequest) -> Path:
     if cwd:
         return Path(cwd).expanduser().resolve(strict=False)
@@ -377,6 +718,96 @@ def _sandbox_shell_backend_cwd(cwd: str | None, request: SandboxRequest) -> Path
 
 def _active_sandbox_mounts() -> list[dict[str, object]]:
     return current_tool_mounts()
+
+
+def _backend_denial_target_path(
+    backend_notes: tuple[str, ...],
+    fallback: Path,
+) -> Path:
+    for note in backend_notes:
+        match = _BACKEND_NOTE_PATH_RE.search(note)
+        if match is not None:
+            return Path(match.group(0).rstrip(".,:"))
+    return fallback
+
+
+def _policy_with_active_tool_mounts(policy: SandboxPolicy) -> SandboxPolicy:
+    mounts_by_path = {str(mount.host_path): mount for mount in policy.mounts}
+    for mount in _active_sandbox_mounts():
+        raw_path = mount.get("path")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            continue
+        access = str(mount.get("access") or "ro").strip()
+        mode = "rw" if access == "rw" else "ro"
+        host_path = Path(raw_path).expanduser().resolve(strict=False)
+        mounts_by_path[str(host_path)] = MountSpec(
+            host_path=host_path,
+            sandbox_path=host_path,
+            mode=mode,
+            required=False,
+        )
+    return dataclasses.replace(policy, mounts=tuple(mounts_by_path.values()))
+
+
+def _backend_denial_requires_write(
+    backend_notes: tuple[str, ...],
+    *,
+    default: bool = False,
+) -> bool:
+    lowered = " ".join(backend_notes).lower()
+    if any(marker in lowered for marker in _BACKEND_NOTE_WRITE_MARKERS):
+        return True
+    if any(marker in lowered for marker in _BACKEND_NOTE_READ_MARKERS):
+        return False
+    return default
+
+
+def _trusted_path_recovery_retry_request(
+    command: str,
+    backend_request: SandboxRequest,
+    backend_notes: tuple[str, ...],
+    *,
+    capability_profile: CapabilityProfile | None = None,
+    write_default: bool = False,
+) -> SandboxRequest | None:
+    if not trusted_sandbox_active():
+        return None
+
+    target = _backend_denial_target_path(backend_notes, backend_request.cwd)
+    workspace = _workspace_root_for_path_access()
+    if capability_profile is None:
+        capability_profile = capability_profile_for_command(("sh", "-lc", command))
+    path_class = classify_path_target(target, workspace=workspace)
+    recovery_decision = decide_dev_recovery(
+        _context_run_mode() or "standard",
+        capability_profile,
+        path_class,
+        network_class=NetworkTargetClass.NONE,
+    )
+    if (
+        recovery_decision.kind is not DevPolicyDecisionKind.AUTO
+        or not recovery_decision.retry_once
+        or not recovery_decision.grant_rw_path
+    ):
+        return None
+
+    mount_decision = decide_path_access(
+        target,
+        workspace=workspace,
+        mounts=_active_sandbox_mounts(),
+        write=_backend_denial_requires_write(backend_notes, default=write_default),
+    )
+    if mount_decision.status == "blocked":
+        return None
+    if mount_decision.status == "request" and not grant_temporary_mount_for_current_tool(
+        mount_decision
+    ):
+        return None
+
+    retry_policy = _policy_with_active_tool_mounts(backend_request.policy)
+    if retry_policy.mounts == backend_request.policy.mounts:
+        return None
+    return backend_request.with_policy(retry_policy)
 
 
 def _sandbox_workdir_access_envelope(
@@ -435,6 +866,7 @@ def _sandbox_write_path_access_envelope(
     write_paths = _shell_write_access_targets(command, profile)
     if not write_paths or not _sandbox_path_access_enabled():
         return None
+    shell_file_targets = frozenset(_shell_write_targets(command))
     for raw_path in write_paths:
         decision = decide_path_access(
             _resolve_shell_write_target(raw_path, workdir),
@@ -446,6 +878,11 @@ def _sandbox_write_path_access_envelope(
             continue
         if decision.status == "blocked":
             return _path_access_blocked_envelope(decision)
+        if trusted_sandbox_active() and grant_temporary_mount_for_current_tool(
+            decision,
+            prefer_file=_shell_write_target_prefers_file(raw_path, shell_file_targets),
+        ):
+            continue
         return _path_access_required_envelope(decision, approval_id=approval_id)
     return None
 
@@ -456,6 +893,16 @@ def _shell_write_access_targets(command: str, profile: OperationProfile) -> tupl
         if target not in targets:
             targets.append(target)
     return tuple(targets)
+
+
+def _shell_write_target_prefers_file(
+    raw_target: str,
+    shell_file_targets: frozenset[str],
+) -> bool:
+    if raw_target in shell_file_targets:
+        return True
+    cleaned = raw_target.strip().strip("'\"")
+    return bool(ntpath.splitext(cleaned)[1] or Path(cleaned).suffix)
 
 
 def _resolve_shell_write_target(raw_target: str, workdir: str | None) -> Path:
@@ -958,7 +1405,7 @@ async def exec_command(
         if isinstance(decision, DenialResult):
             return json.dumps(decision.to_dict())
         backend_request = SandboxRequest(
-            argv=("sh", "-lc", command),
+            argv=_sandbox_shell_backend_argv(command, runtime),
             cwd=_sandbox_shell_backend_cwd(cwd, request),
             action_kind=request.action_kind,
             policy=request.policy,
@@ -976,25 +1423,137 @@ async def exec_command(
         except Exception as exc:
             raise ToolError(f"Sandboxed shell execution failed: {exc}") from exc
         if sandbox_result.backend_notes:
-            escalation = await escalate_backend_denial(
-                sandbox_result, request, policy, runtime=runtime
+            retry_request = _trusted_path_recovery_retry_request(
+                command,
+                backend_request,
+                sandbox_result.backend_notes,
+                write_default=_shell_workdir_requires_write(command, profile),
             )
-            if isinstance(escalation, DenialResult):
-                return json.dumps(escalation.to_dict())
-            _host_once_current_call.set(True)
-            _consume_host_once_current_call()
-            try:
-                return await _run_host_shell_command(
-                    command,
-                    cwd=cwd,
-                    env=merged_env,
-                    timeout=effective_timeout,
+            if retry_request is not None:
+                try:
+                    sandbox_result = await run_under_backend(retry_request, runtime=runtime)
+                except Exception as exc:
+                    raise ToolError(f"Sandboxed shell execution failed: {exc}") from exc
+                backend_request = retry_request
+            if sandbox_result.backend_notes:
+                escalation = await escalate_backend_denial(
+                    sandbox_result, request, policy, runtime=runtime
                 )
-            finally:
-                _host_once_current_call.set(False)
+                if isinstance(escalation, DenialResult):
+                    return json.dumps(escalation.to_dict())
+                _host_once_current_call.set(True)
+                _consume_host_once_current_call()
+                try:
+                    return await _run_host_shell_command(
+                        command,
+                        cwd=cwd,
+                        env=merged_env,
+                        timeout=effective_timeout,
+                    )
+                finally:
+                    _host_once_current_call.set(False)
         output = sandbox_result.stdout
         if sandbox_result.stderr:
             output += sandbox_result.stderr
+        failure = classify_network_failure(output) if sandbox_result.returncode != 0 else None
+        if failure is not None:
+            capability_profile = capability_profile_for_command(("sh", "-lc", command))
+            network_class = network_class_for_failure(
+                failure.host,
+                profile=capability_profile,
+                default=NetworkTargetClass.UNKNOWN_PUBLIC,
+                explicit_hosts=explicit_network_hosts_from_command(command),
+            )
+            recovery_decision = decide_dev_recovery(
+                _context_run_mode() or "standard",
+                capability_profile,
+                PathTargetClass.NORMAL_USER_PATH,
+                network_class,
+            )
+            if (
+                recovery_decision.kind is DevPolicyDecisionKind.AUTO
+                and recovery_decision.retry_once
+            ):
+                log.info(
+                    "shell_runtime_recovery",
+                    command=_audit_command(command),
+                    decision=recovery_decision.kind.value,
+                    reason=recovery_decision.reason,
+                    run_mode=_context_run_mode(),
+                )
+                retry_request = backend_request
+                if (
+                    recovery_decision.use_managed_proxy
+                    and retry_request.policy.network is not NetworkMode.PROXY_ALLOWLIST
+                ):
+                    retry_request = retry_request.with_policy(
+                        dataclasses.replace(
+                            retry_request.policy,
+                            network=NetworkMode.PROXY_ALLOWLIST,
+                            network_proxy=None,
+                        )
+                    )
+                managed_network = await prepare_subprocess_managed_network_proxy(
+                    retry_request,
+                    runtime=runtime,
+                )
+                try:
+                    sandbox_result = await run_under_backend(
+                        managed_network.request,
+                        runtime=runtime,
+                    )
+                except Exception as exc:
+                    raise ToolError(f"Sandboxed shell execution failed: {exc}") from exc
+                finally:
+                    await managed_network.cleanup()
+                output = sandbox_result.stdout
+                if sandbox_result.stderr:
+                    output += sandbox_result.stderr
+            elif (
+                recovery_decision.kind is DevPolicyDecisionKind.ASK
+                and recovery_decision.use_managed_proxy
+            ):
+                log.info(
+                    "shell_runtime_recovery",
+                    command=_audit_command(command),
+                    decision=recovery_decision.kind.value,
+                    reason=recovery_decision.reason,
+                    run_mode=_context_run_mode(),
+                )
+                approval_request = backend_request
+                if approval_request.policy.network is not NetworkMode.PROXY_ALLOWLIST:
+                    approval_request = approval_request.with_policy(
+                        dataclasses.replace(
+                            approval_request.policy,
+                            network=NetworkMode.PROXY_ALLOWLIST,
+                            network_proxy=None,
+                        )
+                    )
+                preflight = await preflight_subprocess_managed_network(
+                    approval_request,
+                    runtime,
+                    consume_temporary_grants=False,
+                )
+                if isinstance(preflight, DenialResult):
+                    return json.dumps(preflight.to_dict())
+                if isinstance(preflight, dict):
+                    return json.dumps(preflight)
+                managed_network = await prepare_subprocess_managed_network_proxy(
+                    approval_request,
+                    runtime=runtime,
+                )
+                try:
+                    sandbox_result = await run_under_backend(
+                        managed_network.request,
+                        runtime=runtime,
+                    )
+                except Exception as exc:
+                    raise ToolError(f"Sandboxed shell execution failed: {exc}") from exc
+                finally:
+                    await managed_network.cleanup()
+                output = sandbox_result.stdout
+                if sandbox_result.stderr:
+                    output += sandbox_result.stderr
         output = _append_sandbox_network_hint(output)
         return f"exit_code={sandbox_result.returncode}\n{output}"
 
@@ -1106,7 +1665,7 @@ async def background_process(
         if isinstance(decision, DenialResult):
             return json.dumps(decision.to_dict())
         backend_request = SandboxRequest(
-            argv=("sh", "-lc", command),
+            argv=_sandbox_shell_backend_argv(command, runtime),
             cwd=_sandbox_shell_backend_cwd(cwd, request),
             action_kind=request.action_kind,
             policy=policy,

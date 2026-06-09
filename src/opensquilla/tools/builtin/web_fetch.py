@@ -271,7 +271,24 @@ async def web_fetch(
         except SSRFBlockedError:
             raise
         except httpx.TimeoutException:
-            raise
+            result = {
+                "url": url,
+                "final_url": url,
+                "status": 0,
+                "content_type": "",
+                "title": "",
+                "extract_mode": extract_mode,
+                "extractor": "none",
+                "truncated": False,
+                "length": 0,
+                "text": "",
+                "error": "timed_out",
+                "hint": (
+                    "The source timed out while loading; skip it, retry later, "
+                    "or use another source."
+                ),
+            }
+            return json.dumps(result, ensure_ascii=False)
         except Exception as exc:
             last_error = str(exc)
             if attempt_idx == 0:

@@ -1,21 +1,34 @@
-"""Fail-closed Windows AppContainer helper.
+"""Windows AppContainer helper.
 
 The adapter invokes this module in a separate interpreter. The helper owns the
-Windows-only boundary: AppContainer profile/capability setup, token creation,
-job-object lifetime, and child process creation. Until filesystem and network
-restrictions are robust enough to enforce the full sandbox policy, the helper
-validates input and exits non-zero instead of launching the requested command.
+Windows-only boundary: AppContainer profile setup, filesystem ACL grants, token
+creation, job-object lifetime, and child process creation. The helper requires
+AppContainer process enforcement for every launch and additionally requires the
+proxy allowlist boundary for proxy-networked policies.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
-import os
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from opensquilla.sandbox.backend.windows_acl import grant_path_to_appcontainer
+from opensquilla.sandbox.backend.windows_primitives import (
+    appcontainer_profile_name,
+    ensure_appcontainer_profile,
+    launch_appcontainer_process,
+)
+from opensquilla.sandbox.backend.windows_support import (
+    APPCONTAINER_ENFORCED_ENV,
+    PROXY_ALLOWLIST_ENFORCED_ENV,
+    probe_windows_sandbox_support,
+)
+from opensquilla.sandbox.types import SandboxBackendError
 
 _UNENFORCEABLE = "windows_appcontainer helper cannot enforce AppContainer policy yet"
 
@@ -26,6 +39,7 @@ class _HelperPayload:
     cwd: Path
     env: dict[str, str]
     policy: dict[str, Any]
+    session_id: str
     timeout: float
 
 
@@ -36,12 +50,16 @@ def main(argv: Sequence[str] | None = None) -> None:
             raise SystemExit("windows_appcontainer helper only runs on native Windows")
         payload = _parse_payload(args)
         _validate_policy_shape(payload.policy)
+        _require_declared_enforcement(payload.policy)
         _run_appcontainer(payload)
     except SystemExit as exc:
         if isinstance(exc.code, str):
             print(exc.code, file=sys.stderr)
             raise SystemExit(1) from None
         raise
+    except SandboxBackendError as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(1) from None
 
 
 def _parse_payload(args: Sequence[str]) -> _HelperPayload:
@@ -76,6 +94,12 @@ def _parse_payload(args: Sequence[str]) -> _HelperPayload:
     if not isinstance(policy, dict):
         raise SystemExit("invalid windows_appcontainer payload: policy is required")
 
+    session_id = raw.get("session_id", "default")
+    if not isinstance(session_id, str) or not session_id:
+        raise SystemExit(
+            "invalid windows_appcontainer payload: session_id must be a non-empty string"
+        )
+
     timeout = raw.get("timeout")
     if not isinstance(timeout, int | float) or timeout <= 0:
         raise SystemExit("invalid windows_appcontainer payload: timeout must be positive")
@@ -85,6 +109,7 @@ def _parse_payload(args: Sequence[str]) -> _HelperPayload:
         cwd=cwd,
         env=dict(env_raw),
         policy=policy,
+        session_id=session_id,
         timeout=float(timeout),
     )
 
@@ -120,40 +145,62 @@ def _validate_policy_shape(policy: dict[str, Any]) -> None:
             )
 
 
+def _require_declared_enforcement(policy: dict[str, Any]) -> None:
+    support = probe_windows_sandbox_support()
+    if not support.is_windows or not support.ctypes_available or not support.appcontainer_enforced:
+        missing = []
+        if not support.ctypes_available:
+            missing.append("ctypes")
+        if not support.appcontainer_enforced:
+            missing.append(APPCONTAINER_ENFORCED_ENV)
+        suffix = f" (missing {', '.join(missing)})" if missing else ""
+        raise SystemExit(f"{_UNENFORCEABLE}{suffix}")
+    if policy.get("network") == "proxy_allowlist" and not support.proxy_allowlist_enforced:
+        missing = []
+        if not support.proxy_allowlist_enforced:
+            missing.append(PROXY_ALLOWLIST_ENFORCED_ENV)
+        suffix = f" (missing {', '.join(missing)})" if missing else ""
+        raise SystemExit(f"{_UNENFORCEABLE}{suffix}")
+
+
 def _run_appcontainer(payload: _HelperPayload) -> None:
-    """Structured skeleton for the future Win32 AppContainer boundary."""
-    handles = _create_appcontainer_profile_and_job(payload.policy)
-    _create_process_in_appcontainer(payload, handles)
+    profile_name = appcontainer_profile_name(payload.session_id)
+    appcontainer_sid = ensure_appcontainer_profile(profile_name)
+    asyncio.run(_grant_policy_paths(payload, appcontainer_sid))
+    result = asyncio.run(
+        launch_appcontainer_process(
+            profile_name=profile_name,
+            argv=payload.argv,
+            cwd=payload.cwd,
+            env=payload.env,
+            timeout=payload.timeout,
+        )
+    )
+    sys.stdout.buffer.write(result.stdout)
+    sys.stderr.buffer.write(result.stderr)
+    raise SystemExit(result.returncode)
 
 
-@dataclass(frozen=True)
-class _Win32AppContainerHandles:
-    profile_sid: int
-    job: int
-
-
-def _create_appcontainer_profile_and_job(
-    policy: dict[str, Any],
-) -> _Win32AppContainerHandles:
-    """Create future AppContainer profile state and a kill-on-close job object.
-
-    This is deliberately not called while policy enforcement is incomplete.
-    It documents the concrete Win32 libraries and constants the final helper
-    will use without risking an unsandboxed child process.
-    """
-    _ = policy
-    if not sys.platform.startswith("win"):
-        raise SystemExit("windows_appcontainer helper only runs on native Windows")
-    raise SystemExit(_UNENFORCEABLE)
-
-
-def _create_process_in_appcontainer(
+async def _grant_policy_paths(
     payload: _HelperPayload,
-    handles: _Win32AppContainerHandles,
+    appcontainer_sid: str,
 ) -> None:
-    """Future CreateProcess boundary with AppContainer attributes."""
-    _ = (payload, handles, os.environ)
-    raise SystemExit(_UNENFORCEABLE)
+    for mount in payload.policy["mounts"]:
+        host = Path(mount["host"])
+        mode = mount["mode"]
+        if mode not in {"rw", "ro"}:
+            raise SystemExit(
+                f"invalid windows_appcontainer policy: unknown mount mode {mode!r}"
+            )
+        if mode == "rw":
+            _prepare_missing_file_mount(host)
+        await grant_path_to_appcontainer(host, appcontainer_sid, mode=mode)
+
+
+def _prepare_missing_file_mount(path: Path) -> None:
+    if path.exists() or not path.suffix or not path.parent.exists():
+        return
+    path.touch(exist_ok=True)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -118,6 +118,19 @@ def test_chat_run_mode_control_replaces_elevated_bypass_copy() -> None:
     assert 'accept="image/*" multiple' not in source
 
 
+def test_chat_run_mode_defaults_trusted_and_normalizes_standard_explicitly() -> None:
+    source = _read_chat_js()
+    start = source.index("function _normalizeRunMode(mode)")
+    end = source.index("  function _setRunMode", start)
+    helper = source[start:end]
+
+    assert "const _RUN_MODE_DEFAULT = 'trusted';" in source
+    assert (
+        "if (value === 'standard' || value === 'standard-sandbox') return 'standard';"
+        in helper
+    )
+
+
 def test_chat_session_transitions_reset_run_mode_before_loading_context() -> None:
     source = _read_chat_js()
 

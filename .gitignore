@@ -35,6 +35,7 @@ GEMINI.md
 .claude/
 .omc/
 .omx/
+.worktrees/
 
 # One-off planning artifacts kept local, not published.
 /PLAN.md

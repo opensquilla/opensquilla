@@ -988,6 +988,8 @@ class StreamConsumerStage:
             extra_yields: list[AgentEvent] = []
             if isinstance(event, TextDeltaEvent):
                 transformed = self._text_delta_handler.handle(event, state)
+                if not transformed.text:
+                    transformed = _SUPPRESS
             elif isinstance(event, TextSnapshotEvent):
                 transformed = self._text_snapshot_handler.handle(event, state)
             elif isinstance(event, ToolUseStartEvent):

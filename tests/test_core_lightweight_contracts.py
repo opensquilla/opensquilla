@@ -65,19 +65,31 @@ def test_wrapped_tool_call_suffix_is_removed_without_losing_prose() -> None:
     assert strip_synthetic_tool_call_suffix(text, ["web_search"]) == "Here is the answer."
 
 
-def test_wrapped_tool_call_suffix_rejects_trailing_sentinel_tokens() -> None:
+def test_wrapped_tool_call_suffix_removes_role_end_sentinel() -> None:
     text = (
         '<tool_call>{"name":"web_search","arguments":{"query":"opensquilla"}}'
         "</tool_call><|role_end|>"
     )
 
-    assert strip_synthetic_tool_call_suffix(text, ["web_search"]) == text
+    assert strip_synthetic_tool_call_suffix(text, ["web_search"]) == ""
 
 
 def test_minimax_tool_call_text_is_removed_as_machine_payload() -> None:
     text = "<minimax:tool_call>{}</minimax:tool_call>"
 
     assert strip_synthetic_tool_call_suffix(text, ["web_search"]) == ""
+
+
+def test_role_end_sentinel_is_removed_as_machine_payload() -> None:
+    assert strip_protocol_text_leak("final answer<|role_end|>") == "final answer"
+
+
+def test_role_end_sentinel_is_suppressed_when_streamed_in_pieces() -> None:
+    guard = ProtocolTextLeakGuard()
+
+    assert guard.push("final answer<|role") == "final answer"
+    assert guard.push("_end|>") == ""
+    assert guard.flush() == ""
 
 
 def test_malformed_text_tool_protocol_is_removed_before_user_display() -> None:

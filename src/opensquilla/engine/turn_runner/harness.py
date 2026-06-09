@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 from opensquilla.engine.turn_runner.agent_bootstrap_stage import (
@@ -65,6 +66,7 @@ from opensquilla.engine.turn_runner.turn_finalizer_stage import (
     TurnErrorPersistPort,
     TurnMemoryCapturePort,
 )
+from opensquilla.provider.types import ModelCapabilities
 from opensquilla.session.compaction_lifecycle import normalize_flush_triggers_strict
 
 
@@ -88,9 +90,26 @@ def _tool_support_mode_for_turn(config: Any, llm_cfg: Any, metadata: dict[str, A
 
 
 def _apply_tool_support_mode(capabilities: Any, mode: str) -> Any:
-    if capabilities is None or mode == "auto":
+    if mode == "auto":
         return capabilities
-    return replace(capabilities, supports_tools=(mode == "on"))
+    state = "supported" if mode == "on" else "unsupported"
+    supports_tools = mode == "on"
+    if capabilities is None:
+        return ModelCapabilities(
+            supports_tools=supports_tools,
+            tool_support_state=state,
+        )
+    try:
+        return replace(
+            capabilities,
+            supports_tools=supports_tools,
+            tool_support_state=state,
+        )
+    except TypeError:
+        values = dict(getattr(capabilities, "__dict__", {}) or {})
+        values["supports_tools"] = supports_tools
+        values["tool_support_state"] = state
+        return SimpleNamespace(**values)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -200,6 +219,7 @@ class _TurnRunnerPromptAssemblerAdapter(PromptAssemblerPort):
         prompt_metadata: dict[str, Any],
         bootstrap_context_mode: str | None,
         fresh_user_session: bool = False,
+        reply_tags_enabled: bool = True,
     ) -> str | tuple[str, str]:
         return self._runner._assemble_prompt(
             agent_id,
@@ -210,6 +230,7 @@ class _TurnRunnerPromptAssemblerAdapter(PromptAssemblerPort):
             prompt_metadata=prompt_metadata,
             bootstrap_context_mode=bootstrap_context_mode,
             fresh_user_session=fresh_user_session,
+            reply_tags_enabled=reply_tags_enabled,
         )
 
 class _TurnRunnerPipelineExecutionAdapter(PipelineExecutionPort):

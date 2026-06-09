@@ -9,6 +9,7 @@ import structlog.testing
 
 from opensquilla.engine import Agent, AgentConfig, ThinkingLevel, ToolResult
 from opensquilla.engine.runtime import TurnRunner
+from opensquilla.engine.types import ErrorEvent
 from opensquilla.engine.usage import UsageTracker
 from opensquilla.provider import (
     ChatConfig,
@@ -60,6 +61,32 @@ class _FallbackSequenceProvider(_SequenceProvider):
     def fallback_after_invalid_response(self, reason: str) -> bool:
         self.fallback_reasons.append(reason)
         return True
+
+
+@pytest.mark.asyncio
+async def test_agent_does_not_call_provider_when_tools_required_but_unsupported() -> None:
+    provider = _SequenceProvider([[ProviderText(text="should not run"), ProviderDone()]])
+    tool = ToolDefinition(
+        name="web_search",
+        description="Search the web.",
+        input_schema=ToolInputSchema(),
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            metadata={"tool_required": True},
+            model_capabilities=ModelCapabilities(
+                supports_tools=False,
+            ),
+        ),
+        tool_definitions=[tool],
+    )
+
+    events = [event async for event in agent.run_turn("search latest AI news")]
+
+    assert provider.calls == []
+    error = next(event for event in events if isinstance(event, ErrorEvent))
+    assert error.code == "tool_capability_unavailable"
 
 
 def _large_reasoning_only_done() -> ProviderDone:

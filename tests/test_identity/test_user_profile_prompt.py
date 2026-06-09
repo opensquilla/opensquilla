@@ -191,3 +191,20 @@ def test_template_no_longer_renders_duplicate_skills_section() -> None:
 
     assert "## Skills (mandatory)" not in prompt
     assert "Available skills:" not in prompt
+
+
+def test_system_prompt_can_omit_reply_tags_for_non_channel_surface() -> None:
+    prompt = assemble_system_prompt(
+        AgentProfile(agent_id="main", prompt_mode="full"),
+        reply_tags_enabled=False,
+    )
+
+    assert "## Reply Tags" not in prompt
+    assert "[[reply_to_current]]" not in prompt
+
+
+def test_system_prompt_keeps_reply_tags_enabled_by_default() -> None:
+    prompt = assemble_system_prompt(AgentProfile(agent_id="main", prompt_mode="full"))
+
+    assert "## Reply Tags" in prompt
+    assert "[[reply_to_current]]" in prompt

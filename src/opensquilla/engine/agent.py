@@ -547,6 +547,33 @@ def _chat_config_with_thinking_disabled(chat_cfg: ChatConfig) -> ChatConfig:
     )
 
 
+def _tool_support_state_from_capabilities(capabilities: Any) -> str:
+    state = str(getattr(capabilities, "tool_support_state", "") or "").strip().lower()
+    supports_tools = bool(getattr(capabilities, "supports_tools", True))
+    if state == "supported" and not supports_tools:
+        return "unsupported"
+    if state in {"supported", "unsupported", "unknown"}:
+        return state
+    return "supported" if supports_tools else "unsupported"
+
+
+def _metadata_requires_tools(metadata: Mapping[str, Any]) -> bool:
+    if metadata.get("tool_required") is True:
+        return True
+    tool_choice = metadata.get("tool_choice") or metadata.get("meta_match_tool_choice")
+    if tool_choice == "required":
+        return True
+    if not isinstance(tool_choice, Mapping):
+        return False
+    if str(tool_choice.get("mode") or "").lower() == "required":
+        return True
+    return (
+        str(tool_choice.get("type") or "").lower() == "function"
+        or isinstance(tool_choice.get("function"), Mapping)
+    )
+
+
+
 def _strip_historical_image_blocks(
     messages: list[Message],
     *,
@@ -1923,11 +1950,24 @@ class Agent:
         # and per-tool execution budget.
         _loop = asyncio.get_running_loop()
         _total_deadline = _loop.time() + self.config.timeout if self.config.timeout > 0 else None
-        tools_supported = True
+        tool_support_state = "supported"
         if self.config.model_capabilities is not None:
-            tools_supported = bool(getattr(self.config.model_capabilities, "supports_tools", True))
+            tool_support_state = _tool_support_state_from_capabilities(
+                self.config.model_capabilities
+            )
+        tools_supported = tool_support_state == "supported"
         provider_tool_definitions = self.tool_definitions or None
         if not tools_supported:
+            if provider_tool_definitions and _metadata_requires_tools(metadata):
+                yield self._transition(AgentState.ERROR)
+                yield ErrorEvent(
+                    message=(
+                        "This turn requires tools, but the selected model is not "
+                        "confirmed to support tool calls."
+                    ),
+                    code="tool_capability_unavailable",
+                )
+                return
             provider_tool_definitions = None
 
         def _positive_float(value: Any) -> float | None:

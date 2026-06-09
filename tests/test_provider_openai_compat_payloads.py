@@ -1389,6 +1389,49 @@ def test_openai_compat_synthesizes_wrapped_tool_call_text(monkeypatch: Any) -> N
     assert tool_end.synthetic_from_text is True
 
 
+def test_openai_compat_synthesizes_wrapped_tool_call_with_role_end_sentinel(
+    monkeypatch: Any,
+) -> None:
+    chunks = [
+        {
+            "model": "local-model",
+            "choices": [
+                {
+                    "delta": {
+                        "content": (
+                            '<tool_call>\n{"name":"lookup","arguments":{"q":"hi"}}\n'
+                            "</tool_call><|role_end|>"
+                        )
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {"model": "local-model", "choices": [{"delta": {}, "finish_reason": "stop"}]},
+    ]
+    body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+    captured: dict[str, Any] = {}
+    _patch_transport_body(monkeypatch, captured, body + b"data: [DONE]\n\n")
+    provider = OpenAIProvider(
+        api_key="test",
+        model="local-model",
+        base_url="http://localhost:8008/v1",
+        provider_kind="self_hosted_openai",
+    )
+    tool = ToolDefinition(
+        name="lookup",
+        description="Lookup a value.",
+        input_schema=ToolInputSchema(properties={"q": {"type": "string"}}, required=["q"]),
+    )
+
+    events = _collect_events(provider, ChatConfig(), tools=[tool])
+
+    tool_end = next(event for event in events if isinstance(event, ToolUseEndEvent))
+    assert tool_end.tool_name == "lookup"
+    assert tool_end.arguments == {"q": "hi"}
+    assert tool_end.synthetic_from_text is True
+
+
 def test_openai_compat_does_not_synthesize_unoffered_wrapped_tool_call_text(
     monkeypatch: Any,
 ) -> None:

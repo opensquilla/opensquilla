@@ -782,6 +782,29 @@ async def test_outer_stage_preserves_meta_text_when_done_text_is_empty() -> None
 
 
 @pytest.mark.asyncio
+async def test_outer_stage_suppresses_empty_protocol_text_deltas() -> None:
+    agent_run = _RecordingAgentRun(
+        events=[
+            TextDeltaEvent(text="<tool_call>"),
+            ToolUseStartEvent(tool_use_id="t1", tool_name="web_search"),
+            DoneEvent(text=""),
+        ]
+    )
+    stage, _ = _make_stage(agent_run=agent_run)
+
+    yielded = await _drain(stage, _make_input())
+
+    assert [type(event).__name__ for event in yielded] == [
+        "ToolUseStartEvent",
+        "DoneEvent",
+    ]
+    assert all(
+        not (isinstance(event, TextDeltaEvent) and event.text == "")
+        for event in yielded
+    )
+
+
+@pytest.mark.asyncio
 async def test_outer_stage_injects_partial_failure_disclosure_before_done() -> None:
     agent_run = _RecordingAgentRun(
         events=[

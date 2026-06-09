@@ -28,6 +28,7 @@ from opensquilla.engine.turn_runner.prompt_assembler_stage import (
     SessionIdResolverPort,
 )
 from opensquilla.observability.prompt_report import PromptReport
+from opensquilla.tools.types import CallerKind, ToolContext
 
 # ---------------------------------------------------------------------------
 # Recording fakes (one per port)
@@ -52,6 +53,7 @@ class _RecordingPromptAssembler:
         prompt_metadata,
         bootstrap_context_mode,
         fresh_user_session=False,
+        reply_tags_enabled=True,
     ):
         self.calls += 1
         self.last_kwargs = dict(
@@ -62,6 +64,7 @@ class _RecordingPromptAssembler:
             extra_context=extra_context,
             bootstrap_context_mode=bootstrap_context_mode,
             fresh_user_session=fresh_user_session,
+            reply_tags_enabled=reply_tags_enabled,
         )
         prompt_metadata.update(self.metadata_to_emit)
         return self.base_prompt
@@ -315,6 +318,30 @@ async def test_prompt_assembler_forwards_fresh_user_session_flag():
     await stage.run(_make_input(fresh_user_session=True))
 
     assert prompt_assembler.last_kwargs["fresh_user_session"] is True
+
+
+@pytest.mark.asyncio
+async def test_prompt_assembler_disables_reply_tags_for_web_surface():
+    prompt_assembler = _RecordingPromptAssembler()
+    stage = _make_stage(assembler=prompt_assembler)
+
+    await stage.run(
+        _make_input(effective_tool_context=ToolContext(caller_kind=CallerKind.WEB))
+    )
+
+    assert prompt_assembler.last_kwargs["reply_tags_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_prompt_assembler_keeps_reply_tags_for_channel_surface():
+    prompt_assembler = _RecordingPromptAssembler()
+    stage = _make_stage(assembler=prompt_assembler)
+
+    await stage.run(
+        _make_input(effective_tool_context=ToolContext(caller_kind=CallerKind.CHANNEL))
+    )
+
+    assert prompt_assembler.last_kwargs["reply_tags_enabled"] is True
 
 
 @pytest.mark.asyncio

@@ -56,6 +56,7 @@ _CONTEXT_WINDOW_FIELDS = (
     "max_context_length",
 )
 _MAX_OUTPUT_FIELDS = ("max_completion_tokens", "max_output_tokens")
+_TOOL_PARAMETER_NAMES = {"tools", "tool_choice"}
 
 
 def _positive_int(value: object) -> int:
@@ -74,6 +75,17 @@ def _first_positive(row: dict, fields: tuple[str, ...]) -> int:
         if value > 0:
             return value
     return 0
+
+
+def _tool_support_state_from_parameters(
+    supported_parameters: tuple[str, ...],
+) -> str:
+    supported = {item.lower() for item in supported_parameters}
+    if supported & _TOOL_PARAMETER_NAMES:
+        return "supported"
+    if supported_parameters:
+        return "unsupported"
+    return "unknown"
 
 
 def _normalized_base_url(base_url: str) -> str:
@@ -124,6 +136,7 @@ def model_info_from_openai_compat_row(row: dict, provider_name: str) -> ModelInf
     supported_parameters = tuple(
         str(item) for item in row.get("supported_parameters", []) if isinstance(item, str)
     )
+    tool_support_state = _tool_support_state_from_parameters(supported_parameters)
     supported = {item.lower() for item in supported_parameters}
     architecture = row.get("architecture") or {}
     input_modalities: set[str] = set()
@@ -136,8 +149,9 @@ def model_info_from_openai_compat_row(row: dict, provider_name: str) -> ModelInf
         context_window=_first_positive(row, _CONTEXT_WINDOW_FIELDS),
         max_output_tokens=max_output_tokens,
         supports_reasoning="reasoning" in supported or "reasoning_effort" in supported,
-        supports_tools="tools" in supported or "tool_choice" in supported,
+        supports_tools=tool_support_state == "supported",
         supports_vision="image" in input_modalities,
+        tool_support_state=tool_support_state,
         supported_parameters=supported_parameters,
         metadata_source="provider",
     )
@@ -216,10 +230,12 @@ class ModelCatalog:
             )
         info = self.get(model_id, provider_name=provider_name, base_url=base_url)
         if provider_id == "openai_compatible":
+            tool_support_state = info.tool_support_state if info else "unknown"
             return ModelCapabilities(
                 supports_reasoning=False,
-                supports_tools=info.supports_tools if info else True,
+                supports_tools=info.supports_tools if info else False,
                 supports_vision=info.supports_vision if info else False,
+                tool_support_state=tool_support_state,
                 reasoning_format="none",
             )
         if info and info.supports_reasoning:
@@ -227,6 +243,7 @@ class ModelCatalog:
                 supports_reasoning=True,
                 supports_tools=info.supports_tools,
                 supports_vision=info.supports_vision,
+                tool_support_state=info.tool_support_state,
                 reasoning_format="openrouter",
             )
         model_l = model_id.strip().lower()
@@ -300,9 +317,21 @@ class ModelCatalog:
                 supports_vision=model_l.startswith(("doubao-seed-1-8", "doubao-seed-2")),
                 reasoning_format="volcengine" if supports_reasoning else "none",
             )
+        if (
+            provider_spec
+            and provider_spec.backend == "openai_compat"
+            and provider_id not in {"openai", "openrouter"}
+        ):
+            tool_support_state = info.tool_support_state if info else "unknown"
+            return ModelCapabilities(
+                supports_tools=info.supports_tools if info else False,
+                supports_vision=info.supports_vision if info else False,
+                tool_support_state=tool_support_state,
+            )
         return ModelCapabilities(
             supports_tools=info.supports_tools if info else True,
             supports_vision=info.supports_vision if info else False,
+            tool_support_state=info.tool_support_state if info else "supported",
         )
 
     async def fetch_openrouter(self, api_key: str, base_url: str, proxy: str = "") -> None:
@@ -361,6 +390,7 @@ class ModelCatalog:
                 update={
                     "supports_tools": supports_tools,
                     "supported_parameters": ("tools",) if supports_tools else (),
+                    "tool_support_state": "supported" if supports_tools else "unsupported",
                     "metadata_source": "tool_probe",
                 }
             )
@@ -371,6 +401,7 @@ class ModelCatalog:
                 display_name=model_id,
                 supports_tools=supports_tools,
                 supported_parameters=("tools",) if supports_tools else (),
+                tool_support_state="supported" if supports_tools else "unsupported",
                 metadata_source="tool_probe",
             )
         self._store_model(

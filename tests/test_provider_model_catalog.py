@@ -152,6 +152,24 @@ def test_provider_qualified_metadata_normalizes_versioned_base_url_suffix() -> N
     )
 
 
+def test_openai_compatible_metadata_without_tool_parameters_is_unknown() -> None:
+    catalog = ModelCatalog()
+    catalog.add_models(
+        "openai_compatible",
+        "http://localhost:8008/v1",
+        [{"id": "local-model", "max_model_len": 32768}],
+    )
+
+    caps = catalog.get_capabilities(
+        "local-model",
+        provider_name="openai_compatible",
+        base_url="http://localhost:8008/v1",
+    )
+
+    assert caps.supports_tools is False
+    assert caps.tool_support_state == "unknown"
+
+
 @pytest.mark.asyncio
 async def test_fetch_openrouter_adds_app_attribution_headers() -> None:
     captured: dict[str, object] = {}
@@ -252,6 +270,7 @@ async def test_probe_openai_compatible_tools_updates_provider_scoped_capability(
         base_url="http://localhost:8008/v1",
     )
     assert caps.supports_tools is True
+    assert caps.tool_support_state == "supported"
 
 
 @pytest.mark.asyncio
@@ -287,3 +306,4 @@ async def test_probe_openai_compatible_tools_requires_returned_tool_call(
         base_url="http://localhost:8008/v1",
     )
     assert caps.supports_tools is False
+    assert caps.tool_support_state == "unsupported"

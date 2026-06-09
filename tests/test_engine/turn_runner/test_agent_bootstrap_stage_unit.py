@@ -377,7 +377,8 @@ def test_runtime_model_catalog_adapter_uses_routed_provider_scope() -> None:
     catalog = adapter.lookup("local-router-model", turn=turn)
 
     assert catalog.capabilities is not None
-    assert catalog.capabilities.supports_tools is True
+    assert catalog.capabilities.supports_tools is False
+    assert catalog.capabilities.tool_support_state == "unknown"
 
 
 def test_runtime_model_catalog_adapter_applies_base_tool_support_off() -> None:
@@ -399,6 +400,29 @@ def test_runtime_model_catalog_adapter_applies_base_tool_support_off() -> None:
 
     assert catalog.capabilities is not None
     assert catalog.capabilities.supports_tools is False
+    assert catalog.capabilities.tool_support_state == "unsupported"
+
+
+def test_runtime_model_catalog_adapter_applies_base_tool_support_on() -> None:
+    cfg = SimpleNamespace(
+        llm=SimpleNamespace(
+            max_tokens=0,
+            provider="openai_compatible",
+            base_url="https://self-hosted.example/v1",
+            api_key="",
+            proxy="",
+            tool_support="on",
+        ),
+        squilla_router=SimpleNamespace(tiers={}),
+    )
+    runner = SimpleNamespace(_config=cfg, _model_catalog=ModelCatalog())
+    adapter = _TurnRunnerModelCatalogAdapter(runner)
+
+    catalog = adapter.lookup("local-router-model", turn=_make_turn())
+
+    assert catalog.capabilities is not None
+    assert catalog.capabilities.supports_tools is True
+    assert catalog.capabilities.tool_support_state == "supported"
 
 
 def test_runtime_model_catalog_adapter_applies_routed_tier_tool_support_off() -> None:
@@ -436,6 +460,7 @@ def test_runtime_model_catalog_adapter_applies_routed_tier_tool_support_off() ->
 
     assert catalog.capabilities is not None
     assert catalog.capabilities.supports_tools is False
+    assert catalog.capabilities.tool_support_state == "unsupported"
 
 
 @pytest.mark.asyncio

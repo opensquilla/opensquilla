@@ -782,11 +782,18 @@ def _apply_routed_provider_override(
 _TOOL_REQUIRED_KEYWORDS = (
     "检索",
     "搜索",
+    "最新",
+    "最近",
+    "今日",
     "查最新",
     "联网",
     "调用工具",
     "使用工具",
     "web_search",
+    "latest",
+    "recent",
+    "current",
+    "today",
     "use tool",
     "call tool",
     "search the web",
@@ -798,6 +805,28 @@ def _tool_support_mode(value: Any) -> str:
     if normalized in {"auto", "on", "off"}:
         return normalized
     return "auto"
+
+
+def _tool_support_state_from_capabilities(capabilities: Any) -> str:
+    state = str(getattr(capabilities, "tool_support_state", "") or "").strip().lower()
+    supports_tools = bool(getattr(capabilities, "supports_tools", True))
+    if state == "supported" and not supports_tools:
+        return "unsupported"
+    if state in {"supported", "unsupported", "unknown"}:
+        return state
+    return "supported" if supports_tools else "unsupported"
+
+
+def _provider_requires_openai_compat_tool_confirmation(provider: str) -> bool:
+    provider_id = str(provider or "").strip().lower()
+    if not provider_id or provider_id in {"openai", "openrouter"}:
+        return False
+    try:
+        from opensquilla.provider.registry import get_provider_spec
+
+        return get_provider_spec(provider_id).backend == "openai_compat"
+    except Exception:  # noqa: BLE001 - unknown providers keep legacy fail-open behavior
+        return False
 
 
 def _turn_requires_tools(
@@ -818,31 +847,38 @@ def _turn_requires_tools(
         and str(tool_choice.get("mode") or "").lower() == "required"
     ):
         return True
+    if isinstance(tool_choice, Mapping) and (
+        str(tool_choice.get("type") or "").lower() == "function"
+        or isinstance(tool_choice.get("function"), Mapping)
+    ):
+        return True
     text = str(message or "").strip().lower()
     if not text:
         return False
     return any(keyword in text for keyword in _TOOL_REQUIRED_KEYWORDS)
 
 
-def _router_tier_supports_tools(
+def _router_tier_tool_support_state(
     *,
     runner: Any,
     _tier_name: str,
     tier_cfg: Mapping[str, Any],
     current_config: Any,
-) -> bool:
+) -> str:
     mode = _tool_support_mode(tier_cfg.get("tool_support"))
     if mode == "off":
-        return False
+        return "unsupported"
     if mode == "on":
-        return True
+        return "supported"
     provider = str(tier_cfg.get("provider") or "").strip().lower()
     model = str(tier_cfg.get("model") or "").strip()
     if not provider or not model:
-        return False
+        return "unsupported"
     model_catalog = getattr(runner, "_model_catalog", None)
     if model_catalog is None:
-        return True
+        if _provider_requires_openai_compat_tool_confirmation(provider):
+            return "unknown"
+        return "supported"
     provider_cfg = _provider_config_from_tier(
         tier_cfg=tier_cfg,
         provider=provider,
@@ -854,7 +890,25 @@ def _router_tier_supports_tools(
         provider_name=getattr(provider_cfg, "provider", provider),
         base_url=getattr(provider_cfg, "base_url", ""),
     )
-    return bool(getattr(caps, "supports_tools", True))
+    return _tool_support_state_from_capabilities(caps)
+
+
+def _router_tier_supports_tools(
+    *,
+    runner: Any,
+    _tier_name: str,
+    tier_cfg: Mapping[str, Any],
+    current_config: Any,
+) -> bool:
+    return (
+        _router_tier_tool_support_state(
+            runner=runner,
+            _tier_name=_tier_name,
+            tier_cfg=tier_cfg,
+            current_config=current_config,
+        )
+        == "supported"
+    )
 
 
 def _reconcile_tool_required_route(
@@ -868,6 +922,7 @@ def _reconcile_tool_required_route(
     tool_defs = list(getattr(turn, "tool_defs", []) or [])
     if not _turn_requires_tools(message=message, metadata=metadata, tool_defs=tool_defs):
         return False
+    metadata["tool_required"] = True
     router_cfg = getattr(getattr(runner, "_config", None), "squilla_router", None)
     tiers = getattr(router_cfg, "tiers", {}) if router_cfg is not None else {}
     if not isinstance(tiers, dict):
@@ -882,12 +937,14 @@ def _reconcile_tool_required_route(
         current_config = cloned_selector.current_config if cloned_selector is not None else None
     except Exception:  # noqa: BLE001
         current_config = None
-    if _router_tier_supports_tools(
+    current_state = _router_tier_tool_support_state(
         runner=runner,
         _tier_name=current_tier,
         tier_cfg=current_cfg,
         current_config=current_config,
-    ):
+    )
+    metadata["tool_required_route_tool_support_state"] = current_state
+    if current_state == "supported":
         return False
 
     current_index = tier_index(current_tier)
@@ -903,17 +960,20 @@ def _reconcile_tool_required_route(
             continue
         candidates.append((idx, normalized, raw_cfg))
     for _idx, candidate_tier, candidate_cfg in sorted(candidates, key=lambda item: item[0]):
-        if not _router_tier_supports_tools(
+        candidate_state = _router_tier_tool_support_state(
             runner=runner,
             _tier_name=candidate_tier,
             tier_cfg=candidate_cfg,
             current_config=current_config,
-        ):
+        )
+        if candidate_state != "supported":
             continue
         metadata["tool_required_route_upgrade"] = {
             "from_tier": current_tier,
             "to_tier": candidate_tier,
             "reason": "selected_tier_without_tools",
+            "from_tool_support_state": current_state,
+            "to_tool_support_state": candidate_state,
         }
         metadata["routed_tier"] = candidate_tier
         metadata["routed_provider"] = str(candidate_cfg.get("provider") or "").strip().lower()
@@ -925,6 +985,7 @@ def _reconcile_tool_required_route(
     metadata["tool_required_no_tool_route"] = {
         "tier": current_tier,
         "reason": "selected_tier_without_tools",
+        "tool_support_state": current_state,
     }
     return False
 
@@ -3785,6 +3846,7 @@ class TurnRunner:
         prompt_metadata: dict[str, Any] | None = None,
         bootstrap_context_mode: str | None = None,
         fresh_user_session: bool = False,
+        reply_tags_enabled: bool = True,
     ) -> str | tuple[str, str]:
         """Assemble identity system prompt via Jinja2 template.
 
@@ -3967,6 +4029,7 @@ class TurnRunner:
             runtime_info=runtime_info,
             docs_path=self._resolve_docs_path(),
             heartbeat_prompt=getattr(self._config, "heartbeat_prompt", None),
+            reply_tags_enabled=reply_tags_enabled,
         )
         # daily_notes, workspace_files, and extra_context are per-turn /
         # per-day volatile content. Keeping them in the cacheable base

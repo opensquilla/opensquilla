@@ -223,7 +223,7 @@ Working directory: {{ runtime_info.workspace_dir }}
 
 {% endif -%}
 
-{% if prompt_mode == "full" -%}
+{% if prompt_mode == "full" and reply_tags_enabled -%}
 ## Reply Tags
 
 When replying to a specific message, use:

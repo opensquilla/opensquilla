@@ -316,6 +316,8 @@ async def test_run_pipeline_upgrades_tool_required_turn_from_no_tool_tier(
         "from_tier": "c1",
         "to_tier": "c2",
         "reason": "selected_tier_without_tools",
+        "from_tool_support_state": "unsupported",
+        "to_tool_support_state": "supported",
     }
     assert cloned_selector.current_config.provider == "openrouter"
     assert cloned_selector.current_config.model == "z-ai/glm-5.1"
@@ -373,7 +375,66 @@ async def test_run_pipeline_marks_tool_required_turn_without_tool_capable_fallba
     assert turn.metadata["tool_required_no_tool_route"] == {
         "tier": "c1",
         "reason": "selected_tier_without_tools",
+        "tool_support_state": "unsupported",
     }
     assert "tool_required_route_upgrade" not in turn.metadata
     assert cloned_selector.current_config.provider == "inception"
     assert getattr(provider, "_provider_kind") == "inception"
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_upgrades_tool_required_turn_from_unknown_auto_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Strategy:
+        async def classify(self, *_args, **_kwargs):
+            return "c1", 0.92, "test_strategy", {}
+
+    monkeypatch.setattr(
+        "opensquilla.engine.steps.squilla_router._get_strategy",
+        lambda _cfg: _Strategy(),
+    )
+    config = GatewayConfig()
+    config.squilla_router = _router_cfg()
+    config.squilla_router.tiers["c1"]["tool_support"] = "auto"
+    config.squilla_router.tiers["c2"]["tool_support"] = "on"
+    selector = ModelSelector(
+        SelectorConfig(
+            primary=ProviderConfig(
+                provider="inception",
+                model="inception/mercury-2",
+                api_key="inception-key",
+                base_url="https://api.inceptionlabs.ai/v1",
+            )
+        )
+    )
+    cloned_selector = selector.clone()
+    runner = TurnRunner(provider_selector=selector, config=config)
+
+    turn, provider = await runner._run_pipeline(
+        message="latest Silicon Valley AI agent developments",
+        session_key="agent:main:test-tool-required-unknown-fallback",
+        provider=selector.resolve(),
+        cloned_selector=cloned_selector,
+        tool_defs=[SimpleNamespace(name="web_search")],
+        base_prompt="system",
+        attachments=[],
+        semantic_message="latest Silicon Valley AI agent developments",
+        tool_context=SimpleNamespace(
+            agent_id="main",
+            workspace_dir="",
+            channel_kind="webchat",
+            channel_id="webchat",
+        ),
+    )
+
+    assert turn.metadata["routed_tier"] == "c2"
+    assert turn.metadata["routed_provider"] == "openrouter"
+    assert turn.metadata["tool_required_route_upgrade"] == {
+        "from_tier": "c1",
+        "to_tier": "c2",
+        "reason": "selected_tier_without_tools",
+        "from_tool_support_state": "unknown",
+        "to_tool_support_state": "supported",
+    }
+    assert getattr(provider, "_provider_kind") == "openrouter"

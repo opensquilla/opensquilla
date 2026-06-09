@@ -14,7 +14,7 @@ _PLAIN_JSON_TOOL_PREFIX_RE = re.compile(
     r"([A-Za-z_][A-Za-z0-9_.:-]*)\s*(?=\{)",
 )
 _WRAPPED_TOOL_CALL_RE = re.compile(
-    r"^\s*<\s*tool_call\s*>\s*(\{.*\})\s*</\s*tool_call\s*>\s*$",
+    r"^\s*<\s*tool_call\s*>\s*(\{.*\})\s*</\s*tool_call\s*>\s*(?:<\|role_end\|>)?\s*$",
     re.DOTALL | re.IGNORECASE,
 )
 _WRAPPED_TOOL_CALL_MARKER_RE = re.compile(r"<\s*tool_call\s*>", re.IGNORECASE)
@@ -22,10 +22,12 @@ _TEXT_PROTOCOL_MARKER_RE = re.compile(
     (
         r"<\s*(?:minimax:tool_call|tool_calls?|tvoe_calls|invoke\b|"
         r"parameter\b|effect_calls\b|details\b|angle\s+brackets\b|"
-        r"[|｜]\s*DSML\s*[|｜]\s*(?:tool_calls?|invoke\b|parameter\b))"
+        r"[|｜]\s*DSML\s*[|｜]\s*(?:tool_calls?|invoke\b|parameter\b))|"
+        r"<\|role_end\|>"
     ),
     re.IGNORECASE,
 )
+_ROLE_END_SENTINEL_RE = re.compile(r"<\|role_end\|>", re.IGNORECASE)
 _TEXT_PROTOCOL_PARAMETER_RE = re.compile(
     (
         r"<\s*(?:parameter|[|｜]\s*DSML\s*[|｜]\s*parameter)\s+"
@@ -81,6 +83,7 @@ _TEXT_PROTOCOL_PREFIXES = (
     "<details",
     "<summary",
     "<angle brackets",
+    "<|role_end|>",
 )
 _MAX_TEXT_PROTOCOL_PREFIX_LEN = max(len(prefix) for prefix in _TEXT_PROTOCOL_PREFIXES)
 
@@ -159,6 +162,8 @@ def strip_synthetic_tool_call_text(text: str, tool_name: str) -> str:
 
 
 def _looks_like_text_tool_protocol_suffix(suffix: str) -> bool:
+    if _ROLE_END_SENTINEL_RE.fullmatch(suffix.strip()):
+        return True
     if re.search(r"<\s*minimax:tool_call\s*>", suffix, re.IGNORECASE):
         return True
     if _TEXT_PROTOCOL_STANDALONE_MARKER_RE.search(suffix):

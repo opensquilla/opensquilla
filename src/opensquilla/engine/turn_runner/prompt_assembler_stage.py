@@ -102,7 +102,16 @@ class PromptAssemblerPort(Protocol):
         prompt_metadata: dict[str, Any],
         bootstrap_context_mode: str | None,
         fresh_user_session: bool = False,
+        reply_tags_enabled: bool = True,
     ) -> str | tuple[str, str]: ...
+
+
+def _reply_tags_enabled_for_tool_context(ctx: ToolContext | None) -> bool:
+    if ctx is None:
+        return True
+    caller_kind = getattr(ctx, "caller_kind", None)
+    caller_value = getattr(caller_kind, "value", caller_kind)
+    return str(caller_value or "").lower() in {"channel", "cron"}
 
 @runtime_checkable
 class PipelineExecutionPort(Protocol):
@@ -361,6 +370,9 @@ class PromptAssemblerStage:
             prompt_metadata=prompt_metadata,
             bootstrap_context_mode=inp.bootstrap_context_mode,
             fresh_user_session=inp.fresh_user_session,
+            reply_tags_enabled=_reply_tags_enabled_for_tool_context(
+                inp.effective_tool_context
+            ),
         )
 
         # 2. Fetch router context (transcript-driven)

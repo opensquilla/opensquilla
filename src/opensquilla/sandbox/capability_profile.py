@@ -118,6 +118,8 @@ def _inject_simple_venv_plus_install_capabilities(
     operation: OperationProfile,
     profile: CapabilityProfile,
 ) -> CapabilityProfile:
+    # Temporary compatibility bridge for the common `python -m venv ... && ... pip install ...`
+    # pattern until Task 2 migrates env creation into OperationProfile.
     if operation.name != "package_install" or profile.package_ecosystem != "python":
         return profile
 
@@ -161,7 +163,10 @@ def _parse_venv_creation_path(argv: tuple[str, ...] | list[str]) -> str | None:
     if not _is_python_venv_create(first_command):
         return None
 
-    venv_path = first_command[3]
+    venv_path = _parse_venv_path(first_command)
+    if not venv_path:
+        return None
+
     for command in script_commands[1:]:
         command_parts = _tokenize_shell_command(command)
         if not command_parts:
@@ -184,6 +189,14 @@ def _is_python_venv_create(parts: tuple[str, ...]) -> bool:
     if parts[1:3] != ("-m", "venv"):
         return False
     return _command_name(parts[0]).startswith("python")
+
+
+def _parse_venv_path(parts: tuple[str, ...]) -> str | None:
+    for token in parts[3:]:
+        if token.startswith("-"):
+            continue
+        return token
+    return None
 
 
 def _command_name(value: str) -> str:

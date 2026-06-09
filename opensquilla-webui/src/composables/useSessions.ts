@@ -97,6 +97,7 @@ export function sessionRunStatus(row: RawSessionItem): string {
 export function sessionVisualStatus(row: Pick<SessionItem, 'status' | 'runStatus'>): string {
   if (row.runStatus === 'failed' || row.runStatus === 'timeout') return row.runStatus
   if (row.runStatus === 'cancelled' || row.runStatus === 'interrupted') return 'killed'
+  if (row.runStatus === 'queued' || row.runStatus === 'running' || row.runStatus === 'idle') return row.runStatus
   return String(row.status || 'unknown').toLowerCase()
 }
 

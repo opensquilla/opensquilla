@@ -115,7 +115,7 @@ export function useChatSend(options: UseChatSendOptions) {
     options.rpc.call('chat.abort', { sessionKey: options.sessionKey.value }).catch(() => {})
     options.stream.endStreaming({ reason: 'aborted' })
     const recovered = options.popAllPendingIntoComposer()
-    console.warn(recovered ? 'Stopped -- pending recovered to input' : 'Stopped')
+    console.info(recovered ? 'Stopped -- pending recovered to input' : 'Stopped')
   }
 
   return {

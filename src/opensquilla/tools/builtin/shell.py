@@ -1502,6 +1502,27 @@ async def exec_command(
                 output = sandbox_result.stdout
                 if sandbox_result.stderr:
                     output += sandbox_result.stderr
+            elif (
+                recovery_decision.kind is DevPolicyDecisionKind.ASK
+                and recovery_decision.use_managed_proxy
+            ):
+                approval_request = backend_request
+                if approval_request.policy.network is not NetworkMode.PROXY_ALLOWLIST:
+                    approval_request = approval_request.with_policy(
+                        dataclasses.replace(
+                            approval_request.policy,
+                            network=NetworkMode.PROXY_ALLOWLIST,
+                            network_proxy=None,
+                        )
+                    )
+                preflight = await preflight_subprocess_managed_network(
+                    approval_request,
+                    runtime,
+                )
+                if isinstance(preflight, DenialResult):
+                    return json.dumps(preflight.to_dict())
+                if isinstance(preflight, dict):
+                    return json.dumps(preflight)
         output = _append_sandbox_network_hint(output)
         return f"exit_code={sandbox_result.returncode}\n{output}"
 

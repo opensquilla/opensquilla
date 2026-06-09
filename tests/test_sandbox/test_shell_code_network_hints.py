@@ -35,6 +35,25 @@ def managed_runtime(tmp_path: Path) -> Iterator[Path]:
         reset_approval_queue()
 
 
+@pytest.fixture
+def standard_runtime_no_preflight(tmp_path: Path) -> Iterator[Path]:
+    reset_approval_queue()
+    configure_runtime(
+        SandboxSettings(
+            run_mode="standard",
+            backend="noop",
+            allow_legacy_mode=True,
+            network_default="none",
+        ),
+        workspace=tmp_path,
+    )
+    try:
+        yield tmp_path
+    finally:
+        reset_runtime()
+        reset_approval_queue()
+
+
 @pytest.mark.asyncio
 async def test_shell_network_command_passes_network_hint(monkeypatch: pytest.MonkeyPatch) -> None:
     from opensquilla.tools.builtin import shell
@@ -607,6 +626,116 @@ async def test_trusted_unknown_install_network_failure_retries_once_with_managed
 
 
 @pytest.mark.asyncio
+async def test_standard_runtime_network_recovery_returns_package_bundle_approval(
+    standard_runtime_no_preflight: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    backend_calls = 0
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        nonlocal backend_calls
+        backend_calls += 1
+        return SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="curl: (6) Could not resolve host: pypi.org\n",
+            backend_notes=(),
+        )
+
+    monkeypatch.setattr(shell, "run_under_backend", _fake_run_under_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(standard_runtime_no_preflight),
+            session_key="s1",
+            run_mode="standard",
+            sandbox_run_context=RunContext(run_mode=RunMode.STANDARD),
+        )
+    )
+    try:
+        payload = json.loads(
+            await shell.exec_command(
+                "pip install demo",
+                workdir=str(standard_runtime_no_preflight),
+            )
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert backend_calls == 1
+    assert payload["status"] == "approval_required"
+    assert payload["approvalKind"] == "sandbox_network"
+    assert payload["bundle_id"] == "python-package-install"
+    pending = get_approval_queue().list_pending("exec")
+    assert len(pending) == 1
+    assert pending[0]["params"]["bundle_id"] == "python-package-install"
+
+
+@pytest.mark.asyncio
+async def test_standard_runtime_network_recovery_returns_host_approval_for_explicit_url(
+    standard_runtime_no_preflight: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    backend_calls = 0
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        nonlocal backend_calls
+        backend_calls += 1
+        return SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="curl: (6) Could not resolve host: unknown.test\n",
+            backend_notes=(),
+        )
+
+    monkeypatch.setattr(shell, "run_under_backend", _fake_run_under_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(standard_runtime_no_preflight),
+            session_key="s1",
+            run_mode="standard",
+            sandbox_run_context=RunContext(run_mode=RunMode.STANDARD),
+        )
+    )
+    try:
+        payload = json.loads(
+            await shell.exec_command(
+                "curl https://unknown.test/path",
+                workdir=str(standard_runtime_no_preflight),
+            )
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert backend_calls == 1
+    assert payload["status"] == "approval_required"
+    assert payload["approvalKind"] == "sandbox_network"
+    assert payload["host"] == "unknown.test"
+    pending = get_approval_queue().list_pending("exec")
+    assert len(pending) == 1
+    assert pending[0]["params"]["host"] == "unknown.test"
+
+
+@pytest.mark.asyncio
 async def test_trusted_hostless_private_network_failure_does_not_retry(
     managed_runtime: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -664,6 +793,68 @@ async def test_trusted_hostless_private_network_failure_does_not_retry(
 
     assert backend_calls == 1
     assert "Network is unreachable" in result
+
+
+@pytest.mark.asyncio
+async def test_trusted_metadata_target_is_not_auto_retried(
+    managed_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    backend_calls = 0
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        nonlocal backend_calls
+        backend_calls += 1
+        return SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="Network is unreachable\n",
+            backend_notes=(),
+        )
+
+    async def _fake_preflight_subprocess_managed_network(request, runtime):
+        return None
+
+    monkeypatch.setattr(shell, "run_under_backend", _fake_run_under_backend)
+    monkeypatch.setattr(shell, "_sensitive_shell_block", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        shell,
+        "preflight_subprocess_managed_network",
+        _fake_preflight_subprocess_managed_network,
+    )
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.TRUSTED,
+                workspace=str(managed_runtime),
+            ),
+        )
+    )
+    try:
+        result = await shell.exec_command(
+            "curl http://169.254.169.254/latest/meta-data/",
+            workdir=str(managed_runtime),
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert backend_calls == 1
+    assert "exit_code=1" in result
+    assert "Network is unreachable" in result
+    assert "approval_required" not in result
 
 
 @pytest.mark.asyncio

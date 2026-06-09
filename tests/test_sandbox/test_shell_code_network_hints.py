@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -822,6 +823,132 @@ async def test_standard_runtime_network_recovery_retries_once_with_approved_bund
     assert backend_calls[0].policy.network is NetworkMode.NONE
     assert backend_calls[1].policy.network is NetworkMode.PROXY_ALLOWLIST
     assert backend_calls[1].env["HTTP_PROXY"] == "http://127.0.0.1:48123"
+    assert get_approval_queue().list_pending("exec") == []
+
+
+@pytest.mark.asyncio
+async def test_standard_runtime_network_recovery_preserves_allow_once_for_proxy_retry(
+    standard_runtime_no_preflight: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox import integration as integration_mod
+    from opensquilla.sandbox.types import (
+        NetworkMode,
+        ResourceLimits,
+        SandboxPolicy,
+        SandboxRequest,
+        SecurityLevel,
+    )
+    from opensquilla.tools.builtin import shell
+
+    command = "curl https://unknown.test/path"
+    workdir = standard_runtime_no_preflight.resolve(strict=False)
+    base_policy = SandboxPolicy(
+        level=SecurityLevel.STANDARD,
+        network=NetworkMode.NONE,
+        mounts=(),
+        workspace_rw=True,
+        tmp_writable=True,
+        limits=ResourceLimits(),
+        env_allowlist=("PATH",),
+        require_approval=False,
+    )
+    approval_policy = SandboxPolicy(
+        level=base_policy.level,
+        network=NetworkMode.PROXY_ALLOWLIST,
+        mounts=base_policy.mounts,
+        workspace_rw=base_policy.workspace_rw,
+        tmp_writable=base_policy.tmp_writable,
+        limits=base_policy.limits,
+        env_allowlist=base_policy.env_allowlist,
+        require_approval=base_policy.require_approval,
+        description=base_policy.description,
+        network_proxy=base_policy.network_proxy,
+    )
+    approval_request = SandboxRequest(
+        argv=("sh", "-lc", command),
+        cwd=workdir,
+        action_kind="shell.exec",
+        policy=approval_policy,
+        env=dict(os.environ),
+    )
+
+    class _FakeProxyServer:
+        host = "127.0.0.1"
+        port = 48123
+
+        def __init__(self, decide, *args, **kwargs) -> None:
+            self._decide = decide
+
+        async def start(self) -> None:
+            decision = self._decide("unknown.test")
+            assert decision.status == "allow"
+
+        async def stop(self) -> None:
+            return None
+
+    async def _fake_gate_action(**kwargs):
+        request = SimpleNamespace(
+            cwd=workdir,
+            action_kind="shell.exec",
+            policy=base_policy,
+            reason="",
+        )
+        return object(), base_policy, request
+
+    backend_calls: list[SandboxRequest] = []
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        backend_calls.append(request)
+        if len(backend_calls) == 1:
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="curl: (6) Could not resolve host: unknown.test\n",
+                backend_notes=(),
+            )
+        return SimpleNamespace(returncode=0, stdout="downloaded\n", stderr="", backend_notes=())
+
+    monkeypatch.setattr(integration_mod, "SandboxProxyServer", _FakeProxyServer)
+    monkeypatch.setattr(shell, "gate_action", _fake_gate_action)
+    monkeypatch.setattr(shell, "run_under_backend", _fake_run_under_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    grant = TemporaryGrant(
+        kind="domain",
+        value="unknown.test",
+        fingerprint=integration_mod.action_fingerprint(approval_request),
+    )
+    run_context = RunContext(
+        run_mode=RunMode.STANDARD,
+        workspace=str(standard_runtime_no_preflight),
+        temporary_grants=(grant,),
+    )
+    tool_context = ToolContext(
+        is_owner=True,
+        caller_kind=CallerKind.CLI,
+        workspace_dir=str(standard_runtime_no_preflight),
+        session_key="s1",
+        run_mode="standard",
+        sandbox_run_context=run_context,
+    )
+    token = current_tool_context.set(tool_context)
+    try:
+        result = await shell.exec_command(command, workdir=str(standard_runtime_no_preflight))
+    finally:
+        current_tool_context.reset(token)
+
+    assert "downloaded" in result
+    assert len(backend_calls) == 2
+    assert backend_calls[0].policy.network is NetworkMode.NONE
+    assert backend_calls[1].policy.network is NetworkMode.PROXY_ALLOWLIST
+    assert backend_calls[1].env["HTTP_PROXY"] == "http://127.0.0.1:48123"
+    assert isinstance(tool_context.sandbox_run_context, RunContext)
+    assert tool_context.sandbox_run_context.temporary_grants == ()
     assert get_approval_queue().list_pending("exec") == []
 
 

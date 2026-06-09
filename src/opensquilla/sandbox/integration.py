@@ -1200,6 +1200,8 @@ async def _prepare_network_none_in_process_action(
 async def preflight_subprocess_managed_network(
     request: SandboxRequest,
     runtime: SandboxRuntime,
+    *,
+    consume_temporary_grants: bool = True,
 ) -> DenialResult | dict[str, object] | None:
     """Preflight explicit network targets before subprocess proxy execution.
 
@@ -1271,7 +1273,7 @@ async def preflight_subprocess_managed_network(
             ),
         )
     for host in targets:
-        if has_temporary_network_grant(
+        if consume_temporary_grants and has_temporary_network_grant(
             original_context,
             host=host,
             fingerprint=fingerprint,

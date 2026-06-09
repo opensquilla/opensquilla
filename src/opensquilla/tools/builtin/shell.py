@@ -1518,6 +1518,7 @@ async def exec_command(
                 preflight = await preflight_subprocess_managed_network(
                     approval_request,
                     runtime,
+                    consume_temporary_grants=False,
                 )
                 if isinstance(preflight, DenialResult):
                     return json.dumps(preflight.to_dict())

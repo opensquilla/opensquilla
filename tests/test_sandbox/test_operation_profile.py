@@ -343,11 +343,23 @@ def test_python_environment_create_help_or_version_is_not_classified_as_create_e
         ("virtualenv", "--help"),
         ("uv", "venv", "--help"),
         ("virtualenv", "-V"),
-        ("uv", "venv", "version"),
     ):
         profile = classify_command(command)
 
         assert profile.name != "create_env"
+
+
+def test_python_environment_create_with_version_named_target() -> None:
+    for command in (
+        ("python", "-m", "venv", "version"),
+        ("virtualenv", "version"),
+        ("uv", "venv", "version"),
+    ):
+        profile = classify_command(command)
+
+        assert profile.name == "create_env"
+        assert profile.package_manager == "python"
+        assert profile.requested_write_paths == ("version",)
 
 
 def test_classify_additional_package_managers() -> None:

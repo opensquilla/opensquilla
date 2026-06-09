@@ -11,7 +11,7 @@ from opensquilla.sandbox.domain_validation import normalize_domain
 _PYTHON_EXE_RE = re.compile(r"python(?:\d+(?:\.\d+)*)?$")
 _URL_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
 _NODE_INSTALL_COMMANDS = frozenset({"add", "ci", "install"})
-_ENV_CREATE_OPTION_TOKENS = frozenset({"--help", "-h", "--version", "-V", "version"})
+_ENV_CREATE_OPTION_TOKENS = frozenset({"--help", "-h", "--version", "-V"})
 _ENV_CREATE_OPTIONS_WITH_VALUE = frozenset({"--prompt", "-p", "--python"})
 _PYTHON_ENV_COMMANDS = frozenset({"virtualenv"})
 _PYTHON_PROJECT_INSTALL_COMMANDS = frozenset({"poetry", "rye", "pixi"})

@@ -193,8 +193,23 @@ async def _chat_history_transcript(
     transcript_getter = getattr(mgr, "get_transcript", None)
     if not callable(transcript_getter):
         return [], False
-    transcript = await transcript_getter(session_key)
-    return list(transcript or []), False
+    transcript = list(await transcript_getter(session_key) or [])
+    if transcript:
+        return transcript, False
+    # Active transcript is empty — the session may have been compacted or
+    # reset while other users still expect to see history.  Fall back to the
+    # canonical transcript (archived + active) so shared sessions don't
+    # appear to "lose" messages after a compaction or page refresh.
+    if not include_canonical and _is_webchat_session_key(session_key):
+        getter = getattr(mgr, "get_canonical_transcript", None)
+        if callable(getter):
+            try:
+                canonical = list(await getter(session_key))
+                if canonical:
+                    return canonical, True
+            except Exception:  # noqa: BLE001
+                pass
+    return [], False
 
 
 async def _chat_history_summaries(

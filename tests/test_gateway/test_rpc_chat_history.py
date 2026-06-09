@@ -495,3 +495,124 @@ async def test_chat_history_exposes_download_url_for_transcript_attachment_refs(
         f"/api/v1/attachments/{sha}?sessionKey=agent%3Amain%3Awebchat%3Atest"
         "&name=webchat-paste-test.txt&mime=text%2Fplain"
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #127 — canonical fallback when includeCanonical=false & active empty
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_canonical_fallback_when_active_empty_and_include_canonical_false() -> None:
+    """After compaction the active transcript may be empty while the canonical
+    (archived + active) transcript still has entries.  The frontend sends
+    ``includeCanonical: false`` on page refresh; without the fallback, all
+    messages would vanish (issue #127)."""
+    canonical_entries = [_entry(1), _entry(2)]
+    mgr = _FakeSessionManager(
+        entries=[],  # active transcript emptied by compaction
+        canonical_entries=canonical_entries,
+    )
+
+    result = await _handle_chat_history(
+        {"sessionKey": "agent:main:webchat:default", "includeCanonical": False},
+        RpcContext(
+            conn_id="test",
+            principal=SimpleNamespace(role="operator"),
+            session_manager=mgr,
+        ),
+    )
+
+    assert mgr.used_canonical is True
+    assert [msg["text"] for msg in result["messages"]] == ["message 1", "message 2"]
+    assert result["canonical_available"] is True
+
+
+@pytest.mark.asyncio
+async def test_no_canonical_fallback_for_non_webchat_session() -> None:
+    """Non-webchat sessions (e.g. CLI) should NOT get the canonical fallback
+    when the active transcript is empty — they don't share sessions."""
+    mgr = _FakeSessionManager(
+        entries=[],
+        canonical_entries=[_entry(1, role="user")],
+    )
+
+    result = await _handle_chat_history(
+        {"sessionKey": "agent:main:cli:default", "includeCanonical": False},
+        RpcContext(
+            conn_id="test",
+            principal=SimpleNamespace(role="operator"),
+            session_manager=mgr,
+        ),
+    )
+
+    assert result["messages"] == []
+    assert result["canonical_available"] is False
+
+
+@pytest.mark.asyncio
+async def test_no_canonical_fallback_when_active_has_entries() -> None:
+    """If the active transcript is non-empty, canonical fallback should not
+    be triggered even for webchat sessions."""
+    active_entries = [_entry(5)]
+    canonical_entries = [_entry(1), _entry(5)]
+    mgr = _FakeSessionManager(
+        entries=active_entries,
+        canonical_entries=canonical_entries,
+    )
+
+    result = await _handle_chat_history(
+        {"sessionKey": "agent:main:webchat:default", "includeCanonical": False},
+        RpcContext(
+            conn_id="test",
+            principal=SimpleNamespace(role="operator"),
+            session_manager=mgr,
+        ),
+    )
+
+    assert [msg["text"] for msg in result["messages"]] == ["message 5"]
+    assert result["canonical_available"] is False
+
+
+@pytest.mark.asyncio
+async def test_canonical_fallback_returns_empty_when_both_empty() -> None:
+    """When both active and canonical transcripts are empty, the result should
+    still be an empty list — no spurious data."""
+    mgr = _FakeSessionManager(
+        entries=[],
+        canonical_entries=[],
+    )
+
+    result = await _handle_chat_history(
+        {"sessionKey": "agent:main:webchat:default", "includeCanonical": False},
+        RpcContext(
+            conn_id="test",
+            principal=SimpleNamespace(role="operator"),
+            session_manager=mgr,
+        ),
+    )
+
+    assert result["messages"] == []
+    assert result["canonical_available"] is False
+
+
+@pytest.mark.asyncio
+async def test_canonical_fallback_graceful_on_canonical_error() -> None:
+    """If canonical transcript raises an unexpected error, the fallback should
+    silently catch it and return empty — not propagate the exception."""
+    mgr = _FakeSessionManager(
+        entries=[],
+        canonical_exception=RuntimeError("db connection lost"),
+    )
+
+    result = await _handle_chat_history(
+        {"sessionKey": "agent:main:webchat:default", "includeCanonical": False},
+        RpcContext(
+            conn_id="test",
+            principal=SimpleNamespace(role="operator"),
+            session_manager=mgr,
+        ),
+    )
+
+    assert result["messages"] == []
+    assert result["canonical_available"] is False

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from opensquilla.sandbox.capability_profile import CapabilityProfile
+from opensquilla.sandbox.capability_profile import CapabilityProfile, NetworkIntent
 from opensquilla.sandbox.run_mode import RunMode, normalize_run_mode
 
 
@@ -60,12 +60,33 @@ _UNSAFE_NETWORKS = {
     NetworkTargetClass.METADATA_OR_LINK_LOCAL,
 }
 
+_UNSAFE_NETWORK_INTENTS = {
+    NetworkIntent.PRIVATE_OR_LOCAL,
+    NetworkIntent.METADATA_OR_LINK_LOCAL,
+}
+
+
+def _normalize_path_class(value: PathTargetClass | str) -> PathTargetClass | None:
+    try:
+        return PathTargetClass(value)
+    except ValueError:
+        return None
+
+
+def _normalize_network_class(
+    value: NetworkTargetClass | str,
+) -> NetworkTargetClass | None:
+    try:
+        return NetworkTargetClass(value)
+    except ValueError:
+        return None
+
 
 def decide_dev_recovery(
     run_mode: RunMode | str,
     profile: CapabilityProfile,
-    path_class: PathTargetClass,
-    network_class: NetworkTargetClass,
+    path_class: PathTargetClass | str,
+    network_class: NetworkTargetClass | str,
 ) -> DevPolicyDecision:
     if not profile.is_development_operation:
         return DevPolicyDecision(
@@ -73,14 +94,29 @@ def decide_dev_recovery(
             "not_development_operation",
         )
 
-    if path_class is PathTargetClass.SENSITIVE:
+    normalized_path_class = _normalize_path_class(path_class)
+    normalized_network_class = _normalize_network_class(network_class)
+
+    if normalized_path_class is None or normalized_network_class is None:
+        return DevPolicyDecision(DevPolicyDecisionKind.ASK, "unclear_target")
+
+    if profile.sensitive_path_touch:
         return DevPolicyDecision(DevPolicyDecisionKind.DENY, "sensitive_path")
 
-    if network_class in _UNSAFE_NETWORKS:
+    if normalized_path_class is PathTargetClass.SENSITIVE:
+        return DevPolicyDecision(DevPolicyDecisionKind.DENY, "sensitive_path")
+
+    if (
+        normalized_network_class in _UNSAFE_NETWORKS
+        or profile.network_intent in _UNSAFE_NETWORK_INTENTS
+    ):
         return DevPolicyDecision(DevPolicyDecisionKind.DENY, "unsafe_network_target")
 
     mode = normalize_run_mode(run_mode)
-    needs_network = network_class is not NetworkTargetClass.NONE
+    needs_network = (
+        profile.needs_network
+        or normalized_network_class is not NetworkTargetClass.NONE
+    )
 
     if mode is RunMode.FULL:
         return DevPolicyDecision(DevPolicyDecisionKind.AUTO, "full_host_mode")
@@ -94,14 +130,14 @@ def decide_dev_recovery(
 
     if (
         mode is RunMode.TRUSTED
-        and path_class in _SAFE_TRUSTED_PATHS
-        and network_class in _SAFE_TRUSTED_NETWORKS
+        and normalized_path_class in _SAFE_TRUSTED_PATHS
+        and normalized_network_class in _SAFE_TRUSTED_NETWORKS
     ):
         return DevPolicyDecision(
             DevPolicyDecisionKind.AUTO,
             "trusted_development_operation",
             use_managed_proxy=needs_network,
-            grant_rw_path=path_class is not PathTargetClass.WORKSPACE,
+            grant_rw_path=normalized_path_class is not PathTargetClass.WORKSPACE,
             retry_once=True,
         )
 

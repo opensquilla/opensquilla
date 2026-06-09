@@ -98,3 +98,72 @@ def test_trusted_workspace_path_does_not_grant_rw_path() -> None:
     assert decision.reason == "trusted_development_operation"
     assert decision.grant_rw_path is False
     assert decision.retry_once is True
+
+
+def test_profile_sensitive_path_touch_denies_even_when_path_class_is_normal() -> None:
+    profile = CapabilityProfile(
+        capabilities=frozenset({Capability.INSTALL_PACKAGES}),
+        sensitive_path_touch=True,
+    )
+
+    decision = decide_dev_recovery(
+        RunMode.TRUSTED,
+        profile,
+        PathTargetClass.NORMAL_USER_PATH,
+        NetworkTargetClass.NONE,
+    )
+
+    assert decision.kind is DevPolicyDecisionKind.DENY
+    assert decision.reason == "sensitive_path"
+
+
+def test_profile_network_intent_requires_managed_proxy_even_when_network_class_none() -> None:
+    decision = decide_dev_recovery(
+        RunMode.TRUSTED,
+        _install_profile(NetworkIntent.PACKAGE_REGISTRY),
+        PathTargetClass.NORMAL_USER_PATH,
+        NetworkTargetClass.NONE,
+    )
+
+    assert decision.kind is DevPolicyDecisionKind.AUTO
+    assert decision.use_managed_proxy is True
+
+
+def test_string_class_values_normalize() -> None:
+    workspace_decision = decide_dev_recovery(
+        RunMode.TRUSTED,
+        _install_profile(),
+        "workspace",
+        "none",
+    )
+    sensitive_decision = decide_dev_recovery(
+        RunMode.TRUSTED,
+        _install_profile(),
+        "sensitive",
+        "none",
+    )
+
+    assert workspace_decision.kind is DevPolicyDecisionKind.AUTO
+    assert workspace_decision.grant_rw_path is False
+    assert sensitive_decision.kind is DevPolicyDecisionKind.DENY
+    assert sensitive_decision.reason == "sensitive_path"
+
+
+def test_invalid_class_values_do_not_auto_allow() -> None:
+    invalid_path_decision = decide_dev_recovery(
+        RunMode.TRUSTED,
+        _install_profile(),
+        "not-a-path-class",
+        "none",
+    )
+    invalid_network_decision = decide_dev_recovery(
+        RunMode.TRUSTED,
+        _install_profile(),
+        "workspace",
+        "not-a-network-class",
+    )
+
+    assert invalid_path_decision.kind is DevPolicyDecisionKind.ASK
+    assert invalid_path_decision.reason == "unclear_target"
+    assert invalid_network_decision.kind is DevPolicyDecisionKind.ASK
+    assert invalid_network_decision.reason == "unclear_target"

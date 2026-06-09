@@ -523,6 +523,90 @@ async def test_trusted_uv_pip_install_receives_managed_proxy_without_prompt(
 
 
 @pytest.mark.asyncio
+async def test_trusted_unknown_install_network_failure_retries_once_with_managed_proxy(
+    managed_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.types import SandboxRequest
+    from opensquilla.tools.builtin import shell
+
+    backend_calls: list[SandboxRequest] = []
+    cleanup_calls = 0
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        backend_calls.append(request)
+        if len(backend_calls) == 1:
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="curl: (6) Could not resolve host: pypi.org\n",
+                backend_notes=(),
+            )
+        return SimpleNamespace(
+            returncode=0,
+            stdout="installed\n",
+            stderr="",
+            backend_notes=(),
+        )
+
+    async def _fake_prepare_subprocess_managed_network_proxy(request, *, runtime=None):
+        managed_env = dict(request.env)
+        managed_env["HTTP_PROXY"] = "http://127.0.0.1:48123"
+        managed_env["HTTPS_PROXY"] = managed_env["HTTP_PROXY"]
+        managed_request = SandboxRequest(
+            argv=request.argv,
+            cwd=request.cwd,
+            action_kind=request.action_kind,
+            policy=request.policy,
+            stdin=request.stdin,
+            env=managed_env,
+            reason=request.reason,
+        )
+
+        async def _cleanup() -> None:
+            nonlocal cleanup_calls
+            cleanup_calls += 1
+
+        return SimpleNamespace(request=managed_request, cleanup=_cleanup)
+
+    monkeypatch.setattr(shell, "run_under_backend", _fake_run_under_backend)
+    monkeypatch.setattr(
+        shell,
+        "prepare_subprocess_managed_network_proxy",
+        _fake_prepare_subprocess_managed_network_proxy,
+    )
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.TRUSTED,
+                workspace=str(managed_runtime),
+            ),
+        )
+    )
+    try:
+        result = await shell.exec_command("pip install demo", workdir=str(managed_runtime))
+    finally:
+        current_tool_context.reset(token)
+
+    assert "installed" in result
+    assert len(backend_calls) == 2
+    assert "HTTP_PROXY" not in backend_calls[0].env
+    assert backend_calls[1].env["HTTP_PROXY"] == "http://127.0.0.1:48123"
+    assert cleanup_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_timeout_wrapped_node_install_queues_bundle_approval_before_proxy_run(
     managed_runtime: Path,
     monkeypatch: pytest.MonkeyPatch,

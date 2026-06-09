@@ -30,6 +30,13 @@ from opensquilla.sandbox.backend.seatbelt import (
     build_seatbelt_argv,
     render_seatbelt_profile,
 )
+from opensquilla.sandbox.capability_profile import capability_profile_for_command
+from opensquilla.sandbox.dev_policy_matrix import (
+    DevPolicyDecisionKind,
+    NetworkTargetClass,
+    PathTargetClass,
+    decide_dev_recovery,
+)
 from opensquilla.sandbox.escalation import (
     build_path_approval_params,
     current_tool_mounts,
@@ -49,6 +56,10 @@ from opensquilla.sandbox.integration import (
 from opensquilla.sandbox.operation_profile import OperationProfile, classify_command
 from opensquilla.sandbox.path_validation import MountDecision, decide_path_access
 from opensquilla.sandbox.policy import LevelHints, build_policy, select_level
+from opensquilla.sandbox.runtime_recovery import (
+    classify_network_failure,
+    network_class_for_failure,
+)
 from opensquilla.sandbox.types import DenialReason, DenialResult, SandboxPolicy, SandboxRequest
 from opensquilla.tools.builtin.shell_policy import check_safe_bin
 from opensquilla.tools.path_policy import reject_foreign_host_path
@@ -1312,6 +1323,40 @@ async def exec_command(
         output = sandbox_result.stdout
         if sandbox_result.stderr:
             output += sandbox_result.stderr
+        failure = classify_network_failure(output)
+        if failure is not None:
+            capability_profile = capability_profile_for_command(("sh", "-lc", command))
+            network_class = network_class_for_failure(
+                failure.host,
+                profile=capability_profile,
+                default=NetworkTargetClass.UNKNOWN_PUBLIC,
+            )
+            recovery_decision = decide_dev_recovery(
+                _context_run_mode() or "standard",
+                capability_profile,
+                PathTargetClass.NORMAL_USER_PATH,
+                network_class,
+            )
+            if (
+                recovery_decision.kind is DevPolicyDecisionKind.AUTO
+                and recovery_decision.retry_once
+            ):
+                managed_network = await prepare_subprocess_managed_network_proxy(
+                    backend_request,
+                    runtime=runtime,
+                )
+                try:
+                    sandbox_result = await run_under_backend(
+                        managed_network.request,
+                        runtime=runtime,
+                    )
+                except Exception as exc:
+                    raise ToolError(f"Sandboxed shell execution failed: {exc}") from exc
+                finally:
+                    await managed_network.cleanup()
+                output = sandbox_result.stdout
+                if sandbox_result.stderr:
+                    output += sandbox_result.stderr
         output = _append_sandbox_network_hint(output)
         return f"exit_code={sandbox_result.returncode}\n{output}"
 

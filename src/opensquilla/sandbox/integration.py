@@ -43,6 +43,7 @@ from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 from opensquilla.sandbox.backend import Backend, NoopBackend, select_backend
+from opensquilla.sandbox.capability_profile import capability_profile_for_command
 from opensquilla.sandbox.config import EffectiveMode, SandboxSettings
 from opensquilla.sandbox.domain_validation import validate_domain_pattern
 from opensquilla.sandbox.escalation import (
@@ -67,7 +68,6 @@ from opensquilla.sandbox.governance import (
 )
 from opensquilla.sandbox.network_guard import NetworkDecision, decide_network_access
 from opensquilla.sandbox.network_proxy import SandboxProxyServer
-from opensquilla.sandbox.operation_profile import classify_command, package_bundle_for_manager
 from opensquilla.sandbox.path_validation import (
     decide_path_access,
     normalize_mount_access,
@@ -1343,8 +1343,8 @@ def _context_has_enabled_package_bundle(context: RunContext, bundle_id: str) -> 
 def _package_bundle_id_for_request(request: SandboxRequest) -> str | None:
     if request.action_kind not in {"shell.exec", "shell.background", "code.exec"}:
         return None
-    profile = classify_command(request.argv)
-    return package_bundle_for_manager(profile.package_manager)
+    profile = capability_profile_for_command(request.argv)
+    return next(iter(profile.package_bundles), None)
 
 
 async def _managed_in_process_denial(

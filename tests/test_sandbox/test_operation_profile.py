@@ -316,11 +316,38 @@ def test_classify_python_environment_creation() -> None:
         ("python3", "-m", "venv", "/tmp/proj/.venv"),
         ("virtualenv", "/tmp/proj/.venv"),
         ("uv", "venv", "/tmp/proj/.venv"),
+        ("python", "-m", "venv", ".venv"),
+        ("virtualenv", ".venv"),
+        ("uv", "venv", ".venv"),
     ):
         profile = classify_command(command)
         assert profile.name == "create_env"
         assert profile.package_manager == "python"
-        assert profile.requested_write_paths == ("/tmp/proj/.venv",)
+        assert profile.requested_write_paths == (
+            "/tmp/proj/.venv" if "/tmp/proj/.venv" in command else ".venv",
+        )
+
+
+def test_classify_python_environment_creation_with_prompt_option_and_relative_target() -> None:
+    profile = classify_command(("python", "-m", "venv", "--prompt", "name", ".venv"))
+
+    assert profile.name == "create_env"
+    assert profile.package_manager == "python"
+    assert profile.requested_write_paths == (".venv",)
+
+
+def test_python_environment_create_help_or_version_is_not_classified_as_create_env() -> None:
+    for command in (
+        ("python", "-m", "venv", "--help"),
+        ("python", "-m", "venv", "--version"),
+        ("virtualenv", "--help"),
+        ("uv", "venv", "--help"),
+        ("virtualenv", "-V"),
+        ("uv", "venv", "version"),
+    ):
+        profile = classify_command(command)
+
+        assert profile.name != "create_env"
 
 
 def test_classify_additional_package_managers() -> None:
@@ -356,10 +383,26 @@ def test_shell_wrapper_merges_create_env_and_install_packages() -> None:
     assert profile.requested_write_paths == ("/tmp/proj/.venv",)
 
 
+def test_shell_wrapper_merges_relative_create_env_and_install_packages() -> None:
+    profile = classify_command(
+        (
+            "sh",
+            "-lc",
+            "python -m venv .venv && .venv/bin/python -m pip install requests",
+        )
+    )
+
+    assert profile.name == "package_install"
+    assert profile.package_manager == "python"
+    assert profile.requested_write_paths == (".venv",)
+
+
 def test_package_bundle_for_manager() -> None:
     assert package_bundle_for_manager("python") == "python-package-install"
     assert package_bundle_for_manager("node") == "node-package-install"
     assert package_bundle_for_manager("rust") == "rust-package-install"
     assert package_bundle_for_manager("go") == "go-package-install"
+    assert package_bundle_for_manager("java") == "java-package-install"
+    assert package_bundle_for_manager("php") == "php-package-install"
     assert package_bundle_for_manager(None) is None
     assert package_bundle_for_manager("unknown") is None

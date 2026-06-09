@@ -11,6 +11,8 @@ from opensquilla.sandbox.domain_validation import normalize_domain
 _PYTHON_EXE_RE = re.compile(r"python(?:\d+(?:\.\d+)*)?$")
 _URL_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
 _NODE_INSTALL_COMMANDS = frozenset({"add", "ci", "install"})
+_ENV_CREATE_OPTION_TOKENS = frozenset({"--help", "-h", "--version", "-V", "version"})
+_ENV_CREATE_OPTIONS_WITH_VALUE = frozenset({"--prompt", "-p", "--python"})
 _PYTHON_ENV_COMMANDS = frozenset({"virtualenv"})
 _PYTHON_PROJECT_INSTALL_COMMANDS = frozenset({"poetry", "rye", "pixi"})
 _JAVA_BUILD_COMMANDS = frozenset({"mvn", "mvnw", "gradle", "gradlew"})
@@ -147,23 +149,67 @@ def _is_python_install(lowered: tuple[str, ...]) -> bool:
 
 
 def _is_python_env_create(lowered: tuple[str, ...]) -> bool:
-    return (
+    if (
         len(lowered) >= 4
         and _PYTHON_EXE_RE.fullmatch(_command_name(lowered[0])) is not None
         and lowered[1:3] == ("-m", "venv")
-    ) or (
-        len(lowered) >= 2
-        and _command_name(lowered[0]) in _PYTHON_ENV_COMMANDS
-    ) or (
+    ):
+        return _env_create_path_from_argv(lowered, lowered, 3) is not None
+    if len(lowered) >= 2 and _command_name(lowered[0]) in _PYTHON_ENV_COMMANDS:
+        return _env_create_path_from_argv(lowered, lowered, 1) is not None
+    if (
         len(lowered) >= 2
         and _command_name(lowered[0]) == "uv"
         and lowered[1] == "venv"
-    )
+    ):
+        return _env_create_path_from_argv(lowered, lowered, 2) is not None
+    return False
 
 
 def _env_create_write_paths(parts: tuple[str, ...]) -> tuple[str, ...]:
-    candidates = _path_args_from_argv(parts)
-    return candidates[-1:] if candidates else ()
+    lowered = tuple(part.lower() for part in parts)
+    if (
+        len(lowered) >= 4
+        and _PYTHON_EXE_RE.fullmatch(_command_name(lowered[0])) is not None
+        and lowered[1:3] == ("-m", "venv")
+    ):
+        path = _env_create_path_from_argv(parts, lowered, 3)
+        return (path,) if path is not None else ()
+    if len(lowered) >= 2 and _command_name(lowered[0]) in _PYTHON_ENV_COMMANDS:
+        path = _env_create_path_from_argv(parts, lowered, 1)
+        return (path,) if path is not None else ()
+    if (
+        len(lowered) >= 2
+        and _command_name(lowered[0]) == "uv"
+        and lowered[1] == "venv"
+    ):
+        path = _env_create_path_from_argv(parts, lowered, 2)
+        return (path,) if path is not None else ()
+    return ()
+
+
+def _env_create_path_from_argv(
+    parts: tuple[str, ...], lowered_parts: tuple[str, ...], start: int
+) -> str | None:
+    if start >= len(parts):
+        return None
+    ignore_next = False
+    for index, part in enumerate(parts[start:], start=start):
+        if ignore_next:
+            ignore_next = False
+            continue
+        lowered = lowered_parts[index]
+        if lowered in _ENV_CREATE_OPTION_TOKENS:
+            return None
+        if lowered in _ENV_CREATE_OPTIONS_WITH_VALUE:
+            ignore_next = True
+            continue
+        if lowered.startswith("--prompt="):
+            continue
+        if part.startswith("-"):
+            continue
+        return part
+    return None
 
 
 def _is_python_project_install(lowered: tuple[str, ...]) -> bool:

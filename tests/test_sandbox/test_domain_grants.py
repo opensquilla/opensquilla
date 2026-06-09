@@ -119,6 +119,17 @@ def test_package_bundles_expand_to_known_domains() -> None:
         "golang.org",
         "storage.googleapis.com",
     )
+    assert expand_package_bundle("java-package-install") == (
+        "repo.maven.apache.org",
+        "repo1.maven.org",
+        "plugins.gradle.org",
+        "services.gradle.org",
+    )
+    assert expand_package_bundle("php-package-install") == (
+        "packagist.org",
+        "repo.packagist.org",
+        "getcomposer.org",
+    )
     assert "rust-package-install" in PACKAGE_BUNDLES
     assert DEFAULT_PACKAGE_BUNDLE_IDS == tuple(PACKAGE_BUNDLES)
     assert expand_package_bundle("unknown") == ()

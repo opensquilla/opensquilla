@@ -558,6 +558,7 @@ class MetaRunWriter:
         inputs_json: str,
         step_outputs_json: str,
         awaiting_since: float,
+        awaiting_filled_json: str = "{}",
     ) -> bool:
         """Atomically transition status running → awaiting_user.
 
@@ -569,6 +570,12 @@ class MetaRunWriter:
 
         Callers MUST NOT raise MetaPaused on False — the user_input
         executor treats False as a normal step failure (design §10).
+
+        ``awaiting_filled_json`` defaults to ``"{}"`` for callers that
+        haven't run prefill. The user_input executor's prefill pass
+        passes the JSON-encoded ``{field: value, __prefill_audit__:...}``
+        here so the surface form renders pre-filled values on first
+        paint (rather than always starting blank).
         """
         try:
             with self._lock:
@@ -583,14 +590,14 @@ class MetaRunWriter:
                                session_key=?,
                                inputs_json=?,
                                step_outputs_json=?,
-                               awaiting_filled_json='{}',
+                               awaiting_filled_json=?,
                                parse_failure_count=0
                          WHERE run_id=? AND status='running'
                         """,
                         (
                             step_id, schema_json, awaiting_since,
                             session_id, inputs_json, step_outputs_json,
-                            run_id,
+                            awaiting_filled_json, run_id,
                         ),
                     )
                     if cur.rowcount == 0:

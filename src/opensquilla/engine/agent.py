@@ -97,7 +97,9 @@ from opensquilla.session.compaction_lifecycle import (
     compaction_result_payload,
     flush_receipt_allows_destructive_compaction,
     flush_receipt_is_successful_flush,
+    flush_trigger_enabled,
     new_compaction_id,
+    pre_compaction_flush_requires_safe_receipt,
 )
 from opensquilla.session.terminal_reply import build_terminal_reply
 from opensquilla.tool_boundary import AgentToolHandler as ToolHandler
@@ -1868,8 +1870,6 @@ class Agent:
         turn_tool_errors = 0
         last_actual_model = ""
         terminal_error: ErrorEvent | None = None
-        window_input_tokens = 0
-        window_output_tokens = 0
         final_text_parts: list[str] = []
         final_reasoning_parts: list[str] = []
         artifact_delivery_final_response_pending = False
@@ -2555,15 +2555,11 @@ class Agent:
                             )
                         ):
                             _attempt_retries_used[_ProviderAttemptKind.REASONING_ONLY] += 1
-                            _thinking_fallback_done = True
-                            thinking_enabled = False
-                            thinking_budget = 0
-                            chat_cfg = _chat_config_with_thinking_disabled(chat_cfg)
                             yield WarningEvent(
                                 code="provider_reasoning_only_retry",
                                 message=(
                                     "The provider returned reasoning without visible content; "
-                                    "retrying once with thinking disabled."
+                                    "retrying once to request visible content."
                                 ),
                             )
                             _call_attempt += 1
@@ -2631,8 +2627,6 @@ class Agent:
                             )
                             if visible_text:
                                 final_text_parts.append(visible_text)
-                            window_input_tokens += iter_input_tokens
-                            window_output_tokens += iter_output_tokens
                             logger.warning(
                                 "provider.output_truncated_continue",
                                 session_key=self._session_key,
@@ -2949,8 +2943,6 @@ class Agent:
                                 kept_count=len(overflow_outcome.messages),
                                 removed_count=overflow_outcome.removed_count,
                             )
-                            window_input_tokens = 0
-                            window_output_tokens = 0
                             _call_attempt += 1
                             continue
                         if not _fallback.should_retry(kind, _retry_attempt):
@@ -3046,14 +3038,16 @@ class Agent:
                 if iter_reasoning_content:
                     final_reasoning_parts.append(iter_reasoning_content)
 
-                window_input_tokens += iter_input_tokens
-                window_output_tokens += iter_output_tokens
-
-                # Check overflow against the current post-compaction window,
-                # not lifetime usage for the whole turn.
+                # Check overflow against the live provider request, not
+                # cumulative billable usage for the whole turn.
+                estimated_context_tokens = self._estimate_live_request_tokens(
+                    request_messages,
+                    tools=provider_tools_for_call,
+                    config=call_chat_cfg,
+                )
                 overflow_outcome = await self._check_context_overflow(
                     turn_messages,
-                    window_input_tokens + window_output_tokens,
+                    estimated_context_tokens,
                     request_context_insert_index=request_context_insert_index,
                     runtime_context_insert_index=runtime_context_insert_index,
                 )
@@ -3071,9 +3065,9 @@ class Agent:
                     )
                     continue  # retry the tool loop iteration
                 if overflow_outcome.compacted:
-                    # Compaction happened — replace message list and reset only
-                    # the live-window gauge. Lifetime counters keep feeding
-                    # DoneEvent usage/cost accounting for this turn.
+                    # Compaction happened — replace message list. Lifetime
+                    # counters keep feeding DoneEvent usage/cost accounting for
+                    # this turn.
                     turn_messages = overflow_outcome.messages
                     if overflow_outcome.request_context_insert_index is not None:
                         request_context_insert_index = overflow_outcome.request_context_insert_index
@@ -3086,8 +3080,6 @@ class Agent:
                         kept_count=len(overflow_outcome.messages),
                         removed_count=overflow_outcome.removed_count,
                     )
-                    window_input_tokens = 0
-                    window_output_tokens = 0
                     overflow_retries = 0  # reset on success
                     # Rebuild chat_cfg so next LLM call uses refreshed system
                     # prompt. Read cache_breakpoints from the
@@ -3817,6 +3809,7 @@ class Agent:
         source_messages = self._strip_provider_context_marker_replay_for_provider(source_messages)
         source_messages = self._compact_aggregate_tool_results_for_provider(source_messages)
         source_messages = self._sanitize_projected_tool_use_arguments_for_provider(source_messages)
+        source_messages = repair_tool_pairing(source_messages)
         return sanitize_session_messages(source_messages)
 
     def _apply_provider_tool_result_overrides(self, messages: list[Message]) -> list[Message]:
@@ -4012,21 +4005,77 @@ class Agent:
         return "The generated file is ready."
 
     def _build_compaction_config(self) -> CompactionConfig:
-        return build_compaction_config_from_provider(
+        config = build_compaction_config_from_provider(
             self.provider,
             default_model=self.config.model_id,
         )
+        config.compaction_profile = self.config.compaction_profile
+        config.protected_recent_messages = self.config.compaction_protected_recent_messages
+        return config
+
+    @staticmethod
+    def _live_request_jsonable(value: Any) -> Any:
+        model_dump = getattr(value, "model_dump", None)
+        if callable(model_dump):
+            try:
+                return model_dump(mode="json", exclude_none=True)
+            except TypeError:
+                return model_dump(mode="json")
+        if isinstance(value, list | tuple):
+            return [Agent._live_request_jsonable(item) for item in value]
+        if isinstance(value, dict):
+            return {
+                str(key): Agent._live_request_jsonable(item) for key, item in value.items()
+            }
+        if hasattr(value, "__dict__"):
+            return {
+                str(key): Agent._live_request_jsonable(item)
+                for key, item in vars(value).items()
+                if not str(key).startswith("_")
+            }
+        try:
+            json.dumps(value)
+        except TypeError:
+            return repr(value)
+        return value
+
+    def _estimate_live_request_tokens(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[ToolDefinition] | None = None,
+        config: ChatConfig | None = None,
+    ) -> int:
+        """Estimate the current provider request size without lifetime usage."""
+
+        payload: dict[str, Any] = {
+            "messages": [self._live_request_jsonable(message) for message in messages],
+        }
+        if tools:
+            payload["tools"] = [self._live_request_jsonable(tool) for tool in tools]
+        if config is not None:
+            if config.system:
+                payload["system"] = config.system
+            config_payload = config.model_dump(
+                mode="json",
+                exclude_none=True,
+                exclude={"system", "model_capabilities"},
+            )
+            payload.update(config_payload)
+
+        estimated_chars = len(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str))
+        return max(1, estimated_chars // 4)
 
     async def _check_context_overflow(
         self,
         messages: list[Message],
-        total_tokens: int,
+        estimated_context_tokens: int,
         *,
         request_context_insert_index: int | None = None,
         runtime_context_insert_index: int | None = None,
         compaction_window_tokens: int | None = None,
     ) -> CompactionOutcome | None:
-        """Check if total tokens exceed the overflow threshold.
+        """Check if estimated live context tokens exceed the overflow threshold.
 
         Uses sub-agent flush instead of prompt injection.
         The flush is re-entrant: it can trigger on every approach to threshold.
@@ -4034,7 +4083,7 @@ class Agent:
         self._last_compaction_refusal_reason = None
         window_tokens = compaction_window_tokens or self.config.context_window_tokens
         threshold = self.config.context_overflow_threshold * window_tokens
-        if total_tokens <= threshold:
+        if estimated_context_tokens <= threshold:
             return CompactionOutcome(
                 messages=messages,
                 request_context_insert_index=request_context_insert_index,
@@ -4087,7 +4136,12 @@ class Agent:
                     return None
             return None
 
-        if not self._flush_done_this_cycle and self.config.flush_enabled:
+        pre_compaction_flush_enabled = flush_trigger_enabled(
+            self.config,
+            "pre_compaction",
+        )
+
+        if not self._flush_done_this_cycle and pre_compaction_flush_enabled:
             try:
                 from opensquilla.memory.flush import (
                     resolve_flush_plan,
@@ -4111,7 +4165,7 @@ class Agent:
                     )
 
                     if should_flush(
-                        total_tokens=total_tokens,
+                        total_tokens=estimated_context_tokens,
                         threshold_tokens=int(threshold),
                         transcript_bytes=transcript_bytes,
                     ):
@@ -4122,7 +4176,7 @@ class Agent:
                         logger.info(
                             "memory_flush.triggered",
                             path=plan.relative_path,
-                            total_tokens=total_tokens,
+                            total_tokens=estimated_context_tokens,
                             threshold=int(threshold),
                         )
                         flush_task = asyncio.create_task(self._run_flush(plan, list(messages)))
@@ -4132,7 +4186,7 @@ class Agent:
             except Exception:
                 logger.debug("memory_flush.skipped", reason="flush module unavailable")
 
-        if self.config.flush_enabled:
+        if pre_compaction_flush_enabled:
             if (
                 flush_task is not None
                 and not flush_task.done()
@@ -4157,7 +4211,7 @@ class Agent:
                     indexed_chunk_count=getattr(receipt, "indexed_chunk_count", None),
                 )
                 self._flush_done_this_cycle = False
-                if self.config.flush_compaction_requires_safe_receipt:
+                if pre_compaction_flush_requires_safe_receipt(self.config):
                     self._last_compaction_refusal_reason = reason
                     if self._session_key:
                         notify_compaction(
@@ -4166,7 +4220,7 @@ class Agent:
                             phase="agent_inline_overflow",
                             status="skipped",
                             reason=reason,
-                            tokens_before=total_tokens,
+                            tokens_before=estimated_context_tokens,
                             context_window_tokens=window_tokens,
                             **compaction_effect_payload(
                                 status="skipped",
@@ -4203,7 +4257,7 @@ class Agent:
                 source="automatic",
                 phase="agent_inline_overflow",
                 status="started",
-                tokens_before=total_tokens,
+                tokens_before=estimated_context_tokens,
                 context_window_tokens=window_tokens,
                 **compaction_effect_payload(status="started"),
                 **compaction_lifecycle_payload(
@@ -4224,7 +4278,7 @@ class Agent:
                     status="failed",
                     message=str(exc),
                     reason=self._last_compaction_refusal_reason,
-                    tokens_before=total_tokens,
+                    tokens_before=estimated_context_tokens,
                     context_window_tokens=window_tokens,
                     **compaction_effect_payload(status="failed"),
                     **compaction_lifecycle_payload(
@@ -4243,7 +4297,7 @@ class Agent:
                 observed_payload.update(
                     compaction_result_payload(
                         result,
-                        tokens_before=total_tokens,
+                        tokens_before=estimated_context_tokens,
                     )
                 )
                 notify_compaction(
@@ -4273,7 +4327,7 @@ class Agent:
                     phase="agent_inline_overflow",
                     status="failed",
                     reason=self._last_compaction_refusal_reason,
-                    tokens_before=total_tokens,
+                    tokens_before=estimated_context_tokens,
                     context_window_tokens=window_tokens,
                     removed_count=result.removed_count,
                     kept_count=len(result.kept_entries),
@@ -4297,7 +4351,7 @@ class Agent:
                     phase="agent_inline_overflow",
                     status="skipped",
                     reason=skip_reason,
-                    tokens_before=total_tokens,
+                    tokens_before=estimated_context_tokens,
                     tokens_after=result.tokens_after,
                     remaining_budget_tokens=result.remaining_budget_tokens,
                     context_window_tokens=window_tokens,
@@ -5279,16 +5333,23 @@ class Agent:
                 return
             # PR7: a paused MetaResult (awaiting user_input) is NOT a
             # failure. Render the form description into assistant text
-            # so IM/CLI/Web fallbacks all see it; the surface-specific
-            # rich card (PR5/6) rides on the synthetic ToolResultEvent
-            # already emitted by the scheduler.
+            # so IM/CLI fallbacks see it; the Web surface has its own
+            # rich form card driven by the synthetic ToolResultEvent
+            # emitted by the scheduler, so we suppress the text fallback
+            # there to avoid the user seeing both a plain-text dump AND
+            # the form (the text was leaking out and looking like the
+            # "real" reply in review.
             if result.paused:
                 from opensquilla.engine.turn_runner.turn_finalizer_stage import (
                     render_paused_outcome,
                 )
-                paused_text = render_paused_outcome(result)
-                if paused_text:
-                    yield TextDeltaEvent(text=paused_text)
+                from opensquilla.tools.types import CallerKind
+                caller_kind = getattr(self._tool_context, "caller_kind", None)
+                is_rich_surface = caller_kind is CallerKind.WEB
+                if not is_rich_surface:
+                    paused_text = render_paused_outcome(result)
+                    if paused_text:
+                        yield TextDeltaEvent(text=paused_text)
                 yield ToolResult(
                     tool_use_id=tc.tool_use_id,
                     tool_name="meta_invoke",
@@ -5496,7 +5557,120 @@ class Agent:
         if race_lost is not None:
             return "你之前的回答已被处理。", True
 
+        proceed_blocked = metadata.pop("meta_clarify_proceed_blocked", None)
+        soft_progress = metadata.pop("meta_clarify_soft_progress", None)
+        if proceed_blocked is not None:
+            return self._render_clarify_progress(
+                proceed_blocked, proceed_blocked=True,
+            ), True
+        if soft_progress is not None:
+            return self._render_clarify_progress(
+                soft_progress, proceed_blocked=False,
+            ), True
+
         return None
+
+    def _render_clarify_progress(
+        self, payload: Any, *, proceed_blocked: bool,
+    ) -> str:
+        """Render soft-clarify progress without exposing internal state."""
+        data = payload if isinstance(payload, dict) else {}
+        filled = data.get("filled")
+        filled_summary = self._format_clarify_filled(filled)
+        missing = self._coerce_clarify_names(data.get("missing_required"))
+        ambiguous = self._format_clarify_ambiguous(
+            data.get("ambiguous_fields"),
+        )
+
+        lines: list[str] = []
+        if proceed_blocked:
+            if missing:
+                lines.append(
+                    "现在还不能开始，还需要补充："
+                    + "、".join(missing)
+                    + "。"
+                )
+            else:
+                lines.append("现在还不能开始，还需要补充必填信息。")
+            if filled_summary:
+                lines.append("已记录：" + filled_summary + "。")
+        else:
+            if filled_summary:
+                lines.append("已记录：" + filled_summary + "。")
+            else:
+                lines.append("已收到补充。")
+            if missing:
+                lines.append("还需要：" + "、".join(missing) + "。")
+            else:
+                lines.append("必填信息已补齐，可以回复“开始”继续。")
+
+        if ambiguous:
+            lines.append("仍不确定：" + ambiguous + "。")
+        lines.append("你可以直接回复缺少字段，或在上面的表单里填写。")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _coerce_clarify_names(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        names: list[str] = []
+        for item in value:
+            if item is None:
+                continue
+            text = str(item).strip()
+            if text:
+                names.append(text)
+        return names
+
+    def _format_clarify_filled(self, value: Any) -> str:
+        if not isinstance(value, dict):
+            return ""
+        parts: list[str] = []
+        for key in sorted(value):
+            label = str(key).strip()
+            if not label:
+                continue
+            parts.append(label + "=" + self._format_clarify_value(value[key]))
+            if len(parts) >= 6:
+                break
+        return "，".join(parts)
+
+    @staticmethod
+    def _format_clarify_value(value: Any) -> str:
+        if isinstance(value, str):
+            text = value
+        elif isinstance(value, (dict, list, tuple)):
+            try:
+                text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+            except TypeError:
+                text = str(value)
+        else:
+            text = str(value)
+        text = " ".join(text.split())
+        if len(text) > 80:
+            return text[:77] + "..."
+        return text
+
+    @staticmethod
+    def _format_clarify_ambiguous(value: Any) -> str:
+        if not isinstance(value, list):
+            return ""
+        parts: list[str] = []
+        for entry in value:
+            if isinstance(entry, dict):
+                name = str(entry.get("name") or "").strip()
+                reason = str(entry.get("reason") or "").strip()
+                if name and reason:
+                    parts.append(name + "（" + reason + "）")
+                elif name:
+                    parts.append(name)
+            elif entry is not None:
+                text = str(entry).strip()
+                if text:
+                    parts.append(text)
+            if len(parts) >= 4:
+                break
+        return "，".join(parts)
 
     def _render_clarify_errors(
         self, errors: Any, awaiting: Any,
@@ -5661,6 +5835,8 @@ class Agent:
             context_window_tokens=self.config.context_window_tokens,
             workspace_dir=spec.workspace_dir or self.config.workspace_dir,
             flush_enabled=self.config.flush_enabled,
+            flush_triggers=list(self.config.flush_triggers),
+            flush_pre_compaction=self.config.flush_pre_compaction,
             flush_timeout_seconds=self.config.flush_timeout_seconds,
             flush_background_timeout_seconds=self.config.flush_background_timeout_seconds,
             flush_backoff_initial_seconds=self.config.flush_backoff_initial_seconds,
@@ -5670,6 +5846,10 @@ class Agent:
                 self.config.flush_compaction_requires_safe_receipt
             ),
             flush_compaction_safety_mode=self.config.flush_compaction_safety_mode,
+            compaction_profile=self.config.compaction_profile,
+            compaction_protected_recent_messages=(
+                self.config.compaction_protected_recent_messages
+            ),
             tool_result_projection_max_inline_chars=(
                 self.config.tool_result_projection_max_inline_chars
             ),

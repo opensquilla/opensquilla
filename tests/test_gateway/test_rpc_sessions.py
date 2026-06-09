@@ -2395,7 +2395,11 @@ class TestSessionsReset:
                 )
             )
         )
-        ctx = make_ctx(session_manager=manager, flush_service=flush_service)
+        ctx = make_ctx(
+            session_manager=manager,
+            flush_service=flush_service,
+            config=GatewayConfig(memory={"flush_enabled": True}),
+        )
 
         res = await dispatcher.dispatch(
             "r1", "sessions.reset", {"key": session.session_key}, ctx
@@ -2444,7 +2448,11 @@ class TestSessionsReset:
                 )
             )
         )
-        ctx = make_ctx(session_manager=manager, flush_service=flush_service)
+        ctx = make_ctx(
+            session_manager=manager,
+            flush_service=flush_service,
+            config=GatewayConfig(memory={"flush_enabled": True}),
+        )
 
         res = await dispatcher.dispatch(
             "r1", "sessions.reset", {"key": session.session_key}, ctx
@@ -2472,6 +2480,32 @@ class TestSessionsReset:
         )
 
         assert res.ok is True
+        assert manager.applied_intents == [(session.session_key, "reset_same_key")]
+
+    @pytest.mark.asyncio
+    async def test_reset_skips_flush_when_session_reset_trigger_disabled(
+        self, dispatcher, session
+    ):
+        manager = FakeSessionManager([session])
+        manager.transcript = [SimpleNamespace(id=1, content="message to discard")]
+        flush_service = SimpleNamespace(
+            execute=AsyncMock(side_effect=AssertionError("reset flush should be disabled"))
+        )
+        ctx = make_ctx(
+            session_manager=manager,
+            flush_service=flush_service,
+            config=GatewayConfig(
+                memory={"flush_enabled": True, "flush_triggers": ["manual"]}
+            ),
+        )
+
+        res = await dispatcher.dispatch(
+            "r1", "sessions.reset", {"key": session.session_key}, ctx
+        )
+
+        assert res.ok is True
+        assert "flush_receipt" not in res.payload
+        flush_service.execute.assert_not_called()
         assert manager.applied_intents == [(session.session_key, "reset_same_key")]
 
     @pytest.mark.asyncio
@@ -2610,7 +2644,11 @@ class TestSessionsTruncate:
                 )
             )
         )
-        ctx = make_ctx(session_manager=manager, flush_service=flush_service)
+        ctx = make_ctx(
+            session_manager=manager,
+            flush_service=flush_service,
+            config=GatewayConfig(memory={"flush_enabled": True}),
+        )
 
         res = await dispatcher.dispatch(
             "r1", "sessions.truncate", {"key": session.session_key}, ctx
@@ -2659,7 +2697,11 @@ class TestSessionsTruncate:
                 )
             )
         )
-        ctx = make_ctx(session_manager=manager, flush_service=flush_service)
+        ctx = make_ctx(
+            session_manager=manager,
+            flush_service=flush_service,
+            config=GatewayConfig(memory={"flush_enabled": True}),
+        )
 
         res = await dispatcher.dispatch(
             "r1",
@@ -2711,7 +2753,11 @@ class TestSessionsTruncate:
                 )
             )
         )
-        ctx = make_ctx(session_manager=manager, flush_service=flush_service)
+        ctx = make_ctx(
+            session_manager=manager,
+            flush_service=flush_service,
+            config=GatewayConfig(memory={"flush_enabled": True}),
+        )
 
         res = await dispatcher.dispatch(
             "r1",
@@ -2755,6 +2801,38 @@ class TestSessionsTruncate:
         assert manager.truncate_calls == [(session.session_key, 1)]
 
     @pytest.mark.asyncio
+    async def test_truncate_skips_flush_when_session_reset_trigger_disabled(
+        self, dispatcher, session
+    ):
+        manager = FakeSessionManager([session])
+        manager.transcript = [
+            SimpleNamespace(id=1, content="message to remove"),
+            SimpleNamespace(id=2, content="message to keep"),
+        ]
+        flush_service = SimpleNamespace(
+            execute=AsyncMock(side_effect=AssertionError("truncate flush should be disabled"))
+        )
+        ctx = make_ctx(
+            session_manager=manager,
+            flush_service=flush_service,
+            config=GatewayConfig(
+                memory={"flush_enabled": True, "flush_triggers": ["manual"]}
+            ),
+        )
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.truncate",
+            {"key": session.session_key, "maxMessages": 1},
+            ctx,
+        )
+
+        assert res.ok is True
+        assert "flush_receipt" not in res.payload
+        flush_service.execute.assert_not_called()
+        assert manager.truncate_calls == [(session.session_key, 1)]
+
+    @pytest.mark.asyncio
     async def test_truncate_refuses_orphaned_checkpoint_receipt(
         self, dispatcher, session
     ):
@@ -2791,7 +2869,11 @@ class TestSessionsTruncate:
                 )
             )
         )
-        ctx = make_ctx(session_manager=manager, flush_service=flush_service)
+        ctx = make_ctx(
+            session_manager=manager,
+            flush_service=flush_service,
+            config=GatewayConfig(memory={"flush_enabled": True}),
+        )
 
         res = await dispatcher.dispatch(
             "r1", "sessions.truncate", {"key": session.session_key}, ctx
@@ -3159,6 +3241,7 @@ class TestSessionsContextCompact:
             config=GatewayConfig(
                 memory={
                     "flush_enabled": True,
+                    "flush_triggers": ["manual"],
                     "flush_compaction_safety_mode": "block",
                 }
             ),
@@ -3218,6 +3301,7 @@ class TestSessionsContextCompact:
             config=GatewayConfig(
                 memory={
                     "flush_enabled": True,
+                    "flush_triggers": ["manual"],
                     "flush_compaction_safety_mode": "block",
                 }
             ),
@@ -3257,6 +3341,7 @@ class TestSessionsContextCompact:
             config=GatewayConfig(
                 memory={
                     "flush_enabled": True,
+                    "flush_triggers": ["manual"],
                     "flush_compaction_safety_mode": "block",
                 }
             ),

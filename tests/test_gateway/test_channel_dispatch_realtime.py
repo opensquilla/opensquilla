@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from opensquilla.artifacts import ArtifactStore
+from opensquilla.channels.contract import ChannelCapabilityProfile
 from opensquilla.channels.stream_policy import resolve_channel_stream_policy
 from opensquilla.channels.types import Attachment, IncomingMessage, OutgoingMessage
 from opensquilla.engine.types import (
@@ -28,13 +29,17 @@ from opensquilla.gateway.channel_dispatch import (
     _build_reply_message,
     _deliver_artifacts_as_channel_files,
     _deliver_runtime_channel_reply,
+    _dispatch_channel_slash_command,
     _dispatch_combined_message_after_debounce,
     _ingest_channel_message_attachments,
+    _preserve_route_channel_metadata,
+    _route_envelope_reply_message,
     _run_turn_batch_path,
     _run_turn_with_streaming,
     _RuntimeChannelStreamRelay,
 )
 from opensquilla.gateway.config import AgentEntryConfig, GatewayConfig
+from opensquilla.gateway.protocol import make_ok_res
 from opensquilla.gateway.routing import build_channel_route_envelope
 from opensquilla.safety.permission_matrix import Principal, is_tool_allowed
 from opensquilla.tools.types import CallerKind
@@ -79,6 +84,70 @@ def test_channel_reply_sanitizes_provider_compaction_markers() -> None:
     assert "opensquilla_compacted" not in reply.content
     assert "assistant_content" not in reply.content
     assert reply.content == "Reply to user:\n?"
+
+
+def test_route_envelope_reply_preserves_channel_for_thread_target() -> None:
+    route_envelope = SimpleNamespace(channel_id="C42", thread_id="1700000000.000100")
+
+    reply = _route_envelope_reply_message("busy", route_envelope)
+
+    assert reply.reply_to == "1700000000.000100"
+    assert reply.metadata == {"channel": "C42"}
+
+
+def test_preserve_route_channel_metadata_for_registry_thread_reply() -> None:
+    route_envelope = SimpleNamespace(channel_id="C42", thread_id="1700000000.000100")
+    reply = OutgoingMessage(
+        content="done",
+        reply_to="1700000000.000100",
+        metadata={"command": "compact"},
+    )
+
+    fixed = _preserve_route_channel_metadata(reply, route_envelope)
+
+    assert fixed.reply_to == "1700000000.000100"
+    assert fixed.metadata == {"command": "compact", "channel": "C42"}
+
+
+@pytest.mark.asyncio
+async def test_registered_slash_command_preserves_channel_for_thread_target() -> None:
+    msg = IncomingMessage(
+        sender_id="U1",
+        channel_id="C42",
+        content="/compact",
+        metadata={"thread_ts": "1700000000.000100"},
+    )
+    route_envelope = build_channel_route_envelope(
+        msg,
+        session_key="agent:main:slack:group:C42:thread:1700000000.000100",
+        session_prefix="slack",
+        agent_id="main",
+    )
+
+    class FakeDispatcher:
+        async def dispatch(self, req_id, method, params, ctx):
+            return make_ok_res(
+                req_id,
+                {
+                    "status": "skipped",
+                    "compacted": False,
+                },
+            )
+
+    reply = await _dispatch_channel_slash_command(
+        route_envelope=route_envelope,
+        msg=msg,
+        session_manager=object(),
+        session_key=route_envelope.session_key,
+        session_prefix="slack",
+        rpc_dispatcher=FakeDispatcher(),
+        context_factory=lambda _envelope: object(),
+    )
+
+    assert reply is not None
+    assert reply.reply_to == "1700000000.000100"
+    assert reply.metadata["channel"] == "C42"
+    assert reply.metadata["command"] == "compact"
 
 
 def test_channel_stream_policy_prefers_adapter_stream_updates() -> None:
@@ -208,6 +277,144 @@ def test_direct_channel_batch_turn_emits_tool_events_to_webui() -> None:
         for _, event_name, payload in bridge.events
     )
     assert channel.sent[-1].content == "ok"
+
+
+@pytest.mark.asyncio
+async def test_direct_channel_batch_turn_sends_clarify_card_to_feishu_channel() -> None:
+    class FeishuLikeChannel(_FakeChannel):
+        @property
+        def capability_profile(self) -> ChannelCapabilityProfile:
+            return ChannelCapabilityProfile(
+                channel_type="feishu",
+                cards=True,
+                interactive_cards=True,
+                card_actions=True,
+            )
+
+    class FakeTurnRunner:
+        async def run(self, message: str, session_key: str, **kwargs):
+            yield ToolResultEvent(
+                tool_use_id="meta_step_clarify",
+                tool_name="meta-step:clarify",
+                result="paused: awaiting user input",
+                arguments={
+                    "kind": "user_input",
+                    "paused": True,
+                    "step": "clarify",
+                    "run_id": "run-1",
+                    "clarify_schema": {
+                        "mode": "form",
+                        "intro": "需要确认几件事。",
+                        "fields": [
+                            {
+                                "name": "destination",
+                                "type": "string",
+                                "required": True,
+                                "prompt": "目的地",
+                            },
+                            {
+                                "name": "budget",
+                                "type": "enum",
+                                "required": False,
+                                "prompt": "预算",
+                                "choices": ["低", "中", "高"],
+                                "default": "中",
+                            },
+                        ],
+                        "cancel_keywords": ["取消", "cancel"],
+                    },
+                },
+            )
+            yield TextDeltaEvent(text="请回复以下字段：\n  1) destination — 目的地 [必填]")
+            yield DoneEvent()
+
+    channel = FeishuLikeChannel()
+    bridge = _FakeEventBridge()
+    config = SimpleNamespace(
+        agent_stream_heartbeat_interval_seconds=0.0,
+        agent_stream_idle_timeout_seconds=1.0,
+    )
+
+    await _run_turn_batch_path(
+        channel,
+        FakeTurnRunner(),
+        IncomingMessage(
+            sender_id="u1",
+            channel_id="c1",
+            content="hello",
+            metadata={"is_group": False, "chat_type": "p2p"},
+        ),
+        "agent:main:channel-clarify",
+        _tool_ctx(),
+        bridge,
+        None,
+        config,
+    )
+
+    assert len(channel.sent) == 1
+    sent = channel.sent[0]
+    assert sent.reply_to == "c1"
+    card = sent.metadata["card"]
+    assert card["header"]["title"]["content"] == "需要补充信息"
+    assert "destination" in json.dumps(card, ensure_ascii=False)
+    assert "预算" in json.dumps(card, ensure_ascii=False)
+    assert '"opensquilla_action": "clarify_submit"' in json.dumps(card)
+    assert '"is_group": false' in json.dumps(card)
+    assert '"chat_type": "p2p"' in json.dumps(card)
+    assert "请回复以下字段" not in sent.content
+    assert any(event_name == "session.event.tool_result" for _, event_name, _ in bridge.events)
+
+
+@pytest.mark.asyncio
+async def test_direct_channel_batch_turn_keeps_text_fallback_without_card_support() -> None:
+    class FakeTurnRunner:
+        async def run(self, message: str, session_key: str, **kwargs):
+            yield ToolResultEvent(
+                tool_use_id="meta_step_clarify",
+                tool_name="meta-step:clarify",
+                result="paused: awaiting user input",
+                arguments={
+                    "kind": "user_input",
+                    "paused": True,
+                    "step": "clarify",
+                    "run_id": "run-1",
+                    "clarify_schema": {
+                        "mode": "form",
+                        "intro": "需要确认几件事。",
+                        "fields": [
+                            {
+                                "name": "destination",
+                                "type": "string",
+                                "required": True,
+                                "prompt": "目的地",
+                            },
+                        ],
+                    },
+                },
+            )
+            yield TextDeltaEvent(text="请回复以下字段：\n  1) destination — 目的地 [必填]")
+            yield DoneEvent()
+
+    channel = _FakeChannel()
+    config = SimpleNamespace(
+        agent_stream_heartbeat_interval_seconds=0.0,
+        agent_stream_idle_timeout_seconds=1.0,
+    )
+
+    await _run_turn_batch_path(
+        channel,
+        FakeTurnRunner(),
+        _message(),
+        "agent:main:channel-clarify",
+        _tool_ctx(),
+        _FakeEventBridge(),
+        None,
+        config,
+    )
+
+    assert len(channel.sent) == 1
+    assert "请回复以下字段" in channel.sent[0].content
+    assert "card" not in channel.sent[0].metadata
 
 
 @pytest.mark.asyncio

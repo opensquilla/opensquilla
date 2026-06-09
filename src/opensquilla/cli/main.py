@@ -9,7 +9,8 @@ import typer
 from opensquilla.env import load_env, warn_if_proxy_ignored
 
 # Populate os.environ from .env files before any submodule import reads keys.
-# Precedence: os.environ > $CWD/.env > $CWD/.env.test > ~/.opensquilla/.env.
+# Precedence: os.environ > $CWD/.env.test during tests > $CWD/.env
+# > $CWD/.env.test fallback outside tests > ~/.opensquilla/.env.
 load_env()
 warn_if_proxy_ignored()
 

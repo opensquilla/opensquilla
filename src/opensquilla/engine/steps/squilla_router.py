@@ -20,6 +20,13 @@ from opensquilla.engine.pipeline import TurnContext
 from opensquilla.engine.pricing import lookup_price
 from opensquilla.provider.context_capabilities import provider_state_continuity_diagnostic
 from opensquilla.router_control import RouterControlHoldStore
+from opensquilla.router_tiers import (
+    DEFAULT_TEXT_TIER,
+    HIGHEST_TEXT_TIER,
+    ROUTE_CLASS_TO_TIER,
+    TIER_TO_ROUTE_CLASS,
+    normalize_text_tier,
+)
 from opensquilla.squilla_router.controller import (
     derive_prompt_policy,
     derive_thinking_mode,
@@ -97,8 +104,8 @@ _DEFER_ROUTING_HISTORY_KEY = "_defer_squilla_router_history"
 _PENDING_ROUTING_HISTORY_ENTRY_KEY = "_pending_squilla_router_history_entry"
 _PENDING_ROUTING_HISTORY_SESSION_KEY = "_pending_squilla_router_history_session"
 _THINKING_LEVELS = {"minimal", "low", "medium", "high", "xhigh", "adaptive"}
-_TIER_TO_ROUTE_CLASS = {"t0": "R0", "t1": "R1", "t2": "R2", "t3": "R3"}
-_ROUTE_CLASS_TO_TIER = {v: k for k, v in _TIER_TO_ROUTE_CLASS.items()}
+_TIER_TO_ROUTE_CLASS = dict(TIER_TO_ROUTE_CLASS)
+_ROUTE_CLASS_TO_TIER = dict(ROUTE_CLASS_TO_TIER)
 _THINKING_MODE_ORDER = {"T0": 0, "T1": 1, "T2": 2, "T3": 3}
 _LARGE_CONTEXT_T2_FLOOR_TOKENS = 25_000
 _LARGE_CONTEXT_T3_FLOOR_TOKENS = 80_000
@@ -282,7 +289,11 @@ class _UnavailableV4Strategy:
         routing_history: list[dict] | None = None,
         **kwargs: object,
     ) -> tuple[str, float, str, dict]:
-        tier = "t1" if "t1" in valid_tiers else (valid_tiers[0] if valid_tiers else "t1")
+        tier = (
+            DEFAULT_TEXT_TIER
+            if DEFAULT_TEXT_TIER in valid_tiers
+            else (valid_tiers[0] if valid_tiers else DEFAULT_TEXT_TIER)
+        )
         return (
             tier,
             0.0,
@@ -490,7 +501,8 @@ def _inject_prompt_hint(message: str, hint: str) -> str:
 
 
 def _tier_index(tier: str, valid_tiers: list[str]) -> int:
-    return valid_tiers.index(tier) if tier in valid_tiers else -1
+    normalized = normalize_text_tier(tier) or tier
+    return valid_tiers.index(normalized) if normalized in valid_tiers else -1
 
 
 def _token_estimate(value: object) -> int | None:
@@ -542,9 +554,9 @@ def _large_context_min_tier(
         material_tokens >= _LARGE_CONTEXT_T3_FLOOR_TOKENS
         or material_tokens >= int(context_window * _LARGE_CONTEXT_T3_CONTEXT_RATIO)
     ):
-        return "t3", material_tokens
+        return HIGHEST_TEXT_TIER, material_tokens
     if material_tokens >= _LARGE_CONTEXT_T2_FLOOR_TOKENS:
-        return "t2", material_tokens
+        return "c2", material_tokens
     return None
 
 
@@ -573,7 +585,7 @@ def _confidence_protected_tier(
     default_tier = getattr(router_cfg, "default_tier", None)
     if default_tier is None:
         return tier, False, threshold, None
-    default_tier = str(default_tier)
+    default_tier = normalize_text_tier(default_tier) or str(default_tier)
     selected_cfg = tiers.get(tier, {}) if isinstance(tiers, dict) else {}
     if bool(_tier_config_value(selected_cfg, "image_only", False)):
         return tier, False, threshold, default_tier
@@ -596,7 +608,8 @@ def _detect_complaint(message: str, max_chars: int | None = None) -> list[str]:
 
 
 def _route_class_for_tier(tier: str) -> str | None:
-    return _TIER_TO_ROUTE_CLASS.get(tier)
+    normalized = normalize_text_tier(tier) or tier
+    return _TIER_TO_ROUTE_CLASS.get(normalized)
 
 
 def _apply_large_context_floor(
@@ -655,11 +668,12 @@ def _tier_for_route_class(route_class: object) -> str | None:
 
 
 def _min_thinking_mode_for_tier(tier: str | None) -> str | None:
-    if tier == "t3":
+    tier = normalize_text_tier(tier)
+    if tier == HIGHEST_TEXT_TIER:
         return "T3"
-    if tier == "t2":
+    if tier == "c2":
         return "T2"
-    if tier == "t1":
+    if tier == DEFAULT_TEXT_TIER:
         return "T1"
     return None
 
@@ -680,8 +694,8 @@ def _reconcile_controller_with_final_tier(
     extra: dict,
 ) -> tuple[str | None, str | None]:
     """Keep controller output consistent with OpenSquilla's final tier overrides."""
-    final_tier = extra.get("final_tier")
-    base_tier = extra.get("base_tier")
+    final_tier = normalize_text_tier(extra.get("final_tier")) or extra.get("final_tier")
+    base_tier = normalize_text_tier(extra.get("base_tier")) or extra.get("base_tier")
     if not final_tier or final_tier == base_tier:
         return thinking_mode, prompt_policy
 
@@ -693,7 +707,7 @@ def _reconcile_controller_with_final_tier(
         _min_thinking_mode_for_tier(str(final_tier)),
     )
     if prompt_policy == "P0" and (
-        str(final_tier) in {"t2", "t3"} or extra.get("complaint_detected")
+        str(final_tier) in {"c2", HIGHEST_TEXT_TIER} or extra.get("complaint_detected")
     ):
         prompt_policy = "P1"
     if thinking_mode is not None and prompt_policy is not None:
@@ -729,7 +743,7 @@ def _previous_final_tier(entry: dict | None) -> str | None:
         return None
     tier = entry.get("final_tier")
     if tier:
-        return str(tier)
+        return normalize_text_tier(tier) or str(tier)
     return _tier_for_route_class(entry.get("final_route_class") or entry.get("route_class"))
 
 
@@ -747,7 +761,7 @@ def _finalize_decision(
     if not _is_history_strategy(strategy_name):
         return decision
 
-    base_tier = decision.tier
+    base_tier = normalize_text_tier(decision.tier) or decision.tier
     final_tier = base_tier
     base_route_class = extra.get("route_class") or _route_class_for_tier(base_tier)
     if base_route_class is not None:
@@ -817,7 +831,8 @@ def _finalize_decision(
     extra.update(
         {
             "base_tier": base_tier,
-            "pre_confidence_tier": pre_confidence_tier,
+            "pre_confidence_tier": normalize_text_tier(pre_confidence_tier)
+            or pre_confidence_tier,
             "confidence_threshold": confidence_threshold,
             "confidence_default_tier": confidence_default_tier,
             "confidence_gate_applied": confidence_gate_applied,
@@ -831,7 +846,7 @@ def _finalize_decision(
                 getattr(router_cfg, "complaint_upgrade_max_chars", 160)
             ),
             "anti_downgrade_applied": anti_downgrade_applied,
-            "previous_tier": previous_tier,
+            "previous_tier": normalize_text_tier(previous_tier) or previous_tier,
             "previous_route_class": previous_route_class,
             "kv_cache_window_seconds": window,
         }
@@ -918,11 +933,14 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
 
         image_tiers = {k: v for k, v in tiers.items() if v.get("supports_image", False)}
         if not image_tiers:
-            log.debug(
+            log.warning(
                 "squilla_router.no_image_tier",
                 note="image detected but no supports_image tier",
             )
-            return ctx
+            raise RuntimeError(
+                "No image-capable SquillaRouter tier is configured for this image request. "
+                "Configure squilla_router.tiers.image_model with supports_image=true."
+            )
         tier_name = random.choice(list(image_tiers.keys()))
         decision = RoutingDecision(
             tier=tier_name,
@@ -978,8 +996,6 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
             ctx.metadata["router_control_target_model"] = hold.model
             ctx.metadata["router_control_target_provider"] = hold.provider
             ctx.metadata["router_control_evidence"] = hold.evidence
-            if hold.duplicate_model_resolution:
-                ctx.metadata["router_control_duplicate_model_resolution"] = True
             ctx.metadata.update(_compute_savings(decision.model, tiers))
             _record_thinking_metadata(ctx, router_cfg, tiers[decision.tier])
             log.debug(
@@ -1048,13 +1064,16 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
         routing_history=routing_history,
         **classify_context,
     )
+    tier_name = normalize_text_tier(tier_name) or tier_name
     if extra:
         ctx.metadata["routing_extra"] = extra
         thinking_mode = extra.get("thinking_mode")
         prompt_policy = extra.get("prompt_policy")
 
     if tier_name is None or tier_name not in tiers:
-        default = getattr(router_cfg, "default_tier", "t1")
+        default = normalize_text_tier(getattr(router_cfg, "default_tier", DEFAULT_TEXT_TIER))
+        if default is None:
+            default = DEFAULT_TEXT_TIER
         tier_name = default if default in tiers else next(iter(tiers), None)
         if tier_name is None:
             return ctx

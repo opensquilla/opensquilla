@@ -320,13 +320,13 @@ def test_interactive_onboard_prompts_router_defaults_before_persist(tmp_path, mo
                 return _Answer("SquillaRouter")
             if message == "Default text model":
                 assert kwargs.get("choices") == [
-                    "Fast/simple (t0)",
-                    "Balanced default (t1)",
-                    "Stronger reasoning (t2)",
-                    "Max quality (t3)",
+                    "Route c0",
+                    "Route c1",
+                    "Route c2",
+                    "Route c3",
                 ]
-                assert kwargs.get("default") == "Balanced default (t1)"
-                return _Answer("Stronger reasoning (t2)")
+                assert kwargs.get("default") == "Route c1"
+                return _Answer("Route c2")
             raise AssertionError(f"unexpected select prompt: {message}")
 
         def text(self, message: str, **kwargs):
@@ -358,7 +358,7 @@ def test_interactive_onboard_prompts_router_defaults_before_persist(tmp_path, mo
     data = target.read_text()
     assert 'api_key = ""' in data
     assert 'api_key_env = "OPENROUTER_API_KEY"' in data
-    assert 'default_tier = "t2"' in data
+    assert 'default_tier = "c2"' in data
     assert 'model = "z-ai/glm-5.1"' in data
 
 
@@ -1352,7 +1352,7 @@ def test_router_tier_overrides_edit_only_selected_tiers():
     from opensquilla.onboarding.flow import _router_tier_overrides
 
     calls: list[str] = []
-    selections = iter(["Stronger reasoning (t2)", "Done"])
+    selections = iter(["Route c2", "Done"])
 
     class _Answer:
         def __init__(self, value):
@@ -1367,28 +1367,28 @@ def test_router_tier_overrides_edit_only_selected_tiers():
             assert message == "Tier to edit"
             assert kwargs.get("choices") == [
                 "Done",
-                "Fast/simple (t0)",
-                "Balanced default (t1)",
-                "Stronger reasoning (t2)",
-                "Max quality (t3)",
+                "Route c0",
+                "Route c1",
+                "Route c2",
+                "Route c3",
                 "Image model",
             ]
             return _Answer(next(selections))
 
         def text(self, message: str, **kwargs):
             calls.append(message)
-            if message == "t2 provider":
+            if message == "c2 provider":
                 assert kwargs.get("default") == "openrouter"
                 return _Answer("openrouter")
-            if message == "t2 model":
+            if message == "c2 model":
                 assert kwargs.get("default") == "z-ai/glm-5.1"
                 return _Answer("custom/reasoner")
             raise AssertionError(f"unexpected text prompt: {message}")
 
     overrides = _router_tier_overrides(_Questionary(), GatewayConfig())
 
-    assert calls == ["Tier to edit", "t2 provider", "t2 model", "Tier to edit"]
-    assert overrides == {"t2": {"provider": "openrouter", "model": "custom/reasoner"}}
+    assert calls == ["Tier to edit", "c2 provider", "c2 model", "Tier to edit"]
+    assert overrides == {"c2": {"provider": "openrouter", "model": "custom/reasoner"}}
 
 
 def test_interactive_feishu_websocket_prompts_only_core_fields(tmp_path, monkeypatch):
@@ -1490,6 +1490,8 @@ def test_interactive_channel_add_uses_explicit_config_path(tmp_path, monkeypatch
         def select(self, message: str, **kwargs):
             if message == "Channel type":
                 return _Answer("slack")
+            if message == "Connection mode":
+                return _Answer("webhook")
             raise AssertionError(f"unexpected select prompt: {message}")
 
         def text(self, message: str, **kwargs):
@@ -1514,8 +1516,64 @@ def test_interactive_channel_add_uses_explicit_config_path(tmp_path, monkeypatch
 
     flow.run_interactive_channel_add(None, config_path=target)
 
-    assert 'type = "slack"' in target.read_text()
+    data = target.read_text()
+    assert 'type = "slack"' in data
+    assert 'connection_mode = "webhook"' in data
+    assert 'signing_secret = "signing-secret"' in data
     assert not default_target.exists()
+
+
+def test_interactive_slack_channel_add_can_select_socket_mode(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    from opensquilla.onboarding import flow
+
+    target = tmp_path / "socket.toml"
+    monkeypatch.setattr(flow, "_is_tty", lambda: True)
+
+    class _Answer:
+        def __init__(self, value):
+            self.value = value
+
+        def ask(self):
+            return self.value
+
+    class _Questionary(types.SimpleNamespace):
+        def select(self, message: str, **kwargs):
+            if message == "Channel type":
+                return _Answer("slack")
+            if message == "Connection mode":
+                return _Answer("socket")
+            raise AssertionError(f"unexpected select prompt: {message}")
+
+        def text(self, message: str, **kwargs):
+            if message == "Channel name":
+                return _Answer("slack-socket")
+            raise AssertionError(f"unexpected text prompt: {message}")
+
+        def password(self, message: str, **_kwargs):
+            if message == "Bot token (xoxb-...)":
+                return _Answer("xoxb-test")
+            if message == "App-level token (xapp-...)":
+                return _Answer("xapp-test")
+            raise AssertionError(f"unexpected password prompt: {message}")
+
+        def confirm(self, message: str, **_kwargs):
+            raise AssertionError(f"unexpected confirm prompt: {message}")
+
+        def checkbox(self, message: str, **_kwargs):
+            raise AssertionError(f"unexpected checkbox prompt: {message}")
+
+    monkeypatch.setitem(sys.modules, "questionary", _Questionary())
+
+    flow.run_interactive_channel_add(None, config_path=target)
+
+    data = target.read_text()
+    assert 'type = "slack"' in data
+    assert 'connection_mode = "socket"' in data
+    assert 'app_token = "xapp-test"' in data
+    assert "signing_secret" not in data
 
 
 def test_optional_onboarding_section_receives_explicit_config_path(tmp_path):
@@ -1837,7 +1895,10 @@ def test_noninteractive_channel_add_writes_config(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
     from opensquilla.onboarding.flow import run_noninteractive_channel_add
 
-    result = run_noninteractive_channel_add("slack", {"name": "w", "token": "x"})
+    result = run_noninteractive_channel_add(
+        "slack",
+        {"name": "w", "token": "x", "signing_secret": "ss"},
+    )
     assert result.path == target
     assert "slack" in target.read_text()
 

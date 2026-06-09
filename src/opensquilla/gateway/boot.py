@@ -1229,8 +1229,8 @@ def build_flush_service(
 ) -> Any:
     """Construct a :class:`SessionFlushService` gated by flush config.
 
-    Returns ``None`` when the kill-switch env var or gateway memory config
-    disables flush. Otherwise returns a service wired to the gateway's tool
+    Returns ``None`` when the kill-switch env var is disabled or gateway memory
+    config does not explicitly enable flush. Otherwise returns a service wired to the gateway's tool
     registry and provider selector. ``agent_id`` is threaded through the
     callable signature for future multi-agent support, but today OpenSquilla
     uses a single ModelSelector so we just call its ``resolve()`` and ignore
@@ -1241,7 +1241,7 @@ def build_flush_service(
     if not is_session_flush_enabled():
         return None
     memory_cfg = getattr(config, "memory", None)
-    if memory_cfg is not None and not getattr(memory_cfg, "flush_enabled", True):
+    if memory_cfg is None or not getattr(memory_cfg, "flush_enabled", False):
         return None
 
     from opensquilla.memory.session_flush import SessionFlushService
@@ -1743,13 +1743,14 @@ async def build_services(
         log.warning("build_services.session_search_tool_failed", error=str(e))
 
     try:
-        from opensquilla.tools.builtin.media import configure_image_generation
+        from opensquilla.tools.builtin.media import configure_audio, configure_image_generation
 
         configure_image_generation(
             config.image_generation,
             llm_config=config.llm,
             squilla_router_config=config.squilla_router,
         )
+        configure_audio(config.audio)
     except Exception as e:
         log.warning("build_services.image_generation_config_failed", error=str(e))
 
@@ -2540,7 +2541,9 @@ async def start_gateway_server(
             provider_selector = svc.provider_selector
             router_cfg = getattr(config, "squilla_router", None)
             tiers = getattr(router_cfg, "tiers", {}) if router_cfg is not None else {}
-            t3_tier = tiers.get("t3") if isinstance(tiers, dict) else None
+            from opensquilla.router_tiers import HIGHEST_TEXT_TIER
+
+            t3_tier = tiers.get(HIGHEST_TEXT_TIER) if isinstance(tiers, dict) else None
             t3_model = ""
             t3_thinking_level = ""
             if isinstance(t3_tier, dict):
@@ -2588,7 +2591,7 @@ async def start_gateway_server(
             }
             if t3_model:
                 auto_metadata.update({
-                    "routed_tier": "t3",
+                    "routed_tier": HIGHEST_TEXT_TIER,
                     "routed_model": t3_model,
                     "applied_model": t3_model,
                 })
@@ -2850,11 +2853,17 @@ async def start_gateway_server(
     server_handle._background_completion_manager = background_completion_manager
 
     if run:
+        uvicorn_kwargs: dict[str, Any] = {
+            "app": app,
+            "host": config.host,
+            "port": config.port,
+            "log_level": "info" if not config.debug else "debug",
+        }
+        if config.tls.keyfile and config.tls.certfile:
+            uvicorn_kwargs["ssl_keyfile"] = config.tls.keyfile
+            uvicorn_kwargs["ssl_certfile"] = config.tls.certfile
         uv_config = uvicorn.Config(
-            app=app,
-            host=config.host,
-            port=config.port,
-            log_level="info" if not config.debug else "debug",
+            **uvicorn_kwargs,
         )
         server = uvicorn.Server(uv_config)
         server_handle._server = server

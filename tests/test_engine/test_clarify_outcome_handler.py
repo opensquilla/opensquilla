@@ -121,6 +121,53 @@ def test_race_lost(agent: Agent) -> None:
     assert "已被处理" in text
 
 
+def test_soft_progress_surfaces_captured_and_missing_fields(agent: Agent) -> None:
+    metadata = {
+        "meta_clarify_soft_progress": {
+            "filled": {"destination": "Tokyo"},
+            "newly_filled": ["destination"],
+            "missing_required": ["days"],
+            "ambiguous_fields": [
+                {"name": "budget", "reason": "多个金额都可能是预算"}
+            ],
+        }
+    }
+
+    out = agent._read_clarify_outcome(metadata)
+
+    assert out is not None
+    text, terminates = out
+    assert "已记录" in text
+    assert "destination=Tokyo" in text
+    assert "还需要" in text
+    assert "days" in text
+    assert "budget" in text
+    assert "多个金额" in text
+    assert terminates is True
+    assert "meta_clarify_soft_progress" not in metadata
+
+
+def test_proceed_blocked_surfaces_required_next_steps(agent: Agent) -> None:
+    metadata = {
+        "meta_clarify_proceed_blocked": {
+            "filled": {"destination": "Tokyo"},
+            "missing_required": ["days", "budget"],
+        }
+    }
+
+    out = agent._read_clarify_outcome(metadata)
+
+    assert out is not None
+    text, terminates = out
+    assert "现在还不能开始" in text
+    assert "还需要" in text
+    assert "days" in text
+    assert "budget" in text
+    assert "destination=Tokyo" in text
+    assert terminates is True
+    assert "meta_clarify_proceed_blocked" not in metadata
+
+
 def test_resume_outcome_is_not_consumed_here(agent: Agent) -> None:
     """meta_resume is handled by _run_meta_resume, not this helper."""
     metadata = {"meta_resume": ("fake", "fake")}

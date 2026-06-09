@@ -31,11 +31,25 @@ The retained stable catalog is intentionally small:
 | `meta-job-search-pipeline` | Turns a JD, resume, and application goal into an application package and interview prep. |
 | `meta-kid-project-planner` | Produces safe, age-appropriate plans for school projects, show-and-tell, or science activities. |
 | `meta-paper-write` | Supports academic drafts, manuscript structure, citation planning, experiment placeholders, and LaTeX/PDF paths. |
+| `meta-short-drama` | Produces short-drama scripts, visual prompts, subtitles, and local video artifacts. |
 | `meta-skill-creator` | Turns repeated multi-skill collaboration patterns into new MetaSkill proposals. |
 | `meta-web-research-to-report` | Turns source-backed research needs into reports, briefs, or decision memos. |
 
 Experimental meta-skills may exist under development trees, but this page lists
-only stable built-ins that should be presented as retained product capabilities.
+only bundled built-ins that should be presented as retained product
+capabilities.
+
+## Requirements
+
+Use the Skill page detail dialog before running a MetaSkill. Its
+**Requirements** section shows the MetaSkill's own requirements plus one-hop
+requirements from child skills.
+
+- `meta-paper-write` needs `xelatex` and `bibtex` for PDF compilation.
+- `meta-short-drama` needs `ffmpeg` and `ffprobe` for local video rendering,
+  merge, and subtitle steps.
+- Document/report MetaSkills inherit readiness from child skills such as
+  `docx`, `xlsx`, `pdf-toolkit`, `pptx`, `multi-search-engine`, and `weather`.
 
 ## How to Ask
 

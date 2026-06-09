@@ -18,6 +18,7 @@ import re
 from typing import Any
 
 import jinja2
+import jinja2.sandbox
 
 from opensquilla.skills.meta.types import MetaStep, RouteCase
 
@@ -66,8 +67,39 @@ def _filter_contains_cjk(value: object) -> bool:
     return bool(re.search(r"[\u3400-\u9fff\uf900-\ufaff]", str(value or "")))
 
 
-def _build_jinja_env() -> jinja2.Environment:
-    env = jinja2.Environment(
+def _filter_int(value: object, default: int = 0) -> int:
+    """Parse ``value`` as an integer, returning ``default`` on failure."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    text = str(value or "").strip()
+    if not text:
+        return default
+    try:
+        return int(text)
+    except ValueError:
+        match = re.search(r"-?\d+", text)
+        if match:
+            try:
+                return int(match.group(0))
+            except ValueError:
+                return default
+        return default
+
+
+def _build_jinja_env() -> jinja2.sandbox.ImmutableSandboxedEnvironment:
+    # ``ImmutableSandboxedEnvironment`` blocks Python attribute introspection
+    # (``__class__`` / ``__mro__`` / ``__subclasses__``) and mutation
+    # operations on inputs. The previous ``jinja2.Environment`` cleared
+    # globals and installed a filter allowlist, but left attribute access
+    # open — a SKILL.md author could escape via
+    # ``{{ inputs.__class__.__mro__[1].__subclasses__() }}``. Sandboxing
+    # at the env level keeps ``inputs.get(...)`` / ``inputs['x']`` /
+    # ``outputs.prev`` working for legitimate templates.
+    env = jinja2.sandbox.ImmutableSandboxedEnvironment(
         undefined=jinja2.StrictUndefined,
         autoescape=False,
         extensions=[],
@@ -86,6 +118,7 @@ def _build_jinja_env() -> jinja2.Environment:
         "lower": lambda value: str(value).lower(),
         "extract_path": _filter_extract_path,
         "contains_cjk": _filter_contains_cjk,
+        "int": _filter_int,
     }
     return env
 
@@ -119,6 +152,10 @@ def render_with_args(
                 raise ValueError(f"undefined template variable: {exc}") from exc
             except jinja2.TemplateSyntaxError as exc:
                 raise ValueError(f"template syntax error: {exc}") from exc
+            except jinja2.sandbox.SecurityError as exc:
+                raise ValueError(
+                    f"template security violation: {exc}",
+                ) from exc
         if isinstance(value, dict):
             return {k: _render(v) for k, v in value.items()}
         if isinstance(value, list):
@@ -162,6 +199,10 @@ def resolve_route(
             raise ValueError(
                 f"route[{index}] when references undefined variable: {exc}",
             ) from exc
+        except jinja2.sandbox.SecurityError as exc:
+            raise ValueError(
+                f"route[{index}] when security violation: {exc}",
+            ) from exc
         if value:
             return case.to
     return None
@@ -186,6 +227,8 @@ def evaluate_when(
         return bool(expr(**context))
     except jinja2.UndefinedError as exc:
         raise ValueError(f"when references undefined variable: {exc}") from exc
+    except jinja2.sandbox.SecurityError as exc:
+        raise ValueError(f"when security violation: {exc}") from exc
 
 
 def format_step_prompt(

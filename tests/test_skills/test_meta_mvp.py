@@ -175,6 +175,97 @@ def test_render_with_args_unknown_variable_raises() -> None:
         )
 
 
+def test_render_with_args_blocks_class_introspection_escape() -> None:
+    """A1: the Jinja environment must block ``__class__`` attribute access so
+    a SKILL.md author cannot escape via Python's MRO chain
+    (``{{ inputs.__class__.__mro__[1].__subclasses__() }}``)."""
+    with pytest.raises(ValueError, match="security violation"):
+        render_with_args(
+            {"hack": "{{ inputs.__class__ }}"},
+            inputs={"x": 1},
+            outputs={},
+        )
+
+
+def test_render_with_args_blocks_subclasses_walk() -> None:
+    """A1: full attribute chain that previously let a template enumerate
+    every loaded Python subclass must raise SecurityError (wrapped as
+    ValueError for the orchestrator's step-failure path)."""
+    with pytest.raises(ValueError, match="security violation"):
+        render_with_args(
+            {"hack": "{{ inputs.__class__.__mro__[1].__subclasses__() }}"},
+            inputs={"x": 1},
+            outputs={},
+        )
+
+
+def test_render_with_args_preserves_nested_get_chain() -> None:
+    """A1 regression guard: the sandbox upgrade must preserve the
+    ``inputs.get('collected', {}).get('field', default)`` pattern that
+    bundled creator skills (meta-skill-creator, meta-paper-write, etc.)
+    rely on. Without this guard a sandbox-strictness change could break
+    every bundled meta skill silently."""
+    rendered = render_with_args(
+        {"out": "{{ inputs.get('collected', {}).get('field', 'fallback') }}"},
+        inputs={"collected": {"field": "got it"}},
+        outputs={},
+    )
+    assert rendered == {"out": "got it"}
+
+
+def test_render_with_args_preserves_subscript_and_filter_pipeline() -> None:
+    """A1 regression guard: subscript access, the ``tojson`` filter, and
+    the ``length`` filter must all survive the sandbox upgrade. These are
+    the load-bearing primitives for the bundled meta-skill-creator DAG.
+
+    NOTE: the third pipeline uses ``outputs.numbers`` rather than ``items``
+    on purpose — ``obj.items`` resolves to the bound dict method via
+    Jinja's getattr-first attribute protocol, which would fail under any
+    Jinja environment (sandboxed or not). The pipeline shape we care
+    about is "dotted access into a stored list, then ``| length``"."""
+    rendered = render_with_args(
+        {
+            "subscript": "{{ inputs['user_message'] | truncate(8) }}",
+            "tojson": "{{ outputs.payload | tojson }}",
+            "length": "{{ outputs.numbers | length }}",
+        },
+        inputs={"user_message": "hello-world-meta-skill"},
+        outputs={"payload": {"k": "v"}, "numbers": [1, 2, 3]},
+    )
+    assert rendered["subscript"] == "hello-wo"
+    assert rendered["tojson"] == '{"k": "v"}'
+    assert rendered["length"] == "3"
+
+
+def test_resolve_route_blocks_class_introspection_escape() -> None:
+    """A1: ``route.when`` expressions go through ``compile_expression`` on
+    the same sandboxed env; introspection escapes must surface as
+    ValueError so the orchestrator treats them as a step failure rather
+    than a silent allow."""
+    from opensquilla.skills.meta.templating import resolve_route
+    from opensquilla.skills.meta.types import RouteCase
+
+    with pytest.raises(ValueError, match="security violation"):
+        resolve_route(
+            (RouteCase(when="inputs.__class__.__name__ == 'dict'", to="x"),),
+            inputs={"x": 1},
+            outputs={},
+        )
+
+
+def test_evaluate_when_blocks_class_introspection_escape() -> None:
+    """A1: step-level ``when`` expressions follow the same contract as
+    ``route.when`` — sandbox violations must raise ValueError."""
+    from opensquilla.skills.meta.templating import evaluate_when
+
+    with pytest.raises(ValueError, match="security violation"):
+        evaluate_when(
+            "inputs.__class__.__name__ == 'dict'",
+            inputs={"x": 1},
+            outputs={},
+        )
+
+
 def test_when_expression_supports_lower_filter() -> None:
     from opensquilla.skills.meta.templating import evaluate_when
 
@@ -431,6 +522,31 @@ async def test_meta_resolution_ignores_triggers_inside_pasted_webchat_dump() -> 
 
 
 @pytest.mark.asyncio
+async def test_meta_resolution_invokes_explicit_named_meta_skill_request() -> None:
+    spec = _make_meta_spec(
+        name="AwesomeWebpageMetaSkill",
+        composition={"steps": [{"id": "a", "skill": "summarize"}]},
+        triggers=["AwesomeWebpageMetaSkill"],
+        priority=50,
+    )
+    loader = _FakeLoader([spec])
+    ctx = SimpleNamespace(
+        message="invoke AwesomeWebpageMetaSkill to create a webpage",
+        semantic_message="invoke AwesomeWebpageMetaSkill to create a webpage",
+        system_prompt=("base prompt", ""),
+        metadata={"skill_loader": loader},
+    )
+
+    out = await meta_resolution(ctx)  # type: ignore[arg-type]
+
+    assert out.metadata["meta_match"].plan.name == "AwesomeWebpageMetaSkill"
+    assert out.metadata["meta_match_tool_choice"] == {
+        "type": "function",
+        "function": {"name": "meta_invoke"},
+    }
+
+
+@pytest.mark.asyncio
 async def test_meta_resolution_still_matches_current_cjk_intent() -> None:
     spec = _make_meta_spec(
         name="meta-household-calendar-test",
@@ -469,10 +585,10 @@ async def test_meta_resolution_promotes_meta_skill_creator_to_highest_text_tier(
         config=SimpleNamespace(
             squilla_router=SimpleNamespace(
                 tiers={
-                    "t0": {"model": "cheap-model"},
-                    "t1": {"model": "balanced-model"},
-                    "t2": {"model": "strong-model"},
-                    "t3": {"model": "frontier-model"},
+                    "c0": {"model": "cheap-model"},
+                    "c1": {"model": "balanced-model"},
+                    "c2": {"model": "strong-model"},
+                    "c3": {"model": "frontier-model"},
                     "image": {"model": "vision-model", "image_only": True},
                 },
             ),
@@ -487,10 +603,10 @@ async def test_meta_resolution_promotes_meta_skill_creator_to_highest_text_tier(
         "dynamic system prompt"
     )
     assert out.model == "frontier-model"
-    assert out.metadata["meta_required_tier"] == "t3"
+    assert out.metadata["meta_required_tier"] == "c3"
     assert out.metadata["meta_required_model"] == "frontier-model"
     assert out.metadata["meta_required_source"] == "meta-skill-creator"
-    assert out.metadata["routed_tier"] == "t3"
+    assert out.metadata["routed_tier"] == "c3"
     assert out.metadata["routed_model"] == "frontier-model"
     assert out.metadata["routing_source"] == "meta_skill_required_tier"
     assert out.metadata["routing_confidence"] == 1.0
@@ -514,8 +630,8 @@ async def test_meta_resolution_does_not_promote_non_creator_meta_to_highest_text
         config=SimpleNamespace(
             squilla_router=SimpleNamespace(
                 tiers={
-                    "t1": {"model": "cheap-model"},
-                    "t3": {"model": "frontier-model"},
+                    "c1": {"model": "cheap-model"},
+                    "c3": {"model": "frontier-model"},
                     "vision": {"model": "vision-model", "image_only": True},
                 },
             ),
@@ -1357,6 +1473,52 @@ async def test_orchestrator_skill_exec_rejects_cwd_outside_workspace(
     assert result.failed_step_id == "x"
     assert result.error and "cwd" in result.error
     assert result.error and "escapes allowed root" in result.error
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_skill_exec_creates_missing_workspace_dir(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / "cwd_skill"
+    skill_dir.mkdir()
+    script = skill_dir / "echo_cwd.py"
+    script.write_text(
+        "from pathlib import Path\n"
+        "print(Path.cwd())\n",
+        encoding="utf-8",
+    )
+
+    workspace = tmp_path / "missing" / "workspace"
+    assert not workspace.exists()
+
+    fake_spec = _make_skill_spec("cwd-skill", content="x")
+    fake_spec.base_dir = str(skill_dir)
+    fake_spec.entrypoint = {"command": "python {baseDir}/echo_cwd.py"}
+
+    plan_spec = _make_meta_spec(
+        composition={
+            "steps": [
+                {"id": "x", "kind": "skill_exec", "skill": "cwd-skill"},
+            ],
+        },
+    )
+    plan = parse_meta_plan(plan_spec)
+    assert plan is not None
+
+    async def runner(_s: str, _u: str) -> AsyncIterator[AgentEvent]:
+        raise AssertionError("no sub-Agent")
+        yield  # pragma: no cover
+
+    orch = MetaOrchestrator(
+        agent_runner=runner,
+        skill_loader=_FakeLoader([fake_spec]),
+        workspace_dir=str(workspace),
+    )
+    result = await orch.run(MetaMatch(plan=plan, inputs={}))
+
+    assert result.ok, result.error
+    assert workspace.exists()
+    assert Path(result.step_outputs["x"]) == workspace
 
 
 @pytest.mark.asyncio

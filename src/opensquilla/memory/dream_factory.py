@@ -9,6 +9,7 @@ from typing import Any
 
 from opensquilla.agents.scope import resolve_agent_workspace_dir
 from opensquilla.memory.dream import Dream
+from opensquilla.router_tiers import DEFAULT_TEXT_TIER, normalize_text_tier
 
 
 def _router_model_routing_enabled(router_cfg: Any | None) -> bool:
@@ -25,11 +26,15 @@ def _dream_provider_target(config: Any) -> tuple[str, str]:
     router_cfg = getattr(config, "squilla_router", None)
     if _router_model_routing_enabled(router_cfg):
         tiers = getattr(router_cfg, "tiers", {}) or {}
-        t1 = tiers.get("t1") if isinstance(tiers, dict) else None
-        if not isinstance(t1, dict) or not str(t1.get("model") or "").strip():
-            raise RuntimeError("squilla_router.tiers.t1 model is required for Dream")
-        provider = str(t1.get("provider") or getattr(llm_cfg, "provider", "openrouter"))
-        model = str(t1["model"])
+        default_tier = normalize_text_tier(getattr(router_cfg, "default_tier", None))
+        default_tier = default_tier or DEFAULT_TEXT_TIER
+        tier_cfg = tiers.get(default_tier) if isinstance(tiers, dict) else None
+        if not isinstance(tier_cfg, dict) or not str(tier_cfg.get("model") or "").strip():
+            raise RuntimeError(
+                f"squilla_router.tiers.{default_tier} model is required for Dream"
+            )
+        provider = str(tier_cfg.get("provider") or getattr(llm_cfg, "provider", "openrouter"))
+        model = str(tier_cfg["model"])
         return provider, model
 
     return str(getattr(llm_cfg, "provider", "openrouter")), str(getattr(llm_cfg, "model", ""))

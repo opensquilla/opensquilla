@@ -17,8 +17,7 @@ from opensquilla.tools.types import current_tool_context
     name="router_control",
     description=(
         "Control the Squilla router for this session. Use only when the user asks "
-        "to switch, upgrade, downgrade, use a configured tier/model, or restore "
-        "automatic routing."
+        "to switch to a configured route or restore automatic routing."
     ),
     params={
         "action": {

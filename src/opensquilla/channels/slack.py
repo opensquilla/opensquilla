@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import json
@@ -81,6 +82,11 @@ class SlackChannel:
     reply_in_thread: bool = False
     signing_secret: str | None = None
     status_reactions_enabled: bool = False
+    # Transport selection. ``socket`` uses Slack Socket Mode (an outbound
+    # websocket long-connection) and needs no public Request URL; it requires
+    # ``app_token`` (an ``xapp-`` App-Level Token with ``connections:write``).
+    connection_mode: str = "webhook"
+    app_token: str = ""
     # ``policy`` declares the admit/deny semantics consumed by
     # ``opensquilla.channels._util.evaluate_policy``. Slack admits DMs, admits
     # group messages only when the bot is mentioned, and applies no
@@ -105,7 +111,14 @@ class SlackChannel:
         init=False,
         repr=False,
     )
+    _socket_task: asyncio.Task | None = field(default=None, init=False, repr=False)
+    _socket_stop: asyncio.Event | None = field(default=None, init=False, repr=False)
     supports_slash_commands: bool = True
+
+    @property
+    def transport_name(self) -> str:
+        """``websocket`` in Socket Mode so the gateway skips webhook routing."""
+        return "websocket" if self.connection_mode == "socket" else "webhook"
 
     @property
     def capability_profile(self) -> ChannelCapabilityProfile:
@@ -121,7 +134,7 @@ class SlackChannel:
             thread_reply=True,
             edit=True,
             delete=True,
-            transports=("webhook",),
+            transports=(self.transport_name,),
         )
 
     @property
@@ -234,35 +247,76 @@ class SlackChannel:
             metadata=metadata,
         )
 
+    def build_reply_message(self, content: str, inbound: IncomingMessage) -> OutgoingMessage:
+        """Target the inbound conversation so batch replies need no static channel id."""
+        metadata: dict[str, Any] = {"channel": inbound.channel_id}
+        if thread_ts := self._reply_thread_ts(inbound):
+            metadata["thread_ts"] = thread_ts
+        return OutgoingMessage(content=content, reply_to=inbound.channel_id, metadata=metadata)
+
+    def streaming_reply_kwargs(self, inbound: IncomingMessage) -> dict[str, Any]:
+        """Stream the reply into the inbound conversation."""
+        kwargs = {"channel": inbound.channel_id}
+        if thread_ts := self._reply_thread_ts(inbound):
+            kwargs["thread_ts"] = thread_ts
+        return kwargs
+
+    def _reply_thread_ts(self, inbound: IncomingMessage) -> str | None:
+        """Resolve the Slack thread target for a reply to ``inbound``."""
+        if not self.reply_in_thread:
+            return None
+        metadata = inbound.metadata or {}
+        raw = metadata.get("thread_ts") or metadata.get("ts")
+        return str(raw) if raw else None
+
     # ------------------------------------------------------------------
     # Outbound
     # ------------------------------------------------------------------
 
     async def send(self, message: OutgoingMessage) -> None:
-        """Post a message to the Slack channel via chat.postMessage."""
-        payload: dict[str, Any] = {
-            "channel": self.slack_channel_id,
-            "text": message.content,
-        }
-        if message.reply_to:
-            payload["thread_ts"] = message.reply_to
-        elif self.reply_in_thread and self._last_thread_ts:
-            payload["thread_ts"] = self._last_thread_ts
-        if message.metadata:
-            if "thread_ts" in message.metadata and message.metadata["thread_ts"] is None:
-                payload.pop("thread_ts", None)
-            payload.update(
-                {key: value for key, value in message.metadata.items() if value is not None}
-            )
+        """Post a message to the originating Slack conversation.
+
+        The destination is resolved from ``reply_to``: the gateway routes the
+        source conversation there, so the bot answers wherever it was
+        addressed without a statically configured ``slack_channel_id``. Slack
+        conversation ids are prefixed ``C``/``G``/``D``; a bare message
+        timestamp is treated as a thread anchor instead. An explicit
+        ``metadata['channel']`` / ``metadata['thread_ts']`` still wins.
+        """
+        meta = message.metadata or {}
+        channel = self.slack_channel_id
+        thread_ts: str | None = None
+        rt = (message.reply_to or "").strip()
+        if rt[:1] in ("C", "G", "D"):
+            channel = rt
+        elif rt:
+            thread_ts = rt
+        if meta.get("channel"):
+            channel = str(meta["channel"])
+        if "thread_ts" in meta:
+            thread_ts = meta["thread_ts"]
+        elif thread_ts is None and self.reply_in_thread and self._last_thread_ts:
+            thread_ts = self._last_thread_ts
+        if not channel:
+            log.error("slack.send_failed", channel="", error="no_target_channel")
+            raise RuntimeError("Slack send has no target channel")
+
+        payload: dict[str, Any] = {"channel": channel, "text": message.content}
+        if thread_ts:
+            payload["thread_ts"] = thread_ts
+        for key, value in meta.items():
+            if key in ("channel", "thread_ts") or value is None:
+                continue
+            payload[key] = value
 
         client = self._get_client()
         resp = await client.post("/chat.postMessage", json=payload)
         resp.raise_for_status()
         data = resp.json()
         if not data.get("ok"):
-            log.error("slack.send_failed", error=data.get("error"), channel=self.slack_channel_id)
+            log.error("slack.send_failed", channel=channel, error=data.get("error"))
             raise RuntimeError(f"Slack API error: {data.get('error')}")
-        log.debug("slack.send", channel=self.slack_channel_id, ts=data.get("ts"))
+        log.debug("slack.send", channel=channel, ts=data.get("ts"))
 
     async def send_file(
         self,
@@ -349,25 +403,33 @@ class SlackChannel:
         self,
         chunks: AsyncIterator[str],
         *,
+        channel: str | None = None,
         thread_ts: str | None = None,
         update_interval_ms: int = 500,
     ) -> str | None:
         """Send a streaming message: post first chunk, update with subsequent chunks.
 
         Returns the message ``ts`` or ``None`` if the iterator was empty.
+        ``channel`` targets the originating conversation (defaulting to
+        ``slack_channel_id``) so a streamed reply lands where the bot was
+        addressed without a statically configured channel.
 
         Uses ``StreamThrottle`` so a fast producer cannot fire two
         concurrent ``chat.update`` calls and a single network failure
         does not lose accumulated text.
         """
         client = self._get_client()
+        target = channel or self.slack_channel_id
+        if not target:
+            log.error("slack.stream_failed", channel="", error="no_target_channel")
+            raise RuntimeError("Slack stream has no target channel")
         throttle = StreamThrottle(interval_s=update_interval_ms / 1000.0)
         message_ts: str | None = None
 
         async def _post(text: str) -> None:
             nonlocal message_ts
             payload: dict[str, Any] = {
-                "channel": self.slack_channel_id,
+                "channel": target,
                 "text": text,
             }
             if thread_ts:
@@ -384,7 +446,7 @@ class SlackChannel:
             resp = await client.post(
                 "/chat.update",
                 json={
-                    "channel": self.slack_channel_id,
+                    "channel": target,
                     "ts": message_ts,
                     "text": text,
                 },
@@ -433,7 +495,8 @@ class SlackChannel:
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        """Validate token via auth.test and store bot_user_id."""
+        """Validate the bot token, store ``bot_user_id``, and - in Socket Mode -
+        open the Slack Socket Mode long-connection."""
         client = self._get_client()
         resp = await client.post("/auth.test")
         resp.raise_for_status()
@@ -441,16 +504,108 @@ class SlackChannel:
         if not data.get("ok"):
             raise SlackAuthError(data.get("error", "unknown auth error"))
         self.bot_user_id = data["user_id"]
+        if self.connection_mode == "socket":
+            if not self.app_token:
+                raise SlackAuthError(
+                    "connection_mode='socket' requires app_token (an xapp- App-Level Token)"
+                )
+            initial_socket_url = await self._open_socket_connection()
+            self._socket_stop = asyncio.Event()
+            self._socket_task = asyncio.create_task(
+                self._run_socket_loop(initial_socket_url), name="slack-socket-mode"
+            )
         self._connected = True
-        log.info("slack.started", bot_user_id=self.bot_user_id)
+        log.info("slack.started", bot_user_id=self.bot_user_id, mode=self.connection_mode)
 
     async def stop(self) -> None:
         """Gracefully shut down the channel adapter."""
+        if self._socket_stop is not None:
+            self._socket_stop.set()
+        if self._socket_task is not None:
+            self._socket_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._socket_task
+            self._socket_task = None
         if self._client is not None:
             await self._client.aclose()
             self._client = None
         self._connected = False
         log.info("slack.stopped")
+
+    # ------------------------------------------------------------------
+    # Socket Mode transport (no public Request URL required)
+    # ------------------------------------------------------------------
+
+    async def _open_socket_connection(self) -> str:
+        """Open a Socket Mode session and return the issued ``wss://`` url."""
+        client = self._get_client()
+        resp = await client.post(
+            "/apps.connections.open",
+            headers={"Authorization": f"Bearer {self.app_token}"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if not data.get("ok"):
+            raise SlackAuthError(f"apps.connections.open failed: {data.get('error')}")
+        return str(data["url"])
+
+    async def _run_socket_loop(self, initial_socket_url: str | None = None) -> None:
+        """Maintain the Socket Mode websocket, reconnecting with backoff."""
+        import websockets
+
+        backoff = 1.0
+        stop = self._socket_stop
+        next_socket_url = initial_socket_url
+        while stop is None or not stop.is_set():
+            try:
+                ws_url = next_socket_url or await self._open_socket_connection()
+                next_socket_url = None
+                async with websockets.connect(
+                    ws_url, ping_interval=30, ping_timeout=20, max_size=None
+                ) as ws:
+                    self._connected = True
+                    backoff = 1.0
+                    log.info("slack.socket_mode.connected")
+                    async for raw in ws:
+                        if stop is not None and stop.is_set():
+                            break
+                        await self._handle_socket_frame(ws, raw)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                next_socket_url = None
+                self._connected = False
+                log.warning("slack.socket_mode.reconnect", error=str(exc), backoff=backoff)
+                if stop is None:
+                    break
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(stop.wait(), timeout=backoff)
+                if stop.is_set():
+                    break
+                backoff = min(backoff * 2, 30.0)
+
+    async def _handle_socket_frame(self, ws: Any, raw: str | bytes) -> None:
+        """Ack and dispatch a single Socket Mode frame."""
+        try:
+            msg = json.loads(raw)
+        except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
+            return
+        # Slack requires an ack (echo the envelope id) within 3 seconds.
+        envelope_id = msg.get("envelope_id")
+        if envelope_id:
+            with contextlib.suppress(Exception):
+                await ws.send(json.dumps({"envelope_id": envelope_id}))
+        mtype = msg.get("type")
+        if mtype == "disconnect":
+            # Slack rotates connections periodically; close so the loop reconnects.
+            with contextlib.suppress(Exception):
+                await ws.close()
+            return
+        if mtype != "events_api":
+            return
+        payload = msg.get("payload")
+        if isinstance(payload, dict) and payload.get("type") == "event_callback":
+            self._ingest_event_callback(payload)
 
     def is_connected(self) -> bool:
         """Return whether the adapter has been started and is connected."""
@@ -497,19 +652,39 @@ class SlackChannel:
             return JSONResponse({"challenge": challenge})
 
         if event_type == "event_callback":
-            event = data.get("event", {})
-            if event.get("type") == "message":
-                dedupe_key = str(
-                    data.get("event_id")
-                    or event.get("client_msg_id")
-                    or f"{event.get('channel', '')}:{event.get('ts', '')}"
-                ).strip(":")
-                if dedupe_key and not self._dedupe.check_and_add(dedupe_key):
-                    return Response(status_code=200)
-                msg = self.parse_event(event)
-                self.enqueue(msg)
+            self._ingest_event_callback(data)
 
         return Response(status_code=200)
+
+    def _ingest_event_callback(self, data: dict[str, Any]) -> None:
+        """Shared inbound path for an Events API ``event_callback`` payload,
+        used by both the webhook handler and the Socket Mode loop."""
+        event = data.get("event", {})
+        if not isinstance(event, dict) or event.get("type") not in {"message", "app_mention"}:
+            return
+        # Only plain user messages are input; drop edits/deletes/joins and the
+        # bot's own streaming-edit echoes (``message_changed`` etc.).
+        if event.get("subtype") not in (None, "file_share", "me_message", "thread_broadcast"):
+            return
+        if self._is_own_message(event):
+            return
+        event_instance_key = (
+            f"{event.get('channel')}:{event.get('ts')}"
+            if event.get("channel") and event.get("ts")
+            else ""
+        )
+        dedupe_key = str(
+            event.get("client_msg_id") or event_instance_key or data.get("event_id") or ""
+        ).strip(":")
+        if dedupe_key and not self._dedupe.check_and_add(dedupe_key):
+            return
+        self.enqueue(self.parse_event(event))
+
+    def _is_own_message(self, event: dict[str, Any]) -> bool:
+        """Drop the bot's own messages so replies never loop back as input."""
+        if event.get("subtype") == "bot_message" or event.get("bot_id"):
+            return True
+        return bool(self.bot_user_id and event.get("user") == self.bot_user_id)
 
     def _verify_signature(self, body: bytes, timestamp: str, signature: str) -> bool:
         """Verify Slack request signature using HMAC-SHA256."""

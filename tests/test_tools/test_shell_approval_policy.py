@@ -501,6 +501,29 @@ async def test_workspace_write_deny_globs_block_direct_shell_command(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_workspace_write_deny_globs_inspect_shell_stdin(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.interaction_mode = InteractionMode.UNATTENDED
+    ctx.elevated = "bypass"
+    ctx.workspace_dir = str(workspace)
+    ctx.workspace_write_deny_globs = ["reports/*.txt"]  # type: ignore[attr-defined]
+
+    result = await shell.exec_command(
+        "sh",
+        workdir=str(workspace),
+        stdin="mkdir -p reports\necho secret > reports/out.txt\n",
+    )
+
+    payload = json.loads(result)
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "workspace_write_deny"
+    assert payload["matched_pattern"] == "reports/*.txt"
+
+
+@pytest.mark.asyncio
 async def test_bypass_still_blocks_sensitive_shell_targets() -> None:
     ctx = current_tool_context.get()
     assert ctx is not None

@@ -140,7 +140,7 @@ async def test_final_done_returns_openrouter_deepseek_reasoning_content() -> Non
 
 
 @pytest.mark.asyncio
-async def test_reasoning_only_first_turn_retries_with_thinking_disabled() -> None:
+async def test_reasoning_only_first_turn_retries_without_disabling_thinking() -> None:
     provider = _SequenceProvider(
         [
             [
@@ -183,6 +183,12 @@ async def test_reasoning_only_first_turn_retries_with_thinking_disabled() -> Non
         event.kind == "warning" and event.code == "provider_reasoning_only_retry"
         for event in events
     )
+    warning = next(
+        event
+        for event in events
+        if event.kind == "warning" and event.code == "provider_reasoning_only_retry"
+    )
+    assert "thinking disabled" not in warning.message
     done = next(event for event in events if event.kind == "done")
     assert done.text == "ok"
     assert done.input_tokens == 21
@@ -190,9 +196,9 @@ async def test_reasoning_only_first_turn_retries_with_thinking_disabled() -> Non
     assert done.reasoning_tokens == 5
     assert len(provider.calls) == 2
     assert provider.calls[0]["config"].thinking is True
-    assert provider.calls[1]["config"].thinking is False
-    assert provider.calls[1]["config"].thinking_level is None
-    assert provider.calls[1]["config"].thinking_budget_tokens == 0
+    assert provider.calls[1]["config"].thinking is True
+    assert provider.calls[1]["config"].thinking_level == ThinkingLevel.MEDIUM
+    assert provider.calls[1]["config"].thinking_budget_tokens > 0
     tracked = usage.get("agent:test:reasoning-only")
     assert tracked is not None
     assert tracked.input_tokens == 21
@@ -204,7 +210,7 @@ async def test_reasoning_only_first_turn_retries_with_thinking_disabled() -> Non
 
 
 @pytest.mark.asyncio
-async def test_reasoning_only_post_tool_turn_retries_with_thinking_disabled() -> None:
+async def test_reasoning_only_post_tool_turn_retries_without_disabling_thinking() -> None:
     provider = _SequenceProvider(
         [
             [
@@ -267,9 +273,16 @@ async def test_reasoning_only_post_tool_turn_retries_with_thinking_disabled() ->
         event.kind == "warning" and event.code == "provider_reasoning_only_retry"
         for event in events
     )
+    warning = next(
+        event
+        for event in events
+        if event.kind == "warning" and event.code == "provider_reasoning_only_retry"
+    )
+    assert "thinking disabled" not in warning.message
     assert len(provider.calls) == 3
     assert provider.calls[1]["config"].thinking is True
-    assert provider.calls[2]["config"].thinking is False
+    assert provider.calls[2]["config"].thinking is True
+    assert provider.calls[2]["config"].thinking_level == ThinkingLevel.MEDIUM
 
 
 @pytest.mark.asyncio

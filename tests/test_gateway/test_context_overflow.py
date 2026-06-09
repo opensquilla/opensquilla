@@ -253,6 +253,7 @@ def _cfg(
     flush_enabled: bool = False,
     flush_timeout_seconds: float = 5.0,
     flush_background_timeout_seconds: float = 60.0,
+    flush_pre_compaction: bool | None = None,
     flush_compaction_requires_safe_receipt: bool = False,
     flush_compaction_safety_mode: str | None = None,
 ) -> GatewayConfig:
@@ -262,6 +263,9 @@ def _cfg(
         "flush_background_timeout_seconds": flush_background_timeout_seconds,
         "flush_compaction_requires_safe_receipt": (flush_compaction_requires_safe_receipt),
     }
+    if flush_pre_compaction is None:
+        flush_pre_compaction = flush_enabled
+    memory["flush_pre_compaction"] = flush_pre_compaction
     if flush_compaction_safety_mode is not None:
         memory["flush_compaction_safety_mode"] = flush_compaction_safety_mode
     return GatewayConfig(
@@ -269,6 +273,28 @@ def _cfg(
         context_budget_tokens=budget,
         memory=memory,
     )
+
+
+def test_gateway_memory_flush_triggers_normalize_aliases() -> None:
+    string_cfg = GatewayConfig(memory={"flush_triggers": "reset, inline_overflow"})
+    list_cfg = GatewayConfig(memory={"flush_triggers": ["manual", "pre-compaction"]})
+
+    assert string_cfg.memory.flush_triggers == ["session_reset", "pre_compaction"]
+    assert list_cfg.memory.flush_triggers == ["manual", "pre_compaction"]
+
+
+@pytest.mark.parametrize(
+    "flush_triggers",
+    [
+        "bogus",
+        ["manual", "bogus"],
+    ],
+)
+def test_gateway_memory_flush_triggers_reject_unknown_values(
+    flush_triggers: object,
+) -> None:
+    with pytest.raises(ValueError, match="unknown flush trigger"):
+        GatewayConfig(memory={"flush_triggers": flush_triggers})
 
 
 def _history(n_entries: int, chars_per_entry: int) -> list[_FakeEntry]:
@@ -740,6 +766,34 @@ async def test_auto_summarize_compacts_while_protect_flush_runs_in_background() 
     assert sm.compact_calls == [("agent:main:s-flush", 10, None)]
     await asyncio.sleep(0)
     flush_service.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_auto_summarize_flush_enabled_without_trigger_skips_flush_service() -> None:
+    cfg = _cfg(
+        ContextOverflowPolicy.AUTO_SUMMARIZE,
+        budget=10,
+        flush_enabled=True,
+        flush_pre_compaction=False,
+    )
+    sm = _FakeSessionManager(_history(6, 40))
+    flush_service = SimpleNamespace(execute=AsyncMock())
+
+    outcome = await apply_context_overflow_policy(
+        config=cfg,
+        message="m",
+        transcript=sm._transcript,
+        session_key="agent:main:s-flush-disabled-trigger",
+        session_manager=sm,
+        flush_service=flush_service,
+    )
+
+    assert outcome.over_budget is True
+    assert outcome.summarized is True
+    assert outcome.retried is True
+    assert outcome.flush_receipt is None
+    flush_service.execute.assert_not_called()
+    assert sm.compact_calls == [("agent:main:s-flush-disabled-trigger", 10, None)]
 
 
 @pytest.mark.asyncio

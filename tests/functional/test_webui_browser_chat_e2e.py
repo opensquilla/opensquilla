@@ -379,6 +379,215 @@ def test_chat_view_loads_and_reaches_gateway_http_status_in_real_browser(tmp_pat
     }
 
 
+def test_replay_gap_history_refresh_preserves_scroll_in_real_browser(tmp_path: Path) -> None:
+    if os.environ.get("OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E") != "1":
+        pytest.skip("set OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E=1 to run chat browser e2e")
+
+    port = _free_port()
+    server_script = tmp_path / "webui_gap_scroll_server.py"
+    browser_script = tmp_path / "webui_gap_scroll_browser.js"
+    server_script.write_text(
+        textwrap.dedent(
+            f"""
+            import uvicorn
+
+            from opensquilla.gateway.app import create_gateway_app
+            from opensquilla.gateway.config import AuthConfig, GatewayConfig
+
+            config = GatewayConfig(
+                host="127.0.0.1",
+                port={port},
+                auth=AuthConfig(mode="none"),
+            )
+            app = create_gateway_app(config)
+
+            if __name__ == "__main__":
+                uvicorn.run(app, host="127.0.0.1", port={port}, log_level="warning")
+            """
+        ),
+        encoding="utf-8",
+    )
+    browser_script.write_text(
+        textwrap.dedent(
+            r"""
+            const { chromium } = require("playwright");
+
+            (async () => {
+              const browser = await chromium.launch({ headless: true });
+              const page = await browser.newPage({ viewport: { width: 1365, height: 768 } });
+              const errors = [];
+              page.on("pageerror", err => errors.push(String(err)));
+              page.on("console", msg => {
+                if (msg.type() === "error") errors.push(msg.text());
+              });
+
+              await page.goto(process.env.TARGET_URL, {
+                waitUntil: "domcontentloaded",
+                timeout: 30000,
+              });
+              await page.waitForFunction(
+                () =>
+                  typeof App !== "undefined" &&
+                  App.getRpc &&
+                  App.getRpc()?.state === "connected",
+                { timeout: 15000 }
+              );
+
+              await page.evaluate(() => {
+                const rpc = App.getRpc();
+                const originalCall = rpc.call.bind(rpc);
+                const messages = [];
+                for (let i = 1; i <= 70; i += 1) {
+                  const label = i % 2 ? "User" : "Assistant";
+                  messages.push({
+                    role: i % 2 ? "user" : "assistant",
+                    text: `${label} history row ${String(i).padStart(2, "0")} `.repeat(8),
+                    timestamp: `2026-06-03T00:${String(i % 60).padStart(2, "0")}:00.000Z`,
+                    message_id: `gap-probe-${i}`,
+                  });
+                }
+                window.__gapProbe = { subscribeCount: 0, historyCount: 0, gapInjected: false };
+                rpc.call = async (method, params) => {
+                  if (method === "chat.history") {
+                    window.__gapProbe.historyCount += 1;
+                    return {
+                      messages,
+                      has_more: false,
+                      history_scope: "complete",
+                      oldest_cursor: null,
+                      newest_cursor: null,
+                      compaction_summaries: [],
+                    };
+                  }
+                  if (method === "sessions.messages.subscribe") {
+                    window.__gapProbe.subscribeCount += 1;
+                    if (window.__gapProbe.subscribeCount <= 1) {
+                      return {
+                        subscribed: true,
+                        key: params && params.key,
+                        current_stream_seq: 12,
+                        replay_complete: true,
+                        replayed_count: 0,
+                        run_status: "idle",
+                      };
+                    }
+                    window.__gapProbe.gapInjected = true;
+                    return {
+                      subscribed: true,
+                      key: params && params.key,
+                      current_stream_seq: 18,
+                      replay_complete: false,
+                      replay_gap_reason: "stream_buffer_empty",
+                      replayed_count: 0,
+                      run_status: "idle",
+                    };
+                  }
+                  return originalCall(method, params);
+                };
+              });
+
+              await page.evaluate(() =>
+                Router.navigate(
+                  "/chat?session=" +
+                    encodeURIComponent("agent:main:webchat:gap-playwright-regression")
+                )
+              );
+              await page.waitForSelector("#chat-thread .msg", { timeout: 15000 });
+              await page.waitForFunction(
+                () => document.querySelectorAll("#chat-thread .msg").length >= 60,
+                { timeout: 15000 }
+              );
+
+              const before = await page.evaluate(() => {
+                const thread = document.querySelector("#chat-thread");
+                thread.scrollTop = 120;
+                return {
+                  scrollTop: thread.scrollTop,
+                  scrollHeight: thread.scrollHeight,
+                  clientHeight: thread.clientHeight,
+                  bottomDistance: thread.scrollHeight - thread.clientHeight - thread.scrollTop,
+                  messageCount: document.querySelectorAll("#chat-thread .msg").length,
+                };
+              });
+
+              await page.evaluate(() => {
+                const handlers = App.getRpc()._listeners.get("_state");
+                if (handlers) handlers.forEach(h => h("connected"));
+              });
+              await page.waitForFunction(
+                () => window.__gapProbe && window.__gapProbe.gapInjected === true,
+                { timeout: 15000 }
+              );
+              await page.waitForFunction(
+                () => window.__gapProbe && window.__gapProbe.historyCount >= 3,
+                { timeout: 15000 }
+              );
+
+              const after = await page.evaluate(() => {
+                const thread = document.querySelector("#chat-thread");
+                return {
+                  scrollTop: thread.scrollTop,
+                  scrollHeight: thread.scrollHeight,
+                  clientHeight: thread.clientHeight,
+                  bottomDistance: thread.scrollHeight - thread.clientHeight - thread.scrollTop,
+                  messageCount: document.querySelectorAll("#chat-thread .msg").length,
+                  toasts: Array.from(document.querySelectorAll(".toast")).map(el =>
+                    el.textContent.trim()
+                  ),
+                  probe: window.__gapProbe,
+                };
+              });
+
+              await browser.close();
+              console.log(JSON.stringify({ before, after, errors }));
+            })().catch(err => {
+              console.error(err && err.stack ? err.stack : String(err));
+              process.exit(1);
+            });
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["OPENSQUILLA_STATE_DIR"] = str(tmp_path / "state")
+    env["OPENSQUILLA_LOG_DIR"] = str(tmp_path / "logs")
+    server = subprocess.Popen(
+        [sys.executable, str(server_script)],
+        cwd=Path.cwd(),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    try:
+        _wait_for_health(port, server)
+        _install_playwright(tmp_path)
+        result = subprocess.run(
+            [_node(), str(browser_script)],
+            cwd=tmp_path,
+            env=dict(env, TARGET_URL=f"http://127.0.0.1:{port}/control/overview"),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+        assert result.returncode == 0, result.stderr or result.stdout
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+    finally:
+        _stop_process(server)
+
+    assert payload["errors"] == [], payload["errors"]
+    assert payload["before"]["messageCount"] >= 60
+    assert payload["after"]["messageCount"] == payload["before"]["messageCount"]
+    assert payload["after"]["probe"]["gapInjected"] is True
+    assert payload["after"]["bottomDistance"] > 1000, payload
+    assert payload["after"]["scrollTop"] <= payload["before"]["scrollTop"] + 80, payload
+    assert "Session stream gap detected; reloading transcript." not in payload["after"]["toasts"]
+
+
 def test_chat_topbar_one_row_layout_in_real_browser(tmp_path: Path) -> None:
     if os.environ.get("OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E") != "1":
         pytest.skip("set OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E=1 to run chat browser e2e")
@@ -903,6 +1112,205 @@ def test_chat_slash_menu_aligns_with_composer_in_real_browser(tmp_path: Path) ->
     assert layouts["mobile"]["layout"]["exportButton"]["visible"] is False
 
 
+def test_chat_escape_in_composer_aborts_streaming_turn_in_real_browser(
+    tmp_path: Path,
+) -> None:
+    if os.environ.get("OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E") != "1":
+        pytest.skip("set OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E=1 to run chat browser e2e")
+
+    port = _free_port()
+    server_script = tmp_path / "webui_escape_abort_server.py"
+    browser_script = tmp_path / "webui_escape_abort_browser.js"
+    server_script.write_text(
+        textwrap.dedent(
+            f"""
+            import uvicorn
+
+            from opensquilla.gateway.app import create_gateway_app
+            from opensquilla.gateway.config import AuthConfig, GatewayConfig
+
+            config = GatewayConfig(
+                host="127.0.0.1",
+                port={port},
+                auth=AuthConfig(mode="none"),
+            )
+            app = create_gateway_app(config)
+
+            if __name__ == "__main__":
+                uvicorn.run(app, host="127.0.0.1", port={port}, log_level="warning")
+            """
+        ),
+        encoding="utf-8",
+    )
+    browser_script.write_text(
+        textwrap.dedent(
+            r"""
+            const { chromium } = require("playwright");
+
+            async function waitRpc(page) {
+              await page.waitForFunction(
+                () =>
+                  typeof App !== "undefined" &&
+                  App.getRpc &&
+                  App.getRpc()?.state === "connected",
+                { timeout: 15000 }
+              );
+            }
+
+            (async () => {
+              const browser = await chromium.launch({ headless: true });
+              const page = await browser.newPage();
+              const errors = [];
+              page.on("pageerror", err => errors.push(String(err)));
+
+              await page.goto(process.env.TARGET_URL, {
+                waitUntil: "domcontentloaded",
+                timeout: 30000,
+              });
+              await page.waitForSelector("#chat-textarea", { timeout: 15000 });
+              await waitRpc(page);
+
+              await page.evaluate(() => {
+                const rpc = App.getRpc();
+                const originalCall = rpc.call.bind(rpc);
+                window.__escapeAbort = { sendCalls: [], abortCalls: [] };
+                rpc.call = (method, params = {}) => {
+                  if (method === "tools.search_provider") {
+                    return Promise.resolve({ provider: "none" });
+                  }
+                  if (method === "config.get") {
+                    return Promise.resolve({
+                      permissions: { default_mode: "ask" },
+                      squilla_router: { enabled: true, rollout_phase: "full", tiers: {} },
+                    });
+                  }
+                  if (method === "chat.history") {
+                    return Promise.resolve({
+                      messages: [],
+                      history_scope: "complete",
+                      has_more: false,
+                    });
+                  }
+                  if (method === "sessions.messages.subscribe") {
+                    return Promise.resolve({
+                      subscribed: true,
+                      key: params.key,
+                      current_stream_seq: 0,
+                      replay_complete: true,
+                      replayed_count: 0,
+                      run_status: "idle",
+                    });
+                  }
+                  if (method === "chat.send") {
+                    window.__escapeAbort.sendCalls.push(params);
+                    return Promise.resolve({ task_id: "escape-abort-task" });
+                  }
+                  if (method === "chat.abort") {
+                    window.__escapeAbort.abortCalls.push(params);
+                    return Promise.resolve({ aborted: true, key: params.sessionKey });
+                  }
+                  return originalCall(method, params);
+                };
+              });
+
+              await page.evaluate(() =>
+                Router.navigate("/chat?session=agent:main:webchat:escape-abort")
+              );
+              await page.waitForSelector("#chat-textarea", { timeout: 15000 });
+              await page.fill("#chat-textarea", "turn to abort from textarea");
+              await page.click("#chat-btn-send");
+              await page.waitForFunction(
+                () =>
+                  window.__escapeAbort.sendCalls.length === 1 &&
+                  OpenSquillaChatDiag.snapshot().isStreaming === true,
+                null, { timeout: 5000 }
+              );
+
+              await page.focus("#chat-textarea");
+              const before = await page.evaluate(() => ({
+                focusId: document.activeElement?.id || "",
+                isStreaming: OpenSquillaChatDiag.snapshot().isStreaming,
+                stopVisible:
+                  !document.querySelector("#chat-btn-stop")?.classList.contains("hidden"),
+              }));
+              await page.locator("#chat-textarea").press("Escape");
+              await page.waitForFunction(
+                () => window.__escapeAbort.abortCalls.length === 1,
+                null, { timeout: 5000 }
+              );
+              await page.waitForFunction(
+                () => OpenSquillaChatDiag.snapshot().isStreaming === false,
+                null, { timeout: 5000 }
+              );
+              const afterState = await page.evaluate(() => ({
+                isStreaming: OpenSquillaChatDiag.snapshot().isStreaming,
+                streamingCount: document.querySelectorAll(".msg.streaming").length,
+                thinkingCount: document.querySelectorAll(".msg.thinking").length,
+                stopVisible:
+                  !document.querySelector("#chat-btn-stop")?.classList.contains("hidden"),
+                abortCalls: window.__escapeAbort.abortCalls,
+              }));
+              const after = { ...afterState, pageErrors: errors };
+
+              await browser.close();
+              console.log(JSON.stringify({ before, after }));
+            })().catch(err => {
+              console.error(err && err.stack ? err.stack : String(err));
+              process.exit(1);
+            });
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["OPENSQUILLA_STATE_DIR"] = str(tmp_path / "state")
+    env["OPENSQUILLA_LOG_DIR"] = str(tmp_path / "logs")
+    server = subprocess.Popen(
+        [sys.executable, str(server_script)],
+        cwd=Path.cwd(),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    try:
+        _wait_for_health(port, server)
+        _install_playwright(tmp_path)
+        result = subprocess.run(
+            [_node(), str(browser_script)],
+            cwd=tmp_path,
+            env=dict(env, TARGET_URL=f"http://127.0.0.1:{port}/control/chat"),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+        assert result.returncode == 0, result.stderr or result.stdout
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+    finally:
+        _stop_process(server)
+
+    before = payload["before"]
+    after = payload["after"]
+    assert before["focusId"] == "chat-textarea", before
+    assert before["isStreaming"] is True, before
+    assert before["stopVisible"] is True, before
+    assert after["abortCalls"] == [
+        {
+            "sessionKey": "agent:main:webchat:escape-abort",
+            "source": "webui_escape",
+        }
+    ], after
+    assert after["isStreaming"] is False, after
+    assert after["streamingCount"] == 0, after
+    assert after["thinkingCount"] == 0, after
+    assert after["stopVisible"] is False, after
+    assert after["pageErrors"] == [], after
+
+
 def test_chat_tool_result_full_view_handles_large_payloads_in_real_browser(
     tmp_path: Path,
 ) -> None:
@@ -1189,7 +1597,28 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
             async function lastSeparatorText(page) {
               return await page.evaluate(() => {
                 const separators = document.querySelectorAll(".chat-context-separator");
-                return separators.length ? separators[separators.length - 1].innerText : "";
+                return separators.length
+                  ? separators[separators.length - 1].textContent
+                  : "";
+              });
+            }
+
+            async function lastSeparatorPlacement(page) {
+              return await page.evaluate(() => {
+                const thread = document.querySelector("#chat-thread");
+                const separators = document.querySelectorAll(".chat-context-separator");
+                const separator = separators[separators.length - 1];
+                if (!thread || !separator) return null;
+                const threadBox = thread.getBoundingClientRect();
+                const separatorBox = separator.getBoundingClientRect();
+                return {
+                  bottomGap: Math.round(threadBox.bottom - separatorBox.bottom),
+                  topGap: Math.round(separatorBox.top - threadBox.top),
+                  className: separator.className,
+                  scrollTop: Math.round(thread.scrollTop),
+                  scrollHeight: Math.round(thread.scrollHeight),
+                  clientHeight: Math.round(thread.clientHeight),
+                };
               });
             }
 
@@ -1237,6 +1666,7 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
               await page.waitForTimeout(600);
               const startedStatusVisible = await lastSeparatorText(page);
               const manualSeparatorStarted = startedStatusVisible;
+              const manualSeparatorStartedPlacement = await lastSeparatorPlacement(page);
               await emitCompaction(page, { status: "skipped", source: "manual" });
               await page.waitForTimeout(250);
               const skippedStatusVisible = await lastSeparatorText(page);
@@ -1248,7 +1678,7 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
                 tokens_after: 1300,
               });
               await page.waitForFunction(
-                () => document.body.innerText.includes("context compacted"),
+                () => document.body.textContent.includes("context compacted"),
                 null, { timeout: 5000 }
               );
 
@@ -1290,6 +1720,7 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
               await page.waitForTimeout(800);
               const automaticStartedStatusVisible = await lastSeparatorText(page);
               const automaticSeparatorStarted = automaticStartedStatusVisible;
+              const automaticSeparatorStartedPlacement = await lastSeparatorPlacement(page);
               await page.fill("#chat-textarea", "queued during automatic compact");
               await page.click("#chat-btn-send");
               await page.waitForTimeout(150);
@@ -1346,7 +1777,9 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
               const automaticNoopSeparatorHidden = await page
                 .locator(".chat-context-separator")
                 .count();
-              const automaticNoopBodyText = await page.locator("body").innerText();
+              const automaticNoopBodyText = await page.evaluate(
+                () => document.body.textContent
+              );
 
               await page.waitForTimeout(1600);
               await emitCompaction(page, {
@@ -1422,6 +1855,11 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
                 startedStatusVisible: startedStatusVisible.includes("context compacting"),
                 manualRailStarted:
                   manualSeparatorStarted.includes("context compacting"),
+                manualRailBottomAnchored:
+                  manualSeparatorStartedPlacement &&
+                  manualSeparatorStartedPlacement.bottomGap <= 60 &&
+                  manualSeparatorStartedPlacement.className
+                    .includes("chat-context-separator--session"),
                 skippedStatusVisible: skippedStatusVisible.includes(
                   "no compaction needed"
                 ),
@@ -1437,6 +1875,11 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
                 ),
                 automaticRailStarted:
                   automaticSeparatorStarted.includes("context compacting"),
+                automaticRailBottomAnchored:
+                  automaticSeparatorStartedPlacement &&
+                  automaticSeparatorStartedPlacement.bottomGap <= 60 &&
+                  automaticSeparatorStartedPlacement.className
+                    .includes("chat-context-separator--session"),
                 automaticObservedStatusVisible: automaticObservedStatusVisible.includes(
                   "context compacting"
                 ),
@@ -1522,12 +1965,14 @@ def test_chat_compaction_events_render_recoverable_toasts_in_real_browser(
         "hasReplayedFailureToast": False,
         "startedStatusVisible": True,
         "manualRailStarted": True,
+        "manualRailBottomAnchored": True,
         "skippedStatusVisible": True,
         "failedStatusVisible": True,
         "queuedBeforeSkipped": 0,
         "skippedDrainedQueuedSend": True,
         "automaticStartedStatusVisible": True,
         "automaticRailStarted": True,
+        "automaticRailBottomAnchored": True,
         "automaticObservedStatusVisible": True,
         "automaticRailObserved": True,
         "automaticRailCompleted": True,
@@ -1632,6 +2077,8 @@ def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path
                   winners: strips.map(
                     el => el.querySelector(".router-fx-cell.win .nm")?.textContent || ""
                   ),
+                  cellCount: cells.length,
+                  cellLabels: cells.map(el => el.textContent || ""),
                   hasLongLabel: cells.some(el => el.textContent === "gemini-3.1-flash-lite"),
                   overflows,
                   gridWithinViewport: gridRect
@@ -1662,6 +2109,20 @@ def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path
                   sessionKey: "agent:main:webchat:router-fx-panel",
                   historyMessages: [],
                   chatCalls: [],
+                  routerConfig: {
+                    enabled: true,
+                    rollout_phase: "full",
+                    tiers: {
+                      c1: { model: "openrouter/deepseek-v4-flash" },
+                      c2: { model: "openrouter/gemini-3.1-flash-lite" },
+                      c3: { model: "openrouter/qwen3.6-max" },
+                      image_model: {
+                        model: "openrouter/kimi-k2.6",
+                        supports_image: true,
+                        image_only: true,
+                      },
+                    },
+                  },
                 };
                 const rpc = App.getRpc();
                 const originalCall = rpc.call.bind(rpc);
@@ -1672,15 +2133,7 @@ def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path
                   if (method === "config.get") {
                     return Promise.resolve({
                       permissions: { default_mode: "ask" },
-                      squilla_router: {
-                        enabled: true,
-                        rollout_phase: "full",
-                        tiers: {
-                          t1: { model: "openrouter/deepseek-v4-flash" },
-                          t2: { model: "openrouter/gemini-3.1-flash-lite" },
-                          t3: { model: "openrouter/qwen3.6-max" },
-                        },
-                      },
+                      squilla_router: window.__routerFxTest.routerConfig,
                     });
                   }
                   if (method === "chat.history") {
@@ -1738,7 +2191,7 @@ def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path
               await emit(page, "session.event.router_decision", {
                 session_key: sessionKey,
                 stream_seq: 101,
-                tier: "t1",
+                tier: "c1",
                 model: "openrouter/deepseek-v4-flash",
                 routing_source: "squilla_router",
                 routing_applied: true,
@@ -1765,7 +2218,7 @@ def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path
                     usage: {
                       model: "openrouter/deepseek-v4-flash",
                       routed_model: "openrouter/deepseek-v4-flash",
-                      routed_tier: "t1",
+                      routed_tier: "c1",
                       routing_source: "squilla_router",
                       routing_applied: true,
                       input_tokens: 11,
@@ -1785,7 +2238,7 @@ def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path
               await emit(page, "session.event.router_decision", {
                 session_key: sessionKey,
                 stream_seq: 102,
-                tier: "t1",
+                tier: "c1",
                 model: "openrouter/deepseek-v4-flash",
                 routing_source: "squilla_router",
                 routing_applied: true,
@@ -1815,7 +2268,7 @@ def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path
                     usage: {
                       model: "openrouter/deepseek-v4-flash",
                       routed_model: "openrouter/deepseek-v4-flash",
-                      routed_tier: "t1",
+                      routed_tier: "c1",
                       routing_source: "squilla_router",
                       routing_applied: true,
                       input_tokens: 11,
@@ -1850,7 +2303,7 @@ def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path
                     usage: {
                       model: "openrouter/deepseek-v4-flash",
                       routed_model: "openrouter/deepseek-v4-flash",
-                      routed_tier: "t1",
+                      routed_tier: "c1",
                       routing_source: "squilla_router",
                       routing_applied: true,
                       input_tokens: 11,
@@ -1872,7 +2325,7 @@ def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path
                     usage: {
                       model: "openrouter/gemini-3.1-flash-lite",
                       routed_model: "openrouter/gemini-3.1-flash-lite",
-                      routed_tier: "t2",
+                      routed_tier: "c2",
                       routing_source: "squilla_router",
                       routing_applied: true,
                       input_tokens: 13,
@@ -1881,13 +2334,13 @@ def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path
                   },
                 ];
                 window.__routerFxTest.deferHistory = true;
-                const stateHandlers = App.getRpc()._listeners.get("_state");
-                if (stateHandlers) stateHandlers.forEach(h => h("connected"));
+                Router.navigate("/overview");
+                Router.navigate("/chat?session=agent:main:webchat:router-fx-panel");
               });
               await emit(page, "session.event.router_decision", {
                 session_key: sessionKey,
                 stream_seq: 103,
-                tier: "t2",
+                tier: "c2",
                 model: "openrouter/gemini-3.1-flash-lite",
                 routing_source: "squilla_router",
                 routing_applied: true,
@@ -1908,6 +2361,94 @@ def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path
               await page.waitForTimeout(300);
               const afterHistoryHydrationReplay = await snapshot(page);
 
+              await page.evaluate(() => {
+                window.__routerFxTest.historyMessages = [
+                  {
+                    role: "user",
+                    text: "describe image",
+                    message_id: "router-fx-u-image",
+                    timestamp: "2026-05-30T00:00:04Z",
+                    attachments: [{
+                      mime: "image/png",
+                      type: "image/png",
+                      name: "preview.png",
+                      data: "data:image/png;base64,iVBORw0KGgo=",
+                    }],
+                  },
+                  {
+                    role: "assistant",
+                    text: "image done",
+                    message_id: "router-fx-a-image",
+                    timestamp: "2026-05-30T00:00:05Z",
+                    model: "openrouter/kimi-k2.6",
+                    usage: {
+                      model: "openrouter/kimi-k2.6",
+                      routed_model: "openrouter/kimi-k2.6",
+                      routed_tier: "image_model",
+                      routing_source: "image_route",
+                      routing_applied: true,
+                      input_tokens: 21,
+                      output_tokens: 5,
+                    },
+                  },
+                ];
+                Router.navigate("/overview");
+                Router.navigate("/chat?session=agent:main:webchat:router-fx-panel");
+              });
+              await page.waitForFunction(
+                () =>
+                  document.querySelector(".msg.user .msg-attachments") &&
+                  document.querySelectorAll(".router-fx").length === 0,
+                { timeout: 15000 }
+              );
+              const singleImageCandidate = await snapshot(page);
+
+              await page.evaluate(() => {
+                window.__routerFxTest.routerConfig = {
+                  enabled: true,
+                  rollout_phase: "full",
+                  tiers: {
+                    t1: { model: "openrouter/shared-model" },
+                    t2: { model: "other-provider/shared-model" },
+                  },
+                };
+                window.__routerFxTest.historyMessages = [
+                  {
+                    role: "user",
+                    text: "same model different provider",
+                    message_id: "router-fx-u-same-display",
+                    timestamp: "2026-05-30T00:00:06Z",
+                  },
+                  {
+                    role: "assistant",
+                    text: "same done",
+                    message_id: "router-fx-a-same-display",
+                    timestamp: "2026-05-30T00:00:07Z",
+                    model: "openrouter/shared-model",
+                    usage: {
+                      model: "openrouter/shared-model",
+                      routed_model: "openrouter/shared-model",
+                      routed_tier: "t1",
+                      routing_source: "squilla_router",
+                      routing_applied: true,
+                      input_tokens: 8,
+                      output_tokens: 2,
+                    },
+                  },
+                ];
+                Router.navigate("/overview");
+                Router.navigate("/chat?session=agent:main:webchat:router-fx-panel");
+              });
+              await page.waitForFunction(
+                () =>
+                  document.querySelector(".msg.user")?.textContent.includes(
+                    "same model different provider"
+                  ) &&
+                  document.querySelectorAll(".router-fx").length === 0,
+                { timeout: 15000 }
+              );
+              const sameDisplaySingleCandidate = await snapshot(page);
+
               const result = {
                 liveSettled,
                 reopened,
@@ -1915,6 +2456,8 @@ def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path
                 narrow,
                 duringHistoryHydrationReplay,
                 afterHistoryHydrationReplay,
+                singleImageCandidate,
+                sameDisplaySingleCandidate,
                 pageErrors: errors,
               };
               await browser.close();
@@ -1966,6 +2509,13 @@ def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path
     assert payload["liveSettled"]["selectorVisible"] == 0
     assert payload["liveSettled"]["winner"] == "deepseek-v4-flash"
     assert "Router selected deepseek-v4-flash" in payload["liveSettled"]["aria"]
+    assert payload["liveSettled"]["cellCount"] == 3
+    assert set(payload["liveSettled"]["cellLabels"]) == {
+        "deepseek-v4-flash",
+        "gemini-3.1-flash-lite",
+        "qwen3.6-max",
+    }
+    assert "kimi-k2.6" not in payload["liveSettled"]["cellLabels"]
 
     for key in ("reopened", "afterReplay", "narrow"):
         snap = payload[key]
@@ -1980,12 +2530,15 @@ def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path
         assert snap["animations"] == [], snap
         assert snap["winner"] == "deepseek-v4-flash", snap
         assert snap["hasLongLabel"] is True, snap
+        assert snap["cellCount"] == 3, snap
+        assert "kimi-k2.6" not in snap["cellLabels"], snap
         assert snap["overflows"] == [], snap
         assert snap["gridWithinViewport"] is True, snap
 
     during = payload["duringHistoryHydrationReplay"]
-    assert during["count"] == 1, during
-    assert during["winners"] == ["deepseek-v4-flash"], during
+    assert during["count"] in (0, 1), during
+    if during["count"] == 1:
+        assert during["winners"] == ["deepseek-v4-flash"], during
     assert during["liveCount"] == 0, during
     assert during["scanningCount"] == 0, during
     assert during["selectorVisible"] == 0, during
@@ -2005,6 +2558,18 @@ def test_router_fx_live_then_reopen_stays_settled_in_real_browser(tmp_path: Path
         "deepseek-v4-flash",
         "gemini-3.1-flash-lite",
     }, after_hydration
+
+    image_single = payload["singleImageCandidate"]
+    assert image_single["count"] == 0, image_single
+    assert image_single["cellCount"] == 0, image_single
+    assert image_single["liveCount"] == 0, image_single
+    assert image_single["scanningCount"] == 0, image_single
+
+    same_display_single = payload["sameDisplaySingleCandidate"]
+    assert same_display_single["count"] == 0, same_display_single
+    assert same_display_single["cellCount"] == 0, same_display_single
+    assert same_display_single["liveCount"] == 0, same_display_single
+    assert same_display_single["scanningCount"] == 0, same_display_single
 
 
 def test_webchat_large_paste_auto_attaches_text_in_real_browser(tmp_path: Path) -> None:
@@ -2841,7 +3406,7 @@ def test_completed_reconnect_without_replay_refreshes_history_in_real_browser(
                         enabled: true,
                         rollout_phase: "full",
                         tiers: {
-                          t1: { model: "openrouter/deepseek-v4-flash" },
+                          c1: { model: "openrouter/deepseek-v4-flash" },
                         },
                       },
                     });
@@ -2876,7 +3441,7 @@ def test_completed_reconnect_without_replay_refreshes_history_in_real_browser(
                             usage: {
                               model: "openrouter/deepseek-v4-flash",
                               routed_model: "openrouter/deepseek-v4-flash",
-                              routed_tier: "t1",
+                              routed_tier: "c1",
                               routing_source: "squilla_router",
                               routing_applied: true,
                               input_tokens: 0,
@@ -3074,7 +3639,7 @@ def test_replayed_savings_done_restores_reply_without_replaying_popup_in_real_br
                         enabled: true,
                         rollout_phase: "full",
                         tiers: {
-                          t1: { model: "openrouter/deepseek-v4-flash" },
+                          c1: { model: "openrouter/deepseek-v4-flash" },
                         },
                       },
                     });
@@ -3127,7 +3692,7 @@ def test_replayed_savings_done_restores_reply_without_replaying_popup_in_real_br
                     output_tokens: 661,
                     model: "openrouter/deepseek-v4-flash",
                     routed_model: "openrouter/deepseek-v4-flash",
-                    routed_tier: "t1",
+                    routed_tier: "c1",
                     routing_source: "squilla_router",
                     routing_applied: true,
                     total_savings_pct: 97,

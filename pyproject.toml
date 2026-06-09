@@ -1,6 +1,6 @@
 [project]
 name = "opensquilla"
-version = "0.3.0"
+version = "0.3.1"
 description = "OpenSquilla — microkernel Python agent runtime with MCP-native tools and multi-channel messaging"
 license = "Apache-2.0"
 readme = "README.md"
@@ -54,6 +54,7 @@ dependencies = [
     "dingtalk-stream>=0.24.3,<0.25",
     "qq-botpy>=1.2.1,<1.3",
     "cryptography>=42",
+    "duckduckgo-search>=8.1.1",
 ]
 
 [project.optional-dependencies]
@@ -97,6 +98,9 @@ packages = ["src/opensquilla"]
 exclude = [
     "src/opensquilla/scheduler/templates/*.md",
     "src/opensquilla/skills/bundled/**/THIRD_PARTY_NOTICES.md",
+    "src/opensquilla/skills/bundled/**/README.md",
+    "src/opensquilla/skills/bundled/**/LICENSE.md",
+    "src/opensquilla/skills/bundled/**/skill-card.md",
     "src/opensquilla/skills/bundled/**/references/*.md",
     "src/opensquilla/skills/exp/**",
     "src/opensquilla/skills/meta/META_SKILL_AUTHORING.md",
@@ -104,6 +108,13 @@ exclude = [
 
 [tool.hatch.build.targets.wheel.force-include]
 "migrations/" = "opensquilla/_migrations/"
+"src/opensquilla/skills/bundled/html-coder/references/add-css-style.md" = "opensquilla/skills/bundled/html-coder/references/add-css-style.md"
+"src/opensquilla/skills/bundled/html-coder/references/add-javascript.md" = "opensquilla/skills/bundled/html-coder/references/add-javascript.md"
+"src/opensquilla/skills/bundled/html-coder/references/attributes.md" = "opensquilla/skills/bundled/html-coder/references/attributes.md"
+"src/opensquilla/skills/bundled/html-coder/references/essentials.md" = "opensquilla/skills/bundled/html-coder/references/essentials.md"
+"src/opensquilla/skills/bundled/html-coder/references/global-attributes.md" = "opensquilla/skills/bundled/html-coder/references/global-attributes.md"
+"src/opensquilla/skills/bundled/html-coder/references/glossary.md" = "opensquilla/skills/bundled/html-coder/references/glossary.md"
+"src/opensquilla/skills/bundled/html-coder/references/standards.md" = "opensquilla/skills/bundled/html-coder/references/standards.md"
 "src/opensquilla/skills/bundled/pptx/references/pptxgenjs.md" = "opensquilla/skills/bundled/pptx/references/pptxgenjs.md"
 "src/opensquilla/skills/bundled/pptx/references/python_pptx.md" = "opensquilla/skills/bundled/pptx/references/python_pptx.md"
 
@@ -140,6 +151,25 @@ select = ["E", "F", "I", "N", "W", "UP"]
 # harm readability. E402 imports-after-sys.path-munge is intentional.
 "src/opensquilla/skills/bundled/skill-creator/scripts/*.py" = ["E501", "N806", "E402"]
 "src/opensquilla/skills/bundled/skill-creator-linter/scripts/*.py" = ["E402", "I001"]
+# meta-short-drama subprocess scripts: long lines hold argv arrays,
+# ffmpeg filter graphs, Chinese error strings, and OpenRouter payload
+# field comments meant to stay readable as one unit.
+"src/opensquilla/skills/bundled/ai-video-script/scripts/*.py" = ["E501"]
+"src/opensquilla/skills/bundled/AwesomeWebpageMetaSkill/scripts/*.py" = ["E501"]
+"src/opensquilla/skills/bundled/nano-banana-pro/scripts/*.py" = ["E501"]
+"src/opensquilla/skills/bundled/seedance-2-prompt/scripts/*.py" = ["E501"]
+"src/opensquilla/skills/bundled/srt-from-script/scripts/*.py" = ["E501"]
+"src/opensquilla/skills/bundled/subtitle-burner/scripts/*.py" = ["E501"]
+"src/opensquilla/skills/bundled/text-file-read/scripts/*.py" = ["E501"]
+"src/opensquilla/skills/bundled/title-card-image/scripts/*.py" = ["E501"]
+"src/opensquilla/skills/bundled/video-merger/scripts/*.py" = ["E501"]
+# video-merger src/ is vendored from upstream MIT-0 clawhub package; keep
+# its Chinese docstrings + ffmpeg argv lines unwrapped.
+"src/opensquilla/skills/bundled/video-merger/src/*.py" = ["E501", "F401"]
+"src/opensquilla/skills/bundled/video-still-animator/scripts/*.py" = ["E501"]
+# meta-short-drama DAG generator: template strings embed YAML blocks
+# whose original line breaks must be preserved.
+"scripts/_gen_meta_short_drama.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -148,6 +178,9 @@ warn_unused_configs = true
 exclude = [
     "^src/opensquilla/squilla_router/models/",
     "^src/opensquilla/skills/bundled/.*/scripts/",
+    # video-merger ships an upstream MIT-0 library under src/; same
+    # treatment as the per-skill scripts/ trees.
+    "^src/opensquilla/skills/bundled/video-merger/src/",
 ]
 
 [[tool.mypy.overrides]]
@@ -164,6 +197,7 @@ module = [
     "src.router.*",
     "tiktoken.*",
     "tokenizers.*",
+    "websockets.*",
     "yaml.*",
     "yoyo.*",
 ]

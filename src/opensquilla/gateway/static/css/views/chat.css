@@ -472,6 +472,12 @@
   box-shadow: var(--shadow-sm);
   font-size: var(--fs-sm);
   line-height: 1.6;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  text-align: start;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   word-break: break-word;
   max-width: 78%;
   min-width: 56px;
@@ -589,14 +595,60 @@
   position: relative;
 }
 
-.chat-msg--streaming .chat-msg-text::after,
-.msg.streaming .msg-body:not(:has(.msg-text-seg:not(:empty)))::after,
-.msg.streaming .msg-text-seg:not(:empty):last-of-type::after {
-  content: '\25CD';
-  display: inline-block;
-  color: var(--accent);
-  animation: blink 1.2s ease-in-out infinite;
-  margin-left: 2px;
+/* Streaming active mark — delayed bottom dock. The mark appears only after
+   short turns have had time to finish, then sits in the bubble's bottom-left
+   corner, aligned with the content-left edge (the tool-card / text icon
+   column) so it reads as part of that column rather than an orphaned dot.
+   It sits centered in the reserved footer band (padding-bottom below), which
+   gives the orbiting ring a clear gap from the last tool card above and the
+   bubble's bottom edge — earlier the mark was lifted 8px, which pushed the
+   ring up into the card and caused a visible overlap. */
+.msg.streaming.streaming-active-mark:not(.awaiting-model) .msg-body {
+  padding-bottom: calc(var(--sp-2) + 24px);
+}
+
+.msg.streaming.streaming-active-mark:not(.awaiting-model) .msg-body::after {
+  content: '';
+  display: block;
+  position: absolute;
+  left: var(--sp-4);
+  bottom: var(--sp-2);
+  width: 16px;
+  height: 16px;
+  pointer-events: none;
+  border-radius: 50%;
+  background-color: color-mix(in srgb, var(--bg-surface) 90%, var(--bg) 10%);
+  background-image: url('../../img/opensquilla-mark.png');
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 11px 11px;
+  /* The mark stays UPRIGHT and legible — it is a figurative, directional
+     squilla, so it must never tumble. The motion lives in the orbiting
+     ring below (::before), not in the brand mark itself. */
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+/* Orbital sweep — a conic highlight rides a hairline ring around the mark.
+   This is the element that animates; circles are built to rotate, the
+   shrimp is not. Reuses --accent / --accent-secondary so it auto-themes. */
+.msg.streaming.streaming-active-mark:not(.awaiting-model) .msg-body::before {
+  content: '';
+  display: block;
+  position: absolute;
+  left: calc(var(--sp-4) - 4px);
+  bottom: calc(var(--sp-2) - 4px);
+  width: 24px;
+  height: 24px;
+  pointer-events: none;
+  border-radius: 50%;
+  background: conic-gradient(from 0deg,
+    transparent 200deg,
+    var(--accent-secondary) 320deg,
+    var(--accent) 350deg,
+    transparent 360deg);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+          mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+  animation: squilla-activity-spin 1.15s linear infinite;
 }
 
 .msg.streaming.awaiting-model::after {
@@ -618,6 +670,20 @@
 @keyframes awaitingModelPulse {
   0%, 100% { opacity: 0.82; }
   50%      { opacity: 0.48; }
+}
+
+@keyframes squilla-activity-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Freeze the orbiting ring into a static arc so the indicator is still
+     legibly "active" without motion. The mark itself is already static. */
+  .msg.streaming.streaming-active-mark:not(.awaiting-model) .msg-body::before {
+    animation: none;
+    background: conic-gradient(from 0deg,
+      var(--accent) 90deg, transparent 90deg);
+  }
 }
 
 @keyframes blink {
@@ -948,6 +1014,17 @@
 .chat-tools-summary[aria-disabled="true"]:hover { color: var(--text-muted); }
 .chat-tools-collapse--running > .chat-tools-summary::after,
 .chat-tools-summary[aria-disabled="true"]::after { opacity: 0.2; }
+
+.chat-meta-step-running-hint {
+  margin-top: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+}
 
 .chat-tools-collapse--success {
   border-left: 3px solid var(--ok);
@@ -1313,6 +1390,24 @@
   overflow: hidden;
 }
 
+.msg-artifact-card--audio {
+  cursor: default;
+  max-width: min(520px, 100%);
+  min-width: min(320px, 78vw);
+}
+
+.msg-artifact-card--audio:hover,
+.msg-artifact-card--audio:focus-visible {
+  background: var(--bg-surface);
+  border-color: var(--border);
+  transform: none;
+}
+
+.msg-artifact-audio {
+  display: block;
+  width: 100%;
+}
+
 .msg-artifact-preview {
   aspect-ratio: 16 / 10;
   background: var(--bg);
@@ -1387,6 +1482,9 @@
   min-height: 32px;
   min-width: 56px;
   padding: var(--sp-2) var(--sp-4);
+  text-align: start;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   word-break: break-word;
 }
 
@@ -1524,6 +1622,10 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.chat-context-separator--session {
+  margin-top: auto;
 }
 
 .chat-context-separator--live span {
@@ -2226,6 +2328,22 @@
   transform: scale(0.92);
 }
 
+#chat-btn-mic.chat-mic-recording {
+  color: #b91c1c;
+  background: #fee2e2;
+  border-color: #fecaca;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.14);
+}
+
+#chat-btn-mic.chat-mic-recording svg {
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes mic-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(0.86); }
+}
+
 /* Stop button pulse animation during streaming */
 #chat-btn-send.danger {
   animation: stop-pulse 1.8s ease-in-out infinite;
@@ -2563,6 +2681,28 @@
   gap: var(--sp-1);
 }
 
+.clarify-form-field-help {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.clarify-form-field-help-summary {
+  cursor: pointer;
+  width: fit-content;
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.clarify-form-field-help-body {
+  margin-top: var(--sp-1);
+  padding: var(--sp-2);
+  background: color-mix(in srgb, var(--bg-surface) 88%, var(--bg-base));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+}
+
 .clarify-form-input {
   font-size: var(--fs-sm);
   padding: var(--sp-2) var(--sp-3);
@@ -2652,22 +2792,232 @@ select.clarify-form-input {
   pointer-events: none;
 }
 
+.clarify-form--submitting {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+}
+
+.clarify-form-submit-status {
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  color: var(--text-muted);
+  text-align: right;
+}
+
+
+/* Progress and next-step summary shown at the top of active clarify forms. */
+.clarify-form-progress {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, var(--accent) 22%);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface-2) 86%, var(--accent) 14%);
+}
+
+.clarify-form-progress-metric {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.clarify-form-progress-next {
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+
+/* ──────────────────────────────────────────────────────────────────
+ * Auto-prefill transparency block (step (d) of the clarify rebuild).
+ *
+ * When the prefill scan inferred values from the user's earlier
+ * messages, the server attaches confirmed_fields / ambiguous_fields /
+ * unknown_mentions to the form payload. The renderer surfaces them at
+ * the top of the form so the user knows what was detected and can
+ * confirm or override per-field. The styling stays visually quiet —
+ * a translucent panel above the form fields rather than a competing
+ * primary surface — because these are *system inferences* the user
+ * is reviewing, not new prompts to act on.
+ * ────────────────────────────────────────────────────────────────── */
+.clarify-form-prefill {
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(80, 130, 200, 0.25);
+  border-radius: 6px;
+  background: rgba(80, 130, 200, 0.05);
+  font-size: 0.9em;
+}
+
+.clarify-form-prefill-note {
+  font-weight: 500;
+  margin-bottom: 6px;
+  opacity: 0.85;
+}
+
+.clarify-form-prefill-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.clarify-form-prefill-list li {
+  padding: 2px 0;
+  line-height: 1.45;
+  font-family: inherit;
+}
+
+.clarify-form-prefill-confirmed {
+  color: rgba(60, 130, 70, 0.95);
+}
+
+.clarify-form-prefill-ambiguous {
+  color: rgba(180, 110, 30, 0.95);
+}
+
+.clarify-form-prefill-unknown {
+  color: rgba(80, 80, 80, 0.85);
+  font-style: italic;
+}
+
+/* Per-row markers attached below the input itself — the local
+ * counterpart of the top-of-form summary so each field shows where
+ * its current value came from without forcing the user to scroll. */
+.clarify-form-row-marker {
+  margin-top: 4px;
+  font-size: 0.85em;
+  line-height: 1.35;
+  opacity: 0.85;
+}
+
+.clarify-form-row-marker-confirmed {
+  color: rgba(60, 130, 70, 0.9);
+}
+
+.clarify-form-row-marker-ambiguous {
+  color: rgba(180, 110, 30, 0.9);
+}
+
+.clarify-form-input-confirmed {
+  /* Visual cue that the input was auto-filled — a subtle left border
+   * accent. Users can still edit/clear normally; the cue just
+   * disambiguates "system inferred this" from "I typed this". */
+  border-left: 3px solid rgba(60, 130, 70, 0.6);
+  background-color: rgba(60, 130, 70, 0.04);
+}
+
+.clarify-form-dual-channel-hint {
+  /* Soft, low-key callout right under the form header that tells the
+   * user the main chat input still works while the form is open.
+   * Quiet styling on purpose — this is a permission marker, not a
+   * call to action. */
+  margin: 2px 0 10px;
+  padding: 6px 10px;
+  font-size: 0.85em;
+  line-height: 1.45;
+  color: rgba(80, 80, 120, 0.85);
+  background: rgba(120, 100, 200, 0.04);
+  border-left: 2px solid rgba(120, 100, 200, 0.35);
+  border-radius: 3px;
+}
+
+
+/* ──────────────────────────────────────────────────────────────────
+ * Clarify-skip transparency card.
+ *
+ * When a meta author's ``when:`` expression suppresses an otherwise-
+ * required user_input step (because the upstream context-extraction
+ * already filled the answers), the scheduler attaches a
+ * ``clarify_skip_summary`` so the user sees what was inferred
+ * without the form being forced back open. The card sits inline in
+ * the assistant stream — quieter than the active form, louder than a
+ * passive log entry, and always offers an undo path.
+ * ────────────────────────────────────────────────────────────────── */
+.clarify-skip-summary {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px dashed rgba(120, 100, 200, 0.35);
+  border-radius: 6px;
+  background: rgba(120, 100, 200, 0.05);
+  font-size: 0.9em;
+}
+
+.clarify-skip-summary-header {
+  font-weight: 500;
+  margin-bottom: 6px;
+  color: rgba(100, 80, 180, 0.95);
+}
+
+.clarify-skip-summary-note {
+  opacity: 0.85;
+  margin-bottom: 6px;
+}
+
+.clarify-skip-summary-trigger {
+  margin-bottom: 6px;
+  font-style: italic;
+  opacity: 0.8;
+}
+
+.clarify-skip-summary-fields-header,
+.clarify-skip-summary-inferred-header {
+  margin-top: 6px;
+  margin-bottom: 4px;
+  font-weight: 500;
+  opacity: 0.85;
+}
+
+.clarify-skip-summary-fields {
+  list-style: none;
+  padding-left: 12px;
+  margin: 0 0 6px;
+}
+
+.clarify-skip-summary-fields li {
+  padding: 1px 0;
+  line-height: 1.4;
+}
+
+.clarify-skip-summary-inferred-entry {
+  margin: 2px 0;
+  padding: 4px 8px;
+  border-left: 2px solid rgba(120, 100, 200, 0.35);
+  background: rgba(120, 100, 200, 0.03);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85em;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.clarify-skip-summary-inferred-step {
+  font-weight: 500;
+  opacity: 0.75;
+}
+
+.clarify-skip-summary-hint {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dotted rgba(120, 100, 200, 0.25);
+  opacity: 0.8;
+  font-size: 0.85em;
+}
+
 
 /* ──────────────────────────────────────────────────────────────────
  * Router slider — arcade-brutalist whac-a-mole grid that fires when
  * the squilla router lands a tier.
  *
- * The strip is a 3 × 4 grid of cells: the operator's real configured
- * tiers (deduped by model) sit in the top rows, padded with popular
- * decoy model names so the grid feels populated. A square hammer-
- * selector hops between cells with bouncy easing and locks onto the
- * routed cell — each visited cell does a quick mole-pop, the winner
- * cell additionally fires a particle burst.
+ * The strip is a compact grid of real candidates for the current
+ * request kind. A square hammer-selector hops between cells with
+ * bouncy easing and locks onto the routed cell — each visited cell
+ * does a quick mole-pop, the winner cell additionally fires a
+ * particle burst.
  *
  * Aesthetic: hairline mantis-brutalist. Orange is the only colour
- * that signals; decoys read dim. Live and history-loaded renders
- * share the same component (history skips the hop animation and
- * settles immediately on the winner cell). ─────────────────────── */
+ * that signals. Live and history-loaded renders share the same
+ * component (history skips the hop animation and settles immediately
+ * on the winner cell). ─────────────────────────────────────────── */
 .router-fx {
   display: flex;
   flex-direction: column;
@@ -2731,10 +3081,9 @@ select.clarify-form-input {
 .router-fx-grid {
   position: relative;
   display: grid;
-  /* 5 × 3 cells. JS pulls from _ROUTER_FX_GRID_COLS / _ROUTER_FX_GRID_ROWS;
-     keep these in sync with that constant when changing dimensions. */
-  grid-template-columns: repeat(5, 1fr);
-  grid-template-rows: repeat(3, 30px);
+  grid-template-columns: repeat(var(--router-fx-cols, 2), 1fr);
+  grid-template-rows: none;
+  grid-auto-rows: 34px;
   gap: 4px;
   padding: 8px;
   background:
@@ -2782,11 +3131,8 @@ select.clarify-form-input {
   white-space: nowrap;
 }
 
-/* Equal prominence: every model cell renders identically at rest — no
- * "this one is configured" accent dot and no dimmed/italic "decoy"
- * treatment. The grid reads as one uniform field so an observer cannot
- * tell which names are actually on the operator's router; only the
- * routing RESULT (.win, below) is ever emphasised. */
+/* Equal prominence: every candidate cell renders identically at rest. Only
+ * the routing RESULT (.win, below) is emphasised. */
 
 /* Mole-pop: scale up + tiny lift + accent tint as the hammer arrives. */
 @keyframes router-fx-mole-pop {
@@ -2999,18 +3345,16 @@ select.clarify-form-input {
   background: var(--text-muted);
 }
 
-/* NOTE: the router grid deliberately does NOT honour prefers-reduced-motion
- * either — same rationale as the cloud: the "Router animation" switch is the
- * explicit opt-in, so OS reduce-motion does not suppress the chase. */
+/* NOTE: the router grid deliberately does NOT honour prefers-reduced-motion:
+ * the "Visual effects" switch is the explicit opt-in, so OS reduce-motion
+ * does not suppress the chase. */
 
-/* Mobile: collapse to 3 columns × 5 rows + smaller type. The hammer
- * still hops; the grid just gets denser. JS still renders 15 cells —
- * keep the cell count divisible across the active grid template so no
- * row ends short. */
+/* Mobile: keep the same real-candidate roster, but wrap compactly. */
 @media (max-width: 640px) {
   .router-fx-grid {
-    grid-template-columns: repeat(3, 1fr);
-    grid-template-rows: repeat(5, 28px);
+    grid-template-columns: repeat(var(--router-fx-mobile-cols, var(--router-fx-cols, 2)), 1fr);
+    grid-template-rows: none;
+    grid-auto-rows: 30px;
     padding: 6px;
     gap: 3px;
   }
@@ -3019,161 +3363,11 @@ select.clarify-form-input {
 }
 @media (max-width: 380px) {
   .router-fx-grid {
-    grid-template-columns: repeat(3, 1fr);
-    grid-template-rows: repeat(5, 26px);
+    grid-template-columns: repeat(var(--router-fx-mobile-cols, 2), 1fr);
+    grid-template-rows: none;
+    grid-auto-rows: 28px;
   }
   .router-fx-cell { font-size: 9.5px; padding: 0 4px; }
-}
-
-/* ── Router-fx style variants ────────────────────────────────────────────
- * Groundwork for future frontend experiments. The visible style today is the
- * BASE look above, rendered when no data-variant attribute is present. JS
- * (_buildRouterFxElement) stamps data-variant="<name>" on the .router-fx root
- * only for non-'default' variants, so adding a skin is purely additive here.
- *
- * To add a variant:
- *   .router-fx[data-variant="<name>"] { --accent: …; --danger: …; }
- * Prefer redefining the custom properties the strip already consumes (--accent,
- * --danger, --text*, --bg*, --hairline, --radius-*) — they inherit down the
- * subtree and stay light/dark-correct for free. Add structural/keyframe rules
- * ONLY when a variant changes shape or motion, and if so mirror the
- * prefers-reduced-motion guard and the 640px/380px grid-collapse rules above,
- * and keep the JS grid-cell count in sync.
- *
- * Keep palette-only variants PALETTE-ONLY: the data-source="fallback" and
- * data-observe="true" rules are semantic overlays at depth (0,1,2,0); a
- * token-only variant layers cleanly under them instead of fighting specificity.
- * The "cloud" variant below is a STRUCTURAL one (its own layout + motion). */
-
-/* ── Cloud variant: "model nebula" / rack-focus ──────────────────────────
- * An optical instrument focusing, not a marketing tag-cloud. ~36 model names
- * hang in an organic, edge-dissolved field at seeded focal DEPTHS where blur,
- * scale and opacity move together (near = sharp/large/bright; far =
- * soft/small/dim). Two layers per name keep motion from fighting: the OUTER
- * owns position + a perpetual parallax drift (the field stays alive even once
- * settled) and the winner's glide to focus; the INNER owns the rack-focus
- * (scale/blur/opacity/glow). Routing: idle -> playing (the whole field
- * defocuses, ease-IN) -> settled (the winner glides to the focal point and
- * resolves sharp with an accent bloom; the rest sink to bokeh). */
-.router-fx[data-variant="cloud"] .router-fx-cloud {
-  position: relative;
-  width: 100%;
-  height: 268px;
-  margin-top: 2px;
-  overflow: visible;
-  /* no border, no box — a faint accent core; the radial mask dissolves the
-   * edges so the nebula has no rigid rectangular boundary. */
-  background:
-    radial-gradient(58% 64% at 50% 47%,
-      color-mix(in srgb, var(--accent) 7%, transparent) 0%,
-      transparent 72%);
-  -webkit-mask-image: radial-gradient(74% 76% at 50% 49%, #000 50%, transparent 100%);
-  mask-image: radial-gradient(74% 76% at 50% 49%, #000 50%, transparent 100%);
-}
-
-/* OUTER: position + (winner only) the glide to focus. NO perpetual motion —
- * the panel must be perfectly still once settled / while output renders. */
-.router-fx[data-variant="cloud"] .router-fx-mote {
-  position: absolute;
-  left: var(--x, 50%);
-  top: var(--y, 50%);
-  z-index: var(--z, 1);
-  transform: translate(-50%, -50%);
-  pointer-events: none;
-  transition:
-    left 360ms cubic-bezier(.2,.85,.25,1),
-    top 360ms cubic-bezier(.2,.85,.25,1);
-}
-
-/* INNER: the focal optics (scale / blur / opacity / colour / glow). */
-.router-fx[data-variant="cloud"] .router-fx-mote-i {
-  display: inline-block;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1;
-  letter-spacing: 0.02em;
-  white-space: nowrap;
-  color: var(--text);
-  opacity: var(--op, 0.6);
-  filter: blur(var(--blur, 0));
-  transform: scale(var(--sc, 1));
-  transform-origin: center;
-  transition:
-    transform 360ms cubic-bezier(.2,.85,.25,1),
-    filter 340ms cubic-bezier(.2,.85,.25,1),
-    opacity 300ms ease,
-    color 280ms ease,
-    letter-spacing 360ms cubic-bezier(.2,.85,.25,1),
-    text-shadow 360ms ease;
-}
-
-/* Scanning — the live "search" before the decision arrives. JS toggles
- * .is-scan across motes (~170ms) so a candidate roams into sharp accent
- * focus while the rest sit softly defocused. Discrete class swaps, so the
- * motion shows even where CSS keyframes are suppressed. */
-.router-fx[data-variant="cloud"][data-state="scanning"] .router-fx-mote-i {
-  filter: blur(calc(var(--blur, 0) + 1.6px));
-  opacity: calc(var(--op, 0.6) * 0.7);
-  transition:
-    transform 200ms cubic-bezier(.2,.85,.25,1),
-    filter 200ms ease,
-    opacity 200ms ease,
-    color 200ms ease,
-    text-shadow 200ms ease;
-}
-.router-fx[data-variant="cloud"][data-state="scanning"] .router-fx-mote.is-scan {
-  z-index: 250;
-}
-.router-fx[data-variant="cloud"][data-state="scanning"] .router-fx-mote.is-scan .router-fx-mote-i {
-  filter: blur(0);
-  opacity: 1;
-  transform: scale(1.4);
-  color: var(--accent);
-  text-shadow:
-    0 0 8px color-mix(in srgb, var(--accent) 60%, transparent),
-    0 0 20px color-mix(in srgb, var(--accent) 32%, transparent);
-}
-
-/* Playing — the lens leaves focus: the whole field defocuses (ease-IN).
- * Only the INNER changes; the outer keeps drifting underneath. */
-.router-fx[data-variant="cloud"][data-state="playing"] .router-fx-mote-i {
-  filter: blur(calc(var(--blur, 0) + 3.6px));
-  opacity: calc(var(--op, 0.6) * 0.4);
-  transform: scale(calc(var(--sc, 1) * 0.86));
-  transition:
-    transform 360ms ease-in,
-    filter 340ms ease-in,
-    opacity 340ms ease-in;
-}
-
-/* Settled — the field sinks to soft bokeh (the outer keeps drifting, so it is
- * never frozen). */
-.router-fx[data-variant="cloud"][data-state="settled"] .router-fx-mote-i {
-  filter: blur(calc(var(--blur, 0) + 2.6px));
-  opacity: 0.16;
-  transform: scale(calc(var(--sc, 1) * 0.9));
-}
-
-/* ...except the winner: the OUTER glides to the focal point (left/top eased)
- * while the INNER resolves sharp with a layered accent bloom. STATIC once
- * settled — no breathe — so the panel is still while output renders.
- * The --winner class outranks the generic settled rule above on specificity. */
-.router-fx[data-variant="cloud"][data-state="settled"] .router-fx-mote--winner {
-  left: 50%;
-  top: 47%;
-  z-index: 300;
-}
-.router-fx[data-variant="cloud"][data-state="settled"] .router-fx-mote--winner .router-fx-mote-i {
-  filter: blur(0);
-  opacity: 1;
-  color: var(--accent);
-  font-weight: 600;
-  letter-spacing: 0.09em;
-  transform: scale(1.9);
-  text-shadow:
-    0 0 8px color-mix(in srgb, var(--accent) 70%, transparent),
-    0 0 22px color-mix(in srgb, var(--accent) 46%, transparent),
-    0 0 48px color-mix(in srgb, var(--accent) 24%, transparent);
 }
 
 /* Once settled, the chase hammer is gone — the .win cell is the marker. */
@@ -3190,65 +3384,16 @@ select.clarify-form-input {
   transition: none !important;
 }
 
-/* Focal reticle: two corner ticks that close on the winner as it locks. */
-.router-fx[data-variant="cloud"] .router-fx-reticle {
-  position: absolute;
-  left: 50%;
-  top: 47%;
-  width: 168px;
-  height: 58px;
-  transform: translate(-50%, -50%) scale(0.82);
-  opacity: 0;
-  pointer-events: none;
-  transition:
-    opacity 460ms ease 220ms,
-    transform 600ms cubic-bezier(.2,.85,.25,1) 220ms;
-}
-.router-fx[data-variant="cloud"] .router-fx-reticle::before,
-.router-fx[data-variant="cloud"] .router-fx-reticle::after {
-  content: '';
-  position: absolute;
-  width: 14px;
-  height: 14px;
-  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
-}
-.router-fx[data-variant="cloud"] .router-fx-reticle::before { left: 0; top: 0; border-right: none; border-bottom: none; }
-.router-fx[data-variant="cloud"] .router-fx-reticle::after  { right: 0; bottom: 0; border-left: none; border-top: none; }
-.router-fx[data-variant="cloud"][data-state="settled"] .router-fx-reticle {
-  opacity: 0.9;
-  transform: translate(-50%, -50%) scale(1);
-}
-
-/* Observe mode: routed model did not drive the turn — dim the whole field. */
-.router-fx[data-variant="cloud"][data-observe="true"] .router-fx-cloud { opacity: 0.6; }
-
-/* Fallback: the chosen tier was the safety net — carry the signal in danger
- * (static glow, no breathe). */
-.router-fx[data-variant="cloud"][data-source="fallback"][data-state="settled"] .router-fx-mote--winner .router-fx-mote-i {
-  color: var(--danger);
-  text-shadow:
-    0 0 7px color-mix(in srgb, var(--danger) 68%, transparent),
-    0 0 20px color-mix(in srgb, var(--danger) 45%, transparent),
-    0 0 46px color-mix(in srgb, var(--danger) 24%, transparent);
-  animation: none;
-}
-.router-fx[data-variant="cloud"][data-source="fallback"] .router-fx-reticle::before,
-.router-fx[data-variant="cloud"][data-source="fallback"] .router-fx-reticle::after {
-  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
-}
-
-/* NOTE: the cloud deliberately does NOT honour prefers-reduced-motion — the
- * panel is an explicitly toggled decorative effect (the "Router animation" /
- * "Cloud view" switches are the opt-in), so OS reduce-motion does not
- * blanket-suppress it. Turn the switch off to stop the motion. */
-
-/* Mobile: a shorter field + smaller type so the nebula still breathes. */
-@media (max-width: 640px) {
-  .router-fx[data-variant="cloud"] .router-fx-cloud {
-    height: 200px;
-  }
-  .router-fx[data-variant="cloud"] .router-fx-mote-i { font-size: 10px; }
-  .router-fx[data-variant="cloud"][data-state="settled"] .router-fx-mote--winner .router-fx-mote-i {
-    transform: scale(1.6);
-  }
-}
+/* ── Router-fx style variants ────────────────────────────────────────────
+ * Groundwork for future frontend experiments. The visible style today is the
+ * BASE look above, rendered when no data-variant attribute is present. JS
+ * (_buildRouterFxElement) stamps data-variant="<name>" on the .router-fx root
+ * only for non-'default' variants, so adding a skin is purely additive here.
+ *
+ * To add a variant:
+ *   .router-fx[data-variant="<name>"] { --accent: …; --danger: …; }
+ * Prefer redefining the custom properties the strip already consumes (--accent,
+ * --danger, --text*, --bg*, --hairline, --radius-*). Keep variants
+ * palette-only unless the router contract changes to support a second visual
+ * grammar for real candidates.
+ */

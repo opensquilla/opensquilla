@@ -65,6 +65,7 @@ async def test_onboarding_catalog_returns_providers_and_channels(tmp_path, monke
     assert "searchProviders" in payload
     assert "routerProfiles" in payload
     assert "imageGenerationProviders" in payload
+    assert "audioProviders" in payload
     assert "memoryEmbeddingProviders" in payload
     types = {c["type"] for c in payload["channels"]}
     assert {"slack", "telegram", "matrix", "discord"} <= types
@@ -72,6 +73,9 @@ async def test_onboarding_catalog_returns_providers_and_channels(tmp_path, monke
     assert {"brave", "duckduckgo"} <= search_provider_ids
     image_provider_ids = {p["providerId"] for p in payload["imageGenerationProviders"]}
     assert {"openai", "openrouter"} <= image_provider_ids
+    audio_provider_ids = {p["providerId"] for p in payload["audioProviders"]}
+    assert {"elevenlabs"} <= audio_provider_ids
+    assert all("whatYouNeed" in p for p in payload["audioProviders"])
     memory_provider_ids = {p["providerId"] for p in payload["memoryEmbeddingProviders"]}
     assert {
         "auto",
@@ -158,9 +162,9 @@ async def test_router_configure_accepts_tier_overrides_and_syncs_llm_model(
         "onboarding.router.configure",
         {
             "mode": "recommended",
-            "defaultTier": "t2",
+            "defaultTier": "c2",
             "tiers": {
-                "t2": {"provider": "openai", "model": "gpt-5.5-custom"},
+                "c2": {"provider": "openai", "model": "gpt-5.5-custom"},
                 "image_model": {
                     "provider": "openai",
                     "model": "gpt-5.4-mini",
@@ -173,11 +177,50 @@ async def test_router_configure_accepts_tier_overrides_and_syncs_llm_model(
 
     assert res.error is None, res.error
     assert ctx.config.llm.model == "gpt-5.5-custom"
-    assert ctx.config.squilla_router.default_tier == "t2"
+    assert ctx.config.squilla_router.default_tier == "c2"
     persisted = tomllib.loads((tmp_path / "c.toml").read_text())
     assert persisted["llm"]["model"] == "gpt-5.5-custom"
-    assert persisted["squilla_router"]["tiers"]["t2"]["model"] == "gpt-5.5-custom"
+    assert persisted["squilla_router"]["tiers"]["c2"]["model"] == "gpt-5.5-custom"
     assert persisted["squilla_router"]["tiers"]["image_model"]["supports_image"] is True
+
+
+@pytest.mark.asyncio
+async def test_router_configure_persists_image_model_as_image_capable(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
+    from opensquilla.gateway.config import GatewayConfig
+
+    ctx = _admin_ctx()
+    ctx.config = GatewayConfig(llm={"provider": "openrouter", "model": "z-ai/glm-5.1"})
+    ctx.config.config_path = str(tmp_path / "c.toml")
+
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.router.configure",
+        {
+            "mode": "openrouter-mix",
+            "defaultTier": "t1",
+            "tiers": {
+                "image_model": {
+                    "provider": "openrouter",
+                    "model": "anthropic/claude-opus-4.7",
+                    "supportsImage": False,
+                },
+            },
+        },
+        ctx,
+    )
+
+    assert res.error is None, res.error
+    persisted = tomllib.loads((tmp_path / "c.toml").read_text())
+    image_tier = persisted["squilla_router"]["tiers"]["image_model"]
+    assert image_tier["model"] == "anthropic/claude-opus-4.7"
+    assert image_tier["supports_image"] is True
+    assert image_tier["image_only"] is True
+    assert ctx.config.squilla_router.tiers["image_model"]["supports_image"] is True
+    assert ctx.config.squilla_router.tiers["image_model"]["image_only"] is True
 
 
 @pytest.mark.asyncio
@@ -285,13 +328,55 @@ async def test_channel_upsert_redacts_secrets(tmp_path, monkeypatch):
     res = await get_dispatcher().dispatch(
         "r1",
         "onboarding.channel.upsert",
-        {"entry": {"type": "slack", "name": "w", "token": "supersecret"}},
+        {
+            "entry": {
+                "type": "slack",
+                "name": "w",
+                "token": "supersecret",
+                "signing_secret": "signing-secret",
+            }
+        },
         _admin_ctx(),
     )
     assert res.error is None, res.error
     assert res.payload["changed"] is True
     assert res.payload["restartRequired"] is True
     assert res.payload["entry"]["token"] == "***"
+
+
+@pytest.mark.asyncio
+async def test_channel_upsert_rejects_slack_webhook_without_signing_secret(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.channel.upsert",
+        {"entry": {"type": "slack", "name": "w", "token": "supersecret"}},
+        _admin_ctx(),
+    )
+
+    assert res.error is not None
+    assert "signing_secret" in res.error.message
+
+
+@pytest.mark.asyncio
+async def test_channel_upsert_rejects_slack_socket_without_app_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.channel.upsert",
+        {
+            "entry": {
+                "type": "slack",
+                "name": "w",
+                "token": "supersecret",
+                "connection_mode": "socket",
+            }
+        },
+        _admin_ctx(),
+    )
+
+    assert res.error is not None
+    assert "app_token" in res.error.message
 
 
 @pytest.mark.asyncio
@@ -569,6 +654,71 @@ async def test_image_generation_configure_can_enable_llm_fallback(tmp_path, monk
 
 
 @pytest.mark.asyncio
+async def test_audio_configure_redacts_api_key_and_persists_tts_defaults(
+    tmp_path,
+    monkeypatch,
+):
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.audio.configure",
+        {
+            "providerId": "elevenlabs",
+            "apiKey": "el-secret",
+            "baseUrl": "https://audio.example",
+            "ttsVoice": "voice_custom",
+            "ttsModel": "eleven_turbo_v2_5",
+            "languageCode": "zh-CN",
+        },
+        _admin_ctx(),
+    )
+
+    assert res.error is None, res.error
+    assert res.payload["changed"] is True
+    assert res.payload["restartRequired"] is False
+    assert res.payload["entry"]["api_key"] == "***"
+    assert res.payload["entry"]["enabled"] is True
+
+    data = tomllib.loads(target.read_text())
+    assert data["audio"]["enabled"] is True
+    assert data["audio"]["providers"]["elevenlabs"]["api_key"] == "el-secret"
+    assert data["audio"]["providers"]["elevenlabs"]["base_url"] == "https://audio.example"
+    assert data["audio"]["tts"]["voice"] == "voice_custom"
+    assert data["audio"]["tts"]["model"] == "eleven_turbo_v2_5"
+    assert data["audio"]["tts"]["language_code"] == "zh-CN"
+
+
+@pytest.mark.asyncio
+async def test_audio_configure_can_save_missing_env_reference(tmp_path, monkeypatch):
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.audio.configure",
+        {
+            "providerId": "elevenlabs",
+            "apiKeyEnv": "ELEVENLABS_API_KEY",
+            "enabled": True,
+        },
+        _admin_ctx(),
+    )
+
+    assert res.error is None, res.error
+    assert res.payload["entry"]["api_key_source"] == "missing_env"
+    assert res.payload["entry"]["api_key_env"] == "ELEVENLABS_API_KEY"
+
+    status = await get_dispatcher().dispatch("r2", "onboarding.status", {}, _read_ctx())
+    assert status.error is None, status.error
+    assert status.payload["sections"]["audio"] == "degraded"
+    assert status.payload["audioSource"] == "missing_env"
+    assert status.payload["audioEnvKey"] == "ELEVENLABS_API_KEY"
+
+
+@pytest.mark.asyncio
 async def test_memory_embedding_configure_redacts_remote_api_key(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
     res = await get_dispatcher().dispatch(
@@ -821,7 +971,7 @@ async def test_channel_disable_then_remove(tmp_path, monkeypatch):
     await d.dispatch(
         "r1",
         "onboarding.channel.upsert",
-        {"entry": {"type": "slack", "name": "w", "token": "t"}},
+        {"entry": {"type": "slack", "name": "w", "token": "t", "signing_secret": "ss"}},
         _admin_ctx(),
     )
     res = await d.dispatch("r2", "onboarding.channel.disable", {"name": "w"}, _admin_ctx())

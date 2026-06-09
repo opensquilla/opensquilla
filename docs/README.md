@@ -35,6 +35,7 @@ root release README with task-oriented guides.
 
 ## Surfaces and Operations
 
+- [`releases/0.3.1.md`](releases/0.3.1.md) - OpenSquilla 0.3.1 release notes.
 - [`releases/0.3.0.md`](releases/0.3.0.md) - OpenSquilla 0.3.0 release notes.
 - [`channels.md`](channels.md) - supported messaging channels and setup flow.
 - [`providers-and-models.md`](providers-and-models.md) - LLM provider catalog,

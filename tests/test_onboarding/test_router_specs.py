@@ -13,16 +13,16 @@ def test_router_catalog_exposes_supported_profiles_and_tiers():
     assert {"openrouter", "deepseek", "openai"} <= set(profiles)
     deepseek = profiles["deepseek"]
     assert deepseek["providerId"] == "deepseek"
-    assert set(deepseek["tiers"]) == {"t0", "t1", "t2", "t3"}
-    assert deepseek["tiers"]["t0"]["model"]
-    assert deepseek["tiers"]["t0"]["provider"] == "deepseek"
-    assert "description" in deepseek["tiers"]["t0"]
-    assert "thinkingLevel" in deepseek["tiers"]["t0"]
+    assert set(deepseek["tiers"]) == {"c0", "c1", "c2", "c3"}
+    assert deepseek["tiers"]["c0"]["model"]
+    assert deepseek["tiers"]["c0"]["provider"] == "deepseek"
+    assert "description" in deepseek["tiers"]["c0"]
+    assert "thinkingLevel" in deepseek["tiers"]["c0"]
     openrouter = profiles["openrouter"]
     assert "image_model" in openrouter["tiers"]
     assert openrouter["tiers"]["image_model"]["supportsImage"] is True
-    assert payload["defaultTier"] == "t1"
-    assert set(payload["textTiers"]) == {"t0", "t1", "t2", "t3"}
+    assert payload["defaultTier"] == "c1"
+    assert set(payload["textTiers"]) == {"c0", "c1", "c2", "c3"}
 
 
 def test_get_router_setup_profile_rejects_unknown_profile():

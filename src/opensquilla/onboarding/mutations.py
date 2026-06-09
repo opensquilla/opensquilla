@@ -18,11 +18,13 @@ from opensquilla.gateway.config import (
     SquillaRouterConfig,
     _router_tier_profile_defaults,
 )
+from opensquilla.onboarding.audio_specs import get_audio_provider_setup_spec
 from opensquilla.onboarding.image_generation_specs import (
     get_image_generation_provider_setup_spec,
 )
 from opensquilla.onboarding.provider_specs import get_provider_setup_spec
 from opensquilla.onboarding.redaction import (
+    redact_audio_payload,
     redact_channel_entry,
     redact_image_generation_payload,
     redact_memory_embedding_payload,
@@ -30,11 +32,16 @@ from opensquilla.onboarding.redaction import (
     redact_search_payload,
 )
 from opensquilla.onboarding.search_specs import get_search_provider_setup_spec
+from opensquilla.router_tiers import (
+    DEFAULT_TEXT_TIER,
+    TEXT_TIERS,
+    normalize_text_tier,
+)
 from opensquilla.secrets import clean_header_secret
 
 SearchFallbackPolicy = Literal["off", "network"]
 RouterMode = Literal["recommended", "openrouter-mix", "disabled"]
-_TEXT_ROUTER_TIERS = ("t0", "t1", "t2", "t3")
+_TEXT_ROUTER_TIERS = TEXT_TIERS
 _ROUTER_TIER_KEYS = set(_TEXT_ROUTER_TIERS) | {"image_model"}
 _TIER_KEY_ALIASES = {
     "thinkingLevel": "thinking_level",
@@ -89,7 +96,7 @@ def _reconcile_router_profile_for_provider(
     if (
         not current_profile
         and provider_id == "openrouter"
-        and cfg.squilla_router.tiers.get("t0", {}).get("provider") == "openrouter"
+        and cfg.squilla_router.tiers.get("c0", {}).get("provider") == "openrouter"
     ):
         return
     router_payload = cfg.squilla_router.model_dump(mode="python")
@@ -103,16 +110,18 @@ def _reconcile_router_profile_for_provider(
 
 
 def _default_text_tier(default_tier: str | None) -> str:
-    tier = (default_tier or "t1").strip()
-    return tier if tier in _TEXT_ROUTER_TIERS else "t1"
+    tier = normalize_text_tier(default_tier or DEFAULT_TEXT_TIER)
+    return tier if tier in _TEXT_ROUTER_TIERS else DEFAULT_TEXT_TIER
 
 
 def _normalize_explicit_text_tier(default_tier: str | None) -> str | None:
     if default_tier is None:
         return None
-    tier = str(default_tier).strip()
-    if not tier:
+    if not str(default_tier).strip():
         return None
+    tier = normalize_text_tier(default_tier)
+    if not tier:
+        raise ValueError("defaultTier must reference a text tier")
     if tier not in _TEXT_ROUTER_TIERS:
         raise ValueError("defaultTier must reference a text tier")
     return tier
@@ -122,7 +131,7 @@ def _router_default_model_for_provider(provider_id: str, default_tier: str | Non
     if provider_id not in ROUTER_TIER_PROFILE_IDS:
         return ""
     tiers = _router_tier_profile_defaults(provider_id)
-    tier = tiers.get(_default_text_tier(default_tier)) or tiers.get("t1") or {}
+    tier = tiers.get(_default_text_tier(default_tier)) or tiers.get("c1") or {}
     return str(tier.get("model") or "").strip()
 
 
@@ -137,6 +146,15 @@ def _normalize_tier_payload(name: str, payload: Any) -> dict[str, Any]:
     return out
 
 
+def _enforce_router_tier_role_invariants(name: str, tier: dict[str, Any]) -> dict[str, Any]:
+    if name != "image_model":
+        return tier
+    out = dict(tier)
+    out["supports_image"] = True
+    out["image_only"] = True
+    return out
+
+
 def _merge_router_tiers(
     base: dict[str, Any],
     overrides: dict[str, Any] | None,
@@ -147,11 +165,11 @@ def _merge_router_tiers(
     if not isinstance(overrides, dict):
         raise ValueError("router tiers must be an object")
     for name, raw_override in overrides.items():
-        tier_name = str(name)
+        tier_name = normalize_text_tier(name) or str(name)
         override = _normalize_tier_payload(tier_name, raw_override)
         current = dict(merged.get(tier_name, {}))
         current.update(override)
-        merged[tier_name] = current
+        merged[tier_name] = _enforce_router_tier_role_invariants(tier_name, current)
     return merged
 
 
@@ -172,7 +190,7 @@ def _sync_llm_model_to_router_default(cfg: GatewayConfig) -> None:
     router = cfg.squilla_router
     if not getattr(router, "enabled", True):
         return
-    default_tier = str(getattr(router, "default_tier", "t1") or "t1")
+    default_tier = _default_text_tier(getattr(router, "default_tier", DEFAULT_TEXT_TIER))
     _validate_router_tiers(router.tiers, default_tier)
     tier = router.tiers[default_tier]
     model = str(tier.get("model") or "").strip()
@@ -200,7 +218,7 @@ def upsert_llm_provider(
     if not model_clean:
         model_clean = _router_default_model_for_provider(
             provider_id,
-            getattr(config.squilla_router, "default_tier", "t1"),
+            getattr(config.squilla_router, "default_tier", "c1"),
         )
     if not model_clean:
         raise ValueError("model is required")
@@ -279,7 +297,7 @@ def upsert_router(
 
     default_tier_override = _normalize_explicit_text_tier(default_tier)
     default_tier_clean = default_tier_override or str(
-        router_payload.get("default_tier") or "t1"
+        normalize_text_tier(router_payload.get("default_tier")) or DEFAULT_TEXT_TIER
     )
     if default_tier_override is not None:
         router_payload["default_tier"] = default_tier_clean
@@ -540,6 +558,102 @@ def disable_image_generation(config: GatewayConfig) -> MutationResult:
     )
 
 
+def _audio_provider_config(config: GatewayConfig, provider_id: str) -> Any:
+    providers = config.audio.providers
+    provider_config = getattr(providers, provider_id, None)
+    if provider_config is None:
+        raise KeyError(f"unknown audio provider: {provider_id!r}")
+    return provider_config
+
+
+def _audio_api_key_source(*, api_key: str, env_key: str) -> str:
+    if api_key:
+        return "explicit"
+    if env_key and os.environ.get(env_key):
+        return "env"
+    if env_key:
+        return "missing_env"
+    return "none"
+
+
+def upsert_audio_provider(
+    config: GatewayConfig,
+    *,
+    provider_id: str,
+    api_key: str = "",
+    api_key_env: str = "",
+    base_url: str = "",
+    enabled: bool = True,
+    tts_voice: str = "",
+    tts_model: str = "",
+    language_code: str = "",
+) -> MutationResult:
+    spec = get_audio_provider_setup_spec(provider_id)
+    if not spec.runtime_supported:
+        raise ValueError(
+            f"audio provider {provider_id!r} is not runtime-supported and cannot be configured"
+        )
+    if provider_id != "elevenlabs":
+        raise ValueError(f"audio provider {provider_id!r} is not supported")
+
+    current_provider_cfg = _audio_provider_config(config, provider_id)
+    explicit_env_key = _clean_optional_str(api_key_env)
+    if api_key and explicit_env_key:
+        raise ValueError("configure either api_key or api_key_env, not both")
+    effective_api_key = clean_header_secret(
+        api_key or getattr(current_provider_cfg, "api_key", ""),
+        label="Audio API key",
+    )
+    current_env_key = getattr(current_provider_cfg, "api_key_env", spec.env_key) or ""
+    env_key = "" if api_key else (explicit_env_key or current_env_key or spec.env_key)
+    api_key_source = _audio_api_key_source(
+        api_key=effective_api_key,
+        env_key=env_key,
+    )
+    if enabled and spec.requires_api_key and api_key_source == "none":
+        raise ValueError(
+            f"audio provider {provider_id!r} requires an api_key or {spec.env_key}"
+        )
+
+    effective_base_url = (
+        base_url or getattr(current_provider_cfg, "base_url", "") or spec.default_base_url
+    )
+    effective_tts_voice = tts_voice or config.audio.tts.voice or spec.default_tts_voice
+    effective_tts_model = tts_model or config.audio.tts.model or spec.default_tts_model
+    effective_language_code = language_code or config.audio.tts.language_code
+
+    new_cfg = _clone(config)
+    new_cfg.audio.enabled = bool(enabled)
+    next_provider_cfg = _audio_provider_config(new_cfg, provider_id)
+    next_provider_cfg.api_key = effective_api_key
+    next_provider_cfg.api_key_env = env_key
+    next_provider_cfg.base_url = effective_base_url
+    new_cfg.audio.tts.voice = effective_tts_voice
+    new_cfg.audio.tts.model = effective_tts_model
+    new_cfg.audio.tts.language_code = effective_language_code
+    if api_key:
+        new_cfg.clear_runtime_secret(f"audio.providers.{provider_id}.api_key")
+
+    payload = {
+        "provider": provider_id,
+        "enabled": bool(enabled),
+        "api_key": effective_api_key,
+        "api_key_env": env_key,
+        "api_key_source": api_key_source,
+        "base_url": effective_base_url,
+        "tts_voice": effective_tts_voice,
+        "tts_model": effective_tts_model,
+        "language_code": effective_language_code,
+    }
+    return MutationResult(
+        config=new_cfg,
+        changed=True,
+        restart_required=False,
+        warnings=[],
+        public_payload=redact_audio_payload(payload),
+    )
+
+
 def upsert_memory_embedding(
     config: GatewayConfig,
     *,
@@ -676,6 +790,12 @@ def validate_channel_entry(payload: dict[str, Any]) -> dict[str, Any]:
         entry = parse_channel_entry(full)
     except ValidationError as exc:
         raise ValueError(str(exc)) from exc
+    if (
+        type_name == "slack"
+        and getattr(entry, "connection_mode", "webhook") == "webhook"
+        and not str(getattr(entry, "signing_secret", "") or "").strip()
+    ):
+        raise ValueError("slack webhook channels require signing_secret")
     return entry.model_dump(mode="python")
 
 

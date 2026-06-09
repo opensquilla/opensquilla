@@ -24,6 +24,34 @@ async def test_exec_command_blocks_sensitive_workdir(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_exec_command_blocks_sensitive_stdin_payload() -> None:
+    result = await shell.exec_command(
+        "cat >/tmp/opensquilla-stdin-sensitive-test",
+        stdin='{"OPENROUTER_API_KEY":"sk-or-secret"}',
+    )
+
+    payload = json.loads(result)
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "sensitive_payload"
+    assert payload["sensitive_payload"] == "secret_json_key"
+    assert "sk-or-secret" not in result
+
+
+@pytest.mark.asyncio
+async def test_exec_command_blocks_sensitive_path_in_stdin() -> None:
+    result = await shell.exec_command(
+        "python -",
+        stdin="from pathlib import Path\nPath('/etc/passwd').read_text()\n",
+    )
+
+    payload = json.loads(result)
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "sensitive_path"
+    assert payload["sensitive_path"] == "/etc"
+    assert "/etc/passwd" not in payload["command"]
+
+
+@pytest.mark.asyncio
 async def test_exec_command_blocks_nested_sensitive_workdir() -> None:
     sensitive_dir = Path.home() / ".ssh" / "id_rsa"
 

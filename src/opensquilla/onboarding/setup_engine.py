@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from opensquilla.gateway.config import GatewayConfig
+from opensquilla.onboarding.audio_specs import audio_provider_catalog_payload
 from opensquilla.onboarding.channel_specs import channel_catalog_payload
 from opensquilla.onboarding.config_store import PersistResult, load_config, persist_config
 from opensquilla.onboarding.image_generation_specs import (
@@ -17,6 +18,7 @@ from opensquilla.onboarding.memory_embedding_specs import (
 from opensquilla.onboarding.mutations import (
     MutationResult,
     disable_image_generation,
+    upsert_audio_provider,
     upsert_channel,
     upsert_image_generation_provider,
     upsert_llm_provider,
@@ -36,6 +38,7 @@ IMAGE_GENERATION_SECTION_ALIASES = frozenset(
 MEMORY_EMBEDDING_SECTION_ALIASES = frozenset(
     {"memory", "memory-embedding", "memory_embedding"}
 )
+AUDIO_SECTION_ALIASES = frozenset({"audio", "voice-audio", "voice_audio"})
 
 _CATALOG_SECTION_ALIASES = {
     "provider": "providers",
@@ -45,6 +48,7 @@ _CATALOG_SECTION_ALIASES = {
     "channels": "channels",
     "channel": "channels",
     **{alias: "imageGenerationProviders" for alias in IMAGE_GENERATION_SECTION_ALIASES},
+    **{alias: "audioProviders" for alias in AUDIO_SECTION_ALIASES},
     **{alias: "memoryEmbeddingProviders" for alias in MEMORY_EMBEDDING_SECTION_ALIASES},
 }
 
@@ -56,6 +60,7 @@ def setup_catalog_payload(section: str | None = None) -> dict[str, Any]:
         "searchProviders": search_provider_catalog_payload(),
         "channels": channel_catalog_payload(),
         "imageGenerationProviders": image_generation_provider_catalog_payload(),
+        "audioProviders": audio_provider_catalog_payload(),
         "memoryEmbeddingProviders": memory_embedding_provider_catalog_payload(),
     }
     if section is None:
@@ -138,6 +143,18 @@ class SetupEngine:
                     base_url=str(payload.get("baseUrl", "")),
                     enabled=enabled,
                 )
+        elif normalized in AUDIO_SECTION_ALIASES:
+            res = upsert_audio_provider(
+                self.config,
+                provider_id=str(payload.get("providerId", "elevenlabs")),
+                api_key=str(payload.get("apiKey", "")),
+                api_key_env=str(payload.get("apiKeyEnv", "")),
+                base_url=str(payload.get("baseUrl", "")),
+                enabled=bool(payload.get("enabled", True)),
+                tts_voice=str(payload.get("ttsVoice", "")),
+                tts_model=str(payload.get("ttsModel", "")),
+                language_code=str(payload.get("languageCode", "")),
+            )
         elif normalized in MEMORY_EMBEDDING_SECTION_ALIASES:
             res = upsert_memory_embedding(
                 self.config,

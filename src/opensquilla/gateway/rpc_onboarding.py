@@ -86,13 +86,14 @@ def _sync_provider_selector(ctx: RpcContext, llm_cfg: Any) -> None:
 
 
 def _sync_image_generation(config: Any) -> None:
-    from opensquilla.tools.builtin.media import configure_image_generation
+    from opensquilla.tools.builtin.media import configure_audio, configure_image_generation
 
     configure_image_generation(
         getattr(config, "image_generation", None),
         llm_config=getattr(config, "llm", None),
         squilla_router_config=getattr(config, "squilla_router", None),
     )
+    configure_audio(getattr(config, "audio", None))
 
 
 def _sync_search_provider(config: Any) -> None:
@@ -151,6 +152,11 @@ def _status_payload(ctx: RpcContext) -> dict[str, Any]:
         "imageGenerationProvider": s.image_generation_provider,
         "imageGenerationPrimary": s.image_generation_primary,
         "imageGenerationEnvKey": s.image_generation_env_key,
+        "audioConfigured": s.audio_configured,
+        "audioEnabled": s.audio_enabled,
+        "audioSource": s.audio_source,
+        "audioProvider": s.audio_provider,
+        "audioEnvKey": s.audio_env_key,
         "searchConfigured": s.search_configured,
         "searchProvider": s.search_provider,
         "searchSource": s.search_source,
@@ -176,6 +182,7 @@ async def _onboarding_status(params: Any, ctx: RpcContext) -> dict[str, Any]:
 
 @_d.method("onboarding.catalog", scope="operator.read")
 async def _onboarding_catalog(params: Any, ctx: RpcContext) -> dict[str, Any]:
+    from opensquilla.onboarding.audio_specs import audio_provider_catalog_payload
     from opensquilla.onboarding.channel_specs import channel_catalog_payload
     from opensquilla.onboarding.image_generation_specs import (
         image_generation_provider_catalog_payload,
@@ -194,6 +201,7 @@ async def _onboarding_catalog(params: Any, ctx: RpcContext) -> dict[str, Any]:
         "routerProfiles": router_catalog_payload(),
         "memoryEmbeddingProviders": memory_embedding_provider_catalog_payload(),
         "imageGenerationProviders": image_generation_provider_catalog_payload(),
+        "audioProviders": audio_provider_catalog_payload(),
     }
 
 
@@ -353,6 +361,35 @@ async def _memory_embedding_configure(params: Any, ctx: RpcContext) -> dict[str,
         onnx_dir=params.get("onnxDir", "") if isinstance(params, dict) else "",
     )
     _apply_inplace(ctx, res.config)
+    config_path = _persist(ctx, res.config, restart_required=res.restart_required)
+    return {
+        "changed": res.changed,
+        "restartRequired": res.restart_required,
+        "configPath": config_path,
+        "entry": res.public_payload,
+        "warnings": res.warnings,
+    }
+
+
+@_d.method("onboarding.audio.configure", scope="operator.admin")
+async def _audio_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
+    from opensquilla.onboarding.mutations import upsert_audio_provider
+
+    provider_id = _require(params, "providerId")
+    cfg = _active_config(ctx)
+    res = upsert_audio_provider(
+        cfg,
+        provider_id=provider_id,
+        api_key=params.get("apiKey", "") if isinstance(params, dict) else "",
+        api_key_env=params.get("apiKeyEnv", "") if isinstance(params, dict) else "",
+        base_url=params.get("baseUrl", "") if isinstance(params, dict) else "",
+        enabled=params.get("enabled", True) if isinstance(params, dict) else True,
+        tts_voice=params.get("ttsVoice", "") if isinstance(params, dict) else "",
+        tts_model=params.get("ttsModel", "") if isinstance(params, dict) else "",
+        language_code=params.get("languageCode", "") if isinstance(params, dict) else "",
+    )
+    _apply_inplace(ctx, res.config)
+    _sync_image_generation(res.config)
     config_path = _persist(ctx, res.config, restart_required=res.restart_required)
     return {
         "changed": res.changed,

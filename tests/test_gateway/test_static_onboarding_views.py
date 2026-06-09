@@ -65,7 +65,9 @@ def test_setup_view_loads_catalog_and_status():
     assert "onboarding.provider.configure" in txt
     assert "onboarding.search.configure" in txt
     assert "onboarding.imageGeneration.configure" in txt
+    assert "onboarding.audio.configure" in txt
     assert "imageGenerationProviders" in txt
+    assert "audioProviders" in txt
     assert "onboarding.memory_embedding.configure" in txt
     assert "Fallback API key" in txt
     assert "data-memory-api-key-label" in txt
@@ -83,6 +85,15 @@ def test_setup_view_is_available_and_uses_canonical_cli_fallbacks():
     assert "onboarding.channel.probe" in txt
     assert "channels.status" in txt
     assert "Connected" in txt
+
+
+def test_setup_view_locks_image_model_image_support():
+    txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
+
+    assert "const isImageModel = name === 'image_model';" in txt
+    assert "isImageModel ? ' checked disabled' :" in txt
+    assert "tier.supportsImage = true;" in txt
+    assert "tier.image_only = true;" in txt
 
 
 def test_setup_finish_cli_commands_target_active_config_path():
@@ -230,6 +241,7 @@ def test_setup_view_starts_on_most_relevant_step():
     assert "['router', 'router']" in txt
     assert "['search', 'extras']" in txt
     assert "['image_generation', 'extras']" in txt
+    assert "['audio', 'extras']" in txt
     assert "['memory_embedding', 'extras']" in txt
     assert "_step = 'provider';" in destroy_body
     assert "_hasAutoSelectedStep = false;" in destroy_body
@@ -578,6 +590,25 @@ def test_setup_view_marks_unsupported_providers_disabled():
     assert "runtimeSupported" in txt
 
 
+def test_setup_view_validates_visible_required_channel_fields_before_save():
+    txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
+    start = txt.index("function _saveChannel()")
+    end = txt.index("  async function _saveMemory()", start)
+    body = txt[start:end]
+
+    assert 'data-required="${field.required ? \'true\' : \'false\'}"' in txt
+    assert "function _validateScopedRequiredFields(scope)" in txt
+    assert "function _canKeepExistingSecret(scope)" in txt
+    assert "input.dataset.secret === 'true' && _canKeepExistingSecret(scope)" in txt
+    assert "row.configured !== false" in txt
+    assert "String(row.type || '') === String(type)" in txt
+    assert "String(row.name || '') === String(name).trim()" in txt
+    assert "_validateScopedRequiredFields('channel')" in body
+    assert "if (missing)" in body
+    assert "is required." in body
+    assert "return;" in body
+
+
 def test_setup_view_treats_image_configure_as_capability_enable_action():
     txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
     assert "field.default !== false" in txt
@@ -637,9 +668,11 @@ def test_setup_capability_cards_offer_copyable_env_recovery_commands():
     assert "_renderCapabilityEnvRecoveryCommand('search')" in body
     assert "_renderCapabilityEnvRecoveryCommand('memory_embedding')" in body
     assert "_renderCapabilityEnvRecoveryCommand('image_generation')" in body
+    assert "_renderCapabilityEnvRecoveryCommand('audio')" in body
     assert "Copy set search key command" in txt
     assert "Copy set memory key command" in txt
     assert "Copy set image key command" in txt
+    assert "Copy set audio key command" in txt
     assert 'data-setup-copy-command="${safeCommand}"' in txt
 
 
@@ -653,6 +686,21 @@ def test_setup_view_exposes_image_generation_env_key_config():
     assert "_syncImageProviderDefaults" in txt
     assert "[data-image-provider]')?.addEventListener('change', _syncImageProviderDefaults)" in txt
     assert "primaryInput.value = spec.defaultModel || primaryInput.value" in txt
+
+
+def test_setup_view_exposes_audio_provider_config():
+    txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
+    assert "audioProviders.find(p => p.providerId === audioProviderSelected)" in txt
+    assert "audioProviderConfig.api_key_env" in txt
+    assert 'data-audio-field="api_key_env"' in txt
+    assert 'data-audio-field="tts_voice"' in txt
+    assert 'data-audio-field="tts_model"' in txt
+    assert 'data-audio-field="language_code"' in txt
+    assert "setup_audio_api_key_env" in txt
+    assert "audioSpec.envKey" in txt
+    assert "_syncAudioProviderDefaults" in txt
+    assert "[data-audio-provider]')?.addEventListener('change', _syncAudioProviderDefaults)" in txt
+    assert "const res = await _rpc.call('onboarding.audio.configure', params)" in txt
 
 
 def test_setup_image_generation_hides_provider_fields_until_enabled():
@@ -694,8 +742,8 @@ def test_setup_router_controls_use_user_facing_labels():
     txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
     assert "SquillaRouter" in txt
     assert "OpenRouter mix" not in txt
-    assert "Balanced default (t1)" in txt
-    assert "Stronger reasoning (t2)" in txt
+    assert "Route c1" in txt
+    assert "Route c2" in txt
 
 
 def test_setup_view_preserves_unsaved_form_values_across_step_navigation():
@@ -752,7 +800,10 @@ def test_setup_stepper_surfaces_readiness_for_each_setup_area():
     assert "setup-stepper__state" in txt
     assert "setup-stepper__label" in txt
     assert "setup-stepper__num" in txt
-    assert "_aggregateStepStatus(['search', 'image_generation', 'memory_embedding'])" in txt
+    assert (
+        "_aggregateStepStatus(['search', 'image_generation', 'audio', "
+        "'memory_embedding'])"
+    ) in txt
     assert "detail.blocking || detail.actionRequired" in txt
     assert "detail.status === 'missing' || detail.status === 'degraded'" in txt
     assert "aria-label=\"${_esc(`${s.label}: ${status.label}`)}\"" in txt
@@ -1007,8 +1058,11 @@ def test_setup_view_surfaces_env_reference_save_feedback():
     memory_end = txt.index("  async function _saveSearch()", memory_start)
     memory_body = txt[memory_start:memory_end]
     image_start = txt.index("async function _saveImage()")
-    image_end = txt.index("  async function _loadChannelStatus()", image_start)
+    image_end = txt.index("  async function _saveAudio()", image_start)
     image_body = txt[image_start:image_end]
+    audio_start = txt.index("async function _saveAudio()")
+    audio_end = txt.index("  async function _loadChannelStatus()", audio_start)
+    audio_body = txt[audio_start:audio_end]
 
     assert "function _toastEnvReferenceSave" in txt
     assert (
@@ -1026,6 +1080,13 @@ def test_setup_view_surfaces_env_reference_save_feedback():
     assert "_toastEnvReferenceSave(" in image_body
     assert "'Image generation'" in image_body
     assert "entry.api_key_source" in image_body
+    assert (
+        "const res = await _rpc.call('onboarding.audio.configure', params)"
+        in audio_body
+    )
+    assert "_toastEnvReferenceSave(" in audio_body
+    assert "'Voice audio'" in audio_body
+    assert "entry.api_key_source" in audio_body
 
 
 def test_setup_view_explains_memory_embedding_provider_modes():

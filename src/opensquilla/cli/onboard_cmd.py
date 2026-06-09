@@ -583,7 +583,7 @@ _CATALOG_COMMANDS = {
         "--api-key-env <ENV_NAME>"
     ),
     "routerProfiles": (
-        "opensquilla onboard configure router --router recommended --default-tier t1"
+        "opensquilla onboard configure router --router recommended --default-tier c1"
     ),
     "searchProviders": (
         "opensquilla onboard configure search --search-provider <provider> "
@@ -841,7 +841,7 @@ def _router_tier_summary(profile: dict[str, object]) -> str:
     if not isinstance(tiers, dict):
         return ""
     summary: list[str] = []
-    for tier in ("t0", "t1", "t2", "t3"):
+    for tier in ("c0", "c1", "c2", "c3"):
         tier_spec = tiers.get(tier)
         if isinstance(tier_spec, dict):
             summary.append(f"{tier}: {tier_spec.get('model', '')}")
@@ -1085,7 +1085,7 @@ def configure_command(
     default_tier: str = typer.Option(
         "",
         "--default-tier",
-        help="Default router text tier: t0, t1, t2, or t3.",
+        help="Default router text tier: c0, c1, c2, or c3.",
         rich_help_panel="Router",
     ),
     search_provider: str = typer.Option(

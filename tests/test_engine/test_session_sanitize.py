@@ -1473,6 +1473,106 @@ async def test_agent_request_context_is_request_only_after_history() -> None:
 
 
 @pytest.mark.asyncio
+async def test_agent_provider_view_prunes_non_adjacent_tool_results() -> None:
+    provider = CapturingProvider()
+    agent = Agent(provider=provider, config=AgentConfig(max_iterations=1))
+    agent.set_history(
+        [
+            Message(role="user", content="old task"),
+            Message(
+                role="assistant",
+                content=[
+                    ContentBlockToolUse(
+                        id="call_lookup",
+                        name="lookup",
+                        input={"q": "old"},
+                    )
+                ],
+            ),
+            Message(role="user", content="ordinary user message before the tool result"),
+            Message(
+                role="user",
+                content=[
+                    ContentBlockToolResult(
+                        tool_use_id="call_lookup",
+                        content="lookup result",
+                        is_error=False,
+                    )
+                ],
+            ),
+        ]
+    )
+
+    events = [event async for event in agent.run_turn("continue")]
+
+    assert any(event.kind == "done" for event in events)
+    replay_payload = json.dumps(
+        [message.model_dump(mode="json") for message in provider.calls[0]["messages"]],
+        ensure_ascii=False,
+    )
+    assert "call_lookup" not in replay_payload
+    assert "ordinary user message before the tool result" in replay_payload
+
+
+@pytest.mark.asyncio
+async def test_agent_provider_view_preserves_split_adjacent_tool_results() -> None:
+    provider = CapturingProvider()
+    agent = Agent(provider=provider, config=AgentConfig(max_iterations=1))
+    agent.set_history(
+        [
+            Message(role="user", content="old task"),
+            Message(
+                role="assistant",
+                content=[
+                    ContentBlockToolUse(
+                        id="call_alpha",
+                        name="lookup",
+                        input={"q": "alpha"},
+                    ),
+                    ContentBlockToolUse(
+                        id="call_beta",
+                        name="lookup",
+                        input={"q": "beta"},
+                    ),
+                ],
+            ),
+            Message(
+                role="user",
+                content=[
+                    ContentBlockToolResult(
+                        tool_use_id="call_alpha",
+                        content="alpha result",
+                        is_error=False,
+                    )
+                ],
+            ),
+            Message(
+                role="user",
+                content=[
+                    ContentBlockToolResult(
+                        tool_use_id="call_beta",
+                        content="beta result",
+                        is_error=False,
+                    )
+                ],
+            ),
+        ]
+    )
+
+    events = [event async for event in agent.run_turn("continue")]
+
+    assert any(event.kind == "done" for event in events)
+    replay_payload = json.dumps(
+        [message.model_dump(mode="json") for message in provider.calls[0]["messages"]],
+        ensure_ascii=False,
+    )
+    assert "call_alpha" in replay_payload
+    assert "alpha result" in replay_payload
+    assert "call_beta" in replay_payload
+    assert "beta result" in replay_payload
+
+
+@pytest.mark.asyncio
 async def test_agent_request_context_repeats_across_tool_loop_without_persisting() -> None:
     provider = ToolLoopCapturingProvider()
 
@@ -1613,8 +1713,16 @@ def test_agent_provider_request_messages_project_overflow_retry_tool_results() -
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "strict_flush_config",
+    [
+        {"flush_compaction_requires_safe_receipt": True},
+        {"flush_compaction_safety_mode": "block"},
+    ],
+)
 async def test_agent_inline_strict_flush_receipt_refuses_destructive_compaction(
     monkeypatch: pytest.MonkeyPatch,
+    strict_flush_config: dict[str, Any],
 ) -> None:
     agent = Agent(
         provider=CapturingProvider(),
@@ -1622,8 +1730,9 @@ async def test_agent_inline_strict_flush_receipt_refuses_destructive_compaction(
             context_window_tokens=10,
             context_overflow_threshold=0.1,
             flush_enabled=True,
+            flush_pre_compaction=True,
             flush_timeout_seconds=0.1,
-            flush_compaction_requires_safe_receipt=True,
+            **strict_flush_config,
         ),
     )
     messages = [Message(role="user", content="important history")]
@@ -1661,7 +1770,7 @@ async def test_agent_inline_strict_flush_receipt_refuses_destructive_compaction(
         compact_context_should_not_run,
     )
 
-    outcome = await agent._check_context_overflow(messages, total_tokens=100)
+    outcome = await agent._check_context_overflow(messages, estimated_context_tokens=100)
 
     assert outcome is None
     assert compact_called is False

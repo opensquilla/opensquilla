@@ -9,6 +9,9 @@ from opensquilla.session.compaction_lifecycle import (
     flush_compaction_decision,
     flush_receipt_allows_destructive_compaction,
     flush_receipt_status_for_compaction,
+    flush_trigger_enabled,
+    normalize_flush_triggers,
+    pre_compaction_flush_enabled,
 )
 
 
@@ -32,6 +35,37 @@ def test_unverifiable_flush_receipt_is_not_destructive_safe() -> None:
 
     assert flush_receipt_allows_destructive_compaction(receipt) is False
     assert flush_compaction_decision(receipt, safety_mode="protect") == "degraded_forensic"
+
+
+def test_flush_enabled_does_not_imply_pre_compaction_trigger() -> None:
+    config = SimpleNamespace(memory=SimpleNamespace(flush_enabled=True))
+
+    assert flush_trigger_enabled(config, "session_reset") is True
+    assert pre_compaction_flush_enabled(config) is False
+
+
+def test_pre_compaction_flush_accepts_explicit_trigger_or_legacy_flag() -> None:
+    trigger_config = SimpleNamespace(
+        memory=SimpleNamespace(
+            flush_enabled=True,
+            flush_triggers=["manual", "pre_compaction"],
+        )
+    )
+    legacy_config = SimpleNamespace(
+        memory=SimpleNamespace(
+            flush_enabled=True,
+            flush_pre_compaction=True,
+        )
+    )
+
+    assert pre_compaction_flush_enabled(trigger_config) is True
+    assert pre_compaction_flush_enabled(legacy_config) is True
+
+
+def test_flush_triggers_normalize_aliases_and_strings() -> None:
+    assert normalize_flush_triggers("reset, inline_overflow") == frozenset(
+        {"session_reset", "pre_compaction"}
+    )
 
 
 def test_backfilled_obligations_remain_destructive_safe() -> None:

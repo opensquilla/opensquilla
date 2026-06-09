@@ -43,6 +43,10 @@ const ChatView = (() => {
   let _currentRunStatus = 'idle';
   let _historySyncTimer = null;
   const _AWAITING_MODEL_CLASS = 'awaiting-model';
+  const _STREAM_ACTIVE_MARK_CLASS = 'streaming-active-mark';
+  const _STREAM_ACTIVE_MARK_DELAY_MS = 3500;
+  let _streamActiveMarkTimer = null;
+  let _streamActiveMarkVisibleStartedAt = 0;
   let _lastVisibleStreamEvent = '';
   const _DEFAULT_STREAM_IDLE_TIMEOUT_MS = 210000; // server should emit terminal first
   let _streamIdleTimeoutMs = _DEFAULT_STREAM_IDLE_TIMEOUT_MS;
@@ -624,6 +628,7 @@ const ChatView = (() => {
   let _thread = null;
   let _textarea = null;
   let _sendBtn = null;
+  let _micBtn = null;
   let _sessionInput = null;
   let _sessionChip = null;
   let _attachPreview = null;
@@ -634,6 +639,10 @@ const ChatView = (() => {
   let _elevatedPill = null;
   let _composer = null;
   let _composerObserver = null;
+  let _mediaRecorder = null;
+  let _recordedAudioChunks = [];
+  let _recordingStream = null;
+  let _voiceInputBusy = false;
 
   /* ── Helpers ────────────────────────────────────────────────────────── */
 
@@ -707,6 +716,13 @@ const ChatView = (() => {
       + 'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
       + '<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>'
       + '<path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';
+  }
+
+  function _clearMessageActionFocus(reason = '') {
+    const active = document.activeElement;
+    if (!active || !active.closest || !active.closest('.msg-actions')) return;
+    active.blur();
+    _chatDiag('message_actions.focus_cleared', { reason: reason || '' });
   }
 
   // Append the hover-action row to a message bubble. Buttons are CSS-hidden
@@ -907,6 +923,7 @@ const ChatView = (() => {
       ev.stopPropagation();
       const bubble = btn.closest('.msg');
       if (!bubble) return;
+      btn.blur();
       const action = btn.dataset.action;
       if (action === 'copy') {
         const text = _extractBubbleText(bubble);
@@ -1250,6 +1267,7 @@ const ChatView = (() => {
                         placeholder="Send a message..." maxlength="100000"
                         aria-label="Message to send"></textarea>
             </div>
+            <button class="btn btn--icon btn--ghost" id="chat-btn-mic" title="Record voice input" aria-label="Record voice input">${icons.microphone ? icons.microphone() : icons.chat()}</button>
             <button class="btn btn--icon btn--ghost" id="chat-btn-new" title="New chat session in the current agent" aria-label="New chat session in the current agent">${icons.plus()}</button>
             <button class="btn btn--icon btn--ghost" id="chat-btn-export" title="Export as Markdown" aria-label="Export as Markdown">${icons.download()}</button>
             <button class="btn btn--icon btn--primary" id="chat-btn-send" title="Send (queues while streaming)" aria-label="Send message">${icons.send()}</button>
@@ -1263,6 +1281,7 @@ const ChatView = (() => {
     _thread       = _el.querySelector('#chat-thread');
     _textarea     = _el.querySelector('#chat-textarea');
     _sendBtn      = _el.querySelector('#chat-btn-send');
+    _micBtn       = _el.querySelector('#chat-btn-mic');
     _sessionInput = null;  // replaced by chip; session key lives in _sessionKey
     _sessionChip  = document.getElementById('chat-session-chip');
     _attachPreview = _el.querySelector('#chat-attach-preview');
@@ -1296,7 +1315,7 @@ const ChatView = (() => {
     // Config (which populates _routerFxModels and registers all
     // configured tiers including image_only ones) must finish before
     // the first history render — otherwise non-winner cells fall back
-    // to the tier id ("t1", "t2") instead of the real model name.
+    // to the tier id ("c1", "c2") instead of the real model name.
     _loadFeatureToggles()
       .catch(() => { /* fall through to history anyway */ })
       .finally(() => _loadHistory());
@@ -1354,6 +1373,9 @@ const ChatView = (() => {
     if (routerToggle) {
       routerToggle.addEventListener('change', async () => {
         const enabled = routerToggle.checked;
+        const previousRouterFeatureEnabled = _routerFeatureEnabled;
+        _routerFeatureEnabled = enabled;
+        if (!enabled) _clearRouterFxVisuals('router_disabled');
         try {
           const patches = { 'squilla_router.enabled': enabled };
           patches['squilla_router.rollout_phase'] = enabled ? 'full' : 'observe';
@@ -1365,7 +1387,10 @@ const ChatView = (() => {
           UI.toast('Squilla Router: ' + (enabled ? 'ON' : 'OFF'), 'info');
         } catch (e) {
           // Revert on failure
+          _routerFeatureEnabled = previousRouterFeatureEnabled;
           routerToggle.checked = !enabled;
+          if (!previousRouterFeatureEnabled) _clearRouterFxVisuals('router_patch_reverted');
+          else _scheduleHistorySync();
           UI.toast('Failed: ' + e.message, 'err');
         }
       });
@@ -1443,12 +1468,10 @@ const ChatView = (() => {
       _updateElevatedPill();
       _refreshToolbarTriggerGlow();
 
-      // Pre-populate the router slider's tier list and model cache
-      // from the operator's actual configured tiers. We register EVERY
-      // tier (including image-only ones like "image_model") into the
-      // slot list, so image-capable models like kimi-k2.6 show up in
-      // the slider even before the first image route fires for the
-      // current session.
+      // Pre-populate the router visualisation from the operator's actual
+      // configured tiers. We keep every tier in the cache, including
+      // image-only routes, but render-time request-kind filtering decides
+      // which candidates can really be called for this turn.
       //
       // We REPLACE _routerFxSlotList from config (rather than merge)
       // so that tiers the operator has removed drop out of the grid
@@ -1461,17 +1484,25 @@ const ChatView = (() => {
       if (tiers && typeof tiers === 'object') {
         Object.keys(tiers).forEach((tier) => {
           if (typeof tier !== 'string' || !tier) return;
-          const lower = tier.toLowerCase();
+          const lower = _routerFxNormalizeTier(tier);
+          if (!lower) return;
           configTierKeys.push(lower);
           configTierSet.add(lower);
-          const model = tiers[tier]?.model;
-          if (typeof model === 'string' && model) {
-            _routerFxModels[lower] = model;
-          }
+          const rawTier = tiers[tier];
+          const tierConfig = {
+            model: typeof rawTier?.model === 'string' ? rawTier.model : '',
+            supportsImage: rawTier?.supports_image === true,
+            imageOnly: rawTier?.image_only === true,
+          };
+          _routerFxTierConfigs[lower] = tierConfig;
+          if (tierConfig.model) _routerFxModels[lower] = tierConfig.model;
         });
       }
       Object.keys(_routerFxModels).forEach((tier) => {
         if (!configTierSet.has(tier)) delete _routerFxModels[tier];
+      });
+      Object.keys(_routerFxTierConfigs).forEach((tier) => {
+        if (!configTierSet.has(tier)) delete _routerFxTierConfigs[tier];
       });
       _routerFxConfigTiers = configTierSet;
       if (configTierKeys.length > 0) {
@@ -2287,6 +2318,7 @@ const ChatView = (() => {
 
     // Send
     _sendBtn.addEventListener('click', _onSend);
+    if (_micBtn) _micBtn.addEventListener('click', _onVoiceInputToggle);
     if (_stopBtn) _stopBtn.addEventListener('click', () => _onStop('webui_stop_button'));
     if (_pendingArea) _pendingArea.addEventListener('click', _onPendingAreaClick);
 
@@ -2344,8 +2376,9 @@ const ChatView = (() => {
     });
 
     // Keyboard: Enter to send; slash navigation; ↑/↓ history; Alt+↑/↓ pending edit.
-    // ESC streaming abort lives on the document-level handler below, except in
-    // editable targets where ESC belongs to text editing / menu dismissal.
+    // ESC streaming abort lives on the document-level handler below. The
+    // composer textarea is allowed to bubble there while streaming; other
+    // editable targets keep ESC for text editing / menu dismissal.
     _textarea.addEventListener('keydown', (e) => {
       if (_composing || e.isComposing || e.keyCode === 229) return;
 
@@ -2431,7 +2464,8 @@ const ChatView = (() => {
       }
     });
 
-    // Document-level ESC: works outside editable targets. Priority chain:
+    // Document-level ESC: works across the chat view, while preserving
+    // non-composer editable targets. Priority chain:
     //   1. streaming  → _onStop (which also recovers pending)
     //   2. pending    → _popAllPendingIntoComposer
     //   3. otherwise drop through to the textarea handler / popovers / no-op
@@ -2446,19 +2480,20 @@ const ChatView = (() => {
     //   - DOM probe: catches sibling document-level consumers that haven't
     //     run yet — if any overlay is currently visible, defer to its handler
     //     instead of treating ESC as a turn abort.
+    //   - editable guard: preserves ESC inside non-composer inputs, while the
+    //     chat textarea can still abort the active stream.
     function _onDocKeydown(e) {
       if (e.key !== 'Escape') return;
       if (typeof Router !== 'undefined' && Router.currentPath && Router.currentPath() !== '/chat') return;
       if (e.defaultPrevented) return;
       if (_chatOverlayVisible()) return;
       const target = e.target;
-      const inEditable = target && (
-        target === _textarea
-        || target.tagName === 'INPUT'
+      const inOtherEditable = target && target !== _textarea && (
+        target.tagName === 'INPUT'
         || target.tagName === 'TEXTAREA'
         || target.isContentEditable
       );
-      if (inEditable) return; // textarea handler will deal with the empty-clear case
+      if (inOtherEditable) return;
       if (_isStreaming) {
         e.preventDefault();
         _onStop('webui_escape');
@@ -2722,14 +2757,18 @@ const ChatView = (() => {
     }
   }
 
-  async function _executeSlashCommand(text) {
+  async function _lookupSlashCommand(text) {
     if (!_slashCatalogLoaded) await _loadSlashCommands();
-    const [cmdText, ...rest] = text.trim().split(/\s+/);
-    const cmd = _slashCommandMap.get(_slashCommandKey(cmdText));
+    const [cmdText] = text.trim().split(/\s+/);
+    return _slashCommandMap.get(_slashCommandKey(cmdText)) || null;
+  }
+
+  async function _executeSlashCommand(text) {
+    const [, ...rest] = text.trim().split(/\s+/);
+    const cmd = await _lookupSlashCommand(text);
     if (!cmd) {
       _closeSlashMenu();
-      UI.toast('Unsupported command: ' + cmdText, 'warn', 2500);
-      return true;
+      return false;
     }
     _selectSlashCmd(cmd, rest.join(' '));
     return true;
@@ -2758,8 +2797,16 @@ const ChatView = (() => {
         if (typeof res.current_stream_seq === 'number') {
           _setSessionStreamSeq(subscribeKey, res.current_stream_seq);
         }
-        UI.toast('Session stream gap detected; reloading transcript.', 'warn', 5000);
-        _loadHistory();
+        const replayGapReason = res.replay_gap_reason || res.replayGapReason || '';
+        if (_replayGapShouldWarn(replayGapReason)) {
+          UI.toast('Missed live stream events; transcript refreshed.', 'warn', 5000);
+        } else {
+          _chatDiag('session.subscribe.replay_gap.history_refresh', {
+            reason: replayGapReason,
+            currentStreamSeq: res.current_stream_seq,
+          });
+        }
+        _loadHistory(_historyRefreshScrollOptions());
       } else if (
         res
         && typeof res.current_stream_seq === 'number'
@@ -2837,7 +2884,7 @@ const ChatView = (() => {
     if (!_thread) return null;
     if (!_compactionSeparatorEl || !_compactionSeparatorEl.isConnected) {
       _compactionSeparatorEl = document.createElement('div');
-      _compactionSeparatorEl.className = 'chat-context-separator chat-context-separator--info';
+      _compactionSeparatorEl.className = 'chat-context-separator chat-context-separator--session chat-context-separator--info';
       _compactionSeparatorEl.setAttribute('role', 'status');
       _compactionSeparatorEl.setAttribute('aria-live', 'polite');
     }
@@ -2888,7 +2935,7 @@ const ChatView = (() => {
       return !!overrides.persist;
     }
     if (!_compactionTerminalStatus(status)) return false;
-    return source === 'manual' && status === 'completed';
+    return status === 'completed';
   }
 
   function _compactionStatusLabel(payload, source, status) {
@@ -2937,6 +2984,7 @@ const ChatView = (() => {
       : '';
     separator.className = [
       'chat-context-separator',
+      'chat-context-separator--session',
       liveClass,
       `chat-context-separator--${tone}`,
       `chat-context-separator--${status || 'unknown'}`,
@@ -2945,6 +2993,7 @@ const ChatView = (() => {
     separator.dataset.source = source || '';
     separator.innerHTML = `<span>${_esc(label)}</span>`;
     _placeCompactionSeparator();
+    if (_autoScroll) _scrollToBottom();
     if (_compactionTerminalStatus(status)) {
       if (_shouldPersistCompactionSeparator(status, source, overrides)) return;
       _scheduleCompactionSeparatorRemoval();
@@ -3235,80 +3284,20 @@ const ChatView = (() => {
   }
 
   /* ── Router slider — arcade-brutalist whac-a-mole grid ─────────────
-   * Fires once per user message when session.event.router_decision
-   * lands. A 3 × 4 cell grid mixes the operator's real configured
-   * tiers (deduped by model) with popular decoy models from the
-   * OpenRouter ecosystem; a hammer-selector hops between cells with
-   * bouncy easing and locks onto the routed cell with a particle
-   * burst. The strip is non-blocking — assistant text streams below
-   * the grid while the chase plays above. */
-
-  // 5 cols × 3 rows = 15 cells. The wider grid gives the hammer more
-  // hops to play and shows the model space as a proper "dial" rather
-  // than a tight 4-cell strip. Mobile breakpoints collapse this down
-  // (see chat.css @media rules).
-  const _ROUTER_FX_GRID_COLS = 5;
-  const _ROUTER_FX_GRID_ROWS = 3;
-  const _ROUTER_FX_GRID_CELLS = _ROUTER_FX_GRID_COLS * _ROUTER_FX_GRID_ROWS;
-  const _ROUTER_FX_REAL_ANCHOR_CELLS = [1, 6, 8, 13, 11, 3, 5, 9, 12, 14, 0, 4, 7, 10, 2];
-
-  // Popular OpenRouter models used as visual decoys, ordered by
-  // approximate openrouter.ai traffic ranking (highest volume first),
-  // refreshed 2026-05 from the OpenRouter usage leaderboard. Anything
-  // already on the operator's router (matched after stripping the
-  // provider prefix) is filtered out at render-time, so the
-  // highest-traffic models that aren't on this user's dial bubble to
-  // the top of the visible field. The actual route is always chosen
-  // from the operator's configured tiers — these only populate the
-  // field. With the real/decoy distinction removed, configured models
-  // are no longer VISUALLY distinguishable from the rest (the roster can
-  // still be inferred by correlating shown names against this public
-  // pool — closing that fully is a separate, deeper change).
-  const _ROUTER_FX_DECOY_POOL = [
-    'deepseek-v4-flash',
-    'claude-sonnet-4.6',
-    'qwen3.6-plus',
-    'minimax-m2.7',
-    'gpt-5.5',
-    'gemini-3.5-flash',
-    'glm-5-turbo',
-    'claude-opus-4.8',
-    'nemotron-3-super',
-    'deepseek-v4-pro',
-    'mimo-v2.5-pro',
-    'gpt-5.4',
-    'kimi-k2.6',
-    'claude-opus-4.7',
-    'gemini-3.1-flash-lite',
-    'glm-5.1',
-    'qwen3.6-max',
-    'claude-haiku-4.5',
-    'grok-4.3',
-    'gpt-5.4-mini',
-    'gemini-2.5-flash',
-    'step-3.5-flash',
-    'mistral-medium-3.5',
-    'ling-2.6-1t',
-    'deepseek-v3.2',
-    'trinity-large-thinking',
-    'gemini-2.5-pro',
-    'seed-2.0-mini',
-    'gpt-5.3-codex',
-    'grok-4.20',
-    'mercury-2',
-    'hunyuan-3',
-    'mimo-v2-omni',
-    'command-r-plus',
-    'llama-4-405b',
-    'sonar-large',
-  ];
+   * Fires once per user message when session.event.router_decision lands.
+   * The grid contains only the effective candidates that could actually be
+   * called for this request kind, deduped by display model name. A
+   * hammer-selector hops between those real cells and locks onto the routed
+   * cell with a particle burst. The strip is non-blocking — assistant text
+   * streams below the grid while the chase plays above. */
 
   // OpenSquilla's tier ids vary by tier_profile. We seed the slot
   // list from config and register any decision tier we haven't seen
   // before, so the grid never silently drops an unfamiliar tier.
-  const _ROUTER_FX_DEFAULT_TIERS = ['t0', 't1', 't2', 't3'];
+  const _ROUTER_FX_DEFAULT_TIERS = ['c0', 'c1', 'c2', 'c3'];
   let _routerFxSlotList = _ROUTER_FX_DEFAULT_TIERS.slice();
   const _routerFxModels = {};
+  const _routerFxTierConfigs = {};
   // Authoritative set of tier ids that exist in the *current* config
   // snapshot (populated by _loadFeatureToggles). Used to skip history
   // strips whose routed_tier has been removed from config and to know
@@ -3351,8 +3340,8 @@ const ChatView = (() => {
 
   function _routerFxSortTiers(list) {
     return list.slice().sort((a, b) => {
-      const am = /^t(\d+)$/.exec(a);
-      const bm = /^t(\d+)$/.exec(b);
+      const am = /^c(\d+)$/.exec(a);
+      const bm = /^c(\d+)$/.exec(b);
       if (am && bm) return parseInt(am[1], 10) - parseInt(bm[1], 10);
       if (am) return -1;
       if (bm) return 1;
@@ -3360,9 +3349,14 @@ const ChatView = (() => {
     });
   }
 
+  function _routerFxNormalizeTier(tier) {
+    if (typeof tier !== 'string' || !tier) return '';
+    return tier.toLowerCase().replace(/^t([0-3])$/, 'c$1');
+  }
+
   function _routerFxRegisterTier(tier) {
-    if (typeof tier !== 'string' || !tier) return;
-    const norm = tier.toLowerCase();
+    const norm = _routerFxNormalizeTier(tier);
+    if (!norm) return;
     if (_routerFxSlotList.indexOf(norm) >= 0) return;
     _routerFxSlotList = _routerFxSortTiers(_routerFxSlotList.concat([norm]));
   }
@@ -3380,10 +3374,110 @@ const ChatView = (() => {
     return _modelDisplayName(name);
   }
 
+  function _routerFxRequestKindFromAttachments(attachments) {
+    const list = Array.isArray(attachments) ? attachments : [];
+    for (const item of list) {
+      const mime = String(item?.mime || item?.type || '').toLowerCase();
+      if (mime.indexOf('image/') === 0) return 'image';
+    }
+    return 'text';
+  }
+
+  function _routerFxNormalizeRequestKind(requestKind) {
+    return requestKind === 'image' ? 'image' : 'text';
+  }
+
+  function _routerFxTierConfig(tier) {
+    const norm = typeof tier === 'string' ? tier.toLowerCase() : '';
+    const known = norm ? _routerFxTierConfigs[norm] : null;
+    if (known) return known;
+    return {
+      model: norm && _routerFxModels[norm] ? _routerFxModels[norm] : '',
+      supportsImage: false,
+      imageOnly: false,
+    };
+  }
+
+  function _routerFxRememberTierDecision(tier, model) {
+    if (typeof tier !== 'string' || !tier) return;
+    const norm = tier.toLowerCase();
+    _routerFxRegisterTier(norm);
+    if (!model) return;
+    const modelName = String(model);
+    _routerFxModels[norm] = modelName;
+    const current = _routerFxTierConfigs[norm] || {};
+    _routerFxTierConfigs[norm] = {
+      model: modelName,
+      supportsImage: current.supportsImage === true,
+      imageOnly: current.imageOnly === true,
+    };
+  }
+
+  function _routerFxTierMatchesRequestKind(tierConfig, requestKind) {
+    const kind = _routerFxNormalizeRequestKind(requestKind);
+    if (kind === 'image') return !!(tierConfig.supportsImage || tierConfig.imageOnly);
+    return !tierConfig.imageOnly;
+  }
+
+  function _routerFxRequestKindFromDecision(decision, fallbackKind) {
+    if (fallbackKind) return _routerFxNormalizeRequestKind(fallbackKind);
+    const source = String(decision?.source || decision?.routing_source || '').toLowerCase();
+    const tier = String(decision?.tier || decision?.routed_tier || '').toLowerCase();
+    if (source === 'image_route' || tier === 'image_model') return 'image';
+    return 'text';
+  }
+
+  function _routerFxVisualEntries(requestKind, decision) {
+    if (_routerFxConfigTiers === null) return [];
+    const kind = _routerFxRequestKindFromDecision(decision, requestKind);
+    const byDisplay = new Map();
+    _routerFxSlotList.forEach((tier) => {
+      if (_routerFxConfigTiers !== null && !_routerFxConfigTiers.has(tier)) return;
+      const tierConfig = _routerFxTierConfig(tier);
+      if (!_routerFxTierMatchesRequestKind(tierConfig, kind)) return;
+      const displayName = tierConfig.model ? _routerFxStripProvider(tierConfig.model) : tier;
+      const key = displayName ? displayName.toLowerCase() : tier;
+      let entry = byDisplay.get(key);
+      if (!entry) {
+        entry = { key, tiers: [], model: tierConfig.model || '', displayName };
+        byDisplay.set(key, entry);
+      }
+      entry.tiers.push(tier);
+      if (!entry.model && tierConfig.model) entry.model = tierConfig.model;
+    });
+    const decisionTier = decision && typeof decision.tier === 'string'
+      ? decision.tier.toLowerCase()
+      : '';
+    const decisionModel = decision && typeof decision.model === 'string' ? decision.model : '';
+    if (decisionTier && decisionModel) {
+      const displayName = _routerFxStripProvider(decisionModel);
+      const key = displayName ? displayName.toLowerCase() : decisionTier;
+      let entry = byDisplay.get(key);
+      if (!entry && _routerFxTierMatchesRequestKind(_routerFxTierConfig(decisionTier), kind)) {
+        entry = { key, tiers: [], model: decisionModel, displayName };
+        byDisplay.set(key, entry);
+      }
+      if (entry) {
+        if (entry.tiers.indexOf(decisionTier) < 0) entry.tiers.push(decisionTier);
+        if (!entry.model) entry.model = decisionModel;
+      }
+    }
+    return Array.from(byDisplay.values()).map((e) => ({
+      key: e.key,
+      tiers: _routerFxSortTiers(e.tiers),
+      model: e.model,
+      displayName: e.displayName || (e.model ? _routerFxStripProvider(e.model) : e.tiers[0]),
+    }));
+  }
+
+  function _routerFxHasMultipleCandidates(requestKind, decision) {
+    return _routerFxVisualEntries(requestKind, decision).length > 1;
+  }
+
   // Promise resolved when _loadFeatureToggles has populated tier
   // models from config. Any _loadHistory call awaits this gate so the
   // first history rebuild never renders strips with empty tier names
-  // ("t1", "t2", …) just because config hadn't returned yet.
+  // ("c1", "c2", …) just because config hadn't returned yet.
   let _routerFxConfigReadyResolve = null;
   const _routerFxConfigReady = new Promise((resolve) => {
     _routerFxConfigReadyResolve = resolve;
@@ -3458,7 +3552,7 @@ const ChatView = (() => {
   }
   function _routerFxIdentity(model, tier) {
     const modelPart = typeof model === 'string' ? model.trim().toLowerCase() : '';
-    const tierPart = typeof tier === 'string' ? tier.trim().toLowerCase() : '';
+    const tierPart = _routerFxNormalizeTier(tier);
     if (!modelPart && !tierPart) return '';
     return modelPart + '|' + tierPart;
   }
@@ -3512,110 +3606,25 @@ const ChatView = (() => {
     }
   }
 
-  // Group tiers by their backing model so two tiers that resolve to
-  // the same model don't get two cells.
-  function _routerFxRealEntries(decision) {
-    const winnerTier = decision && typeof decision.tier === 'string' ? decision.tier.toLowerCase() : '';
-    const winnerModel = decision && typeof decision.model === 'string' ? decision.model : '';
-    const slotKeyOf = (tier) => {
-      const m = _routerFxModels[tier];
-      return m ? m : 'tier:' + tier;
-    };
-    const byKey = new Map();
-    _routerFxSlotList.forEach((tier) => {
-      const key = slotKeyOf(tier);
-      let entry = byKey.get(key);
-      if (!entry) {
-        entry = { key, tiers: [], model: _routerFxModels[tier] || '' };
-        byKey.set(key, entry);
-      }
-      entry.tiers.push(tier);
-    });
-    if (winnerTier && winnerModel) {
-      const target = byKey.get(slotKeyOf(winnerTier));
-      if (target && !target.model) target.model = winnerModel;
-    }
-    return Array.from(byKey.values()).map((e) => ({
-      key: e.key,
-      tiers: e.tiers,
-      model: e.model,
-      displayName: e.model ? _routerFxStripProvider(e.model) : e.tiers[0],
-    }));
+  // Build the visual roster for this turn only. Text requests exclude
+  // image-only routes; image requests include only image-capable routes.
+  // Entries are deduped by display model name so provider/thinking/tier
+  // differences do not create extra visual cells.
+  function _routerFxRealEntries(decision, requestKind) {
+    return _routerFxVisualEntries(requestKind, decision);
   }
 
-  // FNV-1a 32-bit hash of a string — folds the seed key down to a
-  // single integer for mulberry32 to seed off.
-  function _routerFxHashSeed(key) {
-    let h = 0x811c9dc5;
-    const s = String(key == null ? '' : key);
-    for (let i = 0; i < s.length; i++) {
-      h ^= s.charCodeAt(i);
-      h = Math.imul(h, 0x01000193);
-    }
-    return h >>> 0;
-  }
-
-  // mulberry32 PRNG — deterministic, well-distributed, ~10 LoC.
-  function _routerFxMulberry32(seed) {
-    let state = seed >>> 0;
-    return function () {
-      state = (state + 0x6D2B79F5) >>> 0;
-      let t = state;
-      t = Math.imul(t ^ (t >>> 15), t | 1);
-      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
-  }
-
-  // Fisher-Yates in place using the supplied RNG (defaults to
-  // Math.random when no seed key is given — exclusively for code
-  // paths that don't have a stable identifier).
-  function _routerFxShuffle(arr, seedKey) {
-    const rng = seedKey != null
-      ? _routerFxMulberry32(_routerFxHashSeed(seedKey))
-      : Math.random;
-    for (let i = arr.length - 1; i > 0; i--) {
-      const j = Math.floor(rng() * (i + 1));
-      const tmp = arr[i];
-      arr[i] = arr[j];
-      arr[j] = tmp;
-    }
-    return arr;
-  }
-
-  // Assemble the grid (_ROUTER_FX_GRID_CELLS cells): real (deduped) entries + decoys.
-  // Real cells land on distributed anchor slots in a deterministic model order,
-  // so each available model keeps a stable position. The live selector animation
-  // remains random; only the underlying dial layout is fixed.
+  // Assemble the grid from real candidates only. No filler/decoy wall: every
+  // visible model name is a candidate that could actually be called this turn.
   function _routerFxBuildGridCells(realEntries, seedKey) {
-    const cells = Array.from({ length: _ROUTER_FX_GRID_CELLS }, () => null);
-    const realNames = new Set();
     const orderedRealEntries = realEntries.slice().sort((a, b) => (
       (a.displayName || a.key || '').localeCompare(b.displayName || b.key || '')
     ));
-    orderedRealEntries.forEach((entry, i) => {
-      const anchor = _ROUTER_FX_REAL_ANCHOR_CELLS[i];
-      const idx = typeof anchor === 'number' ? anchor : cells.findIndex((cell) => cell == null);
-      if (idx < 0 || idx >= cells.length) return;
-      cells[idx] = { kind: 'real', entry, displayName: entry.displayName };
-      if (entry.displayName) realNames.add(entry.displayName);
-    });
-
-    const decoys = [];
-    for (let i = 0; i < _ROUTER_FX_DECOY_POOL.length && decoys.length < _ROUTER_FX_GRID_CELLS; i++) {
-      const name = _ROUTER_FX_DECOY_POOL[i];
-      if (realNames.has(name)) continue;
-      decoys.push({ kind: 'decoy', displayName: name });
-    }
-    while (decoys.length < _ROUTER_FX_GRID_CELLS) {
-      decoys.push({ kind: 'decoy', displayName: '—' });
-    }
-    const orderedDecoys = _routerFxShuffle(decoys, seedKey ? seedKey + ':decoy' : undefined);
-    let decoyIdx = 0;
-    for (let i = 0; i < cells.length; i++) {
-      if (cells[i] == null) cells[i] = orderedDecoys[decoyIdx++];
-    }
-    return cells;
+    return orderedRealEntries.map((entry) => ({
+      kind: 'real',
+      entry,
+      displayName: entry.displayName,
+    }));
   }
 
   function _buildRouterFxElement(decision, opts) {
@@ -3625,7 +3634,7 @@ const ChatView = (() => {
     wrap.setAttribute('data-history-role', 'router');
     wrap.dataset.renderMode = opts.renderMode || (opts.preSettled ? 'history' : 'live');
     wrap.dataset.state = 'idle';
-    wrap.dataset.tier = decision.tier || '';
+    wrap.dataset.tier = _routerFxNormalizeTier(decision.tier);
     wrap.dataset.source = decision.source || 'none';
     const identity = _routerFxDecisionIdentity(decision);
     if (identity) wrap.dataset.routerIdentity = identity;
@@ -3657,32 +3666,21 @@ const ChatView = (() => {
     const seedKey = opts && opts.seedKey ? String(opts.seedKey) : '';
     if (seedKey) wrap.dataset.seed = seedKey;
 
-    // Cloud variant: a focal-depth nebula of pool models + the routed winner.
-    // No configured roster is rendered. Returns early; the grid build below
-    // is the default look.
-    if (variant === 'cloud') {
-      _routerFxBuildCloud(wrap, decision, seedKey);
-      if (opts.preSettled) {
-        _settleRouterFxCloud(wrap);
-        _routerFxNormalizeSettledStrip(wrap, opts.renderMode || 'history', decision);
-      }
-      return wrap;
-    }
-
-    const realEntries = _routerFxRealEntries(decision);
+    const requestKind = _routerFxRequestKindFromDecision(decision, opts.requestKind);
+    const realEntries = _routerFxRealEntries(decision, requestKind);
+    if (realEntries.length <= 1) return null;
     const gridCells = _routerFxBuildGridCells(realEntries, seedKey || undefined);
 
     const grid = document.createElement('div');
     grid.className = 'router-fx-grid';
+    const cols = Math.min(4, Math.max(2, gridCells.length));
+    const mobileCols = gridCells.length > 2 ? 2 : gridCells.length;
+    grid.style.setProperty('--router-fx-cols', String(cols));
+    grid.style.setProperty('--router-fx-mobile-cols', String(Math.max(1, mobileCols)));
     gridCells.forEach((cellInfo, i) => {
       const cell = document.createElement('div');
       cell.className = 'router-fx-cell';
       cell.dataset.cellIdx = String(i);
-      // Intentionally NOT stamping which cell is real (configured) vs decoy:
-      // every cell renders identically, and the DOM must not leak the
-      // operator's wired-up model roster. Winner detection reads the in-memory
-      // _fxGridCells array (below), not any DOM attribute, so the routing
-      // result still lands on the right cell without exposing the rest.
       // title surfaces the full name on hover when a long one is ellipsized.
       cell.innerHTML = `<span class="nm" title="${_esc(cellInfo.displayName)}">${_esc(cellInfo.displayName)}</span>`;
       grid.appendChild(cell);
@@ -3694,9 +3692,10 @@ const ChatView = (() => {
 
     wrap._fxGridCells = gridCells;
     wrap._fxRealEntries = realEntries;
+    wrap._fxRequestKind = requestKind;
 
     if (opts.preSettled) {
-      const winnerIdx = _routerFxWinnerCellIndex(wrap, decision.tier);
+      const winnerIdx = _routerFxWinnerCellIndex(wrap, _routerFxNormalizeTier(decision.tier));
       if (winnerIdx >= 0) {
         _settleRouterFxImmediate(wrap, winnerIdx, { burst: false, decision });
         _routerFxNormalizeSettledStrip(wrap, opts.renderMode || 'history', decision);
@@ -3780,9 +3779,6 @@ const ChatView = (() => {
     if (selector) selector.classList.remove('visible', 'lock', 'lock-impact');
     wrap.querySelectorAll('.router-fx-cell.pinging').forEach((cell) => {
       cell.classList.remove('pinging');
-    });
-    wrap.querySelectorAll('.router-fx-mote.is-scan').forEach((mote) => {
-      mote.classList.remove('is-scan');
     });
     wrap.querySelectorAll('.router-fx-burst').forEach((burst) => burst.remove());
   }
@@ -3939,116 +3935,13 @@ const ChatView = (() => {
     });
   }
 
-  // ── Cloud variant ("model nebula" / rack-focus) ─────────────────────
-  // A focal-depth field of ~36 pool models + the routed winner, scattered
-  // at seeded positions/depths. Routing reads as a camera rack-focus pull:
-  // the whole field defocuses, then the winner snaps sharp and blooms an
-  // accent glow at the focal point while the rest recede to bokeh. The field
-  // is pool + winner ONLY (never the configured roster), so it exposes
-  // nothing beyond the already-public routed model.
+  // Winner label used for settled semantics and assistive text.
   function _routerFxWinnerName(decision) {
     const model = decision && (decision.model || decision.routed_model);
     if (model) return _routerFxStripProvider(String(model));
-    const tier = decision && decision.tier ? String(decision.tier).toLowerCase() : '';
+    const tier = _routerFxNormalizeTier(decision && decision.tier);
     if (tier && _routerFxModels[tier]) return _routerFxStripProvider(_routerFxModels[tier]);
     return tier || '';
-  }
-
-  function _routerFxBuildCloud(wrap, decision, seedKey) {
-    const cloud = document.createElement('div');
-    cloud.className = 'router-fx-cloud';
-    const winnerName = _routerFxWinnerName(decision);
-    // Field = the public decoy pool + the routed winner (deduped). No
-    // configured-roster names beyond the winner are ever rendered.
-    const seen = new Set();
-    const names = [];
-    if (winnerName) { names.push(winnerName); seen.add(winnerName.toLowerCase()); }
-    _ROUTER_FX_DECOY_POOL.forEach((n) => {
-      const k = n.toLowerCase();
-      if (!seen.has(k)) { seen.add(k); names.push(n); }
-    });
-    // Deterministic per seed so a history rebuild reproduces the same nebula.
-    const rng = _routerFxMulberry32(_routerFxHashSeed((seedKey || '') + ':cloud'));
-    const wkey = winnerName ? winnerName.toLowerCase() : '';
-    let winnerEl = null;
-    names.forEach((name) => {
-      // Two layers, so motion never fights: the OUTER mote owns position +
-      // a perpetual parallax drift (transform) + the winner's travel-to-
-      // focus (left/top), while the INNER owns the rack-focus (scale, blur,
-      // opacity, glow). Splitting them means the field keeps breathing even
-      // once settled, and the winner glides to the focal point instead of
-      // teleporting.
-      const mote = document.createElement('span');
-      mote.className = 'router-fx-mote';
-      // Organic elliptical scatter: area-uniform radius (sqrt) at a random
-      // angle clusters names toward the core and thins to the edges — a soft
-      // nebula, no rigid rows. Focal depth d∈[0,1] drives blur, scale and
-      // opacity TOGETHER so it reads as coherent optical depth, not a tag cloud.
-      const d = rng();
-      const ang = rng() * Math.PI * 2;
-      const rad = Math.sqrt(rng());
-      const x = (50 + Math.cos(ang) * rad * 47).toFixed(2);
-      const y = (50 + Math.sin(ang) * rad * 41).toFixed(2);
-      const blur = (d * 3.4).toFixed(2);
-      const scale = (1.22 - d * 0.62).toFixed(3);
-      const op = (0.92 - d * 0.64).toFixed(3);
-      const z = Math.round((1 - d) * 100);
-      const driftDur = (11 + rng() * 9).toFixed(2);
-      const driftDelay = (-(rng() * 20)).toFixed(2);
-      const dx = (rng() * 2 - 1).toFixed(2);
-      const dy = (rng() * 2 - 1).toFixed(2);
-      mote.style.cssText =
-        `--x:${x}%;--y:${y}%;--z:${z};--drift:${driftDur}s;`
-        + `--ddelay:${driftDelay}s;--dx:${dx};--dy:${dy};`;
-      const inner = document.createElement('span');
-      inner.className = 'router-fx-mote-i';
-      inner.style.cssText = `--blur:${blur}px;--sc:${scale};--op:${op};`;
-      inner.textContent = name;
-      mote.appendChild(inner);
-      if (!winnerEl && wkey && name.toLowerCase() === wkey) {
-        mote.classList.add('router-fx-mote--winner');
-        winnerEl = mote;
-      }
-      cloud.appendChild(mote);
-    });
-    const reticle = document.createElement('div');
-    reticle.className = 'router-fx-reticle';
-    reticle.setAttribute('aria-hidden', 'true');
-    cloud.appendChild(reticle);
-    wrap.appendChild(cloud);
-    wrap._fxCloud = true;
-    wrap._fxWinnerEl = winnerEl;
-  }
-
-  // Settle with no animation (history rebuild, observe mode, reduced motion):
-  // winner in focus, the rest already receded — the CSS settled state does it.
-  function _settleRouterFxCloud(wrap) {
-    if (!wrap) return;
-    wrap.dataset.state = 'settled';
-    delete wrap.dataset.live;
-    delete wrap.dataset.scanning;
-    wrap._fxFinished = true;
-    _routerFxClearVisualResidue(wrap);
-    _routerFxApplySettledSemantics(wrap, wrap._fxDecision || null, wrap.dataset.renderMode);
-  }
-
-  // Live rack-focus: brief beat on the full field, defocus the whole field
-  // (ease-in, lens leaving focus), then snap the winner sharp (decelerate).
-  // The optical pull is CSS (mote transitions keyed off data-state); JS only
-  // flips the phase with the right timing.
-  function _animateRouterFxCloud(wrap) {
-    if (!wrap) return;
-    // Opt-in via the toggle, independent of OS reduce-motion (see
-    // _animateRouterFx). Settle directly only if there is no winner to focus.
-    if (!wrap._fxWinnerEl) { _settleRouterFxCloud(wrap); return; }
-    _routerFxClearAnimationTimers(wrap);
-    // Hold the in-focus field a beat so the defocus reads as intentional.
-    wrap._fxAnimTimers.push(setTimeout(() => {
-      if (wrap.isConnected && wrap.dataset.renderMode === 'live') wrap.dataset.state = 'playing';
-    }, 260));
-    wrap._fxAnimTimers.push(setTimeout(() => {
-      if (wrap.isConnected && wrap.dataset.renderMode === 'live') _settleRouterFxCloud(wrap);
-    }, 680));
   }
 
   // ── Scan → lock ─────────────────────────────────────────────────────────
@@ -4074,7 +3967,13 @@ const ChatView = (() => {
     }
   }
 
-  function _finishPendingRouterFxScan() {
+  function _clearRouterFxVisuals(reason = '') {
+    _cancelPendingRouterFxScan(reason || 'clear_visuals');
+    if (!_thread) return;
+    _thread.querySelectorAll('.router-fx').forEach((el) => _routerFxRemoveStrip(el));
+  }
+
+  async function _finishPendingRouterFxScan() {
     const pending = _routerFxScanPending;
     _routerFxScanDelayTimer = null;
     _routerFxScanPending = null;
@@ -4094,7 +3993,25 @@ const ChatView = (() => {
       });
       return;
     }
-    const started = _routerFxBeginScan(pending.anchorDiv, pending.seedKey);
+    await _routerFxAwaitConfig();
+    if (pending.sessionKey !== (_sessionKey || '')) {
+      _chatDiag('router_scan.pending.drop.session_changed_after_config', {
+        pendingSessionKey: pending.sessionKey || '',
+        sessionKey: _sessionKey || '',
+      });
+      return;
+    }
+    if (_isCompactInFlightForCurrentSession()
+        || _routerFxIsSuppressedForCompactionTurn(pending.turnIndex)) {
+      _chatDiag('router_scan.pending.drop.compaction_suppressed_after_config', {
+        sessionKey: pending.sessionKey || '',
+        turnIndex: pending.turnIndex || '',
+      });
+      return;
+    }
+    const started = _routerFxBeginScan(pending.anchorDiv, pending.seedKey, {
+      requestKind: pending.requestKind,
+    });
     if (!started || !pending.decision || !_thread) return;
     const liveStrip = _thread.querySelector('.router-fx[data-live="true"]');
     if (!liveStrip || liveStrip.dataset.turnIndex !== String(pending.turnIndex)) return;
@@ -4109,7 +4026,9 @@ const ChatView = (() => {
     }
   }
 
-  function _scheduleRouterFxBeginScan(anchorDiv, seedKey) {
+  function _scheduleRouterFxBeginScan(anchorDiv, seedKey, opts) {
+    opts = opts || {};
+    const requestKind = _routerFxNormalizeRequestKind(opts.requestKind);
     _cancelPendingRouterFxScan('reschedule');
     if (_routerFxIsSuppressedForCompactionTurn(_routerFxCountUserMessages())) {
       _chatDiag('router_scan.schedule.skip.compaction_suppressed', {
@@ -4125,16 +4044,27 @@ const ChatView = (() => {
       });
       return false;
     }
+    if (_routerFxConfigTiers !== null && !_routerFxHasMultipleCandidates(requestKind, null)) {
+      _chatDiag('router_scan.schedule.skip.single_candidate', {
+        requestKind,
+        candidates: _routerFxVisualEntries(requestKind, null).length,
+      });
+      return false;
+    }
     _routerFxScanPending = {
       anchorDiv,
       seedKey,
+      requestKind,
       sessionKey: _sessionKey || '',
       turnIndex: String(_routerFxCountUserMessages()),
       decision: null,
     };
-    _routerFxScanDelayTimer = setTimeout(_finishPendingRouterFxScan, _ROUTER_FX_START_DELAY_MS);
+    _routerFxScanDelayTimer = setTimeout(() => {
+      void _finishPendingRouterFxScan();
+    }, _ROUTER_FX_START_DELAY_MS);
     _chatDiag('router_scan.scheduled', {
       seedKey,
+      requestKind,
       delayMs: _ROUTER_FX_START_DELAY_MS,
       turnIndex: _routerFxScanPending.turnIndex,
       anchor: _chatDiagDescribeElement(anchorDiv),
@@ -4147,7 +4077,9 @@ const ChatView = (() => {
   // winner. The scan is JS-driven (discrete class/position changes every
   // ~170ms), so it renders regardless of any CSS-animation quirk — and it
   // fills the wait instead of trailing it, replacing the "Watching" placeholder.
-  function _routerFxBeginScan(anchorDiv, seedKey) {
+  function _routerFxBeginScan(anchorDiv, seedKey, opts) {
+    opts = opts || {};
+    const requestKind = _routerFxNormalizeRequestKind(opts.requestKind);
     if (_routerFxIsSuppressedForCompactionTurn(_routerFxCountUserMessages())) {
       _chatDiag('router_scan.skip.compaction_suppressed', {
         turnIndex: String(_routerFxCountUserMessages()),
@@ -4164,10 +4096,28 @@ const ChatView = (() => {
       });
       return false;
     }
+    if (!_routerFxHasMultipleCandidates(requestKind, null)) {
+      _chatDiag('router_scan.skip.single_candidate', {
+        requestKind,
+        candidates: _routerFxVisualEntries(requestKind, null).length,
+      });
+      return false;
+    }
     _thread.querySelectorAll('.router-fx[data-live="true"]').forEach((el) => {
       _routerFxRemoveStrip(el);
     });
-    const wrap = _buildRouterFxElement({ source: 'none' }, { seedKey, renderMode: 'live' });
+    const wrap = _buildRouterFxElement({ source: 'none' }, {
+      seedKey,
+      renderMode: 'live',
+      requestKind,
+    });
+    if (!wrap) {
+      _chatDiag('router_scan.skip.single_candidate', {
+        requestKind,
+        candidates: _routerFxVisualEntries(requestKind, null).length,
+      });
+      return false;
+    }
     wrap.dataset.live = 'true';
     wrap.dataset.scanning = 'true';
     wrap.dataset.state = 'scanning';
@@ -4219,15 +4169,14 @@ const ChatView = (() => {
     }
   }
 
-  // JS-driven roaming "search": every ~170ms a different candidate is brought
-  // into focus (cloud: a mote sharpens via .is-scan; grid: the hammer hops).
+  // JS-driven roaming "search": every ~190ms the selector hops across a real
+  // candidate cell.
   function _routerFxScanRoam(wrap) {
-    const isCloud = !!wrap._fxCloud;
-    const container = wrap.querySelector(isCloud ? '.router-fx-cloud' : '.router-fx-grid');
-    if (!container) return;
-    const targets = container.querySelectorAll(isCloud ? '.router-fx-mote' : '.router-fx-cell');
+    const grid = wrap.querySelector('.router-fx-grid');
+    if (!grid) return;
+    const targets = grid.querySelectorAll('.router-fx-cell');
     if (!targets.length) return;
-    const selector = isCloud ? null : container.querySelector('.router-fx-selector');
+    const selector = grid.querySelector('.router-fx-selector');
     if (selector) selector.classList.add('visible');
     let prev = -1;
     const step = () => {
@@ -4236,13 +4185,11 @@ const ChatView = (() => {
       let g = 0;
       do { i = Math.floor(Math.random() * targets.length); g++; } while (i === prev && g < 8);
       prev = i;
-      if (isCloud) {
-        targets.forEach((m, idx) => m.classList.toggle('is-scan', idx === i));
-      } else if (selector) {
+      if (selector) {
         _routerFxPositionSelector(selector, targets[i], { hopIdx: i });
         _routerFxPing(targets[i]);
       }
-      wrap._fxScanTimer = setTimeout(step, isCloud ? 170 : 190);
+      wrap._fxScanTimer = setTimeout(step, 190);
     };
     step();
   }
@@ -4252,7 +4199,6 @@ const ChatView = (() => {
     if (wrap._fxScanTimer) { clearTimeout(wrap._fxScanTimer); wrap._fxScanTimer = null; }
     if (wrap._fxScanCap) { clearTimeout(wrap._fxScanCap); wrap._fxScanCap = null; }
     delete wrap.dataset.scanning;
-    wrap.querySelectorAll('.router-fx-mote.is-scan').forEach((m) => m.classList.remove('is-scan'));
   }
 
   function _routerFxPauseScanTimers(wrap) {
@@ -4289,7 +4235,7 @@ const ChatView = (() => {
     _thread.querySelectorAll('.router-fx[data-live="true"]').forEach((wrap) => {
       // Output already complete/arriving → finish the scan immediately, locking
       // onto the cached winner (no half-scan left hanging). Do not mark frozen:
-      // _routerFxLockGrid/_routerFxLockCloud own the visible selection motion.
+      // _routerFxLockGrid owns the visible selection motion.
       if (wrap._fxDecision) {
         _routerFxFinishScan(wrap);
       } else {
@@ -4305,7 +4251,7 @@ const ChatView = (() => {
     if (!wrap) return;
     decision = decision || {};
     _routerFxStopScan(wrap);
-    wrap.dataset.tier = decision.tier || '';
+    wrap.dataset.tier = _routerFxNormalizeTier(decision.tier);
     wrap.dataset.source = decision.source || 'none';
     wrap.dataset.renderMode = wrap.dataset.renderMode || 'live';
     wrap._fxDecision = decision;
@@ -4316,36 +4262,13 @@ const ChatView = (() => {
       wrap.dataset.rolloutPhase = typeof decision.rollout_phase === 'string'
         ? decision.rollout_phase : 'observe';
     }
-    if (wrap._fxCloud) _routerFxLockCloud(wrap, decision);
-    else _routerFxLockGrid(wrap, decision);
-  }
-
-  function _routerFxLockCloud(wrap, decision) {
-    const winnerName = _routerFxWinnerName(decision);
-    const wkey = winnerName ? winnerName.toLowerCase() : '';
-    let winnerEl = null;
-    const motes = wrap.querySelectorAll('.router-fx-mote');
-    if (wkey) {
-      motes.forEach((m) => {
-        const inner = m.querySelector('.router-fx-mote-i');
-        if (!winnerEl && inner && (inner.textContent || '').trim().toLowerCase() === wkey) winnerEl = m;
-      });
-      if (!winnerEl && motes.length) {
-        // Routed model isn't in the field — relabel the first mote to it.
-        winnerEl = motes[0];
-        const inner = winnerEl.querySelector('.router-fx-mote-i');
-        if (inner) inner.textContent = winnerName;
-      }
-    }
-    if (winnerEl) { winnerEl.classList.add('router-fx-mote--winner'); wrap._fxWinnerEl = winnerEl; }
-    requestAnimationFrame(() => { if (wrap.isConnected) _settleRouterFxCloud(wrap); });
+    _routerFxLockGrid(wrap, decision);
   }
 
   function _routerFxLockGrid(wrap, decision) {
-    const tier = decision.tier ? String(decision.tier) : '';
+    const tier = _routerFxNormalizeTier(decision.tier);
     if (tier) {
-      _routerFxRegisterTier(tier);
-      if (decision.model) _routerFxModels[tier.toLowerCase()] = String(decision.model);
+      _routerFxRememberTierDecision(tier, decision.model || '');
     }
     const winnerIdx = _routerFxWinnerCellIndex(wrap, tier);
     if (winnerIdx >= 0) {
@@ -4486,15 +4409,12 @@ const ChatView = (() => {
       _chatDiag('router_decision.skip.invalid_payload', {});
       return;
     }
-    const tier = typeof payload.tier === 'string' ? payload.tier : '';
+    const tier = _routerFxNormalizeTier(payload.tier);
     if (!tier) {
       _chatDiag('router_decision.skip.no_tier', _chatDiagSummarizePayload(payload));
       return;
     }
-    _routerFxRegisterTier(tier);
-    if (payload.model) {
-      _routerFxModels[tier.toLowerCase()] = String(payload.model);
-    }
+    _routerFxRememberTierDecision(tier, payload.model || '');
     const turnIndex = _routerFxCountUserMessages();
     if (_routerFxIsSuppressedForCompactionTurn(turnIndex)) {
       if (_thread) {
@@ -4528,6 +4448,7 @@ const ChatView = (() => {
       _chatDiag('router_decision.cached_on_pending_scan', {
         payload: _chatDiagSummarizePayload(payload),
         turnIndex: _routerFxScanPending.turnIndex || '',
+        requestKind: _routerFxScanPending.requestKind || '',
       });
       return;
     }
@@ -4568,6 +4489,11 @@ const ChatView = (() => {
       _chatDiag('router_decision.skip.disabled_post_config', _chatDiagSummarizePayload(payload));
       return;
     }
+    const replayRequestKind = _routerFxRequestKindFromDecision(payload, null);
+    if (!_routerFxHasMultipleCandidates(replayRequestKind, payload)) {
+      _chatDiag('router_decision.skip.single_candidate', _chatDiagSummarizePayload(payload));
+      return;
+    }
     if (!_historyHasRendered || _historyHydrating) {
       _cachePendingRouterDecision(payload);
       _chatDiag('router_decision.cached_during_history_hydration', {
@@ -4594,14 +4520,16 @@ const ChatView = (() => {
       preSettled: true,
       renderMode: 'history',
       seedKey: replaySeed,
+      requestKind: replayRequestKind,
     });
-    // Cloud flags its winner mote at build time; the grid resolves a winning
-    // cell index. Either way, bail if there is no winner to focus.
-    const winnerIdx = wrap._fxCloud ? -1 : _routerFxWinnerCellIndex(wrap, tier);
-    if (wrap._fxCloud ? !wrap._fxWinnerEl : winnerIdx < 0) {
+    if (!wrap) {
+      _chatDiag('router_decision.skip.single_candidate', _chatDiagSummarizePayload(payload));
+      return;
+    }
+    const winnerIdx = _routerFxWinnerCellIndex(wrap, tier);
+    if (winnerIdx < 0) {
       _chatDiag('router_decision.skip.no_winner', {
         payload: _chatDiagSummarizePayload(payload),
-        cloud: !!wrap._fxCloud,
         winnerIdx,
       });
       return;
@@ -4640,7 +4568,8 @@ const ChatView = (() => {
   // `seedKey` should be a stable per-turn identifier (msg.timestamp
   // or message id) so the cell shuffle reproduces deterministically
   // across page refreshes.
-  function _buildRouterFxFromUsage(usage, seedKey) {
+  function _buildRouterFxFromUsage(usage, seedKey, opts) {
+    opts = opts || {};
     if (!usage) return null;
     // User-pref gate: the viewer has hidden the router-fx visualisation, so
     // no history strip is built. Distinct from the operator routing flag below
@@ -4651,16 +4580,16 @@ const ChatView = (() => {
     // was recorded, drop the historic strip on the next rebuild —
     // the slider's whole point is conveying live router behaviour.
     if (_routerFxConfigTiers !== null && !_routerFeatureEnabled) return null;
-    const tier = typeof usage.routed_tier === 'string' ? usage.routed_tier : '';
+    const tier = _routerFxNormalizeTier(usage.routed_tier);
     if (!tier) return null;
     // If the operator has REMOVED this tier from config since the
     // turn was recorded, skip — rendering the strip would show a
-    // ghost cell ("t2") with no current meaning.
+    // ghost cell ("c2") with no current meaning.
     if (_routerFxConfigTiers !== null
-        && !_routerFxConfigTiers.has(tier.toLowerCase())) {
+        && !_routerFxConfigTiers.has(tier)) {
       return null;
     }
-    _routerFxRegisterTier(tier);
+    _routerFxRememberTierDecision(tier, usage.routed_model || usage.model || '');
     const decision = {
       tier,
       model: usage.routed_model || usage.model || '',
@@ -4670,7 +4599,7 @@ const ChatView = (() => {
       routing_applied: usage.routing_applied !== false,
       rollout_phase: usage.rollout_phase || 'full',
     };
-    if (decision.model) _routerFxModels[tier.toLowerCase()] = decision.model;
+    const requestKind = _routerFxRequestKindFromDecision(decision, opts.requestKind);
     // The cached seed from _routerFxResolveSeed already encodes
     // (stamp, tier, turnIndex) — pass it through verbatim so that
     // live and history paths derive the SAME shuffle for the same
@@ -4680,6 +4609,7 @@ const ChatView = (() => {
     return _buildRouterFxElement(decision, {
       preSettled: true,
       seedKey: seedKey != null ? String(seedKey) : ('history:' + tier),
+      requestKind: requestKind,
     });
   }
 
@@ -4895,6 +4825,11 @@ const ChatView = (() => {
     _unsubs.push(_rpc.on('session.event.warning', (payload) => {
       if (_dropForeignSessionPayload('event.warning', payload)) return;
       if (_isStaleEpoch(payload)) return;
+      const code = String((payload && payload.code) || '');
+      const silentWarningCodes = new Set([
+        'provider_reasoning_only_retry',
+      ]);
+      if (silentWarningCodes.has(code)) return;
       const msg = (payload && payload.message) || 'Squilla warning';
       UI.toast(msg, 'warn', 5000);
     }));
@@ -5166,7 +5101,7 @@ const ChatView = (() => {
         _hideThinkingIndicator();
         _subscribeSession();
         _loadCurrentSessionUsage();
-        _loadHistory();
+        _loadHistory(_historyRefreshScrollOptions());
       }
       if (state === 'disconnected' && _isStreaming) {
         _clearStreamIdleTimer();
@@ -5285,11 +5220,27 @@ const ChatView = (() => {
 
   /* ── Chat History ───────────────────────────────────────────────────── */
 
+  function _historyRefreshScrollOptions() {
+    if (!_thread || !_historyHasRendered) return {};
+    const gap = _thread.scrollHeight - _thread.scrollTop - _thread.clientHeight;
+    if (gap < 60) return {};
+    return {
+      preserveScroll: true,
+      previousScrollHeight: _thread.scrollHeight,
+      previousScrollTop: _thread.scrollTop,
+    };
+  }
+
+  function _replayGapShouldWarn(reason) {
+    const value = String(reason || '').toLowerCase();
+    return !['stream_buffer_empty', 'stream_buffer_reset', 'cursor_ahead_of_stream'].includes(value);
+  }
+
   function _scheduleHistorySync() {
     if (_historySyncTimer) clearTimeout(_historySyncTimer);
     _historySyncTimer = setTimeout(() => {
       _historySyncTimer = null;
-      _loadHistory();
+      _loadHistory(_historyRefreshScrollOptions());
     }, 50);
   }
 
@@ -5420,7 +5371,7 @@ const ChatView = (() => {
     _thread.insertBefore(row, _thread.firstChild || null);
   }
 
-  async function _loadHistory() {
+  async function _loadHistory(opts = {}) {
     if (!_sessionKey || !_thread) return;
     const requestSessionKey = _sessionKey;
     const requestSeq = ++_historyRequestSeq;
@@ -5434,7 +5385,7 @@ const ChatView = (() => {
     try {
       await _rpc.waitForConnection();
       // Wait until router config (tier → model cache) is populated so
-      // historical strips never render with "t1"/"t2"/"t3" placeholders
+      // historical strips never render with "c1"/"c2"/"c3" placeholders
       // just because we raced the config.get response.
       await _routerFxAwaitConfig();
       const data = await _rpc.call('chat.history', {
@@ -5459,7 +5410,7 @@ const ChatView = (() => {
         historyScope: _historyScope,
       });
       _historyHydrating = false;
-      _renderHistoryMessages(messages);
+      _renderHistoryMessages(messages, opts);
     } catch (err) {
       if (requestSessionKey === _sessionKey && requestSeq === _historyRequestSeq) {
         _historyHydrating = false;
@@ -5532,6 +5483,7 @@ const ChatView = (() => {
 
   function _renderHistoryMessages(messages, opts = {}) {
     if (!_thread) return;
+    _clearMessageActionFocus('history_rebuild');
     _removeHistoryScopeRows();
     if (messages.length === 0) {
       const liveRouterStrips = _currentSessionLiveRouterStrips(_sessionKey || '');
@@ -5607,14 +5559,19 @@ const ChatView = (() => {
     // keyed by (sessionKey, userMsgIndex, tier); using this counter
     // means live + history rebuilds for the same turn reuse the same layout.
     let _histUserIdx = 0;
+    let _histLastUserRequestKind = 'text';
     const consumedHistoryElements = new Set();
     messages.forEach((msg) => {
-        if (msg.role === 'user') _histUserIdx++;
+        if (msg.role === 'user') {
+          _histUserIdx++;
+          _histLastUserRequestKind = _routerFxRequestKindFromAttachments(msg.attachments || []);
+        }
         const rawText = msg.text || '';
         const displayText = msg.role === 'user' ? _stripTimePrefix(rawText) : rawText;
         const stableIdentity = _historyStableMessageIdentity(msg);
         const fallbackIdentity = _historyFallbackMessageIdentity(msg.role, displayText);
         const msgOptions = {
+          timestamp: msg.timestamp || msg.ts || null,
           provenanceKind: msg.provenance_kind || '',
           provenanceSourceSessionKey: msg.provenance_source_session_key || '',
           provenanceSourceTool: msg.provenance_source_tool || '',
@@ -5735,7 +5692,9 @@ const ChatView = (() => {
                 if (existingStrip) _routerFxRemoveStrip(existingStrip);
                 const hint = msg.timestamp || msg.ts || msg.message_id || '';
                 const cachedSeed = _routerFxResolveLayoutSeed(_sessionKey, hint);
-                const routerStrip = _buildRouterFxFromUsage(savedUsage, cachedSeed);
+                const routerStrip = _buildRouterFxFromUsage(savedUsage, cachedSeed, {
+                  requestKind: _histLastUserRequestKind,
+                });
                 if (routerStrip) {
                   routerStrip.dataset.sessionKey = _sessionKey || '';
                   routerStrip.dataset.turnIndex = String(_histUserIdx);
@@ -5810,14 +5769,22 @@ const ChatView = (() => {
 	      });
 	  }
 
+  function _historyLiveTailAnchor() {
+    if (!_isStreaming) return null;
+    if (_isCurrentSessionStreamBubble(_streamBubble)) return _streamBubble;
+    if (_isCurrentSessionThinkingIndicator(_thinkingEl)) return _thinkingEl;
+    return null;
+  }
+
   function _appendHistoryDaySeparator(timestamp) {
     const day = _dayKey(timestamp);
     if (!day || day === _lastHeaderDay) return;
     const sep = document.createElement('div');
     sep.className = 'chat-day-sep';
     sep.innerHTML = `<span>${_dayLabel(day)}</span>`;
-    if (_isStreaming && _isCurrentSessionStreamBubble(_streamBubble)) {
-      _thread.insertBefore(sep, _streamBubble);
+    const liveTail = _historyLiveTailAnchor();
+    if (liveTail) {
+      _thread.insertBefore(sep, liveTail);
     } else {
       _thread.appendChild(sep);
     }
@@ -5832,8 +5799,9 @@ const ChatView = (() => {
     // turn unit; otherwise the DOM reorder can strand the strip above the user
     // while output is streaming.
     const attachedRouterStrip = _routerFxStripImmediatelyAfterUser(div);
-    if (_isStreaming && _isCurrentSessionStreamBubble(_streamBubble) && div !== _streamBubble) {
-      _thread.insertBefore(div, _streamBubble);
+    const liveTail = _historyLiveTailAnchor();
+    if (liveTail && div !== liveTail) {
+      _thread.insertBefore(div, liveTail);
       _restoreRouterFxAfterHistoryUser(div, attachedRouterStrip);
       return;
     }
@@ -6022,10 +5990,39 @@ const ChatView = (() => {
     }
   }
 
+  function _syncMessageHeader(div, displayRole, timestamp, options = {}) {
+    if (!div) return;
+    const day = _dayKey(timestamp);
+    const collapsible = (displayRole === 'user' || displayRole === 'assistant');
+    const sameGroup = collapsible
+      && (displayRole === _lastHeaderRole)
+      && day === _lastHeaderDay
+      && day !== '';
+    if (collapsible) _lastHeaderRole = displayRole;
+    const existing = div.querySelector(':scope > .msg-header');
+    const isoStr = timestamp
+      ? (typeof timestamp === 'string' ? timestamp : new Date(timestamp).toISOString())
+      : '';
+    if (sameGroup) {
+      if (existing) existing.remove();
+      if (isoStr) div.title = new Date(isoStr).toLocaleString();
+      return;
+    }
+    const header = existing || document.createElement('div');
+    header.className = 'msg-header';
+    if (isoStr) {
+      header.title = new Date(isoStr).toLocaleString();
+      div.removeAttribute('title');
+    }
+    header.innerHTML = `<span class="role-label">${_esc(_displayRoleLabel(displayRole))}</span>${_renderMessageTags(options)}<span class="msg-time">${_esc(timestamp ? _relTime(timestamp) : '')}</span>`;
+    if (!existing) div.insertBefore(header, div.firstChild);
+  }
+
   function _replaceHistoryMessage(div, role, text, options = {}) {
     const isSubagentCompletion = _isSubagentCompletionMessage(role, text, options);
     const displayRole = isSubagentCompletion ? 'subagent' : role;
     div.className = `msg ${displayRole}`;
+    _syncMessageHeader(div, displayRole, options.timestamp || null, options);
     const body = div.querySelector('.msg-body');
     if (body) {
       _renderMessageBody(body, role, text, options);
@@ -6087,7 +6084,8 @@ const ChatView = (() => {
       text = text.slice(1);
       hasPayload = text || _pendingAttachments.length > 0;
     }
-    const isSlashCommand = !isLiteralSlash && text.startsWith('/');
+    const isSlashCommand = !isLiteralSlash && text.startsWith('/')
+      && !!(await _lookupSlashCommand(text));
     const normalized = await _normalizeOutgoingComposerPayload(
       text,
       _pendingAttachments,
@@ -6102,7 +6100,7 @@ const ChatView = (() => {
     // the same queue: users may keep typing, but the next turn must wait until
     // the transcript maintenance action reaches a terminal state.
     if (_isStreaming || _isCompactInFlightForCurrentSession()) {
-      if (!isLiteralSlash && text.startsWith('/')) {
+      if (isSlashCommand) {
         const waitReason = _isCompactInFlightForCurrentSession()
           ? 'context compaction'
           : 'the current response';
@@ -6178,6 +6176,7 @@ const ChatView = (() => {
     }
     const normalizationProvenance = _inputNormalizationProvenanceFromAttachments(_pendingAttachments);
     if (normalizationProvenance) params.inputProvenance = normalizationProvenance;
+    const routerFxRequestKind = _routerFxRequestKindFromAttachments(params.attachments || []);
 
     // Clear input and attachments
     _textarea.value = '';
@@ -6188,7 +6187,9 @@ const ChatView = (() => {
     // Start streaming UI. Delay the routing scan briefly so request-time
     // compaction can claim the turn without a competing one-frame router flash.
     _startStreaming();
-    const routerScanStarted = _scheduleRouterFxBeginScan(userDiv, _routerFxResolveLayoutSeed(_sessionKey));
+    const routerScanStarted = _scheduleRouterFxBeginScan(userDiv, _routerFxResolveLayoutSeed(_sessionKey), {
+      requestKind: routerFxRequestKind,
+    });
     _chatDiag('send.start', {
       textLen: providerText.length,
       attachments: params.attachments ? params.attachments.length : 0,
@@ -6394,10 +6395,9 @@ const ChatView = (() => {
       _chatDiag('thinking.skip.compaction_in_flight', {});
       return;
     }
-    // Timer starts at send so "Watching · N.Ns" reads total wait. The indicator
-    // is RETAINED — but _showThinkingIndicatorNow defers it until the router
-    // panel has settled, so routing animates first and "Watching…" only appears
-    // afterwards (while the model is still generating), not before it.
+    // Timer starts at send so "Watching · N.Ns" reads total wait. Keep this
+    // independent from router scanning: provider first-byte waits can be long,
+    // and the user still needs an immediate progress signal.
     _thinkingStartTime = Date.now();
 
     // Delay showing the indicator — fast responses won't flash it
@@ -6415,16 +6415,6 @@ const ChatView = (() => {
       _thinkingDelayTimer = setTimeout(_showThinkingIndicatorNow, 150);
       return;
     }
-    // Defer while the router panel is still animating to its final state — the
-    // "Watching…" indicator belongs AFTER routing settles, not during the scan.
-    // Re-check shortly; the panel locks within ~1s, then this shows (with the
-    // elapsed counted from send).
-    if (_thread && _thread.querySelector('.router-fx[data-scanning="true"]')) {
-      _chatDiag('thinking.defer.router_scan', {});
-      _thinkingDelayTimer = setTimeout(_showThinkingIndicatorNow, 150);
-      return;
-    }
-
     const empty = _thread.querySelector('.chat-empty');
     if (empty) empty.remove();
 
@@ -6528,6 +6518,38 @@ const ChatView = (() => {
     return true;
   }
 
+  function _clearStreamActiveMarkReveal() {
+    if (_streamActiveMarkTimer) {
+      clearTimeout(_streamActiveMarkTimer);
+      _streamActiveMarkTimer = null;
+    }
+    _streamActiveMarkVisibleStartedAt = 0;
+    if (_streamBubble) _streamBubble.classList.remove(_STREAM_ACTIVE_MARK_CLASS);
+  }
+
+  function _beginStreamActiveMarkRevealWindow() {
+    _streamActiveMarkVisibleStartedAt = Date.now();
+    _scheduleStreamActiveMarkReveal();
+  }
+
+  function _maybeRevealStreamActiveMark() {
+    if (!_isStreaming || !_streamBubble) return false;
+    const elapsedMs = _streamActiveMarkVisibleStartedAt ? Date.now() - _streamActiveMarkVisibleStartedAt : 0;
+    if (elapsedMs < _STREAM_ACTIVE_MARK_DELAY_MS) return false;
+    _streamBubble.classList.add(_STREAM_ACTIVE_MARK_CLASS);
+    return true;
+  }
+
+  function _scheduleStreamActiveMarkReveal() {
+    if (_streamActiveMarkTimer) clearTimeout(_streamActiveMarkTimer);
+    const generation = _streamGeneration;
+    _streamActiveMarkTimer = setTimeout(() => {
+      _streamActiveMarkTimer = null;
+      if (_streamGeneration !== generation) return;
+      _maybeRevealStreamActiveMark();
+    }, _STREAM_ACTIVE_MARK_DELAY_MS);
+  }
+
   function _startStreaming() {
     _chatDiag('stream.start.before', {
       wasStreaming: _isStreaming,
@@ -6601,6 +6623,7 @@ const ChatView = (() => {
       }
 
       _thread.appendChild(_streamBubble);
+      _beginStreamActiveMarkRevealWindow();
 
       // Create the first text segment
       _newTextSegment();
@@ -6608,6 +6631,7 @@ const ChatView = (() => {
         streamBubble: _chatDiagDescribeElement(_streamBubble),
       });
     }
+    _maybeRevealStreamActiveMark();
     return _streamBubble;
   }
 
@@ -6706,6 +6730,7 @@ const ChatView = (() => {
     if (_renderRafId) { cancelAnimationFrame(_renderRafId); _renderRafId = null; }
     _renderDirty = false;
     _clearStreamIdleTimer();
+    _clearStreamActiveMarkReveal();
     _streamIdlePausedForApproval = false;
     _approvalPendingForCurrentSession = false;
     if (_streamBubble) {
@@ -7035,6 +7060,21 @@ const ChatView = (() => {
     return name || 'tool';
   }
 
+  function _metaStepRunningHint(name) {
+    if (!name || !name.startsWith('meta-step:')) return '';
+    const stepId = name.slice('meta-step:'.length);
+    if (stepId.endsWith('_video')) {
+      return '正在生成视频素材，可能需要几分钟。Generating video assets; this may take several minutes.';
+    }
+    if (stepId.endsWith('_image') || stepId.endsWith('_img_prompt')) {
+      return '正在生成视觉素材，可能需要稍等。Generating visual assets; this can take a little while.';
+    }
+    if (stepId.includes('duration') || stepId.includes('prompt')) {
+      return '正在准备这一生成步骤。Preparing this generation step.';
+    }
+    return '正在运行这个 meta-skill 步骤。Running this meta-skill step.';
+  }
+
   function _isControlPlaneToolName(name) {
     return name === 'router_control';
   }
@@ -7074,6 +7114,14 @@ const ChatView = (() => {
 
     const toolsBody = document.createElement('div');
     toolsBody.className = 'chat-tools-body';
+
+    const runningHint = isRunning ? _metaStepRunningHint(name) : '';
+    if (runningHint) {
+      const hint = document.createElement('div');
+      hint.className = 'chat-meta-step-running-hint';
+      hint.textContent = runningHint;
+      toolsBody.appendChild(hint);
+    }
 
     // Only show input preview if non-empty (arguments may arrive later via tool_use_delta)
     const emptyInputs = ['', '""', '{}', 'null', 'undefined'];
@@ -7148,6 +7196,37 @@ const ChatView = (() => {
     return Array.from(root.querySelectorAll('[data-tool-result-for]')).find(
       (el) => el.getAttribute('data-tool-result-for') === toolId
     ) || null;
+  }
+
+  function _settleToolResultCard(payload, isError) {
+    const toolId = payload && payload.tool_use_id || '';
+    if (!toolId) return null;
+    const bubble = _ensureStreamBubble();
+    const body = bubble && bubble.querySelector('.msg-body');
+    const details = _findToolDetailsById(body, toolId);
+    if (!details) return null;
+    let toolName = payload.name || payload.tool_name || '';
+    if (toolName) _retitleToolCallDOM(details, toolName, payload.arguments || payload.input || '');
+    toolName = toolName || details.getAttribute('data-tool-name') || '';
+    details.classList.remove('chat-tools-collapse--running');
+    details.classList.add(_toolResultStateClass(payload));
+    _setToolSummaryStatus(details, isError ? 'error' : 'done');
+    const summary = details.querySelector('.chat-tools-summary');
+    if (summary) summary.removeAttribute('aria-disabled');
+    return details;
+  }
+
+  function _clarifyArgsFromHistoricalSegment(seg, details) {
+    const input = details && details._opensquillaToolInput;
+    if (!input || typeof input !== 'object') return null;
+    if (
+      input.kind === 'user_input'
+      && input.paused === true
+      && input.clarify_schema
+    ) {
+      return input;
+    }
+    return null;
   }
 
   function _toolExecutionStatus(payload) {
@@ -7346,8 +7425,32 @@ const ChatView = (() => {
     ) {
       try { console.log('[clarify-debug] firing _appendClarifyForm'); } catch (e) {}
       _markVisibleStreamEvent('clarify_form');
+      _settleToolResultCard(payload, false);
       _appendClarifyForm(payload, _args);
       _chatDiag('tool_result.append.clarify_form', _chatDiagSummarizePayload(payload));
+      return;
+    }
+
+    // Skipped user_input step with an inferred-context summary —
+    // close the (c)/(d) "trust gap" on the path where the form was
+    // auto-suppressed. The scheduler attaches ``clarify_skip_summary``
+    // whenever a meta author's ``when:`` expression evaluated false
+    // for a user_input step, so the user can still see what the
+    // upstream context-extraction inferred and intervene before the
+    // DAG continues.
+    if (
+      _args
+      && _args.kind === 'user_input'
+      && _args.skipped === true
+      && _args.clarify_skip_summary
+    ) {
+      try { console.log('[clarify-debug] firing _appendClarifySkipSummary'); } catch (e) {}
+      _markVisibleStreamEvent('clarify_skip_summary');
+      _appendClarifySkipSummary(payload, _args);
+      _chatDiag(
+        'tool_result.append.clarify_skip_summary',
+        _chatDiagSummarizePayload(payload),
+      );
       return;
     }
 
@@ -7430,6 +7533,13 @@ const ChatView = (() => {
   // ── PR5: meta-skill user_input form rendering ──
 
   function _appendClarifyForm(payload, args) {
+    const bubble = _ensureStreamBubble();
+    const body = bubble.querySelector('.msg-body');
+    _appendClarifyFormToBody(body, payload, args);
+  }
+
+  function _appendClarifyFormToBody(body, payload, args) {
+    if (!body) return;
     // The scheduler payload carries:
     //   args.clarify_schema = { mode, intro, fields, cancel_keywords,
     //                            timeout_hours, nl_extract }
@@ -7445,9 +7555,6 @@ const ChatView = (() => {
     const schemaLang = /[\u4e00-\u9fff]/.test(schemaCopy) ? 'zh' : 'en';
     const clarifyText = (zh, en) => schemaLang === 'zh' ? zh : en;
 
-    const bubble = _ensureStreamBubble();
-    const body = bubble.querySelector('.msg-body');
-
     const card = document.createElement('div');
     card.className = 'clarify-form chat-tools-collapse';
     card.setAttribute('data-clarify-step', args.step || '');
@@ -7458,6 +7565,19 @@ const ChatView = (() => {
     header.textContent = clarifyText('请确认以下信息', 'Please confirm these details');
     card.appendChild(header);
 
+    // Dual-channel hint (soft-clarify) — tell the user the main chat
+    // input still works while the form is open, so they can either
+    // type into fields or continue the conversation naturally to
+    // supply / refine answers. Without this line users assume the
+    // form is the only path forward and avoid the message box.
+    const dualChannelHint = document.createElement('div');
+    dualChannelHint.className = 'clarify-form-dual-channel-hint';
+    dualChannelHint.textContent = clarifyText(
+      '✎ 您也可以在下方对话框里继续聊天补充信息，或回复 "开始" 让系统立即执行；说 "算了" 取消。',
+      '✎ You can also keep chatting in the message box below to add or refine info, reply "go ahead" to start, or "cancel" to abort.',
+    );
+    card.appendChild(dualChannelHint);
+
     if (schema.intro) {
       const intro = document.createElement('div');
       intro.className = 'clarify-form-intro';
@@ -7466,20 +7586,203 @@ const ChatView = (() => {
       card.appendChild(intro);
     }
 
-    const form = document.createElement('form');
+    // Step (d) auto-prefill rendering. The server may attach
+    // confirmed_fields / ambiguous_fields / unknown_mentions when
+    // the prefill scan inferred values from the user's earlier
+    // messages. Render a transparency block at the top so the user
+    // sees what was detected and can confirm or override; build a
+    // lookup map so the field rows below can show inline markers.
+    const confirmedFields = Array.isArray(schema.confirmed_fields)
+      ? schema.confirmed_fields : [];
+    const ambiguousFields = Array.isArray(schema.ambiguous_fields)
+      ? schema.ambiguous_fields : [];
+    const unknownMentions = Array.isArray(schema.unknown_mentions)
+      ? schema.unknown_mentions : [];
+    const confirmedByName = {};
+    confirmedFields.forEach((entry) => {
+      if (entry && typeof entry.name === 'string') {
+        confirmedByName[entry.name] = entry;
+      }
+    });
+    const ambiguousByName = {};
+    ambiguousFields.forEach((entry) => {
+      if (entry && typeof entry.name === 'string') {
+        ambiguousByName[entry.name] = entry;
+      }
+    });
+
+    const requiredFields = fields.filter((field) => field && field.required);
+    const confirmedRequiredFields = requiredFields.filter((field) => (
+      confirmedByName[field.name] !== undefined
+    ));
+    const missingRequiredFields = requiredFields.filter((field) => (
+      confirmedByName[field.name] === undefined
+    ));
+    const clarifyFieldPromptText = (field) => {
+      if (!field) return '';
+      return String(field.prompt || '').replace(/\s+/g, ' ').trim();
+    };
+    const clarifyFieldDisplayLabel = (field) => {
+      if (!field) return '';
+      const nameText = String(field.name || '').replace(/[_-]+/g, ' ').trim();
+      const promptText = clarifyFieldPromptText(field);
+      const promptLower = promptText.toLowerCase();
+      const nameLower = nameText.toLowerCase();
+      const promptLooksLikeScriptReplyField = (
+        (
+          promptLower.includes('script draft')
+          && promptLower.includes('verbatim reply')
+        )
+        || (
+          promptText.includes('脚本草稿')
+          && promptText.includes('原样')
+        )
+      );
+      const looksLikeScriptReplyField = (
+        promptLooksLikeScriptReplyField
+        || nameLower === 'reply'
+        || nameLower === 'reply text'
+      );
+      if (looksLikeScriptReplyField) {
+        return clarifyText('回复内容', 'Reply');
+      }
+      if (promptText && promptText.length <= 60) return promptText;
+      if (nameText) {
+        return nameText.replace(/\b[a-z]/g, (char) => char.toUpperCase());
+      }
+      if (promptText) return promptText.slice(0, 60).trim() + '...';
+      return '';
+    };
+
+    if (fields.length > 0) {
+      const progress = document.createElement('div');
+      progress.className = 'clarify-form-progress';
+
+      const metric = document.createElement('div');
+      metric.className = 'clarify-form-progress-metric';
+      metric.textContent = clarifyText(
+        '已收集 ' + confirmedRequiredFields.length + '/' + requiredFields.length + ' 项必填信息',
+        'Captured ' + confirmedRequiredFields.length + '/' + requiredFields.length + ' required details',
+      );
+      progress.appendChild(metric);
+
+      const next = document.createElement('div');
+      next.className = 'clarify-form-progress-next';
+      if (missingRequiredFields.length > 0) {
+        const missingLabels = missingRequiredFields.map(clarifyFieldDisplayLabel).filter(Boolean);
+        next.textContent = clarifyText(
+          '建议下一步：补充 ' + missingLabels.join('、') + '。可在表单中填写，也可直接继续聊天补充。',
+          'Suggested next steps: add ' + missingLabels.join(', ') + '. You can fill the form or keep chatting.',
+        );
+      } else if (ambiguousFields.length > 0) {
+        next.textContent = clarifyText(
+          '建议下一步：检查不确定的信息，确认无误后提交。',
+          'Suggested next steps: review the unclear details, then submit.',
+        );
+      } else {
+        next.textContent = clarifyText(
+          '建议下一步：检查已识别的信息，确认无误后提交。',
+          'Suggested next steps: review the captured details, then submit.',
+        );
+      }
+      progress.appendChild(next);
+      card.appendChild(progress);
+    }
+
+    if (
+      confirmedFields.length > 0
+      || ambiguousFields.length > 0
+      || unknownMentions.length > 0
+    ) {
+      const prefill = document.createElement('div');
+      prefill.className = 'clarify-form-prefill';
+      const prefillNote = document.createElement('div');
+      prefillNote.className = 'clarify-form-prefill-note';
+      prefillNote.textContent = clarifyText(
+        '已根据您之前的消息识别出以下信息，请确认或修改：',
+        'We noticed details from your earlier messages — please confirm or override below:',
+      );
+      prefill.appendChild(prefillNote);
+      const prefillList = document.createElement('ul');
+      prefillList.className = 'clarify-form-prefill-list';
+      confirmedFields.forEach((entry) => {
+        if (!entry || typeof entry.name !== 'string') return;
+        const li = document.createElement('li');
+        li.className = 'clarify-form-prefill-confirmed';
+        // Field values may be any JSON type — coerce to a stable
+        // string the user will recognise. Using textContent keeps
+        // angle brackets / quotes safe (server already xml_escaped
+        // free-text fields).
+        const valueRepr = entry.value === null || entry.value === undefined
+          ? ''
+          : String(entry.value);
+        const sourceLabel = entry.source || 'auto_prefill';
+        li.textContent = clarifyText(
+          '✓ ' + entry.name + ' = ' + valueRepr + '(来源: ' + sourceLabel + ')',
+          '✓ ' + entry.name + ' = ' + valueRepr + ' (source: ' + sourceLabel + ')',
+        );
+        prefillList.appendChild(li);
+      });
+      ambiguousFields.forEach((entry) => {
+        if (!entry || typeof entry.name !== 'string') return;
+        const li = document.createElement('li');
+        li.className = 'clarify-form-prefill-ambiguous';
+        const reason = entry.reason ? ' — ' + entry.reason : '';
+        li.textContent = clarifyText(
+          '⚠ ' + entry.name + '：需要您填写' + reason,
+          '⚠ ' + entry.name + ': needs your input' + reason,
+        );
+        prefillList.appendChild(li);
+      });
+      unknownMentions.forEach((entry) => {
+        if (!entry || typeof entry.text !== 'string') return;
+        const li = document.createElement('li');
+        li.className = 'clarify-form-prefill-unknown';
+        const guess = entry.guess
+          ? clarifyText('（推测：' + entry.guess + '）', ' (looked like: ' + entry.guess + ')')
+          : '';
+        li.textContent = clarifyText(
+          '· 我们注意到您还提到了：' + entry.text + guess,
+          '· we also noticed: ' + entry.text + guess,
+        );
+        prefillList.appendChild(li);
+      });
+      prefill.appendChild(prefillList);
+      card.appendChild(prefill);
+    }
+
+    const form = document.createElement('div');
     form.className = 'clarify-form-fields';
-    form.setAttribute('novalidate', '');
+    form.setAttribute('role', 'form');
 
     fields.forEach((field) => {
       const row = document.createElement('div');
       row.className = 'clarify-form-row';
 
+      const confirmedEntry = confirmedByName[field.name];
+      const ambiguousEntry = ambiguousByName[field.name];
+
       const label = document.createElement('label');
       label.className = 'clarify-form-label';
       const requiredFlag = field.required ? ' *' : '';
-      label.textContent = (field.prompt || field.name) + requiredFlag;
+      const fieldPromptText = clarifyFieldPromptText(field);
+      label.textContent = clarifyFieldDisplayLabel(field) + requiredFlag;
       label.setAttribute('for', 'clarify-' + field.name);
       row.appendChild(label);
+
+      if (field.prompt && clarifyFieldDisplayLabel(field) !== fieldPromptText) {
+        const help = document.createElement('details');
+        help.className = 'clarify-form-field-help';
+        const helpSummary = document.createElement('summary');
+        helpSummary.className = 'clarify-form-field-help-summary';
+        helpSummary.textContent = clarifyText('填写要求', 'Requirements');
+        help.appendChild(helpSummary);
+        const helpBody = document.createElement('div');
+        helpBody.className = 'clarify-form-field-help-body';
+        helpBody.textContent = fieldPromptText;
+        help.appendChild(helpBody);
+        row.appendChild(help);
+      }
 
       let input;
       if (field.type === 'enum' && Array.isArray(field.choices)) {
@@ -7527,7 +7830,57 @@ const ChatView = (() => {
       input.setAttribute('data-clarify-field', field.name);
       input.setAttribute('data-clarify-type', field.type);
       if (field.required) input.setAttribute('data-clarify-required', '1');
+
+      // Auto-prefill: a confirmed value from the prefill scan wins over
+      // any author-supplied default. Mark the field so the user sees
+      // it's a system inference (CSS hook + data attribute) and a
+      // future submit handler could distinguish "user-typed" from
+      // "auto-confirmed". The user can still edit/replace as normal.
+      if (confirmedEntry !== undefined) {
+        const confirmedValue = confirmedEntry.value;
+        if (confirmedValue !== null && confirmedValue !== undefined) {
+          if (field.type === 'bool') {
+            const boolStr = (confirmedValue === true || confirmedValue === 'true')
+              ? 'true' : 'false';
+            input.value = boolStr;
+          } else {
+            input.value = String(confirmedValue);
+          }
+        }
+        input.classList.add('clarify-form-input-confirmed');
+        input.setAttribute('data-clarify-confirmed', '1');
+        input.setAttribute(
+          'data-clarify-source', String(confirmedEntry.source || 'auto_prefill'),
+        );
+      }
+
       row.appendChild(input);
+
+      // Inline marker line below the input — the per-row hint that
+      // tells the user "we filled this from earlier context, edit
+      // freely if it's wrong" or "we noticed something here but
+      // couldn't pin it down".
+      if (confirmedEntry !== undefined) {
+        const marker = document.createElement('div');
+        marker.className = 'clarify-form-row-marker clarify-form-row-marker-confirmed';
+        marker.textContent = clarifyText(
+          '✓ 已自动识别，可编辑修改',
+          '✓ auto-detected from earlier — edit if needed',
+        );
+        row.appendChild(marker);
+      } else if (ambiguousEntry !== undefined) {
+        const marker = document.createElement('div');
+        marker.className = 'clarify-form-row-marker clarify-form-row-marker-ambiguous';
+        const reason = ambiguousEntry.reason
+          ? clarifyText('（' + ambiguousEntry.reason + '）', ' (' + ambiguousEntry.reason + ')')
+          : '';
+        marker.textContent = clarifyText(
+          '⚠ 不太确定，请填写' + reason,
+          '⚠ unclear, please specify' + reason,
+        );
+        row.appendChild(marker);
+      }
+
       form.appendChild(row);
     });
 
@@ -7535,7 +7888,7 @@ const ChatView = (() => {
     actions.className = 'clarify-form-actions';
 
     const submitBtn = document.createElement('button');
-    submitBtn.type = 'submit';
+    submitBtn.type = 'button';
     submitBtn.className = 'clarify-form-submit';
     submitBtn.textContent = clarifyText('提交', 'Submit');
     actions.appendChild(submitBtn);
@@ -7545,8 +7898,9 @@ const ChatView = (() => {
         ? schema.cancel_keywords[0]
         : ''
     );
+    let cancelBtn = null;
     if (cancelKeyword) {
-      const cancelBtn = document.createElement('button');
+      cancelBtn = document.createElement('button');
       cancelBtn.type = 'button';
       cancelBtn.className = 'clarify-form-cancel';
       cancelBtn.textContent = clarifyText('取消', 'Cancel');
@@ -7566,8 +7920,23 @@ const ChatView = (() => {
     }
     form.appendChild(actions);
 
-    form.addEventListener('submit', (evt) => {
-      evt.preventDefault();
+    const submitStatus = document.createElement('div');
+    submitStatus.className = 'clarify-form-submit-status';
+    submitStatus.hidden = true;
+    form.appendChild(submitStatus);
+
+    let clarifySubmitInFlight = false;
+    const waitForClarifySubmitConnection = () => Promise.race([
+      _rpc.waitForConnection(),
+      new Promise((_, reject) => {
+        setTimeout(() => reject(new Error(clarifyText(
+          '连接超时，请刷新页面后重试。',
+          'Connection timed out; refresh the page and retry.',
+        ))), 10000);
+      }),
+    ]);
+    const submitClarifyForm = () => {
+      if (clarifySubmitInFlight) return;
       const collected = {};
       let firstErrorEl = null;
       form.querySelectorAll('[data-clarify-field]').forEach((el) => {
@@ -7602,21 +7971,166 @@ const ChatView = (() => {
         UI.toast(clarifyText('请至少填写一个字段', 'Please fill in at least one field'), 'warn');
         return;
       }
+      clarifySubmitInFlight = true;
       submitBtn.disabled = true;
+      if (cancelBtn) cancelBtn.disabled = true;
+      card.classList.add('clarify-form--submitting');
+      submitStatus.hidden = false;
+      submitStatus.textContent = clarifyText(
+        '正在提交；如果连接刚恢复，会自动继续。',
+        'Submitting; if the connection just recovered, this will continue automatically.',
+      );
       const sessionKey = _currentSessionKey();
-      _rpc.call('chat.clarify_submit', {
-        sessionKey: sessionKey,
-        run_id: runId,
-        fields: collected,
-      }).catch((err) => {
-        submitBtn.disabled = false;
-        UI.toast(clarifyText('提交失败: ', 'Submit failed: ') + (err && err.message || err), 'error');
-      });
+      waitForClarifySubmitConnection()
+        .then(() => _rpc.call('chat.clarify_submit', {
+          sessionKey: sessionKey,
+          run_id: runId,
+          fields: collected,
+        }))
+        .then(() => {
+          clarifySubmitInFlight = false;
+          card.classList.remove('clarify-form--submitting');
+          card.classList.add('clarify-form--submitted');
+          submitStatus.textContent = clarifyText(
+            '已提交，正在继续流程...',
+            'Submitted, continuing...',
+          );
+          UI.toast(clarifyText('已提交，正在继续流程', 'Submitted, continuing'), 'info');
+        })
+        .catch((err) => {
+          clarifySubmitInFlight = false;
+          submitBtn.disabled = false;
+          if (cancelBtn) cancelBtn.disabled = false;
+          card.classList.remove('clarify-form--submitting');
+          submitStatus.hidden = true;
+          submitStatus.textContent = '';
+          UI.toast(clarifyText('提交失败: ', 'Submit failed: ') + (err && err.message || err), 'error');
+        });
+    };
+
+    submitBtn.addEventListener('click', (evt) => {
+      evt.preventDefault();
+      submitClarifyForm();
+    });
+    form.addEventListener('keydown', (evt) => {
+      if (evt.key !== 'Enter' || evt.shiftKey || evt.altKey || evt.ctrlKey || evt.metaKey) {
+        return;
+      }
+      if (evt.target && evt.target.tagName === 'TEXTAREA') return;
+      evt.preventDefault();
+      submitClarifyForm();
     });
 
     card.appendChild(form);
     body.appendChild(card);
     if (_autoScroll) _scrollToBottom();
+  }
+
+  function _appendClarifySkipSummary(payload, args) {
+    // Render a lightweight "trust gap" card for a user_input step
+    // that was auto-skipped by its ``when:`` expression. The user
+    // sees what the system inferred without the form being forced
+    // back open, but still gets a clear way to undo if the
+    // inference was wrong.
+    const summary = args.clarify_skip_summary || {};
+    const stepId = String(summary.step_id || args.skill || '');
+    const fields = Array.isArray(summary.fields) ? summary.fields : [];
+    const inferredFrom = Array.isArray(summary.inferred_from) ? summary.inferred_from : [];
+    const trigger = String(summary.trigger_message || '');
+    const label = String(summary.label || '');
+
+    // Localise the default label when the page is Chinese.
+    const pageLang = /[一-鿿]/.test(
+      (trigger + ' ' + label + ' ' + (fields[0] && fields[0].prompt || '')),
+    ) ? 'zh' : 'en';
+    const localized = (zh, en) => pageLang === 'zh' ? zh : en;
+
+    const bubble = _ensureStreamBubble();
+    const body = bubble.querySelector('.msg-body');
+
+    const card = document.createElement('div');
+    card.className = 'clarify-skip-summary chat-tools-collapse';
+    card.setAttribute('data-clarify-skip-step', stepId);
+
+    const header = document.createElement('div');
+    header.className = 'clarify-skip-summary-header';
+    header.textContent = localized(
+      '系统已从对话上下文中推断了答案 (' + stepId + ')',
+      'System inferred answers from conversation context (' + stepId + ')',
+    );
+    card.appendChild(header);
+
+    if (label) {
+      const note = document.createElement('div');
+      note.className = 'clarify-skip-summary-note';
+      // ``label`` is server-generated copy, not user content — safe as textContent.
+      note.textContent = label;
+      card.appendChild(note);
+    }
+
+    if (trigger) {
+      const triggerEl = document.createElement('div');
+      triggerEl.className = 'clarify-skip-summary-trigger';
+      triggerEl.textContent = localized('您说: ', 'You said: ') + trigger;
+      card.appendChild(triggerEl);
+    }
+
+    if (fields.length > 0) {
+      const fieldsHeader = document.createElement('div');
+      fieldsHeader.className = 'clarify-skip-summary-fields-header';
+      fieldsHeader.textContent = localized(
+        '系统本可询问以下字段，但已根据上下文推断：',
+        'Fields the system would have asked for, now inferred from context:',
+      );
+      card.appendChild(fieldsHeader);
+      const fieldList = document.createElement('ul');
+      fieldList.className = 'clarify-skip-summary-fields';
+      fields.forEach((field) => {
+        if (!field || typeof field.name !== 'string') return;
+        const li = document.createElement('li');
+        const requiredFlag = field.required
+          ? ' ' + localized('（必填）', '(required)')
+          : '';
+        li.textContent = field.name + requiredFlag + (field.prompt ? ' — ' + field.prompt : '');
+        fieldList.appendChild(li);
+      });
+      card.appendChild(fieldList);
+    }
+
+    if (inferredFrom.length > 0) {
+      const inferHeader = document.createElement('div');
+      inferHeader.className = 'clarify-skip-summary-inferred-header';
+      inferHeader.textContent = localized(
+        '推断依据：',
+        'Inferred from:',
+      );
+      card.appendChild(inferHeader);
+      inferredFrom.forEach((entry) => {
+        if (!entry || typeof entry.excerpt !== 'string') return;
+        const block = document.createElement('div');
+        block.className = 'clarify-skip-summary-inferred-entry';
+        const stepLabel = document.createElement('span');
+        stepLabel.className = 'clarify-skip-summary-inferred-step';
+        stepLabel.textContent = '[' + (entry.step || '') + '] ';
+        block.appendChild(stepLabel);
+        const excerpt = document.createElement('span');
+        excerpt.className = 'clarify-skip-summary-inferred-excerpt';
+        excerpt.textContent = entry.excerpt;
+        block.appendChild(excerpt);
+        card.appendChild(block);
+      });
+    }
+
+    const hint = document.createElement('div');
+    hint.className = 'clarify-skip-summary-hint';
+    hint.textContent = localized(
+      '若发现理解有误，请直接回复 "修改 <字段名>" 或重新描述需求。',
+      'If anything looks wrong, reply "change <field>" or restate your request.',
+    );
+    card.appendChild(hint);
+
+    body.appendChild(card);
+    _maybeScrollToBottom();
   }
 
   function _currentSessionKey() {
@@ -7710,9 +8224,11 @@ const ChatView = (() => {
   function _artifactCategory(artifact) {
     const mime = _artifactMime(artifact);
     if (mime.startsWith('image/')) return 'visual';
+    if (mime.startsWith('audio/')) return 'audio';
     if (ARTIFACT_MIME_CATEGORIES[mime]) return ARTIFACT_MIME_CATEGORIES[mime];
     if (!mime || mime === 'application/octet-stream' || mime === 'artifact') {
       const ext = _artifactExtension(_artifactName(artifact));
+      if (['mp3', 'wav', 'm4a', 'aac', 'ogg', 'oga', 'opus', 'flac', 'webm'].includes(ext)) return 'audio';
       if (ARTIFACT_EXTENSION_CATEGORIES[ext]) return ARTIFACT_EXTENSION_CATEGORIES[ext];
     }
     return 'file';
@@ -7723,12 +8239,17 @@ const ChatView = (() => {
       case 'data': return 'data';
       case 'document': return 'doc';
       case 'code': return 'code';
+      case 'audio': return 'audio';
       default: return 'file';
     }
   }
 
   function _isImageArtifact(artifact) {
     return _artifactCategory(artifact) === 'visual';
+  }
+
+  function _isAudioArtifact(artifact) {
+    return _artifactCategory(artifact) === 'audio';
   }
 
   function _artifactPreviewUrl(artifact) {
@@ -7793,6 +8314,15 @@ const ChatView = (() => {
           </span>
           <span class="msg-artifact-card__action" aria-hidden="true">Download</span>
         </a>`;
+      } else if (_isAudioArtifact(artifact)) {
+        html += `<div class="msg-artifact-card msg-artifact-card--audio" data-artifact-category="${_escAttr(category)}" data-artifact-id="${_escAttr(artifact?.id || '')}" data-artifact-name="${_escAttr(name)}">
+          <audio class="msg-artifact-audio" controls preload="metadata" src="${_escAttr(downloadHref)}"></audio>
+          <span class="msg-artifact-card__body">
+            <span class="msg-artifact-card__name">${_esc(name)}</span>
+            <span class="msg-artifact-card__meta">${_esc(meta)}</span>
+          </span>
+          <a class="msg-artifact-card__action" href="${_escAttr(downloadHref)}" download="${_escAttr(name)}" data-artifact-download="${_escAttr(downloadUrl)}">Download</a>
+        </div>`;
       } else {
         html += `<a class="msg-artifact-chip" href="${_escAttr(downloadHref)}" download="${_escAttr(name)}" data-artifact-category="${_escAttr(category)}" data-artifact-download="${_escAttr(downloadUrl)}" data-artifact-id="${_escAttr(artifact?.id || '')}" data-artifact-name="${_escAttr(name)}" title="${_escAttr(name)}">
           <span class="msg-file-chip__icon" aria-hidden="true">${_esc(_artifactCategoryLabel(category))}</span>
@@ -7844,9 +8374,11 @@ const ChatView = (() => {
 
       // Build tool_use_id → tool name map so tool_result segments can look up the name
       const _toolNameById = {};
+      const _toolInputById = {};
       for (const seg of segments) {
         if (seg.type === 'tool_use' && seg.tool_use_id) {
           _toolNameById[seg.tool_use_id] = seg.name || 'tool';
+          _toolInputById[seg.tool_use_id] = seg.input || null;
         }
       }
 
@@ -7864,6 +8396,7 @@ const ChatView = (() => {
           if (_isControlPlaneToolName(seg.name || '')) continue;
           if (_findToolDetailsById(body, seg.tool_use_id || '')) continue;
           const details = _buildToolCallDOM(seg.name || 'tool', seg.tool_use_id || '', seg.input || '', false);
+          details._opensquillaToolInput = seg.input || null;
           body.appendChild(details);
         } else if (seg.type === 'tool_result') {
           const toolId = seg.tool_use_id || '';
@@ -7876,11 +8409,17 @@ const ChatView = (() => {
             const details = _findToolDetailsById(body, toolId);
             if (details) {
               _retitleToolCallDOM(details, resultToolName, seg.input || '');
+              details._opensquillaToolInput = details._opensquillaToolInput || _toolInputById[toolId] || null;
               details.classList.remove('chat-tools-collapse--running');
               details.classList.add(_toolResultStateClass(seg));
               const toolsBody = details.querySelector('.chat-tools-body');
               const resultTarget = toolsBody || details;
               if (_findToolResultById(resultTarget, toolId)) continue;
+              const clarifyArgs = _clarifyArgsFromHistoricalSegment(seg, details);
+              if (clarifyArgs) {
+                _appendClarifyFormToBody(body, seg, clarifyArgs);
+                continue;
+              }
               const resultDiv = _buildToolResultDOM(
                 content,
                 isError,
@@ -8310,6 +8849,134 @@ const ChatView = (() => {
       file_uuid: result.file_uuid,
     };
     _renderAttachmentPreview();
+  }
+
+  async function _onVoiceInputToggle() {
+    if (_voiceInputBusy) return;
+    if (_mediaRecorder && _mediaRecorder.state === 'recording') {
+      _mediaRecorder.stop();
+      return;
+    }
+    await _startVoiceInputRecording();
+  }
+
+  async function _startVoiceInputRecording() {
+    if (!window.isSecureContext && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+      UI.toast('Voice input requires HTTPS on public URLs.', 'warn', 4500);
+      return;
+    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === 'undefined') {
+      UI.toast('Voice input is not available in this browser.', 'warn', 3500);
+      return;
+    }
+    try {
+      _voiceInputBusy = true;
+      _setVoiceInputState('requesting');
+      _recordedAudioChunks = [];
+      _recordingStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : '';
+      _mediaRecorder = mimeType
+        ? new MediaRecorder(_recordingStream, { mimeType })
+        : new MediaRecorder(_recordingStream);
+      _mediaRecorder.addEventListener('dataavailable', (event) => {
+        if (event.data && event.data.size > 0) _recordedAudioChunks.push(event.data);
+      });
+      _mediaRecorder.addEventListener('stop', () => {
+        _finishVoiceInputRecording().catch((err) => {
+          UI.toast(`Voice transcription failed: ${err && err.message || err}`, 'warn', 4500);
+          _setVoiceInputState('idle');
+        });
+      }, { once: true });
+      _mediaRecorder.start();
+      _setVoiceInputState('recording');
+      UI.toast('Recording voice input...', 'info', 1600);
+    } catch (err) {
+      UI.toast(`Could not start voice input: ${err && err.message || err}`, 'warn', 4500);
+      _stopVoiceInputTracks();
+      _setVoiceInputState('idle');
+    } finally {
+      _voiceInputBusy = false;
+    }
+  }
+
+  async function _finishVoiceInputRecording() {
+    _stopVoiceInputTracks();
+    const mime = (_mediaRecorder && _mediaRecorder.mimeType) || 'audio/webm';
+    _mediaRecorder = null;
+    if (!_recordedAudioChunks.length) {
+      _setVoiceInputState('idle');
+      UI.toast('No voice audio was recorded.', 'warn', 2500);
+      return;
+    }
+    _setVoiceInputState('transcribing');
+    _voiceInputBusy = true;
+    try {
+      const blob = new Blob(_recordedAudioChunks, { type: mime });
+      const text = await _transcribeVoiceInput(blob, mime);
+      if (!text) {
+        UI.toast('Voice transcription returned no text.', 'warn', 3000);
+        return;
+      }
+      _appendTranscribedText(text);
+      UI.toast('Voice input transcribed.', 'info', 2200);
+    } finally {
+      _recordedAudioChunks = [];
+      _voiceInputBusy = false;
+      _setVoiceInputState('idle');
+    }
+  }
+
+  async function _transcribeVoiceInput(blob, mime) {
+    const ext = mime.includes('mp4') ? 'm4a' : mime.includes('wav') ? 'wav' : 'webm';
+    const form = new FormData();
+    form.append('file', blob, `voice_input.${ext}`);
+    const headers = {};
+    const token = (App.getAuthToken && App.getAuthToken()) || '';
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const response = await fetch('/api/audio/transcribe', {
+      method: 'POST',
+      body: form,
+      headers: headers,
+      credentials: 'same-origin',
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.error || `HTTP ${response.status}`);
+    }
+    return String(payload.text || '').trim();
+  }
+
+  function _appendTranscribedText(text) {
+    if (!_textarea) return;
+    const current = _textarea.value.trim();
+    const next = current ? `${current}\n${text}` : text;
+    _textarea.value = next;
+    _textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    _textarea.focus();
+    _textarea.setSelectionRange(next.length, next.length);
+  }
+
+  function _setVoiceInputState(state) {
+    if (!_micBtn) return;
+    const recording = state === 'recording';
+    const busy = state === 'requesting' || state === 'transcribing';
+    _micBtn.classList.toggle('chat-mic-recording', recording);
+    _micBtn.disabled = busy;
+    _micBtn.title = recording
+      ? 'Stop recording'
+      : state === 'transcribing'
+        ? 'Transcribing voice input'
+        : 'Record voice input';
+    _micBtn.setAttribute('aria-label', recording ? 'Stop recording voice input' : 'Record voice input');
+  }
+
+  function _stopVoiceInputTracks() {
+    if (_recordingStream && _recordingStream.getTracks) {
+      _recordingStream.getTracks().forEach((track) => track.stop());
+    }
+    _recordingStream = null;
   }
 
   function _resolveAttachmentMime(file) {
@@ -8776,7 +9443,8 @@ const ChatView = (() => {
       text = text.slice(1);
       hasPayload = text || _pendingAttachments.length > 0;
     }
-    const isSlashCommand = !isLiteralSlash && text.startsWith('/');
+    const isSlashCommand = !isLiteralSlash && text.startsWith('/')
+      && !!(await _lookupSlashCommand(text));
     if (!hasPayload) return false;
     const normalized = await _normalizeOutgoingComposerPayload(
       text,
@@ -8809,6 +9477,7 @@ const ChatView = (() => {
     // Clear the root --composer-h so other views' toasts don't keep that offset.
     document.documentElement.style.removeProperty('--composer-h');
     if (_isStreaming) _endStreaming();
+    _clearStreamActiveMarkReveal();
     _hideThinkingIndicator();
     _cancelPendingRouterFxScan('destroy');
     if (_renderRafId) { cancelAnimationFrame(_renderRafId); _renderRafId = null; }

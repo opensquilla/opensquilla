@@ -152,3 +152,93 @@ def test_schema_to_protocol_empty_fields_list():
     payload = schema_to_protocol(schema)
     assert payload["fields"] == []
     assert payload["mode"] == "form"
+
+
+# ── Step (d): confirmed_fields / ambiguous_fields / unknown_mentions ──
+
+
+def _schema_with_two_fields() -> ClarifyStepConfig:
+    return ClarifyStepConfig(
+        mode="form",
+        fields=(
+            ClarifyField(name="city", type="string", required=True),
+            ClarifyField(name="days", type="int", required=True, min=1, max=30),
+        ),
+    )
+
+
+def test_protocol_omits_prefill_keys_when_no_audit() -> None:
+    """Backwards compatibility: surfaces that don't render the new
+    keys must continue to receive exactly the historical payload
+    shape when no prefill audit was attached."""
+    payload = schema_to_protocol(_schema_with_two_fields())
+    assert "confirmed_fields" not in payload
+    assert "ambiguous_fields" not in payload
+    assert "unknown_mentions" not in payload
+
+
+def test_protocol_renders_confirmed_fields_when_prefilled() -> None:
+    """Step (d): when the prefill scan landed values, the surface
+    payload carries an entry per inferred field with the source
+    label so the surface can render 'we noticed X — please confirm'.
+
+    Hallucinated audit names (a field not in the schema) must be
+    filtered out — the schema's field whitelist is the authority."""
+    payload = schema_to_protocol(
+        _schema_with_two_fields(),
+        confirmed_fields={"city": "Tokyo", "totally_made_up": "x"},
+        prefill_audit={
+            "source": "auto_prefill",
+            "fields": ["city", "totally_made_up"],
+            "ambiguous": [{"name": "days", "reason": "duration not stated"}],
+            "unknown_mentions": [{"text": "next month", "guess": ""}],
+        },
+    )
+    assert payload["confirmed_fields"] == [
+        {"name": "city", "value": "Tokyo", "source": "auto_prefill"},
+    ]
+    assert payload["ambiguous_fields"] == [
+        {"name": "days", "reason": "duration not stated"},
+    ]
+    # ``unknown_mentions`` are XML-escaped at the protocol boundary so
+    # angle brackets cannot leak into a Web surface as live HTML.
+    assert payload["unknown_mentions"] == [{"text": "next month"}]
+
+
+def test_protocol_unknown_mentions_escape_angle_brackets() -> None:
+    """Defence in depth: ``unknown_mentions`` and ``ambiguous_fields``
+    text comes from user-mentioned spans the model echoed back. The
+    surface payload crosses HTML / XML rendering boundaries so escape
+    every quoted span at the protocol boundary."""
+    payload = schema_to_protocol(
+        _schema_with_two_fields(),
+        confirmed_fields={"city": "Tokyo"},
+        prefill_audit={
+            "source": "auto_prefill",
+            "fields": ["city"],
+            "ambiguous": [{"name": "days", "reason": "<script>"}],
+            "unknown_mentions": [{"text": "<b>oops</b>", "guess": "<i>?</i>"}],
+        },
+    )
+    ambiguous = payload["ambiguous_fields"][0]
+    assert "<script>" not in ambiguous["reason"]
+    mention = payload["unknown_mentions"][0]
+    assert mention["text"] == "&lt;b&gt;oops&lt;/b&gt;"
+    assert mention.get("guess") == "&lt;i&gt;?&lt;/i&gt;"
+
+
+def test_protocol_drops_audit_entries_for_unknown_field_names() -> None:
+    """An audit listing a hallucinated field name in ``ambiguous`` must
+    be dropped so a regression in the executor cannot redirect the
+    surface's reprompt to a fake field."""
+    payload = schema_to_protocol(
+        _schema_with_two_fields(),
+        confirmed_fields={"city": "Tokyo"},
+        prefill_audit={
+            "source": "auto_prefill",
+            "fields": ["city"],
+            "ambiguous": [{"name": "phantom_field", "reason": "x"}],
+            "unknown_mentions": [],
+        },
+    )
+    assert payload["ambiguous_fields"] == []

@@ -72,6 +72,8 @@ def schema_to_protocol(
     schema: ClarifyStepConfig,
     *,
     intro_override: str = "",
+    confirmed_fields: dict[str, Any] | None = None,
+    prefill_audit: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Convert a ClarifyStepConfig to a JSON-safe surface payload.
 
@@ -79,6 +81,13 @@ def schema_to_protocol(
     a step-specific intro line that takes precedence over the schema's
     own intro — useful when the step body has author-customised
     pre-form text.
+
+    ``confirmed_fields`` and ``prefill_audit`` carry the step-(c)
+    auto-prefill payload to the surface so the user sees "we noticed
+    X from your earlier message — please confirm" instead of being
+    asked to re-enter information they already supplied. Both default
+    to ``None``; callers without a prefill scan get the historical
+    payload shape unchanged.
 
     Returns a dict with these keys (all serialisable):
       ``mode``           — "form" | "chat"
@@ -88,10 +97,22 @@ def schema_to_protocol(
       ``timeout_hours``  — int
       ``nl_extract``     — bool (informational; surfaces don't render
                             this differently, but operators may inspect)
+      ``confirmed_fields`` — list of {name, value, source, reason?} —
+                            entries the system inferred from earlier
+                            context. Surfaces should render these as
+                            pre-filled values requiring confirmation.
+      ``ambiguous_fields`` — list of {name, reason} — fields the
+                            inference saw mentions of but could not
+                            pin down. Surfaces should highlight these
+                            in the form.
+      ``unknown_mentions`` — list of {text, guess?} — user-mentioned
+                            spans that did not map to any schema
+                            field. Surfaces may show "we noticed you
+                            also said: ..." for transparency.
     """
 
     intro_source = intro_override if intro_override else schema.intro
-    return {
+    payload: dict[str, Any] = {
         "mode": schema.mode,
         "intro": _xml_escape(intro_source),
         "fields": [field_to_protocol(f) for f in schema.fields],
@@ -99,3 +120,80 @@ def schema_to_protocol(
         "timeout_hours": schema.timeout_hours,
         "nl_extract": schema.nl_extract,
     }
+
+    confirmed = confirmed_fields or {}
+    audit = prefill_audit or {}
+    if confirmed or audit:
+        # The schema's field whitelist guards against an audit record
+        # naming a non-schema field (defence in depth — the executor
+        # already validates against the same schema).
+        valid_names = {f.name for f in schema.fields}
+        payload["confirmed_fields"] = _confirmed_field_entries(
+            confirmed, audit, valid_names,
+        )
+        payload["ambiguous_fields"] = _ambiguous_field_entries(
+            audit, valid_names,
+        )
+        payload["unknown_mentions"] = _unknown_mention_entries(audit)
+    return payload
+
+
+def _confirmed_field_entries(
+    confirmed: dict[str, Any],
+    audit: dict[str, Any],
+    valid_names: set[str],
+) -> list[dict[str, Any]]:
+    """Render ``confirmed_fields`` from the (name, value) pairs the
+    executor already extracted, attributing each entry to the prefill
+    source recorded in the audit payload."""
+    source = str(audit.get("source") or "auto_prefill")
+    out: list[dict[str, Any]] = []
+    for name in audit.get("fields") or list(confirmed.keys()):
+        if not isinstance(name, str) or name not in valid_names:
+            continue
+        if name not in confirmed:
+            continue
+        entry: dict[str, Any] = {
+            "name": name,
+            "value": confirmed[name],
+            "source": source,
+        }
+        out.append(entry)
+    return out
+
+
+def _ambiguous_field_entries(
+    audit: dict[str, Any],
+    valid_names: set[str],
+) -> list[dict[str, Any]]:
+    raw = audit.get("ambiguous") or []
+    out: list[dict[str, Any]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name") or entry.get("field")
+        if not isinstance(name, str) or name not in valid_names:
+            continue
+        out.append({
+            "name": name,
+            "reason": _xml_escape(str(entry.get("reason") or "")),
+        })
+    return out
+
+
+def _unknown_mention_entries(audit: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = audit.get("unknown_mentions") or []
+    out: list[dict[str, Any]] = []
+    for entry in raw:
+        if isinstance(entry, str):
+            out.append({"text": _xml_escape(entry)})
+        elif isinstance(entry, dict):
+            text = entry.get("text") or entry.get("mention")
+            if not isinstance(text, str) or not text:
+                continue
+            payload: dict[str, Any] = {"text": _xml_escape(text)}
+            guess = entry.get("guess") or entry.get("hint")
+            if isinstance(guess, str) and guess:
+                payload["guess"] = _xml_escape(guess)
+            out.append(payload)
+    return out

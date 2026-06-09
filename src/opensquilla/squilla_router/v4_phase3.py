@@ -13,16 +13,15 @@ from typing import Any
 import structlog
 import yaml
 
+from opensquilla.router_tiers import (
+    DEFAULT_TEXT_TIER,
+    ROUTE_CLASS_TO_TIER,
+)
 from opensquilla.squilla_router.controller import TIER_ORDER, select_localized_prompt_hint
 
 log = structlog.get_logger(__name__)
 
-_ROUTE_CLASS_TO_TIER: dict[str, str] = {
-    "R0": "t0",
-    "R1": "t1",
-    "R2": "t2",
-    "R3": "t3",
-}
+_ROUTE_CLASS_TO_TIER: dict[str, str] = dict(ROUTE_CLASS_TO_TIER)
 
 
 def default_bundle_dir() -> Path:
@@ -43,7 +42,7 @@ def runtime_src_import_path(bundle_dir: Path) -> Iterator[None]:
 
 def _find_valid_tier(start_tier: str, valid_tiers: list[str]) -> str:
     if not valid_tiers:
-        return "t1"
+        return DEFAULT_TEXT_TIER
     start_idx = TIER_ORDER.index(start_tier) if start_tier in TIER_ORDER else 1
     for idx in range(start_idx, len(TIER_ORDER)):
         if TIER_ORDER[idx] in valid_tiers:
@@ -165,7 +164,7 @@ class V4Phase3Strategy:
         self,
         valid_tiers: list[str],
     ) -> tuple[str, float, str, dict]:
-        tier = _find_valid_tier("t1", valid_tiers)
+        tier = _find_valid_tier(DEFAULT_TEXT_TIER, valid_tiers)
         route_class = next(
             (key for key, value in _ROUTE_CLASS_TO_TIER.items() if value == tier),
             "R1",
@@ -243,7 +242,7 @@ class V4Phase3Strategy:
     ) -> tuple[str, float, str, dict]:
         decision = result.decision
         route_class = str(getattr(decision, "route_class", "R1"))
-        tier = _ROUTE_CLASS_TO_TIER.get(route_class, "t1")
+        tier = _ROUTE_CLASS_TO_TIER.get(route_class, DEFAULT_TEXT_TIER)
         if tier not in valid_tiers:
             tier = _find_valid_tier(tier, valid_tiers)
 

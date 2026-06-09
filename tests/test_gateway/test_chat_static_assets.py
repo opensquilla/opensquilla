@@ -195,6 +195,21 @@ def test_chat_composer_autofocus_is_desktop_only() -> None:
     assert "// Autofocus chat input\n    if (_textarea) _textarea.focus();" not in source
 
 
+def test_chat_composer_has_microphone_transcription_flow() -> None:
+    source = _read_chat_js()
+    css = _read_chat_css()
+
+    assert 'id="chat-btn-mic"' in source
+    assert 'aria-label="Record voice input"' in source
+    assert "navigator.mediaDevices.getUserMedia" in source
+    assert "new MediaRecorder" in source
+    assert "/api/audio/transcribe" in source
+    assert "Authorization" in source
+    assert "Bearer ${token}" in source
+    assert "voice_input" in source
+    assert "chat-mic-recording" in css
+
+
 def test_mobile_sidebar_closed_state_leaves_focus_order() -> None:
     app = _read_app_js()
 
@@ -410,16 +425,19 @@ def test_chat_js_has_document_level_escape_handler() -> None:
     assert "if (_chatOverlayVisible()) return;" in source
 
 
-def test_chat_escape_does_not_abort_from_editable_target() -> None:
+def test_chat_escape_aborts_from_composer_but_not_other_editable_targets() -> None:
     source = _read_chat_js()
     handler_start = source.index("function _onDocKeydown(e) {")
     handler_end = source.index("document.addEventListener('keydown', _onDocKeydown)", handler_start)
     handler = source[handler_start:handler_end]
 
-    editable_idx = handler.index("const inEditable = target && (")
+    other_editable_idx = handler.index(
+        "const inOtherEditable = target && target !== _textarea && ("
+    )
     streaming_idx = handler.index("if (_isStreaming) {")
-    assert editable_idx < streaming_idx
-    assert "if (inEditable) return;" in handler
+    assert other_editable_idx < streaming_idx
+    assert "if (inOtherEditable) return;" in handler
+    assert "target !== _textarea" in handler
     assert "_onStop('webui_escape')" in handler
 
 

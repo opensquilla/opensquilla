@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
+from opensquilla.skills.dependency_summary import build_dependency_summary
 from opensquilla.skills.eligibility import (
     EligibilityContext,
     EligibilityReport,
@@ -61,6 +62,10 @@ def _status_from_report(report: EligibilityReport) -> str:
     return "not_declared"
 
 
+def _format_env_any_group(group: list[str]) -> str:
+    return " or ".join(group)
+
+
 def _status_detail(spec: Any, report: EligibilityReport) -> str:
     """Human-readable tooltip detail for the skill status dot/chip."""
     if not report.eligible:
@@ -70,7 +75,11 @@ def _status_detail(spec: Any, report: EligibilityReport) -> str:
             meta = getattr(spec, "metadata", None)
             os_list = list(meta.os) if meta and meta.os else []
             return f"Needs setup — wrong OS (requires: {', '.join(os_list)})"
-        missing = list(report.missing_bins) + list(report.missing_env)
+        missing = (
+            list(report.missing_bins)
+            + list(report.missing_env)
+            + [_format_env_any_group(group) for group in report.missing_env_any]
+        )
         if missing:
             return f"Needs setup — missing: {', '.join(missing)}"
         return "Needs setup"
@@ -81,11 +90,93 @@ def _status_detail(spec: Any, report: EligibilityReport) -> str:
     if requires is None:
         total = 0
     else:
-        total = len(requires.bins) + (1 if requires.any_bins else 0) + len(requires.env)
+        total = (
+            len(requires.bins)
+            + (1 if requires.any_bins else 0)
+            + len(requires.env)
+            + (1 if requires.env_any else 0)
+        )
     return f"Ready — {total}/{total} dependencies satisfied"
 
 
-def _skill_to_dict(spec: Any, report: EligibilityReport, os_name: str = "") -> dict[str, Any]:
+def _requirements_item(
+    name: str,
+    source: str,
+    spec: Any | None,
+    report: EligibilityReport | None,
+) -> dict[str, Any]:
+    """Build a compact dependency-readiness row for the Skill dialog."""
+    if spec is None or report is None:
+        return {
+            "name": name,
+            "source": source,
+            "status": "missing_skill",
+            "requires_bins": [],
+            "requires_any_bins": [],
+            "requires_env": [],
+            "missing_bins": [],
+            "missing_env": [],
+        }
+
+    meta = getattr(spec, "metadata", None)
+    requires = meta.requires if meta is not None else None
+    return {
+        "name": name,
+        "source": source,
+        "status": _status_from_report(report),
+        "requires_bins": list(requires.bins) if requires else [],
+        "requires_any_bins": list(requires.any_bins) if requires else [],
+        "requires_env": list(requires.env) if requires else [],
+        "missing_bins": list(report.missing_bins),
+        "missing_env": list(report.missing_env),
+    }
+
+
+def _requirements_summary(items: list[dict[str, Any]]) -> str:
+    if not items:
+        return "not_declared"
+    statuses = {str(item.get("status", "")) for item in items}
+    if "needs_setup" in statuses or "missing_skill" in statuses:
+        return "needs_setup"
+    if "ready" in statuses:
+        return "ready"
+    return "not_declared"
+
+
+def _requirements_payload(
+    spec: Any,
+    report: EligibilityReport,
+    sub_skills: list[str],
+    *,
+    skill_index: dict[str, Any] | None = None,
+    eligibility_ctx: EligibilityContext | None = None,
+) -> dict[str, Any]:
+    """Return current-skill requirements plus one-hop meta sub-skill rollup."""
+    items: list[dict[str, Any]] = []
+    if report.declared:
+        items.append(_requirements_item(spec.name, "self", spec, report))
+
+    kind = getattr(spec, "kind", "skill") or "skill"
+    if kind in {"meta", "meta_sop"} and skill_index is not None and eligibility_ctx is not None:
+        for sub_name in sub_skills:
+            sub_spec = skill_index.get(sub_name)
+            sub_report = (
+                diagnose_eligibility(sub_spec, eligibility_ctx) if sub_spec is not None else None
+            )
+            items.append(_requirements_item(sub_name, "sub_skill", sub_spec, sub_report))
+
+    return {"summary": _requirements_summary(items), "items": items}
+
+
+def _skill_to_dict(
+    spec: Any,
+    report: EligibilityReport,
+    os_name: str = "",
+    *,
+    skill_index: dict[str, Any] | None = None,
+    loader: SkillLoader | None = None,
+    eligibility_ctx: EligibilityContext | None = None,
+) -> dict[str, Any]:
     """Convert a SkillSpec to a dict with eligibility diagnostics.
 
     Install options are filtered against ``os_name`` before serialization.
@@ -154,6 +245,13 @@ def _skill_to_dict(spec: Any, report: EligibilityReport, os_name: str = "") -> d
         "install": install_entries,
         "kind": kind,
         "sub_skills": sub_skills,
+        "requirements": _requirements_payload(
+            spec,
+            report,
+            sub_skills,
+            skill_index=skill_index,
+            eligibility_ctx=eligibility_ctx,
+        ),
     }
     provenance = getattr(spec, "provenance", None)
     d["provenance"] = {
@@ -165,10 +263,17 @@ def _skill_to_dict(spec: Any, report: EligibilityReport, os_name: str = "") -> d
     d["declared"] = report.declared
     d["status"] = _status_from_report(report)
     d["status_detail"] = _status_detail(spec, report)
+    d["dependency_summary"] = build_dependency_summary(
+        spec,
+        loader=loader,
+        ctx=eligibility_ctx,
+        report=report,
+    )
     if not report.eligible:
         d["reasons"] = report.reasons
         d["missing_bins"] = report.missing_bins
         d["missing_env"] = report.missing_env
+        d["missing_env_any"] = report.missing_env_any
     return d
 
 
@@ -181,8 +286,16 @@ async def _handle_skills_status(params: dict | None, ctx: RpcContext) -> list[di
 
     ctx_eligible = EligibilityContext.auto()
     skills = loader.load_all()
+    skill_index = {skill.name: skill for skill in skills}
     return [
-        _skill_to_dict(skill, diagnose_eligibility(skill, ctx_eligible), ctx_eligible.os_name)
+        _skill_to_dict(
+            skill,
+            diagnose_eligibility(skill, ctx_eligible),
+            ctx_eligible.os_name,
+            skill_index=skill_index,
+            loader=loader,
+            eligibility_ctx=ctx_eligible,
+        )
         for skill in skills
     ]
 
@@ -195,10 +308,19 @@ async def _handle_skills_list(params: dict | None, ctx: RpcContext) -> dict[str,
         return {"skills": []}
 
     ctx_eligible = EligibilityContext.auto()
-    skills = loader.get_user_invocable()
+    all_skills = loader.load_all()
+    skill_index = {skill.name: skill for skill in all_skills}
+    skills = [skill for skill in all_skills if skill.user_invocable]
     return {
         "skills": [
-            _skill_to_dict(skill, diagnose_eligibility(skill, ctx_eligible), ctx_eligible.os_name)
+            _skill_to_dict(
+                skill,
+                diagnose_eligibility(skill, ctx_eligible),
+                ctx_eligible.os_name,
+                skill_index=skill_index,
+                loader=loader,
+                eligibility_ctx=ctx_eligible,
+            )
             for skill in skills
         ]
     }
@@ -236,12 +358,21 @@ async def _handle_skills_get(params: dict | None, ctx: RpcContext) -> dict[str, 
     if loader is None:
         raise KeyError("No skill loader available")
 
-    skill = loader.get_by_name(params["name"])
+    skills = loader.load_all()
+    skill_index = {item.name: item for item in skills}
+    skill = skill_index.get(params["name"])
     if skill is None:
         raise KeyError(f"Skill not found: {params['name']}")
 
     ctx_eligible = EligibilityContext.auto()
-    result = _skill_to_dict(skill, diagnose_eligibility(skill, ctx_eligible), ctx_eligible.os_name)
+    result = _skill_to_dict(
+        skill,
+        diagnose_eligibility(skill, ctx_eligible),
+        ctx_eligible.os_name,
+        skill_index=skill_index,
+        loader=loader,
+        eligibility_ctx=ctx_eligible,
+    )
     result["content"] = skill.content
     result["file_path"] = skill.file_path
     result["base_dir"] = skill.base_dir
@@ -445,6 +576,7 @@ async def _handle_skills_deps_install(params: dict | None, ctx: RpcContext) -> d
         "missing_still": {
             "bins": list(report.missing_bins),
             "env": list(report.missing_env),
+            "env_any": [list(group) for group in report.missing_env_any],
         },
     }
 

@@ -459,6 +459,103 @@ async def test_start_gateway_server_schedules_router_preload_after_channels(
         await server.close()
 
 
+def test_start_gateway_server_passes_tls_files_to_uvicorn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_config: dict[str, Any] = {}
+
+    class FakeTurnRunner:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def set_session_lock_provider(self, _provider: Any) -> None:
+            pass
+
+    class FakeUvicornConfig:
+        def __init__(self, **kwargs: Any) -> None:
+            captured_config.update(kwargs)
+
+    class FakeServer:
+        def __init__(self, _config: Any) -> None:
+            self.should_exit = False
+
+        async def serve(self) -> None:
+            return None
+
+    async def fake_build_services(**kwargs: Any) -> Any:
+        config = kwargs["config"]
+
+        async def close() -> None:
+            return None
+
+        return SimpleNamespace(
+            provider_selector=object(),
+            tool_registry=object(),
+            session_manager=object(),
+            skill_loader=object(),
+            usage_tracker=object(),
+            config=config,
+            memory_sync_managers={},
+            model_catalog=None,
+            memory_retrievers={},
+            turn_capture_services={},
+            flush_service=None,
+            cron_scheduler=None,
+            task_runtime=None,
+            agent_registry=None,
+            memory_managers={},
+            memory_stores={},
+            _turn_runner_ref=[],
+            close=close,
+        )
+
+    def fake_create_background_task(coro: Any) -> Any:
+        close = getattr(coro, "close", None)
+        if callable(close):
+            close()
+        return asyncio.create_task(asyncio.sleep(0))
+
+    from opensquilla.gateway import boot
+
+    monkeypatch.setattr("opensquilla.engine.runtime.TurnRunner", FakeTurnRunner)
+    monkeypatch.setattr(boot, "build_services", fake_build_services)
+    monkeypatch.setattr(boot, "_setup_file_logging", lambda config: None)
+    monkeypatch.setattr(boot, "emit_skill_filter_banner", lambda config: None)
+    monkeypatch.setattr(boot, "create_background_task", fake_create_background_task)
+    monkeypatch.setattr(boot.uvicorn, "Config", FakeUvicornConfig)
+    monkeypatch.setattr(boot.uvicorn, "Server", FakeServer)
+    monkeypatch.setattr(
+        "opensquilla.gateway.pidlock.GatewayPidLock.acquire",
+        lambda self: None,
+    )
+    monkeypatch.setattr(
+        "opensquilla.gateway.pidlock.GatewayPidLock.release",
+        lambda self: None,
+    )
+
+    keyfile = str(tmp_path / "gateway.key")
+    certfile = str(tmp_path / "gateway.crt")
+    config = GatewayConfig(
+        state_dir=str(tmp_path / "state"),
+        workspace_dir=str(tmp_path / "workspace"),
+        control_ui={"enabled": False},
+        channels={"channels": []},
+        tls={"keyfile": keyfile, "certfile": certfile},
+    )
+
+    async def run_case() -> None:
+        server = await boot.start_gateway_server(config=config, run=True)
+
+        try:
+            assert captured_config["ssl_keyfile"] == keyfile
+            assert captured_config["ssl_certfile"] == certfile
+        finally:
+            await server.close()
+
+    asyncio.run(run_case())
+
+
 @pytest.mark.asyncio
 async def test_start_gateway_server_wires_cron_failure_dispatcher(
     tmp_path: Path,
@@ -737,7 +834,7 @@ async def test_start_gateway_server_wires_meta_skill_auto_propose_routes(
         },
         squilla_router={
             "tiers": {
-                "t3": {
+                "c3": {
                     "model": "frontier-t3-model",
                     "thinking_level": "high",
                 },
@@ -758,7 +855,7 @@ async def test_start_gateway_server_wires_meta_skill_auto_propose_routes(
         assert runtime_contexts[-1]["skill_loader"] is server._services.skill_loader
         base_config = runtime_contexts[-1]["base_config"]
         assert base_config.model_id == "frontier-t3-model"
-        assert base_config.metadata["routed_tier"] == "t3"
+        assert base_config.metadata["routed_tier"] == "c3"
         assert base_config.metadata["thinking_level"] == "high"
         assert runtime_contexts[-1]["baseline_model"] == "frontier-t3-model"
         with pytest.raises(RuntimeError):
@@ -792,6 +889,7 @@ def test_build_flush_service_uses_configured_background_memory_timeout() -> None
         provider_selector=SimpleNamespace(resolve=lambda: object()),
         config=GatewayConfig(
             memory={
+                "flush_enabled": True,
                 "flush_timeout_seconds": 0.25,
                 "flush_background_timeout_seconds": 42.0,
             }
@@ -812,7 +910,7 @@ async def test_build_flush_service_archive_workspace_falls_back_to_main_workspac
     service = build_flush_service(
         tool_registry=registry,
         provider_selector=SimpleNamespace(resolve=lambda: None),
-        config=GatewayConfig(),
+        config=GatewayConfig(memory={"flush_enabled": True}),
         memory_managers={
             "side": SimpleNamespace(workspace_dir=None, memory_dir=matching_memory_dir),
             "main": SimpleNamespace(
@@ -862,7 +960,7 @@ async def test_build_flush_service_wires_durable_receipt_writer(tmp_path: Path) 
         service = build_flush_service(
             tool_registry=registry,
             provider_selector=SimpleNamespace(resolve=lambda: None),
-            config=GatewayConfig(),
+            config=GatewayConfig(memory={"flush_enabled": True}),
             session_manager=session_manager,
             memory_managers={"main": SimpleNamespace(workspace_dir=tmp_path)},
         )
@@ -924,7 +1022,7 @@ async def test_build_flush_service_receipt_uses_session_id_captured_before_rotat
         service = build_flush_service(
             tool_registry=registry,
             provider_selector=SimpleNamespace(resolve=lambda: None),
-            config=GatewayConfig(),
+            config=GatewayConfig(memory={"flush_enabled": True}),
             session_manager=session_manager,
             memory_managers={"main": SimpleNamespace(workspace_dir=tmp_path)},
         )
@@ -987,7 +1085,7 @@ async def test_build_flush_service_receipts_distinguish_same_window_different_co
         service = build_flush_service(
             tool_registry=registry,
             provider_selector=SimpleNamespace(resolve=lambda: None),
-            config=GatewayConfig(),
+            config=GatewayConfig(memory={"flush_enabled": True}),
             session_manager=session_manager,
             memory_managers={"main": SimpleNamespace(workspace_dir=tmp_path)},
         )
@@ -1043,7 +1141,7 @@ async def test_build_flush_service_archive_failed_without_checkpoint_is_checkpoi
         service = build_flush_service(
             tool_registry=registry,
             provider_selector=SimpleNamespace(resolve=lambda: None),
-            config=GatewayConfig(),
+            config=GatewayConfig(memory={"flush_enabled": True}),
             session_manager=session_manager,
         )
 
@@ -1234,7 +1332,13 @@ def test_configured_agent_ids_include_enabled_registry_agents_and_channels() -> 
                 AgentEntryConfig(id="disabled", enabled=False),
             ]
         ),
-        entry_payload={"type": "slack", "name": "work", "token": "x", "agent_id": "channel"},
+        entry_payload={
+            "type": "slack",
+            "name": "work",
+            "token": "x",
+            "signing_secret": "ss",
+            "agent_id": "channel",
+        },
     )
 
     assert _configured_agent_ids(result.config) == ["channel", "main", "ops"]

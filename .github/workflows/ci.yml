@@ -3,7 +3,7 @@ name: CI
 "on":
   pull_request:
   push:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
 permissions:
@@ -14,6 +14,52 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  classify-changes:
+    name: Classify changed files
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+      runtime_changed: ${{ steps.classify.outputs.runtime_changed }}
+      test_changed: ${{ steps.classify.outputs.test_changed }}
+      ci_changed: ${{ steps.classify.outputs.ci_changed }}
+      dependency_changed: ${{ steps.classify.outputs.dependency_changed }}
+      release_changed: ${{ steps.classify.outputs.release_changed }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: List changed files
+        shell: bash
+        run: |
+          set -euo pipefail
+          changed_files="${RUNNER_TEMP}/changed-files.txt"
+
+          case "${{ github.event_name }}" in
+            pull_request)
+              git diff --name-only \
+                "${{ github.event.pull_request.base.sha }}" \
+                "${{ github.event.pull_request.head.sha }}" > "${changed_files}"
+              ;;
+            push)
+              printf '.ci/run-all\n' > "${changed_files}"
+              ;;
+            *)
+              printf '.ci/run-all\n' > "${changed_files}"
+              ;;
+          esac
+
+          echo "Changed files:"
+          sed 's/^/  /' "${changed_files}"
+          printf 'CHANGED_FILES=%s\n' "${changed_files}" >> "${GITHUB_ENV}"
+
+      - name: Classify changed files
+        id: classify
+        shell: bash
+        run: bash .github/scripts/classify-ci-changes.sh "${CHANGED_FILES}"
+
   workflow-lint:
     name: Validate GitHub Actions workflows
     runs-on: ubuntu-latest
@@ -27,6 +73,8 @@ jobs:
 
   frontend-check:
     name: Frontend build and typecheck
+    needs: classify-changes
+    if: needs.classify-changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -60,19 +108,15 @@ jobs:
           fi
           echo "Frontend dist verified"
 
-  checks:
-    name: Lint, test, and build
-    runs-on: ${{ matrix.os }}
+  ubuntu-quality:
+    name: Lint, test, and build (ubuntu-latest, 3.12)
+    needs: classify-changes
+    if: needs.classify-changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
     timeout-minutes: 20
 
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        python-version: ['3.12']
-
     env:
-      UV_PYTHON: ${{ matrix.python-version }}
+      UV_PYTHON: "3.12"
       PYTHONPATH: ${{ github.workspace }}
       OPENSQUILLA_TURN_CALL_LOG: "0"
 
@@ -91,7 +135,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.12"
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
@@ -134,3 +178,158 @@ jobs:
       - name: Build wheel
         shell: bash
         run: uv build --wheel
+
+  windows-compat:
+    name: Lint, test, and build (windows-latest, 3.12)
+    needs: classify-changes
+    if: needs.classify-changes.outputs.docs_only != 'true'
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    env:
+      UV_PYTHON: "3.12"
+      PYTHONPATH: ${{ github.workspace }}
+      OPENSQUILLA_TURN_CALL_LOG: "0"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Configure runtime directories
+        shell: bash
+        run: |
+          printf 'OPENSQUILLA_STATE_DIR=%s/opensquilla-state\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'OPENSQUILLA_LOG_DIR=%s/opensquilla-logs\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        shell: bash
+        run: uv sync --extra dev --extra recommended --extra mcp --frozen
+
+      - name: Test
+        shell: bash
+        run: uv run pytest tests -q
+
+  release-packaging:
+    name: Release packaging contracts
+    needs: classify-changes
+    if: needs.classify-changes.outputs.release_changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      UV_PYTHON: "3.12"
+      PYTHONPATH: ${{ github.workspace }}
+      OPENSQUILLA_TURN_CALL_LOG: "0"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        shell: bash
+        run: uv sync --extra dev --extra recommended --extra mcp --frozen
+
+      - name: Run release packaging contract tests
+        shell: bash
+        run: |
+          uv run pytest \
+            tests/test_scripts/test_build_wheelhouse_zip.py \
+            tests/test_install_scripts.py \
+            tests/test_root_start_scripts.py \
+            tests/test_release_consistency.py \
+            tests/test_public_release_hygiene.py \
+            -q
+
+  ci-result:
+    name: CI result
+    needs:
+      - classify-changes
+      - workflow-lint
+      - frontend-check
+      - ubuntu-quality
+      - windows-compat
+      - release-packaging
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check required CI results
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          classify_result="${{ needs.classify-changes.result }}"
+          workflow_lint_result="${{ needs.workflow-lint.result }}"
+          frontend_result="${{ needs.frontend-check.result }}"
+          ubuntu_result="${{ needs.ubuntu-quality.result }}"
+          windows_result="${{ needs.windows-compat.result }}"
+          release_result="${{ needs.release-packaging.result }}"
+          docs_only="${{ needs.classify-changes.outputs.docs_only }}"
+          runtime_changed="${{ needs.classify-changes.outputs.runtime_changed }}"
+          test_changed="${{ needs.classify-changes.outputs.test_changed }}"
+          ci_changed="${{ needs.classify-changes.outputs.ci_changed }}"
+          dependency_changed="${{ needs.classify-changes.outputs.dependency_changed }}"
+          release_changed="${{ needs.classify-changes.outputs.release_changed }}"
+
+          printf 'classify-changes: %s\n' "${classify_result}"
+          printf 'workflow-lint: %s\n' "${workflow_lint_result}"
+          printf 'frontend-check: %s\n' "${frontend_result}"
+          printf 'ubuntu-quality: %s\n' "${ubuntu_result}"
+          printf 'windows-compat: %s\n' "${windows_result}"
+          printf 'release-packaging: %s\n' "${release_result}"
+          printf 'docs_only=%s runtime_changed=%s test_changed=%s ci_changed=%s dependency_changed=%s release_changed=%s\n' \
+            "${docs_only}" "${runtime_changed}" "${test_changed}" "${ci_changed}" "${dependency_changed}" "${release_changed}"
+
+          if [[ "${classify_result}" != "success" ]]; then
+            echo "Classify changed files must succeed."
+            exit 1
+          fi
+
+          if [[ "${workflow_lint_result}" != "success" ]]; then
+            echo "Workflow lint must succeed."
+            exit 1
+          fi
+
+          if [[ "${docs_only}" != "true" && "${frontend_result}" != "success" ]]; then
+            echo "Frontend build and typecheck must succeed for non-documentation changes."
+            exit 1
+          fi
+
+          if [[ "${docs_only}" != "true" && "${ubuntu_result}" != "success" ]]; then
+            echo "Ubuntu quality gate must succeed for non-documentation changes."
+            exit 1
+          fi
+
+          if [[ "${docs_only}" != "true" && "${windows_result}" != "success" ]]; then
+            echo "Windows compatibility tests must succeed for non-documentation changes."
+            exit 1
+          fi
+
+          if [[ "${release_changed}" == "true" && "${release_result}" != "success" ]]; then
+            echo "Release packaging contracts must succeed for release-surface changes."
+            exit 1
+          fi

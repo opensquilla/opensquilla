@@ -27,7 +27,17 @@ from opensquilla.gateway.config_migration import (
     migrate_config_payload,
 )
 from opensquilla.paths import default_opensquilla_home
+from opensquilla.router_tiers import (
+    DEFAULT_TEXT_TIER,
+    normalize_text_tier,
+    normalize_tier_mapping,
+)
 from opensquilla.sandbox.config import SandboxSettings
+from opensquilla.session.compaction_lifecycle import (
+    DEFAULT_FLUSH_TRIGGERS,
+    FlushTrigger,
+    normalize_flush_triggers_strict,
+)
 
 
 class ContextOverflowPolicy(StrEnum):
@@ -491,7 +501,11 @@ class MemoryConfig(BaseSettings):
     ttl_sweep_interval_minutes: float = Field(default=60.0, ge=0.0)
 
     # Flush (pre-compaction memory save)
-    flush_enabled: bool = True
+    flush_enabled: bool = False
+    flush_triggers: list[FlushTrigger] = Field(
+        default_factory=lambda: list(DEFAULT_FLUSH_TRIGGERS)
+    )
+    flush_pre_compaction: bool = False
     flush_timeout_seconds: float = 15.0
     flush_background_timeout_seconds: float = 120.0
     flush_backoff_initial_seconds: float = 30.0
@@ -502,6 +516,11 @@ class MemoryConfig(BaseSettings):
     repair_enabled: bool = True
     repair_interval_seconds: float = Field(default=60.0, ge=0.0)
     repair_max_items_per_tick: int = Field(default=5, ge=1)
+
+    @field_validator("flush_triggers", mode="before")
+    @classmethod
+    def _normalize_flush_triggers(cls, value: object) -> list[FlushTrigger]:
+        return list(normalize_flush_triggers_strict(value))
 
     # Per-turn auto capture / recall
     auto_capture_enabled: bool = True
@@ -534,41 +553,41 @@ class MemoryConfig(BaseSettings):
 def _default_tiers() -> dict:
     """Default model routing config."""
     return {
-        "t0": {
+        "c0": {
             "provider": "openrouter",
             "model": "deepseek/deepseek-v4-flash",
             "description": (
-                "S tier: fast DeepSeek V4 Flash route for trivial chat, short rewrites, "
+                "fast DeepSeek V4 Flash route for trivial chat, short rewrites, "
                 "extraction, and low-risk simple Q&A"
             ),
             "supports_image": False,
             "thinking_level": "high",
         },
-        "t1": {
+        "c1": {
             "provider": "openrouter",
             "model": "deepseek/deepseek-v4-pro",
             "description": (
-                "M tier: default balanced text model for normal agent work, coding assistance, "
+                "default balanced text model for normal agent work, coding assistance, "
                 "debugging, and moderate analysis"
             ),
             "supports_image": False,
             "thinking_level": "high",
         },
-        "t2": {
+        "c2": {
             "provider": "openrouter",
             "model": "z-ai/glm-5.1",
             "description": (
-                "L tier: stronger text model for multi-step coding, structured reasoning, "
+                "stronger text model for multi-step coding, structured reasoning, "
                 "larger context synthesis, and harder analysis"
             ),
             "supports_image": False,
             "thinking_level": "high",
         },
-        "t3": {
+        "c3": {
             "provider": "openrouter",
             "model": "anthropic/claude-opus-4.7",
             "description": (
-                "XL tier: highest-quality text reasoning model for difficult planning, "
+                "Highest-quality text reasoning model for difficult planning, "
                 "deep review, complex debugging, and high-stakes synthesis"
             ),
             "supports_image": False,
@@ -629,34 +648,34 @@ def _router_tier_profile_defaults(profile: str | None) -> dict:
         return _default_tiers()
     profiles = {
         "openai": {
-            "t0": {
+            "c0": {
                 "provider": "openai",
                 "model": "gpt-5.4-nano",
                 "description": (
-                    "OpenAI fast tier: GPT-5.4 Nano for fast, high-throughput simple work."
+                    "OpenAI fast route: GPT-5.4 Nano for fast, high-throughput simple work."
                 ),
                 "supports_image": False,
                 "thinking_level": "none",
             },
-            "t1": {
+            "c1": {
                 "provider": "openai",
                 "model": "gpt-5.4-mini",
-                "description": "OpenAI balanced tier: GPT-5.4 Mini for normal agent work.",
+                "description": "OpenAI balanced route: GPT-5.4 Mini for normal agent work.",
                 "supports_image": False,
                 "thinking_level": "low",
             },
-            "t2": {
+            "c2": {
                 "provider": "openai",
                 "model": "gpt-5.5",
-                "description": "OpenAI strong tier: GPT-5.5 for complex text tasks.",
+                "description": "OpenAI strong route: GPT-5.5 for complex text tasks.",
                 "supports_image": False,
                 "thinking_level": "medium",
             },
-            "t3": {
+            "c3": {
                 "provider": "openai",
                 "model": "gpt-5.5",
                 "description": (
-                    "OpenAI highest tier: GPT-5.5 with high reasoning; GPT-5.5 Pro is "
+                    "OpenAI highest route: GPT-5.5 with high reasoning; GPT-5.5 Pro is "
                     "excluded because it is not streaming-compatible."
                 ),
                 "supports_image": False,
@@ -664,76 +683,76 @@ def _router_tier_profile_defaults(profile: str | None) -> dict:
             },
         },
         "dashscope": {
-            "t0": {
+            "c0": {
                 "provider": "dashscope",
                 "model": "qwen3.6-flash",
                 "description": (
-                    "DashScope fast tier: Qwen3.6 Flash for simple text tasks; "
+                    "DashScope fast route: Qwen3.6 Flash for simple text tasks; "
                     "pending live smoke."
                 ),
                 "supports_image": False,
             },
-            "t1": {
+            "c1": {
                 "provider": "dashscope",
                 "model": "qwen3.6-plus",
                 "description": (
-                    "DashScope balanced tier: Qwen3.6 Plus for normal agent and "
+                    "DashScope balanced route: Qwen3.6 Plus for normal agent and "
                     "coding work; pending live smoke."
                 ),
                 "supports_image": False,
             },
-            "t2": {
+            "c2": {
                 "provider": "dashscope",
                 "model": "qwen3-max",
-                "description": "DashScope strong tier: Qwen3 Max for complex text tasks.",
+                "description": "DashScope strong route: Qwen3 Max for complex text tasks.",
                 "supports_image": False,
             },
-            "t3": {
+            "c3": {
                 "provider": "dashscope",
                 "model": "qwen3-max",
                 "description": (
-                    "DashScope highest tier: Qwen3 Max; higher-thinking behavior "
+                    "DashScope highest route: Qwen3 Max; higher-thinking behavior "
                     "requires future payload support."
                 ),
                 "supports_image": False,
             },
         },
         "deepseek": {
-            "t0": {
+            "c0": {
                 "provider": "deepseek",
                 "model": "deepseek-v4-flash",
                 "description": (
-                    "DeepSeek fast tier: V4 Flash with no router-requested thinking; "
+                    "DeepSeek fast route: V4 Flash with no router-requested thinking; "
                     "request ID pending live smoke."
                 ),
                 "supports_image": False,
                 "thinking_level": "off",
             },
-            "t1": {
+            "c1": {
                 "provider": "deepseek",
                 "model": "deepseek-v4-flash",
                 "description": (
-                    "DeepSeek balanced tier: V4 Flash with thinking enabled; request "
+                    "DeepSeek balanced route: V4 Flash with thinking enabled; request "
                     "ID pending live smoke."
                 ),
                 "supports_image": False,
                 "thinking_level": "low",
             },
-            "t2": {
+            "c2": {
                 "provider": "deepseek",
                 "model": "deepseek-v4-pro",
                 "description": (
-                    "DeepSeek strong tier: V4 Pro with thinking enabled; request ID "
+                    "DeepSeek strong route: V4 Pro with thinking enabled; request ID "
                     "pending live smoke."
                 ),
                 "supports_image": False,
                 "thinking_level": "medium",
             },
-            "t3": {
+            "c3": {
                 "provider": "deepseek",
                 "model": "deepseek-v4-pro",
                 "description": (
-                    "DeepSeek highest tier: same V4 Pro wire behavior until "
+                    "DeepSeek highest route: same V4 Pro wire behavior until "
                     "effort-level support is added."
                 ),
                 "supports_image": False,
@@ -741,31 +760,31 @@ def _router_tier_profile_defaults(profile: str | None) -> dict:
             },
         },
         "gemini": {
-            "t0": {
+            "c0": {
                 "provider": "gemini",
                 "model": "gemini-2.5-flash-lite",
-                "description": "Gemini fast tier: 2.5 Flash-Lite for low-latency tasks.",
+                "description": "Gemini fast route: 2.5 Flash-Lite for low-latency tasks.",
                 "supports_image": False,
             },
-            "t1": {
+            "c1": {
                 "provider": "gemini",
                 "model": "gemini-2.5-flash",
-                "description": "Gemini balanced tier: 2.5 Flash for normal agent work.",
+                "description": "Gemini balanced route: 2.5 Flash for normal agent work.",
                 "supports_image": False,
                 "thinking_level": "low",
             },
-            "t2": {
+            "c2": {
                 "provider": "gemini",
                 "model": "gemini-2.5-pro",
-                "description": "Gemini strong tier: 2.5 Pro for complex coding and reasoning.",
+                "description": "Gemini strong route: 2.5 Pro for complex coding and reasoning.",
                 "supports_image": False,
                 "thinking_level": "medium",
             },
-            "t3": {
+            "c3": {
                 "provider": "gemini",
                 "model": "gemini-2.5-pro",
                 "description": (
-                    "Gemini highest tier: 2.5 Pro with high thinking; 3.1 preview "
+                    "Gemini highest route: 2.5 Pro with high thinking; 3.1 preview "
                     "remains opt-in."
                 ),
                 "supports_image": False,
@@ -773,73 +792,73 @@ def _router_tier_profile_defaults(profile: str | None) -> dict:
             },
         },
         "zhipu": {
-            "t0": {
+            "c0": {
                 "provider": "zhipu",
                 "model": "glm-4.7-flashx",
                 "description": (
-                    "Zhipu fast tier: GLM-4.7 FlashX for simple text tasks; live smoke "
+                    "Zhipu fast route: GLM-4.7 FlashX for simple text tasks; live smoke "
                     "may require fallback."
                 ),
                 "supports_image": False,
             },
-            "t1": {
+            "c1": {
                 "provider": "zhipu",
                 "model": "glm-5",
-                "description": "Zhipu balanced tier: GLM-5 for normal agent work.",
+                "description": "Zhipu balanced route: GLM-5 for normal agent work.",
                 "supports_image": False,
                 "thinking_level": "low",
             },
-            "t2": {
+            "c2": {
                 "provider": "zhipu",
                 "model": "glm-5.1",
-                "description": "Zhipu strong tier: GLM-5.1 for complex text tasks.",
+                "description": "Zhipu strong route: GLM-5.1 for complex text tasks.",
                 "supports_image": False,
                 "thinking_level": "medium",
             },
-            "t3": {
+            "c3": {
                 "provider": "zhipu",
                 "model": "glm-5.1",
-                "description": "Zhipu highest tier: GLM-5.1 with high reasoning effort.",
+                "description": "Zhipu highest route: GLM-5.1 with high reasoning effort.",
                 "supports_image": False,
                 "thinking_level": "high",
             },
         },
         "moonshot": {
-            "t0": {
+            "c0": {
                 "provider": "moonshot",
                 "model": "kimi-k2.5",
                 "description": (
-                    "Moonshot fast tier: Kimi K2.5 for cost-efficient agent work "
+                    "Moonshot fast route: Kimi K2.5 for cost-efficient agent work "
                     "with 256K context."
                 ),
                 "supports_image": True,
                 "thinking_level": "low",
             },
-            "t1": {
+            "c1": {
                 "provider": "moonshot",
                 "model": "kimi-k2.5",
                 "description": (
-                    "Moonshot balanced tier: Kimi K2.5 for normal multimodal "
+                    "Moonshot balanced route: Kimi K2.5 for normal multimodal "
                     "agent work."
                 ),
                 "supports_image": True,
                 "thinking_level": "medium",
             },
-            "t2": {
+            "c2": {
                 "provider": "moonshot",
                 "model": "kimi-k2.6",
                 "description": (
-                    "Moonshot strong tier: Kimi K2.6 for complex coding, reasoning, "
+                    "Moonshot strong route: Kimi K2.6 for complex coding, reasoning, "
                     "and multimodal tasks."
                 ),
                 "supports_image": True,
                 "thinking_level": "medium",
             },
-            "t3": {
+            "c3": {
                 "provider": "moonshot",
                 "model": "kimi-k2.6",
                 "description": (
-                    "Moonshot highest tier: Kimi K2.6 for the hardest long-horizon "
+                    "Moonshot highest route: Kimi K2.6 for the hardest long-horizon "
                     "agent work."
                 ),
                 "supports_image": True,
@@ -847,41 +866,41 @@ def _router_tier_profile_defaults(profile: str | None) -> dict:
             },
         },
         "volcengine": {
-            "t0": {
+            "c0": {
                 "provider": "volcengine",
                 "model": "doubao-seed-2-0-mini-260215",
                 "description": (
-                    "Volcengine fast tier: Doubao Seed 2.0 Mini for low-latency, "
+                    "Volcengine fast route: Doubao Seed 2.0 Mini for low-latency, "
                     "low-cost simple text tasks."
                 ),
                 "supports_image": False,
                 "thinking_level": "off",
             },
-            "t1": {
+            "c1": {
                 "provider": "volcengine",
                 "model": "doubao-seed-2-0-lite-260215",
                 "description": (
-                    "Volcengine balanced tier: Doubao Seed 2.0 Lite for daily agent "
+                    "Volcengine balanced route: Doubao Seed 2.0 Lite for daily agent "
                     "work with lower cost than Pro."
                 ),
                 "supports_image": False,
                 "thinking_level": "low",
             },
-            "t2": {
+            "c2": {
                 "provider": "volcengine",
                 "model": "doubao-seed-2-0-pro-260215",
                 "description": (
-                    "Volcengine strong tier: Doubao Seed 2.0 Pro for complex "
+                    "Volcengine strong route: Doubao Seed 2.0 Pro for complex "
                     "reasoning and multimodal-capable text work."
                 ),
                 "supports_image": False,
                 "thinking_level": "medium",
             },
-            "t3": {
+            "c3": {
                 "provider": "volcengine",
                 "model": "doubao-seed-2-0-code-preview-260215",
                 "description": (
-                    "Volcengine highest tier: Doubao Seed 2.0 Code Preview for the "
+                    "Volcengine highest route: Doubao Seed 2.0 Code Preview for the "
                     "hardest coding and code-review routes."
                 ),
                 "supports_image": False,
@@ -904,7 +923,7 @@ class SquillaRouterConfig(BaseSettings):
     strategy: str = "v4_phase3"
     tier_profile: str | None = None
     tiers: dict = Field(default_factory=_default_tiers)
-    default_tier: str = "t1"
+    default_tier: str = DEFAULT_TEXT_TIER
     confidence_threshold: float = 0.5
     v4_bundle_dir: str | None = None  # V4 Phase 3 bundle root; defaults to bundled assets
     v4_use_aux_head: bool | None = True  # override router.runtime.yaml aux head when set
@@ -916,13 +935,27 @@ class SquillaRouterConfig(BaseSettings):
     complaint_upgrade_max_chars: int = 160
     require_router_runtime: bool = True
     estimated_output_savings_pct: float = 0.03
-    upgrade_to_t3_compaction_enabled: bool = True
+    upgrade_to_c3_compaction_enabled: bool = True
 
     @model_validator(mode="before")
     @classmethod
     def _resolve_tier_profile_defaults(cls, values: Any) -> Any:
         if not isinstance(values, dict):
             return values
+        values = dict(values)
+        if (
+            "upgrade_to_c3_compaction_enabled" not in values
+            and "upgrade_to_t3_compaction_enabled" in values
+        ):
+            values["upgrade_to_c3_compaction_enabled"] = values[
+                "upgrade_to_t3_compaction_enabled"
+            ]
+        if "default_tier" in values:
+            values["default_tier"] = normalize_text_tier(values.get("default_tier")) or values.get(
+                "default_tier"
+            )
+        if isinstance(values.get("tiers"), dict):
+            values["tiers"] = normalize_tier_mapping(values["tiers"])
         profile = values.get("tier_profile")
         if profile is None:
             return values
@@ -959,6 +992,8 @@ class CompactionLlmConfig(BaseSettings):
     model: str | None = None  # None = use session model
     timeout_seconds: float = 90.0
     enabled: bool = True
+    compaction_profile: Literal["conversation", "coding", "research", "support"] = "conversation"
+    protected_recent_messages: int = Field(default=0, ge=0)
 
 
 class MCPServerEntry(BaseSettings):
@@ -1063,6 +1098,46 @@ class ImageGenerationConfig(BaseSettings):
     )
 
 
+class AudioElevenLabsProviderConfig(BaseModel):
+    base_url: str = "https://api.elevenlabs.io"
+    api_key: str = ""
+    api_key_env: str = "ELEVENLABS_API_KEY"
+    speech_to_text_model: str = "scribe_v2"
+    voice_conversion_model: str = "eleven_multilingual_sts_v2"
+    music_model: str = "music_v1"
+    music_output_format: str = "mp3_44100_128"
+
+
+class AudioProvidersConfig(BaseModel):
+    elevenlabs: AudioElevenLabsProviderConfig = Field(
+        default_factory=AudioElevenLabsProviderConfig
+    )
+
+
+class AudioTTSConfig(BaseModel):
+    model: str = "eleven_multilingual_v2"
+    voice: str = "21m00Tcm4TlvDq8ikWAM"
+    language_code: str = ""
+    output_format: str = "mp3_44100_128"
+    timeout_seconds: float = 120.0
+    stability: float | None = None
+    similarity_boost: float | None = None
+    style: float | None = None
+    use_speaker_boost: bool | None = None
+    speed: float = 1.0
+
+
+class AudioConfig(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="OPENSQUILLA_AUDIO_",
+        env_nested_delimiter="__",
+    )
+
+    enabled: bool = False
+    tts: AudioTTSConfig = Field(default_factory=AudioTTSConfig)
+    providers: AudioProvidersConfig = Field(default_factory=AudioProvidersConfig)
+
+
 # ---------------------------------------------------------------------------
 # Channel config (BaseModel — no env-var binding, validated at TOML load)
 # Names use *Entry suffix to avoid shadowing adapter-level *ChannelConfig.
@@ -1095,6 +1170,17 @@ class SlackChannelEntry(ConfiguredChannelEntry):
     slack_channel_id: str = ""
     signing_secret: str | None = None
     reply_in_thread: bool = False
+    # ``socket`` uses Slack Socket Mode (an outbound websocket long-connection,
+    # like Feishu) and needs no public Request URL; ``webhook`` keeps the
+    # Events API webhook. Socket Mode additionally requires ``app_token``.
+    connection_mode: Literal["webhook", "socket"] = "webhook"
+    app_token: str = ""
+
+    @model_validator(mode="after")
+    def _validate_socket_app_token(self) -> SlackChannelEntry:
+        if self.connection_mode == "socket" and not self.app_token.strip():
+            raise ValueError("slack socket channels require app_token")
+        return self
 
 
 class FeishuChannelEntry(ConfiguredChannelEntry):
@@ -1455,6 +1541,7 @@ class GatewayConfig(BaseSettings):
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
     image_generation: ImageGenerationConfig = Field(default_factory=ImageGenerationConfig)
+    audio: AudioConfig = Field(default_factory=AudioConfig)
     sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     agents: list[AgentEntryConfig] = Field(default_factory=list)
@@ -1711,6 +1798,13 @@ class GatewayConfig(BaseSettings):
             data.pop("search_api_key_env", None)
         elif not data.get("search_api_key"):
             data.pop("search_api_key", None)
+        _delete_env_sourced_secret(
+            data,
+            "audio.providers.elevenlabs.api_key",
+            "audio.providers.elevenlabs.api_key_env",
+            default_env="ELEVENLABS_API_KEY",
+            settings_env="OPENSQUILLA_AUDIO_PROVIDERS__ELEVENLABS__API_KEY",
+        )
         router = data.get("squilla_router")
         if isinstance(router, dict) and router.get("tier_profile"):
             try:
@@ -1862,3 +1956,31 @@ def _delete_path(obj: dict[str, Any], path: str) -> None:
             return
         current = next_value
     current.pop(parts[-1], None)
+
+
+def _get_path(obj: dict[str, Any], path: str) -> Any:
+    current: Any = obj
+    for part in path.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
+def _delete_env_sourced_secret(
+    obj: dict[str, Any],
+    secret_path: str,
+    env_path: str,
+    *,
+    default_env: str,
+    settings_env: str | None = None,
+) -> None:
+    value = str(_get_path(obj, secret_path) or "").strip()
+    if not value:
+        _delete_path(obj, secret_path)
+        return
+    env_name = str(_get_path(obj, env_path) or default_env).strip() or default_env
+    if os.environ.get(env_name) == value or (
+        settings_env is not None and os.environ.get(settings_env) == value
+    ):
+        _delete_path(obj, secret_path)

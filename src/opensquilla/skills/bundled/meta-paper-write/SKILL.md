@@ -19,10 +19,14 @@ provenance:
   origin: opensquilla-original
   license: Apache-2.0
 metadata:
+  platform:
+    requires:
+      bins: ["xelatex", "bibtex"]
   opensquilla:
-    risk: low
+    risk: high
     capabilities:
       - filesystem-write
+      - process-control
 composition:
   steps:
     - id: paper_collect

@@ -14,13 +14,25 @@ from opensquilla.skills.loader import SkillLoader
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLED = ROOT / "src" / "opensquilla" / "skills" / "bundled"
+AUDIO_DEFAULTS = {
+    "advanced-dubbing-studio",
+    "music-and-singing-studio",
+    "voice-clone-lab",
+    "voice-conversion-studio",
+    "voiceover-studio",
+}
 DEFAULTS = {
+    "AwesomeWebpageMetaSkill",
+    "ai-video-script",
+    "audio-cog",
     "cron",
     "deep-research",
     "docx",
+    "filesystem",
     "git-diff",
     "github",
     "history-explorer",
+    "html-coder",
     "html-to-pdf",
     "http-fetch",
     "latex-compile",
@@ -31,9 +43,11 @@ DEFAULTS = {
     "meta-job-search-pipeline",
     "meta-kid-project-planner",
     "meta-paper-write",
+    "meta-short-drama",
     "meta-skill-creator",
     "meta-web-research-to-report",
     "multi-search-engine",
+    "nano-banana-pro",
     "nano-pdf",
     "paper-abstract-author",
     "paper-citation-planner",
@@ -47,14 +61,27 @@ DEFAULTS = {
     "paper-source-curator",
     "pdf-toolkit",
     "pptx",
+    "seedance-2-prompt",
     "skill-creator",
+    "srt-from-script",
     "sub-agent",
+    "subtitle-burner",
     "summarize",
+    "text-file-read",
+    "title-card-image",
     "tmux",
+    "video-merger",
+    "video-still-animator",
     "weather",
+    "web-search",
     "xlsx",
-}
+} | AUDIO_DEFAULTS
+PROMPT_DEFAULTS_WITHOUT_AUDIO_TOOLS = DEFAULTS - AUDIO_DEFAULTS
 INTERNAL_HELPERS = {
+    "awesome-webpage-image-download",
+    "awesome-webpage-research",
+    "nano-banana-pro-openrouter",
+    "openrouter-video-generator",
     "skill-creator-linter",
     "skill-creator-proposals",
     "skill-creator-smoke-test",
@@ -140,11 +167,24 @@ async def test_default_prompt_only_injects_retained_bundled_skills(
         EligibilityContext(
             os_name="linux",
             has_bin_cache={
+                "bibtex": True,
                 "codex": True,
                 "curl": True,
+                "ffmpeg": True,
+                "ffprobe": True,
                 "xelatex": True,
                 "nano-pdf": True,
+                "python": True,
+                "python3": True,
                 "tmux": True,
+            },
+            env_cache={
+                "ARK_API_KEY": "set",
+                "BYTEPLUS_API_KEY": "set",
+                "GEMINI_API_KEY": "set",
+                "OPENAI_API_KEY": "set",
+                "OPENROUTER_API_KEY": "set",
+                "VOLC_ARK_API_KEY": "set",
             },
         ),
     )
@@ -153,8 +193,10 @@ async def test_default_prompt_only_injects_retained_bundled_skills(
     ctx = await filter_skills(_ctx(loader))
 
     prompt = ctx.system_prompt[1]
-    for name in DEFAULTS:
+    for name in PROMPT_DEFAULTS_WITHOUT_AUDIO_TOOLS:
         assert f"<name>{name}</name>" in prompt
+    for name in AUDIO_DEFAULTS:
+        assert f"<name>{name}</name>" not in prompt
     for name in INTERNAL_HELPERS:
         assert f"<name>{name}</name>" not in prompt
     assert "<name>healthcheck</name>" not in prompt

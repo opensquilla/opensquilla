@@ -347,6 +347,30 @@ class ChatApplication:
     def surface(self) -> Surface:
         return self._surface
 
+    def reset_session_state(self) -> None:
+        """Reset state that belongs to one interactive-session lifetime.
+
+        ``ChatApplication`` instances are cached per surface so prompt-toolkit
+        wiring, history, and completion setup can be reused across repeated
+        same-process ``interactive_session()`` entries. EOF/callback/paste
+        state is different: it describes one active session and must not leak
+        into the next cached use.
+        """
+        self._eof_seen = False
+        self._cancel_callback = None
+        self._shutdown_callback = None
+        self._last_ctrl_c_at = None
+        self._active_stream_writer = None
+        self._clear_pasted_content()
+        self._buffer.reset()
+        self._next_paste_index = 1
+        self.set_approval_in_flight(False)
+        while True:
+            try:
+                self._submit_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
     def set_toolbar(self, key: str, value: str | None) -> None:
         """Mutate the shared toolbar dict in place.
 

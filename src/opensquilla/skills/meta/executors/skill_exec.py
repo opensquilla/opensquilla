@@ -2,7 +2,7 @@
 
 Runs a wrapped-CLI skill via its ``entrypoint`` manifest — no LLM, no
 sub-Agent. Resolves ``skill.entrypoint`` from the injected ``skill_loader``,
-renders ``command`` / ``args`` (and optional ``stdin`` / ``assemble``
+renders ``command`` / ``args`` (and optional ``env`` / ``stdin`` / ``assemble``
 templates) against ``inputs`` + ``outputs`` + ``with`` (the step's
 rendered ``with_args``), then ``asyncio.create_subprocess_exec``\\s the
 process. Stdout is interpreted per ``parse`` (``text`` | ``json`` |
@@ -11,6 +11,7 @@ process. Stdout is interpreted per ``parse`` (``text`` | ``json`` |
 
 from __future__ import annotations
 
+import asyncio
 import json as _json
 import os
 import shlex
@@ -47,6 +48,9 @@ async def run_skill_exec_step(
 
     Optional features:
 
+    * ``entrypoint.env`` — Jinja-rendered environment override keys and
+      values. Empty rendered values are ignored so parent environment
+      fallbacks survive.
     * ``entrypoint.stdin`` — Jinja-rendered template (with ``{baseDir}``
       substitution) piped to the subprocess's stdin.
     * ``entrypoint.assemble`` — a list of ``{into, from_template}``
@@ -148,6 +152,7 @@ async def run_skill_exec_step(
                 f"{resolved_workdir!s} escapes allowed root "
                 f"{allowed_root!s}",
             )
+        resolved_workdir.mkdir(parents=True, exist_ok=True)
         workdir = str(resolved_workdir)
 
     # Optional assemble: render templated files to disk before exec.
@@ -230,6 +235,31 @@ async def run_skill_exec_step(
         timeout = 60.0
     parse_mode = str(entrypoint.get("parse", "text"))
 
+    raw_env = entrypoint.get("env") or {}
+    if raw_env and not isinstance(raw_env, dict):
+        raise RuntimeError(
+            f"step {step.id!r}: entrypoint.env must be a mapping",
+        )
+    child_env = os.environ.copy()
+    if isinstance(raw_env, dict):
+        for key, value in raw_env.items():
+            if not isinstance(key, str) or not key:
+                raise RuntimeError(
+                    f"step {step.id!r}: entrypoint.env keys must be non-empty strings",
+                )
+            if not isinstance(value, str):
+                raise RuntimeError(
+                    f"step {step.id!r}: entrypoint.env[{key!r}] must be a string template",
+                )
+            rendered_key = _render(key.replace("{baseDir}", base_dir))
+            if not rendered_key:
+                raise RuntimeError(
+                    f"step {step.id!r}: entrypoint.env key rendered empty",
+                )
+            rendered_value = _render(value.replace("{baseDir}", base_dir))
+            if rendered_value:
+                child_env[rendered_key] = rendered_value
+
     # Optional stdin: render Jinja template and pipe to the subprocess.
     stdin_raw = entrypoint.get("stdin")
     stdin_bytes: bytes | None = None
@@ -258,25 +288,49 @@ async def run_skill_exec_step(
         stdin_bytes=len(stdin_bytes) if stdin_bytes is not None else 0,
     )
 
+    # Use asyncio.create_subprocess_exec so the gateway's event loop stays
+    # responsive while the wrapped CLI runs (some skills poll remote APIs for
+    # minutes — a synchronous subprocess.run would freeze the entire HTTP
+    # surface, including /healthz and /control/, until the call returned).
     try:
-        proc = subprocess.run(  # noqa: S603 - argv is manifest-authored and pre-split.
-            argv,
-            input=stdin_bytes,
-            capture_output=True,
+        proc = await asyncio.create_subprocess_exec(  # noqa: S603 - argv is manifest-authored and pre-split.
+            *argv,
+            stdin=subprocess.PIPE if stdin_bytes is not None else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             cwd=workdir,
-            timeout=timeout,
-            check=False,
+            env=child_env,
         )
-    except subprocess.TimeoutExpired as exc:
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"skill {effective_skill!r} command not found: {argv[0]!r}",
+        ) from exc
+
+    try:
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            proc.communicate(input=stdin_bytes),
+            timeout=timeout,
+        )
+    except TimeoutError as exc:
+        # Kill the still-running child so we don't leak a process.
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except TimeoutError:
+            pass
         raise RuntimeError(
             f"skill {effective_skill!r} timed out after {timeout}s",
         ) from exc
 
-    stdout_text = (proc.stdout or b"").decode("utf-8", errors="replace")
-    stderr_text = (proc.stderr or b"").decode("utf-8", errors="replace")
-    if proc.returncode != 0:
+    returncode = proc.returncode if proc.returncode is not None else -1
+    stdout_text = (stdout_bytes or b"").decode("utf-8", errors="replace")
+    stderr_text = (stderr_bytes or b"").decode("utf-8", errors="replace")
+    if returncode != 0:
         raise RuntimeError(
-            f"skill {effective_skill!r} exited {proc.returncode}: "
+            f"skill {effective_skill!r} exited {returncode}: "
             f"{stderr_text[:500]}",
         )
 

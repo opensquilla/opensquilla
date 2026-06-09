@@ -2,8 +2,10 @@
 
 Precedence (highest to lowest):
 1. os.environ (already set by shell / CI)
-2. .env in current working directory
-3. ~/.opensquilla/.env (global user config)
+2. .env.test in current working directory during test runs
+3. .env in current working directory
+4. .env.test in current working directory outside test runs, for keys absent from .env
+5. ~/.opensquilla/.env (global user config)
 
 Existing environment variables are NEVER overridden.
 """
@@ -70,6 +72,15 @@ def _parse_env_file(path: Path) -> dict[str, str]:
     return entries
 
 
+def _is_test_env_enabled() -> bool:
+    """Return True when local test env files should override local dev env files."""
+    # PYTEST_CURRENT_TEST is unavailable during collection/import, so tests that
+    # need import-time .env.test precedence should set OPENSQUILLA_TEST=1.
+    if os.environ.get("OPENSQUILLA_TEST", "").strip().lower() in _TRUTHY:
+        return True
+    return "PYTEST_CURRENT_TEST" in os.environ
+
+
 def load_env(cwd: str | Path | None = None) -> int:
     """Load .env files into os.environ with precedence rules.
 
@@ -77,9 +88,10 @@ def load_env(cwd: str | Path | None = None) -> int:
     """
     candidates = []
 
-    # 1. cwd/.env (or cwd/.env.test as alias for dev)
+    # 1. cwd/.env.test in test runs, otherwise cwd/.env wins for normal dev runs.
     work_dir = Path(cwd) if cwd else Path.cwd()
-    for name in (".env", ".env.test"):
+    local_names = (".env.test", ".env") if _is_test_env_enabled() else (".env", ".env.test")
+    for name in local_names:
         candidates.append(work_dir / name)
 
     # 2. ~/.opensquilla/.env (global)

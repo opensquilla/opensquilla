@@ -133,7 +133,7 @@ def _what_you_need(spec: ProviderSpec) -> tuple[str, ...]:
 def _default_direct_model(provider_id: str) -> str:
     if provider_id in ROUTER_TIER_PROFILE_IDS:
         tiers = _router_tier_profile_defaults(provider_id)
-        tier = tiers.get("t1") or tiers.get("t0") or {}
+        tier = tiers.get("c1") or tiers.get("c0") or {}
         return str(tier.get("model") or "")
     return ""
 

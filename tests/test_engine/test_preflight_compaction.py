@@ -44,6 +44,18 @@ def _make_entry(content: str, role: str = "user") -> TranscriptEntry:
     )
 
 
+def _flush_enabled_config(**overrides: Any) -> SimpleNamespace:
+    memory = {
+        "flush_enabled": True,
+        "flush_pre_compaction": True,
+        "flush_timeout_seconds": 0.25,
+        "flush_background_timeout_seconds": 120.0,
+        "flush_compaction_requires_safe_receipt": False,
+    }
+    memory.update(overrides)
+    return SimpleNamespace(memory=SimpleNamespace(**memory))
+
+
 def _make_assistant_tool_entry(content: str, tool_calls: list[dict[str, Any]]) -> TranscriptEntry:
     return TranscriptEntry(
         session_id="test-session-id",
@@ -403,6 +415,7 @@ async def test_preflight_compacts_when_distill_fails_after_checkpoint() -> None:
         config=SimpleNamespace(
             memory=SimpleNamespace(
                 flush_enabled=True,
+                flush_pre_compaction=True,
                 flush_timeout_seconds=0.25,
                 flush_background_timeout_seconds=42.0,
             )
@@ -437,6 +450,7 @@ async def test_preflight_checkpoint_failure_prevents_destructive_compaction() ->
         config=SimpleNamespace(
             memory=SimpleNamespace(
                 flush_enabled=True,
+                flush_pre_compaction=True,
                 flush_timeout_seconds=0.25,
                 flush_background_timeout_seconds=42.0,
             )
@@ -589,6 +603,7 @@ async def test_preflight_starts_full_transcript_flush_without_blocking_compact()
         provider_selector=MagicMock(),
         session_manager=mock_sm,
         session_flush_service=flush_service,
+        config=_flush_enabled_config(),
     )
 
     with patch("opensquilla.session.tokenizer.estimate_tokens", return_value=1000):
@@ -638,6 +653,7 @@ async def test_preflight_degraded_flush_receipts_do_not_block_compaction(
         provider_selector=MagicMock(),
         session_manager=mock_sm,
         session_flush_service=flush_service,
+        config=_flush_enabled_config(),
     )
 
     with patch("opensquilla.session.tokenizer.estimate_tokens", return_value=1000):
@@ -667,6 +683,7 @@ async def test_preflight_strict_flush_receipt_skips_destructive_compaction() -> 
         config=SimpleNamespace(
             memory=SimpleNamespace(
                 flush_enabled=True,
+                flush_pre_compaction=True,
                 flush_timeout_seconds=0.25,
                 flush_background_timeout_seconds=42.0,
                 flush_compaction_requires_safe_receipt=True,
@@ -697,6 +714,7 @@ async def test_preflight_protect_flush_receipt_marks_degraded_forensic() -> None
         config=SimpleNamespace(
             memory=SimpleNamespace(
                 flush_enabled=True,
+                flush_pre_compaction=True,
                 flush_timeout_seconds=0.25,
                 flush_background_timeout_seconds=42.0,
                 flush_compaction_safety_mode="protect",
@@ -737,6 +755,7 @@ async def test_preflight_compact_failure_uses_emergency_ephemeral_history_trim()
         config=SimpleNamespace(
             memory=SimpleNamespace(
                 flush_enabled=True,
+                flush_pre_compaction=True,
                 flush_timeout_seconds=0.25,
                 flush_background_timeout_seconds=42.0,
                 flush_compaction_safety_mode="protect",
@@ -972,6 +991,7 @@ async def test_preflight_backfilled_flush_receipt_allows_compact() -> None:
         provider_selector=MagicMock(),
         session_manager=mock_sm,
         session_flush_service=flush_service,
+        config=_flush_enabled_config(),
     )
 
     with patch("opensquilla.session.tokenizer.estimate_tokens", return_value=1000):
@@ -999,6 +1019,7 @@ async def test_preflight_uses_background_timeout_for_flush_service() -> None:
         config=SimpleNamespace(
             memory=SimpleNamespace(
                 flush_enabled=True,
+                flush_pre_compaction=True,
                 flush_timeout_seconds=0.25,
                 flush_background_timeout_seconds=42.0,
             )
@@ -1037,6 +1058,7 @@ async def test_preflight_flush_grace_timeout_does_not_block_compaction() -> None
         config=SimpleNamespace(
             memory=SimpleNamespace(
                 flush_enabled=True,
+                flush_pre_compaction=True,
                 flush_timeout_seconds=0.001,
                 flush_background_timeout_seconds=42.0,
             )
@@ -1174,6 +1196,37 @@ async def test_preflight_passes_provider_backed_compaction_config_after_flush() 
     assert config.api_key == "preflight-provider-key"
     assert config.model == "routed/model"
     assert config.base_url == "https://openrouter.ai/api/v1"
+    assert config.timeout_seconds == 17.5
+
+
+@pytest.mark.asyncio
+async def test_preflight_passes_profile_config_without_provider_or_model() -> None:
+    context_window = 1000
+    entries = [_make_entry("early durable fact " + ("a" * 4000))]
+    sm = _ResultCompactionSessionManager(entries)
+    runner = TurnRunner(
+        provider_selector=MagicMock(),
+        session_manager=sm,
+        config=SimpleNamespace(
+            compaction=SimpleNamespace(
+                enabled=False,
+                compaction_profile="coding",
+                protected_recent_messages=7,
+                timeout_seconds=17.5,
+            )
+        ),
+    )
+
+    with patch("opensquilla.session.tokenizer.estimate_tokens", return_value=1000):
+        await runner._maybe_preflight_compact("agent:ops:long-session", context_window)
+
+    assert len(sm.compact_with_result_calls) == 1
+    config = sm.compact_with_result_calls[0][2]
+    assert isinstance(config, CompactionConfig)
+    assert config.model is None
+    assert config.api_key == ""
+    assert config.compaction_profile == "coding"
+    assert config.protected_recent_messages == 7
     assert config.timeout_seconds == 17.5
 
 

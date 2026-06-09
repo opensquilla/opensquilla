@@ -130,12 +130,28 @@ def test_positional_fewer_lines_than_fields():
 
 
 def test_positional_more_lines_than_fields():
+    # Two-field schema where the second line genuinely overflows.
+    schema = _schema(
+        ClarifyField(name="x", type="string", required=True),
+        ClarifyField(name="y", type="int", required=True),
+    )
+    fields, errors = parse_clarify_reply(
+        "Tokyo\n42\nextra", schema, surface="cli",
+    )
+    assert fields == {}
+    assert any("too many" in e.lower() for e in errors)
+
+
+def test_positional_multiline_collapses_into_single_string_field():
+    # When the schema is a single string field (the catch-all pattern
+    # used by free-form review steps), additional lines should be
+    # joined into the same field rather than reported as overflow.
     schema = _schema(ClarifyField(name="x", type="string", required=True))
     fields, errors = parse_clarify_reply(
         "Tokyo\nextra", schema, surface="cli",
     )
-    assert fields == {}
-    assert any("too many" in e.lower() for e in errors)
+    assert errors == []
+    assert fields == {"x": "Tokyo\nextra"}
 
 
 # ── Hybrid rejection ──
@@ -273,3 +289,56 @@ def test_empty_value_after_colon():
     fields, errors = parse_clarify_reply("x:", schema, surface="cli")
     assert fields == {}
     assert any("x" in e and ("empty" in e.lower() or "required" in e.lower()) for e in errors)
+
+
+# ── F4: CJK + conversational bool synonyms ──
+
+
+import pytest  # noqa: E402  — kept at section boundary for grouping
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("好", True),
+        ("对", True),
+        ("嗯", True),
+        ("可以", True),
+        ("确认", True),
+        ("没问题", True),
+        ("ok", True),
+        ("OK", True),
+        ("不", False),
+        ("不要", False),
+        ("不行", False),
+        ("不用", False),
+        ("算了", False),
+        # Pre-existing literals must still work.
+        ("是", True),
+        ("yes", True),
+        ("否", False),
+        ("no", False),
+    ],
+)
+def test_bool_field_accepts_cjk_and_conversational_synonyms(value, expected) -> None:
+    """F4: chat-mode users naturally answer bool prompts with 好 / 对 /
+    可以 / 算了 / 不用. Before this contract those replies fell through
+    to "not a bool" and triggered a re-prompt, surfacing as the
+    "information not understood" symptom. ``_TRUE_VALUES`` /
+    ``_FALSE_VALUES`` in ``clarify_text.py`` must accept the full
+    conversational set; ``clarify_form.py`` mirrors the same table so
+    multi-surface skills do not diverge."""
+    schema = _schema(ClarifyField(name="ok", type="bool", required=True))
+    fields, errors = parse_clarify_reply(f"ok: {value}", schema, surface="cli")
+    assert errors == [], f"unexpected errors for {value!r}: {errors}"
+    assert fields == {"ok": expected}
+
+
+def test_bool_field_rejects_unknown_token() -> None:
+    """F4 negative control: the synonym tables must NOT silently
+    coerce arbitrary CJK or English words to True/False. Only the
+    enumerated synonym set is accepted."""
+    schema = _schema(ClarifyField(name="ok", type="bool", required=True))
+    fields, errors = parse_clarify_reply("ok: maybe", schema, surface="cli")
+    assert fields == {}
+    assert errors, "expected a parse error for an unknown bool token"

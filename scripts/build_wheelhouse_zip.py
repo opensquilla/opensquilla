@@ -39,6 +39,13 @@ ROUTER_PROVENANCE_WHEEL_PATH = (
 TOKENJUICE_PROVENANCE_WHEEL_PATH = "opensquilla/plugins/tokenjuice/PROVENANCE.md"
 ALLOWED_SKILL_REFERENCE_WHEEL_PATHS = frozenset(
     {
+        "opensquilla/skills/bundled/html-coder/references/add-css-style.md",
+        "opensquilla/skills/bundled/html-coder/references/add-javascript.md",
+        "opensquilla/skills/bundled/html-coder/references/attributes.md",
+        "opensquilla/skills/bundled/html-coder/references/essentials.md",
+        "opensquilla/skills/bundled/html-coder/references/global-attributes.md",
+        "opensquilla/skills/bundled/html-coder/references/glossary.md",
+        "opensquilla/skills/bundled/html-coder/references/standards.md",
         "opensquilla/skills/bundled/pptx/references/pptxgenjs.md",
         "opensquilla/skills/bundled/pptx/references/python_pptx.md",
     }

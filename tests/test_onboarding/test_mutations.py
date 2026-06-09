@@ -164,7 +164,12 @@ def test_upsert_channel_appends_new():
     cfg = GatewayConfig()
     res = upsert_channel(
         cfg,
-        entry_payload={"type": "slack", "name": "work", "token": "xoxb-secret"},
+        entry_payload={
+            "type": "slack",
+            "name": "work",
+            "token": "xoxb-secret",
+            "signing_secret": "ss-secret",
+        },
     )
     assert res.restart_required is True
     entries = list_channel_entries(res.config)
@@ -177,7 +182,12 @@ def test_upsert_channel_updates_same_name():
     cfg = GatewayConfig()
     res1 = upsert_channel(
         cfg,
-        entry_payload={"type": "slack", "name": "work", "token": "old"},
+        entry_payload={
+            "type": "slack",
+            "name": "work",
+            "token": "old",
+            "signing_secret": "ss-old",
+        },
     )
     res2 = upsert_channel(
         res1.config,
@@ -197,11 +207,52 @@ def test_upsert_channel_redacts_secrets_in_payload():
     assert res.public_payload["token"] == REDACTED_PLACEHOLDER
 
 
+def test_slack_webhook_channel_requires_signing_secret():
+    cfg = GatewayConfig()
+    with pytest.raises(ValueError, match="signing_secret"):
+        upsert_channel(
+            cfg,
+            entry_payload={"type": "slack", "name": "w", "token": "xoxb-test"},
+        )
+
+
+def test_slack_socket_channel_does_not_require_signing_secret():
+    cfg = GatewayConfig()
+    res = upsert_channel(
+        cfg,
+        entry_payload={
+            "type": "slack",
+            "name": "w",
+            "token": "xoxb-test",
+            "connection_mode": "socket",
+            "app_token": "xapp-test",
+        },
+    )
+
+    entry = list_channel_entries(res.config)[0]
+    assert entry["connection_mode"] == "socket"
+    assert "signing_secret" not in entry or entry["signing_secret"] in (None, "")
+
+
+def test_slack_socket_channel_requires_app_token():
+    cfg = GatewayConfig()
+    with pytest.raises(ValueError, match="app_token"):
+        upsert_channel(
+            cfg,
+            entry_payload={
+                "type": "slack",
+                "name": "w",
+                "token": "xoxb-test",
+                "connection_mode": "socket",
+            },
+        )
+
+
 def test_remove_channel():
     cfg = GatewayConfig()
     res1 = upsert_channel(
         cfg,
-        entry_payload={"type": "slack", "name": "w", "token": "x"},
+        entry_payload={"type": "slack", "name": "w", "token": "x", "signing_secret": "ss"},
     )
     res2 = remove_channel(res1.config, name="w")
     assert list_channel_entries(res2.config) == []
@@ -218,7 +269,7 @@ def test_set_channel_enabled_toggles():
     cfg = GatewayConfig()
     res1 = upsert_channel(
         cfg,
-        entry_payload={"type": "slack", "name": "w", "token": "x"},
+        entry_payload={"type": "slack", "name": "w", "token": "x", "signing_secret": "ss"},
     )
     res2 = set_channel_enabled(res1.config, name="w", enabled=False)
     assert list_channel_entries(res2.config)[0]["enabled"] is False
@@ -294,7 +345,7 @@ def test_upsert_llm_provider_recomputes_openrouter_mix_on_provider_switch():
     assert res.config.llm.provider == "deepseek"
     assert res.config.squilla_router.enabled is True
     assert res.config.squilla_router.tier_profile == "deepseek"
-    assert res.config.squilla_router.tiers["t0"]["provider"] == "deepseek"
+    assert res.config.squilla_router.tiers["c0"]["provider"] == "deepseek"
     assert "tiers" not in res.config.to_toml_dict()["squilla_router"]
 
 
@@ -307,6 +358,28 @@ def test_upsert_router_recommended_writes_profile_without_expanded_tiers():
     assert res.config.squilla_router.tier_profile == "deepseek"
     assert "tiers" not in res.config.to_toml_dict()["squilla_router"]
     assert res.public_payload["mode"] == "recommended"
+
+
+def test_upsert_router_forces_image_model_role_invariants():
+    cfg = GatewayConfig(llm={"provider": "openrouter", "model": "z-ai/glm-5.1"})
+
+    res = upsert_router(
+        cfg,
+        mode="openrouter-mix",
+        tiers={
+            "image_model": {
+                "provider": "openrouter",
+                "model": "anthropic/claude-opus-4.7",
+                "supportsImage": False,
+                "image_only": False,
+            }
+        },
+    )
+
+    image_tier = res.config.squilla_router.tiers["image_model"]
+    assert image_tier["model"] == "anthropic/claude-opus-4.7"
+    assert image_tier["supports_image"] is True
+    assert image_tier["image_only"] is True
 
 
 def test_upsert_router_can_disable():
@@ -418,7 +491,9 @@ def test_upsert_llm_provider_does_not_carry_key_across_providers():
 
 
 def test_validate_channel_entry_returns_normalized_payload():
-    out = validate_channel_entry({"type": "slack", "name": "w", "token": "x"})
+    out = validate_channel_entry(
+        {"type": "slack", "name": "w", "token": "x", "signing_secret": "ss"}
+    )
     assert out["type"] == "slack"
     assert out["enabled"] is True
     assert out["agent_id"] == "main"
@@ -598,7 +673,12 @@ def test_upsert_channel_replaces_secret_when_provided():
     cfg = GatewayConfig()
     first = upsert_channel(
         cfg,
-        entry_payload={"type": "slack", "name": "w", "token": "xoxb-old"},
+        entry_payload={
+            "type": "slack",
+            "name": "w",
+            "token": "xoxb-old",
+            "signing_secret": "ss-old",
+        },
     )
     second = upsert_channel(
         first.config,

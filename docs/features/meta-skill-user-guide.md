@@ -97,11 +97,32 @@ The retained built-in MetaSkills cover a focused set of high-value task classes.
 | `meta-job-search-pipeline` | Turns a JD, resume, and application goal into an application package and interview prep. |
 | `meta-kid-project-planner` | Produces safe, age-appropriate plans for school projects, show-and-tell, or science activities. |
 | `meta-paper-write` | Supports academic drafts, manuscript structure, citation planning, experiment placeholders, and LaTeX/PDF paths. |
+| `meta-short-drama` | Produces short-drama scripts, visual prompts, video assembly plans, subtitles, and rendered local video artifacts. |
 | `meta-skill-creator` | Turns repeated multi-skill collaboration patterns into new MetaSkill proposals. |
 | `meta-web-research-to-report` | Turns source-backed research needs into reports, briefs, or decision memos. |
 
 These are designed around quality over quantity. Immature, duplicate, or
 single-skill wrapper MetaSkills should not remain in the bundled catalog.
+
+## Requirements Before Running MetaSkills
+
+The Skill page is the source of truth for current readiness. Open the skill
+detail dialog and check the **Requirements** section before running workflows
+that export files, compile PDFs, or render video.
+
+Common setup surfaces:
+
+- Paper/PDF workflows such as `meta-paper-write` require `xelatex` and
+  `bibtex` on `PATH`. Install a TeX distribution such as TeX Live, MiKTeX, or
+  BasicTeX before requesting compiled PDFs.
+- Video workflows such as `meta-short-drama` require `ffmpeg` and `ffprobe` on
+  `PATH` for clip animation, merging, and subtitle burn-in.
+- Office-document workflows roll up requirements from child skills such as
+  `docx`, `xlsx`, `pdf-toolkit`, and `pptx`; these usually surface Python
+  package requirements in the Skill page.
+- Search, weather, image, and video-provider steps may require configured API
+  keys or provider credentials. The workflow should treat missing credentials as
+  setup blockers rather than silently degrading output.
 
 ## Two Ways to Use MetaSkill
 
@@ -388,6 +409,10 @@ Good fit:
 - citation plan;
 - experiment and figure/table placeholders;
 - LaTeX/PDF path when explicitly requested.
+
+PDF compilation requires `xelatex` and `bibtex` on `PATH`. If those binaries are
+missing, use the LaTeX source output or install TeX Live, MiKTeX, or BasicTeX
+before asking for a compiled PDF.
 
 High-quality request:
 

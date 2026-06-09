@@ -28,7 +28,7 @@ def _router_cfg(tiers: dict) -> SquillaRouterConfig:
         require_router_runtime=False,
         auto_thinking=False,
         tiers=tiers,
-        default_tier="t1" if "t1" in tiers else next(iter(tiers)),
+        default_tier="c1" if "c1" in tiers else next(iter(tiers)),
     )
 
 
@@ -41,26 +41,21 @@ def test_router_control_targets_generalize_to_every_profile() -> None:
         for tier_name, tier_cfg in tiers.items():
             if tier_cfg.get("image_only"):
                 assert f"tier:{tier_name}" not in target_ids
-                assert f"model:{tier_cfg['model']}" not in target_ids
                 continue
             assert f"tier:{tier_name}" in target_ids
-            assert f"model:{tier_cfg['model']}" in target_ids
 
 
-def test_duplicate_exact_model_target_resolves_to_strongest_text_tier() -> None:
+def test_model_targets_are_rejected_by_local_validation() -> None:
     cfg = _router_cfg(
         {
-            "t0": {"provider": "openrouter", "model": "same/model", "supports_image": False},
-            "t1": {"provider": "openrouter", "model": "other/model", "supports_image": False},
-            "t3": {"provider": "openrouter", "model": "same/model", "supports_image": False},
+            "c0": {"provider": "openrouter", "model": "same/model", "supports_image": False},
+            "c1": {"provider": "openrouter", "model": "other/model", "supports_image": False},
+            "c3": {"provider": "openrouter", "model": "same/model", "supports_image": False},
         }
     )
 
-    target = resolve_router_control_target(cfg, "model:same/model")
-
-    assert target.tier == "t3"
-    assert target.model == "same/model"
-    assert target.duplicate_model_resolution is True
+    with pytest.raises(RouterControlValidationError):
+        resolve_router_control_target(cfg, "model:same/model")
 
 
 def test_natural_language_aliases_are_rejected_by_local_validation() -> None:
@@ -70,14 +65,23 @@ def test_natural_language_aliases_are_rejected_by_local_validation() -> None:
         resolve_router_control_target(cfg, "Claude Opus 4.7")
 
 
+def test_legacy_tier_target_aliases_resolve_to_canonical_routes() -> None:
+    cfg = _router_cfg(_router_tier_profile_defaults("openrouter"))
+
+    target = resolve_router_control_target(cfg, "tier:t3")
+
+    assert target.target_id == "tier:c3"
+    assert target.tier == "c3"
+
+
 def test_hold_store_expires_by_explicit_turn_count_and_sliding_idle_time() -> None:
     cfg = _router_cfg(_router_tier_profile_defaults("openrouter"))
-    target = resolve_router_control_target(cfg, "tier:t3")
+    target = resolve_router_control_target(cfg, "tier:c3")
     store = RouterControlHoldStore()
     store.set_hold(
         "agent:main:test",
         target,
-        evidence="use t3",
+        evidence="use c3",
         now_monotonic=100.0,
         turns_remaining=1,
         ttl_seconds=10.0,
@@ -85,13 +89,13 @@ def test_hold_store_expires_by_explicit_turn_count_and_sliding_idle_time() -> No
 
     first = store.get_valid("agent:main:test", now_monotonic=101.0, decrement=True)
     assert first is not None
-    assert first.tier == "t3"
+    assert first.tier == "c3"
     assert store.get_valid("agent:main:test", now_monotonic=102.0) is None
 
     store.set_hold(
         "agent:main:test",
         target,
-        evidence="use t3 again",
+        evidence="use c3 again",
         now_monotonic=100.0,
         ttl_seconds=10.0,
     )
@@ -102,12 +106,12 @@ def test_hold_store_expires_by_explicit_turn_count_and_sliding_idle_time() -> No
 
 def test_hold_store_deepcopy_preserves_session_identity_for_ttl_refresh() -> None:
     cfg = _router_cfg(_router_tier_profile_defaults("openrouter"))
-    target = resolve_router_control_target(cfg, "tier:t3")
+    target = resolve_router_control_target(cfg, "tier:c3")
     store = RouterControlHoldStore()
     store.set_hold(
         "agent:main:test",
         target,
-        evidence="use t3",
+        evidence="use c3",
         now_monotonic=100.0,
         ttl_seconds=10.0,
     )
@@ -125,12 +129,12 @@ async def test_squilla_router_refreshes_hold_idle_ttl_through_copied_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cfg = _router_cfg(_router_tier_profile_defaults("openrouter"))
-    target = resolve_router_control_target(cfg, "tier:t3")
+    target = resolve_router_control_target(cfg, "tier:c3")
     store = RouterControlHoldStore()
     store.set_hold(
         "agent:main:test-refresh",
         target,
-        evidence="use t3",
+        evidence="use c3",
         now_monotonic=100.0,
         ttl_seconds=10.0,
     )
@@ -161,9 +165,9 @@ async def test_squilla_router_refreshes_hold_idle_ttl_through_copied_metadata(
 @pytest.mark.asyncio
 async def test_squilla_router_applies_hold_before_normal_classification(monkeypatch) -> None:
     cfg = _router_cfg(_router_tier_profile_defaults("openrouter"))
-    target = resolve_router_control_target(cfg, "tier:t3")
+    target = resolve_router_control_target(cfg, "tier:c3")
     store = RouterControlHoldStore()
-    store.set_hold("agent:main:test", target, evidence="use t3")
+    store.set_hold("agent:main:test", target, evidence="use c3")
 
     def fail_strategy(_cfg: object) -> object:
         raise AssertionError("router classification should not run while hold is valid")
@@ -185,15 +189,15 @@ async def test_squilla_router_applies_hold_before_normal_classification(monkeypa
     assert out.model == "anthropic/claude-opus-4.7"
     assert out.metadata["routing_source"] == "router_control_hold"
     assert out.metadata["router_control_hold_applied"] is True
-    assert out.metadata["router_control_target_tier"] == "t3"
+    assert out.metadata["router_control_target_tier"] == "c3"
 
 
 @pytest.mark.asyncio
 async def test_image_attachments_bypass_text_hold(monkeypatch) -> None:
     cfg = _router_cfg(_router_tier_profile_defaults("openrouter"))
-    target = resolve_router_control_target(cfg, "tier:t3")
+    target = resolve_router_control_target(cfg, "tier:c3")
     store = RouterControlHoldStore()
-    store.set_hold("agent:main:test-image", target, evidence="use t3")
+    store.set_hold("agent:main:test-image", target, evidence="use c3")
 
     def fail_strategy(_cfg: object) -> object:
         raise AssertionError("image route should not classify")
@@ -224,6 +228,8 @@ def test_prompt_block_contains_canonical_targets_not_aliases() -> None:
     block = render_router_control_prompt_block(cfg)
 
     assert "router_control" in block
-    assert "tier:t3" in block
-    assert "model:anthropic/claude-opus-4.7" in block
+    assert "tier:c3" in block
+    assert "tier:t3" not in block
+    assert "model:anthropic/claude-opus-4.7" not in block
+    assert "description" not in block
     assert "must choose one target_id exactly" in block

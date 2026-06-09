@@ -34,7 +34,7 @@ class _Strategy:
         routing_history: list[dict] | None = None,
         **kwargs: object,
     ) -> tuple[str, float, str, dict]:
-        return "t1", 0.9, "v4_phase3", {"route_class": "R1"}
+        return "c1", 0.9, "v4_phase3", {"route_class": "R1"}
 
 
 class _ReplayProvider:
@@ -57,8 +57,8 @@ class _ReplayProvider:
                 tool_name="router_control",
                 arguments={
                     "action": "set_hold",
-                    "target_id": "tier:t3",
-                    "evidence": "use t3",
+                    "target_id": "tier:c3",
+                    "evidence": "use c3",
                 },
             )
             yield ProviderDone(model=self.model)
@@ -112,7 +112,7 @@ async def test_router_control_replay_event_replays_turn_once(monkeypatch) -> Non
     events = [
         event
         async for event in runner.run(
-            "Use t3 for this",
+            "Use c3 for this",
             "agent:main:router-control-replay",
             tool_context=ToolContext(is_owner=True, caller_kind=CallerKind.CLI),
             history_has_persisted_user=False,
@@ -125,7 +125,7 @@ async def test_router_control_replay_event_replays_turn_once(monkeypatch) -> Non
     text = "".join(getattr(event, "text", "") for event in events if event.kind == "text_delta")
 
     assert len(replay_events) == 1
-    assert replay_events[0].target_tier == "t3"
+    assert replay_events[0].target_tier == "c3"
     assert provider.calls == ["deepseek/deepseek-v4-pro", "anthropic/claude-opus-4.7"]
     assert done_events[-1].text == "new final"
     assert text.endswith("new final")

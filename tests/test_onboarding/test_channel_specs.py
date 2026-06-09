@@ -39,8 +39,8 @@ ENTRY_MODELS = {
     "telegram": TelegramChannelEntry,
 }
 
-EXPECTED_PUBLIC_URL = {"slack", "wecom"}
-CONDITIONAL_PUBLIC_URL = {"feishu", "telegram"}
+EXPECTED_PUBLIC_URL = {"wecom"}
+CONDITIONAL_PUBLIC_URL = {"feishu", "slack", "telegram"}
 
 
 def test_catalog_includes_all_channels():
@@ -83,7 +83,7 @@ def test_required_pydantic_fields_are_required_in_spec(type_name: str):
 def test_slack_secrets_are_marked_secret():
     spec = get_channel_setup_spec("slack")
     secrets = {f.name for f in spec.fields if f.secret}
-    assert {"token", "signing_secret"} <= secrets
+    assert {"token", "app_token", "signing_secret"} <= secrets
 
 
 def test_telegram_secrets_are_marked_secret():
@@ -92,12 +92,57 @@ def test_telegram_secrets_are_marked_secret():
     assert {"token", "webhook_secret_token"} <= secrets
 
 
+def test_discord_gateway_auth_fields_do_not_expose_interactions_public_key():
+    spec = get_channel_setup_spec("discord")
+    fields = {f.name: f for f in spec.fields}
+
+    assert fields["token"].required is True
+    assert fields["token"].secret is True
+    assert fields["application_id"].secret is False
+    assert "public_key" not in fields
+
+
+def test_dingtalk_stream_credentials_are_marked_correctly():
+    spec = get_channel_setup_spec("dingtalk")
+    fields = {f.name: f for f in spec.fields}
+
+    assert fields["client_id"].required is True
+    assert fields["client_id"].secret is False
+    assert fields["client_secret"].required is True
+    assert fields["client_secret"].secret is True
+
+
+def test_feishu_webhook_secrets_are_marked_secret():
+    spec = get_channel_setup_spec("feishu")
+    secrets = {f.name for f in spec.fields if f.secret}
+
+    assert {"app_secret", "encrypt_key", "verification_token"} <= secrets
+
+
 def test_feishu_connection_mode_choices():
     spec = get_channel_setup_spec("feishu")
     field = next(f for f in spec.fields if f.name == "connection_mode")
     assert field.field_type == "select"
     assert field.default == "websocket"
     assert field.choices == ("webhook", "websocket")
+
+
+def test_slack_connection_mode_choices():
+    spec = get_channel_setup_spec("slack")
+    field = next(f for f in spec.fields if f.name == "connection_mode")
+    assert field.field_type == "select"
+    assert field.default == "webhook"
+    assert field.choices == ("webhook", "socket")
+    assert field.advanced is False
+
+
+def test_slack_mode_specific_fields_are_conditional():
+    spec = get_channel_setup_spec("slack")
+    fields = {f.name: f for f in spec.fields}
+    assert fields["app_token"].show_when == {"connection_mode": "socket"}
+    assert fields["signing_secret"].show_when == {"connection_mode": "webhook"}
+    assert fields["signing_secret"].required is True
+    assert fields["slack_channel_id"].required is False
 
 
 def test_feishu_status_reactions_are_enabled_by_default():
@@ -149,7 +194,10 @@ def test_channel_catalog_payload_exposes_ui_metadata():
     assert feishu["whatYouNeed"]
     slack = next(c for c in payload if c["type"] == "slack")
     assert "public URL" in slack["help"]
-    assert any("public URL" in item for item in slack["whatYouNeed"])
+    assert slack["transport"] == "mixed"
+    assert slack["requiresPublicUrl"] is False
+    slack_fields = {f["name"]: f for f in slack["fields"]}
+    assert slack_fields["app_token"]["showWhen"] == {"connection_mode": "socket"}
 
 
 def test_matrix_encryption_choices():

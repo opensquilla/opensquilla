@@ -86,6 +86,11 @@ def check_eligibility(spec: SkillSpec, ctx: EligibilityContext) -> bool:
             if not _has_env(e, ctx):
                 return False
 
+        # 7. envAny (at least one env var must exist)
+        if meta.requires.env_any:
+            if not any(_has_env(e, ctx) for e in meta.requires.env_any):
+                return False
+
     return True
 
 
@@ -111,6 +116,7 @@ class EligibilityReport:
     reasons: list[str] = field(default_factory=list)
     missing_bins: list[str] = field(default_factory=list)
     missing_env: list[str] = field(default_factory=list)
+    missing_env_any: list[list[str]] = field(default_factory=list)
     install_hints: list[InstallHint] = field(default_factory=list)
     disabled: bool = False
     wrong_os: bool = False
@@ -124,15 +130,19 @@ def _is_declared(spec: SkillSpec) -> bool:
     declaration. ``requires.config`` is excluded — reserved/future,
     doesn't currently affect eligibility.
     """
-    return (
-        spec.metadata is not None
-        and spec.metadata.requires is not None
-        and bool(
-            spec.metadata.requires.bins
-            or spec.metadata.requires.any_bins
-            or spec.metadata.requires.env
+    if spec.metadata is None:
+        return False
+    requires = spec.metadata.requires
+    requires_declared = bool(
+        requires
+        and (
+            requires.bins
+            or requires.any_bins
+            or requires.env
+            or requires.env_any
         )
     )
+    return requires_declared or bool(spec.metadata.install)
 
 
 def _render_install_command(spec: SkillInstallSpec) -> str:
@@ -167,6 +177,7 @@ def diagnose_eligibility(spec: SkillSpec, ctx: EligibilityContext) -> Eligibilit
     reasons: list[str] = []
     missing_bins: list[str] = []
     missing_env: list[str] = []
+    missing_env_any: list[list[str]] = []
     disabled = False
     wrong_os = False
 
@@ -203,6 +214,13 @@ def diagnose_eligibility(spec: SkillSpec, ctx: EligibilityContext) -> Eligibilit
                     missing_env.append(e)
                     reasons.append(f"Missing env var: {e}")
 
+            if meta.requires.env_any:
+                if not any(_has_env(e, ctx) for e in meta.requires.env_any):
+                    missing_env_any.append(list(meta.requires.env_any))
+                    reasons.append(
+                        f"Need one env var from: {', '.join(meta.requires.env_any)}"
+                    )
+
     # Match missing bins against install specs to produce hints
     install_hints: list[InstallHint] = []
     if meta and missing_bins:
@@ -223,6 +241,7 @@ def diagnose_eligibility(spec: SkillSpec, ctx: EligibilityContext) -> Eligibilit
         reasons=reasons,
         missing_bins=missing_bins,
         missing_env=missing_env,
+        missing_env_any=missing_env_any,
         install_hints=install_hints,
         disabled=disabled,
         wrong_os=wrong_os,

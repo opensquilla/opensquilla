@@ -6,6 +6,7 @@ from typing import Any, cast
 
 from opensquilla.engine.pipeline import TurnContext
 from opensquilla.engine.types import RouterDecisionEvent
+from opensquilla.router_tiers import normalize_text_tier, tier_index
 
 
 def _coerce_probs(value: object) -> list[float]:
@@ -53,11 +54,8 @@ def build_router_decision_event(turn: TurnContext) -> RouterDecisionEvent | None
     if isinstance(tier_savings, dict):
         savings_pct = savings_pct or _coerce_float(tier_savings.get("pct"))
 
-    tier_idx = -1
-    try:
-        tier_idx = int(str(routed_tier).lstrip("t"))
-    except (TypeError, ValueError):
-        tier_idx = -1
+    routed_tier = normalize_text_tier(routed_tier) or routed_tier
+    tier_idx = tier_index(routed_tier)
 
     source = str(turn.metadata.get("routing_source") or "none")
     routing_applied = turn.metadata.get("routing_applied")

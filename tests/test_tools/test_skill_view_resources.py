@@ -26,6 +26,12 @@ async def _skill_search_community(query: str, source: str = "clawhub", limit: in
     return await registered.handler(query=query, source=source, limit=limit)
 
 
+async def _skill_list() -> str:
+    registered = get_default_registry().get("skill_list")
+    assert registered is not None
+    return await registered.handler()
+
+
 async def _skill_install_community(
     identifier: str,
     source: str = "clawhub",
@@ -46,6 +52,20 @@ def skill_loader(tmp_path: Path) -> Iterator[SkillLoader]:
     (skill_dir / "SKILL.md").write_text(
         "---\nname: deck\ndescription: Deck helper\n---\n"
         "See [guide](references/guide.md).\n",
+        encoding="utf-8",
+    )
+    env_any_dir = bundled_root / "env-any"
+    env_any_dir.mkdir(parents=True)
+    (env_any_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: env-any\n"
+        "description: Needs one of two API keys\n"
+        "metadata:\n"
+        "  opensquilla:\n"
+        "    requires:\n"
+        "      envAny: [OPENROUTER_API_KEY, ARK_API_KEY]\n"
+        "---\n"
+        "Needs an API key.\n",
         encoding="utf-8",
     )
     (skill_dir / "references" / "guide.md").write_text("reference body\n", encoding="utf-8")
@@ -98,6 +118,19 @@ async def test_skill_view_missing_skill_uses_catalog_guidance(
     assert "current skill catalog" in result
     assert "Do not search host filesystem paths" in result
     assert "skill_list" in result
+
+
+@pytest.mark.asyncio
+async def test_skill_list_reports_missing_env_any_groups(
+    skill_loader: SkillLoader,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("ARK_API_KEY", raising=False)
+
+    result = await _skill_list()
+
+    assert "OPENROUTER_API_KEY or ARK_API_KEY (env var group)" in result
 
 
 @pytest.mark.asyncio

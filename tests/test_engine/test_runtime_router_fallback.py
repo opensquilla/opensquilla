@@ -39,7 +39,7 @@ class _SlowHistoryStrategy:
     ) -> tuple[str, float, str, dict]:
         time.sleep(0.08)
         return (
-            "t2",
+            "c2",
             0.95,
             "v4_phase3",
             {
@@ -62,7 +62,7 @@ class _MutatingHistoryStrategy:
         assert routing_history
         routing_history[0]["final_tier"] = "poisoned"
         return (
-            "t2",
+            "c2",
             0.95,
             "v4_phase3",
             {
@@ -172,7 +172,7 @@ async def test_squilla_router_timeout_does_not_late_mutate_history_entries(
             "turn_index": 0,
             "_ts": time.monotonic(),
             "text": "previous",
-            "final_tier": "t1",
+            "final_tier": "c1",
         }
     ]
     squilla_router_step._history_store.clear()
@@ -206,7 +206,7 @@ async def test_squilla_router_timeout_does_not_late_mutate_history_entries(
     stored_history = squilla_router_step._history_store.get(session_key)
     assert stored_history == original_history
     assert stored_history is not None
-    assert stored_history[0]["final_tier"] == "t1"
+    assert stored_history[0]["final_tier"] == "c1"
     router_record = next(
         record
         for record in turn.metadata["pipeline_steps"]

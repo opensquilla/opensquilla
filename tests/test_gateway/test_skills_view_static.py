@@ -9,7 +9,7 @@ def test_skills_cards_keep_full_description_available_while_clamping_visually() 
     css = SKILLS_CSS.read_text(encoding="utf-8")
 
     render_start = source.index("function _renderCard(skill)")
-    render_end = source.index("  function _openSkillDialog", render_start)
+    render_end = source.index("  function _renderDependencyBadges", render_start)
     render_body = source[render_start:render_end]
 
     assert "const desc = skill.description || '';" in render_body
@@ -27,11 +27,11 @@ def test_skills_cards_keep_full_description_available_while_clamping_visually() 
 
 def test_skill_detail_dialog_shows_full_description_for_touch_users() -> None:
     source = SKILLS_JS.read_text(encoding="utf-8")
-    dialog_start = source.index("function _openSkillDialog(skill)")
+    dialog_start = source.index("function _renderSkillDialogBody")
     dialog_end = source.index("  async function _installDeps", dialog_start)
     dialog_body = source[dialog_start:dialog_end]
 
-    assert '<p class="sk-dialog__desc">${_esc(skill.description || \'\')}</p>' in dialog_body
+    assert '<p class="sk-dialog__desc">${_esc(detail.description || \'\')}</p>' in dialog_body
     assert "_truncDesc" not in source
 
 

@@ -150,6 +150,7 @@ from opensquilla.router_control import (
     RouterControlHoldStore,
     render_router_control_prompt_block,
 )
+from opensquilla.router_tiers import HIGHEST_TEXT_TIER, normalize_text_tier, tier_index
 from opensquilla.safety import injection_guard, permission_matrix, sandbox, tool_tiers
 from opensquilla.session.compaction_lifecycle import (
     COMPACTION_CHUNK_SUMMARIZED_EVENT,
@@ -165,6 +166,7 @@ from opensquilla.session.compaction_lifecycle import (
     flush_receipt_allows_destructive_compaction,
     flush_receipt_is_successful_flush,
     flush_receipt_status_for_compaction,
+    flush_trigger_enabled,
     mark_compaction_flush_status_with_retry,
     new_compaction_id,
     pre_compaction_flush_requires_safe_receipt,
@@ -4316,27 +4318,32 @@ class TurnRunner:
         and compact failures that should trip the circuit without retrying.
         """
         router_cfg = getattr(self._config, "squilla_router", None)
-        if not getattr(router_cfg, "upgrade_to_t3_compaction_enabled", False):
+        upgrade_compaction_enabled = getattr(
+            router_cfg,
+            "upgrade_to_c3_compaction_enabled",
+            getattr(router_cfg, "upgrade_to_t3_compaction_enabled", False),
+        )
+        if not upgrade_compaction_enabled:
             return _T3_NOT_APPLICABLE
 
-        routed_tier = turn.metadata.get("routed_tier")
-        if routed_tier != "t3":
+        routed_tier = normalize_text_tier(turn.metadata.get("routed_tier"))
+        if routed_tier != HIGHEST_TEXT_TIER:
             return _T3_NOT_APPLICABLE
 
         if not turn.metadata.get("routing_applied", False):
             return _T3_NOT_APPLICABLE
 
         routing_extra = turn.metadata.get("routing_extra", {})
-        previous = routing_extra.get("previous_tier")
+        previous = normalize_text_tier(routing_extra.get("previous_tier"))
         if previous is None:
-            final = routing_extra.get("final_tier")
-            base = routing_extra.get("base_tier")
-            if final == "t3" and base in {"t0", "t1", "t2"}:
+            final = normalize_text_tier(routing_extra.get("final_tier"))
+            base = normalize_text_tier(routing_extra.get("base_tier"))
+            if final == HIGHEST_TEXT_TIER and tier_index(base) in {0, 1, 2}:
                 previous = base
             else:
                 return _T3_NOT_APPLICABLE
 
-        if previous not in {"t0", "t1", "t2"}:
+        if tier_index(previous) not in {0, 1, 2}:
             return _T3_NOT_APPLICABLE
 
         if session_key.startswith(("cron:", "subagent:")):
@@ -4368,13 +4375,18 @@ class TurnRunner:
             return _T3_HANDLED
 
         compaction_config = None
-        if compaction_provider is not None or compaction_model:
+        configured_compaction = getattr(getattr(self, "_config", None), "compaction", None)
+        if (
+            compaction_provider is not None
+            or compaction_model
+            or configured_compaction is not None
+        ):
             from opensquilla.session.compaction import build_compaction_config_from_provider
 
             compaction_config = build_compaction_config_from_provider(
                 compaction_provider,
                 model_override=compaction_model,
-                compaction_config=getattr(getattr(self, "_config", None), "compaction", None),
+                compaction_config=configured_compaction,
             )
 
         from opensquilla.session.compaction import CompactionConfig, estimate_entry_replay_tokens
@@ -4409,7 +4421,7 @@ class TurnRunner:
             "t3_upgrade_compaction.triggered",
             session_key=session_key,
             previous_tier=previous,
-            final_tier="t3",
+            final_tier=HIGHEST_TEXT_TIER,
             context_window_tokens=context_window_tokens,
         )
         self.mark_compaction_attempted_this_turn(session_key)
@@ -4762,15 +4774,20 @@ class TurnRunner:
                     ),
                 )
                 return
-        compaction_config = None
         skip_reason = "empty_summary"
-        if compaction_provider is not None or compaction_model:
+        compaction_config = None
+        configured_compaction = getattr(getattr(self, "_config", None), "compaction", None)
+        if (
+            compaction_provider is not None
+            or compaction_model
+            or configured_compaction is not None
+        ):
             from opensquilla.session.compaction import build_compaction_config_from_provider
 
             compaction_config = build_compaction_config_from_provider(
                 compaction_provider,
                 model_override=compaction_model,
-                compaction_config=getattr(getattr(self, "_config", None), "compaction", None),
+                compaction_config=configured_compaction,
             )
         from opensquilla.session.compaction import call_compact_with_optional_config
 
@@ -4942,19 +4959,7 @@ class TurnRunner:
             )
 
     def _pre_compaction_flush_enabled(self) -> bool:
-        from opensquilla.memory.flush_config import is_session_flush_enabled
-
-        if not is_session_flush_enabled():
-            return False
-
-        memory_cfg = getattr(self._config, "memory", None)
-        if memory_cfg is None:
-            return self._session_flush_service is not None
-
-        raw_enabled = getattr(memory_cfg, "flush_enabled", True)
-        if isinstance(raw_enabled, str):
-            return raw_enabled.strip().lower() not in {"0", "false", "no", "off"}
-        return bool(raw_enabled)
+        return flush_trigger_enabled(self._config, "pre_compaction")
 
     def _pre_compaction_flush_requires_safe_receipt(self) -> bool:
         return pre_compaction_flush_requires_safe_receipt(self._config)

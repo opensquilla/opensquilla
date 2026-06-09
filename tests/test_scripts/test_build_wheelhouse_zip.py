@@ -148,6 +148,9 @@ def test_release_wheel_allows_router_provenance_markdown() -> None:
     unrelated_skill_reference = (
         "opensquilla/skills/bundled/example/references/private-notes.md"
     )
+    skill_readme = "opensquilla/skills/bundled/filesystem/README.md"
+    skill_license = "opensquilla/skills/bundled/filesystem/LICENSE.md"
+    skill_card = "opensquilla/skills/bundled/filesystem/skill-card.md"
     unrelated_router_doc = (
         "opensquilla/squilla_router/models/v4.2_phase3_inference/README.md"
     )
@@ -160,6 +163,9 @@ def test_release_wheel_allows_router_provenance_markdown() -> None:
             "opensquilla/skills/bundled/example/SKILL.md",
             pptx_reference,
             unrelated_skill_reference,
+            skill_readme,
+            skill_license,
+            skill_card,
         )
     )
 
@@ -169,6 +175,9 @@ def test_release_wheel_allows_router_provenance_markdown() -> None:
     assert pptx_reference not in violations
     assert unrelated_router_doc in violations
     assert unrelated_skill_reference in violations
+    assert skill_readme in violations
+    assert skill_license in violations
+    assert skill_card in violations
 
 
 def test_pyproject_release_wheel_config_excludes_forbidden_skill_resources() -> None:
@@ -179,6 +188,9 @@ def test_pyproject_release_wheel_config_excludes_forbidden_skill_resources() -> 
     force_includes = wheel_config.get("force-include", {})
 
     assert "src/opensquilla/skills/bundled/**/THIRD_PARTY_NOTICES.md" in excludes
+    assert "src/opensquilla/skills/bundled/**/README.md" in excludes
+    assert "src/opensquilla/skills/bundled/**/LICENSE.md" in excludes
+    assert "src/opensquilla/skills/bundled/**/skill-card.md" in excludes
     assert "src/opensquilla/skills/bundled/**/references/*.md" in excludes
     assert "src/opensquilla/skills/exp/**" in excludes
     assert "src/opensquilla/skills/meta/META_SKILL_AUTHORING.md" in excludes

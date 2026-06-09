@@ -93,14 +93,19 @@ def _preexec(limits: SandboxLimits):  # pragma: no cover — runs in child
     return _apply
 
 
-def _filtered_env(whitelist: Sequence[str]) -> dict[str, str]:
-    parent = os.environ
+def _filtered_env(
+    whitelist: Sequence[str],
+    env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    parent = os.environ if env is None else env
     return {key: parent[key] for key in whitelist if key in parent}
 
 
 def run_sandboxed(
     cmd: Sequence[str],
     limits: SandboxLimits | None = None,
+    *,
+    env: dict[str, str] | None = None,
 ) -> SandboxResult:
     """Run ``cmd`` under ``limits`` and return a :class:`SandboxResult`.
 
@@ -126,14 +131,14 @@ def run_sandboxed(
             limits=effective,
         )
 
-    env = _filtered_env(effective.env_whitelist)
+    child_env = _filtered_env(effective.env_whitelist, env)
 
     try:
         proc = subprocess.Popen(  # noqa: S603 — cmd is caller-controlled
             list(cmd),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            env=env,
+            env=child_env,
             preexec_fn=_preexec(effective),  # noqa: PLW1509 — POSIX setrlimit
             text=True,
         )

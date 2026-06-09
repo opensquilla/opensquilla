@@ -13,8 +13,10 @@ def test_sandbox_network_hint_is_appended_to_dns_failures() -> None:
     hinted = _append_sandbox_network_hint(output)
 
     assert _SANDBOX_NETWORK_HINT in hinted
-    assert "http_request" in hinted
-    assert "web_fetch" in hinted
+    assert "sandbox_network" in hinted
+    assert "managed proxy" in hinted
+    assert "http_request" not in hinted
+    assert "web_fetch" not in hinted
 
 
 def test_sandbox_network_hint_is_not_duplicated() -> None:

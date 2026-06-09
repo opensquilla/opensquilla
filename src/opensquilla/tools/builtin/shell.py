@@ -80,8 +80,10 @@ _EXEC_TERMINATE_TIMEOUT = 0.25
 _EXEC_KILL_TIMEOUT = 0.25
 _COMMAND_AUDIT_MAX_CHARS = 4096
 _SANDBOX_NETWORK_HINT = (
-    "Hint: sandboxed shell/code has no network. Use http_request or web_fetch, "
-    "or run trusted benchmark work with --permissions bypass."
+    "Hint: sandboxed shell/code has no direct network. Use sandbox_network approval "
+    "or trusted managed-network mode, then retry the shell command through the "
+    "managed proxy. Do not switch to separate web download tools for package "
+    "installs unless the user explicitly asks for an offline workaround."
 )
 _SANDBOX_NETWORK_FAILURE_MARKERS: tuple[str, ...] = (
     "could not resolve host",

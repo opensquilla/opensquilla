@@ -245,6 +245,213 @@ async def test_shell_unknown_explicit_url_queues_network_approval_before_proxy_r
 
 
 @pytest.mark.asyncio
+async def test_shell_package_install_queues_bundle_approval_before_proxy_run(
+    managed_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    async def _fail_run_under_backend(request, *, runtime=None):
+        pytest.fail("package bundle approval should run before proxy execution")
+
+    monkeypatch.setattr(shell, "run_under_backend", _fail_run_under_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="s1",
+            run_mode="standard",
+            sandbox_run_context=RunContext(run_mode=RunMode.STANDARD),
+        )
+    )
+    try:
+        payload = json.loads(
+            await shell.exec_command(
+                "pip install requests",
+                workdir=str(managed_runtime),
+            )
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert payload["status"] == "approval_required"
+    assert payload["approvalKind"] == "sandbox_network"
+    assert payload["bundle_id"] == "python-package-install"
+    pending = get_approval_queue().list_pending("exec")
+    assert len(pending) == 1
+    assert pending[0]["params"]["bundle_id"] == "python-package-install"
+
+
+@pytest.mark.asyncio
+async def test_uv_pip_install_queues_bundle_approval_before_proxy_run(
+    managed_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    async def _fail_run_under_backend(request, *, runtime=None):
+        pytest.fail("uv pip package bundle approval should run before proxy execution")
+
+    monkeypatch.setattr(shell, "run_under_backend", _fail_run_under_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="s1",
+            run_mode="standard",
+            sandbox_run_context=RunContext(run_mode=RunMode.STANDARD),
+        )
+    )
+    try:
+        payload = json.loads(
+            await shell.exec_command(
+                "uv pip install --no-cache-dir httpx[http2] pendulum",
+                workdir=str(managed_runtime),
+            )
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert payload["status"] == "approval_required"
+    assert payload["approvalKind"] == "sandbox_network"
+    assert payload["bundle_id"] == "python-package-install"
+    pending = get_approval_queue().list_pending("exec")
+    assert len(pending) == 1
+    assert pending[0]["params"]["bundle_id"] == "python-package-install"
+
+
+@pytest.mark.asyncio
+async def test_trusted_uv_pip_install_receives_managed_proxy_without_prompt(
+    managed_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox import integration as integration_mod
+    from opensquilla.tools.builtin import shell
+
+    class _FakeProxyServer:
+        host = "127.0.0.1"
+        port = 48123
+
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+    seen: dict[str, object] = {}
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        managed = await integration_mod.prepare_subprocess_managed_network_proxy(
+            request,
+            runtime=runtime,
+        )
+        try:
+            seen["env"] = managed.request.env
+            seen["policy"] = managed.request.policy
+            return SimpleNamespace(returncode=0, stdout="installed\n", stderr="", backend_notes=())
+        finally:
+            await managed.cleanup()
+
+    monkeypatch.setattr(integration_mod, "SandboxProxyServer", _FakeProxyServer)
+    monkeypatch.setattr(shell, "run_under_backend", _fake_run_under_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.TRUSTED,
+                workspace=str(managed_runtime),
+            ),
+        )
+    )
+    try:
+        result = await shell.exec_command(
+            "uv pip install --no-cache-dir httpx[http2] pendulum",
+            workdir=str(managed_runtime),
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert "installed" in result
+    assert get_approval_queue().list_pending("exec") == []
+    env = seen["env"]
+    assert isinstance(env, dict)
+    assert env["HTTP_PROXY"] == "http://127.0.0.1:48123"
+    assert env["HTTPS_PROXY"] == env["HTTP_PROXY"]
+
+
+@pytest.mark.asyncio
+async def test_timeout_wrapped_node_install_queues_bundle_approval_before_proxy_run(
+    managed_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    async def _fail_run_under_backend(request, *, runtime=None):
+        pytest.fail("node package bundle approval should run before proxy execution")
+
+    monkeypatch.setattr(shell, "run_under_backend", _fail_run_under_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="s1",
+            run_mode="standard",
+            sandbox_run_context=RunContext(run_mode=RunMode.STANDARD),
+        )
+    )
+    try:
+        payload = json.loads(
+            await shell.exec_command(
+                "timeout 30 npm install lodash",
+                workdir=str(managed_runtime),
+            )
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert payload["status"] == "approval_required"
+    assert payload["approvalKind"] == "sandbox_network"
+    assert payload["bundle_id"] == "node-package-install"
+    pending = get_approval_queue().list_pending("exec")
+    assert len(pending) == 1
+    assert pending[0]["params"]["bundle_id"] == "node-package-install"
+
+
+@pytest.mark.asyncio
 async def test_subprocess_network_approval_uses_session_workspace_for_external_cwd(
     managed_runtime: Path,
 ) -> None:
@@ -375,7 +582,21 @@ async def test_background_shell_network_spawn_receives_managed_proxy(
     managed_runtime: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from opensquilla.sandbox import integration as integration_mod
     from opensquilla.tools.builtin import shell
+
+    class _FakeProxyServer:
+        host = "127.0.0.1"
+        port = 48123
+
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
 
     class _FakeStream:
         async def read(self, size: int) -> bytes:
@@ -399,6 +620,7 @@ async def test_background_shell_network_spawn_receives_managed_proxy(
 
     monkeypatch.setattr(shell, "_spawn_sandboxed_background_process", _fake_spawn)
     monkeypatch.setattr(shell, "_host_execution_allowed", lambda: False)
+    monkeypatch.setattr(integration_mod, "SandboxProxyServer", _FakeProxyServer)
     monkeypatch.setattr(
         shell,
         "check_safe_bin",
@@ -447,8 +669,22 @@ async def test_code_network_subprocess_receives_managed_proxy_env(
     from opensquilla.sandbox import integration as integration_mod
     from opensquilla.tools.builtin import code_exec, shell
 
+    class _FakeProxyServer:
+        host = "127.0.0.1"
+        port = 48123
+
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
     monkeypatch.setattr(code_exec, "_resolve_python_bin", lambda *, sandbox_enabled: sys.executable)
     monkeypatch.setattr(shell, "_host_execution_allowed", lambda: False)
+    monkeypatch.setattr(integration_mod, "SandboxProxyServer", _FakeProxyServer)
     seen: dict[str, object] = {}
 
     async def _fake_run_under_backend(request, *, runtime=None):

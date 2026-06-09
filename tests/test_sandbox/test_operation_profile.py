@@ -19,6 +19,7 @@ def test_classify_python_package_install_variants() -> None:
         ("python3", "-m", "pip", "install", "requests"),
         ("python3.11", "-m", "pip", "install", "requests"),
         ("/usr/bin/python3", "-m", "pip", "install", "requests"),
+        ("uv", "pip", "install", "--no-cache-dir", "requests"),
     ):
         profile = classify_command(command)
         assert profile.name == "package_install"
@@ -50,6 +51,14 @@ def test_classify_alternate_node_package_installers() -> None:
         assert profile.name == "package_install"
         assert profile.package_manager == "node"
         assert profile.needs_network is True
+
+
+def test_classify_node_package_install_behind_timeout_wrapper() -> None:
+    profile = classify_command(("timeout", "30", "npm", "install", "lodash"))
+
+    assert profile.name == "package_install"
+    assert profile.package_manager == "node"
+    assert profile.needs_network is True
 
 
 def test_npm_run_install_is_not_package_install() -> None:

@@ -2238,6 +2238,43 @@ async def test_apply_network_choice_persists_chat_domain_grant(tmp_path):
     assert ("example.com", "chat") in [(grant.domain, grant.scope) for grant in ctx.domains]
 
 
+@pytest.mark.asyncio
+async def test_apply_network_choice_persists_chat_package_bundle_grant(tmp_path):
+    from opensquilla.sandbox.escalation import (
+        apply_sandbox_approval_choice,
+        build_package_bundle_approval_params,
+    )
+    from opensquilla.sandbox.run_context import get_run_context
+
+    manager = _SessionManager()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    params = build_package_bundle_approval_params(
+        "python-package-install",
+        session_key=manager.node.session_key,
+        workspace=str(workspace),
+        fingerprint="fp123",
+    )
+
+    await apply_sandbox_approval_choice(
+        params,
+        choice="allow_bundle_chat",
+        approved=True,
+        session_manager=manager,
+        config=_config(),
+    )
+
+    ctx = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=_config(),
+        workspace=str(workspace),
+    )
+    assert ("python-package-install", "chat") in [
+        (grant.bundle_id, grant.scope) for grant in ctx.bundles
+    ]
+
+
 def test_request_sandbox_approval_reissues_matching_approved_approval() -> None:
     from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
     from opensquilla.sandbox.escalation import (

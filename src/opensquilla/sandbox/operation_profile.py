@@ -46,6 +46,9 @@ class OperationProfile:
 def classify_command(argv: tuple[str, ...] | list[str]) -> OperationProfile:
     parts = tuple(str(p) for p in argv)
     lowered = tuple(p.lower() for p in parts)
+    unwrapped = _strip_command_wrapper(lowered)
+    if unwrapped != lowered:
+        return classify_command(unwrapped)
     if _is_python_install(lowered):
         return OperationProfile("package_install", True, "python")
     if _is_node_install(lowered):
@@ -118,6 +121,11 @@ def _is_python_install(lowered: tuple[str, ...]) -> bool:
         len(lowered) >= 2
         and _command_name(lowered[0]) in {"pip", "pip3"}
         and lowered[1] == "install"
+    ) or (
+        len(lowered) >= 3
+        and _command_name(lowered[0]) == "uv"
+        and lowered[1] == "pip"
+        and lowered[2] == "install"
     )
 
 
@@ -268,6 +276,31 @@ def _strip_assignment_prefix(parts: tuple[str, ...]) -> tuple[str, ...]:
     while index < len(parts) and _ASSIGNMENT_RE.fullmatch(parts[index].lower()):
         index += 1
     return parts[index:]
+
+
+def _strip_command_wrapper(lowered: tuple[str, ...]) -> tuple[str, ...]:
+    if not lowered or _command_name(lowered[0]) != "timeout":
+        return lowered
+
+    index = 1
+    while index < len(lowered):
+        token = lowered[index]
+        if token == "--":
+            index += 1
+            break
+        if not token.startswith("-"):
+            break
+        index += 1
+        if token in {"-k", "--kill-after", "-s", "--signal"} and index < len(lowered):
+            index += 1
+
+    if index >= len(lowered):
+        return lowered
+    # GNU timeout syntax is: timeout [OPTION] DURATION COMMAND [ARG]...
+    index += 1
+    if index >= len(lowered):
+        return lowered
+    return lowered[index:]
 
 
 def _shell_script(parts: tuple[str, ...]) -> str:

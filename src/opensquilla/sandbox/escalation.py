@@ -10,6 +10,7 @@ from typing import Any
 
 from opensquilla.sandbox.domain_validation import domain_matches
 from opensquilla.sandbox.network_guard import NetworkDecision
+from opensquilla.sandbox.package_bundles import expand_package_bundle
 from opensquilla.sandbox.path_validation import MountDecision
 from opensquilla.sandbox.run_context import (
     DomainGrant,
@@ -24,6 +25,7 @@ from opensquilla.sandbox.run_context_service import (
     add_domain_grant,
     add_mount_grant,
     add_public_network_grant,
+    enable_bundle_grant,
 )
 from opensquilla.sandbox.run_mode import RunMode
 
@@ -73,6 +75,33 @@ def build_network_approval_params(
             _choice("allow_once", "Allow once", style="primary"),
             _choice("allow_chat", "Allow this network target"),
             _choice("allow_public_chat", "Allow network access"),
+            _choice("deny", "Deny", approved=False, style="danger"),
+        ],
+    }
+    if session_key:
+        params["sessionKey"] = session_key
+    if workspace:
+        params["workspace"] = workspace
+    return params
+
+
+def build_package_bundle_approval_params(
+    bundle_id: str,
+    *,
+    session_key: str | None,
+    workspace: str | None,
+    fingerprint: str,
+) -> dict[str, object]:
+    normalized_bundle_id = str(bundle_id or "").strip()
+    if not expand_package_bundle(normalized_bundle_id):
+        raise ValueError("unknown_package_bundle")
+    params: dict[str, object] = {
+        "approvalKind": "sandbox_network",
+        "bundle_id": normalized_bundle_id,
+        "fingerprint": fingerprint,
+        "choices": [
+            _choice("allow_bundle_chat", "Allow package install", style="primary"),
+            _choice("allow_bundle_user", "Always allow package installs"),
             _choice("deny", "Deny", approved=False, style="danger"),
         ],
     }
@@ -660,6 +689,7 @@ def _approval_payload(
         "path",
         "access",
         "host",
+        "bundle_id",
         "workspace",
         "sessionKey",
         "fingerprint",
@@ -675,7 +705,15 @@ def _validate_matching_approval_params(
 ) -> None:
     if str(existing.get("approvalKind") or "") != str(expected.get("approvalKind") or ""):
         raise ValueError("approval_does_not_match_requested_sandbox_action")
-    for key in ("path", "host", "access", "fingerprint", "sessionKey", "workspace"):
+    for key in (
+        "path",
+        "host",
+        "bundle_id",
+        "access",
+        "fingerprint",
+        "sessionKey",
+        "workspace",
+    ):
         existing_value = existing.get(key)
         expected_value = expected.get(key)
         if expected_value is None:
@@ -693,6 +731,45 @@ async def _apply_network_choice(
 ) -> None:
     session_key = _require_session_key(params)
     workspace = _workspace_param(params)
+    bundle_id = str(params.get("bundle_id") or params.get("bundleId") or "").strip()
+
+    if bundle_id:
+        if choice == "allow_bundle_chat":
+            updated = await enable_bundle_grant(
+                session_manager,
+                session_key,
+                bundle_id=bundle_id,
+                scope="chat",
+                config=config,
+                workspace=workspace,
+            )
+            remember_resolved_run_context(
+                session_key,
+                workspace,
+                updated,
+                session_manager=session_manager,
+                config=config,
+            )
+            return
+        if choice == "allow_bundle_user":
+            updated = await enable_bundle_grant(
+                session_manager,
+                session_key,
+                bundle_id=bundle_id,
+                scope="workspace",
+                config=config,
+                workspace=workspace,
+            )
+            remember_resolved_run_context(
+                session_key,
+                workspace,
+                updated,
+                session_manager=session_manager,
+                config=config,
+            )
+            return
+        raise ValueError(f"unknown_network_choice:{choice}")
+
     host = _require_text(params, "host")
 
     if choice == "allow_chat":
@@ -901,7 +978,11 @@ def _sandbox_approval_key(params: dict[str, Any] | None) -> str | None:
         fields["path"] = str(params.get("path") or "").strip()
         fields["access"] = str(params.get("access") or "").strip()
     elif approval_kind == "sandbox_network":
-        fields["host"] = str(params.get("host") or "").strip().casefold()
+        bundle_id = str(params.get("bundle_id") or params.get("bundleId") or "").strip()
+        if bundle_id:
+            fields["bundle_id"] = bundle_id
+        else:
+            fields["host"] = str(params.get("host") or "").strip().casefold()
         fields["fingerprint"] = str(params.get("fingerprint") or "").strip()
     elif approval_kind == "host_once":
         fields["fallback"] = "host_once"
@@ -923,7 +1004,8 @@ def _pending_sandbox_approval_key(params: dict[str, Any] | None) -> str | None:
         fields["path"] = str(params.get("path") or "").strip()
         fields["access"] = str(params.get("access") or "").strip()
     elif approval_kind == "sandbox_network":
-        fields["network"] = "public"
+        bundle_id = str(params.get("bundle_id") or params.get("bundleId") or "").strip()
+        fields["network"] = f"bundle:{bundle_id}" if bundle_id else "public"
     elif approval_kind == "host_once":
         fields["fallback"] = "host_once"
     return json.dumps(fields, ensure_ascii=False, sort_keys=True)
@@ -983,6 +1065,7 @@ __all__ = [
     "apply_sandbox_approval_choice",
     "build_backend_failure_approval_params",
     "build_network_approval_params",
+    "build_package_bundle_approval_params",
     "build_path_approval_params",
     "clear_sandbox_approval_denials",
     "consume_persisted_temporary_network_grant",

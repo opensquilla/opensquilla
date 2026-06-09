@@ -48,6 +48,7 @@ from opensquilla.sandbox.domain_validation import validate_domain_pattern
 from opensquilla.sandbox.escalation import (
     build_backend_failure_approval_params,
     build_network_approval_params,
+    build_package_bundle_approval_params,
     consume_persisted_temporary_network_grant,
     consume_temporary_network_grant,
     context_with_temporary_network_grants,
@@ -66,13 +67,14 @@ from opensquilla.sandbox.governance import (
 )
 from opensquilla.sandbox.network_guard import NetworkDecision, decide_network_access
 from opensquilla.sandbox.network_proxy import SandboxProxyServer
+from opensquilla.sandbox.operation_profile import classify_command, package_bundle_for_manager
 from opensquilla.sandbox.path_validation import (
     decide_path_access,
     normalize_mount_access,
     normalize_path,
 )
 from opensquilla.sandbox.policy import LevelHints, build_policy, select_level
-from opensquilla.sandbox.run_context import DomainGrant, RunContext
+from opensquilla.sandbox.run_context import DomainGrant, PackageBundleGrant, RunContext
 from opensquilla.sandbox.run_context_service import auto_add_trusted_domain_grant
 from opensquilla.sandbox.run_mode import RunMode, normalize_run_mode
 from opensquilla.sandbox.stale_output_cache import StaleOutputCache, get_stale_output_cache
@@ -759,6 +761,7 @@ async def prepare_subprocess_managed_network_proxy(
         context,
         fingerprint=fingerprint,
     )
+    context = _context_with_request_package_bundle(context, request)
     original_context = _current_run_context_for_network_proxy()
     consumed_hosts: set[str] = set()
 
@@ -1209,10 +1212,6 @@ async def preflight_subprocess_managed_network(
     if getattr(request.policy, "network", None) != NetworkMode.PROXY_ALLOWLIST:
         return None
 
-    targets = _explicit_network_target_hosts(request.action_kind, request.argv)
-    if not targets:
-        return None
-
     context = _current_run_context_for_network_proxy()
     if context is None:
         return await _managed_in_process_denial(
@@ -1221,6 +1220,13 @@ async def preflight_subprocess_managed_network(
             "NetworkMode.PROXY_ALLOWLIST requires Run Context grants to preflight "
             "explicit subprocess network targets.",
         )
+
+    targets = _explicit_network_target_hosts(request.action_kind, request.argv)
+    if not targets:
+        bundle_approval = await _preflight_request_package_bundle(request, runtime, context)
+        if bundle_approval is not None:
+            return bundle_approval
+        return None
 
     fingerprint = action_fingerprint(request)
     original_context = context
@@ -1283,6 +1289,62 @@ async def preflight_subprocess_managed_network(
                 fingerprint=fingerprint,
             )
     return None
+
+
+async def _preflight_request_package_bundle(
+    request: SandboxRequest,
+    runtime: SandboxRuntime,
+    context: RunContext,
+) -> dict[str, object] | DenialResult | None:
+    bundle_id = _package_bundle_id_for_request(request)
+    if bundle_id is None:
+        return None
+    if _context_has_enabled_package_bundle(context, bundle_id):
+        return None
+    if context.run_mode == RunMode.TRUSTED:
+        return None
+
+    fingerprint = action_fingerprint(request)
+    params = build_package_bundle_approval_params(
+        bundle_id,
+        session_key=_resolve_session_id(runtime, None),
+        workspace=_network_grant_workspace(request, runtime),
+        fingerprint=fingerprint,
+    )
+    return request_sandbox_approval(
+        params,
+        message=(
+            "This package install needs network access to package registry domains. "
+            "Resolve this approval and retry."
+        ),
+    )
+
+
+def _context_with_request_package_bundle(
+    context: RunContext,
+    request: SandboxRequest,
+) -> RunContext:
+    bundle_id = _package_bundle_id_for_request(request)
+    if bundle_id is None or _context_has_enabled_package_bundle(context, bundle_id):
+        return context
+    if context.run_mode != RunMode.TRUSTED:
+        return context
+    grant = PackageBundleGrant(bundle_id=bundle_id, scope="chat", source="auto_trusted")
+    return dataclasses.replace(context, bundles=context.bundles + (grant,))
+
+
+def _context_has_enabled_package_bundle(context: RunContext, bundle_id: str) -> bool:
+    return any(
+        grant.bundle_id == bundle_id and grant.source != "disabled"
+        for grant in context.bundles
+    )
+
+
+def _package_bundle_id_for_request(request: SandboxRequest) -> str | None:
+    if request.action_kind not in {"shell.exec", "shell.background", "code.exec"}:
+        return None
+    profile = classify_command(request.argv)
+    return package_bundle_for_manager(profile.package_manager)
 
 
 async def _managed_in_process_denial(

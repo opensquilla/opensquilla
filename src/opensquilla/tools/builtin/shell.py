@@ -1513,6 +1513,13 @@ async def exec_command(
                 recovery_decision.kind is DevPolicyDecisionKind.ASK
                 and recovery_decision.use_managed_proxy
             ):
+                log.info(
+                    "shell_runtime_recovery",
+                    command=_audit_command(command),
+                    decision=recovery_decision.kind.value,
+                    reason=recovery_decision.reason,
+                    run_mode=_context_run_mode(),
+                )
                 approval_request = backend_request
                 if approval_request.policy.network is not NetworkMode.PROXY_ALLOWLIST:
                     approval_request = approval_request.with_policy(
@@ -1528,30 +1535,9 @@ async def exec_command(
                     consume_temporary_grants=False,
                 )
                 if isinstance(preflight, DenialResult):
-                    log.info(
-                        "shell_runtime_recovery",
-                        command=_audit_command(command),
-                        decision=recovery_decision.kind.value,
-                        reason=recovery_decision.reason,
-                        run_mode=_context_run_mode(),
-                    )
                     return json.dumps(preflight.to_dict())
                 if isinstance(preflight, dict):
-                    log.info(
-                        "shell_runtime_recovery",
-                        command=_audit_command(command),
-                        decision=recovery_decision.kind.value,
-                        reason=recovery_decision.reason,
-                        run_mode=_context_run_mode(),
-                    )
                     return json.dumps(preflight)
-                log.info(
-                    "shell_runtime_recovery",
-                    command=_audit_command(command),
-                    decision=recovery_decision.kind.value,
-                    reason=recovery_decision.reason,
-                    run_mode=_context_run_mode(),
-                )
                 managed_network = await prepare_subprocess_managed_network_proxy(
                     approval_request,
                     runtime=runtime,

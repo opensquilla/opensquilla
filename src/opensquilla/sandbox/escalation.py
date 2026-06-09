@@ -501,7 +501,7 @@ def _temporary_mount_path(decision: MountDecision, *, prefer_file: bool = False)
         return str(candidate)
     if os.name == "nt" and candidate.exists():
         return str(candidate)
-    if prefer_file:
+    if prefer_file and candidate.exists():
         return str(candidate)
     return str(candidate.parent)
 

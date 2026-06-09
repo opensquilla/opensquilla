@@ -884,9 +884,11 @@ async def test_trusted_shell_copy_to_outside_workspace_auto_mounts_rw(
     assert "exit_code=0" in result
     assert backend_calls
     assert get_approval_queue().list_pending("exec") == []
-    assert ctx.sandbox_mounts == [{"path": str(target.resolve(strict=False)), "access": "rw"}]
+    assert ctx.sandbox_mounts == [
+        {"path": str(target.parent.resolve(strict=False)), "access": "rw"}
+    ]
     request = backend_calls[0]
-    assert any(mount.host_path == target for mount in request.policy.mounts)
+    assert any(mount.host_path == target.parent for mount in request.policy.mounts)
 
 
 @pytest.mark.asyncio

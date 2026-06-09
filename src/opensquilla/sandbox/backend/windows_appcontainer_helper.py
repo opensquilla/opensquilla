@@ -192,7 +192,15 @@ async def _grant_policy_paths(
             raise SystemExit(
                 f"invalid windows_appcontainer policy: unknown mount mode {mode!r}"
             )
+        if mode == "rw":
+            _prepare_missing_file_mount(host)
         await grant_path_to_appcontainer(host, appcontainer_sid, mode=mode)
+
+
+def _prepare_missing_file_mount(path: Path) -> None:
+    if path.exists() or not path.suffix or not path.parent.exists():
+        return
+    path.touch(exist_ok=True)
 
 
 if __name__ == "__main__":  # pragma: no cover

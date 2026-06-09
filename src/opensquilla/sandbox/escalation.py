@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -420,7 +421,11 @@ def current_tool_mounts() -> list[dict[str, object]]:
     return list(merged.values())
 
 
-def grant_temporary_mount_for_current_tool(decision: MountDecision) -> bool:
+def grant_temporary_mount_for_current_tool(
+    decision: MountDecision,
+    *,
+    prefer_file: bool = False,
+) -> bool:
     if decision.status != "request" or decision.access not in {"ro", "rw"}:
         return False
     try:
@@ -432,7 +437,7 @@ def grant_temporary_mount_for_current_tool(decision: MountDecision) -> bool:
     if ctx is None:
         return False
 
-    path = _temporary_mount_path(decision)
+    path = _temporary_mount_path(decision, prefer_file=prefer_file)
     access = decision.access
     ctx.sandbox_mounts = [
         mount
@@ -459,11 +464,15 @@ def grant_temporary_mount_for_current_tool(decision: MountDecision) -> bool:
     return True
 
 
-def _temporary_mount_path(decision: MountDecision) -> str:
+def _temporary_mount_path(decision: MountDecision, *, prefer_file: bool = False) -> str:
     if decision.access != "rw":
         return decision.normalized_path
     candidate = Path(decision.normalized_path).expanduser().resolve(strict=False)
     if candidate.exists() and candidate.is_dir():
+        return str(candidate)
+    if os.name == "nt" and candidate.exists():
+        return str(candidate)
+    if os.name == "nt" and prefer_file:
         return str(candidate)
     return str(candidate.parent)
 

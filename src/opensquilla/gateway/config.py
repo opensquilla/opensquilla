@@ -154,7 +154,7 @@ class PermissionsConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    default_mode: Literal["off", "on", "bypass", "full"] = "bypass"
+    default_mode: Literal["off", "on", "bypass", "full"] = "off"
 
 
 class TaskRuntimeConfig(BaseModel):

@@ -4,6 +4,7 @@ import os
 import shutil
 import sys
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -161,44 +162,101 @@ async def test_native_windows_shell_can_remove_workspace_file() -> None:
     workspace = Path.cwd() / ".tmp" / f"native-windows-shell-remove-{uuid.uuid4().hex}"
     try:
         workspace.mkdir(parents=True)
-        target = workspace / "delete-me.txt"
-        target.write_text("hello", encoding="utf-8")
-        argv = shell._sandbox_shell_backend_argv(
-            f"Remove-Item -LiteralPath '{target}' -Force -ErrorAction Stop",
-            _WindowsShellRuntime(),
+
+        async def run_shell_delete(name: str, command_template: str) -> object:
+            target = workspace / f"{name}.txt"
+            target.write_text("hello", encoding="utf-8")
+            argv = shell._sandbox_shell_backend_argv(
+                command_template.format(path=target),
+                _WindowsShellRuntime(),
+            )
+            request = SandboxRequest(
+                argv=argv,
+                cwd=workspace,
+                action_kind="shell.exec",
+                policy=_policy(workspace),
+                env=dict(os.environ),
+            )
+
+            result = await WindowsAppContainerBackend().run(request)
+
+            assert result.returncode == 0
+            assert result.stderr == ""
+            assert target.exists() is False
+            return result
+
+        await run_shell_delete(
+            "delete-me",
+            "Remove-Item -LiteralPath '{path}' -Force -ErrorAction Stop",
         )
-        request = SandboxRequest(
-            argv=argv,
-            cwd=workspace,
-            action_kind="shell.exec",
-            policy=_policy(workspace),
-            env=dict(os.environ),
+        await run_shell_delete(
+            "nested-delete-me",
+            "powershell -Command \"Remove-Item '{path}'\"",
         )
-
-        result = await WindowsAppContainerBackend().run(request)
-
-        assert result.returncode == 0
-        assert result.stderr == ""
-        assert target.exists() is False
-
-        nested_target = workspace / "nested-delete-me.txt"
-        nested_target.write_text("hello", encoding="utf-8")
-        nested_argv = shell._sandbox_shell_backend_argv(
-            f"powershell -Command \"Remove-Item '{nested_target}'\"",
-            _WindowsShellRuntime(),
+        await run_shell_delete(
+            "bare-path-delete",
+            "Remove-Item {path} -Force",
         )
-        nested_request = SandboxRequest(
-            argv=nested_argv,
-            cwd=workspace,
-            action_kind="shell.exec",
-            policy=_policy(workspace),
-            env=dict(os.environ),
+        await run_shell_delete(
+            "bare-literal-delete",
+            "Remove-Item -LiteralPath {path} -Force",
         )
-
-        nested_result = await WindowsAppContainerBackend().run(nested_request)
-
-        assert nested_result.returncode == 0
-        assert nested_result.stderr == ""
-        assert nested_target.exists() is False
+        await run_shell_delete(
+            "nested-bare-delete",
+            "powershell -Command \"Remove-Item {path} -Force\"",
+        )
+        echoed = await run_shell_delete(
+            "delete-then-echo",
+            "Remove-Item -LiteralPath '{path}' -Force -ErrorAction Stop; "
+            "Write-Output deleted",
+        )
+        assert getattr(echoed, "stdout").strip() == "deleted"
+        await run_shell_delete(
+            "test-path-delete",
+            "if (Test-Path -LiteralPath '{path}') {{ "
+            "Remove-Item -LiteralPath '{path}' -Force "
+            "}}",
+        )
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_native_windows_appcontainer_can_create_missing_file_mount(
+    tmp_path: Path,
+) -> None:
+    from opensquilla.sandbox.backend.windows_appcontainer import WindowsAppContainerBackend
+    from opensquilla.tools.builtin import shell
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = tmp_path / "outside-create.txt"
+    policy = _policy(workspace)
+    policy = replace(
+        policy,
+        mounts=policy.mounts
+        + (
+            MountSpec(
+                host_path=target,
+                sandbox_path=target,
+                mode="rw",
+                required=False,
+            ),
+        ),
+    )
+    request = SandboxRequest(
+        argv=shell._sandbox_shell_backend_argv(
+            f'echo hello > "{target}"',
+            _WindowsShellRuntime(),
+        ),
+        cwd=workspace,
+        action_kind="shell.exec",
+        policy=policy,
+        env=dict(os.environ),
+    )
+
+    result = await WindowsAppContainerBackend().run(request)
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert target.read_text(encoding="utf-16").strip() == "hello"

@@ -184,6 +184,21 @@ def test_shell_wrapper_preserves_windows_read_path_arguments() -> None:
     assert profile.requested_paths == (r"C:\workspace\outside",)
 
 
+def test_shell_wrapper_tracks_windows_delete_paths() -> None:
+    for command in (
+        r'del "C:\Users\me\outside-sandbox-smoke.txt"',
+        r"Remove-Item C:\Users\me\outside-sandbox-smoke.txt -Force",
+        r"Remove-Item -LiteralPath C:\Users\me\outside-sandbox-smoke.txt -Force",
+    ):
+        profile = classify_command(("sh", "-lc", command))
+
+        assert profile.name == "destructive_shell"
+        assert profile.high_impact is True
+        assert profile.requested_write_paths == (
+            r"C:\Users\me\outside-sandbox-smoke.txt",
+        )
+
+
 def test_shell_wrapper_preserves_copy_source_and_destination_paths() -> None:
     profile = classify_command(
         ("sh", "-lc", "cp /workspace-src/opensquilla/LICENSE /workspace/license.txt")

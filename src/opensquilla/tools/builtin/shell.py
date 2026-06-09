@@ -414,6 +414,33 @@ _PATH_TOKEN_RE = re.compile(
     r"(?:-(?:LiteralPath|Path)\s+)?(?P<quote>['\"])(?P<path>.*?)(?P=quote)",
     re.IGNORECASE,
 )
+_EXPLICIT_BARE_PATH_RE = re.compile(
+    r"-(?:LiteralPath|Path)\s+(?P<path>(?!['\"])[^\s;{}]+)",
+    re.IGNORECASE,
+)
+_ARG_TOKEN_RE = re.compile(r'"[^"]*"|\'[^\']*\'|\S+')
+_OUTPUT_RE = re.compile(r"^(?:Write-Output|echo)\s+(?P<text>.+)$", re.IGNORECASE)
+_IF_REMOVE_RE = re.compile(
+    r"^if\s*\(.*?Test-Path.+?\)\s*\{\s*(?P<remove>Remove-Item\b.+?)\s*\}$",
+    re.IGNORECASE | re.DOTALL,
+)
+_VALUE_FLAGS = {
+    "-credential",
+    "-ea",
+    "-erroraction",
+    "-ev",
+    "-errorvariable",
+    "-exclude",
+    "-filter",
+    "-include",
+    "-ov",
+    "-outvariable",
+    "-stream",
+    "-wa",
+    "-warningaction",
+    "-wv",
+    "-warningvariable",
+}
 
 
 def _strip_outer_quotes(value):
@@ -421,6 +448,17 @@ def _strip_outer_quotes(value):
     if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
         return value[1:-1]
     return value
+
+
+def _looks_like_path(value):
+    return bool(
+        re.match(r"^[A-Za-z]:[\\/]", value)
+        or value.startswith("\\\\")
+        or value.startswith(".\\")
+        or value.startswith("./")
+        or value.startswith("\\")
+        or value.startswith("/")
+    )
 
 
 def _split_statements(script):
@@ -482,10 +520,45 @@ def _remove_statement_path(statement):
     match = _REMOVE_ITEM_RE.match(statement)
     if not match:
         return None
-    path_match = _PATH_TOKEN_RE.search(match.group("rest"))
+    rest = match.group("rest")
+    path_match = _PATH_TOKEN_RE.search(rest)
     if not path_match:
+        explicit_bare = _EXPLICIT_BARE_PATH_RE.search(rest)
+        if explicit_bare:
+            return explicit_bare.group("path")
+        skip_next = False
+        for token in _ARG_TOKEN_RE.findall(rest):
+            token = _strip_outer_quotes(token)
+            folded = token.lower()
+            if skip_next:
+                skip_next = False
+                continue
+            if folded in _VALUE_FLAGS:
+                skip_next = True
+                continue
+            if token.startswith("-"):
+                continue
+            if _looks_like_path(token):
+                return token
         return None
     return path_match.group("path")
+
+
+def _if_remove_statement_path(statement):
+    match = _IF_REMOVE_RE.match(statement)
+    if not match:
+        return None
+    return _remove_statement_path(match.group("remove"))
+
+
+def _output_statement_text(statement):
+    match = _OUTPUT_RE.match(statement)
+    if not match:
+        return None
+    text = match.group("text")
+    if re.search(r"[<>|&]", text):
+        return None
+    return _strip_outer_quotes(text)
 
 
 def _remove_path(path, *, recurse, force):
@@ -509,28 +582,43 @@ def _remove_path(path, *, recurse, force):
     return None
 
 
-def _handle_remove_only(script):
+def _handle_simple_delete_script(script):
     statements = _split_statements(script)
     if not statements:
         return None
-    paths = []
+    operations = []
     recurse = False
     force = False
     for statement in statements:
         path = _remove_statement_path(statement)
-        if path is None:
-            return None
-        recurse = recurse or bool(re.search(r"\s-Recurse\b", statement, re.IGNORECASE))
-        force = force or bool(re.search(r"\s-Force\b", statement, re.IGNORECASE))
-        paths.append(path)
+        if path is not None:
+            recurse = recurse or bool(re.search(r"\s-Recurse\b", statement, re.IGNORECASE))
+            force = force or bool(re.search(r"\s-Force\b", statement, re.IGNORECASE))
+            operations.append(("remove", path))
+            continue
+        path = _if_remove_statement_path(statement)
+        if path is not None:
+            recurse = recurse or bool(re.search(r"\s-Recurse\b", statement, re.IGNORECASE))
+            force = force or bool(re.search(r"\s-Force\b", statement, re.IGNORECASE))
+            operations.append(("remove", path))
+            continue
+        output = _output_statement_text(statement)
+        if output is not None:
+            operations.append(("output", output))
+            continue
+        return None
     errors = [
         error
-        for path in paths
-        if (error := _remove_path(path, recurse=recurse, force=force))
+        for operation, value in operations
+        if operation == "remove"
+        if (error := _remove_path(value, recurse=recurse, force=force))
     ]
     if errors:
         sys.stderr.write("\n".join(errors))
         return 1
+    for operation, value in operations:
+        if operation == "output":
+            print(value)
     return 0
 
 
@@ -542,7 +630,7 @@ def main():
     command = sys.argv[2]
     nested_command = _nested_powershell_command(command)
     effective_command = nested_command if nested_command is not None else command
-    remove_result = _handle_remove_only(effective_command)
+    remove_result = _handle_simple_delete_script(effective_command)
     if remove_result is not None:
         return remove_result
 
@@ -646,6 +734,7 @@ def _sandbox_write_path_access_envelope(
     write_paths = _shell_write_access_targets(command, profile)
     if not write_paths or not _sandbox_path_access_enabled():
         return None
+    shell_file_targets = frozenset(_shell_write_targets(command))
     for raw_path in write_paths:
         decision = decide_path_access(
             _resolve_shell_write_target(raw_path, workdir),
@@ -657,6 +746,11 @@ def _sandbox_write_path_access_envelope(
             continue
         if decision.status == "blocked":
             return _path_access_blocked_envelope(decision)
+        if trusted_sandbox_active() and grant_temporary_mount_for_current_tool(
+            decision,
+            prefer_file=_shell_write_target_prefers_file(raw_path, shell_file_targets),
+        ):
+            continue
         return _path_access_required_envelope(decision, approval_id=approval_id)
     return None
 
@@ -667,6 +761,16 @@ def _shell_write_access_targets(command: str, profile: OperationProfile) -> tupl
         if target not in targets:
             targets.append(target)
     return tuple(targets)
+
+
+def _shell_write_target_prefers_file(
+    raw_target: str,
+    shell_file_targets: frozenset[str],
+) -> bool:
+    if raw_target in shell_file_targets:
+        return True
+    cleaned = raw_target.strip().strip("'\"")
+    return bool(ntpath.splitext(cleaned)[1] or Path(cleaned).suffix)
 
 
 def _resolve_shell_write_target(raw_target: str, workdir: str | None) -> Path:

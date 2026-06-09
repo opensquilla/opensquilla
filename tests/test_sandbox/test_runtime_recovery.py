@@ -80,11 +80,10 @@ def test_private_command_target_overrides_hostless_network_failure() -> None:
     )
 
 
-def test_tmp_project_path_outside_workspace_is_normal_user_path(tmp_path: Path) -> None:
+def test_user_project_path_outside_workspace_is_normal_user_path(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
-    project = tmp_path / "project"
+    project = Path.home() / ".cache" / "opensquilla-test-project"
     workspace.mkdir()
-    project.mkdir()
 
     assert (
         classify_path_target(project, workspace=workspace)
@@ -109,3 +108,10 @@ def test_sensitive_paths_are_sensitive() -> None:
 
 def test_tmp_descendant_is_temp() -> None:
     assert classify_path_target(Path("/tmp/something"), workspace=None) is PathTargetClass.TEMP
+
+
+def test_existing_user_owned_tmp_descendant_is_temp(tmp_path: Path) -> None:
+    target = tmp_path / "existing"
+    target.mkdir()
+
+    assert classify_path_target(target, workspace=None) is PathTargetClass.TEMP

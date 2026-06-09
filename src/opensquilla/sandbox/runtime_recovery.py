@@ -100,11 +100,11 @@ def classify_path_target(
     if sensitive_path_marker(str(candidate), workspace=workspace_root) is not None:
         return PathTargetClass.SENSITIVE
 
-    if _is_user_owned_or_creatable(candidate):
-        return PathTargetClass.NORMAL_USER_PATH
-
     if _is_relative_to(candidate, _TMP_ROOT):
         return PathTargetClass.TEMP
+
+    if _is_user_owned_or_creatable(candidate):
+        return PathTargetClass.NORMAL_USER_PATH
 
     return PathTargetClass.UNCLEAR
 

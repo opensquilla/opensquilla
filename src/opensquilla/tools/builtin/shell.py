@@ -31,7 +31,7 @@ from opensquilla.sandbox.backend.seatbelt import (
     build_seatbelt_argv,
     render_seatbelt_profile,
 )
-from opensquilla.sandbox.capability_profile import capability_profile_for_command
+from opensquilla.sandbox.capability_profile import CapabilityProfile, capability_profile_for_command
 from opensquilla.sandbox.dev_policy_matrix import (
     DevPolicyDecisionKind,
     NetworkTargetClass,
@@ -122,6 +122,24 @@ _SHELL_NULL_REDIRECT_RE = re.compile(
     r"(?:(?<=^)|(?<=[\s;|&]))\d*[<>]{1,2}\s*/dev/null(?=$|[\s;|&])"
 )
 _BACKEND_NOTE_PATH_RE = re.compile(r"(?:~)?/[^\s'\"`$(){}\[\]<>;,|&]+")
+_BACKEND_NOTE_WRITE_MARKERS = (
+    "bind",
+    "create",
+    "mkdir",
+    "mount",
+    "rename",
+    "rmdir",
+    "truncate",
+    "unlink",
+    "write",
+)
+_BACKEND_NOTE_READ_MARKERS = (
+    "execve",
+    "filesystem.read",
+    "open",
+    "read",
+    "stat",
+)
 PROCESS_ACTIONS: frozenset[str] = frozenset(
     {"eof", "kill", "list", "log", "poll", "remove", "submit", "write"}
 )
@@ -731,17 +749,34 @@ def _policy_with_active_tool_mounts(policy: SandboxPolicy) -> SandboxPolicy:
     return dataclasses.replace(policy, mounts=tuple(mounts_by_path.values()))
 
 
+def _backend_denial_requires_write(
+    backend_notes: tuple[str, ...],
+    *,
+    default: bool = False,
+) -> bool:
+    lowered = " ".join(backend_notes).lower()
+    if any(marker in lowered for marker in _BACKEND_NOTE_WRITE_MARKERS):
+        return True
+    if any(marker in lowered for marker in _BACKEND_NOTE_READ_MARKERS):
+        return False
+    return default
+
+
 def _trusted_path_recovery_retry_request(
     command: str,
     backend_request: SandboxRequest,
     backend_notes: tuple[str, ...],
+    *,
+    capability_profile: CapabilityProfile | None = None,
+    write_default: bool = False,
 ) -> SandboxRequest | None:
     if not trusted_sandbox_active():
         return None
 
     target = _backend_denial_target_path(backend_notes, backend_request.cwd)
     workspace = _workspace_root_for_path_access()
-    capability_profile = capability_profile_for_command(("sh", "-lc", command))
+    if capability_profile is None:
+        capability_profile = capability_profile_for_command(("sh", "-lc", command))
     path_class = classify_path_target(target, workspace=workspace)
     recovery_decision = decide_dev_recovery(
         _context_run_mode() or "standard",
@@ -760,7 +795,7 @@ def _trusted_path_recovery_retry_request(
         target,
         workspace=workspace,
         mounts=_active_sandbox_mounts(),
-        write=True,
+        write=_backend_denial_requires_write(backend_notes, default=write_default),
     )
     if mount_decision.status == "blocked":
         return None
@@ -1392,34 +1427,31 @@ async def exec_command(
                 command,
                 backend_request,
                 sandbox_result.backend_notes,
+                write_default=_shell_workdir_requires_write(command, profile),
             )
             if retry_request is not None:
                 try:
                     sandbox_result = await run_under_backend(retry_request, runtime=runtime)
                 except Exception as exc:
                     raise ToolError(f"Sandboxed shell execution failed: {exc}") from exc
-                if not sandbox_result.backend_notes:
-                    output = sandbox_result.stdout
-                    if sandbox_result.stderr:
-                        output += sandbox_result.stderr
-                    output = _append_sandbox_network_hint(output)
-                    return f"exit_code={sandbox_result.returncode}\n{output}"
-            escalation = await escalate_backend_denial(
-                sandbox_result, request, policy, runtime=runtime
-            )
-            if isinstance(escalation, DenialResult):
-                return json.dumps(escalation.to_dict())
-            _host_once_current_call.set(True)
-            _consume_host_once_current_call()
-            try:
-                return await _run_host_shell_command(
-                    command,
-                    cwd=cwd,
-                    env=merged_env,
-                    timeout=effective_timeout,
+                backend_request = retry_request
+            if sandbox_result.backend_notes:
+                escalation = await escalate_backend_denial(
+                    sandbox_result, request, policy, runtime=runtime
                 )
-            finally:
-                _host_once_current_call.set(False)
+                if isinstance(escalation, DenialResult):
+                    return json.dumps(escalation.to_dict())
+                _host_once_current_call.set(True)
+                _consume_host_once_current_call()
+                try:
+                    return await _run_host_shell_command(
+                        command,
+                        cwd=cwd,
+                        env=merged_env,
+                        timeout=effective_timeout,
+                    )
+                finally:
+                    _host_once_current_call.set(False)
         output = sandbox_result.stdout
         if sandbox_result.stderr:
             output += sandbox_result.stderr

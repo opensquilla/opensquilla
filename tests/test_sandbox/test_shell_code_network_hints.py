@@ -819,6 +819,232 @@ async def test_trusted_normal_user_path_denial_retries_once(
 
 
 @pytest.mark.asyncio
+async def test_trusted_read_path_denial_retries_with_ro_mount(
+    managed_runtime: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.types import SandboxRequest
+    from opensquilla.tools.builtin import shell
+
+    outside = tmp_path_factory.mktemp("outside-read")
+    target = outside / "data.txt"
+    target.write_text("data\n", encoding="utf-8")
+    backend_calls: list[SandboxRequest] = []
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        backend_calls.append(request)
+        if len(backend_calls) == 1:
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="",
+                backend_notes=(f"filesystem.read.denied: {target}",),
+            )
+        return SimpleNamespace(returncode=0, stdout="data\n", stderr="", backend_notes=())
+
+    monkeypatch.setattr(shell, "run_under_backend", _fake_run_under_backend)
+    monkeypatch.setattr(shell, "_sensitive_shell_block", lambda *args, **kwargs: None)
+    monkeypatch.setattr(shell, "_sandbox_read_path_access_envelope", lambda *args, **kwargs: None)
+    monkeypatch.setattr(shell, "_sandbox_write_path_access_envelope", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.TRUSTED,
+                workspace=str(managed_runtime),
+            ),
+        )
+    )
+    try:
+        result = await shell.exec_command("pip install demo", workdir=str(managed_runtime))
+    finally:
+        current_tool_context.reset(token)
+
+    assert "data" in result
+    assert len(backend_calls) == 2
+    retry_mounts = backend_calls[1].policy.mounts
+    assert any(
+        mount.mode == "ro" and target.resolve(strict=False).is_relative_to(mount.host_path)
+        for mount in retry_mounts
+    )
+    assert not any(
+        mount.mode == "rw" and target.resolve(strict=False).is_relative_to(mount.host_path)
+        for mount in retry_mounts
+    )
+
+
+@pytest.mark.asyncio
+async def test_trusted_execve_path_denial_retries_with_ro_mount(
+    managed_runtime: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.types import SandboxRequest
+    from opensquilla.tools.builtin import shell
+
+    outside = tmp_path_factory.mktemp("outside-exec")
+    target = outside / "tool"
+    target.write_text("#!/bin/sh\n", encoding="utf-8")
+    backend_calls: list[SandboxRequest] = []
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        backend_calls.append(request)
+        if len(backend_calls) == 1:
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="",
+                backend_notes=(f"execve.denied: {target}",),
+            )
+        return SimpleNamespace(returncode=0, stdout="ran\n", stderr="", backend_notes=())
+
+    monkeypatch.setattr(shell, "run_under_backend", _fake_run_under_backend)
+    monkeypatch.setattr(shell, "_sensitive_shell_block", lambda *args, **kwargs: None)
+    monkeypatch.setattr(shell, "_sandbox_read_path_access_envelope", lambda *args, **kwargs: None)
+    monkeypatch.setattr(shell, "_sandbox_write_path_access_envelope", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.TRUSTED,
+                workspace=str(managed_runtime),
+            ),
+        )
+    )
+    try:
+        result = await shell.exec_command("pip install demo", workdir=str(managed_runtime))
+    finally:
+        current_tool_context.reset(token)
+
+    assert "ran" in result
+    retry_mounts = backend_calls[1].policy.mounts
+    assert any(
+        mount.mode == "ro" and target.resolve(strict=False).is_relative_to(mount.host_path)
+        for mount in retry_mounts
+    )
+    assert not any(
+        mount.mode == "rw" and target.resolve(strict=False).is_relative_to(mount.host_path)
+        for mount in retry_mounts
+    )
+
+
+@pytest.mark.asyncio
+async def test_trusted_path_recovery_then_network_recovery_preserves_mount(
+    managed_runtime: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.types import SandboxRequest
+    from opensquilla.tools.builtin import shell
+
+    outside = tmp_path_factory.mktemp("outside-path-network")
+    backend_calls: list[SandboxRequest] = []
+    cleanup_calls = 0
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        backend_calls.append(request)
+        if len(backend_calls) == 1:
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="",
+                backend_notes=(f"mount denied: {outside}",),
+            )
+        if len(backend_calls) == 2:
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="curl: (6) Could not resolve host: pypi.org\n",
+                backend_notes=(),
+            )
+        return SimpleNamespace(returncode=0, stdout="installed\n", stderr="", backend_notes=())
+
+    async def _fake_prepare_subprocess_managed_network_proxy(request, *, runtime=None):
+        managed_env = dict(request.env)
+        managed_env["HTTP_PROXY"] = "http://127.0.0.1:48123"
+        managed_env["HTTPS_PROXY"] = managed_env["HTTP_PROXY"]
+        managed_request = SandboxRequest(
+            argv=request.argv,
+            cwd=request.cwd,
+            action_kind=request.action_kind,
+            policy=request.policy,
+            stdin=request.stdin,
+            env=managed_env,
+            reason=request.reason,
+        )
+
+        async def _cleanup() -> None:
+            nonlocal cleanup_calls
+            cleanup_calls += 1
+
+        return SimpleNamespace(request=managed_request, cleanup=_cleanup)
+
+    monkeypatch.setattr(shell, "run_under_backend", _fake_run_under_backend)
+    monkeypatch.setattr(
+        shell,
+        "prepare_subprocess_managed_network_proxy",
+        _fake_prepare_subprocess_managed_network_proxy,
+    )
+    monkeypatch.setattr(shell, "_sensitive_shell_block", lambda *args, **kwargs: None)
+    monkeypatch.setattr(shell, "_sandbox_workdir_access_envelope", lambda *args, **kwargs: None)
+    monkeypatch.setattr(shell, "_sandbox_read_path_access_envelope", lambda *args, **kwargs: None)
+    monkeypatch.setattr(shell, "_sandbox_write_path_access_envelope", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.TRUSTED,
+                workspace=str(managed_runtime),
+            ),
+        )
+    )
+    try:
+        result = await shell.exec_command("pip install demo", workdir=str(outside))
+    finally:
+        current_tool_context.reset(token)
+
+    assert "installed" in result
+    assert len(backend_calls) == 3
+    assert cleanup_calls == 1
+    assert backend_calls[2].env["HTTP_PROXY"] == "http://127.0.0.1:48123"
+    assert any(
+        mount.mode == "rw" and outside.resolve(strict=False).is_relative_to(mount.host_path)
+        for mount in backend_calls[2].policy.mounts
+    )
+
+
+@pytest.mark.asyncio
 async def test_trusted_sensitive_path_denial_does_not_auto_retry(
     managed_runtime: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1273,6 +1499,83 @@ async def test_code_network_subprocess_receives_managed_proxy_env(
     assert env["HTTP_PROXY"].startswith("http://127.0.0.1:")
     assert env["HTTPS_PROXY"] == env["HTTP_PROXY"]
     assert env["NO_PROXY"] == ""
+
+
+@pytest.mark.asyncio
+async def test_trusted_code_exec_normal_user_path_denial_retries_once(
+    managed_runtime: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.types import (
+        DenialReason,
+        DenialResult,
+        SandboxRequest,
+        SecurityLevel,
+        SuggestedNextStep,
+    )
+    from opensquilla.tools.builtin import code_exec, shell
+
+    outside = tmp_path_factory.mktemp("outside-code")
+    backend_calls: list[SandboxRequest] = []
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        backend_calls.append(request)
+        if len(backend_calls) == 1:
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="",
+                timed_out=False,
+                backend_notes=(f"filesystem.read.denied: {outside}",),
+            )
+        return SimpleNamespace(
+            returncode=0,
+            stdout="ok\n",
+            stderr="",
+            timed_out=False,
+            backend_notes=(),
+        )
+
+    async def _fake_escalate_backend_denial(*args, **kwargs):
+        return DenialResult(
+            reason=DenialReason.SEATBELT_DENIED,
+            suggested_next_step=SuggestedNextStep.ASK_USER,
+            level=SecurityLevel.STANDARD,
+            action_fingerprint="test",
+            message="denied",
+            retryable=False,
+        )
+
+    monkeypatch.setattr(code_exec, "run_under_backend", _fake_run_under_backend)
+    monkeypatch.setattr(code_exec, "escalate_backend_denial", _fake_escalate_backend_denial)
+    monkeypatch.setattr(code_exec, "_resolve_python_bin", lambda *, sandbox_enabled: sys.executable)
+    monkeypatch.setattr(shell, "_host_execution_allowed", lambda: False)
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.TRUSTED,
+                workspace=str(managed_runtime),
+            ),
+        )
+    )
+    try:
+        result = json.loads(await code_exec.execute_code("print('ok')"))
+    finally:
+        current_tool_context.reset(token)
+
+    assert result["stdout"] == "ok\n"
+    assert len(backend_calls) == 2
+    assert any(
+        mount.mode == "ro" and outside.resolve(strict=False).is_relative_to(mount.host_path)
+        for mount in backend_calls[1].policy.mounts
+    )
 
 
 @pytest.mark.asyncio

@@ -310,6 +310,52 @@ def test_shell_wrapper_detects_env_prefixed_destructive_command() -> None:
     assert profile.high_impact is True
 
 
+def test_classify_python_environment_creation() -> None:
+    for command in (
+        ("python", "-m", "venv", "/tmp/proj/.venv"),
+        ("python3", "-m", "venv", "/tmp/proj/.venv"),
+        ("virtualenv", "/tmp/proj/.venv"),
+        ("uv", "venv", "/tmp/proj/.venv"),
+    ):
+        profile = classify_command(command)
+        assert profile.name == "create_env"
+        assert profile.package_manager == "python"
+        assert profile.requested_write_paths == ("/tmp/proj/.venv",)
+
+
+def test_classify_additional_package_managers() -> None:
+    cases = {
+        ("poetry", "install"): "python",
+        ("rye", "sync"): "python",
+        ("pixi", "install"): "python",
+        ("bun", "install"): "node",
+        ("composer", "install"): "php",
+        ("mvn", "package"): "java",
+        ("gradle", "build"): "java",
+        ("./gradlew", "build"): "java",
+    }
+    for command, manager in cases.items():
+        profile = classify_command(command)
+        assert profile.name == "package_install"
+        assert profile.package_manager == manager
+        assert profile.needs_network is True
+
+
+def test_shell_wrapper_merges_create_env_and_install_packages() -> None:
+    profile = classify_command(
+        (
+            "sh",
+            "-lc",
+            "python -m venv /tmp/proj/.venv && "
+            "/tmp/proj/.venv/bin/python -m pip install requests",
+        )
+    )
+
+    assert profile.name == "package_install"
+    assert profile.package_manager == "python"
+    assert profile.requested_write_paths == ("/tmp/proj/.venv",)
+
+
 def test_package_bundle_for_manager() -> None:
     assert package_bundle_for_manager("python") == "python-package-install"
     assert package_bundle_for_manager("node") == "node-package-install"

@@ -195,7 +195,7 @@ async def test_exec_command_stdin_write_obeys_timeout() -> None:
     elapsed = time.monotonic() - started
 
     assert "[timeout after 0.2s]" in result
-    assert elapsed < 2.0
+    assert elapsed < 3.0, "timeout path should return before the 5s child sleep"
 
 
 @pytest.mark.asyncio

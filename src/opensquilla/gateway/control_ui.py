@@ -135,15 +135,18 @@ def create_control_ui_routes(config: GatewayConfig) -> list[Route | Mount]:
         return []
 
     base = config.control_ui.base_path
-    template = _get_jinja_env().get_template("index.html")
+    frontend = config.control_ui.frontend
+    template_name = "legacy_index.html" if frontend == "legacy" else "index.html"
+    template = _get_jinja_env().get_template(template_name)
 
     async def serve_index(request: Request) -> HTMLResponse:
         ctx = _build_bootstrap_context(config, request)
-        # Re-read latest Vite assets on every request so rebuilds are picked up
-        # without restarting the gateway.
-        live_js, live_css = _read_vite_assets(base)
-        ctx["vite_js_url"] = live_js
-        ctx["vite_css_url"] = live_css
+        if frontend == "vue":
+            # Re-read latest Vite assets on every request so rebuilds are picked up
+            # without restarting the gateway.
+            live_js, live_css = _read_vite_assets(base)
+            ctx["vite_js_url"] = live_js
+            ctx["vite_css_url"] = live_css
         html = template.render(**ctx)
         response = HTMLResponse(html)
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"

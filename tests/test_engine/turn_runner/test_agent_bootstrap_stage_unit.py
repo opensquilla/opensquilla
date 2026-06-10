@@ -257,7 +257,7 @@ async def test_case01_success_all_defaults() -> None:
     assert o.agent_config.context_window_tokens == 200_000
     assert o.agent_config.max_history_turns == 0
     assert o.agent_config.preserve_historical_images is False
-    assert o.agent_config.length_capped_continuations == 1
+    assert o.agent_config.length_capped_continuations == 3
     assert o.agent_config.metadata["agent_max_iterations"] == 10
     assert o.agent_config.metadata["agent_max_iterations_source"] == "test budget"
 

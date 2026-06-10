@@ -418,7 +418,7 @@ class _ProviderRetryPolicy:
         cls,
         max_provider_retries: int,
         *,
-        length_capped_continuations: int = 1,
+        length_capped_continuations: int = 3,
     ) -> _ProviderRetryPolicy:
         length_capped_continuations = max(1, length_capped_continuations)
         return cls(
@@ -2544,6 +2544,51 @@ class Agent:
                                 _call_attempt += 1
                                 continue
 
+                            if (
+                                attempt_classification.kind
+                                == _ProviderAttemptKind.REASONING_ONLY
+                                and thinking_enabled
+                                and not _thinking_fallback_done
+                                and _retry_policy.can_retry_attempt(
+                                    _ProviderAttemptKind.REASONING_ONLY,
+                                    _attempt_retries_used,
+                                )
+                            ):
+                                _attempt_retries_used[_ProviderAttemptKind.REASONING_ONLY] += 1
+                                _thinking_fallback_done = True
+                                thinking_enabled = False
+                                thinking_budget = 0
+                                chat_cfg = _chat_config_with_thinking_disabled(chat_cfg)
+                                logger.warning(
+                                    "provider.large_context_visible_retry",
+                                    session_key=self._session_key,
+                                    model=last_actual_model or self.config.model_id or "",
+                                    provider=type(self.provider).__name__,
+                                    classification=attempt_classification.kind.value,
+                                    iteration=iterations,
+                                    call_attempt=_call_attempt,
+                                    attempt=_attempt_retries_used.get(
+                                        _ProviderAttemptKind.REASONING_ONLY, 0
+                                    ),
+                                    budget=_retry_policy.attempt_budgets.get(
+                                        _ProviderAttemptKind.REASONING_ONLY, 0
+                                    ),
+                                    iter_input_tokens=iter_input_tokens,
+                                    iter_output_tokens=iter_output_tokens,
+                                    iter_reasoning_tokens=iter_reasoning_tokens,
+                                    reasoning_chars=len(iter_reasoning_content or ""),
+                                )
+                                yield WarningEvent(
+                                    code="provider_large_context_visible_retry",
+                                    message=(
+                                        "The provider returned reasoning without visible "
+                                        "content for a large input; retrying once with "
+                                        "thinking disabled."
+                                    ),
+                                )
+                                _call_attempt += 1
+                                continue
+
                             yield self._transition(AgentState.ERROR)
                             terminal_error = ErrorEvent(
                                 message=(
@@ -2644,8 +2689,17 @@ class Agent:
                                 provider=type(self.provider).__name__,
                                 iteration=iterations,
                                 call_attempt=_call_attempt,
+                                attempt=_attempt_retries_used.get(
+                                    _ProviderAttemptKind.LENGTH_CAPPED, 0
+                                ),
+                                budget=_retry_policy.attempt_budgets.get(
+                                    _ProviderAttemptKind.LENGTH_CAPPED, 0
+                                ),
                                 tool_calls=len(tool_calls),
                                 visible_chars=len(visible_text),
+                                iter_input_tokens=iter_input_tokens,
+                                iter_output_tokens=iter_output_tokens,
+                                iter_reasoning_tokens=iter_reasoning_tokens,
                             )
                             yield WarningEvent(
                                 code="provider_output_continue",

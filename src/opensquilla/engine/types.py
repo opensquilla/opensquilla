@@ -323,7 +323,7 @@ class AgentConfig:
     preserve_historical_images: bool = False
     # Retry policy for transient LLM errors (429, 500, 503)
     max_provider_retries: int = 3
-    length_capped_continuations: int = 1
+    length_capped_continuations: int = 3
     retry_base_backoff_ms: int = 1000
     retry_max_backoff_ms: int = 30_000
     # Prompt caching breakpoints (list of {"text": ..., "cache": "true"})

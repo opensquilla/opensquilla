@@ -1,0 +1,138 @@
+"""Platform-neutral sandbox setup state."""
+
+from __future__ import annotations
+
+import sys
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Any
+
+
+class SandboxSetupState(StrEnum):
+    NOT_SETUP = "not_setup"
+    SETTING_UP = "setting_up"
+    READY = "ready"
+    FAILED = "failed"
+    UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True)
+class SetupResult:
+    state: SandboxSetupState
+    platform: str
+    message: str
+    requires_admin: bool = False
+    detail: str | None = None
+
+    def to_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "state": self.state.value,
+            "platform": self.platform,
+            "message": self.message,
+            "requiresAdmin": self.requires_admin,
+        }
+        if self.detail:
+            payload["detail"] = self.detail
+        return payload
+
+
+def _platform_name(platform: str | None = None) -> str:
+    value = platform or sys.platform
+    if value.startswith("win"):
+        return "win32"
+    if value == "darwin":
+        return "darwin"
+    if value.startswith("linux"):
+        return "linux"
+    return value
+
+
+def _requires_admin(platform: str) -> bool:
+    return platform.startswith("win")
+
+
+def setup_status_payload(
+    state: SandboxSetupState,
+    *,
+    platform: str | None = None,
+    message: str | None = None,
+    detail: str | None = None,
+) -> dict[str, object]:
+    normalized_platform = _platform_name(platform)
+    default_message = {
+        SandboxSetupState.NOT_SETUP: "Sandbox setup has not been completed.",
+        SandboxSetupState.SETTING_UP: "Sandbox setup is running.",
+        SandboxSetupState.READY: "Sandbox setup is ready.",
+        SandboxSetupState.FAILED: "Sandbox setup failed.",
+        SandboxSetupState.UNAVAILABLE: "Sandbox setup is unavailable on this host.",
+    }[state]
+    return SetupResult(
+        state=state,
+        platform=normalized_platform,
+        message=message or default_message,
+        requires_admin=_requires_admin(normalized_platform),
+        detail=detail,
+    ).to_payload()
+
+
+async def current_sandbox_setup_status(config: Any) -> SetupResult:
+    platform = _platform_name()
+    if platform == "win32":
+        return await _windows_setup_status(config)
+    return await _portable_setup_status(config, platform=platform)
+
+
+async def ensure_sandbox_setup(config: Any) -> SetupResult:
+    platform = _platform_name()
+    if platform == "win32":
+        return await _ensure_windows_setup(config)
+    return await _ensure_portable_setup(config, platform=platform)
+
+
+async def _windows_setup_status(config: Any) -> SetupResult:
+    _ = config
+    return SetupResult(
+        state=SandboxSetupState.NOT_SETUP,
+        platform="win32",
+        message="Windows sandbox service has not been installed.",
+        requires_admin=True,
+    )
+
+
+async def _ensure_windows_setup(config: Any) -> SetupResult:
+    _ = config
+    return SetupResult(
+        state=SandboxSetupState.NOT_SETUP,
+        platform="win32",
+        message="Windows sandbox service setup is not implemented yet.",
+        requires_admin=True,
+    )
+
+
+async def _portable_setup_status(config: Any, *, platform: str) -> SetupResult:
+    _ = config
+    return SetupResult(
+        state=SandboxSetupState.READY,
+        platform=platform,
+        message="Sandbox setup is ready.",
+        requires_admin=False,
+    )
+
+
+async def _ensure_portable_setup(config: Any, *, platform: str) -> SetupResult:
+    _ = config
+    return SetupResult(
+        state=SandboxSetupState.READY,
+        platform=platform,
+        message="Sandbox setup is ready.",
+        requires_admin=False,
+    )
+
+
+__all__ = [
+    "SandboxSetupState",
+    "SetupResult",
+    "current_sandbox_setup_status",
+    "ensure_sandbox_setup",
+    "setup_status_payload",
+]

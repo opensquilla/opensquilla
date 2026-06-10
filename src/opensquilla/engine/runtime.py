@@ -1725,6 +1725,16 @@ class TurnRunner:
         kind = input_provenance.get("kind")
         return str(kind) if kind is not None and str(kind) else None
 
+    @staticmethod
+    def _normalize_input_provenance(
+        input_provenance: dict[str, Any] | str | None,
+    ) -> dict[str, Any] | None:
+        if isinstance(input_provenance, dict):
+            return dict(input_provenance)
+        if input_provenance:
+            return {"kind": str(input_provenance)}
+        return None
+
     @classmethod
     def _turn_memory_capture_allowed(
         cls,
@@ -1842,6 +1852,7 @@ class TurnRunner:
         """
         session_key = canonicalize_session_key(session_key)
         agent_id = normalize_agent_id(agent_id)
+        normalized_input_provenance = self._normalize_input_provenance(input_provenance)
         lock = self.get_session_lock(session_key)
         effective_tool_context = replace(
             tool_context,
@@ -1879,7 +1890,7 @@ class TurnRunner:
                     length_capped_continuations=length_capped_continuations,
                     input_mode=input_mode,
                     persist_input=persist_input,
-                    input_provenance=input_provenance,
+                    input_provenance=normalized_input_provenance,
                     history_has_persisted_user=history_has_persisted_user,
                     fresh_user_session=fresh_user_session,
                     session_intent=session_intent,
@@ -1919,7 +1930,7 @@ class TurnRunner:
                         length_capped_continuations=length_capped_continuations,
                         input_mode=input_mode,
                         persist_input=persist_input,
-                        input_provenance=input_provenance,
+                        input_provenance=normalized_input_provenance,
                         history_has_persisted_user=history_has_persisted_user,
                         fresh_user_session=fresh_user_session,
                         session_intent=session_intent,
@@ -3849,10 +3860,7 @@ class TurnRunner:
                 return await apply_squilla_router(_copy_router_turn(turn))
 
             try:
-                routed = await asyncio.wait_for(
-                    asyncio.to_thread(lambda: asyncio.run(_run_router_step())),
-                    timeout=router_timeout,
-                )
+                routed = await asyncio.wait_for(_run_router_step(), timeout=router_timeout)
                 return commit_deferred_router_history(routed)
             except TimeoutError as exc:
                 raise TimeoutError(f"squilla router timed out after {router_timeout:g}s") from exc

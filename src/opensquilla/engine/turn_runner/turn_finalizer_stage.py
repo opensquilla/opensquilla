@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 import structlog
 
 from opensquilla.observability.decision_log import build_vision_followup_gate_reason_code
+from opensquilla.skills.meta.types import MetaPaused
 
 if TYPE_CHECKING:
     from opensquilla.engine.turn_runner.outcome import StageOutcome
@@ -154,6 +155,8 @@ def render_paused_outcome(result: MetaResult) -> str:
     if not result.paused or result.paused_payload is None:
         return result.final_text or ""
     payload = result.paused_payload
+    if not isinstance(payload, MetaPaused):
+        return result.final_text or ""
     schema = payload.schema
     language = str(getattr(payload, "language", "") or "").lower()
     if language not in {"en", "zh"}:

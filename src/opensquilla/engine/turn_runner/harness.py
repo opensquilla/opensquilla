@@ -198,6 +198,30 @@ class _TurnRunnerPipelineExecutionAdapter(PipelineExecutionPort):
         self,
         request: RunPipelineRequest,
     ) -> tuple[Any, Any]:
+        from opensquilla.engine.runtime import _accepts_keyword_arg
+
+        kwargs: dict[str, Any] = {
+            "semantic_message": request.semantic_message,
+            "ingress_pipeline_steps": request.ingress_pipeline_steps,
+            "prev_assistant_text": request.prev_assistant_text,
+            "prev_assistant_usage": request.prev_assistant_usage,
+            "history_user_texts": request.history_user_texts,
+            "history_has_recent_image": request.history_has_recent_image,
+            "history_image_turn_count": request.history_image_turn_count,
+            "vision_sticky_remaining": request.vision_sticky_remaining,
+            "turns_since_last_image": request.turns_since_last_image,
+            "last_image_turn_text": request.last_image_turn_text,
+            "vision_candidate_turns": request.vision_candidate_turns,
+            "flags_text_override": request.flags_text_override,
+            "tool_context": request.tool_context,
+            "normalization_metadata": request.normalization_metadata,
+            "input_provenance": request.input_provenance,
+        }
+        accepted_kwargs = {
+            name: value
+            for name, value in kwargs.items()
+            if _accepts_keyword_arg(self._runner._run_pipeline, name)
+        }
         return await self._runner._run_pipeline(
             request.runtime_message,
             request.session_key,
@@ -206,21 +230,7 @@ class _TurnRunnerPipelineExecutionAdapter(PipelineExecutionPort):
             request.tool_defs,
             request.base_prompt,
             request.attachments,
-            semantic_message=request.semantic_message,
-            ingress_pipeline_steps=request.ingress_pipeline_steps,
-            prev_assistant_text=request.prev_assistant_text,
-            prev_assistant_usage=request.prev_assistant_usage,
-            history_user_texts=request.history_user_texts,
-            history_has_recent_image=request.history_has_recent_image,
-            history_image_turn_count=request.history_image_turn_count,
-            vision_sticky_remaining=request.vision_sticky_remaining,
-            turns_since_last_image=request.turns_since_last_image,
-            last_image_turn_text=request.last_image_turn_text,
-            vision_candidate_turns=request.vision_candidate_turns,
-            flags_text_override=request.flags_text_override,
-            tool_context=request.tool_context,
-            normalization_metadata=request.normalization_metadata,
-            input_provenance=request.input_provenance,
+            **accepted_kwargs,
         )
 
 class _TurnRunnerRouterContextAdapter(RouterContextPort):

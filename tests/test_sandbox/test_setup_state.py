@@ -46,3 +46,44 @@ async def test_platform_setup_dispatches_windows(monkeypatch) -> None:
 
     assert result.state is setup_state.SandboxSetupState.READY
     assert calls
+
+
+async def test_windows_setup_status_uses_service_client(monkeypatch) -> None:
+    from opensquilla.sandbox import setup_state
+    from opensquilla.sandbox.windows_service_client import WindowsSandboxServiceClient
+
+    calls = []
+
+    async def fake_health(self):
+        calls.append(self.pipe_name)
+        return setup_state.SetupResult(
+            state=setup_state.SandboxSetupState.READY,
+            platform="win32",
+            message="Windows sandbox service is ready.",
+            requires_admin=True,
+        )
+
+    monkeypatch.setattr(setup_state.sys, "platform", "win32")
+    monkeypatch.setattr(WindowsSandboxServiceClient, "health", fake_health)
+
+    result = await setup_state.current_sandbox_setup_status(
+        SimpleNamespace(sandbox=SimpleNamespace(windows_service_pipe=r"\\.\pipe\custom"))
+    )
+
+    assert result.state is setup_state.SandboxSetupState.READY
+    assert calls == [r"\\.\pipe\custom"]
+
+
+async def test_windows_service_client_fails_closed_by_default() -> None:
+    from opensquilla.sandbox.setup_state import SandboxSetupState
+    from opensquilla.sandbox.windows_service_client import WindowsSandboxServiceClient
+
+    client = WindowsSandboxServiceClient()
+
+    health = await client.health()
+    setup = await client.ensure_setup()
+
+    assert health.state is SandboxSetupState.NOT_SETUP
+    assert health.requires_admin is True
+    assert setup.state is SandboxSetupState.FAILED
+    assert setup.requires_admin is True

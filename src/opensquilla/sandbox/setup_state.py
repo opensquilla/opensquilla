@@ -90,23 +90,17 @@ async def ensure_sandbox_setup(config: Any) -> SetupResult:
 
 
 async def _windows_setup_status(config: Any) -> SetupResult:
-    _ = config
-    return SetupResult(
-        state=SandboxSetupState.NOT_SETUP,
-        platform="win32",
-        message="Windows sandbox service has not been installed.",
-        requires_admin=True,
-    )
+    from opensquilla.sandbox.windows_service_client import WindowsSandboxServiceClient
+
+    client = WindowsSandboxServiceClient.from_config(config)
+    return await client.health()
 
 
 async def _ensure_windows_setup(config: Any) -> SetupResult:
-    _ = config
-    return SetupResult(
-        state=SandboxSetupState.NOT_SETUP,
-        platform="win32",
-        message="Windows sandbox service setup is not implemented yet.",
-        requires_admin=True,
-    )
+    from opensquilla.sandbox.windows_service_client import WindowsSandboxServiceClient
+
+    client = WindowsSandboxServiceClient.from_config(config)
+    return await client.ensure_setup()
 
 
 async def _portable_setup_status(config: Any, *, platform: str) -> SetupResult:

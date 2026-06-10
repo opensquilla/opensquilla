@@ -34,11 +34,20 @@ def wfp_smoke_check() -> bool:
 def managed_network_proxy_smoke_check() -> bool:
     """Return whether managed proxy readiness passed a real smoke check.
 
-    Runtime in-process proxy context is not setup readiness. Later managed
-    network tasks will replace this conservative placeholder with checks that
-    prove the proxy boundary needed by Windows backends is available.
+    Runtime in-process proxy context is not setup readiness. This check only
+    succeeds when the broker-only egress boundary can be proven.
     """
-    return False
+    return broker_only_egress_smoke_check()
+
+
+def broker_only_egress_smoke_check() -> bool:
+    """Return whether AppContainer egress is restricted to the broker proxy."""
+    if not _native_windows():
+        return False
+    try:
+        return _broker_only_egress_smoke_check_native()
+    except Exception:
+        return False
 
 
 def install_wfp_policy(
@@ -145,6 +154,11 @@ def _required_filters_installed() -> bool:
     return False
 
 
+def _broker_only_egress_smoke_check_native() -> bool:
+    """Return True when native WFP probes prove broker-only egress is active."""
+    return _provider_installed() and _required_filters_installed()
+
+
 def _install_wfp_policy_native(
     *,
     appcontainer_sid: str,
@@ -213,6 +227,7 @@ __all__ = [
     "WFP_PROVIDER_NAME",
     "WFP_SUBLAYER_NAME",
     "WfpFilterSpec",
+    "broker_only_egress_smoke_check",
     "build_broker_only_filter_specs",
     "install_wfp_policy",
     "managed_network_proxy_smoke_check",

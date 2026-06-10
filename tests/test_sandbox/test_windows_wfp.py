@@ -44,6 +44,37 @@ def test_wfp_smoke_check_is_false_off_windows_even_when_hooks_pass(monkeypatch) 
     assert mod.wfp_smoke_check() is False
 
 
+def test_broker_only_egress_smoke_check_uses_native_probe(monkeypatch) -> None:
+    from opensquilla.sandbox.backend import windows_wfp as mod
+
+    calls: list[str] = []
+
+    monkeypatch.setattr(mod.sys, "platform", "win32")
+    monkeypatch.setattr(
+        mod,
+        "_broker_only_egress_smoke_check_native",
+        lambda: calls.append("probe") or True,
+    )
+
+    assert mod.broker_only_egress_smoke_check() is True
+    assert calls == ["probe"]
+
+
+def test_managed_network_proxy_smoke_check_uses_broker_only_probe(monkeypatch) -> None:
+    from opensquilla.sandbox.backend import windows_wfp as mod
+
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        mod,
+        "broker_only_egress_smoke_check",
+        lambda: calls.append("probe") or True,
+    )
+
+    assert mod.managed_network_proxy_smoke_check() is True
+    assert calls == ["probe"]
+
+
 def test_build_broker_only_filters_orders_allow_before_block() -> None:
     from opensquilla.sandbox.backend.windows_wfp import build_broker_only_filter_specs
 

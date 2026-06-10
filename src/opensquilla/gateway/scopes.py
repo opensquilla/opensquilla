@@ -113,6 +113,7 @@ METHOD_SCOPES: dict[str, str] = {
     "tools.effective": READ_SCOPE,
     "tools.search_provider": READ_SCOPE,  # OpenSquilla-only; classified read.
     "sandbox.status": READ_SCOPE,  # OpenSquilla-only; sandbox posture summary.
+    "sandbox.setup.status": READ_SCOPE,  # OpenSquilla-only; setup readiness.
     "sandbox.explain": READ_SCOPE,  # OpenSquilla-only; deterministic sandbox explanation.
     "sandbox.run_context.get": READ_SCOPE,  # OpenSquilla-only; session sandbox mode.
     "sandbox.path.list": READ_SCOPE,  # OpenSquilla-only; inline path browser listing.
@@ -161,6 +162,7 @@ METHOD_SCOPES: dict[str, str] = {
     "sandbox.domain.remove": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded handler.
     "sandbox.bundle.enable": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded handler.
     "sandbox.bundle.disable": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded handler.
+    "sandbox.setup.ensure": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded setup.
     "sandbox.run_context.set": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded handler.
     "sandbox.path.pick": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded host directory picker.
     # OpenSquilla-only; explicit override of `config.` admin prefix.

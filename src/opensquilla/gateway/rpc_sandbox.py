@@ -35,7 +35,17 @@ from opensquilla.sandbox.run_context_service import (
     remove_mount_grant,
     set_workspace,
 )
-from opensquilla.sandbox.run_mode import display_name, execution_target, normalize_run_mode
+from opensquilla.sandbox.run_mode import (
+    RunMode,
+    display_name,
+    execution_target,
+    normalize_run_mode,
+)
+from opensquilla.sandbox.setup_state import (
+    SandboxSetupState,
+    current_sandbox_setup_status,
+    ensure_sandbox_setup,
+)
 from opensquilla.sandbox.status import status_payload
 from opensquilla.session.keys import parse_agent_id
 
@@ -295,6 +305,19 @@ async def _handle_sandbox_status(params: dict | None, ctx: RpcContext) -> dict:
     return status_payload(ctx.config)
 
 
+@_d.method("sandbox.setup.status", scope="operator.read")
+async def _handle_sandbox_setup_status(params: dict | None, ctx: RpcContext) -> dict:
+    result = await current_sandbox_setup_status(ctx.config)
+    return result.to_payload()
+
+
+@_d.method("sandbox.setup.ensure", scope="operator.write")
+async def _handle_sandbox_setup_ensure(params: dict | None, ctx: RpcContext) -> dict:
+    _require_owner(ctx, "sandbox.setup.ensure")
+    result = await ensure_sandbox_setup(ctx.config)
+    return result.to_payload()
+
+
 @_d.method("sandbox.explain", scope="operator.read")
 async def _handle_sandbox_explain(params: dict | None, ctx: RpcContext) -> dict:
     params = params if isinstance(params, dict) else {}
@@ -317,6 +340,19 @@ async def _handle_sandbox_explain(params: dict | None, ctx: RpcContext) -> dict:
     return result
 
 
+async def _require_sandbox_setup_ready_for_mode(ctx: RpcContext, run_mode: Any) -> None:
+    normalized = normalize_run_mode(run_mode)
+    if normalized == RunMode.FULL:
+        return
+    status = await current_sandbox_setup_status(ctx.config)
+    if status.state != SandboxSetupState.READY:
+        raise RpcHandlerError(
+            "SANDBOX_SETUP_REQUIRED",
+            "Sandbox setup must be completed before enabling sandbox run modes.",
+            details=status.to_payload(),
+        )
+
+
 @_d.method("sandbox.run_context.get", scope="operator.read")
 async def _handle_sandbox_run_context_get(params: dict | None, ctx: RpcContext) -> dict:
     params = _require_params(params)
@@ -337,11 +373,12 @@ async def _handle_sandbox_run_context_set(params: dict | None, ctx: RpcContext) 
     params = _require_params(params)
     session_key = _require_session_key(params)
     _require_owner(ctx, "sandbox.run_context.set")
+    run_mode = normalize_run_mode(params.get("runMode"))
+    await _require_sandbox_setup_ready_for_mode(ctx, run_mode)
     manager = _require_session_manager(ctx)
     session = await _ensure_session_for_set(manager, session_key)
     if session is None:
         raise KeyError(f"Session not found: {session_key}")
-    run_mode = normalize_run_mode(params.get("runMode"))
     context = await set_run_mode(
         manager,
         session_key,

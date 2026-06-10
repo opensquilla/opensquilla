@@ -51,6 +51,7 @@ request_template:
     - "Pause for one free-form review before generating media."
     - "Keep shot count between 1 and 10 and use conservative defaults when unspecified."
 output_contract:
+  append_to_final_text: false
   required_sections:
     - "Story/script summary"
     - "Review or adjustment status"

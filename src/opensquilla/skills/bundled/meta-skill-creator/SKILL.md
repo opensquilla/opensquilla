@@ -53,6 +53,7 @@ request_template:
     - "Create a meta-skill only when orchestration is explicitly requested."
     - "Check trigger collisions and lint before presenting a proposal."
 output_contract:
+  append_to_final_text: false
   required_sections:
     - "Intent summary"
     - "Proposed DAG"

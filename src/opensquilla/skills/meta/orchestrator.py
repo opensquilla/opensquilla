@@ -37,6 +37,7 @@ import structlog
 
 from opensquilla.engine.types import AgentConfig, AgentEvent
 from opensquilla.provider.protocol import LLMProvider
+from opensquilla.skills.meta.clarify_autofill import autofill_required_clarify_fields
 from opensquilla.skills.meta.events import _StepDone, yield_skill_view_preface
 from opensquilla.skills.meta.executors.agent import (
     run_step_with_skill_stream,
@@ -277,6 +278,29 @@ def _append_output_contract_block(
     if not text.strip():
         return block
     return f"{text.rstrip()}\n\n---\n\n{block}"
+
+
+def _last_non_empty_step_output(step_outputs: dict[str, str]) -> str:
+    for text in reversed(list(step_outputs.values())):
+        if text.strip():
+            return text
+    return ""
+
+
+def _empty_final_text_fallback(plan: MetaPlan, inputs: dict[str, Any]) -> str:
+    language = str(inputs.get("user_language") or "").lower()
+    instruction = str(inputs.get("language_instruction") or "").lower()
+    if language.startswith("en") or (not language and "english" in instruction):
+        return (
+            f"The meta-skill `{plan.name}` completed, but it did not produce "
+            "a user-visible final answer. Review the step results above and "
+            "rerun with more specific output requirements if you need a "
+            "polished deliverable."
+        )
+    return (
+        f"Meta skill `{plan.name}` 已完成，但这次流程没有生成可展示的最终回答。"
+        "请查看上方步骤结果和产物；如果需要，可以补充更明确的输出要求后重新运行。"
+    )
 
 
 def _verify_declared_artifacts(
@@ -1163,7 +1187,16 @@ class MetaOrchestrator:
         outputs = json.loads(payload.step_outputs_json or "{}")
 
         schema_dict = json.loads(payload.awaiting_schema_json or "{}")
+        cfg = clarify_config_from_jsonable(schema_dict)
         filled_clean = _merge_clarify_defaults(schema_dict, filled_fields)
+        filled_clean, _completed = await autofill_required_clarify_fields(
+            schema=cfg,
+            filled_fields=filled_clean,
+            user_message=str(inputs.get("user_message") or ""),
+            clarify_reply=_format_clarify_reply_for_autofill(filled_fields),
+            prior_step_outputs=outputs,
+            llm_chat=self._llm_chat,
+        )
 
         inputs.setdefault("collected", {})
         inputs["collected"][payload.awaiting_step_id] = filled_clean
@@ -1177,7 +1210,6 @@ class MetaOrchestrator:
                 str(inputs.get("user_message") or ""),
             )
 
-        cfg = clarify_config_from_jsonable(schema_dict)
         outputs[payload.awaiting_step_id] = render_clarify_summary(
             schema=cfg, filled=filled_clean,
         )
@@ -1273,7 +1305,16 @@ class MetaOrchestrator:
         outputs = json.loads(payload.step_outputs_json or "{}")
 
         schema_dict = json.loads(payload.awaiting_schema_json or "{}")
+        cfg = clarify_config_from_jsonable(schema_dict)
         filled_clean = _merge_clarify_defaults(schema_dict, filled_fields)
+        filled_clean, _completed = await autofill_required_clarify_fields(
+            schema=cfg,
+            filled_fields=filled_clean,
+            user_message=str(inputs.get("user_message") or ""),
+            clarify_reply=_format_clarify_reply_for_autofill(filled_fields),
+            prior_step_outputs=outputs,
+            llm_chat=self._llm_chat,
+        )
 
         inputs.setdefault("collected", {})
         inputs["collected"][payload.awaiting_step_id] = filled_clean
@@ -1283,7 +1324,6 @@ class MetaOrchestrator:
             filled_fields=filled_clean,
         )
 
-        cfg = clarify_config_from_jsonable(schema_dict)
         outputs[payload.awaiting_step_id] = render_clarify_summary(
             schema=cfg, filled=filled_clean,
         )
@@ -1398,7 +1438,10 @@ class MetaOrchestrator:
             selected = step_outputs.get(sid, "")
             if selected.strip():
                 return selected
-            return current_final_text
+            if current_final_text.strip():
+                return current_final_text
+            fallback = _last_non_empty_step_output(step_outputs)
+            return fallback if fallback.strip() else _empty_final_text_fallback(plan, inputs)
         if mode != "auto":
             log.warning(
                 "orchestrator.unknown_final_text_mode mode=%s skill=%s",
@@ -1556,6 +1599,19 @@ def _merge_clarify_defaults(
         if k in allowed:
             merged[k] = v
     return merged
+
+
+def _format_clarify_reply_for_autofill(filled_fields: dict[str, Any]) -> str:
+    lines: list[str] = []
+    for key, value in (filled_fields or {}).items():
+        if value is None:
+            rendered = ""
+        elif isinstance(value, bool):
+            rendered = "true" if value else "false"
+        else:
+            rendered = str(value)
+        lines.append(f"{key}: {rendered}")
+    return "\n".join(lines)
 
 
 def _inject_additional_notes_into_inputs(

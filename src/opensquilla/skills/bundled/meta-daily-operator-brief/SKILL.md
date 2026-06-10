@@ -53,6 +53,7 @@ request_template:
     - "Use pasted context first; memory/weather only enrich the brief when available."
     - "Avoid creating reminders unless the user explicitly asks."
 output_contract:
+  append_to_final_text: false
   required_sections:
     - "Top priorities"
     - "Schedule or timing risks"

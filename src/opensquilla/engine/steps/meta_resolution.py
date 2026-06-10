@@ -35,6 +35,7 @@ from typing import Any
 import structlog
 
 from opensquilla.engine.pipeline import TurnContext
+from opensquilla.skills.meta.clarify_autofill import autofill_required_clarify_fields
 from opensquilla.skills.meta.clarify_nl_extract import extract as _nl_extract
 from opensquilla.skills.meta.clarify_text import parse_clarify_reply
 from opensquilla.skills.meta.inputs import (
@@ -167,6 +168,17 @@ def _hits_cancel_keywords(message: str, keywords: tuple[str, ...]) -> bool:
         if kw and kw in lower:
             return True
     return False
+
+
+def _clarify_errors_allow_autofill(errors: list[str]) -> bool:
+    if not errors:
+        return True
+    for error in errors:
+        lowered = str(error).lower()
+        if "required field" in lowered or "empty value" in lowered:
+            continue
+        return False
+    return True
 
 
 def _current_semantic_text(ctx: TurnContext) -> str:
@@ -1098,6 +1110,53 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
                 )
                 if not errors and parsed and previously_filled:
                     parsed = {**previously_filled, **parsed}
+            if errors and not parsed and ctx.message.strip():
+                from dataclasses import replace
+
+                relaxed_schema = replace(
+                    schema,
+                    fields=tuple(replace(field, required=False) for field in schema.fields),
+                )
+                partial, partial_errors = parse_clarify_reply(
+                    ctx.message,
+                    relaxed_schema,
+                    surface=getattr(ctx, "surface_kind", "unknown"),
+                )
+                if not partial_errors and partial:
+                    parsed = {**previously_filled, **partial}
+            candidate_fields = {**previously_filled, **parsed}
+            if _clarify_errors_allow_autofill(errors):
+                try:
+                    inputs_for_autofill = _json_object(awaiting.inputs_json)
+                    outputs_for_autofill = _json_object(awaiting.step_outputs_json)
+                    filled_auto, completed_auto = await autofill_required_clarify_fields(
+                        schema=schema,
+                        filled_fields=candidate_fields,
+                        user_message=str(inputs_for_autofill.get("user_message") or ""),
+                        clarify_reply=ctx.message,
+                        prior_step_outputs=outputs_for_autofill,
+                        llm_chat=ctx.metadata.get("meta_llm_chat"),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "meta_resolution.clarify_autofill_failed",
+                        error=str(exc),
+                    )
+                    filled_auto, completed_auto = candidate_fields, {}
+            else:
+                filled_auto, completed_auto = candidate_fields, {}
+            missing_after_autofill = [
+                field.name
+                for field in schema.fields
+                if field.required and field.name not in filled_auto
+            ]
+            if completed_auto:
+                parsed = filled_auto
+                if not missing_after_autofill:
+                    errors = []
+                ctx.metadata["meta_clarify_autofilled_fields"] = sorted(
+                    completed_auto.keys()
+                )
             if errors:
                 failure_count = writer.increment_parse_failures(
                     run_id=awaiting.run_id,

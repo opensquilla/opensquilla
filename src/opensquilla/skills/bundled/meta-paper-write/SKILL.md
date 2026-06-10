@@ -53,6 +53,7 @@ request_template:
     - "Do not fabricate citations or experimental results."
     - "Use compact output unless the request explicitly asks for full manuscript artifacts."
 output_contract:
+  append_to_final_text: false
   required_sections:
     - "Manuscript or repair output"
     - "Citation and source status"

@@ -53,6 +53,7 @@ request_template:
     - "Use current sources when browsing is available."
     - "Separate evidence, assumptions, and recommendations."
 output_contract:
+  append_to_final_text: false
   required_sections:
     - "Key findings"
     - "Source-backed evidence"

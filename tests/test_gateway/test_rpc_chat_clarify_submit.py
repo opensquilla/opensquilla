@@ -114,14 +114,32 @@ async def test_clarify_submit_rejects_empty_fields():
 
 
 @pytest.mark.asyncio
-async def test_clarify_submit_rejects_all_empty_values():
-    """If every value is None / '' the resulting text would be empty
-    and meta_resolution couldn't tell what the user meant."""
+async def test_clarify_submit_allows_all_empty_values_for_server_autofill(monkeypatch):
+    """Empty form submissions must reach meta_resolution so required fields
+    can be inferred from context instead of trapping the user in the form."""
+    captured: dict = {}
+
+    async def _fake_send(send_params, ctx):
+        captured["send_params"] = send_params
+        return {"ok": True, "sessionKey": send_params["sessionKey"]}
+
+    monkeypatch.setattr(
+        "opensquilla.gateway.rpc_chat._handle_chat_send",
+        _fake_send,
+    )
+
     ctx = RpcContext(conn_id="c", principal=SimpleNamespace(role="operator"))
-    with pytest.raises(ValueError, match="only empty values"):
-        await _handle_chat_clarify_submit(
-            {"sessionKey": "S1", "fields": {"a": "", "b": None}}, ctx,
-        )
+    result = await _handle_chat_clarify_submit(
+        {"sessionKey": "S1", "fields": {"a": "", "b": None}},
+        ctx,
+    )
+
+    assert result["ok"] is True
+    assert captured["send_params"]["message"] == ""
+    assert captured["send_params"]["inputProvenance"] == {
+        "kind": "clarify_form",
+        "source": "webui",
+    }
 
 
 @pytest.mark.asyncio

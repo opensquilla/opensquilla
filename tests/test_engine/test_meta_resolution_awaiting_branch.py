@@ -367,12 +367,9 @@ async def test_nl_extract_preferred_when_deterministic_parser_would_succeed(tmp_
 
 
 @pytest.mark.asyncio
-async def test_clarify_form_submit_uses_deterministic_fields_even_with_nl_extract(tmp_path):
-    """Structured form submissions are already field-level user input.
-
-    Do not let nl_extract reinterpret a required string like "都可以" as too
-    vague and strand the run in awaiting_user.
-    """
+async def test_clarify_form_submit_autofills_delegated_required_answer(tmp_path):
+    """Structured form submissions skip nl_extract, but delegated required
+    answers like ``都可以`` still need concrete server-side completion."""
     writer = _writer(tmp_path)
     cfg = ClarifyStepConfig(
         mode="form",
@@ -434,7 +431,7 @@ async def test_clarify_form_submit_uses_deterministic_fields_even_with_nl_extrac
 
     async def _nl_chat(system, user):
         llm_called["count"] += 1
-        return json.dumps({"age_band": "PRE_K"})
+        return json.dumps({"topic": "磁力迷宫"})
 
     loader = MagicMock()
     loader.load_all.return_value = []
@@ -456,8 +453,9 @@ async def test_clarify_form_submit_uses_deterministic_fields_even_with_nl_extrac
 
     assert "meta_resume" in out.metadata
     _, parsed = out.metadata["meta_resume"]
-    assert parsed == {"topic": "都可以", "age_band": "PRE_K"}
-    assert llm_called["count"] == 0
+    assert parsed == {"topic": "磁力迷宫", "age_band": "PRE_K"}
+    assert llm_called["count"] == 1
+    assert out.metadata["meta_clarify_autofilled_fields"] == ["topic"]
 
 
 @pytest.mark.asyncio
@@ -831,11 +829,10 @@ async def test_nl_success_rejects_incomplete_required(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_deterministic_real_missing_required_still_reprompts(tmp_path):
-    """Bug-Y guardrail: relaxing ``required`` for previously_filled
-    fields must NOT mask a genuinely missing required field. A turn
-    that fills only one of two required fields, with NO prior state,
-    must still trigger the standard reprompt path."""
+async def test_deterministic_missing_required_autofills_and_resumes(tmp_path):
+    """A form reply that omits required fields should no longer trap the
+    user in a reprompt loop. The resolver infers the missing required
+    values, then resumes with a complete payload."""
     writer = _writer(tmp_path)
     _seed_awaiting_multi_field(
         writer,
@@ -843,20 +840,45 @@ async def test_deterministic_real_missing_required_still_reprompts(tmp_path):
             ClarifyField(name="city", type="string", required=True),
             ClarifyField(name="days", type="int", required=True, min=1, max=30),
         ),
-        # No awaiting_filled — both fields are genuinely missing until
-        # this turn's reply is parsed.
     )
     ctx = _ctx(writer, message="days: 5", session_id="S1")
+    async def fake_chat(_system: str, _user: str) -> str:
+        return '{"city": "Tokyo"}'
+
+    ctx.metadata["meta_llm_chat"] = fake_chat
     out = await meta_resolution(ctx)
-    assert "meta_resume" not in out.metadata, (
-        f"genuinely missing required field must still reprompt; got "
-        f"metadata={dict(out.metadata)}"
+    assert "meta_resume" in out.metadata, (
+        f"missing required field should be inferred; got metadata={dict(out.metadata)}"
     )
-    assert "meta_clarify_errors" in out.metadata
-    errors = out.metadata["meta_clarify_errors"]
-    assert any("city" in err for err in errors), (
-        f"reprompt must name the truly missing field; got {errors!r}"
+    _, parsed = out.metadata["meta_resume"]
+    assert parsed == {"days": 5, "city": "Tokyo"}
+    assert out.metadata["meta_clarify_autofilled_fields"] == ["city"]
+
+
+@pytest.mark.asyncio
+async def test_deterministic_uninformative_required_answer_is_autofilled(tmp_path):
+    """Delegating answers such as ``都可以`` are treated as permission for the
+    runtime to choose a concrete value, not as useful field content."""
+    writer = _writer(tmp_path)
+    _seed_awaiting_multi_field(
+        writer,
+        fields=(
+            ClarifyField(name="budget", type="string", required=True),
+            ClarifyField(name="age", type="int", required=True, min=6, max=12),
+        ),
     )
+    ctx = _ctx(writer, message="budget: 都可以\nage: 9", session_id="S1")
+
+    async def fake_chat(_system: str, _user: str) -> str:
+        return '{"budget": "100 元以内"}'
+
+    ctx.metadata["meta_llm_chat"] = fake_chat
+    out = await meta_resolution(ctx)
+
+    assert "meta_resume" in out.metadata
+    _, parsed = out.metadata["meta_resume"]
+    assert parsed == {"budget": "100 元以内", "age": 9}
+    assert out.metadata["meta_clarify_autofilled_fields"] == ["budget"]
 
 
 @pytest.mark.asyncio

@@ -53,6 +53,7 @@ request_template:
     - "Refuse unsafe or age-inappropriate projects."
     - "Default to modest materials and light guardian supervision when unspecified."
 output_contract:
+  append_to_final_text: false
   required_sections:
     - "Feasibility verdict"
     - "Step-by-step plan"

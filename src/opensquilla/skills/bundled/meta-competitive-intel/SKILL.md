@@ -56,6 +56,7 @@ request_template:
     - "Use public/current evidence when browsing is available."
     - "Do not treat stale pasted examples as current facts."
 output_contract:
+  append_to_final_text: false
   required_sections:
     - "Executive summary"
     - "Signal table with evidence"

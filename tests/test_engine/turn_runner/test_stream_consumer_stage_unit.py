@@ -692,6 +692,65 @@ async def test_outer_stage_yields_text_then_done_and_notifies_post_stream() -> N
 
 
 @pytest.mark.asyncio
+async def test_outer_stage_surfaces_completed_meta_when_done_text_is_empty() -> None:
+    agent_run = _RecordingAgentRun(
+        events=[
+            ToolResultEvent(
+                tool_use_id="meta-1",
+                tool_name="meta_invoke",
+                result="meta-skill 'AwesomeWebpageMetaSkill' completed.",
+                is_error=False,
+                arguments={"name": "AwesomeWebpageMetaSkill"},
+            ),
+            DoneEvent(text=""),
+        ]
+    )
+    stage, _ = _make_stage(agent_run=agent_run)
+    inp = _make_input()
+
+    yielded = await _drain(stage, inp)
+
+    kinds = [type(e).__name__ for e in yielded]
+    assert kinds == ["ToolResultEvent", "TextDeltaEvent", "DoneEvent"]
+    fallback = yielded[1]
+    assert isinstance(fallback, TextDeltaEvent)
+    assert "AwesomeWebpageMetaSkill" in fallback.text
+    assert "没有生成可展示的最终回答" in fallback.text
+    done = yielded[2]
+    assert isinstance(done, DoneEvent)
+    assert done.text == "".join(inp.state.final_text_parts)
+    assert done.text == fallback.text
+
+
+@pytest.mark.asyncio
+async def test_outer_stage_preserves_meta_text_when_done_text_is_empty() -> None:
+    agent_run = _RecordingAgentRun(
+        events=[
+            TextDeltaEvent(text="Final meta answer"),
+            ToolResultEvent(
+                tool_use_id="meta-1",
+                tool_name="meta_invoke",
+                result="meta-skill 'meta-kid-project-planner' completed.",
+                is_error=False,
+                arguments={"name": "meta-kid-project-planner"},
+            ),
+            DoneEvent(text=""),
+        ]
+    )
+    stage, _ = _make_stage(agent_run=agent_run)
+    inp = _make_input()
+
+    yielded = await _drain(stage, inp)
+
+    kinds = [type(e).__name__ for e in yielded]
+    assert kinds == ["TextDeltaEvent", "ToolResultEvent", "DoneEvent"]
+    done = yielded[2]
+    assert isinstance(done, DoneEvent)
+    assert done.text == "Final meta answer"
+    assert inp.state.final_text_parts == ["Final meta answer"]
+
+
+@pytest.mark.asyncio
 async def test_outer_stage_injects_partial_failure_disclosure_before_done() -> None:
     agent_run = _RecordingAgentRun(
         events=[

@@ -751,6 +751,27 @@ def test_all_bundled_meta_skills_have_language_safe_user_visible_copy(
     assert not issues, "\n".join(issues)
 
 
+def test_all_bundled_meta_skills_keep_output_contract_audits_internal(
+    tmp_path: Path,
+) -> None:
+    bundled = Path("src/opensquilla/skills/bundled").resolve()
+    loader = SkillLoader(
+        bundled_dir=bundled,
+        snapshot_path=tmp_path / "skills-snapshot.json",
+    )
+    specs = [s for s in loader.load_all() if getattr(s, "kind", "") == "meta"]
+
+    assert specs
+    issues: list[str] = []
+    for spec in specs:
+        plan = parse_meta_plan(spec)
+        assert plan is not None
+        if plan.output_contract and plan.output_contract.get("append_to_final_text") is not False:
+            issues.append(f"{spec.name}: output_contract must stay out of final text")
+
+    assert not issues, "\n".join(issues)
+
+
 # ---------------------------------------------------------------------------
 # Resolver (engine.steps.meta_resolution)
 # ---------------------------------------------------------------------------
@@ -2737,6 +2758,102 @@ async def test_orchestrator_final_text_step_falls_back_when_named_output_empty()
 
     assert result.ok, result.error
     assert result.final_text == "fallback handoff"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_final_text_step_falls_back_to_last_non_empty_output() -> None:
+    spec = _make_meta_spec(
+        composition={
+            "steps": [
+                {
+                    "id": "preview",
+                    "kind": "llm_chat",
+                    "with": {"task": "write preview"},
+                },
+                {
+                    "id": "final",
+                    "kind": "llm_chat",
+                    "depends_on": ["preview"],
+                    "with": {"task": "write final"},
+                },
+                {
+                    "id": "audit",
+                    "kind": "llm_chat",
+                    "depends_on": ["final"],
+                    "with": {"task": "write audit"},
+                },
+            ],
+        },
+        final_text_mode="step:final",
+    )
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+    loader = _FakeLoader([])
+
+    replies = iter(["usable preview", "", ""])
+
+    async def fake_chat(_s: str, _u: str) -> str:
+        return next(replies)
+
+    async def explode_runner(_s: str, _u: str) -> AsyncIterator[AgentEvent]:
+        raise AssertionError("agent runner must not be called for llm_chat")
+        yield  # pragma: no cover
+
+    orch = MetaOrchestrator(
+        agent_runner=explode_runner,
+        skill_loader=loader,
+        llm_chat=fake_chat,
+    )
+    result = await orch.run(MetaMatch(plan=plan, inputs={"user_message": "u"}))
+
+    assert result.ok, result.error
+    assert result.final_text == "usable preview"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_final_text_step_uses_visible_fallback_when_all_outputs_empty() -> None:
+    spec = _make_meta_spec(
+        name="meta-empty-final",
+        composition={
+            "steps": [
+                {
+                    "id": "final",
+                    "kind": "llm_chat",
+                    "with": {"task": "write final"},
+                },
+            ],
+        },
+        final_text_mode="step:final",
+    )
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+    loader = _FakeLoader([])
+
+    async def empty_chat(_s: str, _u: str) -> str:
+        return ""
+
+    async def explode_runner(_s: str, _u: str) -> AsyncIterator[AgentEvent]:
+        raise AssertionError("agent runner must not be called for llm_chat")
+        yield  # pragma: no cover
+
+    orch = MetaOrchestrator(
+        agent_runner=explode_runner,
+        skill_loader=loader,
+        llm_chat=empty_chat,
+    )
+    result = await orch.run(
+        MetaMatch(
+            plan=plan,
+            inputs={
+                "user_message": "请运行",
+                "user_language": "zh",
+            },
+        ),
+    )
+
+    assert result.ok, result.error
+    assert "meta-empty-final" in result.final_text
+    assert "没有生成可展示的最终回答" in result.final_text
 
 
 @pytest.mark.asyncio

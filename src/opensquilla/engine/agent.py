@@ -166,6 +166,21 @@ MAX_META_INVOKE_DEPTH = 3
 MAX_META_INVOKE_PER_TURN = 8
 
 
+def _meta_empty_final_text_fallback(skill_name: str, inputs: Mapping[str, Any]) -> str:
+    language = str(inputs.get("user_language") or "").lower()
+    instruction = str(inputs.get("language_instruction") or "").lower()
+    if language.startswith("en") or (not language and "english" in instruction):
+        return (
+            f"Meta skill `{skill_name}` completed, but this run did not produce "
+            "a user-visible final answer. Review the step results above, or "
+            "rerun with more specific output requirements if needed."
+        )
+    return (
+        f"Meta skill `{skill_name}` 已完成，但这次流程没有生成可展示的最终回答。"
+        "请查看上方步骤结果和产物；如果需要，可以补充更明确的输出要求后重新运行。"
+    )
+
+
 def _is_deepseek_model_id(model_id: str | None) -> bool:
     normalized = (model_id or "").strip().lower()
     return normalized.startswith("deepseek") or "/deepseek" in normalized
@@ -5444,6 +5459,8 @@ class Agent:
             if not result.ok:
                 yield self._format_meta_invoke_failure(tc, result, plan)
                 return
+            if not result.final_text:
+                result.final_text = _meta_empty_final_text_fallback(name, match.inputs)
             if result.final_text:
                 yield TextDeltaEvent(text=result.final_text)
             yield ToolResult(

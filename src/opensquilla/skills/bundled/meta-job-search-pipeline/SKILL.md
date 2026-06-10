@@ -53,6 +53,7 @@ request_template:
     - "Never auto-apply or contact employers."
     - "Preserve truthful experience; flag gaps instead of inventing claims."
 output_contract:
+  append_to_final_text: false
   required_sections:
     - "Target-role fit"
     - "Tailored material or prep pack"

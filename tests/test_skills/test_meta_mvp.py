@@ -2496,6 +2496,20 @@ def test_output_contract_block_can_render_english_headings() -> None:
     assert "声明的输出契约" not in text
 
 
+def test_output_contract_block_can_be_kept_out_of_user_visible_final_text() -> None:
+    text = _append_output_contract_block(
+        "## Recommendation\nNegotiate.",
+        {
+            "required_sections": ["Recommendation", "Evidence"],
+            "append_to_final_text": False,
+        },
+    )
+
+    assert text == "## Recommendation\nNegotiate."
+    assert "确定性检查" not in text
+    assert "Declared Output Contract" not in text
+
+
 def test_output_contract_audit_reports_pass_warn_and_fail() -> None:
     passed = _audit_output_contract(
         "## Recommendation\nShip.\n\n## Evidence\nFact.",

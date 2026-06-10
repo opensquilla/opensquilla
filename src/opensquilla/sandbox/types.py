@@ -199,6 +199,7 @@ class SandboxRequest:
     stdin: bytes | None = None
     env: dict[str, str] = field(default_factory=dict)
     reason: str = ""
+    session_id: str = ""
 
     def with_policy(self, policy: SandboxPolicy) -> SandboxRequest:
         return SandboxRequest(
@@ -209,6 +210,7 @@ class SandboxRequest:
             stdin=self.stdin,
             env=dict(self.env),
             reason=self.reason,
+            session_id=self.session_id,
         )
 
 

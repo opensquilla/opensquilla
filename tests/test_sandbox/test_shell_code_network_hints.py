@@ -679,7 +679,7 @@ async def test_trusted_uv_pip_install_receives_managed_proxy_without_prompt(
 
 
 @pytest.mark.asyncio
-async def test_trusted_unknown_install_network_failure_retries_once_with_managed_proxy(
+async def test_trusted_unknown_install_uses_managed_proxy_without_redundant_retry(
     managed_runtime: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -755,10 +755,9 @@ async def test_trusted_unknown_install_network_failure_retries_once_with_managed
     finally:
         current_tool_context.reset(token)
 
-    assert "installed" in result
-    assert len(backend_calls) == 2
-    assert "HTTP_PROXY" not in backend_calls[0].env
-    assert backend_calls[1].env["HTTP_PROXY"] == "http://127.0.0.1:48123"
+    assert "Could not resolve host: pypi.org" in result
+    assert len(backend_calls) == 1
+    assert backend_calls[0].env["HTTP_PROXY"] == "http://127.0.0.1:48123"
     assert cleanup_calls == 1
 
 
@@ -1489,7 +1488,7 @@ async def test_trusted_execve_path_denial_retries_with_ro_mount(
 
 
 @pytest.mark.asyncio
-async def test_trusted_path_recovery_then_network_recovery_preserves_mount(
+async def test_trusted_path_recovery_preserves_mount_without_redundant_network_retry(
     managed_runtime: Path,
     tmp_path_factory: pytest.TempPathFactory,
     monkeypatch: pytest.MonkeyPatch,
@@ -1573,13 +1572,13 @@ async def test_trusted_path_recovery_then_network_recovery_preserves_mount(
     finally:
         current_tool_context.reset(token)
 
-    assert "installed" in result
-    assert len(backend_calls) == 3
-    assert cleanup_calls == 1
-    assert backend_calls[2].env["HTTP_PROXY"] == "http://127.0.0.1:48123"
+    assert "Could not resolve host: pypi.org" in result
+    assert len(backend_calls) == 2
+    assert cleanup_calls == 2
+    assert backend_calls[1].env["HTTP_PROXY"] == "http://127.0.0.1:48123"
     assert any(
         mount.mode == "rw" and outside.resolve(strict=False).is_relative_to(mount.host_path)
-        for mount in backend_calls[2].policy.mounts
+        for mount in backend_calls[1].policy.mounts
     )
 
 

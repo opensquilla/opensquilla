@@ -68,8 +68,8 @@ async def test_grant_path_to_appcontainer_grants_parent_traverse_for_directory(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    target = tmp_path / "venv-target"
-    target.mkdir()
+    target = tmp_path / "Users" / "alice" / ".opensquilla" / "workspace"
+    target.mkdir(parents=True)
     captured: list[tuple[tuple[str, ...], Path]] = []
 
     async def fake_run_icacls(argv: tuple[str, ...], path: Path) -> None:
@@ -83,7 +83,13 @@ async def test_grant_path_to_appcontainer_grants_parent_traverse_for_directory(
 
     await grant_path_to_appcontainer(target, "S-1-15-2-123", mode="rw")
 
+    traverse_paths = [
+        parent for parent in (*reversed(target.parent.parents), target.parent) if parent.exists()
+    ]
     assert captured == [
-        (build_icacls_traverse_argv(target.parent, "S-1-15-2-123"), target.parent),
+        *[
+            (build_icacls_traverse_argv(parent, "S-1-15-2-123"), parent)
+            for parent in traverse_paths
+        ],
         (build_icacls_grant_argv(target, "S-1-15-2-123", mode="rw"), target),
     ]

@@ -21,6 +21,7 @@ from opensquilla.sandbox.types import SandboxBackendError, SandboxRequest, Sandb
 
 _HELPER_MODULE = "opensquilla.sandbox.backend.windows_appcontainer_helper"
 _OUTPUT_BYTE_CAP = 1_048_576
+_HELPER_SETUP_TIMEOUT_PADDING_S = 30.0
 
 
 class WindowsAppContainerBackend(Backend):
@@ -51,6 +52,7 @@ class WindowsAppContainerBackend(Backend):
             json.dumps(payload, separators=(",", ":"), sort_keys=True),
         )
         wall = request.policy.limits.wall_timeout_s
+        helper_timeout = _helper_wait_timeout_s(wall)
         started = time.monotonic()
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -70,7 +72,7 @@ class WindowsAppContainerBackend(Backend):
         try:
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 proc.communicate(),
-                timeout=wall,
+                timeout=helper_timeout,
             )
         except TimeoutError:
             proc.kill()
@@ -121,6 +123,10 @@ def _payload_for_request(
         "appcontainer_sid": str(getattr(identity, "appcontainer_sid", "") or ""),
         "timeout": request.policy.limits.wall_timeout_s,
     }
+
+
+def _helper_wait_timeout_s(wall_timeout_s: float) -> float:
+    return max(0.01, float(wall_timeout_s)) + _HELPER_SETUP_TIMEOUT_PADDING_S
 
 
 def _allowed_env(request: SandboxRequest) -> dict[str, str]:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -206,51 +205,107 @@ def test_windows_backend_maps_posix_tmp_to_session_temp_root(
     assert expected.parent.exists()
 
 
-@pytest.mark.skipif(not sys.platform.startswith("win"), reason="Windows command shim test")
+def test_windows_backend_maps_windows_tmp_to_same_session_temp_root(
+    tmp_path: Path,
+) -> None:
+    from opensquilla.tools.builtin import shell
+    from opensquilla.tools.types import ToolContext, current_tool_context
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    token = current_tool_context.set(
+        ToolContext(
+            workspace_dir=str(workspace),
+            session_key="agent:main:webchat:abc",
+        )
+    )
+    try:
+        command = shell._windows_translate_posix_tmp_references(
+            r'python -m venv "C:\tmp\opensquilla-deps-smoke\python-alt"; '
+            r'cd C:\tmp\opensquilla-deps-smoke\python-alt'
+        )
+        workdir = shell._windows_translate_posix_tmp_path(
+            r"C:\tmp\opensquilla-deps-smoke\python-alt"
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    expected = (
+        workspace
+        / ".opensquilla"
+        / "tmp"
+        / "agent-main-webchat-abc"
+        / "opensquilla-deps-smoke"
+        / "python-alt"
+    )
+    assert str(expected) in command
+    assert str(expected) == workdir
+    assert r"C:\tmp" not in command
+    assert expected.parent.exists()
+
+
 def test_windows_shell_host_uses_in_memory_python_functions_without_cmd_shims(
     tmp_path: Path,
 ) -> None:
     from opensquilla.tools.builtin import shell
 
-    fake_powershell = tmp_path / "fake-powershell.cmd"
-    captured = tmp_path / "captured.txt"
-    fake_powershell.write_text(
-        "@echo off\r\n"
-        f'echo %* > "{captured}"\r\n',
-        encoding="utf-8",
+    shim_root = tmp_path / "opensquilla-python-shims"
+    assert not shim_root.exists()
+    source = shell._WINDOWS_SANDBOX_SHELL_HOST_CODE
+    assert "opensquilla-python-shims" not in source
+    assert "function Invoke-OpenSquillaPythonProcess" in source
+    assert "function python " in source
+    assert "function python3 " in source
+    assert "function py " in source
+    assert "$psi.UseShellExecute = $false" in source
+    assert "$env:TEMP =" in source
+    assert "OPENSQUILLA_WINDOWS_APPCONTAINER_TEMPFILE_PATCH" in source
+
+
+def test_windows_powershell_compat_rewrites_direct_python_exe_invocation() -> None:
+    from opensquilla.tools.builtin import shell
+
+    command = shell._windows_powershell_compat_command(
+        r'D:\tmp\project\.venv\Scripts\python.exe -m pip install --no-cache-dir '
+        r'"httpx[http2]" pendulum'
     )
-    env = {
-        "COMSPEC": r"C:\Windows\System32\cmd.exe",
-        "PATH": r"C:\Windows\System32",
-        "PATHEXT": ".COM;.EXE;.BAT;.CMD",
-        "SystemRoot": r"C:\Windows",
-        "TEMP": str(tmp_path),
-        "TMP": str(tmp_path),
-    }
+
+    assert command.startswith("Invoke-OpenSquillaPythonProcess ")
+    assert "-FilePath 'D:\\tmp\\project\\.venv\\Scripts\\python.exe'" in command
+    expected_args = "-Arguments @('-m','pip','install','--no-cache-dir','httpx[http2]','pendulum')"
+    assert expected_args in command
+
+
+def test_windows_shell_host_runs_rewritten_python_without_powershell(
+    tmp_path: Path,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    python_path = str(Path(sys.executable)).replace("'", "''")
+    command = (
+        "Invoke-OpenSquillaPythonProcess "
+        f"-FilePath '{python_path}' "
+        "-Arguments @('-c','print(123)')"
+    )
 
     result = subprocess.run(
         [
             sys.executable,
             "-c",
             shell._WINDOWS_SANDBOX_SHELL_HOST_CODE,
-            str(fake_powershell),
-            "Get-Command python",
+            str(tmp_path / "missing-powershell.exe"),
+            command,
+            str(tmp_path),
+            str(tmp_path),
         ],
         cwd=str(tmp_path),
-        env=env,
         text=True,
         capture_output=True,
         check=False,
     )
 
     assert result.returncode == 0, result.stderr
-    shim_root = tmp_path / "opensquilla-python-shims"
-    assert not shim_root.exists()
-    captured_args = captured.read_text(encoding="utf-8")
-    assert "Set-Alias -Name python " in captured_args
-    assert "Set-Alias -Name python3 " in captured_args
-    assert "Set-Alias -Name py " in captured_args
-    assert os.path.basename(sys.executable).lower() in captured_args.lower()
+    assert result.stdout.strip() == "123"
 
 
 @pytest.mark.asyncio
@@ -435,6 +490,8 @@ async def test_exec_command_windows_backend_uses_pinned_powershell_argv(
     assert isinstance(request, SandboxRequest)
     assert request.argv[0] == sys.executable
     assert request.argv[1] == "-c"
+    assert "try {{ Set-Location -LiteralPath" in request.argv[2]
+    assert "catch {{ Write-Error $_; exit 1 }}" in request.argv[2]
     assert request.argv[3] == r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
     assert request.argv[4] == "echo ok"
 
@@ -518,6 +575,252 @@ async def test_exec_command_windows_backend_translates_tmp_and_sets_session_temp
 
 
 @pytest.mark.asyncio
+async def test_exec_command_windows_backend_pins_workdir_inside_shell_host(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    project = workspace / "project"
+    project.mkdir()
+    policy = _policy(workspace)
+    runtime = SimpleNamespace(
+        effective=SimpleNamespace(sandbox_enabled=True),
+        backend=SimpleNamespace(name="windows_appcontainer"),
+        workspace=workspace,
+    )
+    gate_request = SimpleNamespace(
+        cwd=workspace,
+        action_kind="shell.exec",
+        policy=policy,
+        reason="",
+        session_id="agent:main:webchat:abc",
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_gate_action(**kwargs: object) -> tuple[object, SandboxPolicy, object]:
+        return object(), policy, gate_request
+
+    async def fake_run_under_backend(request: SandboxRequest, *, runtime: object) -> object:
+        captured["request"] = request
+        return SimpleNamespace(returncode=0, stdout="ok\n", stderr="", backend_notes=())
+
+    async def fake_preflight(request: SandboxRequest, runtime: object) -> object | None:
+        return None
+
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(shell, "_host_execution_allowed", lambda: False)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+    monkeypatch.setattr(shell, "gate_action", fake_gate_action)
+    monkeypatch.setattr(shell, "preflight_subprocess_managed_network", fake_preflight)
+    monkeypatch.setattr(shell, "run_under_backend", fake_run_under_backend)
+
+    await shell.exec_command("Get-ChildItem .venv\\Scripts\\", workdir=str(project))
+
+    request = captured["request"]
+    assert isinstance(request, SandboxRequest)
+    assert request.cwd == project.resolve(strict=False)
+    assert request.argv[5] == str(project.resolve(strict=False))
+
+
+@pytest.mark.asyncio
+async def test_exec_command_trusted_windows_write_grant_reaches_backend_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.sandbox.run_context import RunContext
+    from opensquilla.sandbox.run_mode import RunMode
+    from opensquilla.tools.builtin import shell
+    from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside" / ".venv"
+    policy = _policy(workspace)
+    runtime = SimpleNamespace(
+        effective=SimpleNamespace(sandbox_enabled=True),
+        backend=SimpleNamespace(name="windows_appcontainer"),
+        workspace=workspace,
+    )
+    gate_request = SimpleNamespace(
+        cwd=workspace,
+        action_kind="shell.exec",
+        policy=policy,
+        reason="",
+        session_id="agent:main:webchat:abc",
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_gate_action(**kwargs: object) -> tuple[object, SandboxPolicy, object]:
+        return object(), policy, gate_request
+
+    async def fake_run_under_backend(request: SandboxRequest, *, runtime: object) -> object:
+        captured["request"] = request
+        return SimpleNamespace(returncode=0, stdout="ok\n", stderr="", backend_notes=())
+
+    async def fake_preflight(request: SandboxRequest, runtime: object) -> object | None:
+        return None
+
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(shell, "_host_execution_allowed", lambda: False)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+    monkeypatch.setattr(shell, "gate_action", fake_gate_action)
+    monkeypatch.setattr(shell, "preflight_subprocess_managed_network", fake_preflight)
+    monkeypatch.setattr(shell, "run_under_backend", fake_run_under_backend)
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(workspace),
+            session_key="agent:main:webchat:abc",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.TRUSTED,
+                workspace=str(workspace),
+            ),
+        )
+    )
+    try:
+        await shell.exec_command(
+            f'python -m venv "{outside}"',
+            workdir=str(workspace),
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    request = captured["request"]
+    assert isinstance(request, SandboxRequest)
+    assert any(
+        mount.host_path == outside.parent.resolve(strict=False) and mount.mode == "rw"
+        for mount in request.policy.mounts
+    )
+
+
+@pytest.mark.asyncio
+async def test_exec_command_windows_backend_mounts_python_runtime_for_venv(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    policy = _policy(workspace)
+    runtime = SimpleNamespace(
+        effective=SimpleNamespace(sandbox_enabled=True),
+        backend=SimpleNamespace(name="windows_appcontainer"),
+        workspace=workspace,
+    )
+    gate_request = SimpleNamespace(
+        cwd=workspace,
+        action_kind="shell.exec",
+        policy=policy,
+        reason="",
+        session_id="agent:main:webchat:abc",
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_gate_action(**kwargs: object) -> tuple[object, SandboxPolicy, object]:
+        return object(), policy, gate_request
+
+    async def fake_run_under_backend(request: SandboxRequest, *, runtime: object) -> object:
+        captured["request"] = request
+        return SimpleNamespace(returncode=0, stdout="ok\n", stderr="", backend_notes=())
+
+    async def fake_preflight(request: SandboxRequest, runtime: object) -> object | None:
+        return None
+
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(shell, "_host_execution_allowed", lambda: False)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+    monkeypatch.setattr(shell, "gate_action", fake_gate_action)
+    monkeypatch.setattr(shell, "preflight_subprocess_managed_network", fake_preflight)
+    monkeypatch.setattr(shell, "run_under_backend", fake_run_under_backend)
+
+    await shell.exec_command(
+        "python -m venv /tmp/opensquilla-deps-smoke/python-alt/.venv",
+        workdir=str(workspace),
+    )
+
+    request = captured["request"]
+    assert isinstance(request, SandboxRequest)
+    mount_paths = {mount.host_path for mount in request.policy.mounts if mount.mode == "ro"}
+    assert Path(sys.prefix).resolve(strict=False) in mount_paths
+    assert Path(sys.base_prefix).resolve(strict=False) in mount_paths
+
+
+@pytest.mark.asyncio
+async def test_exec_command_windows_backend_uses_requested_timeout_in_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    policy = _policy(workspace, wall_timeout_s=5.0)
+    runtime = SimpleNamespace(
+        effective=SimpleNamespace(sandbox_enabled=True),
+        backend=SimpleNamespace(name="windows_appcontainer"),
+        workspace=workspace,
+    )
+    gate_request = SimpleNamespace(
+        cwd=workspace,
+        action_kind="shell.exec",
+        policy=policy,
+        reason="",
+        session_id="agent:main:webchat:abc",
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_gate_action(**kwargs: object) -> tuple[object, SandboxPolicy, object]:
+        return object(), policy, gate_request
+
+    async def fake_run_under_backend(request: SandboxRequest, *, runtime: object) -> object:
+        captured["request"] = request
+        return SimpleNamespace(returncode=0, stdout="ok\n", stderr="", backend_notes=())
+
+    async def fake_preflight(request: SandboxRequest, runtime: object) -> object | None:
+        return None
+
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(shell, "_host_execution_allowed", lambda: False)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+    monkeypatch.setattr(shell, "gate_action", fake_gate_action)
+    monkeypatch.setattr(shell, "preflight_subprocess_managed_network", fake_preflight)
+    monkeypatch.setattr(shell, "run_under_backend", fake_run_under_backend)
+
+    await shell.exec_command("python -m pip install humanize", timeout=300)
+
+    request = captured["request"]
+    assert isinstance(request, SandboxRequest)
+    assert request.policy.limits.wall_timeout_s == 300
+    assert request.session_id == "agent:main:webchat:abc"
+
+
+@pytest.mark.asyncio
 async def test_exec_command_windows_python_install_queues_bundle_before_backend(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -597,6 +900,232 @@ async def test_exec_command_windows_python_install_queues_bundle_before_backend(
     assert len(pending) == 1
     assert pending[0]["params"]["bundle_id"] == "python-package-install"
     reset_approval_queue()
+
+
+@pytest.mark.asyncio
+async def test_exec_command_trusted_windows_python_install_uses_managed_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.sandbox import integration as integration_mod
+    from opensquilla.sandbox.run_context import RunContext
+    from opensquilla.sandbox.run_mode import RunMode
+    from opensquilla.tools.builtin import shell
+    from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
+
+    class _FakeProxyServer:
+        host = "127.0.0.1"
+        port = 48123
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            return None
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    venv_python = (
+        workspace
+        / ".opensquilla"
+        / "tmp"
+        / "agent-main-webchat-abc"
+        / "opensquilla-deps-smoke"
+        / "python-alt"
+        / ".venv"
+        / "Scripts"
+        / "python.exe"
+    )
+    policy = _policy(workspace, network=NetworkMode.PROXY_ALLOWLIST)
+    runtime = SimpleNamespace(
+        effective=SimpleNamespace(sandbox_enabled=True),
+        backend=SimpleNamespace(name="windows_appcontainer"),
+        workspace=workspace,
+    )
+    gate_request = SimpleNamespace(
+        cwd=workspace,
+        action_kind="shell.exec",
+        policy=policy,
+        reason="",
+    )
+    seen: dict[str, object] = {}
+
+    async def fake_gate_action(**kwargs: object) -> tuple[object, SandboxPolicy, object]:
+        seen["hints"] = kwargs["hints"]
+        return object(), policy, gate_request
+
+    async def fake_run_under_backend(request: SandboxRequest, *, runtime: object) -> object:
+        seen["request"] = request
+        return SimpleNamespace(
+            returncode=0,
+            stdout="installed\n",
+            stderr="",
+            backend_notes=(),
+        )
+
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setattr(integration_mod, "SandboxProxyServer", _FakeProxyServer)
+    monkeypatch.setattr(
+        integration_mod,
+        "_windows_proxy_allowlist_enforced",
+        lambda runtime: True,
+    )
+    monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(shell, "_host_execution_allowed", lambda: False)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+    monkeypatch.setattr(shell, "gate_action", fake_gate_action)
+    monkeypatch.setattr(shell, "run_under_backend", fake_run_under_backend)
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(workspace),
+            session_key="agent:main:webchat:abc",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.TRUSTED,
+                workspace=str(workspace),
+            ),
+        )
+    )
+    try:
+        result = await shell.exec_command(
+            f'{venv_python} -m pip install --no-cache-dir "httpx[http2]" pendulum',
+            workdir=str(workspace),
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert "installed" in result
+    hints = seen["hints"]
+    assert getattr(hints, "needs_network") is True
+    request = seen["request"]
+    assert isinstance(request, SandboxRequest)
+    assert request.policy.network_proxy is not None
+    assert request.env["HTTP_PROXY"] == "http://127.0.0.1:48123"
+    assert request.env["HTTPS_PROXY"] == request.env["HTTP_PROXY"]
+    assert request.env["NO_PROXY"] == ""
+
+
+@pytest.mark.asyncio
+async def test_exec_command_trusted_windows_posix_venv_install_uses_powershell_compat(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.sandbox import integration as integration_mod
+    from opensquilla.sandbox.run_context import RunContext
+    from opensquilla.sandbox.run_mode import RunMode
+    from opensquilla.tools.builtin import shell
+    from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
+
+    class _FakeProxyServer:
+        host = "127.0.0.1"
+        port = 48123
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            return None
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    policy = _policy(workspace, network=NetworkMode.PROXY_ALLOWLIST)
+    runtime = SimpleNamespace(
+        effective=SimpleNamespace(sandbox_enabled=True),
+        backend=SimpleNamespace(name="windows_appcontainer"),
+        workspace=workspace,
+    )
+    gate_request = SimpleNamespace(
+        cwd=workspace,
+        action_kind="shell.exec",
+        policy=policy,
+        reason="",
+    )
+    seen: dict[str, object] = {}
+
+    async def fake_gate_action(**kwargs: object) -> tuple[object, SandboxPolicy, object]:
+        seen["hints"] = kwargs["hints"]
+        return object(), policy, gate_request
+
+    async def fake_run_under_backend(request: SandboxRequest, *, runtime: object) -> object:
+        seen["request"] = request
+        return SimpleNamespace(
+            returncode=0,
+            stdout=(
+                "httpx 0.test\n"
+                "pendulum 0.test\n"
+                "orjson 0.test\n"
+                "Pillow 0.test\n"
+                "humanize 0.test\n"
+            ),
+            stderr="",
+            backend_notes=(),
+        )
+
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setattr(integration_mod, "SandboxProxyServer", _FakeProxyServer)
+    monkeypatch.setattr(
+        integration_mod,
+        "_windows_proxy_allowlist_enforced",
+        lambda runtime: True,
+    )
+    monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(shell, "_host_execution_allowed", lambda: False)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+    monkeypatch.setattr(shell, "gate_action", fake_gate_action)
+    monkeypatch.setattr(shell, "run_under_backend", fake_run_under_backend)
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(workspace),
+            session_key="agent:main:webchat:abc",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.TRUSTED,
+                workspace=str(workspace),
+            ),
+        )
+    )
+    try:
+        result = await shell.exec_command(
+            "mkdir -p /tmp/opensquilla-deps-smoke/python-alt && "
+            "python -m venv /tmp/opensquilla-deps-smoke/python-alt/.venv && "
+            "/tmp/opensquilla-deps-smoke/python-alt/.venv/Scripts/python.exe "
+            '-m pip install --no-cache-dir "httpx[http2]" pendulum orjson Pillow humanize',
+            workdir=str(workspace),
+            timeout=300,
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert "httpx 0.test" in result
+    hints = seen["hints"]
+    assert getattr(hints, "needs_network") is True
+    request = seen["request"]
+    assert isinstance(request, SandboxRequest)
+    backend_command = request.argv[4]
+    assert "&&" not in backend_command
+    assert "mkdir -p" not in backend_command
+    assert "New-Item -ItemType Directory -Force -Path" in backend_command
+    assert "if (-not $?) { exit 1 }" in backend_command
+    assert request.policy.network_proxy is not None
+    assert request.env["HTTP_PROXY"] == "http://127.0.0.1:48123"
 
 
 @pytest.mark.asyncio
@@ -841,7 +1370,9 @@ def test_native_sync_launch_uses_handle_list_and_job_object(
             self.created_job = False
             self.kill_on_close_job = None
             self.assigned_job = None
+            self.default_dacl_grants: list[tuple[int, str]] = []
             self.resumed_thread = None
+            self.call_order: list[str] = []
             self.job_finished = False
             self.closed: list[int] = []
 
@@ -891,9 +1422,19 @@ def test_native_sync_launch_uses_handle_list_and_job_object(
             process_info.hThread = 301
 
         def assign_process_to_job(self, job: int, process: int) -> None:
+            self.call_order.append("assign_job")
             self.assigned_job = (job, process)
 
+        def grant_process_token_default_dacl(
+            self,
+            process: int,
+            appcontainer_sid: str,
+        ) -> None:
+            self.call_order.append("default_dacl")
+            self.default_dacl_grants.append((process, appcontainer_sid))
+
         def resume_thread(self, thread: int) -> None:
+            self.call_order.append("resume")
             self.resumed_thread = thread
 
         def close_handle(self, handle: int) -> None:
@@ -959,6 +1500,8 @@ def test_native_sync_launch_uses_handle_list_and_job_object(
     assert api.creation_flags & primitives._CREATE_SUSPENDED
     assert api.created_job is True
     assert api.assigned_job == (200, 300)
+    assert api.default_dacl_grants == [(300, "S-1-15-2-100")]
+    assert api.call_order == ["assign_job", "default_dacl", "resume"]
     assert api.resumed_thread == 301
     assert 200 in api.closed
 
@@ -1236,6 +1779,7 @@ async def test_run_timeout_kills_helper(
         return proc
 
     monkeypatch.setattr(WindowsAppContainerBackend, "available", lambda self: True)
+    monkeypatch.setattr(win_mod, "_HELPER_SETUP_TIMEOUT_PADDING_S", 0.0)
     monkeypatch.setattr(
         win_mod.asyncio,
         "create_subprocess_exec",
@@ -1250,6 +1794,59 @@ async def test_run_timeout_kills_helper(
     assert result.returncode == 124
     assert result.timed_out is True
     assert result.backend_used == "windows_appcontainer"
+
+
+@pytest.mark.asyncio
+async def test_run_helper_wait_includes_appcontainer_setup_padding(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.sandbox.backend import windows_appcontainer as win_mod
+    from opensquilla.sandbox.backend.windows_appcontainer import (
+        WindowsAppContainerBackend,
+    )
+
+    class HangingProcess:
+        returncode = None
+        killed = False
+
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+            return b"", b""
+
+        def kill(self) -> None:
+            self.killed = True
+
+        async def wait(self) -> None:
+            return None
+
+    proc = HangingProcess()
+    observed: dict[str, float] = {}
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: object) -> HangingProcess:
+        return proc
+
+    async def fake_wait_for(coro: object, *, timeout: float | None = None) -> object:
+        observed["timeout"] = float(timeout or 0)
+        close = getattr(coro, "close", None)
+        if callable(close):
+            close()
+        raise TimeoutError
+
+    monkeypatch.setattr(WindowsAppContainerBackend, "available", lambda self: True)
+    monkeypatch.setattr(
+        win_mod.asyncio,
+        "create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(win_mod.asyncio, "wait_for", fake_wait_for)
+
+    result = await WindowsAppContainerBackend().run(
+        _request(tmp_path, _policy(tmp_path, wall_timeout_s=0.01))
+    )
+
+    assert proc.killed is True
+    assert result.timed_out is True
+    assert observed["timeout"] > 0.01
 
 
 def test_run_raises_when_backend_unavailable(

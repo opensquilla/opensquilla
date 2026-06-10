@@ -413,6 +413,7 @@ def build_request(
     Exposed for callers (notably shell.py) that want to fingerprint a
     command without going through the decorator.
     """
+    session_id = _resolve_session_id(get_runtime(), None) if get_runtime() is not None else ""
     return SandboxRequest(
         argv=argv,
         cwd=cwd,
@@ -420,6 +421,7 @@ def build_request(
         policy=policy,
         env=dict(env or {}),
         reason=reason,
+        session_id=session_id,
     )
 
 
@@ -500,6 +502,7 @@ def request_with_managed_network_proxy_env(
         stdin=request.stdin,
         env=env,
         reason=request.reason,
+        session_id=request.session_id,
     )
 
 

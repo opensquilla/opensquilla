@@ -64,6 +64,27 @@ def test_classify_python_package_install_in_windows_shell_host_wrapper() -> None
     assert profile.needs_network is True
 
 
+def test_classify_rewritten_python_package_install_in_windows_shell_host_wrapper() -> None:
+    script = (
+        "Invoke-OpenSquillaPythonProcess "
+        "-FilePath 'D:\\opensquilla\\.tmp\\proj\\.venv\\Scripts\\python.exe' "
+        "-Arguments @('-m','pip','install','--no-cache-dir','httpx[http2]','pendulum')"
+    )
+    profile = classify_command(
+        (
+            "D:\\opensquilla\\.venv\\Scripts\\python.exe",
+            "-c",
+            "windows sandbox shell host expects powershell path and command",
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            script,
+        )
+    )
+
+    assert profile.name == "package_install"
+    assert profile.package_manager == "python"
+    assert profile.needs_network is True
+
+
 def test_pip_help_install_is_not_package_install() -> None:
     profile = classify_command(("pip", "help", "install"))
     assert profile.name == "unknown_shell"

@@ -53,34 +53,44 @@ def _is_running_as_admin() -> bool:
         return False
 
 
-def _ps_create_rule_script() -> str:
-    return r"""
+def _ps_single_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _ps_create_rule_script(rule: FirewallRule) -> str:
+    entries = [
+        f"  Name = {_ps_single_quote(rule.name)}",
+        f"  DisplayName = {_ps_single_quote(rule.display_name)}",
+        "  Direction = 'Outbound'",
+        "  Enabled = 'True'",
+        f"  Action = {_ps_single_quote(rule.action)}",
+        "  Profile = 'Any'",
+        f"  Package = {_ps_single_quote(rule.package_sid)}",
+        f"  Protocol = {_ps_single_quote(rule.protocol)}",
+    ]
+    if rule.remote_address:
+        addresses = ", ".join(
+            _ps_single_quote(address.strip())
+            for address in rule.remote_address.split(",")
+            if address.strip()
+        )
+        entries.append(f"  RemoteAddress = @({addresses})")
+    if rule.remote_port is not None:
+        entries.append(f"  RemotePort = {int(rule.remote_port)}")
+    body = "\n".join(entries)
+    return f"""
 $ErrorActionPreference = 'Stop'
-$remoteAddress = $args[6]
-$params = @{
-  Name = $args[0]
-  DisplayName = $args[1]
-  Direction = 'Outbound'
-  Enabled = 'True'
-  Action = $args[2]
-  Profile = 'Any'
-  Package = $args[3]
-  Protocol = $args[4]
-}
-if ($remoteAddress) {
-  $params.RemoteAddress = $remoteAddress -split ','
-}
-if ($args[5]) {
-  $params.RemotePort = [int]$args[5]
-}
+$params = @{{
+{body}
+}}
 New-NetFirewallRule @params | Out-Null
 """.strip()
 
 
-def _ps_remove_rule_script() -> str:
-    return r"""
+def _ps_remove_rule_script(rule_name: str) -> str:
+    return f"""
 $ErrorActionPreference = 'Stop'
-Remove-NetFirewallRule -Name $args[0] -ErrorAction SilentlyContinue
+Remove-NetFirewallRule -Name {_ps_single_quote(rule_name)} -ErrorAction SilentlyContinue
 """.strip()
 
 
@@ -154,14 +164,7 @@ class WindowsFirewallPolicyManager:
                 "-ExecutionPolicy",
                 "Bypass",
                 "-Command",
-                _ps_create_rule_script(),
-                rule.name,
-                rule.display_name,
-                rule.action,
-                rule.package_sid,
-                rule.protocol,
-                str(rule.remote_port or ""),
-                rule.remote_address or "",
+                _ps_create_rule_script(rule),
             ]
         )
 
@@ -175,8 +178,7 @@ class WindowsFirewallPolicyManager:
                 "-ExecutionPolicy",
                 "Bypass",
                 "-Command",
-                _ps_remove_rule_script(),
-                rule_name,
+                _ps_remove_rule_script(rule_name),
             ]
         )
 
@@ -206,23 +208,6 @@ def _firewall_rules_for_request(request: InstallPolicyRequest) -> tuple[Firewall
             package_sid=sid,
             protocol="Any",
             remote_address="0.0.0.0-127.0.0.0,127.0.0.2-255.255.255.255",
-        ),
-        FirewallRule(
-            name=f"OpenSquilla-{run_id}-allow-proxy-ipv6",
-            display_name=f"{display_prefix} allow proxy IPv6",
-            action="Allow",
-            package_sid=sid,
-            protocol="TCP",
-            remote_address="::1",
-            remote_port=proxy_port,
-        ),
-        FirewallRule(
-            name=f"OpenSquilla-{run_id}-block-ipv6",
-            display_name=f"{display_prefix} block IPv6",
-            action="Block",
-            package_sid=sid,
-            protocol="Any",
-            remote_address="::/0",
         ),
     )
 

@@ -50,6 +50,9 @@ class OperationProfile:
 
 def classify_command(argv: tuple[str, ...] | list[str]) -> OperationProfile:
     parts = tuple(str(p) for p in argv)
+    python_process_parts = _windows_invoke_python_process_parts(parts)
+    if python_process_parts is not None:
+        return classify_command(python_process_parts)
     windows_shell_host_command = _windows_shell_host_command(parts)
     if windows_shell_host_command is not None:
         return classify_command(("powershell", "-Command", windows_shell_host_command))
@@ -408,8 +411,78 @@ def _windows_shell_host_command(parts: tuple[str, ...]) -> str | None:
         return None
     if "windows sandbox shell host expects powershell path and command" not in parts[2].lower():
         return None
-    command = parts[-1].strip()
+    command = parts[4].strip()
     return command or None
+
+
+def _windows_invoke_python_process_parts(parts: tuple[str, ...]) -> tuple[str, ...] | None:
+    if not parts or _command_name(parts[0]).lower() != "invoke-opensquillapythonprocess":
+        return None
+    executable: str | None = None
+    arguments: tuple[str, ...] | None = None
+    index = 1
+    while index < len(parts):
+        flag = parts[index].lower()
+        if flag == "-filepath" and index + 1 < len(parts):
+            executable = _unescape_powershell_single_quoted(parts[index + 1])
+            index += 2
+            continue
+        if flag == "-arguments" and index + 1 < len(parts):
+            arguments = _powershell_single_quoted_array(parts[index + 1])
+            index += 2
+            continue
+        index += 1
+    if not executable or arguments is None:
+        return None
+    return (executable, *arguments)
+
+
+def _unescape_powershell_single_quoted(value: str) -> str:
+    return _strip_outer_quotes(value).replace("''", "'")
+
+
+def _powershell_single_quoted_array(value: str) -> tuple[str, ...] | None:
+    value = value.strip()
+    if not value.startswith("@(") or not value.endswith(")"):
+        return None
+    body = value[2:-1]
+    values: list[str] = []
+    index = 0
+    length = len(body)
+    while index < length:
+        while index < length and body[index].isspace():
+            index += 1
+        if index < length and body[index] == ",":
+            index += 1
+            continue
+        while index < length and body[index].isspace():
+            index += 1
+        if index >= length:
+            break
+        if body[index] != "'":
+            return None
+        index += 1
+        chars: list[str] = []
+        while index < length:
+            char = body[index]
+            if char != "'":
+                chars.append(char)
+                index += 1
+                continue
+            if index + 1 < length and body[index + 1] == "'":
+                chars.append("'")
+                index += 2
+                continue
+            index += 1
+            break
+        else:
+            return None
+        while index < length and body[index].isspace():
+            index += 1
+        if index < length and body[index] not in ",":
+            return None
+        values.append("".join(chars))
+    return tuple(values)
 
 
 def _strip_outer_quotes(value: str) -> str:

@@ -42,6 +42,7 @@ def _request(tmp_path: Path) -> SandboxRequest:
         action_kind="shell.exec",
         policy=_policy(tmp_path),
         env={"PATH": r"C:\Windows\System32"},
+        session_id="agent:main:webchat:abc",
     )
 
 
@@ -87,7 +88,7 @@ async def test_backend_payload_includes_prepared_appcontainer_identity(
         win_mod,
         "prepare_appcontainer_identity",
         lambda session_id: SimpleNamespace(
-            profile_name="opensquilla-sandbox-default",
+            profile_name=f"opensquilla-sandbox-{session_id.replace(':', '-')}",
             appcontainer_sid="S-1-15-2-123",
         ),
     )
@@ -107,7 +108,11 @@ async def test_backend_payload_includes_prepared_appcontainer_identity(
         "opensquilla.sandbox.backend.windows_appcontainer_helper",
     )
     payload = json.loads(helper_argv[3])
-    assert payload["appcontainer_profile_name"] == "opensquilla-sandbox-default"
+    assert payload["session_id"] == "agent:main:webchat:abc"
+    assert (
+        payload["appcontainer_profile_name"]
+        == "opensquilla-sandbox-agent-main-webchat-abc"
+    )
     assert payload["appcontainer_sid"] == "S-1-15-2-123"
     assert captured["kwargs"] == {
         "stdout": asyncio.subprocess.PIPE,

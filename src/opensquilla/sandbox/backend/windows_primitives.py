@@ -42,7 +42,12 @@ _DACL_SECURITY_INFORMATION = 0x00000004
 _SET_ACCESS = 2
 _TRUSTEE_IS_SID = 0
 _TRUSTEE_IS_UNKNOWN = 0
+_TOKEN_QUERY = 0x0008
+_TOKEN_ADJUST_DEFAULT = 0x0080
+_TOKEN_USER_CLASS = 1
+_TOKEN_DEFAULT_DACL_CLASS = 6
 _READ_CONTROL = 0x00020000
+_GENERIC_ALL = 0x10000000
 _WINSTA_ENUMDESKTOPS = 0x0001
 _WINSTA_READATTRIBUTES = 0x0002
 _WINSTA_ACCESSGLOBALATOMS = 0x0020
@@ -143,6 +148,21 @@ class _SecurityCapabilities(ctypes.Structure):
         ("CapabilityCount", wintypes.DWORD),
         ("Reserved", wintypes.DWORD),
     )
+
+
+class _TokenDefaultDacl(ctypes.Structure):
+    _fields_ = (("DefaultDacl", wintypes.LPVOID),)
+
+
+class _SidAndAttributes(ctypes.Structure):
+    _fields_ = (
+        ("Sid", wintypes.LPVOID),
+        ("Attributes", wintypes.DWORD),
+    )
+
+
+class _TokenUser(ctypes.Structure):
+    _fields_ = (("User", _SidAndAttributes),)
 
 
 class _TrusteeW(ctypes.Structure):
@@ -388,6 +408,7 @@ def _launch_appcontainer_process_native_sync(
         )
         try:
             api.assign_process_to_job(job_handle, process_info.hProcess)
+            api.grant_process_token_default_dacl(process_info.hProcess, sid.sid_string)
             api.resume_thread(process_info.hThread)
         except Exception:
             if process_info.hProcess:
@@ -565,6 +586,27 @@ class _Win32Api:
             wintypes.LPVOID,
         )
         self.advapi32.SetSecurityInfo.restype = wintypes.DWORD
+        self.advapi32.OpenProcessToken.argtypes = (
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.HANDLE),
+        )
+        self.advapi32.OpenProcessToken.restype = wintypes.BOOL
+        self.advapi32.GetTokenInformation.argtypes = (
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+        )
+        self.advapi32.GetTokenInformation.restype = wintypes.BOOL
+        self.advapi32.SetTokenInformation.argtypes = (
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        )
+        self.advapi32.SetTokenInformation.restype = wintypes.BOOL
         self.kernel32.LocalFree.argtypes = (wintypes.HLOCAL,)
         self.kernel32.LocalFree.restype = wintypes.HLOCAL
         self.kernel32.GetCurrentThreadId.argtypes = ()
@@ -773,6 +815,120 @@ class _Win32Api:
                 self.kernel32.LocalFree(security_descriptor)
             if sid:
                 self.kernel32.LocalFree(sid)
+
+    def grant_process_token_default_dacl(
+        self,
+        process: wintypes.HANDLE,
+        appcontainer_sid: str,
+    ) -> None:
+        token = wintypes.HANDLE()
+        sid = wintypes.LPVOID()
+        new_dacl = wintypes.LPVOID()
+        if not self.advapi32.OpenProcessToken(
+            process,
+            _TOKEN_QUERY | _TOKEN_ADJUST_DEFAULT,
+            ctypes.byref(token),
+        ):
+            raise _last_error("OpenProcessToken")
+        try:
+            old_dacl, token_default_dacl_buffer = self._token_default_dacl(token)
+            user_sid, token_user_buffer = self._token_user_sid(token)
+            if not self.advapi32.ConvertStringSidToSidW(appcontainer_sid, ctypes.byref(sid)):
+                raise _last_error("ConvertStringSidToSidW")
+
+            entries = (_ExplicitAccessW * 2)()
+            for entry, trustee_sid in zip(entries, (sid, user_sid), strict=True):
+                entry.grfAccessPermissions = _GENERIC_ALL
+                entry.grfAccessMode = _SET_ACCESS
+                entry.Trustee.TrusteeForm = _TRUSTEE_IS_SID
+                entry.Trustee.TrusteeType = _TRUSTEE_IS_UNKNOWN
+                entry.Trustee.ptstrName = ctypes.cast(trustee_sid, wintypes.LPWSTR)
+            err = self.advapi32.SetEntriesInAclW(
+                len(entries),
+                entries,
+                old_dacl,
+                ctypes.byref(new_dacl),
+            )
+            if err != _ERROR_SUCCESS:
+                raise _Win32Error("SetEntriesInAclW", err)
+
+            token_dacl = _TokenDefaultDacl(new_dacl)
+            if not self.advapi32.SetTokenInformation(
+                token,
+                _TOKEN_DEFAULT_DACL_CLASS,
+                ctypes.byref(token_dacl),
+                ctypes.sizeof(token_dacl),
+            ):
+                raise _last_error("SetTokenInformation")
+            _ = token_default_dacl_buffer
+            _ = token_user_buffer
+        finally:
+            if new_dacl:
+                self.kernel32.LocalFree(new_dacl)
+            if sid:
+                self.kernel32.LocalFree(sid)
+            if token:
+                self.close_handle(token)
+
+    def _token_default_dacl(
+        self,
+        token: wintypes.HANDLE,
+    ) -> tuple[wintypes.LPVOID, ctypes.Array[ctypes.c_char]]:
+        size = wintypes.DWORD(0)
+        if self.advapi32.GetTokenInformation(
+            token,
+            _TOKEN_DEFAULT_DACL_CLASS,
+            None,
+            0,
+            ctypes.byref(size),
+        ):
+            raise _Win32Error("GetTokenInformation", 0)
+        error = ctypes.get_last_error()
+        if error != _ERROR_INSUFFICIENT_BUFFER:
+            raise _Win32Error("GetTokenInformation", error)
+        buffer = ctypes.create_string_buffer(size.value)
+        if not self.advapi32.GetTokenInformation(
+            token,
+            _TOKEN_DEFAULT_DACL_CLASS,
+            buffer,
+            size,
+            ctypes.byref(size),
+        ):
+            raise _last_error("GetTokenInformation")
+        return (
+            ctypes.cast(buffer, ctypes.POINTER(_TokenDefaultDacl)).contents.DefaultDacl,
+            buffer,
+        )
+
+    def _token_user_sid(
+        self,
+        token: wintypes.HANDLE,
+    ) -> tuple[wintypes.LPVOID, ctypes.Array[ctypes.c_char]]:
+        size = wintypes.DWORD(0)
+        if self.advapi32.GetTokenInformation(
+            token,
+            _TOKEN_USER_CLASS,
+            None,
+            0,
+            ctypes.byref(size),
+        ):
+            raise _Win32Error("GetTokenInformation", 0)
+        error = ctypes.get_last_error()
+        if error != _ERROR_INSUFFICIENT_BUFFER:
+            raise _Win32Error("GetTokenInformation", error)
+        buffer = ctypes.create_string_buffer(size.value)
+        if not self.advapi32.GetTokenInformation(
+            token,
+            _TOKEN_USER_CLASS,
+            buffer,
+            size,
+            ctypes.byref(size),
+        ):
+            raise _last_error("GetTokenInformation")
+        return (
+            ctypes.cast(buffer, ctypes.POINTER(_TokenUser)).contents.User.Sid,
+            buffer,
+        )
 
     def create_appcontainer_attribute_list(
         self,

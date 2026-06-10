@@ -52,6 +52,26 @@ def build_icacls_traverse_argv(path: Path, appcontainer_sid: str) -> tuple[str, 
     )
 
 
+def _ancestor_traverse_paths(path: Path) -> tuple[Path, ...]:
+    parent = path.expanduser().resolve(strict=False).parent
+    candidates = (*reversed(parent.parents), parent)
+    paths: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate).casefold()
+        if key in seen:
+            continue
+        try:
+            exists = candidate.exists()
+        except OSError:
+            exists = False
+        if not exists:
+            continue
+        paths.append(candidate)
+        seen.add(key)
+    return tuple(paths)
+
+
 async def grant_path_to_appcontainer(
     path: Path,
     appcontainer_sid: str,
@@ -61,8 +81,8 @@ async def grant_path_to_appcontainer(
     if sys.platform != "win32":
         raise SandboxBackendError("Windows ACL grants require native Windows")
 
-    if path.exists():
-        await _run_icacls(build_icacls_traverse_argv(path.parent, appcontainer_sid), path.parent)
+    for ancestor in _ancestor_traverse_paths(path):
+        await _run_icacls(build_icacls_traverse_argv(ancestor, appcontainer_sid), ancestor)
     argv = build_icacls_grant_argv(path, appcontainer_sid, mode=mode)
     await _run_icacls(argv, path)
 

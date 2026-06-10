@@ -31,6 +31,9 @@ class WindowsAppContainerBackend(Backend):
     def available(self) -> bool:
         return probe_windows_sandbox_support().appcontainer_available
 
+    def prepare_identity(self, session_id: str) -> Any:
+        return prepare_appcontainer_identity(session_id)
+
     async def run(self, request: SandboxRequest) -> SandboxResult:
         if not self.available():
             raise SandboxBackendError(
@@ -39,7 +42,7 @@ class WindowsAppContainerBackend(Backend):
             )
 
         session_id = str(getattr(request, "session_id", "") or "default")
-        identity = prepare_appcontainer_identity(session_id)
+        identity = self.prepare_identity(session_id)
         payload = _payload_for_request(request, session_id=session_id, identity=identity)
         helper_argv = (
             sys.executable,

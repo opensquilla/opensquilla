@@ -270,6 +270,74 @@ async def test_shell_unknown_explicit_url_queues_network_approval_before_proxy_r
 
 
 @pytest.mark.asyncio
+async def test_windows_proxy_allowlist_runtime_enters_network_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.sandbox import integration as integration_mod
+    from opensquilla.sandbox.types import (
+        NetworkMode,
+        NetworkProxySpec,
+        ResourceLimits,
+        SandboxPolicy,
+        SandboxRequest,
+        SecurityLevel,
+    )
+
+    events = []
+
+    async def fake_prepare_boundary(request, runtime):
+        events.append(("prepare", request.policy.network_proxy.port))
+        return "ctx"
+
+    async def fake_cleanup_boundary(ctx):
+        events.append(("cleanup", ctx))
+
+    class Backend:
+        name = "windows_appcontainer"
+
+        async def run(self, request):
+            events.append(("run", request.policy.network_proxy.port))
+            return SimpleNamespace(returncode=0, stdout="ok", stderr="", backend_notes=())
+
+    policy = SandboxPolicy(
+        level=SecurityLevel.STANDARD,
+        network=NetworkMode.PROXY_ALLOWLIST,
+        network_proxy=NetworkProxySpec(host="127.0.0.1", port=48123),
+        mounts=(),
+        workspace_rw=True,
+        tmp_writable=True,
+        limits=ResourceLimits(wall_timeout_s=30),
+        env_allowlist=("PATH",),
+        require_approval=False,
+    )
+    request = SandboxRequest(
+        argv=("python", "-m", "pip", "install", "humanize"),
+        cwd=tmp_path,
+        action_kind="shell.exec",
+        policy=policy,
+        env={"PATH": "x"},
+    )
+    runtime = SimpleNamespace(backend=Backend())
+
+    monkeypatch.setattr(
+        integration_mod,
+        "_prepare_platform_network_boundary",
+        fake_prepare_boundary,
+    )
+    monkeypatch.setattr(
+        integration_mod,
+        "_cleanup_platform_network_boundary",
+        fake_cleanup_boundary,
+    )
+
+    result = await integration_mod.run_under_backend(request, runtime=runtime)
+
+    assert result.stdout == "ok"
+    assert events == [("prepare", 48123), ("run", 48123), ("cleanup", "ctx")]
+
+
+@pytest.mark.asyncio
 async def test_shell_package_install_queues_bundle_approval_before_proxy_run(
     managed_runtime: Path,
     monkeypatch: pytest.MonkeyPatch,

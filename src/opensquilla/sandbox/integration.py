@@ -614,7 +614,7 @@ async def run_under_backend(
         request,
         backend_name=_backend_name(rt),
     )
-    return await rt.backend.run(request)
+    return await _run_backend_with_platform_network_boundary(request, rt)
 
 
 async def _noop_managed_network_cleanup() -> None:
@@ -720,9 +720,50 @@ async def _run_with_managed_network_proxy(
 ) -> SandboxResult:
     managed = await prepare_subprocess_managed_network_proxy(request, runtime=runtime)
     try:
-        return await runtime.backend.run(managed.request)
+        return await _run_backend_with_platform_network_boundary(managed.request, runtime)
     finally:
         await managed.cleanup()
+
+
+async def _run_backend_with_platform_network_boundary(
+    request: SandboxRequest,
+    runtime: SandboxRuntime,
+) -> SandboxResult:
+    boundary_context = await _prepare_platform_network_boundary(request, runtime)
+    try:
+        return await runtime.backend.run(request)
+    finally:
+        await _cleanup_platform_network_boundary(boundary_context)
+
+
+async def _prepare_platform_network_boundary(
+    request: SandboxRequest,
+    runtime: SandboxRuntime,
+) -> object | None:
+    if request.policy.network != NetworkMode.PROXY_ALLOWLIST:
+        return None
+    if request.policy.network_proxy is None:
+        return None
+    backend_name = _backend_name(runtime).lower()
+    if not backend_name.startswith("windows_appcontainer"):
+        return None
+    backend = getattr(runtime, "backend", None)
+    prepare_identity = getattr(backend, "prepare_identity", None)
+    if not callable(prepare_identity):
+        raise SandboxBackendError("Windows AppContainer backend cannot prepare identity")
+    identity = prepare_identity(_resolve_session_id(runtime, None))
+
+    from opensquilla.sandbox.backend.windows_network_boundary import WindowsNetworkBoundary
+
+    boundary = WindowsNetworkBoundary.from_config(getattr(runtime, "settings", None))
+    return (boundary, await boundary.prepare(request, identity=identity))
+
+
+async def _cleanup_platform_network_boundary(context: object | None) -> None:
+    if context is None:
+        return
+    boundary, boundary_context = context
+    await boundary.cleanup(boundary_context)
 
 
 async def prepare_subprocess_managed_network_proxy(

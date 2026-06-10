@@ -37,7 +37,7 @@ _RUN_MODE_ALIASES = {
 }
 
 
-def normalize_run_mode(value: Any, default: RunMode = RunMode.TRUSTED) -> RunMode:
+def normalize_run_mode(value: Any, default: RunMode = RunMode.FULL) -> RunMode:
     if isinstance(value, RunMode):
         return value
     if value is None or str(value).strip() == "":
@@ -116,6 +116,11 @@ def config_run_mode(config: Any) -> RunMode:
     if permission_mode == "full":
         return RunMode.FULL
     if _field_was_set(sandbox, "sandbox") and not bool(getattr(sandbox, "sandbox", False)):
+        return RunMode.FULL
+    if not _field_was_set(sandbox, "sandbox") and not _field_was_set(
+        sandbox,
+        "security_grading",
+    ):
         return RunMode.FULL
 
     return legacy_state_to_run_mode(

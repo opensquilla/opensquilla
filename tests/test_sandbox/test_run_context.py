@@ -42,6 +42,28 @@ class _SessionManager:
 
 
 @pytest.mark.asyncio
+async def test_default_run_context_is_full_host_access() -> None:
+    from opensquilla.sandbox.config import SandboxSettings
+    from opensquilla.sandbox.run_context import get_run_context
+
+    manager = _SessionManager()
+    config = SimpleNamespace(
+        sandbox=SandboxSettings(),
+        permissions=SimpleNamespace(default_mode="off"),
+    )
+
+    context = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=config,
+        workspace="/workspace",
+    )
+
+    assert context.run_mode is RunMode.FULL
+    assert context.source == "default"
+
+
+@pytest.mark.asyncio
 async def test_run_context_initializes_from_global_default_and_persists_override() -> None:
     from opensquilla.sandbox.run_context import get_run_context, set_run_mode
 

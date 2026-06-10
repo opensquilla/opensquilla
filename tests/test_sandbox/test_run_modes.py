@@ -34,6 +34,13 @@ def test_full_host_access_is_the_only_global_host_target() -> None:
     assert execution_target(RunMode.FULL) == "host"
 
 
+def test_normalize_run_mode_defaults_to_full() -> None:
+    assert normalize_run_mode(None) == RunMode.FULL
+    assert normalize_run_mode("") == RunMode.FULL
+    assert normalize_run_mode("trusted") == RunMode.TRUSTED
+    assert normalize_run_mode("standard") == RunMode.STANDARD
+
+
 def test_legacy_bypass_state_maps_to_trusted_without_preserving_host_bypass() -> None:
     mode = legacy_state_to_run_mode(
         sandbox_enabled=False,
@@ -44,7 +51,7 @@ def test_legacy_bypass_state_maps_to_trusted_without_preserving_host_bypass() ->
     assert mode == RunMode.TRUSTED
 
 
-def test_default_sandbox_settings_resolve_to_trusted_sandbox() -> None:
+def test_default_sandbox_settings_resolve_to_full_host_access_run_mode() -> None:
     settings = SandboxSettings()
     config = types.SimpleNamespace(
         sandbox=settings,
@@ -55,7 +62,7 @@ def test_default_sandbox_settings_resolve_to_trusted_sandbox() -> None:
 
     assert effective.sandbox_enabled is True
     assert effective.grading_enabled is True
-    assert config_run_mode(config) == RunMode.TRUSTED
+    assert config_run_mode(config) == RunMode.FULL
 
 
 def test_legacy_off_state_maps_to_trusted_sandbox_default() -> None:

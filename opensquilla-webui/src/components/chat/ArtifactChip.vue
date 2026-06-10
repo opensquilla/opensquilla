@@ -42,17 +42,17 @@ defineEmits<{
   gap: 0.875rem;
   width: 100%;
   padding: 0.75rem;
-  border: 1px solid rgba(31, 35, 40, 0.08);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--bg-surface);
   cursor: pointer;
   text-align: left;
   transition: border-color 0.14s ease, box-shadow 0.14s ease, transform 0.14s ease;
 }
 
 .msg-artifact-chip:hover {
-  border-color: rgba(31, 35, 40, 0.18);
-  box-shadow: 0 3px 10px rgba(31, 35, 40, 0.08);
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-md);
   transform: translateY(-1px);
 }
 
@@ -63,18 +63,18 @@ defineEmits<{
   width: 3rem;
   height: 3rem;
   border-radius: 8px;
-  color: #315f68;
-  background: #f2f8f7;
+  color: var(--info);
+  background: color-mix(in srgb, var(--info) 10%, var(--bg-surface));
 }
 
 .msg-artifact-icon[data-kind="data"] {
-  color: #5d552f;
-  background: #faf7ec;
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, var(--bg-surface));
 }
 
 .msg-artifact-icon[data-kind="code"] {
-  color: #70452b;
-  background: #fbf4ef;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-surface));
 }
 
 .msg-artifact-info {
@@ -85,7 +85,7 @@ defineEmits<{
 }
 
 .msg-artifact-name {
-  color: #202722;
+  color: var(--text);
   font-size: 0.9375rem;
   font-weight: 500;
   line-height: 1.35;
@@ -95,7 +95,7 @@ defineEmits<{
 }
 
 .msg-artifact-meta {
-  color: #8a9189;
+  color: var(--text-dim);
   font-size: 0.8125rem;
   line-height: 1.35;
   overflow: hidden;
@@ -111,8 +111,8 @@ defineEmits<{
   min-height: 2.125rem;
   padding: 0 0.875rem;
   border-radius: 999px;
-  background: #f6f7f4;
-  color: #262b27;
+  background: var(--bg-elevated);
+  color: var(--text);
   font-size: 0.8125rem;
   font-weight: 500;
   white-space: nowrap;
@@ -120,8 +120,8 @@ defineEmits<{
 }
 
 .msg-artifact-chip:hover .msg-artifact-action {
-  background: #202722;
-  color: #fff;
+  background: var(--accent);
+  color: var(--accent-foreground);
 }
 
 @media (max-width: 640px) {

@@ -109,12 +109,12 @@ function onMessageClick(event: MouseEvent) {
 }
 
 .msg-user--share-mode:hover {
-  background: rgba(184, 68, 4, 0.045);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
 }
 
 .msg-user--share-selected {
-  background: rgba(184, 68, 4, 0.07);
-  box-shadow: inset 0 0 0 1px rgba(184, 68, 4, 0.16);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
 .chat-share-picker {
@@ -127,30 +127,30 @@ function onMessageClick(event: MouseEvent) {
   justify-content: center;
   width: 1.45rem;
   height: 1.45rem;
-  border: 1px solid rgba(32, 39, 34, 0.14);
+  border: 1px solid var(--border-strong);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.94);
-  color: #6b716a;
-  box-shadow: 0 6px 18px rgba(31, 35, 40, 0.08);
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  box-shadow: var(--shadow-md);
   cursor: pointer;
   transition: transform 0.14s ease, border-color 0.14s ease, color 0.14s ease;
 }
 
 .chat-share-picker:hover {
   transform: translateY(-1px);
-  border-color: rgba(184, 68, 4, 0.35);
-  color: #b84404;
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--accent);
 }
 
 .chat-share-picker.is-selected {
-  border-color: rgba(184, 68, 4, 0.45);
-  background: #b84404;
-  color: #fff;
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: var(--accent);
+  color: var(--accent-foreground);
 }
 
 .msg-user-bubble {
-  background: #f4f4f5;
-  color: #18181b;
+  background: var(--bg-elevated);
+  color: var(--text);
   padding: 0.5rem 0.875rem;
   border-radius: 1rem;
   font-size: 0.875rem;
@@ -180,14 +180,14 @@ function onMessageClick(event: MouseEvent) {
   background: none;
   border: none;
   cursor: pointer;
-  color: #c4c4c4;
+  color: var(--text-dim);
   border-radius: 3px;
   font-size: 0.6875rem;
 }
 
 .msg-action:hover {
-  color: #a1a1aa;
-  background: #f4f4f5;
+  color: var(--text-muted);
+  background: var(--bg-hover);
 }
 
 .msg-action.msg-action--ok,
@@ -228,7 +228,7 @@ function onMessageClick(event: MouseEvent) {
   align-items: center;
   justify-content: center;
   padding: 0.125rem 0.375rem;
-  background: var(--bg-secondary, #f5f5f5);
+  background: var(--bg-hover);
   border-radius: 0.25rem;
   font-size: 0.6875rem;
   font-weight: 600;
@@ -241,7 +241,7 @@ function onMessageClick(event: MouseEvent) {
 
 .msg-file-chip__meta {
   font-size: 0.8125rem;
-  color: var(--text-muted, #999);
+  color: var(--text-dim);
 }
 
 @media (max-width: 640px) {

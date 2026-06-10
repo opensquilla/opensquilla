@@ -95,7 +95,7 @@ defineEmits<{
 .msg-ai-text {
   font-size: 0.875rem;
   line-height: 1.6;
-  color: #27272a;
+  color: var(--text);
   word-break: break-word;
   margin-bottom: 0.5rem;
 }
@@ -105,16 +105,16 @@ defineEmits<{
 .msg-ai-text :deep(ul), .msg-ai-text :deep(ol) { margin: 0.375rem 0; padding-left: 1.25rem; }
 .msg-ai-text :deep(li) { margin: 0.125rem 0; }
 .msg-ai-text :deep(code) {
-  background: #f4f4f5;
+  background: var(--bg-hover);
   padding: 0.0625rem 0.25rem;
   border-radius: 3px;
   font-family: var(--font-mono);
   font-size: 0.8125rem;
-  color: #52525b;
+  color: var(--text-muted);
 }
 .msg-ai-text :deep(pre) {
-  background: #fafafa;
-  border: 1px solid #e4e4e7;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0.625rem;
   overflow-x: auto;
@@ -126,15 +126,13 @@ defineEmits<{
 }
 
 .step-card {
-  background: #fff;
-  border: 1px solid rgba(31, 35, 40, 0.08);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 0.25rem;
   overflow: hidden;
   margin: 0.625rem 0;
-  box-shadow:
-    0 1px 1px rgba(31, 35, 40, 0.025),
-    0 8px 18px rgba(31, 35, 40, 0.032);
+  box-shadow: var(--shadow-xs);
 }
 
 .step-group {
@@ -173,22 +171,22 @@ defineEmits<{
 
 .step-group-header:hover,
 .step-subitem:hover {
-  background: #f7f8f6;
+  background: var(--bg-hover);
 }
 
 .step-group.is-open > .step-group-header,
 .step-subitem.is-open {
-  background: #fafbf9;
+  background: var(--bg-elevated);
 }
 
 .step-group--running > .step-group-header,
 .step-item--running {
-  background: rgba(184, 68, 4, 0.045);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
 }
 
 .step-group--running .step-icon,
 .step-item--running .step-icon {
-  color: #b84404;
+  color: var(--accent);
 }
 
 .step-group--error .step-title,
@@ -196,7 +194,7 @@ defineEmits<{
 .step-item--error .step-title,
 .step-item--error .step-subtitle,
 .step-item--error .step-status {
-  color: #c2410c;
+  color: var(--danger);
 }
 
 .step-group-members {
@@ -210,7 +208,7 @@ defineEmits<{
   width: calc(100% - 1.25rem);
   height: 1px;
   margin: 0 0 0.125rem 1.25rem;
-  background: rgba(31, 35, 40, 0.045);
+  background: var(--hairline);
 }
 
 .step-icon {
@@ -220,7 +218,7 @@ defineEmits<{
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  color: #6b716b;
+  color: var(--text-muted);
 }
 
 .step-body {
@@ -238,7 +236,7 @@ defineEmits<{
 .step-title {
   font-size: 0.8125rem;
   font-weight: 500;
-  color: #272a27;
+  color: var(--text);
   line-height: 1.4;
   flex-shrink: 0;
 }
@@ -249,14 +247,14 @@ defineEmits<{
   line-height: 1.3;
   padding: 0.0625rem 0.375rem;
   border-radius: 999px;
-  color: #71766f;
-  background: rgba(31, 35, 40, 0.055);
+  color: var(--text-muted);
+  background: var(--bg-hover);
 }
 
 .step-subtitle {
   font-size: 0.765625rem;
   font-weight: 500;
-  color: #4b514a;
+  color: var(--text-muted);
   line-height: 1.4;
   flex-shrink: 0;
   max-width: 14rem;
@@ -267,7 +265,7 @@ defineEmits<{
 
 .step-secondary {
   min-width: 0;
-  color: #90958f;
+  color: var(--text-dim);
   font-size: 0.8125rem;
   line-height: 1.4;
   overflow: hidden;
@@ -278,12 +276,12 @@ defineEmits<{
 .step-detail {
   margin-top: 0.5rem;
   padding: 0.5rem 0.625rem;
-  background: #f8f9f7;
-  border: 1px solid rgba(31, 35, 40, 0.06);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
   border-radius: 6px;
   font-family: var(--font-mono);
   font-size: 0.6875rem;
-  color: #676d66;
+  color: var(--text-muted);
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 100px;
@@ -293,20 +291,20 @@ defineEmits<{
 .step-result {
   margin-top: 0.5rem;
   padding: 0.5rem 0.625rem;
-  background: #f8f9f7;
-  border: 1px solid rgba(31, 35, 40, 0.06);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
   border-radius: 6px;
 }
 
 .step-result--error {
-  background: #fff7ed;
-  border-color: #fed7aa;
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-surface));
+  border-color: color-mix(in srgb, var(--danger) 30%, var(--border));
 }
 
 .step-result-pre {
   font-family: var(--font-mono);
   font-size: 0.6875rem;
-  color: #27272a;
+  color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 100px;
@@ -318,7 +316,7 @@ defineEmits<{
   margin-top: 0.25rem;
   padding: 0.125rem 0.375rem;
   font-size: 0.6875rem;
-  color: #b84404;
+  color: var(--accent);
   background: transparent;
   border: none;
   cursor: pointer;
@@ -333,12 +331,12 @@ defineEmits<{
   align-items: center;
   gap: 0.375rem;
   flex-shrink: 0;
-  color: #a4aaa3;
+  color: var(--text-dim);
 }
 
 .step-status {
   font-size: 0.8125rem;
-  color: #9ca29b;
+  color: var(--text-dim);
   white-space: nowrap;
 }
 

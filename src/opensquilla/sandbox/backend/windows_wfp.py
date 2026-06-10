@@ -127,6 +127,14 @@ def uninstall_wfp_policy() -> None:
     _uninstall_wfp_policy_native()
 
 
+def remove_wfp_filters(filter_ids: tuple[object, ...] | list[object]) -> None:
+    """Remove previously installed WFP filters by id."""
+    _require_native_windows()
+    engine = _open_wfp_engine()
+    for filter_id in reversed(tuple(filter_ids)):
+        engine.delete_filter(filter_id)
+
+
 def _provider_installed() -> bool:
     """Return True only when native query proves the WFP provider exists."""
     return False
@@ -208,6 +216,7 @@ __all__ = [
     "build_broker_only_filter_specs",
     "install_wfp_policy",
     "managed_network_proxy_smoke_check",
+    "remove_wfp_filters",
     "uninstall_wfp_policy",
     "wfp_smoke_check",
 ]

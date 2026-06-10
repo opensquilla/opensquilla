@@ -6,9 +6,11 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
+from opensquilla.sandbox.backend import windows_wfp
 from opensquilla.sandbox.setup_state import SandboxSetupState, SetupResult
 
 Transport = Callable[[dict[str, object]], Awaitable[dict[str, object]]]
+_POLICIES: dict[str, tuple[object, ...]] = {}
 
 
 def _validate_run_id(value: str) -> str:
@@ -124,4 +126,38 @@ class WindowsSandboxServiceClient:
     async def remove_policy(self, run_id: str) -> dict[str, object]:
         return await self._request({"op": "remove_policy", "run_id": _validate_run_id(run_id)})
 
-__all__ = ["InstallPolicyRequest", "Transport", "WindowsSandboxServiceClient"]
+
+async def dispatch_service_request(payload: dict[str, object]) -> dict[str, object]:
+    op = str(payload.get("op") or "")
+    if op == "health":
+        return {"status": "ok"}
+    if op == "install_policy":
+        request = InstallPolicyRequest(
+            run_id=str(payload.get("run_id") or ""),
+            appcontainer_sid=str(payload.get("appcontainer_sid") or ""),
+            proxy_host=str(payload.get("proxy_host") or ""),
+            proxy_port=int(payload.get("proxy_port") or 0),
+            ttl_seconds=int(payload.get("ttl_seconds") or 0),
+        )
+        filter_ids = windows_wfp.install_wfp_policy(
+            run_id=request.run_id,
+            appcontainer_sid=request.appcontainer_sid,
+            broker_host=request.proxy_host,
+            broker_port=request.proxy_port,
+        )
+        _POLICIES[request.run_id] = tuple(filter_ids)
+        return {"status": "ok", "filter_ids": list(filter_ids)}
+    if op == "remove_policy":
+        run_id = _validate_run_id(str(payload.get("run_id") or ""))
+        filter_ids = _POLICIES.pop(run_id, ())
+        windows_wfp.remove_wfp_filters(filter_ids)
+        return {"status": "ok", "removed": len(filter_ids)}
+    raise ValueError(f"unknown operation: {op}")
+
+
+__all__ = [
+    "InstallPolicyRequest",
+    "Transport",
+    "WindowsSandboxServiceClient",
+    "dispatch_service_request",
+]

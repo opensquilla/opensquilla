@@ -1566,6 +1566,43 @@
 }
 .chat-pending-chip-remove:hover { color: var(--danger); }
 
+.chat-sandbox-setup-banner {
+  width: min(calc(100% - var(--sp-8)), var(--chat-measure));
+  margin: 0 auto var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg-surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--border));
+  border-radius: var(--radius-md);
+  box-sizing: border-box;
+}
+.chat-sandbox-setup-banner.hidden { display: none; }
+
+.chat-sandbox-setup-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  line-height: 1.35;
+}
+.chat-sandbox-setup-copy span {
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.chat-sandbox-setup-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  flex-shrink: 0;
+}
+
 .chat-context-separator {
   --separator-tone: var(--accent);
   width: min(820px, 100%);

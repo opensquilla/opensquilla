@@ -8,6 +8,28 @@ SAVINGS_FX_JS = Path("src/opensquilla/gateway/static/js/components/savings-fx.js
 TASK_RUNTIME_PY = Path("src/opensquilla/gateway/task_runtime.py")
 
 
+def test_chat_view_defaults_to_full_host_access() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "const _RUN_MODE_DEFAULT = 'full';" in source
+
+
+def test_chat_view_has_sandbox_setup_banner() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert 'id="chat-sandbox-setup-banner"' in source
+    assert "sandbox.setup.status" in source
+    assert "sandbox.setup.ensure" in source
+
+
+def test_chat_sandbox_setup_banner_has_dedicated_styles() -> None:
+    css = CHAT_CSS.read_text(encoding="utf-8")
+
+    assert ".chat-sandbox-setup-banner {" in css
+    assert ".chat-sandbox-setup-copy {" in css
+    assert ".chat-sandbox-setup-actions {" in css
+
+
 def test_global_topbar_does_not_render_duplicate_chat_title() -> None:
     source = APP_JS.read_text(encoding="utf-8")
     topbar_start = source.index('<header class="topbar"')

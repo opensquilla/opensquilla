@@ -40,6 +40,8 @@ class _HelperPayload:
     env: dict[str, str]
     policy: dict[str, Any]
     session_id: str
+    appcontainer_profile_name: str | None
+    appcontainer_sid: str | None
     timeout: float
 
 
@@ -100,6 +102,21 @@ def _parse_payload(args: Sequence[str]) -> _HelperPayload:
             "invalid windows_appcontainer payload: session_id must be a non-empty string"
         )
 
+    profile_name = raw.get("appcontainer_profile_name")
+    if profile_name is not None and (not isinstance(profile_name, str) or not profile_name):
+        raise SystemExit(
+            "invalid windows_appcontainer payload: appcontainer_profile_name "
+            "must be a non-empty string"
+        )
+
+    appcontainer_sid = raw.get("appcontainer_sid")
+    if appcontainer_sid is not None and (
+        not isinstance(appcontainer_sid, str) or not appcontainer_sid
+    ):
+        raise SystemExit(
+            "invalid windows_appcontainer payload: appcontainer_sid must be a non-empty string"
+        )
+
     timeout = raw.get("timeout")
     if not isinstance(timeout, int | float) or timeout <= 0:
         raise SystemExit("invalid windows_appcontainer payload: timeout must be positive")
@@ -110,6 +127,8 @@ def _parse_payload(args: Sequence[str]) -> _HelperPayload:
         env=dict(env_raw),
         policy=policy,
         session_id=session_id,
+        appcontainer_profile_name=profile_name,
+        appcontainer_sid=appcontainer_sid,
         timeout=float(timeout),
     )
 
@@ -164,8 +183,10 @@ def _require_declared_enforcement(policy: dict[str, Any]) -> None:
 
 
 def _run_appcontainer(payload: _HelperPayload) -> None:
-    profile_name = appcontainer_profile_name(payload.session_id)
-    appcontainer_sid = ensure_appcontainer_profile(profile_name)
+    profile_name = payload.appcontainer_profile_name or appcontainer_profile_name(
+        payload.session_id
+    )
+    appcontainer_sid = payload.appcontainer_sid or ensure_appcontainer_profile(profile_name)
     asyncio.run(_grant_policy_paths(payload, appcontainer_sid))
     result = asyncio.run(
         launch_appcontainer_process(

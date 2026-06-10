@@ -76,6 +76,12 @@ class AppContainerLaunchResult:
     stderr: bytes
 
 
+@dataclass(frozen=True)
+class AppContainerIdentity:
+    profile_name: str
+    appcontainer_sid: str
+
+
 class _Win32Error(SandboxBackendError):
     def __init__(self, function: str, code: int) -> None:
         self.function = function
@@ -211,6 +217,15 @@ def appcontainer_profile_name(session_id: str) -> str:
     if not safe:
         safe = "default"
     return f"{_PROFILE_PREFIX}{safe}"[:_PROFILE_MAX_LENGTH].rstrip("-")
+
+
+def prepare_appcontainer_identity(session_id: str) -> AppContainerIdentity:
+    profile_name = appcontainer_profile_name(session_id)
+    appcontainer_sid = ensure_appcontainer_profile(profile_name)
+    return AppContainerIdentity(
+        profile_name=profile_name,
+        appcontainer_sid=appcontainer_sid,
+    )
 
 
 def ensure_appcontainer_profile(profile_name: str) -> str:
@@ -1098,10 +1113,12 @@ def restricted_token_smoke_check() -> bool:
 
 
 __all__ = [
+    "AppContainerIdentity",
     "AppContainerLaunchResult",
     "appcontainer_profile_name",
     "appcontainer_smoke_check",
     "ensure_appcontainer_profile",
     "launch_appcontainer_process",
+    "prepare_appcontainer_identity",
     "restricted_token_smoke_check",
 ]

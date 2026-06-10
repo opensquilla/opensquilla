@@ -15,6 +15,7 @@ import time
 from typing import Any
 
 from opensquilla.sandbox.backend.base import Backend
+from opensquilla.sandbox.backend.windows_primitives import prepare_appcontainer_identity
 from opensquilla.sandbox.backend.windows_support import probe_windows_sandbox_support
 from opensquilla.sandbox.types import SandboxBackendError, SandboxRequest, SandboxResult
 
@@ -37,7 +38,9 @@ class WindowsAppContainerBackend(Backend):
                 "plus an enforced AppContainer process boundary"
             )
 
-        payload = _payload_for_request(request)
+        session_id = str(getattr(request, "session_id", "") or "default")
+        identity = prepare_appcontainer_identity(session_id)
+        payload = _payload_for_request(request, session_id=session_id, identity=identity)
         helper_argv = (
             sys.executable,
             "-m",
@@ -99,13 +102,20 @@ class WindowsAppContainerBackend(Backend):
         )
 
 
-def _payload_for_request(request: SandboxRequest) -> dict[str, Any]:
+def _payload_for_request(
+    request: SandboxRequest,
+    *,
+    session_id: str | None = None,
+    identity: Any | None = None,
+) -> dict[str, Any]:
     return {
         "argv": list(request.argv),
         "cwd": str(request.cwd),
         "env": _allowed_env(request),
         "policy": request.policy.summary(),
-        "session_id": str(getattr(request, "session_id", "") or "default"),
+        "session_id": session_id or str(getattr(request, "session_id", "") or "default"),
+        "appcontainer_profile_name": str(getattr(identity, "profile_name", "") or ""),
+        "appcontainer_sid": str(getattr(identity, "appcontainer_sid", "") or ""),
         "timeout": request.policy.limits.wall_timeout_s,
     }
 

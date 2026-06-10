@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,60 @@ def test_install_policy_request_rejects_non_appcontainer_sid() -> None:
             proxy_port=48123,
             ttl_seconds=60,
         )
+
+
+def test_new_broker_state_defaults_to_localhost_tcp(tmp_path: Path) -> None:
+    from opensquilla.sandbox.windows_service_ipc import new_broker_state
+
+    state = new_broker_state(base_dir=tmp_path)
+
+    assert state.ipc_kind == "tcp"
+    assert state.broker_host == "127.0.0.1"
+    assert 1 <= state.broker_port <= 65535
+    assert state.to_json()["ipc_kind"] == "tcp"
+    assert state.to_json()["broker_host"] == "127.0.0.1"
+    assert isinstance(state.to_json()["broker_port"], int)
+
+
+def test_request_sync_supports_localhost_tcp_ipc(tmp_path: Path) -> None:
+    from multiprocessing.connection import Listener
+
+    from opensquilla.sandbox.windows_service_ipc import (
+        BrokerConnectionState,
+        request_sync,
+    )
+
+    authkey_hex = "01" * 32
+    listener = Listener(("127.0.0.1", 0), family="AF_INET", authkey=bytes.fromhex(authkey_hex))
+    host, port = listener.address
+
+    def serve_once() -> None:
+        conn = listener.accept()
+        try:
+            assert conn.recv() == {"op": "health"}
+            conn.send({"status": "ok", "admin": True})
+        finally:
+            conn.close()
+            listener.close()
+
+    thread = threading.Thread(target=serve_once)
+    thread.start()
+    try:
+        response = request_sync(
+            BrokerConnectionState(
+                pipe_name=r"\\.\pipe\unused",
+                authkey_hex=authkey_hex,
+                state_file=tmp_path / "state.json",
+                ipc_kind="tcp",
+                broker_host=host,
+                broker_port=port,
+            ),
+            {"op": "health"},
+        )
+    finally:
+        thread.join(timeout=5)
+
+    assert response == {"status": "ok", "admin": True}
 
 
 def test_install_policy_request_rejects_non_loopback_proxy() -> None:
@@ -131,6 +186,9 @@ async def test_ensure_setup_launches_broker_when_not_reachable(tmp_path: Path) -
     assert result.state is SandboxSetupState.READY
     assert launched
     assert launched[0].pipe_name == r"\\.\pipe\opensquilla-test-service"
+    assert launched[0].ipc_kind == "tcp"
+    assert launched[0].broker_host == "127.0.0.1"
+    assert 1 <= launched[0].broker_port <= 65535
     assert (tmp_path / "windows-sandbox-service.json").exists()
 
 

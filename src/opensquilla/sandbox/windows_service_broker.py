@@ -267,8 +267,21 @@ class WindowsSandboxBroker:
 def run_named_pipe_server(*, pipe_name: str, authkey: bytes) -> None:
     from multiprocessing.connection import Listener
 
-    broker = WindowsSandboxBroker()
     listener = Listener(pipe_name, family="AF_PIPE", authkey=authkey)
+    _serve_listener(listener)
+
+
+def run_tcp_server(*, host: str, port: int, authkey: bytes) -> None:
+    from multiprocessing.connection import Listener
+
+    if host != "127.0.0.1":
+        raise ValueError("Windows sandbox broker IPC must bind to 127.0.0.1")
+    listener = Listener((host, int(port)), family="AF_INET", authkey=authkey)
+    _serve_listener(listener)
+
+
+def _serve_listener(listener: object) -> None:
+    broker = WindowsSandboxBroker()
     try:
         while True:
             conn = listener.accept()
@@ -290,14 +303,22 @@ def run_named_pipe_server(*, pipe_name: str, authkey: bytes) -> None:
 
 def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="OpenSquilla Windows sandbox broker")
-    parser.add_argument("--pipe", required=True)
+    parser.add_argument("--pipe")
+    parser.add_argument("--host")
+    parser.add_argument("--port", type=int)
     parser.add_argument("--authkey", required=True)
     return parser.parse_args(list(argv))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
-    run_named_pipe_server(pipe_name=args.pipe, authkey=bytes.fromhex(args.authkey))
+    authkey = bytes.fromhex(args.authkey)
+    if args.host and args.port:
+        run_tcp_server(host=args.host, port=args.port, authkey=authkey)
+    elif args.pipe:
+        run_named_pipe_server(pipe_name=args.pipe, authkey=authkey)
+    else:
+        raise ValueError("Windows sandbox broker requires --host/--port or --pipe")
     return 0
 
 
@@ -310,4 +331,5 @@ __all__ = [
     "WindowsFirewallPolicyManager",
     "WindowsSandboxBroker",
     "run_named_pipe_server",
+    "run_tcp_server",
 ]

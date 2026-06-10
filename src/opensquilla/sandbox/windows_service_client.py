@@ -268,16 +268,20 @@ def _launch_elevated_broker(state: BrokerConnectionState) -> None:
     python_executable = Path(
         state.python_executable or str(resolve_broker_python_executable())
     )
-    params = subprocess.list2cmdline(
-        [
-            "-m",
-            "opensquilla.sandbox.windows_service_broker",
-            "--pipe",
-            state.pipe_name,
-            "--authkey",
-            state.authkey_hex,
-        ]
-    )
+    broker_args = ["-m", "opensquilla.sandbox.windows_service_broker"]
+    if state.ipc_kind == "tcp":
+        broker_args.extend(
+            [
+                "--host",
+                state.broker_host,
+                "--port",
+                str(state.broker_port),
+            ]
+        )
+    else:
+        broker_args.extend(["--pipe", state.pipe_name])
+    broker_args.extend(["--authkey", state.authkey_hex])
+    params = subprocess.list2cmdline(broker_args)
     try:
         import ctypes
 

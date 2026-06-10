@@ -8,7 +8,7 @@ export default defineConfig({
   workers: process.env.CI ? 1 : undefined,
   reporter: 'list',
   use: {
-    baseURL: 'http://127.0.0.1:18790',
+    baseURL: process.env.OPENSQUILLA_WEBUI_BASE_URL || 'http://127.0.0.1:18790',
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },

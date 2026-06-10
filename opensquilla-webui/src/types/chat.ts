@@ -19,10 +19,17 @@ export interface ChatPendingItem {
 }
 
 export interface ChatRouterCell {
-  kind: 'real' | 'decoy'
-  tier?: string
-  tiers?: string[]
+  kind: 'real'
+  tier: string
+  tiers: string[]
   displayName: string
+  model?: string
+}
+
+export interface ChatRouterTierConfig {
+  model: string
+  supportsImage: boolean
+  imageOnly: boolean
 }
 
 export interface ChatToolCall {
@@ -75,6 +82,7 @@ export type ChatRunStatusState =
   | 'idle'
   | 'queued'
   | 'running'
+  | 'approval_pending'
   | 'interrupted'
   | 'failed'
   | 'timeout'

@@ -8,7 +8,7 @@ export type IconName =
   | 'refresh' | 'download' | 'save' | 'menu' | 'user' | 'search'
   | 'edit' | 'info' | 'settings' | 'gear' | 'regenerate'
   | 'pencil' | 'chevronDown' | 'chevronRight' | 'arrowUp'
-  | 'panel-left-open' | 'panel-left-close' | 'clock'
+  | 'panel-left-open' | 'panel-left-close' | 'clock' | 'microphone'
   | 'cloud' | 'fileText' | 'fileCode' | 'image' | 'table';
 
 interface IconDef {
@@ -60,6 +60,7 @@ const ICONS: Record<IconName, IconDef> = {
   'panel-left-open':  { path: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M14 9l6 6-6 6"/>' },
   'panel-left-close': { path: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M20 9l-6 6 6 6"/>' },
   clock: { path: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>' },
+  microphone: { path: '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/><path d="M8 22h8"/>', strokeWidth: 1.7 },
   cloud: { path: '<path d="M17.5 19H8a6 6 0 1 1 1.03-11.91A7 7 0 0 1 22 12.5 4.5 4.5 0 0 1 17.5 19z"/>', strokeWidth: 1.5 },
   fileText: { path: '<path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7z"/><path d="M14 2v5h5"/><path d="M9 13h6"/><path d="M9 17h4"/>', strokeWidth: 1.5 },
   fileCode: { path: '<path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7z"/><path d="M14 2v5h5"/><path d="m10 13-2 2 2 2"/><path d="m14 13 2 2-2 2"/>', strokeWidth: 1.5 },

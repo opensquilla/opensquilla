@@ -4,6 +4,7 @@ import type {
   ChatMessageMeta,
   ChatRenderedMessage,
   ChatRouterCell,
+  ChatRouterTierConfig,
   ChatStreamTimelineItem,
   ChatTimelineSegment,
   ChatToolCall,
@@ -23,6 +24,11 @@ import {
   toolResultIsError,
   toolSecondaryText,
 } from '@/utils/chat/toolDisplay'
+import {
+  normalizeRouterTextTier,
+  normalizeRouterTier,
+  sortRouterTiers,
+} from '@/utils/chat/routerTiers'
 
 export interface NormalizedRouterDecision extends Record<string, unknown> {
   tier: string
@@ -43,13 +49,15 @@ export interface UseChatRenderedMessagesOptions {
   sessionKey: Ref<string>
   routerSlots: Ref<string[]>
   routerModels: Ref<Record<string, string>>
-  decoyPool: string[]
-  gridCells: number
+  routerTierConfigs: Ref<Record<string, ChatRouterTierConfig>>
+  routerVisualEffectsEnabled: Ref<boolean>
   renderMarkdown: (text: string) => string
   stripGeneratedArtifactMarkers: (text: string) => string
   stripTimePrefix: (text: string) => string
   isSubagentCompletionMessage: (role: string, text: string, options?: ChatMessage) => boolean
 }
+
+type ChatRouterRequestKind = 'text' | 'image'
 
 export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions) {
   const renderedMessages = computed((): ChatRenderedMessage[] => {
@@ -58,6 +66,7 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
     let prevRole = ''
     let turnRouterIdx = -1
     let turnIdx = 0
+    let turnRequestKind: ChatRouterRequestKind = 'text'
 
     for (let i = 0; i < options.messages.value.length; i++) {
       const msg = options.messages.value[i]
@@ -70,33 +79,22 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
 
       if (msg.role === 'user') {
         turnRouterIdx = -1
+        turnRequestKind = routerRequestKindFromAttachments(msg.attachments)
         turnIdx++
       }
 
       const routerDecision = normalizeRouterDecision(msg.routerDecision || (msg.provenanceKind === 'router_decision' ? msg : null))
       if (routerDecision) {
-        const stripItem = renderedRouterStrip(msg, routerDecision, turnIdx, i)
-        if (turnRouterIdx >= 0) {
-          stripItem.routerSettled = true
-          result[turnRouterIdx] = stripItem
-        } else {
-          result.push(stripItem)
-          turnRouterIdx = result.length - 1
-        }
+        const stripItem = renderedRouterStrip(msg, routerDecision, turnIdx, i, undefined, turnRequestKind)
+        if (stripItem) turnRouterIdx = upsertRouterStrip(result, stripItem, turnRouterIdx)
         prevRole = ''
         continue
       }
 
       const usageRouterDecision = routerDecisionFromUsage(msg)
       if (usageRouterDecision) {
-        const stripItem = renderedRouterStrip(msg, usageRouterDecision, turnIdx, i, `${msg.messageId || i}-router`)
-        if (turnRouterIdx >= 0) {
-          stripItem.routerSettled = true
-          result[turnRouterIdx] = stripItem
-        } else {
-          result.push(stripItem)
-          turnRouterIdx = result.length - 1
-        }
+        const stripItem = renderedRouterStrip(msg, usageRouterDecision, turnIdx, i, `${msg.messageId || i}-router`, turnRequestKind)
+        if (stripItem) turnRouterIdx = upsertRouterStrip(result, stripItem, turnRouterIdx)
         prevRole = ''
       }
 
@@ -138,8 +136,11 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
     turnIdx: number,
     index: number,
     messageId = msg.messageId,
-  ): ChatRenderedMessage {
-    const cells = routerDecisionCells(decision)
+    requestKind: ChatRouterRequestKind = 'text',
+  ): ChatRenderedMessage | null {
+    if (!options.routerVisualEffectsEnabled.value) return null
+    const cells = routerDecisionCellsForRequest(decision, requestKind)
+    if (cells.length <= 1) return null
     return {
       id: `router-turn-${turnIdx}`,
       role: 'router',
@@ -189,16 +190,25 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
   }
 
   function routerDecisionCells(decision: NormalizedRouterDecision): ChatRouterCell[] {
-    const winnerTier = String(decision.tier || '').toLowerCase()
-    const configuredTiers = options.routerSlots.value.length ? options.routerSlots.value.slice() : []
+    return routerDecisionCellsForRequest(decision, 'text')
+  }
+
+  function routerDecisionCellsForRequest(decision: NormalizedRouterDecision, requestKind: ChatRouterRequestKind): ChatRouterCell[] {
+    const winnerTier = normalizeRouterTier(decision.tier)
+    const configuredTiers = options.routerSlots.value.length
+      ? options.routerSlots.value.map(normalizeRouterTier).filter(Boolean)
+      : Object.keys(options.routerTierConfigs.value).map(normalizeRouterTier).filter(Boolean)
     if (winnerTier && !configuredTiers.includes(winnerTier)) configuredTiers.push(winnerTier)
-    const sourceTiers = configuredTiers.length ? configuredTiers : (winnerTier ? [winnerTier] : [])
+    const sourceTiers = sortRouterTiers(configuredTiers.length ? configuredTiers : (winnerTier ? [winnerTier] : []))
     const realByModel = new Map<string, ChatRouterCell>()
 
     for (const tier of sourceTiers) {
-      const model = options.routerModels.value[tier] || (tier === winnerTier ? String(decision.model || '') : '')
+      const tierConfig = routerTierConfig(tier)
+      if (tier !== winnerTier && !routerTierMatchesRequestKind(tierConfig, requestKind)) continue
+      const model = tierConfig.model || options.routerModels.value[tier] || (tier === winnerTier ? String(decision.model || '') : '')
       if (!model && tier !== winnerTier) continue
-      const key = model || `winner:${tier}`
+      const displayName = shortModelName(routerFxStripProvider(model)) || (tier === winnerTier ? 'selected model' : tier)
+      const key = displayName || model || `winner:${tier}`
       const existing = realByModel.get(key)
       if (existing) {
         existing.tiers = [...(existing.tiers || []), tier]
@@ -208,23 +218,27 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
         kind: 'real',
         tier,
         tiers: [tier],
-        displayName: shortModelName(routerFxStripProvider(model)) || 'selected model',
+        displayName,
+        model,
       })
     }
 
-    const realCells = Array.from(realByModel.values())
-    const realNames = new Set(realCells.map(cell => cell.displayName).filter(Boolean))
-    const decoys: ChatRouterCell[] = []
-    for (const name of options.decoyPool) {
-      if (realCells.length + decoys.length >= options.gridCells) break
-      if (realNames.has(name)) continue
-      decoys.push({ kind: 'decoy', displayName: name })
+    return Array.from(realByModel.values())
+      .sort((a, b) => (a.displayName || a.tier).localeCompare(b.displayName || b.tier))
+  }
+
+  function routerTierConfig(tier: string): ChatRouterTierConfig {
+    const normalized = normalizeRouterTier(tier)
+    return options.routerTierConfigs.value[normalized] || {
+      model: options.routerModels.value[normalized] || '',
+      supportsImage: false,
+      imageOnly: false,
     }
-    while (realCells.length + decoys.length < options.gridCells) {
-      decoys.push({ kind: 'decoy', displayName: '-' })
-    }
-    const seedKey = `${options.sessionKey.value}:${decision.tier || ''}:${decision.model || ''}:${decision.messageId || ''}`
-    return routerFxShuffle([...realCells, ...decoys], seedKey)
+  }
+
+  function routerTierMatchesRequestKind(tierConfig: ChatRouterTierConfig, requestKind: ChatRouterRequestKind): boolean {
+    if (requestKind === 'image') return tierConfig.supportsImage || tierConfig.imageOnly
+    return !tierConfig.imageOnly
   }
 
   function normalizeMessageTimeline(msg: ChatMessage, ownerKey: string): ChatStreamTimelineItem[] {
@@ -362,6 +376,26 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
   }
 }
 
+function upsertRouterStrip(
+  result: ChatRenderedMessage[],
+  stripItem: ChatRenderedMessage,
+  previousIndex: number,
+): number {
+  if (previousIndex >= 0) {
+    stripItem.routerSettled = true
+    result[previousIndex] = stripItem
+    return previousIndex
+  }
+  result.push(stripItem)
+  return result.length - 1
+}
+
+function routerRequestKindFromAttachments(attachments: ChatMessage['attachments']): ChatRouterRequestKind {
+  return attachments?.some(att => String(att.mime || '').toLowerCase().startsWith('image/'))
+    ? 'image'
+    : 'text'
+}
+
 export function relTime(ts: string | number | null): string {
   if (!ts) return ''
   const d = typeof ts === 'number' ? new Date(ts) : new Date(ts)
@@ -394,7 +428,8 @@ export function truncate(s: string, max = 200): string {
 export function normalizeRouterDecision(raw: unknown): NormalizedRouterDecision | null {
   if (!raw || typeof raw !== 'object') return null
   const source = raw as Record<string, unknown>
-  const tier = String(source.tier || source.routed_tier || '').trim()
+  const rawTier = String(source.tier || source.routed_tier || '').trim()
+  const tier = normalizeRouterTextTier(rawTier) || normalizeRouterTier(rawTier)
   if (!tier) return null
   return {
     ...source,
@@ -440,50 +475,12 @@ function routerFxStripProvider(name: string): string {
   return idx >= 0 ? raw.slice(idx + 1) : raw
 }
 
-function routerFxHashSeed(key: string): number {
-  let h = 0x811c9dc5
-  const s = String(key || '')
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i)
-    h = Math.imul(h, 0x01000193)
-  }
-  return h >>> 0
-}
-
-function routerFxMulberry32(seed: number): () => number {
-  let state = seed >>> 0
-  return () => {
-    state = (state + 0x6D2B79F5) >>> 0
-    let t = state
-    t = Math.imul(t ^ (t >>> 15), t | 1)
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-}
-
-function routerFxShuffle<T>(items: T[], seedKey: string): T[] {
-  const rng = routerFxMulberry32(routerFxHashSeed(seedKey))
-  const arr = items.slice()
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1))
-    ;[arr[i], arr[j]] = [arr[j], arr[i]]
-  }
-  return arr
-}
-
 export function routerFxSortTiers(list: string[]): string[] {
-  return list.slice().sort((a, b) => {
-    const am = /^t(\d+)$/.exec(a)
-    const bm = /^t(\d+)$/.exec(b)
-    if (am && bm) return parseInt(am[1], 10) - parseInt(bm[1], 10)
-    if (am) return -1
-    if (bm) return 1
-    return a.localeCompare(b)
-  })
+  return sortRouterTiers(list)
 }
 
 export function routerWinnerCellIndex(cells: ChatRouterCell[], tier: string): number {
-  const norm = String(tier || '').toLowerCase()
+  const norm = normalizeRouterTier(tier)
   return cells.findIndex(cell => cell.kind === 'real' && (cell.tiers || []).includes(norm))
 }
 

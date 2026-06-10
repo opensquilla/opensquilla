@@ -97,6 +97,7 @@ export function useChatElevatedMode(options: UseChatElevatedModeOptions) {
     elevatedMode,
     globalElevatedMode,
     effectiveElevatedMode,
+    elevatedUnavailable,
     loadElevatedMode,
     setElevatedMode,
     syncElevatedMode,

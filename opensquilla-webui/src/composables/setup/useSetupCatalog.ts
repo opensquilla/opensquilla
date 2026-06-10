@@ -7,6 +7,7 @@ import { useSetupRouterForm } from '@/composables/setup/useSetupRouterForm'
 import { useSetupStep } from '@/composables/setup/useSetupStep'
 import { useRpcStore } from '@/stores/rpc'
 import { copyTextWithFallback } from '@/utils/browser'
+import { TEXT_TIERS, routerTierLabel } from '@/utils/chat/routerTiers'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -19,15 +20,6 @@ const STEPS = [
   { id: 'extras', label: 'Capabilities' },
   { id: 'finish', label: 'Finish' },
 ] as const
-
-const TEXT_TIERS = ['t0', 't1', 't2', 't3'] as const
-
-const TIER_LABELS: Record<string, string> = {
-  t0: 'Fast/simple (t0)',
-  t1: 'Balanced default (t1)',
-  t2: 'Stronger reasoning (t2)',
-  t3: 'Max quality (t3)',
-}
 
 const READINESS_LABELS: Record<string, string> = {
   ok: 'Ready',
@@ -925,7 +917,7 @@ function _toastEnvReferenceSave(
 // ---------------------------------------------------------------------------
 
 function tierLabel(tier: string): string {
-  return TIER_LABELS[tier] || tier || 'Balanced default (t1)'
+  return routerTierLabel(tier)
 }
 
 function shellArg(value: string): string {

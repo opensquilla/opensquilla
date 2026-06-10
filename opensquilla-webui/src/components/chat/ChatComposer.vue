@@ -39,6 +39,42 @@
             <button class="btn btn--icon btn--ghost chat-plus-btn" title="Attach files: PNG, JPEG, GIF, WEBP, PDF, TXT, MD, HTML, CSV, JSON" aria-label="Attach files" @click="fileInputEl?.click()">
               <Icon name="plus" :size="18" />
             </button>
+            <div class="chat-settings-anchor">
+              <button
+                class="btn btn--icon btn--ghost"
+                title="Composer settings"
+                aria-label="Composer settings"
+                :aria-expanded="settingsOpen ? 'true' : 'false'"
+                @click="settingsOpen = !settingsOpen"
+              >
+                <Icon name="settings" :size="17" />
+              </button>
+              <ChatComposerSettings
+                v-if="settingsOpen"
+                :elevated-mode="elevatedMode"
+                :elevated-unavailable="elevatedUnavailable"
+                :router-enabled="routerEnabled"
+                :router-settings-busy="routerSettingsBusy"
+                :visual-effects-enabled="routerVisualEffectsEnabled"
+                @close="settingsOpen = false"
+                @set-elevated-mode="emit('setElevatedMode', $event)"
+                @set-router-enabled="emit('setRouterEnabled', $event)"
+                @set-visual-effects-enabled="emit('setVisualEffectsEnabled', $event)"
+              />
+            </div>
+            <button
+              class="btn btn--icon btn--ghost"
+              :class="{ 'is-active': voiceRecording }"
+              title="Record voice input"
+              aria-label="Record voice input"
+              :disabled="voiceBusy"
+              @click="emit('voiceInput')"
+            >
+              <Icon name="microphone" :size="17" />
+            </button>
+            <button class="btn btn--icon btn--ghost" title="Export as Markdown" aria-label="Export as Markdown" @click="emit('exportMarkdown')">
+              <Icon name="download" :size="17" />
+            </button>
           </div>
           <div class="chat-input-actions chat-input-actions--right">
             <button class="btn btn--icon btn--primary chat-send-btn" :class="{ 'is-ready': hasSendContent }" :title="sendButtonTitle" aria-label="Send" @click="emit('send')">
@@ -65,6 +101,7 @@
 <script setup lang="ts">
 import { nextTick, ref } from 'vue'
 import Icon from '@/components/Icon.vue'
+import ChatComposerSettings from '@/components/chat/ChatComposerSettings.vue'
 import type { Attachment } from '@/types/chat'
 
 interface ChatComposerExpose {
@@ -81,6 +118,13 @@ defineProps<{
   isNewLanding: boolean
   placeholder: string
   sendButtonTitle: string
+  elevatedMode: string
+  elevatedUnavailable: boolean
+  routerEnabled: boolean
+  routerVisualEffectsEnabled: boolean
+  routerSettingsBusy: boolean
+  voiceBusy: boolean
+  voiceRecording: boolean
 }>()
 
 const emit = defineEmits<{
@@ -90,6 +134,11 @@ const emit = defineEmits<{
   keydown: [event: KeyboardEvent]
   removeAttachment: [index: number]
   send: []
+  setElevatedMode: [mode: string]
+  setRouterEnabled: [enabled: boolean]
+  setVisualEffectsEnabled: [enabled: boolean]
+  voiceInput: []
+  exportMarkdown: []
   stop: []
 }>()
 
@@ -97,6 +146,7 @@ const inputText = defineModel<string>({ required: true })
 const composerEl = ref<HTMLElement | null>(null)
 const textareaEl = ref<HTMLTextAreaElement | null>(null)
 const fileInputEl = ref<HTMLInputElement | null>(null)
+const settingsOpen = ref(false)
 
 function attachmentMeta(att: Attachment): string {
   const size = typeof att.size === 'number'
@@ -240,7 +290,7 @@ defineExpose<ChatComposerExpose>({
   border-radius: 22px;
   background: #fff;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
-  overflow: hidden;
+  position: relative;
 }
 
 .chat-composer--new-landing .chat-input-panel {
@@ -274,6 +324,11 @@ defineExpose<ChatComposerExpose>({
 .chat-input-actions {
   gap: 0.25rem;
   min-width: 0;
+}
+
+.chat-settings-anchor {
+  position: relative;
+  display: inline-flex;
 }
 
 .chat-input-actions--right {
@@ -353,6 +408,11 @@ defineExpose<ChatComposerExpose>({
 .btn--ghost:hover {
   background: var(--bg-secondary, #f5f5f5);
   color: var(--text-primary, #1a1a1a);
+}
+
+.btn--ghost.is-active {
+  background: #f0f7f2;
+  color: #166534;
 }
 
 .chat-send-btn.btn--primary {

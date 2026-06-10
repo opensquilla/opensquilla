@@ -240,6 +240,16 @@ export interface ChatHistoryMessage {
 
 export interface ChatHistoryResponse {
   messages?: ChatHistoryMessage[]
+  has_more?: boolean
+  hasMore?: boolean
+  oldest_cursor?: string | number | null
+  oldestCursor?: string | number | null
+  newest_cursor?: string | number | null
+  newestCursor?: string | number | null
+  history_scope?: string
+  historyScope?: string
+  limit?: number
+  returned?: number
 }
 
 export interface RouterDecisionPayload extends SessionEventPayload {

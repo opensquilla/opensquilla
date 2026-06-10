@@ -63,9 +63,16 @@
           <img class="chat-landing-lockup" :src="landingLockupUrl" alt="OpenSquilla" />
         </div>
         <div v-else-if="messages.length === 0 && !isStreaming" class="chat-empty">No messages yet.</div>
+        <ChatHistoryScopeRow
+          v-if="!isNewChatLanding"
+          :state="historyState"
+          @load-earlier="loadEarlierHistory"
+        />
 
         <ChatMessageList
           :messages="renderedMessages"
+          :session-key="sessionKey"
+          :auth-token="readAuthToken()"
           :share-mode="shareMode"
           :selected-message-ids="selectedShareMessageIds"
           :assistant-avatar-url="assistantAvatarUrl"
@@ -117,7 +124,12 @@
               <span class="stream-activity-text activity-shimmer">{{ streamActivityText }}</span>
             </div>
 
-            <ChatArtifactList :artifacts="streamArtifacts" @download="downloadArtifact" />
+            <ChatArtifactList
+              :artifacts="streamArtifacts"
+              :session-key="sessionKey"
+              :auth-token="readAuthToken()"
+              @download="downloadArtifact"
+            />
 
           </div>
         </div>
@@ -174,11 +186,23 @@
       :is-new-landing="isNewChatLanding"
       :placeholder="composerPlaceholder"
       :send-button-title="sendButtonTitle"
+      :elevated-mode="elevatedMode"
+      :elevated-unavailable="elevatedUnavailable"
+      :router-enabled="routerEnabled"
+      :router-visual-effects-enabled="routerVisualEffectsEnabled"
+      :router-settings-busy="routerSettingsBusy"
+      :voice-busy="voiceBusy"
+      :voice-recording="voiceRecording"
       @composition-change="composing = $event"
       @file-change="onFileInputChange"
       @input="onTextareaInput"
       @keydown="onTextareaKeydown"
       @remove-attachment="removeAttachment"
+      @set-elevated-mode="setComposerElevatedMode"
+      @set-router-enabled="setComposerRouterEnabled"
+      @set-visual-effects-enabled="setComposerVisualEffectsEnabled"
+      @voice-input="onVoiceInput"
+      @export-markdown="exportMarkdown"
       @send="onSend"
       @stop="onStop"
     />
@@ -198,6 +222,7 @@ import { useRpcStore } from '@/stores/rpc'
 import { useAppStore } from '@/stores/app'
 import ChatArtifactList from '@/components/chat/ChatArtifactList.vue'
 import ChatComposer from '@/components/chat/ChatComposer.vue'
+import ChatHistoryScopeRow from '@/components/chat/ChatHistoryScopeRow.vue'
 import ChatMessageList from '@/components/chat/ChatMessageList.vue'
 import PendingQueue from '@/components/chat/PendingQueue.vue'
 import RouterFxStrip from '@/components/chat/RouterFxStrip.vue'
@@ -210,6 +235,7 @@ import { useChatComposerShortcuts } from '@/composables/chat/useChatComposerShor
 import { useChatElevatedMode } from '@/composables/chat/useChatElevatedMode'
 import { useChatFeatureToggles } from '@/composables/chat/useChatFeatureToggles'
 import { useChatHistory } from '@/composables/chat/useChatHistory'
+import { useChatMarkdownExport } from '@/composables/chat/useChatMarkdownExport'
 import { useChatMessageActions } from '@/composables/chat/useChatMessageActions'
 import { useChatPendingQueue } from '@/composables/chat/useChatPendingQueue'
 import { useChatShareExport } from '@/composables/chat/useChatShareExport'
@@ -230,6 +256,7 @@ import { useChatSlashCommands } from '@/composables/chat/useChatSlashCommands'
 import { useChatStream } from '@/composables/chat/useChatStream'
 import { useChatTextRendering } from '@/composables/chat/useChatTextRendering'
 import { useChatUsageWidget } from '@/composables/chat/useChatUsageWidget'
+import { useVoiceInput } from '@/composables/chat/useVoiceInput'
 import { useDocumentEvent } from '@/composables/useDocumentEvent'
 import type {
   ChatMessage,
@@ -263,28 +290,10 @@ type Message = ChatMessage
 
 /* ── Constants ─────────────────────────────────────────────────────── */
 
-const ROUTER_FX_GRID_CELLS = 12
-const ROUTER_FX_DECOY_POOL = [
-  'claude-sonnet-4.6',
-  'claude-haiku-4.5',
-  'gpt-5-mini',
-  'gemini-2.5-flash',
-  'deepseek-r1',
-  'gpt-5',
-  'claude-opus-4.7',
-  'gemini-2.5-pro',
-  'gemini-2.0-flash',
-  'llama-4-405b',
-  'mistral-large-3',
-  'qwen-3-72b',
-  'grok-3-mini',
-  'sonar-large',
-  'command-r-plus',
-  'jamba-1.5-large',
-]
 const CHAT_RUN_STATUS_VALUES: ChatRunStatusState[] = [
   'queued',
   'running',
+  'approval_pending',
   'interrupted',
   'failed',
   'timeout',
@@ -335,7 +344,9 @@ const chatElevatedMode = useChatElevatedMode({
 })
 const {
   elevatedMode,
+  elevatedUnavailable,
   loadElevatedMode,
+  setElevatedMode,
   setGlobalElevatedMode,
   normalizeElevatedMode,
 } = chatElevatedMode
@@ -488,7 +499,14 @@ const chatFeatureToggles = useChatFeatureToggles({
 const {
   routerSlots,
   routerModels,
+  routerEnabled,
+  routerVisualEffectsEnabled,
+  routerSettingsBusy,
+  routerTierConfigs,
   loadFeatureToggles,
+  setRouterEnabled,
+  setRouterVisualEffectsEnabled,
+  bindFeatureRefresh,
 } = chatFeatureToggles
 
 const chatSessionRoute = useChatSessionRoute(sessionKey)
@@ -505,8 +523,8 @@ const chatRenderedMessages = useChatRenderedMessages({
   sessionKey,
   routerSlots,
   routerModels,
-  decoyPool: ROUTER_FX_DECOY_POOL,
-  gridCells: ROUTER_FX_GRID_CELLS,
+  routerTierConfigs,
+  routerVisualEffectsEnabled,
   renderMarkdown,
   stripGeneratedArtifactMarkers,
   stripTimePrefix,
@@ -523,16 +541,27 @@ const chatHistory = useChatHistory({
   rpc,
   sessionKey,
   messages,
+  threadRef,
   lastHeaderRole,
   lastHeaderDay,
   stripTimePrefix,
   scrollToBottom,
 })
 const {
+  historyState,
   loadHistory,
+  loadEarlierHistory,
   scheduleHistorySync,
   cleanup: cleanupHistory,
 } = chatHistory
+
+const voiceInput = useVoiceInput()
+const {
+  voiceBusy,
+  voiceRecording,
+  toggleVoiceInput,
+  cleanup: cleanupVoiceInput,
+} = voiceInput
 
 const chatMessageActions = useChatMessageActions({
   messages,
@@ -706,7 +735,7 @@ let composerResizeObserver: ResizeObserver | null = null
 const runStatusLabel = computed(() => runStatus.value.label)
 const runStatusChipClass = computed(() => {
   const cls: Record<string, string> = {
-    queued: 'chip-warn', running: 'chip-ok', interrupted: 'chip-warn',
+    queued: 'chip-warn', running: 'chip-ok', approval_pending: 'chip-warn', interrupted: 'chip-warn',
     failed: 'chip-danger', timeout: 'chip-warn',
   }
   return cls[runStatus.value.status] || ''
@@ -751,10 +780,52 @@ const currentChatTitle = computed(() => {
   return `Chat ${suffix}`
 })
 
+const chatMarkdownExport = useChatMarkdownExport({
+  messages: renderedMessages,
+  currentTitle: currentChatTitle,
+})
+const { exportMarkdown } = chatMarkdownExport
+
 const shareableMessageCount = computed(() => renderedMessages.value.filter(isShareableChatMessage).length)
 const selectedShareCount = computed(() => selectedShareMessageIds.value.size)
 
 /* ── Helpers ───────────────────────────────────────────────────────── */
+
+function readAuthToken(): string {
+  try {
+    return sessionStorage.getItem('opensquilla.wsToken') || ''
+  } catch {
+    return ''
+  }
+}
+
+function setComposerElevatedMode(mode: string) {
+  setElevatedMode(mode, { persist: true, sync: true })
+}
+
+async function setComposerRouterEnabled(enabled: boolean) {
+  await setRouterEnabled(enabled)
+  scheduleHistorySync()
+}
+
+function setComposerVisualEffectsEnabled(enabled: boolean) {
+  setRouterVisualEffectsEnabled(enabled)
+  scheduleHistorySync()
+}
+
+function appendComposerText(text: string) {
+  const next = String(text || '').trim()
+  if (!next) return
+  inputText.value = inputText.value.trim()
+    ? `${inputText.value.trimEnd()}\n${next}`
+    : next
+  autoResizeTextarea()
+  composerRef.value?.focusTextarea()
+}
+
+function onVoiceInput() {
+  void toggleVoiceInput(appendComposerText)
+}
 
 function normalizeRunStatus(status: string): ChatRunStatusState {
   const value = String(status || '').toLowerCase()
@@ -767,7 +838,7 @@ function normalizeRunStatus(status: string): ChatRunStatusState {
 
 function runStatusLabelText(status: ChatRunStatusState): string {
   const labels: Record<string, string> = {
-    queued: 'Queued', running: 'Running', interrupted: 'Interrupted',
+    queued: 'Queued', running: 'Running', approval_pending: 'Approval pending', interrupted: 'Interrupted',
     failed: 'Failed', timeout: 'Timed out', cancelled: 'Cancelled', idle: 'Idle',
   }
   return labels[status] || 'Idle'
@@ -779,7 +850,7 @@ function sessionRunStatus(source: ChatRunStatusSource | null | undefined): ChatR
   const last = stateSource.last_task || stateSource.lastTask || null
   const activeStatus = active ? normalizeRunStatus(active.status || '') : ''
   let status = normalizeRunStatus(stateSource.run_status || stateSource.runStatus || active?.status || last?.status || '')
-  if (active && (activeStatus === 'queued' || activeStatus === 'running')) status = activeStatus
+  if (active && (activeStatus === 'queued' || activeStatus === 'running' || activeStatus === 'approval_pending')) status = activeStatus
   const task = active || last || null
   return { status, label: runStatusLabelText(status), task }
 }
@@ -812,12 +883,22 @@ function subagentBody(text: string): string {
 /* ── Artifacts ─────────────────────────────────────────────────────── */
 
 async function downloadArtifact(artifact: ArtifactPayload) {
-  const url = artifactDownloadUrl(artifact, window.location.origin)
+  const token = readAuthToken()
+  const url = artifactDownloadUrl(artifact, window.location.origin, {
+    sessionKey: sessionKey.value,
+    includeSessionKey: false,
+  })
   if (!url) return
   try {
     const headers: Record<string, string> = {}
-    if (sessionKey.value) headers['x-opensquilla-session-key'] = sessionKey.value
-    const response = await fetch(url, { method: 'GET', headers, credentials: 'same-origin' })
+    const sameOrigin = new URL(url, window.location.origin).origin === window.location.origin
+    if (sameOrigin && sessionKey.value) headers['x-opensquilla-session-key'] = sessionKey.value
+    if (sameOrigin && token) headers.Authorization = `Bearer ${token}`
+    const response = await fetch(url, {
+      method: 'GET',
+      headers,
+      credentials: sameOrigin ? 'same-origin' : 'omit',
+    })
     if (!response.ok) {
       console.warn(`Download failed: HTTP ${response.status}`)
       return
@@ -965,6 +1046,7 @@ onMounted(async () => {
 
   // Load feature toggles
   await loadFeatureToggles()
+  unsubs.push(bindFeatureRefresh(scheduleHistorySync))
 
   // Subscribe to RPC events
   unsubs.push(chatRpcSubscriptions.subscribe())
@@ -1001,6 +1083,7 @@ onUnmounted(() => {
   cleanupHistory()
   cleanupStream()
   cleanupCompaction()
+  cleanupVoiceInput()
   if (composerResizeObserver) { composerResizeObserver.disconnect(); composerResizeObserver = null }
   document.documentElement.style.removeProperty('--composer-h')
   unsubscribeSession()

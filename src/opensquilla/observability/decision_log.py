@@ -24,7 +24,7 @@ from typing import Literal
 from opensquilla.bootstrap_types import BootstrapFileReport
 from opensquilla.paths import default_opensquilla_home
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 _INTENT_SUMMARY_MAX_CHARS = 500
 _EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 _URL_RE = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
@@ -160,6 +160,14 @@ class DecisionEntry:
     session_flush_extraction_model: str | None = None
     session_flush_fallback_used: bool = False
     session_flush_fallback_reason: str | None = None
+    image_route_reason: str | None = None
+    vision_followup_gate_decision: str | None = None
+    vision_followup_gate_confidence: float | None = None
+    vision_followup_gate_reason: str | None = None
+    vision_followup_gate_source: str | None = None
+    vision_followup_gate_model: str | None = None
+    vision_followup_needs_image: bool | None = None
+    vision_followup_fallback: str | None = None
     skills_invoked: list[str] = field(default_factory=list)
     pipeline_steps: list[PipelineStepRecord] = field(default_factory=list)
     savings: SavingsTelemetry = field(default_factory=SavingsTelemetry)

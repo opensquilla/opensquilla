@@ -524,6 +524,22 @@ class _DoneHandler:
             cache_hit_active=provider_cache_hit or opensquilla_cache_hit,
             total_savings_pct=comprehensive.pct,
             total_savings_usd=comprehensive.usd,
+            image_route_reason=metadata.get("image_route_reason"),
+            vision_followup_gate_decision=metadata.get(
+                "router_vision_followup_gate_decision"
+            ),
+            vision_followup_gate_confidence=metadata.get(
+                "router_vision_followup_gate_confidence"
+            ),
+            vision_followup_gate_reason=metadata.get(
+                "router_vision_followup_gate_reason"
+            ),
+            vision_followup_gate_source=metadata.get(
+                "router_vision_followup_gate_source"
+            ),
+            vision_followup_gate_model=metadata.get("router_vision_followup_gate_model"),
+            vision_followup_needs_image=metadata.get("router_vision_followup_needs_image"),
+            vision_followup_fallback=metadata.get("router_vision_followup_fallback"),
         )
         state.done_event = event
 

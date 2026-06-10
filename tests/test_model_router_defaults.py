@@ -37,6 +37,7 @@ def test_squilla_router_defaults_match_runtime_router_config() -> None:
     assert cfg.strategy == "v4_phase3"
     assert cfg.default_tier == "c1"
     assert cfg.confidence_threshold == 0.5
+    assert cfg.confidence_high_tier_margin == 0.05
     assert cfg.v4_use_aux_head is True
     assert cfg.kv_cache_anti_downgrade_enabled is True
     assert cfg.kv_cache_anti_downgrade_window_seconds == 600
@@ -44,6 +45,7 @@ def test_squilla_router_defaults_match_runtime_router_config() -> None:
     assert cfg.complaint_upgrade_steps == 1
     assert cfg.complaint_upgrade_max_chars == 160
     assert cfg.require_router_runtime is True
+    assert cfg.vision_followup_gate_tier == "c0"
 
     assert cfg.tiers["c0"]["model"] == "deepseek/deepseek-v4-flash"
     assert cfg.tiers["c0"]["thinking_level"] == "high"

@@ -64,6 +64,12 @@ class RunPipelineRequest:
     prev_assistant_text: str | None = None
     prev_assistant_usage: dict[str, Any] | None = None
     history_user_texts: list[str] | None = None
+    history_has_recent_image: bool = False
+    history_image_turn_count: int = 0
+    vision_sticky_remaining: int = 0
+    turns_since_last_image: int | None = None
+    last_image_turn_text: str | None = None
+    vision_candidate_turns: int = 0
     flags_text_override: str | None = None
     tool_context: ToolContext | None = None
     normalization_metadata: dict[str, Any] | None = None
@@ -363,6 +369,40 @@ class PromptAssemblerStage:
             ),
         )
 
+        raw_history_image_turn_count = router_context.get("history_image_turn_count")
+        history_image_turn_count = (
+            raw_history_image_turn_count
+            if isinstance(raw_history_image_turn_count, int)
+            else 0
+        )
+        raw_vision_sticky_remaining = router_context.get("vision_sticky_remaining")
+        vision_sticky_remaining = (
+            raw_vision_sticky_remaining
+            if isinstance(raw_vision_sticky_remaining, int)
+            and not isinstance(raw_vision_sticky_remaining, bool)
+            else 0
+        )
+        raw_turns_since_last_image = router_context.get("turns_since_last_image")
+        turns_since_last_image = (
+            raw_turns_since_last_image
+            if isinstance(raw_turns_since_last_image, int)
+            and not isinstance(raw_turns_since_last_image, bool)
+            else None
+        )
+        raw_vision_candidate_turns = router_context.get("vision_candidate_turns")
+        vision_candidate_turns = (
+            raw_vision_candidate_turns
+            if isinstance(raw_vision_candidate_turns, int)
+            and not isinstance(raw_vision_candidate_turns, bool)
+            else 0
+        )
+        raw_last_image_turn_text = router_context.get("last_image_turn_text")
+        last_image_turn_text = (
+            raw_last_image_turn_text
+            if isinstance(raw_last_image_turn_text, str)
+            else None
+        )
+
         # 3. Run pre-turn pipeline (model routing, skills, prompt cache, etc.)
         request = RunPipelineRequest(
             runtime_message=inp.runtime_message,
@@ -377,6 +417,12 @@ class PromptAssemblerStage:
             prev_assistant_text=router_context.get("prev_assistant_text"),
             prev_assistant_usage=router_context.get("prev_assistant_usage"),
             history_user_texts=router_context.get("history_user_texts"),
+            history_has_recent_image=bool(router_context.get("history_has_recent_image")),
+            history_image_turn_count=history_image_turn_count,
+            vision_sticky_remaining=vision_sticky_remaining,
+            turns_since_last_image=turns_since_last_image,
+            last_image_turn_text=last_image_turn_text,
+            vision_candidate_turns=vision_candidate_turns,
             flags_text_override=inp.semantic_input,
             tool_context=inp.effective_tool_context,
             normalization_metadata=inp.normalization_metadata,

@@ -320,6 +320,12 @@ async def test_case03_history_router_context_threading() -> None:
             "prev_assistant_text": "prior reply",
             "prev_assistant_usage": {"output_tokens": 32},
             "history_user_texts": ["q1"],
+            "history_has_recent_image": True,
+            "history_image_turn_count": 2,
+            "vision_sticky_remaining": 1,
+            "turns_since_last_image": 1,
+            "last_image_turn_text": "Describe this screenshot.",
+            "vision_candidate_turns": 8,
         }
     )
     executor = _RecordingPipelineExecutor(turn=_make_turn(), provider=_StubProvider())
@@ -330,6 +336,12 @@ async def test_case03_history_router_context_threading() -> None:
     assert req.prev_assistant_text == "prior reply"
     assert req.prev_assistant_usage == {"output_tokens": 32}
     assert req.history_user_texts == ["q1"]
+    assert req.history_has_recent_image is True
+    assert req.history_image_turn_count == 2
+    assert req.vision_sticky_remaining == 1
+    assert req.turns_since_last_image == 1
+    assert req.last_image_turn_text == "Describe this screenshot."
+    assert req.vision_candidate_turns == 8
 
 
 @pytest.mark.asyncio

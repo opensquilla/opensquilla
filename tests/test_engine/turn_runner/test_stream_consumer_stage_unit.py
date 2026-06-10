@@ -572,6 +572,37 @@ def test_done_handler_normalizes_and_emits_done() -> None:
     assert extra == []
 
 
+def test_done_handler_carries_vision_followup_metadata() -> None:
+    state = _make_state()
+    handler = _DoneHandler()
+    inp = _make_input(
+        state=state,
+        turn=_make_turn(
+            metadata={
+                "image_route_reason": "gate_history",
+                "router_vision_followup_gate_decision": "needs_image",
+                "router_vision_followup_gate_confidence": 0.92,
+                "router_vision_followup_gate_reason": "references previous image",
+                "router_vision_followup_gate_source": "llm",
+                "router_vision_followup_gate_model": "deepseek/deepseek-v4-flash",
+                "router_vision_followup_needs_image": True,
+            }
+        ),
+    )
+
+    transformed, extra = handler.handle(DoneEvent(text="ok"), inp, state)
+
+    assert getattr(transformed, "image_route_reason") == "gate_history"
+    assert getattr(transformed, "vision_followup_gate_decision") == "needs_image"
+    assert getattr(transformed, "vision_followup_gate_confidence") == 0.92
+    assert getattr(transformed, "vision_followup_gate_reason") == "references previous image"
+    assert getattr(transformed, "vision_followup_gate_source") == "llm"
+    assert getattr(transformed, "vision_followup_gate_model") == "deepseek/deepseek-v4-flash"
+    assert getattr(transformed, "vision_followup_needs_image") is True
+    assert state.done_event is transformed
+    assert extra == []
+
+
 @pytest.mark.asyncio
 async def test_compaction_handler_runs_persist_snapshot_prompt_in_order() -> None:
     persist = _RecordingCompactionPersist()

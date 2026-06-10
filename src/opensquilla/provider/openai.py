@@ -388,7 +388,10 @@ def _stream_timeout(timeout: float) -> httpx.Timeout:
     if connect <= 0:
         connect = 12.0
     connect = min(connect, max(timeout, 1.0))
-    return httpx.Timeout(timeout, connect=connect, write=10.0, pool=10.0)
+    write = _coerce_float(os.environ.get("OPENSQUILLA_LLM_STREAM_WRITE_TIMEOUT_SECONDS"))
+    if write <= 0:
+        write = max(60.0, timeout)
+    return httpx.Timeout(timeout, connect=connect, write=write, pool=10.0)
 
 
 def _synthesize_text_tool_events(
@@ -1146,7 +1149,8 @@ class OpenAIProvider:
                     "openrouter.stream_timeout_fallback_started",
                     model=self._model,
                     timeout_seconds=cfg.timeout,
-                    error=str(exc),
+                    timeout_phase=type(exc).__name__,
+                    error=str(exc) or repr(exc),
                 )
                 yield ProviderHeartbeatEvent(
                     phase="llm_fallback",

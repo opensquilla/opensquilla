@@ -168,6 +168,14 @@ class DoneEvent:
     session_totals: SessionTotalsSnapshot | None = None
     routing_applied: bool = True
     rollout_phase: str = "full"
+    image_route_reason: str | None = None
+    vision_followup_gate_decision: str | None = None
+    vision_followup_gate_confidence: float | None = None
+    vision_followup_gate_reason: str | None = None
+    vision_followup_gate_source: str | None = None
+    vision_followup_gate_model: str | None = None
+    vision_followup_needs_image: bool | None = None
+    vision_followup_fallback: str | None = None
 
     @property
     def upstream_cost_usd(self) -> float:

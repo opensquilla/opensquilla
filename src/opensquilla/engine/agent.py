@@ -528,13 +528,20 @@ def _chat_config_with_thinking_disabled(chat_cfg: ChatConfig) -> ChatConfig:
     )
 
 
-def _strip_historical_image_blocks(messages: list[Message]) -> list[Message]:
+def _strip_historical_image_blocks(
+    messages: list[Message],
+    *,
+    preserve_images: bool = False,
+) -> list[Message]:
     """Remove image payload blocks from history before provider calls.
 
     Current-turn uploads are passed through ``extra_messages`` and are not part
     of the history list sanitized here. This prevents a later text follow-up
     from replaying stale image input to a text-only route.
     """
+    if preserve_images:
+        return messages
+
     sanitized: list[Message] = []
     for msg in messages:
         content = msg.content
@@ -1775,7 +1782,15 @@ class Agent:
             preserve_tool_call_reasoning=thinking_enabled,
             preserve_reasoning_content=preserve_reasoning_content,
         )
-        sanitized_history = _strip_historical_image_blocks(sanitized_history)
+        preserve_historical_images = bool(
+            getattr(self.config.model_capabilities, "supports_vision", False)
+            if self.config.model_capabilities is not None
+            else False
+        )
+        sanitized_history = _strip_historical_image_blocks(
+            sanitized_history,
+            preserve_images=preserve_historical_images,
+        )
         self._write_context_stage(
             "session:sanitized",
             sanitized_history,

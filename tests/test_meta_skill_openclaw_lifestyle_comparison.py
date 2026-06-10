@@ -704,6 +704,33 @@ def test_chinese_contract_renewal_prompt_forces_meta_invoke(tmp_path: Path) -> N
     }
 
 
+def test_document_decision_meta_skill_requires_preflight_confirmation_and_hides_audit_block(
+    tmp_path: Path,
+) -> None:
+    loader = SkillLoader(
+        bundled_dir=Path("src/opensquilla/skills/bundled"),
+        snapshot_path=tmp_path / "snapshot.json",
+    )
+    spec = loader.get_by_name("meta-document-to-decision")
+    assert spec is not None
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+
+    assert plan.request_template["requires_confirmation"] is True
+    assert plan.output_contract["append_to_final_text"] is False
+
+
+def test_document_decision_meta_skill_preserves_contract_fact_terms() -> None:
+    raw = Path(
+        "src/opensquilla/skills/bundled/meta-document-to-decision/SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    for term in ("4800", "38%", "90", "99.0%", "5%", "7 天", "不可退款"):
+        assert term in raw
+    assert "Do not expose deterministic checks" in raw
+    assert "do not append the output-contract audit block" in raw
+
+
 def test_competitive_intel_outranks_daily_brief_for_competitor_followup_prompts(
     tmp_path: Path,
 ) -> None:

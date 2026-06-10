@@ -249,6 +249,8 @@ def _append_output_contract_block(
 
     if not output_contract:
         return text
+    if output_contract.get("append_to_final_text") is False:
+        return text
     sections = _contract_items(output_contract.get("required_sections"))
     assumptions = _contract_items(output_contract.get("assumptions"))
     unverified = _contract_items(output_contract.get("unverified"))

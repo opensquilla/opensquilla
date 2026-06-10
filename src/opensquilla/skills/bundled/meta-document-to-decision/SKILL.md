@@ -6,6 +6,7 @@ meta_priority: 67
 always: false
 final_text_mode: "step:decision_brief_audit"
 request_template:
+  requires_confirmation: true
   outcome: "Decision-ready brief with recommendation, evidence table, risks, and questions."
   outcome_zh: "包含建议、证据表、风险和追问清单的决策简报。"
   outcome_en: "Decision-ready brief with recommendation, evidence table, risks, and questions."
@@ -14,6 +15,9 @@ request_template:
       label_zh: "文件或摘录"
       label_en: "Document or excerpt"
       required: true
+      type: textarea
+      description_zh: "粘贴合同、报价、邮件或文件路径；如果你稍后补材料，我会先停下来等你。"
+      description_en: "Paste the contract, quote, email, or file path; if you will provide it later, I will pause for it."
     - name: decision_question
       label_zh: "决策问题"
       label_en: "Decision question"
@@ -50,6 +54,7 @@ request_template:
     - "Do not make legal or financial claims beyond the provided evidence."
     - "If criteria are missing, use risk, cost, reversibility, and urgency as defaults."
 output_contract:
+  append_to_final_text: false
   required_sections:
     - "Recommendation"
     - "Evidence table"
@@ -271,6 +276,10 @@ composition:
           Extract:
           - key facts with evidence source/page/sheet when available
           - money/date/obligation/risk clauses
+          - every explicit numeric term needed for the decision, including
+            prices, price-change percentages, dates, notice windows,
+            SLA percentages, liability caps, data-export windows, refund
+            terms, renewal lengths, and payment timing
           - inconsistencies and missing information
           - decisions the user can safely make
           - items requiring lawyer/doctor/accountant/professional review
@@ -311,6 +320,11 @@ composition:
           2. Evidence table. Use the literal section title "Evidence table /
              证据表" and cite each row's source as quote/contract/email/page/
              sheet/excerpt when available.
+             The evidence table must preserve key numeric facts exactly as
+             supplied. For renewal-contract style excerpts, explicitly carry
+             through terms such as 4800, 38%, 90, 99.0%, 5%, 7 天, and
+             不可退款 when they appear in the source. Do not replace concrete
+             numbers with generic labels like "合同价格" or "终止条款".
           3. Risks ranked high/medium/low
           4. Questions to ask the other party
           5. What to do next in 24 hours
@@ -374,6 +388,21 @@ composition:
           {{ inputs.user_message | xml_escape | truncate(5000) }}
 
           Required audit rules:
+          - Do not expose deterministic checks, output-contract audit blocks,
+            internal validation status, "Declared Output Contract",
+            "声明的输出契约", "Deterministic Check", "确定性检查", pass/fail
+            audit summaries, or meta/debug scaffolding. The orchestrator
+            stores contract audit metadata separately; do not append the
+            output-contract audit block to the user-visible answer. In short:
+            do not append the output-contract audit block.
+          - Preserve every decision-critical numeric fact from the source in
+            the final answer. For a vendor renewal or contract excerpt, keep
+            exact prices, percentage increases, service dates, notice periods,
+            auto-renewal duration, SLA percentages, liability caps, data
+            export windows, prepayment/refund terms, and payment timing. If
+            the source contains terms like 4800, 38%, 90, 99.0%, 5%, 7 天, or
+            不可退款, those terms must appear in the final evidence/risk
+            analysis unless they are irrelevant and you explicitly say why.
           - Remove statutes, legal article numbers, and law-name citations
             such as Civil Code, 民法典, article numbers, court standards, or
             specific legal doctrines unless they appear in the provided

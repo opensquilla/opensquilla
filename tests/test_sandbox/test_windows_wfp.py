@@ -44,30 +44,77 @@ def test_wfp_smoke_check_is_false_off_windows_even_when_hooks_pass(monkeypatch) 
     assert mod.wfp_smoke_check() is False
 
 
+def test_build_broker_only_filters_orders_allow_before_block() -> None:
+    from opensquilla.sandbox.backend.windows_wfp import build_broker_only_filter_specs
+
+    specs = build_broker_only_filter_specs(
+        run_id="run-1",
+        appcontainer_sid="S-1-15-2-123",
+        broker_host="127.0.0.1",
+        broker_port=48123,
+    )
+
+    assert [spec.action for spec in specs] == ["permit", "block", "permit", "block"]
+    assert specs[0].weight > specs[1].weight
+    assert specs[2].weight > specs[3].weight
+    assert all(spec.appcontainer_sid == "S-1-15-2-123" for spec in specs)
+
+
+def test_install_wfp_policy_rolls_back_partial_filters(monkeypatch) -> None:
+    from opensquilla.sandbox.backend import windows_wfp
+
+    events = []
+
+    class Engine:
+        def add_filter(self, spec):
+            events.append(("add", spec.name))
+            if "block-ipv4" in spec.name:
+                raise RuntimeError("boom")
+            return len(events)
+
+        def delete_filter(self, filter_id):
+            events.append(("delete", filter_id))
+
+    monkeypatch.setattr(windows_wfp.sys, "platform", "win32")
+    monkeypatch.setattr(windows_wfp, "_open_wfp_engine", lambda: Engine())
+
+    with pytest.raises(RuntimeError, match="boom"):
+        windows_wfp.install_wfp_policy(
+            appcontainer_sid="S-1-15-2-123",
+            broker_host="127.0.0.1",
+            broker_port=48123,
+            run_id="run-1",
+        )
+
+    assert ("delete", 1) in events
+
+
 def test_install_wfp_policy_validates_sid_host_port_and_platform(monkeypatch) -> None:
     from opensquilla.sandbox.backend import windows_wfp as mod
 
-    calls: list[dict[str, object]] = []
-    monkeypatch.setattr(mod.sys, "platform", "win32")
-    monkeypatch.setattr(
-        mod,
-        "_install_wfp_policy_native",
-        lambda **kwargs: calls.append(kwargs),
-    )
+    calls = []
 
-    mod.install_wfp_policy(
+    class Engine:
+        def add_filter(self, spec):
+            calls.append(spec)
+            return len(calls)
+
+        def delete_filter(self, filter_id):
+            raise AssertionError(f"delete_filter should not run: {filter_id}")
+
+    monkeypatch.setattr(mod.sys, "platform", "win32")
+    monkeypatch.setattr(mod, "_open_wfp_engine", lambda: Engine())
+
+    filter_ids = mod.install_wfp_policy(
         appcontainer_sid="S-1-15-2-12345",
         broker_host="127.0.0.1",
         broker_port=18080,
+        run_id="run-1",
     )
 
-    assert calls == [
-        {
-            "appcontainer_sid": "S-1-15-2-12345",
-            "broker_host": "127.0.0.1",
-            "broker_port": 18080,
-        }
-    ]
+    assert filter_ids == (1, 2, 3, 4)
+    assert [spec.run_id for spec in calls] == ["run-1"] * 4
+    assert calls[0].remote_port == 18080
 
     with pytest.raises(RuntimeError, match="requires Windows"):
         monkeypatch.setattr(mod.sys, "platform", "linux")

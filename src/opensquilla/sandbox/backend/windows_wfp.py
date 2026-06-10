@@ -1,9 +1,23 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import dataclass
 
 WFP_PROVIDER_NAME = "OpenSquilla Sandbox Network Policy"
 WFP_SUBLAYER_NAME = "OpenSquilla AppContainer Broker-Only Egress"
+
+
+@dataclass(frozen=True)
+class WfpFilterSpec:
+    name: str
+    run_id: str
+    layer: str
+    action: str
+    appcontainer_sid: str
+    weight: int
+    protocol: str | None = None
+    remote_address: str | None = None
+    remote_port: int | None = None
 
 
 def wfp_smoke_check() -> bool:
@@ -32,20 +46,78 @@ def install_wfp_policy(
     appcontainer_sid: str,
     broker_host: str,
     broker_port: int,
-) -> None:
+    run_id: str = "default",
+) -> tuple[object, ...]:
     """Install broker-only WFP egress policy for an AppContainer SID."""
     _require_native_windows()
-    if not appcontainer_sid.startswith("S-1-15-2-"):
-        raise ValueError("appcontainer_sid must be an AppContainer SID")
-    if not broker_host:
-        raise ValueError("broker_host must be non-empty")
-    if not 1 <= broker_port <= 65535:
-        raise ValueError("broker_port must be in range 1..65535")
-
-    _install_wfp_policy_native(
+    specs = build_broker_only_filter_specs(
+        run_id=run_id,
         appcontainer_sid=appcontainer_sid,
         broker_host=broker_host,
         broker_port=broker_port,
+    )
+    engine = _open_wfp_engine()
+    filter_ids: list[object] = []
+    try:
+        for spec in specs:
+            filter_ids.append(engine.add_filter(spec))
+    except Exception:
+        for filter_id in reversed(filter_ids):
+            engine.delete_filter(filter_id)
+        raise
+    return tuple(filter_ids)
+
+
+def build_broker_only_filter_specs(
+    *,
+    run_id: str,
+    appcontainer_sid: str,
+    broker_host: str,
+    broker_port: int,
+) -> tuple[WfpFilterSpec, ...]:
+    run_id = _validate_run_id(run_id)
+    appcontainer_sid = _validate_appcontainer_sid(appcontainer_sid)
+    broker_host = _validate_loopback_host(broker_host)
+    broker_port = _validate_broker_port(broker_port)
+    return (
+        WfpFilterSpec(
+            name=f"OpenSquilla {run_id} allow-proxy-ipv4",
+            run_id=run_id,
+            layer="ALE_AUTH_CONNECT_V4",
+            action="permit",
+            appcontainer_sid=appcontainer_sid,
+            protocol="TCP",
+            remote_address="127.0.0.1",
+            remote_port=broker_port,
+            weight=200,
+        ),
+        WfpFilterSpec(
+            name=f"OpenSquilla {run_id} block-ipv4",
+            run_id=run_id,
+            layer="ALE_AUTH_CONNECT_V4",
+            action="block",
+            appcontainer_sid=appcontainer_sid,
+            weight=100,
+        ),
+        WfpFilterSpec(
+            name=f"OpenSquilla {run_id} allow-proxy-ipv6",
+            run_id=run_id,
+            layer="ALE_AUTH_CONNECT_V6",
+            action="permit",
+            appcontainer_sid=appcontainer_sid,
+            protocol="TCP",
+            remote_address="::1",
+            remote_port=broker_port,
+            weight=200,
+        ),
+        WfpFilterSpec(
+            name=f"OpenSquilla {run_id} block-ipv6",
+            run_id=run_id,
+            layer="ALE_AUTH_CONNECT_V6",
+            action="block",
+            appcontainer_sid=appcontainer_sid,
+            weight=100,
+        ),
     )
 
 
@@ -87,9 +159,53 @@ def _native_windows() -> bool:
     return sys.platform.startswith("win")
 
 
+def _validate_run_id(value: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise ValueError("run_id is required")
+    return normalized
+
+
+def _validate_appcontainer_sid(value: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized.startswith("S-1-15-2-"):
+        raise ValueError("appcontainer_sid must be an AppContainer SID")
+    return normalized
+
+
+def _validate_loopback_host(value: str) -> str:
+    normalized = str(value or "").strip()
+    if normalized not in {"127.0.0.1", "::1"}:
+        raise ValueError("broker_host must be loopback")
+    return normalized
+
+
+def _validate_broker_port(value: int) -> int:
+    port = int(value)
+    if not 1 <= port <= 65535:
+        raise ValueError("broker_port must be in range 1..65535")
+    return port
+
+
+class _NativeWfpEngine:
+    def add_filter(self, spec: WfpFilterSpec) -> object:
+        _ = spec
+        raise RuntimeError("native WFP filter install is not implemented")
+
+    def delete_filter(self, filter_id: object) -> None:
+        _ = filter_id
+        raise RuntimeError("native WFP filter cleanup is not implemented")
+
+
+def _open_wfp_engine() -> _NativeWfpEngine:
+    return _NativeWfpEngine()
+
+
 __all__ = [
     "WFP_PROVIDER_NAME",
     "WFP_SUBLAYER_NAME",
+    "WfpFilterSpec",
+    "build_broker_only_filter_specs",
     "install_wfp_policy",
     "managed_network_proxy_smoke_check",
     "uninstall_wfp_policy",

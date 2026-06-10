@@ -843,6 +843,16 @@ async def test_proxy_stop_is_idempotent() -> None:
     await server.stop()
 
 
+async def test_proxy_default_endpoint_is_loopback_for_broker_only_egress() -> None:
+    server = SandboxProxyServer(_allow_decision)
+    await server.start()
+    try:
+        assert server.host == "127.0.0.1"
+        assert server.port > 0
+    finally:
+        await server.stop()
+
+
 @pytest.mark.parametrize(
     "target",
     [

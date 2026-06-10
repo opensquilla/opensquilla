@@ -1142,6 +1142,8 @@ def test_helper_run_appcontainer_creates_profile_grants_and_launches(
         env={"PATH": r"C:\Windows\System32"},
         policy=_policy(tmp_path).summary(),
         session_id="agent:main",
+        appcontainer_profile_name=None,
+        appcontainer_sid=None,
         timeout=5.0,
     )
 
@@ -1202,6 +1204,8 @@ async def test_grant_policy_paths_grants_each_mount_mode(
             ]
         },
         session_id="default",
+        appcontainer_profile_name=None,
+        appcontainer_sid=None,
         timeout=5.0,
     )
 
@@ -1227,6 +1231,8 @@ async def test_grant_policy_paths_rejects_unknown_mount_mode(tmp_path: Path) -> 
             ]
         },
         session_id="default",
+        appcontainer_profile_name=None,
+        appcontainer_sid=None,
         timeout=5.0,
     )
 

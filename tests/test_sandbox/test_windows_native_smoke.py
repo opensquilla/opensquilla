@@ -45,9 +45,19 @@ def _native_appcontainer_ready() -> bool:
     return WindowsAppContainerBackend().available()
 
 
-pytestmark = pytest.mark.skipif(
-    not _native_appcontainer_ready(),
-    reason="native Windows AppContainer smoke requires an available backend",
+_RUN_WINDOWS_NATIVE_SMOKE = os.environ.get("OPENSQUILLA_RUN_WINDOWS_NATIVE_SMOKE") == "1"
+_RUN_WINDOWS_WFP_SMOKE = os.environ.get("OPENSQUILLA_RUN_WINDOWS_WFP_SMOKE") == "1"
+
+_native_appcontainer_smoke = pytest.mark.skipif(
+    not (_RUN_WINDOWS_NATIVE_SMOKE and _native_appcontainer_ready()),
+    reason=(
+        "native Windows AppContainer smoke requires "
+        "OPENSQUILLA_RUN_WINDOWS_NATIVE_SMOKE=1 and an available backend"
+    ),
+)
+_native_wfp_smoke = pytest.mark.skipif(
+    not (sys.platform.startswith("win") and _RUN_WINDOWS_WFP_SMOKE),
+    reason="native Windows WFP smoke requires OPENSQUILLA_RUN_WINDOWS_WFP_SMOKE=1",
 )
 
 
@@ -86,6 +96,7 @@ class _WindowsShellRuntime:
     backend = type("Backend", (), {"name": "windows_appcontainer"})()
 
 
+@_native_appcontainer_smoke
 @pytest.mark.asyncio
 async def test_native_windows_appcontainer_blocks_write_outside_workspace(
     tmp_path: Path,
@@ -127,6 +138,7 @@ async def test_native_windows_appcontainer_blocks_write_outside_workspace(
     assert outside.exists() is False
 
 
+@_native_appcontainer_smoke
 @pytest.mark.asyncio
 async def test_native_windows_appcontainer_echo(tmp_path: Path) -> None:
     from opensquilla.sandbox.backend.windows_appcontainer import WindowsAppContainerBackend
@@ -154,6 +166,7 @@ async def test_native_windows_appcontainer_echo(tmp_path: Path) -> None:
     assert result.stdout.strip() == "ok"
 
 
+@_native_appcontainer_smoke
 @pytest.mark.asyncio
 async def test_native_windows_shell_can_remove_workspace_file() -> None:
     from opensquilla.sandbox.backend.windows_appcontainer import WindowsAppContainerBackend
@@ -221,6 +234,7 @@ async def test_native_windows_shell_can_remove_workspace_file() -> None:
         shutil.rmtree(workspace, ignore_errors=True)
 
 
+@_native_appcontainer_smoke
 @pytest.mark.asyncio
 async def test_native_windows_appcontainer_can_create_missing_file_mount(
     tmp_path: Path,
@@ -260,3 +274,10 @@ async def test_native_windows_appcontainer_can_create_missing_file_mount(
     assert result.returncode == 0
     assert result.stderr == ""
     assert target.read_text(encoding="utf-16").strip() == "hello"
+
+
+@_native_wfp_smoke
+def test_windows_broker_only_egress_native_smoke() -> None:
+    from opensquilla.sandbox.backend.windows_wfp import broker_only_egress_smoke_check
+
+    assert broker_only_egress_smoke_check() is True

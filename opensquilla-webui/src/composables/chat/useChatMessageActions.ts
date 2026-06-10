@@ -2,6 +2,7 @@ import { nextTick, type Ref } from 'vue'
 import type {
   ChatMessage,
   ChatRenderedMessage,
+  ChatStreamTimelineItem,
 } from '@/types/chat'
 import { copyTextWithFallback } from '@/utils/browser'
 
@@ -9,14 +10,40 @@ export interface UseChatMessageActionsOptions {
   messages: Ref<ChatMessage[]>
   inputText: Ref<string>
   isStreaming: Ref<boolean>
+  sanitizeCopyText: (text: string) => string
+  stripTimePrefix: (text: string) => string
   autoResizeTextarea: () => void
   sendCurrentInput: () => void
   focusComposer: () => void
 }
 
 export function useChatMessageActions(options: UseChatMessageActionsOptions) {
-  function copyMessage(msg: ChatRenderedMessage) {
-    copyTextWithFallback(msg.text || '').catch(() => {})
+  function copyableMessageText(message: ChatRenderedMessage): string {
+    // User bubbles render the raw text with only the time prefix stripped, so
+    // copy must match: the markdown sanitizers would truncate or strip literal
+    // text (e.g. "<details>") that is visible on screen.
+    if ((message.displayRole || message.role) === 'user') {
+      return options.stripTimePrefix(message.text || '').trim()
+    }
+    // Tool-bearing turns render text as separate timeline segments; the raw
+    // message text concatenates them without separators, so rebuild from the
+    // segments to keep paragraph boundaries in the copied markdown.
+    const segmentTexts = (message.timelineItems || [])
+      .filter((item): item is Extract<ChatStreamTimelineItem, { type: 'text' }> => item.type === 'text')
+      .map(item => options.sanitizeCopyText(item.rawText || ''))
+      .filter(Boolean)
+    if (segmentTexts.length) return segmentTexts.join('\n\n')
+    return options.sanitizeCopyText(message.text || '')
+  }
+
+  async function copyMessage(msg: ChatRenderedMessage): Promise<boolean> {
+    try {
+      await copyTextWithFallback(copyableMessageText(msg))
+      return true
+    } catch (err) {
+      console.warn('Copy failed:', err instanceof Error ? err.message : String(err))
+      return false
+    }
   }
 
   function sourceMessageIndex(message: ChatRenderedMessage): number {

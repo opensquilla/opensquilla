@@ -60,8 +60,15 @@ export function useChatTextRendering() {
     return html
   }
 
+  function sanitizeCopyText(text: string): string {
+    return stripProtocolTextLeak(
+      stripDirectiveTags(stripGeneratedArtifactMarkers(stripTimePrefix(String(text || '')))),
+    ).trim()
+  }
+
   return {
     renderMarkdown,
+    sanitizeCopyText,
     stripDirectiveTags,
     stripGeneratedArtifactMarkers,
     stripProtocolTextLeak,

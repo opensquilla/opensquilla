@@ -39,9 +39,16 @@
       </div>
     </div>
     <div class="msg-user-actions">
-      <button type="button" class="msg-action" title="Copy" @click="$emit('copy', message)">
-        <Icon name="copy" :size="12" />
+      <button
+        type="button"
+        class="msg-action"
+        :class="{ 'msg-action--ok': copyState === 'ok', 'msg-action--err': copyState === 'err' }"
+        :title="copyTitle"
+        @click="onCopyClick"
+      >
+        <Icon :name="copyIconName" :size="12" />
       </button>
+      <span class="msg-copy-live" aria-live="polite">{{ copyLiveText }}</span>
       <button type="button" class="msg-action" title="Edit" @click="$emit('edit', message)">
         <Icon name="edit" :size="12" />
       </button>
@@ -51,6 +58,7 @@
 
 <script setup lang="ts">
 import Icon from '@/components/Icon.vue'
+import { useCopyFeedback } from '@/composables/chat/useCopyFeedback'
 import type { ChatRenderedMessage } from '@/types/chat'
 
 const props = defineProps<{
@@ -59,13 +67,17 @@ const props = defineProps<{
   shareSelected: boolean
   shareMessageId: string
   stripTimePrefix: (text: string) => string
+  copyMessage: (message: ChatRenderedMessage) => Promise<boolean>
 }>()
 
 const emit = defineEmits<{
-  copy: [message: ChatRenderedMessage]
   edit: [message: ChatRenderedMessage]
   toggleShare: [messageId: string]
 }>()
+
+const { copyState, copyIconName, copyTitle, copyLiveText, onCopyClick } = useCopyFeedback(
+  () => props.copyMessage(props.message),
+)
 
 function onMessageClick(event: MouseEvent) {
   if (!props.shareMode) return
@@ -176,6 +188,25 @@ function onMessageClick(event: MouseEvent) {
 .msg-action:hover {
   color: #a1a1aa;
   background: #f4f4f5;
+}
+
+.msg-action.msg-action--ok,
+.msg-action.msg-action--ok:hover {
+  color: var(--ok);
+}
+
+.msg-action.msg-action--err,
+.msg-action.msg-action--err:hover {
+  color: var(--danger);
+}
+
+.msg-copy-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .msg-attachments {

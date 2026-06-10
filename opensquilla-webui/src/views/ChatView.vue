@@ -87,7 +87,7 @@
           :tool-group-status-text="toolGroupStatusText"
           :tool-status-text="toolStatusText"
           :tool-secondary-text="toolSecondaryText"
-          @copy-message="copyMessage"
+          :copy-message="copyMessage"
           @edit-message="editMessage"
           @regenerate-message="regenerateMessage"
           @toggle-share-message="toggleShareMessage"
@@ -367,6 +367,7 @@ let resetComposerInputHistory: () => void = () => {}
 const chatTextRendering = useChatTextRendering()
 const {
   renderMarkdown,
+  sanitizeCopyText,
   stripDirectiveTags,
   stripGeneratedArtifactMarkers,
   stripProtocolTextLeak,
@@ -567,6 +568,8 @@ const chatMessageActions = useChatMessageActions({
   messages,
   inputText,
   isStreaming,
+  sanitizeCopyText,
+  stripTimePrefix,
   autoResizeTextarea,
   sendCurrentInput: () => sendCurrentInput(),
   focusComposer: () => composerRef.value?.focusTextarea(),

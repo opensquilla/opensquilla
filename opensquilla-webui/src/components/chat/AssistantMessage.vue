@@ -71,9 +71,16 @@
           <span v-if="message.meta.hasSaved" class="savings-indicator">{{ message.meta.savedLabel }}</span>
         </div>
         <div class="msg-ai-actions">
-          <button type="button" class="msg-action" title="Copy" @click="$emit('copy', message)">
-            <Icon name="copy" :size="12" />
+          <button
+            type="button"
+            class="msg-action"
+            :class="{ 'msg-action--ok': copyState === 'ok', 'msg-action--err': copyState === 'err' }"
+            :title="copyTitle"
+            @click="onCopyClick"
+          >
+            <Icon :name="copyIconName" :size="12" />
           </button>
+          <span class="msg-copy-live" aria-live="polite">{{ copyLiveText }}</span>
           <button type="button" class="msg-action" title="Regenerate" @click="$emit('regenerate', message)">
             <Icon name="refresh" :size="12" />
           </button>
@@ -88,6 +95,7 @@ import { computed } from 'vue'
 import Icon from '@/components/Icon.vue'
 import ChatArtifactList from '@/components/chat/ChatArtifactList.vue'
 import ToolCallTimeline from '@/components/chat/ToolCallTimeline.vue'
+import { useCopyFeedback } from '@/composables/chat/useCopyFeedback'
 import type {
   ChatRenderedMessage,
   ChatStreamTimelineItem,
@@ -112,12 +120,12 @@ const props = defineProps<{
   toolGroupStatusText: (group: ChatToolCallGroup) => string
   toolStatusText: (call: ChatToolCallRenderItem) => string
   toolSecondaryText: (call: ChatToolCallRenderItem) => string
+  copyMessage: (message: ChatRenderedMessage) => Promise<boolean>
   sessionKey?: string
   authToken?: string
 }>()
 
 const emit = defineEmits<{
-  copy: [message: ChatRenderedMessage]
   regenerate: [message: ChatRenderedMessage]
   toggleShare: [messageId: string]
   downloadArtifact: [artifact: ArtifactPayload]
@@ -125,6 +133,10 @@ const emit = defineEmits<{
   toggleToolItem: [renderKey: string]
   showToolResult: [content: string, title: string]
 }>()
+
+const { copyState, copyIconName, copyTitle, copyLiveText, onCopyClick } = useCopyFeedback(
+  () => props.copyMessage(props.message),
+)
 
 const legacyTimelineItems = computed<ChatStreamTimelineItem[]>(() => {
   const calls = props.message.toolCalls || []
@@ -301,6 +313,25 @@ function onMessageClick(event: MouseEvent) {
 .msg-action:hover {
   color: #a1a1aa;
   background: #f4f4f5;
+}
+
+.msg-action.msg-action--ok,
+.msg-action.msg-action--ok:hover {
+  color: var(--ok);
+}
+
+.msg-action.msg-action--err,
+.msg-action.msg-action--err:hover {
+  color: var(--danger);
+}
+
+.msg-copy-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .msg-ai-meta {

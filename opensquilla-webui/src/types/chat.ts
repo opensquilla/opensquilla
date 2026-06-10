@@ -73,7 +73,7 @@ export interface ChatStreamSegment {
 }
 
 export type ChatStreamTimelineItem =
-  | { type: 'text'; key: string; html: string }
+  | { type: 'text'; key: string; html: string; rawText?: string }
   | { type: 'tool-group'; key: string; group: ChatToolCallGroup }
 
 export type ChatRole = 'user' | 'assistant' | 'system' | 'error' | 'router' | string

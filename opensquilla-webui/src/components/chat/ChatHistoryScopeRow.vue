@@ -43,7 +43,7 @@ const visible = computed(() => props.state.hasMore || Boolean(scopeText.value))
   flex-wrap: wrap;
   width: min(calc(100% - 48px), 980px);
   margin: 0.5rem auto 0.75rem;
-  color: #6b716a;
+  color: var(--text-muted);
   font-size: 0.75rem;
 }
 
@@ -52,16 +52,16 @@ const visible = computed(() => props.state.hasMore || Boolean(scopeText.value))
   align-items: center;
   min-height: 30px;
   padding: 0.25rem 0.75rem;
-  border: 1px solid #d9d9de;
+  border: 1px solid var(--border-strong);
   border-radius: 999px;
-  background: #fff;
-  color: #303034;
+  background: var(--bg-surface);
+  color: var(--text);
   cursor: pointer;
 }
 
 .chat-history-scope__button:hover {
-  border-color: #b9bbc2;
-  background: #f8f8f9;
+  border-color: var(--border-focus);
+  background: var(--bg-elevated);
 }
 
 .chat-history-scope__button:disabled {
@@ -70,6 +70,6 @@ const visible = computed(() => props.state.hasMore || Boolean(scopeText.value))
 }
 
 .chat-history-scope__text {
-  color: #7c827b;
+  color: var(--text-dim);
 }
 </style>

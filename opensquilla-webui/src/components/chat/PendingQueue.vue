@@ -60,8 +60,8 @@ defineEmits<{
 <style scoped>
 .chat-pending {
   padding: 0.5rem 1rem;
-  border-top: 1px solid var(--border-color, #e5e5e5);
-  background: var(--bg-secondary, #f5f5f5);
+  border-top: 1px solid var(--border);
+  background: var(--bg-elevated);
   flex-shrink: 0;
 }
 
@@ -75,12 +75,12 @@ defineEmits<{
 .chat-pending-label {
   font-size: 0.8125rem;
   font-weight: 600;
-  color: var(--text-muted, #666);
+  color: var(--text-muted);
 }
 
 .chat-pending-clear {
   font-size: 0.8125rem;
-  color: var(--accent-color, #3b82f6);
+  color: var(--accent);
   background: none;
   border: none;
   cursor: pointer;
@@ -97,8 +97,8 @@ defineEmits<{
   align-items: center;
   gap: 0.25rem;
   padding: 0.25rem 0.5rem;
-  background: var(--bg-primary, #fff);
-  border: 1px solid var(--border-color, #e5e5e5);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   border-radius: 0.375rem;
   font-size: 0.8125rem;
   cursor: default;
@@ -114,13 +114,13 @@ defineEmits<{
   background: none;
   border: none;
   cursor: pointer;
-  color: var(--text-muted, #666);
+  color: var(--text-muted);
   font-size: 0.875rem;
   line-height: 1;
 }
 
 .chat-pending-chip-remove:hover {
-  color: #dc2626;
+  color: var(--danger);
 }
 
 .chat-pending-attch {

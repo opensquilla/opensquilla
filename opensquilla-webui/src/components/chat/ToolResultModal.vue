@@ -31,7 +31,7 @@ defineEmits<{
   position: fixed;
   inset: 0;
   z-index: 300;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--scrim);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -75,7 +75,7 @@ defineEmits<{
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
-  background: var(--bg-primary);
+  background: var(--bg);
   color: var(--text);
 }
 </style>

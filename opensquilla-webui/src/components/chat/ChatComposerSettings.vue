@@ -105,10 +105,10 @@ const normalizedElevatedMode = computed(() => {
   bottom: calc(100% + 8px);
   width: min(360px, calc(100vw - 48px));
   padding: 0.75rem;
-  border: 1px solid rgba(32, 39, 34, 0.14);
+  border: 1px solid var(--border-strong);
   border-radius: 8px;
-  background: #fff;
-  box-shadow: 0 18px 46px rgba(31, 35, 40, 0.16);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-xl);
   z-index: 30;
 }
 
@@ -120,7 +120,7 @@ const normalizedElevatedMode = computed(() => {
   margin-bottom: 0.625rem;
   font-size: 0.8125rem;
   font-weight: 700;
-  color: #202722;
+  color: var(--text);
 }
 
 .composer-settings__close {
@@ -132,20 +132,20 @@ const normalizedElevatedMode = computed(() => {
   border: 1px solid transparent;
   border-radius: 999px;
   background: transparent;
-  color: #6b716a;
+  color: var(--text-muted);
   cursor: pointer;
 }
 
 .composer-settings__close:hover {
-  background: #f5f5f5;
-  color: #202722;
+  background: var(--bg-hover);
+  color: var(--text);
 }
 
 .composer-settings__section {
   display: grid;
   gap: 0.375rem;
   padding: 0.625rem 0;
-  border-top: 1px solid #ececef;
+  border-top: 1px solid var(--border);
 }
 
 .composer-settings__section:first-of-type {
@@ -160,7 +160,7 @@ const normalizedElevatedMode = computed(() => {
 .composer-settings__label {
   font-size: 0.75rem;
   font-weight: 700;
-  color: #5f655f;
+  color: var(--text-muted);
 }
 
 .composer-settings__radio {
@@ -168,14 +168,14 @@ const normalizedElevatedMode = computed(() => {
   align-items: center;
   gap: 0.5rem;
   min-height: 28px;
-  color: #303034;
+  color: var(--text);
   font-size: 0.8125rem;
   cursor: pointer;
 }
 
 .composer-settings__radio input {
   margin: 0;
-  accent-color: #202722;
+  accent-color: var(--accent);
 }
 
 .composer-settings__radio.is-disabled {
@@ -184,7 +184,7 @@ const normalizedElevatedMode = computed(() => {
 }
 
 .composer-settings__hint {
-  color: #8a5a00;
+  color: var(--warn);
   font-size: 0.75rem;
   line-height: 1.35;
 }
@@ -197,17 +197,17 @@ const normalizedElevatedMode = computed(() => {
   width: 100%;
   min-height: 42px;
   padding: 0.5rem 0.625rem;
-  border: 1px solid #e2e2e6;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fbfbfc;
-  color: #202722;
+  background: var(--bg-elevated);
+  color: var(--text);
   text-align: left;
   cursor: pointer;
 }
 
 .composer-settings__switch:hover {
-  border-color: #c9c9d1;
-  background: #fff;
+  border-color: var(--border-focus);
+  background: var(--bg-surface);
 }
 
 .composer-settings__switch:disabled {
@@ -226,7 +226,7 @@ const normalizedElevatedMode = computed(() => {
 
 .composer-settings__switch small {
   margin-top: 1px;
-  color: #70776f;
+  color: var(--text-muted);
   font-size: 0.6875rem;
 }
 
@@ -236,7 +236,7 @@ const normalizedElevatedMode = computed(() => {
   width: 36px;
   height: 20px;
   border-radius: 999px;
-  background: #d6d6da;
+  background: var(--bg-hover);
   flex-shrink: 0;
   transition: background 0.16s ease;
 }
@@ -248,13 +248,13 @@ const normalizedElevatedMode = computed(() => {
   width: 14px;
   height: 14px;
   border-radius: 999px;
-  background: #fff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.22);
+  background: var(--bg-surface);
+  box-shadow: 0 1px 3px var(--shadow-color);
   transition: transform 0.16s ease;
 }
 
 .composer-settings__switch[aria-checked="true"] .composer-settings__switch-track {
-  background: #202722;
+  background: var(--accent);
 }
 
 .composer-settings__switch[aria-checked="true"] .composer-settings__switch-thumb {

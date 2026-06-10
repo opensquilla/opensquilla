@@ -56,13 +56,14 @@ const gridStyle = computed<Record<string, string>>(() => {
   margin: 0.375rem auto 0.25rem;
   padding: 0;
   user-select: none;
-  --router-accent: var(--accent, #f56600);
-  --router-bg: #fff;
-  --router-surface: #fafafa;
-  --router-hairline: rgba(24, 24, 27, 0.09);
-  --router-text: #27272a;
-  --router-muted: #8b8b93;
-  --router-danger: #dc2626;
+  --router-accent: var(--accent);
+  --router-bg: var(--bg-surface);
+  --router-surface: var(--bg-elevated);
+  --router-hairline: var(--hairline);
+  --router-text: var(--text);
+  --router-muted: var(--text-dim);
+  --router-danger: var(--danger);
+  --router-cell-bg: color-mix(in srgb, var(--bg-surface) 72%, transparent);
 }
 
 .router-fx-header {
@@ -107,7 +108,7 @@ const gridStyle = computed<Record<string, string>>(() => {
   gap: 4px;
   padding: 8px;
   background:
-    radial-gradient(rgba(24, 24, 27, 0.08) 0.7px, transparent 1.2px) 0 0 / 8px 8px,
+    radial-gradient(color-mix(in srgb, var(--router-text) 8%, transparent) 0.7px, transparent 1.2px) 0 0 / 8px 8px,
     var(--router-surface);
   border: 1px solid var(--router-hairline);
   border-radius: 8px;
@@ -121,7 +122,7 @@ const gridStyle = computed<Record<string, string>>(() => {
   justify-content: center;
   min-width: 0;
   padding: 0 6px;
-  background: rgba(255, 255, 255, 0.72);
+  background: var(--router-cell-bg);
   border: 1px solid var(--router-hairline);
   border-radius: 4px;
   color: var(--router-text);
@@ -135,9 +136,9 @@ const gridStyle = computed<Record<string, string>>(() => {
 }
 
 @keyframes router-fx-mole-pop {
-  0% { transform: translateY(0) scale(1); background: rgba(255, 255, 255, 0.72); }
-  35% { transform: translateY(-2px) scale(1.14); background: color-mix(in srgb, var(--router-accent) 14%, #fff); }
-  100% { transform: translateY(0) scale(1); background: rgba(255, 255, 255, 0.72); }
+  0% { transform: translateY(0) scale(1); background: var(--router-cell-bg); }
+  35% { transform: translateY(-2px) scale(1.14); background: color-mix(in srgb, var(--router-accent) 14%, var(--router-bg)); }
+  100% { transform: translateY(0) scale(1); background: var(--router-cell-bg); }
 }
 
 .router-fx-cell:nth-child(2),
@@ -195,14 +196,14 @@ const gridStyle = computed<Record<string, string>>(() => {
 
 .router-fx[data-settled="true"] .router-fx-cell.win {
   color: var(--router-accent);
-  background: color-mix(in srgb, var(--router-accent) 9%, #fff);
+  background: color-mix(in srgb, var(--router-accent) 9%, var(--router-bg));
   border-color: var(--router-accent);
   font-weight: 600;
 }
 
 .router-fx[data-settled="true"][data-source="fallback"] .router-fx-cell.win {
   color: var(--router-danger);
-  background: color-mix(in srgb, var(--router-danger) 9%, #fff);
+  background: color-mix(in srgb, var(--router-danger) 9%, var(--router-bg));
   border-color: var(--router-danger);
 }
 
@@ -213,7 +214,7 @@ const gridStyle = computed<Record<string, string>>(() => {
 @keyframes router-fx-winner-reveal {
   0%, 89% {
     color: var(--router-text);
-    background: rgba(255, 255, 255, 0.72);
+    background: var(--router-cell-bg);
     border-color: var(--router-hairline);
     font-weight: 400;
     transform: translateY(0);
@@ -221,7 +222,7 @@ const gridStyle = computed<Record<string, string>>(() => {
   }
   100% {
     color: var(--router-accent);
-    background: color-mix(in srgb, var(--router-accent) 9%, #fff);
+    background: color-mix(in srgb, var(--router-accent) 9%, var(--router-bg));
     border-color: var(--router-accent);
     font-weight: 600;
     transform: translateY(-1px);
@@ -232,7 +233,7 @@ const gridStyle = computed<Record<string, string>>(() => {
 @keyframes router-fx-winner-reveal-fallback {
   0%, 89% {
     color: var(--router-text);
-    background: rgba(255, 255, 255, 0.72);
+    background: var(--router-cell-bg);
     border-color: var(--router-hairline);
     font-weight: 400;
     transform: translateY(0);
@@ -240,7 +241,7 @@ const gridStyle = computed<Record<string, string>>(() => {
   }
   100% {
     color: var(--router-danger);
-    background: color-mix(in srgb, var(--router-danger) 9%, #fff);
+    background: color-mix(in srgb, var(--router-danger) 9%, var(--router-bg));
     border-color: var(--router-danger);
     font-weight: 600;
     transform: translateY(-1px);
@@ -356,7 +357,7 @@ const gridStyle = computed<Record<string, string>>(() => {
   margin-left: 12px;
   padding: 1px 6px;
   border-radius: 3px;
-  background: rgba(139, 139, 147, 0.16);
+  background: color-mix(in srgb, var(--router-muted) 16%, transparent);
   color: var(--router-muted);
   font-family: var(--font-mono);
   font-size: 9px;
@@ -379,8 +380,8 @@ const gridStyle = computed<Record<string, string>>(() => {
 
 .router-fx[data-observe="true"] .router-fx-cell.win {
   animation: none;
-  background: rgba(139, 139, 147, 0.08);
-  border-color: rgba(139, 139, 147, 0.35);
+  background: color-mix(in srgb, var(--router-muted) 8%, transparent);
+  border-color: color-mix(in srgb, var(--router-muted) 35%, transparent);
   color: var(--router-muted);
   font-weight: 500;
 }
@@ -401,7 +402,7 @@ const gridStyle = computed<Record<string, string>>(() => {
 .router-fx[data-static="true"] .router-fx-cell.win {
   animation: none;
   color: var(--router-accent);
-  background: color-mix(in srgb, var(--router-accent) 9%, #fff);
+  background: color-mix(in srgb, var(--router-accent) 9%, var(--router-bg));
   border-color: var(--router-accent);
   font-weight: 600;
   transform: translateY(-1px);
@@ -410,7 +411,7 @@ const gridStyle = computed<Record<string, string>>(() => {
 
 .router-fx[data-static="true"][data-source="fallback"] .router-fx-cell.win {
   color: var(--router-danger);
-  background: color-mix(in srgb, var(--router-danger) 9%, #fff);
+  background: color-mix(in srgb, var(--router-danger) 9%, var(--router-bg));
   border-color: var(--router-danger);
   box-shadow: 0 1px 0 color-mix(in srgb, var(--router-danger) 35%, transparent);
 }

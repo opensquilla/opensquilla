@@ -178,12 +178,12 @@ function onMessageClick(event: MouseEvent) {
 }
 
 .msg-ai--share-mode:hover {
-  background: rgba(184, 68, 4, 0.045);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
 }
 
 .msg-ai--share-selected {
-  background: rgba(184, 68, 4, 0.07);
-  box-shadow: inset 0 0 0 1px rgba(184, 68, 4, 0.16);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
 .chat-share-picker {
@@ -196,40 +196,40 @@ function onMessageClick(event: MouseEvent) {
   justify-content: center;
   width: 1.45rem;
   height: 1.45rem;
-  border: 1px solid rgba(32, 39, 34, 0.14);
+  border: 1px solid var(--border-strong);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.94);
-  color: #6b716a;
-  box-shadow: 0 6px 18px rgba(31, 35, 40, 0.08);
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  box-shadow: var(--shadow-md);
   cursor: pointer;
   transition: transform 0.14s ease, border-color 0.14s ease, color 0.14s ease;
 }
 
 .chat-share-picker:hover {
   transform: translateY(-1px);
-  border-color: rgba(184, 68, 4, 0.35);
-  color: #b84404;
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--accent);
 }
 
 .chat-share-picker.is-selected {
-  border-color: rgba(184, 68, 4, 0.45);
-  background: #b84404;
-  color: #fff;
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: var(--accent);
+  color: var(--accent-foreground);
 }
 
 .msg-ai-avatar {
   width: 1.75rem;
   height: 1.75rem;
   border-radius: 50%;
-  background: #fff;
-  border: 1px solid rgba(32, 39, 34, 0.08);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
   margin-top: 0.0625rem;
   overflow: hidden;
-  box-shadow: 0 1px 2px rgba(31, 35, 40, 0.05);
+  box-shadow: var(--shadow-xs);
 }
 
 .msg-ai-avatar__img {
@@ -249,7 +249,7 @@ function onMessageClick(event: MouseEvent) {
 .msg-ai-text {
   font-size: 0.875rem;
   line-height: 1.6;
-  color: #27272a;
+  color: var(--text);
   word-break: break-word;
   margin-bottom: 0.5rem;
 }
@@ -259,16 +259,16 @@ function onMessageClick(event: MouseEvent) {
 .msg-ai-text :deep(ul), .msg-ai-text :deep(ol) { margin: 0.375rem 0; padding-left: 1.25rem; }
 .msg-ai-text :deep(li) { margin: 0.125rem 0; }
 .msg-ai-text :deep(code) {
-  background: #f4f4f5;
+  background: var(--bg-hover);
   padding: 0.0625rem 0.25rem;
   border-radius: 3px;
   font-family: var(--font-mono);
   font-size: 0.8125rem;
-  color: #52525b;
+  color: var(--text-muted);
 }
 .msg-ai-text :deep(pre) {
-  background: #fafafa;
-  border: 1px solid #e4e4e7;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0.625rem;
   overflow-x: auto;
@@ -305,14 +305,14 @@ function onMessageClick(event: MouseEvent) {
   background: none;
   border: none;
   cursor: pointer;
-  color: #c4c4c4;
+  color: var(--text-dim);
   border-radius: 3px;
   font-size: 0.6875rem;
 }
 
 .msg-action:hover {
-  color: #a1a1aa;
-  background: #f4f4f5;
+  color: var(--text-muted);
+  background: var(--bg-hover);
 }
 
 .msg-action.msg-action--ok,
@@ -340,7 +340,7 @@ function onMessageClick(event: MouseEvent) {
   gap: 0.5rem;
   font-size: 0.8125rem;
   line-height: 1.35;
-  color: rgba(82, 88, 81, 0.56);
+  color: color-mix(in srgb, var(--text-muted) 56%, transparent);
 }
 
 .msg-ai-meta > span:not(.savings-indicator) {
@@ -359,15 +359,15 @@ function onMessageClick(event: MouseEvent) {
   min-height: 1.25rem;
   padding: 0 0.45rem;
   overflow: hidden;
-  border: 1px solid rgba(184, 68, 4, 0.18);
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
   border-radius: 999px;
   background:
-    linear-gradient(135deg, rgba(255, 247, 237, 0.96), rgba(255, 255, 255, 0.78) 48%, rgba(240, 253, 244, 0.9)),
-    radial-gradient(circle at 18% 0%, rgba(251, 191, 36, 0.34), transparent 42%);
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 8%, var(--bg-surface)), var(--bg-surface) 48%, color-mix(in srgb, var(--ok) 8%, var(--bg-surface))),
+    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--warn) 34%, transparent), transparent 42%);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.85),
-    0 5px 14px rgba(184, 68, 4, 0.08);
-  color: #9a4b00;
+    inset 0 1px 0 color-mix(in srgb, var(--bg-surface) 85%, transparent),
+    0 5px 14px color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--accent);
   font-weight: 650;
   isolation: isolate;
 }
@@ -377,7 +377,7 @@ function onMessageClick(event: MouseEvent) {
   position: absolute;
   inset: -40% auto -40% -60%;
   width: 42%;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.82), transparent);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--bg-surface) 82%, transparent), transparent);
   transform: skewX(-18deg);
   animation: savingsSweep 3.4s ease-in-out infinite;
   opacity: 0.72;

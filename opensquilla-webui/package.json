@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "npm run typecheck && vite build",
     "preview": "vite preview",
-    "check:architecture": "node scripts/check-architecture.mjs && node scripts/check-chat-security.mjs",
+    "check:architecture": "node scripts/check-architecture.mjs && node scripts/check-chat-security.mjs && node scripts/check-chat-colors.mjs",
     "typecheck": "npm run check:architecture && vue-tsc --noEmit",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",

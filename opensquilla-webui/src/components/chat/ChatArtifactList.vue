@@ -168,9 +168,9 @@ onUnmounted(() => {
 .msg-artifact-preview {
   display: block;
   overflow: hidden;
-  border: 1px solid rgba(32, 39, 34, 0.12);
+  border: 1px solid var(--border-strong);
   border-radius: 8px;
-  background: #f7f7f8;
+  background: var(--bg-elevated);
 }
 
 .msg-artifact-preview img {
@@ -185,7 +185,7 @@ onUnmounted(() => {
   min-height: 120px;
   align-items: center;
   justify-content: center;
-  color: #6f746f;
+  color: var(--text-muted);
   font-size: 0.78rem;
 }
 </style>

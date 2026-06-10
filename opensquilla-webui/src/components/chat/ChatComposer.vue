@@ -192,7 +192,7 @@ defineExpose<ChatComposerExpose>({
 .chat-composer {
   padding: 0.75rem 1.5rem 1.875rem;
   border-top: 0;
-  background: #fff;
+  background: var(--bg-surface);
   flex-shrink: 0;
 }
 
@@ -224,8 +224,8 @@ defineExpose<ChatComposerExpose>({
   align-items: center;
   gap: 0.375rem;
   padding: 0.25rem 0.5rem;
-  background: #f9fafb;
-  border: 1px solid var(--border-color, #e5e5e5);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
   border-radius: 0.375rem;
   font-size: 0.8125rem;
 }
@@ -245,7 +245,7 @@ defineExpose<ChatComposerExpose>({
 .attachment-chip__spinner {
   width: 12px;
   height: 12px;
-  border: 2px solid var(--text-muted, #666);
+  border: 2px solid var(--text-muted);
   border-top-color: transparent;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
@@ -260,7 +260,7 @@ defineExpose<ChatComposerExpose>({
 }
 
 .attachment-chip__meta {
-  color: var(--text-muted, #999);
+  color: var(--text-dim);
   font-size: 0.6875rem;
 }
 
@@ -274,39 +274,35 @@ defineExpose<ChatComposerExpose>({
   background: none;
   border: none;
   cursor: pointer;
-  color: var(--text-muted, #666);
+  color: var(--text-muted);
   font-size: 0.875rem;
 }
 
 .attachment-remove:hover {
-  color: #dc2626;
+  color: var(--danger);
 }
 
 .chat-input-panel {
   display: flex;
   flex-direction: column;
   min-height: 128px;
-  border: 1px solid #d9d9de;
+  border: 1px solid var(--border-strong);
   border-radius: 22px;
-  background: #fff;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-xs);
   position: relative;
 }
 
 .chat-composer--new-landing .chat-input-panel {
   min-height: 148px;
-  border-color: rgba(32, 39, 34, 0.10);
+  border-color: var(--border);
   border-radius: 24px;
-  box-shadow:
-    0 1px 2px rgba(31, 35, 40, 0.025),
-    0 18px 42px rgba(31, 35, 40, 0.065);
+  box-shadow: var(--shadow-lg);
 }
 
 .chat-composer--new-landing .chat-input-panel:focus-within {
-  border-color: rgba(32, 39, 34, 0.18);
-  box-shadow:
-    0 1px 2px rgba(31, 35, 40, 0.025),
-    0 22px 48px rgba(31, 35, 40, 0.08);
+  border-color: var(--border-focus);
+  box-shadow: var(--shadow-xl);
 }
 
 .chat-input-footer,
@@ -349,7 +345,7 @@ defineExpose<ChatComposerExpose>({
   border: 0;
   border-radius: 0;
   background: transparent;
-  color: #1a1a1a;
+  color: var(--text);
   font-size: 0.9375rem;
   line-height: 1.5;
   resize: none;
@@ -368,21 +364,8 @@ defineExpose<ChatComposerExpose>({
 }
 
 .chat-input-panel:focus-within {
-  border-color: #c9c9d1;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
-}
-
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0.5rem 0.75rem;
-  border-radius: 0.375rem;
-  font-size: 0.875rem;
-  font-weight: 500;
-  cursor: pointer;
-  border: 1px solid transparent;
-  transition: background 0.15s, border-color 0.15s;
+  border-color: var(--border-focus);
+  box-shadow: var(--shadow-sm);
 }
 
 .btn--icon {
@@ -395,56 +378,41 @@ defineExpose<ChatComposerExpose>({
 }
 
 .chat-plus-btn {
-  border: 1px solid #e1e1e5;
-  color: #303034;
-}
-
-.btn--ghost {
-  background: none;
-  border-color: transparent;
-  color: var(--text-muted, #666);
-}
-
-.btn--ghost:hover {
-  background: var(--bg-secondary, #f5f5f5);
-  color: var(--text-primary, #1a1a1a);
+  border: 1px solid var(--border);
+  color: var(--text);
 }
 
 .btn--ghost.is-active {
-  background: #f0f7f2;
-  color: #166534;
+  background: color-mix(in srgb, var(--ok) 12%, var(--bg-surface));
+  color: var(--ok);
 }
 
 .chat-send-btn.btn--primary {
-  background: #d6d6da;
-  color: #fff;
-  border-color: #d6d6da;
+  background: var(--bg-hover);
+  color: var(--text-dim);
+  border-color: var(--bg-hover);
 }
 
 .chat-send-btn.btn--primary:hover {
-  background: #c9c9ce;
-  border-color: #c9c9ce;
+  background: var(--bg-hover);
+  border-color: var(--bg-hover);
 }
 
 .chat-send-btn.btn--primary.is-ready {
-  background: #202722 !important;
-  border-color: #202722 !important;
-  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-foreground);
 }
 
 .chat-send-btn.btn--primary.is-ready:hover {
-  background: #111612 !important;
-  border-color: #111612 !important;
-}
-
-.chat-send-btn {
-  color: #fff;
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 .btn--danger {
-  background: #dc2626;
-  color: #fff;
-  border-color: #dc2626;
+  background: var(--danger);
+  color: var(--bg);
+  border-color: var(--danger);
 }
 
 .btn--danger:hover {

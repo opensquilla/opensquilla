@@ -34,7 +34,7 @@ defineProps<{
 
 .msg-system {
   font-size: 0.8125rem;
-  color: #a1a1aa;
+  color: var(--text-dim);
   padding: 0.25rem 0.625rem;
   border-radius: 6px;
   max-width: 70%;
@@ -42,8 +42,8 @@ defineProps<{
 }
 
 .msg-system.error {
-  background: #fef2f2;
-  color: #dc2626;
+  background: color-mix(in srgb, var(--danger) 10%, var(--bg-surface));
+  color: var(--danger);
 }
 
 .msg-system-label {
@@ -63,7 +63,7 @@ defineProps<{
 
 .chat-subagent-disclosure-body {
   padding: 0.5rem;
-  background: var(--bg-tertiary, #e5e5e5);
+  background: var(--bg-hover);
   border-radius: 0.25rem;
   font-size: 0.8125rem;
   overflow-x: auto;

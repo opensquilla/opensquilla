@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -170,6 +172,206 @@ def test_windows_backend_shell_argv_ignores_untrusted_comspec_for_shell_host(
     assert argv[4] == "echo ok"
 
 
+def test_windows_backend_maps_posix_tmp_to_session_temp_root(
+    tmp_path: Path,
+) -> None:
+    from opensquilla.tools.builtin import shell
+    from opensquilla.tools.types import ToolContext, current_tool_context
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    token = current_tool_context.set(
+        ToolContext(
+            workspace_dir=str(workspace),
+            session_key="agent:main:webchat:abc",
+        )
+    )
+    try:
+        command = shell._windows_translate_posix_tmp_references(
+            "python -m venv /tmp/opensquilla-deps-smoke/python-alt",
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    expected = (
+        workspace
+        / ".opensquilla"
+        / "tmp"
+        / "agent-main-webchat-abc"
+        / "opensquilla-deps-smoke"
+        / "python-alt"
+    )
+    assert str(expected) in command
+    assert "/tmp/" not in command
+    assert expected.parent.exists()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="Windows command shim test")
+def test_windows_shell_host_uses_in_memory_python_functions_without_cmd_shims(
+    tmp_path: Path,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    fake_powershell = tmp_path / "fake-powershell.cmd"
+    captured = tmp_path / "captured.txt"
+    fake_powershell.write_text(
+        "@echo off\r\n"
+        f'echo %* > "{captured}"\r\n',
+        encoding="utf-8",
+    )
+    env = {
+        "COMSPEC": r"C:\Windows\System32\cmd.exe",
+        "PATH": r"C:\Windows\System32",
+        "PATHEXT": ".COM;.EXE;.BAT;.CMD",
+        "SystemRoot": r"C:\Windows",
+        "TEMP": str(tmp_path),
+        "TMP": str(tmp_path),
+    }
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            shell._WINDOWS_SANDBOX_SHELL_HOST_CODE,
+            str(fake_powershell),
+            "Get-Command python",
+        ],
+        cwd=str(tmp_path),
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    shim_root = tmp_path / "opensquilla-python-shims"
+    assert not shim_root.exists()
+    captured_args = captured.read_text(encoding="utf-8")
+    assert "Set-Alias -Name python " in captured_args
+    assert "Set-Alias -Name python3 " in captured_args
+    assert "Set-Alias -Name py " in captured_args
+    assert os.path.basename(sys.executable).lower() in captured_args.lower()
+
+
+@pytest.mark.asyncio
+async def test_windows_proxy_allowlist_missing_fails_preflight_before_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.sandbox import integration as integration_mod
+    from opensquilla.sandbox.run_context import PackageBundleGrant, RunContext
+    from opensquilla.sandbox.run_mode import RunMode
+    from opensquilla.tools.types import ToolContext, current_tool_context
+
+    policy = _policy(tmp_path, network=NetworkMode.PROXY_ALLOWLIST)
+    request = SandboxRequest(
+        argv=("powershell", "-Command", "python -m pip install humanize"),
+        cwd=tmp_path,
+        action_kind="shell.exec",
+        policy=policy,
+        env={"PATH": r"C:\Windows\System32"},
+    )
+
+    class _Ledger:
+        async def record_denial(self, *args: object, **kwargs: object) -> None:
+            return None
+
+    runtime = SimpleNamespace(
+        backend=SimpleNamespace(name="windows_appcontainer"),
+        workspace=tmp_path,
+        ledger=_Ledger(),
+    )
+    monkeypatch.setattr(
+        integration_mod,
+        "_windows_proxy_allowlist_enforced",
+        lambda runtime: False,
+        raising=False,
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            workspace_dir=str(tmp_path),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.TRUSTED,
+                workspace=str(tmp_path),
+                bundles=(PackageBundleGrant(bundle_id="python-package-install"),),
+            ),
+        )
+    )
+    try:
+        result = await integration_mod.preflight_subprocess_managed_network(
+            request,
+            runtime,
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert result is not None
+    assert not isinstance(result, dict)
+    message = result.message
+    assert "Windows sandbox managed network" in message
+    assert "PROXY_ALLOWLIST" in message
+    assert "http_request" in message
+    assert result.retryable is False
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("New-Item -ItemType Directory -Path /tmp/proj", "/tmp/proj"),
+        ("mkdir /tmp/proj", "/tmp/proj"),
+        ("python -m venv /tmp/proj/.venv", "/tmp/proj/.venv"),
+        ("uv venv /tmp/proj/.venv", "/tmp/proj/.venv"),
+        ("Remove-Item -LiteralPath /tmp/proj/out.txt -Force", "/tmp/proj/out.txt"),
+        ("echo hello > /tmp/proj/out.txt", "/tmp/proj/out.txt"),
+        ('cmd /c "mkdir /tmp/proj"', "/tmp/proj"),
+        ('powershell -Command "New-Item -ItemType Directory -Path /tmp/proj"', "/tmp/proj"),
+    ],
+)
+def test_windows_shell_write_targets_cover_windows_commands(
+    command: str,
+    expected: str,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    assert expected in shell._windows_shell_write_targets(command)
+
+
+@pytest.mark.asyncio
+async def test_execute_code_windows_sandbox_rejects_environment_subprocess_misuse(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.tools.builtin import code_exec
+
+    runtime = SimpleNamespace(
+        effective=SimpleNamespace(sandbox_enabled=True),
+        backend=SimpleNamespace(name="windows_appcontainer"),
+        workspace=tmp_path,
+    )
+
+    async def fail_gate_action(*args: object, **kwargs: object) -> object:
+        raise AssertionError("execute_code should reject before sandbox gate_action")
+
+    monkeypatch.setattr(code_exec, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(code_exec, "gate_action", fail_gate_action)
+
+    payload = json.loads(
+        await code_exec.execute_code(
+            "import subprocess\n"
+            "subprocess.run(['python', '-m', 'venv', '/tmp/opensquilla-deps-smoke'])"
+        )
+    )
+
+    assert payload["status"] == "unsupported_tool_use"
+    assert payload["tool"] == "execute_code"
+    assert payload["recommended_tool"] == "exec_command"
+    assert "venv" in payload["message"]
+
+
 def test_non_windows_backend_shell_argv_uses_posix_shell() -> None:
     from opensquilla.tools.builtin import shell
 
@@ -235,6 +437,166 @@ async def test_exec_command_windows_backend_uses_pinned_powershell_argv(
     assert request.argv[1] == "-c"
     assert request.argv[3] == r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
     assert request.argv[4] == "echo ok"
+
+
+@pytest.mark.asyncio
+async def test_exec_command_windows_backend_translates_tmp_and_sets_session_temp_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.tools.builtin import shell
+    from opensquilla.tools.types import ToolContext, current_tool_context
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    policy = _policy(workspace)
+    runtime = SimpleNamespace(
+        effective=SimpleNamespace(sandbox_enabled=True),
+        backend=SimpleNamespace(name="windows_appcontainer"),
+        workspace=workspace,
+    )
+    gate_request = SimpleNamespace(
+        cwd=workspace,
+        action_kind="shell.exec",
+        policy=policy,
+        reason="",
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_gate_action(**kwargs: object) -> tuple[object, SandboxPolicy, object]:
+        captured["gate"] = kwargs
+        return object(), policy, gate_request
+
+    async def fake_run_under_backend(request: SandboxRequest, *, runtime: object) -> object:
+        captured["request"] = request
+        return SimpleNamespace(returncode=0, stdout="ok\n", stderr="", backend_notes=())
+
+    async def fake_preflight(request: SandboxRequest, runtime: object) -> object | None:
+        return None
+
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(shell, "_host_execution_allowed", lambda: False)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+    monkeypatch.setattr(shell, "gate_action", fake_gate_action)
+    monkeypatch.setattr(shell, "preflight_subprocess_managed_network", fake_preflight)
+    monkeypatch.setattr(shell, "run_under_backend", fake_run_under_backend)
+    token = current_tool_context.set(
+        ToolContext(
+            workspace_dir=str(workspace),
+            session_key="agent:main:webchat:abc",
+        )
+    )
+    try:
+        await shell.exec_command(
+            "python -m venv /tmp/opensquilla-deps-smoke/python-alt",
+            workdir=str(workspace),
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    expected = (
+        workspace
+        / ".opensquilla"
+        / "tmp"
+        / "agent-main-webchat-abc"
+        / "opensquilla-deps-smoke"
+        / "python-alt"
+    )
+    request = captured["request"]
+    assert isinstance(request, SandboxRequest)
+    assert str(expected) in request.argv[4]
+    assert "/tmp/" not in request.argv[4]
+    assert request.env["TEMP"] == str(expected.parent.parent)
+    assert request.env["TMP"] == request.env["TEMP"]
+    assert request.env["TMPDIR"] == request.env["TEMP"]
+    assert expected.parent.exists()
+
+
+@pytest.mark.asyncio
+async def test_exec_command_windows_python_install_queues_bundle_before_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
+    from opensquilla.sandbox import integration as integration_mod
+    from opensquilla.sandbox.run_context import RunContext
+    from opensquilla.sandbox.run_mode import RunMode
+    from opensquilla.tools.builtin import shell
+    from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
+
+    reset_approval_queue()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    venv_python = workspace / ".venv" / "Scripts" / "python.exe"
+    policy = _policy(workspace, network=NetworkMode.PROXY_ALLOWLIST)
+    runtime = SimpleNamespace(
+        effective=SimpleNamespace(sandbox_enabled=True),
+        backend=SimpleNamespace(name="windows_appcontainer"),
+        workspace=workspace,
+    )
+    gate_request = SimpleNamespace(
+        cwd=workspace,
+        action_kind="shell.exec",
+        policy=policy,
+        reason="",
+    )
+
+    async def fake_gate_action(**kwargs: object) -> tuple[object, SandboxPolicy, object]:
+        return object(), policy, gate_request
+
+    async def fail_run_under_backend(request: SandboxRequest, *, runtime: object) -> object:
+        raise AssertionError("package bundle approval should run before backend execution")
+
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setattr(
+        integration_mod,
+        "_windows_proxy_allowlist_enforced",
+        lambda runtime: True,
+    )
+    monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(shell, "_host_execution_allowed", lambda: False)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+    monkeypatch.setattr(shell, "gate_action", fake_gate_action)
+    monkeypatch.setattr(shell, "run_under_backend", fail_run_under_backend)
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(workspace),
+            session_key="s1",
+            run_mode="standard",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.STANDARD,
+                workspace=str(workspace),
+            ),
+        )
+    )
+    try:
+        payload = json.loads(
+            await shell.exec_command(
+                f'& "{venv_python}" -m pip install --no-cache-dir httpx[http2] pendulum',
+                workdir=str(workspace),
+            )
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert payload["status"] == "approval_required"
+    assert payload["approvalKind"] == "sandbox_network"
+    assert payload["bundle_id"] == "python-package-install"
+    pending = get_approval_queue().list_pending("exec")
+    assert len(pending) == 1
+    assert pending[0]["params"]["bundle_id"] == "python-package-install"
+    reset_approval_queue()
 
 
 @pytest.mark.asyncio

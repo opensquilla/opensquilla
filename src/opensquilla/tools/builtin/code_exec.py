@@ -147,6 +147,49 @@ def _code_needs_network(code: str) -> bool:
     return any(token in lowered for token in _CODE_NETWORK_TOKENS)
 
 
+def _windows_sandbox_backend_active(runtime: object | None) -> bool:
+    backend = getattr(runtime, "backend", None) if runtime is not None else None
+    backend_name = str(getattr(backend, "name", "") or "")
+    return backend_name.startswith("windows_")
+
+
+def _windows_environment_subprocess_misuse(code: str) -> str | None:
+    lowered = code.lower()
+    if "subprocess." not in lowered and "os.system" not in lowered and "os.popen" not in lowered:
+        return None
+    if re.search(r"\bpython(?:\d+(?:\.\d+)*)?\b[^\"'\n;]{0,120}-m[^\"'\n;]{0,40}venv", lowered):
+        return "python -m venv"
+    if re.search(r"\buv\b[^\"'\n;]{0,80}\bvenv\b", lowered):
+        return "uv venv"
+    if re.search(r"\b(?:pip|pip3)\b[^\"'\n;]{0,80}\binstall\b", lowered):
+        return "pip install"
+    if re.search(r"\buv\b[^\"'\n;]{0,80}\bpip\b[^\"'\n;]{0,80}\binstall\b", lowered):
+        return "uv pip install"
+    if re.search(r"\b(?:npm|pnpm|yarn)\b[^\"'\n;]{0,80}\b(?:add|ci|install)\b", lowered):
+        return "node package install"
+    if "venv" in lowered:
+        return "venv"
+    return None
+
+
+def _unsupported_windows_environment_subprocess_payload(reason: str) -> str:
+    return json.dumps(
+        {
+            "status": "unsupported_tool_use",
+            "tool": "execute_code",
+            "recommended_tool": "exec_command",
+            "reason": "windows_sandbox_environment_subprocess",
+            "message": (
+                "execute_code is for short Python calculations and import checks. "
+                f"Windows sandbox detected {reason} through a Python subprocess; "
+                "use exec_command so the Windows shell path translation, AppContainer ACL "
+                "grants, and managed network approvals run before the process starts."
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
 _MAX_TIMEOUT = 120
 _DEFAULT_TIMEOUT = 30
 _MAX_OUTPUT_CHARS = 50_000
@@ -316,6 +359,7 @@ async def execute_code(
     ctx = current_tool_context.get()
     runtime = get_runtime()
     from opensquilla.tools.builtin.shell import (
+        _apply_windows_session_tmp_env,
         _consume_host_once_current_call,
         _host_execution_allowed,
         _host_once_current_call,
@@ -325,6 +369,10 @@ async def execute_code(
     sandbox_enabled = bool(
         runtime is not None and runtime.effective.sandbox_enabled and not host_execution
     )
+    if sandbox_enabled and _windows_sandbox_backend_active(runtime):
+        misuse = _windows_environment_subprocess_misuse(code)
+        if misuse is not None:
+            return _unsupported_windows_environment_subprocess_payload(misuse)
     python_bin = _resolve_python_bin(sandbox_enabled=sandbox_enabled)
     workspace = (
         Path(ctx.workspace_dir).expanduser().resolve() if ctx and ctx.workspace_dir else None
@@ -343,6 +391,8 @@ async def execute_code(
     start_ns = time.monotonic_ns()
 
     safe_env = {k: v for k, v in os.environ.items() if k in _SAFE_ENV_KEYS}
+    if sandbox_enabled and _windows_sandbox_backend_active(runtime):
+        _apply_windows_session_tmp_env(safe_env)
     hints = LevelHints(needs_network=_code_needs_network(code))
 
     if runtime is None or (runtime.effective.sandbox_enabled and not host_execution):

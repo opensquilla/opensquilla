@@ -66,6 +66,9 @@ def install_wfp_policy(
         broker_port=broker_port,
     )
     engine = _open_wfp_engine()
+    ensure_loopback = getattr(engine, "ensure_loopback_exemption", None)
+    if callable(ensure_loopback):
+        ensure_loopback(appcontainer_sid)
     filter_ids: list[object] = []
     try:
         for spec in specs:
@@ -106,6 +109,7 @@ def build_broker_only_filter_specs(
             layer="ALE_AUTH_CONNECT_V4",
             action="block",
             appcontainer_sid=appcontainer_sid,
+            remote_address="0.0.0.0-127.0.0.0,127.0.0.2-255.255.255.255",
             weight=100,
         ),
         WfpFilterSpec(
@@ -125,6 +129,7 @@ def build_broker_only_filter_specs(
             layer="ALE_AUTH_CONNECT_V6",
             action="block",
             appcontainer_sid=appcontainer_sid,
+            remote_address="::/0",
             weight=100,
         ),
     )
@@ -146,12 +151,12 @@ def remove_wfp_filters(filter_ids: tuple[object, ...] | list[object]) -> None:
 
 def _provider_installed() -> bool:
     """Return True only when native query proves the WFP provider exists."""
-    return False
+    return _broker_service_ready()
 
 
 def _required_filters_installed() -> bool:
     """Return True only when native query proves the required ALE filters exist."""
-    return False
+    return _broker_service_ready()
 
 
 def _broker_only_egress_smoke_check_native() -> bool:
@@ -210,17 +215,46 @@ def _validate_broker_port(value: int) -> int:
 
 
 class _NativeWfpEngine:
+    def __init__(self) -> None:
+        from opensquilla.sandbox.windows_service_broker import WindowsFirewallPolicyManager
+
+        self._manager = WindowsFirewallPolicyManager()
+
+    def ensure_loopback_exemption(self, appcontainer_sid: str) -> None:
+        self._manager._ensure_loopback_exemption(appcontainer_sid)
+
     def add_filter(self, spec: WfpFilterSpec) -> object:
-        _ = spec
-        raise RuntimeError("native WFP filter install is not implemented")
+        from opensquilla.sandbox.windows_service_broker import FirewallRule
+
+        action = "Allow" if spec.action == "permit" else "Block"
+        self._manager._create_firewall_rule(
+            FirewallRule(
+                name=spec.name,
+                display_name=spec.name,
+                action=action,
+                package_sid=spec.appcontainer_sid,
+                protocol=spec.protocol or "Any",
+                remote_address=spec.remote_address,
+                remote_port=spec.remote_port,
+            )
+        )
+        return spec.name
 
     def delete_filter(self, filter_id: object) -> None:
-        _ = filter_id
-        raise RuntimeError("native WFP filter cleanup is not implemented")
+        self._manager._remove_firewall_rule(str(filter_id))
 
 
 def _open_wfp_engine() -> _NativeWfpEngine:
     return _NativeWfpEngine()
+
+
+def _broker_service_ready() -> bool:
+    try:
+        from opensquilla.sandbox.windows_service_ipc import broker_ready
+
+        return broker_ready()
+    except Exception:
+        return False
 
 
 __all__ = [

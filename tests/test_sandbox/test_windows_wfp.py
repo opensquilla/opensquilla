@@ -75,6 +75,16 @@ def test_managed_network_proxy_smoke_check_uses_broker_only_probe(monkeypatch) -
     assert calls == ["probe"]
 
 
+def test_wfp_smoke_check_accepts_ready_broker(monkeypatch) -> None:
+    from opensquilla.sandbox.backend import windows_wfp as mod
+
+    monkeypatch.setattr(mod.sys, "platform", "win32")
+    monkeypatch.setattr(mod, "_broker_service_ready", lambda: True)
+
+    assert mod.wfp_smoke_check() is True
+    assert mod.managed_network_proxy_smoke_check() is True
+
+
 def test_build_broker_only_filters_orders_allow_before_block() -> None:
     from opensquilla.sandbox.backend.windows_wfp import build_broker_only_filter_specs
 

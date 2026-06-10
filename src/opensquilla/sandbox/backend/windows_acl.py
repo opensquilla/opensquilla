@@ -61,7 +61,7 @@ async def grant_path_to_appcontainer(
     if sys.platform != "win32":
         raise SandboxBackendError("Windows ACL grants require native Windows")
 
-    if path.exists() and not path.is_dir():
+    if path.exists():
         await _run_icacls(build_icacls_traverse_argv(path.parent, appcontainer_sid), path.parent)
     argv = build_icacls_grant_argv(path, appcontainer_sid, mode=mode)
     await _run_icacls(argv, path)

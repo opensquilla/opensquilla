@@ -110,7 +110,8 @@ def test_tmp_descendant_is_temp() -> None:
     assert classify_path_target(Path("/tmp/something"), workspace=None) is PathTargetClass.TEMP
 
 
-def test_existing_user_owned_tmp_descendant_is_temp(tmp_path: Path) -> None:
+def test_existing_user_owned_tmp_descendant_is_temp(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TMP", str(tmp_path.parent))
     target = tmp_path / "existing"
     target.mkdir()
 

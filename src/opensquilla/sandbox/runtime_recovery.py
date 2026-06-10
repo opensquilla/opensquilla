@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import os
 import re
+import tempfile
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -54,7 +55,6 @@ _NETWORK_UNREACHABLE_MARKERS: tuple[str, ...] = (
 )
 _LOCALHOST_NAMES = {"localhost", "localhost.localdomain"}
 _URL_RE = re.compile(r"https?://[^\s'\"<>]+", re.IGNORECASE)
-_TMP_ROOT = Path("/tmp")
 
 
 def classify_network_failure(output: str) -> NetworkFailure | None:
@@ -83,6 +83,9 @@ def classify_path_target(
     *,
     workspace: Path | None,
 ) -> PathTargetClass:
+    if _looks_like_posix_tmp(path):
+        return PathTargetClass.TEMP
+
     try:
         candidate = path.expanduser().resolve(strict=False)
     except (OSError, RuntimeError):
@@ -100,7 +103,7 @@ def classify_path_target(
     if sensitive_path_marker(str(candidate), workspace=workspace_root) is not None:
         return PathTargetClass.SENSITIVE
 
-    if _is_relative_to(candidate, _TMP_ROOT):
+    if any(_is_relative_to(candidate, root) for root in _temp_roots()):
         return PathTargetClass.TEMP
 
     if _is_user_owned_or_creatable(candidate):
@@ -157,6 +160,17 @@ def explicit_network_hosts_from_command(command: str) -> tuple[str, ...]:
 
 
 def _is_user_owned_or_creatable(path: Path) -> bool:
+    if os.name == "nt":
+        try:
+            if path.exists():
+                return os.access(path, os.R_OK | os.W_OK)
+            for parent in path.parents:
+                if parent.exists():
+                    return os.access(parent, os.W_OK | os.X_OK)
+        except (OSError, RuntimeError):
+            return False
+        return False
+
     uid = getattr(os, "getuid", lambda: None)()
     if uid is None:
         return False
@@ -169,6 +183,29 @@ def _is_user_owned_or_creatable(path: Path) -> bool:
     except (OSError, RuntimeError):
         return False
     return False
+
+
+def _looks_like_posix_tmp(path: Path) -> bool:
+    text = path.as_posix()
+    return text == "/tmp" or text.startswith("/tmp/")
+
+
+def _temp_roots() -> tuple[Path, ...]:
+    roots: list[Path] = []
+    for value in (
+        os.environ.get("TMP"),
+        os.environ.get("TEMP"),
+        os.environ.get("TMPDIR"),
+        tempfile.gettempdir(),
+        "/tmp",
+    ):
+        if not value:
+            continue
+        try:
+            roots.append(Path(value).expanduser().resolve(strict=False))
+        except (OSError, RuntimeError):
+            continue
+    return tuple(dict.fromkeys(roots))
 
 
 def _is_relative_to(candidate: Path, root: Path) -> bool:

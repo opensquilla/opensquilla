@@ -74,11 +74,19 @@ async def test_windows_setup_status_uses_service_client(monkeypatch) -> None:
     assert calls == [r"\\.\pipe\custom"]
 
 
-async def test_windows_service_client_fails_closed_by_default() -> None:
+async def test_windows_service_client_fails_closed_when_launcher_fails(tmp_path) -> None:
     from opensquilla.sandbox.setup_state import SandboxSetupState
     from opensquilla.sandbox.windows_service_client import WindowsSandboxServiceClient
 
-    client = WindowsSandboxServiceClient()
+    async def transport(payload):
+        assert payload == {"op": "health"}
+        raise ConnectionError("missing broker")
+
+    client = WindowsSandboxServiceClient(
+        state_dir=tmp_path,
+        transport=transport,
+        broker_launcher=lambda state: (_ for _ in ()).throw(RuntimeError("blocked")),
+    )
 
     health = await client.health()
     setup = await client.ensure_setup()
@@ -87,3 +95,4 @@ async def test_windows_service_client_fails_closed_by_default() -> None:
     assert health.requires_admin is True
     assert setup.state is SandboxSetupState.FAILED
     assert setup.requires_admin is True
+    assert setup.detail == "blocked"

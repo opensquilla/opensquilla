@@ -124,7 +124,10 @@ _SANDBOX_NETWORK_FAILURE_MARKERS: tuple[str, ...] = (
 _SHELL_NULL_REDIRECT_RE = re.compile(
     r"(?:(?<=^)|(?<=[\s;|&]))\d*[<>]{1,2}\s*/dev/null(?=$|[\s;|&])"
 )
-_BACKEND_NOTE_PATH_RE = re.compile(r"(?:~)?/[^\s'\"`$(){}\[\]<>;,|&]+")
+_BACKEND_NOTE_PATH_RE = re.compile(
+    r"(?:[A-Za-z]:[\\/]|\\\\)[^\s'\"`$(){}\[\]<>;,|&]+"
+    r"|(?:~)?/[^\s'\"`$(){}\[\]<>;,|&]+"
+)
 _BACKEND_NOTE_WRITE_MARKERS = (
     "bind",
     "create",
@@ -143,6 +146,45 @@ _BACKEND_NOTE_READ_MARKERS = (
     "read",
     "stat",
 )
+_WINDOWS_POSIX_TMP_QUOTED_RE = re.compile(
+    r"(?P<quote>['\"])(?P<path>/tmp(?:/[^'\"]*)?)(?P=quote)"
+)
+_WINDOWS_POSIX_TMP_BARE_RE = re.compile(
+    r"(?<![A-Za-z0-9_./:\\-])(?P<path>/tmp(?:/[^\s'\";&|<>)]*)?)"
+)
+_WINDOWS_SHELL_ARG_RE = re.compile(r'"[^"]*"|\'[^\']*\'|\S+')
+_WINDOWS_SHELL_PATH_FLAGS = frozenset(
+    {
+        "-destination",
+        "-filepath",
+        "-literalpath",
+        "-name",
+        "-path",
+    }
+)
+_WINDOWS_SHELL_VALUE_FLAGS = frozenset(
+    {
+        "-encoding",
+        "-erroraction",
+        "-errorvariable",
+        "-ev",
+        "-exclude",
+        "-filter",
+        "-include",
+        "-inputobject",
+        "-itemtype",
+        "-outvariable",
+        "-ov",
+        "-stream",
+        "-type",
+        "-value",
+        "-warningaction",
+        "-warningvariable",
+    }
+)
+_WINDOWS_SHELL_CREATE_COMMANDS = frozenset({"md", "mkdir", "new-item", "ni"})
+_WINDOWS_SHELL_CONTENT_COMMANDS = frozenset({"add-content", "out-file", "set-content"})
+_WINDOWS_SHELL_REMOVE_COMMANDS = frozenset({"del", "erase", "remove-item", "rm"})
 PROCESS_ACTIONS: frozenset[str] = frozenset(
     {"eof", "kill", "list", "log", "poll", "remove", "submit", "write"}
 )
@@ -446,6 +488,71 @@ def _workspace_root_for_path_access() -> Path | None:
     return None
 
 
+def _windows_sandbox_backend_active(runtime: object | None = None) -> bool:
+    runtime = get_runtime() if runtime is None else runtime
+    backend = getattr(runtime, "backend", None) if runtime is not None else None
+    backend_name = str(getattr(backend, "name", "") or "")
+    return backend_name.startswith("windows_")
+
+
+def _windows_session_slug() -> str:
+    ctx = current_tool_context.get()
+    raw = str(getattr(ctx, "session_key", None) or "default")
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw).strip("-._")
+    if not slug:
+        return "default"
+    return slug[:80]
+
+
+def _windows_session_tmp_root() -> Path | None:
+    workspace = _workspace_root_for_path_access()
+    if workspace is None:
+        return None
+    return (
+        workspace
+        / ".opensquilla"
+        / "tmp"
+        / _windows_session_slug()
+    ).resolve(strict=False)
+
+
+def _windows_translate_posix_tmp_path(path: str) -> str:
+    if path != "/tmp" and not path.startswith("/tmp/"):
+        return path
+    root = _windows_session_tmp_root()
+    if root is None:
+        return path
+    tail = path.removeprefix("/tmp").lstrip("/")
+    mapped = root.joinpath(*[part for part in tail.split("/") if part]) if tail else root
+    mapped.parent.mkdir(parents=True, exist_ok=True)
+    if not tail:
+        mapped.mkdir(parents=True, exist_ok=True)
+    return str(mapped)
+
+
+def _windows_translate_posix_tmp_references(command: str) -> str:
+    def replace_quoted(match: re.Match[str]) -> str:
+        quote = match.group("quote")
+        return f"{quote}{_windows_translate_posix_tmp_path(match.group('path'))}{quote}"
+
+    translated = _WINDOWS_POSIX_TMP_QUOTED_RE.sub(replace_quoted, command)
+    return _WINDOWS_POSIX_TMP_BARE_RE.sub(
+        lambda match: _windows_translate_posix_tmp_path(match.group("path")),
+        translated,
+    )
+
+
+def _apply_windows_session_tmp_env(env: dict[str, str]) -> None:
+    root = _windows_session_tmp_root()
+    if root is None:
+        return
+    root.mkdir(parents=True, exist_ok=True)
+    value = str(root)
+    env["TEMP"] = value
+    env["TMP"] = value
+    env["TMPDIR"] = value
+
+
 def _sandbox_shell_policy_cwd(cwd: str | None) -> Path | None:
     workspace = _workspace_root_for_path_access()
     if workspace is not None:
@@ -706,6 +813,23 @@ def _handle_simple_delete_script(script):
     return 0
 
 
+def _ps_single_quote(value):
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _python_alias_prelude():
+    target = _ps_single_quote(sys.executable)
+    return (
+        f"Set-Alias -Name python -Value {target} -Scope Local; "
+        f"Set-Alias -Name python3 -Value {target} -Scope Local; "
+        f"Set-Alias -Name py -Value {target} -Scope Local; "
+    )
+
+
+def _with_python_aliases(command):
+    return _python_alias_prelude() + command
+
+
 def main():
     if len(sys.argv) != 3:
         sys.stderr.write("windows sandbox shell host expects powershell path and command")
@@ -727,7 +851,7 @@ def main():
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
-            effective_command,
+            _with_python_aliases(effective_command),
         ],
         check=False,
     )
@@ -756,6 +880,186 @@ def _sandbox_shell_backend_cwd(cwd: str | None, request: SandboxRequest) -> Path
     if cwd:
         return Path(cwd).expanduser().resolve(strict=False)
     return request.cwd
+
+
+def _windows_strip_outer_quotes(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        return value[1:-1]
+    return value
+
+
+def _windows_shell_tokens(script: str) -> list[str]:
+    return [_windows_strip_outer_quotes(token) for token in _WINDOWS_SHELL_ARG_RE.findall(script)]
+
+
+def _windows_split_statements(script: str) -> list[str]:
+    statements: list[str] = []
+    current: list[str] = []
+    quote = ""
+    escaped = False
+    for char in script:
+        if escaped:
+            current.append(char)
+            escaped = False
+            continue
+        if char == "`":
+            current.append(char)
+            escaped = True
+            continue
+        if quote:
+            current.append(char)
+            if char == quote:
+                quote = ""
+            continue
+        if char in "'\"":
+            current.append(char)
+            quote = char
+            continue
+        if char in ";&":
+            statement = "".join(current).strip()
+            if statement:
+                statements.append(statement)
+            current = []
+            continue
+        current.append(char)
+    statement = "".join(current).strip()
+    if statement:
+        statements.append(statement)
+    return statements
+
+
+def _windows_shell_command_name(token: str) -> str:
+    name = ntpath.basename(token).lower()
+    return name.removesuffix(".exe")
+
+
+def _windows_shell_command_after_option(
+    tokens: list[str],
+    options: frozenset[str],
+) -> str | None:
+    for index, token in enumerate(tokens[1:], start=1):
+        if token.lower() in options and index + 1 < len(tokens):
+            return " ".join(tokens[index + 1 :])
+    return None
+
+
+def _windows_shell_token_looks_like_path(token: str) -> bool:
+    if not token or token == "-":
+        return False
+    lowered = token.lower()
+    if lowered.startswith(("http://", "https://")):
+        return False
+    return (
+        lowered in {".venv", "venv"}
+        or token.startswith(("/", "\\", "./", ".\\", "../", "..\\"))
+        or ntpath.isabs(token)
+        or "\\" in token
+        or "/" in token
+    )
+
+
+def _windows_paths_from_tokens(tokens: list[str], *, positional: bool = True) -> list[str]:
+    paths: list[str] = []
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        lowered = token.lower()
+        if lowered in _WINDOWS_SHELL_PATH_FLAGS and index + 1 < len(tokens):
+            paths.append(tokens[index + 1])
+            index += 2
+            continue
+        if any(lowered.startswith(f"{flag}:") for flag in _WINDOWS_SHELL_PATH_FLAGS):
+            paths.append(token.split(":", 1)[1])
+            index += 1
+            continue
+        if lowered in _WINDOWS_SHELL_VALUE_FLAGS:
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        if positional and _windows_shell_token_looks_like_path(token):
+            paths.append(token)
+        index += 1
+    return paths
+
+
+def _windows_python_venv_targets(tokens: list[str]) -> list[str]:
+    if len(tokens) < 4:
+        return []
+    command = _windows_shell_command_name(tokens[0])
+    if not re.fullmatch(r"py|python(?:\d+(?:\.\d+)*)?", command):
+        return []
+    if tokens[1].lower() != "-m" or tokens[2].lower() != "venv":
+        return []
+    for token in tokens[3:]:
+        if not token.startswith("-"):
+            return [token]
+    return []
+
+
+def _windows_uv_venv_targets(tokens: list[str]) -> list[str]:
+    if len(tokens) < 2 or _windows_shell_command_name(tokens[0]) != "uv":
+        return []
+    if tokens[1].lower() != "venv":
+        return []
+    index = 2
+    while index < len(tokens):
+        token = tokens[index]
+        lowered = token.lower()
+        if lowered in {"--python", "-p", "--seed", "--prompt"}:
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return [token]
+    return [".venv"]
+
+
+def _windows_shell_write_targets(command: str) -> list[str]:
+    targets: list[str] = []
+    for target in _basic_shell_write_targets(command):
+        if target not in targets:
+            targets.append(target)
+    for statement in _windows_split_statements(command):
+        tokens = _windows_shell_tokens(statement)
+        if not tokens:
+            continue
+        command_name = _windows_shell_command_name(tokens[0])
+        nested: str | None = None
+        if command_name == "cmd":
+            nested = _windows_shell_command_after_option(tokens, frozenset({"/c", "/k"}))
+        elif command_name in {"powershell", "pwsh"}:
+            nested = _windows_shell_command_after_option(
+                tokens,
+                frozenset({"-c", "-command"}),
+            )
+        if nested is not None:
+            for target in _windows_shell_write_targets(_windows_strip_outer_quotes(nested)):
+                if target not in targets:
+                    targets.append(target)
+            continue
+        if command_name in _WINDOWS_SHELL_REMOVE_COMMANDS:
+            for target in _windows_paths_from_tokens(tokens):
+                if target not in targets:
+                    targets.append(target)
+            continue
+        if command_name in _WINDOWS_SHELL_CREATE_COMMANDS:
+            for target in _windows_paths_from_tokens(tokens):
+                if target not in targets:
+                    targets.append(target)
+            continue
+        if command_name in _WINDOWS_SHELL_CONTENT_COMMANDS:
+            for target in _windows_paths_from_tokens(tokens):
+                if target not in targets:
+                    targets.append(target)
+            continue
+        for target in (*_windows_python_venv_targets(tokens), *_windows_uv_venv_targets(tokens)):
+            if target not in targets:
+                targets.append(target)
+    return targets
 
 
 def _active_sandbox_mounts() -> list[dict[str, object]]:
@@ -974,12 +1278,21 @@ def _shell_target_is_relative(raw_target: str) -> bool:
     return not Path(cleaned).expanduser().is_absolute()
 
 
-def _shell_write_targets(command: str) -> list[str]:
+def _basic_shell_write_targets(command: str) -> list[str]:
     targets: list[str] = []
     redirection_pattern = r"(?:^|\s)(?:\d?>{1,2}|&>{1,2})\s*(['\"]?)([^'\"\s|&;]+)\1"
     targets.extend(match.group(2) for match in re.finditer(redirection_pattern, command))
     tee_pattern = r"(?:^|\s)tee(?:\s+-[A-Za-z]+)*\s+(['\"]?)([^'\"\s|&;]+)\1"
     targets.extend(match.group(2) for match in re.finditer(tee_pattern, command))
+    return targets
+
+
+def _shell_write_targets(command: str) -> list[str]:
+    targets = _basic_shell_write_targets(command)
+    if _windows_sandbox_backend_active():
+        for target in _windows_shell_write_targets(command):
+            if target not in targets:
+                targets.append(target)
     return targets
 
 
@@ -1098,8 +1411,13 @@ def _resolve_background_timeout(timeout: float | int | None) -> float:
 def _effective_workdir(workdir: str | None) -> str | None:
     ctx = current_tool_context.get()
     if workdir:
-        reject_foreign_host_path(workdir, platform=os.name)
-        raw = Path(workdir).expanduser()
+        translated = (
+            _windows_translate_posix_tmp_path(workdir)
+            if _windows_sandbox_backend_active()
+            else workdir
+        )
+        reject_foreign_host_path(translated, platform=os.name)
+        raw = Path(translated).expanduser()
         if not raw.is_absolute() and ctx and ctx.workspace_dir:
             return str((Path(ctx.workspace_dir).expanduser().resolve() / raw).resolve())
         return str(raw.resolve())
@@ -1432,6 +1750,12 @@ async def exec_command(
 ) -> str:
     import os
 
+    runtime = get_runtime()
+    if _windows_sandbox_backend_active(runtime):
+        command = _windows_translate_posix_tmp_references(command)
+        if workdir:
+            workdir = _windows_translate_posix_tmp_path(workdir)
+
     result = check_safe_bin(command)
     cwd = _effective_workdir(workdir)
     profile = _profile_shell_command(command)
@@ -1501,8 +1825,9 @@ async def exec_command(
 
     host_execution = _host_execution_allowed()
 
-    runtime = get_runtime()
     if runtime is not None and runtime.effective.sandbox_enabled and not host_execution:
+        if _windows_sandbox_backend_active(runtime):
+            _apply_windows_session_tmp_env(merged_env)
         decision, policy, request = await gate_action(
             action_kind="shell.exec",
             argv=("exec_command", command),
@@ -1605,6 +1930,15 @@ async def exec_command(
                             network_proxy=None,
                         )
                     )
+                preflight = await preflight_subprocess_managed_network(
+                    retry_request,
+                    runtime,
+                    consume_temporary_grants=False,
+                )
+                if isinstance(preflight, DenialResult):
+                    return json.dumps(preflight.to_dict())
+                if isinstance(preflight, dict):
+                    return json.dumps(preflight)
                 managed_network = await prepare_subprocess_managed_network_proxy(
                     retry_request,
                     runtime=runtime,
@@ -1704,6 +2038,12 @@ async def background_process(
     timeout: float = _DEFAULT_BACKGROUND_TIMEOUT,
     approval_id: str | None = None,
 ) -> str:
+    runtime = get_runtime()
+    if _windows_sandbox_backend_active(runtime):
+        command = _windows_translate_posix_tmp_references(command)
+        if workdir:
+            workdir = _windows_translate_posix_tmp_path(workdir)
+
     result = check_safe_bin(command)
     cwd = _effective_workdir(workdir)
     profile = _profile_shell_command(command)
@@ -1763,13 +2103,15 @@ async def background_process(
 
     host_execution = _host_execution_allowed()
 
-    runtime = get_runtime()
     if runtime is not None and runtime.effective.sandbox_enabled and not host_execution:
+        merged_env = dict(os.environ)
+        if _windows_sandbox_backend_active(runtime):
+            _apply_windows_session_tmp_env(merged_env)
         decision, policy, request = await gate_action(
             action_kind="shell.background",
             argv=("background_process", command),
             cwd=_sandbox_shell_policy_cwd(cwd),
-            env=dict(os.environ),
+            env=merged_env,
             hints=_level_hints_for_shell_profile(
                 profile,
                 warnlist_handled=result.needs_approval,
@@ -1782,7 +2124,7 @@ async def background_process(
             cwd=_sandbox_shell_backend_cwd(cwd, request),
             action_kind=request.action_kind,
             policy=policy,
-            env=dict(os.environ),
+            env=merged_env,
         )
         preflight = await preflight_subprocess_managed_network(backend_request, runtime)
         if isinstance(preflight, DenialResult):

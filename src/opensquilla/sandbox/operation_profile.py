@@ -16,7 +16,7 @@ _ENV_CREATE_OPTIONS_WITH_VALUE = frozenset({"--prompt", "-p", "--python"})
 _PYTHON_ENV_COMMANDS = frozenset({"virtualenv"})
 _PYTHON_PROJECT_INSTALL_COMMANDS = frozenset({"poetry", "rye", "pixi"})
 _JAVA_BUILD_COMMANDS = frozenset({"mvn", "mvnw", "gradle", "gradlew"})
-_SHELL_WRAPPERS = frozenset({"bash", "dash", "fish", "ksh", "sh", "zsh"})
+_SHELL_WRAPPERS = frozenset({"bash", "dash", "fish", "ksh", "powershell", "pwsh", "sh", "zsh"})
 _DESTRUCTIVE_COMMANDS = frozenset({"del", "erase", "format", "mkfs", "remove-item", "rm"})
 _SHELL_SEPARATORS = frozenset({"&&", "||", ";", "|"})
 _URL_NETWORK_COMMANDS = frozenset({"aria2", "aria2c", "curl", "http", "httpie", "https", "wget"})
@@ -50,6 +50,9 @@ class OperationProfile:
 
 def classify_command(argv: tuple[str, ...] | list[str]) -> OperationProfile:
     parts = tuple(str(p) for p in argv)
+    windows_shell_host_command = _windows_shell_host_command(parts)
+    if windows_shell_host_command is not None:
+        return classify_command(("powershell", "-Command", windows_shell_host_command))
     lowered = tuple(p.lower() for p in parts)
     unwrapped = _strip_command_wrapper(lowered)
     if unwrapped != lowered:
@@ -319,6 +322,7 @@ def _shell_script_is_destructive(lowered: tuple[str, ...]) -> bool:
 
 
 def _shell_tokens(script: str) -> tuple[str, ...]:
+    script = _strip_outer_quotes(script.strip())
     try:
         lexer = shlex.shlex(
             script,
@@ -388,9 +392,31 @@ def _shell_commands(parts: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
 
 def _strip_assignment_prefix(parts: tuple[str, ...]) -> tuple[str, ...]:
     index = 0
-    while index < len(parts) and _ASSIGNMENT_RE.fullmatch(parts[index].lower()):
-        index += 1
+    while index < len(parts):
+        token = _strip_outer_quotes(parts[index]).lower()
+        if token == "&" or _ASSIGNMENT_RE.fullmatch(token):
+            index += 1
+            continue
+        break
     return parts[index:]
+
+
+def _windows_shell_host_command(parts: tuple[str, ...]) -> str | None:
+    if len(parts) < 5:
+        return None
+    if parts[1].lower() != "-c":
+        return None
+    if "windows sandbox shell host expects powershell path and command" not in parts[2].lower():
+        return None
+    command = parts[-1].strip()
+    return command or None
+
+
+def _strip_outer_quotes(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        return value[1:-1]
+    return value
 
 
 def _strip_command_wrapper(lowered: tuple[str, ...]) -> tuple[str, ...]:
@@ -434,8 +460,13 @@ def _is_shell_command_option(part: str) -> bool:
 
 
 def _command_name(value: str) -> str:
+    value = _strip_outer_quotes(value)
     name = value.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-    return name.removesuffix(".exe")
+    lowered = name.lower()
+    for suffix in (".exe", ".cmd", ".bat"):
+        if lowered.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
 
 
 def _path_args_from_argv(parts: tuple[str, ...]) -> tuple[str, ...]:

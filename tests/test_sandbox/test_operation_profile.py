@@ -19,12 +19,49 @@ def test_classify_python_package_install_variants() -> None:
         ("python3", "-m", "pip", "install", "requests"),
         ("python3.11", "-m", "pip", "install", "requests"),
         ("/usr/bin/python3", "-m", "pip", "install", "requests"),
+        ("python.cmd", "-m", "pip", "install", "requests"),
         ("uv", "pip", "install", "--no-cache-dir", "requests"),
     ):
         profile = classify_command(command)
         assert profile.name == "package_install"
         assert profile.package_manager == "python"
         assert profile.needs_network is True
+
+
+def test_classify_python_package_install_in_powershell_call_operator() -> None:
+    script = (
+        '& "D:\\opensquilla\\.tmp\\proj\\.venv\\Scripts\\python.exe" '
+        "-m pip install --no-cache-dir httpx[http2] pendulum"
+    )
+    for command in (
+        ("sh", "-lc", script),
+        ("powershell", "-Command", script),
+        ("pwsh", "-c", script),
+    ):
+        profile = classify_command(command)
+        assert profile.name == "package_install"
+        assert profile.package_manager == "python"
+        assert profile.needs_network is True
+
+
+def test_classify_python_package_install_in_windows_shell_host_wrapper() -> None:
+    script = (
+        '& "D:\\opensquilla\\.tmp\\proj\\.venv\\Scripts\\python.exe" '
+        "-m pip install --no-cache-dir httpx[http2] pendulum"
+    )
+    profile = classify_command(
+        (
+            "D:\\opensquilla\\.venv\\Scripts\\python.exe",
+            "-c",
+            "windows sandbox shell host expects powershell path and command",
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            script,
+        )
+    )
+
+    assert profile.name == "package_install"
+    assert profile.package_manager == "python"
+    assert profile.needs_network is True
 
 
 def test_pip_help_install_is_not_package_install() -> None:

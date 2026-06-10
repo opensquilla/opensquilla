@@ -7,6 +7,7 @@ import pytest
 
 from opensquilla.sandbox.backend.windows_acl import (
     build_icacls_grant_argv,
+    build_icacls_traverse_argv,
     grant_path_to_appcontainer,
 )
 from opensquilla.sandbox.types import SandboxBackendError
@@ -60,3 +61,29 @@ async def test_grant_path_to_appcontainer_fails_closed_on_non_windows(
 
     with pytest.raises(SandboxBackendError, match="Windows ACL grants require native Windows"):
         await grant_path_to_appcontainer(Path("/workspace"), "S-1-15-2-123", mode="rw")
+
+
+@pytest.mark.asyncio
+async def test_grant_path_to_appcontainer_grants_parent_traverse_for_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "venv-target"
+    target.mkdir()
+    captured: list[tuple[tuple[str, ...], Path]] = []
+
+    async def fake_run_icacls(argv: tuple[str, ...], path: Path) -> None:
+        captured.append((argv, path))
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        "opensquilla.sandbox.backend.windows_acl._run_icacls",
+        fake_run_icacls,
+    )
+
+    await grant_path_to_appcontainer(target, "S-1-15-2-123", mode="rw")
+
+    assert captured == [
+        (build_icacls_traverse_argv(target.parent, "S-1-15-2-123"), target.parent),
+        (build_icacls_grant_argv(target, "S-1-15-2-123", mode="rw"), target),
+    ]

@@ -196,6 +196,7 @@ async def test_image_followup_routes_vision_and_replays_inline_history_image() -
             max_iterations=1,
             model_id=routed.model,
             model_capabilities=ModelCapabilities(supports_vision=True),
+            preserve_historical_images=True,
         ),
     )
     await runner._load_history(agent, key)
@@ -354,6 +355,7 @@ async def test_historical_image_ref_replays_from_real_material_store(tmp_path: P
         config=AgentConfig(
             max_iterations=1,
             model_capabilities=ModelCapabilities(supports_vision=True),
+            preserve_historical_images=True,
         ),
     )
     await runner._load_history(agent, key)
@@ -473,6 +475,34 @@ async def test_text_model_history_keeps_image_as_marker_not_provider_image() -> 
     )
     await runner._load_history(agent, key)
     events = [event async for event in agent.run_turn("Continue as text.")]
+
+    assert any(event.kind == "done" for event in events)
+    sent_messages = provider.calls[0]["messages"]
+    assert not any(_message_has_image(message) for message in sent_messages)
+    assert "historical attachment omitted" in str(sent_messages[0].content)
+
+
+@pytest.mark.asyncio
+async def test_text_only_followup_does_not_replay_history_image_on_vision_model() -> None:
+    manager = _FakeSessionManager()
+    key = "agent:main:image-followup-text-only-vision-model"
+    config = GatewayConfig()
+    runner = TurnRunner(provider_selector=MagicMock(), session_manager=manager, config=config)
+    await manager.create(key)
+    await manager.append_message(key, "user", _inline_image_envelope("Describe this image."))
+    await manager.append_message(key, "assistant", "It shows a small test image.")
+    await manager.append_message(key, "user", "Now write a Python script.")
+
+    provider = _CapturingProvider()
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            max_iterations=1,
+            model_capabilities=ModelCapabilities(supports_vision=True),
+        ),
+    )
+    await runner._load_history(agent, key)
+    events = [event async for event in agent.run_turn("Now write a Python script.")]
 
     assert any(event.kind == "done" for event in events)
     sent_messages = provider.calls[0]["messages"]

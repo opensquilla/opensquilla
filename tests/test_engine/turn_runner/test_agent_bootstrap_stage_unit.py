@@ -256,6 +256,7 @@ async def test_case01_success_all_defaults() -> None:
     assert o.agent_config.max_tokens == 4096
     assert o.agent_config.context_window_tokens == 200_000
     assert o.agent_config.max_history_turns == 0
+    assert o.agent_config.preserve_historical_images is False
     assert o.agent_config.length_capped_continuations == 1
     assert o.agent_config.metadata["agent_max_iterations"] == 10
     assert o.agent_config.metadata["agent_max_iterations_source"] == "test budget"
@@ -276,6 +277,14 @@ async def test_route_history_limit_metadata_threads_to_agent_config() -> None:
     inp = _make_input(turn=_make_turn(metadata={"route_max_history_turns": 1}))
     out = await stage.run(inp)
     assert out.output.agent_config.max_history_turns == 1
+
+
+@pytest.mark.asyncio
+async def test_image_route_metadata_allows_historical_image_replay() -> None:
+    stage = _make_stage()
+    inp = _make_input(turn=_make_turn(metadata={"image_route_reason": "gate_history"}))
+    out = await stage.run(inp)
+    assert out.output.agent_config.preserve_historical_images is True
 
 
 @pytest.mark.asyncio

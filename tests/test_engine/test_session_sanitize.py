@@ -2158,7 +2158,7 @@ async def test_agent_preserves_reasoning_content_for_deepseek_tool_replay() -> N
 
 
 @pytest.mark.asyncio
-async def test_agent_preserves_historical_image_blocks_for_vision_models() -> None:
+async def test_agent_preserves_allowed_historical_image_blocks_for_vision_models() -> None:
     provider = CapturingProvider()
     agent = Agent(
         provider=provider,
@@ -2166,6 +2166,7 @@ async def test_agent_preserves_historical_image_blocks_for_vision_models() -> No
             max_iterations=1,
             model_id="vision-model",
             model_capabilities=ModelCapabilities(supports_vision=True),
+            preserve_historical_images=True,
         ),
     )
     agent.set_history(

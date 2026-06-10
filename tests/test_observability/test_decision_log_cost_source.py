@@ -106,7 +106,9 @@ def test_decision_log_carries_vision_followup_metadata(monkeypatch) -> None:
                 "image_route_reason": "gate_history",
                 "router_vision_followup_gate_decision": "needs_image",
                 "router_vision_followup_gate_confidence": 0.92,
-                "router_vision_followup_gate_reason": "references previous image",
+                "router_vision_followup_gate_reason": (
+                    "references previous image with private detail from local image"
+                ),
                 "router_vision_followup_gate_source": "llm",
                 "router_vision_followup_gate_model": "deepseek/deepseek-v4-flash",
                 "router_vision_followup_needs_image": True,
@@ -122,7 +124,8 @@ def test_decision_log_carries_vision_followup_metadata(monkeypatch) -> None:
     assert entry.image_route_reason == "gate_history"
     assert entry.vision_followup_gate_decision == "needs_image"
     assert entry.vision_followup_gate_confidence == 0.92
-    assert entry.vision_followup_gate_reason == "references previous image"
+    assert entry.vision_followup_gate_reason == "llm_needs_image"
+    assert "private detail" not in entry.vision_followup_gate_reason
     assert entry.vision_followup_gate_source == "llm"
     assert entry.vision_followup_gate_model == "deepseek/deepseek-v4-flash"
     assert entry.vision_followup_needs_image is True

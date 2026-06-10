@@ -292,7 +292,7 @@ async def test_turn_usage_persists_vision_followup_metadata() -> None:
     done.image_route_reason = "gate_history"
     done.vision_followup_gate_decision = "needs_image"
     done.vision_followup_gate_confidence = 0.92
-    done.vision_followup_gate_reason = "references previous image"
+    done.vision_followup_gate_reason = "references previous image with private detail"
     done.vision_followup_gate_source = "llm"
     done.vision_followup_gate_model = "deepseek/deepseek-v4-flash"
     done.vision_followup_needs_image = True
@@ -304,7 +304,8 @@ async def test_turn_usage_persists_vision_followup_metadata() -> None:
     assert usage["image_route_reason"] == "gate_history"
     assert usage["vision_followup_gate_decision"] == "needs_image"
     assert usage["vision_followup_gate_confidence"] == 0.92
-    assert usage["vision_followup_gate_reason"] == "references previous image"
+    assert usage["vision_followup_gate_reason"] == "llm_needs_image"
+    assert "private detail" not in usage["vision_followup_gate_reason"]
     assert usage["vision_followup_gate_source"] == "llm"
     assert usage["vision_followup_gate_model"] == "deepseek/deepseek-v4-flash"
     assert usage["vision_followup_needs_image"] is True

@@ -582,7 +582,9 @@ def test_done_handler_carries_vision_followup_metadata() -> None:
                 "image_route_reason": "gate_history",
                 "router_vision_followup_gate_decision": "needs_image",
                 "router_vision_followup_gate_confidence": 0.92,
-                "router_vision_followup_gate_reason": "references previous image",
+                "router_vision_followup_gate_reason": (
+                    "references previous image with private detail"
+                ),
                 "router_vision_followup_gate_source": "llm",
                 "router_vision_followup_gate_model": "deepseek/deepseek-v4-flash",
                 "router_vision_followup_needs_image": True,
@@ -595,7 +597,8 @@ def test_done_handler_carries_vision_followup_metadata() -> None:
     assert getattr(transformed, "image_route_reason") == "gate_history"
     assert getattr(transformed, "vision_followup_gate_decision") == "needs_image"
     assert getattr(transformed, "vision_followup_gate_confidence") == 0.92
-    assert getattr(transformed, "vision_followup_gate_reason") == "references previous image"
+    assert getattr(transformed, "vision_followup_gate_reason") == "llm_needs_image"
+    assert "private detail" not in getattr(transformed, "vision_followup_gate_reason")
     assert getattr(transformed, "vision_followup_gate_source") == "llm"
     assert getattr(transformed, "vision_followup_gate_model") == "deepseek/deepseek-v4-flash"
     assert getattr(transformed, "vision_followup_needs_image") is True

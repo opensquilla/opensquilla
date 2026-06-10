@@ -56,6 +56,22 @@ class _JsonProvider:
         return []
 
 
+class _RaisingProvider:
+    provider_name = "raising"
+
+    async def chat(
+        self,
+        messages: list[Message],  # noqa: ARG002
+        tools: list[ToolDefinition] | None = None,  # noqa: ARG002
+        config: ChatConfig | None = None,  # noqa: ARG002
+    ) -> AsyncIterator[StreamEvent]:
+        raise RuntimeError("provider echoed private detail from local image")
+        yield TextDeltaEvent(text="unreachable")
+
+    async def list_models(self) -> list[ModelInfo]:
+        return []
+
+
 class _ReasoningOnlyProvider:
     provider_name = "reasoning-only"
 
@@ -336,6 +352,26 @@ async def test_gate_unknown_recent_falls_back_to_image() -> None:
     assert out.metadata["router_vision_followup_gate_decision"] == "unknown"
     assert out.metadata["router_vision_followup_needs_image"] is True
     assert out.metadata["router_vision_followup_fallback"] == "image_if_recent"
+
+
+@pytest.mark.asyncio
+async def test_gate_provider_error_fails_closed_without_raw_error_reason() -> None:
+    ctx = _ctx(
+        "What about this?",
+        {
+            "router_history_has_recent_image": True,
+            "router_turns_since_last_image": 1,
+        },
+    )
+    ctx.provider = _RaisingProvider()
+
+    out = await apply_vision_followup_gate(ctx)
+
+    assert out.metadata["router_vision_followup_gate_decision"] == "unknown"
+    assert out.metadata["router_vision_followup_gate_source"] == "error"
+    assert out.metadata["router_vision_followup_gate_reason"] == "RuntimeError"
+    assert out.metadata["router_vision_followup_needs_image"] is False
+    assert "router_vision_followup_fallback" not in out.metadata
 
 
 @pytest.mark.asyncio

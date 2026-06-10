@@ -34,6 +34,7 @@ import structlog
 
 from opensquilla.engine.hooks.types import CompactionState
 from opensquilla.engine.tool_text_compat import ProtocolTextLeakGuard
+from opensquilla.observability.decision_log import build_vision_followup_gate_reason_code
 
 if TYPE_CHECKING:
     from opensquilla.engine.agent import Agent
@@ -531,8 +532,11 @@ class _DoneHandler:
             vision_followup_gate_confidence=metadata.get(
                 "router_vision_followup_gate_confidence"
             ),
-            vision_followup_gate_reason=metadata.get(
-                "router_vision_followup_gate_reason"
+            vision_followup_gate_reason=build_vision_followup_gate_reason_code(
+                decision=metadata.get("router_vision_followup_gate_decision"),
+                source=metadata.get("router_vision_followup_gate_source"),
+                reason=metadata.get("router_vision_followup_gate_reason"),
+                fallback=metadata.get("router_vision_followup_fallback"),
             ),
             vision_followup_gate_source=metadata.get(
                 "router_vision_followup_gate_source"

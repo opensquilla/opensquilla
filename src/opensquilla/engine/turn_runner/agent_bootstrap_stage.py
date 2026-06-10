@@ -179,6 +179,11 @@ def _route_max_history_turns(metadata: dict[str, Any]) -> int:
     return 0
 
 
+def _preserve_historical_images(metadata: dict[str, Any]) -> bool:
+    image_route_reason = metadata.get("image_route_reason")
+    return image_route_reason in {"current_turn", "gate_history"}
+
+
 @runtime_checkable
 class MemorySnapshotPort(Protocol):
     """Wraps the per-agent memory sync warm + the per-(agent_id, session_key)
@@ -419,6 +424,7 @@ class AgentBootstrapStage:
             max_tokens=catalog.max_tokens,
             context_window_tokens=catalog.context_window,
             max_history_turns=_route_max_history_turns(inp.turn.metadata),
+            preserve_historical_images=_preserve_historical_images(inp.turn.metadata),
             flush_enabled=aux.flush_enabled,
             flush_triggers=aux.flush_triggers,
             flush_pre_compaction=aux.flush_pre_compaction,

@@ -1783,7 +1783,8 @@ class Agent:
             preserve_reasoning_content=preserve_reasoning_content,
         )
         preserve_historical_images = bool(
-            getattr(self.config.model_capabilities, "supports_vision", False)
+            self.config.preserve_historical_images
+            and getattr(self.config.model_capabilities, "supports_vision", False)
             if self.config.model_capabilities is not None
             else False
         )

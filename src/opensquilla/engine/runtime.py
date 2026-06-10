@@ -132,6 +132,7 @@ from opensquilla.observability.decision_log import (
     PipelineStepRecord,
     SavingsTelemetry,
     build_intent_summary,
+    build_vision_followup_gate_reason_code,
     compute_hashes,
     write_decision_entry,
 )
@@ -4450,7 +4451,14 @@ class TurnRunner:
                     else None
                 ),
                 vision_followup_gate_reason=(
-                    turn_obj.metadata.get("router_vision_followup_gate_reason")
+                    build_vision_followup_gate_reason_code(
+                        decision=turn_obj.metadata.get(
+                            "router_vision_followup_gate_decision"
+                        ),
+                        source=turn_obj.metadata.get("router_vision_followup_gate_source"),
+                        reason=turn_obj.metadata.get("router_vision_followup_gate_reason"),
+                        fallback=turn_obj.metadata.get("router_vision_followup_fallback"),
+                    )
                     if turn_obj is not None
                     else None
                 ),
@@ -5578,7 +5586,10 @@ class TurnRunner:
             transcript = list(emergency_override.kept_entries)
             summary_markers.append(emergency_override.summary)
         model_caps = getattr(getattr(agent, "config", None), "model_capabilities", None)
-        preserve_image_history = bool(getattr(model_caps, "supports_vision", False))
+        preserve_image_history = bool(
+            getattr(getattr(agent, "config", None), "preserve_historical_images", False)
+            and getattr(model_caps, "supports_vision", False)
+        )
         lookback = int(
             getattr(
                 getattr(self._config, "squilla_router", None),

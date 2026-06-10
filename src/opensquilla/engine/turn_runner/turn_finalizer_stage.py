@@ -39,6 +39,8 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
 
+from opensquilla.observability.decision_log import build_vision_followup_gate_reason_code
+
 if TYPE_CHECKING:
     from opensquilla.engine.turn_runner.outcome import StageOutcome
     from opensquilla.engine.types import DoneEvent, ErrorEvent
@@ -306,10 +308,11 @@ def _turn_usage_payload(
             "vision_followup_gate_confidence",
             None,
         ),
-        "vision_followup_gate_reason": getattr(
-            done_event,
-            "vision_followup_gate_reason",
-            None,
+        "vision_followup_gate_reason": build_vision_followup_gate_reason_code(
+            decision=getattr(done_event, "vision_followup_gate_decision", None),
+            source=getattr(done_event, "vision_followup_gate_source", None),
+            reason=getattr(done_event, "vision_followup_gate_reason", None),
+            fallback=getattr(done_event, "vision_followup_fallback", None),
         ),
         "vision_followup_gate_source": getattr(
             done_event,

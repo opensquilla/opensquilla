@@ -258,6 +258,17 @@ def _apply_unknown_fallback(ctx: TurnContext, *, source: str, reason: str) -> No
     ctx.metadata["router_vision_followup_needs_image"] = needs_image
     if needs_image:
         ctx.metadata["router_vision_followup_fallback"] = "image_if_recent"
+    else:
+        ctx.metadata.pop("router_vision_followup_fallback", None)
+
+
+def _apply_gate_error(ctx: TurnContext, *, reason: str) -> None:
+    ctx.metadata["router_vision_followup_gate_decision"] = "unknown"
+    ctx.metadata["router_vision_followup_gate_confidence"] = 0.0
+    ctx.metadata["router_vision_followup_gate_reason"] = reason
+    ctx.metadata["router_vision_followup_gate_source"] = "error"
+    ctx.metadata["router_vision_followup_needs_image"] = False
+    ctx.metadata.pop("router_vision_followup_fallback", None)
 
 
 async def _run_gate_or_fallback(ctx: TurnContext) -> TurnContext:
@@ -267,11 +278,7 @@ async def _run_gate_or_fallback(ctx: TurnContext) -> TurnContext:
         raw = await asyncio.wait_for(_call_gate_provider(ctx), timeout=timeout + 0.2)
         decision, confidence, reason = _parse_gate_response(raw)
     except Exception as exc:  # noqa: BLE001 - gate failure must not block routing
-        _apply_unknown_fallback(
-            ctx,
-            source="error",
-            reason=str(exc) or type(exc).__name__,
-        )
+        _apply_gate_error(ctx, reason=type(exc).__name__)
         return ctx
     _apply_gate_decision(ctx, decision=decision, confidence=confidence, reason=reason)
     return ctx

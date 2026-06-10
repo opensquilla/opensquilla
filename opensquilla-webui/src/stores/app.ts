@@ -99,6 +99,7 @@ export const useAppStore = defineStore('app', () => {
 
   const features = ref<Record<string, boolean>>({
     tokenViz: false,
+    contractDebug: false,
     ...((window as FeatureWindow).OPENSQUILLA_FEATURES || {}),
   })
 

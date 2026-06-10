@@ -13,48 +13,68 @@ test.describe('Chat Page', () => {
     await expect(page).toHaveTitle(/OpenSquilla/)
   })
 
-  test('sidebar navigation has all menu items', async ({ page }) => {
-    const navItems = page.locator('.sidebar-fn-item')
-    await expect(navItems).toHaveCount(10)
+  test('sidebar navigation is grouped with labeled items', async ({ page }) => {
+    const nav = page.locator('.sidebar-primary-nav')
+    await expect(nav.locator('.sidebar-nav-group-label')).toHaveText([
+      'Work', 'Operate', 'Observe', 'Configure',
+    ])
 
-    const expectedLabels = [
-      'Overview', 'Agents', 'Skills', 'Channels', 'Cron', 'Sessions', 'Usage',
-      'Config', 'Logs', 'Approvals',
-    ]
-    for (const label of expectedLabels) {
-      await expect(page.getByText(label, { exact: true })).toBeVisible()
-    }
+    await expect(nav.locator('.sidebar-fn-item .sidebar-fn-label')).toHaveText([
+      'Chat', 'Sessions', 'Approvals',
+      'Agents', 'Channels', 'Cron', 'Skills',
+      'Overview', 'Usage', 'Logs', 'Health',
+      'Config',
+    ])
   })
 
   test('can navigate between views', async ({ page }) => {
-    await page.click('text=Overview')
+    const nav = page.locator('.sidebar-primary-nav')
+
+    await nav.getByText('Overview', { exact: true }).click()
     await expect(page).toHaveURL(/\/overview/)
 
-    await page.click('text=Sessions')
+    await nav.getByText('Sessions', { exact: true }).click()
     await expect(page).toHaveURL(/\/sessions/)
 
-    await page.click('text=Logs')
+    await nav.getByText('Logs', { exact: true }).click()
     await expect(page).toHaveURL(/\/logs/)
+
+    await nav.getByText('Chat', { exact: true }).click()
+    await expect(page).toHaveURL(/\/chat$/)
 
     await page.getByRole('button', { name: 'New chat' }).click()
     await expect(page.getByRole('dialog', { name: 'New chat' })).toBeVisible()
     await page.getByRole('button', { name: 'Start chat' }).click()
-    await expect(page).toHaveURL(/\/chat\?session=agent%3Amain%3Awebchat%3A/)
+    await expect(page).toHaveURL(/\/chat\/new\?agent=main$/)
+  })
+
+  test('sidebar conversation list is filtered and free of raw identifiers', async ({ page }) => {
+    await expect(page.locator('.sidebar-filter-chip')).toHaveText(['All', 'Chats', 'Automations'])
+
+    // Let the session list settle before inspecting sidebar text.
+    await page.waitForSelector('.conn-pill.connected', { timeout: 10000 }).catch(() => {})
+    await page.waitForTimeout(800)
+    await expect(page.locator('.sidebar-history-list, .sidebar-history-empty').first()).toBeVisible()
+
+    const sidebarText = await page.locator('.sidebar').innerText()
+    expect(sidebarText).not.toMatch(/agent:[a-z0-9_-]+:[a-z0-9_-]+:/i)
+    expect(sidebarText).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)
+
+    // Contract-gap chips stay hidden unless the debug feature flag is on.
+    await expect(page.locator('.sidebar-history-gap')).toHaveCount(0)
   })
 
   test('theme toggle works', async ({ page }) => {
     const html = page.locator('html')
 
-    // Check initial theme
-    const initialTheme = await html.getAttribute('data-theme')
-    expect(['light', 'dark']).toContain(initialTheme)
+    // Pin the starting mode so the first cycle step (light → dark) is observable.
+    await page.evaluate(() => localStorage.setItem('opensquilla-theme', 'light'))
+    await page.reload()
+    await page.waitForSelector('.topbar .conn-pill', { timeout: 10000 })
+    await expect(html).toHaveAttribute('data-theme', 'light')
 
-    // Click theme toggle
     await page.click('[title^="Theme:"]')
-
-    // Theme should change
-    const newTheme = await html.getAttribute('data-theme')
-    expect(newTheme).not.toBe(initialTheme)
+    await expect(html).toHaveAttribute('data-theme', 'dark')
   })
 
   test('chat input area is visible', async ({ page }) => {
@@ -65,7 +85,7 @@ test.describe('Chat Page', () => {
   })
 
   test('connection status shows connected', async ({ page }) => {
-    const connPill = page.locator('.conn-pill')
+    const connPill = page.locator('.topbar .conn-pill')
     await expect(connPill).toBeVisible()
 
     const text = await connPill.textContent()
@@ -109,14 +129,15 @@ test.describe('Chat Interaction', () => {
   test('sidebar toggle works on mobile viewport', async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 667 })
 
+    // Mobile collapses the sidebar to an overlay; the topbar toggle reopens it.
     const sidebar = page.locator('.sidebar')
-    await expect(sidebar).toHaveClass(/docked/)
-
-    await page.click('.sidebar-brand .sidebar-dock-toggle')
     await expect(sidebar).not.toHaveClass(/docked/)
 
     await page.click('.topbar-toggle')
     await expect(sidebar).toHaveClass(/docked/)
+
+    await page.click('.sidebar-brand .sidebar-dock-toggle')
+    await expect(sidebar).not.toHaveClass(/docked/)
   })
 })
 

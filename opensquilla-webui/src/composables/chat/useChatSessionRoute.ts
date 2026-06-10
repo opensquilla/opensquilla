@@ -1,24 +1,16 @@
 import type { Ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  WEBCHAT_SESSION_KEY,
   agentIdFromSessionKey,
   canonicalSessionKey,
   webchatSessionKey,
 } from '@/utils/chat/sessionKeys'
 
 const ACTIVE_SESSION_STORAGE_KEY = 'opensquilla_active_session'
+const DRAFT_CHAT_PATH = '/chat/new'
 
 function routeStringParam(value: unknown): string {
   return typeof value === 'string' ? value : ''
-}
-
-function readStoredSession(): string {
-  try {
-    return canonicalSessionKey(localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY) || '')
-  } catch {
-    return ''
-  }
 }
 
 function writeStoredSession(key: string) {
@@ -41,7 +33,11 @@ export function useChatSessionRoute(sessionKey: Ref<string>) {
     router.replace({ path: '/chat', query: { session: sessionKey.value } }).catch(() => {})
   }
 
-  function hasNewChatRouteSignal(): boolean {
+  function isDraftRoute(): boolean {
+    return route.path === DRAFT_CHAT_PATH
+  }
+
+  function hasLegacyNewChatQuery(): boolean {
     return route.query.newChat === '1' || route.query.new === '1'
   }
 
@@ -53,26 +49,39 @@ export function useChatSessionRoute(sessionKey: Ref<string>) {
     return routeStringParam(route.query.agent)
   }
 
-  function createSessionKey(): string {
-    return webchatSessionKey(agentIdFromSessionKey(sessionKey.value), Math.random().toString(36).slice(2, 10))
+  function draftAgentId(): string {
+    return readAgentFromUrl() || 'main'
   }
 
-  function resolveInitialSession(): { sessionKey: string; hasUrlSession: boolean; startNewChat: boolean } {
+  function goToDraft(options: { agentId?: string; replace?: boolean } = {}) {
+    const agent = options.agentId || readAgentFromUrl()
+    const target = { path: DRAFT_CHAT_PATH, query: agent ? { agent } : {} }
+    const navigation = options.replace ? router.replace(target) : router.push(target)
+    navigation.catch(() => {})
+  }
+
+  function createSessionKey(agentId?: string): string {
+    const agent = agentId || agentIdFromSessionKey(sessionKey.value)
+    return webchatSessionKey(agent, Math.random().toString(36).slice(2, 10))
+  }
+
+  function resolveInitialSession(): { sessionKey: string; hasUrlSession: boolean; draft: boolean } {
     const urlSession = readSessionFromUrl()
-    const urlAgent = readAgentFromUrl()
-    const storedSession = readStoredSession()
-    const fallbackSession = urlAgent ? webchatSessionKey(urlAgent) : (storedSession || WEBCHAT_SESSION_KEY)
-    return {
-      sessionKey: canonicalSessionKey(urlSession || fallbackSession),
-      hasUrlSession: Boolean(urlSession),
-      startNewChat: hasNewChatRouteSignal(),
+    if (urlSession) {
+      return { sessionKey: canonicalSessionKey(urlSession), hasUrlSession: true, draft: false }
     }
+    // No explicit session in the URL: open a clean draft instead of silently
+    // restoring a previous session.
+    return { sessionKey: createSessionKey(draftAgentId()), hasUrlSession: false, draft: true }
   }
 
   return {
     route,
     createSessionKey,
-    hasNewChatRouteSignal,
+    draftAgentId,
+    goToDraft,
+    hasLegacyNewChatQuery,
+    isDraftRoute,
     persistSession,
     readAgentFromUrl,
     readSessionFromUrl,

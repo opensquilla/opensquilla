@@ -44,30 +44,29 @@
 
     <!-- Function list -->
     <div class="sidebar-section sidebar-primary-nav" aria-label="Control navigation">
-      <router-link
-        v-for="route in quickRoutes"
-        :key="route.path"
-        :to="route.path"
-        class="sidebar-fn-item"
-        :class="{ 'is-active': $route.path === route.path }"
-        :title="route.title"
-        :aria-label="route.title"
-        :data-tooltip="route.title"
-        @click="handleNavClick"
-      >
-        <Icon :name="route.icon" :size="18" />
-        <span class="sidebar-fn-label">{{ route.title }}</span>
-        <span v-if="route.path === '/approvals' && appStore.approvalCount > 0" class="nav-badge">
-          {{ appStore.approvalCount }}
-        </span>
-      </router-link>
+      <div v-for="group in navGroups" :key="group.label" class="sidebar-nav-group">
+        <div class="sidebar-nav-group-label">{{ group.label }}</div>
+        <router-link
+          v-for="route in group.items"
+          :key="route.path"
+          :to="route.path"
+          class="sidebar-fn-item"
+          :class="{ 'is-active': isNavActive(route.path) }"
+          @click="handleNavClick"
+        >
+          <Icon :name="route.icon" :size="16" />
+          <span class="sidebar-fn-label">{{ route.title }}</span>
+          <span v-if="route.path === '/approvals' && appStore.approvalCount > 0" class="nav-badge">
+            {{ appStore.approvalCount }}
+          </span>
+        </router-link>
+      </div>
     </div>
 
-    <!-- Conversations -->
+    <!-- Recent conversations -->
     <div class="sidebar-section sidebar-history">
       <div class="sidebar-section-header">
-        <Icon name="chat" :size="18" />
-        <span>Conversations</span>
+        <span>Recent</span>
         <button
           class="sidebar-refresh-btn"
           title="Refresh conversations"
@@ -77,60 +76,44 @@
           <Icon name="refresh" :size="12" />
         </button>
       </div>
+      <div class="sidebar-filter-row" aria-label="Filter conversations">
+        <button
+          v-for="filter in conversationFilters"
+          :key="filter.id"
+          type="button"
+          class="sidebar-filter-chip"
+          :class="{ 'is-active': conversationFilter === filter.id }"
+          :aria-pressed="conversationFilter === filter.id"
+          @click="conversationFilter = filter.id"
+        >
+          {{ filter.label }}
+        </button>
+      </div>
       <div v-if="sessionListError" class="sidebar-history-empty">
         Unable to load sessions
       </div>
-      <div v-else-if="conversationFamilies.length === 0" class="sidebar-history-empty">
+      <div v-else-if="filteredConversations.length === 0" class="sidebar-history-empty">
         No recent conversations
       </div>
       <div v-else class="sidebar-history-list">
-        <div v-for="family in conversationFamilies" :key="family.id" class="sidebar-history-agent sidebar-history-family">
-          <button
-            class="sidebar-history-agent-toggle"
-            :aria-expanded="isConversationGroupExpanded(family.id)"
-            @click="toggleConversationGroup(family.id)"
-          >
-            <Icon :name="isConversationGroupExpanded(family.id) ? 'chevronDown' : 'chevronRight'" :size="14" />
-            <Icon :name="family.icon" :size="15" />
-            <span class="sidebar-history-agent-name">{{ family.label }}</span>
-            <span class="sidebar-history-agent-count">{{ family.count }}</span>
-          </button>
-          <div v-if="isConversationGroupExpanded(family.id)" class="sidebar-history-agent-items sidebar-history-family-items">
-            <div v-for="group in family.groups" :key="`${family.id}:${group.label}`" class="sidebar-history-agent sidebar-history-local">
-              <button
-                class="sidebar-history-agent-toggle sidebar-history-local-toggle"
-                :aria-expanded="isConversationGroupExpanded(`${family.id}:${group.label}`)"
-                @click="toggleConversationGroup(`${family.id}:${group.label}`)"
-              >
-                <Icon :name="isConversationGroupExpanded(`${family.id}:${group.label}`) ? 'chevronDown' : 'chevronRight'" :size="13" />
-                <span class="sidebar-history-agent-name">{{ group.label }}</span>
-                <span class="sidebar-history-agent-count">{{ group.items.length }}</span>
-              </button>
-              <div v-if="isConversationGroupExpanded(`${family.id}:${group.label}`)" class="sidebar-history-agent-items">
-                <button
-                  v-for="item in group.items"
-                  :key="item.key"
-                  class="sidebar-history-item"
-                  :class="{ 'is-current': isCurrentSession(item.key) }"
-                  :title="item.title"
-                  @click="switchToSession(item.key)"
-                >
-                  <span class="sidebar-history-dot" :class="`status--${item.runStatus}`" />
-                  <span class="sidebar-history-key">
-                    <span class="sidebar-history-title">{{ item.title }}</span>
-                  </span>
-                  <span v-if="item.hasContractGaps" class="sidebar-history-gap" title="Backend session-list-v1 contract fields are missing">Gap</span>
-                  <span v-if="item.runStatus !== 'idle'" class="sidebar-history-run">{{ item.runLabel }}</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <button
+          v-for="item in filteredConversations"
+          :key="item.key"
+          class="sidebar-history-item"
+          :class="{ 'is-current': isCurrentSession(item.key) }"
+          :title="item.title"
+          @click="switchToSession(item.key)"
+        >
+          <span class="sidebar-history-dot" :class="`status--${item.runStatus}`" />
+          <span class="sidebar-history-title">{{ item.title }}</span>
+          <span v-if="contractDebugEnabled && item.hasContractGaps" class="sidebar-history-gap" title="Backend session-list-v1 contract fields are missing">Gap</span>
+          <span v-if="item.runStatus !== 'idle'" class="sidebar-history-run">{{ item.runLabel }}</span>
+        </button>
       </div>
     </div>
 
     <!-- Bottom links -->
-    <div class="sidebar-bottom">
+    <div v-if="bottomRoutes.length" class="sidebar-bottom">
       <router-link
         v-for="route in bottomRoutes"
         :key="route.path"
@@ -199,11 +182,11 @@
     class="main"
     :class="{
       docked: appStore.sidebarOpen,
-      'main--chat': $route.path === '/chat',
-      'main--chat-sidebar-collapsed': $route.path === '/chat' && !appStore.sidebarOpen,
+      'main--chat': isChatRoute,
+      'main--chat-sidebar-collapsed': isChatRoute && !appStore.sidebarOpen,
     }"
   >
-    <header class="topbar" :class="{ 'topbar--chat': $route.path === '/chat' }">
+    <header class="topbar" :class="{ 'topbar--chat': isChatRoute }">
       <div class="topbar-left">
         <!-- Sidebar toggle — visible when sidebar is collapsed -->
         <button
@@ -230,7 +213,7 @@
         </button>
       </div>
     </header>
-    <main class="content" :class="{ 'content--chat': $route.path === '/chat' }" id="content">
+    <main class="content" :class="{ 'content--chat': isChatRoute }" id="content">
       <ErrorBoundary>
         <router-view />
       </ErrorBoundary>
@@ -244,55 +227,45 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from './stores/app'
 import { useRpcStore } from './stores/rpc'
 import { useSessions, type SessionItem } from './composables/useSessions'
-import type { IconName } from './utils/icons'
 import Icon from './components/Icon.vue'
 import ErrorBoundary from './components/ErrorBoundary.vue'
 import { useDocumentEvent } from './composables/useDocumentEvent'
 import type { AgentOption, AgentsListResponse } from './types/rpc'
 import { useNavigation } from './app/useNavigation'
-import { newWebchatSessionKey, normalizeAgentId } from './utils/chat/sessionKeys'
+import { normalizeAgentId } from './utils/chat/sessionKeys'
 
 const appStore = useAppStore()
 const rpcStore = useRpcStore()
 const $route = useRoute()
 const router = useRouter()
 const { allSessions, sessionListError, isLoading, loadSessions } = useSessions()
-const { quickRoutes, bottomRoutes } = useNavigation()
+const { navGroups, bottomRoutes } = useNavigation()
 
 type SidebarFamilyId = 'chats' | 'channels' | 'automations'
+type SidebarFilterId = 'all' | 'chats' | 'automations'
 
 interface SidebarConversationItem {
   key: string
   title: string
   effectiveAgentId: string
   sourceFamily: SidebarFamilyId
-  localGroupLabel: string
   runStatus: string
   runLabel: string
   updatedAt: number
   hasContractGaps: boolean
 }
 
-interface SidebarConversationGroup {
-  label: string
-  items: SidebarConversationItem[]
-  updatedAt: number
-}
-
-interface SidebarConversationFamily {
-  id: SidebarFamilyId
-  label: string
-  icon: IconName
-  groups: SidebarConversationGroup[]
-  count: number
-  updatedAt: number
-}
+const conversationFilters: Array<{ id: SidebarFilterId; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'chats', label: 'Chats' },
+  { id: 'automations', label: 'Automations' },
+]
 
 const agents = ref<AgentOption[]>([])
 const agentListError = ref(false)
 const newChatPickerOpen = ref(false)
 const selectedNewChatAgentId = ref('main')
-const expandedConversationGroups = ref<Record<string, boolean>>({})
+const conversationFilter = ref<SidebarFilterId>('all')
 const localChatSessions = ref<Record<string, { effectiveAgentId: string; title: string; updatedAt: number }>>({})
 
 const brandMarkUrl = computed(() => {
@@ -310,6 +283,16 @@ const currentSessionKey = computed(() => {
   return ($route.query.session as string) || ''
 })
 
+// Chat layout applies to both the session view and the draft route.
+const isChatRoute = computed(() => $route.path === '/chat' || $route.path === '/chat/new')
+
+const contractDebugEnabled = computed(() => appStore.features.contractDebug === true)
+
+function isNavActive(path: string): boolean {
+  if (path === '/chat') return isChatRoute.value
+  return $route.path === path
+}
+
 function isCurrentSession(key: string): boolean {
   return key === currentSessionKey.value
 }
@@ -319,14 +302,20 @@ function agentDisplayName(agentId: string): string {
   return agent?.name || (agentId === 'main' ? 'Main Agent' : agentId)
 }
 
-function humanize(value: string): string {
-  const cleaned = String(value || '').replace(/[_-]/g, ' ').trim()
-  return cleaned ? cleaned.charAt(0).toUpperCase() + cleaned.slice(1) : ''
+// Raw session keys (agent:…:…) and bare UUIDs must never render in the sidebar.
+const RAW_SESSION_KEY_PATTERN = /\bagent:[a-z0-9_-]+:[a-z0-9_-]+:/i
+const UUID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
+
+function looksLikeRawSessionId(value: string): boolean {
+  return RAW_SESSION_KEY_PATTERN.test(value) || UUID_PATTERN.test(value) || /^(agent|cron):/i.test(value)
 }
 
 function sidebarConversationTitle(item: SessionItem): string {
-  const title = item.title.trim()
-  return title || item.key || 'Untitled session'
+  for (const candidate of [item.title, item.subtitle, item.groupLabel]) {
+    const text = String(candidate || '').trim()
+    if (text && !looksLikeRawSessionId(text)) return text
+  }
+  return 'Untitled session'
 }
 
 function sourceFamilyForSession(item: SessionItem): SidebarFamilyId | null {
@@ -337,36 +326,6 @@ function sourceFamilyForSession(item: SessionItem): SidebarFamilyId | null {
   if (item.sessionKind === 'channel') return 'channels'
   if (item.sessionKind === 'cron') return 'automations'
   return null
-}
-
-function channelGroupLabel(item: SessionItem): string {
-  const ctx = item.channelContext || null
-  const channel = humanize(ctx?.name || item.surface || item.groupLabel || 'Channel')
-  const target = ctx?.id || item.raw.lastTo || item.raw.last_to || ''
-  return target ? `${channel} / ${target}` : channel
-}
-
-function automationGroupLabel(item: SessionItem): string {
-  const cron = item.raw.cron || null
-  return String(cron?.jobId || cron?.job_id || item.title || item.groupLabel || 'Automation')
-}
-
-function localGroupLabelForSession(item: SessionItem, family: SidebarFamilyId): string {
-  if (family === 'chats') return agentDisplayName(item.effectiveAgentId)
-  if (family === 'channels') return channelGroupLabel(item)
-  return automationGroupLabel(item)
-}
-
-function familyLabel(id: SidebarFamilyId): string {
-  if (id === 'chats') return 'Chats'
-  if (id === 'channels') return 'Channels'
-  return 'Automations'
-}
-
-function familyIcon(id: SidebarFamilyId): IconName {
-  if (id === 'chats') return 'chat'
-  if (id === 'channels') return 'channels'
-  return 'cron'
 }
 
 const selectableAgents = computed(() => {
@@ -397,7 +356,6 @@ const sidebarConversations = computed((): SidebarConversationItem[] => {
       effectiveAgentId: item.effectiveAgentId,
       title: sidebarConversationTitle(item),
       sourceFamily,
-      localGroupLabel: localGroupLabelForSession(item, sourceFamily),
       runStatus: item.runStatus,
       runLabel: item.runLabel,
       updatedAt: item.updatedAt,
@@ -411,7 +369,6 @@ const sidebarConversations = computed((): SidebarConversationItem[] => {
       effectiveAgentId: local.effectiveAgentId,
       sourceFamily: 'chats',
       title: local.title || 'New chat',
-      localGroupLabel: agentDisplayName(local.effectiveAgentId),
       runStatus: 'idle',
       runLabel: 'Idle',
       updatedAt: local.updatedAt,
@@ -426,7 +383,6 @@ const sidebarConversations = computed((): SidebarConversationItem[] => {
       effectiveAgentId: currentAgentId,
       sourceFamily: 'chats',
       title: 'Current session',
-      localGroupLabel: agentDisplayName(currentAgentId),
       runStatus: 'idle',
       runLabel: 'Idle',
       updatedAt: currentUpdatedAt,
@@ -436,50 +392,9 @@ const sidebarConversations = computed((): SidebarConversationItem[] => {
   return result.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 60)
 })
 
-const conversationFamilies = computed((): SidebarConversationFamily[] => {
-  const familyMap = new Map<SidebarFamilyId, SidebarConversationFamily>()
-  for (const item of sidebarConversations.value) {
-    let family = familyMap.get(item.sourceFamily)
-    if (!family) {
-      family = {
-        id: item.sourceFamily,
-        label: familyLabel(item.sourceFamily),
-        icon: familyIcon(item.sourceFamily),
-        groups: [],
-        count: 0,
-        updatedAt: 0,
-      }
-      familyMap.set(item.sourceFamily, family)
-    }
-    let group = family.groups.find(candidate => candidate.label === item.localGroupLabel)
-    if (!group) {
-      group = { label: item.localGroupLabel, items: [], updatedAt: 0 }
-      family.groups.push(group)
-    }
-    group.items.push(item)
-    group.updatedAt = Math.max(group.updatedAt, item.updatedAt)
-    family.count += 1
-    family.updatedAt = Math.max(family.updatedAt, item.updatedAt)
-  }
-
-  const currentFamily = sidebarConversations.value.find(item => item.key === currentSessionKey.value)?.sourceFamily || null
-  return Array.from(familyMap.values())
-    .map(family => ({
-      ...family,
-      groups: family.groups
-        .map(group => ({
-          ...group,
-          items: [...group.items].sort((a, b) => b.updatedAt - a.updatedAt),
-        }))
-        .sort((a, b) => b.updatedAt - a.updatedAt),
-    }))
-    .sort((a, b) => {
-      if (currentFamily) {
-        if (a.id === currentFamily && b.id !== currentFamily) return -1
-        if (b.id === currentFamily && a.id !== currentFamily) return 1
-      }
-      return b.updatedAt - a.updatedAt
-    })
+const filteredConversations = computed((): SidebarConversationItem[] => {
+  if (conversationFilter.value === 'all') return sidebarConversations.value
+  return sidebarConversations.value.filter(item => item.sourceFamily === conversationFilter.value)
 })
 
 let hoverLeaveTimer: ReturnType<typeof setTimeout> | null = null
@@ -553,14 +468,10 @@ function onNewChatBackdrop(e: MouseEvent) {
 }
 
 function startNewChatForSelectedAgent() {
+  // Draft state: no session exists until the first message is sent.
   const agentId = normalizeAgentId(selectedNewChatAgentId.value || 'main')
-  const key = newWebchatSessionKey(agentId)
-  localChatSessions.value = {
-    ...localChatSessions.value,
-    [key]: { effectiveAgentId: agentId, title: 'New chat', updatedAt: Date.now() },
-  }
   closeNewChatPicker()
-  router.push({ path: '/chat', query: { session: key } })
+  router.push({ path: '/chat/new', query: { agent: agentId } })
 }
 
 function goToAgents() {
@@ -592,27 +503,6 @@ function onHoverLeave() {
   }, 250)
 }
 
-function isConversationGroupExpanded(key: string): boolean {
-  if (Object.prototype.hasOwnProperty.call(expandedConversationGroups.value, key)) {
-    return expandedConversationGroups.value[key] !== false
-  }
-  return true
-}
-
-function persistExpandedConversationGroups() {
-  try {
-    localStorage.setItem('opensquilla_sidebar_conversation_groups', JSON.stringify(expandedConversationGroups.value))
-  } catch {}
-}
-
-function toggleConversationGroup(key: string) {
-  expandedConversationGroups.value = {
-    ...expandedConversationGroups.value,
-    [key]: !isConversationGroupExpanded(key),
-  }
-  persistExpandedConversationGroups()
-}
-
 function scheduleSessionRefresh() {
   if (sessionRefreshTimer) clearTimeout(sessionRefreshTimer)
   sessionRefreshTimer = setTimeout(() => {
@@ -636,10 +526,6 @@ useDocumentEvent('keydown', handleKeydown)
 onMounted(() => {
   syncMobileSidebar()
   window.addEventListener('resize', syncMobileSidebar)
-  try {
-    const raw = localStorage.getItem('opensquilla_sidebar_conversation_groups')
-    if (raw) expandedConversationGroups.value = JSON.parse(raw)
-  } catch {}
   loadAgents()
   loadSessions()
   rpcUnsubSessionsChanged = rpcStore.on('sessions.changed', scheduleSessionRefresh)

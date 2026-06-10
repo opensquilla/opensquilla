@@ -79,6 +79,7 @@
   --info: #60A5FA;
   --shadow: rgba(0, 0, 0, 0.5);
   --shadow-color: rgba(0,0,0,0.5);
+  --scrim: rgba(0, 0, 0, 0.6);
   --grain-opacity: 0.05;
 
   --surface-2: var(--bg-elevated);
@@ -125,6 +126,7 @@
   --info: #1D4ED8;
   --shadow: rgba(40,30,20,0.10);
   --shadow-color: rgba(40,30,20,0.10);
+  --scrim: rgba(20, 18, 15, 0.45);
   --grain-opacity: 0.03;
 
   --surface-2: var(--bg-elevated);
@@ -457,12 +459,29 @@ pre {
 }
 
 .sidebar-primary-nav {
-  display: grid;
-  gap: 5px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  padding: 6px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: 2px 8px 8px;
   position: relative;
   z-index: 4;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.sidebar-nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.sidebar-nav-group-label {
+  padding: var(--sp-2) var(--sp-2) 3px;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--sidebar-text-soft);
 }
 
 .sidebar-section-header {
@@ -523,13 +542,9 @@ pre {
 }
 
 .sidebar-primary-nav .sidebar-fn-item {
-  flex-direction: column;
-  gap: 4px;
-  justify-content: center;
-  min-height: 38px;
+  min-height: 32px;
   margin: 0;
-  padding: 0;
-  text-align: center;
+  padding: 5px var(--sp-2);
 }
 
 .sidebar-fn-label {
@@ -539,15 +554,11 @@ pre {
   white-space: nowrap;
 }
 
-.sidebar-primary-nav .sidebar-fn-label {
-  display: none;
-}
-
-.sidebar-primary-nav .sidebar-fn-item::after,
 .sidebar-bottom .sidebar-fn-item::after {
   background: color-mix(in srgb, var(--sidebar-text-strong) 94%, transparent);
   border: 1px solid color-mix(in srgb, var(--sidebar-text-strong) 18%, transparent);
   border-radius: var(--radius-sm);
+  bottom: calc(100% + 6px);
   box-shadow: 0 8px 18px rgba(20, 18, 15, 0.14);
   color: var(--bg-surface);
   content: attr(data-tooltip);
@@ -562,8 +573,7 @@ pre {
   pointer-events: none;
   position: absolute;
   text-overflow: ellipsis;
-  top: calc(100% + 6px);
-  transform: translate(-50%, -3px);
+  transform: translate(-50%, 3px);
   transition:
     opacity 120ms ease 220ms,
     transform 120ms ease 220ms,
@@ -573,25 +583,12 @@ pre {
   z-index: 20;
 }
 
-.sidebar-primary-nav .sidebar-fn-item:hover::after,
-.sidebar-primary-nav .sidebar-fn-item:focus-visible::after,
 .sidebar-bottom .sidebar-fn-item:hover::after,
 .sidebar-bottom .sidebar-fn-item:focus-visible::after {
   opacity: 1;
   transform: translate(-50%, 0);
   transition-delay: 260ms, 260ms, 0ms;
   visibility: visible;
-}
-
-.sidebar-bottom .sidebar-fn-item::after {
-  bottom: calc(100% + 6px);
-  top: auto;
-  transform: translate(-50%, 3px);
-}
-
-.sidebar-bottom .sidebar-fn-item:hover::after,
-.sidebar-bottom .sidebar-fn-item:focus-visible::after {
-  transform: translate(-50%, 0);
 }
 .sidebar-fn-item:hover {
   background: var(--sidebar-item-hover);
@@ -605,7 +602,8 @@ pre {
 /* Conversations section */
 .sidebar-history {
   flex: 1;
-  min-height: 0;
+  /* Keep the recent list usable when the grouped nav fills a short viewport. */
+  min-height: 132px;
   margin-top: 0;
   overflow: hidden;
   display: flex;
@@ -624,77 +622,32 @@ pre {
   padding: 4px 8px 8px;
 }
 
-.sidebar-history-agent {
-  margin: 4px 0 12px;
-}
-
-.sidebar-history-family {
-  margin: 6px 0 14px;
-}
-
-.sidebar-history-agent-toggle {
+.sidebar-filter-row {
   display: flex;
-  align-items: center;
-  gap: 7px;
-  width: calc(100% - var(--sp-2));
-  min-height: 34px;
-  margin: 0 var(--sp-1);
-  padding: 6px 9px;
-  border: 0;
-  border-radius: var(--radius-sm);
+  gap: var(--sp-1);
+  padding: 2px 14px 6px;
+}
+
+.sidebar-filter-chip {
+  padding: 3px 10px;
+  border: 1px solid var(--sidebar-border);
+  border-radius: 999px;
   background: transparent;
-  color: var(--sidebar-text-strong);
-  cursor: pointer;
-  font-size: 0.78125rem;
-  font-weight: 700;
-  text-align: left;
-}
-
-.sidebar-history-agent-toggle:hover {
-  background: var(--sidebar-item-hover);
-}
-
-.sidebar-history-agent-name {
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sidebar-history-agent-count {
-  color: var(--sidebar-text-soft);
-  font-size: 0.75rem;
-  font-weight: 650;
-}
-
-.sidebar-history-agent-items {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 3px 0 0 12px;
-}
-
-.sidebar-history-family-items {
-  gap: 8px;
-  padding-left: 10px;
-}
-
-.sidebar-history-local {
-  margin-bottom: 6px;
-}
-
-.sidebar-history-local-toggle {
-  min-height: 32px;
-  padding-left: 8px;
-  font-size: 0.75rem;
-  font-weight: 650;
   color: var(--sidebar-text);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms, color 120ms, border-color 120ms;
 }
 
-.sidebar-history-local .sidebar-history-agent-items {
-  gap: 5px;
-  padding: 5px 0 2px 12px;
+.sidebar-filter-chip:hover {
+  background: var(--sidebar-item-hover);
+  color: var(--sidebar-text-strong);
+}
+
+.sidebar-filter-chip.is-active {
+  background: var(--sidebar-item-active);
+  color: var(--sidebar-text-strong);
 }
 
 .sidebar-history-empty {
@@ -751,22 +704,12 @@ pre {
   50% { opacity: 0.4; }
 }
 
-.sidebar-history-key {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
+.sidebar-history-title {
   flex: 1;
   min-width: 0;
-  color: inherit;
-}
-
-.sidebar-history-title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.sidebar-history-title {
   color: inherit;
   font-size: 0.828125rem;
   font-weight: 500;
@@ -1043,7 +986,6 @@ pre {
   text-align: center;
 }
 
-.sidebar-primary-nav .nav-badge,
 .sidebar-bottom .nav-badge {
   margin-left: 0;
   position: absolute;
@@ -1214,6 +1156,16 @@ pre {
     height: 40px;
   }
 
+  .sidebar-primary-nav .sidebar-fn-item,
+  .sidebar-history-item {
+    min-height: 44px;
+  }
+
+  .sidebar-filter-chip {
+    min-height: 36px;
+    padding: 6px 12px;
+  }
+
   .nav-item {
     padding: var(--sp-3) var(--sp-4);
     font-size: var(--fs-md);
@@ -1245,21 +1197,22 @@ pre {
   }
 
   .sidebar-primary-nav {
-    gap: 4px;
-    padding-bottom: 7px;
+    gap: 3px;
+    padding-bottom: 6px;
   }
 
   .sidebar-primary-nav .sidebar-fn-item {
-    min-height: 36px;
+    min-height: 28px;
+    padding-block: 3px;
+  }
+
+  .sidebar-nav-group-label {
+    padding-top: var(--sp-1);
   }
 
   .sidebar-history-item {
     min-height: 34px;
     padding-block: 6px;
-  }
-
-  .sidebar-history-agent-toggle {
-    min-height: 32px;
   }
 
   .sidebar-bottom {

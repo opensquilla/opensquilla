@@ -11,7 +11,15 @@ export interface NavigationItem {
   path: string
   title: string
   icon: IconName
+  group: string
 }
+
+export interface NavigationGroup {
+  label: string
+  items: NavigationItem[]
+}
+
+const GROUP_ORDER = ['Work', 'Operate', 'Observe', 'Configure']
 
 const navRoutes = [
   ...sharedRoutes,
@@ -34,5 +42,20 @@ export function getNavigationItems(slot: NavigationSlot): NavigationItem[] {
       path: route.path,
       title: String(route.meta?.title || route.name || route.path),
       icon: (route.meta?.icon || 'home') as IconName,
+      group: String(route.meta?.group || 'Work'),
     }))
+}
+
+export function getNavigationGroups(): NavigationGroup[] {
+  const groups = new Map<string, NavigationGroup>()
+  for (const item of getNavigationItems('primary')) {
+    const existing = groups.get(item.group)
+    if (existing) existing.items.push(item)
+    else groups.set(item.group, { label: item.group, items: [item] })
+  }
+  const orderIndex = (label: string) => {
+    const index = GROUP_ORDER.indexOf(label)
+    return index === -1 ? GROUP_ORDER.length : index
+  }
+  return Array.from(groups.values()).sort((a, b) => orderIndex(a.label) - orderIndex(b.label))
 }

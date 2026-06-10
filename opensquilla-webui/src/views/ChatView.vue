@@ -276,6 +276,7 @@ import {
   toolStatusText,
 } from '@/utils/chat/toolDisplay'
 import { isShareableChatMessage } from '@/utils/chat/messageIdentity'
+import { agentIdFromSessionKey } from '@/utils/chat/sessionKeys'
 
 /* ── Types ─────────────────────────────────────────────────────────── */
 
@@ -514,7 +515,10 @@ const chatSessionRoute = useChatSessionRoute(sessionKey)
 const {
   route,
   createSessionKey,
-  hasNewChatRouteSignal,
+  draftAgentId,
+  goToDraft,
+  hasLegacyNewChatQuery,
+  isDraftRoute,
   persistSession,
   resolveInitialSession,
 } = chatSessionRoute
@@ -624,10 +628,9 @@ const chatSessionRuntime = useChatSessionRuntime({
   resetStreamLiveTurnState,
 })
 const {
-  consumeNewChatRouteSignal,
   resetCurrentSessionAfterSlash,
+  startDraftSession,
   switchToSession,
-  newSession,
 } = chatSessionRuntime
 
 const chatSlashCommands = useChatSlashCommands({
@@ -635,7 +638,7 @@ const chatSlashCommands = useChatSlashCommands({
   inputText,
   sessionKey,
   autoResizeTextarea,
-  newSession,
+  newSession: () => goToDraft({ agentId: agentIdFromSessionKey(sessionKey.value) }),
   resetCurrentSession: resetCurrentSessionAfterSlash,
   setCompactInFlight,
   showCompactStatus,
@@ -1037,12 +1040,29 @@ function onDocumentKeydown(e: KeyboardEvent) {
 
 /* ── Lifecycle ─────────────────────────────────────────────────────── */
 
+// Reset to a clean draft for the agent requested by the draft route. The
+// provisional key stays out of the URL and storage until the first send.
+function enterDraft() {
+  const agentId = draftAgentId()
+  const isFreshDraft = pendingSessionIntent.value === 'new_chat'
+    && messages.value.length === 0
+    && !isStreaming.value
+    && agentIdFromSessionKey(sessionKey.value) === agentId
+  if (!isFreshDraft) startDraftSession(agentId)
+  if (isDesktopViewport.value) composerRef.value?.focusTextarea()
+}
+
 onMounted(async () => {
-  // Initialize session key
+  // Initialize session key. Without an explicit ?session= the view opens as a
+  // draft instead of restoring a previous session.
   const initialSession = resolveInitialSession()
-  const startNewChatOnMount = initialSession.startNewChat
   sessionKey.value = initialSession.sessionKey
-  persistSession(sessionKey.value, { updateRoute: !initialSession.hasUrlSession })
+  if (initialSession.draft) {
+    pendingSessionIntent.value = 'new_chat'
+    if (!isDraftRoute() || hasLegacyNewChatQuery()) goToDraft({ replace: true })
+  } else {
+    persistSession(sessionKey.value, { updateRoute: false })
+  }
 
   // Load elevated mode
   loadElevatedMode()
@@ -1064,13 +1084,10 @@ onMounted(async () => {
     composerResizeObserver.observe(composerEl)
   }
 
-  // Load the requested chat state.
-  if (startNewChatOnMount) {
-    consumeNewChatRouteSignal()
-  } else {
-    subscribeSession()
-    loadHistory()
-  }
+  // Load the requested chat state. Drafts subscribe so the first send can
+  // stream, but have no history to load.
+  subscribeSession()
+  if (!initialSession.draft) loadHistory()
   loadSlashCommands()
 
   // Focus textarea on desktop
@@ -1102,12 +1119,22 @@ watch(() => route.query.session, (newSession) => {
   }
 })
 
-// Watch for "new chat" signals from the sidebar. The legacy ?new=1 signal is
-// still accepted so older links do not silently restore the previous session.
+// Entering the draft route resets to a clean draft for the requested agent.
+watch(() => [route.path, route.query.agent], () => {
+  if (isDraftRoute()) enterDraft()
+})
+
+// Legacy ?newChat=1 / ?new=1 links land on the draft route, then the params disappear.
 watch(() => [route.query.newChat, route.query.new], () => {
-  if (hasNewChatRouteSignal()) {
-    consumeNewChatRouteSignal()
-  }
+  if (hasLegacyNewChatQuery()) goToDraft({ replace: true })
+})
+
+// A draft materializes its session key in the URL only when the first message
+// actually goes out.
+watch(pendingSessionIntent, (intent, previous) => {
+  if (previous !== 'new_chat' || intent !== null) return
+  if (!isDraftRoute()) return
+  persistSession(sessionKey.value)
 })
 
 watch(sessionKey, () => {

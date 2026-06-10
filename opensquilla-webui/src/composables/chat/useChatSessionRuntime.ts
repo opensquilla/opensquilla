@@ -27,7 +27,7 @@ export interface UseChatSessionRuntimeOptions {
   lastHeaderDay: Ref<string>
   usageAccum: Ref<ChatUsageAccumulator>
   usageModel: Ref<string>
-  createSessionKey: () => string
+  createSessionKey: (agentId?: string) => string
   persistSession: (key: string, options?: { updateRoute?: boolean }) => void
   unsubscribeSession: () => void | Promise<void>
   subscribeSession: () => void | Promise<void>
@@ -107,27 +107,23 @@ export function useChatSessionRuntime(options: UseChatSessionRuntimeOptions) {
     options.loadHistory()
   }
 
-  function newSession() {
+  // Drafts keep their provisional key out of the URL and local storage; it
+  // only persists once the first message actually goes out.
+  function startDraftSession(agentId?: string) {
     options.unsubscribeSession()
-    const key = options.createSessionKey()
+    const key = options.createSessionKey(agentId)
     options.sessionKey.value = key
-    options.persistSession(key)
     resetSessionRuntimeState()
     resetCompactAndQueueState()
     options.pendingSessionIntent.value = 'new_chat'
     resetSessionViewState()
     options.subscribeSession()
-    console.info('New chat session:', key)
-  }
-
-  function consumeNewChatRouteSignal() {
-    newSession()
+    console.info('New chat draft:', key)
   }
 
   return {
-    consumeNewChatRouteSignal,
     resetCurrentSessionAfterSlash,
+    startDraftSession,
     switchToSession,
-    newSession,
   }
 }

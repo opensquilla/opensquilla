@@ -1,12 +1,12 @@
 import { computed } from 'vue'
-import { getNavigationItems } from '@/router/nav'
+import { getNavigationGroups, getNavigationItems } from '@/router/nav'
 
 export function useNavigation() {
-  const quickRoutes = computed(() => getNavigationItems('primary'))
+  const navGroups = computed(() => getNavigationGroups())
   const bottomRoutes = computed(() => getNavigationItems('bottom'))
 
   return {
-    quickRoutes,
+    navGroups,
     bottomRoutes,
   }
 }

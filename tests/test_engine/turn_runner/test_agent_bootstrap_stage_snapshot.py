@@ -594,7 +594,7 @@ async def test_agent_bootstrap_stage_snapshot(
         "agent_config_tool_timeout": case["tool_timeout"],
         "agent_config_request_timeout": case["request_timeout"],
         "agent_config_max_provider_retries": case["max_provider_retries"],
-        "agent_config_length_capped_continuations": 1,
+        "agent_config_length_capped_continuations": 3,
         "agent_config_system_prompt": "FINAL",
         "agent_config_model_id": "claude-sonnet-4.5",
         "agent_config_cache_mode": "off",

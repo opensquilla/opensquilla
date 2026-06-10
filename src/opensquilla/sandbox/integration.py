@@ -429,6 +429,19 @@ def _backend_name(runtime: SandboxRuntime | object | None) -> str:
     return str(name or "")
 
 
+def _windows_proxy_allowlist_enforced(runtime: SandboxRuntime | object | None) -> bool:
+    backend_name = _backend_name(runtime).lower()
+    if not backend_name.startswith("windows_"):
+        return True
+    try:
+        from opensquilla.sandbox.backend.windows_support import (
+            probe_windows_sandbox_support,
+        )
+    except Exception:
+        return False
+    return bool(probe_windows_sandbox_support().proxy_allowlist_enforced)
+
+
 def _managed_proxy_env_keys(
     backend_name: str | None,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -729,6 +742,8 @@ async def _run_backend_with_platform_network_boundary(
     request: SandboxRequest,
     runtime: SandboxRuntime,
 ) -> SandboxResult:
+    if not _uses_platform_network_boundary(request, runtime):
+        return await runtime.backend.run(request)
     boundary_context = await _prepare_platform_network_boundary(request, runtime)
     try:
         return await runtime.backend.run(request)
@@ -736,16 +751,22 @@ async def _run_backend_with_platform_network_boundary(
         await _cleanup_platform_network_boundary(boundary_context)
 
 
+def _uses_platform_network_boundary(
+    request: SandboxRequest,
+    runtime: SandboxRuntime,
+) -> bool:
+    return (
+        request.policy.network == NetworkMode.PROXY_ALLOWLIST
+        and request.policy.network_proxy is not None
+        and _backend_name(runtime).lower().startswith("windows_appcontainer")
+    )
+
+
 async def _prepare_platform_network_boundary(
     request: SandboxRequest,
     runtime: SandboxRuntime,
 ) -> object | None:
-    if request.policy.network != NetworkMode.PROXY_ALLOWLIST:
-        return None
-    if request.policy.network_proxy is None:
-        return None
-    backend_name = _backend_name(runtime).lower()
-    if not backend_name.startswith("windows_appcontainer"):
+    if not _uses_platform_network_boundary(request, runtime):
         return None
     backend = getattr(runtime, "backend", None)
     prepare_identity = getattr(backend, "prepare_identity", None)
@@ -1264,6 +1285,20 @@ async def preflight_subprocess_managed_network(
     """
     if getattr(request.policy, "network", None) != NetworkMode.PROXY_ALLOWLIST:
         return None
+
+    if not _windows_proxy_allowlist_enforced(runtime):
+        return await _managed_in_process_denial(
+            request,
+            runtime,
+            (
+                "Windows sandbox managed network is unavailable: PROXY_ALLOWLIST "
+                "is not enforced by the active Windows backend. Do not retry "
+                "with http_request. Do not retry with web_fetch. Do not retry "
+                "with offline wheel downloads. Do not retry with host Python. "
+                "Keep the operation blocked until the Windows proxy allowlist "
+                "backend is enabled or the user changes run mode."
+            ),
+        )
 
     context = _current_run_context_for_network_proxy()
     if context is None:

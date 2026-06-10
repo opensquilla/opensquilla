@@ -338,6 +338,69 @@ async def test_windows_proxy_allowlist_runtime_enters_network_boundary(
 
 
 @pytest.mark.asyncio
+async def test_windows_unready_proxy_allowlist_blocks_network_workarounds(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.sandbox import integration as integration_mod
+    from opensquilla.sandbox.types import (
+        NetworkMode,
+        ResourceLimits,
+        SandboxPolicy,
+        SandboxRequest,
+        SecurityLevel,
+    )
+
+    class _Ledger:
+        async def record_denial(self, *args: object, **kwargs: object) -> None:
+            return None
+
+    policy = SandboxPolicy(
+        level=SecurityLevel.STANDARD,
+        network=NetworkMode.PROXY_ALLOWLIST,
+        mounts=(),
+        workspace_rw=True,
+        tmp_writable=True,
+        limits=ResourceLimits(wall_timeout_s=30),
+        env_allowlist=("PATH",),
+        require_approval=False,
+    )
+    request = SandboxRequest(
+        argv=("powershell", "-Command", "python -m pip install humanize"),
+        cwd=tmp_path,
+        action_kind="shell.exec",
+        policy=policy,
+        env={"PATH": r"C:\Windows\System32"},
+    )
+    runtime = SimpleNamespace(
+        backend=SimpleNamespace(name="windows_appcontainer"),
+        workspace=tmp_path,
+        ledger=_Ledger(),
+    )
+
+    monkeypatch.setattr(
+        integration_mod,
+        "_windows_proxy_allowlist_enforced",
+        lambda runtime: False,
+    )
+
+    result = await integration_mod.preflight_subprocess_managed_network(
+        request,
+        runtime,
+    )
+
+    assert result is not None
+    assert not isinstance(result, dict)
+    assert result.retryable is False
+    assert "Windows sandbox managed network is unavailable" in result.message
+    assert "PROXY_ALLOWLIST" in result.message
+    assert "Do not retry with http_request" in result.message
+    assert "Do not retry with web_fetch" in result.message
+    assert "Do not retry with offline wheel downloads" in result.message
+    assert "Do not retry with host Python" in result.message
+
+
+@pytest.mark.asyncio
 async def test_shell_package_install_queues_bundle_approval_before_proxy_run(
     managed_runtime: Path,
     monkeypatch: pytest.MonkeyPatch,

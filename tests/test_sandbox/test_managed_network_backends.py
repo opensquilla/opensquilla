@@ -121,8 +121,9 @@ def test_noop_backend_passes_request_proxy_env_to_child(
     policy = _policy(tmp_path, network_proxy=_proxy_spec())
     seen: dict[str, object] = {}
 
-    def _fake_run_sandboxed(cmd, limits=None, *, env=None):
+    def _fake_run_sandboxed(cmd, limits=None, *, stdin=None, env=None):
         seen["cmd"] = tuple(cmd)
+        seen["stdin"] = stdin
         seen["env"] = dict(env or {})
         return SafetySandboxResult(returncode=0, stdout="ok\n", stderr="")
 
@@ -145,6 +146,7 @@ def test_noop_backend_passes_request_proxy_env_to_child(
     result = noop_mod._run_request_sync(request, noop_mod._limits_from_policy(request))
 
     assert result.returncode == 0
+    assert seen["stdin"] is None
     assert seen["env"] == {
         "PATH": "/bin",
         "HTTP_PROXY": "http://127.0.0.1:18080",
@@ -423,6 +425,51 @@ async def test_run_under_backend_proxy_allowlist_without_context_fails_closed(
             _request(_policy(tmp_path, network_proxy=None), tmp_path),
             runtime=runtime,
         )
+
+
+@pytest.mark.asyncio
+async def test_non_windows_proxy_allowlist_skips_platform_network_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class FakeBackend:
+        name = "bubblewrap"
+
+        async def run(self, request: SandboxRequest) -> SandboxResult:
+            return SandboxResult(
+                returncode=0,
+                stdout="ok",
+                stderr="",
+                wall_time_s=0.0,
+                backend_used="bubblewrap",
+            )
+
+    async def fake_prepare_platform_network_boundary(
+        request: SandboxRequest,
+        runtime: object,
+    ) -> object:
+        calls.append("prepare")
+        return None
+
+    monkeypatch.setattr(
+        integration_mod,
+        "_prepare_platform_network_boundary",
+        fake_prepare_platform_network_boundary,
+    )
+
+    policy = _policy(
+        tmp_path,
+        network_proxy=NetworkProxySpec(host="127.0.0.1", port=18080),
+    )
+    result = await integration_mod.run_under_backend(
+        _request(policy, tmp_path),
+        runtime=SimpleNamespace(backend=FakeBackend()),
+    )
+
+    assert result.stdout == "ok"
+    assert calls == []
 
 
 def test_policy_positional_description_keeps_legacy_binding(

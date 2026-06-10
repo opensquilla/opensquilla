@@ -75,6 +75,7 @@
 - Design-token constraints: reuse existing tokens and icons.
 - Performance constraints: sidebar action must stay instant and not fetch the agent list.
 - Compatibility constraints: accept legacy `?new=1` route signals and normalize them to `?session=...`.
+- Frontend selection: Vue is the default and only product-facing Control UI. The `control_ui.frontend = "legacy"` gateway setting exists only as a maintainer rollback fallback for the frozen vanilla-JS frontend, is not user-visible, and requires a gateway restart.
 - Test/screenshot expectations: run typecheck/build and smoke the `/chat?newChat=1` path when possible.
 
 ## Open questions

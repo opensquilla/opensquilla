@@ -33,6 +33,8 @@
       :tool-group-status-text="toolGroupStatusText"
       :tool-status-text="toolStatusText"
       :tool-secondary-text="toolSecondaryText"
+      :session-key="sessionKey"
+      :auth-token="authToken"
       @copy="$emit('copyMessage', $event)"
       @regenerate="$emit('regenerateMessage', $event)"
       @toggle-share="$emit('toggleShareMessage', $event)"
@@ -79,6 +81,8 @@ defineProps<{
   toolGroupStatusText: (group: ChatToolCallGroup) => string
   toolStatusText: (call: ChatToolCallRenderItem) => string
   toolSecondaryText: (call: ChatToolCallRenderItem) => string
+  sessionKey?: string
+  authToken?: string
 }>()
 
 defineEmits<{

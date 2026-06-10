@@ -325,6 +325,19 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
 
   function handleRpcAny(rawEvent: string, rawPayload: unknown) {
     const payloadObj = (rawPayload && typeof rawPayload === 'object' ? rawPayload : {}) as SessionEventPayload
+    const rawStatus = payloadObj.run_status || payloadObj.runStatus || payloadObj.status || ''
+    const normalizedStatus = options.normalizeRunStatus(String(rawStatus))
+    if (
+      normalizedStatus === 'approval_pending' ||
+      (typeof rawEvent === 'string' && rawEvent.includes('approval') && isCurrentSessionPayload(payloadObj))
+    ) {
+      if (!isCurrentSessionPayload(payloadObj)) return
+      options.applySessionRunState({
+        run_status: 'approval_pending',
+        active_task: { ...(payloadObj || {}), status: 'approval_pending' },
+      })
+      return
+    }
     const terminalStatus = eventTaskTerminalStatus(rawEvent)
     if (terminalStatus) {
       if (!isCurrentSessionPayload(payloadObj)) return

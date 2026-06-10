@@ -54,6 +54,8 @@
       <ChatArtifactList
         v-if="message.artifacts?.length"
         :artifacts="message.artifacts"
+        :session-key="sessionKey"
+        :auth-token="authToken"
         @download="$emit('downloadArtifact', $event)"
       />
 
@@ -110,6 +112,8 @@ const props = defineProps<{
   toolGroupStatusText: (group: ChatToolCallGroup) => string
   toolStatusText: (call: ChatToolCallRenderItem) => string
   toolSecondaryText: (call: ChatToolCallRenderItem) => string
+  sessionKey?: string
+  authToken?: string
 }>()
 
 const emit = defineEmits<{

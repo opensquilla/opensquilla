@@ -1,4 +1,9 @@
 import { computed, ref, type ComputedRef } from 'vue'
+import {
+  DEFAULT_TEXT_TIER,
+  IMAGE_TIER,
+  normalizeRouterTier,
+} from '@/utils/chat/routerTiers'
 
 export interface SetupTierValue {
   provider: string
@@ -18,14 +23,15 @@ export function buildRouterPayload(
 ): Record<string, unknown> {
   const tiers: Record<string, Record<string, unknown>> = {}
   Object.entries(tierValues).forEach(([name, tier]) => {
-    tiers[name] = {
+    const tierName = normalizeRouterTier(name) || name
+    tiers[tierName] = {
       provider: tier.provider,
       model: tier.model,
       thinkingLevel: tier.thinkingLevel,
       supportsImage: tier.supportsImage,
     }
   })
-  return { mode, defaultTier, tiers }
+  return { mode, defaultTier: normalizeRouterTier(defaultTier) || DEFAULT_TEXT_TIER, tiers }
 }
 
 interface TierConfig {
@@ -52,7 +58,7 @@ interface RouterPanelContext {
 
 export function useSetupRouterForm() {
   const routerMode = ref('recommended')
-  const routerDefaultTier = ref('t1')
+  const routerDefaultTier = ref(DEFAULT_TEXT_TIER)
   const tierValues = ref<Record<string, SetupTierValue>>({})
   const mode = computed(() => routerMode.value)
   const defaultTier = computed(() => routerDefaultTier.value)
@@ -62,12 +68,13 @@ export function useSetupRouterForm() {
     profileTiers: Record<string, TierConfig>,
   ) {
     routerMode.value = router.enabled === false ? 'disabled' : 'recommended'
-    routerDefaultTier.value = router.default_tier || 't1'
+    routerDefaultTier.value = normalizeRouterTier(router.default_tier || '') || DEFAULT_TEXT_TIER
 
     const tiers = Object.assign({}, profileTiers || {}, router.tiers || {})
     const next: Record<string, SetupTierValue> = {}
     Object.entries(tiers).forEach(([name, tier]) => {
-      next[name] = {
+      const tierName = normalizeRouterTier(name) || name
+      next[tierName] = {
         provider: tier.provider || '',
         model: tier.model || '',
         thinkingLevel: tier.thinkingLevel || tier.thinking_level || '',
@@ -89,7 +96,7 @@ export function useSetupRouterForm() {
 
   function tierRows(textTiers: readonly string[]): SetupTierRow[] {
     return Object.entries(tierValues.value)
-      .filter(([name]) => textTiers.includes(name) || name === 'image_model')
+      .filter(([name]) => textTiers.includes(name) || name === IMAGE_TIER)
       .map(([name, tier]) => ({
         name,
         provider: tier.provider,
@@ -104,7 +111,7 @@ export function useSetupRouterForm() {
   }
 
   function setRouterDefaultTier(value: string) {
-    routerDefaultTier.value = value
+    routerDefaultTier.value = normalizeRouterTier(value) || DEFAULT_TEXT_TIER
   }
 
   function payload(): Record<string, unknown> {

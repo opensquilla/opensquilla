@@ -79,14 +79,49 @@ export function artifactMeta(artifact: ArtifactPayload): string {
   return [mime, size].filter(Boolean).join(' · ')
 }
 
-export function artifactDownloadUrl(artifact: ArtifactPayload, baseOrigin: string): string {
+export interface ArtifactUrlOptions {
+  sessionKey?: string
+  absolute?: boolean
+  includeSessionKey?: boolean
+}
+
+export function artifactDownloadUrl(
+  artifact: ArtifactPayload,
+  baseOrigin: string,
+  options: ArtifactUrlOptions = {},
+): string {
   let raw = artifact?.download_url ? String(artifact.download_url) : ''
   if (!raw && artifact?.id) raw = `/api/v1/artifacts/${encodeURIComponent(artifact.id)}`
   if (!raw) return ''
   try {
     const url = new URL(raw, baseOrigin)
-    url.searchParams.delete('sessionKey')
-    url.searchParams.delete('session_key')
+    const base = new URL(baseOrigin)
+    const sameOrigin = url.origin === base.origin
+    if (sameOrigin) {
+      url.searchParams.delete('token')
+      url.searchParams.delete('sessionKey')
+      url.searchParams.delete('session_key')
+    }
+    const artifactSession = artifact.sessionKey || artifact.session_key
+    const sessionKey = options.sessionKey || (artifactSession ? String(artifactSession) : '')
+    if (
+      sameOrigin &&
+      options.includeSessionKey === true &&
+      sessionKey &&
+      !url.searchParams.get('sessionKey') &&
+      !url.searchParams.get('session_key')
+    ) {
+      url.searchParams.set('sessionKey', sessionKey)
+    }
+    if (!sameOrigin || options.absolute) return url.toString()
     return url.pathname + url.search + url.hash
   } catch { return raw }
+}
+
+export function artifactPreviewUrl(
+  artifact: ArtifactPayload,
+  baseOrigin: string,
+  options: ArtifactUrlOptions = {},
+): string {
+  return artifactDownloadUrl(artifact, baseOrigin, options)
 }

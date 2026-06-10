@@ -9,35 +9,20 @@
   >
     <div class="router-fx-header">
       <span class="glyph">&#8592;</span>
-      <span class="title">model router</span>
+      <span class="title">AI model router</span>
       <span class="glyph">&#8594;</span>
     </div>
-    <div class="router-fx-grid">
+    <div class="router-fx-grid" :style="gridStyle">
       <div
         v-for="(cell, cellIndex) in gridCells"
-        :key="cellIndex"
+        :key="cell.tiers?.join(':') || `${cell.displayName}-${cellIndex}`"
         class="router-fx-cell"
         :data-kind="cell.kind"
         :data-cell-idx="cellIndex"
         :data-tiers="cell.tiers?.join(',')"
         :class="{ win: cellIndex === message.winnerIdx }"
       >
-        <span class="nm">{{ cell.displayName }}</span>
-      </div>
-      <div
-        v-if="hasWinner"
-        class="router-fx-selector visible lock"
-        :class="{ 'lock-impact': !message.routerStatic && !message.routerSettled }"
-        :style="selectorStyle"
-        aria-hidden="true"
-      />
-      <div
-        v-if="hasWinner && !message.routerStatic && !message.routerSettled"
-        class="router-fx-burst"
-        :style="burstStyle"
-        aria-hidden="true"
-      >
-        <i v-for="n in 6" :key="n" />
+        <span class="nm" :title="cell.displayName">{{ cell.displayName }}</span>
       </div>
     </div>
   </div>
@@ -51,41 +36,13 @@ const props = defineProps<{
   message: ChatRenderedMessage
 }>()
 
-const ROUTER_FX_GRID_COLS = 4
-
 const gridCells = computed(() => props.message.gridCells || [])
-
-const hasWinner = computed(() => Number(props.message.winnerIdx) >= 0)
-
-const selectorStyle = computed<Record<string, string>>(() => {
-  const idx = Math.max(0, Number(props.message.winnerIdx ?? 0))
-  const col = idx % ROUTER_FX_GRID_COLS
-  const row = Math.floor(idx / ROUTER_FX_GRID_COLS)
-  const lefts = [
-    '8px',
-    'calc(((100% - 28px) / 4) + 12px)',
-    'calc(((100% - 28px) / 2) + 16px)',
-    'calc(((100% - 28px) * 3 / 4) + 20px)',
-  ]
+const gridColumnCount = computed(() => Math.min(4, Math.max(2, gridCells.value.length)))
+const mobileGridColumnCount = computed(() => gridCells.value.length > 2 ? 2 : Math.max(1, gridCells.value.length))
+const gridStyle = computed<Record<string, string>>(() => {
   return {
-    '--router-left': lefts[col] || '8px',
-    '--router-top': `${8 + row * 34}px`,
-  }
-})
-
-const burstStyle = computed<Record<string, string>>(() => {
-  const idx = Math.max(0, Number(props.message.winnerIdx ?? 0))
-  const col = idx % ROUTER_FX_GRID_COLS
-  const row = Math.floor(idx / ROUTER_FX_GRID_COLS)
-  const lefts = [
-    'calc(((100% - 28px) / 8) + 8px)',
-    'calc(((100% - 28px) * 3 / 8) + 12px)',
-    'calc(((100% - 28px) * 5 / 8) + 16px)',
-    'calc(((100% - 28px) * 7 / 8) + 20px)',
-  ]
-  return {
-    '--router-burst-left': lefts[col] || 'calc(12.5% + 4.5px)',
-    '--router-burst-top': `${23 + row * 34}px`,
+    '--router-fx-cols': String(gridColumnCount.value),
+    '--router-fx-mobile-cols': String(mobileGridColumnCount.value),
   }
 })
 </script>
@@ -145,8 +102,8 @@ const burstStyle = computed<Record<string, string>>(() => {
 .router-fx-grid {
   position: relative;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  grid-template-rows: repeat(3, 30px);
+  grid-template-columns: repeat(var(--router-fx-cols, 2), 1fr);
+  grid-auto-rows: 34px;
   gap: 4px;
   padding: 8px;
   background:
@@ -177,24 +134,6 @@ const burstStyle = computed<Record<string, string>>(() => {
   transition: transform 220ms cubic-bezier(.34,1.65,.5,1), background 240ms ease, color 240ms ease, border-color 240ms ease, box-shadow 240ms ease;
 }
 
-.router-fx-cell[data-kind="real"]::after {
-  content: '';
-  position: absolute;
-  top: 3px;
-  right: 3px;
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: var(--router-accent);
-  opacity: 0.72;
-}
-
-.router-fx-cell[data-kind="decoy"] {
-  color: var(--router-muted);
-  font-style: italic;
-  opacity: 0.78;
-}
-
 @keyframes router-fx-mole-pop {
   0% { transform: translateY(0) scale(1); background: rgba(255, 255, 255, 0.72); }
   35% { transform: translateY(-2px) scale(1.14); background: color-mix(in srgb, var(--router-accent) 14%, #fff); }
@@ -214,6 +153,8 @@ const burstStyle = computed<Record<string, string>>(() => {
 .router-fx-cell:nth-child(4) { animation-delay: 760ms; }
 
 .router-fx-cell .nm {
+  display: block;
+  max-width: 100%;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -225,6 +166,15 @@ const burstStyle = computed<Record<string, string>>(() => {
 }
 
 .router-fx-cell.win::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--router-accent);
+  opacity: 1;
   animation: router-fx-winner-dot-reveal 1.42s linear both;
 }
 
@@ -484,6 +434,29 @@ const burstStyle = computed<Record<string, string>>(() => {
     top: var(--router-top);
     transform: rotate(0deg);
     opacity: 1;
+  }
+}
+
+@media (max-width: 640px) {
+  .router-fx {
+    width: min(calc(100% - 24px), 620px);
+  }
+
+  .router-fx-grid {
+    grid-template-columns: repeat(var(--router-fx-mobile-cols, var(--router-fx-cols, 2)), 1fr);
+    grid-auto-rows: 30px;
+    padding: 6px;
+    gap: 3px;
+  }
+
+  .router-fx-cell {
+    font-size: 10px;
+    padding: 0 5px;
+  }
+
+  .router-fx-header {
+    font-size: 9.5px;
+    letter-spacing: 0.36em;
   }
 }
 </style>

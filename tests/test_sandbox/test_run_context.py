@@ -235,10 +235,13 @@ async def test_rpc_run_context_set_allows_owner_full_mode() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rpc_run_context_set_creates_owner_new_webchat_session() -> None:
+async def test_rpc_run_context_set_creates_owner_new_webchat_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.gateway import rpc_sandbox
     from opensquilla.gateway.auth import Principal
     from opensquilla.gateway.rpc import RpcContext
-    from opensquilla.gateway.rpc_sandbox import _handle_sandbox_run_context_set
+    from opensquilla.sandbox.setup_state import SandboxSetupState, SetupResult
 
     manager = _SessionManager()
     session_key = "agent:main:webchat:dkkwi6so"
@@ -260,7 +263,17 @@ async def test_rpc_run_context_set_creates_owner_new_webchat_session() -> None:
         config=config,
     )
 
-    result = await _handle_sandbox_run_context_set(
+    async def fake_status(config: object) -> SetupResult:
+        return SetupResult(
+            state=SandboxSetupState.READY,
+            platform="win32",
+            message="ready",
+            requires_admin=True,
+        )
+
+    monkeypatch.setattr(rpc_sandbox, "current_sandbox_setup_status", fake_status)
+
+    result = await rpc_sandbox._handle_sandbox_run_context_set(
         {"sessionKey": session_key, "runMode": "trusted"},
         ctx,
     )

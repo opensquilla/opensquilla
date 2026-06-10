@@ -13,7 +13,7 @@
       :share-selected="selectedMessageIds.has(chatMessageKey(message, index))"
       :share-message-id="chatMessageKey(message, index)"
       :strip-time-prefix="stripTimePrefix"
-      @copy="$emit('copyMessage', $event)"
+      :copy-message="copyMessage"
       @edit="$emit('editMessage', $event)"
       @toggle-share="$emit('toggleShareMessage', $event)"
     />
@@ -35,7 +35,7 @@
       :tool-secondary-text="toolSecondaryText"
       :session-key="sessionKey"
       :auth-token="authToken"
-      @copy="$emit('copyMessage', $event)"
+      :copy-message="copyMessage"
       @regenerate="$emit('regenerateMessage', $event)"
       @toggle-share="$emit('toggleShareMessage', $event)"
       @download-artifact="$emit('downloadArtifact', $event)"
@@ -81,12 +81,12 @@ defineProps<{
   toolGroupStatusText: (group: ChatToolCallGroup) => string
   toolStatusText: (call: ChatToolCallRenderItem) => string
   toolSecondaryText: (call: ChatToolCallRenderItem) => string
+  copyMessage: (message: ChatRenderedMessage) => Promise<boolean>
   sessionKey?: string
   authToken?: string
 }>()
 
 defineEmits<{
-  copyMessage: [message: ChatRenderedMessage]
   editMessage: [message: ChatRenderedMessage]
   regenerateMessage: [message: ChatRenderedMessage]
   toggleShareMessage: [messageId: string]

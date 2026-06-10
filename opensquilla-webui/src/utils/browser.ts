@@ -1,6 +1,12 @@
 export async function copyTextWithFallback(text: string): Promise<void> {
   if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-    return navigator.clipboard.writeText(text)
+    try {
+      await navigator.clipboard.writeText(text)
+      return
+    } catch {
+      // writeText can reject on focus loss, permission denial, or insecure
+      // contexts; fall through to the legacy textarea path before giving up.
+    }
   }
 
   const textarea = document.createElement('textarea')

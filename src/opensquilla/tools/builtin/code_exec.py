@@ -182,7 +182,7 @@ def _unsupported_windows_environment_subprocess_payload(reason: str) -> str:
             "message": (
                 "execute_code is for short Python calculations and import checks. "
                 f"Windows sandbox detected {reason} through a Python subprocess; "
-                "use exec_command so the Windows shell path translation, AppContainer ACL "
+                "use exec_command so the Windows shell path translation, sandbox filesystem "
                 "grants, and managed network approvals run before the process starts."
             ),
         },

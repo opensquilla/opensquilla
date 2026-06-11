@@ -504,6 +504,13 @@ def _windows_sandbox_backend_active(runtime: object | None = None) -> bool:
     return backend_name.startswith("windows_")
 
 
+def _windows_restricted_token_backend_active(runtime: object | None = None) -> bool:
+    runtime = get_runtime() if runtime is None else runtime
+    backend = getattr(runtime, "backend", None) if runtime is not None else None
+    backend_name = str(getattr(backend, "name", "") or "")
+    return backend_name == "windows_restricted_token"
+
+
 def _windows_session_slug() -> str:
     ctx = current_tool_context.get()
     raw = str(getattr(ctx, "session_key", None) or "default")
@@ -1123,6 +1130,17 @@ def _sandbox_shell_backend_argv(
     backend_name = getattr(backend, "name", "")
     if backend_name.startswith("windows_"):
         command = _windows_powershell_compat_command(command)
+        if _windows_restricted_token_backend_active(runtime):
+            return (
+                _trusted_windows_powershell_path(),
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                command,
+            )
         argv = (
             sys.executable,
             "-c",
@@ -1507,6 +1525,8 @@ def _policy_with_windows_shell_runtime_mounts(
     runtime: object | None,
 ) -> SandboxPolicy:
     if not _windows_sandbox_backend_active(runtime) or not hasattr(policy, "mounts"):
+        return policy
+    if _windows_restricted_token_backend_active(runtime):
         return policy
     mounts_by_path = {str(mount.host_path): mount for mount in policy.mounts}
     for path in _windows_shell_runtime_mount_paths():

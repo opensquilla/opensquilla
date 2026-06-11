@@ -270,7 +270,7 @@ async def test_shell_unknown_explicit_url_queues_network_approval_before_proxy_r
 
 
 @pytest.mark.asyncio
-async def test_windows_proxy_allowlist_runtime_enters_network_boundary(
+async def test_windows_proxy_allowlist_runtime_skips_platform_network_boundary(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -334,7 +334,7 @@ async def test_windows_proxy_allowlist_runtime_enters_network_boundary(
     result = await integration_mod.run_under_backend(request, runtime=runtime)
 
     assert result.stdout == "ok"
-    assert events == [("prepare", 48123), ("run", 48123), ("cleanup", "ctx")]
+    assert events == [("run", 48123)]
 
 
 @pytest.mark.asyncio

@@ -140,6 +140,40 @@ class ToolsConfig(BaseModel):
     also_allow: list[str] = Field(default_factory=list)
     workspace_write_deny_globs: list[str] = Field(default_factory=list)
     trusted_fake_ip_cidrs: list[str] = Field(default_factory=list)
+    toolsets: dict[str, list[str]] = Field(
+        default_factory=lambda: {
+            "minimal": ["session_status"],
+            "web": ["web_search", "web_fetch", "session_status", "session_search"],
+            "memory": ["memory_search", "memory_get", "session_status"],
+            "files": ["read_file", "list_dir", "glob_search", "grep_search"],
+            "coding": [
+                "read_file",
+                "list_dir",
+                "glob_search",
+                "grep_search",
+                "edit_file",
+                "write_file",
+                "apply_patch",
+                "exec_command",
+                "git_status",
+                "git_diff",
+            ],
+        }
+    )
+    toolset_priority: list[str] = Field(
+        default_factory=lambda: [
+            "session_status",
+            "web_search",
+            "web_fetch",
+            "session_search",
+            "memory_search",
+            "memory_get",
+            "read_file",
+            "grep_search",
+            "glob_search",
+            "list_dir",
+        ]
+    )
 
     @field_validator("trusted_fake_ip_cidrs")
     @classmethod
@@ -241,6 +275,8 @@ class LlmProviderConfig(BaseSettings):
     # OpenRouter fallback.
     provider_routing: dict[str, str] = Field(default_factory=dict)
     tool_support: Literal["auto", "on", "off"] = "auto"
+    toolset: str | None = None
+    max_tool_schema_chars: int = 0
 
     @model_validator(mode="after")
     def _normalize_direct_deepseek_model(self) -> LlmProviderConfig:

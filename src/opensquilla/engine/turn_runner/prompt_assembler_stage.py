@@ -22,6 +22,7 @@ future prompt-failure early-yield branch.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -112,6 +113,65 @@ def _reply_tags_enabled_for_tool_context(ctx: ToolContext | None) -> bool:
     caller_kind = getattr(ctx, "caller_kind", None)
     caller_value = getattr(caller_kind, "value", caller_kind)
     return str(caller_value or "").lower() in {"channel", "cron"}
+
+
+def _tier_cfg_for_turn(config: Any, metadata: Mapping[str, Any]) -> Mapping[str, Any]:
+    routed_tier = str(metadata.get("routed_tier") or "").strip()
+    if not routed_tier:
+        return {}
+    router_cfg = getattr(config, "squilla_router", None)
+    tiers = getattr(router_cfg, "tiers", {}) if router_cfg is not None else {}
+    if not isinstance(tiers, Mapping):
+        return {}
+    tier_cfg = tiers.get(routed_tier, {})
+    return tier_cfg if isinstance(tier_cfg, Mapping) else {}
+
+
+def _first_text(*values: Any) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _first_positive_int(*values: Any) -> int | None:
+    for value in values:
+        try:
+            parsed = int(value or 0)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return None
+
+
+def _configured_tool_schema_policy(
+    config: Any,
+    metadata: Mapping[str, Any],
+) -> tuple[str, Mapping[str, list[str]], list[str], int | None] | None:
+    tier_cfg = _tier_cfg_for_turn(config, metadata)
+    llm_cfg = getattr(config, "llm", None)
+    tools_cfg = getattr(config, "tools", None)
+    toolset = _first_text(
+        tier_cfg.get("toolset"),
+        tier_cfg.get("toolSet"),
+        getattr(llm_cfg, "toolset", None),
+        "full",
+    )
+    max_chars = _first_positive_int(
+        tier_cfg.get("max_tool_schema_chars"),
+        tier_cfg.get("maxToolSchemaChars"),
+        getattr(llm_cfg, "max_tool_schema_chars", None),
+    )
+    if toolset == "full" and max_chars is None:
+        return None
+    raw_toolsets = getattr(tools_cfg, "toolsets", {}) if tools_cfg is not None else {}
+    toolsets = raw_toolsets if isinstance(raw_toolsets, Mapping) else {}
+    raw_priority = (
+        getattr(tools_cfg, "toolset_priority", []) if tools_cfg is not None else []
+    )
+    priority = list(raw_priority) if isinstance(raw_priority, list) else []
+    return toolset or "full", toolsets, priority, max_chars
 
 @runtime_checkable
 class PipelineExecutionPort(Protocol):
@@ -447,6 +507,44 @@ class PromptAssemblerStage:
         # 4. Merge prompt + tool metadata
         turn.metadata.update(prompt_metadata)
         turn.metadata.update(inp.tool_metadata)
+
+        tool_policy = _configured_tool_schema_policy(
+            getattr(turn, "config", None),
+            getattr(turn, "metadata", {}) or {},
+        )
+        if tool_policy is not None and getattr(turn, "tool_defs", None):
+            from opensquilla.provider.tool_schema_budget import fit_tool_schema_budget
+
+            selected_toolset, toolsets, priority, max_chars = tool_policy
+            fit_result = fit_tool_schema_budget(
+                turn.tool_defs,
+                toolset=selected_toolset,
+                toolsets=toolsets,
+                priority=priority,
+                max_tool_schema_chars=max_chars,
+            )
+            turn.tool_defs = fit_result.tool_defs
+            turn.metadata["selected_toolset"] = fit_result.selected_toolset
+            turn.metadata["dropped_tools"] = fit_result.dropped_tools
+            turn.metadata["tools_chars"] = fit_result.tools_chars
+            turn.metadata["tool_schema_chars"] = fit_result.tools_chars
+            turn.metadata["tool_schema_budget_chars"] = fit_result.budget_chars
+            if fit_result.changed:
+                prompt_metadata = {}
+                turn.system_prompt = self._prompt_assembler.assemble_prompt(
+                    inp.agent_id,
+                    turn.tool_defs,
+                    session_key=inp.session_key,
+                    semantic_message=inp.semantic_input,
+                    extra_context=inp.extra_prompt_context,
+                    prompt_metadata=prompt_metadata,
+                    bootstrap_context_mode=inp.bootstrap_context_mode,
+                    fresh_user_session=inp.fresh_user_session,
+                    reply_tags_enabled=_reply_tags_enabled_for_tool_context(
+                        inp.effective_tool_context
+                    ),
+                )
+                turn.metadata.update(prompt_metadata)
 
         # 5. Memory fingerprint merge (defensive — port returns None to skip)
         fingerprint = self._memory_fingerprint.memory_mode_fingerprint()

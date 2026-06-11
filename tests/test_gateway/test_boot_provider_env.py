@@ -225,6 +225,34 @@ async def test_safe_config_patch_allows_tool_support_leaf_paths(tmp_path) -> Non
     assert persisted["squilla_router"]["tiers"]["c1"]["tool_support"] == "on"
 
 
+async def test_safe_config_patch_allows_tool_schema_fit_leaf_paths(tmp_path) -> None:
+    cfg = GatewayConfig(config_path=str(tmp_path / "config.toml"))
+    selector = _CapturingSelector()
+    ctx = SimpleNamespace(config=cfg, provider_selector=selector)
+
+    await _handle_config_patch_safe(
+        {
+            "patches": {
+                "llm.toolset": "web",
+                "llm.max_tool_schema_chars": 12000,
+                "squilla_router.tiers.c1.toolset": "web",
+                "squilla_router.tiers.c1.max_tool_schema_chars": 12000,
+            }
+        },
+        ctx,
+    )
+
+    assert ctx.config.llm.toolset == "web"
+    assert ctx.config.llm.max_tool_schema_chars == 12000
+    assert ctx.config.squilla_router.tiers["c1"]["toolset"] == "web"
+    assert ctx.config.squilla_router.tiers["c1"]["max_tool_schema_chars"] == 12000
+    persisted = tomllib.loads((tmp_path / "config.toml").read_text())
+    assert persisted["llm"]["toolset"] == "web"
+    assert persisted["llm"]["max_tool_schema_chars"] == 12000
+    assert persisted["squilla_router"]["tiers"]["c1"]["toolset"] == "web"
+    assert persisted["squilla_router"]["tiers"]["c1"]["max_tool_schema_chars"] == 12000
+
+
 async def test_safe_config_patch_rejects_non_tool_support_tier_paths(tmp_path) -> None:
     cfg = GatewayConfig(config_path=str(tmp_path / "config.toml"))
     ctx = SimpleNamespace(config=cfg, provider_selector=_CapturingSelector())

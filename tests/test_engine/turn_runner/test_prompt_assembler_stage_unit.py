@@ -28,6 +28,9 @@ from opensquilla.engine.turn_runner.prompt_assembler_stage import (
     SessionIdResolverPort,
 )
 from opensquilla.observability.prompt_report import PromptReport
+from opensquilla.provider.openai import _build_openai_tool
+from opensquilla.provider.request_proof import _payload_chars
+from opensquilla.provider.types import ToolDefinition, ToolInputSchema
 from opensquilla.tools.types import CallerKind, ToolContext
 
 # ---------------------------------------------------------------------------
@@ -146,6 +149,15 @@ class _RecordingMemoryFingerprint:
 
 
 @dataclass
+class _TurnSystemPromptResolver:
+    calls: int = 0
+
+    def resolve_prompt_config(self, turn):
+        self.calls += 1
+        return turn.system_prompt, None, None
+
+
+@dataclass
 class _StubProvider:
     name: str = "stub"
     provider_name: str = ""
@@ -205,12 +217,14 @@ def _make_turn(
     metadata: dict[str, Any] | None = None,
     tool_defs: list[Any] | None = None,
     model: str = "",
+    system_prompt: Any = "BASE",
 ):
     return SimpleNamespace(
         message=message,
         metadata=dict(metadata or {}),
         tool_defs=list(tool_defs or []),
         model=model,
+        system_prompt=system_prompt,
     )
 
 
@@ -451,6 +465,79 @@ async def test_case04_routed_provider_wins_over_call_site_model() -> None:
     assert out.output.resolved_model == "z-ai/glm-5.1"
     assert out.output.selector_model == "z-ai/glm-5.1"
     assert out.output.squilla_router_tier == "c2"
+
+
+@pytest.mark.asyncio
+async def test_routed_tier_toolset_fits_schema_budget_and_rebuilds_prompt() -> None:
+    def _tool(name: str, *, desc_size: int) -> ToolDefinition:
+        return ToolDefinition(
+            name=name,
+            description=f"{name} " + ("x" * desc_size),
+            input_schema=ToolInputSchema(
+                properties={
+                    "query": {
+                        "type": "string",
+                        "description": "q" * desc_size,
+                    }
+                },
+                required=["query"],
+            ),
+        )
+
+    web_search = _tool("web_search", desc_size=12)
+    web_fetch = _tool("web_fetch", desc_size=12)
+    exec_command = _tool("exec_command", desc_size=2000)
+    keep_budget = _payload_chars(
+        [_build_openai_tool(web_search), _build_openai_tool(web_fetch)]
+    ) + 16
+    all_tools = [web_search, web_fetch, exec_command]
+    config = SimpleNamespace(
+        llm=SimpleNamespace(toolset=None, max_tool_schema_chars=0),
+        tools=SimpleNamespace(
+            toolsets={
+                "web": ["web_search", "web_fetch", "exec_command"],
+            },
+            toolset_priority=["web_search", "web_fetch", "exec_command"],
+        ),
+        squilla_router=SimpleNamespace(
+            tiers={
+                "c1": {
+                    "toolset": "web",
+                    "max_tool_schema_chars": keep_budget,
+                }
+            }
+        ),
+    )
+    turn = _make_turn(
+        metadata={"routed_tier": "c1"},
+        tool_defs=all_tools,
+        model="small-model",
+    )
+    turn.config = config
+    assembler = _RecordingPromptAssembler()
+    executor = _RecordingPipelineExecutor(turn=turn, provider=_StubProvider())
+    stage = _make_stage(
+        assembler=assembler,
+        executor=executor,
+        resolver=_TurnSystemPromptResolver(),
+    )
+
+    out = await stage.run(
+        _make_input(
+            cloned_selector=_StubSelector(),
+            tool_defs=all_tools,
+        )
+    )
+
+    final_tool_names = [tool.name for tool in out.output.turn.tool_defs]
+    assert final_tool_names == ["web_search", "web_fetch"]
+    assert assembler.calls == 2
+    assert [tool.name for tool in assembler.last_kwargs["tool_defs"]] == final_tool_names
+    assert out.output.final_prompt == "BASE"
+    assert out.output.prompt_report.tool_count == 2
+    assert out.output.turn.metadata["selected_toolset"] == "web"
+    assert out.output.turn.metadata["dropped_tools"] == ["exec_command"]
+    assert out.output.turn.metadata["tools_chars"] <= keep_budget
 
 
 @pytest.mark.asyncio

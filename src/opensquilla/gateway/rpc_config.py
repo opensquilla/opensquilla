@@ -275,6 +275,8 @@ _READONLY_PATHS = frozenset({"auth.token", "auth.password"})
 _SAFE_WRITE_PATCH_PATHS = frozenset(
     {
         "llm.tool_support",
+        "llm.toolset",
+        "llm.max_tool_schema_chars",
         "skills.filter_enabled",
         "skills.filter_lexical_top_n",
         "skills.filter_semantic_top_n",
@@ -288,6 +290,9 @@ _SAFE_WRITE_PATCH_PATHS = frozenset(
     }
 )
 _SAFE_ROUTER_TIER_TOOL_SUPPORT_IDS = frozenset({"c0", "c1", "c2", "c3", "image_model"})
+_SAFE_ROUTER_TIER_TOOL_SCHEMA_FIELDS = frozenset(
+    {"tool_support", "toolset", "max_tool_schema_chars"}
+)
 
 
 def _is_safe_write_patch_path(path: str) -> bool:
@@ -299,7 +304,7 @@ def _is_safe_write_patch_path(path: str) -> bool:
         and parts[0] == "squilla_router"
         and parts[1] == "tiers"
         and parts[2] in _SAFE_ROUTER_TIER_TOOL_SUPPORT_IDS
-        and parts[3] == "tool_support"
+        and parts[3] in _SAFE_ROUTER_TIER_TOOL_SCHEMA_FIELDS
     )
 
 

@@ -96,12 +96,26 @@ def test_windows_auto_fails_closed_when_restricted_token_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from opensquilla.sandbox import backend as backend_mod
+    from opensquilla.sandbox.backend import windows_support as support_mod
     from opensquilla.sandbox.backend.windows_restricted_token import (
         WindowsRestrictedTokenBackend,
     )
 
     monkeypatch.setattr(backend_mod.sys, "platform", "win32")
     monkeypatch.setattr(WindowsRestrictedTokenBackend, "available", lambda self: False)
+    monkeypatch.setattr(
+        support_mod,
+        "probe_windows_sandbox_support",
+        lambda: type(
+            "Support",
+            (),
+            {
+                "ctypes_available": True,
+                "restricted_token_enforced": False,
+                "proxy_allowlist_enforced": False,
+            },
+        )(),
+    )
 
     with pytest.raises(SandboxBackendError, match="no real sandbox backend"):
         backend_mod.select_backend(SandboxSettings(sandbox=True, backend="auto"))
@@ -315,29 +329,54 @@ def test_helper_non_windows_fails_closed_without_subprocess_fallback(
     assert "only runs on native Windows" in captured.err
 
 
-def test_helper_rejects_before_run_when_restricted_token_enforcement_missing(
+def test_helper_rejects_proxy_allowlist_before_launch(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
 ) -> None:
     from opensquilla.sandbox.backend import windows_restricted_token_helper as helper
-    from opensquilla.sandbox.backend.windows_support import WindowsSandboxSupport
 
-    def forbidden_run(payload: object) -> None:
-        raise AssertionError("helper must not run without declared enforcement")
+    def forbidden_run(payload: object) -> int:
+        raise AssertionError("proxy_allowlist must fail before launch")
+
+    policy = _policy(tmp_path).summary()
+    policy["network"] = "proxy_allowlist"
+    policy["network_proxy"] = {"host": "127.0.0.1", "port": 48123}
 
     monkeypatch.setattr(helper.sys, "platform", "win32")
-    monkeypatch.setattr(
-        helper,
-        "probe_windows_sandbox_support",
-        lambda: WindowsSandboxSupport(
-            is_windows=True,
-            ctypes_available=True,
-            restricted_token_enforced=False,
-            proxy_allowlist_enforced=False,
-        ),
-    )
     monkeypatch.setattr(helper, "_run_restricted", forbidden_run)
+    payload = json.dumps(
+        {
+            "argv": ["cmd", "/c", "echo", "ok"],
+            "cwd": str(tmp_path),
+            "env": {},
+            "policy": policy,
+            "timeout": 5.0,
+        }
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        helper.main([payload])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code != 0
+    assert "proxy_allowlist" in captured.err
+
+
+def test_helper_network_none_reaches_restricted_launch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.sandbox.backend import windows_restricted_token_helper as helper
+
+    launched: dict[str, object] = {}
+
+    def fake_run(payload: object) -> int:
+        launched["payload"] = payload
+        return 0
+
+    monkeypatch.setattr(helper.sys, "platform", "win32")
+    monkeypatch.setattr(helper, "_run_restricted", fake_run)
     payload = json.dumps(
         {
             "argv": ["cmd", "/c", "echo", "ok"],
@@ -351,6 +390,5 @@ def test_helper_rejects_before_run_when_restricted_token_enforcement_missing(
     with pytest.raises(SystemExit) as exc_info:
         helper.main([payload])
 
-    captured = capsys.readouterr()
-    assert exc_info.value.code != 0
-    assert "cannot enforce policy on this host" in captured.err
+    assert exc_info.value.code == 0
+    assert "payload" in launched

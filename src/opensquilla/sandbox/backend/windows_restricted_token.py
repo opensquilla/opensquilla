@@ -34,7 +34,7 @@ class WindowsRestrictedTokenBackend(Backend):
         if not self.available():
             raise SandboxBackendError(
                 "windows_restricted_token backend unavailable: requires native Windows "
-                "plus enforced restricted-token and proxy allowlist boundaries"
+                "plus an enforced restricted-token boundary"
             )
 
         payload = _payload_for_request(request)

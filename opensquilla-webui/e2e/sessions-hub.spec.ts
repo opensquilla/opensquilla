@@ -64,8 +64,10 @@ test.describe('Sessions Hub', () => {
       await expect(page.locator('.hub-state')).toContainText('No matches')
       await page.getByRole('button', { name: 'Clear filters' }).click()
     } else {
+      // Task/subagent rows intentionally follow their chat parent through the
+      // Chats filter; cron and channel sessions must be filtered out.
       for (const kind of await rows.evaluateAll(nodes => nodes.map(node => node.getAttribute('data-kind')))) {
-        expect(kind).toBe('chat')
+        expect(['chat', 'task']).toContain(kind)
       }
       await chips.getByRole('button', { name: 'All', exact: true }).click()
     }

@@ -1,12 +1,12 @@
 import { computed } from 'vue'
-import { getNavigationGroups, getNavigationItems } from '@/router/nav'
+import { getConsoleNavigationItems, getNavigationItems } from '@/router/nav'
 
 export function useNavigation() {
-  const navGroups = computed(() => getNavigationGroups())
+  const consoleRoutes = computed(() => getConsoleNavigationItems())
   const bottomRoutes = computed(() => getNavigationItems('bottom'))
 
   return {
-    navGroups,
+    consoleRoutes,
     bottomRoutes,
   }
 }

@@ -35,20 +35,51 @@
     <div class="sidebar-actions">
       <button
         class="sidebar-new-session"
-        title="Start a new chat"
+        title="Start a new chat (Ctrl+K)"
         @click="openNewChatPicker"
       >
         <Icon name="plus" :size="16" />
         <span>New chat</span>
+        <kbd class="sidebar-kbd" aria-hidden="true">Ctrl K</kbd>
       </button>
     </div>
 
-    <!-- Function list -->
-    <div class="sidebar-section sidebar-primary-nav" aria-label="Control navigation">
-      <div v-for="group in navGroups" :key="group.label" class="sidebar-nav-group">
-        <div class="sidebar-nav-group-label">{{ group.label }}</div>
+    <!-- Fixed nav core: never scrolls; Recents below is the only scroll region -->
+    <div class="sidebar-section sidebar-core" aria-label="Control navigation">
+      <router-link
+        to="/sessions"
+        class="sidebar-fn-item"
+        :class="{ 'is-active': isNavActive('/sessions') }"
+        @click="handleNavClick"
+      >
+        <Icon name="sessions" :size="16" />
+        <span class="sidebar-fn-label">Sessions</span>
+      </router-link>
+      <button
+        v-if="appStore.approvalCount > 0"
+        type="button"
+        class="sidebar-fn-item"
+        title="Open the blocked session"
+        @click="onApprovalsRowClick"
+      >
+        <Icon name="approvals" :size="16" />
+        <span class="sidebar-fn-label">Approvals</span>
+        <span class="sidebar-count-badge">{{ appStore.approvalCount }}</span>
+      </button>
+      <button
+        type="button"
+        class="sidebar-fn-item sidebar-console-row"
+        :aria-expanded="consoleOpen"
+        aria-controls="sidebar-console-list"
+        @click="consoleOpen = !consoleOpen"
+      >
+        <Icon name="settings" :size="16" />
+        <span class="sidebar-fn-label">Console</span>
+        <Icon class="sidebar-console-chevron" name="chevronRight" :size="14" />
+      </button>
+      <div v-if="consoleOpen" id="sidebar-console-list" class="sidebar-console-list">
         <router-link
-          v-for="route in group.items"
+          v-for="route in consoleRoutes"
           :key="route.path"
           :to="route.path"
           class="sidebar-fn-item"
@@ -57,9 +88,6 @@
         >
           <Icon :name="route.icon" :size="16" />
           <span class="sidebar-fn-label">{{ route.title }}</span>
-          <span v-if="route.path === '/approvals' && appStore.approvalCount > 0" class="nav-badge">
-            {{ appStore.approvalCount }}
-          </span>
         </router-link>
       </div>
     </div>
@@ -75,22 +103,19 @@
       @refresh="loadSessions"
     />
 
-    <!-- Bottom links -->
-    <div v-if="bottomRoutes.length" class="sidebar-bottom">
-      <router-link
-        v-for="route in bottomRoutes"
-        :key="route.path"
-        :to="route.path"
+    <!-- Fixed footer: settings + connection state -->
+    <div class="sidebar-foot">
+      <button
+        type="button"
         class="sidebar-fn-item"
-        :class="{ 'is-active': $route.path === route.path }"
-        :title="route.title"
-        :aria-label="route.title"
-        :data-tooltip="route.title"
-        @click="handleNavClick"
+        @click="openSettings"
       >
-        <Icon :name="route.icon" :size="16" />
-        <span class="sidebar-fn-label">{{ route.title }}</span>
-      </router-link>
+        <Icon name="settings" :size="16" />
+        <span class="sidebar-fn-label">Settings</span>
+        <span class="sidebar-conn" :class="rpcStore.state">
+          <span class="sidebar-conn-dot" aria-hidden="true"></span>{{ rpcStore.state }}
+        </span>
+      </button>
     </div>
   </nav>
 
@@ -239,11 +264,13 @@
     </button>
   </nav>
 
+  <SettingsModal />
+
   <ToastHost />
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from './stores/app'
 import { useRpcStore } from './stores/rpc'
@@ -251,6 +278,7 @@ import { useSessions, type SessionItem } from './composables/useSessions'
 import Icon from './components/Icon.vue'
 import ErrorBoundary from './components/ErrorBoundary.vue'
 import ToastHost from './components/ToastHost.vue'
+import SettingsModal from './components/settings/SettingsModal.vue'
 import SidebarConversations, {
   type SidebarConversationItem,
   type SidebarFamilyId,
@@ -265,7 +293,7 @@ const rpcStore = useRpcStore()
 const $route = useRoute()
 const router = useRouter()
 const { allSessions, sessionListError, isLoading, loadSessions } = useSessions()
-const { navGroups, bottomRoutes } = useNavigation()
+const { consoleRoutes, bottomRoutes } = useNavigation()
 
 const agents = ref<AgentOption[]>([])
 const agentListError = ref(false)
@@ -299,6 +327,12 @@ function isNavActive(path: string): boolean {
   return $route.path === path
 }
 
+// Console fold: open while visiting any console page (active trail stays
+// visible), collapse automatically when navigating back to chat/sessions.
+const consoleOpen = ref(false)
+const isConsoleRoute = computed(() => consoleRoutes.value.some(route => route.path === $route.path))
+watch(isConsoleRoute, open => { consoleOpen.value = open }, { immediate: true })
+
 function agentDisplayName(agentId: string): string {
   const agent = agents.value.find(a => a.id === agentId)
   return agent?.name || (agentId === 'main' ? 'Main Agent' : agentId)
@@ -318,37 +352,6 @@ function sidebarConversationTitle(item: SessionItem): string {
     if (text && !looksLikeRawSessionId(text)) return text
   }
   return 'Untitled session'
-}
-
-// Grouped-mode bucket label; raw ids (cron UUIDs, session keys) never render.
-function sidebarGroupLabel(item: SessionItem): string {
-  if (item.sessionKind === 'cron') {
-    // Show the cron job's human name. The contract's generic "Cron" group
-    // label and jobId UUIDs make useless headers, so fall through to the
-    // job name embedded in the run title when the name field is absent.
-    const candidates = [
-      item.raw.cron?.name,
-      String(item.title || '').replace(/^Cron:\s*/i, ''),
-      item.groupLabel,
-    ]
-    for (const candidate of candidates) {
-      const text = String(candidate || '').trim()
-      if (text && !looksLikeRawSessionId(text)) return text
-    }
-    return 'Automation'
-  }
-  const text = String(item.groupLabel || '').trim()
-  if (text && !looksLikeRawSessionId(text)) return text
-  return item.sessionKind === 'channel' ? 'Channel' : 'Conversations'
-}
-
-// Stable grouping key; cron runs bucket by job id even when jobs share a name.
-function sidebarGroupKey(item: SessionItem, label: string): string {
-  if (item.sessionKind === 'cron') {
-    const jobId = String(item.raw.cron?.jobId || item.raw.cron?.job_id || item.raw.cron?.id || '').trim()
-    if (jobId) return jobId
-  }
-  return label
 }
 
 function sourceFamilyForSession(item: SessionItem): SidebarFamilyId | null {
@@ -384,13 +387,10 @@ const sidebarConversations = computed((): SidebarConversationItem[] => {
     const sourceFamily = sourceFamilyForSession(item)
     if (!sourceFamily) continue
     seen.add(key)
-    const groupLabel = sidebarGroupLabel(item)
     result.push({
       key,
       effectiveAgentId: item.effectiveAgentId,
       agentName: agentDisplayName(normalizeAgentId(item.effectiveAgentId)),
-      groupLabel,
-      groupKey: sidebarGroupKey(item, groupLabel),
       title: sidebarConversationTitle(item),
       sourceFamily,
       runStatus: item.runStatus,
@@ -405,8 +405,6 @@ const sidebarConversations = computed((): SidebarConversationItem[] => {
       key,
       effectiveAgentId: local.effectiveAgentId,
       agentName: agentDisplayName(normalizeAgentId(local.effectiveAgentId)),
-      groupLabel: '',
-      groupKey: '',
       sourceFamily: 'chats',
       title: local.title || 'New chat',
       runStatus: 'idle',
@@ -422,8 +420,6 @@ const sidebarConversations = computed((): SidebarConversationItem[] => {
       key: currentSessionKey.value,
       effectiveAgentId: currentAgentId,
       agentName: agentDisplayName(currentAgentId),
-      groupLabel: '',
-      groupKey: '',
       sourceFamily: 'chats',
       title: 'Current session',
       runStatus: 'idle',
@@ -560,6 +556,24 @@ async function openBlockedApprovalSession() {
   router.push('/approvals')
 }
 
+// Sidebar Approvals row (rendered only while requests are pending) shares the
+// topbar pill's deep-link behavior.
+function onApprovalsRowClick() {
+  handleNavClick()
+  openBlockedApprovalSession()
+}
+
+// Footer settings row: desktop keeps its settings route; web opens the
+// settings modal (mounted by the modal owner; this only flips the flag).
+function openSettings() {
+  handleNavClick()
+  if (bottomRoutes.value.length) {
+    router.push(bottomRoutes.value[0].path)
+    return
+  }
+  appStore.setSettingsOpen(true)
+}
+
 function onHoverEnter() {
   if (appStore.sidebarOpen) return
   if (hoverLeaveTimer) {
@@ -584,8 +598,23 @@ function scheduleSessionRefresh() {
   }, 150)
 }
 
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  if (target.isContentEditable) return true
+  return target instanceof HTMLInputElement
+    || target instanceof HTMLTextAreaElement
+    || target instanceof HTMLSelectElement
+}
+
 function handleKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape' && appStore.sidebarOpen) {
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k') {
+    if (isEditableTarget(e.target) || appStore.settingsOpen) return
+    e.preventDefault()
+    openNewChatPicker()
+    return
+  }
+  // The settings modal owns Escape while open (it closes itself).
+  if (e.key === 'Escape' && appStore.sidebarOpen && !appStore.settingsOpen) {
     appStore.setSidebarOpen(false)
   }
 }

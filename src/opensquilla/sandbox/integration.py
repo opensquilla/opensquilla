@@ -745,42 +745,23 @@ async def _run_backend_with_platform_network_boundary(
     request: SandboxRequest,
     runtime: SandboxRuntime,
 ) -> SandboxResult:
-    if not _uses_platform_network_boundary(request, runtime):
-        return await runtime.backend.run(request)
-    boundary_context = await _prepare_platform_network_boundary(request, runtime)
-    try:
-        return await runtime.backend.run(request)
-    finally:
-        await _cleanup_platform_network_boundary(boundary_context)
+    return await runtime.backend.run(request)
 
 
 def _uses_platform_network_boundary(
     request: SandboxRequest,
     runtime: SandboxRuntime,
 ) -> bool:
-    return (
-        request.policy.network == NetworkMode.PROXY_ALLOWLIST
-        and request.policy.network_proxy is not None
-        and _backend_name(runtime).lower().startswith("windows_appcontainer")
-    )
+    _ = (request, runtime)
+    return False
 
 
 async def _prepare_platform_network_boundary(
     request: SandboxRequest,
     runtime: SandboxRuntime,
 ) -> object | None:
-    if not _uses_platform_network_boundary(request, runtime):
-        return None
-    backend = getattr(runtime, "backend", None)
-    prepare_identity = getattr(backend, "prepare_identity", None)
-    if not callable(prepare_identity):
-        raise SandboxBackendError("Windows AppContainer backend cannot prepare identity")
-    identity = prepare_identity(_resolve_session_id(runtime, None))
-
-    from opensquilla.sandbox.backend.windows_network_boundary import WindowsNetworkBoundary
-
-    boundary = WindowsNetworkBoundary.from_config(getattr(runtime, "settings", None))
-    return (boundary, await boundary.prepare(request, identity=identity))
+    _ = (request, runtime)
+    return None
 
 
 async def _cleanup_platform_network_boundary(context: object | None) -> None:

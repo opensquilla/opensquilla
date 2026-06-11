@@ -4,6 +4,7 @@ import asyncio
 import json
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.types import (
     MountSpec,
     NetworkMode,
+    NetworkProxySpec,
     ResourceLimits,
     SandboxBackendError,
     SandboxPolicy,
@@ -103,6 +105,29 @@ def test_windows_auto_fails_closed_when_restricted_token_unavailable(
 
     with pytest.raises(SandboxBackendError, match="no real sandbox backend"):
         backend_mod.select_backend(SandboxSettings(sandbox=True, backend="auto"))
+
+
+def test_platform_network_boundary_ignores_legacy_appcontainer_backend_name(
+    tmp_path: Path,
+) -> None:
+    from opensquilla.sandbox.integration import _uses_platform_network_boundary
+
+    policy = replace(
+        _policy(tmp_path),
+        network=NetworkMode.PROXY_ALLOWLIST,
+        network_proxy=NetworkProxySpec(host="127.0.0.1", port=48123),
+    )
+    request = SandboxRequest(
+        argv=("cmd", "/c", "echo", "ok"),
+        cwd=tmp_path,
+        action_kind="shell.exec",
+        policy=policy,
+        env={},
+    )
+    backend = type("Backend", (), {"name": "windows_appcontainer"})()
+    runtime = type("Runtime", (), {"backend": backend})()
+
+    assert _uses_platform_network_boundary(request, runtime) is False
 
 
 def test_explicit_windows_restricted_token_selects_backend_when_available(

@@ -22,6 +22,13 @@
       <img class="msg-ai-avatar__img" :src="assistantAvatarUrl" alt="" aria-hidden="true" />
     </div>
     <div class="msg-ai-main">
+      <details v-if="message.reasoning" class="thinking-fold">
+        <summary class="thinking-fold__summary">
+          <Icon class="thinking-fold__chevron" name="chevronRight" :size="12" />
+          <span>{{ reasoningSummary }}</span>
+        </summary>
+        <div class="thinking-fold__body">{{ message.reasoning.text }}</div>
+      </details>
       <ToolCallTimeline
         v-if="message.timelineItems?.length"
         :items="message.timelineItems"
@@ -59,16 +66,54 @@
         @download="$emit('downloadArtifact', $event)"
       />
 
+      <SourcesRow v-if="message.toolCalls?.length" :calls="message.toolCalls" />
+
       <div class="msg-ai-footer">
         <div v-if="message.meta" class="msg-ai-meta">
           <span v-if="message.meta.model" class="msg-meta__model">{{ message.meta.modelShort }}</span>
-          <span v-if="message.meta.hasTokens">
-            &#8593;{{ fmtTok(message.meta.input) }} &#8595;{{ fmtTok(message.meta.output) }}
-          </span>
-          <span v-if="message.meta.cachedTokens">cache:{{ fmtTok(message.meta.cachedTokens) }}</span>
-          <span v-if="message.meta.reasoningTokens">think:{{ fmtTok(message.meta.reasoningTokens) }}</span>
-          <span v-if="message.meta.costUsd">${{ message.meta.costUsd.toFixed(6).replace(/\.?0+$/, '') }}</span>
+          <span v-if="message.meta.costUsd" class="msg-meta__cost">${{ message.meta.costUsd.toFixed(6).replace(/\.?0+$/, '') }}</span>
           <span v-if="message.meta.hasSaved" class="savings-indicator">{{ message.meta.savedLabel }}</span>
+          <span
+            v-if="hasMetaDetails"
+            ref="metaMoreRef"
+            class="msg-meta__more"
+            @mouseenter="metaHovered = true"
+            @mouseleave="metaHovered = false"
+            @keydown.escape.stop="closeMetaDetails"
+            @focusout="onMetaFocusOut"
+          >
+            <button
+              ref="metaTriggerRef"
+              type="button"
+              class="msg-meta__more-btn"
+              :aria-expanded="metaDetailsOpen"
+              :aria-controls="metaDetailsId"
+              aria-label="Usage details"
+              @click="metaPinned = !metaPinned"
+            >
+              <Icon name="info" :size="12" />
+            </button>
+            <div
+              v-if="metaDetailsOpen"
+              :id="metaDetailsId"
+              class="msg-meta-popover"
+              role="group"
+              aria-label="Usage details"
+            >
+              <div v-if="message.meta.hasTokens" class="msg-meta-popover__row">
+                <span class="msg-meta-popover__label">tokens</span>
+                <span class="msg-meta-popover__value">&#8593;{{ fmtTok(message.meta.input) }} &#8595;{{ fmtTok(message.meta.output) }}</span>
+              </div>
+              <div v-if="message.meta.cachedTokens" class="msg-meta-popover__row">
+                <span class="msg-meta-popover__label">cache</span>
+                <span class="msg-meta-popover__value">{{ fmtTok(message.meta.cachedTokens) }}</span>
+              </div>
+              <div v-if="message.meta.reasoningTokens" class="msg-meta-popover__row">
+                <span class="msg-meta-popover__label">think</span>
+                <span class="msg-meta-popover__value">{{ fmtTok(message.meta.reasoningTokens) }}</span>
+              </div>
+            </div>
+          </span>
         </div>
         <div class="msg-ai-actions">
           <button
@@ -91,9 +136,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import Icon from '@/components/Icon.vue'
 import ChatArtifactList from '@/components/chat/ChatArtifactList.vue'
+import SourcesRow from '@/components/chat/SourcesRow.vue'
 import ToolCallTimeline from '@/components/chat/ToolCallTimeline.vue'
 import { useCopyFeedback } from '@/composables/chat/useCopyFeedback'
 import type {
@@ -137,6 +183,60 @@ const emit = defineEmits<{
 const { copyState, copyIconName, copyTitle, copyLiveText, onCopyClick } = useCopyFeedback(
   () => props.copyMessage(props.message),
 )
+
+const metaMoreRef = ref<HTMLElement | null>(null)
+const metaTriggerRef = ref<HTMLButtonElement | null>(null)
+const metaPinned = ref(false)
+const metaHovered = ref(false)
+const metaDetailsOpen = computed(() => metaPinned.value || metaHovered.value)
+
+const reasoningSummary = computed(() => {
+  const seconds = props.message.reasoning?.seconds || 0
+  if (seconds < 1) return 'Thought process'
+  if (seconds < 60) return `Thought for ${seconds}s`
+  return `Thought for ${Math.floor(seconds / 60)}m ${seconds % 60}s`
+})
+
+const hasMetaDetails = computed(() => {
+  const meta = props.message.meta
+  if (!meta) return false
+  return meta.hasTokens || meta.cachedTokens > 0 || meta.reasoningTokens > 0
+})
+
+const metaDetailsId = computed(
+  () => `msg-meta-details-${props.message.messageId || props.message.id || props.index}`,
+)
+
+function closeMetaDetails() {
+  if (!metaDetailsOpen.value) return
+  metaPinned.value = false
+  metaHovered.value = false
+  metaTriggerRef.value?.focus()
+}
+
+function onMetaFocusOut(event: FocusEvent) {
+  const next = event.relatedTarget
+  if (next instanceof Node && metaMoreRef.value?.contains(next)) return
+  if (next === null) return
+  metaPinned.value = false
+}
+
+function onDocumentPointerDown(event: PointerEvent) {
+  const root = metaMoreRef.value
+  if (!root) return
+  if (event.target instanceof Node && root.contains(event.target)) return
+  metaPinned.value = false
+  metaHovered.value = false
+}
+
+watch(metaDetailsOpen, open => {
+  if (open) document.addEventListener('pointerdown', onDocumentPointerDown, true)
+  else document.removeEventListener('pointerdown', onDocumentPointerDown, true)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', onDocumentPointerDown, true)
+})
 
 const legacyTimelineItems = computed<ChatStreamTimelineItem[]>(() => {
   const calls = props.message.toolCalls || []
@@ -246,6 +346,64 @@ function onMessageClick(event: MouseEvent) {
   padding-top: 0.0625rem;
 }
 
+.thinking-fold {
+  margin: 0 0 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--text-dim);
+}
+
+.thinking-fold__summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.125rem 0.25rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  list-style: none;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.thinking-fold__summary::-webkit-details-marker {
+  display: none;
+}
+
+.thinking-fold__summary:hover {
+  color: var(--text-muted);
+}
+
+.thinking-fold__summary:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.thinking-fold__chevron {
+  flex-shrink: 0;
+  transition: transform 0.12s ease;
+}
+
+.thinking-fold[open] > .thinking-fold__summary .thinking-fold__chevron {
+  transform: rotate(90deg);
+}
+
+.thinking-fold__body {
+  margin: 0.25rem 0 0.375rem;
+  padding: 0.375rem 0.75rem;
+  border-left: 2px solid var(--border);
+  color: var(--text-muted);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 16rem;
+  overflow-y: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thinking-fold__chevron {
+    transition: none;
+  }
+}
+
 .msg-ai-text {
   font-size: 0.875rem;
   line-height: 1.6;
@@ -337,19 +495,97 @@ function onMessageClick(event: MouseEvent) {
 .msg-ai-meta {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
+  min-width: 0;
   gap: 0.5rem;
   font-size: 0.8125rem;
   line-height: 1.35;
   color: color-mix(in srgb, var(--text-muted) 56%, transparent);
 }
 
-.msg-ai-meta > span:not(.savings-indicator) {
+.msg-ai-meta > span:not(.savings-indicator):not(.msg-meta__more) {
   opacity: 0.72;
   transition: opacity 0.16s ease, color 0.16s ease;
 }
 
-.msg-ai:hover .msg-ai-meta > span:not(.savings-indicator) {
+.msg-ai:hover .msg-ai-meta > span:not(.savings-indicator):not(.msg-meta__more) {
   opacity: 0.88;
+}
+
+.msg-meta__cost {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.msg-meta__more {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.msg-meta__more-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 999px;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: color var(--transition), background var(--transition);
+}
+
+.msg-meta__more-btn:hover,
+.msg-meta__more-btn[aria-expanded='true'] {
+  color: var(--text-muted);
+  background: var(--bg-hover);
+}
+
+.msg-meta__more-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.msg-meta-popover {
+  position: absolute;
+  bottom: calc(100% + 0.375rem);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 10rem;
+  max-width: min(18rem, calc(100vw - 2rem));
+  padding: 0.5rem 0.625rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.msg-meta-popover__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.msg-meta-popover__label {
+  color: var(--text-dim);
+}
+
+.msg-meta-popover__value {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
 }
 
 .savings-indicator {
@@ -379,16 +615,16 @@ function onMessageClick(event: MouseEvent) {
   width: 42%;
   background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--bg-surface) 82%, transparent), transparent);
   transform: skewX(-18deg);
-  animation: savingsSweep 3.4s ease-in-out infinite;
-  opacity: 0.72;
+  animation: savingsSweep 5.6s ease-in-out infinite;
+  opacity: 0.55;
   pointer-events: none;
 }
 
 @keyframes savingsSweep {
-  0%, 42% {
+  0%, 62% {
     left: -60%;
   }
-  72%, 100% {
+  84%, 100% {
     left: 118%;
   }
 }
@@ -397,6 +633,32 @@ function onMessageClick(event: MouseEvent) {
   .savings-indicator::after {
     animation: none;
     display: none;
+  }
+}
+
+@media (max-width: 768px) {
+  .msg-ai-footer {
+    min-width: 0;
+  }
+
+  .msg-ai-meta {
+    flex: 1;
+    flex-wrap: nowrap;
+    gap: 0.375rem;
+  }
+
+  .msg-meta__model {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .msg-meta__cost,
+  .savings-indicator,
+  .msg-meta__more {
+    flex-shrink: 0;
   }
 }
 

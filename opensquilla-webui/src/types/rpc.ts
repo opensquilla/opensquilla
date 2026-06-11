@@ -229,6 +229,7 @@ export interface ChatHistoryMessage {
   provenance_kind?: string
   provenance_source_session_key?: string
   provenance_source_tool?: string
+  reasoning_content?: string
   usage?: unknown
   turn_usage?: unknown
   model?: string

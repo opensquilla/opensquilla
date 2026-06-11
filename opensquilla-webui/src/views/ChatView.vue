@@ -107,6 +107,26 @@
             <img class="msg-ai-avatar__img" :src="assistantAvatarUrl" alt="" aria-hidden="true" />
           </div>
           <div class="msg-ai-main">
+            <div
+              v-if="streamActivityVisible"
+              class="stream-activity"
+              :class="{ 'stream-activity--stale': streamActivityStale }"
+              role="status"
+              aria-live="polite"
+            >
+              <span class="stream-activity-dot" aria-hidden="true" />
+              <span class="stream-activity-text" :class="{ 'activity-shimmer': !streamActivityStale }">{{ streamActivityText }}</span>
+            </div>
+
+            <!-- Live model reasoning: collapsed by default, expandable mid-turn -->
+            <details v-if="streamThinkingText" class="thinking-fold">
+              <summary class="thinking-fold__summary">
+                <Icon class="thinking-fold__chevron" name="chevronRight" :size="12" />
+                <span>Thinking · {{ streamThinkingElapsedText }}</span>
+              </summary>
+              <div class="thinking-fold__body">{{ streamThinkingText }}</div>
+            </details>
+
             <ToolCallTimeline
               :items="streamTimelineItems"
               :is-tool-group-open="isToolGroupOpen"
@@ -114,15 +134,11 @@
               :tool-group-status-text="toolGroupStatusText"
               :tool-status-text="toolStatusText"
               :tool-secondary-text="toolSecondaryText"
+              :tool-elapsed-text="streamToolElapsedText"
               @toggle-group="toggleToolGroup"
               @toggle-item="toggleToolItem"
               @show-result="showToolResultModal"
             />
-
-            <div v-if="streamActivityVisible" class="stream-activity" role="status" aria-live="polite">
-              <span class="stream-activity-dot" aria-hidden="true" />
-              <span class="stream-activity-text activity-shimmer">{{ streamActivityText }}</span>
-            </div>
 
             <ChatArtifactList
               :artifacts="streamArtifacts"
@@ -146,6 +162,30 @@
             </div>
           </div>
         </div>
+
+        <!-- In-thread approval cards: blocked runs ask for a decision here -->
+        <ApprovalCard
+          v-for="entry in approvalEntries"
+          :key="entry.approval.id"
+          :approval="entry.approval"
+          :resolution="entry.resolution"
+          :busy="approvalBusyIds.has(entry.approval.id)"
+          :error="entry.error"
+          @allow-once="resolveApproval(entry, 'allow-once')"
+          @allow-always="resolveApproval(entry, 'allow-always')"
+          @deny="note => resolveApproval(entry, 'deny', note)"
+        />
+
+        <!-- In-thread clarify card: pending agent questions render as a form -->
+        <ClarifyCard
+          v-if="pendingClarify"
+          :request="pendingClarify"
+          :submitted="clarifySubmitted"
+          :busy="clarifyBusy"
+          :error="clarifyError"
+          @submit="submitClarify"
+          @dismiss="dismissClarify"
+        />
       </div>
     </div>
 
@@ -220,15 +260,18 @@
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRpcStore } from '@/stores/rpc'
 import { useAppStore } from '@/stores/app'
+import ApprovalCard from '@/components/chat/ApprovalCard.vue'
 import ChatArtifactList from '@/components/chat/ChatArtifactList.vue'
 import ChatComposer from '@/components/chat/ChatComposer.vue'
 import ChatHistoryScopeRow from '@/components/chat/ChatHistoryScopeRow.vue'
 import ChatMessageList from '@/components/chat/ChatMessageList.vue'
+import ClarifyCard from '@/components/chat/ClarifyCard.vue'
 import PendingQueue from '@/components/chat/PendingQueue.vue'
 import RouterFxStrip from '@/components/chat/RouterFxStrip.vue'
 import ToolCallTimeline from '@/components/chat/ToolCallTimeline.vue'
 import ToolResultModal from '@/components/chat/ToolResultModal.vue'
 import Icon from '@/components/Icon.vue'
+import { useChatApprovals } from '@/composables/chat/useChatApprovals'
 import { useChatAttachments } from '@/composables/chat/useChatAttachments'
 import { useChatCompaction } from '@/composables/chat/useChatCompaction'
 import { useChatComposerShortcuts } from '@/composables/chat/useChatComposerShortcuts'
@@ -258,6 +301,7 @@ import { useChatTextRendering } from '@/composables/chat/useChatTextRendering'
 import { useChatUsageWidget } from '@/composables/chat/useChatUsageWidget'
 import { useVoiceInput } from '@/composables/chat/useVoiceInput'
 import { useDocumentEvent } from '@/composables/useDocumentEvent'
+import { useToasts } from '@/composables/useToasts'
 import type {
   ChatMessage,
   ChatRunStatus,
@@ -307,6 +351,7 @@ const toolResultModal = ref({ open: false, title: '', content: '' })
 
 const rpc = useRpcStore()
 const appStore = useAppStore()
+const { pushToast } = useToasts()
 const isCompactViewport = useMediaQuery('(max-width: 480px)')
 const isDesktopViewport = useMediaQuery('(min-width: 769px)')
 const assistantAvatarUrl = computed(() => {
@@ -394,7 +439,9 @@ const {
   streamHasVisibleOutput,
   streamTimelineItems,
   streamActivityVisible,
+  streamActivityStale,
   streamActivityText,
+  streamToolElapsedText,
   thinkingVisible,
   thinkingText,
   startStreaming,
@@ -593,6 +640,7 @@ const chatSessionSubscription = useChatSessionSubscription({
   sessionRunStatus,
   loadHistory,
   resetStreamIdleTimer,
+  resetStreamLiveTurnState,
 })
 const {
   subscribeSession,
@@ -703,6 +751,41 @@ const chatSend = useChatSend({
 const { onSend, onStop } = chatSend
 sendCurrentInput = onSend
 
+// Deny notes ride the normal send path: queued while the turn is streaming,
+// sent immediately otherwise.
+function queueDenyFeedback(note: string) {
+  if (isStreaming.value || isCompactInFlightForCurrentSession()) {
+    enqueuePendingInput(note)
+    return
+  }
+  const prior = inputText.value
+  inputText.value = note
+  void onSend()
+  if (prior.trim()) {
+    inputText.value = prior
+    autoResizeTextarea()
+  }
+}
+
+const chatApprovals = useChatApprovals({
+  rpc,
+  sessionKey,
+  runStatus,
+  onDenyFeedback: queueDenyFeedback,
+  onSnapshotCount: count => appStore.setApprovalCount(count),
+})
+const {
+  approvalEntries,
+  approvalBusyIds,
+  pendingClarify,
+  clarifySubmitted,
+  clarifyBusy,
+  clarifyError,
+  resolveApproval,
+  submitClarify,
+  dismissClarify,
+} = chatApprovals
+
 const rpcEventHandlers = useChatRpcEventHandlers({
   sessionKey,
   currentEpoch,
@@ -730,7 +813,16 @@ const rpcEventHandlers = useChatRpcEventHandlers({
   loadHistory,
   loadCurrentSessionUsage,
 })
+const {
+  streamThinkingText,
+  streamThinkingElapsedText,
+  attachTurnReasoning,
+} = rpcEventHandlers
 const chatRpcSubscriptions = useChatRpcSubscriptions(rpc, rpcEventHandlers.handlers)
+
+// History syncs replace the messages array; rows carry reasoning text but
+// not the measured thinking duration — re-attach this session's records.
+watch(messages, () => attachTurnReasoning())
 
 // Unsubscribers
 let unsubs: (() => void)[] = []
@@ -762,7 +854,7 @@ const isNewChatLanding = computed(() => {
 })
 
 const composerPlaceholder = computed(() => {
-  if (isNewChatLanding.value) return '分配一个任务或提问任何问题'
+  if (isNewChatLanding.value) return 'Assign a task or ask anything'
   return isCompactViewport.value ? 'Message...' : 'Send a message...'
 })
 
@@ -906,19 +998,22 @@ async function downloadArtifact(artifact: ArtifactPayload) {
       credentials: sameOrigin ? 'same-origin' : 'omit',
     })
     if (!response.ok) {
-      console.warn(`Download failed: HTTP ${response.status}`)
+      pushToast(`Download failed — HTTP ${response.status}`, { tone: 'danger' })
       return
     }
     const blob = await response.blob()
     downloadBlob(blob, artifact.name || 'artifact')
   } catch (err) {
     console.warn('Download failed:', err)
+    pushToast('Download failed', { tone: 'danger' })
   }
 }
 
 function copySessionKey() {
   if (!sessionKey.value) return
-  copyTextWithFallback(sessionKey.value).catch(() => {})
+  copyTextWithFallback(sessionKey.value).catch(() => {
+    pushToast('Copy failed', { tone: 'danger' })
+  })
 }
 
 /* ── Share export ──────────────────────────────────────────────────── */
@@ -950,6 +1045,7 @@ async function saveShareImage() {
     endShareMode()
   } catch (err) {
     console.warn('Share image export failed:', err)
+    pushToast('Share export failed', { tone: 'danger' })
   } finally {
     shareSaving.value = false
   }
@@ -1073,6 +1169,7 @@ onMounted(async () => {
 
   // Subscribe to RPC events
   unsubs.push(chatRpcSubscriptions.subscribe())
+  unsubs.push(chatApprovals.subscribe())
 
   // Composer resize observer
   const composerEl = composerRef.value?.composerElement()
@@ -1104,6 +1201,7 @@ onUnmounted(() => {
   cleanupStream()
   cleanupCompaction()
   cleanupVoiceInput()
+  chatApprovals.cleanup()
   if (composerResizeObserver) { composerResizeObserver.disconnect(); composerResizeObserver = null }
   document.documentElement.style.removeProperty('--composer-h')
   unsubscribeSession()

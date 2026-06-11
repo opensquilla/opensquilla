@@ -122,6 +122,7 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
         timelineItems: normalizeMessageTimeline(msg, ownerKey),
         artifacts: msg.artifacts,
         meta: messageMeta(msg),
+        reasoning: msg.role === 'assistant' ? msg.reasoning : undefined,
         interrupted: msg.interrupted,
         provenanceKind: msg.provenanceKind,
       })

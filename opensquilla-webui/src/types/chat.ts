@@ -155,10 +155,17 @@ export interface ChatUsagePayload {
   [key: string]: unknown
 }
 
+/** Per-turn model reasoning captured from thinking deltas / done backfill. */
+export interface ChatReasoning {
+  text: string
+  seconds: number
+}
+
 export interface ChatMessage {
   role: ChatRole
   text: string
   ts: string | number | null
+  reasoning?: ChatReasoning
   routerDecision?: import('./rpc').RouterDecisionPayload | null
   artifacts?: ArtifactPayload[]
   tool_calls?: RawToolCallPayload[]
@@ -211,6 +218,7 @@ export interface ChatRenderedMessage {
   timelineItems?: ChatStreamTimelineItem[]
   artifacts?: ArtifactPayload[]
   meta?: ChatMessageMeta
+  reasoning?: ChatReasoning
   interrupted?: boolean
   provenanceKind?: string
   daySeparator?: boolean

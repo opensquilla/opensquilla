@@ -74,10 +74,14 @@ export function useChatHistory(options: UseChatHistoryOptions) {
   }
 
   function mapHistoryMessage(msg: ChatHistoryMessage): ChatMessage {
+    // History rows carry the turn's reasoning text but not the measured
+    // thinking duration; live turn records re-fill seconds after sync.
+    const reasoningText = typeof msg.reasoning_content === 'string' ? msg.reasoning_content.trim() : ''
     return {
       role: msg.role || 'assistant',
       text: msg.role === 'user' ? options.stripTimePrefix(msg.text || '') : msg.text || '',
       ts: msg.timestamp || msg.ts || null,
+      reasoning: reasoningText ? { text: reasoningText, seconds: 0 } : undefined,
       routerDecision: msg.router_decision || msg.routerDecision || null,
       artifacts: msg.artifacts || [],
       tool_calls: recordArray<RawToolCallPayload>(msg.tool_calls),

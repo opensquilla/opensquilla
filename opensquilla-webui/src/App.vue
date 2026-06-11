@@ -155,6 +155,7 @@
       docked: appStore.sidebarOpen,
       'main--chat': isChatRoute,
       'main--chat-sidebar-collapsed': isChatRoute && !appStore.sidebarOpen,
+      'main--tabbar-hidden': mobileKeyboardOpen,
     }"
   >
     <header class="topbar" :class="{ 'topbar--chat': isChatRoute }">
@@ -191,6 +192,51 @@
     </main>
   </div>
 
+  <!-- Mobile bottom tab bar (<=768px only; hides while the keyboard is up) -->
+  <nav
+    class="mobile-tabbar"
+    :class="{ 'is-keyboard-open': mobileKeyboardOpen }"
+    aria-label="Primary mobile"
+  >
+    <router-link
+      to="/chat"
+      class="mobile-tab"
+      :class="{ 'is-active': isNavActive('/chat') }"
+      @click="handleNavClick"
+    >
+      <Icon name="chat" :size="20" />
+      <span class="mobile-tab__label">Chat</span>
+    </router-link>
+    <router-link
+      to="/sessions"
+      class="mobile-tab"
+      :class="{ 'is-active': isNavActive('/sessions') }"
+      @click="handleNavClick"
+    >
+      <Icon name="sessions" :size="20" />
+      <span class="mobile-tab__label">Sessions</span>
+    </router-link>
+    <router-link
+      to="/approvals"
+      class="mobile-tab"
+      :class="{ 'is-active': isNavActive('/approvals') }"
+      @click="handleNavClick"
+    >
+      <Icon name="approvals" :size="20" />
+      <span class="mobile-tab__label">Approvals</span>
+      <span v-if="appStore.approvalCount > 0" class="mobile-tab__badge">{{ appStore.approvalCount }}</span>
+    </router-link>
+    <button
+      type="button"
+      class="mobile-tab"
+      :class="{ 'is-active': appStore.sidebarOpen }"
+      @click="appStore.setSidebarOpen(true)"
+    >
+      <Icon name="menu" :size="20" />
+      <span class="mobile-tab__label">More</span>
+    </button>
+  </nav>
+
   <ToastHost />
 </template>
 
@@ -221,6 +267,7 @@ const { navGroups, bottomRoutes } = useNavigation()
 
 const agents = ref<AgentOption[]>([])
 const agentListError = ref(false)
+const mobileKeyboardOpen = ref(false)
 const newChatPickerOpen = ref(false)
 const selectedNewChatAgentId = ref('main')
 const localChatSessions = ref<Record<string, { effectiveAgentId: string; title: string; updatedAt: number }>>({})
@@ -396,6 +443,16 @@ function syncMobileSidebar() {
   }
 }
 
+// Hide the bottom tab bar while the on-screen keyboard owns the bottom edge.
+// A visual-viewport shrink well beyond browser-chrome changes (>140px) is the
+// simplest cross-platform signal; per-input focus tracking was considered and
+// dropped as fragile. When the heuristic misses, the bar just stays visible.
+function syncMobileKeyboard() {
+  const viewport = window.visualViewport
+  if (!viewport) return
+  mobileKeyboardOpen.value = window.innerWidth <= 768 && window.innerHeight - viewport.height > 140
+}
+
 function toggleDock() {
   appStore.toggleSidebar()
 }
@@ -540,6 +597,7 @@ useDocumentEvent('keydown', handleKeydown)
 onMounted(() => {
   syncMobileSidebar()
   window.addEventListener('resize', syncMobileSidebar)
+  window.visualViewport?.addEventListener('resize', syncMobileKeyboard)
   loadAgents()
   loadSessions()
   rpcUnsubSessionsChanged = rpcStore.on('sessions.changed', scheduleSessionRefresh)
@@ -550,6 +608,7 @@ onUnmounted(() => {
   if (sessionRefreshTimer) clearTimeout(sessionRefreshTimer)
   if (rpcUnsubSessionsChanged) rpcUnsubSessionsChanged()
   window.removeEventListener('resize', syncMobileSidebar)
+  window.visualViewport?.removeEventListener('resize', syncMobileKeyboard)
 })
 
 </script>

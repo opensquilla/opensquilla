@@ -1,6 +1,5 @@
 <template>
   <div class="empty-state">
-    <img class="empty-state__mark" :src="markUrl" alt="OpenSquilla" />
     <p class="empty-state__greeting">{{ greeting }}</p>
     <p class="empty-state__identity">{{ identityLine }}</p>
     <div v-if="!suppressed" class="empty-state__chips" role="group" aria-label="Suggested tasks">
@@ -32,7 +31,6 @@ interface AgentIdentityPayload {
 
 const props = defineProps<{
   agentId: string
-  markUrl: string
   suppressed?: boolean
 }>()
 
@@ -87,14 +85,6 @@ const chips = computed(() => {
   align-items: center;
   gap: var(--sp-2);
   text-align: center;
-}
-
-.empty-state__mark {
-  display: block;
-  width: 48px;
-  height: 48px;
-  object-fit: contain;
-  filter: drop-shadow(0 6px 14px var(--shadow-color));
 }
 
 .empty-state__greeting {

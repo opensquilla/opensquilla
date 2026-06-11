@@ -6,12 +6,14 @@
         <label class="chat-label" :title="sessionKey">{{ currentChatTitle }}</label>
         <button
           class="chat-session-copy-btn"
-          title="Copy session key"
-          aria-label="Copy session key"
-          @click="copySessionKey"
+          :class="{ 'chat-session-copy-btn--ok': sessionCopyState === 'ok' }"
+          :title="sessionCopyState === 'ok' ? 'Copied' : 'Copy session key'"
+          :aria-label="sessionCopyState === 'ok' ? 'Copied' : 'Copy session key'"
+          @click="onSessionCopyClick"
         >
-          <Icon name="copy" :size="14" />
+          <Icon :name="sessionCopyIcon" :size="14" />
         </button>
+        <span class="chat-copy-live" aria-live="polite">{{ sessionCopyLiveText }}</span>
       </div>
       <div class="chat-header-right">
         <div v-if="shareMode" class="chat-share-controls" role="group" aria-label="Share selected messages">
@@ -63,7 +65,6 @@
           <EmptyStateChips
             :key="landingAgentId"
             :agent-id="landingAgentId"
-            :mark-url="assistantAvatarUrl"
             :suppressed="landingPrefilled"
             @pick="applyLandingSuggestion"
           />
@@ -81,7 +82,6 @@
           :auth-token="readAuthToken()"
           :share-mode="shareMode"
           :selected-message-ids="selectedShareMessageIds"
-          :assistant-avatar-url="assistantAvatarUrl"
           :strip-time-prefix="stripTimePrefix"
           :render-markdown="renderMarkdown"
           :fmt-tok="fmtTok"
@@ -119,9 +119,6 @@
 
         <!-- Streaming AI message (Kimi style) -->
         <div v-if="isStreaming && streamBubble" class="msg-ai" data-history-role="assistant" aria-live="polite">
-          <div class="msg-ai-avatar">
-            <img class="msg-ai-avatar__img" :src="assistantAvatarUrl" alt="" aria-hidden="true" />
-          </div>
           <div class="msg-ai-main">
             <div
               v-if="streamActivityVisible"
@@ -168,9 +165,6 @@
 
         <!-- Thinking indicator -->
         <div v-if="thinkingVisible" class="msg-ai thinking" role="status" aria-live="polite">
-          <div class="msg-ai-avatar">
-            <img class="msg-ai-avatar__img" :src="assistantAvatarUrl" alt="" aria-hidden="true" />
-          </div>
           <div class="msg-ai-main">
             <div class="thinking-status">
               <span class="stream-activity-dot" aria-hidden="true" />
@@ -334,6 +328,7 @@ import type {
 } from '@/types/rpc'
 import { artifactDownloadUrl } from '@/utils/chat/artifacts'
 import { copyTextWithFallback, downloadBlob } from '@/utils/browser'
+import { useCopyFeedback } from '@/composables/chat/useCopyFeedback'
 import {
   toolCallGroups,
   toolGroupStatusText,
@@ -375,10 +370,6 @@ const appStore = useAppStore()
 const { pushToast } = useToasts()
 const isCompactViewport = useMediaQuery('(max-width: 480px)')
 const isDesktopViewport = useMediaQuery('(min-width: 769px)')
-const assistantAvatarUrl = computed(() => {
-  const base = document.getElementById('opensquilla-data')?.dataset.basePath || '/control'
-  return `${base}/static/img/opensquilla-mark.png`
-})
 const landingAgentId = computed(() => agentIdFromSessionKey(sessionKey.value))
 // True when the current draft opened with prefilled composer text (Sessions
 // Hub task input); the landing suggestion chips stay out of the way then.
@@ -1077,12 +1068,21 @@ async function downloadArtifact(artifact: ArtifactPayload) {
   }
 }
 
-function copySessionKey() {
-  if (!sessionKey.value) return
-  copyTextWithFallback(sessionKey.value).catch(() => {
+const {
+  copyState: sessionCopyState,
+  copyIconName: sessionCopyIcon,
+  copyLiveText: sessionCopyLiveText,
+  onCopyClick: onSessionCopyClick,
+} = useCopyFeedback(async () => {
+  if (!sessionKey.value) return false
+  try {
+    await copyTextWithFallback(sessionKey.value)
+    return true
+  } catch {
     pushToast('Copy failed', { tone: 'danger' })
-  })
-}
+    return false
+  }
+})
 
 /* ── Share export ──────────────────────────────────────────────────── */
 

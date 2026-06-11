@@ -19,9 +19,6 @@
     >
       <Icon :name="shareSelected ? 'check' : 'plus'" :size="13" />
     </button>
-    <div class="msg-ai-avatar">
-      <img class="msg-ai-avatar__img" :src="assistantAvatarUrl" alt="" aria-hidden="true" />
-    </div>
     <div class="msg-ai-main">
       <details v-if="message.reasoning" class="thinking-fold">
         <summary class="thinking-fold__summary">
@@ -168,7 +165,6 @@ const props = defineProps<{
   shareMode: boolean
   shareSelected: boolean
   shareMessageId: string
-  assistantAvatarUrl: string
   renderMarkdown: (text: string) => string
   fmtTok: (value: number) => string
   toolCallGroups: (calls: ChatToolCall[], baseKey: string) => ChatToolCallGroup[]
@@ -332,28 +328,6 @@ function onMessageClick(event: MouseEvent) {
   border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   background: var(--accent);
   color: var(--accent-foreground);
-}
-
-.msg-ai-avatar {
-  width: 1.75rem;
-  height: 1.75rem;
-  border-radius: 50%;
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  margin-top: 0.0625rem;
-  overflow: hidden;
-  box-shadow: var(--shadow-xs);
-}
-
-.msg-ai-avatar__img {
-  width: 1.125rem;
-  height: 1.125rem;
-  object-fit: contain;
-  display: block;
 }
 
 .msg-ai-main {

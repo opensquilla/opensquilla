@@ -207,9 +207,34 @@
           Approval required
         </button>
         <span class="conn-pill" :class="rpcStore.state">{{ rpcStore.state }}</span>
-        <button class="btn btn--icon btn--ghost" @click="appStore.cycleTheme" :title="`Theme: ${appStore.theme}`" :aria-label="`Theme: ${appStore.theme}`">
-          <Icon :name="themeIconName" :size="16" />
-        </button>
+        <div class="theme-menu-wrap">
+          <button
+            ref="themeButtonRef"
+            class="btn btn--icon btn--ghost"
+            title="Theme"
+            aria-label="Theme"
+            aria-haspopup="menu"
+            :aria-expanded="themeMenuOpen"
+            @click.stop="themeMenuOpen = !themeMenuOpen"
+          >
+            <Icon :name="themeIconName" :size="16" />
+          </button>
+          <div v-if="themeMenuOpen" class="theme-menu" role="menu" aria-label="Theme">
+            <button
+              v-for="opt in themeOptions"
+              :key="opt.mode"
+              type="button"
+              class="theme-menu__item"
+              role="menuitemradio"
+              :aria-checked="appStore.theme === opt.mode"
+              @click="pickTheme(opt.mode)"
+            >
+              <Icon :name="opt.icon" :size="15" />
+              <span>{{ opt.label }}</span>
+              <Icon v-if="appStore.theme === opt.mode" class="theme-menu__check" name="check" :size="14" />
+            </button>
+          </div>
+        </div>
       </div>
     </header>
     <main class="content" :class="{ 'content--chat': isChatRoute }" id="content">
@@ -272,7 +297,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useAppStore } from './stores/app'
+import { useAppStore, type ThemeMode } from './stores/app'
 import { useRpcStore } from './stores/rpc'
 import { useSessions, type SessionItem } from './composables/useSessions'
 import Icon from './components/Icon.vue'
@@ -310,6 +335,28 @@ const brandMarkUrl = computed(() => {
 const themeIconName = computed(() => {
   if (appStore.theme === 'system') return 'monitor'
   return appStore.resolvedTheme === 'dark' ? 'moon' : 'sun'
+})
+
+const themeMenuOpen = ref(false)
+const themeButtonRef = ref<HTMLButtonElement | null>(null)
+const themeOptions = [
+  { mode: 'light', label: 'Light', icon: 'sun' },
+  { mode: 'dark', label: 'Dark', icon: 'moon' },
+  { mode: 'system', label: 'System', icon: 'monitor' },
+] as const
+
+function pickTheme(mode: ThemeMode) {
+  appStore.setTheme(mode)
+  themeMenuOpen.value = false
+  themeButtonRef.value?.focus()
+}
+
+useDocumentEvent('click', (e) => {
+  if (!themeMenuOpen.value) return
+  const wrap = themeButtonRef.value?.closest('.theme-menu-wrap')
+  if (wrap && e.target instanceof Node && !wrap.contains(e.target)) {
+    themeMenuOpen.value = false
+  }
 })
 
 // Current session key from ChatView via URL
@@ -611,6 +658,11 @@ function handleKeydown(e: KeyboardEvent) {
     if (isEditableTarget(e.target) || appStore.settingsOpen) return
     e.preventDefault()
     openNewChatPicker()
+    return
+  }
+  if (e.key === 'Escape' && themeMenuOpen.value) {
+    themeMenuOpen.value = false
+    themeButtonRef.value?.focus()
     return
   }
   // The settings modal owns Escape while open (it closes itself).

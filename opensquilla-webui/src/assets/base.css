@@ -1130,6 +1130,54 @@ pre {
   margin-left: auto;
 }
 
+/* Theme picker menu (topbar) */
+.theme-menu-wrap {
+  position: relative;
+}
+
+.theme-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 60;
+  min-width: 150px;
+  padding: var(--sp-1);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+}
+
+.theme-menu__item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  text-align: left;
+}
+
+.theme-menu__item:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.theme-menu__item[aria-checked='true'] {
+  color: var(--text);
+}
+
+.theme-menu__check {
+  margin-left: auto;
+  color: var(--accent);
+}
+
 .sidebar-toggle.btn {
   display: inline-flex;
   width: 36px;

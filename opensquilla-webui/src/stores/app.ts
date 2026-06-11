@@ -12,6 +12,7 @@ export const useAppStore = defineStore('app', () => {
   const sidebarOpen = ref(true)
   const sidebarHovered = ref(false)
   const approvalCount = ref(0)
+  const settingsOpen = ref(false)
 
   const systemDark = ref<boolean>(
     window.matchMedia('(prefers-color-scheme: dark)').matches
@@ -97,6 +98,10 @@ export const useAppStore = defineStore('app', () => {
     approvalCount.value = count
   }
 
+  function setSettingsOpen(open: boolean) {
+    settingsOpen.value = open
+  }
+
   const features = ref<Record<string, boolean>>({
     tokenViz: false,
     contractDebug: false,
@@ -109,6 +114,7 @@ export const useAppStore = defineStore('app', () => {
     sidebarOpen,
     sidebarHovered,
     approvalCount,
+    settingsOpen,
     features,
     initTheme,
     destroyTheme,
@@ -118,5 +124,6 @@ export const useAppStore = defineStore('app', () => {
     toggleSidebar,
     setSidebarHovered,
     setApprovalCount,
+    setSettingsOpen,
   }
 })

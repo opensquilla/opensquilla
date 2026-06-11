@@ -6,11 +6,26 @@ import asyncio
 import json
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 from opensquilla.sandbox.backend.base import Backend
+from opensquilla.sandbox.backend.windows_default_acl import (
+    AclAccess,
+    AclGrant,
+    AclGrantKind,
+    plan_acl_refresh,
+)
 from opensquilla.sandbox.backend.windows_default_cache import build_cache_env, ensure_cache_dirs
+from opensquilla.sandbox.backend.windows_default_capability import capability_sids_for_command
+from opensquilla.sandbox.backend.windows_default_roots import (
+    runtime_rx_roots,
+    windows_sensitive_marker,
+    workspace_write_roots,
+)
+from opensquilla.sandbox.backend.windows_default_setup import default_setup_marker_path
 from opensquilla.sandbox.backend.windows_default_support import probe_windows_default_support
+from opensquilla.sandbox.run_mode import normalize_run_mode
 from opensquilla.sandbox.types import SandboxBackendError, SandboxRequest, SandboxResult
 
 _HELPER_MODULE = "opensquilla.sandbox.backend.windows_default_runner"
@@ -92,14 +107,81 @@ def _support_ready() -> bool:
 
 def _payload_for_request(request: SandboxRequest) -> dict[str, Any]:
     env = build_cache_env(request.cwd, base_env=_allowed_env(request))
+    policy = request.policy.summary()
+    policy["windowsAclPlan"] = _acl_plan_payload(request)
     return {
         "backend": "windows_default",
         "argv": list(request.argv),
         "cwd": str(request.cwd),
         "env": env,
-        "policy": request.policy.summary(),
+        "policy": policy,
         "runMode": request.run_mode,
         "timeout": request.policy.limits.wall_timeout_s,
+    }
+
+
+def _python_executable() -> Path:
+    return Path(sys.executable)
+
+
+def _capability_store_path() -> Path:
+    return default_setup_marker_path().with_name("cap_sids.json")
+
+
+def _acl_plan_payload(request: SandboxRequest) -> dict[str, object]:
+    write_roots = workspace_write_roots(request.cwd)
+    required: list[AclGrant] = [
+        *(AclGrant(root, AclAccess.RWX, AclGrantKind.REQUIRED) for root in write_roots.rwx_roots),
+        *(
+            AclGrant(root, AclAccess.RX, AclGrantKind.REQUIRED)
+            for root in runtime_rx_roots(_python_executable())
+        ),
+    ]
+    policy_grants = [
+        AclGrant(
+            mount.host_path,
+            AclAccess.RWX if mount.mode == "rw" else AclAccess.RX,
+            AclGrantKind.POLICY,
+        )
+        for mount in request.policy.mounts
+    ]
+    plan = plan_acl_refresh(
+        run_mode=normalize_run_mode(request.run_mode),
+        required=required,
+        policy=policy_grants,
+        expansion=(),
+        sensitive_marker=lambda path: windows_sensitive_marker(path),
+    )
+    if plan.denied:
+        denied = plan.denied[0]
+        raise SandboxBackendError(
+            f"windows_default denied sensitive ACL grant for {denied.grant.path}: "
+            f"{denied.reason}"
+        )
+    if plan.approval_required:
+        grant = plan.approval_required[0]
+        raise SandboxBackendError(
+            f"windows_default ACL approval is required before granting {grant.path}"
+        )
+
+    roots = tuple(grant.path for grant in plan.auto_grants)
+    sids = capability_sids_for_command(_capability_store_path(), roots)
+    sid_by_root = {str(root): sid for root, sid in zip(roots, sids, strict=False)}
+    grants: list[dict[str, str]] = []
+    for grant in plan.auto_grants:
+        grants.append(
+            {
+                "path": str(grant.path),
+                "access": grant.access.value,
+                "kind": grant.kind.value,
+                "capabilitySid": sid_by_root[str(grant.path)],
+            }
+        )
+    return {
+        "autoGrants": grants,
+        "approvalRequired": [],
+        "denied": [],
+        "capabilitySids": list(dict.fromkeys(item["capabilitySid"] for item in grants)),
     }
 
 

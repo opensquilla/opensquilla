@@ -47,6 +47,7 @@ def test_payload_contains_cache_env_and_run_mode(
     from opensquilla.sandbox.backend import windows_default as mod
 
     monkeypatch.setattr(mod, "_support_ready", lambda: True)
+    monkeypatch.setattr(mod, "_capability_store_path", lambda: tmp_path / "cap_sids.json")
 
     payload = mod._payload_for_request(_request(tmp_path))
 
@@ -93,6 +94,7 @@ async def test_backend_returns_helper_result(
         return _Proc()
 
     monkeypatch.setattr(mod, "_support_ready", lambda: True)
+    monkeypatch.setattr(mod, "_capability_store_path", lambda: tmp_path / "cap_sids.json")
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
 
     result = await WindowsDefaultBackend().run(_request(tmp_path))
@@ -102,3 +104,29 @@ async def test_backend_returns_helper_result(
     assert result.stderr == "err"
     assert result.backend_used == "windows_default"
     assert "opensquilla.sandbox.backend.windows_default_runner" in captured["argv"]
+
+
+def test_payload_contains_required_workspace_and_runtime_acl_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default as mod
+
+    monkeypatch.setattr(mod, "_support_ready", lambda: True)
+    monkeypatch.setattr(
+        mod,
+        "_python_executable",
+        lambda: tmp_path / "runtime" / "Scripts" / "python.exe",
+    )
+    monkeypatch.setattr(mod, "_capability_store_path", lambda: tmp_path / "cap_sids.json")
+    (tmp_path / "runtime" / "Scripts").mkdir(parents=True)
+    (tmp_path / "runtime" / "Scripts" / "python.exe").write_text("", encoding="utf-8")
+
+    payload = mod._payload_for_request(_request(tmp_path))
+
+    plan = payload["policy"]["windowsAclPlan"]
+    grant_paths = {grant["path"]: grant["access"] for grant in plan["autoGrants"]}
+    assert grant_paths[str(tmp_path)] == "RWX"
+    assert grant_paths[str(tmp_path / ".opensquilla-cache")] == "RWX"
+    assert grant_paths[str(tmp_path / "runtime" / "Scripts")] == "RX"
+    assert plan["capabilitySids"]

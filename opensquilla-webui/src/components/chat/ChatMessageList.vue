@@ -24,7 +24,6 @@
       :share-mode="shareMode"
       :share-selected="selectedMessageIds.has(chatMessageKey(message, index))"
       :share-message-id="chatMessageKey(message, index)"
-      :assistant-avatar-url="assistantAvatarUrl"
       :render-markdown="renderMarkdown"
       :fmt-tok="fmtTok"
       :tool-call-groups="toolCallGroups"
@@ -69,7 +68,6 @@ defineProps<{
   messages: ChatRenderedMessage[]
   shareMode: boolean
   selectedMessageIds: Set<string>
-  assistantAvatarUrl: string
   stripTimePrefix: (text: string) => string
   renderMarkdown: (text: string) => string
   fmtTok: (value: number) => string

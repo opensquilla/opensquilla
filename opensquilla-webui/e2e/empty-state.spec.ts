@@ -9,15 +9,16 @@ async function openDraft(page: Page) {
 }
 
 test.describe('Empty draft state', () => {
-  test('draft greets with the mark, identity line, and at least 3 chips', async ({ page }) => {
+  test('draft greets with the identity line and at least 3 chips, no brand mark', async ({ page }) => {
     await openDraft(page)
 
-    await expect(page.locator('.empty-state__mark')).toBeVisible()
     await expect(page.locator('.empty-state__greeting')).toHaveText(/Good (morning|afternoon|evening)\./)
     await expect(page.locator('.empty-state__identity')).toContainText('· ready')
 
-    // The giant wordmark is gone; the small mark carries the brand.
+    // Brand lives in the sidebar chrome only: no wordmark, no mark in the content area.
     await expect(page.locator('.chat-landing-lockup')).toHaveCount(0)
+    await expect(page.locator('.empty-state__mark')).toHaveCount(0)
+    await expect(page.locator('.msg-ai-avatar')).toHaveCount(0)
 
     expect(await page.locator('.empty-state__chip').count()).toBeGreaterThanOrEqual(3)
   })

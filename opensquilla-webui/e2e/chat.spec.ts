@@ -14,44 +14,62 @@ test.describe('Chat Page', () => {
     await expect(page).toHaveTitle(/OpenSquilla/)
   })
 
-  test('sidebar navigation is grouped with labeled items', async ({ page }) => {
-    const nav = page.locator('.sidebar-primary-nav')
-    await expect(nav.locator('.sidebar-nav-group-label')).toHaveText([
-      'Work', 'Operate', 'Observe', 'Configure',
-    ])
+  test('sidebar core shows fixed rows with the Console fold', async ({ page }) => {
+    const core = page.locator('.sidebar-core')
 
-    await expect(nav.locator('.sidebar-fn-item .sidebar-fn-label')).toHaveText([
-      'Chat', 'Sessions', 'Approvals',
+    // The old grouped nav (WORK/OPERATE/OBSERVE) and the Chat row are gone;
+    // Approvals only appears while requests are pending (count badge).
+    await expect(page.locator('.sidebar-nav-group-label')).toHaveCount(0)
+    await expect(core.getByText('Chat', { exact: true })).toHaveCount(0)
+    const hasPendingApprovals = (await page.locator('.approval-inline').count()) > 0
+    await expect(core.locator('> .sidebar-fn-item .sidebar-fn-label')).toHaveText(
+      hasPendingApprovals ? ['Sessions', 'Approvals', 'Console'] : ['Sessions', 'Console'],
+    )
+
+    // Console row toggles the fold without navigating.
+    const urlBefore = page.url()
+    const consoleRow = core.getByRole('button', { name: 'Console' })
+    await expect(consoleRow).toHaveAttribute('aria-expanded', 'false')
+    await expect(page.locator('#sidebar-console-list')).toHaveCount(0)
+
+    await consoleRow.click()
+    await expect(consoleRow).toHaveAttribute('aria-expanded', 'true')
+    await expect(page.locator('#sidebar-console-list .sidebar-fn-label')).toHaveText([
       'Agents', 'Channels', 'Cron', 'Skills',
       'Overview', 'Usage', 'Logs', 'Health',
-      'Config',
     ])
+    expect(page.url()).toBe(urlBefore)
+
+    await consoleRow.click()
+    await expect(consoleRow).toHaveAttribute('aria-expanded', 'false')
+    await expect(page.locator('#sidebar-console-list')).toHaveCount(0)
   })
 
   test('can navigate between views', async ({ page }) => {
-    const nav = page.locator('.sidebar-primary-nav')
+    const core = page.locator('.sidebar-core')
 
-    await nav.getByText('Overview', { exact: true }).click()
+    await core.getByRole('button', { name: 'Console' }).click()
+    await core.getByText('Overview', { exact: true }).click()
     await expect(page).toHaveURL(/\/overview/)
 
-    await nav.getByText('Sessions', { exact: true }).click()
-    await expect(page).toHaveURL(/\/sessions/)
-
-    await nav.getByText('Logs', { exact: true }).click()
+    // The fold stays open while moving between console pages.
+    await core.getByText('Logs', { exact: true }).click()
     await expect(page).toHaveURL(/\/logs/)
 
-    // Bare /chat opens the new-chat draft state (see new-chat.spec.ts).
-    await nav.getByText('Chat', { exact: true }).click()
-    await expect(page).toHaveURL(/\/chat\/new$/)
+    await core.getByText('Sessions', { exact: true }).click()
+    await expect(page).toHaveURL(/\/sessions/)
 
+    // Chat now starts from New chat (the dedicated Chat nav row is gone);
+    // the picker lands on the draft state (see new-chat.spec.ts).
     await page.getByRole('button', { name: 'New chat' }).click()
     await expect(page.getByRole('dialog', { name: 'New chat' })).toBeVisible()
     await page.getByRole('button', { name: 'Start chat' }).click()
-    await expect(page).toHaveURL(/\/chat\/new\?agent=main$/)
+    await expect(page).toHaveURL(/\/chat\/new\?agent=[a-z0-9_-]+$/i)
   })
 
-  test('sidebar conversation list is filtered and free of raw identifiers', async ({ page }) => {
-    await expect(page.locator('.sidebar-filter-chip')).toHaveText(['All', 'Chats', 'Automations'])
+  test('sidebar conversation list is free of raw identifiers', async ({ page }) => {
+    // The family filter chips were retired with the Recents-only sidebar.
+    await expect(page.locator('.sidebar-filter-chip')).toHaveCount(0)
 
     // Let the session list settle before inspecting sidebar text.
     await page.waitForSelector('.conn-pill.connected', { timeout: 10000 }).catch(() => {})
@@ -148,6 +166,13 @@ test.describe('Visual Regression', () => {
   // only hold against a clean instance (the default, non-live suite).
   test.skip(LIVE, 'Visual baselines assume a clean sidebar; skipped in live runs.')
 
+  // Live data and wall-clock content are masked so the baseline pins the
+  // chrome: sidebar core/footer, composer, and chat surface.
+  const dynamicRegions = (page: import('@playwright/test').Page) => [
+    page.locator('.sidebar-history'),
+    page.locator('.empty-state__greeting'),
+  ]
+
   test('chat page screenshot matches baseline', async ({ page }) => {
     await page.goto(CONTROL_URL + 'chat')
     await page.waitForSelector('.conn-pill', { timeout: 10000 })
@@ -155,6 +180,7 @@ test.describe('Visual Regression', () => {
 
     await expect(page).toHaveScreenshot('chat-page.png', {
       maxDiffPixels: 100,
+      mask: dynamicRegions(page),
     })
   })
 
@@ -171,6 +197,7 @@ test.describe('Visual Regression', () => {
 
     await expect(page).toHaveScreenshot('chat-page-dark.png', {
       maxDiffPixels: 100,
+      mask: dynamicRegions(page),
     })
   })
 })

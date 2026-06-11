@@ -479,42 +479,62 @@ pre {
   padding: 4px 0;
 }
 
-.sidebar-primary-nav {
+/* Fixed nav core: a handful of rows that never scroll; only Recents does. */
+.sidebar-core {
   display: flex;
   flex-direction: column;
   gap: var(--sp-1);
   padding: 2px 8px 8px;
   position: relative;
   z-index: 4;
-  min-height: 0;
-  overflow-y: auto;
+  flex-shrink: 0;
 }
 
-.sidebar-nav-group {
+/* New-chat keyboard hint */
+.sidebar-kbd {
+  margin-left: auto;
+  padding: 1px 5px;
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-sm);
+  color: var(--sidebar-text-soft);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+/* Pending-approvals count on the conditional Approvals row */
+.sidebar-count-badge {
+  margin-left: auto;
+  min-width: 18px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+/* Console fold row: toggles the inline operations list, never navigates */
+.sidebar-console-chevron {
+  margin-left: auto;
+  color: var(--sidebar-text-soft);
+  transition: transform 120ms;
+}
+.sidebar-console-row[aria-expanded='true'] .sidebar-console-chevron {
+  transform: rotate(90deg);
+}
+
+/* Console sub-items: indented behind a left rail */
+.sidebar-console-list {
   display: flex;
   flex-direction: column;
   gap: 1px;
-}
-
-.sidebar-nav-group-label {
-  padding: var(--sp-2) var(--sp-2) 3px;
-  font-size: var(--fs-xs);
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--sidebar-text-soft);
-}
-
-.sidebar-section-header {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  padding: var(--sp-2) var(--sp-4);
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  text-transform: none;
-  letter-spacing: 0;
-  color: var(--sidebar-text-strong);
+  margin-left: 14px;
+  padding-left: var(--sp-1);
+  border-left: 1px solid var(--sidebar-border);
 }
 
 .sidebar-refresh-btn {
@@ -544,7 +564,7 @@ pre {
   to { transform: rotate(360deg); }
 }
 
-/* Function item (icon + name) */
+/* Function item (icon + name); also styles core/footer <button> rows */
 .sidebar-fn-item {
   display: flex;
   align-items: center;
@@ -552,17 +572,21 @@ pre {
   min-width: 0;
   padding: var(--sp-2) var(--sp-3);
   margin: 0 var(--sp-2);
+  border: none;
   border-radius: var(--radius-md);
+  background: transparent;
   color: var(--sidebar-text-strong);
+  font-family: var(--font-sans);
   font-size: var(--fs-sm);
   font-weight: 600;
   position: relative;
+  text-align: left;
   text-decoration: none;
   transition: background 120ms, color 120ms;
   cursor: pointer;
 }
 
-.sidebar-primary-nav .sidebar-fn-item {
+.sidebar-core .sidebar-fn-item {
   min-height: 32px;
   margin: 0;
   padding: 5px var(--sp-2);
@@ -575,42 +599,6 @@ pre {
   white-space: nowrap;
 }
 
-.sidebar-bottom .sidebar-fn-item::after {
-  background: color-mix(in srgb, var(--sidebar-text-strong) 94%, transparent);
-  border: 1px solid color-mix(in srgb, var(--sidebar-text-strong) 18%, transparent);
-  border-radius: var(--radius-sm);
-  bottom: calc(100% + 6px);
-  box-shadow: 0 8px 18px rgba(20, 18, 15, 0.14);
-  color: var(--bg-surface);
-  content: attr(data-tooltip);
-  font-size: 11px;
-  font-weight: 700;
-  left: 50%;
-  line-height: 1;
-  max-width: 96px;
-  opacity: 0;
-  overflow: hidden;
-  padding: 6px 8px;
-  pointer-events: none;
-  position: absolute;
-  text-overflow: ellipsis;
-  transform: translate(-50%, 3px);
-  transition:
-    opacity 120ms ease 220ms,
-    transform 120ms ease 220ms,
-    visibility 0ms linear 340ms;
-  visibility: hidden;
-  white-space: nowrap;
-  z-index: 20;
-}
-
-.sidebar-bottom .sidebar-fn-item:hover::after,
-.sidebar-bottom .sidebar-fn-item:focus-visible::after {
-  opacity: 1;
-  transform: translate(-50%, 0);
-  transition-delay: 260ms, 260ms, 0ms;
-  visibility: visible;
-}
 .sidebar-fn-item:hover {
   background: var(--sidebar-item-hover);
   color: var(--sidebar-text-strong);
@@ -620,10 +608,10 @@ pre {
   color: var(--sidebar-text-strong);
 }
 
-/* Conversations section */
+/* Recents: the only scrollable sidebar region */
 .sidebar-history {
   flex: 1;
-  /* Keep the recent list usable when the grouped nav fills a short viewport. */
+  /* Keep the recent list usable when the expanded console fills a short viewport. */
   min-height: 132px;
   margin-top: 0;
   overflow: hidden;
@@ -631,10 +619,20 @@ pre {
   flex-direction: column;
 }
 
-.sidebar-history .sidebar-section-header {
+.sidebar-recents-header {
+  display: flex;
+  align-items: center;
   gap: var(--sp-2);
-  padding: 6px 14px;
-  font-size: 0.8125rem;
+  padding: var(--sp-2) 14px 2px;
+  flex-shrink: 0;
+}
+
+.sidebar-recents-eyebrow {
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--sidebar-text-soft);
 }
 
 .sidebar-history-list {
@@ -643,32 +641,31 @@ pre {
   padding: 4px 8px 8px;
 }
 
+/* Active agent-filter chip, dismissible, shown at the top of Recents */
 .sidebar-filter-row {
   display: flex;
-  gap: var(--sp-1);
   padding: 2px 14px 6px;
+  flex-shrink: 0;
 }
 
-.sidebar-filter-chip {
+.sidebar-agent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  max-width: 100%;
   padding: 3px 10px;
-  border: 1px solid var(--sidebar-border);
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--sidebar-border));
   border-radius: 999px;
-  background: transparent;
-  color: var(--sidebar-text);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--sidebar-text-strong);
   font-size: var(--fs-xs);
   font-weight: 600;
   cursor: pointer;
   transition: background 120ms, color 120ms, border-color 120ms;
 }
 
-.sidebar-filter-chip:hover {
-  background: var(--sidebar-item-hover);
-  color: var(--sidebar-text-strong);
-}
-
-.sidebar-filter-chip.is-active {
-  background: var(--sidebar-item-active);
-  color: var(--sidebar-text-strong);
+.sidebar-agent-chip:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 .sidebar-history-empty {
@@ -757,36 +754,6 @@ pre {
   color: var(--sidebar-text-soft);
 }
 
-/* Recent | Grouped segmented toggle */
-.sidebar-mode-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 2px;
-  border: 1px solid var(--sidebar-border);
-  border-radius: 999px;
-  background: var(--sidebar-control-bg);
-}
-
-.sidebar-mode-btn {
-  border: 0;
-  background: transparent;
-  border-radius: 999px;
-  padding: 2px 10px;
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  color: var(--sidebar-text);
-  cursor: pointer;
-  transition: background 120ms, color 120ms;
-}
-.sidebar-mode-btn:hover {
-  color: var(--sidebar-text-strong);
-}
-.sidebar-mode-btn.is-active {
-  background: var(--sidebar-item-active);
-  color: var(--sidebar-text-strong);
-}
-
 /* Conversation row: session button + agent badge side by side */
 .sidebar-history-row {
   display: flex;
@@ -827,74 +794,6 @@ pre {
   border-color: var(--accent);
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
-}
-
-/* Grouped mode: family eyebrow + collapsible groups */
-.sidebar-family-label {
-  padding: var(--sp-2) 14px 2px;
-  font-size: var(--fs-xs);
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--sidebar-text-soft);
-}
-
-.sidebar-group-header {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  width: calc(100% - var(--sp-2));
-  min-height: 30px;
-  margin: 1px var(--sp-1);
-  padding: 4px 10px;
-  border: none;
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--sidebar-text-strong);
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  text-align: left;
-  cursor: pointer;
-  transition: background 120ms, color 120ms;
-}
-.sidebar-group-header:hover {
-  background: var(--sidebar-item-hover);
-}
-
-.sidebar-group-chevron {
-  color: var(--sidebar-text-soft);
-  transition: transform 120ms;
-}
-.sidebar-group.is-collapsed .sidebar-group-chevron {
-  transform: rotate(-90deg);
-}
-
-.sidebar-group-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sidebar-group-count {
-  flex-shrink: 0;
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: var(--sidebar-control-bg);
-  color: var(--sidebar-text-soft);
-  font-size: 0.625rem;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-
-.sidebar-group-dot {
-  margin-left: auto;
-}
-
-.sidebar-group-items {
-  margin-left: 14px;
-  padding-left: var(--sp-1);
-  border-left: 1px solid var(--sidebar-border);
 }
 
 /* Mobile drawer scrim: render only in the <=768px overlay layout */
@@ -1069,31 +968,43 @@ pre {
   }
 }
 
-/* Bottom section */
-.sidebar-bottom {
-  display: grid;
-  gap: 5px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+/* Fixed footer: settings row + connection state */
+.sidebar-foot {
   padding: 8px 8px 0;
   border-top: 1px solid var(--sidebar-border);
-  margin-top: auto;
+  flex-shrink: 0;
   position: relative;
   z-index: 5;
 }
 
-.sidebar-bottom .sidebar-fn-item {
-  flex-direction: column;
-  gap: 4px;
-  justify-content: center;
-  min-height: 38px;
+.sidebar-foot .sidebar-fn-item {
+  width: 100%;
+  min-height: 36px;
   margin: 0;
-  padding: 0;
-  text-align: center;
+  padding: var(--sp-2);
 }
 
-.sidebar-bottom .sidebar-fn-label {
-  display: none;
+.sidebar-conn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--sidebar-text-soft);
 }
+
+.sidebar-conn-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.sidebar-conn.connected { color: var(--ok); }
+.sidebar-conn.connecting { color: var(--warn); }
+.sidebar-conn.disconnected { color: var(--danger); }
 
 /* Legacy nav styles (kept for compatibility) */
 .nav-brand {
@@ -1143,25 +1054,6 @@ pre {
 .nav-item.is-active {
   background: color-mix(in srgb, var(--accent) 12%, var(--bg-hover));
   color: var(--accent);
-}
-
-.nav-badge {
-  margin-left: auto;
-  background: var(--danger);
-  color: var(--accent-foreground);
-  font-size: var(--fs-xs);
-  font-weight: 700;
-  padding: 1px 6px;
-  border-radius: 999px;
-  min-width: 18px;
-  text-align: center;
-}
-
-.sidebar-bottom .nav-badge {
-  margin-left: 0;
-  position: absolute;
-  right: 6px;
-  top: 5px;
 }
 
 /* Main content area */
@@ -1336,28 +1228,29 @@ pre {
     height: 40px;
   }
 
-  .sidebar-primary-nav .sidebar-fn-item,
+  .sidebar-core .sidebar-fn-item,
+  .sidebar-foot .sidebar-fn-item,
   .sidebar-history-item {
     min-height: 44px;
   }
 
-  .sidebar-filter-chip {
-    min-height: 36px;
-    padding: 6px 12px;
+  /* Short-phone safety valve: with 44px touch rows an expanded console can
+     outgrow the drawer; let the core scroll itself instead of clipping the
+     pinned footer. Collapsed (the common state) it still fits without one. */
+  .sidebar-core {
+    min-height: 0;
+    flex-shrink: 1;
+    overflow-y: auto;
   }
 
-  .sidebar-mode-btn {
-    min-height: 32px;
-    padding-inline: 12px;
+  .sidebar-agent-chip {
+    min-height: 36px;
+    padding: 6px 12px;
   }
 
   .sidebar-agent-badge {
     width: 32px;
     height: 32px;
-  }
-
-  .sidebar-group-header {
-    min-height: 44px;
   }
 
   .nav-item {
@@ -1478,18 +1371,14 @@ pre {
     padding-block: 7px;
   }
 
-  .sidebar-primary-nav {
+  .sidebar-core {
     gap: 3px;
     padding-bottom: 6px;
   }
 
-  .sidebar-primary-nav .sidebar-fn-item {
+  .sidebar-core .sidebar-fn-item {
     min-height: 28px;
     padding-block: 3px;
-  }
-
-  .sidebar-nav-group-label {
-    padding-top: var(--sp-1);
   }
 
   .sidebar-history-item {
@@ -1497,12 +1386,12 @@ pre {
     padding-block: 6px;
   }
 
-  .sidebar-bottom {
+  .sidebar-foot {
     padding-top: 6px;
   }
 
-  .sidebar-bottom .sidebar-fn-item {
-    min-height: 36px;
+  .sidebar-foot .sidebar-fn-item {
+    min-height: 32px;
   }
 }
 

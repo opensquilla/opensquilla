@@ -4,7 +4,6 @@ import types
 
 import pytest
 
-from opensquilla.sandbox.backend import select_backend
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.run_mode import (
     RunMode,
@@ -15,7 +14,6 @@ from opensquilla.sandbox.run_mode import (
     normalize_run_mode,
     run_mode_config_patch,
 )
-from opensquilla.sandbox.types import SandboxBackendError
 
 
 def test_trusted_sandbox_is_sandboxed_and_skips_only_routine_prompts() -> None:
@@ -127,20 +125,9 @@ def test_explicit_full_run_mode_disables_sandbox_booleans() -> None:
     assert config_run_mode(config) == RunMode.FULL
 
 
-def test_windows_restricted_token_backend_fails_closed_when_unavailable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from opensquilla.sandbox.backend import WindowsRestrictedTokenBackend
-
-    monkeypatch.setattr(WindowsRestrictedTokenBackend, "available", lambda self: False)
-    settings = SandboxSettings(
-        sandbox=True,
-        security_grading=True,
-        backend="windows_restricted_token",
-    )
-
-    with pytest.raises(SandboxBackendError, match="windows_restricted_token.*unavailable"):
-        select_backend(settings)
+def test_removed_windows_restricted_token_backend_config_is_rejected() -> None:
+    with pytest.raises(ValueError, match="windows_restricted_token.*windows_default"):
+        SandboxSettings(backend="windows_restricted_token")
 
 
 def test_configured_default_elevated_only_returns_full() -> None:

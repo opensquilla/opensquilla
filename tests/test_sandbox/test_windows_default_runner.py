@@ -29,7 +29,7 @@ def test_parse_payload_rejects_wrong_backend(tmp_path) -> None:
     from opensquilla.sandbox.backend.windows_default_runner import _parse_payload
 
     payload = {
-        "backend": "windows_restricted_token",
+        "backend": "not_windows_default",
         "argv": ["cmd"],
         "cwd": str(tmp_path),
         "env": {},

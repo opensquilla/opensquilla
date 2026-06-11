@@ -447,12 +447,12 @@ def _windows_proxy_allowlist_enforced(runtime: SandboxRuntime | object | None) -
     if not backend_name.startswith("windows_"):
         return True
     try:
-        from opensquilla.sandbox.backend.windows_support import (
-            probe_windows_sandbox_support,
+        from opensquilla.sandbox.backend.windows_default_support import (
+            probe_windows_default_support,
         )
     except Exception:
         return False
-    return bool(probe_windows_sandbox_support().proxy_allowlist_enforced)
+    return bool(probe_windows_default_support().proxy_allowlist_enforced)
 
 
 def _managed_proxy_env_keys(

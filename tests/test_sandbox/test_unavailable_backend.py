@@ -54,16 +54,17 @@ async def test_unavailable_backend_fails_closed_without_running_command(
 
 def test_auto_backend_failure_includes_windows_setup_diagnostics(monkeypatch) -> None:
     from opensquilla.sandbox import backend as backend_mod
-    from opensquilla.sandbox.backend import windows_support
-    from opensquilla.sandbox.backend.windows_restricted_token import (
-        WindowsRestrictedTokenBackend,
+    from opensquilla.sandbox.backend import windows_default_support
+    from opensquilla.sandbox.backend.windows_default import (
+        WindowsDefaultBackend,
     )
     from opensquilla.sandbox.config import SandboxSettings
 
     monkeypatch.setattr(backend_mod.sys, "platform", "win32")
-    monkeypatch.setattr(WindowsRestrictedTokenBackend, "available", lambda self: False)
-    monkeypatch.setattr(windows_support, "_ctypes_available", lambda: True)
-    monkeypatch.setattr(windows_support, "_restricted_token_smoke_ok", lambda: False)
+    monkeypatch.setattr(WindowsDefaultBackend, "available", lambda self: False)
+    monkeypatch.setattr(windows_default_support, "_ctypes_available", lambda: True)
+    monkeypatch.setattr(windows_default_support, "_token_api_available", lambda: False)
+    monkeypatch.setattr(windows_default_support, "_acl_api_available", lambda: True)
 
     with pytest.raises(SandboxBackendError) as exc_info:
         backend_mod.select_backend(SandboxSettings(sandbox=True, backend="auto"))
@@ -71,5 +72,5 @@ def test_auto_backend_failure_includes_windows_setup_diagnostics(monkeypatch) ->
     message = str(exc_info.value)
     assert "no real sandbox backend" in message
     assert "Windows sandbox setup diagnostics" in message
-    assert "Restricted Token" in message
+    assert "windows_default" in message
     assert "network boundary" in message

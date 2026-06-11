@@ -30,7 +30,6 @@ BackendName = Literal[
     "bubblewrap",
     "seatbelt",
     "noop",
-    "windows_appcontainer",
     "windows_restricted_token",
 ]
 NetworkDefault = Literal["none", "proxy_allowlist"]

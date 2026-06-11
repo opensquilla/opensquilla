@@ -50,6 +50,11 @@ def _request(tmp_path: Path, *, wall_timeout_s: float = 5.0) -> SandboxRequest:
     )
 
 
+def test_windows_appcontainer_backend_literal_is_rejected() -> None:
+    with pytest.raises(Exception, match="windows_appcontainer"):
+        SandboxSettings(sandbox=True, backend="windows_appcontainer")  # type: ignore[arg-type]
+
+
 def test_windows_restricted_token_available_requires_enforced_boundary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -76,15 +81,11 @@ def test_windows_auto_selects_restricted_token_when_appcontainer_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from opensquilla.sandbox import backend as backend_mod
-    from opensquilla.sandbox.backend.windows_appcontainer import (
-        WindowsAppContainerBackend,
-    )
     from opensquilla.sandbox.backend.windows_restricted_token import (
         WindowsRestrictedTokenBackend,
     )
 
     monkeypatch.setattr(backend_mod.sys, "platform", "win32")
-    monkeypatch.setattr(WindowsAppContainerBackend, "available", lambda self: False)
     monkeypatch.setattr(WindowsRestrictedTokenBackend, "available", lambda self: True)
 
     backend = backend_mod.select_backend(SandboxSettings(sandbox=True, backend="auto"))
@@ -97,15 +98,11 @@ def test_windows_auto_fails_closed_when_restricted_token_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from opensquilla.sandbox import backend as backend_mod
-    from opensquilla.sandbox.backend.windows_appcontainer import (
-        WindowsAppContainerBackend,
-    )
     from opensquilla.sandbox.backend.windows_restricted_token import (
         WindowsRestrictedTokenBackend,
     )
 
     monkeypatch.setattr(backend_mod.sys, "platform", "win32")
-    monkeypatch.setattr(WindowsAppContainerBackend, "available", lambda self: False)
     monkeypatch.setattr(WindowsRestrictedTokenBackend, "available", lambda self: False)
 
     with pytest.raises(SandboxBackendError, match="no real sandbox backend"):

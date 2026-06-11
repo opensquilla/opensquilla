@@ -30,7 +30,6 @@ from opensquilla.sandbox.backend.bubblewrap import BubblewrapBackend
 from opensquilla.sandbox.backend.noop import NoopBackend
 from opensquilla.sandbox.backend.seatbelt import SeatbeltBackend
 from opensquilla.sandbox.backend.unavailable import UnavailableBackend
-from opensquilla.sandbox.backend.windows_appcontainer import WindowsAppContainerBackend
 from opensquilla.sandbox.backend.windows_restricted_token import WindowsRestrictedTokenBackend
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.types import SandboxBackendError
@@ -51,10 +50,8 @@ def _auto_backend_failure_message() -> str:
     diagnostics = (
         "Windows sandbox setup diagnostics: "
         f"ctypes={'ready' if support.ctypes_available else 'missing'}, "
-        f"AppContainer={'ready' if support.appcontainer_enforced else 'not ready'}, "
         f"Restricted Token={'ready' if support.restricted_token_enforced else 'not ready'}, "
-        f"WFP={'ready' if support.wfp_enforced else 'not ready'}, "
-        f"managed proxy={'ready' if support.managed_proxy_enforced else 'not ready'}"
+        f"network boundary={'ready' if support.proxy_allowlist_enforced else 'not ready'}"
     )
     return f"{message}; {diagnostics}"
 
@@ -70,9 +67,6 @@ def _auto_backend() -> Backend:
         if seatbelt.available():
             return seatbelt
     if sys.platform.startswith("win"):
-        appcontainer = WindowsAppContainerBackend()
-        if appcontainer.available():
-            return appcontainer
         restricted_token = WindowsRestrictedTokenBackend()
         if restricted_token.available():
             return restricted_token
@@ -100,8 +94,6 @@ def select_backend(settings: SandboxSettings) -> Backend:
         backend = SeatbeltBackend()
     elif choice == "noop":
         backend = NoopBackend()
-    elif choice == "windows_appcontainer":
-        backend = WindowsAppContainerBackend()
     elif choice == "windows_restricted_token":
         backend = WindowsRestrictedTokenBackend()
     else:  # pragma: no cover — pydantic Literal constrains this upstream
@@ -128,7 +120,6 @@ __all__ = [
     "NoopBackend",
     "SeatbeltBackend",
     "UnavailableBackend",
-    "WindowsAppContainerBackend",
     "WindowsRestrictedTokenBackend",
     "select_backend",
 ]

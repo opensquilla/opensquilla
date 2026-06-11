@@ -4895,7 +4895,7 @@ const ChatView = (() => {
         );
       } else if (action === 'switch-skill' || action === 'switch-meta-skill') {
         if (_textarea) {
-          _textarea.placeholder = '想换哪个 meta-skill？例如：Use meta-skill `meta-web-research-to-report`';
+          _textarea.placeholder = '想换哪个 meta-skill？例如：Use meta-skill `meta-kid-project-planner`';
           _textarea.focus();
         }
       } else if (action === 'install-dependency') {

@@ -81,7 +81,7 @@ def test_g2_passes_on_valid_p1() -> None:
 
 EXISTING_META_BUNDLES = [
     "meta-pdf-intelligence", "meta-travel-planner",
-    "meta-migration-assistant", "meta-web-research-to-report",
+    "meta-migration-assistant",
     "meta-stack-trace-investigator", "meta-paper-write",
     "meta-skill-creator",
 ]
@@ -141,12 +141,12 @@ def test_g1_rejects_nested_meta_skill_reference() -> None:
     producing misleading auto_enable_eligible=true proposals that crashed at
     runtime."""
     nested_meta = VALID_P1.replace(
-        "skill: pdf-toolkit", "skill: meta-web-research-to-report"
+        "skill: pdf-toolkit", "skill: meta-paper-write"
     )
     out = _run_lint(nested_meta)
     assert out["G1"]["passed"] is False
     assert any(
-        "meta-web-research-to-report" in d
+        "meta-paper-write" in d
         and ("nested" in d.lower() or "kind: meta" in d)
         for d in out["G1"]["diagnostics"]
     ), f"Expected nested meta-skill diagnostic; got: {out['G1']['diagnostics']}"

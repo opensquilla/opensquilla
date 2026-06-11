@@ -10,7 +10,7 @@ from opensquilla.engine.types import (
 def test_meta_run_announced_minimal():
     ev = MetaRunAnnouncedEvent(
         run_id="r1",
-        meta_skill_name="meta-document-to-decision",
+        meta_skill_name="meta-kid-project-planner",
         steps=[
             {"id": "intake", "label": "意图提取", "kind": "llm_chat", "depends_on": []},
             {"id": "search", "label": "检索证据", "kind": "agent", "depends_on": ["intake"]},

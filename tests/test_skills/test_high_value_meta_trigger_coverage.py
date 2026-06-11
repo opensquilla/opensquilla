@@ -39,14 +39,6 @@ def test_high_value_meta_skills_match_natural_user_prompts(tmp_path: Path) -> No
                 expected_meta_skill="meta-travel-planner",
             ),
             TriggerCase(
-                name="web_research_lifelike",
-                user_message=(
-                    "Can you look into local-first AI coding assistants and "
-                    "write up the findings for our CTO?"
-                ),
-                expected_meta_skill="meta-web-research-to-report",
-            ),
-            TriggerCase(
                 name="paper_manuscript",
                 user_message=(
                     "I need an academic manuscript about meta-skill "

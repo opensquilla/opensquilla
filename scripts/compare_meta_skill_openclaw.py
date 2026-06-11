@@ -110,28 +110,6 @@ def criterion(
 
 
 SKILL_RUBRICS: dict[str, tuple[RubricCriterion, ...]] = {
-    "meta-web-research-to-report": (
-        criterion(
-            "question_framing",
-            "States assumptions and decision context.",
-            r"assumption",
-            r"decision",
-        ),
-        criterion(
-            "source_quality", "Separates sources from claims.", r"source", r"citation", r"https?://"
-        ),
-        criterion("claim_mapping", "Maps findings to evidence.", r"evidence", r"finding", r"claim"),
-        criterion(
-            "risk_tradeoff", "Names risks and tradeoffs.", r"risk", r"trade[- ]?off", r"limitation"
-        ),
-        criterion(
-            "memo_ready",
-            "Produces a compact decision-memo artifact.",
-            r"memo",
-            r"recommendation",
-            r"summary",
-        ),
-    ),
     "meta-paper-write": (
         criterion(
             "paper_sections",
@@ -311,25 +289,6 @@ SKILL_RUBRICS: dict[str, tuple[RubricCriterion, ...]] = {
 
 COMPARISON_CASES: list[ComparisonCase] = [
     ComparisonCase(
-        case_id="web_research_report",
-        skill_name="meta-web-research-to-report",
-        prompt=(
-            "I'm the CTO of a small product team and need a concise research report "
-            "before our planning meeting. Should we adopt local-first AI coding "
-            "assistants in 2026? Please include the assumptions you're making, "
-            "5 key findings, practical risks, and a source list. Keep it compact "
-            "enough to paste into a decision memo, but make it artifact-ready."
-        ),
-        expected_advantage=(
-            "OpenSquilla should infer report preferences, search/curate sources, "
-            "draft with citations, and run a readiness gate."
-        ),
-        optimization_if_not_better=(
-            "Tighten source-quality gating, require explicit source-to-claim mapping, "
-            "and add a final report checklist before export."
-        ),
-    ),
-    ComparisonCase(
         case_id="paper_write",
         skill_name="meta-paper-write",
         prompt=(
@@ -457,57 +416,6 @@ COMPARISON_CASES: list[ComparisonCase] = [
 
 COMPARISON_CASES.extend(
     [
-        ComparisonCase(
-            case_id="web_research_conflicting_sources",
-            skill_name="meta-web-research-to-report",
-            scenario="degraded",
-            prompt=(
-                "Build a short decision memo from these conflicting notes only; do "
-                "not invent sources. Note A says local-first AI coding assistants "
-                "reduce review latency by 30% in a 12-person pilot. Note B says "
-                "the same pilot saw onboarding time increase for two juniors. Note "
-                "C says legal rejected one cloud-only vendor. I need claim-to-note "
-                "mapping, confidence levels, risks, and a recommendation."
-            ),
-            expected_advantage=(
-                "OpenSquilla should preserve source-to-claim mapping even when web "
-                "research is unavailable and evidence is provided inline."
-            ),
-            optimization_if_not_better=(
-                "Add an inline-source mode with explicit claim tables and confidence "
-                "labels before drafting the memo."
-            ),
-            failure_modes=(
-                "Treats inline notes as verified external sources.",
-                "Ignores conflict between latency and onboarding cost.",
-                "Gives a recommendation without confidence or evidence mapping.",
-            ),
-        ),
-        ComparisonCase(
-            case_id="web_research_no_browse_boundary",
-            skill_name="meta-web-research-to-report",
-            scenario="boundary",
-            prompt=(
-                "I am offline and only want a research plan, not a factual report. "
-                "Design the exact questions, source classes, inclusion/exclusion "
-                "criteria, and final report outline for evaluating whether local "
-                "AI coding agents are production-ready. Flag what cannot be known "
-                "until browsing is available."
-            ),
-            expected_advantage=(
-                "OpenSquilla should avoid fake current facts and produce a reusable "
-                "research protocol with clear unknowns."
-            ),
-            optimization_if_not_better=(
-                "Strengthen no-browse boundary handling and require an unknowns "
-                "section when the user asks for a research plan only."
-            ),
-            failure_modes=(
-                "Fabricates current market facts.",
-                "Fails to separate protocol from findings.",
-                "Omits inclusion criteria or unknowns.",
-            ),
-        ),
         ComparisonCase(
             case_id="paper_write_citation_boundary",
             skill_name="meta-paper-write",

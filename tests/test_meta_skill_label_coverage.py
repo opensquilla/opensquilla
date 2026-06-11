@@ -6,15 +6,10 @@ import pytest
 import yaml
 
 BUNDLED_META_SKILLS = [
-    "meta-competitive-intel",
-    "meta-daily-operator-brief",
-    "meta-document-to-decision",
-    "meta-job-search-pipeline",
     "meta-kid-project-planner",
     "meta-paper-write",
     "meta-short-drama",
     "meta-skill-creator",
-    "meta-web-research-to-report",
 ]
 
 

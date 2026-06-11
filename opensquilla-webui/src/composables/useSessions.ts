@@ -292,6 +292,49 @@ export function normalizeSessionItem(item: unknown): SessionItem | null {
   }
 }
 
+/** Parent session key for subagent rows, when the contract carries one. */
+export function sessionParentKey(item: SessionItem): string {
+  const parent = item.raw.parent
+  if (!parent || typeof parent !== 'object') return ''
+  const key = (parent as Record<string, unknown>).key
+  return typeof key === 'string' ? key.trim() : ''
+}
+
+export interface SessionLedgerEntry {
+  item: SessionItem
+  depth: number
+}
+
+/**
+ * Flatten sessions into ledger order: rows keep their recency sort, and
+ * subagent rows indent directly under their parent when the parent is in
+ * the same list. Orphan subagents stay at the root level.
+ */
+export function arrangeSessionLedger(items: SessionItem[]): SessionLedgerEntry[] {
+  const byKey = new Map(items.map(item => [item.key, item]))
+  const children = new Map<string, SessionItem[]>()
+  const roots: SessionItem[] = []
+  for (const item of items) {
+    const parentKey = sessionParentKey(item)
+    if (parentKey && parentKey !== item.key && byKey.has(parentKey)) {
+      const list = children.get(parentKey) || []
+      list.push(item)
+      children.set(parentKey, list)
+    } else {
+      roots.push(item)
+    }
+  }
+  const entries: SessionLedgerEntry[] = []
+  const visit = (item: SessionItem, depth: number) => {
+    entries.push({ item, depth })
+    for (const child of children.get(item.key) || []) {
+      visit(child, Math.min(depth + 1, 3))
+    }
+  }
+  for (const root of roots) visit(root, 0)
+  return entries
+}
+
 export function sessionMatches(item: SessionItem, query: string): boolean {
   const q = query.trim().toLowerCase()
   if (!q) return true

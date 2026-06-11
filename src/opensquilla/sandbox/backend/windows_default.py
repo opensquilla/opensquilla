@@ -149,7 +149,7 @@ def _acl_plan_payload(request: SandboxRequest) -> dict[str, object]:
         run_mode=normalize_run_mode(request.run_mode),
         required=required,
         policy=policy_grants,
-        expansion=(),
+        expansion=_expansion_grants_from_env(request),
         sensitive_marker=lambda path: windows_sensitive_marker(path),
     )
     if plan.denied:
@@ -183,6 +183,15 @@ def _acl_plan_payload(request: SandboxRequest) -> dict[str, object]:
         "denied": [],
         "capabilitySids": list(dict.fromkeys(item["capabilitySid"] for item in grants)),
     }
+
+
+def _expansion_grants_from_env(request: SandboxRequest) -> tuple[AclGrant, ...]:
+    raw = request.env.get("OPENSQUILLA_WINDOWS_SANDBOX_EXPANSION_ROOTS", "")
+    roots = [item.strip() for item in raw.split(";") if item.strip()]
+    return tuple(
+        AclGrant(Path(root), AclAccess.RWX, AclGrantKind.EXPANSION)
+        for root in roots
+    )
 
 
 def _allowed_env(request: SandboxRequest) -> dict[str, str]:

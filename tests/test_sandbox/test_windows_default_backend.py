@@ -130,3 +130,53 @@ def test_payload_contains_required_workspace_and_runtime_acl_plan(
     assert grant_paths[str(tmp_path / ".opensquilla-cache")] == "RWX"
     assert grant_paths[str(tmp_path / "runtime" / "Scripts")] == "RX"
     assert plan["capabilitySids"]
+
+
+def test_trusted_non_sensitive_expansion_auto_grants(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default as mod
+
+    external = tmp_path.parent / f"{tmp_path.name}-external-cache"
+    external.mkdir()
+    request = _request(tmp_path)
+    request = SandboxRequest(
+        argv=request.argv,
+        cwd=request.cwd,
+        action_kind=request.action_kind,
+        policy=request.policy,
+        env={"OPENSQUILLA_WINDOWS_SANDBOX_EXPANSION_ROOTS": str(external)},
+        run_mode=RunMode.TRUSTED.value,
+    )
+    monkeypatch.setattr(mod, "_support_ready", lambda: True)
+    monkeypatch.setattr(mod, "_capability_store_path", lambda: tmp_path / "cap_sids.json")
+
+    payload = mod._payload_for_request(request)
+
+    paths = {grant["path"] for grant in payload["policy"]["windowsAclPlan"]["autoGrants"]}
+    assert str(external) in paths
+
+
+def test_standard_non_sensitive_expansion_requires_approval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default as mod
+
+    external = tmp_path.parent / f"{tmp_path.name}-external-cache"
+    external.mkdir()
+    request = _request(tmp_path)
+    request = SandboxRequest(
+        argv=request.argv,
+        cwd=request.cwd,
+        action_kind=request.action_kind,
+        policy=request.policy,
+        env={"OPENSQUILLA_WINDOWS_SANDBOX_EXPANSION_ROOTS": str(external)},
+        run_mode=RunMode.STANDARD.value,
+    )
+    monkeypatch.setattr(mod, "_support_ready", lambda: True)
+    monkeypatch.setattr(mod, "_capability_store_path", lambda: tmp_path / "cap_sids.json")
+
+    with pytest.raises(SandboxBackendError, match="ACL approval is required"):
+        mod._payload_for_request(request)

@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/opensquilla-opensquilla-badge.png)](https://mseep.ai/app/opensquilla-opensquilla)
+
 # OpenSquilla — Token-Efficient AI Agent
 
 <p align="center">

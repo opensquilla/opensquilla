@@ -62,3 +62,57 @@ def test_runner_rejects_proxy_allowlist_in_phase_one(tmp_path) -> None:
 
     with pytest.raises(SystemExit, match="Windows network boundary is pending"):
         _validate_policy_is_enforceable(parsed.policy)
+
+
+def test_runner_applies_acl_refresh_before_process_launch(tmp_path, monkeypatch) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    calls = []
+    payload = mod.HelperPayload(
+        argv=("cmd", "/c", "echo ok"),
+        cwd=tmp_path,
+        env={},
+        policy={
+            "network": "none",
+            "mounts": [],
+            "windowsAclPlan": {
+                "autoGrants": [
+                    {
+                        "path": str(tmp_path),
+                        "access": "RWX",
+                        "capabilitySid": "S-1-15-3-1",
+                    }
+                ],
+                "capabilitySids": ["S-1-15-3-1"],
+            },
+        },
+        run_mode="trusted",
+        timeout=5,
+    )
+
+    monkeypatch.setattr(mod, "_apply_acl_refresh", lambda plan: calls.append(("acl", plan)))
+    monkeypatch.setattr(
+        mod,
+        "_run_restricted_process_native",
+        lambda payload, sids: calls.append(("run", sids)) or 0,
+    )
+
+    assert mod._run_windows_default(payload) == 0
+    assert calls[0][0] == "acl"
+    assert calls[1] == ("run", ("S-1-15-3-1",))
+
+
+def test_runner_rejects_missing_acl_plan(tmp_path) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    payload = mod.HelperPayload(
+        argv=("cmd",),
+        cwd=tmp_path,
+        env={},
+        policy={"network": "none", "mounts": []},
+        run_mode="trusted",
+        timeout=5,
+    )
+
+    with pytest.raises(SystemExit, match="windowsAclPlan is required"):
+        mod._run_windows_default(payload)

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -95,11 +97,496 @@ def _validate_policy_is_enforceable(policy: dict[str, Any]) -> None:
 
 
 def _run_windows_default(payload: HelperPayload) -> int:
-    return _run_windows_default_native(payload)
+    acl_plan = _windows_acl_plan(payload.policy)
+    capability_sids = _capability_sids(acl_plan)
+    _apply_acl_refresh(acl_plan)
+    return _run_restricted_process_native(payload, capability_sids)
 
 
-def _run_windows_default_native(payload: HelperPayload) -> int:
-    raise SystemExit("windows_default native runner is unavailable in this build")
+def _windows_acl_plan(policy: dict[str, Any]) -> dict[str, Any]:
+    plan = policy.get("windowsAclPlan")
+    if not isinstance(plan, dict):
+        raise SystemExit("invalid windows_default policy: windowsAclPlan is required")
+    auto_grants = plan.get("autoGrants")
+    if not isinstance(auto_grants, list):
+        raise SystemExit("invalid windows_default policy: autoGrants must be a list")
+    capability_sids = plan.get("capabilitySids")
+    if not isinstance(capability_sids, list) or not all(
+        isinstance(sid, str) for sid in capability_sids
+    ):
+        raise SystemExit("invalid windows_default policy: capabilitySids must be a string list")
+    return plan
+
+
+def _capability_sids(plan: dict[str, Any]) -> tuple[str, ...]:
+    return tuple(str(sid) for sid in plan["capabilitySids"])
+
+
+def _apply_acl_refresh(plan: dict[str, Any]) -> None:
+    for grant in plan["autoGrants"]:
+        if not isinstance(grant, dict):
+            raise SystemExit("invalid windows_default ACL grant: grant must be an object")
+        path = grant.get("path")
+        access = grant.get("access")
+        sid = grant.get("capabilitySid")
+        if not isinstance(path, str) or access not in {"RX", "RWX"} or not isinstance(sid, str):
+            raise SystemExit("invalid windows_default ACL grant shape")
+        _grant_path_to_sid(Path(path), access, sid)
+
+
+def _grant_path_to_sid(path: Path, access: str, sid: str) -> None:
+    if not path.exists():
+        raise SystemExit(f"windows_default ACL grant target does not exist: {path}")
+    rights = "RX" if access == "RX" else "M"
+    grant = f"*{sid}:(OI)(CI){rights}" if path.is_dir() else f"*{sid}:{rights}"
+    argv = ["icacls", str(path), "/grant", grant, "/C"]
+    if path.is_dir():
+        argv.append("/T")
+    completed = subprocess.run(
+        argv,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise SystemExit(
+            f"windows_default ACL grant failed for {path}: {completed.stderr.strip()}"
+        )
+
+
+def _environment_block(env: dict[str, str]) -> str:
+    merged = dict(env)
+    for key in ("SystemRoot", "WINDIR", "ComSpec"):
+        value = os.environ.get(key)
+        if value and key not in merged:
+            merged[key] = value
+    items = [
+        f"{key}={value}"
+        for key, value in sorted(merged.items(), key=lambda item: item[0].upper())
+    ]
+    return "\0".join(items) + "\0\0"
+
+
+def _run_restricted_process_native(
+    payload: HelperPayload,
+    capability_sids: tuple[str, ...],
+) -> int:
+    if not sys.platform.startswith("win"):
+        raise SystemExit("windows_default runner only runs on native Windows")
+
+    try:
+        return _run_restricted_process_native_impl(payload, capability_sids)
+    except OSError as exc:
+        raise SystemExit(f"windows_default process launch failed: {exc}") from exc
+
+
+def _run_restricted_process_native_impl(
+    payload: HelperPayload,
+    capability_sids: tuple[str, ...],
+) -> int:
+    import ctypes
+    import msvcrt
+    import threading
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    LPVOID = wintypes.LPVOID
+    HANDLE = wintypes.HANDLE
+    DWORD = wintypes.DWORD
+    BOOL = wintypes.BOOL
+
+    class SECURITY_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [
+            ("nLength", DWORD),
+            ("lpSecurityDescriptor", LPVOID),
+            ("bInheritHandle", BOOL),
+        ]
+
+    class SID_AND_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [
+            ("Sid", LPVOID),
+            ("Attributes", DWORD),
+        ]
+
+    class STARTUPINFO(ctypes.Structure):
+        _fields_ = [
+            ("cb", DWORD),
+            ("lpReserved", wintypes.LPWSTR),
+            ("lpDesktop", wintypes.LPWSTR),
+            ("lpTitle", wintypes.LPWSTR),
+            ("dwX", DWORD),
+            ("dwY", DWORD),
+            ("dwXSize", DWORD),
+            ("dwYSize", DWORD),
+            ("dwXCountChars", DWORD),
+            ("dwYCountChars", DWORD),
+            ("dwFillAttribute", DWORD),
+            ("dwFlags", DWORD),
+            ("wShowWindow", wintypes.WORD),
+            ("cbReserved2", wintypes.WORD),
+            ("lpReserved2", ctypes.POINTER(ctypes.c_byte)),
+            ("hStdInput", HANDLE),
+            ("hStdOutput", HANDLE),
+            ("hStdError", HANDLE),
+        ]
+
+    class PROCESS_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("hProcess", HANDLE),
+            ("hThread", HANDLE),
+            ("dwProcessId", DWORD),
+            ("dwThreadId", DWORD),
+        ]
+
+    class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64),
+            ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", DWORD),
+            ("SchedulingClass", DWORD),
+        ]
+
+    class IO_COUNTERS(ctypes.Structure):
+        _fields_ = [
+            ("ReadOperationCount", ctypes.c_uint64),
+            ("WriteOperationCount", ctypes.c_uint64),
+            ("OtherOperationCount", ctypes.c_uint64),
+            ("ReadTransferCount", ctypes.c_uint64),
+            ("WriteTransferCount", ctypes.c_uint64),
+            ("OtherTransferCount", ctypes.c_uint64),
+        ]
+
+    class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+            ("IoInfo", IO_COUNTERS),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    advapi32.OpenProcessToken.argtypes = [HANDLE, DWORD, ctypes.POINTER(HANDLE)]
+    advapi32.OpenProcessToken.restype = BOOL
+    advapi32.GetTokenInformation.argtypes = [HANDLE, DWORD, LPVOID, DWORD, ctypes.POINTER(DWORD)]
+    advapi32.GetTokenInformation.restype = BOOL
+    advapi32.ConvertStringSidToSidW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(LPVOID)]
+    advapi32.ConvertStringSidToSidW.restype = BOOL
+    advapi32.CreateRestrictedToken.argtypes = [
+        HANDLE,
+        DWORD,
+        DWORD,
+        LPVOID,
+        DWORD,
+        LPVOID,
+        DWORD,
+        ctypes.POINTER(SID_AND_ATTRIBUTES),
+        ctypes.POINTER(HANDLE),
+    ]
+    advapi32.CreateRestrictedToken.restype = BOOL
+    advapi32.CreateProcessAsUserW.argtypes = [
+        HANDLE,
+        wintypes.LPCWSTR,
+        wintypes.LPWSTR,
+        LPVOID,
+        LPVOID,
+        BOOL,
+        DWORD,
+        LPVOID,
+        wintypes.LPCWSTR,
+        ctypes.POINTER(STARTUPINFO),
+        ctypes.POINTER(PROCESS_INFORMATION),
+    ]
+    advapi32.CreateProcessAsUserW.restype = BOOL
+    advapi32.CreateProcessWithTokenW.argtypes = [
+        HANDLE,
+        DWORD,
+        wintypes.LPCWSTR,
+        wintypes.LPWSTR,
+        DWORD,
+        LPVOID,
+        wintypes.LPCWSTR,
+        ctypes.POINTER(STARTUPINFO),
+        ctypes.POINTER(PROCESS_INFORMATION),
+    ]
+    advapi32.CreateProcessWithTokenW.restype = BOOL
+
+    kernel32.GetCurrentProcess.restype = HANDLE
+    kernel32.CreatePipe.argtypes = [
+        ctypes.POINTER(HANDLE),
+        ctypes.POINTER(HANDLE),
+        ctypes.POINTER(SECURITY_ATTRIBUTES),
+        DWORD,
+    ]
+    kernel32.CreatePipe.restype = BOOL
+    kernel32.SetHandleInformation.argtypes = [HANDLE, DWORD, DWORD]
+    kernel32.SetHandleInformation.restype = BOOL
+    kernel32.CloseHandle.argtypes = [HANDLE]
+    kernel32.CloseHandle.restype = BOOL
+    kernel32.CreateJobObjectW.argtypes = [LPVOID, wintypes.LPCWSTR]
+    kernel32.CreateJobObjectW.restype = HANDLE
+    kernel32.SetInformationJobObject.argtypes = [HANDLE, ctypes.c_int, LPVOID, DWORD]
+    kernel32.SetInformationJobObject.restype = BOOL
+    kernel32.AssignProcessToJobObject.argtypes = [HANDLE, HANDLE]
+    kernel32.AssignProcessToJobObject.restype = BOOL
+    kernel32.ResumeThread.argtypes = [HANDLE]
+    kernel32.ResumeThread.restype = DWORD
+    kernel32.WaitForSingleObject.argtypes = [HANDLE, DWORD]
+    kernel32.WaitForSingleObject.restype = DWORD
+    kernel32.TerminateJobObject.argtypes = [HANDLE, DWORD]
+    kernel32.TerminateJobObject.restype = BOOL
+    kernel32.GetExitCodeProcess.argtypes = [HANDLE, ctypes.POINTER(DWORD)]
+    kernel32.GetExitCodeProcess.restype = BOOL
+
+    TOKEN_ASSIGN_PRIMARY = 0x0001
+    TOKEN_DUPLICATE = 0x0002
+    TOKEN_QUERY = 0x0008
+    TOKEN_ADJUST_DEFAULT = 0x0080
+    TOKEN_ADJUST_SESSIONID = 0x0100
+    TOKEN_GROUPS_CLASS = 2
+    SE_GROUP_LOGON_ID = 0xC0000000
+    DISABLE_MAX_PRIVILEGE = 0x01
+    STARTF_USESTDHANDLES = 0x00000100
+    CREATE_SUSPENDED = 0x00000004
+    CREATE_UNICODE_ENVIRONMENT = 0x00000400
+    HANDLE_FLAG_INHERIT = 0x00000001
+    JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+    WAIT_TIMEOUT = 0x00000102
+    WAIT_FAILED = 0xFFFFFFFF
+
+    def win_error(label: str) -> OSError:
+        code = ctypes.get_last_error()
+        return OSError(code, f"{label} failed: {ctypes.FormatError(code)}")
+
+    def close(handle: int) -> None:
+        if handle:
+            kernel32.CloseHandle(handle)
+
+    def convert_sid(value: str, label: str) -> object:
+        sid = LPVOID()
+        if not advapi32.ConvertStringSidToSidW(value, ctypes.byref(sid)):
+            raise win_error(f"ConvertStringSidToSidW({label})")
+        return sid
+
+    def logon_sid_from_token(token: int) -> tuple[object | None, object | None]:
+        needed = DWORD()
+        advapi32.GetTokenInformation(token, TOKEN_GROUPS_CLASS, None, 0, ctypes.byref(needed))
+        if not needed.value:
+            return None, None
+        buffer = ctypes.create_string_buffer(needed.value)
+        if not advapi32.GetTokenInformation(
+            token,
+            TOKEN_GROUPS_CLASS,
+            buffer,
+            needed,
+            ctypes.byref(needed),
+        ):
+            return None, None
+        group_count = ctypes.cast(buffer, ctypes.POINTER(DWORD)).contents.value
+        offset = ctypes.sizeof(DWORD)
+        align = ctypes.alignment(SID_AND_ATTRIBUTES)
+        offset = (offset + align - 1) & ~(align - 1)
+        groups_type = SID_AND_ATTRIBUTES * group_count
+        groups = groups_type.from_buffer(buffer, offset)
+        for group in groups:
+            if group.Attributes & SE_GROUP_LOGON_ID == SE_GROUP_LOGON_ID:
+                return group.Sid, buffer
+        return None, buffer
+
+    local_free = ctypes.windll.kernel32.LocalFree
+    local_free.argtypes = [LPVOID]
+    local_free.restype = LPVOID
+
+    source_token = HANDLE()
+    restricted_token = HANDLE()
+    allocated_sids: list[object] = []
+    logon_sid_buffer: object | None = None
+    stdout_read = HANDLE()
+    stdout_write = HANDLE()
+    stderr_read = HANDLE()
+    stderr_write = HANDLE()
+    job = HANDLE()
+    process_info = PROCESS_INFORMATION()
+    reader_threads: list[threading.Thread] = []
+    outputs: dict[str, bytes] = {"stdout": b"", "stderr": b""}
+
+    try:
+        desired_access = (
+            TOKEN_ASSIGN_PRIMARY
+            | TOKEN_DUPLICATE
+            | TOKEN_QUERY
+            | TOKEN_ADJUST_DEFAULT
+            | TOKEN_ADJUST_SESSIONID
+        )
+        if not advapi32.OpenProcessToken(
+            kernel32.GetCurrentProcess(),
+            desired_access,
+            ctypes.byref(source_token),
+        ):
+            raise win_error("OpenProcessToken")
+
+        restricting_sids = [
+            convert_sid("S-1-5-12", "restricted"),
+            convert_sid("S-1-1-0", "everyone"),
+            convert_sid("S-1-5-11", "authenticated-users"),
+            convert_sid("S-1-5-32-545", "builtin-users"),
+        ]
+        allocated_sids.extend(restricting_sids)
+        for index, capability_sid in enumerate(capability_sids):
+            sid = convert_sid(capability_sid, f"capability-{index}")
+            allocated_sids.append(sid)
+            restricting_sids.append(sid)
+
+        logon_sid, logon_sid_buffer = logon_sid_from_token(source_token)
+        if logon_sid:
+            restricting_sids.append(logon_sid)
+        restricting_entries = (SID_AND_ATTRIBUTES * len(restricting_sids))()
+        for index, sid in enumerate(restricting_sids):
+            restricting_entries[index].Sid = sid
+            restricting_entries[index].Attributes = 0
+
+        if not advapi32.CreateRestrictedToken(
+            source_token,
+            DISABLE_MAX_PRIVILEGE,
+            0,
+            None,
+            0,
+            None,
+            len(restricting_sids),
+            restricting_entries,
+            ctypes.byref(restricted_token),
+        ):
+            raise win_error("CreateRestrictedToken")
+
+        sa = SECURITY_ATTRIBUTES()
+        sa.nLength = ctypes.sizeof(SECURITY_ATTRIBUTES)
+        sa.lpSecurityDescriptor = None
+        sa.bInheritHandle = True
+        if not kernel32.CreatePipe(ctypes.byref(stdout_read), ctypes.byref(stdout_write), ctypes.byref(sa), 0):
+            raise win_error("CreatePipe(stdout)")
+        if not kernel32.CreatePipe(ctypes.byref(stderr_read), ctypes.byref(stderr_write), ctypes.byref(sa), 0):
+            raise win_error("CreatePipe(stderr)")
+        kernel32.SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0)
+        kernel32.SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0)
+
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            raise win_error("CreateJobObjectW")
+        limit_info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        limit_info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not kernel32.SetInformationJobObject(
+            job,
+            JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+            ctypes.byref(limit_info),
+            ctypes.sizeof(limit_info),
+        ):
+            raise win_error("SetInformationJobObject")
+
+        startup = STARTUPINFO()
+        startup.cb = ctypes.sizeof(STARTUPINFO)
+        startup.lpDesktop = "winsta0\\default"
+        startup.dwFlags = STARTF_USESTDHANDLES
+        startup.hStdInput = 0
+        startup.hStdOutput = stdout_write
+        startup.hStdError = stderr_write
+
+        command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline(payload.argv))
+        env_block = ctypes.create_unicode_buffer(_environment_block(payload.env))
+        creation_flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT
+        created = advapi32.CreateProcessAsUserW(
+            restricted_token,
+            None,
+            command_line,
+            None,
+            None,
+            True,
+            creation_flags,
+            env_block,
+            str(payload.cwd),
+            ctypes.byref(startup),
+            ctypes.byref(process_info),
+        )
+        if not created:
+            command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline(payload.argv))
+            created = advapi32.CreateProcessWithTokenW(
+                restricted_token,
+                0,
+                None,
+                command_line,
+                creation_flags,
+                env_block,
+                str(payload.cwd),
+                ctypes.byref(startup),
+                ctypes.byref(process_info),
+            )
+        if not created:
+            raise win_error("CreateProcessAsUserW/CreateProcessWithTokenW")
+
+        close(stdout_write)
+        stdout_write = HANDLE()
+        close(stderr_write)
+        stderr_write = HANDLE()
+
+        if not kernel32.AssignProcessToJobObject(job, process_info.hProcess):
+            raise win_error("AssignProcessToJobObject")
+        if kernel32.ResumeThread(process_info.hThread) == WAIT_FAILED:
+            raise win_error("ResumeThread")
+
+        def read_pipe(name: str, handle: object) -> None:
+            raw_handle = getattr(handle, "value", handle)
+            fd = msvcrt.open_osfhandle(int(raw_handle), os.O_RDONLY | os.O_BINARY)
+            with os.fdopen(fd, "rb", closefd=True) as stream:
+                outputs[name] = stream.read()
+
+        for name, handle in (("stdout", stdout_read), ("stderr", stderr_read)):
+            thread = threading.Thread(target=read_pipe, args=(name, handle), daemon=True)
+            thread.start()
+            reader_threads.append(thread)
+        stdout_read = HANDLE()
+        stderr_read = HANDLE()
+
+        wait_ms = max(1, int(payload.timeout * 1000))
+        wait_result = kernel32.WaitForSingleObject(process_info.hProcess, wait_ms)
+        if wait_result == WAIT_TIMEOUT:
+            kernel32.TerminateJobObject(job, 124)
+            kernel32.WaitForSingleObject(process_info.hProcess, 5000)
+            exit_code = 124
+        elif wait_result == WAIT_FAILED:
+            raise win_error("WaitForSingleObject")
+        else:
+            code = DWORD()
+            if not kernel32.GetExitCodeProcess(process_info.hProcess, ctypes.byref(code)):
+                raise win_error("GetExitCodeProcess")
+            exit_code = int(code.value)
+
+        for thread in reader_threads:
+            thread.join(timeout=5)
+        sys.stdout.buffer.write(outputs["stdout"])
+        sys.stderr.buffer.write(outputs["stderr"])
+        return exit_code
+    finally:
+        close(stdout_write)
+        close(stderr_write)
+        close(stdout_read)
+        close(stderr_read)
+        close(process_info.hThread)
+        close(process_info.hProcess)
+        close(job)
+        close(restricted_token)
+        close(source_token)
+        for sid in allocated_sids:
+            if sid:
+                local_free(sid)
+        _ = logon_sid_buffer
 
 
 if __name__ == "__main__":

@@ -57,6 +57,7 @@ _CONTEXT_WINDOW_FIELDS = (
 )
 _MAX_OUTPUT_FIELDS = ("max_completion_tokens", "max_output_tokens")
 _TOOL_PARAMETER_NAMES = {"tools", "tool_choice"}
+_TOOL_PROBE_MODES = {"required", "auto"}
 
 
 def _positive_int(value: object) -> int:
@@ -86,6 +87,11 @@ def _tool_support_state_from_parameters(
     if supported_parameters:
         return "unsupported"
     return "unknown"
+
+
+def _normalize_tool_probe_mode(value: object) -> str:
+    mode = str(value or "required").strip().lower()
+    return mode if mode in _TOOL_PROBE_MODES else "required"
 
 
 def _normalized_base_url(base_url: str) -> str:
@@ -233,7 +239,7 @@ class ModelCatalog:
             tool_support_state = info.tool_support_state if info else "unknown"
             return ModelCapabilities(
                 supports_reasoning=False,
-                supports_tools=info.supports_tools if info else False,
+                supports_tools=info.supports_tools if info else True,
                 supports_vision=info.supports_vision if info else False,
                 tool_support_state=tool_support_state,
                 reasoning_format="none",
@@ -420,6 +426,7 @@ class ModelCatalog:
         api_key: str = "",
         proxy: str = "",
         timeout: float = 5.0,
+        tool_probe_mode: str = "required",
     ) -> bool | None:
         headers: dict[str, str] = {}
         effective_key = clean_header_secret(api_key, label="LLM API key")
@@ -438,7 +445,7 @@ class ModelCatalog:
                     },
                 }
             ],
-            "tool_choice": "required",
+            "tool_choice": _normalize_tool_probe_mode(tool_probe_mode),
             "max_tokens": 16,
             "temperature": 0,
             "stream": False,

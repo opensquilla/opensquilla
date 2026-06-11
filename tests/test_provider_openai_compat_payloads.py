@@ -203,6 +203,69 @@ def test_openrouter_stream_timeout_emits_heartbeat_before_non_stream_fallback(
     assert event.phase == "llm_fallback"
 
 
+def test_openrouter_request_error_logs_exception_type(monkeypatch: Any) -> None:
+    captured_logs: list[tuple[str, dict[str, Any]]] = []
+
+    class ReadErrorStream:
+        async def __aenter__(self) -> Any:
+            request = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+            raise httpx.ReadError("", request=request)
+
+        async def __aexit__(self, *_exc: Any) -> None:
+            return None
+
+    class ReadErrorClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> ReadErrorClient:
+            return self
+
+        async def __aexit__(self, *_exc: Any) -> None:
+            return None
+
+        def stream(self, *args: Any, **kwargs: Any) -> ReadErrorStream:
+            return ReadErrorStream()
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", ReadErrorClient)
+    monkeypatch.setattr(
+        "opensquilla.provider.openai.log.warning",
+        lambda event, **kwargs: captured_logs.append((event, kwargs)),
+    )
+
+    provider = OpenAIProvider(
+        api_key="test",
+        model="z-ai/glm-5.1",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+
+    async def _run() -> list[Any]:
+        return [
+            event
+            async for event in provider.chat(
+                [Message(role="user", content="hi")],
+                config=ChatConfig(timeout=10),
+            )
+        ]
+
+    events = asyncio.run(_run())
+
+    assert any(isinstance(event, ErrorEvent) and event.code == "request_error" for event in events)
+    assert captured_logs == [
+        (
+            "provider.chat_request_error",
+            {
+                "provider": "openrouter",
+                "model": "z-ai/glm-5.1",
+                "error_type": "ReadError",
+                "error": "ReadError('')",
+                "emitted_stream_event": False,
+            },
+        )
+    ]
+
+
 def test_openrouter_list_models_reports_openrouter_provider(monkeypatch: Any) -> None:
     captured: dict[str, Any] = {}
     _patch_get_transport_response(

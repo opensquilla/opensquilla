@@ -988,7 +988,7 @@ const ChatView = (() => {
 
   function _historyTurnMeta(msg) {
     const u = msg?.usage || msg?.turn_usage || null;
-    const model = msg?.model || u?.model || u?.routed_model || '';
+    const model = msg?.routed_model || u?.routed_model || msg?.model || u?.model || '';
     const input = Number(msg?.input ?? msg?.input_tokens ?? u?.input_tokens ?? u?.inputTokens ?? 0);
     const output = Number(msg?.output ?? msg?.output_tokens ?? u?.output_tokens ?? u?.outputTokens ?? 0);
     if (!model && input <= 0 && output <= 0 && !u) return null;
@@ -3717,6 +3717,15 @@ const ChatView = (() => {
       decision.provider || decision.routed_provider || '',
     );
   }
+  function _routerFxIsDiffusionModel(model) {
+    const label = _routerFxStripProvider(String(model || '')).toLowerCase();
+    const lowered = String(model || '').toLowerCase() + ' ' + label;
+    return lowered.indexOf('mercury') >= 0 || lowered.indexOf('llada') >= 0;
+  }
+  function _routerFxShouldSettleImmediately(decision) {
+    if (!decision || typeof decision !== 'object') return false;
+    return _routerFxIsDiffusionModel(decision.model || decision.routed_model || '');
+  }
   function _routerFxUsageIdentity(usage) {
     if (!usage || typeof usage !== 'object') return '';
     return _routerFxIdentity(
@@ -3773,6 +3782,29 @@ const ChatView = (() => {
   // and hosted copy of the same model can appear as distinct candidates.
   function _routerFxRealEntries(decision, requestKind) {
     return _routerFxVisualEntries(requestKind, decision);
+  }
+
+  function _routerFxShuffle(items, seedKey) {
+    const shuffled = items.slice();
+    let state = 2166136261;
+    const seed = String(seedKey || 'router-fx');
+    for (let i = 0; i < seed.length; i++) {
+      state ^= seed.charCodeAt(i);
+      state = Math.imul(state, 16777619);
+    }
+    state >>>= 0;
+    if (!state) state = 0x9e3779b9;
+    const nextRandom = () => {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return state / 0x100000000;
+    };
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(nextRandom() * (i + 1));
+      const tmp = shuffled[i];
+      shuffled[i] = shuffled[j];
+      shuffled[j] = tmp;
+    }
+    return shuffled;
   }
 
   // Assemble the default panel from real candidates only. No filler/decoy
@@ -4078,6 +4110,16 @@ const ChatView = (() => {
     }
   }
 
+  function _routerFxSettleDecisionImmediately(wrap, decision, renderMode) {
+    if (!wrap || !decision) return;
+    wrap._fxDecision = decision;
+    const winnerIdx = _routerFxWinnerCellIndex(wrap, _routerFxNormalizeTier(decision.tier));
+    if (winnerIdx >= 0) {
+      _settleRouterFxImmediate(wrap, winnerIdx, { burst: false, decision });
+    }
+    _routerFxNormalizeSettledStrip(wrap, renderMode || 'live', decision);
+  }
+
   function _routerFxFireBurst(grid, cell) {
     if (!grid || !cell) return;
     const cellRect = cell.getBoundingClientRect();
@@ -4246,6 +4288,11 @@ const ChatView = (() => {
       payload: _chatDiagSummarizePayload(pending.decision),
       liveStrip: _chatDiagDescribeElement(liveStrip),
     });
+    if (_routerFxShouldSettleImmediately(pending.decision)) {
+      _routerFxSettleDecisionImmediately(liveStrip, pending.decision, 'live');
+      _scrollToBottom();
+      return;
+    }
     if (liveStrip._fxFinished) {
       _routerFxLock(liveStrip, pending.decision);
       _scrollToBottom();
@@ -4463,7 +4510,21 @@ const ChatView = (() => {
       // onto the cached winner (no half-scan left hanging). Do not mark frozen:
       // _routerFxLockGrid owns the visible selection motion.
       if (wrap._fxDecision) {
-        _routerFxFinishScan(wrap);
+        if (_routerFxShouldSettleImmediately(wrap._fxDecision)) {
+          const winnerIdx = _routerFxWinnerCellIndex(
+            wrap,
+            _routerFxNormalizeTier(wrap._fxDecision.tier),
+          );
+          if (winnerIdx >= 0) {
+            _settleRouterFxImmediate(wrap, winnerIdx, {
+              burst: false,
+              decision: wrap._fxDecision,
+            });
+          }
+          _routerFxNormalizeSettledStrip(wrap, 'live', wrap._fxDecision);
+        } else {
+          _routerFxFinishScan(wrap);
+        }
       } else {
         _chatDiag('router_scan.keep_scanning_without_decision_on_output', {
           strip: _chatDiagDescribeElement(wrap),
@@ -4698,6 +4759,11 @@ const ChatView = (() => {
         liveStrip: _chatDiagDescribeElement(liveStrip),
         finished: !!liveStrip._fxFinished,
       });
+      if (_routerFxShouldSettleImmediately(payload)) {
+        _routerFxSettleDecisionImmediately(liveStrip, payload, 'live');
+        _scrollToBottom();
+        return;
+      }
       if (liveStrip._fxFinished) {
         _routerFxLock(liveStrip, payload);
         _scrollToBottom();
@@ -5506,7 +5572,7 @@ const ChatView = (() => {
         if (u.savings_usd > 0) {
           _usageAccum.sessionSaved = (_usageAccum.sessionSaved || 0) + u.savings_usd;
         }
-        if (u.model) _usageModel = u.model;
+        if (u.routed_model || u.model) _usageModel = u.routed_model || u.model;
         _viz.update({ ..._usageAccum, model: _usageModel });
         _saveWidgetState();
         const turnContextStatus = u.contextStatus || u.context_status
@@ -5550,7 +5616,7 @@ const ChatView = (() => {
           _storeTurnMeta(_sessionKey, _metaIdx, _usageModel, u.input_tokens | 0, u.output_tokens | 0, {
             cached_tokens: u.cached_tokens || 0,
             cache_hit_active: !!u.cache_hit_active,
-            model: u.model || _usageModel || null,
+            model: u.routed_model || u.model || _usageModel || null,
             routed_model: u.routed_model || null,
             routed_tier: u.routed_tier || null,
             routing_source: u.routing_source || 'none',
@@ -7458,6 +7524,8 @@ const ChatView = (() => {
     _streamArtifacts = [];
     if (_thread) _thread.setAttribute('aria-busy', 'false');
     _updateSendButton();
+    _autoScroll = true;
+    _scrollToBottom();
     _chatDiag('stream.end.done', {
       reason: reason || '',
       wasAborted,

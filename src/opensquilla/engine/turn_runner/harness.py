@@ -77,16 +77,40 @@ def _normalize_tool_support(value: Any) -> str:
     return "auto"
 
 
+def _positive_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return parsed if parsed > 0 else 0
+
+
+def _routed_tier_cfg(config: Any, metadata: dict[str, Any]) -> dict[str, Any]:
+    if config is None or not metadata.get("routed_provider"):
+        return {}
+    router_cfg = getattr(config, "squilla_router", None)
+    tiers = getattr(router_cfg, "tiers", {}) if router_cfg is not None else {}
+    routed_tier = str(metadata.get("routed_tier") or "").strip()
+    tier_cfg = tiers.get(routed_tier, {}) if isinstance(tiers, dict) else {}
+    return tier_cfg if isinstance(tier_cfg, dict) else {}
+
+
 def _tool_support_mode_for_turn(config: Any, llm_cfg: Any, metadata: dict[str, Any]) -> str:
     if config is not None and metadata.get("routed_provider"):
-        router_cfg = getattr(config, "squilla_router", None)
-        tiers = getattr(router_cfg, "tiers", {}) if router_cfg is not None else {}
-        routed_tier = str(metadata.get("routed_tier") or "").strip()
-        tier_cfg = tiers.get(routed_tier, {}) if isinstance(tiers, dict) else {}
-        if isinstance(tier_cfg, dict) and "tool_support" in tier_cfg:
+        tier_cfg = _routed_tier_cfg(config, metadata)
+        if "tool_support" in tier_cfg:
             return _normalize_tool_support(tier_cfg.get("tool_support"))
         return "auto"
     return _normalize_tool_support(getattr(llm_cfg, "tool_support", "auto"))
+
+
+def _context_window_override_for_turn(config: Any, metadata: dict[str, Any]) -> int:
+    tier_cfg = _routed_tier_cfg(config, metadata)
+    return _positive_int(
+        tier_cfg.get("context_window_tokens", tier_cfg.get("contextWindowTokens"))
+    )
 
 
 def _apply_tool_support_mode(capabilities: Any, mode: str) -> Any:
@@ -487,6 +511,11 @@ class _TurnRunnerModelCatalogAdapter(ModelCatalogPort):
             max_tokens = user_max_tokens if user_max_tokens > 0 else 16384
             context_window = 200_000
             capabilities = None
+        context_window_override = _context_window_override_for_turn(
+            runner._config, metadata
+        )
+        if context_window_override > 0:
+            context_window = context_window_override
         tool_support_mode = _tool_support_mode_for_turn(runner._config, llm_cfg, metadata)
         capabilities = _apply_tool_support_mode(capabilities, tool_support_mode)
         if isinstance(metadata, dict):

@@ -1,3 +1,4 @@
+import sys
 import tomllib
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
@@ -17,6 +18,7 @@ def _squilla_router_config_cls():
     assert spec is not None
     assert spec.loader is not None
     module = module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module.SquillaRouterConfig
 
@@ -41,6 +43,7 @@ def test_squilla_router_defaults_match_runtime_router_config() -> None:
     assert cfg.v4_use_aux_head is True
     assert cfg.kv_cache_anti_downgrade_enabled is True
     assert cfg.kv_cache_anti_downgrade_window_seconds == 600
+    assert not hasattr(cfg, "tool_required_anti_downgrade_bypass_enabled")
     assert cfg.complaint_upgrade_enabled is True
     assert cfg.complaint_upgrade_steps == 1
     assert cfg.complaint_upgrade_max_chars == 160
@@ -316,6 +319,7 @@ def test_example_toml_enables_runtime_router_defaults() -> None:
     assert squilla_router["v4_use_aux_head"] is True
     assert squilla_router["kv_cache_anti_downgrade_enabled"] is True
     assert squilla_router["kv_cache_anti_downgrade_window_seconds"] == 600
+    assert "tool_required_anti_downgrade_bypass_enabled" not in squilla_router
     assert squilla_router["complaint_upgrade_enabled"] is True
     assert squilla_router["complaint_upgrade_steps"] == 1
     assert squilla_router["complaint_upgrade_max_chars"] == 160

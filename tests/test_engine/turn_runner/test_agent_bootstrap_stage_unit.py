@@ -377,8 +377,49 @@ def test_runtime_model_catalog_adapter_uses_routed_provider_scope() -> None:
     catalog = adapter.lookup("local-router-model", turn=turn)
 
     assert catalog.capabilities is not None
-    assert catalog.capabilities.supports_tools is False
+    assert catalog.capabilities.supports_tools is True
     assert catalog.capabilities.tool_support_state == "unknown"
+
+
+def test_runtime_model_catalog_adapter_uses_routed_tier_context_window_override() -> None:
+    model_catalog = ModelCatalog()
+    model_catalog.add_models(
+        "openai_compatible",
+        "https://self-hosted.example/v1",
+        [{"id": "local-router-model", "max_model_len": 32_768}],
+    )
+    cfg = SimpleNamespace(
+        llm=SimpleNamespace(
+            max_tokens=0,
+            provider="inception",
+            base_url="https://api.inceptionlabs.example/v1",
+            api_key="",
+            proxy="",
+        ),
+        squilla_router=SimpleNamespace(
+            tiers={
+                "c1": {
+                    "provider": "openai_compatible",
+                    "model": "local-router-model",
+                    "base_url": "https://self-hosted.example/v1",
+                    "context_window_tokens": 65_536,
+                }
+            }
+        ),
+    )
+    runner = SimpleNamespace(_config=cfg, _model_catalog=model_catalog)
+    adapter = _TurnRunnerModelCatalogAdapter(runner)
+    turn = _make_turn(
+        metadata={
+            "routed_provider": "openai_compatible",
+            "routed_model": "local-router-model",
+            "routed_tier": "c1",
+        }
+    )
+
+    catalog = adapter.lookup("local-router-model", turn=turn)
+
+    assert catalog.context_window == 65_536
 
 
 def test_runtime_model_catalog_adapter_applies_base_tool_support_off() -> None:

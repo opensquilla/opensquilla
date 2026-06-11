@@ -129,7 +129,7 @@ def test_unknown_compatible_model_degrades_to_tools_only() -> None:
     assert caps.reasoning_format == "none"
 
 
-def test_generic_self_hosted_unknown_model_defaults_to_unknown_tools() -> None:
+def test_generic_self_hosted_unknown_model_remains_tool_optimistic_unknown() -> None:
     caps = ModelCatalog().get_capabilities(
         "unknown-model",
         provider_name="openai_compatible",
@@ -137,7 +137,7 @@ def test_generic_self_hosted_unknown_model_defaults_to_unknown_tools() -> None:
     )
 
     assert caps.supports_reasoning is False
-    assert caps.supports_tools is False
+    assert caps.supports_tools is True
     assert caps.tool_support_state == "unknown"
     assert caps.reasoning_format == "none"
 

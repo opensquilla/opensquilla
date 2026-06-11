@@ -1752,9 +1752,20 @@ def test_savings_popup_persists_cache_hit_active_to_turn_meta() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
 
     assert "cache_hit_active: !!u.cache_hit_active," in source
-    assert "model: u.model || _usageModel || null," in source
+    assert "model: u.routed_model || u.model || _usageModel || null," in source
     assert "routed_model: u.routed_model || null," in source
     assert "__savings_ui_suppressed: !!u.__savings_ui_suppressed," in source
+
+
+def test_done_usage_model_prefers_routed_model_for_footer_and_persistence() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert (
+        "const model = msg?.routed_model || u?.routed_model || msg?.model || u?.model || '';"
+        in source
+    )
+    assert "if (u.routed_model || u.model) _usageModel = u.routed_model || u.model;" in source
+    assert "model: u.routed_model || u.model || _usageModel || null," in source
 
 
 def test_savings_fx_cleanup_removes_floating_labels() -> None:
@@ -2017,6 +2028,7 @@ def test_router_fx_legacy_grid_is_config_driven_visual_only() -> None:
     assert "data-router-panel" not in source
     assert "const _ROUTER_FX_DECOY_POOL = [" in source
     assert "const _ROUTER_FX_REAL_ANCHOR_CELLS" in source
+    assert "function _routerFxShuffle(items, seedKey) {" in source
     assert "function _routerFxNormalizeVisualMode(mode) {" in source
     assert "return 'legacy_grid';" in source
     assert "_routerFxApplyConfigVisualMode(cfg?.squilla_router?.visual_mode);" in source
@@ -2726,6 +2738,26 @@ def test_router_fx_settles_but_preserves_winner_animation_when_output_begins() -
     assert '.router-fx[data-frozen="true"]' not in css
 
 
+def test_router_fx_diffusion_models_settle_without_live_animation() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "function _routerFxIsDiffusionModel" in source
+    helper_start = source.index("function _routerFxIsDiffusionModel")
+    helper_end = source.index("function _routerFxShouldSettleImmediately", helper_start)
+    helper_body = source[helper_start:helper_end]
+    assert "lowered.indexOf('mercury') >= 0" in helper_body
+    assert "lowered.indexOf('llada') >= 0" in helper_body
+
+    settle_start = source.index("function _routerFxSettleForOutput()")
+    settle_end = source.index("  // Lock an in-flight scanning strip", settle_start)
+    settle_body = source[settle_start:settle_end]
+    assert "_routerFxShouldSettleImmediately(wrap._fxDecision)" in settle_body
+    assert "_routerFxNormalizeSettledStrip(wrap, 'live', wrap._fxDecision);" in settle_body
+    assert settle_body.index("_routerFxShouldSettleImmediately(wrap._fxDecision)") < settle_body.index(
+        "_routerFxFinishScan(wrap);"
+    )
+
+
 def test_router_fx_history_mode_has_no_motion_effects() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     css = CHAT_CSS.read_text(encoding="utf-8")
@@ -3311,6 +3343,18 @@ def test_chat_streaming_text_strips_generated_artifact_markers() -> None:
     assert "_stripGeneratedArtifactMarkers(_activeTextRaw)" in flush_body
     assert "_stripGeneratedArtifactMarkers(_streamRaw)" in end_body
     assert "_stripGeneratedArtifactMarkers(seg.raw)" in end_body
+
+
+def test_chat_stream_end_forces_bottom_scroll_after_final_render() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    end_start = source.index("function _endStreaming")
+    end_end = source.index("  /* ── Attachments", end_start)
+    end_body = source[end_start:end_end]
+
+    assert "_autoScroll = true;" in end_body
+    assert "_scrollToBottom();" in end_body
+    assert end_body.index("_routerFxStaticizeCompletedStrips") < end_body.index("_autoScroll = true;")
+    assert end_body.index("_autoScroll = true;") < end_body.index("_scrollToBottom();")
 
 
 def test_chat_history_text_segments_use_protocol_leak_guard() -> None:

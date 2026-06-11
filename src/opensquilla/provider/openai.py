@@ -225,6 +225,13 @@ def _is_direct_inception_diffusing_request(
     return provider_kind == "inception" or "api.inceptionlabs.ai" in base_url_lower
 
 
+def _sanitize_direct_diffusing_snapshot_text(text: str) -> str:
+    if "\ufffd" not in text:
+        return text
+    stripped = text.rstrip("\ufffd")
+    return stripped if stripped else text
+
+
 def _request_model_for_direct_provider(
     provider_kind: str,
     base_url: str,
@@ -1122,6 +1129,9 @@ class OpenAIProvider:
                             if text:
                                 emitted_stream_event = True
                                 if use_text_snapshots:
+                                    text = _sanitize_direct_diffusing_snapshot_text(text)
+                                    if not text:
+                                        continue
                                     yield TextSnapshotEvent(text=text)
                                     assistant_text_parts[:] = [text]
                                 else:
@@ -1246,6 +1256,14 @@ class OpenAIProvider:
                 return
             yield ErrorEvent(message=f"Request timed out: {exc}", code="timeout")
         except httpx.RequestError as exc:
+            log.warning(
+                "provider.chat_request_error",
+                provider=self._provider_kind,
+                model=self._model,
+                error_type=type(exc).__name__,
+                error=str(exc) or repr(exc),
+                emitted_stream_event=emitted_stream_event,
+            )
             yield ErrorEvent(message=f"Request error: {exc}", code="request_error")
 
     async def _complete_non_stream(
@@ -1285,6 +1303,14 @@ class OpenAIProvider:
             yield ErrorEvent(message=f"Request timed out: {timeout_exc}", code="timeout")
             return
         except httpx.RequestError as exc:
+            log.warning(
+                "provider.chat_request_error",
+                provider=self._provider_kind,
+                model=self._model,
+                error_type=type(exc).__name__,
+                error=str(exc) or repr(exc),
+                emitted_stream_event=False,
+            )
             yield ErrorEvent(message=f"Request error: {exc}", code="request_error")
             return
 

@@ -80,6 +80,10 @@ class ToolContext:
     router_control_hold_store: Any | None = None
     router_control_replay_depth: int = 0
     router_control_turn_hold_applied: bool = False
+    router_control_turn_target_id: str | None = None
+    router_control_turn_target_tier: str | None = None
+    router_control_turn_target_model: str | None = None
+    router_control_turn_target_provider: str | None = None
 
 
 # Request-scoped context — set by build_tool_handler before each dispatch.

@@ -275,6 +275,8 @@ class LlmProviderConfig(BaseSettings):
     # OpenRouter fallback.
     provider_routing: dict[str, str] = Field(default_factory=dict)
     tool_support: Literal["auto", "on", "off"] = "auto"
+    tool_probe_mode: Literal["required", "auto"] = "required"
+    tool_call_protocol: Literal["auto", "native", "text_wrapper"] = "auto"
     toolset: str | None = None
     max_tool_schema_chars: int = 0
 
@@ -695,6 +697,49 @@ def _normalize_tier_tool_supports(tiers: object) -> object:
                     "auto, on, off"
                 )
             next_tier["tool_support"] = mode
+        if "toolProbeMode" in next_tier and "tool_probe_mode" not in next_tier:
+            next_tier["tool_probe_mode"] = next_tier.pop("toolProbeMode")
+        elif "toolProbeMode" in next_tier:
+            next_tier.pop("toolProbeMode", None)
+        if "tool_probe_mode" in next_tier:
+            probe_mode = str(next_tier.get("tool_probe_mode") or "required").strip().lower()
+            if probe_mode not in {"required", "auto"}:
+                raise ValueError(
+                    f"squilla_router.tiers.{tier_name}.tool_probe_mode must be one of: "
+                    "required, auto"
+                )
+            next_tier["tool_probe_mode"] = probe_mode
+        if "toolCallProtocol" in next_tier and "tool_call_protocol" not in next_tier:
+            next_tier["tool_call_protocol"] = next_tier.pop("toolCallProtocol")
+        elif "toolCallProtocol" in next_tier:
+            next_tier.pop("toolCallProtocol", None)
+        if "tool_call_protocol" in next_tier:
+            protocol = (
+                str(next_tier.get("tool_call_protocol") or "auto")
+                .strip()
+                .lower()
+                .replace("-", "_")
+            )
+            if protocol not in {"auto", "native", "text_wrapper"}:
+                raise ValueError(
+                    f"squilla_router.tiers.{tier_name}.tool_call_protocol must be one of: "
+                    "auto, native, text_wrapper"
+                )
+            next_tier["tool_call_protocol"] = protocol
+        if "toolRouteReliability" in next_tier and "tool_route_reliability" not in next_tier:
+            next_tier["tool_route_reliability"] = next_tier.pop("toolRouteReliability")
+        elif "toolRouteReliability" in next_tier:
+            next_tier.pop("toolRouteReliability", None)
+        if "tool_route_reliability" in next_tier:
+            reliability = (
+                str(next_tier.get("tool_route_reliability") or "auto").strip().lower()
+            )
+            if reliability not in {"auto", "verified", "experimental", "off"}:
+                raise ValueError(
+                    f"squilla_router.tiers.{tier_name}.tool_route_reliability must be one of: "
+                    "auto, verified, experimental, off"
+                )
+            next_tier["tool_route_reliability"] = reliability
         normalized[tier_name] = next_tier
     return normalized
 

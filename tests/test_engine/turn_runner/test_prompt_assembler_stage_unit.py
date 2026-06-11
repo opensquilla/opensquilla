@@ -218,6 +218,7 @@ def _make_turn(
     tool_defs: list[Any] | None = None,
     model: str = "",
     system_prompt: Any = "BASE",
+    config: Any = None,
 ):
     return SimpleNamespace(
         message=message,
@@ -225,6 +226,7 @@ def _make_turn(
         tool_defs=list(tool_defs or []),
         model=model,
         system_prompt=system_prompt,
+        config=config,
     )
 
 
@@ -431,14 +433,31 @@ async def test_case04_squilla_router_fires_overrides_model() -> None:
     assert "claude-haiku-4.5" in selector.overridden_models
     # explicit model wins
     assert out.output.resolved_model == "claude-haiku-4.5"
-    assert out.output.squilla_router_tier == "premium"
+    assert out.output.squilla_router_tier is None
+    assert out.output.turn.metadata["routing_source"] == "explicit_model"
 
 
 @pytest.mark.asyncio
-async def test_case04_routed_provider_wins_over_call_site_model() -> None:
+async def test_case04_explicit_model_matching_tier_wins_over_pipeline_route() -> None:
     selector = _StubSelector("sel4-provider", current_model="inception/mercury-2")
     routed_provider = _StubProvider("openrouter_routed")
     selector.resolve_returns = routed_provider
+    config = SimpleNamespace(
+        squilla_router=SimpleNamespace(
+            tiers={
+                "c1": {
+                    "provider": "openai_compatible",
+                    "model": "inclusionAI/LLaDA2.1-flash",
+                    "base_url": "http://127.0.0.1:8008/v1",
+                    "api_key": "llada-key",
+                },
+                "c2": {
+                    "provider": "openrouter",
+                    "model": "z-ai/glm-5.1",
+                },
+            }
+        )
+    )
     executor = _RecordingPipelineExecutor(
         turn=_make_turn(
             metadata={
@@ -447,24 +466,26 @@ async def test_case04_routed_provider_wins_over_call_site_model() -> None:
                 "routed_provider": "openrouter",
             },
             model="z-ai/glm-5.1",
+            config=config,
         ),
         provider=_StubProvider("post_pipeline"),
     )
     stage = _make_stage(executor=executor)
     inp = _make_input(
         cloned_selector=selector,
-        model="claude-haiku-4.5",
+        model="inclusionAI/LLaDA2.1-flash",
     )
 
     out = await stage.run(inp)
 
     assert selector.overridden_models == []
     assert selector.overridden_primary
-    assert selector.overridden_primary[0].provider == "openrouter"
-    assert selector.overridden_primary[0].model == "z-ai/glm-5.1"
-    assert out.output.resolved_model == "z-ai/glm-5.1"
-    assert out.output.selector_model == "z-ai/glm-5.1"
-    assert out.output.squilla_router_tier == "c2"
+    assert selector.overridden_primary[0].provider == "openai_compatible"
+    assert selector.overridden_primary[0].model == "inclusionAI/LLaDA2.1-flash"
+    assert out.output.resolved_model == "inclusionAI/LLaDA2.1-flash"
+    assert out.output.selector_model == "inclusionAI/LLaDA2.1-flash"
+    assert out.output.squilla_router_tier == "c1"
+    assert out.output.turn.metadata["routing_source"] == "explicit_model"
 
 
 @pytest.mark.asyncio

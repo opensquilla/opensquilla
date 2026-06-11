@@ -76,6 +76,17 @@ class RunPipelineRequest:
     normalization_metadata: dict[str, Any] | None = None
     input_provenance: dict[str, Any] | str | None = None
 
+
+def _append_dynamic_system_prompt_block(
+    system_prompt: str | tuple[str, str],
+    block: str,
+) -> str | tuple[str, str]:
+    if isinstance(system_prompt, str):
+        return f"{system_prompt}\n\n{block}" if system_prompt else block
+    base, dynamic = system_prompt
+    return (base, f"{dynamic}\n\n{block}" if dynamic else block)
+
+
 # ---------------------------------------------------------------------------
 # Ports — narrow Protocols so the stage is unit-testable without the full
 # TurnRunner. The runtime adapters in ``harness.py`` bind these to the
@@ -125,6 +136,55 @@ def _tier_cfg_for_turn(config: Any, metadata: Mapping[str, Any]) -> Mapping[str,
         return {}
     tier_cfg = tiers.get(routed_tier, {})
     return tier_cfg if isinstance(tier_cfg, Mapping) else {}
+
+
+def _configured_tier_for_model(
+    config: Any,
+    model: str,
+) -> tuple[str, Mapping[str, Any]] | None:
+    requested = str(model or "").strip()
+    if not requested:
+        return None
+    router_cfg = getattr(config, "squilla_router", None)
+    tiers = getattr(router_cfg, "tiers", {}) if router_cfg is not None else {}
+    if not isinstance(tiers, Mapping):
+        return None
+    for tier_name, tier_cfg in tiers.items():
+        if not isinstance(tier_cfg, Mapping):
+            continue
+        configured_model = str(tier_cfg.get("model") or "").strip()
+        if configured_model == requested:
+            return str(tier_name), tier_cfg
+    return None
+
+
+def _pin_explicit_model_choice(turn: Any, explicit_model: str | None) -> None:
+    model = str(explicit_model or "").strip()
+    if not model:
+        return
+    metadata = getattr(turn, "metadata", None)
+    if not isinstance(metadata, dict):
+        metadata = {}
+        turn.metadata = metadata
+
+    turn.model = model
+    metadata["routed_model"] = model
+    metadata["routing_source"] = "explicit_model"
+    metadata["routing_applied"] = False
+
+    matched_tier = _configured_tier_for_model(getattr(turn, "config", None), model)
+    if matched_tier is None:
+        metadata.pop("routed_tier", None)
+        metadata.pop("routed_provider", None)
+        return
+
+    tier_name, tier_cfg = matched_tier
+    metadata["routed_tier"] = tier_name
+    provider = str(tier_cfg.get("provider") or "").strip().lower()
+    if provider:
+        metadata["routed_provider"] = provider
+    else:
+        metadata.pop("routed_provider", None)
 
 
 def _first_text(*values: Any) -> str | None:
@@ -327,8 +387,10 @@ class PromptAssemblerStageOutput:
       or ``None``.
     - ``request_context_prompt``: the dynamic context for non-cached
       prefix, or ``None``.
-    - ``resolved_model``: the final model id (routed provider turn >
-      explicit > pipeline > selector).
+    - ``resolved_model``: the final model id (explicit selection >
+      pipeline > selector). When explicit selection matches a configured
+      tier, the stage rewrites routed metadata to that tier before provider
+      resolution.
     - ``provider_name``: the provider's name attribute or class name.
     - ``session_id_for_log``: the durable session_id for trace_context.
     - ``trace_context_session_id``: the same value, surfaced explicitly so
@@ -503,6 +565,7 @@ class PromptAssemblerStage:
             input_provenance=inp.input_provenance,
         )
         turn, provider = await self._pipeline_executor.run_pipeline(request)
+        _pin_explicit_model_choice(turn, inp.model)
 
         # 4. Merge prompt + tool metadata
         turn.metadata.update(prompt_metadata)
@@ -555,6 +618,15 @@ class PromptAssemblerStage:
                     {str(k): str(v) for k, v in prompt_fingerprint.items()}
                 )
             turn.metadata["memory_mode_fingerprint"] = fingerprint
+
+        from opensquilla.router_control import render_router_control_status_prompt
+
+        router_control_status = render_router_control_status_prompt(turn.metadata)
+        if router_control_status:
+            turn.system_prompt = _append_dynamic_system_prompt_block(
+                turn.system_prompt,
+                router_control_status,
+            )
 
         # 6. Effective runtime message + selector override / fallback wrap
         effective_runtime_message = getattr(turn, "message", inp.runtime_message)

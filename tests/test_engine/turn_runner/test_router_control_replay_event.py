@@ -15,6 +15,9 @@ from opensquilla.gateway.config import (
     _router_tier_profile_defaults,
 )
 from opensquilla.provider import (
+    ChatConfig,
+)
+from opensquilla.provider import (
     DoneEvent as ProviderDone,
 )
 from opensquilla.provider import (
@@ -42,10 +45,18 @@ class _ReplayProvider:
 
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.provider_requests: list[str] = []
         self.model = "base-model"
 
-    def chat(self, messages: list[Any], tools=None, config=None) -> AsyncIterator[Any]:
+    def chat(
+        self,
+        messages: list[Any],
+        tools=None,
+        config: ChatConfig | None = None,
+    ) -> AsyncIterator[Any]:
         self.calls.append(self.model)
+        system_prompt = config.system if config and config.system else ""
+        self.provider_requests.append(f"{system_prompt}\n\n{messages!r}")
         return self._stream(len(self.calls))
 
     async def _stream(self, call_number: int) -> AsyncIterator[Any]:
@@ -127,5 +138,10 @@ async def test_router_control_replay_event_replays_turn_once(monkeypatch) -> Non
     assert len(replay_events) == 1
     assert replay_events[0].target_tier == "c3"
     assert provider.calls == ["deepseek/deepseek-v4-pro", "anthropic/claude-opus-4.7"]
+    assert "Router Control status" not in provider.provider_requests[0]
+    assert "Router Control status" in provider.provider_requests[1]
+    assert "target_id=tier:c3" in provider.provider_requests[1]
+    assert "model=anthropic/claude-opus-4.7" in provider.provider_requests[1]
+    assert "Do not call router_control again" in provider.provider_requests[1]
     assert done_events[-1].text == "new final"
     assert text.endswith("new final")

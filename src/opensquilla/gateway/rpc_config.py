@@ -275,6 +275,8 @@ _READONLY_PATHS = frozenset({"auth.token", "auth.password"})
 _SAFE_WRITE_PATCH_PATHS = frozenset(
     {
         "llm.tool_support",
+        "llm.tool_probe_mode",
+        "llm.tool_call_protocol",
         "llm.toolset",
         "llm.max_tool_schema_chars",
         "skills.filter_enabled",
@@ -292,7 +294,14 @@ _SAFE_WRITE_PATCH_PATHS = frozenset(
 )
 _SAFE_ROUTER_TIER_TOOL_SUPPORT_IDS = frozenset({"c0", "c1", "c2", "c3", "image_model"})
 _SAFE_ROUTER_TIER_TOOL_SCHEMA_FIELDS = frozenset(
-    {"tool_support", "toolset", "max_tool_schema_chars"}
+    {
+        "tool_support",
+        "tool_probe_mode",
+        "tool_call_protocol",
+        "toolset",
+        "max_tool_schema_chars",
+        "tool_route_reliability",
+    }
 )
 
 

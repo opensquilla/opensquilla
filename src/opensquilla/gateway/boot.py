@@ -59,6 +59,7 @@ log = structlog.get_logger(__name__)
 class _OpenAICompatibleProbeModel:
     model_id: str
     tool_support: str = "auto"
+    tool_probe_mode: str = "required"
 
 
 @dataclass
@@ -97,6 +98,13 @@ def _normalize_tool_support_mode(value: Any) -> str:
     return "auto"
 
 
+def _normalize_tool_probe_mode(value: Any) -> str:
+    normalized = str(value or "required").strip().lower()
+    if normalized in {"required", "auto"}:
+        return normalized
+    return "required"
+
+
 def _openai_compatible_catalog_sources(
     config: GatewayConfig,
     *,
@@ -119,6 +127,7 @@ def _openai_compatible_catalog_sources(
         *,
         model_id: str = "",
         tool_support: str = "auto",
+        tool_probe_mode: str = "required",
     ) -> None:
         provider_id = str(provider or "").strip().lower()
         clean_url = str(url or "").strip()
@@ -147,6 +156,7 @@ def _openai_compatible_catalog_sources(
                 _OpenAICompatibleProbeModel(
                     model_id=clean_model,
                     tool_support=_normalize_tool_support_mode(tool_support),
+                    tool_probe_mode=_normalize_tool_probe_mode(tool_probe_mode),
                 )
             )
             return
@@ -158,6 +168,7 @@ def _openai_compatible_catalog_sources(
         proxy,
         model_id=str(getattr(config.llm, "model", "") or ""),
         tool_support=str(getattr(config.llm, "tool_support", "auto") or "auto"),
+        tool_probe_mode=str(getattr(config.llm, "tool_probe_mode", "required") or "required"),
     )
 
     router_cfg = getattr(config, "squilla_router", None)
@@ -201,6 +212,7 @@ def _openai_compatible_catalog_sources(
             resolved_proxy,
             model_id=str(tier_cfg.get("model") or ""),
             tool_support=str(tier_cfg.get("tool_support") or "auto"),
+            tool_probe_mode=str(tier_cfg.get("tool_probe_mode") or "required"),
         )
 
     return sources
@@ -1911,6 +1923,7 @@ async def build_services(
                         model_id=probe_model.model_id,
                         api_key=catalog_source.api_key,
                         proxy=catalog_source.proxy,
+                        tool_probe_mode=probe_model.tool_probe_mode,
                     ),
                     timeout=5.0,
                 )

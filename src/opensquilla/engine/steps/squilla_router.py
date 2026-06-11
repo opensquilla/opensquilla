@@ -1016,6 +1016,7 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
             ctx.metadata["routing_source"] = decision.source
             ctx.metadata["router_control_hold_applied"] = True
             ctx.metadata["router_control_action"] = "set_hold"
+            ctx.metadata["router_control_target_id"] = hold.target_id
             ctx.metadata["router_control_target_tier"] = hold.tier
             ctx.metadata["router_control_target_model"] = hold.model
             ctx.metadata["router_control_target_provider"] = hold.provider

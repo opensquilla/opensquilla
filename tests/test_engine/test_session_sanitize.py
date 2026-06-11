@@ -78,6 +78,18 @@ class StaticCostProvider(CapturingProvider):
         )
 
 
+class MissingUsageProvider(CapturingProvider):
+    async def _stream(self) -> AsyncIterator[Any]:
+        yield ProviderText(text="sample response")
+        yield ProviderDone(
+            stop_reason="end_turn",
+            input_tokens=0,
+            output_tokens=0,
+            billed_cost=0.0,
+            model="inclusionAI/LLaDA2.1-flash",
+        )
+
+
 class ToolLoopCapturingProvider:
     provider_name = "fake"
 
@@ -1083,6 +1095,30 @@ async def test_agent_static_cost_source_is_explicitly_distinct_from_provider_bil
     events = [event async for event in agent.run_turn("hello")]
     done = next(event for event in events if event.kind == "done")
 
+    assert done.billed_cost == 0.0
+    assert done.cost_usd > 0.0
+    assert done.cost_source == "opensquilla_static_estimate"
+
+
+@pytest.mark.asyncio
+async def test_agent_estimates_cost_when_openai_compatible_provider_omits_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "OPENSQUILLA_PRICE_OVERRIDES_JSON",
+        '{"inclusionAI/LLaDA2.1-flash":{"input_per_m":0.5,"output_per_m":1.5}}',
+    )
+    provider = MissingUsageProvider()
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(model_id="inclusionAI/LLaDA2.1-flash"),
+    )
+
+    events = [event async for event in agent.run_turn("sample prompt")]
+    done = next(event for event in events if event.kind == "done")
+
+    assert done.input_tokens > 0
+    assert done.output_tokens > 0
     assert done.billed_cost == 0.0
     assert done.cost_usd > 0.0
     assert done.cost_source == "opensquilla_static_estimate"

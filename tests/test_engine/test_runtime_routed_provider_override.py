@@ -265,7 +265,258 @@ async def test_run_pipeline_deduplicates_configured_fallbacks_matching_router_ti
 
 
 @pytest.mark.asyncio
-async def test_run_pipeline_upgrades_tool_required_turn_from_no_tool_tier(
+async def test_run_pipeline_keeps_search_text_on_experimental_supported_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Strategy:
+        async def classify(self, *_args, **_kwargs):
+            return "c1", 0.92, "test_strategy", {}
+
+    monkeypatch.setattr(
+        "opensquilla.engine.steps.squilla_router._get_strategy",
+        lambda _cfg: _Strategy(),
+    )
+    config = GatewayConfig()
+    config.squilla_router = _router_cfg()
+    config.squilla_router.tiers["c0"] = {
+        "provider": "inception",
+        "model": "inception/mercury-2",
+        "api_key": "inception-key",
+        "base_url": "https://api.inceptionlabs.ai/v1",
+        "tool_support": "on",
+        "tool_route_reliability": "verified",
+    }
+    config.squilla_router.tiers["c1"] = {
+        "provider": "openai_compatible",
+        "model": "inclusionAI/LLaDA2.1-flash",
+        "api_key": "llada-key",
+        "base_url": "http://127.0.0.1:8008/v1",
+        "tool_support": "on",
+        "tool_route_reliability": "experimental",
+    }
+    selector = ModelSelector(
+        SelectorConfig(
+            primary=ProviderConfig(
+                provider="openai_compatible",
+                model="inclusionAI/LLaDA2.1-flash",
+                api_key="llada-key",
+                base_url="http://127.0.0.1:8008/v1",
+            )
+        )
+    )
+    cloned_selector = selector.clone()
+    runner = TurnRunner(provider_selector=selector, config=config)
+
+    turn, provider = await runner._run_pipeline(
+        message="search the web for synthetic routing test data",
+        session_key="agent:main:test-tool-required-supported-tier-authority",
+        provider=selector.resolve(),
+        cloned_selector=cloned_selector,
+        tool_defs=[SimpleNamespace(name="web_search")],
+        base_prompt="system",
+        attachments=[],
+        semantic_message="search the web for synthetic routing test data",
+        tool_context=SimpleNamespace(
+            agent_id="main",
+            workspace_dir="",
+            channel_kind="webchat",
+            channel_id="webchat",
+        ),
+    )
+
+    assert turn.metadata["routed_tier"] == "c1"
+    assert turn.metadata["routed_provider"] == "openai_compatible"
+    assert turn.metadata["routed_model"] == "inclusionAI/LLaDA2.1-flash"
+    assert "tool_required" not in turn.metadata
+    assert "tool_required_route_reliability" not in turn.metadata
+    assert "tool_required_unverified_tool_route" not in turn.metadata
+    assert "tool_required_reliability_upgrade" not in turn.metadata
+    assert "tool_required_anti_downgrade_bypassed" not in turn.metadata
+    assert turn.metadata["routing_source"] != "tool_reliability_fallback"
+    assert cloned_selector.current_config.provider == "openai_compatible"
+    assert cloned_selector.current_config.model == "inclusionAI/LLaDA2.1-flash"
+    assert getattr(provider, "_provider_kind") == "self_hosted_openai"
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_keeps_search_text_on_verified_current_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Strategy:
+        async def classify(self, *_args, **_kwargs):
+            return "c1", 0.92, "test_strategy", {}
+
+    monkeypatch.setattr(
+        "opensquilla.engine.steps.squilla_router._get_strategy",
+        lambda _cfg: _Strategy(),
+    )
+    config = GatewayConfig()
+    config.squilla_router = _router_cfg()
+    config.squilla_router.tiers["c1"]["tool_support"] = "on"
+    config.squilla_router.tiers["c1"]["tool_route_reliability"] = "verified"
+    config.squilla_router.tiers["c2"]["tool_support"] = "on"
+    selector = ModelSelector(
+        SelectorConfig(
+            primary=ProviderConfig(
+                provider="inception",
+                model="inception/mercury-2",
+                api_key="inception-key",
+                base_url="https://api.inceptionlabs.ai/v1",
+            )
+        )
+    )
+    cloned_selector = selector.clone()
+    runner = TurnRunner(provider_selector=selector, config=config)
+
+    turn, provider = await runner._run_pipeline(
+        message="search the web for synthetic routing test data",
+        session_key="agent:main:test-tool-required-verified-current",
+        provider=selector.resolve(),
+        cloned_selector=cloned_selector,
+        tool_defs=[SimpleNamespace(name="web_search")],
+        base_prompt="system",
+        attachments=[],
+        semantic_message="search the web for synthetic routing test data",
+        tool_context=SimpleNamespace(
+            agent_id="main",
+            workspace_dir="",
+            channel_kind="webchat",
+            channel_id="webchat",
+        ),
+    )
+
+    assert turn.metadata["routed_tier"] == "c1"
+    assert "tool_required" not in turn.metadata
+    assert "tool_required_route_reliability" not in turn.metadata
+    assert "tool_required_reliability_upgrade" not in turn.metadata
+    assert getattr(provider, "_provider_kind") == "inception"
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_does_not_mark_experimental_tool_route_for_search_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Strategy:
+        async def classify(self, *_args, **_kwargs):
+            return "c1", 0.92, "test_strategy", {}
+
+    monkeypatch.setattr(
+        "opensquilla.engine.steps.squilla_router._get_strategy",
+        lambda _cfg: _Strategy(),
+    )
+    config = GatewayConfig()
+    config.squilla_router = _router_cfg()
+    config.squilla_router.tiers["c1"]["tool_support"] = "on"
+    config.squilla_router.tiers["c1"]["tool_route_reliability"] = "experimental"
+    config.squilla_router.tiers["c2"]["tool_support"] = "on"
+    config.squilla_router.tiers["c2"]["tool_route_reliability"] = "experimental"
+    config.squilla_router.tiers["c3"]["tool_support"] = "off"
+    selector = ModelSelector(
+        SelectorConfig(
+            primary=ProviderConfig(
+                provider="inception",
+                model="inception/mercury-2",
+                api_key="inception-key",
+                base_url="https://api.inceptionlabs.ai/v1",
+            )
+        )
+    )
+    cloned_selector = selector.clone()
+    runner = TurnRunner(provider_selector=selector, config=config)
+
+    turn, provider = await runner._run_pipeline(
+        message="search the web for synthetic routing test data",
+        session_key="agent:main:test-tool-required-no-verified-route",
+        provider=selector.resolve(),
+        cloned_selector=cloned_selector,
+        tool_defs=[SimpleNamespace(name="web_search")],
+        base_prompt="system",
+        attachments=[],
+        semantic_message="search the web for synthetic routing test data",
+        tool_context=SimpleNamespace(
+            agent_id="main",
+            workspace_dir="",
+            channel_kind="webchat",
+            channel_id="webchat",
+        ),
+    )
+
+    assert turn.metadata["routed_tier"] == "c1"
+    assert "tool_required" not in turn.metadata
+    assert "tool_required_unverified_tool_route" not in turn.metadata
+    assert "tool_required_reliability_upgrade" not in turn.metadata
+    assert getattr(provider, "_provider_kind") == "inception"
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_ignores_tool_required_reliability_bypass_for_search_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Strategy:
+        async def classify(self, *_args, **_kwargs):
+            return "c1", 0.92, "test_strategy", {}
+
+    monkeypatch.setattr(
+        "opensquilla.engine.steps.squilla_router._get_strategy",
+        lambda _cfg: _Strategy(),
+    )
+    config = GatewayConfig()
+    config.squilla_router = _router_cfg()
+    config.squilla_router.tiers["c0"] = {
+        "provider": "inception",
+        "model": "inception/mercury-2",
+        "api_key": "inception-key",
+        "base_url": "https://api.inceptionlabs.ai/v1",
+        "tool_support": "on",
+        "tool_route_reliability": "verified",
+    }
+    config.squilla_router.tiers["c1"] = {
+        "provider": "openai_compatible",
+        "model": "inclusionAI/LLaDA2.1-flash",
+        "api_key": "llada-key",
+        "base_url": "http://127.0.0.1:8008/v1",
+        "tool_support": "on",
+        "tool_route_reliability": "experimental",
+    }
+    selector = ModelSelector(
+        SelectorConfig(
+            primary=ProviderConfig(
+                provider="openai_compatible",
+                model="inclusionAI/LLaDA2.1-flash",
+                api_key="llada-key",
+                base_url="http://127.0.0.1:8008/v1",
+            )
+        )
+    )
+    cloned_selector = selector.clone()
+    runner = TurnRunner(provider_selector=selector, config=config)
+
+    turn, provider = await runner._run_pipeline(
+        message="search the web for synthetic routing test data",
+        session_key="agent:main:test-tool-required-bypass-disabled",
+        provider=selector.resolve(),
+        cloned_selector=cloned_selector,
+        tool_defs=[SimpleNamespace(name="web_search")],
+        base_prompt="system",
+        attachments=[],
+        semantic_message="search the web for synthetic routing test data",
+        tool_context=SimpleNamespace(
+            agent_id="main",
+            workspace_dir="",
+            channel_kind="webchat",
+            channel_id="webchat",
+        ),
+    )
+
+    assert turn.metadata["routed_tier"] == "c1"
+    assert "tool_required" not in turn.metadata
+    assert "tool_required_unverified_tool_route" not in turn.metadata
+    assert "tool_required_reliability_upgrade" not in turn.metadata
+    assert getattr(provider, "_provider_kind") == "self_hosted_openai"
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_keeps_search_text_on_no_tool_tier(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _Strategy:
@@ -310,22 +561,17 @@ async def test_run_pipeline_upgrades_tool_required_turn_from_no_tool_tier(
         ),
     )
 
-    assert turn.metadata["routed_tier"] == "c2"
-    assert turn.metadata["routed_provider"] == "openrouter"
-    assert turn.metadata["tool_required_route_upgrade"] == {
-        "from_tier": "c1",
-        "to_tier": "c2",
-        "reason": "selected_tier_without_tools",
-        "from_tool_support_state": "unsupported",
-        "to_tool_support_state": "supported",
-    }
-    assert cloned_selector.current_config.provider == "openrouter"
-    assert cloned_selector.current_config.model == "z-ai/glm-5.1"
-    assert getattr(provider, "_provider_kind") == "openrouter"
+    assert turn.metadata["routed_tier"] == "c1"
+    assert turn.metadata["routed_provider"] == "inception"
+    assert "tool_required" not in turn.metadata
+    assert "tool_required_route_upgrade" not in turn.metadata
+    assert cloned_selector.current_config.provider == "inception"
+    assert cloned_selector.current_config.model == "inception/mercury-2"
+    assert getattr(provider, "_provider_kind") == "inception"
 
 
 @pytest.mark.asyncio
-async def test_run_pipeline_marks_tool_required_turn_without_tool_capable_fallback(
+async def test_run_pipeline_does_not_mark_search_text_without_tool_capable_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _Strategy:
@@ -372,18 +618,15 @@ async def test_run_pipeline_marks_tool_required_turn_without_tool_capable_fallba
     )
 
     assert turn.metadata["routed_tier"] == "c1"
-    assert turn.metadata["tool_required_no_tool_route"] == {
-        "tier": "c1",
-        "reason": "selected_tier_without_tools",
-        "tool_support_state": "unsupported",
-    }
+    assert "tool_required" not in turn.metadata
+    assert "tool_required_no_tool_route" not in turn.metadata
     assert "tool_required_route_upgrade" not in turn.metadata
     assert cloned_selector.current_config.provider == "inception"
     assert getattr(provider, "_provider_kind") == "inception"
 
 
 @pytest.mark.asyncio
-async def test_run_pipeline_upgrades_tool_required_turn_from_unknown_auto_tier(
+async def test_run_pipeline_keeps_latest_text_on_unknown_auto_tier(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _Strategy:
@@ -428,13 +671,8 @@ async def test_run_pipeline_upgrades_tool_required_turn_from_unknown_auto_tier(
         ),
     )
 
-    assert turn.metadata["routed_tier"] == "c2"
-    assert turn.metadata["routed_provider"] == "openrouter"
-    assert turn.metadata["tool_required_route_upgrade"] == {
-        "from_tier": "c1",
-        "to_tier": "c2",
-        "reason": "selected_tier_without_tools",
-        "from_tool_support_state": "unknown",
-        "to_tool_support_state": "supported",
-    }
-    assert getattr(provider, "_provider_kind") == "openrouter"
+    assert turn.metadata["routed_tier"] == "c1"
+    assert turn.metadata["routed_provider"] == "inception"
+    assert "tool_required" not in turn.metadata
+    assert "tool_required_route_upgrade" not in turn.metadata
+    assert getattr(provider, "_provider_kind") == "inception"

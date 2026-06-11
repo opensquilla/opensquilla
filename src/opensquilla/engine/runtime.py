@@ -779,217 +779,6 @@ def _apply_routed_provider_override(
     return False
 
 
-_TOOL_REQUIRED_KEYWORDS = (
-    "检索",
-    "搜索",
-    "最新",
-    "最近",
-    "今日",
-    "查最新",
-    "联网",
-    "调用工具",
-    "使用工具",
-    "web_search",
-    "latest",
-    "recent",
-    "current",
-    "today",
-    "use tool",
-    "call tool",
-    "search the web",
-)
-
-
-def _tool_support_mode(value: Any) -> str:
-    normalized = str(value or "auto").strip().lower()
-    if normalized in {"auto", "on", "off"}:
-        return normalized
-    return "auto"
-
-
-def _tool_support_state_from_capabilities(capabilities: Any) -> str:
-    state = str(getattr(capabilities, "tool_support_state", "") or "").strip().lower()
-    supports_tools = bool(getattr(capabilities, "supports_tools", True))
-    if state == "supported" and not supports_tools:
-        return "unsupported"
-    if state in {"supported", "unsupported", "unknown"}:
-        return state
-    return "supported" if supports_tools else "unsupported"
-
-
-def _provider_requires_openai_compat_tool_confirmation(provider: str) -> bool:
-    provider_id = str(provider or "").strip().lower()
-    if not provider_id or provider_id in {"openai", "openrouter"}:
-        return False
-    try:
-        from opensquilla.provider.registry import get_provider_spec
-
-        return get_provider_spec(provider_id).backend == "openai_compat"
-    except Exception:  # noqa: BLE001 - unknown providers keep legacy fail-open behavior
-        return False
-
-
-def _turn_requires_tools(
-    *,
-    message: str,
-    metadata: Mapping[str, Any],
-    tool_defs: list[Any],
-) -> bool:
-    if not tool_defs:
-        return False
-    if metadata.get("tool_required") is True:
-        return True
-    tool_choice = metadata.get("tool_choice") or metadata.get("meta_match_tool_choice")
-    if tool_choice == "required":
-        return True
-    if (
-        isinstance(tool_choice, Mapping)
-        and str(tool_choice.get("mode") or "").lower() == "required"
-    ):
-        return True
-    if isinstance(tool_choice, Mapping) and (
-        str(tool_choice.get("type") or "").lower() == "function"
-        or isinstance(tool_choice.get("function"), Mapping)
-    ):
-        return True
-    text = str(message or "").strip().lower()
-    if not text:
-        return False
-    return any(keyword in text for keyword in _TOOL_REQUIRED_KEYWORDS)
-
-
-def _router_tier_tool_support_state(
-    *,
-    runner: Any,
-    _tier_name: str,
-    tier_cfg: Mapping[str, Any],
-    current_config: Any,
-) -> str:
-    mode = _tool_support_mode(tier_cfg.get("tool_support"))
-    if mode == "off":
-        return "unsupported"
-    if mode == "on":
-        return "supported"
-    provider = str(tier_cfg.get("provider") or "").strip().lower()
-    model = str(tier_cfg.get("model") or "").strip()
-    if not provider or not model:
-        return "unsupported"
-    model_catalog = getattr(runner, "_model_catalog", None)
-    if model_catalog is None:
-        if _provider_requires_openai_compat_tool_confirmation(provider):
-            return "unknown"
-        return "supported"
-    provider_cfg = _provider_config_from_tier(
-        tier_cfg=tier_cfg,
-        provider=provider,
-        model=model,
-        current_config=current_config,
-    )
-    caps = model_catalog.get_capabilities(
-        model,
-        provider_name=getattr(provider_cfg, "provider", provider),
-        base_url=getattr(provider_cfg, "base_url", ""),
-    )
-    return _tool_support_state_from_capabilities(caps)
-
-
-def _router_tier_supports_tools(
-    *,
-    runner: Any,
-    _tier_name: str,
-    tier_cfg: Mapping[str, Any],
-    current_config: Any,
-) -> bool:
-    return (
-        _router_tier_tool_support_state(
-            runner=runner,
-            _tier_name=_tier_name,
-            tier_cfg=tier_cfg,
-            current_config=current_config,
-        )
-        == "supported"
-    )
-
-
-def _reconcile_tool_required_route(
-    runner: Any,
-    turn: Any,
-    *,
-    message: str,
-    cloned_selector: Any,
-) -> bool:
-    metadata = getattr(turn, "metadata", {}) or {}
-    tool_defs = list(getattr(turn, "tool_defs", []) or [])
-    if not _turn_requires_tools(message=message, metadata=metadata, tool_defs=tool_defs):
-        return False
-    metadata["tool_required"] = True
-    router_cfg = getattr(getattr(runner, "_config", None), "squilla_router", None)
-    tiers = getattr(router_cfg, "tiers", {}) if router_cfg is not None else {}
-    if not isinstance(tiers, dict):
-        return False
-    current_tier = normalize_text_tier(metadata.get("routed_tier"))
-    if current_tier is None:
-        return False
-    current_cfg = tiers.get(current_tier, {})
-    if not isinstance(current_cfg, dict):
-        return False
-    try:
-        current_config = cloned_selector.current_config if cloned_selector is not None else None
-    except Exception:  # noqa: BLE001
-        current_config = None
-    current_state = _router_tier_tool_support_state(
-        runner=runner,
-        _tier_name=current_tier,
-        tier_cfg=current_cfg,
-        current_config=current_config,
-    )
-    metadata["tool_required_route_tool_support_state"] = current_state
-    if current_state == "supported":
-        return False
-
-    current_index = tier_index(current_tier)
-    candidates: list[tuple[int, str, dict[str, Any]]] = []
-    for name, raw_cfg in tiers.items():
-        if not isinstance(raw_cfg, dict) or raw_cfg.get("image_only", False):
-            continue
-        normalized = normalize_text_tier(name)
-        if normalized is None:
-            continue
-        idx = tier_index(normalized)
-        if idx <= current_index:
-            continue
-        candidates.append((idx, normalized, raw_cfg))
-    for _idx, candidate_tier, candidate_cfg in sorted(candidates, key=lambda item: item[0]):
-        candidate_state = _router_tier_tool_support_state(
-            runner=runner,
-            _tier_name=candidate_tier,
-            tier_cfg=candidate_cfg,
-            current_config=current_config,
-        )
-        if candidate_state != "supported":
-            continue
-        metadata["tool_required_route_upgrade"] = {
-            "from_tier": current_tier,
-            "to_tier": candidate_tier,
-            "reason": "selected_tier_without_tools",
-            "from_tool_support_state": current_state,
-            "to_tool_support_state": candidate_state,
-        }
-        metadata["routed_tier"] = candidate_tier
-        metadata["routed_provider"] = str(candidate_cfg.get("provider") or "").strip().lower()
-        metadata["routed_model"] = str(candidate_cfg.get("model") or "").strip()
-        metadata["routing_source"] = "tool_capability_fallback"
-        turn.model = metadata["routed_model"]
-        return True
-
-    metadata["tool_required_no_tool_route"] = {
-        "tier": current_tier,
-        "reason": "selected_tier_without_tools",
-        "tool_support_state": current_state,
-    }
-    return False
-
-
 def _strip_context_summary_marker(content: str) -> str:
     """Return summary text from a legacy transcript summary marker."""
     if content.startswith(_CONTEXT_SUMMARY_MARKER):
@@ -2578,6 +2367,18 @@ class TurnRunner:
                 tool_context.router_control_replay_depth = router_control_replay_depth
                 tool_context.router_control_turn_hold_applied = bool(
                     turn.metadata.get("router_control_hold_applied")
+                )
+                tool_context.router_control_turn_target_id = turn.metadata.get(
+                    "router_control_target_id"
+                )
+                tool_context.router_control_turn_target_tier = turn.metadata.get(
+                    "router_control_target_tier"
+                )
+                tool_context.router_control_turn_target_model = turn.metadata.get(
+                    "router_control_target_model"
+                )
+                tool_context.router_control_turn_target_provider = turn.metadata.get(
+                    "router_control_target_provider"
                 )
             router_event = build_router_decision_event(turn)
             if router_event is not None:
@@ -4427,13 +4228,6 @@ class TurnRunner:
                 inject_platform_hint,
                 apply_prompt_cache,
             ],
-        )
-
-        _reconcile_tool_required_route(
-            self,
-            turn,
-            message=semantic_message or message,
-            cloned_selector=cloned_selector,
         )
 
         # Apply routed provider/model back to cloned selector (local, not shared)

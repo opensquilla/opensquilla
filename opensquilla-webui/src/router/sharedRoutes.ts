@@ -17,7 +17,7 @@ export const sharedRoutes: RouteRecordRaw[] = [
     path: '/',
     redirect: () => {
       const isMobile = window.matchMedia('(max-width: 768px)').matches
-      return isMobile ? '/chat' : '/overview'
+      return isMobile ? '/chat' : '/sessions'
     },
   },
   { path: '/chat',      name: 'chat',      component: ChatView,      meta: { title: 'Chat', group: 'Work', icon: 'chat', nav: 'primary', navOrder: 10, platforms: ['web', 'desktop'] } },

@@ -24,6 +24,7 @@
       <button
         class="sidebar-dock-toggle"
         :title="appStore.sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'"
+        :aria-label="appStore.sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'"
         @click="toggleDock"
       >
         <Icon :name="appStore.sidebarOpen ? 'panel-left-close' : 'panel-left-open'" :size="16" />
@@ -114,7 +115,7 @@
           <h2 id="new-chat-title">New chat</h2>
           <p>Choose the agent this conversation belongs to.</p>
         </div>
-        <button class="new-chat-dialog__close" title="Close" @click="closeNewChatPicker">×</button>
+        <button class="new-chat-dialog__close" title="Close" aria-label="Close" @click="closeNewChatPicker">×</button>
       </header>
       <div v-if="agentListError" class="new-chat-dialog__error">
         Agent list is unavailable. The main agent is still available.
@@ -165,6 +166,7 @@
           v-show="!appStore.sidebarOpen"
           class="sidebar-dock-toggle topbar-toggle"
           title="Expand sidebar"
+          aria-label="Expand sidebar"
           @click="toggleDock"
         >
           <Icon name="panel-left-open" :size="16" />
@@ -180,7 +182,7 @@
           Approval required
         </button>
         <span class="conn-pill" :class="rpcStore.state">{{ rpcStore.state }}</span>
-        <button class="btn btn--icon btn--ghost" @click="appStore.cycleTheme" :title="`Theme: ${appStore.theme}`">
+        <button class="btn btn--icon btn--ghost" @click="appStore.cycleTheme" :title="`Theme: ${appStore.theme}`" :aria-label="`Theme: ${appStore.theme}`">
           <Icon :name="themeIconName" :size="16" />
         </button>
       </div>

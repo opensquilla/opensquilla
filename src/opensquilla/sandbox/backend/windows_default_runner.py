@@ -1,5 +1,7 @@
 """Windows default sandbox runner helper."""
 
+# ruff: noqa: N801, N806
+
 from __future__ import annotations
 
 import json
@@ -471,9 +473,19 @@ def _run_restricted_process_native_impl(
         sa.nLength = ctypes.sizeof(SECURITY_ATTRIBUTES)
         sa.lpSecurityDescriptor = None
         sa.bInheritHandle = True
-        if not kernel32.CreatePipe(ctypes.byref(stdout_read), ctypes.byref(stdout_write), ctypes.byref(sa), 0):
+        if not kernel32.CreatePipe(
+            ctypes.byref(stdout_read),
+            ctypes.byref(stdout_write),
+            ctypes.byref(sa),
+            0,
+        ):
             raise win_error("CreatePipe(stdout)")
-        if not kernel32.CreatePipe(ctypes.byref(stderr_read), ctypes.byref(stderr_write), ctypes.byref(sa), 0):
+        if not kernel32.CreatePipe(
+            ctypes.byref(stderr_read),
+            ctypes.byref(stderr_write),
+            ctypes.byref(sa),
+            0,
+        ):
             raise win_error("CreatePipe(stderr)")
         kernel32.SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0)
         kernel32.SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0)

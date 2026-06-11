@@ -84,16 +84,28 @@ test.describe('Chat Page', () => {
     await expect(page.locator('.sidebar-history-gap')).toHaveCount(0)
   })
 
-  test('theme toggle works', async ({ page }) => {
+  test('theme menu picks a mode directly', async ({ page }) => {
     const html = page.locator('html')
 
-    // Pin the starting mode so the first cycle step (light → dark) is observable.
     await page.evaluate(() => localStorage.setItem('opensquilla-theme', 'light'))
     await page.reload()
     await page.waitForSelector('.topbar .conn-pill', { timeout: 10000 })
     await expect(html).toHaveAttribute('data-theme', 'light')
 
-    await page.click('[title^="Theme:"]')
+    const themeButton = page.getByRole('button', { name: 'Theme', exact: true })
+    await themeButton.click()
+    const menu = page.getByRole('menu', { name: 'Theme' })
+    await expect(menu).toBeVisible()
+    await expect(menu.getByRole('menuitemradio', { name: 'Light' })).toHaveAttribute('aria-checked', 'true')
+
+    await menu.getByRole('menuitemradio', { name: 'Dark' }).click()
+    await expect(html).toHaveAttribute('data-theme', 'dark')
+    await expect(menu).toHaveCount(0)
+
+    // Escape closes without changing the mode.
+    await themeButton.click()
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('menu', { name: 'Theme' })).toHaveCount(0)
     await expect(html).toHaveAttribute('data-theme', 'dark')
   })
 

@@ -121,6 +121,7 @@ def _rights_for_mode(mode: str) -> str:
 
 
 def _grant_policy_paths(payload: _HelperPayload, sid: str) -> None:
+    user_sid = _current_user_sid()
     mounts = payload.policy.get("mounts")
     if not isinstance(mounts, list):
         raise SystemExit("invalid windows_restricted_token policy: mounts must be a list")
@@ -138,8 +139,11 @@ def _grant_policy_paths(payload: _HelperPayload, sid: str) -> None:
                 raise SystemExit(f"required windows_restricted_token mount does not exist: {path}")
             continue
         rights = _rights_for_mode(mode)
-        grant = f"*{sid}:(OI)(CI){rights}" if path.is_dir() else f"*{sid}:{rights}"
-        argv = ["icacls", str(path), "/grant", grant, "/C"]
+        grants = [
+            f"*{sid}:(OI)(CI){rights}" if path.is_dir() else f"*{sid}:{rights}",
+            f"*{user_sid}:(OI)(CI){rights}" if path.is_dir() else f"*{user_sid}:{rights}",
+        ]
+        argv = ["icacls", str(path), "/grant", *grants, "/C"]
         if path.is_dir():
             argv.append("/T")
         completed = subprocess.run(
@@ -154,6 +158,27 @@ def _grant_policy_paths(payload: _HelperPayload, sid: str) -> None:
                 "windows_restricted_token ACL grant failed for "
                 f"{path}: {completed.stderr.strip()}"
             )
+
+
+def _current_user_sid() -> str:
+    completed = subprocess.run(
+        ["whoami", "/user", "/fo", "csv", "/nh"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise SystemExit(
+            "windows_restricted_token could not resolve current user SID: "
+            f"{completed.stderr.strip()}"
+        )
+    line = completed.stdout.strip().splitlines()[0]
+    parts = [part.strip().strip('"') for part in line.split('","')]
+    sid = parts[-1] if parts else ""
+    if not sid.startswith("S-1-"):
+        raise SystemExit(f"windows_restricted_token received invalid user SID: {sid!r}")
+    return sid
 
 
 def _run_restricted_process(payload: _HelperPayload, restricting_sid: str) -> int:
@@ -270,6 +295,8 @@ def _run_restricted_process_native(payload: _HelperPayload, restricting_sid: str
 
     advapi32.OpenProcessToken.argtypes = [HANDLE, DWORD, ctypes.POINTER(HANDLE)]
     advapi32.OpenProcessToken.restype = BOOL
+    advapi32.GetTokenInformation.argtypes = [HANDLE, DWORD, LPVOID, DWORD, ctypes.POINTER(DWORD)]
+    advapi32.GetTokenInformation.restype = BOOL
     advapi32.ConvertStringSidToSidW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(LPVOID)]
     advapi32.ConvertStringSidToSidW.restype = BOOL
     advapi32.CreateRestrictedToken.argtypes = [
@@ -346,6 +373,31 @@ def _run_restricted_process_native(payload: _HelperPayload, restricting_sid: str
         if handle:
             kernel32.CloseHandle(handle)
 
+    def logon_sid_from_token(token: int) -> tuple[object | None, object | None]:
+        needed = DWORD()
+        advapi32.GetTokenInformation(token, TOKEN_GROUPS_CLASS, None, 0, ctypes.byref(needed))
+        if not needed.value:
+            return None, None
+        buffer = ctypes.create_string_buffer(needed.value)
+        if not advapi32.GetTokenInformation(
+            token,
+            TOKEN_GROUPS_CLASS,
+            buffer,
+            needed,
+            ctypes.byref(needed),
+        ):
+            return None, None
+        group_count = ctypes.cast(buffer, ctypes.POINTER(DWORD)).contents.value
+        offset = ctypes.sizeof(DWORD)
+        align = ctypes.alignment(SID_AND_ATTRIBUTES)
+        offset = (offset + align - 1) & ~(align - 1)
+        groups_type = SID_AND_ATTRIBUTES * group_count
+        groups = groups_type.from_buffer(buffer, offset)
+        for group in groups:
+            if group.Attributes & SE_GROUP_LOGON_ID == SE_GROUP_LOGON_ID:
+                return group.Sid, buffer
+        return None, buffer
+
     local_free = ctypes.windll.kernel32.LocalFree
     local_free.argtypes = [LPVOID]
     local_free.restype = LPVOID
@@ -354,6 +406,9 @@ def _run_restricted_process_native(payload: _HelperPayload, restricting_sid: str
     restricted_token = HANDLE()
     sid_restrict = LPVOID()
     sid_everyone = LPVOID()
+    sid_authenticated_users = LPVOID()
+    sid_builtin_users = LPVOID()
+    logon_sid_buffer: object | None = None
     stdout_read = HANDLE()
     stdout_write = HANDLE()
     stderr_read = HANDLE()
@@ -368,13 +423,12 @@ def _run_restricted_process_native(payload: _HelperPayload, restricting_sid: str
     TOKEN_QUERY = 0x0008
     TOKEN_ADJUST_DEFAULT = 0x0080
     TOKEN_ADJUST_SESSIONID = 0x0100
+    TOKEN_GROUPS_CLASS = 2
+    SE_GROUP_LOGON_ID = 0xC0000000
     DISABLE_MAX_PRIVILEGE = 0x01
-    LUA_TOKEN = 0x04
-    WRITE_RESTRICTED = 0x08
     STARTF_USESTDHANDLES = 0x00000100
     CREATE_SUSPENDED = 0x00000004
     CREATE_UNICODE_ENVIRONMENT = 0x00000400
-    CREATE_NO_WINDOW = 0x08000000
     HANDLE_FLAG_INHERIT = 0x00000001
     JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
@@ -400,21 +454,39 @@ def _run_restricted_process_native(payload: _HelperPayload, restricting_sid: str
             raise win_error("ConvertStringSidToSidW(restricting)")
         if not advapi32.ConvertStringSidToSidW("S-1-1-0", ctypes.byref(sid_everyone)):
             raise win_error("ConvertStringSidToSidW(everyone)")
+        if not advapi32.ConvertStringSidToSidW(
+            "S-1-5-11",
+            ctypes.byref(sid_authenticated_users),
+        ):
+            raise win_error("ConvertStringSidToSidW(authenticated-users)")
+        if not advapi32.ConvertStringSidToSidW(
+            "S-1-5-32-545",
+            ctypes.byref(sid_builtin_users),
+        ):
+            raise win_error("ConvertStringSidToSidW(builtin-users)")
 
-        restricting_entries = (SID_AND_ATTRIBUTES * 2)()
-        restricting_entries[0].Sid = sid_restrict
-        restricting_entries[0].Attributes = 0
-        restricting_entries[1].Sid = sid_everyone
-        restricting_entries[1].Attributes = 0
+        logon_sid, logon_sid_buffer = logon_sid_from_token(source_token)
+        restricting_sids = [
+            sid_restrict,
+            sid_everyone,
+            sid_authenticated_users,
+            sid_builtin_users,
+        ]
+        if logon_sid:
+            restricting_sids.append(logon_sid)
+        restricting_entries = (SID_AND_ATTRIBUTES * len(restricting_sids))()
+        for index, sid in enumerate(restricting_sids):
+            restricting_entries[index].Sid = sid
+            restricting_entries[index].Attributes = 0
 
         if not advapi32.CreateRestrictedToken(
             source_token,
-            DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED,
+            DISABLE_MAX_PRIVILEGE,
             0,
             None,
             0,
             None,
-            2,
+            len(restricting_sids),
             restricting_entries,
             ctypes.byref(restricted_token),
         ):
@@ -446,6 +518,7 @@ def _run_restricted_process_native(payload: _HelperPayload, restricting_sid: str
 
         startup = STARTUPINFO()
         startup.cb = ctypes.sizeof(STARTUPINFO)
+        startup.lpDesktop = "winsta0\\default"
         startup.dwFlags = STARTF_USESTDHANDLES
         startup.hStdInput = 0
         startup.hStdOutput = stdout_write
@@ -453,7 +526,7 @@ def _run_restricted_process_native(payload: _HelperPayload, restricting_sid: str
 
         command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline(payload.argv))
         env_block = ctypes.create_unicode_buffer(_environment_block(payload.env))
-        creation_flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW
+        creation_flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT
         created = advapi32.CreateProcessAsUserW(
             restricted_token,
             None,
@@ -539,6 +612,11 @@ def _run_restricted_process_native(payload: _HelperPayload, restricting_sid: str
             local_free(sid_restrict)
         if sid_everyone:
             local_free(sid_everyone)
+        if sid_authenticated_users:
+            local_free(sid_authenticated_users)
+        if sid_builtin_users:
+            local_free(sid_builtin_users)
+        _ = logon_sid_buffer
 
 
 def restricted_token_smoke_check() -> bool:

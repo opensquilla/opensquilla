@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Any, Literal
 
 from opensquilla.sandbox.sensitive_paths import sensitive_path_marker
@@ -33,21 +33,6 @@ _POSIX_BLOCKED_PREFIXES: tuple[str, ...] = (
     "/var/run/docker.sock",
     "/run/docker.sock",
 )
-_WINDOWS_BLOCKED_PARTS: tuple[tuple[str, ...], ...] = (
-    ("windows",),
-    ("programdata", "microsoft", "crypto"),
-    ("users", "all users", "microsoft", "crypto"),
-)
-_WINDOWS_CREDENTIAL_PARTS: tuple[str, ...] = (
-    ".ssh",
-    ".aws",
-    ".azure",
-    ".kube",
-    "gcloud",
-    "credentials",
-)
-
-
 def normalize_mount_access(value: Any, default: MountAccess = "ro") -> MountAccess:
     return "rw" if isinstance(value, str) and value.lower().strip() == "rw" else default
 
@@ -189,18 +174,9 @@ def _is_filesystem_root(path: PurePath) -> bool:
 
 
 def _is_windows_sensitive_path(raw_path: str) -> bool:
-    if os.name != "nt" and "\\" not in raw_path and not PureWindowsPath(raw_path).drive:
-        return False
-    win = PureWindowsPath(raw_path)
-    parts = tuple(part.casefold() for part in win.parts if part not in {win.anchor, "\\"})
-    if not parts:
-        return False
-    if len(parts) == 1 and parts[0].endswith(":\\"):
-        return True
-    for blocked in _WINDOWS_BLOCKED_PARTS:
-        if len(parts) >= len(blocked) and parts[: len(blocked)] == blocked:
-            return True
-    return any(part in _WINDOWS_CREDENTIAL_PARTS for part in parts)
+    from opensquilla.sandbox.backend.windows_default_roots import windows_sensitive_marker
+
+    return windows_sensitive_marker(raw_path) is not None
 
 
 __all__ = [

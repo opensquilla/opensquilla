@@ -7,6 +7,16 @@
       >
         Pending {{ items.length }}/{{ maxPending }}
       </span>
+      <span
+        v-if="mode"
+        class="chat-pending-mode"
+        :class="{ 'chat-pending-mode--steer': mode === 'steer' }"
+        :title="mode === 'steer'
+          ? 'Steer mode: new sends interrupt the response now; these queued messages still auto-send after the turn'
+          : 'Queue mode: these messages auto-send in order when the current response finishes'"
+      >
+        {{ mode === 'steer' ? 'Steer' : 'Queue' }}
+      </span>
       <button
         v-if="items.length >= 2"
         class="chat-pending-clear"
@@ -49,6 +59,7 @@ interface PendingQueueItem {
 defineProps<{
   items: PendingQueueItem[]
   maxPending: number
+  mode?: 'queue' | 'steer' | null
 }>()
 
 defineEmits<{
@@ -70,6 +81,23 @@ defineEmits<{
   align-items: center;
   justify-content: space-between;
   margin-bottom: 0.375rem;
+}
+
+.chat-pending-mode {
+  margin-right: auto;
+  margin-left: 0.5rem;
+  padding: 0.0625rem 0.4375rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.chat-pending-mode--steer {
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+  color: var(--warn);
 }
 
 .chat-pending-label {

@@ -16,6 +16,7 @@
   "dependencies": {
     "@types/dompurify": "^3.0.5",
     "dompurify": "^3.4.7",
+    "highlight.js": "^11.11.1",
     "html-to-image": "^1.11.13",
     "marked": "^18.0.4",
     "pinia": "^2.1.7",

@@ -263,6 +263,13 @@
 
 /* Messages */
 
+/* Invisible router-strip twin rendered while a turn awaits its routing
+   decision: keeps the strip's layout slot occupied so the real strip
+   mounts without shifting the live answer area below it. */
+.router-fx-reserve {
+  visibility: hidden;
+}
+
 /* AI message */
 .msg-ai {
   display: flex;
@@ -697,20 +704,76 @@
   color: var(--text-muted);
 }
 
-/* Code blocks */
-:deep(.code-block) {
-  background: var(--bg-elevated);
-  color: var(--text);
-  padding: 0.75rem;
-  border-radius: 0.375rem;
-  overflow-x: auto;
-  font-size: 0.8125rem;
-  line-height: 1.5;
-  margin: 0.5rem 0;
+/* Code blocks — markdown fences render as <pre><span.code-lang><code.hljs> */
+:deep(pre:has(> .code-lang)) {
+  position: relative;
 }
 
-:deep(.code-block code) {
+:deep(pre > .code-lang) {
+  position: absolute;
+  top: 0.25rem;
+  right: 0.375rem;
+  padding: 0 0.25rem;
   font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  background: var(--bg-elevated);
+  border-radius: 0.25rem;
+  user-select: none;
+  pointer-events: none;
+}
+
+:deep(pre code.hljs) {
+  display: block;
+  overflow-x: auto;
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+
+/* Highlight token mapping — values from the --syntax-* family in base.css */
+:deep(.hljs-comment), :deep(.hljs-quote) {
+  color: var(--syntax-comment);
+  font-style: italic;
+}
+
+:deep(.hljs-meta), :deep(.hljs-doctag) {
+  color: var(--syntax-comment);
+}
+
+:deep(.hljs-keyword), :deep(.hljs-selector-tag), :deep(.hljs-built_in), :deep(.hljs-template-tag) {
+  color: var(--syntax-keyword);
+}
+
+:deep(.hljs-string), :deep(.hljs-regexp), :deep(.hljs-addition) {
+  color: var(--syntax-string);
+}
+
+:deep(.hljs-number), :deep(.hljs-literal), :deep(.hljs-symbol), :deep(.hljs-bullet) {
+  color: var(--syntax-literal);
+}
+
+:deep(.hljs-title), :deep(.hljs-section), :deep(.hljs-name) {
+  color: var(--syntax-title);
+}
+
+:deep(.hljs-attr), :deep(.hljs-attribute), :deep(.hljs-variable), :deep(.hljs-template-variable),
+:deep(.hljs-type), :deep(.hljs-property), :deep(.hljs-selector-id), :deep(.hljs-selector-class),
+:deep(.hljs-selector-attr), :deep(.hljs-selector-pseudo) {
+  color: var(--syntax-attr);
+}
+
+:deep(.hljs-deletion) {
+  color: var(--danger);
+}
+
+:deep(.hljs-emphasis) {
+  font-style: italic;
+}
+
+:deep(.hljs-strong) {
+  font-weight: 600;
 }
 
 :deep(code) {

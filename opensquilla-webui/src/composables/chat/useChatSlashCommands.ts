@@ -126,7 +126,6 @@ export function useChatSlashCommands(options: UseChatSlashCommandsOptions) {
         options.rpc.call('sessions.reset', { key: options.sessionKey.value })
           .then(() => {
             options.resetCurrentSession()
-            console.info('Session reset')
           })
           .catch((err: unknown) => console.warn('Reset failed:', err instanceof Error ? err.message : String(err)))
         break

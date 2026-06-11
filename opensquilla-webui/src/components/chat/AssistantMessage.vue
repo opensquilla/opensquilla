@@ -14,6 +14,7 @@
       :class="{ 'is-selected': shareSelected }"
       :aria-pressed="shareSelected"
       :title="shareSelected ? 'Remove from share image' : 'Add to share image'"
+      :aria-label="shareSelected ? 'Remove from share image' : 'Add to share image'"
       @click.stop="emit('toggleShare', shareMessageId)"
     >
       <Icon :name="shareSelected ? 'check' : 'plus'" :size="13" />
@@ -126,12 +127,13 @@
               class="msg-action"
               :class="{ 'msg-action--ok': copyState === 'ok', 'msg-action--err': copyState === 'err' }"
               :title="copyTitle"
+              :aria-label="copyTitle"
               @click="onCopyClick"
             >
               <Icon :name="copyIconName" :size="12" />
             </button>
             <span class="msg-copy-live" aria-live="polite">{{ copyLiveText }}</span>
-            <button type="button" class="msg-action" title="Regenerate" @click="$emit('regenerate', message)">
+            <button type="button" class="msg-action" title="Regenerate" aria-label="Regenerate" @click="$emit('regenerate', message)">
               <Icon name="refresh" :size="12" />
             </button>
           </div>

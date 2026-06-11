@@ -206,6 +206,7 @@ function fallbackSessionTitle(row: RawSessionItem, key: string, sessionKind: str
   if (sessionKind === 'chat') return 'New chat'
   if (sessionKind === 'cron') return textValue(row.subject) || 'Automation run'
   if (sessionKind === 'channel') return textValue(row.subject) || 'Channel conversation'
+  if (sessionKind === 'task') return 'Subagent task'
   return key || 'Untitled session'
 }
 
@@ -253,7 +254,8 @@ export function normalizeSessionItem(item: unknown): SessionItem | null {
   const conversationKind = deriveConversationKind(raw, key)
   const surface = deriveSurface(raw, key, sessionKind)
   const groupLabel = deriveGroupLabel(raw, key, sessionKind, derivedAgentId)
-  const title = normalizeRequiredString(raw, 'title', fallbackSessionTitle(raw, key, sessionKind), gaps)
+  let title = normalizeRequiredString(raw, 'title', fallbackSessionTitle(raw, key, sessionKind), gaps)
+  if (sessionKind === 'task' && /^you are a subagent\b/i.test(title)) title = 'Subagent task'
   const subtitle = hasOwn(raw, 'subtitle') ? textValue(raw.subtitle) : ''
   if (!hasOwn(raw, 'subtitle')) gaps.push('subtitle')
   const effectiveAgentId = normalizeEffectiveAgentId(raw, gaps, derivedAgentId)

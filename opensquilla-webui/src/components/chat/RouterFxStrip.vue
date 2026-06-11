@@ -81,6 +81,19 @@ const gridStyle = computed<Record<string, string>>(() => {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.44em;
+  white-space: nowrap;
+}
+
+@media (max-width: 480px) {
+  .router-fx-header {
+    gap: 8px;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+  }
+
+  .router-fx-header .title {
+    padding-left: 0.18em;
+  }
 }
 
 .router-fx-header .title {

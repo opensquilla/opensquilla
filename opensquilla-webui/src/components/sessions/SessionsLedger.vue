@@ -11,7 +11,7 @@
       <button
         type="button"
         class="hub-row__main"
-        :aria-label="'Open in chat: ' + entry.item.title"
+        :aria-label="'Inspect session: ' + entry.item.title"
         @click="emit('open', entry.item)"
       >
         <span class="hub-row__icon" aria-hidden="true">

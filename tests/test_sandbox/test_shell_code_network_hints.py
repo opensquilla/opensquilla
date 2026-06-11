@@ -294,7 +294,7 @@ async def test_windows_proxy_allowlist_runtime_skips_platform_network_boundary(
         events.append(("cleanup", ctx))
 
     class Backend:
-        name = "windows_appcontainer"
+        name = "windows_restricted_token"
 
         async def run(self, request):
             events.append(("run", request.policy.network_proxy.port))
@@ -373,7 +373,7 @@ async def test_windows_unready_proxy_allowlist_blocks_network_workarounds(
         env={"PATH": r"C:\Windows\System32"},
     )
     runtime = SimpleNamespace(
-        backend=SimpleNamespace(name="windows_appcontainer"),
+        backend=SimpleNamespace(name="windows_restricted_token"),
         workspace=tmp_path,
         ledger=_Ledger(),
     )

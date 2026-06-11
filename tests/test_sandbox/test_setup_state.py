@@ -12,7 +12,7 @@ def test_setup_status_payload_defaults_to_not_setup() -> None:
         "state": "not_setup",
         "platform": "win32",
         "message": "Sandbox setup has not been completed.",
-        "requiresAdmin": True,
+        "requiresAdmin": False,
     }
 
 
@@ -35,8 +35,8 @@ async def test_platform_setup_dispatches_windows(monkeypatch) -> None:
         return setup_state.SetupResult(
             state=setup_state.SandboxSetupState.READY,
             platform="win32",
-            message="Windows sandbox service is ready.",
-            requires_admin=True,
+            message="Windows restricted-token sandbox is ready.",
+            requires_admin=False,
         )
 
     monkeypatch.setattr(setup_state.sys, "platform", "win32")
@@ -48,51 +48,47 @@ async def test_platform_setup_dispatches_windows(monkeypatch) -> None:
     assert calls
 
 
-async def test_windows_setup_status_uses_service_client(monkeypatch) -> None:
+async def test_windows_setup_status_reports_restricted_token_ready(monkeypatch) -> None:
     from opensquilla.sandbox import setup_state
-    from opensquilla.sandbox.windows_service_client import WindowsSandboxServiceClient
-
-    calls = []
-
-    async def fake_health(self):
-        calls.append(self.pipe_name)
-        return setup_state.SetupResult(
-            state=setup_state.SandboxSetupState.READY,
-            platform="win32",
-            message="Windows sandbox service is ready.",
-            requires_admin=True,
-        )
 
     monkeypatch.setattr(setup_state.sys, "platform", "win32")
-    monkeypatch.setattr(WindowsSandboxServiceClient, "health", fake_health)
-
-    result = await setup_state.current_sandbox_setup_status(
-        SimpleNamespace(sandbox=SimpleNamespace(windows_service_pipe=r"\\.\pipe\custom"))
+    monkeypatch.setattr(
+        setup_state,
+        "_probe_windows_sandbox_support",
+        lambda: setup_state.WindowsSetupSupport(
+            restricted_token_available=True,
+            ctypes_available=True,
+            restricted_token_enforced=True,
+            proxy_allowlist_enforced=False,
+        ),
     )
+
+    result = await setup_state.current_sandbox_setup_status(SimpleNamespace())
 
     assert result.state is setup_state.SandboxSetupState.READY
-    assert calls == [r"\\.\pipe\custom"]
+    assert result.requires_admin is False
+    assert result.message == "Windows restricted-token sandbox is ready."
 
 
-async def test_windows_service_client_fails_closed_when_launcher_fails(tmp_path) -> None:
-    from opensquilla.sandbox.setup_state import SandboxSetupState
-    from opensquilla.sandbox.windows_service_client import WindowsSandboxServiceClient
+async def test_windows_setup_status_reports_restricted_token_unavailable(
+    monkeypatch,
+) -> None:
+    from opensquilla.sandbox import setup_state
 
-    async def transport(payload):
-        assert payload == {"op": "health"}
-        raise ConnectionError("missing broker")
-
-    client = WindowsSandboxServiceClient(
-        state_dir=tmp_path,
-        transport=transport,
-        broker_launcher=lambda state: (_ for _ in ()).throw(RuntimeError("blocked")),
+    monkeypatch.setattr(setup_state.sys, "platform", "win32")
+    monkeypatch.setattr(
+        setup_state,
+        "_probe_windows_sandbox_support",
+        lambda: setup_state.WindowsSetupSupport(
+            restricted_token_available=False,
+            ctypes_available=True,
+            restricted_token_enforced=False,
+            proxy_allowlist_enforced=False,
+        ),
     )
 
-    health = await client.health()
-    setup = await client.ensure_setup()
+    result = await setup_state.ensure_sandbox_setup(SimpleNamespace())
 
-    assert health.state is SandboxSetupState.NOT_SETUP
-    assert health.requires_admin is True
-    assert setup.state is SandboxSetupState.FAILED
-    assert setup.requires_admin is True
-    assert setup.detail == "blocked"
+    assert result.state is setup_state.SandboxSetupState.UNAVAILABLE
+    assert result.requires_admin is False
+    assert result.detail == "restricted_token=not ready"

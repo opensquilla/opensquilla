@@ -1,21 +1,17 @@
 """Sandbox backend implementations and selection helper.
 
-Five concrete backends ship today:
+Four concrete backends ship today:
 
-* :class:`~opensquilla.sandbox.backend.bubblewrap.BubblewrapBackend` — the Linux
+* :class:`~opensquilla.sandbox.backend.bubblewrap.BubblewrapBackend` - the Linux
   primary path; uses the ``bwrap`` binary for namespace isolation.
-* :class:`~opensquilla.sandbox.backend.seatbelt.SeatbeltBackend` — macOS
+* :class:`~opensquilla.sandbox.backend.seatbelt.SeatbeltBackend` - macOS
   primary path; uses ``sandbox-exec`` with a generated SBPL profile.
-* :class:`~opensquilla.sandbox.backend.windows_appcontainer.WindowsAppContainerBackend` —
-  native Windows primary path; delegates to an AppContainer helper and fails
-  closed until policy enforcement is implemented.
-* :class:`~opensquilla.sandbox.backend.windows_restricted_token.WindowsRestrictedTokenBackend` —
-  legacy/degraded native Windows path; delegates to a restricted-token helper
-  and fails closed when policy enforcement is unavailable.
-* :class:`~opensquilla.sandbox.backend.noop.NoopBackend` — used when the sandbox
-  feature switch is off; runs the command through the existing rlimit
-  wrapper and emits a warning on every invocation so the bypass is visible
-  in logs.
+* :class:`~opensquilla.sandbox.backend.windows_restricted_token.WindowsRestrictedTokenBackend`
+  - native Windows path; delegates to a restricted-token helper and fails closed
+  when policy enforcement is unavailable.
+* :class:`~opensquilla.sandbox.backend.noop.NoopBackend` - used when the sandbox
+  feature switch is off; runs the command through the existing rlimit wrapper
+  and emits a warning on every invocation so the bypass is visible in logs.
 
 :func:`select_backend` picks one based on the settings + host capabilities.
 """
@@ -77,7 +73,7 @@ def select_backend(settings: SandboxSettings) -> Backend:
     """Return the backend matching ``settings.backend``.
 
     ``"auto"`` defers to :func:`_auto_backend`. Explicit choices are honoured
-    even when the backend is unavailable — the caller will see an honest
+    even when the backend is unavailable - the caller will see an honest
     ``available() is False`` and can decide whether to degrade or abort.
     Selection is logged so operators can correlate runtime behaviour with
     config.
@@ -96,7 +92,7 @@ def select_backend(settings: SandboxSettings) -> Backend:
         backend = NoopBackend()
     elif choice == "windows_restricted_token":
         backend = WindowsRestrictedTokenBackend()
-    else:  # pragma: no cover — pydantic Literal constrains this upstream
+    else:  # pragma: no cover - pydantic Literal constrains this upstream
         raise ValueError(f"unknown sandbox backend: {choice!r}")
 
     log.info(

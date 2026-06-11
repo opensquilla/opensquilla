@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from opensquilla.sandbox.backend.base import Backend
+from opensquilla.sandbox.backend.windows_default_support import probe_windows_default_support
 from opensquilla.sandbox.types import SandboxBackendError, SandboxRequest, SandboxResult
 
 
@@ -12,7 +13,7 @@ class WindowsDefaultBackend(Backend):
     name = "windows_default"
 
     def available(self) -> bool:
-        return False
+        return probe_windows_default_support().default_backend_available
 
     async def run(self, request: SandboxRequest) -> SandboxResult:
         raise SandboxBackendError(

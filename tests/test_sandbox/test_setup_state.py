@@ -35,7 +35,7 @@ async def test_platform_setup_dispatches_windows(monkeypatch) -> None:
         return setup_state.SetupResult(
             state=setup_state.SandboxSetupState.READY,
             platform="win32",
-            message="Windows restricted-token sandbox is ready.",
+            message="Windows default sandbox is ready.",
             requires_admin=False,
         )
 
@@ -48,7 +48,7 @@ async def test_platform_setup_dispatches_windows(monkeypatch) -> None:
     assert calls
 
 
-async def test_windows_setup_status_reports_restricted_token_ready(monkeypatch) -> None:
+async def test_windows_setup_status_reports_windows_default_ready(monkeypatch) -> None:
     from opensquilla.sandbox import setup_state
 
     monkeypatch.setattr(setup_state.sys, "platform", "win32")
@@ -56,9 +56,11 @@ async def test_windows_setup_status_reports_restricted_token_ready(monkeypatch) 
         setup_state,
         "_probe_windows_sandbox_support",
         lambda: setup_state.WindowsSetupSupport(
-            restricted_token_available=True,
+            default_backend_available=True,
             ctypes_available=True,
-            restricted_token_enforced=True,
+            token_api_available=True,
+            acl_api_available=True,
+            setup_ready=True,
             proxy_allowlist_enforced=False,
         ),
     )
@@ -67,10 +69,10 @@ async def test_windows_setup_status_reports_restricted_token_ready(monkeypatch) 
 
     assert result.state is setup_state.SandboxSetupState.READY
     assert result.requires_admin is False
-    assert result.message == "Windows restricted-token sandbox is ready."
+    assert result.message == "Windows default sandbox is ready."
 
 
-async def test_windows_setup_status_reports_restricted_token_unavailable(
+async def test_windows_setup_status_reports_windows_default_not_setup(
     monkeypatch,
 ) -> None:
     from opensquilla.sandbox import setup_state
@@ -80,15 +82,17 @@ async def test_windows_setup_status_reports_restricted_token_unavailable(
         setup_state,
         "_probe_windows_sandbox_support",
         lambda: setup_state.WindowsSetupSupport(
-            restricted_token_available=False,
+            default_backend_available=False,
             ctypes_available=True,
-            restricted_token_enforced=False,
+            token_api_available=True,
+            acl_api_available=True,
+            setup_ready=False,
             proxy_allowlist_enforced=False,
         ),
     )
 
     result = await setup_state.ensure_sandbox_setup(SimpleNamespace())
 
-    assert result.state is setup_state.SandboxSetupState.UNAVAILABLE
-    assert result.requires_admin is False
-    assert result.detail == "restricted_token=not ready"
+    assert result.state is setup_state.SandboxSetupState.NOT_SETUP
+    assert result.requires_admin is True
+    assert "setup=not ready" in str(result.detail)

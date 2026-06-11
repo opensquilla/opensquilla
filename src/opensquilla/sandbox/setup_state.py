@@ -38,9 +38,11 @@ class SetupResult:
 
 @dataclass(frozen=True)
 class WindowsSetupSupport:
-    restricted_token_available: bool
+    default_backend_available: bool
     ctypes_available: bool
-    restricted_token_enforced: bool
+    token_api_available: bool
+    acl_api_available: bool
+    setup_ready: bool
     proxy_allowlist_enforced: bool
 
 
@@ -100,24 +102,22 @@ async def ensure_sandbox_setup(config: Any) -> SetupResult:
 
 async def _windows_setup_status(config: Any) -> SetupResult:
     _ = config
-    return _windows_restricted_token_setup_result()
+    return _windows_default_setup_result()
 
 
 async def _ensure_windows_setup(config: Any) -> SetupResult:
     _ = config
-    return _windows_restricted_token_setup_result()
+    return _windows_default_setup_result()
 
 
-def _windows_restricted_token_setup_result() -> SetupResult:
+def _windows_default_setup_result() -> SetupResult:
     support = _probe_windows_sandbox_support()
-    if support.restricted_token_available:
-        detail = None
-        if not support.proxy_allowlist_enforced:
-            detail = "proxy_allowlist=not ready"
+    if support.default_backend_available:
+        detail = "proxy_allowlist=not ready"
         return SetupResult(
             state=SandboxSetupState.READY,
             platform="win32",
-            message="Windows restricted-token sandbox is ready.",
+            message="Windows default sandbox is ready.",
             requires_admin=False,
             detail=detail,
         )
@@ -125,29 +125,37 @@ def _windows_restricted_token_setup_result() -> SetupResult:
     reasons: list[str] = []
     if not support.ctypes_available:
         reasons.append("ctypes=missing")
-    if not support.restricted_token_enforced:
-        reasons.append("restricted_token=not ready")
-    if not reasons:
-        reasons.append("restricted_token=not ready")
+    if not support.token_api_available:
+        reasons.append("token_api=not ready")
+    if not support.acl_api_available:
+        reasons.append("acl_api=not ready")
+    if not support.setup_ready:
+        reasons.append("setup=not ready")
     return SetupResult(
-        state=SandboxSetupState.UNAVAILABLE,
+        state=(
+            SandboxSetupState.NOT_SETUP
+            if support.setup_ready is False
+            else SandboxSetupState.UNAVAILABLE
+        ),
         platform="win32",
-        message="Windows restricted-token sandbox is unavailable on this host.",
-        requires_admin=False,
+        message="Windows default sandbox setup is required.",
+        requires_admin=True,
         detail=", ".join(reasons),
     )
 
 
 def _probe_windows_sandbox_support() -> WindowsSetupSupport:
-    from opensquilla.sandbox.backend.windows_support import (
-        probe_windows_sandbox_support,
+    from opensquilla.sandbox.backend.windows_default_support import (
+        probe_windows_default_support,
     )
 
-    support = probe_windows_sandbox_support()
+    support = probe_windows_default_support()
     return WindowsSetupSupport(
-        restricted_token_available=support.restricted_token_available,
+        default_backend_available=support.default_backend_available,
         ctypes_available=support.ctypes_available,
-        restricted_token_enforced=support.restricted_token_enforced,
+        token_api_available=support.token_api_available,
+        acl_api_available=support.acl_api_available,
+        setup_ready=support.setup_ready,
         proxy_allowlist_enforced=support.proxy_allowlist_enforced,
     )
 

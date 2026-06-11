@@ -325,6 +325,15 @@ def _resolve_workspace(runtime: SandboxRuntime, cwd: str | None) -> Path:
     return Path.cwd()
 
 
+def _resolve_request_run_mode(runtime: SandboxRuntime | None) -> str:
+    context = current_tool_run_context()
+    if isinstance(context, RunContext):
+        return context.run_mode.value
+    if runtime is not None:
+        return normalize_run_mode(runtime.settings.run_mode).value
+    return RunMode.FULL.value
+
+
 def _session_mounts_for_policy(workspace: Path) -> tuple[MountSpec, ...]:
     try:
         from opensquilla.tools.types import current_tool_context
@@ -413,7 +422,8 @@ def build_request(
     Exposed for callers (notably shell.py) that want to fingerprint a
     command without going through the decorator.
     """
-    session_id = _resolve_session_id(get_runtime(), None) if get_runtime() is not None else ""
+    runtime = get_runtime()
+    session_id = _resolve_session_id(runtime, None) if runtime is not None else ""
     return SandboxRequest(
         argv=argv,
         cwd=cwd,
@@ -422,6 +432,7 @@ def build_request(
         env=dict(env or {}),
         reason=reason,
         session_id=session_id,
+        run_mode=_resolve_request_run_mode(runtime),
     )
 
 
@@ -503,6 +514,7 @@ def request_with_managed_network_proxy_env(
         env=env,
         reason=request.reason,
         session_id=request.session_id,
+        run_mode=request.run_mode,
     )
 
 

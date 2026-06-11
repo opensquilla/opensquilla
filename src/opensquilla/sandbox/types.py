@@ -200,6 +200,7 @@ class SandboxRequest:
     env: dict[str, str] = field(default_factory=dict)
     reason: str = ""
     session_id: str = ""
+    run_mode: str = ""
 
     def with_policy(self, policy: SandboxPolicy) -> SandboxRequest:
         return SandboxRequest(
@@ -211,6 +212,7 @@ class SandboxRequest:
             env=dict(self.env),
             reason=self.reason,
             session_id=self.session_id,
+            run_mode=self.run_mode,
         )
 
 

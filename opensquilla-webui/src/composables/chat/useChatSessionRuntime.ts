@@ -118,7 +118,6 @@ export function useChatSessionRuntime(options: UseChatSessionRuntimeOptions) {
     options.pendingSessionIntent.value = 'new_chat'
     resetSessionViewState()
     options.subscribeSession()
-    console.info('New chat draft:', key)
   }
 
   return {

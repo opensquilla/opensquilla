@@ -171,6 +171,7 @@ export function toolCallGroups(calls: ChatToolCall[] | undefined, ownerKey: stri
 export function toolResultCount(raw: string): number | null {
   const text = String(raw || '').trim()
   if (!text) return null
+  // 结果 is the CJK word for "results", kept to parse localized tool output.
   const match = /(?:^|\D)(\d{1,4})\s*(?:results?|结果)(?:\D|$)/i.exec(text)
   if (match) return Number(match[1])
   try {

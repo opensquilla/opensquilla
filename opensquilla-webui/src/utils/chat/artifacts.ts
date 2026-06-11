@@ -64,13 +64,13 @@ export function artifactFileTitle(artifact: ArtifactPayload): string {
 export function artifactFileSubtitle(artifact: ArtifactPayload): string {
   const label = artifactCategoryLabel(artifact)
   const meta = artifactMeta(artifact)
-  const action = artifactActionLabel(artifact) === '预览' ? '预览文件' : '下载文件'
+  const action = artifactActionLabel(artifact) === 'Preview' ? 'Preview file' : 'Download file'
   return [action, label.toUpperCase(), meta].filter(Boolean).join(' · ')
 }
 
 export function artifactActionLabel(artifact: ArtifactPayload): string {
   const cat = artifactCategory(artifact)
-  return cat === 'visual' || cat === 'document' ? '预览' : '下载'
+  return cat === 'visual' || cat === 'document' ? 'Preview' : 'Download'
 }
 
 export function artifactMeta(artifact: ArtifactPayload): string {

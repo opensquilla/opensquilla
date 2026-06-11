@@ -64,53 +64,15 @@
     </div>
 
     <!-- Recent conversations -->
-    <div class="sidebar-section sidebar-history">
-      <div class="sidebar-section-header">
-        <span>Recent</span>
-        <button
-          class="sidebar-refresh-btn"
-          title="Refresh conversations"
-          :class="{ spinning: isLoading }"
-          @click="loadSessions"
-        >
-          <Icon name="refresh" :size="12" />
-        </button>
-      </div>
-      <div class="sidebar-filter-row" aria-label="Filter conversations">
-        <button
-          v-for="filter in conversationFilters"
-          :key="filter.id"
-          type="button"
-          class="sidebar-filter-chip"
-          :class="{ 'is-active': conversationFilter === filter.id }"
-          :aria-pressed="conversationFilter === filter.id"
-          @click="conversationFilter = filter.id"
-        >
-          {{ filter.label }}
-        </button>
-      </div>
-      <div v-if="sessionListError" class="sidebar-history-empty">
-        Unable to load sessions
-      </div>
-      <div v-else-if="filteredConversations.length === 0" class="sidebar-history-empty">
-        No recent conversations
-      </div>
-      <div v-else class="sidebar-history-list">
-        <button
-          v-for="item in filteredConversations"
-          :key="item.key"
-          class="sidebar-history-item"
-          :class="{ 'is-current': isCurrentSession(item.key) }"
-          :title="item.title"
-          @click="switchToSession(item.key)"
-        >
-          <span class="sidebar-history-dot" :class="`status--${item.runStatus}`" />
-          <span class="sidebar-history-title">{{ item.title }}</span>
-          <span v-if="contractDebugEnabled && item.hasContractGaps" class="sidebar-history-gap" title="Backend session-list-v1 contract fields are missing">Gap</span>
-          <span v-if="item.runStatus !== 'idle'" class="sidebar-history-run">{{ item.runLabel }}</span>
-        </button>
-      </div>
-    </div>
+    <SidebarConversations
+      :items="sidebarConversations"
+      :error="sessionListError"
+      :loading="isLoading"
+      :current-key="currentSessionKey"
+      :contract-debug-enabled="contractDebugEnabled"
+      @select="switchToSession"
+      @refresh="loadSessions"
+    />
 
     <!-- Bottom links -->
     <div v-if="bottomRoutes.length" class="sidebar-bottom">
@@ -130,6 +92,15 @@
       </router-link>
     </div>
   </nav>
+
+  <!-- Mobile drawer scrim: tap outside the sidebar to close it (<=768px only) -->
+  <div
+    v-if="appStore.sidebarOpen"
+    class="sidebar-scrim"
+    role="presentation"
+    aria-hidden="true"
+    @click="appStore.setSidebarOpen(false)"
+  />
 
   <div
     v-if="newChatPickerOpen"
@@ -202,8 +173,8 @@
         <button
           v-if="appStore.approvalCount > 0"
           class="approval-inline"
-          @click="$router.push('/approvals')"
-          title="Open approvals"
+          @click="openBlockedApprovalSession"
+          title="Open the blocked session"
         >
           Approval required
         </button>
@@ -219,6 +190,8 @@
       </ErrorBoundary>
     </main>
   </div>
+
+  <ToastHost />
 </template>
 
 <script setup lang="ts">
@@ -229,6 +202,11 @@ import { useRpcStore } from './stores/rpc'
 import { useSessions, type SessionItem } from './composables/useSessions'
 import Icon from './components/Icon.vue'
 import ErrorBoundary from './components/ErrorBoundary.vue'
+import ToastHost from './components/ToastHost.vue'
+import SidebarConversations, {
+  type SidebarConversationItem,
+  type SidebarFamilyId,
+} from './components/SidebarConversations.vue'
 import { useDocumentEvent } from './composables/useDocumentEvent'
 import type { AgentOption, AgentsListResponse } from './types/rpc'
 import { useNavigation } from './app/useNavigation'
@@ -241,31 +219,10 @@ const router = useRouter()
 const { allSessions, sessionListError, isLoading, loadSessions } = useSessions()
 const { navGroups, bottomRoutes } = useNavigation()
 
-type SidebarFamilyId = 'chats' | 'channels' | 'automations'
-type SidebarFilterId = 'all' | 'chats' | 'automations'
-
-interface SidebarConversationItem {
-  key: string
-  title: string
-  effectiveAgentId: string
-  sourceFamily: SidebarFamilyId
-  runStatus: string
-  runLabel: string
-  updatedAt: number
-  hasContractGaps: boolean
-}
-
-const conversationFilters: Array<{ id: SidebarFilterId; label: string }> = [
-  { id: 'all', label: 'All' },
-  { id: 'chats', label: 'Chats' },
-  { id: 'automations', label: 'Automations' },
-]
-
 const agents = ref<AgentOption[]>([])
 const agentListError = ref(false)
 const newChatPickerOpen = ref(false)
 const selectedNewChatAgentId = ref('main')
-const conversationFilter = ref<SidebarFilterId>('all')
 const localChatSessions = ref<Record<string, { effectiveAgentId: string; title: string; updatedAt: number }>>({})
 
 const brandMarkUrl = computed(() => {
@@ -293,10 +250,6 @@ function isNavActive(path: string): boolean {
   return $route.path === path
 }
 
-function isCurrentSession(key: string): boolean {
-  return key === currentSessionKey.value
-}
-
 function agentDisplayName(agentId: string): string {
   const agent = agents.value.find(a => a.id === agentId)
   return agent?.name || (agentId === 'main' ? 'Main Agent' : agentId)
@@ -316,6 +269,37 @@ function sidebarConversationTitle(item: SessionItem): string {
     if (text && !looksLikeRawSessionId(text)) return text
   }
   return 'Untitled session'
+}
+
+// Grouped-mode bucket label; raw ids (cron UUIDs, session keys) never render.
+function sidebarGroupLabel(item: SessionItem): string {
+  if (item.sessionKind === 'cron') {
+    // Show the cron job's human name. The contract's generic "Cron" group
+    // label and jobId UUIDs make useless headers, so fall through to the
+    // job name embedded in the run title when the name field is absent.
+    const candidates = [
+      item.raw.cron?.name,
+      String(item.title || '').replace(/^Cron:\s*/i, ''),
+      item.groupLabel,
+    ]
+    for (const candidate of candidates) {
+      const text = String(candidate || '').trim()
+      if (text && !looksLikeRawSessionId(text)) return text
+    }
+    return 'Automation'
+  }
+  const text = String(item.groupLabel || '').trim()
+  if (text && !looksLikeRawSessionId(text)) return text
+  return item.sessionKind === 'channel' ? 'Channel' : 'Conversations'
+}
+
+// Stable grouping key; cron runs bucket by job id even when jobs share a name.
+function sidebarGroupKey(item: SessionItem, label: string): string {
+  if (item.sessionKind === 'cron') {
+    const jobId = String(item.raw.cron?.jobId || item.raw.cron?.job_id || item.raw.cron?.id || '').trim()
+    if (jobId) return jobId
+  }
+  return label
 }
 
 function sourceFamilyForSession(item: SessionItem): SidebarFamilyId | null {
@@ -351,9 +335,13 @@ const sidebarConversations = computed((): SidebarConversationItem[] => {
     const sourceFamily = sourceFamilyForSession(item)
     if (!sourceFamily) continue
     seen.add(key)
+    const groupLabel = sidebarGroupLabel(item)
     result.push({
       key,
       effectiveAgentId: item.effectiveAgentId,
+      agentName: agentDisplayName(normalizeAgentId(item.effectiveAgentId)),
+      groupLabel,
+      groupKey: sidebarGroupKey(item, groupLabel),
       title: sidebarConversationTitle(item),
       sourceFamily,
       runStatus: item.runStatus,
@@ -367,6 +355,9 @@ const sidebarConversations = computed((): SidebarConversationItem[] => {
     result.push({
       key,
       effectiveAgentId: local.effectiveAgentId,
+      agentName: agentDisplayName(normalizeAgentId(local.effectiveAgentId)),
+      groupLabel: '',
+      groupKey: '',
       sourceFamily: 'chats',
       title: local.title || 'New chat',
       runStatus: 'idle',
@@ -381,6 +372,9 @@ const sidebarConversations = computed((): SidebarConversationItem[] => {
     result.push({
       key: currentSessionKey.value,
       effectiveAgentId: currentAgentId,
+      agentName: agentDisplayName(currentAgentId),
+      groupLabel: '',
+      groupKey: '',
       sourceFamily: 'chats',
       title: 'Current session',
       runStatus: 'idle',
@@ -390,11 +384,6 @@ const sidebarConversations = computed((): SidebarConversationItem[] => {
     })
   }
   return result.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 60)
-})
-
-const filteredConversations = computed((): SidebarConversationItem[] => {
-  if (conversationFilter.value === 'all') return sidebarConversations.value
-  return sidebarConversations.value.filter(item => item.sourceFamily === conversationFilter.value)
 })
 
 let hoverLeaveTimer: ReturnType<typeof setTimeout> | null = null
@@ -485,6 +474,31 @@ function switchToSession(key: string) {
   if (appStore.sidebarHovered) {
     appStore.setSidebarHovered(false)
   }
+}
+
+// Topbar approval pill: jump straight to the blocked session's chat so the
+// in-thread card can be answered; fall back to the Approvals page when the
+// pending request carries no session.
+async function openBlockedApprovalSession() {
+  try {
+    const headers: Record<string, string> = {}
+    try {
+      const token = sessionStorage.getItem('opensquilla.wsToken') || ''
+      if (token) headers['Authorization'] = `Bearer ${token}`
+    } catch { /* ignore */ }
+    const res = await fetch('/api/approvals', { headers })
+    if (res.ok) {
+      const data = await res.json() as { pending?: Array<{ sessionKey?: string }> }
+      const key = (data.pending || [])
+        .map(item => String(item.sessionKey || '').trim())
+        .find(Boolean)
+      if (key) {
+        switchToSession(key)
+        return
+      }
+    }
+  } catch { /* fall through to the Approvals page */ }
+  router.push('/approvals')
 }
 
 function onHoverEnter() {

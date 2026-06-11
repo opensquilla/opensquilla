@@ -326,6 +326,17 @@
   line-height: 1.5;
 }
 
+/* Honest staleness note: shown when no gateway signal for a while. */
+.stream-activity--stale .stream-activity-dot {
+  background: var(--warn);
+  animation: none;
+  box-shadow: none;
+}
+
+.stream-activity--stale .stream-activity-text {
+  color: var(--warn);
+}
+
 .activity-shimmer {
   color: var(--text-dim);
   background:
@@ -342,6 +353,65 @@
   background-clip: text;
   -webkit-text-fill-color: transparent;
   animation: activityTextShimmer 2.2s ease-in-out infinite;
+}
+
+/* Live model reasoning disclosure (collapsed by default) */
+.thinking-fold {
+  margin: 0 0 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--text-dim);
+}
+
+.thinking-fold__summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.125rem 0.25rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  list-style: none;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.thinking-fold__summary::-webkit-details-marker {
+  display: none;
+}
+
+.thinking-fold__summary:hover {
+  color: var(--text-muted);
+}
+
+.thinking-fold__summary:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.thinking-fold__chevron {
+  flex-shrink: 0;
+  transition: transform 0.12s ease;
+}
+
+.thinking-fold[open] > .thinking-fold__summary .thinking-fold__chevron {
+  transform: rotate(90deg);
+}
+
+.thinking-fold__body {
+  margin: 0.25rem 0 0.375rem;
+  padding: 0.375rem 0.75rem;
+  border-left: 2px solid var(--border);
+  color: var(--text-muted);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 16rem;
+  overflow-y: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thinking-fold__chevron {
+    transition: none;
+  }
 }
 
 /* Thinking indicator */

@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test'
 
 const CONTROL_URL = '/control/'
+const LIVE = process.env.OPENSQUILLA_E2E_LIVE === '1'
 
 test.describe('Chat Page', () => {
   test.beforeEach(async ({ page }) => {
@@ -39,8 +40,9 @@ test.describe('Chat Page', () => {
     await nav.getByText('Logs', { exact: true }).click()
     await expect(page).toHaveURL(/\/logs/)
 
+    // Bare /chat opens the new-chat draft state (see new-chat.spec.ts).
     await nav.getByText('Chat', { exact: true }).click()
-    await expect(page).toHaveURL(/\/chat$/)
+    await expect(page).toHaveURL(/\/chat\/new$/)
 
     await page.getByRole('button', { name: 'New chat' }).click()
     await expect(page.getByRole('dialog', { name: 'New chat' })).toBeVisible()
@@ -142,6 +144,10 @@ test.describe('Chat Interaction', () => {
 })
 
 test.describe('Visual Regression', () => {
+  // Live runs seed real sessions into the sidebar, so the pixel baselines
+  // only hold against a clean instance (the default, non-live suite).
+  test.skip(LIVE, 'Visual baselines assume a clean sidebar; skipped in live runs.')
+
   test('chat page screenshot matches baseline', async ({ page }) => {
     await page.goto(CONTROL_URL + 'chat')
     await page.waitForSelector('.conn-pill', { timeout: 10000 })

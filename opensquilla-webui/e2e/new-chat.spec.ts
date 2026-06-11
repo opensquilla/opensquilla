@@ -66,7 +66,8 @@ test.describe('New chat draft state', () => {
     await textarea.fill('Reply with the single word: ok')
     await page.locator('.chat-send-btn[aria-label="Send"]').click()
 
-    await expect(page).toHaveURL(/\/chat\?session=agent%3Amain%3Awebchat%3A/, { timeout: 15000 })
+    // vue-router leaves colons in query values unencoded; tolerate both forms.
+    await expect(page).toHaveURL(/\/chat\?session=agent(?::|%3A)main(?::|%3A)webchat(?::|%3A)/, { timeout: 15000 })
     await expect(page.locator('.msg-user').first()).toBeVisible()
   })
 })

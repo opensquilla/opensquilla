@@ -1,5 +1,7 @@
 import { ref } from 'vue'
 
+import { useToasts } from '@/composables/useToasts'
+
 interface TranscriptionResponse {
   text?: string
   error?: string
@@ -14,6 +16,7 @@ function authToken(): string {
 }
 
 export function useVoiceInput() {
+  const { pushToast } = useToasts()
   const voiceBusy = ref(false)
   const voiceRecording = ref(false)
   let recorder: MediaRecorder | null = null
@@ -31,7 +34,7 @@ export function useVoiceInput() {
   async function startRecording(onText: (text: string) => void) {
     if (voiceBusy.value || voiceRecording.value) return
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
-      console.warn('Voice input is not supported by this browser.')
+      pushToast('Voice input is not supported in this browser', { tone: 'danger' })
       return
     }
     voiceBusy.value = true

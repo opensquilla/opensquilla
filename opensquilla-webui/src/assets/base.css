@@ -736,6 +736,151 @@ pre {
   color: var(--sidebar-text-soft);
 }
 
+/* Recent | Grouped segmented toggle */
+.sidebar-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--sidebar-border);
+  border-radius: 999px;
+  background: var(--sidebar-control-bg);
+}
+
+.sidebar-mode-btn {
+  border: 0;
+  background: transparent;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--sidebar-text);
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+.sidebar-mode-btn:hover {
+  color: var(--sidebar-text-strong);
+}
+.sidebar-mode-btn.is-active {
+  background: var(--sidebar-item-active);
+  color: var(--sidebar-text-strong);
+}
+
+/* Conversation row: session button + agent badge side by side */
+.sidebar-history-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 1px var(--sp-1);
+}
+
+.sidebar-history-row .sidebar-history-item {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+  margin: 0;
+}
+
+.sidebar-agent-badge {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--sidebar-border);
+  border-radius: 50%;
+  background: var(--sidebar-control-bg);
+  color: var(--sidebar-text);
+  font-size: 0.625rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 120ms, color 120ms, border-color 120ms;
+}
+.sidebar-agent-badge:hover {
+  color: var(--sidebar-text-strong);
+  border-color: var(--border-strong);
+}
+.sidebar-agent-badge.is-active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* Grouped mode: family eyebrow + collapsible groups */
+.sidebar-family-label {
+  padding: var(--sp-2) 14px 2px;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--sidebar-text-soft);
+}
+
+.sidebar-group-header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: calc(100% - var(--sp-2));
+  min-height: 30px;
+  margin: 1px var(--sp-1);
+  padding: 4px 10px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--sidebar-text-strong);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+.sidebar-group-header:hover {
+  background: var(--sidebar-item-hover);
+}
+
+.sidebar-group-chevron {
+  color: var(--sidebar-text-soft);
+  transition: transform 120ms;
+}
+.sidebar-group.is-collapsed .sidebar-group-chevron {
+  transform: rotate(-90deg);
+}
+
+.sidebar-group-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-group-count {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--sidebar-control-bg);
+  color: var(--sidebar-text-soft);
+  font-size: 0.625rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.sidebar-group-dot {
+  margin-left: auto;
+}
+
+.sidebar-group-items {
+  margin-left: 14px;
+  padding-left: var(--sp-1);
+  border-left: 1px solid var(--sidebar-border);
+}
+
+/* Mobile drawer scrim: render only in the <=768px overlay layout */
+.sidebar-scrim {
+  display: none;
+}
+
 .new-chat-backdrop {
   position: fixed;
   inset: 0;
@@ -1147,6 +1292,15 @@ pre {
       8px 0 48px rgba(0, 0, 0, 0.04);
   }
 
+  /* Tap-to-close backdrop behind the open drawer */
+  .sidebar-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 150;
+    background: var(--scrim);
+  }
+
   .main.docked {
     margin-left: 0;
   }
@@ -1164,6 +1318,20 @@ pre {
   .sidebar-filter-chip {
     min-height: 36px;
     padding: 6px 12px;
+  }
+
+  .sidebar-mode-btn {
+    min-height: 32px;
+    padding-inline: 12px;
+  }
+
+  .sidebar-agent-badge {
+    width: 32px;
+    height: 32px;
+  }
+
+  .sidebar-group-header {
+    min-height: 44px;
   }
 
   .nav-item {

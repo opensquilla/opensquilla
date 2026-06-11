@@ -1,4 +1,4 @@
-import type { Ref } from 'vue'
+import { computed, ref, watch, type Ref } from 'vue'
 import type {
   ChatMessage,
   ChatPendingItem,
@@ -99,6 +99,21 @@ type ChatDoneUsagePayload = SessionEventPayload & ChatDoneUsageFields & {
   usage?: ChatDoneUsageFields
 }
 
+// A completed turn's measured thinking duration must survive the
+// chat.history sync that replaces the messages array ~50ms after done.
+// History rows carry the reasoning text but not the duration, so records
+// are re-attached strictly by identity (reasoning or answer text) —
+// never by timestamp proximity, which mis-bound reasoning to a
+// neighbouring turn whenever a turn ran longer than the gap after it.
+const REASONING_LOG_LIMIT = 20
+
+interface TurnReasoningRecord {
+  sessionKey: string
+  text: string
+  seconds: number
+  messageText: string
+}
+
 export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions) {
   const {
     sessionKey,
@@ -112,6 +127,75 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
     usageModel,
     stream,
   } = options
+
+  // Live thinking deltas for the current turn (session.event.thinking).
+  const streamThinking = ref<{ text: string; startedAt: number } | null>(null)
+  const turnReasoningLog: TurnReasoningRecord[] = []
+
+  const streamThinkingText = computed(() => streamThinking.value?.text || '')
+  // Recomputed per delta; while reasoning streams the label keeps pace, and
+  // the final "Thought for Ns" uses the measured wall clock at done.
+  const streamThinkingElapsedText = computed(() => {
+    const current = streamThinking.value
+    if (!current) return ''
+    const seconds = Math.max(0, Math.floor((Date.now() - current.startedAt) / 1000))
+    return `${seconds}s`
+  })
+
+  function appendThinkingDelta(text: string) {
+    if (!text) return
+    if (!stream.isStreaming.value) stream.startStreaming()
+    const current = streamThinking.value
+    streamThinking.value = current
+      ? { text: current.text + text, startedAt: current.startedAt }
+      : { text, startedAt: Date.now() }
+  }
+
+  function clearLiveThinking() {
+    streamThinking.value = null
+  }
+
+  // Walk recorded turn reasonings (newest first) and re-bind each to the
+  // newest unclaimed assistant message it identifies: a row that already
+  // carries this record's reasoning text gets its measured duration
+  // restored, and a row without reasoning is claimed via its answer text
+  // (covers history rows that predate the reasoning backfill). A record
+  // with no identity match attaches nowhere — losing a duration beats
+  // showing one turn's reasoning under another turn's answer. Idempotent:
+  // safe to run after every history replacement.
+  function attachTurnReasoning() {
+    if (turnReasoningLog.length === 0) return
+    const list = messages.value
+    const claimed = new Set<ChatMessage>()
+    for (let r = turnReasoningLog.length - 1; r >= 0; r--) {
+      const record = turnReasoningLog[r]
+      if (record.sessionKey !== sessionKey.value) continue
+      for (let i = list.length - 1; i >= 0; i--) {
+        const msg = list[i]
+        if (msg.role !== 'assistant' || claimed.has(msg)) continue
+        const carriesRecordReasoning = msg.reasoning?.text === record.text
+        const matchesAnswerText =
+          !msg.reasoning && record.messageText !== '' && msg.text.trim() === record.messageText
+        if (!carriesRecordReasoning && !matchesAnswerText) continue
+        claimed.add(msg)
+        msg.reasoning = { text: record.text, seconds: record.seconds }
+        break
+      }
+    }
+  }
+
+  function recordTurnReasoning(text: string, seconds: number, messageText: string) {
+    turnReasoningLog.push({ sessionKey: sessionKey.value, text, seconds, messageText })
+    if (turnReasoningLog.length > REASONING_LOG_LIMIT) {
+      turnReasoningLog.splice(0, turnReasoningLog.length - REASONING_LOG_LIMIT)
+    }
+    attachTurnReasoning()
+  }
+
+  watch(sessionKey, () => {
+    streamThinking.value = null
+    turnReasoningLog.length = 0
+  })
 
   function isStaleEpoch(payload: SessionEventPayload): boolean {
     return payloadIsStaleEpoch(payload, currentEpoch.value)
@@ -362,6 +446,15 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
     if (event.startsWith('session.event.task_group.')) return
     if (event === 'sessions.changed') return
 
+    if (event === 'session.event.thinking') {
+      if (aborted.value) return
+      const thinkingText = (payload as SessionEventPayload).text
+      if (typeof thinkingText !== 'string' || !thinkingText) return
+      stream.resetStreamIdleTimer()
+      appendThinkingDelta(thinkingText)
+      return
+    }
+
     if (event.endsWith('.done') || event === 'chat.done') {
       const donePayload = payload as ChatDoneUsagePayload
       const u = donePayload.usage || donePayload || {}
@@ -383,7 +476,28 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
       } else {
         options.flushPendingRouterDecision()
       }
+      // Done backfills the turn's reasoning: prefer the authoritative
+      // reasoning_content, fall back to accumulated live thinking deltas.
+      const rawReasoningContent = (payload as SessionEventPayload).reasoning_content
+      const doneReasoning = typeof rawReasoningContent === 'string'
+        ? rawReasoningContent.trim()
+        : ''
+      const liveThinking = streamThinking.value
+      const reasoningText = doneReasoning || liveThinking?.text.trim() || ''
+      const reasoningSeconds = liveThinking
+        ? Math.max(0, Math.floor((Date.now() - liveThinking.startedAt) / 1000))
+        : 0
+      clearLiveThinking()
       stream.endStreaming()
+      // endStreaming pushes the assistant message only when the turn kept
+      // visible output; sentinel/empty bubbles must not record reasoning.
+      // Bind reasoning to that exact bubble, then keep a record so the
+      // measured duration survives history replacements.
+      const lastMessage = messages.value[messages.value.length - 1]
+      if (reasoningText && payload?.reason !== 'aborted' && lastMessage?.role === 'assistant') {
+        lastMessage.reasoning = { text: reasoningText, seconds: reasoningSeconds }
+        recordTurnReasoning(reasoningText, reasoningSeconds, lastMessage.text.trim())
+      }
       options.scheduleHistorySync()
 
       if (payload?.reason === 'aborted') {
@@ -400,6 +514,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
       }
     } else if (event.endsWith('.error')) {
       options.clearPendingRouterDecision()
+      clearLiveThinking()
       stream.endStreaming()
       messages.value.push({ role: 'error', text: eventSessionErrorMessage(payload), ts: new Date().toISOString() })
       options.scheduleHistorySync()
@@ -450,5 +565,8 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
 
   return {
     handlers,
+    streamThinkingText,
+    streamThinkingElapsedText,
+    attachTurnReasoning,
   }
 }

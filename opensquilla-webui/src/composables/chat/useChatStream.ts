@@ -31,6 +31,19 @@ const THINKING_DELAY_MS = 400
 const THINKING_TTL_MS = 60000
 const SQUILLA_VERBS = ['Planning next step', 'Reading context', 'Waiting for model', 'Preparing output']
 const SQUILLA_DWELL_MS = 2500
+const STALE_SIGNAL_MS = 20000
+
+const TOOL_PROGRESS_VERBS: Record<string, string> = {
+  'web.search': 'Searching the web',
+  'web.read': 'Reading a web page',
+  'code.python': 'Running Python',
+  'command.run': 'Running a command',
+  'file.inspect': 'Inspecting files',
+  'file.write': 'Writing a file',
+  'file.edit': 'Editing a file',
+  'artifact.create': 'Creating a file',
+  'memory.search': 'Searching memory',
+}
 
 export interface UseChatStreamOptions {
   messages: Ref<ChatMessage[]>
@@ -63,24 +76,36 @@ export function useChatStream(options: UseChatStreamOptions) {
       streamArtifacts.value.length > 0
   })
 
-  const streamActivity = ref({ label: 'Sending', startedAt: 0 })
+  const streamActivity = ref({ label: 'Sending', key: 'Sending', startedAt: 0 })
   const streamActivityTick = ref(0)
   let streamActivityTimer: ReturnType<typeof setInterval> | null = null
+  const streamRound = ref(1)
+  const lastSignalAt = ref(0)
+  const toolTimes = ref(new Map<string, { startedAt: number; endedAt?: number }>())
 
+  // The ribbon stays up for the whole run, including while tool rows render.
   const streamActivityVisible = computed(() => {
-    return isStreaming.value &&
-      streamBubble.value &&
-      !streamHasVisibleOutput.value
+    return isStreaming.value && streamBubble.value
+  })
+
+  const streamActivityStale = computed(() => {
+    streamActivityTick.value
+    return lastSignalAt.value > 0 && Date.now() - lastSignalAt.value > STALE_SIGNAL_MS
   })
 
   const streamActivityText = computed(() => {
     streamActivityTick.value
-    const startedAt = streamActivity.value.startedAt || Date.now()
-    const seconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
+    const now = Date.now()
+    if (lastSignalAt.value > 0 && now - lastSignalAt.value > STALE_SIGNAL_MS) {
+      const silent = Math.floor((now - lastSignalAt.value) / 1000)
+      return `Still working — last signal ${silent}s ago`
+    }
+    const startedAt = streamActivity.value.startedAt || now
+    const seconds = Math.max(0, Math.floor((now - startedAt) / 1000))
     const base = seconds >= 10 && streamActivity.value.label === 'Planning next step'
       ? 'Still waiting for model'
       : streamActivity.value.label
-    return `${base} · ${seconds}s`
+    return `${base} · ${seconds}s · round ${streamRound.value}`
   })
 
   const streamTimelineItems = computed<ChatStreamTimelineItem[]>(() => {
@@ -112,16 +137,44 @@ export function useChatStream(options: UseChatStreamOptions) {
     streamSegments.value = []
     streamToolCalls.value = []
     streamArtifacts.value = []
+    toolTimes.value = new Map()
   }
 
-  function setStreamActivity(label: string) {
-    streamActivity.value = { label, startedAt: Date.now() }
+  function noteStreamSignal() {
+    lastSignalAt.value = Date.now()
+  }
+
+  // `key` identifies the activity phase: the elapsed counter restarts only
+  // when the phase changes, so label refinements (e.g. tool arguments
+  // streaming in) keep the same running clock.
+  function setStreamActivity(label: string, key = label) {
+    noteStreamSignal()
+    const current = streamActivity.value
+    if (current.key === key) {
+      if (current.label !== label) {
+        streamActivity.value = { label, key, startedAt: current.startedAt || Date.now() }
+      }
+    } else {
+      streamActivity.value = { label, key, startedAt: Date.now() }
+    }
     streamActivityTick.value++
     if (!streamActivityTimer) {
       streamActivityTimer = setInterval(() => {
         streamActivityTick.value++
       }, 1000)
     }
+  }
+
+  function toolNarrationLabel(tc: ChatToolCall): string {
+    const verb = TOOL_PROGRESS_VERBS[toolOperationKey(tc.name)]
+      || `Running ${tc.name.replace(/[_-]+/g, ' ')}`
+    const arg = String(tc.inputPreview || '').replace(/\s+/g, ' ').trim().replace(/^"|"$/g, '')
+    if (isEmptyToolPreview(arg)) return `${verb}…`
+    return `${verb} · ${truncateToolPreview(arg, 48)}`
+  }
+
+  function narrateToolCall(tc: ChatToolCall) {
+    setStreamActivity(toolNarrationLabel(tc), `tool:${tc.toolId}`)
   }
 
   function clearStreamActivity() {
@@ -139,6 +192,8 @@ export function useChatStream(options: UseChatStreamOptions) {
     openToolGroups.value = new Set()
     openToolItems.value = new Set()
     streamToolGroupSeq = 0
+    streamRound.value = 1
+    noteStreamSignal()
     streamBubble.value = true
     streamShowHeader.value = options.lastHeaderRole.value !== 'assistant'
     setStreamActivity('Sending')
@@ -159,9 +214,10 @@ export function useChatStream(options: UseChatStreamOptions) {
       ).trim()
 
       const sentinelOnly = !wasAborted && ['NO_REPLY', 'HEARTBEAT_OK'].includes(cleanedText)
-      const abortedEmpty = wasAborted && !cleanedText
+      // After Stop, partial streamed output (text, tool rows, artifacts) is
+      // kept; only a bubble with nothing visible at all is dropped.
       const emptyStream = !cleanedText && streamArtifacts.value.length === 0 && streamToolCalls.value.length === 0
-      if (sentinelOnly || abortedEmpty || emptyStream) {
+      if (sentinelOnly || emptyStream) {
         streamBubble.value = false
         isStreaming.value = false
         resetStreamState()
@@ -206,7 +262,7 @@ export function useChatStream(options: UseChatStreamOptions) {
   function appendDelta(text: string) {
     if (options.aborted.value) return
     if (!isStreaming.value) startStreaming()
-    clearStreamActivity()
+    setStreamActivity('Writing reply', `write:${streamRound.value}`)
     streamRaw.value += text
 
     const lastSegment = streamSegments.value[streamSegments.value.length - 1]
@@ -217,6 +273,12 @@ export function useChatStream(options: UseChatStreamOptions) {
       lastSegment.dirty = true
     }
 
+    scheduleRender()
+  }
+
+  // Batch stream-driven DOM work (markdown re-render + autoscroll) into one
+  // ~80ms flush so heavy tool turns do not re-render per event.
+  function scheduleRender() {
     renderDirty = true
     if (!renderRafId) {
       renderRafId = setTimeout(flushRender, 80)
@@ -272,6 +334,9 @@ export function useChatStream(options: UseChatStreamOptions) {
   }
 
   function resetStreamIdleTimer() {
+    // Every gateway event funnels through here, including run heartbeats, so
+    // it doubles as the liveness signal for the staleness note.
+    noteStreamSignal()
     clearStreamIdleTimer()
     if (!isStreaming.value || streamIdlePausedForApproval.value) return
     streamIdleTimer.value = setTimeout(() => {
@@ -306,6 +371,12 @@ export function useChatStream(options: UseChatStreamOptions) {
       return existing
     }
 
+    // Only calls observed from their start get a wall clock; result-only
+    // calls (and replayed history) never show a fabricated elapsed time.
+    if (optionsArg.running && !toolTimes.value.has(toolId)) {
+      toolTimes.value.set(toolId, { startedAt: Date.now() })
+    }
+
     const operationKey = toolOperationKey(name)
     const lastSegment = streamSegments.value[streamSegments.value.length - 1]
     const groupId = lastSegment?.type === 'tool-group' && lastSegment.operationKey === operationKey && lastSegment.groupId
@@ -337,15 +408,12 @@ export function useChatStream(options: UseChatStreamOptions) {
   function appendToolCall(payload: ToolUsePayload) {
     const tc = ensureStreamToolCall(payload, { running: true })
     if (!tc) return
-    clearStreamActivity()
-    options.scrollToBottom()
+    narrateToolCall(tc)
+    scheduleRender()
   }
 
   function appendToolDelta(payload: ToolDeltaPayload) {
     if (!payload || options.aborted.value) return
-    if (isStreaming.value && streamBubble.value && !streamHasVisibleOutput.value) {
-      setStreamActivity('Receiving tool arguments')
-    }
     const toolId = payload.tool_use_id || payload.toolUseId || payload.id || ''
     const fragment = payload.json_fragment ?? payload.jsonFragment ?? payload.fragment ?? ''
     const fragmentText = typeof fragment === 'string' ? fragment : String(fragment || '')
@@ -354,7 +422,6 @@ export function useChatStream(options: UseChatStreamOptions) {
     const existing = streamToolCalls.value.find(t => t.toolId === toolId)
     const tc = existing || ensureStreamToolCall(payload, { running: true })
     if (!tc) return
-    clearStreamActivity()
 
     const nextInput = `${tc.inputRaw || ''}${fragmentText}`
     tc.inputRaw = nextInput
@@ -362,7 +429,8 @@ export function useChatStream(options: UseChatStreamOptions) {
       tc.inputPreview = truncateToolPreview(nextInput, 200)
       tc.displayName = toolDisplayName(tc.name, nextInput)
     }
-    options.scrollToBottom()
+    if (tc.isRunning) narrateToolCall(tc)
+    scheduleRender()
   }
 
   function appendToolResult(payload: ToolResultPayload) {
@@ -376,7 +444,6 @@ export function useChatStream(options: UseChatStreamOptions) {
 
     const tc = streamToolCalls.value.find(t => t.toolId === toolId) || ensureStreamToolCall(payload, { running: false })
     if (tc) {
-      clearStreamActivity()
       const input = normalizeToolInputText(payload)
       if (input) {
         tc.inputRaw = input
@@ -388,9 +455,33 @@ export function useChatStream(options: UseChatStreamOptions) {
       tc.isError = toolResultIsError(payload)
       tc.result = content
       tc.resultPreview = truncateToolPreview(content, 200)
+
+      const timing = toolTimes.value.get(tc.toolId)
+      if (timing && !timing.endedAt) timing.endedAt = Date.now()
+
+      const stillRunning = streamToolCalls.value.find(t => t.isRunning)
+      if (stillRunning) {
+        narrateToolCall(stillRunning)
+      } else {
+        // All tools in the batch came back: the model starts its next round.
+        streamRound.value++
+        setStreamActivity('Planning next step', `plan:${streamRound.value}`)
+      }
     }
 
-    options.scrollToBottom()
+    scheduleRender()
+  }
+
+  function streamToolElapsedText(call: Pick<ChatToolCall, 'toolId'>): string {
+    streamActivityTick.value
+    const timing = toolTimes.value.get(call.toolId)
+    if (!timing) return ''
+    const end = timing.endedAt ?? Date.now()
+    const seconds = Math.max(0, end - timing.startedAt) / 1000
+    if (timing.endedAt && seconds < 10) return `${seconds.toFixed(1)}s`
+    const whole = Math.floor(seconds)
+    if (whole < 60) return `${whole}s`
+    return `${Math.floor(whole / 60)}m ${whole % 60}s`
   }
 
   function streamToolCallToHistoryCall(tc: ChatToolCall): RawToolCallPayload {
@@ -431,9 +522,9 @@ export function useChatStream(options: UseChatStreamOptions) {
 
   function appendArtifact(payload: ArtifactPayload) {
     if (!payload) return
-    clearStreamActivity()
+    noteStreamSignal()
     streamArtifacts.value.push(payload)
-    options.scrollToBottom()
+    scheduleRender()
   }
 
   function reconcileFinalText(finalText: string) {
@@ -484,7 +575,9 @@ export function useChatStream(options: UseChatStreamOptions) {
     streamHasVisibleOutput,
     streamTimelineItems,
     streamActivityVisible,
+    streamActivityStale,
     streamActivityText,
+    streamToolElapsedText,
     thinkingVisible,
     thinkingText,
     startStreaming,

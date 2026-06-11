@@ -6,9 +6,9 @@ Four concrete backends ship today:
   primary path; uses the ``bwrap`` binary for namespace isolation.
 * :class:`~opensquilla.sandbox.backend.seatbelt.SeatbeltBackend` - macOS
   primary path; uses ``sandbox-exec`` with a generated SBPL profile.
-* :class:`~opensquilla.sandbox.backend.windows_restricted_token.WindowsRestrictedTokenBackend`
-  - native Windows path; delegates to a restricted-token helper and fails closed
-  when policy enforcement is unavailable.
+* :class:`~opensquilla.sandbox.backend.windows_default.WindowsDefaultBackend`
+  - native Windows path; prepares Windows sandbox grants and fails closed when
+  policy enforcement is unavailable.
 * :class:`~opensquilla.sandbox.backend.noop.NoopBackend` - used when the sandbox
   feature switch is off; runs the command through the existing rlimit wrapper
   and emits a warning on every invocation so the bypass is visible in logs.
@@ -26,7 +26,7 @@ from opensquilla.sandbox.backend.bubblewrap import BubblewrapBackend
 from opensquilla.sandbox.backend.noop import NoopBackend
 from opensquilla.sandbox.backend.seatbelt import SeatbeltBackend
 from opensquilla.sandbox.backend.unavailable import UnavailableBackend
-from opensquilla.sandbox.backend.windows_restricted_token import WindowsRestrictedTokenBackend
+from opensquilla.sandbox.backend.windows_default import WindowsDefaultBackend
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.types import SandboxBackendError
 
@@ -38,15 +38,15 @@ def _auto_backend_failure_message() -> str:
     if not sys.platform.startswith("win"):
         return message
 
-    from opensquilla.sandbox.backend.windows_support import (
-        probe_windows_sandbox_support,
+    from opensquilla.sandbox.backend.windows_default_support import (
+        probe_windows_default_support,
     )
 
-    support = probe_windows_sandbox_support()
+    support = probe_windows_default_support()
     diagnostics = (
         "Windows sandbox setup diagnostics: "
         f"ctypes={'ready' if support.ctypes_available else 'missing'}, "
-        f"Restricted Token={'ready' if support.restricted_token_enforced else 'not ready'}, "
+        f"windows_default={'ready' if support.default_backend_available else 'not ready'}, "
         f"network boundary={'ready' if support.proxy_allowlist_enforced else 'not ready'}"
     )
     return f"{message}; {diagnostics}"
@@ -63,9 +63,9 @@ def _auto_backend() -> Backend:
         if seatbelt.available():
             return seatbelt
     if sys.platform.startswith("win"):
-        restricted_token = WindowsRestrictedTokenBackend()
-        if restricted_token.available():
-            return restricted_token
+        windows_default = WindowsDefaultBackend()
+        if windows_default.available():
+            return windows_default
     return NoopBackend()
 
 
@@ -90,8 +90,8 @@ def select_backend(settings: SandboxSettings) -> Backend:
         backend = SeatbeltBackend()
     elif choice == "noop":
         backend = NoopBackend()
-    elif choice == "windows_restricted_token":
-        backend = WindowsRestrictedTokenBackend()
+    elif choice == "windows_default":
+        backend = WindowsDefaultBackend()
     else:  # pragma: no cover - pydantic Literal constrains this upstream
         raise ValueError(f"unknown sandbox backend: {choice!r}")
 
@@ -116,6 +116,6 @@ __all__ = [
     "NoopBackend",
     "SeatbeltBackend",
     "UnavailableBackend",
-    "WindowsRestrictedTokenBackend",
+    "WindowsDefaultBackend",
     "select_backend",
 ]

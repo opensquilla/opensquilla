@@ -17,7 +17,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from opensquilla.sandbox.run_mode import RunMode, normalize_run_mode
@@ -30,7 +30,7 @@ BackendName = Literal[
     "bubblewrap",
     "seatbelt",
     "noop",
-    "windows_restricted_token",
+    "windows_default",
 ]
 NetworkDefault = Literal["none", "proxy_allowlist"]
 RunModeName = Literal["standard", "trusted", "full"]
@@ -96,6 +96,16 @@ class SandboxSettings(BaseSettings):
     cpu_seconds: int = 30
     memory_mb: int = 1024
     wall_seconds: int = 60
+
+    @field_validator("backend", mode="before")
+    @classmethod
+    def _reject_removed_windows_backend(cls, value: object) -> object:
+        if str(value).strip().lower() == "windows_restricted_token":
+            raise ValueError(
+                "windows_restricted_token was removed; use backend='windows_default' "
+                "or backend='auto'"
+            )
+        return value
 
     @model_validator(mode="after")
     def _check_legacy_level(self) -> SandboxSettings:

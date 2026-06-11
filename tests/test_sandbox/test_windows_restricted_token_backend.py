@@ -55,7 +55,7 @@ def test_windows_appcontainer_backend_literal_is_rejected() -> None:
         SandboxSettings(sandbox=True, backend="windows_appcontainer")  # type: ignore[arg-type]
 
 
-def test_windows_restricted_token_available_requires_enforced_boundary(
+def test_windows_restricted_token_available_requires_enforced_process_boundary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from opensquilla.sandbox.backend import windows_support as support_mod
@@ -65,15 +65,11 @@ def test_windows_restricted_token_available_requires_enforced_boundary(
 
     monkeypatch.setattr(support_mod.sys, "platform", "win32")
     monkeypatch.setattr(support_mod, "_ctypes_available", lambda: True)
+    monkeypatch.setattr(support_mod, "_restricted_token_smoke_ok", lambda: False)
 
     assert WindowsRestrictedTokenBackend().available() is False
 
     monkeypatch.setattr(support_mod, "_restricted_token_smoke_ok", lambda: True)
-    monkeypatch.setattr(support_mod, "_wfp_smoke_ok", lambda: False)
-    monkeypatch.setattr(support_mod, "_broker_smoke_ok", lambda: True)
-    assert WindowsRestrictedTokenBackend().available() is False
-
-    monkeypatch.setattr(support_mod, "_wfp_smoke_ok", lambda: True)
     assert WindowsRestrictedTokenBackend().available() is True
 
 
@@ -312,7 +308,6 @@ def test_helper_rejects_before_run_when_restricted_token_enforcement_missing(
         lambda: WindowsSandboxSupport(
             is_windows=True,
             ctypes_available=True,
-            appcontainer_enforced=False,
             restricted_token_enforced=False,
             proxy_allowlist_enforced=False,
         ),

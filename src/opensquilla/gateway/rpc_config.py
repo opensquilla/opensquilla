@@ -285,6 +285,7 @@ _SAFE_WRITE_PATCH_PATHS = frozenset(
         "squilla_router.enabled",
         "squilla_router.rollout_phase",
         "squilla_router.strategy",
+        "squilla_router.visual_mode",
         "squilla_router.default_tier",
         "squilla_router.confidence_threshold",
     }

@@ -984,6 +984,7 @@ class SquillaRouterConfig(BaseSettings):
     rollout_phase: str = "full"  # "observe" | "prompt_only" | "full"
     strategy: str = "v4_phase3"
     tier_profile: str | None = None
+    visual_mode: Literal["real_candidates", "legacy_grid"] = "real_candidates"
     tiers: dict = Field(default_factory=_default_tiers)
     default_tier: str = DEFAULT_TEXT_TIER
     confidence_threshold: float = 0.5
@@ -1009,6 +1010,17 @@ class SquillaRouterConfig(BaseSettings):
     vision_followup_gate_max_output_tokens: int = Field(default=512, ge=16)
     vision_followup_gate_fallback_recent_turns: int = Field(default=2, ge=0)
     vision_followup_gate_unknown_policy: str = "image_if_recent"
+
+    @field_validator("visual_mode", mode="before")
+    @classmethod
+    def _normalize_visual_mode(cls, value: Any) -> str:
+        raw = "real_candidates" if value is None else str(value).strip().lower()
+        normalized = raw.replace("-", "_")
+        if normalized in {"", "real_candidates", "candidates"}:
+            return "real_candidates"
+        if normalized in {"legacy_grid", "model_space", "modelspace"}:
+            return "legacy_grid"
+        raise ValueError("visual_mode must be one of: real_candidates, legacy_grid")
 
     @model_validator(mode="before")
     @classmethod

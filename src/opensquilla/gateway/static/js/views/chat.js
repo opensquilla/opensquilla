@@ -1464,6 +1464,7 @@ const ChatView = (() => {
       // per browser, so it survives view re-render / navigation. Inherits the
       // visibility/focus refresh that re-runs this function for free.
       _routerFxLoadPref();
+      _routerFxApplyConfigVisualMode(cfg?.squilla_router?.visual_mode);
       const routerFxToggle = _el?.querySelector('#toggle-router-fx');
       if (routerFxToggle) routerFxToggle.checked = _routerFx.enabled;
       if (window.SavingsFX) window.SavingsFX.setEnabled(_routerFx.enabled);
@@ -3321,10 +3322,70 @@ const ChatView = (() => {
   // the whole animation (scan + ~360ms settle transition) stays under ~1s.
   const _ROUTER_FX_SCAN_MS = 600;
   const _ROUTER_FX_START_DELAY_MS = 280;
-  const _routerFx = { enabled: true, variant: 'default' };
+  const _ROUTER_FX_GRID_COLS = 5;
+  const _ROUTER_FX_GRID_ROWS = 3;
+  const _ROUTER_FX_GRID_CELLS = _ROUTER_FX_GRID_COLS * _ROUTER_FX_GRID_ROWS;
+  const _ROUTER_FX_REAL_ANCHOR_CELLS = [1, 6, 8, 13, 11, 3, 5, 9, 12, 14, 0, 4, 7, 10, 2];
+  const _ROUTER_FX_DECOY_POOL = [
+    'deepseek-v4-flash',
+    'claude-sonnet-4.6',
+    'qwen3.6-plus',
+    'minimax-m2.7',
+    'gpt-5.5',
+    'gemini-3.5-flash',
+    'glm-5-turbo',
+    'claude-opus-4.8',
+    'nemotron-3-super',
+    'deepseek-v4-pro',
+    'mimo-v2.5-pro',
+    'gpt-5.4',
+    'kimi-k2.6',
+    'claude-opus-4.7',
+    'gemini-3.1-flash-lite',
+    'glm-5.1',
+    'qwen3.6-max',
+    'claude-haiku-4.5',
+    'grok-4.3',
+    'gpt-5.4-mini',
+    'gemini-2.5-flash',
+    'step-3.5-flash',
+    'mistral-medium-3.5',
+    'ling-2.6-1t',
+    'deepseek-v3.2',
+    'trinity-large-thinking',
+    'gemini-2.5-pro',
+    'seed-2.0-mini',
+    'gpt-5.3-codex',
+    'grok-4.20',
+    'mercury-2',
+    'hunyuan-3',
+    'mimo-v2-omni',
+    'command-r-plus',
+    'llama-4-405b',
+    'sonar-large',
+  ];
+  const _routerFx = { enabled: true, visualMode: 'real_candidates', variant: 'default' };
+  function _routerFxNormalizeVisualMode(mode) {
+    const normalized = typeof mode === 'string'
+      ? mode.trim().toLowerCase().replace(/-/g, '_')
+      : '';
+    if (normalized === 'legacy_grid' || normalized === 'model_space') {
+      return 'legacy_grid';
+    }
+    return 'real_candidates';
+  }
+  function _routerFxPanelDataset(mode) {
+    return _routerFxNormalizeVisualMode(mode) === 'legacy_grid'
+      ? 'legacy-grid'
+      : 'real-candidates';
+  }
+  function _routerFxApplyConfigVisualMode(mode) {
+    _routerFx.visualMode = _routerFxNormalizeVisualMode(mode);
+  }
   function _routerFxLoadPref() {
     // Defaults stand (enabled ON, default variant) unless a stored pref
     // overrides them. localStorage may throw (private mode / quota) — swallow.
+    _routerFx.visualMode = 'real_candidates';
     _routerFx.variant = 'default';
     try {
       const raw = localStorage.getItem(_ROUTER_FX_PREF_KEY);
@@ -3714,9 +3775,9 @@ const ChatView = (() => {
     return _routerFxVisualEntries(requestKind, decision);
   }
 
-  // Assemble the grid from real candidates only. No filler/decoy wall: every
-  // visible model name is a candidate that could actually be called this turn.
-  function _routerFxBuildGridCells(realEntries, seedKey) {
+  // Assemble the default panel from real candidates only. No filler/decoy
+  // wall: every visible model name is callable for this turn.
+  function _routerFxBuildCandidateGridCells(realEntries, seedKey) {
     const orderedRealEntries = realEntries.slice().sort((a, b) => (
       (a.label || a.displayName || a.key || '').localeCompare(b.label || b.displayName || b.key || '')
     ));
@@ -3727,6 +3788,63 @@ const ChatView = (() => {
       label: entry.label || entry.displayName,
       title: entry.title || entry.label || entry.displayName,
     }));
+  }
+
+  // Legacy grid is a visual wall only: real candidates keep their in-memory
+  // entries for winner lookup, while decoys are labels with no tier metadata.
+  function _routerFxBuildLegacyGridCells(realEntries, seedKey) {
+    const cells = Array.from({ length: _ROUTER_FX_GRID_CELLS }, () => null);
+    const realNames = new Set();
+    const orderedRealEntries = realEntries.slice().sort((a, b) => (
+      (a.label || a.displayName || a.key || '').localeCompare(b.label || b.displayName || b.key || '')
+    ));
+    orderedRealEntries.forEach((entry, i) => {
+      const anchor = _ROUTER_FX_REAL_ANCHOR_CELLS[i];
+      const idx = typeof anchor === 'number' ? anchor : cells.findIndex((cell) => cell == null);
+      if (idx < 0 || idx >= cells.length) return;
+      cells[idx] = {
+        kind: 'real',
+        entry,
+        displayName: entry.displayName,
+        label: entry.label || entry.displayName,
+        title: entry.title || entry.label || entry.displayName,
+      };
+      if (entry.displayName) realNames.add(entry.displayName);
+      if (entry.label) realNames.add(entry.label);
+    });
+
+    const decoys = [];
+    for (let i = 0; i < _ROUTER_FX_DECOY_POOL.length && decoys.length < _ROUTER_FX_GRID_CELLS; i++) {
+      const name = _ROUTER_FX_DECOY_POOL[i];
+      if (realNames.has(name)) continue;
+      decoys.push({
+        kind: 'decoy',
+        displayName: name,
+        label: name,
+        title: name,
+      });
+    }
+    while (decoys.length < _ROUTER_FX_GRID_CELLS) {
+      decoys.push({
+        kind: 'decoy',
+        displayName: '-',
+        label: '-',
+        title: '-',
+      });
+    }
+    const orderedDecoys = _routerFxShuffle(decoys, seedKey ? seedKey + ':decoy' : undefined);
+    let decoyIdx = 0;
+    for (let i = 0; i < cells.length; i++) {
+      if (cells[i] == null) cells[i] = orderedDecoys[decoyIdx++];
+    }
+    return cells;
+  }
+
+  function _routerFxBuildGridCells(realEntries, seedKey, visualMode) {
+    if (_routerFxNormalizeVisualMode(visualMode) === 'legacy_grid') {
+      return _routerFxBuildLegacyGridCells(realEntries, seedKey);
+    }
+    return _routerFxBuildCandidateGridCells(realEntries, seedKey);
   }
 
   function _buildRouterFxElement(decision, opts) {
@@ -3767,11 +3885,15 @@ const ChatView = (() => {
     // layout on every rebuild, so the field never reshuffles after lock.
     const seedKey = opts && opts.seedKey ? String(opts.seedKey) : '';
     if (seedKey) wrap.dataset.seed = seedKey;
+    const visualMode = _routerFxNormalizeVisualMode(
+      opts.visualMode != null ? opts.visualMode : _routerFx.visualMode,
+    );
+    wrap.dataset.panel = _routerFxPanelDataset(visualMode);
 
     const requestKind = _routerFxRequestKindFromDecision(decision, opts.requestKind);
     const realEntries = _routerFxRealEntries(decision, requestKind);
     if (realEntries.length <= 1) return null;
-    const gridCells = _routerFxBuildGridCells(realEntries, seedKey || undefined);
+    const gridCells = _routerFxBuildGridCells(realEntries, seedKey || undefined, visualMode);
 
     const grid = document.createElement('div');
     grid.className = 'router-fx-grid';
@@ -6028,6 +6150,7 @@ const ChatView = (() => {
                 if (identityChanged) savedUsage.__savings_ui_suppressed = true;
               }
               if (window.SavingsFX) window.SavingsFX.noteTurn(savedUsage);
+              const routerPanel = _routerFxPanelDataset(_routerFx.visualMode);
               // Place a pre-settled router slider directly beneath the
               // user message that triggered this turn — never above
               // it, never with anything wedged in between.
@@ -6051,7 +6174,8 @@ const ChatView = (() => {
               if (userMsg && userMsg.parentNode === _thread) {
                 const ownStrips = Array.from(_thread.querySelectorAll('.router-fx')).filter(
                   (el) => el.dataset.sessionKey === (_sessionKey || '')
-                    && el.dataset.turnIndex === String(_histUserIdx),
+                    && el.dataset.turnIndex === String(_histUserIdx)
+                    && _routerFxPanelDataset(el.dataset.panel) === routerPanel,
                 );
                 const keep = ownStrips.find((el) => el.dataset.routerIdentity === routerIdentity)
                   || null;
@@ -6072,7 +6196,8 @@ const ChatView = (() => {
               const existingStrip = (placed && placed.classList
                   && placed.classList.contains('router-fx')) ? placed : null;
               const alreadyInPlace = existingStrip
-                && existingStrip.dataset.routerIdentity === routerIdentity;
+                && existingStrip.dataset.routerIdentity === routerIdentity
+                && _routerFxPanelDataset(existingStrip.dataset.panel) === routerPanel;
               if (!alreadyInPlace) {
                 if (existingStrip) _routerFxRemoveStrip(existingStrip);
                 const hint = msg.timestamp || msg.ts || msg.message_id || '';

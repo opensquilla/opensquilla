@@ -103,6 +103,28 @@ def test_direct_provider_runtime_does_not_inherit_openrouter_provider_routing() 
     assert runtime.provider_routing == {}
 
 
+def test_squilla_router_visual_mode_defaults_to_real_candidates() -> None:
+    cfg = GatewayConfig()
+
+    assert cfg.squilla_router.visual_mode == "real_candidates"
+    assert cfg.to_public_dict()["squilla_router"]["visual_mode"] == "real_candidates"
+
+
+def test_squilla_router_visual_mode_accepts_legacy_grid_and_model_space_alias() -> None:
+    legacy_cfg = GatewayConfig(squilla_router={"visual_mode": "legacy_grid"})
+    alias_cfg = GatewayConfig(squilla_router={"visual_mode": "model_space"})
+    dashed_alias_cfg = GatewayConfig(squilla_router={"visual_mode": "model-space"})
+
+    assert legacy_cfg.squilla_router.visual_mode == "legacy_grid"
+    assert alias_cfg.squilla_router.visual_mode == "legacy_grid"
+    assert dashed_alias_cfg.squilla_router.visual_mode == "legacy_grid"
+
+
+def test_squilla_router_visual_mode_rejects_unknown_value() -> None:
+    with pytest.raises(ValueError, match="visual_mode must be one of"):
+        GatewayConfig(squilla_router={"visual_mode": "all_models"})
+
+
 def test_gateway_config_rejects_invalid_router_tier_tool_support() -> None:
     with pytest.raises(ValueError, match="tool_support must be one of"):
         GatewayConfig(
@@ -251,6 +273,20 @@ async def test_safe_config_patch_allows_tool_schema_fit_leaf_paths(tmp_path) -> 
     assert persisted["llm"]["max_tool_schema_chars"] == 12000
     assert persisted["squilla_router"]["tiers"]["c1"]["toolset"] == "web"
     assert persisted["squilla_router"]["tiers"]["c1"]["max_tool_schema_chars"] == 12000
+
+
+async def test_safe_config_patch_allows_router_visual_mode(tmp_path) -> None:
+    cfg = GatewayConfig(config_path=str(tmp_path / "config.toml"))
+    ctx = SimpleNamespace(config=cfg, provider_selector=_CapturingSelector())
+
+    await _handle_config_patch_safe(
+        {"patches": {"squilla_router.visual_mode": "legacy_grid"}},
+        ctx,
+    )
+
+    assert ctx.config.squilla_router.visual_mode == "legacy_grid"
+    persisted = tomllib.loads((tmp_path / "config.toml").read_text())
+    assert persisted["squilla_router"]["visual_mode"] == "legacy_grid"
 
 
 async def test_safe_config_patch_rejects_non_tool_support_tier_paths(tmp_path) -> None:

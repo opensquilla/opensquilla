@@ -1995,13 +1995,10 @@ def test_router_fx_history_reanchors_stranded_strip() -> None:
 
 def test_router_fx_uses_only_effective_real_candidates() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
-    builder_start = source.index("function _routerFxBuildGridCells(realEntries, seedKey) {")
-    builder_end = source.index("  function _buildRouterFxElement", builder_start)
+    builder_start = source.index("function _routerFxBuildCandidateGridCells(realEntries, seedKey) {")
+    builder_end = source.index("  function _routerFxBuildLegacyGridCells", builder_start)
     builder_body = source[builder_start:builder_end]
 
-    assert "const _ROUTER_FX_DECOY_POOL" not in source
-    assert "_ROUTER_FX_REAL_ANCHOR_CELLS" not in source
-    assert "_ROUTER_FX_GRID_CELLS" not in source
     assert "function _routerFxResolveLayoutSeed(sessionKey, hintTimestamp)" in source
     assert "function _routerFxVisualEntries(requestKind, decision) {" in source
     assert "const cachedSeed = _routerFxResolveLayoutSeed(_sessionKey, hint);" in source
@@ -2010,6 +2007,45 @@ def test_router_fx_uses_only_effective_real_candidates() -> None:
     assert "kind: 'real'," in builder_body
     assert "kind: 'decoy'" not in builder_body
     assert "return _routerFxShuffle(cells, seedKey);" not in builder_body
+
+
+def test_router_fx_legacy_grid_is_config_driven_visual_only() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    css = CHAT_CSS.read_text(encoding="utf-8")
+
+    assert "Router panel" not in source
+    assert "data-router-panel" not in source
+    assert "const _ROUTER_FX_DECOY_POOL = [" in source
+    assert "const _ROUTER_FX_REAL_ANCHOR_CELLS" in source
+    assert "function _routerFxNormalizeVisualMode(mode) {" in source
+    assert "return 'legacy_grid';" in source
+    assert "_routerFxApplyConfigVisualMode(cfg?.squilla_router?.visual_mode);" in source
+    assert "saved.visualMode" not in source
+    assert "saved.panel" not in source
+    assert "visualMode:" not in source[
+        source.index("function _routerFxSavePref() {"):
+        source.index("function _routerFxSortTiers(", source.index("function _routerFxSavePref() {"))
+    ]
+
+    legacy_start = source.index("function _routerFxBuildLegacyGridCells(realEntries, seedKey) {")
+    legacy_end = source.index("  function _routerFxBuildGridCells", legacy_start)
+    legacy_body = source[legacy_start:legacy_end]
+    assert "Array.from({ length: _ROUTER_FX_GRID_CELLS }" in legacy_body
+    assert "cells[idx] = {" in legacy_body
+    assert "kind: 'real'," in legacy_body
+    assert "kind: 'decoy'," in legacy_body
+    assert "realNames.add(entry.displayName);" in legacy_body
+
+    builder_start = source.index("function _routerFxBuildGridCells(realEntries, seedKey, visualMode) {")
+    builder_end = source.index("  function _buildRouterFxElement", builder_start)
+    builder_body = source[builder_start:builder_end]
+    assert "_routerFxNormalizeVisualMode(visualMode) === 'legacy_grid'" in builder_body
+    assert "_routerFxBuildLegacyGridCells(realEntries, seedKey)" in builder_body
+    assert "_routerFxBuildCandidateGridCells(realEntries, seedKey)" in builder_body
+    assert "wrap.dataset.panel = _routerFxPanelDataset(visualMode);" in source
+    assert "_routerFxBuildGridCells(realEntries, seedKey || undefined, visualMode);" in source
+    assert "cells[i].kind === 'real' && cells[i].entry.tiers.indexOf(norm) >= 0" in source
+    assert '.router-fx[data-panel="legacy-grid"] .router-fx-grid' in css
 
 
 def test_router_fx_cells_render_model_labels_without_roster_metadata() -> None:
@@ -2746,7 +2782,10 @@ def test_router_fx_visualisation_pref_is_client_side_localstorage() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
 
     assert "const _ROUTER_FX_PREF_KEY = 'opensquilla-router-fx';" in source
-    assert "const _routerFx = { enabled: true, variant: 'default' };" in source
+    assert (
+        "const _routerFx = { enabled: true, visualMode: 'real_candidates', "
+        "variant: 'default' };"
+    ) in source
     assert "function _routerFxLoadPref() {" in source
     assert "function _routerFxSavePref() {" in source
     assert "localStorage.getItem(_ROUTER_FX_PREF_KEY)" in source
@@ -2763,6 +2802,8 @@ def test_router_fx_visualisation_pref_is_client_side_localstorage() -> None:
     load_body = source[load_start:load_end]
     assert "const saved = JSON.parse(raw);" in load_body
     assert "if (typeof saved.enabled === 'boolean') _routerFx.enabled = saved.enabled;" in load_body
+    assert "saved.visualMode" not in load_body
+    assert "saved.panel" not in load_body
     assert "saved.variant" not in load_body
     assert "_routerFx.variant = 'default';" in load_body
     assert "} catch { /* keep defaults */ }" in load_body
@@ -2773,6 +2814,8 @@ def test_router_fx_visualisation_pref_is_client_side_localstorage() -> None:
     save_body = source[save_start:save_end]
     assert "localStorage.setItem(_ROUTER_FX_PREF_KEY, JSON.stringify({" in save_body
     assert "enabled: _routerFx.enabled," in save_body
+    assert "visualMode:" not in save_body
+    assert "panel:" not in save_body
     assert "variant:" not in save_body
     assert "} catch { /* preference is best-effort */ }" in save_body
 
@@ -2797,7 +2840,10 @@ def test_router_effects_default_on_and_cloud_choice_hidden() -> None:
         .read_text(encoding="utf-8")
     )
 
-    assert "const _routerFx = { enabled: true, variant: 'default' };" in chat_source
+    assert (
+        "const _routerFx = { enabled: true, visualMode: 'real_candidates', "
+        "variant: 'default' };"
+    ) in chat_source
     assert (
         "try { return window.localStorage.getItem(_PREF_KEY) !== '0'; } catch { return true; }"
         in savings_source

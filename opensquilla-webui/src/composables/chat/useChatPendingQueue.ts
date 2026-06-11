@@ -1,7 +1,9 @@
-import { computed, nextTick, ref, type Ref } from 'vue'
+import { computed, nextTick, ref, watch, type Ref } from 'vue'
 import type { Attachment, ChatPendingItem } from '@/types/chat'
 
 const MAX_PENDING = 5
+
+export type BusySendMode = 'queue' | 'steer'
 
 export interface UseChatPendingQueueOptions {
   inputText: Ref<string>
@@ -21,6 +23,15 @@ export function useChatPendingQueue(options: UseChatPendingQueueOptions) {
 
   const canQueueMore = computed(() => pendingQueue.value.length < MAX_PENDING)
 
+  // Busy-composer delivery mode: 'queue' holds the message until the turn
+  // ends (pending queue), 'steer' sends it immediately into the active run.
+  // The choice only applies while a run is active, so it snaps back to the
+  // safe default whenever streaming stops.
+  const busySendMode = ref<BusySendMode>('queue')
+  watch(options.isStreaming, (streaming) => {
+    if (!streaming) busySendMode.value = 'queue'
+  })
+
   function enqueuePendingInput(text: string) {
     if (pendingQueue.value.length >= MAX_PENDING) {
       console.warn(`Pending queue full (${MAX_PENDING})`)
@@ -35,7 +46,6 @@ export function useChatPendingQueue(options: UseChatPendingQueueOptions) {
     options.pendingAttachments.value = []
     options.pendingSessionIntent.value = null
     options.autoResizeTextarea()
-    console.info(`Queued (${pendingQueue.value.length}/${MAX_PENDING})`)
     return true
   }
 
@@ -109,6 +119,7 @@ export function useChatPendingQueue(options: UseChatPendingQueueOptions) {
   return {
     pendingQueue,
     canQueueMore,
+    busySendMode,
     maxPending: MAX_PENDING,
     enqueuePendingInput,
     removePendingChip,

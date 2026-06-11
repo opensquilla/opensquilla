@@ -60,7 +60,13 @@
         :class="{ 'drag-over': threadDragOver }"
       >
         <div v-if="isNewChatLanding" class="chat-landing-brand" aria-label="OpenSquilla new chat">
-          <img class="chat-landing-lockup" :src="landingLockupUrl" alt="OpenSquilla" />
+          <EmptyStateChips
+            :key="landingAgentId"
+            :agent-id="landingAgentId"
+            :mark-url="assistantAvatarUrl"
+            :suppressed="landingPrefilled"
+            @pick="applyLandingSuggestion"
+          />
         </div>
         <div v-else-if="messages.length === 0 && !isStreaming" class="chat-empty">No messages yet.</div>
         <ChatHistoryScopeRow
@@ -100,6 +106,16 @@
             <RouterFxStrip :message="msg" />
           </template>
         </ChatMessageList>
+
+        <!-- Invisible router-strip twin: holds the strip's slot in the layout
+             from turn start until the routing decision arrives, so the real
+             strip cannot shift the content below it. -->
+        <RouterFxStrip
+          v-if="routerStripReserve"
+          class="router-fx-reserve"
+          :message="routerStripReserve"
+          aria-hidden="true"
+        />
 
         <!-- Streaming AI message (Kimi style) -->
         <div v-if="isStreaming && streamBubble" class="msg-ai" data-history-role="assistant" aria-live="polite">
@@ -192,6 +208,7 @@
     <PendingQueue
       :items="pendingQueue"
       :max-pending="maxPending"
+      :mode="isStreaming ? busySendMode : null"
       @clear="clearPendingQueue"
       @remove="removePendingChip"
     />
@@ -221,6 +238,7 @@
       ref="composerRef"
       v-model="inputText"
       :attachments="pendingAttachments"
+      :busy-send-mode="busySendMode"
       :has-send-content="hasSendContent"
       :is-streaming="isStreaming"
       :is-new-landing="isNewChatLanding"
@@ -238,6 +256,7 @@
       @input="onTextareaInput"
       @keydown="onTextareaKeydown"
       @remove-attachment="removeAttachment"
+      @set-busy-send-mode="busySendMode = $event"
       @set-elevated-mode="setComposerElevatedMode"
       @set-router-enabled="setComposerRouterEnabled"
       @set-visual-effects-enabled="setComposerVisualEffectsEnabled"
@@ -266,6 +285,7 @@ import ChatComposer from '@/components/chat/ChatComposer.vue'
 import ChatHistoryScopeRow from '@/components/chat/ChatHistoryScopeRow.vue'
 import ChatMessageList from '@/components/chat/ChatMessageList.vue'
 import ClarifyCard from '@/components/chat/ClarifyCard.vue'
+import EmptyStateChips from '@/components/chat/EmptyStateChips.vue'
 import PendingQueue from '@/components/chat/PendingQueue.vue'
 import RouterFxStrip from '@/components/chat/RouterFxStrip.vue'
 import ToolCallTimeline from '@/components/chat/ToolCallTimeline.vue'
@@ -304,6 +324,7 @@ import { useDocumentEvent } from '@/composables/useDocumentEvent'
 import { useToasts } from '@/composables/useToasts'
 import type {
   ChatMessage,
+  ChatRenderedMessage,
   ChatRunStatus,
   ChatRunStatusSource,
   ChatRunStatusState,
@@ -358,10 +379,10 @@ const assistantAvatarUrl = computed(() => {
   const base = document.getElementById('opensquilla-data')?.dataset.basePath || '/control'
   return `${base}/static/img/opensquilla-mark.png`
 })
-const landingLockupUrl = computed(() => {
-  const base = document.getElementById('opensquilla-data')?.dataset.basePath || '/control'
-  return `${base}/static/img/opensquilla-long-logo.png?v=20260601`
-})
+const landingAgentId = computed(() => agentIdFromSessionKey(sessionKey.value))
+// True when the current draft opened with prefilled composer text (Sessions
+// Hub task input); the landing suggestion chips stay out of the way then.
+const landingPrefilled = ref(false)
 
 /* ── DOM refs ──────────────────────────────────────────────────────── */
 
@@ -501,6 +522,7 @@ const chatPendingQueue = useChatPendingQueue({
 const {
   pendingQueue,
   canQueueMore,
+  busySendMode,
   maxPending,
   enqueuePendingInput,
   removePendingChip,
@@ -582,7 +604,40 @@ const chatRenderedMessages = useChatRenderedMessages({
   stripTimePrefix,
   isSubagentCompletionMessage,
 })
-const { renderedMessages } = chatRenderedMessages
+const { renderedMessages, routerDecisionCells } = chatRenderedMessages
+
+/**
+ * Reserves the AI model router strip's space as soon as a turn starts
+ * streaming, so the real strip landing ~1s later (when the router decision
+ * push arrives) replaces an equally sized invisible twin instead of pushing
+ * the live activity area down (cumulative layout shift).
+ */
+const routerStripReserve = computed<ChatRenderedMessage | null>(() => {
+  if (!isStreaming.value || !routerEnabled.value || !routerVisualEffectsEnabled.value) return null
+  const rendered = renderedMessages.value
+  for (let i = rendered.length - 1; i >= 0; i--) {
+    const msg = rendered[i]
+    if (msg.isRouterStrip) return null
+    if (msg.displayRole === 'user') break
+  }
+  const cells = routerDecisionCells({ tier: '', model: '' })
+  if (cells.length <= 1) return null
+  return {
+    id: 'router-strip-reserve',
+    role: 'router',
+    displayRole: 'router',
+    roleLabel: 'Router',
+    text: '',
+    timeStr: '',
+    showHeader: false,
+    isRouterStrip: true,
+    routerState: 'pending',
+    routerSource: 'none',
+    routerStatic: true,
+    gridCells: cells,
+    winnerIdx: -1,
+  }
+})
 
 const chatShareExport = useChatShareExport({
   threadRef,
@@ -731,6 +786,7 @@ const chatSend = useChatSend({
   inputText,
   messages,
   sessionKey,
+  busySendMode,
   elevatedMode,
   pendingAttachments,
   pendingSessionIntent,
@@ -864,7 +920,11 @@ const hasSendContent = computed(() => {
 
 const sendButtonTitle = computed(() => {
   if (isCompactInFlightForCurrentSession()) return 'Send (queues until compaction finishes)'
-  if (isStreaming.value) return 'Send (queues for after current response)'
+  if (isStreaming.value) {
+    return busySendMode.value === 'steer'
+      ? 'Send (steers the current response now)'
+      : 'Send (queues for after current response)'
+  }
   return 'Send'
 })
 
@@ -909,6 +969,14 @@ async function setComposerRouterEnabled(enabled: boolean) {
 function setComposerVisualEffectsEnabled(enabled: boolean) {
   setRouterVisualEffectsEnabled(enabled)
   scheduleHistorySync()
+}
+
+// A landing suggestion chip replaces the draft composer text; the user still
+// reviews and sends it themselves.
+function applyLandingSuggestion(text: string) {
+  inputText.value = text
+  autoResizeTextarea()
+  composerRef.value?.focusTextarea()
 }
 
 function appendComposerText(text: string) {
@@ -1136,15 +1204,31 @@ function onDocumentKeydown(e: KeyboardEvent) {
 
 /* ── Lifecycle ─────────────────────────────────────────────────────── */
 
+// One-shot composer prefill carried in history state (the Sessions Hub task
+// input navigates here with it). Consumed on draft entry so reload or
+// back/forward does not re-apply the text.
+function consumeDraftPrefill() {
+  const state = window.history.state as Record<string, unknown> | null
+  const prefill = typeof state?.prefill === 'string' ? state.prefill : ''
+  if (!prefill) return
+  inputText.value = prefill
+  landingPrefilled.value = true
+  try {
+    window.history.replaceState({ ...window.history.state, prefill: undefined }, '')
+  } catch { /* ignore */ }
+}
+
 // Reset to a clean draft for the agent requested by the draft route. The
 // provisional key stays out of the URL and storage until the first send.
 function enterDraft() {
+  landingPrefilled.value = false
   const agentId = draftAgentId()
   const isFreshDraft = pendingSessionIntent.value === 'new_chat'
     && messages.value.length === 0
     && !isStreaming.value
     && agentIdFromSessionKey(sessionKey.value) === agentId
   if (!isFreshDraft) startDraftSession(agentId)
+  consumeDraftPrefill()
   if (isDesktopViewport.value) composerRef.value?.focusTextarea()
 }
 
@@ -1156,6 +1240,7 @@ onMounted(async () => {
   if (initialSession.draft) {
     pendingSessionIntent.value = 'new_chat'
     if (!isDraftRoute() || hasLegacyNewChatQuery()) goToDraft({ replace: true })
+    consumeDraftPrefill()
   } else {
     persistSession(sessionKey.value, { updateRoute: false })
   }

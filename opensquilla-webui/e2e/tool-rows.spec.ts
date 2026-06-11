@@ -49,11 +49,21 @@ test.describe('Tool rows and activity ribbon', () => {
 
     // Run completes: ribbon goes away, transcript keeps the tool rows.
     await expect(ribbon).toHaveCount(0, { timeout: 180000 })
-    const searchRow = page.locator('.msg-ai .tool-row[data-op="web.search"]').first()
+    let searchRow = page.locator('.msg-ai .tool-row[data-op="web.search"]').first()
     await expect(searchRow).toBeVisible()
 
     // Search rows are collapsed pills after completion.
     await expect(searchRow).toHaveAttribute('aria-expanded', 'false')
+
+    // Multiple search calls collapse under a group header; expand it and
+    // assert against a member row, which follows the same pill contract.
+    if (await searchRow.evaluate((el) => el.classList.contains('tool-row--group'))) {
+      await searchRow.click()
+      await expect(searchRow).toHaveAttribute('aria-expanded', 'true')
+      searchRow = page.locator('.msg-ai .tool-row--member[data-op="web.search"]').first()
+      await expect(searchRow).toBeVisible()
+      await expect(searchRow).toHaveAttribute('aria-expanded', 'false')
+    }
 
     // Replayed rows show no elapsed badges (no fake timings).
     await expect(page.locator('.tool-row__elapsed')).toHaveCount(0)

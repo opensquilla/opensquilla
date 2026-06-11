@@ -5,6 +5,7 @@ import type {
   ChatSendResponse,
 } from '@/types/rpc'
 import type { ChatRpcStreamApi } from '@/composables/chat/useChatRpcEventHandlers'
+import type { BusySendMode } from '@/composables/chat/useChatPendingQueue'
 
 type RpcClient = {
   call: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -15,6 +16,7 @@ export interface UseChatSendOptions {
   inputText: Ref<string>
   messages: Ref<ChatMessage[]>
   sessionKey: Ref<string>
+  busySendMode: Ref<BusySendMode>
   elevatedMode: Ref<string>
   pendingAttachments: Ref<Attachment[]>
   pendingSessionIntent: Ref<string | null>
@@ -57,6 +59,12 @@ export function useChatSend(options: UseChatSendOptions) {
         return
       }
       if (!hasPayload) return
+      // Steer injects into the active run right away; compaction cannot be
+      // steered, so those sends still queue until it finishes.
+      if (options.busySendMode.value === 'steer' && !compactInFlight) {
+        await dispatchSend(text, { queueMode: 'steer' })
+        return
+      }
       options.enqueuePendingInput(text)
       return
     }
@@ -68,6 +76,12 @@ export function useChatSend(options: UseChatSendOptions) {
 
     if (!hasPayload || !options.sessionKey.value) return
 
+    await dispatchSend(text)
+  }
+
+  async function dispatchSend(text: string, sendOpts?: { queueMode?: 'steer' }) {
+    if (!options.sessionKey.value) return
+
     options.aborted.value = false
     options.closeSlashMenu()
 
@@ -78,6 +92,7 @@ export function useChatSend(options: UseChatSendOptions) {
     options.scrollToBottom()
 
     const params: ChatSendParams = { message: text || 'Describe these attachments', sessionKey: options.sessionKey.value }
+    if (sendOpts?.queueMode) params.queueMode = sendOpts.queueMode
     const elevated = options.normalizeElevatedMode(options.elevatedMode.value)
     if (elevated) params._source = { elevated }
     if (options.pendingSessionIntent.value) {
@@ -96,14 +111,19 @@ export function useChatSend(options: UseChatSendOptions) {
     options.autoResizeTextarea()
     options.pendingAttachments.value = []
 
-    options.stream.startStreaming()
-    options.stream.showThinkingIndicator()
+    // A steer send rides an already-active stream; restarting it would wipe
+    // the partial output of the run being steered.
+    const wasStreaming = options.stream.isStreaming.value
+    if (!wasStreaming) {
+      options.stream.startStreaming()
+      options.stream.showThinkingIndicator()
+    }
 
     try {
       const res = await options.rpc.call<ChatSendResponse>('chat.send', params)
       if (res?.sessionKey && res.sessionKey !== options.sessionKey.value) options.persistSession(res.sessionKey)
     } catch (err: unknown) {
-      options.stream.endStreaming()
+      if (!wasStreaming) options.stream.endStreaming()
       const message = err instanceof Error ? err.message : String(err)
       options.messages.value.push({ role: 'error', text: 'Send failed: ' + message, ts: new Date().toISOString() })
     }
@@ -114,8 +134,7 @@ export function useChatSend(options: UseChatSendOptions) {
     options.aborted.value = true
     options.rpc.call('chat.abort', { sessionKey: options.sessionKey.value }).catch(() => {})
     options.stream.endStreaming({ reason: 'aborted' })
-    const recovered = options.popAllPendingIntoComposer()
-    console.info(recovered ? 'Stopped -- pending recovered to input' : 'Stopped')
+    options.popAllPendingIntoComposer()
   }
 
   return {

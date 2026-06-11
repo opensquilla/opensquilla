@@ -35,6 +35,9 @@
   --sp-6: 24px;
   --sp-8: 32px;
 
+  /* Mobile shell */
+  --mobile-tabbar-h: 56px;
+
   /* Transitions */
   --transition: 150ms ease;
   --ease-press: cubic-bezier(.2,.7,.2,1);
@@ -77,6 +80,15 @@
   --warn: #EAB308;
   --danger: #F87171;
   --info: #60A5FA;
+
+  /* Syntax highlighting (chat code blocks) */
+  --syntax-comment: #8B93A6;
+  --syntax-keyword: #C792EA;
+  --syntax-string: #9ECE6A;
+  --syntax-literal: #E5C07B;
+  --syntax-title: #7AA2F7;
+  --syntax-attr: #56B6C2;
+
   --shadow: rgba(0, 0, 0, 0.5);
   --shadow-color: rgba(0,0,0,0.5);
   --scrim: rgba(0, 0, 0, 0.6);
@@ -124,6 +136,15 @@
   --warn: #7A4F00;
   --danger: #A61B1B;
   --info: #1D4ED8;
+
+  /* Syntax highlighting (chat code blocks) */
+  --syntax-comment: #5F6B7A;
+  --syntax-keyword: #8E24AA;
+  --syntax-string: #2E7D32;
+  --syntax-literal: #8A5700;
+  --syntax-title: #1E55C7;
+  --syntax-attr: #0E7490;
+
   --shadow: rgba(40,30,20,0.10);
   --shadow-color: rgba(40,30,20,0.10);
   --scrim: rgba(20, 18, 15, 0.45);
@@ -881,6 +902,11 @@ pre {
   display: none;
 }
 
+/* Mobile bottom tab bar: render only in the <=768px shell */
+.mobile-tabbar {
+  display: none;
+}
+
 .new-chat-backdrop {
   position: fixed;
   inset: 0;
@@ -1342,6 +1368,94 @@ pre {
 
   .main, .content { min-width: 0; }
   .content { overflow-x: hidden; }
+
+  /* Reserve room for the fixed tab bar so content — including the in-flow
+     chat composer — never sits behind it; reclaim the space while the
+     keyboard hides the bar. */
+  .main {
+    padding-bottom: calc(var(--mobile-tabbar-h) + env(safe-area-inset-bottom, 0px));
+  }
+  .main.main--tabbar-hidden {
+    padding-bottom: 0;
+  }
+
+  /* Fixed bottom tab bar. Sits above the topbar and popovers, beneath every
+     overlay (new-chat backdrop 80, drawer scrim 150, sidebar 200, modals 300+)
+     so the More drawer and dialogs dim it. */
+  .mobile-tabbar {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 60;
+    height: calc(var(--mobile-tabbar-h) + env(safe-area-inset-bottom, 0px));
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    background: var(--bg-surface);
+    border-top: 1px solid var(--border);
+    transition: transform var(--transition);
+  }
+
+  .mobile-tabbar.is-keyboard-open {
+    transform: translateY(100%);
+    pointer-events: none;
+  }
+
+  .mobile-tab {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    min-height: 44px;
+    min-width: 44px;
+    padding: var(--sp-1) var(--sp-2);
+    position: relative;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--text-muted);
+    font-family: var(--font-sans);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    line-height: 1.2;
+    text-decoration: none;
+    cursor: pointer;
+    transition: color 120ms;
+  }
+  .mobile-tab:hover {
+    color: var(--text);
+  }
+  .mobile-tab.is-active {
+    color: var(--accent);
+  }
+  .mobile-tab:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+
+  .mobile-tab__label {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-tab__badge {
+    position: absolute;
+    top: var(--sp-1);
+    left: calc(50% + 6px);
+    min-width: 16px;
+    padding: 0 4px;
+    border-radius: 999px;
+    background: var(--danger);
+    color: var(--accent-foreground);
+    font-size: 0.625rem;
+    font-weight: 700;
+    line-height: 16px;
+    text-align: center;
+  }
 }
 
 @media (max-height: 760px) {

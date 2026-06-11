@@ -24,6 +24,7 @@
           <button
             type="button"
             class="tool-row tool-row--group"
+            :data-op="item.group.operationKey"
             :aria-expanded="groupOpen(item.group)"
             @click="$emit('toggleGroup', item.group.groupId)"
           >

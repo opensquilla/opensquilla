@@ -58,79 +58,87 @@
         @show-result="(content, title) => $emit('showToolResult', content, title)"
       />
 
-      <ChatArtifactList
-        v-if="message.artifacts?.length"
-        :artifacts="message.artifacts"
-        :session-key="sessionKey"
-        :auth-token="authToken"
-        @download="$emit('downloadArtifact', $event)"
-      />
+      <div
+        class="msg-ai-ending"
+        :class="{ 'msg-ai-ending--done': showDoneBlock }"
+        :data-testid="showDoneBlock ? 'done-block' : undefined"
+      >
+        <ChatArtifactList
+          v-if="message.artifacts?.length"
+          :artifacts="message.artifacts"
+          :session-key="sessionKey"
+          :auth-token="authToken"
+          @download="$emit('downloadArtifact', $event)"
+        />
 
-      <SourcesRow v-if="message.toolCalls?.length" :calls="message.toolCalls" />
+        <SourcesRow v-if="message.toolCalls?.length" :calls="message.toolCalls" />
 
-      <div class="msg-ai-footer">
-        <div v-if="message.meta" class="msg-ai-meta">
-          <span v-if="message.meta.model" class="msg-meta__model">{{ message.meta.modelShort }}</span>
-          <span v-if="message.meta.costUsd" class="msg-meta__cost">${{ message.meta.costUsd.toFixed(6).replace(/\.?0+$/, '') }}</span>
-          <span v-if="message.meta.hasSaved" class="savings-indicator">{{ message.meta.savedLabel }}</span>
-          <span
-            v-if="hasMetaDetails"
-            ref="metaMoreRef"
-            class="msg-meta__more"
-            @mouseenter="metaHovered = true"
-            @mouseleave="metaHovered = false"
-            @keydown.escape.stop="closeMetaDetails"
-            @focusout="onMetaFocusOut"
-          >
+        <div class="msg-ai-footer">
+          <div v-if="message.meta" class="msg-ai-meta">
+            <span v-if="message.meta.model" class="msg-meta__model">{{ message.meta.modelShort }}</span>
+            <span v-if="message.meta.costUsd" class="msg-meta__cost">${{ message.meta.costUsd.toFixed(6).replace(/\.?0+$/, '') }}</span>
+            <span v-if="message.meta.hasSaved" class="savings-indicator">{{ message.meta.savedLabel }}</span>
+            <span
+              v-if="hasMetaDetails"
+              ref="metaMoreRef"
+              class="msg-meta__more"
+              @mouseenter="metaHovered = true"
+              @mouseleave="metaHovered = false"
+              @keydown.escape.stop="closeMetaDetails"
+              @focusout="onMetaFocusOut"
+            >
+              <button
+                ref="metaTriggerRef"
+                type="button"
+                class="msg-meta__more-btn"
+                :aria-expanded="metaDetailsOpen"
+                :aria-controls="metaDetailsId"
+                aria-label="Usage details"
+                @click="metaPinned = !metaPinned"
+              >
+                <Icon name="info" :size="12" />
+              </button>
+              <div
+                v-if="metaDetailsOpen"
+                :id="metaDetailsId"
+                class="msg-meta-popover"
+                role="group"
+                aria-label="Usage details"
+              >
+                <div v-if="message.meta.hasTokens" class="msg-meta-popover__row">
+                  <span class="msg-meta-popover__label">tokens</span>
+                  <span class="msg-meta-popover__value">&#8593;{{ fmtTok(message.meta.input) }} &#8595;{{ fmtTok(message.meta.output) }}</span>
+                </div>
+                <div v-if="message.meta.cachedTokens" class="msg-meta-popover__row">
+                  <span class="msg-meta-popover__label">cache</span>
+                  <span class="msg-meta-popover__value">{{ fmtTok(message.meta.cachedTokens) }}</span>
+                </div>
+                <div v-if="message.meta.reasoningTokens" class="msg-meta-popover__row">
+                  <span class="msg-meta-popover__label">think</span>
+                  <span class="msg-meta-popover__value">{{ fmtTok(message.meta.reasoningTokens) }}</span>
+                </div>
+              </div>
+            </span>
+          </div>
+          <div class="msg-ai-actions">
             <button
-              ref="metaTriggerRef"
               type="button"
-              class="msg-meta__more-btn"
-              :aria-expanded="metaDetailsOpen"
-              :aria-controls="metaDetailsId"
-              aria-label="Usage details"
-              @click="metaPinned = !metaPinned"
+              class="msg-action"
+              :class="{ 'msg-action--ok': copyState === 'ok', 'msg-action--err': copyState === 'err' }"
+              :title="copyTitle"
+              @click="onCopyClick"
             >
-              <Icon name="info" :size="12" />
+              <Icon :name="copyIconName" :size="12" />
             </button>
-            <div
-              v-if="metaDetailsOpen"
-              :id="metaDetailsId"
-              class="msg-meta-popover"
-              role="group"
-              aria-label="Usage details"
-            >
-              <div v-if="message.meta.hasTokens" class="msg-meta-popover__row">
-                <span class="msg-meta-popover__label">tokens</span>
-                <span class="msg-meta-popover__value">&#8593;{{ fmtTok(message.meta.input) }} &#8595;{{ fmtTok(message.meta.output) }}</span>
-              </div>
-              <div v-if="message.meta.cachedTokens" class="msg-meta-popover__row">
-                <span class="msg-meta-popover__label">cache</span>
-                <span class="msg-meta-popover__value">{{ fmtTok(message.meta.cachedTokens) }}</span>
-              </div>
-              <div v-if="message.meta.reasoningTokens" class="msg-meta-popover__row">
-                <span class="msg-meta-popover__label">think</span>
-                <span class="msg-meta-popover__value">{{ fmtTok(message.meta.reasoningTokens) }}</span>
-              </div>
-            </div>
-          </span>
-        </div>
-        <div class="msg-ai-actions">
-          <button
-            type="button"
-            class="msg-action"
-            :class="{ 'msg-action--ok': copyState === 'ok', 'msg-action--err': copyState === 'err' }"
-            :title="copyTitle"
-            @click="onCopyClick"
-          >
-            <Icon :name="copyIconName" :size="12" />
-          </button>
-          <span class="msg-copy-live" aria-live="polite">{{ copyLiveText }}</span>
-          <button type="button" class="msg-action" title="Regenerate" @click="$emit('regenerate', message)">
-            <Icon name="refresh" :size="12" />
-          </button>
+            <span class="msg-copy-live" aria-live="polite">{{ copyLiveText }}</span>
+            <button type="button" class="msg-action" title="Regenerate" @click="$emit('regenerate', message)">
+              <Icon name="refresh" :size="12" />
+            </button>
+          </div>
         </div>
       </div>
+
+      <DoneCard v-if="showDoneBlock" />
     </div>
   </div>
 </template>
@@ -139,6 +147,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import Icon from '@/components/Icon.vue'
 import ChatArtifactList from '@/components/chat/ChatArtifactList.vue'
+import DoneCard from '@/components/chat/DoneCard.vue'
 import SourcesRow from '@/components/chat/SourcesRow.vue'
 import ToolCallTimeline from '@/components/chat/ToolCallTimeline.vue'
 import { useCopyFeedback } from '@/composables/chat/useCopyFeedback'
@@ -196,6 +205,12 @@ const reasoningSummary = computed(() => {
   if (seconds < 60) return `Thought for ${seconds}s`
   return `Thought for ${Math.floor(seconds / 60)}m ${seconds % 60}s`
 })
+
+// A completed turn that produced artifacts ends with the deliverable block:
+// artifact chips, then sources, then the receipt, grouped as one ending.
+const showDoneBlock = computed(() =>
+  !!props.message.artifacts?.length && !props.message.isStreaming && !props.message.interrupted,
+)
 
 const hasMetaDetails = computed(() => {
   const meta = props.message.meta
@@ -442,6 +457,28 @@ function onMessageClick(event: MouseEvent) {
   align-items: center;
   gap: 0.625rem;
   margin-top: 0.25rem;
+}
+
+.msg-ai-ending--done {
+  margin-top: 0.625rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--bg-surface) 55%, transparent);
+}
+
+.msg-ai-ending--done :deep(.msg-artifacts) {
+  margin: 0;
+}
+
+.msg-ai-ending--done :deep(.sources-row) {
+  margin: 0.5rem 0 0;
+}
+
+.msg-ai-ending--done .msg-ai-footer {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--hairline);
 }
 
 .msg-ai-actions {

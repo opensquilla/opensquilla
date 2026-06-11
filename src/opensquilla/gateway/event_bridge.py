@@ -11,7 +11,7 @@ from typing import Any
 
 import structlog
 
-from opensquilla.engine.types import AgentEvent
+from opensquilla.gateway.scopes import operator_scope_satisfies
 from opensquilla.gateway.session_streams import get_session_streams
 
 log = structlog.get_logger(__name__)
@@ -86,6 +86,45 @@ class EventBridge:
         except Exception as exc:
             log.debug(
                 "event_bridge.emit_failed",
+                event_name=event_name,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+
+    async def broadcast_scoped(
+        self,
+        event_name: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        required_scope: str,
+    ) -> None:
+        """Broadcast an event to every connection whose scopes satisfy ``required_scope``.
+
+        Gateway-wide events (e.g. approval lifecycle pushes) are not tied to
+        one session's message subscribers; instead they reach every connected
+        operator that could call the matching RPC surface, using the same
+        scope-implication rules as request dispatch.
+        """
+        if self._registry is None:
+            return
+        try:
+            send_payload = payload or {}
+            for conn in self._registry.all():
+                principal = getattr(conn, "principal", None)
+                scopes = getattr(principal, "scopes", None)
+                if not scopes or not operator_scope_satisfies(required_scope, scopes):
+                    continue
+                try:
+                    await conn.send_event(event_name, send_payload)
+                except Exception:
+                    log.debug(
+                        "event_bridge.send_failed",
+                        conn_id=getattr(conn, "conn_id", None),
+                        event_name=event_name,
+                    )
+        except Exception as exc:
+            log.debug(
+                "event_bridge.broadcast_failed",
                 event_name=event_name,
                 error_type=type(exc).__name__,
                 error=str(exc),

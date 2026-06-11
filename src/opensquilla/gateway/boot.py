@@ -497,6 +497,7 @@ class ServiceContainer:
     heartbeat_watcher: Any = None
     deferred_warmups: list[Callable[[], Any]] = field(default_factory=list)
     _compaction_listener_remove: Callable[[], None] | None = None
+    _approval_listener_remove: Callable[[], None] | None = None
 
     # Backward-compat alias — returns the "main" store (or None).
     @property
@@ -518,6 +519,14 @@ class ServiceContainer:
             except Exception:
                 pass
             self._compaction_listener_remove = None
+
+        remove_approval_listener = getattr(self, "_approval_listener_remove", None)
+        if callable(remove_approval_listener):
+            try:
+                remove_approval_listener()
+            except Exception:
+                pass
+            self._approval_listener_remove = None
 
         # ── 1. Stop scheduled producers (no further writes after this) ──
         if self.heartbeat_watcher is not None:
@@ -2298,6 +2307,15 @@ async def start_gateway_server(
 
     svc._compaction_listener_remove = add_compaction_listener(
         _emit_runtime_compaction_event
+    )
+
+    from opensquilla.application.approval_queue import get_approval_queue
+    from opensquilla.gateway.approval_events import register_approval_event_bridge
+
+    svc._approval_listener_remove = register_approval_event_bridge(
+        get_approval_queue(),
+        runtime_event_bridge,
+        schedule=create_background_task,
     )
 
     background_completion_manager = BackgroundCompletionManager(

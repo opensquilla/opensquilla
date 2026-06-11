@@ -8,6 +8,7 @@ import os
 import sqlite3
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
@@ -39,6 +40,10 @@ class PendingApproval:
 
 _DEFAULT_APPROVAL_QUEUE_PATH = state_dir("approval_queue.sqlite")
 
+# Listener signature: (event, info) where event is "requested" or "resolved"
+# and info mirrors ``ApprovalQueue.status()`` for the affected approval.
+ApprovalEventListener = Callable[[str, dict], None]
+
 
 class ApprovalQueue:
     def __init__(
@@ -54,6 +59,7 @@ class ApprovalQueue:
         self._global_settings = ApprovalSettings()
         self._node_settings: dict[str, ApprovalSettings] = {}
         self._session_elevated_modes: dict[str, str] = {}
+        self._event_listeners: list[ApprovalEventListener] = []
 
         self._db_path = Path(db_path or os.fspath(_DEFAULT_APPROVAL_QUEUE_PATH))
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -131,6 +137,41 @@ class ApprovalQueue:
             ).fetchone(),
         )
 
+    def add_event_listener(self, listener: ApprovalEventListener) -> Callable[[], None]:
+        """Register a lifecycle listener; returns a remove callable.
+
+        Listeners fire synchronously on ``requested`` (an approval was
+        created — the moment a run blocks) and ``resolved`` (a decision
+        landed, including deny-on-timeout). Listener errors are swallowed:
+        notification is best-effort and must never break queue state.
+        """
+        self._event_listeners.append(listener)
+
+        def _remove() -> None:
+            try:
+                self._event_listeners.remove(listener)
+            except ValueError:
+                pass
+
+        return _remove
+
+    def _notify_event(self, event: str, entry: PendingApproval) -> None:
+        if not self._event_listeners:
+            return
+        info = {
+            "id": entry.approval_id,
+            "namespace": entry.namespace,
+            "params": dict(entry.params),
+            "created_at": entry.created_at,
+            "resolved": entry.resolved,
+            "approved": entry.approved,
+        }
+        for listener in list(self._event_listeners):
+            try:
+                listener(event, info)
+            except Exception:  # pragma: no cover — listeners are best-effort
+                continue
+
     def request(self, namespace: str = "exec", params: dict | None = None) -> str:
         payload = self._serialize_params(params or {})
         while True:
@@ -157,6 +198,7 @@ class ApprovalQueue:
             created_at=now,
         )
         self._pending[approval_id] = entry
+        self._notify_event("requested", entry)
         return approval_id
 
     def get(self, approval_id: str) -> PendingApproval:
@@ -211,6 +253,7 @@ class ApprovalQueue:
         entry = self.get(approval_id)
         entry._event.set()
         self._pending[approval_id] = entry
+        self._notify_event("resolved", entry)
         return entry.approved
 
     def resolve(
@@ -258,6 +301,7 @@ class ApprovalQueue:
         entry.resolved = True
         entry._event.set()
         self._pending[approval_id] = entry
+        self._notify_event("resolved", entry)
 
         if approved and elevated_mode in VALID_ELEVATED_MODES:
             entry.params["elevatedMode"] = elevated_mode

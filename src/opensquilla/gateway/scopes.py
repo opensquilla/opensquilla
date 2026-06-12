@@ -147,6 +147,7 @@ METHOD_SCOPES: dict[str, str] = {
     "chat.clarify_submit": WRITE_SCOPE,
     "search.query": WRITE_SCOPE,
     "sessions.create": WRITE_SCOPE,
+    "sessions.fork": WRITE_SCOPE,
     "sessions.send": WRITE_SCOPE,
     "sessions.abort": WRITE_SCOPE,
     "sessions.reset": WRITE_SCOPE,

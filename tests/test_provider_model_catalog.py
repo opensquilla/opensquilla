@@ -351,9 +351,15 @@ async def test_probe_openai_compatible_tools_timeout_keeps_capability_unknown() 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("message", [{"content": "pong"}, {"tool_calls": []}])
-async def test_probe_openai_compatible_tools_requires_returned_tool_call(
+async def test_probe_openai_compatible_tools_keeps_unknown_without_returned_tool_call(
     message: dict[str, object],
 ) -> None:
+    """A 200 without tool_calls must not persist an unsupported verdict.
+
+    Endpoints like Inception diffusion models answer the probe prompt in
+    text while calling tools fine in real turns; only an explicit 400/422
+    rejection proves the endpoint cannot take tools.
+    """
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.raise_for_status = MagicMock()
@@ -375,11 +381,11 @@ async def test_probe_openai_compatible_tools_requires_returned_tool_call(
             model_id="local-model",
         )
 
-    assert result is False
+    assert result is None
     caps = catalog.get_capabilities(
         "local-model",
         provider_name="openai_compatible",
         base_url="http://localhost:8008/v1",
     )
-    assert caps.supports_tools is False
-    assert caps.tool_support_state == "unsupported"
+    assert caps.supports_tools is True
+    assert caps.tool_support_state == "unknown"

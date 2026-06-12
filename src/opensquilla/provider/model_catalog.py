@@ -482,13 +482,20 @@ class ModelCatalog:
             message = choices[0].get("message") or {}
             if isinstance(message, dict):
                 accepted_tools = bool(message.get("tool_calls"))
+        if not accepted_tools:
+            # A 200 without tool_calls only proves the endpoint accepted the
+            # tools payload; some endpoints (e.g. Inception diffusion models)
+            # do not enforce tool_choice=required yet call tools fine in real
+            # turns. Keep the capability unknown rather than persisting an
+            # unsupported verdict; explicit rejection is the 400/422 branch.
+            return None
         self.set_tool_probe_result(
             provider_name=provider_name,
             base_url=base_url,
             model_id=model_id,
-            supports_tools=accepted_tools,
+            supports_tools=True,
         )
-        return accepted_tools
+        return True
 
     def get(
         self,

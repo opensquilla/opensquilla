@@ -286,7 +286,7 @@ function onMessageClick(event: MouseEvent) {
   position: relative;
   display: flex;
   gap: 0.625rem;
-  width: min(calc(100% - 48px), 980px);
+  width: var(--chat-col, min(calc(100% - 48px), 980px));
   margin: 0 auto;
   padding: 0.5rem 0;
   align-items: flex-start;

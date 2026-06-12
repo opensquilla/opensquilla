@@ -148,7 +148,7 @@ function onSubmit() {
 
 <style scoped>
 .clarify-card {
-  width: min(calc(100% - 48px), 980px);
+  width: var(--chat-col, min(calc(100% - 48px), 980px));
   margin: var(--sp-2) auto;
   background: var(--bg-surface);
   border: 1px solid color-mix(in srgb, var(--info) 35%, var(--border));
@@ -315,7 +315,7 @@ function onSubmit() {
 }
 
 .clarify-outcome {
-  width: min(calc(100% - 48px), 980px);
+  width: var(--chat-col, min(calc(100% - 48px), 980px));
   margin: var(--sp-1) auto;
   display: flex;
   align-items: center;

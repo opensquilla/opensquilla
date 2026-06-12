@@ -1190,7 +1190,7 @@ pre {
 
 .content {
   flex: 1;
-  margin: 5.333px;
+  margin: var(--sp-1);
   padding: var(--sp-4);
   overflow-y: auto;
   min-width: 0;
@@ -1204,12 +1204,21 @@ pre {
 
 .content--chat {
   margin: 0;
-  padding: 5.333px;
+  /* No right inset: the chat panel meets the screen edge so the thread's
+     scrollbar sits where the cursor lands when flung to the edge, instead of
+     hiding behind a dead padding strip. */
+  padding: var(--sp-1) 0 var(--sp-1) var(--sp-1);
   background: var(--sidebar-bg);
   border: 0;
   border-radius: 0;
   box-shadow: none;
   overflow: hidden;
+}
+
+.content--chat .chat {
+  border-right: 0;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
 }
 
 .approval-inline {
@@ -1239,7 +1248,7 @@ pre {
   }
 
   .content--chat {
-    padding: 4px;
+    padding: var(--sp-1) 0 var(--sp-1) var(--sp-1);
   }
 
   .topbar {

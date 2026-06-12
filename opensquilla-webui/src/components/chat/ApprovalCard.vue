@@ -129,7 +129,7 @@ function emitDeny() {
 
 <style scoped>
 .approval-card {
-  width: min(calc(100% - 48px), 980px);
+  width: var(--chat-col, min(calc(100% - 48px), 980px));
   margin: var(--sp-2) auto;
   background: var(--bg-surface);
   border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--border));
@@ -272,7 +272,7 @@ function emitDeny() {
 }
 
 .approval-outcome {
-  width: min(calc(100% - 48px), 980px);
+  width: var(--chat-col, min(calc(100% - 48px), 980px));
   margin: var(--sp-1) auto;
   display: flex;
   align-items: center;

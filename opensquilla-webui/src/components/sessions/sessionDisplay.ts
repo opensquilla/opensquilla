@@ -29,7 +29,12 @@ export function sessionStatusBadge(item: SessionItem, needsInput = false): Sessi
   return map[item.runStatus] || null
 }
 
-export function sessionRelTime(timestamp: number | null | undefined): string {
+/**
+ * Shared relative-time formatter for every session ledger row (and any other
+ * surface that lists sessions). Renders "just now" / "Ns ago" / "Nm ago" /
+ * "Nh ago" / "Nd ago" up to ~7 days, then falls back to an absolute date.
+ */
+export function formatRelativeTime(timestamp: number | null | undefined): string {
   if (!timestamp) return '—'
   const d = new Date(timestamp)
   if (isNaN(d.getTime())) return '—'
@@ -45,4 +50,17 @@ export function sessionRelTime(timestamp: number | null | undefined): string {
   if (diffHour < 24) return `${diffHour}h ago`
   if (diffDay < 7) return `${diffDay}d ago`
   return d.toLocaleDateString()
+}
+
+/** Back-compat alias; prefer {@link formatRelativeTime} for new call sites. */
+export const sessionRelTime = formatRelativeTime
+
+/**
+ * Ledger title for a subagent row: "↳ Subagent · {parent title}" when the
+ * parent title is known, otherwise a plain "↳ Subagent" so we never surface a
+ * raw key. The arrow + label conveys lineage without rendering UUIDs.
+ */
+export function subagentRowTitle(parentTitle: string | null | undefined): string {
+  const parent = (parentTitle || '').trim()
+  return parent ? `↳ Subagent · ${parent}` : '↳ Subagent'
 }

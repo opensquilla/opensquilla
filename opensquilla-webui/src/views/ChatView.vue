@@ -16,6 +16,17 @@
         <span class="chat-copy-live" aria-live="polite">{{ sessionCopyLiveText }}</span>
       </div>
       <div class="chat-header-right">
+        <button
+          v-if="sessionArtifacts.length > 0"
+          type="button"
+          class="chat-share-btn chat-deliverables-btn"
+          :title="`Deliverables (${sessionArtifacts.length})`"
+          :aria-label="`Deliverables (${sessionArtifacts.length})`"
+          @click="openDeliverables"
+        >
+          <Icon name="download" :size="14" />
+          <span>Deliverables ({{ sessionArtifacts.length }})</span>
+        </button>
         <div v-if="shareMode" class="chat-share-controls" role="group" aria-label="Share selected messages">
           <span class="chat-share-count">{{ selectedShareCount }} selected</span>
           <button
@@ -117,41 +128,48 @@
           aria-hidden="true"
         />
 
-        <!-- Streaming AI message (Kimi style) -->
+        <!-- Streaming AI message: the live run is promoted into a centered
+             work card so it owns the focus while the agent works. -->
         <div v-if="isStreaming && streamBubble" class="msg-ai" data-history-role="assistant" aria-live="polite">
           <div class="msg-ai-main">
-            <div
-              v-if="streamActivityVisible"
-              class="stream-activity"
-              :class="{ 'stream-activity--stale': streamActivityStale }"
+            <section
+              class="work-card"
+              :class="{ 'work-card--stale': streamActivityStale }"
               role="status"
               aria-live="polite"
             >
-              <span class="stream-activity-dot" aria-hidden="true" />
-              <span class="stream-activity-text" :class="{ 'activity-shimmer': !streamActivityStale }">{{ streamActivityText }}</span>
-            </div>
+              <header v-if="streamActivityVisible" class="work-card__head stream-activity">
+                <span class="work-card__dot" aria-hidden="true" />
+                <span class="work-card__phase" :class="{ 'activity-shimmer': !streamActivityStale }">{{ streamPhaseLabel }}</span>
+                <span v-if="streamPhaseElapsed" class="work-card__elapsed">{{ streamPhaseElapsed }}</span>
+                <span class="work-card__step">{{ streamStepLabel }}</span>
+              </header>
 
-            <!-- Live model reasoning: collapsed by default, expandable mid-turn -->
-            <details v-if="streamThinkingText" class="thinking-fold">
-              <summary class="thinking-fold__summary">
-                <Icon class="thinking-fold__chevron" name="chevronRight" :size="12" />
-                <span>Thinking · {{ streamThinkingElapsedText }}</span>
-              </summary>
-              <div class="thinking-fold__body">{{ streamThinkingText }}</div>
-            </details>
+              <!-- Live model reasoning: collapsed by default, expandable mid-turn -->
+              <details v-if="streamThinkingText" class="thinking-fold">
+                <summary class="thinking-fold__summary">
+                  <Icon class="thinking-fold__chevron" name="chevronRight" :size="12" />
+                  <span>Thinking · {{ streamThinkingElapsedText }}</span>
+                </summary>
+                <div class="thinking-fold__body">{{ streamThinkingText }}</div>
+              </details>
 
-            <ToolCallTimeline
-              :items="streamTimelineItems"
-              :is-tool-group-open="isToolGroupOpen"
-              :is-tool-item-open="isToolItemOpen"
-              :tool-group-status-text="toolGroupStatusText"
-              :tool-status-text="toolStatusText"
-              :tool-secondary-text="toolSecondaryText"
-              :tool-elapsed-text="streamToolElapsedText"
-              @toggle-group="toggleToolGroup"
-              @toggle-item="toggleToolItem"
-              @show-result="showToolResultModal"
-            />
+              <ToolCallTimeline
+                v-if="streamTimelineItems.length"
+                class="work-card__timeline"
+                variant="checklist"
+                :items="streamTimelineItems"
+                :is-tool-group-open="isToolGroupOpen"
+                :is-tool-item-open="isToolItemOpen"
+                :tool-group-status-text="toolGroupStatusText"
+                :tool-status-text="toolStatusText"
+                :tool-secondary-text="toolSecondaryText"
+                :tool-elapsed-text="streamToolElapsedText"
+                @toggle-group="toggleToolGroup"
+                @toggle-item="toggleToolItem"
+                @show-result="showToolResultModal"
+              />
+            </section>
 
             <ChatArtifactList
               :artifacts="streamArtifacts"
@@ -266,6 +284,15 @@
       :content="toolResultModal.content"
       @close="toolResultModal.open = false"
     />
+
+    <DeliverablesDrawer
+      :open="deliverablesOpen"
+      :artifacts="sessionArtifacts"
+      :session-key="sessionKey"
+      :auth-token="readAuthToken()"
+      @close="deliverablesOpen = false"
+      @download="downloadArtifact"
+    />
   </div>
 </template>
 
@@ -275,6 +302,7 @@ import { useRpcStore } from '@/stores/rpc'
 import { useAppStore } from '@/stores/app'
 import ApprovalCard from '@/components/chat/ApprovalCard.vue'
 import ChatArtifactList from '@/components/chat/ChatArtifactList.vue'
+import DeliverablesDrawer from '@/components/chat/DeliverablesDrawer.vue'
 import ChatComposer from '@/components/chat/ChatComposer.vue'
 import ChatHistoryScopeRow from '@/components/chat/ChatHistoryScopeRow.vue'
 import ChatMessageList from '@/components/chat/ChatMessageList.vue'
@@ -452,7 +480,9 @@ const {
   streamTimelineItems,
   streamActivityVisible,
   streamActivityStale,
-  streamActivityText,
+  streamPhaseLabel,
+  streamPhaseElapsed,
+  streamStepLabel,
   streamToolElapsedText,
   thinkingVisible,
   thinkingText,
@@ -1068,6 +1098,36 @@ async function downloadArtifact(artifact: ArtifactPayload) {
   }
 }
 
+/**
+ * Every deliverable the current session has produced, deduped by identity.
+ * Artifacts arrive on completed/replayed assistant turns (`message.artifacts`,
+ * filled from chat.history and from the streamed turn that just ended) and on
+ * the in-flight turn (`streamArtifacts`); both feed the per-session drawer.
+ */
+const sessionArtifacts = computed<ArtifactPayload[]>(() => {
+  const seen = new Set<string>()
+  const collected: ArtifactPayload[] = []
+  const consider = (artifact: ArtifactPayload | undefined | null) => {
+    if (!artifact) return
+    const id = String(artifact.id || artifact.download_url || artifact.name || '')
+    if (!id || seen.has(id)) return
+    seen.add(id)
+    collected.push(artifact)
+  }
+  for (const message of messages.value) {
+    message.artifacts?.forEach(consider)
+  }
+  streamArtifacts.value.forEach(consider)
+  return collected
+})
+
+const deliverablesOpen = ref(false)
+
+function openDeliverables() {
+  if (sessionArtifacts.value.length === 0) return
+  deliverablesOpen.value = true
+}
+
 const {
   copyState: sessionCopyState,
   copyIconName: sessionCopyIcon,
@@ -1322,6 +1382,7 @@ watch(pendingSessionIntent, (intent, previous) => {
 
 watch(sessionKey, () => {
   if (shareMode.value) endShareMode()
+  deliverablesOpen.value = false
 })
 
 watch(shareableMessageCount, (count) => {

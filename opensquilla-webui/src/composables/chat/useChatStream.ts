@@ -93,7 +93,9 @@ export function useChatStream(options: UseChatStreamOptions) {
     return lastSignalAt.value > 0 && Date.now() - lastSignalAt.value > STALE_SIGNAL_MS
   })
 
-  const streamActivityText = computed(() => {
+  // Phase narration on its own, used by the work-card head where elapsed and
+  // the step chip render as separate elements rather than one packed string.
+  const streamPhaseLabel = computed(() => {
     streamActivityTick.value
     const now = Date.now()
     if (lastSignalAt.value > 0 && now - lastSignalAt.value > STALE_SIGNAL_MS) {
@@ -102,11 +104,23 @@ export function useChatStream(options: UseChatStreamOptions) {
     }
     const startedAt = streamActivity.value.startedAt || now
     const seconds = Math.max(0, Math.floor((now - startedAt) / 1000))
-    const base = seconds >= 10 && streamActivity.value.label === 'Planning next step'
+    return seconds >= 10 && streamActivity.value.label === 'Planning next step'
       ? 'Still waiting for model'
       : streamActivity.value.label
-    return `${base} · ${seconds}s · round ${streamRound.value}`
   })
+
+  // Elapsed seconds for the current phase, rendered as its own chip.
+  const streamPhaseElapsed = computed(() => {
+    streamActivityTick.value
+    const now = Date.now()
+    if (lastSignalAt.value > 0 && now - lastSignalAt.value > STALE_SIGNAL_MS) return ''
+    const startedAt = streamActivity.value.startedAt || now
+    const seconds = Math.max(0, Math.floor((now - startedAt) / 1000))
+    return `${seconds}s`
+  })
+
+  // A step in progress, not a bare round counter.
+  const streamStepLabel = computed(() => `Step ${streamRound.value}`)
 
   const streamTimelineItems = computed<ChatStreamTimelineItem[]>(() => {
     const groupsById = new Map(toolCallGroups(streamToolCalls.value, 'stream').map(group => [group.groupId, group]))
@@ -576,7 +590,9 @@ export function useChatStream(options: UseChatStreamOptions) {
     streamTimelineItems,
     streamActivityVisible,
     streamActivityStale,
-    streamActivityText,
+    streamPhaseLabel,
+    streamPhaseElapsed,
+    streamStepLabel,
     streamToolElapsedText,
     thinkingVisible,
     thinkingText,

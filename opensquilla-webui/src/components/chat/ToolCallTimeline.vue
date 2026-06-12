@@ -1,4 +1,5 @@
 <template>
+  <div class="tool-timeline" :class="{ 'tool-timeline--checklist': variant === 'checklist' }">
   <template v-for="item in visibleItems" :key="item.key">
     <div v-if="item.type === 'text'" class="msg-ai-text" v-html="item.html" />
     <button
@@ -93,6 +94,7 @@
       </div>
     </div>
   </template>
+  </div>
 </template>
 
 <script lang="ts">
@@ -187,6 +189,10 @@ const props = defineProps<{
   // Live streams provide real per-call timings; replayed history omits this
   // prop, so no fabricated elapsed badges appear.
   toolElapsedText?: (call: ChatToolCallRenderItem) => string
+  // 'checklist' drives the live work-card presentation: a running row shows a
+  // pulsing ring, a completed row dims, an error row stays open. History
+  // omits this, keeping the default pill timeline untouched.
+  variant?: 'checklist'
 }>()
 
 const emit = defineEmits<{
@@ -347,6 +353,12 @@ function forwardShowResult(content: string, title: string) {
   text-decoration: underline;
 }
 
+.tool-overflow-note:focus-visible {
+  outline: none;
+  border-radius: 4px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
 .tool-row {
   display: flex;
   align-items: center;
@@ -366,6 +378,11 @@ function forwardShowResult(content: string, title: string) {
 
 .tool-row:hover {
   background: var(--bg-hover);
+}
+
+.tool-row:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
 .tool-row.is-open,
@@ -503,6 +520,118 @@ function forwardShowResult(content: string, title: string) {
   padding: 0 0.875rem 0.5rem;
 }
 
+.step-chevron {
+  transition: transform 0.12s ease;
+}
+
+.tool-row.is-open .step-chevron,
+.step-group.is-open > .tool-row--group .step-chevron {
+  transform: rotate(90deg);
+}
+
+@keyframes toolRowPulse {
+  0% { transform: scale(0.85); opacity: 0.6; }
+  55% { transform: scale(1.05); opacity: 1; }
+  100% { transform: scale(0.85); opacity: 0.65; }
+}
+
+/* ── Checklist variant (live work card) ───────────────────────────────
+   The wrapper is layout-neutral for history; in the work card it stacks
+   the tool rows into a single vertical sequence the eye can track. */
+.tool-timeline {
+  display: contents;
+}
+
+.tool-timeline--checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+/* Flatten the per-group card chrome so the rows read as one running list. */
+.tool-timeline--checklist .step-card {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* A running row earns an outlined, softly pulsing ring; completed rows dim
+   so attention stays on what is in flight. */
+.tool-timeline--checklist .tool-row--running {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: 6px;
+  animation: checklistRowRing 1.8s ease-in-out infinite;
+}
+
+.tool-timeline--checklist .tool-row__bullet--ok {
+  animation: checklistCheckIn 0.2s var(--ease-press, ease-out) both;
+}
+
+.tool-timeline--checklist .tool-row__state-icon--ok {
+  animation: checklistCheckIn 0.2s var(--ease-press, ease-out) both;
+}
+
+/* Completed, non-open rows soften and tuck in — kept for traceability, not
+   deleted — so the running row reads as the live focus. */
+.tool-timeline--checklist .tool-row-wrap:has(.tool-row--running) {
+  opacity: 1;
+}
+
+.tool-timeline--checklist
+  .tool-row:not(.tool-row--running):not(.tool-row--error):not(.is-open) {
+  opacity: 0.62;
+  transition: opacity 0.2s ease;
+}
+
+.tool-timeline--checklist
+  .tool-row:not(.tool-row--running):not(.tool-row--error):not(.is-open):hover {
+  opacity: 1;
+}
+
+.tool-timeline--checklist .tool-row--error {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 36%, transparent);
+  border-radius: 6px;
+}
+
+@keyframes checklistRowRing {
+  0%, 100% { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent); }
+  50% { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 56%, transparent); }
+}
+
+@keyframes checklistCheckIn {
+  0% { transform: scale(0.4); opacity: 0; }
+  60% { transform: scale(1.12); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-row__bullet--running {
+    animation: none;
+  }
+
+  .tool-timeline--checklist .tool-row--running,
+  .tool-timeline--checklist .tool-row__bullet--ok,
+  .tool-timeline--checklist .tool-row__state-icon--ok {
+    animation: none;
+  }
+
+  .tool-timeline--checklist
+    .tool-row:not(.tool-row--running):not(.tool-row--error):not(.is-open) {
+    transition: none;
+  }
+}
+</style>
+
+<!-- The expanded-row section content (labels, pre, "view full" button) is built
+     by the ToolRowSections child via render functions h(), so those elements
+     never receive a scoped data-v attribute and scoped rules cannot reach them
+     (the button would fall back to native chrome — a white box on the dark
+     surface). Their styling lives here, non-scoped. Tokens only — the
+     chat-color guard covers this path. -->
+<style>
 .tool-row-section {
   margin-top: 0.5rem;
   padding: 0.5rem 0.625rem;
@@ -542,10 +671,12 @@ function forwardShowResult(content: string, title: string) {
 .step-view-btn {
   margin-top: 0.25rem;
   padding: 0.125rem 0.375rem;
-  font-size: 0.6875rem;
-  color: var(--accent);
+  border: 0;
+  border-radius: 4px;
   background: transparent;
-  border: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.6875rem;
   cursor: pointer;
 }
 
@@ -553,24 +684,8 @@ function forwardShowResult(content: string, title: string) {
   text-decoration: underline;
 }
 
-.step-chevron {
-  transition: transform 0.12s ease;
-}
-
-.tool-row.is-open .step-chevron,
-.step-group.is-open > .tool-row--group .step-chevron {
-  transform: rotate(90deg);
-}
-
-@keyframes toolRowPulse {
-  0% { transform: scale(0.85); opacity: 0.6; }
-  55% { transform: scale(1.05); opacity: 1; }
-  100% { transform: scale(0.85); opacity: 0.65; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .tool-row__bullet--running {
-    animation: none;
-  }
+.step-view-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
 }
 </style>

@@ -263,6 +263,176 @@ def test_per_turn_bubble_chip_differs_across_turns_in_real_browser(tmp_path: Pat
     )
 
 
+def test_live_stream_cumulative_text_delta_does_not_duplicate_visible_prefix(
+    tmp_path: Path,
+) -> None:
+    """Live WebUI rendering treats cumulative text snapshots as replace-by-suffix.
+
+    Some upstream paths can emit a post-tool text frame that contains the full
+    assistant text so far instead of only the newly generated suffix. The live
+    chat bubble must not display the already-rendered prefix twice while the
+    turn is still streaming.
+    """
+    if os.environ.get("OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E") != "1":
+        pytest.skip("set OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E=1 to run chat browser e2e")
+
+    port = _free_port()
+    server_script = tmp_path / "webui_cumulative_delta_server.py"
+    browser_script = tmp_path / "webui_cumulative_delta_browser.js"
+    server_script.write_text(
+        textwrap.dedent(
+            f"""
+            import uvicorn
+
+            from opensquilla.gateway.app import create_gateway_app
+            from opensquilla.gateway.config import AuthConfig, GatewayConfig
+
+            config = GatewayConfig(
+                host="127.0.0.1",
+                port={port},
+                auth=AuthConfig(mode="none"),
+            )
+            app = create_gateway_app(config)
+
+            if __name__ == "__main__":
+                uvicorn.run(app, host="127.0.0.1", port={port}, log_level="warning")
+            """
+        ),
+        encoding="utf-8",
+    )
+    browser_script.write_text(
+        textwrap.dedent(
+            r"""
+            const { chromium } = require("playwright");
+
+            (async () => {
+              const browser = await chromium.launch({ headless: true });
+              const page = await browser.newPage();
+              const errors = [];
+              page.on("pageerror", err => errors.push(String(err)));
+
+              await page.goto(process.env.TARGET_URL, {
+                waitUntil: "domcontentloaded",
+                timeout: 30000,
+              });
+              await page.waitForSelector("#chat-textarea", { timeout: 15000 });
+              await page.waitForFunction(
+                () =>
+                  typeof App !== "undefined" &&
+                  App.getRpc &&
+                  App.getRpc()?.state === "connected",
+                { timeout: 15000 }
+              );
+
+              const prefix = "小will 好！我来帮你查一下今天上海的天气。";
+              const suffix = "让我试试另一个天气源";
+              await page.evaluate(
+                ({ prefix, suffix }) => {
+                  const rpc = App.getRpc();
+                  const ls = rpc._listeners;
+                  const emitNamed = (name, payload) => {
+                    const handlers = ls.get(name);
+                    if (handlers) handlers.forEach(h => h(payload));
+                  };
+
+                  emitNamed("session.event.text_delta", {
+                    stream_seq: 1,
+                    text: prefix,
+                  });
+                  emitNamed("session.event.tool_use_start", {
+                    stream_seq: 2,
+                    tool_use_id: "tool-search",
+                    tool_name: "web_search",
+                    name: "web_search",
+                  });
+                  emitNamed("session.event.tool_result", {
+                    stream_seq: 3,
+                    tool_use_id: "tool-search",
+                    tool_name: "web_search",
+                    name: "web_search",
+                    result: {
+                      results: [{
+                        title: "weather",
+                        url: "https://example.test",
+                        snippet: "ok",
+                      }],
+                    },
+                    is_error: false,
+                  });
+                  emitNamed("session.event.text_delta", {
+                    stream_seq: 4,
+                    text: prefix + suffix,
+                  });
+                },
+                { prefix, suffix }
+              );
+
+              await page.waitForFunction(
+                ({ suffix }) => document.querySelector(".msg.assistant")
+                  ?.textContent.includes(suffix),
+                { suffix },
+                { timeout: 5000 }
+              );
+              await page.waitForTimeout(100);
+
+              const payload = await page.evaluate(({ prefix, suffix }) => {
+                const assistant = document.querySelector(".msg.assistant");
+                const text = assistant ? assistant.textContent : "";
+                return {
+                  text,
+                  countPrefix: text.split(prefix).length - 1,
+                  countSuffix: text.split(suffix).length - 1,
+                  toolCardCount: document.querySelectorAll(".chat-tools-collapse").length,
+                };
+              }, { prefix, suffix });
+              payload.pageErrors = errors;
+              await browser.close();
+              console.log(JSON.stringify(payload));
+            })().catch(err => {
+              console.error(err && err.stack ? err.stack : String(err));
+              process.exit(1);
+            });
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["OPENSQUILLA_STATE_DIR"] = str(tmp_path / "state")
+    env["OPENSQUILLA_LOG_DIR"] = str(tmp_path / "logs")
+    server = subprocess.Popen(
+        [sys.executable, str(server_script)],
+        cwd=Path.cwd(),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    try:
+        _wait_for_health(port, server)
+        _install_playwright(tmp_path)
+        result = subprocess.run(
+            [_node(), str(browser_script)],
+            cwd=tmp_path,
+            env=dict(env, TARGET_URL=f"http://127.0.0.1:{port}/control/chat"),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+        assert result.returncode == 0, result.stderr or result.stdout
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+    finally:
+        _stop_process(server)
+
+    assert payload["pageErrors"] == [], payload["pageErrors"]
+    assert payload["toolCardCount"] >= 1, payload["text"]
+    assert payload["countSuffix"] == 1, payload["text"]
+    assert payload["countPrefix"] == 1, payload["text"]
+
+
 def test_chat_view_loads_and_reaches_gateway_http_status_in_real_browser(tmp_path: Path) -> None:
     if os.environ.get("OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E") != "1":
         pytest.skip("set OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E=1 to run chat browser e2e")

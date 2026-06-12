@@ -6946,25 +6946,43 @@ const ChatView = (() => {
     return seg;
   }
 
+  function _normalizeIncomingStreamDelta(text) {
+    const raw = typeof text === 'string' ? text : '';
+    if (!raw || !_streamRaw) return raw;
+    const sawToolBoundary = _segments.some((seg) => seg && seg.type === 'tool');
+    if (!sawToolBoundary) return raw;
+    if (raw === _streamRaw) return '';
+    if (raw.startsWith(_streamRaw)) return raw.slice(_streamRaw.length);
+    return raw;
+  }
+
   function _appendDelta(text) {
     if (_aborted) return;
+    const deltaText = _normalizeIncomingStreamDelta(text);
+    if (!deltaText) {
+      _chatDiag('stream.delta.skip_empty_or_duplicate', {
+        len: text ? text.length : 0,
+        streamRawLen: _streamRaw.length,
+      });
+      return;
+    }
     _chatDiag('stream.delta.start', {
-      len: text ? text.length : 0,
-      head: _chatDiagShortText(text, 100),
+      len: deltaText.length,
+      head: _chatDiagShortText(deltaText, 100),
       wasStreaming: _isStreaming,
       hasStreamBubble: !!_streamBubble,
     });
     if (!_isStreaming) _startStreaming();
     _ensureStreamBubble();
     _markVisibleStreamEvent('text_delta');
-    _streamRaw += text;
-    _activeTextRaw += text;
+    _streamRaw += deltaText;
+    _activeTextRaw += deltaText;
     // Keep segment raw in sync for final render
     const lastSeg = _segments[_segments.length - 1];
     if (lastSeg && lastSeg.type === 'text') lastSeg.raw = _activeTextRaw;
 
     // First delta: render immediately for snappy feel; subsequent deltas batch via rAF
-    if (!_renderRafId && _activeTextRaw.length === text.length) {
+    if (!_renderRafId && _activeTextRaw.length === deltaText.length) {
       _renderDirty = true;
       _flushRender();
     } else {

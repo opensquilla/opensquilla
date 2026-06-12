@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import concurrent.futures
 import contextlib
 import contextvars
 import copy
@@ -3856,14 +3857,26 @@ class TurnRunner:
             )
 
         async def _bounded_apply_squilla_router(turn: TurnContext) -> TurnContext:
-            async def _run_router_step() -> TurnContext:
-                return await apply_squilla_router(_copy_router_turn(turn))
+            def _run_router_step_sync() -> TurnContext:
+                return asyncio.run(apply_squilla_router(_copy_router_turn(turn)))
 
+            loop = asyncio.get_running_loop()
+            executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="opensquilla-router-timeout",
+            )
+            future = loop.run_in_executor(executor, _run_router_step_sync)
             try:
-                routed = await asyncio.wait_for(_run_router_step(), timeout=router_timeout)
+                routed = await asyncio.wait_for(
+                    future,
+                    timeout=router_timeout,
+                )
                 return commit_deferred_router_history(routed)
             except TimeoutError as exc:
+                future.cancel()
                 raise TimeoutError(f"squilla router timed out after {router_timeout:g}s") from exc
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
 
         _bounded_apply_squilla_router.__name__ = "apply_squilla_router"
 

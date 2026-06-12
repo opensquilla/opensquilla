@@ -14,20 +14,24 @@ CHAT_JS = Path("src/opensquilla/gateway/static/js/views/chat.js")
 INDEX_HTML = Path("src/opensquilla/gateway/templates/index.html")
 
 
+def _read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
 def test_ribbon_module_exists():
     assert RIBBON_JS.exists()
-    text = RIBBON_JS.read_text()
+    text = _read_text(RIBBON_JS)
     for name in ("createRibbon", "updateStep", "completeRun", "renderRibbon"):
         assert f"function {name}" in text, f"missing function {name}"
 
 
 def test_ribbon_exposes_window_global():
-    text = RIBBON_JS.read_text()
+    text = _read_text(RIBBON_JS)
     assert "root.MetaRibbon" in text or "window.MetaRibbon" in text
 
 
 def test_ribbon_state_classes_are_normalized():
-    text = RIBBON_JS.read_text()
+    text = _read_text(RIBBON_JS)
 
     assert "step.state = normalizeStateClass(stepStateEvent.state);" in text
     assert "state.runOutcome = normalizeRunOutcome(completedEvent.outcome);" in text
@@ -44,7 +48,7 @@ def test_ribbon_state_classes_are_normalized():
 
 
 def test_ribbon_glyph_table_covers_all_states():
-    text = RIBBON_JS.read_text()
+    text = _read_text(RIBBON_JS)
     for state in (
         "pending",
         "running",
@@ -59,7 +63,7 @@ def test_ribbon_glyph_table_covers_all_states():
 
 
 def test_ribbon_css_has_chip_state_classes():
-    text = RIBBON_CSS.read_text()
+    text = _read_text(RIBBON_CSS)
     for cls in (
         "chip.pending",
         "chip.running",
@@ -74,8 +78,8 @@ def test_ribbon_css_has_chip_state_classes():
 
 
 def test_ribbon_renders_accessible_compact_run_bar():
-    js = RIBBON_JS.read_text()
-    css = RIBBON_CSS.read_text()
+    js = _read_text(RIBBON_JS)
+    css = _read_text(RIBBON_CSS)
     for token in (
         "meta-ribbon-shell",
         "meta-ribbon-icon",
@@ -107,14 +111,14 @@ def test_ribbon_renders_accessible_compact_run_bar():
 
 
 def test_preflight_uses_checkpoint_language_not_generic_confirmation():
-    text = PREFLIGHT_JS.read_text()
+    text = _read_text(PREFLIGHT_JS)
     assert "我准备运行" in text
     assert "开始运行" in text
     assert "Confirmation" not in text
 
 
 def test_preflight_chrome_follows_request_language():
-    text = PREFLIGHT_JS.read_text()
+    text = _read_text(PREFLIGHT_JS)
     for token in (
         "detectLanguage",
         "preflightCopy",
@@ -131,7 +135,7 @@ def test_preflight_chrome_follows_request_language():
 
 
 def test_ribbon_chrome_follows_request_language():
-    text = RIBBON_JS.read_text()
+    text = _read_text(RIBBON_JS)
     for token in (
         "language: detectLanguage(announce.language",
         "ribbonCopy(state.language)",
@@ -147,8 +151,8 @@ def test_ribbon_chrome_follows_request_language():
 
 
 def test_preflight_collects_missing_fields_inline_instead_of_editing_composer():
-    preflight = PREFLIGHT_JS.read_text()
-    chat = CHAT_JS.read_text()
+    preflight = _read_text(PREFLIGHT_JS)
+    chat = _read_text(CHAT_JS)
     for token in (
         "renderMissingFields",
         "collectFieldValues",
@@ -173,7 +177,7 @@ def test_preflight_collects_missing_fields_inline_instead_of_editing_composer():
 
 
 def test_index_html_loads_ribbon_before_chat():
-    text = INDEX_HTML.read_text()
+    text = _read_text(INDEX_HTML)
     ribbon_pos = text.find("chat/meta-ribbon.js")
     preflight_pos = text.find("chat/meta-preflight.js")
     artifact_card_pos = text.find("chat/artifact-card.js")
@@ -191,12 +195,12 @@ def test_index_html_loads_ribbon_before_chat():
 
 
 def test_index_html_loads_ribbon_css():
-    text = INDEX_HTML.read_text()
+    text = _read_text(INDEX_HTML)
     assert "chat-meta-ribbon.css" in text
 
 
 def test_chat_js_references_window_metaribbon():
-    text = CHAT_JS.read_text()
+    text = _read_text(CHAT_JS)
     assert "window.MetaRibbon" in text
     for name in ("createRibbon", "updateStep", "completeRun", "renderRibbon"):
         assert name in text, f"chat.js missing {name} reference"
@@ -204,7 +208,7 @@ def test_chat_js_references_window_metaribbon():
 
 def test_preflight_module_exists():
     assert PREFLIGHT_JS.exists()
-    text = PREFLIGHT_JS.read_text()
+    text = _read_text(PREFLIGHT_JS)
     for name in ("createPreflight", "renderPreflight"):
         assert f"function {name}" in text, f"missing function {name}"
     assert "root.MetaPreflight" in text or "window.MetaPreflight" in text
@@ -220,7 +224,7 @@ def test_preflight_module_exists():
 
 
 def test_clarify_form_enum_options_display_localized_labels():
-    text = CHAT_JS.read_text()
+    text = _read_text(CHAT_JS)
     assert "const optionByValue = new Map();" in text
     assert "Array.isArray(field.options)" in text
     assert "localizedChoiceLabel(choiceValue, schemaLang)" in text
@@ -229,7 +233,7 @@ def test_clarify_form_enum_options_display_localized_labels():
 
 
 def test_chat_js_references_window_metapreflight():
-    text = CHAT_JS.read_text()
+    text = _read_text(CHAT_JS)
     assert "window.MetaPreflight" in text
     assert "session.event.meta_preflight" in text
     assert "_insertMetaPreflightElement" in text
@@ -239,7 +243,7 @@ def test_chat_js_references_window_metapreflight():
 
 
 def test_chat_pending_queue_keeps_hidden_preflight_control_out_of_composer():
-    text = CHAT_JS.read_text()
+    text = _read_text(CHAT_JS)
 
     assert "hiddenControl: preserveComposer === true" in text
     assert "if (head.hiddenControl)" in text
@@ -250,7 +254,7 @@ def test_chat_pending_queue_keeps_hidden_preflight_control_out_of_composer():
 
 def test_artifact_card_module_exists():
     assert ARTIFACT_CARD_JS.exists()
-    text = ARTIFACT_CARD_JS.read_text()
+    text = _read_text(ARTIFACT_CARD_JS)
     assert "function renderArtifacts" in text
     assert "root.ArtifactCard" in text or "window.ArtifactCard" in text
     for label in ("Open", "Download"):
@@ -261,7 +265,7 @@ def test_artifact_card_module_exists():
 
 def test_meta_run_history_module_exists():
     assert META_RUN_HISTORY_JS.exists()
-    text = META_RUN_HISTORY_JS.read_text()
+    text = _read_text(META_RUN_HISTORY_JS)
     assert "root.MetaRunHistory" in text or "window.MetaRunHistory" in text
     for method in (
         "meta.runs.list",
@@ -288,14 +292,14 @@ def test_meta_run_history_module_exists():
 
 
 def test_chat_js_renders_stream_artifacts_with_artifact_card_module():
-    text = CHAT_JS.read_text()
+    text = _read_text(CHAT_JS)
     assert "window.ArtifactCard" in text
     assert "renderArtifacts" in text
     assert "session.event.artifact" in text
 
 
 def test_chat_js_references_meta_run_history_launcher():
-    text = CHAT_JS.read_text()
+    text = _read_text(CHAT_JS)
     assert "window.MetaRunHistory" in text
     assert "openRunHistory" in text
     assert "meta-run-history" in text
@@ -305,14 +309,14 @@ def test_chat_js_references_meta_run_history_launcher():
 
 
 def test_chat_js_uses_server_preflight_confirmation_rpc():
-    text = CHAT_JS.read_text()
+    text = _read_text(CHAT_JS)
     assert "meta.runs.confirm_preflight" in text
     assert "_confirmMetaPreflight" in text
     assert "confirmed.message" in text
 
 
 def test_chat_js_dispatches_meta_events():
-    text = CHAT_JS.read_text()
+    text = _read_text(CHAT_JS)
     assert "session.event.meta_run_announced" in text
     assert "session.event.meta_step_state" in text
     assert "session.event.meta_run_completed" in text
@@ -321,13 +325,13 @@ def test_chat_js_dispatches_meta_events():
 
 
 def test_chat_js_keeps_preflight_before_same_run_ribbon():
-    text = CHAT_JS.read_text()
+    text = _read_text(CHAT_JS)
     assert "_metaPreflightEl.get" in text
     assert "preflight.nextSibling" in text
 
 
 def test_chat_js_handles_ribbon_action_events():
-    text = CHAT_JS.read_text()
+    text = _read_text(CHAT_JS)
     assert "meta-ribbon-action" in text
     for action in (
         "retry-run",

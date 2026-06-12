@@ -721,3 +721,48 @@ def test_tier_routed_provider_config_keeps_explicit_model_pin() -> None:
     assert routed.provider == "openrouter"
     assert routed.model == "z-ai/glm-5.1"
     assert routed.api_key == "openrouter-tier-key"
+
+
+def test_external_acquisition_policy_scales_fetch_cap_to_routed_window() -> None:
+    """The per-turn web policy derives the single-fetch cap from the routed
+    model's context window: small windows shrink the cap so one fetch
+    survives into the next iteration's request view; large windows keep the
+    50k default via the ceiling.
+    """
+    from types import SimpleNamespace
+
+    from opensquilla.engine.runtime import _external_acquisition_policy_for_turn
+    from opensquilla.result_budget import DEFAULT_TOOL_RUN_BUDGET_POLICY
+
+    small_cfg = SimpleNamespace(
+        context_window_tokens=32_768,
+        max_tokens=4_096,
+        context_overflow_threshold=0.85,
+        provider_request_proof_max_chars=0,
+        tool_use_argument_provider_request_max_chars=0,
+        tool_result_provider_request_max_chars=0,
+    )
+    small = _external_acquisition_policy_for_turn(small_cfg)
+    assert small.max_single_fetch_chars == 8_000
+    assert small.max_web_search_results == (
+        DEFAULT_TOOL_RUN_BUDGET_POLICY.max_web_search_results
+    )
+
+    large_cfg = SimpleNamespace(
+        context_window_tokens=200_000,
+        max_tokens=16_384,
+        context_overflow_threshold=0.85,
+        provider_request_proof_max_chars=0,
+        tool_use_argument_provider_request_max_chars=0,
+        tool_result_provider_request_max_chars=0,
+    )
+    large = _external_acquisition_policy_for_turn(large_cfg)
+    assert large.max_single_fetch_chars == 50_000
+
+    broken_cfg = SimpleNamespace()
+    assert (
+        _external_acquisition_policy_for_turn(broken_cfg)
+        is DEFAULT_TOOL_RUN_BUDGET_POLICY
+        or _external_acquisition_policy_for_turn(broken_cfg).max_single_fetch_chars
+        is not None
+    )

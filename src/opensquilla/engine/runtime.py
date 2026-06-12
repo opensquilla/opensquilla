@@ -843,6 +843,36 @@ def _prepend_request_context_prompt(
 # emitter bypasses that guard, since each replay re-runs the whole turn.
 _MAX_ROUTER_CONTROL_REPLAYS = 2
 
+
+def _external_acquisition_policy_for_turn(agent_config: Any) -> Any:
+    """Derive the per-turn external-acquisition budget from the routed model.
+
+    The default web policy caps a single fetch at 50k chars — sized for
+    large-context models. On a routed small-context tier the same fetch is
+    larger than the whole provider-request budget, so it gets elided to a
+    projection stub on the very next iteration: the model never sees what it
+    fetched, concludes the search failed, and retries in a loop (observed:
+    agent:main:webchat:3h1bj7ek, 27 web calls in one turn). Shape the
+    acquisition at the source instead, keyed to the turn's actual budget.
+    """
+    from opensquilla.context_budget import ContextBudgetGovernor
+    from opensquilla.result_budget import (
+        DEFAULT_TOOL_RUN_BUDGET_POLICY,
+        ToolRunBudgetPolicy,
+    )
+
+    try:
+        governor = ContextBudgetGovernor.from_config(agent_config)
+        fetch_cap = governor.single_external_acquisition_chars(
+            ceiling=DEFAULT_TOOL_RUN_BUDGET_POLICY.max_single_fetch_chars,
+        )
+    except Exception:  # noqa: BLE001 - budget shaping is never fatal
+        return DEFAULT_TOOL_RUN_BUDGET_POLICY
+    return ToolRunBudgetPolicy(
+        max_single_fetch_chars=fetch_cap,
+        max_web_search_results=DEFAULT_TOOL_RUN_BUDGET_POLICY.max_web_search_results,
+    )
+
 _MAX_TOOL_RESULT_CHARS = 2000
 _MAX_TOOL_RESULT_METADATA_VALUE_CHARS = 256
 _MAX_PERSISTED_TOOL_ARGUMENT_FIELD_CHARS = 4096
@@ -2466,6 +2496,13 @@ class TurnRunner:
             model_caps = ab_out.model_capabilities  # noqa: F841
             private_memory_allowed = ab_out.private_memory_allowed
             sync_manager = ab_out.sync_manager
+            if (
+                tool_context is not None
+                and tool_context.tool_run_budget_policy is None
+            ):
+                tool_context.tool_run_budget_policy = (
+                    _external_acquisition_policy_for_turn(agent_config)
+                )
             if turn_call_logger is not None:
                 turn_call_logger.write(
                     "agent_runtime_budget",

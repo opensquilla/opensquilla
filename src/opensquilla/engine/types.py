@@ -463,6 +463,10 @@ class AgentConfig:
     tool_use_argument_projection_enabled: bool = False
     tool_result_external_keep_recent: int = 2
     tool_failure_loop_block_threshold: int = 3
+    # Per-turn count of SUCCESSFUL web acquisition calls after which results
+    # carry a usage note nudging the model to answer from gathered evidence.
+    # Advisory shaping only — never blocks. 0 disables.
+    tool_repetition_advice_threshold: int = 6
     tool_result_store_dir: str | None = None
     tool_result_store_session_id: str | None = None
     tool_result_store_session_key: str | None = None

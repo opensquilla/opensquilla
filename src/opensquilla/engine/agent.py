@@ -780,6 +780,7 @@ class Agent:
         self._session_flush_service = session_flush_service
         self._last_compaction_refusal_reason: str | None = None
         self._tool_failure_loop_counts: dict[tuple[str, str], int] = {}
+        self._tool_success_counts: dict[str, int] = {}
         self._provider_tool_result_overrides: dict[str, ContentBlockToolResult] = {}
 
     def _context_overflow_error(self) -> ErrorEvent:
@@ -1440,6 +1441,11 @@ class Agent:
             f"{handle_line}"
             f"omitted_chars: {omitted}\n"
             f"reason: {reason}.\n"
+            "note: This call SUCCEEDED and returned the full content; only "
+            "this conversation view is condensed to fit the context budget. "
+            "Do not call the tool again to recover the omitted middle — a "
+            "repeat call gets condensed the same way. Work from the head/tail "
+            "below, or make a narrower request for the specific part needed.\n"
             f"head:\n{head}"
         )
         if tail:
@@ -5158,7 +5164,47 @@ class Agent:
                 "write_file",
             }:
                 self._tool_failure_loop_counts.clear()
+            result = self._append_repetition_advice(tc, result)
         return result
+
+    def _append_repetition_advice(self, tc: ToolCall, result: ToolResult) -> ToolResult:
+        """Soft brake on futile repetition of SUCCESSFUL acquisition calls.
+
+        The failure-loop guard only sees errors; a small-context model whose
+        results get condensed re-issues near-identical successful searches
+        indefinitely (observed: 27 web calls in one turn). Past a per-turn
+        threshold, append advice to the result text — shaping, never
+        blocking, so no error envelopes reach the stream or the frontend.
+        """
+        if tc.tool_name not in {"web_search", "web_fetch", "http_request"}:
+            return result
+        threshold = max(
+            0,
+            int(getattr(self.config, "tool_repetition_advice_threshold", 0) or 0),
+        )
+        if threshold <= 0:
+            return result
+        count = self._tool_success_counts.get(tc.tool_name, 0) + 1
+        self._tool_success_counts[tc.tool_name] = count
+        if count < threshold or not isinstance(result.content, str):
+            return result
+        advice = (
+            f"\n\n[turn_usage_note] This turn has now made {count} successful "
+            f"{tc.tool_name} calls. Their results were all delivered (some "
+            "views condensed to fit the context budget) — absence of detail "
+            "here does not mean the call failed. Prefer answering from the "
+            "evidence already gathered. Make another call only for a "
+            "concretely missing fact, and say what it is in the query."
+        )
+        return ToolResult(
+            tool_use_id=result.tool_use_id,
+            tool_name=result.tool_name,
+            content=result.content + advice,
+            is_error=result.is_error,
+            artifacts=list(result.artifacts),
+            execution_status=result.execution_status,
+            terminates_turn=result.terminates_turn,
+        )
 
     def _matched_meta_skill_name_from_metadata(self) -> str | None:
         metadata = self.config.metadata or {}

@@ -447,4 +447,16 @@ def _apply_max_chars(result: dict[str, Any], max_chars: int | None) -> dict[str,
     output["original_length"] = len(inner)
     output["returned_length"] = max_chars
     output["length"] = len(inner)
+    # Addressed to the model, in prose: small-context models do not act on
+    # bare flags, and an unexplained truncation reads as a failed fetch,
+    # which triggers retry loops.
+    output["truncation_notice"] = (
+        f"The fetch SUCCEEDED. The page has {len(inner)} characters; the first "
+        f"{max_chars} are shown above, sized to this conversation's context "
+        "budget. Re-fetching the same URL returns the same truncated view — "
+        "do not retry for more text. If the shown content answers the "
+        "question, use it. If a specific later section is needed, narrow the "
+        "request instead: search within the site, fetch a more specific URL, "
+        "or pass max_chars with a byte range in mind."
+    )
     return output

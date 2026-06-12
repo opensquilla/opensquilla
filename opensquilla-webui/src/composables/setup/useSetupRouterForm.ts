@@ -63,6 +63,11 @@ export function useSetupRouterForm() {
   const mode = computed(() => routerMode.value)
   const defaultTier = computed(() => routerDefaultTier.value)
 
+  const serialized = computed(() => JSON.stringify({ m: routerMode.value, d: routerDefaultTier.value, t: tierValues.value }))
+  // Seed from the initial state so the pristine form is never dirty while config loads.
+  const baseline = ref(serialized.value)
+  const isDirty = computed(() => serialized.value !== baseline.value)
+
   function initFromConfig(
     router: RouterConfig,
     profileTiers: Record<string, TierConfig>,
@@ -82,6 +87,7 @@ export function useSetupRouterForm() {
       }
     })
     tierValues.value = next
+    baseline.value = serialized.value
   }
 
   function updateTierField(name: string, key: keyof SetupTierValue, value: string | boolean) {
@@ -133,6 +139,7 @@ export function useSetupRouterForm() {
   return {
     mode,
     defaultTier,
+    isDirty,
     initFromConfig,
     setRouterMode,
     setRouterDefaultTier,

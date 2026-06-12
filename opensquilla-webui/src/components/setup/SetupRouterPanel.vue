@@ -25,9 +25,7 @@ const emit = defineEmits<{
   updateRouterMode: [value: string]
   updateRouterDefaultTier: [value: string]
   updateTierField: [name: string, key: keyof Omit<TierRow, 'name'>, value: string | boolean]
-  back: []
   save: []
-  next: []
 }>()
 </script>
 
@@ -68,9 +66,7 @@ const emit = defineEmits<{
     </div>
     <div v-else class="setup-warning">Choose a provider first to preview and save SquillaRouter tiers.</div>
     <div class="setup-actions">
-      <button class="setup-btn" @click="emit('back')">Back</button>
       <button class="setup-btn setup-btn--primary" :disabled="!panel.hasSavedProvider" @click="emit('save')">Save Router</button>
-      <button class="setup-btn" @click="emit('next')">Next</button>
     </div>
   </section>
 </template>

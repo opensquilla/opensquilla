@@ -1,4 +1,4 @@
-import { computed, ref, type ComputedRef } from 'vue'
+import { computed, ref, type ComputedRef, type Ref } from 'vue'
 
 interface ProviderSpec {
   providerId: string
@@ -69,6 +69,14 @@ interface CapabilitiesPanelContext {
   capabilityBadgeTone: (name: string) => string
   capabilityBadgeLabel: (name: string) => string
   capabilitySaveButtonClass: (name: string) => string
+  memoryAutoCapture: Ref<boolean>
+  audioEnabled: Ref<boolean>
+  audioApiKey: Ref<string>
+  audioApiKeyEnv: Ref<string>
+  audioStatusText: ComputedRef<string>
+  audioBadgeTone: ComputedRef<string>
+  audioBadgeLabel: ComputedRef<string>
+  audioKeyPlaceholder: ComputedRef<string>
 }
 
 export interface SearchFormValues {
@@ -158,6 +166,26 @@ export function useSetupCapabilitiesForm() {
   const imageBaseUrl = ref('')
   const imageEnabled = ref(true)
 
+  const searchSerialized = computed(() => JSON.stringify([
+    searchProvider.value, searchMaxResults.value, searchApiKey.value, searchApiKeyEnv.value,
+    searchProxy.value, searchUseEnvProxy.value, searchFallbackPolicy.value, searchDiagnostics.value,
+  ]))
+  const memorySerialized = computed(() => JSON.stringify([
+    memoryProvider.value, memoryModel.value, memoryApiKey.value, memoryApiKeyEnv.value,
+    memoryBaseUrl.value, memoryOnnxDir.value,
+  ]))
+  const imageSerialized = computed(() => JSON.stringify([
+    imageProvider.value, imagePrimary.value, imageApiKey.value, imageApiKeyEnv.value,
+    imageBaseUrl.value, imageEnabled.value,
+  ]))
+  // Seed from the initial state so the pristine forms are never dirty while config loads.
+  const searchBaseline = ref(searchSerialized.value)
+  const memoryBaseline = ref(memorySerialized.value)
+  const imageBaseline = ref(imageSerialized.value)
+  const searchDirty = computed(() => searchSerialized.value !== searchBaseline.value)
+  const memoryDirty = computed(() => memorySerialized.value !== memoryBaseline.value)
+  const imageDirty = computed(() => imageSerialized.value !== imageBaseline.value)
+
   const memoryRemoteControlEnabled = computed(() => ['auto', 'openai', 'openai-compatible', 'ollama'].includes(memoryProvider.value))
   const memoryLocalControlEnabled = computed(() => memoryProvider.value === 'local')
   const selectedSearchProvider = computed(() => searchProvider.value)
@@ -183,6 +211,8 @@ export function useSetupCapabilitiesForm() {
     searchUseEnvProxy.value = config.search_use_env_proxy === true
     searchFallbackPolicy.value = config.search_fallback_policy || 'off'
     searchDiagnostics.value = config.search_diagnostics === true
+    searchApiKey.value = ''
+    searchBaseline.value = searchSerialized.value
   }
 
   function initMemoryFromConfig(config: ConfigData) {
@@ -195,6 +225,8 @@ export function useSetupCapabilitiesForm() {
     memoryBaseUrl.value = remote.base_url || ''
     const local = current.local || {}
     memoryOnnxDir.value = local.onnx_dir || ''
+    memoryApiKey.value = ''
+    memoryBaseline.value = memorySerialized.value
   }
 
   function initImageFromConfig(config: ConfigData, status: StatusData, providers: ProviderSpec[]) {
@@ -206,6 +238,8 @@ export function useSetupCapabilitiesForm() {
     imageApiKeyEnv.value = providerConfig.api_key_env || ''
     imageBaseUrl.value = providerConfig.base_url || ''
     imageEnabled.value = status.imageGenerationEnabled !== false
+    imageApiKey.value = ''
+    imageBaseline.value = imageSerialized.value
   }
 
   function onSearchProviderChange(spec: ProviderSpec | null | undefined) {
@@ -321,6 +355,10 @@ export function useSetupCapabilitiesForm() {
         imageApiKeyEnv: imageApiKeyEnv.value,
         imageBaseUrl: imageBaseUrl.value,
         imageEnabled: imageEnabled.value,
+        memoryAutoCapture: context.memoryAutoCapture.value,
+        audioEnabled: context.audioEnabled.value,
+        audioApiKey: context.audioApiKey.value,
+        audioApiKeyEnv: context.audioApiKeyEnv.value,
       },
       options: {
         searchProviders: context.searchProviders.value,
@@ -355,6 +393,10 @@ export function useSetupCapabilitiesForm() {
         capabilityBadgeTone: context.capabilityBadgeTone,
         capabilityBadgeLabel: context.capabilityBadgeLabel,
         capabilitySaveButtonClass: context.capabilitySaveButtonClass,
+        audioStatusText: context.audioStatusText.value,
+        audioBadgeTone: context.audioBadgeTone.value,
+        audioBadgeLabel: context.audioBadgeLabel.value,
+        audioKeyPlaceholder: context.audioKeyPlaceholder.value,
       },
     }))
   }
@@ -364,6 +406,9 @@ export function useSetupCapabilitiesForm() {
     selectedMemoryProvider,
     selectedImageProvider,
     imageIsEnabled,
+    searchDirty,
+    memoryDirty,
+    imageDirty,
     searchAdvancedOpen,
     searchApiKeyEnvValue,
     memoryApiKeyEnvValue,

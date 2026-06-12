@@ -1,8 +1,10 @@
-import { computed, ref, type ComputedRef } from 'vue'
+import { computed, ref, type ComputedRef, type Ref } from 'vue'
 
 interface ProviderField {
   name: string
   label: string
+  type?: string
+  secret?: boolean
   default?: string | boolean | number
   [key: string]: unknown
 }
@@ -39,6 +41,7 @@ interface ProviderPanelContext {
   providerEnvMissing: ComputedRef<boolean>
   providerEnvKey: ComputedRef<string>
   providerEnvCommand: ComputedRef<string>
+  llmTimeoutSeconds: Ref<number>
 }
 
 function camel(name: string): string {
@@ -58,16 +61,25 @@ export function useSetupProviderForm() {
   const providerFieldValues = ref<Record<string, unknown>>({})
   const selectedProvider = computed(() => providerSelected.value)
 
+  const serialized = computed(() => JSON.stringify({ p: providerSelected.value, v: providerFieldValues.value }))
+  // Seed from the initial state so the pristine form is never dirty while config loads.
+  const baseline = ref(serialized.value)
+  const isDirty = computed(() => serialized.value !== baseline.value)
+
   function initFromConfig(config: ProviderConfig, status: SetupStatus, providers: ProviderSpec[]) {
     const hasSaved = Boolean(config.provider) && status.hasConfig !== false
-    if (!hasSaved || !config.provider) return
-
-    providerSelected.value = config.provider
-    const spec = providers.find(p => p.providerId === config.provider)
-    spec?.fields?.forEach(field => {
-      const value = config[field.name]
-      if (value !== undefined) providerFieldValues.value[field.name] = value
-    })
+    if (hasSaved && config.provider) {
+      providerSelected.value = config.provider
+      const spec = providers.find(p => p.providerId === config.provider)
+      spec?.fields?.forEach(field => {
+        // Secrets are write-only: config.get returns the literal "[redacted]",
+        // which must never be seeded into the form or echoed back on save.
+        if (field.secret || field.type === 'password') return
+        const value = config[field.name]
+        if (value !== undefined) providerFieldValues.value[field.name] = value
+      })
+    }
+    baseline.value = serialized.value
   }
 
   function resetForProvider(spec: { fields?: ProviderField[] } | null | undefined) {
@@ -115,12 +127,14 @@ export function useSetupProviderForm() {
       providerEnvMissing: context.providerEnvMissing.value,
       providerEnvKey: context.providerEnvKey.value,
       providerEnvCommand: context.providerEnvCommand.value,
+      llmTimeoutSeconds: context.llmTimeoutSeconds.value,
       providerFieldValue: (field: ProviderField) => fieldValue(field, context.currentConfig.value),
     }))
   }
 
   return {
     selectedProvider,
+    isDirty,
     initFromConfig,
     resetForProvider,
     fieldValue,

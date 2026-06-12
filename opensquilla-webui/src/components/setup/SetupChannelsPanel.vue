@@ -45,8 +45,6 @@ const emit = defineEmits<{
   channelTypeChange: []
   updateChannelField: [name: string, value: unknown]
   save: []
-  back: []
-  next: []
 }>()
 
 function onChannelTypeSelect(event: Event) {
@@ -95,10 +93,6 @@ function onChannelTypeSelect(event: Event) {
         </template>
         <p v-else class="setup-muted">No channels configured.</p>
       </div>
-    </div>
-    <div class="setup-actions">
-      <button class="setup-btn" @click="emit('back')">Back</button>
-      <button class="setup-btn" @click="emit('next')">Next</button>
     </div>
   </section>
 </template>

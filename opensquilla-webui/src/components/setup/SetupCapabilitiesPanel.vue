@@ -36,6 +36,10 @@ interface CapabilitiesPanelContract {
     imageApiKeyEnv: string
     imageBaseUrl: string
     imageEnabled: boolean
+    memoryAutoCapture: boolean
+    audioEnabled: boolean
+    audioApiKey: string
+    audioApiKeyEnv: string
   }
   options: {
     searchProviders: ProviderOption[]
@@ -70,6 +74,10 @@ interface CapabilitiesPanelContract {
     capabilityBadgeTone: (name: string) => string
     capabilityBadgeLabel: (name: string) => string
     capabilitySaveButtonClass: (name: string) => string
+    audioStatusText: string
+    audioBadgeTone: string
+    audioBadgeLabel: string
+    audioKeyPlaceholder: string
   }
 }
 
@@ -78,16 +86,15 @@ defineProps<{
 }>()
 
 const emit = defineEmits<{
-  updateField: [group: 'search' | 'memory' | 'image', key: string, value: string | number | boolean]
+  updateField: [group: 'search' | 'memory' | 'image' | 'audio', key: string, value: string | number | boolean]
   searchProviderChange: []
   memoryProviderChange: []
   imageProviderChange: []
   saveSearch: []
   saveMemory: []
   saveImage: []
+  saveAudio: []
   copy: [command: string]
-  back: []
-  next: []
 }>()
 
 function onSearchProviderSelect(event: Event) {
@@ -109,8 +116,8 @@ function onImageProviderSelect(event: Event) {
 <template>
   <section class="setup-panel">
     <header class="setup-panel__head">
-      <h3>Capability Center</h3>
-      <p>Web search &middot; Memory recall &middot; Image generation</p>
+      <h3>Capabilities</h3>
+      <p>Web search &middot; Memory recall &middot; Image generation &middot; Audio</p>
     </header>
     <div class="setup-extras">
       <div class="setup-mini">
@@ -188,6 +195,10 @@ function onImageProviderSelect(event: Event) {
           @copy="emit('copy', $event)"
         />
         <SetupNeedList :items="panel.state.memoryNeeds" label="Memory needs" />
+        <label class="setup-check">
+          <input :checked="panel.form.memoryAutoCapture" name="setup_memory_auto_capture" type="checkbox" @change="emit('updateField', 'memory', 'autoCapture', ($event.target as HTMLInputElement).checked)">
+          <span>Automatic memory capture &mdash; save highlights of your conversations into long-term memory.</span>
+        </label>
         <label>
           <span>Provider</span>
           <select :value="panel.form.memoryProvider" name="setup_memory_provider" @change="onMemoryProviderSelect">
@@ -266,10 +277,29 @@ function onImageProviderSelect(event: Event) {
         </label>
         <button :class="panel.state.capabilitySaveButtonClass('image_generation')" @click="emit('saveImage')">Save image generation</button>
       </div>
-    </div>
-    <div class="setup-actions">
-      <button class="setup-btn" @click="emit('back')">Back</button>
-      <button class="setup-btn" @click="emit('next')">Next</button>
+
+      <div class="setup-mini">
+        <div class="setup-mini__head">
+          <h4>Audio</h4>
+          <span class="setup-badge" :class="panel.state.audioBadgeTone">{{ panel.state.audioBadgeLabel }}</span>
+        </div>
+        <p class="setup-muted">{{ panel.state.audioStatusText }}</p>
+        <div v-if="panel.form.audioEnabled">
+          <label>
+            <span>API key</span>
+            <input :value="panel.form.audioApiKey" name="setup_audio_api_key" type="password" :placeholder="panel.state.audioKeyPlaceholder" @input="emit('updateField', 'audio', 'apiKey', ($event.target as HTMLInputElement).value)">
+          </label>
+          <label>
+            <span>API key env</span>
+            <input :value="panel.form.audioApiKeyEnv" name="setup_audio_api_key_env" placeholder="ELEVENLABS_API_KEY" @input="emit('updateField', 'audio', 'apiKeyEnv', ($event.target as HTMLInputElement).value)">
+          </label>
+        </div>
+        <label class="setup-check">
+          <input :checked="panel.form.audioEnabled" name="setup_audio_enabled" type="checkbox" @change="emit('updateField', 'audio', 'enabled', ($event.target as HTMLInputElement).checked)">
+          <span>Enable voice &amp; audio tools (text-to-speech and speech-to-text via ElevenLabs).</span>
+        </label>
+        <button class="setup-btn" @click="emit('saveAudio')">Save audio</button>
+      </div>
     </div>
   </section>
 </template>

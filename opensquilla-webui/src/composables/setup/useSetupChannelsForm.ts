@@ -46,17 +46,27 @@ export function useSetupChannelsForm() {
   const channelFieldValues = ref<Record<string, unknown>>({})
   const selectedChannelType = computed(() => channelType.value)
 
+  const serialized = computed(() => JSON.stringify({ t: channelType.value, v: channelFieldValues.value }))
+  // Seed from the initial state so the pristine form is never dirty while config loads.
+  const baseline = ref(serialized.value)
+  const isDirty = computed(() => serialized.value !== baseline.value)
+
+  // The channels form is an entry composer: every (re)load resets the draft
+  // to the selected type's defaults, so Discard and post-save reloads clear it.
   function initFromCatalog(channels: ChannelSpec[]) {
     if (channels.length > 0 && !channelType.value) {
       channelType.value = channels[0].type
     }
+    resetForSpec(channels.find(c => c.type === channelType.value))
   }
 
+  // Switching channel type resets the entry form; type choice alone is not an unsaved edit.
   function resetForSpec(spec: ChannelSpec | null | undefined) {
     channelFieldValues.value = {}
     spec?.fields?.forEach(field => {
       channelFieldValues.value[field.name] = field.default ?? ''
     })
+    baseline.value = serialized.value
   }
 
   function updateField(name: string, value: unknown) {
@@ -90,6 +100,7 @@ export function useSetupChannelsForm() {
 
   return {
     selectedChannelType,
+    isDirty,
     initFromCatalog,
     resetForSpec,
     selectChannelType,

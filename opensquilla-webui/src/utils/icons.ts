@@ -9,7 +9,7 @@ export type IconName =
   | 'edit' | 'info' | 'settings' | 'gear' | 'gauge' | 'regenerate'
   | 'pencil' | 'chevronDown' | 'chevronRight' | 'arrowUp'
   | 'panel-left-open' | 'panel-left-close' | 'clock' | 'microphone'
-  | 'cloud' | 'fileText' | 'fileCode' | 'image' | 'table';
+  | 'cloud' | 'fileText' | 'fileCode' | 'image' | 'table' | 'externalLink';
 
 interface IconDef {
   path: string;
@@ -67,6 +67,7 @@ const ICONS: Record<IconName, IconDef> = {
   fileCode: { path: '<path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7z"/><path d="M14 2v5h5"/><path d="m10 13-2 2 2 2"/><path d="m14 13 2 2-2 2"/>', strokeWidth: 1.5 },
   image: { path: '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10.5" r="1.5"/><path d="m21 15-4.5-4.5L6 19"/>', strokeWidth: 1.5 },
   table: { path: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18"/><path d="M9 4v16"/><path d="M15 4v16"/>', strokeWidth: 1.5 },
+  externalLink: { path: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>', strokeWidth: 1.5 },
 };
 
 export function getIconSvg(name: IconName, size: number = 16): string {

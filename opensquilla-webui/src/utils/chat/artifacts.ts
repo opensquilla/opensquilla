@@ -61,21 +61,46 @@ export function artifactFileTitle(artifact: ArtifactPayload): string {
   return artifactName(artifact)
 }
 
+/** Short uppercase type badge, e.g. PNG, CSV, PDF, SQL. */
+export function artifactKindPill(artifact: ArtifactPayload): string {
+  const ext = artifactExtension(artifactName(artifact))
+  if (ext) return ext.toUpperCase()
+  const mime = artifactMime(artifact)
+  const subtype = mime.includes('/') ? mime.slice(mime.indexOf('/') + 1) : mime
+  const cleaned = subtype.replace(/^x[-.]/, '').replace(/[+.].*$/, '')
+  return cleaned ? cleaned.toUpperCase() : artifactCategoryLabel(artifact).toUpperCase()
+}
+
+/** Human-readable byte size, e.g. "727 KB". Empty when size is unknown. */
+export function artifactSizeLabel(artifact: ArtifactPayload): string {
+  if (!artifact?.size) return ''
+  return `${Math.max(1, Math.round(Number(artifact.size) / 1024))} KB`
+}
+
+/**
+ * Compact meta line shown in cards: `TYPE · size`, e.g. `PNG · 727 KB`.
+ * No "Preview file"/"Download file" prefix and no doubled uppercase category.
+ */
 export function artifactFileSubtitle(artifact: ArtifactPayload): string {
-  const label = artifactCategoryLabel(artifact)
-  const meta = artifactMeta(artifact)
-  const action = artifactActionLabel(artifact) === 'Preview' ? 'Preview file' : 'Download file'
-  return [action, label.toUpperCase(), meta].filter(Boolean).join(' · ')
+  return [artifactKindPill(artifact), artifactSizeLabel(artifact)].filter(Boolean).join(' · ')
+}
+
+/**
+ * Previewable types get an Open affordance: images plus documents
+ * (pdf / html / markdown / plain text). Data and code are download-only.
+ */
+export function canPreview(artifact: ArtifactPayload): boolean {
+  const cat = artifactCategory(artifact)
+  return cat === 'visual' || cat === 'document'
 }
 
 export function artifactActionLabel(artifact: ArtifactPayload): string {
-  const cat = artifactCategory(artifact)
-  return cat === 'visual' || cat === 'document' ? 'Preview' : 'Download'
+  return canPreview(artifact) ? 'Open' : 'Download'
 }
 
 export function artifactMeta(artifact: ArtifactPayload): string {
   const mime = artifact?.mime ? String(artifact.mime) : ''
-  const size = artifact?.size ? `${Math.max(1, Math.round(Number(artifact.size) / 1024))} KB` : ''
+  const size = artifactSizeLabel(artifact)
   return [mime, size].filter(Boolean).join(' · ')
 }
 
@@ -123,5 +148,20 @@ export function artifactPreviewUrl(
   baseOrigin: string,
   options: ArtifactUrlOptions = {},
 ): string {
+  return artifactDownloadUrl(artifact, baseOrigin, options)
+}
+
+/**
+ * Small thumbnail URL for grid/inline previews. Prefers the backend-supplied
+ * `thumbnail_url` (a `{download_url}?variant=thumb` webp); when it is absent we
+ * fall back to the full download URL so older artifacts still render a preview.
+ */
+export function artifactThumbnailUrl(
+  artifact: ArtifactPayload,
+  baseOrigin: string,
+  options: ArtifactUrlOptions = {},
+): string {
+  const thumb = artifact?.thumbnail_url ? String(artifact.thumbnail_url) : ''
+  if (thumb) return artifactDownloadUrl({ ...artifact, download_url: thumb }, baseOrigin, options)
   return artifactDownloadUrl(artifact, baseOrigin, options)
 }

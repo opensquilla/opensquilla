@@ -91,6 +91,8 @@ test.describe('Per-session deliverables drawer', () => {
     // Both deliverables render as tiles.
     await expect(page.locator('.deliv-tile')).toHaveCount(2)
     await expect(page.locator('.deliv-tile__name').first()).toHaveText('report.csv')
+    // Tile meta uses the clean TYPE · size copy, not a doubled category.
+    await expect(page.locator('.deliv-tile__meta').first()).toHaveText('CSV · 2 KB')
 
     // Focus moved into the drawer (close button is focused on open).
     const focusInside = await page.evaluate(() => {

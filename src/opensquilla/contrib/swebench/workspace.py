@@ -54,10 +54,17 @@ class SWEBenchWorkspace:
         """
         for name_fn in (instance_id_to_image, instance_id_to_image_sweagent):
             candidate = name_fn(instance_id)
-            result = subprocess.run(
-                ["docker", "image", "inspect", candidate],
-                capture_output=True,
-            )
+            try:
+                result = subprocess.run(
+                    ["docker", "image", "inspect", candidate],
+                    capture_output=True,
+                    timeout=30,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                # Docker missing or unresponsive must not hang or crash
+                # workspace construction; start() will surface the failure.
+                logger.warning("docker image inspect failed for %s: %s", candidate, exc)
+                continue
             if result.returncode == 0:
                 return candidate
         # Default to harness format even if not found (will fail at start)

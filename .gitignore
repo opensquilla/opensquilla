@@ -21,6 +21,9 @@ opensquilla.toml
 !.github/workflows/
 !.github/workflows/*.yml
 data/
+# Packaged data for the SWE-bench contrib harness must ship with the wheel.
+!src/opensquilla/contrib/swebench/data/
+!src/opensquilla/contrib/swebench/data/**
 .opensquilla/
 benchmarks/
 specs/

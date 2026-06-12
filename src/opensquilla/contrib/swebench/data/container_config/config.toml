@@ -1,0 +1,82 @@
+# OpenSquilla config for SWE-bench evaluation runs (v0.3.1, fixed-model mode).
+#
+# Loaded inside SWE-bench Docker containers via the env var
+# OPENSQUILLA_GATEWAY_CONFIG_PATH=/opt/opensquilla-config/config.toml
+#
+# Goals:
+#   - Run "opensquilla agent" in standalone (no-gateway) mode.
+#   - Disable sandbox/grading: the SWE-bench container is itself the
+#     isolation boundary, and host-side bubblewrap is not present.
+#   - Strip tools that are useless or harmful for SWE-bench runs
+#     (web, messaging, sub-agents, memory tools, etc.).
+#   - Pin LLM provider to OpenRouter; the API key comes from the
+#     OPENROUTER_API_KEY env var injected by the adapter.
+#   - Fixed-model run: squilla_router DISABLED. Model comes from the
+#     adapter CLI (--model z-ai/glm-5.1 --thinking high); [llm].model
+#     below is only the fallback and is pinned to the same model.
+
+# Workspace defaults (the adapter passes --workspace /testbed at the CLI).
+workspace_strict = false
+
+# Agent loop budget — default GatewayConfig.agent_max_iterations is 100, which is too tight
+# for SWE-bench tasks (some hit the cap with partial patches). Override to 300.
+agent_max_iterations = 300
+
+[llm]
+provider = "openrouter"
+model = "z-ai/glm-5.1"                        # fallback; adapter CLI --model wins
+base_url = "https://openrouter.ai/api/v1"
+# api_key comes from $OPENROUTER_API_KEY at runtime.
+# 32768 cap leaves headroom for reasoning + visible output even on xhigh-thinking tiers.
+max_tokens = 32768
+
+[squilla_router]
+enabled = false
+
+[sandbox]
+# We're already inside a SWE-bench Docker container; double-sandboxing
+# with bubblewrap is not available and not needed.
+sandbox = false
+security_grading = false
+
+[tools]
+# Drop tools that don't help (or actively hurt) SWE-bench runs.
+# Names are matched against the live tool registry; unknown entries
+# are ignored. Filesystem / shell / patch / git stay enabled by default.
+deny = [
+  # No outbound network from inside SWE-bench containers.
+  "web_search",
+  "web_fetch",
+  "web",
+  # Image / media generation is irrelevant.
+  "media",
+  "image",
+  "image_generate",
+  "generate_image",
+  # Persistent / cross-session memory tools — we want :memory: only.
+  "memory_search",
+  "memory_get",
+  "memory_save",
+  "memory_facts",
+  # Inter-session / multi-agent orchestration — single isolated run.
+  "sessions",
+  "session_search",
+  "sessions_list",
+  "sessions_history",
+  "sessions_send",
+  "sessions_yield",
+  "sessions_spawn",
+  "agents",
+  "subagents",
+  "session_status",
+  "nodes",
+  # Scheduling.
+  "cron",
+  # Channel / messaging tools have no inbox here.
+  "messaging",
+  "messaging_send",
+]
+
+# Disable in-turn memory_flush for SWE-bench automation runs.
+[memory]
+flush_enabled = false

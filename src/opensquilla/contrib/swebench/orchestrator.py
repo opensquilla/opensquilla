@@ -135,7 +135,7 @@ def run_one_instance(
         started_at=datetime.now(UTC).isoformat(),
     )
 
-    workspace = SWEBenchWorkspace(instance_id)
+    workspace: SWEBenchWorkspace | None = None
     agent_id = f"swe-{instance_id}".replace(".", "-")
     agent_result = None
 
@@ -143,7 +143,10 @@ def run_one_instance(
         # 1. Create isolated agent (own workspace, sessions, memory)
         adapter.create_agent(agent_id)
 
-        # 2. Start Docker workspace
+        # 2. Start Docker workspace. Construction probes docker, so it stays
+        # inside the guarded block — a missing/hung docker must still be
+        # recorded as a failed instance.
+        workspace = SWEBenchWorkspace(instance_id)
         container_name = workspace.start()
         workspace.prepare_instance(base_commit, setup_gitignore=setup_gitignore)
 
@@ -201,7 +204,8 @@ def run_one_instance(
     finally:
         # Always cleanup: delete agent first, then Docker container
         adapter.delete_agent(agent_id)
-        workspace.cleanup()
+        if workspace is not None:
+            workspace.cleanup()
         record.finished_at = datetime.now(UTC).isoformat()
         if record.started_at and record.finished_at:
             start = datetime.fromisoformat(record.started_at)

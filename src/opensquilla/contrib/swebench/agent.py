@@ -262,21 +262,30 @@ def _save_container_file(container_name: str, src_in_container: str, dest: Path)
 
 
 def _cleanup_opensquilla_metadata(container_name: str) -> None:
-    """Remove anything OpenSquilla may have dropped under /testbed."""
-    subprocess.run(
-        [
-            "docker",
-            "exec",
-            container_name,
-            "bash",
-            "-c",
-            "cd /testbed && rm -rf "
-            "AGENTS.md HEARTBEAT.md SOUL.md TOOLS.md USER.md IDENTITY.md "
-            "memory/ sessions/ .opensquilla/",
-        ],
-        capture_output=True,
-        timeout=10,
+    """Remove runtime droppings OpenSquilla may have left under /testbed.
+
+    Only untracked copies are removed: when the benchmark repo legitimately
+    tracks a file with one of these names (e.g. its own AGENTS.md), deleting
+    it would surface as a spurious deletion in the collected patch.
+    """
+    names = (
+        "AGENTS.md HEARTBEAT.md SOUL.md TOOLS.md USER.md IDENTITY.md memory sessions .opensquilla"
     )
+    script = (
+        f"cd /testbed && for f in {names}; do "
+        'git ls-files --error-unmatch "$f" >/dev/null 2>&1 || rm -rf "$f"; '
+        "done"
+    )
+    try:
+        subprocess.run(
+            ["docker", "exec", container_name, "bash", "-c", script],
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        # Best-effort cleanup must never fail the run; the patch cleaner
+        # still strips anything unexpected later.
+        logger.warning("Container metadata cleanup failed: %s", exc)
 
 
 def _parse_json_envelope(stdout: str) -> dict | None:

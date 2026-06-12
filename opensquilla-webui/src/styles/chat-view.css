@@ -14,6 +14,9 @@
      same column so streaming and settled content share a left edge. Widens
      a step on very large viewports so the thread is not a sliver. */
   --chat-col: min(calc(100% - 48px), clamp(980px, 62vw, 1280px));
+  /* The input column: the composer panel and everything anchored to it
+     (slash menu, queue chips) is deliberately narrower than the thread. */
+  --composer-col: 820px;
 }
 
 .chat--new-landing {
@@ -730,8 +733,12 @@
 .chat-slash {
   position: absolute;
   bottom: calc(var(--composer-h, 60px) + 0.5rem);
-  left: 1rem;
-  right: 1rem;
+  /* Match the input panel it floats above — the composer column, not the
+     full panel width. */
+  left: 0;
+  right: 0;
+  width: min(calc(100% - 2rem), var(--composer-col));
+  margin-inline: auto;
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: 0.5rem;

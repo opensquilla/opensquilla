@@ -622,6 +622,19 @@ def _trusted_windows_powershell_path() -> str:
     return r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 
 
+def _windows_direct_powershell_argv(command: str) -> tuple[str, ...]:
+    return (
+        _trusted_windows_powershell_path(),
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        command,
+    )
+
+
 _WINDOWS_SANDBOX_SHELL_HOST_CODE = r"""
 import os
 import re
@@ -1122,20 +1135,7 @@ def _sandbox_shell_backend_argv(
     backend = getattr(runtime, "backend", None)
     backend_name = getattr(backend, "name", "")
     if backend_name.startswith("windows_"):
-        command = _windows_powershell_compat_command(command)
-        argv = (
-            sys.executable,
-            "-c",
-            _WINDOWS_SANDBOX_SHELL_HOST_CODE,
-            _trusted_windows_powershell_path(),
-            command,
-        )
-        if cwd is not None:
-            tmp_root = _windows_session_tmp_root()
-            if tmp_root is not None:
-                return (*argv, str(cwd), str(tmp_root))
-            return (*argv, str(cwd))
-        return argv
+        return _windows_direct_powershell_argv(_windows_powershell_compat_command(command))
     return ("sh", "-lc", command)
 
 
@@ -1616,6 +1616,8 @@ def _sandbox_workdir_access_envelope(
         return None
     if decision.status == "blocked":
         return _path_access_blocked_envelope(decision)
+    if trusted_sandbox_active() and grant_temporary_mount_for_current_tool(decision):
+        return None
     return _path_access_required_envelope(decision, approval_id=approval_id)
 
 
@@ -2193,7 +2195,8 @@ async def exec_command(
     import os
 
     runtime = get_runtime()
-    if _windows_sandbox_backend_active(runtime):
+    windows_process_sandbox = _windows_sandbox_backend_active(runtime)
+    if windows_process_sandbox:
         command = _windows_translate_posix_tmp_references(command)
         if workdir:
             workdir = _windows_translate_posix_tmp_path(workdir)
@@ -2211,35 +2214,36 @@ async def exec_command(
     )
     if sensitive_block is not None:
         return sensitive_block
-    path_access = _sandbox_workdir_access_envelope(
-        cwd,
-        write=_shell_workdir_requires_write(command, profile, stdin=stdin),
-        approval_id=approval_id,
-    )
-    if path_access is not None:
-        return json.dumps(path_access, ensure_ascii=False)
-    path_access = _sandbox_read_path_access_envelope(profile, cwd, approval_id=approval_id)
-    if path_access is not None:
-        return json.dumps(path_access, ensure_ascii=False)
-    path_access = _sandbox_write_path_access_envelope(
-        profile,
-        cwd,
-        command,
-        stdin=stdin,
-        approval_id=approval_id,
-    )
-    if path_access is not None:
-        return json.dumps(path_access, ensure_ascii=False)
-    lockdown_block = _workspace_lockdown_shell_block(
-        "exec_command", command, cwd, stdin=stdin
-    )
-    if lockdown_block is not None:
-        return json.dumps(lockdown_block, ensure_ascii=False)
-    deny_block = _workspace_write_deny_shell_block(
-        "exec_command", command, cwd, stdin=stdin
-    )
-    if deny_block is not None:
-        return json.dumps(deny_block, ensure_ascii=False)
+    if not windows_process_sandbox:
+        path_access = _sandbox_workdir_access_envelope(
+            cwd,
+            write=_shell_workdir_requires_write(command, profile, stdin=stdin),
+            approval_id=approval_id,
+        )
+        if path_access is not None:
+            return json.dumps(path_access, ensure_ascii=False)
+        path_access = _sandbox_read_path_access_envelope(profile, cwd, approval_id=approval_id)
+        if path_access is not None:
+            return json.dumps(path_access, ensure_ascii=False)
+        path_access = _sandbox_write_path_access_envelope(
+            profile,
+            cwd,
+            command,
+            stdin=stdin,
+            approval_id=approval_id,
+        )
+        if path_access is not None:
+            return json.dumps(path_access, ensure_ascii=False)
+        lockdown_block = _workspace_lockdown_shell_block(
+            "exec_command", command, cwd, stdin=stdin
+        )
+        if lockdown_block is not None:
+            return json.dumps(lockdown_block, ensure_ascii=False)
+        deny_block = _workspace_write_deny_shell_block(
+            "exec_command", command, cwd, stdin=stdin
+        )
+        if deny_block is not None:
+            return json.dumps(deny_block, ensure_ascii=False)
 
     # Warnlist: two-step approval flow
     if result.needs_approval:
@@ -2269,7 +2273,7 @@ async def exec_command(
     effective_timeout = _resolve_background_timeout(timeout)
 
     if runtime is not None and runtime.effective.sandbox_enabled and not host_execution:
-        if _windows_sandbox_backend_active(runtime):
+        if windows_process_sandbox:
             _apply_windows_session_tmp_env(merged_env)
         decision, policy, request = await gate_action(
             action_kind="shell.exec",
@@ -2284,7 +2288,9 @@ async def exec_command(
         if isinstance(decision, DenialResult):
             return json.dumps(decision.to_dict())
         backend_cwd = _sandbox_shell_backend_cwd(cwd, request)
-        backend_policy = _policy_with_active_tool_mounts(request.policy)
+        backend_policy = request.policy
+        if not windows_process_sandbox:
+            backend_policy = _policy_with_active_tool_mounts(backend_policy)
         backend_policy = _policy_with_windows_shell_runtime_mounts(backend_policy, runtime)
         backend_policy = _policy_with_wall_timeout(backend_policy, effective_timeout)
         backend_request = SandboxRequest(
@@ -2296,6 +2302,7 @@ async def exec_command(
             env=dict(merged_env),
             reason=getattr(request, "reason", ""),
             session_id=getattr(request, "session_id", ""),
+            run_mode=getattr(request, "run_mode", ""),
         )
         preflight = await preflight_subprocess_managed_network(backend_request, runtime)
         if isinstance(preflight, DenialResult):
@@ -2310,12 +2317,14 @@ async def exec_command(
         except Exception as exc:
             raise ToolError(f"Sandboxed shell execution failed: {exc}") from exc
         if sandbox_result.backend_notes:
-            retry_request = _trusted_path_recovery_retry_request(
-                command,
-                backend_request,
-                sandbox_result.backend_notes,
-                write_default=_shell_workdir_requires_write(command, profile, stdin=stdin),
-            )
+            retry_request = None
+            if not windows_process_sandbox:
+                retry_request = _trusted_path_recovery_retry_request(
+                    command,
+                    backend_request,
+                    sandbox_result.backend_notes,
+                    write_default=_shell_workdir_requires_write(command, profile, stdin=stdin),
+                )
             if retry_request is not None:
                 try:
                     sandbox_result = await _run_backend_with_managed_network(
@@ -2331,18 +2340,7 @@ async def exec_command(
                 )
                 if isinstance(escalation, DenialResult):
                     return json.dumps(escalation.to_dict())
-                _host_once_current_call.set(True)
-                _consume_host_once_current_call()
-                try:
-                    return await _run_host_shell_command(
-                        command,
-                        cwd=cwd,
-                        env=merged_env,
-                        stdin_bytes=stdin_bytes,
-                        effective_timeout=effective_timeout,
-                    )
-                finally:
-                    _host_once_current_call.set(False)
+                raise ToolError("Sandboxed shell execution denied; host fallback disabled")
         output = sandbox_result.stdout
         if sandbox_result.stderr:
             output += sandbox_result.stderr
@@ -2496,7 +2494,8 @@ async def background_process(
     approval_id: str | None = None,
 ) -> str:
     runtime = get_runtime()
-    if _windows_sandbox_backend_active(runtime):
+    windows_process_sandbox = _windows_sandbox_backend_active(runtime)
+    if windows_process_sandbox:
         command = _windows_translate_posix_tmp_references(command)
         if workdir:
             workdir = _windows_translate_posix_tmp_path(workdir)
@@ -2509,30 +2508,31 @@ async def background_process(
     sensitive_block = _sensitive_shell_block("background_process", command, workdir=cwd)
     if sensitive_block is not None:
         return sensitive_block
-    path_access = _sandbox_workdir_access_envelope(
-        cwd,
-        write=_shell_workdir_requires_write(command, profile),
-        approval_id=approval_id,
-    )
-    if path_access is not None:
-        return json.dumps(path_access, ensure_ascii=False)
-    path_access = _sandbox_read_path_access_envelope(profile, cwd, approval_id=approval_id)
-    if path_access is not None:
-        return json.dumps(path_access, ensure_ascii=False)
-    path_access = _sandbox_write_path_access_envelope(
-        profile,
-        cwd,
-        command,
-        approval_id=approval_id,
-    )
-    if path_access is not None:
-        return json.dumps(path_access, ensure_ascii=False)
-    lockdown_block = _workspace_lockdown_shell_block("background_process", command, cwd)
-    if lockdown_block is not None:
-        return json.dumps(lockdown_block, ensure_ascii=False)
-    deny_block = _workspace_write_deny_shell_block("background_process", command, cwd)
-    if deny_block is not None:
-        return json.dumps(deny_block, ensure_ascii=False)
+    if not windows_process_sandbox:
+        path_access = _sandbox_workdir_access_envelope(
+            cwd,
+            write=_shell_workdir_requires_write(command, profile),
+            approval_id=approval_id,
+        )
+        if path_access is not None:
+            return json.dumps(path_access, ensure_ascii=False)
+        path_access = _sandbox_read_path_access_envelope(profile, cwd, approval_id=approval_id)
+        if path_access is not None:
+            return json.dumps(path_access, ensure_ascii=False)
+        path_access = _sandbox_write_path_access_envelope(
+            profile,
+            cwd,
+            command,
+            approval_id=approval_id,
+        )
+        if path_access is not None:
+            return json.dumps(path_access, ensure_ascii=False)
+        lockdown_block = _workspace_lockdown_shell_block("background_process", command, cwd)
+        if lockdown_block is not None:
+            return json.dumps(lockdown_block, ensure_ascii=False)
+        deny_block = _workspace_write_deny_shell_block("background_process", command, cwd)
+        if deny_block is not None:
+            return json.dumps(deny_block, ensure_ascii=False)
     if result.needs_approval:
         prior_elevation = _approval_elevation_state()
         approval_response: dict[str, object] | None = None
@@ -2563,7 +2563,7 @@ async def background_process(
 
     if runtime is not None and runtime.effective.sandbox_enabled and not host_execution:
         merged_env = dict(os.environ)
-        if _windows_sandbox_backend_active(runtime):
+        if windows_process_sandbox:
             _apply_windows_session_tmp_env(merged_env)
         decision, policy, request = await gate_action(
             action_kind="shell.background",
@@ -2578,7 +2578,9 @@ async def background_process(
         if isinstance(decision, DenialResult):
             return json.dumps(decision.to_dict())
         backend_cwd = _sandbox_shell_backend_cwd(cwd, request)
-        backend_policy = _policy_with_active_tool_mounts(policy)
+        backend_policy = policy
+        if not windows_process_sandbox:
+            backend_policy = _policy_with_active_tool_mounts(backend_policy)
         backend_policy = _policy_with_windows_shell_runtime_mounts(backend_policy, runtime)
         backend_policy = _policy_with_wall_timeout(backend_policy, effective_timeout)
         backend_request = SandboxRequest(
@@ -2588,6 +2590,7 @@ async def background_process(
             policy=backend_policy,
             env=merged_env,
             session_id=getattr(request, "session_id", ""),
+            run_mode=getattr(request, "run_mode", ""),
         )
         preflight = await preflight_subprocess_managed_network(backend_request, runtime)
         if isinstance(preflight, DenialResult):

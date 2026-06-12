@@ -513,6 +513,32 @@ def _enable_token_privilege_native(token: int, name: str) -> None:
         )
 
 
+def _write_child_stdin(kernel32: object, stdin_write: object, stdin: bytes | None) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    try:
+        if stdin:
+            offset = 0
+            while offset < len(stdin):
+                chunk = stdin[offset:]
+                written = wintypes.DWORD()
+                buffer = ctypes.create_string_buffer(chunk)
+                if not kernel32.WriteFile(
+                    stdin_write,
+                    buffer,
+                    len(chunk),
+                    ctypes.byref(written),
+                    None,
+                ):
+                    raise OSError(ctypes.get_last_error(), "WriteFile(stdin) failed")
+                if written.value == 0:
+                    raise OSError(0, "WriteFile(stdin) wrote zero bytes")
+                offset += written.value
+    finally:
+        kernel32.CloseHandle(stdin_write)
+
+
 def _run_restricted_process_native_impl(
     payload: HelperPayload,
     capability_sids: tuple[str, ...],
@@ -677,6 +703,8 @@ def _run_restricted_process_native_impl(
     kernel32.TerminateJobObject.restype = BOOL
     kernel32.GetExitCodeProcess.argtypes = [HANDLE, ctypes.POINTER(DWORD)]
     kernel32.GetExitCodeProcess.restype = BOOL
+    kernel32.WriteFile.argtypes = [HANDLE, LPVOID, DWORD, ctypes.POINTER(DWORD), LPVOID]
+    kernel32.WriteFile.restype = BOOL
 
     TOKEN_ASSIGN_PRIMARY = 0x0001
     TOKEN_DUPLICATE = 0x0002
@@ -742,6 +770,8 @@ def _run_restricted_process_native_impl(
     restricted_token = HANDLE()
     allocated_sids: list[object] = []
     logon_sid_buffer: object | None = None
+    stdin_read = HANDLE()
+    stdin_write = HANDLE()
     stdout_read = HANDLE()
     stdout_write = HANDLE()
     stderr_read = HANDLE()
@@ -810,6 +840,14 @@ def _run_restricted_process_native_impl(
         sa.lpSecurityDescriptor = None
         sa.bInheritHandle = True
         if not kernel32.CreatePipe(
+            ctypes.byref(stdin_read),
+            ctypes.byref(stdin_write),
+            ctypes.byref(sa),
+            0,
+        ):
+            raise win_error("CreatePipe(stdin)")
+        kernel32.SetHandleInformation(stdin_write, HANDLE_FLAG_INHERIT, 0)
+        if not kernel32.CreatePipe(
             ctypes.byref(stdout_read),
             ctypes.byref(stdout_write),
             ctypes.byref(sa),
@@ -843,7 +881,7 @@ def _run_restricted_process_native_impl(
         startup.cb = ctypes.sizeof(STARTUPINFO)
         startup.lpDesktop = "winsta0\\default"
         startup.dwFlags = STARTF_USESTDHANDLES
-        startup.hStdInput = 0
+        startup.hStdInput = stdin_read
         startup.hStdOutput = stdout_write
         startup.hStdError = stderr_write
 
@@ -879,6 +917,10 @@ def _run_restricted_process_native_impl(
         if not created:
             raise win_error("CreateProcessAsUserW/CreateProcessWithTokenW")
 
+        close(stdin_read)
+        stdin_read = HANDLE()
+        _write_child_stdin(kernel32, stdin_write, payload.stdin)
+        stdin_write = HANDLE()
         close(stdout_write)
         stdout_write = HANDLE()
         close(stderr_write)
@@ -922,6 +964,8 @@ def _run_restricted_process_native_impl(
         sys.stderr.buffer.write(outputs["stderr"])
         return exit_code
     finally:
+        close(stdin_read)
+        close(stdin_write)
         close(stdout_write)
         close(stderr_write)
         close(stdout_read)

@@ -194,3 +194,23 @@ def test_token_post_create_hooks_are_called(monkeypatch) -> None:
         ("default_dacl", 123, ("logon", "everyone", "cap-a")),
         ("privilege", 123, "SeChangeNotifyPrivilege"),
     ]
+
+
+def test_child_stdin_writer_writes_payload_and_closes(monkeypatch) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    calls = []
+
+    class FakeKernel32:
+        def WriteFile(self, handle, data, size, written_ptr, overlapped):
+            calls.append(("write", handle, bytes(data[:size])))
+            written_ptr._obj.value = size
+            return 1
+
+        def CloseHandle(self, handle):
+            calls.append(("close", handle))
+            return 1
+
+    mod._write_child_stdin(FakeKernel32(), 42, b"abc")
+
+    assert calls == [("write", 42, b"abc"), ("close", 42)]

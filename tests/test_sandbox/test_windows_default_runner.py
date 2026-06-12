@@ -159,3 +159,38 @@ def test_runner_rejects_missing_acl_plan(tmp_path) -> None:
 
     with pytest.raises(SystemExit, match="windowsAclPlan is required"):
         mod._run_windows_default(payload)
+
+
+def test_restricted_token_flags_match_codex_legacy() -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    assert mod.RESTRICTED_TOKEN_FLAGS == (
+        mod.DISABLE_MAX_PRIVILEGE | mod.LUA_TOKEN | mod.WRITE_RESTRICTED
+    )
+
+
+def test_token_post_create_hooks_are_called(monkeypatch) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    calls = []
+
+    monkeypatch.setattr(
+        mod,
+        "_set_token_default_dacl",
+        lambda token, sids: calls.append(("default_dacl", token, tuple(sids))),
+    )
+    monkeypatch.setattr(
+        mod,
+        "_enable_token_privilege",
+        lambda token, name: calls.append(("privilege", token, name)),
+    )
+
+    mod._finalize_restricted_token(
+        token=123,
+        dacl_sids=("logon", "everyone", "cap-a"),
+    )
+
+    assert calls == [
+        ("default_dacl", 123, ("logon", "everyone", "cap-a")),
+        ("privilege", 123, "SeChangeNotifyPrivilege"),
+    ]

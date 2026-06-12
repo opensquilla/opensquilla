@@ -14,6 +14,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+DISABLE_MAX_PRIVILEGE = 0x01
+LUA_TOKEN = 0x04
+WRITE_RESTRICTED = 0x08
+RESTRICTED_TOKEN_FLAGS = DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED
+GENERIC_ALL = 0x10000000
+
 
 @dataclass(frozen=True)
 class HelperPayload:
@@ -344,6 +350,169 @@ def _run_restricted_process_native(
         raise SystemExit(f"windows_default process launch failed: {exc}") from exc
 
 
+def _finalize_restricted_token(token: int, dacl_sids: Sequence[object]) -> None:
+    _set_token_default_dacl(token, dacl_sids)
+    _enable_token_privilege(token, "SeChangeNotifyPrivilege")
+
+
+def _set_token_default_dacl(token: int, dacl_sids: Sequence[object]) -> None:
+    if not dacl_sids:
+        return
+    _set_token_default_dacl_native(token, dacl_sids)
+
+
+def _enable_token_privilege(token: int, name: str) -> None:
+    _enable_token_privilege_native(token, name)
+
+
+def _set_token_default_dacl_native(token: int, dacl_sids: Sequence[object]) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    DWORD = wintypes.DWORD
+    LPVOID = wintypes.LPVOID
+
+    class TRUSTEE_W(ctypes.Structure):
+        _fields_ = [
+            ("pMultipleTrustee", LPVOID),
+            ("MultipleTrusteeOperation", DWORD),
+            ("TrusteeForm", DWORD),
+            ("TrusteeType", DWORD),
+            ("ptstrName", LPVOID),
+        ]
+
+    class EXPLICIT_ACCESS_W(ctypes.Structure):
+        _fields_ = [
+            ("grfAccessPermissions", DWORD),
+            ("grfAccessMode", DWORD),
+            ("grfInheritance", DWORD),
+            ("Trustee", TRUSTEE_W),
+        ]
+
+    class TOKEN_DEFAULT_DACL(ctypes.Structure):
+        _fields_ = [("DefaultDacl", LPVOID)]
+
+    advapi32.SetEntriesInAclW.argtypes = [
+        DWORD,
+        ctypes.POINTER(EXPLICIT_ACCESS_W),
+        LPVOID,
+        ctypes.POINTER(LPVOID),
+    ]
+    advapi32.SetEntriesInAclW.restype = DWORD
+    advapi32.SetTokenInformation.argtypes = [wintypes.HANDLE, DWORD, LPVOID, DWORD]
+    advapi32.SetTokenInformation.restype = wintypes.BOOL
+    kernel32.LocalFree.argtypes = [LPVOID]
+    kernel32.LocalFree.restype = LPVOID
+
+    ERROR_SUCCESS = 0
+    GRANT_ACCESS = 1
+    TRUSTEE_IS_SID = 0
+    TRUSTEE_IS_UNKNOWN = 0
+    TOKEN_DEFAULT_DACL_CLASS = 6
+
+    entries = (EXPLICIT_ACCESS_W * len(dacl_sids))()
+    for index, sid in enumerate(dacl_sids):
+        entries[index].grfAccessPermissions = GENERIC_ALL
+        entries[index].grfAccessMode = GRANT_ACCESS
+        entries[index].grfInheritance = 0
+        entries[index].Trustee.pMultipleTrustee = None
+        entries[index].Trustee.MultipleTrusteeOperation = 0
+        entries[index].Trustee.TrusteeForm = TRUSTEE_IS_SID
+        entries[index].Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN
+        entries[index].Trustee.ptstrName = sid
+
+    new_dacl = LPVOID()
+    code = advapi32.SetEntriesInAclW(
+        len(dacl_sids),
+        entries,
+        None,
+        ctypes.byref(new_dacl),
+    )
+    if code != ERROR_SUCCESS:
+        raise OSError(code, f"SetEntriesInAclW failed: {ctypes.FormatError(code)}")
+    try:
+        info = TOKEN_DEFAULT_DACL(new_dacl)
+        if not advapi32.SetTokenInformation(
+            token,
+            TOKEN_DEFAULT_DACL_CLASS,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        ):
+            error_code = ctypes.get_last_error()
+            raise OSError(
+                error_code,
+                f"SetTokenInformation(TokenDefaultDacl) failed: "
+                f"{ctypes.FormatError(error_code)}",
+            )
+    finally:
+        if new_dacl:
+            kernel32.LocalFree(new_dacl)
+
+
+def _enable_token_privilege_native(token: int, name: str) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    DWORD = wintypes.DWORD
+    LPVOID = wintypes.LPVOID
+
+    class LUID(ctypes.Structure):
+        _fields_ = [("LowPart", DWORD), ("HighPart", ctypes.c_long)]
+
+    class LUID_AND_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [("Luid", LUID), ("Attributes", DWORD)]
+
+    class TOKEN_PRIVILEGES(ctypes.Structure):
+        _fields_ = [("PrivilegeCount", DWORD), ("Privileges", LUID_AND_ATTRIBUTES * 1)]
+
+    SE_PRIVILEGE_ENABLED = 0x00000002
+
+    advapi32.LookupPrivilegeValueW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        ctypes.POINTER(LUID),
+    ]
+    advapi32.LookupPrivilegeValueW.restype = wintypes.BOOL
+    advapi32.AdjustTokenPrivileges.argtypes = [
+        wintypes.HANDLE,
+        wintypes.BOOL,
+        ctypes.POINTER(TOKEN_PRIVILEGES),
+        DWORD,
+        LPVOID,
+        LPVOID,
+    ]
+    advapi32.AdjustTokenPrivileges.restype = wintypes.BOOL
+
+    luid = LUID()
+    if not advapi32.LookupPrivilegeValueW(None, name, ctypes.byref(luid)):
+        error_code = ctypes.get_last_error()
+        raise OSError(
+            error_code,
+            f"LookupPrivilegeValueW({name}) failed: {ctypes.FormatError(error_code)}",
+        )
+    privileges = TOKEN_PRIVILEGES()
+    privileges.PrivilegeCount = 1
+    privileges.Privileges[0].Luid = luid
+    privileges.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED
+    if not advapi32.AdjustTokenPrivileges(
+        token,
+        False,
+        ctypes.byref(privileges),
+        0,
+        None,
+        None,
+    ):
+        error_code = ctypes.get_last_error()
+        raise OSError(
+            error_code,
+            f"AdjustTokenPrivileges({name}) failed: {ctypes.FormatError(error_code)}",
+        )
+
+
 def _run_restricted_process_native_impl(
     payload: HelperPayload,
     capability_sids: tuple[str, ...],
@@ -514,9 +683,9 @@ def _run_restricted_process_native_impl(
     TOKEN_QUERY = 0x0008
     TOKEN_ADJUST_DEFAULT = 0x0080
     TOKEN_ADJUST_SESSIONID = 0x0100
+    TOKEN_ADJUST_PRIVILEGES = 0x0020
     TOKEN_GROUPS_CLASS = 2
     SE_GROUP_LOGON_ID = 0xC0000000
-    DISABLE_MAX_PRIVILEGE = 0x01
     STARTF_USESTDHANDLES = 0x00000100
     CREATE_SUSPENDED = 0x00000004
     CREATE_UNICODE_ENVIRONMENT = 0x00000400
@@ -589,6 +758,7 @@ def _run_restricted_process_native_impl(
             | TOKEN_QUERY
             | TOKEN_ADJUST_DEFAULT
             | TOKEN_ADJUST_SESSIONID
+            | TOKEN_ADJUST_PRIVILEGES
         )
         if not advapi32.OpenProcessToken(
             kernel32.GetCurrentProcess(),
@@ -619,7 +789,7 @@ def _run_restricted_process_native_impl(
 
         if not advapi32.CreateRestrictedToken(
             source_token,
-            DISABLE_MAX_PRIVILEGE,
+            RESTRICTED_TOKEN_FLAGS,
             0,
             None,
             0,
@@ -629,6 +799,11 @@ def _run_restricted_process_native_impl(
             ctypes.byref(restricted_token),
         ):
             raise win_error("CreateRestrictedToken")
+        dacl_sids = []
+        if logon_sid:
+            dacl_sids.append(logon_sid)
+        dacl_sids.extend(restricting_sids)
+        _finalize_restricted_token(restricted_token, dacl_sids)
 
         sa = SECURITY_ATTRIBUTES()
         sa.nLength = ctypes.sizeof(SECURITY_ATTRIBUTES)

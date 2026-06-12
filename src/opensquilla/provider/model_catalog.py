@@ -46,6 +46,11 @@ _STATIC_FALLBACK: dict[str, tuple[int, int]] = {
     "kimi-k2.6": (32_768, 262_144),
     "moonshotai/kimi-k2.6": (DEFAULT_MAX_TOKENS, 262_142),
     "moonshotai/kimi-k2.5": (65_535, 262_144),
+    # Inception /v1/models: context_length=128000, max_output_length=50000.
+    # Both spellings: tier configs use the prefixed id, direct Inception
+    # requests strip the provider prefix.
+    "inception/mercury-2": (50_000, 128_000),
+    "mercury-2": (50_000, 128_000),
 }
 
 

@@ -193,3 +193,94 @@ async def test_router_control_replay_depth_cap_finishes_turn_without_recursion(
     assert provider.calls == ["deepseek/deepseek-v4-pro"]
     assert done_events
     assert done_events[-1].text == "old partial"
+
+
+class _TextRouterControlProvider:
+    """Emits a text-form router_control call instead of a native tool call."""
+
+    provider_name = "test"
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.model = "base-model"
+
+    def chat(
+        self,
+        messages: list[Any],
+        tools=None,
+        config: ChatConfig | None = None,
+    ) -> AsyncIterator[Any]:
+        self.calls.append(self.model)
+        return self._stream()
+
+    async def _stream(self) -> AsyncIterator[Any]:
+        yield ProviderText(
+            text=(
+                "I will switch now.\n"
+                'router_control{"action": "set_hold", "target_id": "tier:c3",'
+                ' "evidence": "user asked for opus"}'
+            )
+        )
+        yield ProviderDone(model=self.model)
+
+    async def list_models(self) -> list[Any]:
+        return []
+
+
+@pytest.mark.asyncio
+async def test_router_control_text_synthesis_blocked_when_toolset_lacks_router_control(
+    monkeypatch,
+) -> None:
+    """Hold-lock characterization (live incident agent:main:webchat:t65cahdl).
+
+    With a hold pinning c1 and c1's toolset narrowed to exclude
+    router_control, a text-compat model imitating router_control{...} must
+    not produce a synthesized tool call (allowlist gate keys on the tools
+    actually sent), the turn must finish, and the hold must stay in place —
+    the session is locked until the toolset regains the escape hatch.
+    """
+    monkeypatch.setattr(squilla_router_step, "_get_strategy", lambda _cfg: _Strategy())
+    provider = _TextRouterControlProvider()
+    tiers = _router_tier_profile_defaults("openrouter")
+    tiers["c1"] = dict(tiers["c1"])
+    tiers["c1"]["toolset"] = "files"
+    cfg = GatewayConfig(
+        squilla_router=SquillaRouterConfig(
+            enabled=True,
+            rollout_phase="full",
+            require_router_runtime=False,
+            tiers=tiers,
+        )
+    )
+    runner = TurnRunner(
+        provider_selector=_Selector(provider),
+        tool_registry=get_default_registry(),
+        config=cfg,
+    )
+    session_key = "agent:main:router-control-hold-locked"
+    store = runner._router_control_hold_store
+    targets = store.build_targets(cfg.squilla_router)
+    c1_target = next(t for t in targets if t.tier == "c1")
+    store.set_hold(session_key, c1_target, evidence="pin c1 for testing")
+
+    events = [
+        event
+        async for event in runner.run(
+            "Switch to opus please",
+            session_key,
+            tool_context=ToolContext(is_owner=True, caller_kind=CallerKind.CLI),
+            history_has_persisted_user=False,
+            no_memory_capture=True,
+        )
+    ]
+
+    tool_events = [event for event in events if getattr(event, "kind", "") == "tool_use_start"]
+    replay_events = [event for event in events if isinstance(event, RouterControlReplayEvent)]
+    done_events = [event for event in events if isinstance(event, DoneEvent)]
+
+    assert tool_events == []
+    assert replay_events == []
+    assert done_events
+    hold_after = store.get_valid(session_key)
+    assert hold_after is not None
+    assert hold_after.tier == "c1"

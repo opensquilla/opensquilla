@@ -33,6 +33,8 @@ def test_direct_profile_static_fallbacks_cover_context_windows() -> None:
         "moonshot-v1-128k": 131_072,
         "kimi-k2.5": 262_144,
         "kimi-k2.6": 262_144,
+        "inception/mercury-2": 128_000,
+        "mercury-2": 128_000,
     }
 
     for model_id, context_window in expected_windows.items():

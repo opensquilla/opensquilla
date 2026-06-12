@@ -111,6 +111,10 @@ A probe that gets a 200 response without a tool call leaves the capability
 and ordinary turns proceed without tools. Set `tool_support = "on"` after
 verifying a route with `scripts/live_compat_tool_route_smoke.py`.
 
+Custom toolsets used on routed tiers should include `router_control`:
+without it, an active router hold cannot be switched or released from chat,
+locking the session on the held tier.
+
 ### Named toolsets
 
 A common pattern is offering the built-in `core` toolset on a budget tier:

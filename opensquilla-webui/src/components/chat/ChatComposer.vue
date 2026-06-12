@@ -235,7 +235,7 @@ defineExpose<ChatComposerExpose>({
 }
 
 .chat-composer-inner {
-  width: min(100%, 820px);
+  width: min(100%, var(--composer-col, 820px));
   margin: 0 auto;
 }
 

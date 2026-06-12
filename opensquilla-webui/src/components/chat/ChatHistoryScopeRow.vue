@@ -41,7 +41,7 @@ const visible = computed(() => props.state.hasMore || Boolean(scopeText.value))
   justify-content: center;
   gap: 0.5rem;
   flex-wrap: wrap;
-  width: min(calc(100% - 48px), 980px);
+  width: var(--chat-col, min(calc(100% - 48px), 980px));
   margin: 0.5rem auto 0.75rem;
   color: var(--text-muted);
   font-size: 0.75rem;

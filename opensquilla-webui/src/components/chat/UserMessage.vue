@@ -92,7 +92,9 @@ function onMessageClick(event: MouseEvent) {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  width: min(calc(100% - 48px), 980px);
+  /* Shared conversation column, defined on .chat — keeps user bubbles in the
+     same column as assistant content at every viewport width. */
+  width: var(--chat-col, min(calc(100% - 48px), 980px));
   margin: 0 auto;
   padding: 0.5rem 0;
   max-width: calc(100% - 48px);

@@ -74,14 +74,22 @@ class V4Phase3Strategy:
         self._config: dict[str, Any] = {}
         self._model_version = "unknown"
         self._available = False
+        self._degraded_warned = False
 
         try:
             self._init_runtime(use_aux_head=use_aux_head)
         except Exception as exc:
-            log.warning(
+            missing_dep = isinstance(exc, ImportError) or isinstance(exc.__cause__, ImportError)
+            log.error(
                 "v4_phase3.init_failed",
                 bundle_dir=str(self.bundle_dir),
                 error=str(exc),
+                hint=(
+                    "router ML runtime missing; install opensquilla[recommended] "
+                    "to enable v4_phase3 routing"
+                    if missing_dep
+                    else None
+                ),
             )
             if require_router_runtime:
                 raise RuntimeError(f"failed to initialize V4 Phase 3 router: {exc}") from exc
@@ -164,18 +172,34 @@ class V4Phase3Strategy:
         self,
         valid_tiers: list[str],
     ) -> tuple[str, float, str, dict]:
+        if not self._degraded_warned:
+            self._degraded_warned = True
+            log.warning(
+                "v4_phase3.degraded",
+                detail=(
+                    "v4_phase3 runtime unavailable; every turn falls back to the "
+                    "default tier (source=v4_unavailable). Install "
+                    "opensquilla[recommended] and verify the bundle to restore "
+                    "ML routing, or set require_router_runtime=true to fail fast."
+                ),
+            )
         tier = _find_valid_tier(DEFAULT_TEXT_TIER, valid_tiers)
         route_class = next(
             (key for key, value in _ROUTE_CLASS_TO_TIER.items() if value == tier),
             "R1",
         )
-        return tier, 0.0, "v4_unavailable", {
-            "route_class": route_class,
-            "top1_label": route_class,
-            "thinking_mode": "T1",
-            "prompt_policy": "P1",
-            "model_version": self._model_version,
-        }
+        return (
+            tier,
+            0.0,
+            "v4_unavailable",
+            {
+                "route_class": route_class,
+                "top1_label": route_class,
+                "thinking_mode": "T1",
+                "prompt_policy": "P1",
+                "model_version": self._model_version,
+            },
+        )
 
     def _build_request(
         self,

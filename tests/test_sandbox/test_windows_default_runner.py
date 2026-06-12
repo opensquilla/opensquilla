@@ -25,6 +25,29 @@ def test_parse_payload_accepts_valid_windows_default_payload(tmp_path) -> None:
     assert parsed.run_mode == "trusted"
 
 
+def test_parse_payload_decodes_stdin_base64(tmp_path) -> None:
+    from opensquilla.sandbox.backend.windows_default_runner import _parse_payload
+
+    payload = {
+        "backend": "windows_default",
+        "argv": ["cmd", "/c", "more"],
+        "cwd": str(tmp_path),
+        "env": {},
+        "policy": {
+            "network": "none",
+            "mounts": [],
+            "windowsAclPlan": {"autoGrants": [], "capabilitySids": []},
+        },
+        "runMode": "trusted",
+        "timeout": 5,
+        "stdinBase64": "YWJjMTIz",
+    }
+
+    parsed = _parse_payload([json.dumps(payload)])
+
+    assert parsed.stdin == b"abc123"
+
+
 def test_parse_payload_rejects_wrong_backend(tmp_path) -> None:
     from opensquilla.sandbox.backend.windows_default_runner import _parse_payload
 
@@ -80,10 +103,10 @@ def test_runner_applies_acl_refresh_before_process_launch(tmp_path, monkeypatch)
                     {
                         "path": str(tmp_path),
                         "access": "RWX",
-                        "capabilitySid": "S-1-15-3-1",
+                        "capabilitySid": "S-1-5-21-100-101-102-103",
                     }
                 ],
-                "capabilitySids": ["S-1-15-3-1"],
+                "capabilitySids": ["S-1-5-21-100-101-102-103"],
             },
         },
         run_mode="trusted",
@@ -99,7 +122,27 @@ def test_runner_applies_acl_refresh_before_process_launch(tmp_path, monkeypatch)
 
     assert mod._run_windows_default(payload) == 0
     assert calls[0][0] == "acl"
-    assert calls[1] == ("run", ("S-1-15-3-1",))
+    assert calls[1] == ("run", ("S-1-5-21-100-101-102-103",))
+
+
+def test_grant_path_to_sid_uses_native_acl_writer(tmp_path, monkeypatch) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    calls = []
+
+    def fail_subprocess(*args, **kwargs):  # pragma: no cover - only reached on regression
+        raise AssertionError("icacls must not be used for random restricting SIDs")
+
+    monkeypatch.setattr(mod.subprocess, "run", fail_subprocess)
+    monkeypatch.setattr(
+        mod,
+        "_grant_path_to_sid_native",
+        lambda path, access, sid: calls.append((path, access, sid)),
+    )
+
+    mod._grant_path_to_sid(tmp_path, "RWX", "S-1-5-21-100-101-102-103")
+
+    assert calls == [(tmp_path, "RWX", "S-1-5-21-100-101-102-103")]
 
 
 def test_runner_rejects_missing_acl_plan(tmp_path) -> None:

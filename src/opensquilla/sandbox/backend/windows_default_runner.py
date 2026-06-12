@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import subprocess
@@ -22,6 +23,7 @@ class HelperPayload:
     policy: dict[str, Any]
     run_mode: str
     timeout: float
+    stdin: bytes | None = None
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -80,6 +82,21 @@ def _parse_payload(args: Sequence[str]) -> HelperPayload:
     if not isinstance(timeout, int | float) or timeout <= 0:
         raise SystemExit("invalid windows_default payload: timeout must be positive")
 
+    stdin_raw = raw.get("stdinBase64")
+    if stdin_raw is None:
+        stdin = None
+    elif isinstance(stdin_raw, str):
+        try:
+            stdin = base64.b64decode(stdin_raw.encode("ascii"), validate=True)
+        except (ValueError, UnicodeEncodeError) as exc:
+            raise SystemExit(
+                "invalid windows_default payload: stdinBase64 is invalid"
+            ) from exc
+    else:
+        raise SystemExit(
+            "invalid windows_default payload: stdinBase64 must be a string or null"
+        )
+
     return HelperPayload(
         argv=tuple(argv),
         cwd=cwd,
@@ -87,6 +104,7 @@ def _parse_payload(args: Sequence[str]) -> HelperPayload:
         policy=policy,
         run_mode=str(run_mode),
         timeout=float(timeout),
+        stdin=stdin,
     )
 
 
@@ -139,22 +157,165 @@ def _apply_acl_refresh(plan: dict[str, Any]) -> None:
 def _grant_path_to_sid(path: Path, access: str, sid: str) -> None:
     if not path.exists():
         raise SystemExit(f"windows_default ACL grant target does not exist: {path}")
-    rights = "RX" if access == "RX" else "M"
-    grant = f"*{sid}:(OI)(CI){rights}" if path.is_dir() else f"*{sid}:{rights}"
-    argv = ["icacls", str(path), "/grant", grant, "/C"]
-    if path.is_dir():
-        argv.append("/T")
-    completed = subprocess.run(
-        argv,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
-    )
-    if completed.returncode != 0:
+    try:
+        _grant_path_to_sid_native(path, access, sid)
+    except OSError as exc:
         raise SystemExit(
-            f"windows_default ACL grant failed for {path}: {completed.stderr.strip()}"
+            f"windows_default ACL grant failed for {path}: {exc}"
+        ) from exc
+
+
+def _grant_path_to_sid_native(path: Path, access: str, sid: str) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    DWORD = wintypes.DWORD
+    LPVOID = wintypes.LPVOID
+
+    class TRUSTEE_W(ctypes.Structure):
+        _fields_ = [
+            ("pMultipleTrustee", LPVOID),
+            ("MultipleTrusteeOperation", DWORD),
+            ("TrusteeForm", DWORD),
+            ("TrusteeType", DWORD),
+            ("ptstrName", LPVOID),
+        ]
+
+    class EXPLICIT_ACCESS_W(ctypes.Structure):
+        _fields_ = [
+            ("grfAccessPermissions", DWORD),
+            ("grfAccessMode", DWORD),
+            ("grfInheritance", DWORD),
+            ("Trustee", TRUSTEE_W),
+        ]
+
+    advapi32.ConvertStringSidToSidW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(LPVOID)]
+    advapi32.ConvertStringSidToSidW.restype = wintypes.BOOL
+    advapi32.GetNamedSecurityInfoW.argtypes = [
+        wintypes.LPWSTR,
+        DWORD,
+        DWORD,
+        ctypes.POINTER(LPVOID),
+        ctypes.POINTER(LPVOID),
+        ctypes.POINTER(LPVOID),
+        ctypes.POINTER(LPVOID),
+        ctypes.POINTER(LPVOID),
+    ]
+    advapi32.GetNamedSecurityInfoW.restype = DWORD
+    advapi32.SetEntriesInAclW.argtypes = [
+        DWORD,
+        ctypes.POINTER(EXPLICIT_ACCESS_W),
+        LPVOID,
+        ctypes.POINTER(LPVOID),
+    ]
+    advapi32.SetEntriesInAclW.restype = DWORD
+    advapi32.SetNamedSecurityInfoW.argtypes = [
+        wintypes.LPWSTR,
+        DWORD,
+        DWORD,
+        LPVOID,
+        LPVOID,
+        LPVOID,
+        LPVOID,
+    ]
+    advapi32.SetNamedSecurityInfoW.restype = DWORD
+    kernel32.LocalFree.argtypes = [LPVOID]
+    kernel32.LocalFree.restype = LPVOID
+
+    ERROR_SUCCESS = 0
+    SE_FILE_OBJECT = 1
+    DACL_SECURITY_INFORMATION = 0x00000004
+    GRANT_ACCESS = 1
+    TRUSTEE_IS_SID = 0
+    TRUSTEE_IS_UNKNOWN = 0
+    NO_INHERITANCE = 0
+    OBJECT_INHERIT_ACE = 0x1
+    CONTAINER_INHERIT_ACE = 0x2
+
+    DELETE = 0x00010000
+    FILE_DELETE_CHILD = 0x00000040
+    FILE_GENERIC_READ = 0x00120089
+    FILE_GENERIC_WRITE = 0x00120116
+    FILE_GENERIC_EXECUTE = 0x001200A0
+
+    def win32_error(label: str, code: int | None = None) -> OSError:
+        error_code = ctypes.get_last_error() if code is None else code
+        return OSError(error_code, f"{label} failed: {ctypes.FormatError(error_code)}")
+
+    if access == "RX":
+        allow_mask = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE
+    elif access == "RWX":
+        allow_mask = (
+            FILE_GENERIC_READ
+            | FILE_GENERIC_WRITE
+            | FILE_GENERIC_EXECUTE
+            | DELETE
+            | FILE_DELETE_CHILD
         )
+    else:
+        raise OSError(0, f"unsupported ACL access mode: {access!r}")
+
+    sid_ptr = LPVOID()
+    security_descriptor = LPVOID()
+    old_dacl = LPVOID()
+    new_dacl = LPVOID()
+    path_buffer = ctypes.create_unicode_buffer(str(path))
+    inheritance = (
+        OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE if path.is_dir() else NO_INHERITANCE
+    )
+
+    try:
+        if not advapi32.ConvertStringSidToSidW(sid, ctypes.byref(sid_ptr)):
+            raise win32_error("ConvertStringSidToSidW")
+        code = advapi32.GetNamedSecurityInfoW(
+            path_buffer,
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            ctypes.byref(old_dacl),
+            None,
+            ctypes.byref(security_descriptor),
+        )
+        if code != ERROR_SUCCESS:
+            raise win32_error("GetNamedSecurityInfoW", code)
+
+        explicit = EXPLICIT_ACCESS_W()
+        explicit.grfAccessPermissions = allow_mask
+        explicit.grfAccessMode = GRANT_ACCESS
+        explicit.grfInheritance = inheritance
+        explicit.Trustee.pMultipleTrustee = None
+        explicit.Trustee.MultipleTrusteeOperation = 0
+        explicit.Trustee.TrusteeForm = TRUSTEE_IS_SID
+        explicit.Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN
+        explicit.Trustee.ptstrName = sid_ptr
+
+        code = advapi32.SetEntriesInAclW(
+            1,
+            ctypes.byref(explicit),
+            old_dacl,
+            ctypes.byref(new_dacl),
+        )
+        if code != ERROR_SUCCESS:
+            raise win32_error("SetEntriesInAclW", code)
+        code = advapi32.SetNamedSecurityInfoW(
+            path_buffer,
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            new_dacl,
+            None,
+        )
+        if code != ERROR_SUCCESS:
+            raise win32_error("SetNamedSecurityInfoW", code)
+    finally:
+        for pointer in (new_dacl, security_descriptor, sid_ptr):
+            if pointer:
+                kernel32.LocalFree(pointer)
 
 
 def _environment_block(env: dict[str, str]) -> str:

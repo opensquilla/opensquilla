@@ -59,6 +59,30 @@ def test_payload_contains_cache_env_and_run_mode(
     assert payload["policy"]["network"] == "none"
 
 
+def test_payload_encodes_stdin_as_base64(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default as mod
+
+    request = _request(tmp_path)
+    request = SandboxRequest(
+        argv=request.argv,
+        cwd=request.cwd,
+        action_kind=request.action_kind,
+        policy=request.policy,
+        stdin=b"hello from stdin\r\n",
+        env=request.env,
+        run_mode=request.run_mode,
+    )
+    monkeypatch.setattr(mod, "_support_ready", lambda: True)
+    monkeypatch.setattr(mod, "_capability_store_path", lambda: tmp_path / "cap_sids.json")
+
+    payload = mod._payload_for_request(request)
+
+    assert payload["stdinBase64"] == "aGVsbG8gZnJvbSBzdGRpbg0K"
+
+
 @pytest.mark.asyncio
 async def test_backend_fails_closed_when_setup_is_not_ready(
     tmp_path: Path,
@@ -180,3 +204,111 @@ def test_standard_non_sensitive_expansion_requires_approval(
 
     with pytest.raises(SandboxBackendError, match="ACL approval is required"):
         mod._payload_for_request(request)
+
+
+def test_windows_filesystem_operation_request_uses_worker_cwd_and_precise_mounts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default as mod
+    from opensquilla.sandbox.operation_runtime import SandboxOperation
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "nested" / "notes.txt"
+    payload = workspace / ".opensquilla-cache" / "fs-worker" / "payload.json"
+    runtime_scripts = tmp_path / "runtime" / "Scripts"
+    runtime_scripts.mkdir(parents=True)
+    python_exe = runtime_scripts / "python.exe"
+    python_exe.write_text("", encoding="utf-8")
+    source_root = tmp_path / "src" / "opensquilla"
+    source_root.mkdir(parents=True)
+
+    monkeypatch.setattr(mod, "_python_executable", lambda: python_exe)
+    monkeypatch.setattr(mod, "_opensquilla_import_roots", lambda: (source_root,))
+
+    operation = SandboxOperation.filesystem(
+        kind="write_text",
+        workspace=workspace,
+        run_mode=RunMode.TRUSTED.value,
+        path=target,
+        paths=(target,),
+        content="hello",
+    )
+
+    request = mod._filesystem_operation_request(operation, payload)
+
+    assert request.cwd == workspace / ".opensquilla-cache" / "fs-worker"
+    assert request.cwd != workspace
+    assert request.run_mode == "trusted"
+    mounts = {str(mount.host_path): mount.mode for mount in request.policy.mounts}
+    assert mounts[str(workspace)] == "rw"
+    assert mounts[str(runtime_scripts)] == "ro"
+    assert mounts[str(runtime_scripts.parent)] == "ro"
+    assert mounts[str(source_root)] == "ro"
+    assert "opensquilla.sandbox.filesystem_worker" in request.argv
+
+
+def test_windows_filesystem_operation_request_supplies_home_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default as mod
+    from opensquilla.sandbox.operation_runtime import SandboxOperation
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "notes.txt"
+    payload = workspace / ".opensquilla-cache" / "fs-worker" / "payload.json"
+    python_exe = tmp_path / "runtime" / "Scripts" / "python.exe"
+    python_exe.parent.mkdir(parents=True)
+    python_exe.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(mod, "_python_executable", lambda: python_exe)
+
+    operation = SandboxOperation.filesystem(
+        kind="read_file",
+        workspace=workspace,
+        run_mode=RunMode.TRUSTED.value,
+        path=target,
+        paths=(target,),
+    )
+
+    request = mod._filesystem_operation_request(operation, payload)
+
+    assert request.env["USERPROFILE"] == str(request.cwd)
+    assert request.env["HOMEDRIVE"]
+    assert request.env["HOMEPATH"]
+    assert "USERPROFILE" in request.policy.env_allowlist
+    assert "HOMEDRIVE" in request.policy.env_allowlist
+    assert "HOMEPATH" in request.policy.env_allowlist
+
+
+def test_windows_filesystem_operation_denies_runtime_readonly_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default as mod
+    from opensquilla.sandbox.operation_runtime import SandboxOperation
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runtime_scripts = tmp_path / "runtime" / "Scripts"
+    runtime_scripts.mkdir(parents=True)
+    target = runtime_scripts / "python.exe"
+    target.write_text("", encoding="utf-8")
+    payload = workspace / ".opensquilla-cache" / "fs-worker" / "payload.json"
+
+    monkeypatch.setattr(mod, "_runtime_readonly_roots", lambda: (runtime_scripts,))
+
+    operation = SandboxOperation.filesystem(
+        kind="write_text",
+        workspace=workspace,
+        run_mode=RunMode.TRUSTED.value,
+        path=target,
+        paths=(target,),
+        content="blocked",
+    )
+
+    with pytest.raises(SandboxBackendError, match="read-only runtime"):
+        mod._filesystem_operation_request(operation, payload)

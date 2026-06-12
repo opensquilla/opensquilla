@@ -82,7 +82,7 @@ async function openSeededSession(page: Page) {
   await page.waitForSelector('.conn-pill', { timeout: 10000 })
 }
 
-test.describe('Done card deliverable endings', () => {
+test.describe('Deliverable endings', () => {
   test('artifact turn groups artifacts, sources, and receipt into one ending block', async ({ page }) => {
     await openSeededSession(page)
 
@@ -90,7 +90,8 @@ test.describe('Done card deliverable endings', () => {
     const block = page.getByTestId('done-block')
     await expect(block).toHaveCount(1)
     await expect(block).toBeVisible({ timeout: 10000 })
-    await expect(page.locator('.done-card')).toHaveCount(1)
+    // The retired follow-up row never renders; the ending block closes the turn.
+    await expect(page.locator('.done-card')).toHaveCount(0)
 
     // The block holds the chip, the sources row, and the receipt line.
     await expect(block.locator('.msg-artifact-chip')).toBeVisible()
@@ -112,25 +113,27 @@ test.describe('Done card deliverable endings', () => {
     expect(order.sources).toBeGreaterThan(order.artifacts)
     expect(order.receipt).toBeGreaterThan(order.sources)
 
-    // The follow-up actions sit under the block, inside the same message.
-    const followUnderBlock = await page.locator('.msg-ai-main').last().evaluate(el => {
+    // Nothing follows the deliverable block inside the message: the block is
+    // the last element of the assistant subtree.
+    const blockIsLast = await page.locator('.msg-ai-main').last().evaluate(el => {
       const done = el.querySelector('[data-testid="done-block"]')
-      const follow = el.querySelector('.done-card')
-      if (!done || !follow) return false
-      return !!(done.compareDocumentPosition(follow) & Node.DOCUMENT_POSITION_FOLLOWING)
+      return !!done && done.parentElement?.lastElementChild === done
     })
-    expect(followUnderBlock).toBe(true)
+    expect(blockIsLast).toBe(true)
   })
 
-  test('Continue focuses the composer and New task opens a draft chat', async ({ page }) => {
+  test('completed turns render no follow-up actions; the composer is the continue affordance', async ({ page }) => {
     await openSeededSession(page)
 
-    await page.getByTestId('done-continue').click()
-    await expect(page.locator('.chat-textarea')).toBeFocused()
+    await expect(page.getByTestId('done-block')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByTestId('done-continue')).toHaveCount(0)
+    await expect(page.getByTestId('done-new-task')).toHaveCount(0)
+    await expect(page.locator('.done-card')).toHaveCount(0)
 
-    await page.getByTestId('done-new-task').click()
-    await expect(page).toHaveURL(/\/chat\/new$/)
-    await expect(page.getByTestId('done-block')).toHaveCount(0)
+    // Continuing the conversation goes straight through the composer.
+    await expect(page.locator('.chat-textarea')).toBeVisible()
+    await page.locator('.chat-textarea').click()
+    await expect(page.locator('.chat-textarea')).toBeFocused()
   })
 
   test('live file-producing run ends with the deliverable block', async ({ page }) => {
@@ -149,7 +152,9 @@ test.describe('Done card deliverable endings', () => {
     await expect(block).toBeVisible({ timeout: 180000 })
     await expect(block.locator('.msg-artifact-chip').first()).toBeVisible()
     await expect(block.locator('.msg-ai-footer')).toBeVisible()
-    await expect(page.getByTestId('done-continue')).toBeVisible()
-    await expect(page.getByTestId('done-new-task')).toBeVisible()
+    // No follow-up action row after completion.
+    await expect(page.getByTestId('done-continue')).toHaveCount(0)
+    await expect(page.getByTestId('done-new-task')).toHaveCount(0)
+    await expect(page.locator('.done-card')).toHaveCount(0)
   })
 })

@@ -24,6 +24,8 @@ export interface SessionItem {
   messageCount: number | null
   updatedAt: number
   interactive: boolean
+  /** True when this session was forked from its parent's transcript. */
+  forkedFromParent: boolean
   contractGaps: string[]
   raw: RawSessionItem
 }
@@ -289,6 +291,7 @@ export function normalizeSessionItem(item: unknown): SessionItem | null {
     messageCount,
     updatedAt,
     interactive: raw.interactive === true,
+    forkedFromParent: raw.forkedFromParent === true || raw.forked_from_parent === true,
     contractGaps: Array.from(new Set(gaps)),
     raw,
   }

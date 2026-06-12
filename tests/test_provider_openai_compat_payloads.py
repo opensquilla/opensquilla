@@ -17,6 +17,7 @@ from opensquilla.provider.types import (
     Message,
     ModelCapabilities,
     ProviderHeartbeatEvent,
+    TextDeltaEvent,
     ToolDefinition,
     ToolInputSchema,
     ToolUseEndEvent,
@@ -1668,6 +1669,107 @@ def test_openai_compat_synthesizes_trailing_plain_json_tool_call(
     assert tool_ends[0].tool_name == "lookup"
     assert tool_ends[0].arguments == {"q": "llada"}
     assert tool_ends[0].synthetic_from_text is True
+
+
+def test_openai_compat_does_not_synthesize_unoffered_plain_json_tool_call_text(
+    monkeypatch: Any,
+) -> None:
+    """``name{...}`` text naming a tool outside this turn's offered schema is
+    NOT synthesized into a tool call; the text stays visible unstripped.
+
+    Complements the wrapped-form unoffered test above: per-turn routing can
+    narrow the offered schema, so a model trained on the wider toolset may
+    emit plain-JSON calls for tools the current route does not advertise.
+    """
+    chunks = [
+        {
+            "model": "local-model",
+            "choices": [
+                {
+                    "delta": {"content": 'I will save that.\nsave{"value": 1}'},
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {"model": "local-model", "choices": [{"delta": {}, "finish_reason": "stop"}]},
+    ]
+    body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+    captured: dict[str, Any] = {}
+    _patch_transport_body(monkeypatch, captured, body + b"data: [DONE]\n\n")
+    provider = OpenAIProvider(
+        api_key="test",
+        model="local-model",
+        base_url="http://localhost:8008/v1",
+        provider_kind="self_hosted_openai",
+    )
+    tool = ToolDefinition(
+        name="lookup",
+        description="Lookup a value.",
+        input_schema=ToolInputSchema(properties={"q": {"type": "string"}}, required=["q"]),
+    )
+
+    events = _collect_events(provider, ChatConfig(), tools=[tool])
+
+    assert not any(isinstance(event, ToolUseEndEvent) for event in events)
+    text = "".join(event.text for event in events if isinstance(event, TextDeltaEvent))
+    assert 'save{"value": 1}' in text
+
+
+def test_openai_compat_replays_unoffered_history_tool_name_verbatim(
+    monkeypatch: Any,
+) -> None:
+    """History tool_calls replay the recorded name even when this turn's
+    tools array no longer offers it (multi-provider routing swaps schemas
+    between turns; the transcript must stay internally consistent)."""
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="local-model",
+        base_url="http://localhost:8008/v1",
+        provider_kind="self_hosted_openai",
+    )
+    messages = [
+        Message(role="user", content="check the cache"),
+        Message(
+            role="assistant",
+            content=[
+                ContentBlockToolUse(
+                    id="call_foreign",
+                    name="foreign_probe",
+                    input={"q": "cache"},
+                )
+            ],
+        ),
+        Message(
+            role="user",
+            content=[
+                ContentBlockToolResult(
+                    tool_use_id="call_foreign",
+                    content="cache is warm",
+                )
+            ],
+        ),
+        Message(role="user", content="continue"),
+    ]
+    tool = ToolDefinition(
+        name="lookup",
+        description="Lookup a value.",
+        input_schema=ToolInputSchema(properties={"q": {"type": "string"}}, required=["q"]),
+    )
+
+    async def _run() -> None:
+        async for _ in provider.chat(messages, config=ChatConfig(), tools=[tool]):
+            pass
+
+    asyncio.run(_run())
+
+    payload = captured["payload"]
+    assistant_message = payload["messages"][1]
+    assert assistant_message["role"] == "assistant"
+    assert assistant_message["tool_calls"][0]["function"]["name"] == "foreign_probe"
+    assert assistant_message["tool_calls"][0]["id"] == "call_foreign"
+    assert [entry["function"]["name"] for entry in payload["tools"]] == ["lookup"]
 
 
 def test_gemini_stream_multiple_tool_calls_without_indexes_stay_separate(

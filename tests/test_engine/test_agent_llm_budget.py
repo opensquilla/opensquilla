@@ -551,6 +551,49 @@ async def test_agent_blocks_repeated_missing_tool_handler_failures() -> None:
 
 
 @pytest.mark.asyncio
+async def test_agent_unknown_tool_dispatch_envelopes_feed_failure_loop_counter() -> None:
+    """ToolNotFound envelopes from real dispatch count toward the per-instance
+    failure-loop threshold: the third identical unknown call is blocked before
+    reaching dispatch again (threshold default 3, counter lives on the Agent).
+    """
+    from opensquilla.tools.dispatch import build_tool_handler
+    from opensquilla.tools.registry import ToolRegistry
+    from opensquilla.tools.types import ToolContext
+
+    dispatch_calls = 0
+    dispatch_handler = build_tool_handler(ToolRegistry(), ToolContext())
+
+    async def _counting_dispatch(call: Any) -> ToolResult:
+        nonlocal dispatch_calls
+        dispatch_calls += 1
+        return await dispatch_handler(call)
+
+    agent = Agent(
+        provider=_ContextOverflowProvider(success_after=1),
+        config=AgentConfig(tool_failure_loop_block_threshold=3),
+        tool_handler=_counting_dispatch,
+    )
+
+    first = await agent._execute_tool(
+        ToolCall(tool_use_id="ghost-1", tool_name="ghost_tool", arguments={"q": "same"})
+    )
+    second = await agent._execute_tool(
+        ToolCall(tool_use_id="ghost-2", tool_name="ghost_tool", arguments={"q": "same"})
+    )
+    third = await agent._execute_tool(
+        ToolCall(tool_use_id="ghost-3", tool_name="ghost_tool", arguments={"q": "same"})
+    )
+
+    assert dispatch_calls == 2
+    assert json.loads(first.content)["error_class"] == "ToolNotFound"
+    assert json.loads(second.content)["error_class"] == "ToolNotFound"
+    assert third.is_error is True
+    assert "Do not retry this exact call unchanged" in third.content
+    assert third.execution_status is not None
+    assert third.execution_status.get("reason") == "tool_failure_loop_exhausted"
+
+
+@pytest.mark.asyncio
 async def test_agent_provider_request_proof_budget_is_separate_from_tool_result_cap() -> None:
     provider = _ConfigCapturingProvider()
     agent = Agent(

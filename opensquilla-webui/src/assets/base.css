@@ -196,7 +196,7 @@ body::before {
 a { color: var(--accent); text-decoration: none; }
 a:hover { color: var(--accent-hover); }
 
-input, textarea, select {
+input:not([type="radio"]):not([type="checkbox"]), textarea, select {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -207,9 +207,12 @@ input, textarea, select {
   outline: none;
   transition: border-color var(--transition), box-shadow var(--transition);
 }
-input:focus, textarea:focus, select:focus {
+input:not([type="radio"]):not([type="checkbox"]):focus, textarea:focus, select:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+input[type="radio"], input[type="checkbox"] {
+  accent-color: var(--accent);
 }
 input::placeholder, textarea::placeholder { color: var(--text-dim); }
 

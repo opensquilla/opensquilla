@@ -167,20 +167,63 @@ const normalizedElevatedMode = computed(() => {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  min-height: 28px;
+  min-height: 30px;
+  padding: 0 0.25rem;
+  border-radius: 6px;
   color: var(--text);
   font-size: 0.8125rem;
   cursor: pointer;
 }
 
+.composer-settings__radio:hover {
+  background: var(--bg-hover);
+}
+
 .composer-settings__radio input {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
   margin: 0;
-  accent-color: var(--accent);
+  flex-shrink: 0;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 999px;
+  background: transparent;
+  display: grid;
+  place-content: center;
+  transition: border-color 0.14s ease;
+}
+
+.composer-settings__radio input::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  transform: scale(0);
+  transition: transform 0.14s ease;
+}
+
+.composer-settings__radio input:checked {
+  border-color: var(--accent);
+}
+
+.composer-settings__radio input:checked::before {
+  transform: scale(1);
+}
+
+.composer-settings__radio input:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: 2px;
 }
 
 .composer-settings__radio.is-disabled {
   cursor: not-allowed;
   opacity: 0.55;
+}
+
+.composer-settings__radio.is-disabled:hover {
+  background: transparent;
 }
 
 .composer-settings__hint {

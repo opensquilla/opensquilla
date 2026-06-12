@@ -30,7 +30,18 @@ CORE_TOOLS = [
     "publish_artifact",
     "session_status",
     "message",
+    "router_control",
 ]
+
+
+def test_core_keeps_the_router_control_escape_hatch() -> None:
+    """A routed tier without router_control cannot switch tiers or release an
+    active hold from chat; text-compat models are allowlist-gated, so the
+    session is locked on the tier (live incident: agent:main:webchat:t65cahdl).
+    """
+    assert "router_control" in ToolsConfig().toolsets["core"]
+    priority = ToolsConfig().toolset_priority
+    assert priority.index("router_control") < priority.index("web_search")
 
 
 def _tool(name: str) -> ToolDefinition:

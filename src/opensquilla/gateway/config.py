@@ -171,12 +171,16 @@ class ToolsConfig(BaseModel):
                 "publish_artifact",
                 "session_status",
                 "message",
+                # Control-plane escape hatch: without router_control a routed
+                # tier cannot switch tiers or release an active hold from chat.
+                "router_control",
             ],
         }
     )
     toolset_priority: list[str] = Field(
         default_factory=lambda: [
             "session_status",
+            "router_control",
             "web_search",
             "web_fetch",
             "session_search",

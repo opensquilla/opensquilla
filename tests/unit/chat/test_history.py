@@ -34,6 +34,40 @@ def test_transcript_entries_to_chat_messages_preserves_usage_and_artifacts() -> 
     assert "reasoning_content" not in messages[0]
 
 
+def test_transcript_entries_to_chat_messages_rebuilds_artifact_thumbnail_url() -> None:
+    # A persisted assistant turn stores the public artifact payload, which carries
+    # the reconstructed thumbnail_url but not the internal has_thumbnail boolean.
+    entry = SimpleNamespace(
+        id=43,
+        message_id="m3",
+        role="assistant",
+        content=(
+            '{"text": "here is the chart", "artifacts": [{'
+            '"id": "art-bmYMIceM2Ddx3rkFM4BOmZ7A", "kind": "artifact_ref", '
+            '"name": "chart.png", "mime": "image/png", "size": 954199, '
+            '"session_id": "session-1", "source": "publish_artifact", '
+            '"created_at": "2026-06-13T00:00:00Z", "store": "artifacts", '
+            '"download_url": "/api/v1/artifacts/art-bmYMIceM2Ddx3rkFM4BOmZ7A", '
+            '"thumbnail_url": "/api/v1/artifacts/art-bmYMIceM2Ddx3rkFM4BOmZ7A?variant=thumb"'
+            '}]}'
+        ),
+        created_at="now",
+        provenance_kind=None,
+        provenance_source_session_key=None,
+        provenance_source_tool=None,
+        turn_usage=None,
+        tool_calls=None,
+    )
+
+    messages = transcript_entries_to_chat_messages([entry])
+
+    artifact = messages[0]["artifacts"][0]
+    assert artifact["id"] == "art-bmYMIceM2Ddx3rkFM4BOmZ7A"
+    assert artifact["thumbnail_url"] == (
+        "/api/v1/artifacts/art-bmYMIceM2Ddx3rkFM4BOmZ7A?variant=thumb"
+    )
+
+
 def _assistant_entry(**overrides: object) -> SimpleNamespace:
     entry = SimpleNamespace(
         id=7,

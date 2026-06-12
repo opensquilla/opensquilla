@@ -324,8 +324,16 @@ def _artifact_event_kwargs(payload: dict[str, Any]) -> dict[str, Any]:
         "created_at",
         "download_url",
         "store",
+        "has_thumbnail",
     }
-    return {key: value for key, value in artifact_payload(payload).items() if key in allowed}
+    normalized = artifact_payload(payload)
+    kwargs = {key: value for key, value in normalized.items() if key in allowed}
+    # artifact_payload exposes the public thumbnail_url; carry the boolean signal onto
+    # the event dataclass so downstream serializers can rebuild the variant URL.
+    kwargs["has_thumbnail"] = bool(
+        payload.get("has_thumbnail") or normalized.get("thumbnail_url")
+    )
+    return kwargs
 
 
 def _flatten_content_blocks(blocks: list[Any]) -> str:

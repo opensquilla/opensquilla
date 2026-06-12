@@ -42,6 +42,25 @@ def test_default_bootstrap_templates_define_distinct_file_roles() -> None:
     assert "Agent name, tone, and persona belong in IDENTITY.md or SOUL.md" in memory
 
 
+def test_system_prompt_carries_cron_job_kind_decision_rules() -> None:
+    prompt = assemble_system_prompt(
+        AgentProfile(agent_id="main", prompt_mode="full"),
+        tools=["cron", "exec_command"],
+    )
+
+    assert "## Cron Scheduling" in prompt
+    assert "`job_kind=reminder` and `session_target=isolated`" in prompt
+    assert "without invoking the agent/model chain" in prompt
+    assert "`job_kind=agent_turn` with `session_target=isolated`" in prompt
+    assert "`job_kind=system_event` and `session_target=main` only for internal" in prompt
+
+    without_cron = assemble_system_prompt(
+        AgentProfile(agent_id="main", prompt_mode="full"),
+        tools=["exec_command"],
+    )
+    assert "## Cron Scheduling" not in without_cron
+
+
 def test_system_prompt_routes_profile_to_user_md() -> None:
     prompt = assemble_system_prompt(
         AgentProfile(agent_id="main", prompt_mode="full"),

@@ -121,6 +121,15 @@ SOUL.md defines durable voice and persona guidance for this workspace. Treat it 
 {% endif -%}
 {% endif -%}
 
+{% if tools and "cron" in tools and prompt_mode != "none" -%}
+## Cron Scheduling
+
+- For proactive reminders, including reminders phrased as "this/current session", use `job_kind=reminder` and `session_target=isolated` so the scheduled run delivers static text without invoking the agent/model chain or adding a fake user turn to the visible conversation.
+- For recurring background agent tasks such as "every morning summarize yesterday's emails", use `job_kind=agent_turn` with `session_target=isolated`.
+- Use `job_kind=system_event` and `session_target=main` only for internal main-session events.
+
+{% endif -%}
+
 {% if tools and "memory_search" in tools and prompt_mode != "none" -%}
 {% set has_memory_get = tools and "memory_get" in tools -%}
 ## Memory Recall

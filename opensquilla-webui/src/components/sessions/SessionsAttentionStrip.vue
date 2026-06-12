@@ -1,5 +1,20 @@
 <template>
+  <p v-if="isIdle" class="hub-attention-clear" aria-label="Needs attention">
+    <span class="hub-attention-clear__mark" aria-hidden="true">✓</span>
+    <span class="hub-attention-clear__text">All clear</span>
+    <template v-if="costUsd != null">
+      <span class="hub-attention-clear__sep" aria-hidden="true">·</span>
+      <button
+        type="button"
+        class="hub-attention-clear__cost"
+        @click="emit('open-usage')"
+      >
+        ${{ costUsd.toFixed(2) }} today
+      </button>
+    </template>
+  </p>
   <section
+    v-else
     class="hub-attention control-stat-grid"
     style="--control-stat-min: 180px"
     aria-label="Needs attention"
@@ -16,10 +31,13 @@
         {{ approvalsCount > 0 ? 'open the blocked session →' : 'nothing waiting on you' }}
       </span>
     </button>
-    <div class="control-stat control-stat--static hub-attention__tile">
+    <div
+      class="control-stat control-stat--static hub-attention__tile"
+      :class="{ 'control-stat--accent': activeCount > 0, 'is-active': runningCount > 0 }"
+    >
       <span class="control-stat__label">Active</span>
       <span class="control-stat__value">
-        {{ runningCount + queuedCount }}<span v-if="runningCount > 0" class="hub-attention__dot" aria-hidden="true"></span>
+        {{ activeCount }}<span v-if="runningCount > 0" class="hub-attention__dot" aria-hidden="true"></span>
       </span>
       <span class="control-stat__hint">
         {{ runningCount }} running · {{ queuedCount }} queued
@@ -39,7 +57,9 @@
 </template>
 
 <script setup lang="ts">
-defineProps<{
+import { computed } from 'vue'
+
+const props = defineProps<{
   approvalsCount: number
   runningCount: number
   queuedCount: number
@@ -50,9 +70,63 @@ const emit = defineEmits<{
   'open-approvals': []
   'open-usage': []
 }>()
+
+const activeCount = computed(() => props.runningCount + props.queuedCount)
+// Fully idle: nothing waiting on the operator and nothing in flight.
+const isIdle = computed(() => props.approvalsCount === 0 && activeCount.value === 0)
 </script>
 
 <style scoped>
+.hub-attention-clear {
+  align-items: center;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  color: var(--text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--fs-sm);
+  gap: var(--sp-2);
+  margin: 0;
+  padding: var(--sp-3) var(--sp-4);
+}
+
+.hub-attention-clear__mark {
+  color: var(--ok);
+  font-weight: 650;
+}
+
+.hub-attention-clear__text {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.hub-attention-clear__sep {
+  color: var(--text-dim);
+}
+
+.hub-attention-clear__cost {
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  padding: 0;
+  transition: color var(--transition);
+}
+
+.hub-attention-clear__cost:hover {
+  color: var(--text);
+}
+
+.hub-attention-clear__cost:focus-visible {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  outline: none;
+}
+
 .hub-attention__tile {
   font: inherit;
 }
@@ -61,9 +135,18 @@ const emit = defineEmits<{
   animation: hub-attention-glow 2s ease-in-out infinite;
 }
 
+.hub-attention__tile.is-active {
+  animation: hub-attention-pulse 2s ease-in-out infinite;
+}
+
 @keyframes hub-attention-glow {
   0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn) 0%, transparent); }
   50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 35%, transparent); }
+}
+
+@keyframes hub-attention-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); }
+  50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent); }
 }
 
 .hub-attention__dot {
@@ -73,5 +156,13 @@ const emit = defineEmits<{
   height: 8px;
   width: 8px;
   animation: pulse 1.5s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hub-attention__tile.is-blocked,
+  .hub-attention__tile.is-active,
+  .hub-attention__dot {
+    animation: none;
+  }
 }
 </style>

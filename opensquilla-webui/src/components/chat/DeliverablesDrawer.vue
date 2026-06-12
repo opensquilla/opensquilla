@@ -30,19 +30,34 @@
               type="button"
               class="deliv-tile"
               :title="artifactFileTitle(artifact)"
+              :aria-label="`Open ${artifactFileTitle(artifact)}, ${artifactFileSubtitle(artifact)}`"
               @click="openPreview(artifact)"
             >
               <span class="deliv-tile__thumb" :data-kind="artifactCategory(artifact)">
+                <!-- Thumbnail is lazy + concurrency-capped: it only fetches once
+                     the tile scrolls into view. Non-image / failed thumbs fall
+                     back to the category glyph. -->
                 <img
-                  v-if="previewUrlFor(artifact)"
-                  :src="previewUrlFor(artifact)"
+                  v-if="isVisual(artifact) && tileThumbState(artifact) === 'loaded' && tileThumbUrl(artifact)"
+                  :src="tileThumbUrl(artifact)"
                   :alt="artifactFileTitle(artifact)"
-                  loading="lazy"
+                  decoding="async"
                 />
-                <Icon v-else :name="artifactIconName(artifact)" :size="26" />
+                <span
+                  v-else-if="isVisual(artifact) && tileThumbState(artifact) === 'loading'"
+                  :ref="el => registerTileThumb(artifact, el)"
+                  class="deliv-tile__thumb-skeleton"
+                  aria-hidden="true"
+                />
+                <Icon
+                  v-else
+                  :ref="el => registerTileThumb(artifact, el)"
+                  :name="artifactIconName(artifact)"
+                  :size="26"
+                />
               </span>
               <span class="deliv-tile__name">{{ artifactFileTitle(artifact) }}</span>
-              <span class="deliv-tile__meta">{{ artifactTileMeta(artifact) }}</span>
+              <span class="deliv-tile__meta">{{ artifactFileSubtitle(artifact) }}</span>
             </button>
           </li>
         </ul>
@@ -74,11 +89,44 @@
         </header>
         <div class="deliv-preview__body">
           <img
-            v-if="previewUrlFor(active)"
+            v-if="isVisual(active) && fullState === 'loaded' && fullUrl"
             class="deliv-preview__image"
-            :src="previewUrlFor(active)"
+            :src="fullUrl"
             :alt="artifactFileTitle(active)"
+            decoding="async"
           />
+          <div
+            v-else-if="isVisual(active) && (fullState === 'timeout' || fullState === 'error')"
+            class="deliv-preview__file"
+            role="status"
+          >
+            <p class="deliv-preview__meta">
+              {{ fullState === 'timeout' ? 'Preview timed out.' : 'Preview failed to load.' }}
+            </p>
+            <button type="button" class="btn btn--ghost" @click="retryFull">
+              <Icon name="refresh" :size="14" />
+              <span>Retry</span>
+            </button>
+          </div>
+          <div
+            v-else-if="isVisual(active)"
+            class="deliv-preview__loading"
+            role="status"
+            aria-label="Loading preview"
+          >
+            <div
+              v-if="fullProgress !== null"
+              class="deliv-preview__progress"
+              role="progressbar"
+              aria-label="Preview download"
+              :aria-valuenow="fullProgress ?? 0"
+              aria-valuemin="0"
+              aria-valuemax="100"
+            >
+              <span class="deliv-preview__progress-bar" :style="{ width: `${fullProgress}%` }" />
+            </div>
+            <span v-else class="deliv-preview__progress-shimmer" aria-hidden="true" />
+          </div>
           <div v-else class="deliv-preview__file">
             <span class="deliv-preview__icon" :data-kind="artifactCategory(active)" aria-hidden="true">
               <Icon :name="artifactIconName(active)" :size="40" />
@@ -89,7 +137,7 @@
         <footer class="deliv-preview__actions">
           <button type="button" class="btn btn--primary" @click="emit('download', active)">
             <Icon name="download" :size="14" />
-            <span>{{ artifactActionLabel(active) === 'Preview' ? 'Download' : artifactActionLabel(active) }}</span>
+            <span>Download</span>
           </button>
         </footer>
       </div>
@@ -102,14 +150,17 @@ import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import Icon from '@/components/Icon.vue'
 import type { ArtifactPayload } from '@/types/rpc'
 import {
-  artifactActionLabel,
+  createArtifactPreview,
+  type ArtifactPreviewController,
+  type ArtifactPreviewState,
+} from '@/composables/chat/useArtifactPreview'
+import {
   artifactCategory,
-  artifactCategoryLabel,
   artifactDownloadUrl,
   artifactFileSubtitle,
   artifactFileTitle,
   artifactIconName,
-  artifactMeta,
+  artifactThumbnailUrl,
 } from '@/utils/chat/artifacts'
 
 const props = defineProps<{
@@ -131,26 +182,12 @@ const active = ref<ArtifactPayload | null>(null)
 
 let invokerEl: HTMLElement | null = null
 
-/* ── Secure blob previews ──────────────────────────────────────────────
-   Mirrors ChatArtifactList: image artifacts are fetched with auth headers
-   (never credentials in the URL) and rendered as revocable object URLs. */
-
-const visualArtifacts = computed(() =>
-  props.artifacts.filter(artifact => artifactCategory(artifact) === 'visual'))
-const previewUrls = ref<Record<string, string>>({})
-let previewLoadSeq = 0
-
 function artifactKey(artifact: ArtifactPayload): string {
   return String(artifact.id || artifact.download_url || artifact.name || '')
 }
 
-function previewUrlFor(artifact: ArtifactPayload | null): string {
-  if (!artifact) return ''
-  return previewUrls.value[artifactKey(artifact)] || ''
-}
-
-function artifactTileMeta(artifact: ArtifactPayload): string {
-  return [artifactCategoryLabel(artifact).toUpperCase(), artifactMeta(artifact)].filter(Boolean).join(' · ')
+function isVisual(artifact: ArtifactPayload | null): boolean {
+  return !!artifact && artifactCategory(artifact) === 'visual'
 }
 
 function sameOrigin(url: string): boolean {
@@ -167,57 +204,116 @@ function previewHeaders(url: string): Record<string, string> {
   return headers
 }
 
-function revokePreviewUrls(urls: Record<string, string>) {
-  for (const url of Object.values(urls)) {
-    try { URL.revokeObjectURL(url) } catch {}
+/* ── Tile thumbnails: lazy + capped, small bytes per tile ──────────────────
+   Each visual tile fetches the `variant=thumb` webp (or the full image when no
+   thumbnail exists) only when it scrolls into view. Bytes are rendered as a
+   revocable blob via URL.createObjectURL(blob) inside the shared controller. */
+
+const tileControllers = new Map<string, ArtifactPreviewController>()
+
+function tileController(artifact: ArtifactPayload): ArtifactPreviewController {
+  const key = artifactKey(artifact)
+  let controller = tileControllers.get(key)
+  if (!controller) {
+    controller = createArtifactPreview({
+      resolveUrl: () => artifactThumbnailUrl(artifact, window.location.origin, {
+        sessionKey: props.sessionKey,
+        includeSessionKey: false,
+      }),
+      headers: () => previewHeaders(artifactThumbnailUrl(artifact, window.location.origin, {
+        sessionKey: props.sessionKey,
+        includeSessionKey: false,
+      })),
+      sameOrigin,
+      fullSize: false,
+    })
+    tileControllers.set(key, controller)
   }
+  return controller
 }
 
-async function loadPreviewUrls() {
-  const seq = ++previewLoadSeq
-  const entries = await Promise.all(visualArtifacts.value.map(async artifact => {
-    const url = artifactDownloadUrl(artifact, window.location.origin, {
+function registerTileThumb(artifact: ArtifactPayload, el: unknown) {
+  const target = el && typeof el === 'object' && '$el' in el
+    ? (el as { $el: unknown }).$el
+    : el
+  tileController(artifact).observe(target instanceof Element ? target : null)
+}
+
+function tileThumbState(artifact: ArtifactPayload): ArtifactPreviewState {
+  return tileController(artifact).state.value as ArtifactPreviewState
+}
+
+function tileThumbUrl(artifact: ArtifactPayload): string {
+  return tileController(artifact).objectUrl.value || ''
+}
+
+function disposeTileControllers() {
+  for (const controller of tileControllers.values()) controller.dispose()
+  tileControllers.clear()
+}
+
+/* ── Full image (lightbox): fetched only on Open, bounded by the LRU ──────── */
+
+let fullController: ArtifactPreviewController | null = null
+const fullState = ref<ArtifactPreviewState>('idle')
+const fullProgress = ref<number | null>(null)
+const fullUrl = ref<string>('')
+
+let stopFullState: (() => void) | null = null
+
+function disposeFull() {
+  stopFullState?.()
+  stopFullState = null
+  fullController?.dispose()
+  fullController = null
+  fullState.value = 'idle'
+  fullProgress.value = null
+  fullUrl.value = ''
+}
+
+function loadFull(artifact: ArtifactPayload) {
+  disposeFull()
+  fullController = createArtifactPreview({
+    resolveUrl: () => artifactDownloadUrl(artifact, window.location.origin, {
       sessionKey: props.sessionKey,
       includeSessionKey: false,
-    })
-    if (!url) return null
-    try {
-      const isSameOrigin = sameOrigin(url)
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: previewHeaders(url),
-        credentials: isSameOrigin ? 'same-origin' : 'omit',
-      })
-      if (!response.ok || seq !== previewLoadSeq) return null
-      const blob = await response.blob()
-      if (seq !== previewLoadSeq) return null
-      return [artifactKey(artifact), URL.createObjectURL(blob)] as const
-    } catch {
-      return null
-    }
-  }))
-  const nextUrls: Record<string, string> = {}
-  for (const entry of entries) {
-    if (entry) nextUrls[entry[0]] = entry[1]
-  }
-  if (seq !== previewLoadSeq) {
-    revokePreviewUrls(nextUrls)
-    return
-  }
-  const previousUrls = previewUrls.value
-  previewUrls.value = nextUrls
-  revokePreviewUrls(previousUrls)
+    }),
+    headers: () => previewHeaders(artifactDownloadUrl(artifact, window.location.origin, {
+      sessionKey: props.sessionKey,
+      includeSessionKey: false,
+    })),
+    sameOrigin,
+    fullSize: true,
+  })
+  const ctrl = fullController
+  stopFullState = watch(
+    [ctrl.state, ctrl.progress, ctrl.objectUrl],
+    ([s, p, u]) => {
+      fullState.value = s as ArtifactPreviewState
+      fullProgress.value = (p as number | null) ?? null
+      fullUrl.value = (u as string) || ''
+    },
+    { immediate: true },
+  )
+  ctrl.load()
+}
+
+function retryFull() {
+  fullController?.retry()
 }
 
 /* ── Preview (lightbox / metadata) ─────────────────────────────────────── */
 
 function openPreview(artifact: ArtifactPayload) {
   active.value = artifact
+  if (isVisual(artifact)) loadFull(artifact)
+  else disposeFull()
   nextTick(() => previewCloseBtn.value?.focus())
 }
 
 function closePreview() {
   active.value = null
+  disposeFull()
   nextTick(() => closeBtn.value?.focus())
 }
 
@@ -264,27 +360,32 @@ watch(
     if (open && !wasOpen) {
       invokerEl = document.activeElement instanceof HTMLElement ? document.activeElement : null
       document.addEventListener('keydown', onDocumentKeydown)
-      void loadPreviewUrls()
       nextTick(() => closeBtn.value?.focus())
     } else if (!open && wasOpen) {
       document.removeEventListener('keydown', onDocumentKeydown)
       active.value = null
+      disposeFull()
+      disposeTileControllers()
       if (invokerEl && document.contains(invokerEl)) invokerEl.focus()
       invokerEl = null
     }
   },
 )
 
-// Refresh thumbnails when the open drawer's artifact set or auth changes.
+const visualKeys = computed(() =>
+  props.artifacts.filter(isVisual).map(artifactKey).join('|'))
+
+// Drop tile controllers when the open drawer's artifact set or auth changes so
+// their blob URLs are revoked promptly.
 watch(
-  () => [props.open, visualArtifacts.value.map(artifactKey).join('|'), props.sessionKey || '', props.authToken || ''],
-  () => { if (props.open) void loadPreviewUrls() },
+  () => [visualKeys.value, props.sessionKey || '', props.authToken || ''],
+  () => { if (props.open) disposeTileControllers() },
 )
 
 onUnmounted(() => {
   document.removeEventListener('keydown', onDocumentKeydown)
-  previewLoadSeq += 1
-  revokePreviewUrls(previewUrls.value)
+  disposeFull()
+  disposeTileControllers()
 })
 </script>
 

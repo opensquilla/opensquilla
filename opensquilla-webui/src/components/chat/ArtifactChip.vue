@@ -1,59 +1,137 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import Icon from '@/components/Icon.vue'
 import type { IconName } from '@/utils/icons'
 import type { ArtifactPayload } from '@/types/rpc'
 
-defineProps<{
+const props = defineProps<{
   artifact: ArtifactPayload
   category: string
   iconName: IconName
   title: string
-  subtitle: string
+  kindPill: string
+  size: string
+  /** Previewable types expose an explicit Open action; others are download-only. */
+  previewable: boolean
+  /** Visible label for the primary action ("Open" or "Download"). */
   actionLabel: string
 }>()
 
-defineEmits<{
+const emit = defineEmits<{
+  open: [artifact: ArtifactPayload]
   download: [artifact: ArtifactPayload]
 }>()
+
+// The card body maps to the primary action: Open when previewable, otherwise
+// Download. A previewable card never downloads on body click; a download-only
+// card has no misleading Open affordance.
+function onBodyClick() {
+  if (props.previewable) emit('open', props.artifact)
+  else emit('download', props.artifact)
+}
+
+// The verb (Open / Download) belongs to the dedicated action buttons; the body
+// is the artifact identity row. Naming it by the file plus its kind/size keeps
+// a unique accessible name so a screen reader does not hear the same action
+// twice, while still describing the target. Skipping the verb avoids colliding
+// with the "Open …" / "Download …" controls beside it.
+const bodyLabel = computed(() => {
+  const context = [props.kindPill, props.size].filter(Boolean).join(' · ')
+  return context ? `${props.title}, ${context}` : props.title
+})
 </script>
 
 <template>
-  <button
-    type="button"
-    class="msg-artifact-chip"
-    @click="$emit('download', artifact)"
-  >
-    <span class="msg-artifact-icon" :data-kind="category" aria-hidden="true">
-      <Icon :name="iconName" :size="22" />
+  <div class="msg-artifact-chip" :data-previewable="previewable ? 'true' : 'false'">
+    <button
+      type="button"
+      class="msg-artifact-body"
+      :aria-label="bodyLabel"
+      @click="onBodyClick"
+    >
+      <span class="msg-artifact-icon" :data-kind="category" aria-hidden="true">
+        <Icon :name="iconName" :size="22" />
+      </span>
+      <span class="msg-artifact-info">
+        <span class="msg-artifact-name">{{ title }}</span>
+        <span class="msg-artifact-meta">
+          <span v-if="kindPill" class="msg-artifact-kind">{{ kindPill }}</span>
+          <span v-if="size" class="msg-artifact-size">{{ size }}</span>
+        </span>
+      </span>
+    </button>
+    <span class="msg-artifact-actions">
+      <!-- Previewable: an explicit "Open" verb plus an icon-only Download.
+           Download-only: a single labelled "Download" action, no Open. -->
+      <button
+        v-if="previewable"
+        type="button"
+        class="msg-artifact-action"
+        :aria-label="`Open ${title}`"
+        @click="emit('open', artifact)"
+      >
+        <Icon name="externalLink" :size="14" />
+        <span class="msg-artifact-action__label">Open</span>
+      </button>
+      <button
+        v-if="previewable"
+        type="button"
+        class="msg-artifact-download"
+        :aria-label="`Download ${title}`"
+        @click="emit('download', artifact)"
+      >
+        <Icon name="download" :size="16" />
+      </button>
+      <button
+        v-else
+        type="button"
+        class="msg-artifact-action"
+        :aria-label="`Download ${title}`"
+        @click="emit('download', artifact)"
+      >
+        <Icon name="download" :size="14" />
+        <span class="msg-artifact-action__label">Download</span>
+      </button>
     </span>
-    <span class="msg-artifact-info">
-      <span class="msg-artifact-name">{{ title }}</span>
-      <span class="msg-artifact-meta">{{ subtitle }}</span>
-    </span>
-    <span class="msg-artifact-action">{{ actionLabel }}</span>
-  </button>
+  </div>
 </template>
 
 <style scoped>
 .msg-artifact-chip {
   display: grid;
-  grid-template-columns: 3rem minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 0.875rem;
+  gap: var(--sp-2);
   width: 100%;
-  padding: 0.75rem;
+  padding: var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-1);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--bg-surface);
-  cursor: pointer;
-  text-align: left;
-  transition: border-color 0.14s ease, box-shadow 0.14s ease, transform 0.14s ease;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
 }
 
 .msg-artifact-chip:hover {
   border-color: var(--border-strong);
-  box-shadow: var(--shadow-md);
-  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.msg-artifact-body {
+  display: grid;
+  grid-template-columns: 3rem minmax(0, 1fr);
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+  padding: var(--sp-1);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.msg-artifact-body:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 .msg-artifact-icon {
@@ -62,7 +140,7 @@ defineEmits<{
   justify-content: center;
   width: 3rem;
   height: 3rem;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   color: var(--info);
   background: color-mix(in srgb, var(--info) 10%, var(--bg-surface));
 }
@@ -80,7 +158,7 @@ defineEmits<{
 .msg-artifact-info {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: var(--sp-1);
   min-width: 0;
 }
 
@@ -95,53 +173,124 @@ defineEmits<{
 }
 
 .msg-artifact-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
   color: var(--text-dim);
-  font-size: 0.8125rem;
+  font-size: var(--fs-xs);
   line-height: 1.35;
+  min-width: 0;
+}
+
+.msg-artifact-kind {
+  flex-shrink: 0;
+  padding: 0 var(--sp-1);
+  border-radius: var(--radius-sm);
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+
+.msg-artifact-size {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.msg-artifact-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex-shrink: 0;
+}
+
 .msg-artifact-action {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  min-width: 4rem;
-  min-height: 2.125rem;
-  padding: 0 0.875rem;
-  border-radius: 999px;
-  background: var(--bg-elevated);
+  gap: var(--sp-1);
+  height: var(--sp-8);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
   color: var(--text);
-  font-size: 0.8125rem;
+  font-size: var(--fs-xs);
   font-weight: 500;
   white-space: nowrap;
-  transition: background 0.14s ease, color 0.14s ease;
+  cursor: pointer;
+  transition: border-color 0.14s ease, color 0.14s ease;
 }
 
-.msg-artifact-chip:hover .msg-artifact-action {
-  background: var(--accent);
-  color: var(--accent-foreground);
+.msg-artifact-action:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  color: var(--accent);
 }
 
-@media (max-width: 640px) {
-  .msg-artifact-chip {
-    grid-template-columns: 2.75rem minmax(0, 1fr);
-    gap: 0.75rem;
-    padding: 0.625rem;
+.msg-artifact-download {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--sp-8);
+  height: var(--sp-8);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: border-color 0.14s ease, color 0.14s ease;
+}
+
+.msg-artifact-download:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  color: var(--accent);
+}
+
+.msg-artifact-action:focus-visible,
+.msg-artifact-download:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+@media (max-width: 768px) {
+  .msg-artifact-body {
+    grid-template-columns: 2.25rem minmax(0, 1fr);
+    gap: var(--sp-2);
   }
 
   .msg-artifact-icon {
-    width: 2.75rem;
-    height: 2.75rem;
+    width: 2.25rem;
+    height: 2.25rem;
+  }
+
+  .msg-artifact-action__label {
+    display: none;
   }
 
   .msg-artifact-action {
-    grid-column: 2;
-    justify-self: start;
-    min-height: 1.875rem;
-    min-width: 3.5rem;
-    margin-top: 0.125rem;
+    padding: 0;
+    justify-content: center;
+  }
+
+  /* 44px touch targets while the slimmer icon column returns width to the
+     filename, which otherwise truncates to a couple of characters on phones. */
+  .msg-artifact-action,
+  .msg-artifact-download {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .msg-artifact-chip,
+  .msg-artifact-action,
+  .msg-artifact-download {
+    transition: none;
   }
 }
 </style>

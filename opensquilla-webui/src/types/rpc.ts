@@ -119,6 +119,7 @@ export interface ArtifactPayload {
   mime?: string
   size?: number | string
   download_url?: string
+  thumbnail_url?: string
   [key: string]: unknown
 }
 

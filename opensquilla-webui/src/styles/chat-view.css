@@ -69,7 +69,7 @@
   background: var(--bg-elevated);
   color: var(--text-muted);
   font-size: 0.8125rem;
-  font-weight: 560;
+  font-weight: 600;
   white-space: nowrap;
 }
 
@@ -1122,10 +1122,29 @@
   object-fit: cover;
 }
 
+.deliv-tile__thumb-skeleton {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    100deg,
+    var(--bg-surface) 30%,
+    var(--bg-hover) 50%,
+    var(--bg-surface) 70%
+  );
+  background-size: 220% 100%;
+  animation: delivSkeleton 1.4s ease-in-out infinite;
+}
+
+@keyframes delivSkeleton {
+  from { background-position: 180% 0; }
+  to { background-position: -80% 0; }
+}
+
 .deliv-tile__name {
   color: var(--text);
-  font-size: var(--fs-xs);
-  font-weight: 560;
+  font-size: var(--fs-sm);
+  font-weight: 600;
   line-height: 1.3;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1202,6 +1221,46 @@
   object-fit: contain;
 }
 
+.deliv-preview__loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 12rem;
+  padding: var(--sp-6);
+}
+
+.deliv-preview__progress {
+  width: min(280px, 60%);
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--bg-hover);
+}
+
+.deliv-preview__progress-bar {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.18s ease;
+}
+
+.deliv-preview__progress-shimmer {
+  display: block;
+  width: min(280px, 60%);
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(
+    100deg,
+    var(--bg-hover) 30%,
+    var(--accent) 50%,
+    var(--bg-hover) 70%
+  );
+  background-size: 220% 100%;
+  animation: delivSkeleton 1.4s ease-in-out infinite;
+}
+
 .deliv-preview__file {
   display: flex;
   flex-direction: column;
@@ -1266,5 +1325,15 @@
 @media (prefers-reduced-motion: reduce) {
   .deliv-drawer {
     animation: none;
+  }
+
+  .deliv-tile__thumb-skeleton,
+  .deliv-preview__progress-shimmer {
+    animation: none;
+    background: var(--bg-hover);
+  }
+
+  .deliv-preview__progress-bar {
+    transition: none;
   }
 }

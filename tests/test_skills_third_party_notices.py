@@ -14,6 +14,7 @@ ORIGINALS = {
     "awesome-webpage-image-download",
     "awesome-webpage-research",
     "deep-research",
+    "swe-bench",
     "docx",
     "git-diff",
     "github",

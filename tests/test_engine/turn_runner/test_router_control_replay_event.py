@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from opensquilla.engine import runtime as runtime_module
 from opensquilla.engine.runtime import TurnRunner
 from opensquilla.engine.steps import squilla_router as squilla_router_step
 from opensquilla.engine.types import DoneEvent, RouterControlReplayEvent
@@ -145,3 +146,50 @@ async def test_router_control_replay_event_replays_turn_once(monkeypatch) -> Non
     assert "Do not call router_control again" in provider.provider_requests[1]
     assert done_events[-1].text == "new final"
     assert text.endswith("new final")
+
+
+@pytest.mark.asyncio
+async def test_router_control_replay_depth_cap_finishes_turn_without_recursion(
+    monkeypatch,
+) -> None:
+    """The runtime-side ceiling must hold even if the tool-side guard fails.
+
+    With the cap forced to zero, the first replay request is already over
+    the limit: the replay event is suppressed, the turn finishes normally
+    on the original route, and the provider is called exactly once.
+    """
+    monkeypatch.setattr(squilla_router_step, "_get_strategy", lambda _cfg: _Strategy())
+    monkeypatch.setattr(runtime_module, "_MAX_ROUTER_CONTROL_REPLAYS", 0)
+    provider = _ReplayProvider()
+    cfg = GatewayConfig(
+        squilla_router=SquillaRouterConfig(
+            enabled=True,
+            rollout_phase="full",
+            require_router_runtime=False,
+            tiers=_router_tier_profile_defaults("openrouter"),
+        )
+    )
+    runner = TurnRunner(
+        provider_selector=_Selector(provider),
+        tool_registry=get_default_registry(),
+        config=cfg,
+    )
+
+    events = [
+        event
+        async for event in runner.run(
+            "Use c3 for this",
+            "agent:main:router-control-replay-cap",
+            tool_context=ToolContext(is_owner=True, caller_kind=CallerKind.CLI),
+            history_has_persisted_user=False,
+            no_memory_capture=True,
+        )
+    ]
+
+    replay_events = [event for event in events if isinstance(event, RouterControlReplayEvent)]
+    done_events = [event for event in events if isinstance(event, DoneEvent)]
+
+    assert replay_events == []
+    assert provider.calls == ["deepseek/deepseek-v4-pro"]
+    assert done_events
+    assert done_events[-1].text == "old partial"

@@ -826,6 +826,11 @@ def _prepend_request_context_prompt(
     return f"{prepended_context.strip()}\n\n{existing_request_context.strip()}"
 
 
+# Hard ceiling on router_control replay recursion. The router_control tool
+# already refuses to re-arm at depth > 0; this cap holds even if a future
+# emitter bypasses that guard, since each replay re-runs the whole turn.
+_MAX_ROUTER_CONTROL_REPLAYS = 2
+
 _MAX_TOOL_RESULT_CHARS = 2000
 _MAX_TOOL_RESULT_METADATA_VALUE_CHARS = 256
 _MAX_PERSISTED_TOOL_ARGUMENT_FIELD_CHARS = 4096
@@ -2531,6 +2536,17 @@ class TurnRunner:
             router_control_replay_event: RouterControlReplayEvent | None = None
             async for event in self._stream_consumer_stage.run(stream_inp):
                 if isinstance(event, RouterControlReplayEvent):
+                    if router_control_replay_depth >= _MAX_ROUTER_CONTROL_REPLAYS:
+                        # Suppress the replay request and let the turn finish
+                        # on its current route; the event is an internal
+                        # control signal, not user-facing output.
+                        log.warning(
+                            "router_control.replay_depth_capped",
+                            replay_depth=router_control_replay_depth,
+                            max_replays=_MAX_ROUTER_CONTROL_REPLAYS,
+                            session_key=session_key,
+                        )
+                        continue
                     router_control_replay_event = event
                     yield event
                     break

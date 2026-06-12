@@ -54,6 +54,7 @@ from opensquilla.session.compaction_lifecycle import (
     pre_compaction_flush_requires_safe_receipt,
 )
 from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id, parse_agent_id
+from opensquilla.session.models import SessionStatus
 from opensquilla.session.terminal_reply import build_terminal_reply, sanitize_agent_error
 
 _d = get_dispatcher()
@@ -850,6 +851,10 @@ async def _handle_sessions_list(params: dict | None, ctx: RpcContext) -> dict:
             "parentSessionKey": getattr(s, "parent_session_key", None),
             "spawned_by": getattr(s, "spawned_by", None),
             "spawnedBy": getattr(s, "spawned_by", None),
+            "spawn_depth": getattr(s, "spawn_depth", 0),
+            "spawnDepth": getattr(s, "spawn_depth", 0),
+            "forked_from_parent": bool(getattr(s, "forked_from_parent", False)),
+            "forkedFromParent": bool(getattr(s, "forked_from_parent", False)),
             "origin": getattr(s, "origin", None),
             "message_count": entry_count,
             "entry_count": entry_count,
@@ -920,6 +925,48 @@ async def _handle_sessions_create(params: dict | None, ctx: RpcContext) -> dict:
         result["seededMessage"] = True
 
     return result
+
+
+@_d.method("sessions.fork", scope="operator.write")
+async def _handle_sessions_fork(params: dict | None, ctx: RpcContext) -> dict:
+    """Fork a session into a new webchat-routable child with a copied transcript."""
+    key = _require_key(params)
+    assert isinstance(params, dict)
+    title = params.get("title")
+    if title is not None and not isinstance(title, str):
+        raise ValueError("params.title must be a string")
+
+    if ctx.session_manager is None:
+        raise KeyError("No session manager available")
+    storage = get_session_storage(ctx.session_manager)
+    if storage is None:
+        raise KeyError("No session storage available")
+
+    parent = await storage.get_session(key)
+    if parent is None:
+        raise KeyError(f"Session not found: {key}")
+
+    agent_id = _effective_agent_id_for_session(parent, key)
+    child_key = _create_session_key(agent_id, "webchat")
+    child = await ctx.session_manager.branch(
+        key,
+        child_key,
+        fork_transcript=True,
+        status=SessionStatus.DONE,
+    )
+
+    display_name = title or getattr(parent, "display_name", None)
+    if display_name:
+        await ctx.session_manager.update(child.session_key, display_name=display_name)
+
+    await _emit_to_subscribers(
+        ctx,
+        child.session_key,
+        "sessions.changed",
+        build_sessions_changed_payload(child.session_key, "forked", run_status="idle"),
+    )
+
+    return {"key": child.session_key, "parentKey": key}
 
 
 @_d.method("sessions.send", scope="operator.write")

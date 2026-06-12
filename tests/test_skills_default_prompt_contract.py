@@ -66,6 +66,7 @@ DEFAULTS = {
     "srt-from-script",
     "sub-agent",
     "subtitle-burner",
+    "swe-bench",
     "summarize",
     "text-file-read",
     "title-card-image",

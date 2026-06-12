@@ -26,6 +26,65 @@ def test_python_runtime_roots_are_rx(tmp_path: Path) -> None:
     assert tmp_path / ".venv" in roots
 
 
+def test_python_runtime_roots_include_external_venv_base_runtime(tmp_path: Path) -> None:
+    from opensquilla.sandbox.backend.windows_default_roots import runtime_rx_roots
+
+    python = tmp_path / "project" / ".venv" / "Scripts" / "python.exe"
+    base_runtime = tmp_path / "runtime" / "python"
+    python.parent.mkdir(parents=True)
+    base_runtime.mkdir(parents=True)
+
+    roots = runtime_rx_roots(python, base_prefix=base_runtime)
+
+    assert python.parent in roots
+    assert tmp_path / "project" / ".venv" in roots
+    assert base_runtime in roots
+
+
+def test_windows_platform_rx_roots_from_env(tmp_path: Path) -> None:
+    from opensquilla.sandbox.backend.windows_default_roots import windows_platform_rx_roots
+
+    windows_root = tmp_path / "Windows"
+    program_data = tmp_path / "ProgramData"
+    program_files = tmp_path / "Program Files"
+    program_files_x86 = tmp_path / "Program Files (x86)"
+
+    roots = windows_platform_rx_roots(
+        {
+            "SystemRoot": str(windows_root),
+            "ProgramData": str(program_data),
+            "ProgramFiles": str(program_files),
+            "ProgramFiles(x86)": str(program_files_x86),
+        }
+    )
+
+    assert windows_root in roots
+    assert windows_root / "System32" in roots
+    assert program_data in roots
+    assert program_files in roots
+    assert program_files_x86 in roots
+
+
+def test_process_executable_rx_roots_include_executable_and_platform_roots(
+    tmp_path: Path,
+) -> None:
+    from opensquilla.sandbox.backend.windows_default_roots import process_executable_rx_roots
+
+    windows_root = tmp_path / "Windows"
+    powershell_root = windows_root / "System32" / "WindowsPowerShell" / "v1.0"
+    powershell = powershell_root / "powershell.exe"
+
+    roots = process_executable_rx_roots(
+        (str(powershell), "-Command", "Write-Output ok"),
+        {"SystemRoot": str(windows_root)},
+    )
+
+    assert powershell_root in roots
+    assert powershell_root.parent in roots
+    assert windows_root in roots
+    assert windows_root / "System32" in roots
+
+
 def test_opensquilla_state_protected_roots_are_sensitive(tmp_path: Path) -> None:
     from opensquilla.sandbox.backend.windows_default_roots import (
         opensquilla_protected_roots,

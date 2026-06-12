@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,13 +32,66 @@ def workspace_write_roots(workspace: Path) -> WorkspaceWriteRoots:
     )
 
 
-def runtime_rx_roots(python_executable: Path) -> tuple[Path, ...]:
+def runtime_rx_roots(
+    python_executable: Path,
+    *,
+    base_prefix: Path | None = None,
+) -> tuple[Path, ...]:
     roots: list[Path] = []
     exe_dir = python_executable.parent
     roots.append(exe_dir)
     if exe_dir.name.lower() == "scripts":
         roots.append(exe_dir.parent)
+    base = base_prefix if base_prefix is not None else Path(sys.base_prefix)
+    if base:
+        roots.append(base)
     return tuple(dict.fromkeys(roots))
+
+
+def windows_system_root(env: Mapping[str, str] | None = None) -> Path:
+    source = env or {}
+    raw = source.get("SystemRoot") or source.get("SYSTEMROOT") or "C:\\Windows"
+    return Path(raw)
+
+
+def windows_program_data_root(env: Mapping[str, str] | None = None) -> Path:
+    source = env or {}
+    return Path(source.get("ProgramData") or "C:\\ProgramData")
+
+
+def _program_files_roots_from_env(env: Mapping[str, str] | None = None) -> tuple[Path, ...]:
+    source = env or {}
+    roots = [
+        Path(source.get("ProgramFiles") or "C:\\Program Files"),
+        Path(source.get("ProgramFiles(x86)") or "C:\\Program Files (x86)"),
+    ]
+    return tuple(dict.fromkeys(root for root in roots if str(root)))
+
+
+def windows_platform_rx_roots(env: Mapping[str, str] | None = None) -> tuple[Path, ...]:
+    system_root = windows_system_root(env)
+    roots = [
+        system_root,
+        system_root / "System32",
+        windows_program_data_root(env),
+        *_program_files_roots_from_env(env),
+    ]
+    return tuple(dict.fromkeys(root for root in roots if str(root)))
+
+
+def process_executable_rx_roots(
+    argv: Sequence[str],
+    env: Mapping[str, str] | None = None,
+) -> tuple[Path, ...]:
+    if not argv:
+        return ()
+    executable = Path(argv[0])
+    roots: list[Path] = []
+    if executable.is_absolute():
+        roots.append(executable.parent)
+        roots.append(executable.parent.parent)
+    roots.extend(windows_platform_rx_roots(env))
+    return tuple(dict.fromkeys(root for root in roots if str(root)))
 
 
 def opensquilla_state_root(home: Path) -> Path:
@@ -104,8 +159,12 @@ __all__ = [
     "normalize_windows_path",
     "opensquilla_protected_roots",
     "opensquilla_state_root",
+    "process_executable_rx_roots",
     "runtime_rx_roots",
     "windows_sensitive_marker",
+    "windows_platform_rx_roots",
+    "windows_program_data_root",
+    "windows_system_root",
     "workspace_cache_root",
     "workspace_write_roots",
 ]

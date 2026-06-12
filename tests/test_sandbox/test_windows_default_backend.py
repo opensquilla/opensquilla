@@ -156,6 +156,50 @@ def test_payload_contains_required_workspace_and_runtime_acl_plan(
     assert plan["capabilitySids"]
 
 
+def test_payload_grants_process_runtime_roots_rx(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default as mod
+
+    powershell_root = tmp_path / "Windows" / "System32" / "WindowsPowerShell" / "v1.0"
+    program_files = tmp_path / "Program Files"
+    program_data = tmp_path / "ProgramData"
+    for path in (powershell_root, program_files, program_data):
+        path.mkdir(parents=True)
+    powershell = powershell_root / "powershell.exe"
+    powershell.write_text("", encoding="utf-8")
+
+    request = _request(tmp_path)
+    request = SandboxRequest(
+        argv=(str(powershell), "-NoLogo", "-Command", "Write-Output ok"),
+        cwd=request.cwd,
+        action_kind=request.action_kind,
+        policy=request.policy,
+        env=request.env,
+        run_mode=request.run_mode,
+    )
+    monkeypatch.setattr(mod, "_support_ready", lambda: True)
+    monkeypatch.setattr(mod, "_capability_store_path", lambda: tmp_path / "cap_sids.json")
+    monkeypatch.setattr(
+        mod,
+        "process_executable_rx_roots",
+        lambda argv, env: (powershell_root, program_files, program_data),
+        raising=False,
+    )
+
+    payload = mod._payload_for_request(request)
+
+    grants = {
+        grant["path"]: grant["access"]
+        for grant in payload["policy"]["windowsAclPlan"]["autoGrants"]
+    }
+    assert grants[str(powershell_root)] == "RX"
+    assert grants[str(program_files)] == "RX"
+    assert grants[str(program_data)] == "RX"
+    assert grants[str(tmp_path)] == "RWX"
+
+
 def test_trusted_non_sensitive_expansion_auto_grants(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

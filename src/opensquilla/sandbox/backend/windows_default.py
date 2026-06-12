@@ -21,6 +21,7 @@ from opensquilla.sandbox.backend.windows_default_acl import (
 from opensquilla.sandbox.backend.windows_default_cache import build_cache_env, ensure_cache_dirs
 from opensquilla.sandbox.backend.windows_default_capability import capability_sids_for_command
 from opensquilla.sandbox.backend.windows_default_roots import (
+    process_executable_rx_roots,
     runtime_rx_roots,
     windows_sensitive_marker,
     workspace_cache_root,
@@ -353,12 +354,16 @@ def _is_relative_to_casefold(candidate: Path, root: Path) -> bool:
 
 def _acl_plan_payload(request: SandboxRequest) -> dict[str, object]:
     write_roots = workspace_write_roots(request.cwd)
+    process_rx_roots = tuple(
+        root for root in process_executable_rx_roots(request.argv, request.env) if root.exists()
+    )
     required: list[AclGrant] = [
         *(AclGrant(root, AclAccess.RWX, AclGrantKind.REQUIRED) for root in write_roots.rwx_roots),
         *(
             AclGrant(root, AclAccess.RX, AclGrantKind.REQUIRED)
             for root in runtime_rx_roots(_python_executable())
         ),
+        *(AclGrant(root, AclAccess.RX, AclGrantKind.REQUIRED) for root in process_rx_roots),
     ]
     policy_grants = [
         AclGrant(
@@ -373,7 +378,7 @@ def _acl_plan_payload(request: SandboxRequest) -> dict[str, object]:
         required=required,
         policy=policy_grants,
         expansion=_expansion_grants_from_env(request),
-        sensitive_marker=lambda path: windows_sensitive_marker(path),
+        sensitive_marker=lambda path: _acl_sensitive_marker(path, process_rx_roots),
     )
     if plan.denied:
         denied = plan.denied[0]
@@ -406,6 +411,20 @@ def _acl_plan_payload(request: SandboxRequest) -> dict[str, object]:
         "denied": [],
         "capabilitySids": list(dict.fromkeys(item["capabilitySid"] for item in grants)),
     }
+
+
+def _acl_sensitive_marker(path: Path, rx_roots: tuple[Path, ...]) -> str | None:
+    marker = windows_sensitive_marker(path)
+    if marker == "windows_system" and any(_same_path_casefold(path, root) for root in rx_roots):
+        return None
+    return marker
+
+
+def _same_path_casefold(left: Path, right: Path) -> bool:
+    return str(left).replace("\\", "/").rstrip("/").lower() == str(right).replace(
+        "\\",
+        "/",
+    ).rstrip("/").lower()
 
 
 def _expansion_grants_from_env(request: SandboxRequest) -> tuple[AclGrant, ...]:

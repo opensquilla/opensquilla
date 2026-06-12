@@ -232,6 +232,7 @@ class _RecordingPromptAssembler(PromptAssemblerPort):
         prompt_metadata,
         bootstrap_context_mode,  # noqa: ANN001, ARG002
         fresh_user_session=False,  # noqa: ANN001, ARG002
+        reply_tags_enabled=True,  # noqa: ANN001, ARG002
     ):
         prompt_metadata["prompt_key"] = "prompt_value"
         return "base"

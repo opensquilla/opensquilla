@@ -475,16 +475,25 @@ async def test_prompt_assembler_stage_snapshot(
     # Successful path: build expected snapshot from the case definition.
     metadata_after_merge = dict(case["turn_metadata"])
     metadata_after_merge.update(case["prompt_metadata"])
-    expected_resolved_model = (
-        case.get("model") or case["turn_model"] or "claude-sonnet-4.5"
+    if case.get("model"):
+        # _pin_explicit_model_choice records the explicit selection in the
+        # routed-selection metadata contract and sets turn.model.
+        metadata_after_merge["routed_model"] = case["model"]
+        metadata_after_merge["routing_source"] = "explicit_model"
+        metadata_after_merge["routing_applied"] = False
+    expected_turn_model = case.get("model") or case["turn_model"]
+    expected_resolved_model = expected_turn_model or "claude-sonnet-4.5"
+    # Provider-scoped routing (0618ec1b): any truthy turn.model re-resolves
+    # the provider through the cloned selector after the pipeline.
+    expected_provider_name = (
+        "override-resolved" if expected_turn_model else "post-pipeline"
     )
-    expected_provider_name = "override-resolved" if case.get("model") else "post-pipeline"
     expected_snapshot = {
         "outcome": "success",
         "provider_name": expected_provider_name,
         "provider_is_fallback_wrapped": True,
         "turn_message": case["turn_message"],
-        "turn_model": case["turn_model"],
+        "turn_model": expected_turn_model,
         "turn_metadata_keys": tuple(sorted(metadata_after_merge.keys())),
         "turn_metadata_routed_tier": metadata_after_merge.get("routed_tier"),
         "turn_tool_defs_count": len(case["turn_tool_defs"]),

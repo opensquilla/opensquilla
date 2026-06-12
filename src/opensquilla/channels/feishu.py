@@ -413,13 +413,17 @@ class FeishuWebSocketTransport:
             finally:
                 self._connected = False
                 startup_event.set()
-                self._unbind_sdk_event_loop(worker_loop)
-                self._drain_worker_loop(worker_loop)
-                with contextlib.suppress(Exception):
-                    worker_loop.close()
-                if self._worker_loop is worker_loop:
-                    self._worker_loop = None
-                self._release_active_client()
+                try:
+                    self._unbind_sdk_event_loop(worker_loop)
+                    try:
+                        self._drain_worker_loop(worker_loop)
+                    finally:
+                        with contextlib.suppress(Exception):
+                            worker_loop.close()
+                        if self._worker_loop is worker_loop:
+                            self._worker_loop = None
+                finally:
+                    self._release_active_client()
 
         try:
             self._register_active_client()
@@ -471,6 +475,7 @@ class FeishuWebSocketTransport:
                 thread.join(timeout=0)
             self._thread = None
             self._worker_loop = None
+            self._release_active_client()
         self._handler = None
         self._loop = None
         self._lark = None
@@ -622,9 +627,9 @@ class FeishuWebSocketTransport:
         for task in pending:
             task.cancel()
         if pending:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(Exception, asyncio.CancelledError):
                 loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(Exception, asyncio.CancelledError):
             loop.run_until_complete(loop.shutdown_asyncgens())
 
     def _register_active_client(self) -> None:

@@ -1230,12 +1230,21 @@ function autoResizeTextarea() {
 function onDocumentPaste(e: ClipboardEvent) {
   const items = e.clipboardData?.items
   if (!items) return
+  let attachedImage = false
   for (let i = 0; i < items.length; i++) {
     if (items[i].type.startsWith('image/')) {
       const file = items[i].getAsFile()
-      if (file) addAttachment(file)
+      if (file) {
+        addAttachment(file)
+        attachedImage = true
+      }
     }
   }
+  // Screenshot tools put both the image and its local file path on the
+  // clipboard; once we have attached the image, suppress the default paste so
+  // the path text is not also dumped into the composer (and then sent to the
+  // agent). Plain-text pastes with no image fall through unchanged.
+  if (attachedImage) e.preventDefault()
 }
 
 /* ── Document keydown (ESC) ────────────────────────────────────────── */

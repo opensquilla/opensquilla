@@ -11,7 +11,8 @@
         >
           <span class="attachment-chip__icon" aria-hidden="true">
             <span v-if="att.kind === 'inline_pending' || att.kind === 'uploading'" class="spinner attachment-chip__spinner" />
-            <span v-else>file</span>
+            <img v-else-if="att.dataUrl" class="attachment-chip__thumb" :src="att.dataUrl" alt="" />
+            <Icon v-else :name="attachmentIcon(att)" :size="15" />
           </span>
           <span class="attachment-chip__name">{{ att.name }}</span>
           <span class="attachment-chip__meta">{{ attachmentMeta(att) }}</span>
@@ -121,6 +122,7 @@
 <script setup lang="ts">
 import { nextTick, ref } from 'vue'
 import Icon from '@/components/Icon.vue'
+import type { IconName } from '@/utils/icons'
 import ChatComposerSettings from '@/components/chat/ChatComposerSettings.vue'
 import type { Attachment } from '@/types/chat'
 
@@ -170,11 +172,18 @@ const textareaEl = ref<HTMLTextAreaElement | null>(null)
 const fileInputEl = ref<HTMLInputElement | null>(null)
 const settingsOpen = ref(false)
 
+function attachmentIcon(att: Attachment): IconName {
+  return (att.mime || '').startsWith('image/') ? 'image' : 'fileText'
+}
+
 function attachmentMeta(att: Attachment): string {
+  const mime = att.mime || ''
+  const subtype = mime.includes('/') ? mime.split('/')[1] : mime
+  const label = subtype ? subtype.toUpperCase() : 'FILE'
   const size = typeof att.size === 'number'
     ? `${Math.max(1, Math.round(att.size / 1024))} KB`
     : ''
-  return [att.mime || 'attachment', size].filter(Boolean).join(' · ')
+  return [label, size].filter(Boolean).join(' · ')
 }
 
 function composerElement(): HTMLElement | null {
@@ -262,6 +271,14 @@ defineExpose<ChatComposerExpose>({
   justify-content: center;
   width: 16px;
   height: 16px;
+  color: var(--text-muted);
+}
+
+.attachment-chip__thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  object-fit: cover;
 }
 
 .attachment-chip__spinner {

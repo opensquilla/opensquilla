@@ -29,6 +29,7 @@ interface ProviderPanelContract {
   providerEnvMissing: boolean
   providerEnvKey: string
   providerEnvCommand: string
+  llmTimeoutSeconds: number
   providerFieldValue: (field: FieldSpec) => string
 }
 
@@ -40,9 +41,9 @@ const emit = defineEmits<{
   updateProviderSelected: [value: string]
   providerChange: []
   updateProviderField: [name: string, value: unknown]
+  updateLlmTimeout: [value: number]
   copy: [command: string]
   save: []
-  next: []
 }>()
 
 function onProviderSelect(event: Event) {
@@ -80,8 +81,8 @@ function onProviderSelect(event: Event) {
           @update="(name, val) => emit('updateProviderField', name, val)"
         />
       </div>
-      <details v-if="panel.providerAdvancedFields.length > 0" :open="panel.providerAdvancedOpen">
-        <summary>Advanced provider connection</summary>
+      <details :open="panel.providerAdvancedOpen">
+        <summary>Advanced provider options</summary>
         <div class="setup-mini__advanced-body" aria-label="Provider connection">
           <SetupField
             v-for="field in panel.providerAdvancedFields"
@@ -91,6 +92,19 @@ function onProviderSelect(event: Event) {
             scope="provider"
             @update="(name, val) => emit('updateProviderField', name, val)"
           />
+          <label>
+            <span>Request timeout (seconds)</span>
+            <small class="setup-help">How long to wait for a single model response before timing out &mdash; raise this for slow local models (Ollama, vLLM, LM Studio).</small>
+            <input
+              :value="panel.llmTimeoutSeconds"
+              name="setup_provider_request_timeout"
+              type="number"
+              min="1"
+              step="1"
+              inputmode="numeric"
+              @input="emit('updateLlmTimeout', Number(($event.target as HTMLInputElement).value))"
+            >
+          </label>
         </div>
       </details>
       <div v-if="panel.providerEnvMissing" class="setup-warning">
@@ -105,7 +119,6 @@ function onProviderSelect(event: Event) {
       </div>
       <div class="setup-actions">
         <button class="setup-btn setup-btn--primary" :disabled="!panel.providerSelected" @click="emit('save')">Save Provider</button>
-        <button class="setup-btn" :disabled="!panel.providerSelected" @click="emit('next')">Next</button>
       </div>
     </div>
   </section>

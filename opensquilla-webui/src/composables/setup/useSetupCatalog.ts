@@ -1,11 +1,12 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { useRouter } from 'vue-router'
 import { useSetupChannelsForm } from '@/composables/setup/useSetupChannelsForm'
 import { useSetupCapabilitiesForm } from '@/composables/setup/useSetupCapabilitiesForm'
 import { useSetupProviderForm } from '@/composables/setup/useSetupProviderForm'
 import { useSetupRouterForm } from '@/composables/setup/useSetupRouterForm'
-import { useSetupStep } from '@/composables/setup/useSetupStep'
+import { useSettingsPromotedForm, DEFAULT_LLM_TIMEOUT_SECONDS } from '@/composables/setup/useSettingsPromotedForm'
+import { useSettingsSection } from '@/composables/setup/useSettingsSection'
 import { useRpcStore } from '@/stores/rpc'
+import { useToasts } from '@/composables/useToasts'
 import { copyTextWithFallback } from '@/utils/browser'
 import { TEXT_TIERS, routerTierLabel } from '@/utils/chat/routerTiers'
 
@@ -13,13 +14,14 @@ import { TEXT_TIERS, routerTierLabel } from '@/utils/chat/routerTiers'
 // Constants
 // ---------------------------------------------------------------------------
 
-const STEPS = [
-  { id: 'provider', label: 'Provider' },
-  { id: 'router', label: 'Router Tiers' },
-  { id: 'channels', label: 'Channels' },
-  { id: 'extras', label: 'Capabilities' },
-  { id: 'finish', label: 'Finish' },
+export const SETTINGS_SECTIONS = [
+  { id: 'provider', label: 'Provider', icon: 'agents' },
+  { id: 'router', label: 'Router', icon: 'cron' },
+  { id: 'channels', label: 'Channels', icon: 'channels' },
+  { id: 'capabilities', label: 'Capabilities', icon: 'skills' },
 ] as const
+
+export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]['id']
 
 const READINESS_LABELS: Record<string, string> = {
   ok: 'Ready',
@@ -137,6 +139,7 @@ interface ConfigData {
     api_key?: string
     [key: string]: unknown
   }
+  llm_request_timeout_seconds?: number
   squilla_router?: {
     enabled?: boolean
     default_tier?: string
@@ -150,6 +153,7 @@ interface ConfigData {
   search_fallback_policy?: string
   search_diagnostics?: boolean
   memory?: {
+    auto_capture_enabled?: boolean
     embedding?: {
       provider?: string
       mode?: string
@@ -166,6 +170,15 @@ interface ConfigData {
   image_generation?: {
     providers?: Record<string, { api_key_env?: string; base_url?: string }>
   }
+  audio?: {
+    enabled?: boolean
+    providers?: Record<string, { api_key?: string; api_key_env?: string }>
+  }
+}
+
+export interface SettingsActionItem {
+  label: string
+  section: SettingsSectionId
 }
 
 export function useSetupCatalog() {
@@ -174,23 +187,20 @@ export function useSetupCatalog() {
 // ---------------------------------------------------------------------------
 
 const rpc = useRpcStore()
-const router = useRouter()
+const { pushToast } = useToasts()
 
 const catalog = ref<OnboardingCatalog>({})
 const status = ref<OnboardingStatus>({})
 const config = ref<ConfigData>({})
 const channelStatus = ref<{ channels: ChannelStatusRow[] }>({ channels: [] })
-const {
-  step,
-  hasAutoSelectedStep,
-  setStep,
-  markAutoSelected,
-} = useSetupStep('provider')
+const loaded = ref(false)
+const { section, setSection } = useSettingsSection('provider')
 
 const providerForm = useSetupProviderForm()
 const routerForm = useSetupRouterForm()
 const channelsForm = useSetupChannelsForm()
 const capabilitiesForm = useSetupCapabilitiesForm()
+const promotedForm = useSettingsPromotedForm()
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -200,7 +210,7 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 
 onMounted(async () => {
   await loadData()
-  selectInitialStep()
+  loaded.value = true
   startChannelPolling()
 })
 
@@ -233,8 +243,9 @@ async function loadData() {
     capabilitiesForm.initMemoryFromConfig(config.value)
     capabilitiesForm.initImageFromConfig(config.value, status.value, imageProviders.value)
     channelsForm.initFromCatalog(catalog.value.channels || [])
+    promotedForm.initFromConfig(config.value)
   } catch (err) {
-    console.warn('Failed to load setup catalog: ' + (err instanceof Error ? err.message : String(err)))
+    pushToast('Failed to load settings: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
   }
 }
 
@@ -249,7 +260,7 @@ async function loadChannelStatus() {
 function startChannelPolling() {
   if (pollTimer) clearInterval(pollTimer)
   pollTimer = setInterval(async () => {
-    if (step.value !== 'channels') return
+    if (section.value !== 'channels') return
     await loadChannelStatus()
   }, 5000)
 }
@@ -297,6 +308,7 @@ const providerNeeds = computed(() => {
 })
 
 const providerAdvancedOpen = computed(() => {
+  if (promotedForm.llmTimeoutSeconds.value !== DEFAULT_LLM_TIMEOUT_SECONDS) return true
   return providerAdvancedFields.value.some(f => {
     if (f.required) return true
     const val = providerForm.fieldValue(f, config.value.llm || {}).trim()
@@ -332,6 +344,8 @@ const providerProxy = computed(() => {
   return ((config.value.llm || {}).proxy || '').trim()
 })
 
+const configPath = computed(() => status.value.configPath || '')
+
 const searchSpec = computed(() => searchProviders.value.find(p => p.providerId === capabilitiesForm.selectedSearchProvider.value) || searchProviders.value[0] || null)
 const searchRequiresKey = computed(() => searchSpec.value?.requiresApiKey === true)
 const searchEnvPlaceholder = computed(() => searchRequiresKey.value ? (searchSpec.value?.envKey || 'SEARCH_API_KEY') : 'not required for this provider')
@@ -351,6 +365,22 @@ const imageNeeds = computed(() => {
 })
 const imageStatusText = computed(() => _imageGenerationStatusText())
 
+const audioKeyReferenced = computed(() => promotedForm.audioKeyConfigured.value || Boolean(promotedForm.audioApiKeyEnv.value.trim()) || Boolean(promotedForm.audioApiKey.value.trim()))
+const audioStatusText = computed(() => {
+  if (!promotedForm.audioEnabled.value) return 'Voice and audio tools are hidden from agents until this capability is enabled.'
+  if (audioKeyReferenced.value) return 'Voice and audio tools will be available in new turns once the gateway sees the key.'
+  return 'Audio is enabled but still needs an ElevenLabs key before agents can use it.'
+})
+const audioBadgeTone = computed(() => {
+  if (!promotedForm.audioEnabled.value) return 'is-muted'
+  return audioKeyReferenced.value ? 'is-ok' : 'is-warn'
+})
+const audioBadgeLabel = computed(() => {
+  if (!promotedForm.audioEnabled.value) return 'Optional'
+  return audioKeyReferenced.value ? 'Ready' : 'Needs action'
+})
+const audioKeyPlaceholder = computed(() => promotedForm.audioKeyConfigured.value ? 'leave blank to keep current' : 'paste an ElevenLabs key')
+
 const providerPanel = providerForm.createPanel({
   currentConfig: currentProviderConfig,
   providerSummary,
@@ -364,6 +394,7 @@ const providerPanel = providerForm.createPanel({
   providerEnvMissing,
   providerEnvKey,
   providerEnvCommand,
+  llmTimeoutSeconds: promotedForm.llmTimeoutSeconds,
 })
 
 const routerPanel = routerForm.createPanel({
@@ -409,6 +440,14 @@ const capabilitiesPanel = capabilitiesForm.createPanel({
   capabilityBadgeTone,
   capabilityBadgeLabel,
   capabilitySaveButtonClass,
+  memoryAutoCapture: promotedForm.memoryAutoCapture,
+  audioEnabled: promotedForm.audioEnabled,
+  audioApiKey: promotedForm.audioApiKey,
+  audioApiKeyEnv: promotedForm.audioApiKeyEnv,
+  audioStatusText,
+  audioBadgeTone,
+  audioBadgeLabel,
+  audioKeyPlaceholder,
 })
 
 const hasSetupAction = computed(() => {
@@ -419,27 +458,33 @@ const hasSetupAction = computed(() => {
   ))
 })
 
-const onboardingReasons = computed(() => {
+// Banner items: one row per pending action, each deep-linking to its section.
+const actionItems = computed<SettingsActionItem[]>(() => {
   if (!hasSetupAction.value) return []
-  const reasons: string[] = []
+  const items: SettingsActionItem[] = []
+  const seen = new Set<string>()
+  const push = (label: string, target: SettingsSectionId) => {
+    if (seen.has(label)) return
+    seen.add(label)
+    items.push({ label, section: target })
+  }
   const llm = config.value.llm || {}
   if (providerEnvMissing.value) {
-    reasons.push(`${providerEnvKey.value} is not visible`)
+    push(`${providerEnvKey.value} is not visible`, 'provider')
   } else if (!llm.provider || !llm.model) {
-    reasons.push('Connect a model provider')
+    push('Connect a model provider', 'provider')
   }
   const details = status.value.sectionDetails || {}
   Object.entries(details).forEach(([name, detail]) => {
     if (!detail.blocking && !detail.actionRequired) return
-    if ((name === 'llm' || name === 'provider') && detail.status === 'missing') {
-      if (!reasons.includes('Connect a model provider')) reasons.push('Connect a model provider')
+    if (name === 'llm' || name === 'provider') {
+      push('Connect a model provider', 'provider')
       return
     }
-    if ((name === 'llm' || name === 'provider') && reasons.length) return
-    const reason = setupActionReason(name, detail)
-    if (!reasons.includes(reason)) reasons.push(reason)
+    push(setupActionReason(name, detail), sectionForDetailName(name) || 'provider')
   })
-  return reasons.length ? reasons : ['Review setup sections for pending actions']
+  if (!items.length) push('Review setup sections for pending actions', 'provider')
+  return items
 })
 
 const configCliArg = computed(() => {
@@ -463,7 +508,7 @@ const fixCommands = computed(() => {
 })
 
 const handoffCommands = computed(() => [
-  { label: 'Guided CLI', command: `opensquilla onboard --if-needed${configCliArg.value}` },
+  { label: 'CLI onboarding', command: `opensquilla onboard --if-needed${configCliArg.value}` },
   { label: 'Check status', command: `opensquilla onboard status${configCliArg.value}` },
 ])
 
@@ -476,58 +521,66 @@ const recipeCommands = computed(() => [
   { label: 'Memory options', command: `opensquilla onboard catalog memory${configCliArg.value}` },
 ])
 
-const readinessEntries = computed(() => Object.entries(status.value.sectionDetails || {}))
-const requiredReadiness = computed(() => readinessEntries.value.filter(([, d]) => d.required))
-const optionalReadiness = computed(() => readinessEntries.value.filter(([, d]) => !d.required))
+const configSummary = computed(() => {
+  const rows: Array<{ label: string; value: string }> = [
+    { label: 'Provider', value: providerSummary.value },
+    { label: 'Model', value: modelSummary.value },
+  ]
+  if (providerProxy.value) rows.push({ label: 'Proxy', value: providerProxy.value })
+  rows.push({ label: 'Router', value: routerSummary.value })
+  rows.push({ label: 'Channels', value: String(status.value.channelCount || 0) })
+  return rows
+})
 
 // ---------------------------------------------------------------------------
-// Step logic
+// Section state
 // ---------------------------------------------------------------------------
 
-function selectInitialStep() {
-  if (hasAutoSelectedStep.value) return
-  step.value = initialStepFromStatus()
-  markAutoSelected()
+function isSectionId(value: string): value is SettingsSectionId {
+  return SETTINGS_SECTIONS.some(s => s.id === value)
 }
 
-function initialStepFromStatus(): string {
+// target: explicit section id, 'auto' (first not-ready), or null (first section).
+function selectInitialSection(target: string | null) {
+  if (target && target !== 'auto' && isSectionId(target)) {
+    setSection(target)
+    return
+  }
+  setSection(target === 'auto' ? firstActionSection() : 'provider')
+}
+
+function firstActionSection(): SettingsSectionId {
   const details = status.value.sectionDetails || {}
-  const sectionSteps: [string, string][] = [
+  const sectionOrder: Array<[string, SettingsSectionId]> = [
     ['llm', 'provider'],
     ['router', 'router'],
     ['channels', 'channels'],
-    ['search', 'extras'],
-    ['image_generation', 'extras'],
-    ['memory_embedding', 'extras'],
+    ['search', 'capabilities'],
+    ['image_generation', 'capabilities'],
+    ['memory_embedding', 'capabilities'],
+    ['audio', 'capabilities'],
   ]
-  const entry = sectionSteps.find(([section]) => {
-    const detail = details[section] || {}
-    return detail.blocking || detail.actionRequired || detail.status === 'missing' || detail.status === 'degraded'
+  const entry = sectionOrder.find(([name]) => {
+    const detail = details[name] || {}
+    return stepDetailNeedsAction(detail)
   })
   if (entry) return entry[1]
-  if (status.value.needsOnboarding === false) return 'finish'
+  if (providerEnvMissing.value) return 'provider'
   return 'provider'
 }
 
-function stepStatus(stepId: string): { label: string; tone: string } {
-  const currentProvider = (config.value.llm || {}).provider || ''
-  const hasSavedProvider = Boolean(currentProvider) && status.value.hasConfig !== false
-  if (stepId === 'provider') {
+function sectionStatus(sectionId: string): { label: string; tone: string } {
+  if (sectionId === 'provider') {
     if (providerEnvMissing.value) return { label: 'Needs action', tone: 'is-warn' }
     return detailStepStatus((status.value.sectionDetails || {}).llm || (status.value.sectionDetails || {}).provider)
   }
-  if (stepId === 'router' && !hasSavedProvider) {
+  if (sectionId === 'router' && !hasSavedProvider.value) {
     return { label: 'Provider first', tone: 'is-muted' }
   }
-  if (stepId === 'router') return detailStepStatus((status.value.sectionDetails || {}).router)
-  if (stepId === 'channels') return detailStepStatus((status.value.sectionDetails || {}).channels)
-  if (stepId === 'extras') {
-    return aggregateStepStatus(['search', 'image_generation', 'memory_embedding'])
-  }
-  if (stepId === 'finish') {
-    return hasSetupAction.value
-      ? { label: 'Review', tone: 'is-warn' }
-      : { label: 'Ready', tone: 'is-ok' }
+  if (sectionId === 'router') return detailStepStatus((status.value.sectionDetails || {}).router)
+  if (sectionId === 'channels') return detailStepStatus((status.value.sectionDetails || {}).channels)
+  if (sectionId === 'capabilities') {
+    return aggregateStepStatus(['search', 'image_generation', 'memory_embedding', 'audio'])
   }
   return { label: 'Review', tone: 'is-muted' }
 }
@@ -565,6 +618,54 @@ function setupActionReason(name: string, detail: SectionDetail): string {
   return `${detail.label || name} setup needed`
 }
 
+function sectionForDetailName(name: string): SettingsSectionId | null {
+  if (name === 'llm' || name === 'provider') return 'provider'
+  if (name === 'router') return 'router'
+  if (name === 'channels') return 'channels'
+  if (name === 'search' || name === 'image_generation' || name === 'memory_embedding' || name === 'audio') return 'capabilities'
+  return null
+}
+
+// ---------------------------------------------------------------------------
+// Dirty state
+// ---------------------------------------------------------------------------
+
+const providerDirty = computed(() => providerForm.isDirty.value || promotedForm.timeoutDirty.value)
+const routerDirty = computed(() => routerForm.isDirty.value)
+const channelsDirty = computed(() => channelsForm.isDirty.value)
+const capabilitiesDirty = computed(() => (
+  capabilitiesForm.searchDirty.value
+  || capabilitiesForm.memoryDirty.value
+  || capabilitiesForm.imageDirty.value
+  || promotedForm.captureDirty.value
+  || promotedForm.audioDirty.value
+))
+
+function sectionDirty(sectionId: string): boolean {
+  if (sectionId === 'provider') return providerDirty.value
+  if (sectionId === 'router') return routerDirty.value
+  if (sectionId === 'channels') return channelsDirty.value
+  if (sectionId === 'capabilities') return capabilitiesDirty.value
+  return false
+}
+
+const dirtySections = computed(() => SETTINGS_SECTIONS.filter(s => sectionDirty(s.id)))
+const hasUnsavedChanges = computed(() => dirtySections.value.length > 0)
+
+async function saveDirtySections() {
+  if (providerDirty.value) await saveProvider()
+  if (routerDirty.value) await saveRouter()
+  if (channelsDirty.value) await saveChannel()
+  if (capabilitiesForm.searchDirty.value) await saveSearch()
+  if (capabilitiesForm.memoryDirty.value || promotedForm.captureDirty.value) await saveMemory()
+  if (capabilitiesForm.imageDirty.value) await saveImage()
+  if (promotedForm.audioDirty.value) await saveAudio()
+}
+
+async function discardChanges() {
+  await loadData()
+}
+
 // ---------------------------------------------------------------------------
 // Provider helpers
 // ---------------------------------------------------------------------------
@@ -587,6 +688,10 @@ function onProviderChange() {
 
 function updateProviderField(name: string, value: unknown) {
   providerForm.updateField(name, value)
+}
+
+function updateLlmTimeout(value: number) {
+  promotedForm.setLlmTimeoutSeconds(value)
 }
 
 function envRecoveryCommand(section: string): string {
@@ -628,7 +733,7 @@ function updateTierField(
 }
 
 // ---------------------------------------------------------------------------
-// Search / Memory / Image helpers
+// Search / Memory / Image / Audio helpers
 // ---------------------------------------------------------------------------
 
 function onSearchProviderChange() {
@@ -644,10 +749,18 @@ function onImageProviderChange() {
 }
 
 function updateCapabilityField(
-  group: 'search' | 'memory' | 'image',
+  group: 'search' | 'memory' | 'image' | 'audio',
   key: string,
   value: string | number | boolean,
 ) {
+  if (group === 'audio') {
+    promotedForm.updateAudioField(key, value as string | boolean)
+    return
+  }
+  if (group === 'memory' && key === 'autoCapture') {
+    promotedForm.setMemoryAutoCapture(Boolean(value))
+    return
+  }
   capabilitiesForm.updateField(group, key, value)
 }
 
@@ -743,12 +856,15 @@ function _missingEnvStatusText(capability: string, envKey: string | undefined, f
 
 function capabilityBadgeTone(name: string): string {
   const detail = (status.value.sectionDetails || {})[name] || {}
-  return _readinessTone(detail, name)
+  if (detail.blocking || detail.actionRequired) return 'is-warn'
+  if (detail.status === 'ok') return 'is-ok'
+  return 'is-muted'
 }
 
 function capabilityBadgeLabel(name: string): string {
   const detail = (status.value.sectionDetails || {})[name] || {}
-  return _readinessStatusLabel(detail, name)
+  if (detail.blocking || detail.actionRequired) return 'Needs action'
+  return READINESS_LABELS[detail.status || ''] || 'Optional'
 }
 
 function capabilitySaveButtonClass(name: string): string {
@@ -758,89 +874,46 @@ function capabilitySaveButtonClass(name: string): string {
     : 'setup-btn'
 }
 
-function _readinessTone(detail: SectionDetail, name: string): string {
-  if (_routerNeedsProvider(detail, name)) return 'is-warn'
-  if (detail.blocking || detail.actionRequired) return 'is-warn'
-  if (detail.status === 'ok') return 'is-ok'
-  return 'is-muted'
-}
-
-function _readinessStatusLabel(detail: SectionDetail, name: string): string {
-  if (_routerNeedsProvider(detail, name)) return 'Provider first'
-  if (detail.blocking || detail.actionRequired) return 'Needs action'
-  return READINESS_LABELS[detail.status || ''] || 'Optional'
-}
-
-function _routerNeedsProvider(detail: SectionDetail, name: string): boolean {
-  return name === 'router' && detail.status === 'ok' && detail.detail === 'uses SquillaRouter after provider setup'
-}
-
-function readinessTone(detail: SectionDetail, name: string): string {
-  return _readinessTone(detail, name)
-}
-
-function readinessStatusLabel(detail: SectionDetail, name: string): string {
-  return _readinessStatusLabel(detail, name)
-}
-
-function readinessActionLabel(detail: SectionDetail, name: string): string {
-  if (_routerNeedsProvider(detail, name)) return 'Choose provider'
-  if (detail.blocking || detail.actionRequired) return 'Fix'
-  if (detail.status === 'ok') return 'Review'
-  return 'Configure'
-}
-
-function readinessActionAriaLabel(detail: SectionDetail, name: string): string {
-  const label = detail.label || name.replace(/_/g, ' ')
-  if (_routerNeedsProvider(detail, name)) return `Choose provider for ${label}`
-  return `${readinessActionLabel(detail, name)} ${label}`
-}
-
-function setupStepForSection(name: string, detail: SectionDetail = {}): string | null {
-  if (_routerNeedsProvider(detail, name)) return 'provider'
-  if (name === 'llm' || name === 'provider') return 'provider'
-  if (name === 'router') return 'router'
-  if (name === 'channels') return 'channels'
-  if (name === 'search' || name === 'image_generation' || name === 'memory_embedding') return 'extras'
-  return null
-}
-
 // ---------------------------------------------------------------------------
 // Save actions
 // ---------------------------------------------------------------------------
 
+async function patchConfig(patches: Record<string, unknown>): Promise<boolean> {
+  if (!Object.keys(patches).length) return false
+  const res = await rpc.call<{ restartRequired?: boolean }>('config.patch', { patches })
+  return res?.restartRequired === true
+}
+
 async function saveProvider() {
   if (!providerForm.selectedProvider.value) {
-    console.warn('Choose a provider before saving.')
+    pushToast('Choose a provider before saving.', { tone: 'danger' })
     return
   }
   try {
     await rpc.call('onboarding.provider.configure', providerForm.payload())
+    const restart = await patchConfig(promotedForm.providerPatches())
     await loadData()
     if (providerEnvMissing.value) {
-      console.warn(`${providerEnvKey.value} is not visible to this gateway process.`)
-      step.value = 'provider'
+      pushToast(`${providerEnvKey.value} is not visible to this gateway process.`, { tone: 'danger' })
       return
     }
-    console.warn('Provider saved.')
-    step.value = 'router'
+    pushToast(restart ? 'Provider saved. Restart required.' : 'Provider saved.')
   } catch (err) {
-    console.warn('Save failed: ' + (err instanceof Error ? err.message : String(err)))
+    pushToast('Save failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
   }
 }
 
 async function saveRouter() {
   if (!hasSavedProvider.value) {
-    console.warn('Choose a provider before saving router tiers.')
+    pushToast('Choose a provider before saving router tiers.', { tone: 'danger' })
     return
   }
   try {
     await rpc.call('onboarding.router.configure', routerForm.payload())
-    console.warn('Router saved.')
+    pushToast('Router saved.')
     await loadData()
-    step.value = 'channels'
   } catch (err) {
-    console.warn('Save failed: ' + (err instanceof Error ? err.message : String(err)))
+    pushToast('Save failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
   }
 }
 
@@ -849,10 +922,10 @@ async function saveChannel() {
   try {
     await rpc.call('onboarding.channel.probe', { entry })
     await rpc.call('onboarding.channel.upsert', { entry })
-    console.warn('Channel saved. Restart required.')
-    await loadChannelStatus()
+    pushToast('Channel saved. Restart required.')
+    await loadData()
   } catch (err) {
-    console.warn('Save failed: ' + (err instanceof Error ? err.message : String(err)))
+    pushToast('Save failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
   }
 }
 
@@ -860,24 +933,32 @@ async function saveSearch() {
   const params = capabilitiesForm.searchPayload()
   try {
     await rpc.call('onboarding.search.configure', params)
-    console.warn('Search saved.')
+    pushToast('Search saved.')
     await loadData()
   } catch (err) {
-    console.warn('Save failed: ' + (err instanceof Error ? err.message : String(err)))
+    pushToast('Save failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
   }
 }
 
 async function saveMemory() {
-  const params = capabilitiesForm.memoryPayload()
+  const embeddingDirty = capabilitiesForm.memoryDirty.value
   try {
-    const res = await rpc.call<{ entry?: { remote?: { api_key_env?: string; api_key?: string } }; restartRequired?: boolean }>('onboarding.memory_embedding.configure', params)
-    const remote = res?.entry?.remote || {}
-    if (!_toastEnvReferenceSave('Memory embedding', remote.api_key_env, '', remote.api_key ?? '', res?.restartRequired)) {
-      console.warn('Memory embedding saved. Restart required.')
+    let envToastShown = false
+    if (embeddingDirty) {
+      const params = capabilitiesForm.memoryPayload()
+      const res = await rpc.call<{ entry?: { remote?: { api_key_env?: string; api_key?: string } }; restartRequired?: boolean }>('onboarding.memory_embedding.configure', params)
+      const remote = res?.entry?.remote || {}
+      envToastShown = _toastEnvReferenceSave('Memory embedding', remote.api_key_env, '', remote.api_key ?? '', res?.restartRequired)
+    }
+    // The capture toggle rides config.patch and hot-applies; only embedding
+    // changes need a gateway restart.
+    await patchConfig(promotedForm.memoryPatches())
+    if (!envToastShown) {
+      pushToast(embeddingDirty ? 'Memory saved. Restart required for embedding changes.' : 'Memory saved.')
     }
     await loadData()
   } catch (err) {
-    console.warn('Save failed: ' + (err instanceof Error ? err.message : String(err)))
+    pushToast('Save failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
   }
 }
 
@@ -887,11 +968,28 @@ async function saveImage() {
     const res = await rpc.call<{ entry?: { api_key_env?: string; api_key_source?: string; api_key?: string }; restartRequired?: boolean }>('onboarding.imageGeneration.configure', params)
     const entry = res?.entry || {}
     if (!_toastEnvReferenceSave('Image generation', entry.api_key_env, entry.api_key_source, entry.api_key, res?.restartRequired)) {
-      console.warn('Image generation saved.')
+      pushToast('Image generation saved.')
     }
     await loadData()
   } catch (err) {
-    console.warn('Save failed: ' + (err instanceof Error ? err.message : String(err)))
+    pushToast('Save failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
+  }
+}
+
+async function saveAudio() {
+  if (!promotedForm.audioDirty.value) {
+    pushToast('No audio changes to save.')
+    return
+  }
+  try {
+    const res = await rpc.call<{ entry?: { api_key_env?: string; api_key_source?: string; api_key?: string }; restartRequired?: boolean }>('onboarding.audio.configure', promotedForm.audioPayload())
+    const entry = res?.entry || {}
+    if (!_toastEnvReferenceSave('Audio', entry.api_key_env, entry.api_key_source, entry.api_key, res?.restartRequired)) {
+      pushToast(res?.restartRequired ? 'Audio saved. Restart required.' : 'Audio saved.')
+    }
+    await loadData()
+  } catch (err) {
+    pushToast('Save failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
   }
 }
 
@@ -905,10 +1003,10 @@ function _toastEnvReferenceSave(
   const key = String(envKey || '').trim()
   if (!key || hasInlineKey) return false
   if (keySource === 'missing_env' || restartRequired) {
-    console.warn(`${surface} saved $${key}. Start or restart the gateway with that variable set.`)
+    pushToast(`${surface} saved $${key}. Start or restart the gateway with that variable set.`)
     return true
   }
-  console.warn(`${surface} saved $${key} reference. Keep it set for gateway restarts.`)
+  pushToast(`${surface} saved $${key} reference. Keep it set for gateway restarts.`)
   return true
 }
 
@@ -926,98 +1024,74 @@ function shellArg(value: string): string {
   return `'${text.replace(/'/g, `'\''`)}'`
 }
 
-async function copyCommand(command: string) {
-  if (!command) return
+async function copyText(text: string, successMessage: string) {
+  if (!text) return
   try {
-    await copyTextWithFallback(command)
-    console.warn('Copied command')
+    await copyTextWithFallback(text)
+    pushToast(successMessage)
   } catch (err) {
-    console.warn('Copy failed: ' + (err instanceof Error ? err.message : String(err)))
+    pushToast('Copy failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
   }
 }
 
+async function copyCommand(command: string) {
+  await copyText(command, 'Copied command')
+}
+
+async function copyConfigPath() {
+  await copyText(configPath.value, 'Copied path')
+}
+
   return {
-    router,
-    STEPS,
-    catalog,
     status,
     config,
-    channelStatus,
-    step,
-    hasAutoSelectedStep,
+    section,
+    setSection,
+    loaded,
     providerPanel,
     routerPanel,
     channelsPanel,
     capabilitiesPanel,
     loadData,
-    loadChannelStatus,
-    currentProvider,
     hasSavedProvider,
-    routerProfiles,
-    providerSpec,
-    providerFields,
-    providerSummary,
     providerEnvMissing,
     providerEnvKey,
-    providerEnvCommand,
-    searchEnvCommand,
-    memoryEnvCommand,
-    imageEnvCommand,
-    routerSummary,
-    modelSummary,
-    providerProxy,
     hasSetupAction,
-    onboardingReasons,
-    configCliArg,
-    envRecoveryCommands,
+    actionItems,
     fixCommands,
     handoffCommands,
     recipeCommands,
-    readinessEntries,
-    requiredReadiness,
-    optionalReadiness,
-    selectInitialStep,
-    initialStepFromStatus,
-    setStep,
-    stepStatus,
-    detailStepStatus,
-    aggregateStepStatus,
-    stepDetailNeedsAction,
-    setupActionReason,
-    isProviderAdvancedField,
+    configSummary,
+    configPath,
+    selectInitialSection,
+    sectionStatus,
+    sectionDirty,
+    dirtySections,
+    hasUnsavedChanges,
+    saveDirtySections,
+    discardChanges,
     selectProvider,
     setRouterMode,
     setRouterDefaultTier,
     selectChannelType,
     updateProviderField,
+    updateLlmTimeout,
     updateTierField,
     updateChannelField,
     updateCapabilityField,
     onProviderChange,
-    envRecoveryCommand,
     onChannelTypeChange,
     onSearchProviderChange,
     onMemoryProviderChange,
     onImageProviderChange,
-    credentialNeedList,
-    memoryNeedList,
-    searchStatusText,
-    capabilityBadgeTone,
-    capabilityBadgeLabel,
-    capabilitySaveButtonClass,
-    readinessTone,
-    readinessStatusLabel,
-    readinessActionLabel,
-    readinessActionAriaLabel,
-    setupStepForSection,
     saveProvider,
     saveRouter,
     saveChannel,
     saveSearch,
     saveMemory,
     saveImage,
-    tierLabel,
-    shellArg,
+    saveAudio,
     copyCommand,
+    copyConfigPath,
   }
 }

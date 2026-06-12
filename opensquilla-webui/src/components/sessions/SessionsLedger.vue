@@ -11,14 +11,14 @@
       <button
         type="button"
         class="hub-row__main"
-        :aria-label="'Inspect session: ' + entry.item.title"
+        :aria-label="'Inspect session: ' + rowTitle(entry)"
         @click="emit('open', entry.item)"
       >
         <span class="hub-row__icon" aria-hidden="true">
           <Icon :name="surfaceIcon(entry.item)" :size="15" />
         </span>
         <span class="hub-row__body">
-          <span class="hub-row__title">{{ entry.item.title }}</span>
+          <span class="hub-row__title">{{ rowTitle(entry) }}</span>
           <span v-if="entry.item.subtitle" class="hub-row__subtitle">{{ entry.item.subtitle }}</span>
         </span>
         <span class="hub-row__agent">{{ agentName(entry.item) }}</span>
@@ -31,13 +31,13 @@
         </span>
         <span class="hub-row__meta">
           <span class="hub-row__count">{{ entry.item.messageCount != null ? entry.item.messageCount.toLocaleString() : '—' }} msg</span>
-          <span class="hub-row__time">{{ relTime(entry.item.updatedAt) }}</span>
+          <span class="hub-row__time">{{ formatRelativeTime(entry.item.updatedAt) }}</span>
         </span>
       </button>
       <button
         type="button"
         class="hub-row__delete"
-        :aria-label="'Delete session: ' + entry.item.title"
+        :aria-label="'Delete session: ' + rowTitle(entry)"
         @click="emit('remove', entry.item)"
       >
         <Icon name="trash" :size="14" />
@@ -50,6 +50,7 @@
 import Icon from '@/components/Icon.vue'
 import type { IconName } from '@/utils/icons'
 import type { SessionItem, SessionLedgerEntry } from '@/composables/useSessions'
+import { formatRelativeTime, subagentRowTitle } from './sessionDisplay'
 
 const props = defineProps<{
   entries: SessionLedgerEntry[]
@@ -91,22 +92,10 @@ function statusBadge(item: SessionItem): { label: string; cls: string } | null {
   return map[item.runStatus] || null
 }
 
-function relTime(timestamp: number | undefined): string {
-  if (!timestamp) return '—'
-  const d = new Date(timestamp)
-  if (isNaN(d.getTime())) return '—'
-
-  const diffSec = Math.floor((Date.now() - d.getTime()) / 1000)
-  const diffMin = Math.floor(diffSec / 60)
-  const diffHour = Math.floor(diffMin / 60)
-  const diffDay = Math.floor(diffHour / 24)
-
-  if (diffSec < 10) return 'just now'
-  if (diffSec < 60) return `${diffSec}s ago`
-  if (diffMin < 60) return `${diffMin}m ago`
-  if (diffHour < 24) return `${diffHour}h ago`
-  if (diffDay < 7) return `${diffDay}d ago`
-  return d.toLocaleDateString()
+function rowTitle(entry: SessionLedgerEntry): string {
+  // Subagent rows read as lineage ("↳ Subagent · {parent}") instead of a flat
+  // title; root rows keep their human title.
+  return entry.depth > 0 ? subagentRowTitle(entry.parentTitle) : entry.item.title
 }
 </script>
 
@@ -126,6 +115,7 @@ function relTime(timestamp: number | undefined): string {
   border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
   display: flex;
   gap: var(--sp-1);
+  position: relative;
 }
 
 .hub-row:last-child {
@@ -133,7 +123,18 @@ function relTime(timestamp: number | undefined): string {
 }
 
 .hub-row--child .hub-row__main {
-  padding-left: calc(var(--sp-4) + var(--hub-row-depth, 1) * var(--sp-6));
+  padding-left: calc(var(--sp-4) + var(--hub-row-depth, 1) * var(--sp-4));
+}
+
+/* Thin guide line marking subagent lineage under its parent. */
+.hub-row--child::before {
+  background: var(--border);
+  bottom: 0;
+  content: '';
+  left: calc(var(--sp-4) + (var(--hub-row-depth, 1) - 0.5) * var(--sp-4));
+  position: absolute;
+  top: 0;
+  width: 1px;
 }
 
 .hub-row__main {
@@ -250,6 +251,13 @@ function relTime(timestamp: number | undefined): string {
   background: color-mix(in srgb, var(--danger) 10%, transparent);
   border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
   color: var(--danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hub-row__status--running,
+  .hub-row__status--needs-input {
+    animation: none;
+  }
 }
 
 .hub-row__status--off {

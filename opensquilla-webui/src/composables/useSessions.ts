@@ -294,17 +294,35 @@ export function normalizeSessionItem(item: unknown): SessionItem | null {
   }
 }
 
+function parentField(item: SessionItem): Record<string, unknown> | null {
+  const parent = item.raw.parent
+  return parent && typeof parent === 'object' ? parent as Record<string, unknown> : null
+}
+
 /** Parent session key for subagent rows, when the contract carries one. */
 export function sessionParentKey(item: SessionItem): string {
-  const parent = item.raw.parent
-  if (!parent || typeof parent !== 'object') return ''
-  const key = (parent as Record<string, unknown>).key
+  const key = parentField(item)?.key
   return typeof key === 'string' ? key.trim() : ''
+}
+
+/** Spawn depth from the session contract; 0 when the row is not a subagent. */
+export function sessionSpawnDepth(item: SessionItem): number {
+  const raw = parentField(item)?.spawnDepth
+  const depth = Number(raw)
+  return Number.isFinite(depth) && depth > 0 ? depth : 0
+}
+
+/** Parent title carried by the contract, used to label subagent lineage. */
+export function sessionParentTitle(item: SessionItem): string {
+  const title = parentField(item)?.title
+  return typeof title === 'string' ? title.trim() : ''
 }
 
 export interface SessionLedgerEntry {
   item: SessionItem
   depth: number
+  /** Resolved parent title for subagent rows; empty for root rows. */
+  parentTitle: string
 }
 
 /**
@@ -327,13 +345,19 @@ export function arrangeSessionLedger(items: SessionItem[]): SessionLedgerEntry[]
     }
   }
   const entries: SessionLedgerEntry[] = []
-  const visit = (item: SessionItem, depth: number) => {
-    entries.push({ item, depth })
+  const visit = (item: SessionItem, depth: number, parentTitle: string) => {
+    entries.push({ item, depth, parentTitle: depth > 0 ? parentTitle : '' })
     for (const child of children.get(item.key) || []) {
-      visit(child, Math.min(depth + 1, 3))
+      visit(child, Math.min(depth + 1, 3), item.title)
     }
   }
-  for (const root of roots) visit(root, 0)
+  for (const root of roots) {
+    // An orphan subagent (parent not in the visible list) still indents when
+    // the contract marks it spawned; its lineage label falls back to the
+    // parent title carried on the contract.
+    const orphanDepth = sessionSpawnDepth(root) > 0 ? 1 : 0
+    visit(root, orphanDepth, orphanDepth > 0 ? sessionParentTitle(root) : '')
+  }
   return entries
 }
 

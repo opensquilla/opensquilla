@@ -97,4 +97,55 @@ test.describe('Sessions Hub', () => {
     await expect(page.locator('.inspect-drawer')).toBeVisible()
     await expect(page).toHaveURL(/\/sessions$/)
   })
+
+  test('attention strip collapses to one quiet line when fully idle', async ({ page }) => {
+    await openHub(page)
+
+    // Exactly one of the attention surfaces renders: the collapsed clear line
+    // (idle) or the expanded tile grid (something needs attention).
+    const clear = page.locator('.hub-attention-clear')
+    const expanded = page.locator('.hub-attention')
+    const isIdle = (await clear.count()) > 0
+    test.skip(!isIdle, 'Gateway has pending approvals or active runs; idle collapse not exercised')
+
+    await expect(clear).toBeVisible()
+    await expect(expanded).toHaveCount(0)
+    await expect(clear).toContainText('All clear')
+    // The cost figure stays visible in the idle state.
+    const text = (await clear.innerText()).trim()
+    if (/\$/.test(text)) expect(text).toMatch(/\$\d+\.\d{2} today/)
+  })
+
+  test('ledger times read as relative ago strings', async ({ page }) => {
+    await openHub(page)
+
+    const rows = page.locator('.hub-row')
+    test.skip((await rows.count()) === 0, 'No sessions on this gateway; seed sessions to exercise the ledger')
+
+    const time = (await rows.first().locator('.hub-row__time').innerText()).trim()
+    // Relative form ("just now" / "Ns/Nm/Nh/Nd ago") or an absolute fallback
+    // beyond ~7 days — never a raw timestamp or ISO string.
+    expect(time).toMatch(/^(just now|\d+[smhd] ago|\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}|—)$/)
+  })
+
+  test('subagent rows indent and read as lineage under their parent', async ({ page }) => {
+    await openHub(page)
+
+    const children = page.locator('.hub-row--child')
+    test.skip((await children.count()) === 0, 'No subagent sessions on this gateway; seed a spawned run to exercise lineage')
+
+    const first = children.first()
+    // Indented one level: child main padding exceeds a root row's.
+    const childPad = await first.locator('.hub-row__main').evaluate(
+      el => parseFloat(getComputedStyle(el as HTMLElement).paddingLeft))
+    const rootPad = await page.locator('.hub-row:not(.hub-row--child) .hub-row__main').first().evaluate(
+      el => parseFloat(getComputedStyle(el as HTMLElement).paddingLeft))
+    expect(childPad).toBeGreaterThan(rootPad)
+
+    // Lineage title, never a flat "Spawned from" label or a raw key.
+    const title = (await first.locator('.hub-row__title').innerText()).trim()
+    expect(title.startsWith('↳ Subagent')).toBe(true)
+    expect(title).not.toMatch(RAW_KEY_PATTERN)
+    expect(title).not.toMatch(UUID_PATTERN)
+  })
 })

@@ -4,10 +4,18 @@
       <div class="ch-stage__title-block control-stage__title-block">
         <h2 class="ch-stage__title control-stage__title">Channels</h2>
         <p class="ch-stage__subtitle control-stage__subtitle">
-          Runtime status for configured channels. Use guided setup or CLI to add and change channel configuration.
+          Runtime status for configured channels. Add or change channel configuration in Settings or the CLI.
         </p>
       </div>
       <div class="ch-stage__actions control-stage__actions">
+        <button
+          class="ch-link"
+          type="button"
+          title="Channel configuration lives in Settings"
+          @click="openSettingsSurface"
+        >
+          open settings &rarr;
+        </button>
         <button class="btn btn--ghost" title="Refresh" @click="loadData">
           <Icon name="refresh" :size="16" />
           <span>Refresh</span>
@@ -82,12 +90,12 @@
         </div>
         <div class="ch-empty__title">No configured channels.</div>
         <p class="ch-empty__msg">
-          Channel provisioning stays in guided setup and the CLI so credentials, dependency extras, webhook URLs, and restart requirements stay explicit.
+          Channel provisioning lives in Settings and the CLI so credentials, dependency extras, webhook URLs, and restart requirements stay explicit.
         </p>
         <div class="ch-empty__actions">
-          <button class="btn btn--primary" type="button" @click="openProvisioning">
-            <Icon :name="provisioningIcon" :size="16" />
-            <span>{{ provisioningLabel }}</span>
+          <button class="btn btn--primary" type="button" @click="openSettingsSurface">
+            <Icon name="settings" :size="16" />
+            <span>Open settings</span>
           </button>
         </div>
         <code class="ch-empty__code">opensquilla onboard configure channels &middot; opensquilla channels list</code>
@@ -136,9 +144,9 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { useAppStore } from '@/stores/app'
 import { useRpcStore } from '@/stores/rpc'
 import Icon from '@/components/Icon.vue'
-import type { IconName } from '@/utils/icons'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -178,6 +186,7 @@ const STATUS_ORDER: Record<string, number> = {
 // State
 // ---------------------------------------------------------------------------
 
+const appStore = useAppStore()
 const rpc = useRpcStore()
 const router = useRouter()
 const channels = ref<Channel[]>([])
@@ -190,20 +199,6 @@ let unsubStatus: (() => void) | null = null
 // ---------------------------------------------------------------------------
 
 const total = computed(() => channels.value.length)
-
-const provisioningRoute = computed(() => {
-  if (router.hasRoute('setup')) return '/setup'
-  if (router.hasRoute('settings')) return '/settings'
-  return '/overview'
-})
-
-const provisioningLabel = computed(() => {
-  if (provisioningRoute.value === '/setup') return 'Guided setup'
-  if (provisioningRoute.value === '/settings') return 'Desktop settings'
-  return 'Open Overview'
-})
-
-const provisioningIcon = computed<IconName>(() => provisioningRoute.value === '/settings' ? 'settings' : 'config')
 
 const connected = computed(() =>
   channels.value.filter(c => c.status === 'running' || c.status === 'connected').length
@@ -276,8 +271,13 @@ async function loadData() {
   }
 }
 
-function openProvisioning(): void {
-  void router.push(provisioningRoute.value)
+// Desktop keeps its settings route; web opens the settings modal in place.
+function openSettingsSurface(): void {
+  if (router.hasRoute('settings')) {
+    void router.push('/settings')
+    return
+  }
+  appStore.setSettingsOpen(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -352,6 +352,26 @@ function statusHint(ch: Channel): string {
 <style scoped>
 .stat--hero {
   min-height: 116px;
+}
+
+.ch-link {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--accent);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  justify-content: center;
+  letter-spacing: 0.04em;
+  min-height: 40px;
+  padding: 0 var(--sp-1);
+  white-space: nowrap;
+}
+
+.ch-link:hover {
+  color: var(--accent-hover);
 }
 
 .dot {

@@ -69,11 +69,12 @@
       <button
         type="button"
         class="sidebar-fn-item sidebar-console-row"
+        data-icon="gauge"
         :aria-expanded="consoleOpen"
         aria-controls="sidebar-console-list"
         @click="consoleOpen = !consoleOpen"
       >
-        <Icon name="settings" :size="16" />
+        <Icon name="gauge" :size="16" />
         <span class="sidebar-fn-label">Console</span>
         <Icon class="sidebar-console-chevron" name="chevronRight" :size="14" />
       </button>
@@ -108,6 +109,7 @@
       <button
         type="button"
         class="sidebar-fn-item"
+        data-icon="settings"
         @click="openSettings"
       >
         <Icon name="settings" :size="16" />

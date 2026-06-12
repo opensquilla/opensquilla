@@ -5,7 +5,6 @@ const ChatView = () => import('@/views/ChatView.vue')
 const CronView = () => import('@/views/CronView.vue')
 const AgentsView = () => import('@/views/AgentsView.vue')
 const ApprovalsView = () => import('@/views/ApprovalsView.vue')
-const HealthView = () => import('@/views/HealthView.vue')
 const ChannelsView = () => import('@/views/ChannelsView.vue')
 const LogsView = () => import('@/views/LogsView.vue')
 const SessionsView = () => import('@/views/SessionsView.vue')
@@ -32,5 +31,6 @@ export const sharedRoutes: RouteRecordRaw[] = [
   { path: '/overview',  name: 'overview',  component: OverviewView,  meta: { title: 'Overview', group: 'Observe', icon: 'home', nav: 'primary', navOrder: 80, platforms: ['web', 'desktop'] } },
   { path: '/usage',     name: 'usage',     component: UsageView,     meta: { title: 'Usage', group: 'Observe', icon: 'usage', nav: 'primary', navOrder: 90, platforms: ['web', 'desktop'] } },
   { path: '/logs',      name: 'logs',      component: LogsView,      meta: { title: 'Logs', group: 'Observe', icon: 'logs', nav: 'primary', navOrder: 100, platforms: ['web', 'desktop'] } },
-  { path: '/health',    name: 'health',    component: HealthView,    meta: { title: 'Health', group: 'Observe', icon: 'monitor', nav: 'primary', navOrder: 110, platforms: ['web', 'desktop'] } },
+  // Readiness/doctor moved inline into Overview; the old deep link stays valid.
+  { path: '/health',    redirect: '/overview' },
 ]

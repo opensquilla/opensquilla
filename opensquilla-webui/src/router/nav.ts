@@ -22,7 +22,6 @@ const CONSOLE_PATHS = [
   '/overview',
   '/usage',
   '/logs',
-  '/health',
 ]
 
 const navRoutes = [

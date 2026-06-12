@@ -34,9 +34,10 @@ test.describe('Chat Page', () => {
 
     await consoleRow.click()
     await expect(consoleRow).toHaveAttribute('aria-expanded', 'true')
+    // Health folded into Overview, so the console fold holds seven pages.
     await expect(page.locator('#sidebar-console-list .sidebar-fn-label')).toHaveText([
       'Agents', 'Channels', 'Cron', 'Skills',
-      'Overview', 'Usage', 'Logs', 'Health',
+      'Overview', 'Usage', 'Logs',
     ])
     expect(page.url()).toBe(urlBefore)
 

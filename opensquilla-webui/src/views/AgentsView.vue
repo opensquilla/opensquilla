@@ -6,6 +6,14 @@
         <p class="ag-stage__subtitle control-stage__subtitle">Custom personalities and skill sets you can chat with.</p>
       </div>
       <div class="ag-stage__actions control-stage__actions">
+        <button
+          class="ag-link"
+          type="button"
+          title="Provider and model defaults live in Settings"
+          @click="openSettingsSurface"
+        >
+          open settings &rarr;
+        </button>
         <button class="btn btn--ghost" title="Refresh" @click="loadData">
           <Icon name="refresh" :size="16" />
           <span>Refresh</span>
@@ -251,6 +259,7 @@
 <script setup lang="ts">
 import { ref, computed, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
+import { useAppStore } from '@/stores/app'
 import { useRpcStore } from '@/stores/rpc'
 import Icon from '@/components/Icon.vue'
 import { useAgentsData } from '@/composables/agents/useAgentsData'
@@ -261,6 +270,7 @@ import type { Agent } from '@/types/agents'
 // State
 // ---------------------------------------------------------------------------
 
+const appStore = useAppStore()
 const rpc = useRpcStore()
 const router = useRouter()
 
@@ -341,6 +351,15 @@ function onCardKeydown(event: KeyboardEvent) {
     const id = target.querySelector('.ag-card__id')?.textContent || ''
     if (id) openDrawer('view', id)
   }
+}
+
+// Desktop keeps its settings route; web opens the settings modal in place.
+function openSettingsSurface() {
+  if (router.hasRoute('settings')) {
+    router.push('/settings')
+    return
+  }
+  appStore.setSettingsOpen(true)
 }
 
 function openChat(id?: string) {
@@ -485,6 +504,26 @@ function rpcErrorCode(err: unknown): string {
 <style scoped>
 .stat--hero {
   min-height: 116px;
+}
+
+.ag-link {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--accent);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  justify-content: center;
+  letter-spacing: 0.04em;
+  min-height: 40px;
+  padding: 0 var(--sp-1);
+  white-space: nowrap;
+}
+
+.ag-link:hover {
+  color: var(--accent-hover);
 }
 
 .ag-create {

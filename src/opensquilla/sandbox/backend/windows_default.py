@@ -23,6 +23,7 @@ from opensquilla.sandbox.backend.windows_default_capability import capability_si
 from opensquilla.sandbox.backend.windows_default_roots import (
     process_executable_rx_roots,
     runtime_rx_roots,
+    windows_platform_rx_roots,
     windows_sensitive_marker,
     workspace_cache_root,
     workspace_write_roots,
@@ -357,13 +358,18 @@ def _acl_plan_payload(request: SandboxRequest) -> dict[str, object]:
     process_rx_roots = tuple(
         root for root in process_executable_rx_roots(request.argv, request.env) if root.exists()
     )
+    runtime_acl_roots = tuple(
+        root
+        for root in runtime_rx_roots(_python_executable())
+        if _rx_root_needs_acl_grant(root, request.env)
+    )
+    process_acl_roots = tuple(
+        root for root in process_rx_roots if _rx_root_needs_acl_grant(root, request.env)
+    )
     required: list[AclGrant] = [
         *(AclGrant(root, AclAccess.RWX, AclGrantKind.REQUIRED) for root in write_roots.rwx_roots),
-        *(
-            AclGrant(root, AclAccess.RX, AclGrantKind.REQUIRED)
-            for root in runtime_rx_roots(_python_executable())
-        ),
-        *(AclGrant(root, AclAccess.RX, AclGrantKind.REQUIRED) for root in process_rx_roots),
+        *(AclGrant(root, AclAccess.RX, AclGrantKind.REQUIRED) for root in runtime_acl_roots),
+        *(AclGrant(root, AclAccess.RX, AclGrantKind.REQUIRED) for root in process_acl_roots),
     ]
     policy_grants = [
         AclGrant(
@@ -378,7 +384,7 @@ def _acl_plan_payload(request: SandboxRequest) -> dict[str, object]:
         required=required,
         policy=policy_grants,
         expansion=_expansion_grants_from_env(request),
-        sensitive_marker=lambda path: _acl_sensitive_marker(path, process_rx_roots),
+        sensitive_marker=_acl_sensitive_marker,
     )
     if plan.denied:
         denied = plan.denied[0]
@@ -413,18 +419,14 @@ def _acl_plan_payload(request: SandboxRequest) -> dict[str, object]:
     }
 
 
-def _acl_sensitive_marker(path: Path, rx_roots: tuple[Path, ...]) -> str | None:
-    marker = windows_sensitive_marker(path)
-    if marker == "windows_system" and any(_same_path_casefold(path, root) for root in rx_roots):
-        return None
-    return marker
+def _rx_root_needs_acl_grant(path: Path, env: dict[str, str]) -> bool:
+    return not any(
+        _is_relative_to_casefold(path, root) for root in windows_platform_rx_roots(env)
+    )
 
 
-def _same_path_casefold(left: Path, right: Path) -> bool:
-    return str(left).replace("\\", "/").rstrip("/").lower() == str(right).replace(
-        "\\",
-        "/",
-    ).rstrip("/").lower()
+def _acl_sensitive_marker(path: Path) -> str | None:
+    return windows_sensitive_marker(path)
 
 
 def _expansion_grants_from_env(request: SandboxRequest) -> tuple[AclGrant, ...]:

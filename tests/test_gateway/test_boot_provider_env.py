@@ -6,7 +6,11 @@ from types import SimpleNamespace
 import pytest
 
 from opensquilla.gateway.boot import _openai_compatible_catalog_sources
-from opensquilla.gateway.config import GatewayConfig
+from opensquilla.gateway.config import (
+    GatewayConfig,
+    SquillaRouterConfig,
+    _router_tier_profile_defaults,
+)
 from opensquilla.gateway.llm_runtime import resolve_llm_runtime_config
 from opensquilla.gateway.rpc_config import (
     _handle_config_patch,
@@ -280,29 +284,23 @@ async def test_safe_config_patch_allows_tool_schema_fit_leaf_paths(tmp_path) -> 
     assert persisted["squilla_router"]["tiers"]["c1"]["max_tool_schema_chars"] == 12000
 
 
-async def test_safe_config_patch_allows_router_tier_tool_route_reliability(tmp_path) -> None:
+async def test_safe_config_patch_rejects_deprecated_router_tier_tool_keys(tmp_path) -> None:
     cfg = GatewayConfig(config_path=str(tmp_path / "config.toml"))
     selector = _CapturingSelector()
     ctx = SimpleNamespace(config=cfg, provider_selector=selector)
 
-    await _handle_config_patch_safe(
-        {
-            "patches": {
-                "squilla_router.tiers.c1.tool_route_reliability": "experimental",
-            }
-        },
-        ctx,
-    )
-
-    assert ctx.config.squilla_router.tiers["c1"]["tool_route_reliability"] == "experimental"
-    persisted = tomllib.loads((tmp_path / "config.toml").read_text())
-    assert (
-        persisted["squilla_router"]["tiers"]["c1"]["tool_route_reliability"]
-        == "experimental"
-    )
+    for key, value in (
+        ("tool_route_reliability", "experimental"),
+        ("tool_call_protocol", "auto"),
+    ):
+        with pytest.raises(ValueError, match="Path is not safe"):
+            await _handle_config_patch_safe(
+                {"patches": {f"squilla_router.tiers.c1.{key}": value}},
+                ctx,
+            )
 
 
-async def test_safe_config_patch_allows_router_tier_tool_protocol_fields(tmp_path) -> None:
+async def test_safe_config_patch_allows_router_tier_tool_probe_mode(tmp_path) -> None:
     cfg = GatewayConfig(config_path=str(tmp_path / "config.toml"))
     selector = _CapturingSelector()
     ctx = SimpleNamespace(config=cfg, provider_selector=selector)
@@ -311,17 +309,30 @@ async def test_safe_config_patch_allows_router_tier_tool_protocol_fields(tmp_pat
         {
             "patches": {
                 "squilla_router.tiers.c1.tool_probe_mode": "auto",
-                "squilla_router.tiers.c1.tool_call_protocol": "auto",
             }
         },
         ctx,
     )
 
     assert ctx.config.squilla_router.tiers["c1"]["tool_probe_mode"] == "auto"
-    assert ctx.config.squilla_router.tiers["c1"]["tool_call_protocol"] == "auto"
     persisted = tomllib.loads((tmp_path / "config.toml").read_text())
     assert persisted["squilla_router"]["tiers"]["c1"]["tool_probe_mode"] == "auto"
-    assert persisted["squilla_router"]["tiers"]["c1"]["tool_call_protocol"] == "auto"
+
+
+def test_deprecated_tier_tool_keys_warn_once_and_pass_through(monkeypatch) -> None:
+    from opensquilla.gateway import config as config_module
+
+    monkeypatch.setattr(config_module, "_DEAD_TIER_TOOL_KEYS_WARNED", False)
+    tiers = _router_tier_profile_defaults("openrouter")
+    tiers["c1"] = dict(tiers["c1"])
+    tiers["c1"]["tool_call_protocol"] = "native"
+    tiers["c1"]["tool_route_reliability"] = "verified"
+
+    with pytest.warns(DeprecationWarning, match="never consumed"):
+        cfg = SquillaRouterConfig(tiers=tiers)
+
+    assert cfg.tiers["c1"]["tool_call_protocol"] == "native"
+    assert cfg.tiers["c1"]["tool_route_reliability"] == "verified"
 
 
 async def test_safe_config_patch_rejects_tool_required_bypass_gate(tmp_path) -> None:

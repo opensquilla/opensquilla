@@ -276,7 +276,6 @@ class LlmProviderConfig(BaseSettings):
     provider_routing: dict[str, str] = Field(default_factory=dict)
     tool_support: Literal["auto", "on", "off"] = "auto"
     tool_probe_mode: Literal["required", "auto"] = "required"
-    tool_call_protocol: Literal["auto", "native", "text_wrapper"] = "auto"
     toolset: str | None = None
     max_tool_schema_chars: int = 0
 
@@ -709,39 +708,48 @@ def _normalize_tier_tool_supports(tiers: object) -> object:
                     "required, auto"
                 )
             next_tier["tool_probe_mode"] = probe_mode
-        if "toolCallProtocol" in next_tier and "tool_call_protocol" not in next_tier:
-            next_tier["tool_call_protocol"] = next_tier.pop("toolCallProtocol")
-        elif "toolCallProtocol" in next_tier:
-            next_tier.pop("toolCallProtocol", None)
-        if "tool_call_protocol" in next_tier:
-            protocol = (
-                str(next_tier.get("tool_call_protocol") or "auto")
-                .strip()
-                .lower()
-                .replace("-", "_")
-            )
-            if protocol not in {"auto", "native", "text_wrapper"}:
-                raise ValueError(
-                    f"squilla_router.tiers.{tier_name}.tool_call_protocol must be one of: "
-                    "auto, native, text_wrapper"
-                )
-            next_tier["tool_call_protocol"] = protocol
-        if "toolRouteReliability" in next_tier and "tool_route_reliability" not in next_tier:
-            next_tier["tool_route_reliability"] = next_tier.pop("toolRouteReliability")
-        elif "toolRouteReliability" in next_tier:
-            next_tier.pop("toolRouteReliability", None)
-        if "tool_route_reliability" in next_tier:
-            reliability = (
-                str(next_tier.get("tool_route_reliability") or "auto").strip().lower()
-            )
-            if reliability not in {"auto", "verified", "experimental", "off"}:
-                raise ValueError(
-                    f"squilla_router.tiers.{tier_name}.tool_route_reliability must be one of: "
-                    "auto, verified, experimental, off"
-                )
-            next_tier["tool_route_reliability"] = reliability
+        _warn_dead_tier_tool_keys_once(next_tier)
         normalized[tier_name] = next_tier
     return normalized
+
+
+# Same atomic check-and-set dance as the prompt_cache.enabled deprecation:
+# warn outside the lock, dedupe under it.
+_DEAD_TIER_TOOL_KEYS_WARN_LOCK = threading.Lock()
+_DEAD_TIER_TOOL_KEYS_WARNED = False
+
+_DEAD_TIER_TOOL_KEYS = (
+    "tool_call_protocol",
+    "toolCallProtocol",
+    "tool_route_reliability",
+    "toolRouteReliability",
+)
+
+
+def _warn_dead_tier_tool_keys_once(tier_cfg: dict) -> None:
+    """Deprecation pass for tier keys that never gained a runtime consumer.
+
+    tool_call_protocol and tool_route_reliability were validated but never
+    wired to behavior; keys pass through unvalidated so configs keep loading.
+    Removal target: 0.next+2.
+    """
+    present = [key for key in _DEAD_TIER_TOOL_KEYS if key in tier_cfg]
+    if not present:
+        return
+    global _DEAD_TIER_TOOL_KEYS_WARNED
+    with _DEAD_TIER_TOOL_KEYS_WARN_LOCK:
+        should_warn = not _DEAD_TIER_TOOL_KEYS_WARNED
+        if should_warn:
+            _DEAD_TIER_TOOL_KEYS_WARNED = True
+    if should_warn:
+        warnings.warn(
+            f"squilla_router tier keys {present!r} are deprecated and have no "
+            "effect (tool_call_protocol / tool_route_reliability were never "
+            "consumed); use tool_support and tool_probe_mode instead. "
+            "Removal target: 0.next+2.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
 
 def _router_tier_profile_defaults(profile: str | None) -> dict:

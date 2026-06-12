@@ -276,7 +276,6 @@ _SAFE_WRITE_PATCH_PATHS = frozenset(
     {
         "llm.tool_support",
         "llm.tool_probe_mode",
-        "llm.tool_call_protocol",
         "llm.toolset",
         "llm.max_tool_schema_chars",
         "skills.filter_enabled",
@@ -297,10 +296,8 @@ _SAFE_ROUTER_TIER_TOOL_SCHEMA_FIELDS = frozenset(
     {
         "tool_support",
         "tool_probe_mode",
-        "tool_call_protocol",
         "toolset",
         "max_tool_schema_chars",
-        "tool_route_reliability",
     }
 )
 

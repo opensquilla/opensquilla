@@ -284,7 +284,6 @@ async def test_run_pipeline_keeps_search_text_on_experimental_supported_tier(
         "api_key": "inception-key",
         "base_url": "https://api.inceptionlabs.ai/v1",
         "tool_support": "on",
-        "tool_route_reliability": "verified",
     }
     config.squilla_router.tiers["c1"] = {
         "provider": "openai_compatible",
@@ -292,7 +291,6 @@ async def test_run_pipeline_keeps_search_text_on_experimental_supported_tier(
         "api_key": "llada-key",
         "base_url": "http://127.0.0.1:8008/v1",
         "tool_support": "on",
-        "tool_route_reliability": "experimental",
     }
     selector = ModelSelector(
         SelectorConfig(
@@ -353,7 +351,6 @@ async def test_run_pipeline_keeps_search_text_on_verified_current_tier(
     config = GatewayConfig()
     config.squilla_router = _router_cfg()
     config.squilla_router.tiers["c1"]["tool_support"] = "on"
-    config.squilla_router.tiers["c1"]["tool_route_reliability"] = "verified"
     config.squilla_router.tiers["c2"]["tool_support"] = "on"
     selector = ModelSelector(
         SelectorConfig(
@@ -407,9 +404,7 @@ async def test_run_pipeline_does_not_mark_experimental_tool_route_for_search_tex
     config = GatewayConfig()
     config.squilla_router = _router_cfg()
     config.squilla_router.tiers["c1"]["tool_support"] = "on"
-    config.squilla_router.tiers["c1"]["tool_route_reliability"] = "experimental"
     config.squilla_router.tiers["c2"]["tool_support"] = "on"
-    config.squilla_router.tiers["c2"]["tool_route_reliability"] = "experimental"
     config.squilla_router.tiers["c3"]["tool_support"] = "off"
     selector = ModelSelector(
         SelectorConfig(
@@ -468,7 +463,6 @@ async def test_run_pipeline_ignores_tool_required_reliability_bypass_for_search_
         "api_key": "inception-key",
         "base_url": "https://api.inceptionlabs.ai/v1",
         "tool_support": "on",
-        "tool_route_reliability": "verified",
     }
     config.squilla_router.tiers["c1"] = {
         "provider": "openai_compatible",
@@ -476,7 +470,6 @@ async def test_run_pipeline_ignores_tool_required_reliability_bypass_for_search_
         "api_key": "llada-key",
         "base_url": "http://127.0.0.1:8008/v1",
         "tool_support": "on",
-        "tool_route_reliability": "experimental",
     }
     selector = ModelSelector(
         SelectorConfig(

@@ -98,6 +98,8 @@ export interface RawSessionItem {
   model?: string
   channel?: Record<string, unknown>
   parent?: Record<string, unknown>
+  forked_from_parent?: boolean
+  forkedFromParent?: boolean
   cron?: RawSessionCron
 }
 

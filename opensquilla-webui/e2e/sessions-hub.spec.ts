@@ -142,9 +142,12 @@ test.describe('Sessions Hub', () => {
       el => parseFloat(getComputedStyle(el as HTMLElement).paddingLeft))
     expect(childPad).toBeGreaterThan(rootPad)
 
-    // Lineage title, never a flat "Spawned from" label or a raw key.
+    // Lineage title, never a flat "Spawned from" label or a raw key. Forked
+    // conversations carry their own copied title behind the arrow; subagent
+    // rows read as "↳ Subagent".
+    const isFork = (await first.locator('.hub-row__fork-badge').count()) > 0
     const title = (await first.locator('.hub-row__title').innerText()).trim()
-    expect(title.startsWith('↳ Subagent')).toBe(true)
+    expect(title.startsWith(isFork ? '↳ ' : '↳ Subagent')).toBe(true)
     expect(title).not.toMatch(RAW_KEY_PATTERN)
     expect(title).not.toMatch(UUID_PATTERN)
   })

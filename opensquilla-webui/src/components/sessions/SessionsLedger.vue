@@ -11,7 +11,7 @@
       <button
         type="button"
         class="hub-row__main"
-        :aria-label="'Inspect session: ' + rowTitle(entry)"
+        :aria-label="rowAccessibleName('Inspect', entry)"
         @click="emit('open', entry.item)"
       >
         <span class="hub-row__icon" aria-hidden="true">
@@ -21,6 +21,7 @@
           <span class="hub-row__title">{{ rowTitle(entry) }}</span>
           <span v-if="entry.item.subtitle" class="hub-row__subtitle">{{ entry.item.subtitle }}</span>
         </span>
+        <span v-if="entry.item.forkedFromParent" class="hub-row__fork-badge">Fork</span>
         <span class="hub-row__agent">{{ agentName(entry.item) }}</span>
         <span
           v-if="statusBadge(entry.item)"
@@ -30,14 +31,14 @@
           {{ statusBadge(entry.item)!.label }}
         </span>
         <span class="hub-row__meta">
-          <span class="hub-row__count">{{ entry.item.messageCount != null ? entry.item.messageCount.toLocaleString() : '—' }} msg</span>
+          <span class="hub-row__count">{{ entry.item.messageCount ? entry.item.messageCount.toLocaleString() + ' msg' : '—' }}</span>
           <span class="hub-row__time">{{ formatRelativeTime(entry.item.updatedAt) }}</span>
         </span>
       </button>
       <button
         type="button"
         class="hub-row__delete"
-        :aria-label="'Delete session: ' + rowTitle(entry)"
+        :aria-label="rowAccessibleName('Delete', entry)"
         @click="emit('remove', entry.item)"
       >
         <Icon name="trash" :size="14" />
@@ -94,8 +95,21 @@ function statusBadge(item: SessionItem): { label: string; cls: string } | null {
 
 function rowTitle(entry: SessionLedgerEntry): string {
   // Subagent rows read as lineage ("↳ Subagent · {parent}") instead of a flat
-  // title; root rows keep their human title.
-  return entry.depth > 0 ? subagentRowTitle(entry.parentTitle) : entry.item.title
+  // title; forked conversations keep their own (copied) title behind the
+  // lineage arrow; root rows keep their human title.
+  if (entry.depth <= 0) return entry.item.title
+  if (entry.item.forkedFromParent) return `↳ ${entry.item.title}`
+  return subagentRowTitle(entry.parentTitle)
+}
+
+// Screen readers announce "↳" as "right-pointing arrow" noise; the accessible
+// name carries the lineage in words instead.
+function rowAccessibleName(verb: string, entry: SessionLedgerEntry): string {
+  const plain = rowTitle(entry).replace(/^↳\s*/, '')
+  const kind = entry.depth > 0
+    ? (entry.item.forkedFromParent ? 'forked session' : 'subagent session')
+    : 'session'
+  return `${verb} ${kind}: ${plain}`
 }
 </script>
 
@@ -194,6 +208,20 @@ function rowTitle(entry: SessionLedgerEntry): string {
   font-size: var(--fs-xs);
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Accent-tinted lineage badge: this row is a forked conversation, not a subagent. */
+.hub-row__fork-badge {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 1px var(--sp-2);
+  text-transform: uppercase;
   white-space: nowrap;
 }
 
@@ -311,6 +339,24 @@ function rowTitle(entry: SessionLedgerEntry): string {
 
   .hub-row__meta {
     min-width: 52px;
+  }
+}
+
+/* Phone widths: the badge + meta + delete columns crush the title to a couple
+   of characters; drop the secondary time line and slim the badge so the row's
+   identity stays readable. */
+@media (max-width: 480px) {
+  .hub-row__time {
+    display: none;
+  }
+
+  .hub-row__meta {
+    min-width: 0;
+  }
+
+  .hub-row__fork-badge {
+    padding: 1px var(--sp-1);
+    letter-spacing: 0;
   }
 }
 </style>

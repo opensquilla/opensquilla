@@ -105,6 +105,8 @@
           :tool-status-text="toolStatusText"
           :tool-secondary-text="toolSecondaryText"
           :copy-message="copyMessage"
+          :fork-busy="forkInFlight"
+          @fork-conversation="forkConversation"
           @edit-message="editMessage"
           @regenerate-message="regenerateMessage"
           @toggle-share-message="toggleShareMessage"
@@ -225,11 +227,28 @@
       @remove="removePendingChip"
     />
 
-    <!-- Compact status -->
+    <!-- Compaction maintenance card -->
     <div v-if="compactStatus.visible" class="chat-compact-status" :class="`chat-compact-status--${compactStatus.tone}`" role="status" aria-live="polite">
-      <span :class="compactStatus.isBusy ? 'chat-compact-status__spinner' : 'chat-compact-status__dot'" aria-hidden="true" />
-      <span class="chat-compact-status__text">{{ compactStatus.message }}</span>
-      <span v-if="compactStatus.detail" class="chat-compact-status__detail">{{ compactStatus.detail }}</span>
+      <div class="chat-compact-status__head">
+        <span class="chat-compact-status__dot" :class="{ 'chat-compact-status__dot--pulsing': compactStatus.isBusy }" aria-hidden="true" />
+        <span class="chat-compact-status__title">{{ compactStatus.message }}</span>
+        <span v-if="compactElapsed" class="chat-compact-status__elapsed">{{ compactElapsed }}</span>
+      </div>
+      <p v-if="compactStatus.detail" class="chat-compact-status__detail">{{ compactStatus.detail }}</p>
+      <div v-if="compactGaugeVisible" class="chat-compact-status__gauge" aria-hidden="true">
+        <span
+          class="chat-compact-status__gauge-fill"
+          :class="{
+            'chat-compact-status__gauge-fill--breathing': compactStatus.isBusy,
+            'chat-compact-status__gauge-fill--done': compactStatus.status === 'completed',
+          }"
+          :style="compactStatus.occupancyPercent !== null ? { width: `${compactStatus.occupancyPercent}%` } : undefined"
+        />
+      </div>
+      <div v-if="compactGaugeVisible && compactStatus.occupancyPercent !== null" class="chat-compact-status__legend">
+        <span>context {{ compactStatus.occupancyPercent }}%</span>
+        <span v-if="compactStatus.contextWindowLabel">{{ compactStatus.contextWindowLabel }}</span>
+      </div>
     </div>
 
     <!-- Slash command menu -->
@@ -298,6 +317,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
 import { useAppStore } from '@/stores/app'
 import ApprovalCard from '@/components/chat/ApprovalCard.vue'
@@ -395,6 +415,7 @@ const toolResultModal = ref({ open: false, title: '', content: '' })
 
 const rpc = useRpcStore()
 const appStore = useAppStore()
+const router = useRouter()
 const { pushToast } = useToasts()
 const isCompactViewport = useMediaQuery('(max-width: 480px)')
 const isDesktopViewport = useMediaQuery('(min-width: 769px)')
@@ -561,6 +582,7 @@ const chatCompaction = useChatCompaction({
 })
 const {
   compactStatus,
+  compactElapsed,
   setCompactInFlight,
   hideCompactStatus,
   showCompactStatus,
@@ -568,6 +590,11 @@ const {
   cleanup: cleanupCompaction,
 } = chatCompaction
 isCompactInFlightForCurrentSession = chatCompaction.isCompactInFlightForCurrentSession
+
+// The context gauge stays up while compaction runs and settles on completed;
+// skipped/failed/cancelled keep the card head only.
+const compactGaugeVisible = computed(() =>
+  compactStatus.value.isBusy || compactStatus.value.status === 'completed')
 
 const chatUsageWidget = useChatUsageWidget({
   rpc,
@@ -1126,6 +1153,31 @@ const deliverablesOpen = ref(false)
 function openDeliverables() {
   if (sessionArtifacts.value.length === 0) return
   deliverablesOpen.value = true
+}
+
+/* ── Fork ──────────────────────────────────────────────────────────── */
+
+// Whole-conversation fork from the tip: the backend copies the transcript
+// into a sibling session, then we navigate there the same way the session
+// switcher does (route query change → switchToSession).
+const forkInFlight = ref(false)
+
+async function forkConversation() {
+  const parentKey = sessionKey.value
+  if (!parentKey || forkInFlight.value) return
+  if (pendingSessionIntent.value === 'new_chat') return
+  forkInFlight.value = true
+  try {
+    const res = await rpc.call<{ key?: string }>('sessions.fork', { key: parentKey })
+    const childKey = typeof res?.key === 'string' ? res.key : ''
+    if (!childKey) throw new Error('sessions.fork returned no key')
+    router.push({ path: '/chat', query: { session: childKey } }).catch(() => {})
+  } catch (err) {
+    console.warn('Fork failed:', err)
+    pushToast('Fork failed', { tone: 'danger' })
+  } finally {
+    forkInFlight.value = false
+  }
 }
 
 const {

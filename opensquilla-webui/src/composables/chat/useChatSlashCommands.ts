@@ -134,7 +134,7 @@ export function useChatSlashCommands(options: UseChatSlashCommandsOptions) {
       case '/compact': {
         const compactKey = options.sessionKey.value
         options.setCompactInFlight(true, compactKey)
-        options.showCompactStatus('started', 'Compacting context...', { tone: 'info' })
+        options.showCompactStatus('started', 'Compacting context', { tone: 'info' })
         options.rpc.call('sessions.contextCompact', { key: compactKey })
           .then(() => {
             if (compactKey !== options.sessionKey.value) return

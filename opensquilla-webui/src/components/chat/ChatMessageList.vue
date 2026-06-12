@@ -35,6 +35,9 @@
       :session-key="sessionKey"
       :auth-token="authToken"
       :copy-message="copyMessage"
+      :is-tip="index === lastAssistantIndex"
+      :fork-busy="forkBusy"
+      @fork="$emit('forkConversation')"
       @regenerate="$emit('regenerateMessage', $event)"
       @toggle-share="$emit('toggleShareMessage', $event)"
       @download-artifact="$emit('downloadArtifact', $event)"
@@ -52,6 +55,7 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import AssistantMessage from '@/components/chat/AssistantMessage.vue'
 import SystemMessage from '@/components/chat/SystemMessage.vue'
 import UserMessage from '@/components/chat/UserMessage.vue'
@@ -64,7 +68,7 @@ import type {
 import type { ArtifactPayload } from '@/types/rpc'
 import { chatMessageKey } from '@/utils/chat/messageIdentity'
 
-defineProps<{
+const props = defineProps<{
   messages: ChatRenderedMessage[]
   shareMode: boolean
   selectedMessageIds: Set<string>
@@ -82,6 +86,7 @@ defineProps<{
   copyMessage: (message: ChatRenderedMessage) => Promise<boolean>
   sessionKey?: string
   authToken?: string
+  forkBusy?: boolean
 }>()
 
 defineEmits<{
@@ -92,5 +97,15 @@ defineEmits<{
   toggleToolGroup: [groupId: string]
   toggleToolItem: [renderKey: string]
   showToolResult: [content: string, title: string]
+  forkConversation: []
 }>()
+
+// The conversation tip: forking is whole-conversation in this release, so the
+// fork action only renders on the thread's last assistant message.
+const lastAssistantIndex = computed(() => {
+  for (let i = props.messages.length - 1; i >= 0; i--) {
+    if (props.messages[i].displayRole === 'assistant') return i
+  }
+  return -1
+})
 </script>

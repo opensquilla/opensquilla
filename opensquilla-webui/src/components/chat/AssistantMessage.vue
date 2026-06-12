@@ -133,11 +133,21 @@
             <button type="button" class="msg-action" title="Regenerate" aria-label="Regenerate" @click="$emit('regenerate', message)">
               <Icon name="refresh" :size="12" />
             </button>
+            <button
+              v-if="isTip"
+              type="button"
+              class="msg-action msg-action--fork"
+              data-testid="fork-conversation"
+              :disabled="forkBusy"
+              title="Fork conversation"
+              aria-label="Fork conversation"
+              @click="$emit('fork')"
+            >
+              <Icon name="fork" :size="12" />
+            </button>
           </div>
         </div>
       </div>
-
-      <DoneCard v-if="showDoneBlock" />
     </div>
   </div>
 </template>
@@ -146,7 +156,6 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import Icon from '@/components/Icon.vue'
 import ChatArtifactList from '@/components/chat/ChatArtifactList.vue'
-import DoneCard from '@/components/chat/DoneCard.vue'
 import SourcesRow from '@/components/chat/SourcesRow.vue'
 import ToolCallTimeline from '@/components/chat/ToolCallTimeline.vue'
 import { useCopyFeedback } from '@/composables/chat/useCopyFeedback'
@@ -176,6 +185,9 @@ const props = defineProps<{
   copyMessage: (message: ChatRenderedMessage) => Promise<boolean>
   sessionKey?: string
   authToken?: string
+  /** True on the thread's last assistant message — the only place the whole-conversation fork action renders. */
+  isTip?: boolean
+  forkBusy?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -185,6 +197,7 @@ const emit = defineEmits<{
   toggleToolGroup: [groupId: string]
   toggleToolItem: [renderKey: string]
   showToolResult: [content: string, title: string]
+  fork: []
 }>()
 
 const { copyState, copyIconName, copyTitle, copyLiveText, onCopyClick } = useCopyFeedback(
@@ -464,15 +477,29 @@ function onMessageClick(event: MouseEvent) {
   transition: opacity 0.15s;
 }
 
-.msg-ai:hover .msg-ai-actions {
+.msg-ai:hover .msg-ai-actions,
+.msg-ai-actions:focus-within {
   opacity: 1;
+}
+
+/* Touch screens have no hover to reveal the cluster — keep it always visible
+   and give the buttons real tap targets. */
+@media (hover: none) {
+  .msg-ai-actions {
+    opacity: 1;
+  }
+
+  .msg-action {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+  }
 }
 
 .msg-action {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0.125rem;
+  padding: 0.25rem;
   background: none;
   border: none;
   cursor: pointer;
@@ -484,6 +511,21 @@ function onMessageClick(event: MouseEvent) {
 .msg-action:hover {
   color: var(--text-muted);
   background: var(--bg-hover);
+}
+
+.msg-action:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+/* Fork creates something new — its hover signal is the accent, not text-muted. */
+.msg-action--fork:hover {
+  color: var(--accent);
+}
+
+.msg-action--fork:disabled {
+  cursor: progress;
+  opacity: 0.55;
 }
 
 .msg-action.msg-action--ok,

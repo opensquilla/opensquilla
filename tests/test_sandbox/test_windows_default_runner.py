@@ -202,12 +202,12 @@ def test_child_stdin_writer_writes_payload_and_closes(monkeypatch) -> None:
     calls = []
 
     class FakeKernel32:
-        def WriteFile(self, handle, data, size, written_ptr, overlapped):
+        def WriteFile(self, handle, data, size, written_ptr, overlapped):  # noqa: N802
             calls.append(("write", handle, bytes(data[:size])))
             written_ptr._obj.value = size
             return 1
 
-        def CloseHandle(self, handle):
+        def CloseHandle(self, handle):  # noqa: N802
             calls.append(("close", handle))
             return 1
 

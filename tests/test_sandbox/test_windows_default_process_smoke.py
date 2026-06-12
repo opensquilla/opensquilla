@@ -15,7 +15,6 @@ from opensquilla.sandbox.types import (
     SecurityLevel,
 )
 
-
 pytestmark = pytest.mark.skipif(
     sys.platform != "win32"
     or os.environ.get("OPENSQUILLA_RUN_WINDOWS_SANDBOX_SMOKE") != "1",

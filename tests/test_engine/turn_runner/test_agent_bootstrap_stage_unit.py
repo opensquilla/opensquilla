@@ -422,6 +422,90 @@ def test_runtime_model_catalog_adapter_uses_routed_tier_context_window_override(
     assert catalog.context_window == 65_536
 
 
+def test_runtime_model_catalog_adapter_warns_once_on_defaulted_context_window(
+    monkeypatch,
+) -> None:
+    from opensquilla.engine.turn_runner import harness as harness_module
+
+    monkeypatch.setattr(harness_module, "_DEFAULT_CONTEXT_WARNED", set())
+    cfg = SimpleNamespace(
+        llm=SimpleNamespace(
+            max_tokens=0,
+            provider="openai_compatible",
+            base_url="https://self-hosted.example/v1",
+            api_key="",
+            proxy="",
+        ),
+        squilla_router=SimpleNamespace(
+            tiers={
+                "c1": {
+                    "provider": "openai_compatible",
+                    "model": "local-router-model",
+                    "base_url": "https://self-hosted.example/v1",
+                }
+            }
+        ),
+    )
+    runner = SimpleNamespace(_config=cfg, _model_catalog=ModelCatalog())
+    adapter = _TurnRunnerModelCatalogAdapter(runner)
+    turn = _make_turn(
+        metadata={
+            "routed_provider": "openai_compatible",
+            "routed_model": "local-router-model",
+            "routed_tier": "c1",
+        }
+    )
+
+    catalog = adapter.lookup("local-router-model", turn=turn)
+    adapter.lookup("local-router-model", turn=turn)
+
+    assert catalog.context_window == harness_module.DEFAULT_CONTEXT_WINDOW
+    assert harness_module._DEFAULT_CONTEXT_WARNED == {
+        "c1|openai_compatible|local-router-model"
+    }
+
+
+def test_runtime_model_catalog_adapter_override_suppresses_default_window_warning(
+    monkeypatch,
+) -> None:
+    from opensquilla.engine.turn_runner import harness as harness_module
+
+    monkeypatch.setattr(harness_module, "_DEFAULT_CONTEXT_WARNED", set())
+    cfg = SimpleNamespace(
+        llm=SimpleNamespace(
+            max_tokens=0,
+            provider="openai_compatible",
+            base_url="https://self-hosted.example/v1",
+            api_key="",
+            proxy="",
+        ),
+        squilla_router=SimpleNamespace(
+            tiers={
+                "c1": {
+                    "provider": "openai_compatible",
+                    "model": "local-router-model",
+                    "base_url": "https://self-hosted.example/v1",
+                    "context_window_tokens": 8_192,
+                }
+            }
+        ),
+    )
+    runner = SimpleNamespace(_config=cfg, _model_catalog=ModelCatalog())
+    adapter = _TurnRunnerModelCatalogAdapter(runner)
+    turn = _make_turn(
+        metadata={
+            "routed_provider": "openai_compatible",
+            "routed_model": "local-router-model",
+            "routed_tier": "c1",
+        }
+    )
+
+    catalog = adapter.lookup("local-router-model", turn=turn)
+
+    assert catalog.context_window == 8_192
+    assert harness_module._DEFAULT_CONTEXT_WARNED == set()
+
+
 def test_runtime_model_catalog_adapter_applies_base_tool_support_off() -> None:
     cfg = SimpleNamespace(
         llm=SimpleNamespace(

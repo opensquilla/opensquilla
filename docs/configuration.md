@@ -85,6 +85,32 @@ Supported sections:
 | Inspect current values | `opensquilla config get` |
 | Persist an advanced key | `opensquilla config set <key> <value> --config <path>` |
 
+## Router Tier Configuration
+
+Each `squilla_router.tiers.<name>` entry routes a tier to a full provider
+identity, not just a model name. Self-hosted OpenAI-compatible endpoints are
+supported, including blank-auth deployments.
+
+| Field | Meaning |
+| --- | --- |
+| `provider` | Provider id (`openrouter`, `inception`, `openai_compatible`, ...). |
+| `model` | Model id sent to that provider. |
+| `base_url` | Endpoint override; defaults to the provider's standard URL. |
+| `api_key` / `api_key_env` | Tier-scoped credential (literal value or env var name). Leave empty for blank-auth endpoints. |
+| `description` | Shown in the WebUI router panel. |
+| `supports_image` | Marks the tier eligible for image routes. |
+| `thinking_level` | Default thinking level for the tier. |
+| `context_window_tokens` | Real context window of the model. Set this for self-hosted or small models: unknown models otherwise inherit an optimistic 200k default (a one-time warning `routed_tier.context_window_defaulted` is logged when that happens). |
+| `toolset` | Named toolset to offer on this tier (`full` for everything). |
+| `max_tool_schema_chars` | Tool-schema budget for small-context models. Units are compact-JSON serialization characters (the same accounting as request proof), not wire bytes. |
+| `tool_support` | `auto` (probe/catalog decides), `on` (operator vouches the model calls tools; required for models that ignore the boot probe, e.g. diffusion models), `off` (never send tools). |
+| `tool_probe_mode` | `required` or `auto` `tool_choice` used by the boot-time tool probe. |
+
+A probe that gets a 200 response without a tool call leaves the capability
+`unknown`; tool-required turns are refused on `unknown`/`unsupported` routes,
+and ordinary turns proceed without tools. Set `tool_support = "on"` after
+verifying a route with `scripts/live_compat_tool_route_smoke.py`.
+
 ## Provider Configuration
 
 Inspect provider support:

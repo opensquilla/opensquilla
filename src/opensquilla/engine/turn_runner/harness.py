@@ -13,9 +13,12 @@ the stage boundaries are ready to sequence.
 from __future__ import annotations
 
 import inspect
+import threading
 from dataclasses import replace
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
+
+import structlog
 
 from opensquilla.engine.turn_runner.agent_bootstrap_stage import (
     AgentConfigBuilderPort,
@@ -66,8 +69,11 @@ from opensquilla.engine.turn_runner.turn_finalizer_stage import (
     TurnErrorPersistPort,
     TurnMemoryCapturePort,
 )
+from opensquilla.provider.model_catalog import DEFAULT_CONTEXT_WINDOW
 from opensquilla.provider.types import ModelCapabilities
 from opensquilla.session.compaction_lifecycle import normalize_flush_triggers_strict
+
+log = structlog.get_logger(__name__)
 
 
 def _normalize_tool_support(value: Any) -> str:
@@ -113,10 +119,40 @@ def _context_window_override_for_turn(config: Any, metadata: dict[str, Any]) -> 
     )
 
 
+_DEFAULT_CONTEXT_WARNED: set[str] = set()
+_DEFAULT_CONTEXT_WARN_LOCK = threading.Lock()
+
+
+def _warn_default_context_window_once(
+    *, tier: str, model_id: str, provider_name: str, default_window: int
+) -> None:
+    """Warn once per route when a routed model falls back to the default window.
+
+    Small self-hosted models silently inheriting the optimistic default can
+    overrun their real context at the provider; the fix is a per-tier
+    ``context_window_tokens`` override.
+    """
+    key = f"{tier}|{provider_name}|{model_id}"
+    with _DEFAULT_CONTEXT_WARN_LOCK:
+        if key in _DEFAULT_CONTEXT_WARNED:
+            return
+        _DEFAULT_CONTEXT_WARNED.add(key)
+    log.warning(
+        "routed_tier.context_window_defaulted",
+        tier=tier,
+        model=model_id,
+        provider=provider_name,
+        default_context_window=default_window,
+        hint="set squilla_router.tiers.<tier>.context_window_tokens for this model",
+    )
+
+
 def _apply_tool_support_mode(capabilities: Any, mode: str) -> Any:
     if mode == "auto":
         return capabilities
-    state = "supported" if mode == "on" else "unsupported"
+    state: Literal["supported", "unsupported"] = (
+        "supported" if mode == "on" else "unsupported"
+    )
     supports_tools = mode == "on"
     if capabilities is None:
         return ModelCapabilities(
@@ -509,13 +545,28 @@ class _TurnRunnerModelCatalogAdapter(ModelCatalogPort):
             )
         else:
             max_tokens = user_max_tokens if user_max_tokens > 0 else 16384
-            context_window = 200_000
+            context_window = DEFAULT_CONTEXT_WINDOW
             capabilities = None
         context_window_override = _context_window_override_for_turn(
             runner._config, metadata
         )
         if context_window_override > 0:
             context_window = context_window_override
+        elif (
+            metadata.get("routed_provider")
+            and runner._model_catalog is not None
+            and context_window == DEFAULT_CONTEXT_WINDOW
+        ):
+            info = runner._model_catalog.get(
+                model_id, provider_name=provider_name, base_url=base_url
+            )
+            if info is None or info.context_window <= 0:
+                _warn_default_context_window_once(
+                    tier=str(metadata.get("routed_tier") or ""),
+                    model_id=model_id,
+                    provider_name=str(provider_name or ""),
+                    default_window=DEFAULT_CONTEXT_WINDOW,
+                )
         tool_support_mode = _tool_support_mode_for_turn(runner._config, llm_cfg, metadata)
         capabilities = _apply_tool_support_mode(capabilities, tool_support_mode)
         if isinstance(metadata, dict):

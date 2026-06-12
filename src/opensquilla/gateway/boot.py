@@ -33,6 +33,7 @@ import uvicorn
 from starlette.applications import Starlette
 
 from opensquilla.agents.scope import resolve_agent_model, resolve_agent_workspace_dir
+from opensquilla.artifacts import enrich_artifact_event_dict
 from opensquilla.asyncio_utils import create_background_task
 from opensquilla.engine.usage import UsageTracker as _UsageTracker
 from opensquilla.gateway.app import create_gateway_app
@@ -1034,6 +1035,8 @@ async def _emit_task_runtime_stream_events(
                 if not key.startswith("_")
             }
         event_kind = event_dict.pop("kind", getattr(event, "kind", event.__class__.__name__))
+        if event_kind == "artifact":
+            event_dict = enrich_artifact_event_dict(event_dict)
         if event_kind == "error":
             raw_message = event_dict.get("message")
             error_message = (

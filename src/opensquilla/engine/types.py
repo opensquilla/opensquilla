@@ -124,6 +124,7 @@ class ArtifactEvent:
     created_at: str = ""
     download_url: str = ""
     store: str = "artifacts"
+    has_thumbnail: bool = False
 
 
 @dataclass

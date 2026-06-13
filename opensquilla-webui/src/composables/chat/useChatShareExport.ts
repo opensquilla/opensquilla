@@ -14,29 +14,64 @@ const CAPTURE_STAGE_MAX_WIDTH = 1040
 const MAX_EXPORT_HEIGHT = 24000
 const SHARE_TEMPLATE_WIDTH = 760
 const SHARE_TEMPLATE_MARGIN = 28
-const SHARE_TEMPLATE_TOP = 28
-const SHARE_TEMPLATE_BRAND_HEIGHT = 64
-const SHARE_TEMPLATE_FOOTER_HEIGHT = 188
-const SHARE_TEMPLATE_QR_SIZE = 84
+const SHARE_TEMPLATE_TOP = 24
+const SHARE_TEMPLATE_BRAND_HEIGHT = 24
+const SHARE_TEMPLATE_BRAND_GAP = 14
+const SHARE_TEMPLATE_FOOTER_HEIGHT = 96
+const SHARE_TEMPLATE_QR_SIZE = 64
 const CAPTURE_SCALE_LIMIT = 2
+
+const SHARE_FILENAME_PREFIX = 'opensquilla'
+const SHARE_FILENAME_FALLBACK = 'chat'
+const SHARE_SLUG_MAX_LENGTH = 40
+const SHARE_FOOTER_CAPTION = 'opensquilla.ai'
 
 const SHARE_STAGE_ID = 'opensquilla-share-export-stage'
 
+// Interactive UI remnants that must never appear in the static share image.
+// Keep this list class-based and specific: generic selectors (e.g. bare
+// input[type=checkbox]) would also strip rendered markdown task lists.
+const SHARE_CLONE_STRIP_SELECTORS = [
+  '.chat-share-picker',
+  '.msg-user-actions',
+  '.msg-ai-actions',
+  '.share-select-check',
+  '.share-select-checkbox',
+  '.chat-share-checkbox',
+  '[data-share-checkbox]',
+  '[data-share-control]',
+  '.msg-meta__more',
+  '.msg-meta__cost',
+  '.step-view-btn',
+  '.msg-artifact-actions',
+  '.msg-artifact-download',
+  '[data-tooltip]',
+  '[role="tooltip"]',
+]
+
 export function useChatShareExport(options: ChatShareExportOptions) {
-  async function exportSelectedMessages(selectedIds: Set<string>): Promise<void> {
-    if (selectedIds.size === 0) return
+  async function exportSelectedMessages(selectedIds: Set<string>): Promise<string | null> {
+    if (selectedIds.size === 0) {
+      console.warn('Share export skipped: no messages selected')
+      return null
+    }
     const sourceElements = selectedShareElements(options.threadRef.value, selectedIds)
-    if (sourceElements.length === 0) return
+    if (sourceElements.length === 0) {
+      console.warn('Share export skipped: selected messages not found in thread')
+      return null
+    }
 
     await document.fonts?.ready
-    const stage = buildShareExportStage(sourceElements)
+    const stage = buildShareDom(sourceElements)
 
     try {
       document.body.appendChild(stage)
       await waitForStablePaint()
       const contentCanvas = await captureStageWithDom(stage)
       const blob = await composeShareTemplate(contentCanvas)
-      downloadBlob(blob, options.filename())
+      const filename = shareExportFilename(options.filename())
+      downloadBlob(blob, filename)
+      return filename
     } finally {
       stage.remove()
     }
@@ -47,18 +82,61 @@ export function useChatShareExport(options: ChatShareExportOptions) {
   }
 }
 
+export function shareExportFilename(rawName: string, now: Date = new Date()): string {
+  const date = now.toISOString().slice(0, 10)
+  const slug = shareTitleSlug(rawName) || SHARE_FILENAME_FALLBACK
+  return `${SHARE_FILENAME_PREFIX}-${slug}-${date}.png`
+}
+
+function shareTitleSlug(rawName: string): string {
+  let value = (rawName || '').trim()
+  // Unwrap values that are already composed filenames (the previous template
+  // produced "opensquilla-chat-<title|chat>-<date>.png", which duplicated
+  // "chat" whenever the title fell back).
+  const looksComposed = /\.png$/i.test(value) || /^opensquilla-/i.test(value)
+  if (looksComposed) {
+    value = value
+      .replace(/\.png$/i, '')
+      .replace(/^opensquilla-/i, '')
+      .replace(/-\d{4}-\d{2}-\d{2}$/, '')
+      .replace(/^chat-(?=.)/i, '')
+  }
+
+  const slug = value
+    .toLowerCase()
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f<>:"/\\|?*]+/g, '-')
+    .replace(/\s+/g, '-')
+    .replace(/\.+$/g, '')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+|-+$/g, '')
+  const capped = Array.from(slug).slice(0, SHARE_SLUG_MAX_LENGTH).join('').replace(/^-+|-+$/g, '')
+  return dedupeAdjacentSegments(capped)
+}
+
+function dedupeAdjacentSegments(slug: string): string {
+  const segments = slug.split('-').filter(Boolean)
+  const result: string[] = []
+  for (const segment of segments) {
+    if (result[result.length - 1] !== segment) result.push(segment)
+  }
+  return result.join('-')
+}
+
 function selectedShareElements(thread: HTMLElement | null, selectedIds: Set<string>): HTMLElement[] {
   if (!thread) return []
   const elements = Array.from(thread.querySelectorAll<HTMLElement>('[data-share-message-id]'))
   return elements.filter(element => selectedIds.has(element.dataset.shareMessageId || ''))
 }
 
-function buildShareExportStage(sourceElements: HTMLElement[]): HTMLElement {
+export function buildShareDom(sourceElements: HTMLElement[]): HTMLElement {
   const stageWidth = captureStageWidth(sourceElements)
+  const tokens = shareThemeTokens()
   const stage = document.createElement('section')
   stage.id = SHARE_STAGE_ID
   stage.setAttribute('aria-hidden', 'true')
   stage.className = 'chat-share-export-stage'
+  stage.dataset.shareTemplateMetrics = JSON.stringify(shareTemplateMetrics())
   stage.style.cssText = [
     'position:fixed',
     'left:16px',
@@ -67,8 +145,8 @@ function buildShareExportStage(sourceElements: HTMLElement[]): HTMLElement {
     `max-width:${stageWidth}px`,
     'padding:0 0 8px',
     'box-sizing:border-box',
-    'background:#ffffff',
-    'color:#18181b',
+    `background:${tokens.card}`,
+    `color:${tokens.text}`,
     'z-index:-1',
     'pointer-events:none',
     'overflow:visible',
@@ -89,6 +167,32 @@ function buildShareExportStage(sourceElements: HTMLElement[]): HTMLElement {
   return stage
 }
 
+function shareTemplateMetrics() {
+  return {
+    width: SHARE_TEMPLATE_WIDTH,
+    contentWidth: EXPORT_WIDTH,
+    top: SHARE_TEMPLATE_TOP,
+    brandHeight: SHARE_TEMPLATE_BRAND_HEIGHT,
+    brandGap: SHARE_TEMPLATE_BRAND_GAP,
+    footerHeight: SHARE_TEMPLATE_FOOTER_HEIGHT,
+    qrSize: SHARE_TEMPLATE_QR_SIZE,
+    caption: SHARE_FOOTER_CAPTION,
+  }
+}
+
+function shareThemeTokens() {
+  const styles = getComputedStyle(document.documentElement)
+  const token = (name: string, fallback: string) => styles.getPropertyValue(name).trim() || fallback
+  return {
+    page: token('--bg', '#f4f4f3'),
+    card: token('--bg-surface', '#ffffff'),
+    border: token('--border', 'rgba(32, 39, 34, 0.08)'),
+    text: token('--text', '#18181b'),
+    muted: token('--text-muted', '#4f5550'),
+    fontSans: token('--font-sans', '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'),
+  }
+}
+
 function captureStageWidth(sourceElements: HTMLElement[]): number {
   const sourceWidth = Math.max(
     ...sourceElements.map(element => element.getBoundingClientRect().width),
@@ -107,18 +211,34 @@ function cleanupShareClone(clone: HTMLElement): HTMLElement {
   )
   clone.removeAttribute('data-share-selected')
 
+  // Thinking fold: an expanded fold means the user deliberately opened the
+  // reasoning and is sharing it — keep the text, but swap the interactive
+  // <details> chrome for a quiet static label. A collapsed fold is just a
+  // dead button in a static image and is dropped entirely.
+  clone.querySelectorAll<HTMLElement>('.thinking-fold').forEach((fold) => {
+    const body = fold.querySelector<HTMLElement>('.thinking-fold__body')
+    const text = body?.textContent?.trim() || ''
+    if (!fold.hasAttribute('open') || !text) {
+      fold.remove()
+      return
+    }
+    const block = document.createElement('div')
+    block.className = 'chat-share-export-thinking'
+    const label = document.createElement('div')
+    label.className = 'chat-share-export-thinking__label'
+    label.textContent = 'Thinking'
+    const bodyText = document.createElement('div')
+    bodyText.className = 'chat-share-export-thinking__body'
+    bodyText.textContent = text
+    block.append(label, bodyText)
+    fold.replaceWith(block)
+  })
+
   clone.querySelectorAll<HTMLElement>('[data-share-selected]').forEach((element) => {
     element.removeAttribute('data-share-selected')
   })
-  clone.querySelectorAll<HTMLElement>([
-    '.chat-share-picker',
-    '.msg-user-actions',
-    '.msg-ai-actions',
-    '.share-select-check',
-    '[data-share-control]',
-    '[data-tooltip]',
-    '[role="tooltip"]',
-  ].join(',')).forEach(element => element.remove())
+  clone.querySelectorAll<HTMLElement>(SHARE_CLONE_STRIP_SELECTORS.join(','))
+    .forEach(element => element.remove())
 
   clone.querySelectorAll<HTMLElement>('*').forEach((element) => {
     element.classList.remove(
@@ -155,6 +275,31 @@ function shareExportCss(): string {
     #${SHARE_STAGE_ID} select {
       pointer-events: none !important;
     }
+
+    #${SHARE_STAGE_ID} .chat-share-export-thinking {
+      margin: 0 0 10px;
+      padding: 6px 10px;
+      border-left: 2px solid color-mix(in srgb, currentColor 22%, transparent);
+    }
+
+    #${SHARE_STAGE_ID} .chat-share-export-thinking__label {
+      font-size: 11px;
+      letter-spacing: 0.04em;
+      opacity: 0.55;
+      margin-bottom: 3px;
+    }
+
+    #${SHARE_STAGE_ID} .chat-share-export-thinking__body {
+      font-size: 12px;
+      line-height: 1.55;
+      opacity: 0.75;
+      white-space: pre-wrap;
+    }
+
+    /* The live meta line is hover-dimmed; the static image has no hover. */
+    #${SHARE_STAGE_ID} .msg-ai-meta > span {
+      opacity: 1 !important;
+    }
   `
 }
 
@@ -162,7 +307,7 @@ async function captureStageWithDom(stage: HTMLElement): Promise<HTMLCanvasElemen
   const rect = stage.getBoundingClientRect()
   const height = assertShareStageHeight(stage, rect)
   const canvas = await toCanvas(stage, {
-    backgroundColor: '#ffffff',
+    backgroundColor: shareThemeTokens().card,
     cacheBust: true,
     pixelRatio: captureScale(),
     width: Math.ceil(rect.width),
@@ -178,10 +323,11 @@ async function captureStageWithDom(stage: HTMLElement): Promise<HTMLCanvasElemen
 }
 
 async function composeShareTemplate(contentCanvas: HTMLCanvasElement): Promise<Blob> {
+  const tokens = shareThemeTokens()
   const contentHeight = Math.ceil((contentCanvas.height * EXPORT_WIDTH) / contentCanvas.width)
   const height = SHARE_TEMPLATE_TOP
     + SHARE_TEMPLATE_BRAND_HEIGHT
-    + SHARE_TEMPLATE_MARGIN
+    + SHARE_TEMPLATE_BRAND_GAP
     + contentHeight
     + SHARE_TEMPLATE_FOOTER_HEIGHT
 
@@ -200,15 +346,15 @@ async function composeShareTemplate(contentCanvas: HTMLCanvasElement): Promise<B
   if (!context) throw new Error('Canvas is unavailable')
   context.scale(scale, scale)
 
-  context.fillStyle = '#f4f4f3'
+  context.fillStyle = tokens.page
   context.fillRect(0, 0, SHARE_TEMPLATE_WIDTH, height)
 
-  await drawTemplateBrand(context, SHARE_TEMPLATE_TOP)
+  await drawTemplateBrand(context, SHARE_TEMPLATE_TOP, tokens)
 
   const cardX = SHARE_TEMPLATE_MARGIN
-  const cardY = SHARE_TEMPLATE_TOP + SHARE_TEMPLATE_BRAND_HEIGHT + SHARE_TEMPLATE_MARGIN
+  const cardY = SHARE_TEMPLATE_TOP + SHARE_TEMPLATE_BRAND_HEIGHT + SHARE_TEMPLATE_BRAND_GAP
   roundRect(context, cardX, cardY, EXPORT_WIDTH, contentHeight, 8)
-  context.fillStyle = '#ffffff'
+  context.fillStyle = tokens.card
   context.fill()
   context.save()
   roundRect(context, cardX, cardY, EXPORT_WIDTH, contentHeight, 8)
@@ -216,55 +362,59 @@ async function composeShareTemplate(contentCanvas: HTMLCanvasElement): Promise<B
   context.drawImage(contentCanvas, cardX, cardY, EXPORT_WIDTH, contentHeight)
   context.restore()
   roundRect(context, cardX, cardY, EXPORT_WIDTH, contentHeight, 8)
-  context.strokeStyle = 'rgba(32, 39, 34, 0.08)'
+  context.strokeStyle = tokens.border
   context.stroke()
 
-  await drawTemplateFooter(context, cardY + contentHeight)
+  await drawTemplateFooter(context, cardY + contentHeight, tokens)
 
   return await blobFromCanvas(canvas)
 }
 
-async function drawTemplateBrand(context: CanvasRenderingContext2D, y: number) {
-  const logo = await loadOptionalImage(staticAssetUrl('img/opensquilla-long-logo.png'))
-  if (logo) {
-    const logoWidth = 260
-    const logoHeight = Math.round(logoWidth * (logo.naturalHeight / logo.naturalWidth))
-    const logoX = (SHARE_TEMPLATE_WIDTH - logoWidth) / 2
-    const logoY = y + Math.round((SHARE_TEMPLATE_BRAND_HEIGHT - logoHeight) / 2)
-    context.drawImage(logo, logoX, logoY, logoWidth, logoHeight)
-    return
+async function drawTemplateBrand(
+  context: CanvasRenderingContext2D,
+  y: number,
+  tokens: ReturnType<typeof shareThemeTokens>,
+) {
+  const markSize = 22
+  let textX = SHARE_TEMPLATE_MARGIN
+  const mark = await loadOptionalImage(staticAssetUrl('img/opensquilla-mark.png'))
+  if (mark) {
+    const markY = y + Math.round((SHARE_TEMPLATE_BRAND_HEIGHT - markSize) / 2)
+    context.drawImage(mark, SHARE_TEMPLATE_MARGIN, markY, markSize, markSize)
+    textX += markSize + 8
   }
 
-  context.font = '800 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
-  context.fillStyle = '#141414'
-  context.textAlign = 'center'
-  context.textBaseline = 'top'
-  context.fillText('OpenSquilla', SHARE_TEMPLATE_WIDTH / 2, y)
+  context.font = `600 18px ${tokens.fontSans}`
+  context.fillStyle = tokens.text
   context.textAlign = 'left'
+  context.textBaseline = 'middle'
+  context.fillText('OpenSquilla', textX, y + SHARE_TEMPLATE_BRAND_HEIGHT / 2)
+  context.textBaseline = 'alphabetic'
 }
 
-async function drawTemplateFooter(context: CanvasRenderingContext2D, startY: number) {
-  const asset = await loadOptionalImage(staticAssetUrl('img/QRcode.png'))
-  const assetX = (SHARE_TEMPLATE_WIDTH - SHARE_TEMPLATE_QR_SIZE) / 2
-  const assetY = startY + 24
+async function drawTemplateFooter(
+  context: CanvasRenderingContext2D,
+  startY: number,
+  tokens: ReturnType<typeof shareThemeTokens>,
+) {
+  const qrY = startY + 16
+  const qrX = SHARE_TEMPLATE_WIDTH - SHARE_TEMPLATE_MARGIN - SHARE_TEMPLATE_QR_SIZE
+  const qr = await loadOptionalImage(staticAssetUrl('img/QRcode.png'))
 
-  if (asset) {
-    roundRect(context, assetX, assetY, SHARE_TEMPLATE_QR_SIZE, SHARE_TEMPLATE_QR_SIZE, 8)
+  if (qr) {
+    // White backing keeps the QR scannable on the dark theme page fill.
+    roundRect(context, qrX, qrY, SHARE_TEMPLATE_QR_SIZE, SHARE_TEMPLATE_QR_SIZE, 6)
     context.fillStyle = '#ffffff'
     context.fill()
-    context.drawImage(asset, assetX, assetY, SHARE_TEMPLATE_QR_SIZE, SHARE_TEMPLATE_QR_SIZE)
+    context.drawImage(qr, qrX, qrY, SHARE_TEMPLATE_QR_SIZE, SHARE_TEMPLATE_QR_SIZE)
   }
 
-  context.font = '700 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
-  context.fillStyle = '#4f5550'
-  context.textAlign = 'center'
-  context.textBaseline = 'top'
-  context.fillText('Scan the QR code to visit OpenSquilla', SHARE_TEMPLATE_WIDTH / 2, assetY + SHARE_TEMPLATE_QR_SIZE + 14)
-
-  context.font = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
-  context.fillStyle = 'rgba(82, 88, 81, 0.62)'
-  context.fillText('Token-Efficient · Meta-Skills · AI Agent', SHARE_TEMPLATE_WIDTH / 2, assetY + SHARE_TEMPLATE_QR_SIZE + 32)
+  context.font = `500 12px ${tokens.fontSans}`
+  context.fillStyle = tokens.muted
   context.textAlign = 'left'
+  context.textBaseline = 'middle'
+  context.fillText(SHARE_FOOTER_CAPTION, SHARE_TEMPLATE_MARGIN, qrY + SHARE_TEMPLATE_QR_SIZE / 2)
+  context.textBaseline = 'alphabetic'
 }
 
 function assertShareStageHeight(stage: HTMLElement, rect: DOMRect): number {

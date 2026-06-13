@@ -35,3 +35,29 @@ export function downloadBlob(blob: Blob, filename: string): void {
 export function downloadText(filename: string, mime: string, content: string): void {
   downloadBlob(new Blob([content], { type: mime }), filename)
 }
+
+// Whether this browser can put an image on the clipboard. The async Clipboard
+// API plus the ClipboardItem constructor are both required and only exist in a
+// secure context (localhost counts); older Firefox/Safari lack ClipboardItem.
+// Evaluated once at call sites so the Copy affordance can be hidden when false.
+export function shareCopyImageSupported(): boolean {
+  return (
+    typeof navigator !== 'undefined' &&
+    !!navigator.clipboard &&
+    typeof navigator.clipboard.write === 'function' &&
+    typeof ClipboardItem !== 'undefined'
+  )
+}
+
+// Copy a PNG (or any image) blob to the clipboard. Returns false instead of
+// throwing when the API is missing or the write is rejected (permission, focus
+// loss, transient failure), so callers can fall back to a download with a toast.
+export async function copyImageToClipboard(blob: Blob): Promise<boolean> {
+  if (!shareCopyImageSupported()) return false
+  try {
+    await navigator.clipboard.write([new ClipboardItem({ [blob.type || 'image/png']: blob })])
+    return true
+  } catch {
+    return false
+  }
+}

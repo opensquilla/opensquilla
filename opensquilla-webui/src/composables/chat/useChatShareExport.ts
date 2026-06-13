@@ -2,11 +2,20 @@ import type { Ref } from 'vue'
 import { toCanvas } from 'html-to-image'
 import { downloadBlob } from '@/utils/browser'
 
+export type ShareExportTheme = 'light' | 'dark'
+
 interface ChatShareExportOptions {
   threadRef: Ref<HTMLElement | null>
   /** Raw conversation title. The composable does all slugging and filename
       composition (CJK-safe) — callers must NOT pre-sanitize or pre-compose. */
   title: () => string
+}
+
+export interface ShareImageResult {
+  blob: Blob
+  filename: string
+  width: number
+  height: number
 }
 
 const EXPORT_WIDTH = 704
@@ -52,7 +61,15 @@ const SHARE_CLONE_STRIP_SELECTORS = [
 ]
 
 export function useChatShareExport(options: ChatShareExportOptions) {
-  async function exportSelectedMessages(selectedIds: Set<string>): Promise<string | null> {
+  // Build the share PNG without delivering it: callers get the blob (plus the
+  // composed filename and pixel size) and decide whether to preview, copy, or
+  // download. `theme` forces the export's token theme independently of the live
+  // app theme, defaulting to light for legibility on social surfaces.
+  async function buildShareImage(
+    selectedIds: Set<string>,
+    opts: { theme?: ShareExportTheme } = {},
+  ): Promise<ShareImageResult | null> {
+    const theme: ShareExportTheme = opts.theme ?? 'light'
     if (selectedIds.size === 0) {
       console.warn('Share export skipped: no messages selected')
       return null
@@ -64,22 +81,33 @@ export function useChatShareExport(options: ChatShareExportOptions) {
     }
 
     await document.fonts?.ready
-    const stage = buildShareDom(sourceElements)
+    const stage = buildShareDom(sourceElements, theme)
 
     try {
       document.body.appendChild(stage)
       await waitForStablePaint()
       const contentCanvas = await captureStageWithDom(stage)
-      const blob = await composeShareTemplate(contentCanvas)
+      const { blob, width, height } = await composeShareTemplate(contentCanvas, stage)
       const filename = shareExportFilename(options.title())
-      downloadBlob(blob, filename)
-      return filename
+      return { blob, filename, width, height }
     } finally {
       stage.remove()
     }
   }
 
+  // Thin build + immediate download, kept for non-preview callers.
+  async function exportSelectedMessages(
+    selectedIds: Set<string>,
+    opts: { theme?: ShareExportTheme } = {},
+  ): Promise<string | null> {
+    const result = await buildShareImage(selectedIds, opts)
+    if (!result) return null
+    downloadBlob(result.blob, result.filename)
+    return result.filename
+  }
+
   return {
+    buildShareImage,
     exportSelectedMessages,
   }
 }
@@ -131,14 +159,19 @@ function selectedShareElements(thread: HTMLElement | null, selectedIds: Set<stri
   return elements.filter(element => selectedIds.has(element.dataset.shareMessageId || ''))
 }
 
-export function buildShareDom(sourceElements: HTMLElement[]): HTMLElement {
+export function buildShareDom(sourceElements: HTMLElement[], theme: ShareExportTheme = 'light'): HTMLElement {
   const stageWidth = captureStageWidth(sourceElements)
-  const tokens = shareThemeTokens()
   const stage = document.createElement('section')
   stage.id = SHARE_STAGE_ID
+  // Forcing data-theme on the stage root re-resolves the token custom
+  // properties for the whole cloned subtree, decoupling the export from the
+  // live app theme. shareThemeTokens() reads getComputedStyle of THIS element,
+  // and html-to-image inlines those computed styles into the raster.
+  stage.dataset.theme = theme
   stage.setAttribute('aria-hidden', 'true')
   stage.className = 'chat-share-export-stage'
   stage.dataset.shareTemplateMetrics = JSON.stringify(shareTemplateMetrics())
+  const tokens = shareThemeTokens(stage)
   stage.style.cssText = [
     'position:fixed',
     'left:16px',
@@ -182,8 +215,11 @@ function shareTemplateMetrics() {
   }
 }
 
-function shareThemeTokens() {
-  const styles = getComputedStyle(document.documentElement)
+function shareThemeTokens(themeEl: HTMLElement) {
+  // Read the forced-theme custom properties off the export stage (not
+  // document.documentElement), so the rasterized template follows the stage's
+  // data-theme rather than the live app theme.
+  const styles = getComputedStyle(themeEl)
   const token = (name: string, fallback: string) => styles.getPropertyValue(name).trim() || fallback
   return {
     page: token('--bg', '#f4f4f3'),
@@ -309,7 +345,7 @@ async function captureStageWithDom(stage: HTMLElement): Promise<HTMLCanvasElemen
   const rect = stage.getBoundingClientRect()
   const height = assertShareStageHeight(stage, rect)
   const canvas = await toCanvas(stage, {
-    backgroundColor: shareThemeTokens().card,
+    backgroundColor: shareThemeTokens(stage).card,
     cacheBust: true,
     pixelRatio: captureScale(),
     width: Math.ceil(rect.width),
@@ -324,8 +360,11 @@ async function captureStageWithDom(stage: HTMLElement): Promise<HTMLCanvasElemen
   return canvas
 }
 
-async function composeShareTemplate(contentCanvas: HTMLCanvasElement): Promise<Blob> {
-  const tokens = shareThemeTokens()
+async function composeShareTemplate(
+  contentCanvas: HTMLCanvasElement,
+  stage: HTMLElement,
+): Promise<{ blob: Blob; width: number; height: number }> {
+  const tokens = shareThemeTokens(stage)
   const contentHeight = Math.ceil((contentCanvas.height * EXPORT_WIDTH) / contentCanvas.width)
   const height = SHARE_TEMPLATE_TOP
     + SHARE_TEMPLATE_BRAND_HEIGHT
@@ -369,7 +408,8 @@ async function composeShareTemplate(contentCanvas: HTMLCanvasElement): Promise<B
 
   await drawTemplateFooter(context, cardY + contentHeight, tokens)
 
-  return await blobFromCanvas(canvas)
+  const blob = await blobFromCanvas(canvas)
+  return { blob, width: SHARE_TEMPLATE_WIDTH, height }
 }
 
 async function drawTemplateBrand(
@@ -378,19 +418,25 @@ async function drawTemplateBrand(
   tokens: ReturnType<typeof shareThemeTokens>,
 ) {
   const markSize = 22
-  let textX = SHARE_TEMPLATE_MARGIN
+  const markGap = 8
   const mark = await loadOptionalImage(staticAssetUrl('img/opensquilla-mark.png'))
+
+  // Measure with the wordmark font already set so the centered group is exact.
+  context.font = `600 18px ${tokens.fontSans}`
+  const wordWidth = context.measureText('OpenSquilla').width
+  const groupWidth = (mark ? markSize + markGap : 0) + wordWidth
+  let cursorX = Math.round((SHARE_TEMPLATE_WIDTH - groupWidth) / 2)
+
   if (mark) {
     const markY = y + Math.round((SHARE_TEMPLATE_BRAND_HEIGHT - markSize) / 2)
-    context.drawImage(mark, SHARE_TEMPLATE_MARGIN, markY, markSize, markSize)
-    textX += markSize + 8
+    context.drawImage(mark, cursorX, markY, markSize, markSize)
+    cursorX += markSize + markGap
   }
 
-  context.font = `600 18px ${tokens.fontSans}`
   context.fillStyle = tokens.text
   context.textAlign = 'left'
   context.textBaseline = 'middle'
-  context.fillText('OpenSquilla', textX, y + SHARE_TEMPLATE_BRAND_HEIGHT / 2)
+  context.fillText('OpenSquilla', cursorX, y + SHARE_TEMPLATE_BRAND_HEIGHT / 2)
   context.textBaseline = 'alphabetic'
 }
 
@@ -399,23 +445,33 @@ async function drawTemplateFooter(
   startY: number,
   tokens: ReturnType<typeof shareThemeTokens>,
 ) {
-  const qrY = startY + 16
-  const qrX = SHARE_TEMPLATE_WIDTH - SHARE_TEMPLATE_MARGIN - SHARE_TEMPLATE_QR_SIZE
   const qr = await loadOptionalImage(staticAssetUrl('img/QRcode.png'))
 
+  // One cohesive, centered footer band: [QR][gap][caption], the whole group
+  // centered on the template width rather than pinned to opposite corners.
+  const captionGap = 12
+  context.font = `500 12px ${tokens.fontSans}`
+  const captionWidth = context.measureText(SHARE_FOOTER_CAPTION).width
+  const groupWidth = (qr ? SHARE_TEMPLATE_QR_SIZE + captionGap : 0) + captionWidth
+  const groupX = Math.round((SHARE_TEMPLATE_WIDTH - groupWidth) / 2)
+  const qrY = startY + 16
+  const centerY = qrY + SHARE_TEMPLATE_QR_SIZE / 2
+
+  let captionX = groupX
   if (qr) {
+    const qrX = groupX
     // White backing keeps the QR scannable on the dark theme page fill.
     roundRect(context, qrX, qrY, SHARE_TEMPLATE_QR_SIZE, SHARE_TEMPLATE_QR_SIZE, 6)
     context.fillStyle = '#ffffff'
     context.fill()
     context.drawImage(qr, qrX, qrY, SHARE_TEMPLATE_QR_SIZE, SHARE_TEMPLATE_QR_SIZE)
+    captionX = qrX + SHARE_TEMPLATE_QR_SIZE + captionGap
   }
 
-  context.font = `500 12px ${tokens.fontSans}`
   context.fillStyle = tokens.muted
   context.textAlign = 'left'
   context.textBaseline = 'middle'
-  context.fillText(SHARE_FOOTER_CAPTION, SHARE_TEMPLATE_MARGIN, qrY + SHARE_TEMPLATE_QR_SIZE / 2)
+  context.fillText(SHARE_FOOTER_CAPTION, captionX, centerY)
   context.textBaseline = 'alphabetic'
 }
 

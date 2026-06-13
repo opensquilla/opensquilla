@@ -766,3 +766,46 @@ def test_external_acquisition_policy_scales_fetch_cap_to_routed_window() -> None
         or _external_acquisition_policy_for_turn(broken_cfg).max_single_fetch_chars
         is not None
     )
+
+
+@pytest.mark.asyncio
+async def test_external_acquisition_policy_clamps_web_fetch_reservation() -> None:
+    """Integration: the routed-window policy clamps a web_fetch's max_chars
+    at reservation time, so a small-context tier never acquires a page it
+    cannot keep across iterations (the elision-loop in incident
+    agent:main:webchat:3h1bj7ek). Verified live against a 1.5MB page.
+    """
+    from types import SimpleNamespace
+
+    from opensquilla.engine.runtime import _external_acquisition_policy_for_turn
+    from opensquilla.result_budget import ToolRunBudgetTracker
+
+    c1_cfg = SimpleNamespace(
+        context_window_tokens=32_768,
+        max_tokens=4_096,
+        context_overflow_threshold=0.85,
+        provider_request_proof_max_chars=0,
+        tool_use_argument_provider_request_max_chars=0,
+        tool_result_provider_request_max_chars=0,
+    )
+    policy = _external_acquisition_policy_for_turn(c1_cfg)
+    tracker = ToolRunBudgetTracker(policy)
+
+    # No caller-supplied max_chars: the reservation must inject the cap.
+    args: dict = {"url": "https://example.com/big"}
+    reservation = await tracker.reserve_tool_call(tool_name="web_fetch", arguments=args)
+    assert reservation.arguments["max_chars"] == 8_000
+
+    # A caller asking for more than the cap is clamped down.
+    over_args: dict = {"url": "https://example.com/big", "max_chars": 1_000_000}
+    over = await ToolRunBudgetTracker(policy).reserve_tool_call(
+        tool_name="web_fetch", arguments=over_args
+    )
+    assert over.arguments["max_chars"] == 8_000
+
+    # A caller asking for less keeps the smaller request.
+    under_args: dict = {"url": "https://example.com/big", "max_chars": 2_000}
+    under = await ToolRunBudgetTracker(policy).reserve_tool_call(
+        tool_name="web_fetch", arguments=under_args
+    )
+    assert under.arguments["max_chars"] == 2_000

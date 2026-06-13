@@ -17,7 +17,7 @@
       :aria-label="shareSelected ? 'Remove from share image' : 'Add to share image'"
       @click.stop="emit('toggleShare', shareMessageId)"
     >
-      <Icon :name="shareSelected ? 'check' : 'plus'" :size="13" />
+      <Icon v-if="shareSelected" name="check" :size="13" />
     </button>
     <div class="msg-ai-main">
       <details v-if="message.reasoning" class="thinking-fold">
@@ -308,10 +308,12 @@ function onMessageClick(event: MouseEvent) {
 }
 
 .msg-ai--share-selected {
-  background: color-mix(in srgb, var(--accent) 7%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  box-shadow: inset 0 0 0 2px var(--accent);
 }
 
+/* Checkbox-style selection indicator: empty outlined circle when unselected,
+   accent-filled with a check when selected. Always visible in share mode. */
 .chat-share-picker {
   position: absolute;
   left: 0.45rem;
@@ -320,27 +322,38 @@ function onMessageClick(event: MouseEvent) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.45rem;
-  height: 1.45rem;
-  border: 1px solid var(--border-strong);
+  width: 1.5rem;
+  height: 1.5rem;
+  border: 2px solid var(--border-strong);
   border-radius: 999px;
   background: var(--bg-surface);
   color: var(--text-muted);
   box-shadow: var(--shadow-md);
   cursor: pointer;
-  transition: transform 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+  transition: transform 0.14s ease, border-color 0.14s ease, background 0.14s ease, color 0.14s ease;
 }
 
 .chat-share-picker:hover {
   transform: translateY(-1px);
-  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
-  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border-strong));
+}
+
+.chat-share-picker:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 .chat-share-picker.is-selected {
-  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  border-color: var(--accent);
   background: var(--accent);
   color: var(--accent-foreground);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-share-picker {
+    transition: none;
+  }
 }
 
 .msg-ai-main {

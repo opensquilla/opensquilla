@@ -4,7 +4,9 @@ import { downloadBlob } from '@/utils/browser'
 
 interface ChatShareExportOptions {
   threadRef: Ref<HTMLElement | null>
-  filename: () => string
+  /** Raw conversation title. The composable does all slugging and filename
+      composition (CJK-safe) — callers must NOT pre-sanitize or pre-compose. */
+  title: () => string
 }
 
 const EXPORT_WIDTH = 704
@@ -69,7 +71,7 @@ export function useChatShareExport(options: ChatShareExportOptions) {
       await waitForStablePaint()
       const contentCanvas = await captureStageWithDom(stage)
       const blob = await composeShareTemplate(contentCanvas)
-      const filename = shareExportFilename(options.filename())
+      const filename = shareExportFilename(options.title())
       downloadBlob(blob, filename)
       return filename
     } finally {

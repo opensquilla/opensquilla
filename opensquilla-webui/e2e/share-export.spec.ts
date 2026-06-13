@@ -75,8 +75,11 @@ test.describe('Share export', () => {
     await page.goto(CONTROL_URL + 'chat/new')
     await page.waitForSelector('.conn-pill', { timeout: 10000 })
 
-    // One real turn so there are two bubbles to share.
-    const prompt = 'Reply with the single word: ok'
+    // One real turn so there are two bubbles to share. The prompt is CJK on
+    // purpose: the title (and thus the filename slug) derives from the first
+    // user message, and this asserts non-ASCII titles survive the view→export
+    // wiring (a pre-slug mangler in the view once stripped them to "chat").
+    const prompt = '用一个词回答我：好'
     await page.locator('.chat-textarea').fill(prompt)
     await page.locator('.chat-send-btn[aria-label="Send"]').click()
     await expect(page.locator('.msg-ai').first()).toBeVisible({ timeout: 120000 })
@@ -114,6 +117,9 @@ test.describe('Share export', () => {
     const slugPart = filename.replace(/^opensquilla-/, '').replace(/-\d{4}-\d{2}-\d{2}\.png$/, '')
     expect(slugPart.length).toBeGreaterThan(0)
     expect(slugPart).not.toMatch(/(^|-)([^-]+)-\2(-|$)/)
+    // The CJK title must survive into the slug, not collapse to the fallback.
+    expect(slugPart).toMatch(/[一-鿿]/)
+    expect(slugPart).not.toBe('chat')
 
     // Blob is a real PNG of meaningful size.
     const filePath = await download.path()

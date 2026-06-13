@@ -704,7 +704,7 @@ const routerStripReserve = computed<ChatRenderedMessage | null>(() => {
 
 const chatShareExport = useChatShareExport({
   threadRef,
-  filename: shareFilename,
+  title: shareTitle,
 })
 
 const chatHistory = useChatHistory({
@@ -1256,13 +1256,13 @@ async function saveShareImage() {
   }
 }
 
-function shareFilename(): string {
-  const title = currentChatTitle.value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 36) || 'chat'
-  return `opensquilla-chat-${title}-${new Date().toISOString().slice(0, 10)}.png`
+// The export composable owns all filename composition and slugging (it is
+// CJK-aware). Hand it the raw human title and nothing else — pre-mangling here
+// (e.g. stripping non-ASCII) would erase Chinese titles before the slugger sees
+// them, and pre-composing a filename only forced the composable to take it back
+// apart.
+function shareTitle(): string {
+  return currentChatTitle.value
 }
 
 /* ── Streaming ─────────────────────────────────────────────────────── */

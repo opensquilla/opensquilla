@@ -9,6 +9,20 @@ from opensquilla.cli.swebench_cmd import swebench_app
 cli_runner = CliRunner()
 
 
+def test_missing_docker_guides_install_not_dead_end(monkeypatch):
+    # When docker is absent, solve must tell the user how to install it (and
+    # point at code-task), not fail cryptically or silently.
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    result = cli_runner.invoke(swebench_app, ["solve", "django__django-16429"])
+    assert result.exit_code == 2
+    out = result.output.lower()
+    assert "docker" in out
+    assert "install" in out or "get-docker" in out or "get.docker" in out
+    assert "code-task" in result.output
+
+
 def test_help_runs_without_optional_deps():
     result = cli_runner.invoke(swebench_app, ["--help"])
     assert result.exit_code == 0

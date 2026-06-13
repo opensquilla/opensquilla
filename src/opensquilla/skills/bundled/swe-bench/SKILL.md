@@ -17,7 +17,7 @@ metadata:
     "platform":
       {
         "emoji": "🧪",
-        "requires": { "bins": ["docker"], "env": ["OPENROUTER_API_KEY"] },
+        "requires": { "env": ["OPENROUTER_API_KEY"] },
         "install":
           [
             {
@@ -37,6 +37,17 @@ Run a SWE-bench instance end-to-end: ensure the instance's Docker image is
 available (pull from Docker Hub if missing), start a container, run an
 OpenSquilla agent against the issue, collect the patch, and optionally run
 the official evaluation.
+
+## Prerequisites — guide the user, don't dead-end
+
+SWE-bench mode runs the official evaluation images, so it needs the **Docker
+CLI**. Docker is NOT a hard gate on this skill: if it is missing, the
+`opensquilla swebench` command prints the exact install command for the
+user's OS and exits. When that happens, relay the install guidance to the
+user ("SWE-bench needs Docker — install it with `...`, then I can run this")
+instead of saying the task is impossible. Also mention that solving a
+**real-repository** coding task (not a benchmark instance) does NOT need
+Docker — that is what the `code-task` skill is for.
 
 ## Commands
 

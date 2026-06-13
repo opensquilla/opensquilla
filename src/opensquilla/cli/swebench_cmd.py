@@ -38,6 +38,47 @@ def _require_swebench() -> None:
         raise typer.Exit(2) from exc
 
 
+def _docker_install_hint() -> str:
+    """OS-appropriate guidance for installing the Docker CLI."""
+    import platform
+
+    system = platform.system().lower()
+    if system == "darwin":
+        return "Install Docker Desktop: https://docs.docker.com/desktop/install/mac-install/"
+    if system == "linux":
+        return (
+            "Install Docker, e.g. `curl -fsSL https://get.docker.com | sh` "
+            "(or your distro's docker.io / docker-ce package), then start the daemon."
+        )
+    return "Install Docker: https://docs.docker.com/get-docker/"
+
+
+def _require_docker() -> None:
+    """Preflight: SWE-bench runs official Docker images. Guide install if missing.
+
+    Rather than dead-ending, tell the user exactly what to install so they
+    can come back and run it.
+    """
+    import shutil
+
+    if shutil.which("docker") is not None:
+        return
+    typer.secho(
+        "SWE-bench mode needs the Docker CLI to run the official evaluation "
+        "images, but `docker` was not found on PATH.",
+        err=True,
+        fg=typer.colors.RED,
+    )
+    typer.secho(_docker_install_hint(), err=True, fg=typer.colors.YELLOW)
+    typer.secho(
+        "Tip: to solve a real-repository coding task WITHOUT Docker, use "
+        "`opensquilla code-task` instead.",
+        err=True,
+        fg=typer.colors.CYAN,
+    )
+    raise typer.Exit(2)
+
+
 @swebench_app.command("solve")
 def solve(
     instance_id: str = typer.Argument(..., help="SWE-bench instance, e.g. django__django-16429"),
@@ -59,6 +100,7 @@ def solve(
     json_output: bool = typer.Option(False, "--json", help="Print the result as JSON on stdout."),
 ) -> None:
     """Run one instance end-to-end: image → container → agent → patch."""
+    _require_docker()
     _require_datasets()
     if evaluate or build:
         _require_swebench()
@@ -117,6 +159,7 @@ def eval_predictions(
     timeout: int = typer.Option(1800, help="Per-instance evaluation timeout (seconds)."),
 ) -> None:
     """Run the official SWE-bench evaluation harness on a predictions file."""
+    _require_docker()
     _require_swebench()
 
     from opensquilla.contrib.swebench.evaluate import run_evaluation
@@ -140,6 +183,7 @@ def pull(
     build: bool = typer.Option(False, "--build", help="Build locally when pull fails."),
 ) -> None:
     """Pre-fetch the Docker image for an instance (local → pull → build)."""
+    _require_docker()
     if build:
         _require_swebench()
 

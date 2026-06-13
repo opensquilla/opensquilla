@@ -33,9 +33,19 @@ def test_swebench_skill_declares_requirements(loader: SkillLoader) -> None:
     meta = spec.metadata
     assert meta is not None
     assert meta.requires is not None
-    assert "docker" in meta.requires.bins
     assert "OPENROUTER_API_KEY" in meta.requires.env
     assert any("swebench" in i.package for i in meta.install)
+
+
+def test_swebench_skill_does_not_hard_gate_on_docker(loader: SkillLoader) -> None:
+    # Docker must NOT be a hard eligibility gate: the skill stays visible to
+    # the agent so it can guide the user to install Docker instead of the
+    # capability silently disappearing.
+    spec = loader.get_by_name("swe-bench")
+    assert spec is not None
+    assert "docker" not in spec.metadata.requires.bins
+    # ...but Docker is still documented as a prerequisite.
+    assert "Docker" in spec.content
 
 
 def test_swebench_skill_body_documents_the_cli(loader: SkillLoader) -> None:

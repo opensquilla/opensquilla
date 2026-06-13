@@ -25,34 +25,20 @@
           @click="openDeliverables"
         >
           <Icon name="download" :size="14" />
-          <span>Deliverables ({{ sessionArtifacts.length }})</span>
+          <span class="chat-share-btn__label">Deliverables ({{ sessionArtifacts.length }})</span>
         </button>
-        <div v-if="shareMode" class="chat-share-controls" role="group" aria-label="Share selected messages">
-          <span class="chat-share-count">{{ selectedShareCount }} selected</span>
-          <button
-            type="button"
-            class="chat-share-btn chat-share-btn--save"
-            :disabled="selectedShareCount === 0 || shareSaving"
-            title="Save selected bubbles as PNG"
-            @click="saveShareImage"
-          >
-            <Icon name="download" :size="14" />
-            <span>{{ shareSaving ? 'Saving...' : 'Save PNG' }}</span>
-          </button>
-          <button type="button" class="chat-share-btn" title="Cancel share selection" @click="endShareMode">
-            Cancel
-          </button>
-        </div>
         <button
-          v-else
+          v-if="!shareMode"
+          ref="shareEntryBtnRef"
           type="button"
           class="chat-share-btn"
           :disabled="shareableMessageCount === 0"
-          :title="shareableMessageCount === 0 ? 'Send or open a chat with bubbles to share' : 'Select bubbles to save as a share image'"
+          :title="shareableMessageCount === 0 ? 'Send a message first to share' : 'Select bubbles to save as a share image'"
+          :aria-label="shareableMessageCount === 0 ? 'Send a message first to share' : 'Share'"
           @click="startShareMode"
         >
           <Icon name="share" :size="14" />
-          <span>Share</span>
+          <span class="chat-share-btn__label">Share</span>
         </button>
         <span class="chip" :class="runStatusChipClass" :title="runStatusTitle">{{ runStatusLabel }}</span>
       </div>
@@ -60,6 +46,33 @@
 
     <!-- Thread -->
     <div class="chat-body">
+      <!-- Share-mode banner: pinned above the scrolling thread, below the
+           header, so it can never collide with the floating topbar cluster. -->
+      <div
+        v-if="shareMode"
+        ref="shareBannerRef"
+        class="chat-share-banner"
+        tabindex="-1"
+        role="group"
+        aria-label="Share selected messages"
+        data-testid="share-banner"
+      >
+        <span class="chat-share-banner__hint">Select bubbles to share</span>
+        <span class="chat-share-banner__count" role="status" aria-live="polite">{{ selectedShareCount }} selected</span>
+        <button
+          type="button"
+          class="chat-share-btn chat-share-btn--save"
+          :disabled="selectedShareCount === 0 || shareSaving"
+          :title="selectedShareCount === 0 ? 'Select at least one bubble first' : 'Save selected bubbles as PNG'"
+          @click="saveShareImage"
+        >
+          <Icon name="download" :size="14" />
+          <span>{{ shareSaving ? 'Saving…' : 'Save PNG' }}</span>
+        </button>
+        <button type="button" class="chat-share-btn" title="Cancel share selection" @click="endShareMode">
+          Cancel
+        </button>
+      </div>
       <div
         ref="threadRef"
         class="chat-thread"
@@ -445,6 +458,8 @@ const threadDragOver = ref(false)
 const shareMode = ref(false)
 const shareSaving = ref(false)
 const selectedShareMessageIds = ref<Set<string>>(new Set())
+const shareBannerRef = ref<HTMLElement | null>(null)
+const shareEntryBtnRef = ref<HTMLButtonElement | null>(null)
 
 const chatElevatedMode = useChatElevatedMode({
   sessionKey,
@@ -1202,11 +1217,20 @@ function startShareMode() {
   if (shareableMessageCount.value === 0) return
   shareMode.value = true
   selectedShareMessageIds.value = new Set()
+  nextTick(() => shareBannerRef.value?.focus())
 }
 
 function endShareMode() {
+  // Exiting tears down the banner and the bubble pickers; if focus was inside
+  // ANY of that mode UI it would drop to <body>, so return it to the entry
+  // button in every case.
+  const active = document.activeElement
+  const modeUiHadFocus = !!shareBannerRef.value?.contains(active)
+    || !!(active instanceof HTMLElement
+      && active.closest('[data-share-control], .msg-user--share-mode, .msg-ai--share-mode'))
   shareMode.value = false
   selectedShareMessageIds.value = new Set()
+  if (modeUiHadFocus) nextTick(() => shareEntryBtnRef.value?.focus())
 }
 
 function toggleShareMessage(messageId: string) {
@@ -1221,8 +1245,9 @@ async function saveShareImage() {
   shareSaving.value = true
   try {
     await nextTick()
-    await chatShareExport.exportSelectedMessages(selectedShareMessageIds.value)
+    const savedName = await chatShareExport.exportSelectedMessages(selectedShareMessageIds.value)
     endShareMode()
+    if (savedName) pushToast(`Saved ${savedName}`, { duration: 4000 })
   } catch (err) {
     console.warn('Share image export failed:', err)
     pushToast('Share export failed', { tone: 'danger' })

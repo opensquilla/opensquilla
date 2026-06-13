@@ -36,15 +36,6 @@
   flex-shrink: 0;
 }
 
-/* The fixed topbar's right cluster (connection pill, theme) floats over this
-   band; below ~1100px the right-aligned header actions would slide under it
-   and lose pointer events, so reserve the cluster's width. */
-@media (max-width: 1100px) {
-  .chat-header {
-    padding-right: 168px;
-  }
-}
-
 .chat-header-left {
   display: flex;
   align-items: center;
@@ -57,17 +48,35 @@
   align-items: center;
   gap: 0.5rem;
   flex-shrink: 0;
-  margin-right: 56px;
+  /* The fixed topbar's right cluster (connection pill, theme) floats over
+     this band at every width and intercepts pointer events; reserve its full
+     width so the header action buttons stay clickable. */
+  margin-right: 168px;
 }
 
-.chat-share-controls {
-  display: inline-flex;
+.chat-share-banner {
+  display: flex;
   align-items: center;
-  gap: 0.375rem;
-  min-width: 0;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  flex-shrink: 0;
+  min-height: 2.5rem;
+  padding: 0.375rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 4%, var(--bg-surface));
 }
 
-.chat-share-count {
+.chat-share-banner:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.chat-share-banner__hint {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+.chat-share-banner__count {
   display: inline-flex;
   align-items: center;
   min-height: 1.75rem;
@@ -75,10 +84,15 @@
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--bg-elevated);
-  color: var(--text-muted);
+  color: var(--text);
   font-size: 0.8125rem;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+.chat-share-banner .chat-share-btn--save {
+  margin-left: auto;
 }
 
 .chat-share-btn {
@@ -113,9 +127,16 @@
   box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
+/* Disabled must stay legible, not vanish: keep the icon/label readable and
+   explain the state via cursor + title instead of fading the control away. */
 .chat-share-btn:disabled {
   cursor: not-allowed;
-  opacity: 0.42;
+  opacity: 0.65;
+  color: var(--text-dim);
+}
+
+.chat-share-btn--save:disabled {
+  color: var(--accent-foreground);
 }
 
 .chat-share-btn:focus-visible {
@@ -1053,17 +1074,36 @@
 
   .chat-header {
     /* Keep the header actions clear of the floating topbar cluster (conn pill
-       + theme menu) that overlays this band's right edge on narrow screens. */
-    padding: 0.5rem 176px 0.5rem 0.75rem;
+       + theme menu) that overlays this band's right edge on narrow screens.
+       The cluster is right-anchored and intrudes ~194px at its widest — 62px
+       of fixed chrome right of the pill plus the pill in its longest state
+       (DISCONNECTED, ~132px) — so reserve that plus a small margin. */
+    padding: 0.5rem 204px 0.5rem 0.75rem;
   }
 
   .chat-header-right {
     margin-right: 0;
   }
 
-  .chat-share-btn span,
-  .chat-share-count {
+  /* Collapse header share/deliverables buttons to icon-only. Target the
+     explicit label class, NOT every span: Icon.vue's root element is a
+     <span class="icon">, so a bare `span` selector would hide the icon too
+     and leave an empty button shell. */
+  .chat-header .chat-share-btn__label {
     display: none;
+  }
+
+  .chat-header .chat-share-btn {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+  }
+
+  .chat-share-banner {
+    padding: 0.375rem 0.75rem;
+  }
+
+  .chat-share-banner .chat-share-btn {
+    min-height: 2.75rem;
   }
 
   .chat-session-chip {
@@ -1081,13 +1121,10 @@
 }
 
 /* At phone widths the session title truncates to a couple of characters and
-   only crowds the header against the floating topbar cluster — drop it and
-   tighten the reservation so the action buttons keep room. */
+   only crowds the header against the floating topbar cluster — drop it so the
+   action buttons keep room. The full topbar reservation stays in force: the
+   floating cluster does not shrink at phone widths. */
 @media (max-width: 480px) {
-  .chat-header {
-    padding-right: 132px;
-  }
-
   .chat-label {
     display: none;
   }

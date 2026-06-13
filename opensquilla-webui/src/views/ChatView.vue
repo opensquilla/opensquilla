@@ -325,6 +325,19 @@
       @close="deliverablesOpen = false"
       @download="downloadArtifact"
     />
+
+    <SharePreviewModal
+      :open="!!sharePreview"
+      :image-url="sharePreview?.url || ''"
+      :filename="sharePreview?.filename || ''"
+      :theme="shareTheme"
+      :copy-supported="copySupported"
+      :busy="shareSaving"
+      @close="closeSharePreview"
+      @download="onShareDownload"
+      @copy="onShareCopy"
+      @set-theme="onShareSetTheme"
+    />
   </div>
 </template>
 
@@ -343,6 +356,7 @@ import ClarifyCard from '@/components/chat/ClarifyCard.vue'
 import EmptyStateChips from '@/components/chat/EmptyStateChips.vue'
 import PendingQueue from '@/components/chat/PendingQueue.vue'
 import RouterFxStrip from '@/components/chat/RouterFxStrip.vue'
+import SharePreviewModal from '@/components/chat/SharePreviewModal.vue'
 import ToolCallTimeline from '@/components/chat/ToolCallTimeline.vue'
 import ToolResultModal from '@/components/chat/ToolResultModal.vue'
 import Icon from '@/components/Icon.vue'
@@ -357,6 +371,7 @@ import { useChatMarkdownExport } from '@/composables/chat/useChatMarkdownExport'
 import { useChatMessageActions } from '@/composables/chat/useChatMessageActions'
 import { useChatPendingQueue } from '@/composables/chat/useChatPendingQueue'
 import { useChatShareExport } from '@/composables/chat/useChatShareExport'
+import type { ShareExportTheme } from '@/composables/chat/useChatShareExport'
 import { useMediaQuery } from '@/composables/chat/useMediaQuery'
 import {
   fmtTok,
@@ -388,7 +403,7 @@ import type {
   ArtifactPayload,
 } from '@/types/rpc'
 import { artifactDownloadUrl } from '@/utils/chat/artifacts'
-import { copyTextWithFallback, downloadBlob } from '@/utils/browser'
+import { copyTextWithFallback, copyImageToClipboard, downloadBlob, shareCopyImageSupported } from '@/utils/browser'
 import { useCopyFeedback } from '@/composables/chat/useCopyFeedback'
 import {
   toolCallGroups,
@@ -460,6 +475,13 @@ const shareSaving = ref(false)
 const selectedShareMessageIds = ref<Set<string>>(new Set())
 const shareBannerRef = ref<HTMLElement | null>(null)
 const shareEntryBtnRef = ref<HTMLButtonElement | null>(null)
+// Preview-before-download: Save renders the PNG to a blob and opens the modal
+// instead of downloading blind. The view owns the object-URL lifecycle.
+const sharePreview = ref<{ url: string; blob: Blob; filename: string } | null>(null)
+const shareTheme = ref<ShareExportTheme>('light')
+// Whether the browser can copy an image to the clipboard. Resolved once: the
+// capability does not change within a session, and the modal hides Copy when false.
+const copySupported = shareCopyImageSupported()
 
 const chatElevatedMode = useChatElevatedMode({
   sessionKey,
@@ -1230,6 +1252,12 @@ function endShareMode() {
       && active.closest('[data-share-control], .msg-user--share-mode, .msg-ai--share-mode'))
   shareMode.value = false
   selectedShareMessageIds.value = new Set()
+  // Leaving share mode invalidates any open preview (the selection it rendered
+  // is gone), so drop the modal and its object URL alongside the mode.
+  if (sharePreview.value) {
+    URL.revokeObjectURL(sharePreview.value.url)
+    sharePreview.value = null
+  }
   if (modeUiHadFocus) nextTick(() => shareEntryBtnRef.value?.focus())
 }
 
@@ -1240,20 +1268,97 @@ function toggleShareMessage(messageId: string) {
   selectedShareMessageIds.value = next
 }
 
+// Save renders the selected bubbles to a PNG blob and opens the preview modal;
+// it no longer downloads directly. Share mode stays active while previewing so
+// the user can still adjust the selection after closing the modal — it only
+// ends once they commit with Download.
 async function saveShareImage() {
   if (selectedShareMessageIds.value.size === 0 || shareSaving.value) return
   shareSaving.value = true
   try {
     await nextTick()
-    const savedName = await chatShareExport.exportSelectedMessages(selectedShareMessageIds.value)
-    endShareMode()
-    if (savedName) pushToast(`Saved ${savedName}`, { duration: 4000 })
+    const result = await chatShareExport.buildShareImage(selectedShareMessageIds.value, {
+      theme: shareTheme.value,
+    })
+    if (!result) {
+      pushToast('Share export failed', { tone: 'danger' })
+      return
+    }
+    const url = URL.createObjectURL(result.blob)
+    sharePreview.value = { url, blob: result.blob, filename: result.filename }
   } catch (err) {
     console.warn('Share image export failed:', err)
     pushToast('Share export failed', { tone: 'danger' })
   } finally {
     shareSaving.value = false
   }
+}
+
+function onShareDownload() {
+  const preview = sharePreview.value
+  if (!preview) return
+  downloadBlob(preview.blob, preview.filename)
+  pushToast(`Saved ${preview.filename}`, { duration: 4000 })
+  // endShareMode revokes the preview URL and drops the modal, then exits share
+  // mode (which remounts the header Share button); focus lands back on it. The
+  // modal's Download button held focus, outside the banner, so endShareMode's
+  // own conditional restore does not fire — focus the entry button explicitly.
+  endShareMode()
+  nextTick(() => shareEntryBtnRef.value?.focus())
+}
+
+async function onShareCopy() {
+  const preview = sharePreview.value
+  if (!preview) return
+  const ok = await copyImageToClipboard(preview.blob)
+  // Approved decision: the modal stays open after a copy so the user can copy
+  // again or then download; only Download / Cancel / Escape closes it.
+  pushToast(ok ? 'Copied to clipboard' : 'Copy not supported — download instead', {
+    tone: ok ? undefined : 'danger',
+  })
+}
+
+// Re-render the image in the chosen theme, swapping the object URL in place so
+// the modal stays open and shows a busy state during the rebuild.
+async function onShareSetTheme(next: ShareExportTheme) {
+  if (next === shareTheme.value && sharePreview.value) return
+  shareTheme.value = next
+  if (!sharePreview.value || shareSaving.value) return
+  shareSaving.value = true
+  try {
+    const result = await chatShareExport.buildShareImage(selectedShareMessageIds.value, { theme: next })
+    if (!result) {
+      pushToast('Share export failed', { tone: 'danger' })
+      return
+    }
+    const previous = sharePreview.value
+    sharePreview.value = {
+      url: URL.createObjectURL(result.blob),
+      blob: result.blob,
+      filename: result.filename,
+    }
+    if (previous) URL.revokeObjectURL(previous.url)
+  } catch (err) {
+    console.warn('Share image re-render failed:', err)
+    pushToast('Share export failed', { tone: 'danger' })
+  } finally {
+    shareSaving.value = false
+  }
+}
+
+// Close the preview without leaving share mode: revoke the URL and restore
+// focus. While share mode is still active the header Share button is unmounted
+// (v-if="!shareMode"), so focus returns to the share banner — the mode's anchor
+// and where startShareMode put it; only once the mode has ended does the entry
+// button exist to receive focus.
+function closeSharePreview() {
+  const preview = sharePreview.value
+  if (preview) URL.revokeObjectURL(preview.url)
+  sharePreview.value = null
+  nextTick(() => {
+    if (shareMode.value) shareBannerRef.value?.focus()
+    else shareEntryBtnRef.value?.focus()
+  })
 }
 
 // The export composable owns all filename composition and slugging (it is
@@ -1329,6 +1434,11 @@ function onDocumentPaste(e: ClipboardEvent) {
 function onDocumentKeydown(e: KeyboardEvent) {
   if (e.key !== 'Escape') return
   if (e.defaultPrevented) return
+
+  // The share preview modal owns Escape while it is open: it closes only the
+  // preview (share mode stays active) via its own handler, so bail here and let
+  // it run rather than tearing down the whole share mode underneath it.
+  if (sharePreview.value) return
 
   if (shareMode.value) {
     e.preventDefault()
@@ -1435,6 +1545,11 @@ onUnmounted(() => {
   chatApprovals.cleanup()
   if (composerResizeObserver) { composerResizeObserver.disconnect(); composerResizeObserver = null }
   document.documentElement.style.removeProperty('--composer-h')
+  // Drop any live share-preview object URL so the blob can be reclaimed.
+  if (sharePreview.value) {
+    URL.revokeObjectURL(sharePreview.value.url)
+    sharePreview.value = null
+  }
   unsubscribeSession()
 })
 

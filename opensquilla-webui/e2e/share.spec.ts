@@ -235,4 +235,54 @@ test.describe('Share mode interaction shell', () => {
     const opacity = await entry.evaluate(el => parseFloat(getComputedStyle(el).opacity))
     expect(opacity).toBeGreaterThanOrEqual(0.6)
   })
+
+  test('Save opens the preview modal; Escape closes only the modal and keeps share mode', async ({ page }) => {
+    await openSeededSession(page, SESSION_KEY, true)
+    await enterShareMode(page)
+
+    // Select both bubbles, then Save renders the PNG and opens the preview.
+    await page.locator('.msg-user-bubble').first().click()
+    await page.locator('.chat-share-picker').last().click()
+    await expect(page.getByTestId('share-banner')).toContainText('2 selected')
+    await page.getByTestId('share-banner').getByRole('button', { name: 'Save PNG' }).click()
+
+    const dialog = page.getByRole('dialog', { name: 'Share preview' })
+    await expect(dialog).toBeVisible({ timeout: 15000 })
+    await expect(dialog).toHaveAttribute('aria-modal', 'true')
+    await expect(dialog.getByRole('img', { name: 'Share preview' })).toBeVisible()
+    await expect(dialog.getByRole('button', { name: 'Download image' })).toBeVisible()
+
+    // Escape closes the preview but leaves share mode active (the banner stays),
+    // and focus returns to the share banner — the header Share button is
+    // unmounted while share mode is on, so the banner is the mode's anchor.
+    await page.keyboard.press('Escape')
+    await expect(dialog).toHaveCount(0)
+    await expect(page.getByTestId('share-banner')).toBeVisible()
+    const bannerFocusedAfterEscape = await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="share-banner"]')
+      return !!el && document.activeElement === el
+    })
+    expect(bannerFocusedAfterEscape).toBe(true)
+  })
+
+  test('the modal close button dismisses the preview and returns focus to the Share entry', async ({ page }) => {
+    await openSeededSession(page, SESSION_KEY, true)
+    await enterShareMode(page)
+
+    await page.locator('.msg-user-bubble').first().click()
+    await page.locator('.chat-share-picker').last().click()
+    await page.getByTestId('share-banner').getByRole('button', { name: 'Save PNG' }).click()
+
+    const dialog = page.getByRole('dialog', { name: 'Share preview' })
+    await expect(dialog).toBeVisible({ timeout: 15000 })
+
+    await dialog.getByRole('button', { name: 'Close' }).click()
+    await expect(dialog).toHaveCount(0)
+    await expect(page.getByTestId('share-banner')).toBeVisible()
+    const bannerFocusedAfterClose = await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="share-banner"]')
+      return !!el && document.activeElement === el
+    })
+    expect(bannerFocusedAfterClose).toBe(true)
+  })
 })

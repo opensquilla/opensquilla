@@ -104,9 +104,36 @@ test.describe('Share export', () => {
     await page.keyboard.press('Enter')
     await expect(page.locator('.chat-share-banner__count')).toHaveText(/2 selected/)
 
-    const downloadPromise = page.waitForEvent('download')
+    // Save no longer downloads blind: it renders the PNG and opens the preview
+    // modal. The download fires only when the user commits via Download image.
     await page.getByRole('button', { name: /Save PNG/ }).focus()
     await page.keyboard.press('Enter')
+    const dialog = page.getByRole('dialog', { name: 'Share preview' })
+    await expect(dialog).toBeVisible()
+    const previewImg = dialog.getByRole('img', { name: 'Share preview' })
+    await expect(previewImg).toBeVisible()
+
+    // The export defaults to a light theme; the segmented toggle re-renders the
+    // preview on demand. Exercise Dark then return to Light (the asset the rest
+    // of this test reasons about) and confirm each switch produces an image.
+    const themeGroup = dialog.getByRole('group', { name: 'Export theme' })
+    const lightBtn = themeGroup.getByRole('button', { name: 'Light' })
+    const darkBtn = themeGroup.getByRole('button', { name: 'Dark' })
+    await expect(lightBtn).toHaveAttribute('aria-pressed', 'true')
+    await expect(darkBtn).toHaveAttribute('aria-pressed', 'false')
+    await darkBtn.click()
+    await expect(darkBtn).toHaveAttribute('aria-pressed', 'true')
+    await expect(dialog.locator('[aria-busy="false"] img')).toBeVisible()
+    await lightBtn.click()
+    await expect(lightBtn).toHaveAttribute('aria-pressed', 'true')
+    await expect(dialog.locator('[aria-busy="false"] img')).toBeVisible()
+
+    // Copy image is offered when the browser supports clipboard images
+    // (Chromium does); the live runner asserts presence, not the OS clipboard.
+    await expect(dialog.getByRole('button', { name: 'Copy image' })).toBeVisible()
+
+    const downloadPromise = page.waitForEvent('download')
+    await dialog.getByRole('button', { name: 'Download image' }).click()
     const download = await downloadPromise
 
     // Filename contract: opensquilla-{slug}-{YYYY-MM-DD}.png, no duplicated
@@ -164,7 +191,8 @@ test.describe('Share export', () => {
     if (liveModelCount > 0) expect(probe!.modelEls).toBeGreaterThan(0)
     if (liveSavedCount > 0) expect(probe!.savedEls).toBeGreaterThan(0)
 
-    // Share mode ends after a successful save.
+    // Download closes the preview and exits share mode.
+    await expect(page.getByRole('dialog', { name: 'Share preview' })).toHaveCount(0)
     await expect(page.getByTestId('share-banner')).toHaveCount(0)
   })
 })

@@ -26,8 +26,24 @@ class TestPaths:
         assert config.runs_root() == tmp_path
         assert config.run_dir("r1") == tmp_path / "r1"
         assert config.repo_dir("r1") == tmp_path / "r1" / "repo"
-        assert config.scratch_dir("r1") == tmp_path / "r1" / "scratch"
         assert config.artifact_path("r1", "result.json") == tmp_path / "r1" / "result.json"
+
+    def test_scratch_is_sandbox_writable_not_under_runs_root(self, monkeypatch, tmp_path):
+        # The scratch dir MUST NOT live under the runs root (which defaults to
+        # ~/.opensquilla, i.e. /root/... — hard-blocked by the agent sandbox).
+        # It must default under the system temp dir.
+        import tempfile
+
+        monkeypatch.setenv("OPENSQUILLA_CODETASK_RUNS_DIR", str(tmp_path))
+        monkeypatch.delenv("OPENSQUILLA_CODETASK_SCRATCH_DIR", raising=False)
+        scratch = config.scratch_dir("r1")
+        assert tempfile.gettempdir() in str(scratch)
+        assert str(tmp_path) not in str(scratch)
+        assert scratch.name == "scratch"
+
+    def test_scratch_override(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("OPENSQUILLA_CODETASK_SCRATCH_DIR", str(tmp_path / "s"))
+        assert config.scratch_dir("r1") == tmp_path / "s" / "r1" / "scratch"
 
     def test_agent_python_default(self, monkeypatch):
         monkeypatch.delenv("OPENSQUILLA_CODETASK_AGENT_PYTHON", raising=False)

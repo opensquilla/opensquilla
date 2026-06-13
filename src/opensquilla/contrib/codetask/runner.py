@@ -125,6 +125,11 @@ def solve(
         _persist(result)
         return result
 
+    # Persist the agent's verification manifest into the run dir for the
+    # record (scratch lives under the system temp dir so the sandbox can
+    # write it; the run dir is the durable home for artifacts).
+    _archive_manifest(scratch, rid)
+
     # 6. Verify (red -> green -> regression), runner-authoritative.
     vout = verify(
         repo=prepared.path,
@@ -141,6 +146,17 @@ def solve(
 
     _persist(result)
     return result
+
+
+def _archive_manifest(scratch: Path, run_id: str) -> None:
+    """Copy the agent's verification.json from scratch into the run dir."""
+    src = scratch / config.VERIFICATION_MANIFEST_NAME
+    if not src.is_file():
+        return
+    try:
+        config.artifact_path(run_id, config.VERIFICATION_MANIFEST_NAME).write_text(src.read_text())
+    except OSError:
+        pass
 
 
 def _render_prompt(task_md: str, hints: str, scratch: Path) -> str:

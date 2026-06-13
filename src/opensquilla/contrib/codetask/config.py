@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 from opensquilla.paths import default_opensquilla_home
@@ -92,8 +93,19 @@ def repo_dir(run_id: str) -> Path:
 
 
 def scratch_dir(run_id: str) -> Path:
-    """Agent scratch dir (reproducers, manifest, debug) — outside the repo."""
-    return run_dir(run_id) / "scratch"
+    """Agent scratch dir (reproducers, manifest, debug) — outside the repo.
+
+    MUST live somewhere the agent's sandbox can write. The default runs_root
+    is under the OpenSquilla home (e.g. /root/.opensquilla when running as
+    root), and the agent's sensitive-path guard HARD-BLOCKS writes under
+    /root — so the scratch dir is placed under the system temp dir instead,
+    which is sandbox-writable. The (non-sandboxed) runner copies the manifest
+    back into the run dir for the permanent record.
+    """
+    override = os.environ.get("OPENSQUILLA_CODETASK_SCRATCH_DIR")
+    if override:
+        return Path(override).expanduser() / run_id / "scratch"
+    return Path(tempfile.gettempdir()) / "opensquilla-codetask" / run_id / "scratch"
 
 
 def artifact_path(run_id: str, name: str) -> Path:

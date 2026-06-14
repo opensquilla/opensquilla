@@ -89,3 +89,9 @@ opensquilla-webui/dist/
 # helper stay out of the published tree.
 /_clawhub_skills/
 /scripts/_fetch_clawhub_skills.py
+
+# Playwright e2e output (reports, traces, screenshots) — regenerated per run.
+test-results/
+
+# Runtime config-write backups the gateway leaves when it rewrites config.toml.
+opensquilla.toml.backup.*

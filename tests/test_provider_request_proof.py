@@ -9,6 +9,8 @@ from opensquilla.provider.request_proof import (
     prove_or_compact_provider_payload,
     prove_provider_payload,
 )
+from opensquilla.provider.tool_schema_budget import openai_tool_payload, tool_schema_chars
+from opensquilla.provider.types import ToolDefinition, ToolInputSchema
 
 
 def test_provider_request_proof_allows_payload_within_budget() -> None:
@@ -29,6 +31,26 @@ def test_provider_request_proof_allows_payload_within_budget() -> None:
     assert proof["system_chars"] == 0
     assert proof["top_level_chars"] == 0
     assert proof["tool_schema_too_large"] is False
+
+
+def test_tool_schema_budget_estimator_matches_provider_proof_tool_chars() -> None:
+    tool = ToolDefinition(
+        name="lookup",
+        description="Lookup a value.",
+        input_schema=ToolInputSchema(
+            properties={"query": {"type": "string", "description": "search text"}},
+            required=["query"],
+        ),
+    )
+    tools_payload = openai_tool_payload([tool])
+
+    proof = prove_provider_payload(
+        {"messages": [{"role": "user", "content": "small"}], "tools": tools_payload},
+        projection_adapter="openai",
+        proof_budget=10_000,
+    )
+
+    assert tool_schema_chars([tool]) == proof["tools_chars"]
 
 
 def test_provider_request_proof_blocks_oversized_payload() -> None:

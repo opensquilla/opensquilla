@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator, Mapping
@@ -72,6 +73,9 @@ from opensquilla.provider import (
     TextDeltaEvent as ProviderTextDelta,
 )
 from opensquilla.provider import (
+    TextSnapshotEvent as ProviderTextSnapshot,
+)
+from opensquilla.provider import (
     ToolUseStartEvent as ProviderToolUseStart,
 )
 from opensquilla.provider.failures import ProviderFailureKind, classify_provider_error
@@ -120,6 +124,7 @@ from .types import (
     RunHeartbeatEvent,
     StateChangeEvent,
     TextDeltaEvent,
+    TextSnapshotEvent,
     ThinkingLevel,
     ToolCall,
     ToolResult,
@@ -144,6 +149,14 @@ _PROVIDER_OUTPUT_CONTINUE_PROMPT = (
     "been written. If a tool call was interrupted or incomplete, regenerate a complete "
     "tool call from scratch."
 )
+_INTERNAL_COMPACTION_MARKER_RE = re.compile(
+    r"(?m)^[ \t]*\["
+    r"(?:opensquilla_compacted:[^\]\r\n]*|"
+    r"provider_request_[^\]\r\n]*compacted:[^\]\r\n]*)"
+    r"\][ \t]*(?:\r?\n)?"
+    r"|\[(?:opensquilla_compacted:[^\]\r\n]*|"
+    r"provider_request_[^\]\r\n]*compacted:[^\]\r\n]*)\]"
+)
 
 _meta_invoke_depth: ContextVar[int] = ContextVar(
     "opensquilla_meta_invoke_depth", default=0
@@ -161,6 +174,90 @@ def _cost_source_for_usage(cost_usd: float, billed_cost: float) -> str:
     if cost_usd > 0.0:
         return "opensquilla_estimate"
     return "unavailable"
+
+
+def _strip_internal_compaction_markers(text: str) -> str:
+    return _INTERNAL_COMPACTION_MARKER_RE.sub("", text)
+
+
+def _should_forward_provider_visible_text(raw_text: str, visible_text: str) -> bool:
+    if not visible_text:
+        return False
+    return raw_text == visible_text or bool(visible_text.strip())
+
+
+def _strip_internal_compaction_markers_from_messages(messages: list[Message]) -> list[Message]:
+    sanitized: list[Message] = []
+    for msg in messages:
+        content = msg.content
+        reasoning_content = (
+            _strip_internal_compaction_markers(msg.reasoning_content)
+            if msg.reasoning_content is not None
+            else None
+        )
+        reasoning_changed = reasoning_content != msg.reasoning_content
+
+        if isinstance(content, str):
+            cleaned = _strip_internal_compaction_markers(content)
+            if not cleaned.strip() and not (reasoning_content or "").strip():
+                continue
+            if cleaned != content or reasoning_changed:
+                sanitized.append(
+                    msg.model_copy(
+                        update={
+                            "content": cleaned,
+                            "reasoning_content": reasoning_content,
+                        }
+                    )
+                )
+            else:
+                sanitized.append(msg)
+            continue
+
+        if not isinstance(content, list):
+            sanitized.append(msg)
+            continue
+
+        changed = reasoning_changed
+        kept: list[Any] = []
+        for block in content:
+            if isinstance(block, ContentBlockText):
+                cleaned = _strip_internal_compaction_markers(block.text)
+                changed = changed or cleaned != block.text
+                if cleaned.strip():
+                    kept.append(
+                        block.model_copy(update={"text": cleaned})
+                        if cleaned != block.text
+                        else block
+                    )
+                continue
+            if isinstance(block, ContentBlockThinking):
+                cleaned = _strip_internal_compaction_markers(block.thinking)
+                changed = changed or cleaned != block.thinking
+                if cleaned.strip():
+                    kept.append(
+                        block.model_copy(update={"thinking": cleaned})
+                        if cleaned != block.thinking
+                        else block
+                    )
+                continue
+            kept.append(block)
+
+        if not changed:
+            sanitized.append(msg)
+            continue
+        if not kept and not (reasoning_content or "").strip():
+            continue
+        sanitized.append(
+            msg.model_copy(
+                update={
+                    "content": kept,
+                    "reasoning_content": reasoning_content,
+                }
+            )
+        )
+    return sanitized
+
 
 MAX_META_INVOKE_DEPTH = 3
 MAX_META_INVOKE_PER_TURN = 8
@@ -543,6 +640,33 @@ def _chat_config_with_thinking_disabled(chat_cfg: ChatConfig) -> ChatConfig:
     )
 
 
+def _tool_support_state_from_capabilities(capabilities: Any) -> str:
+    state = str(getattr(capabilities, "tool_support_state", "") or "").strip().lower()
+    supports_tools = bool(getattr(capabilities, "supports_tools", True))
+    if state == "supported" and not supports_tools:
+        return "unsupported"
+    if state in {"supported", "unsupported", "unknown"}:
+        return state
+    return "supported" if supports_tools else "unsupported"
+
+
+def _metadata_requires_tools(metadata: Mapping[str, Any]) -> bool:
+    if metadata.get("tool_required") is True:
+        return True
+    tool_choice = metadata.get("tool_choice") or metadata.get("meta_match_tool_choice")
+    if tool_choice == "required":
+        return True
+    if not isinstance(tool_choice, Mapping):
+        return False
+    if str(tool_choice.get("mode") or "").lower() == "required":
+        return True
+    return (
+        str(tool_choice.get("type") or "").lower() == "function"
+        or isinstance(tool_choice.get("function"), Mapping)
+    )
+
+
+
 def _strip_historical_image_blocks(
     messages: list[Message],
     *,
@@ -656,6 +780,7 @@ class Agent:
         self._session_flush_service = session_flush_service
         self._last_compaction_refusal_reason: str | None = None
         self._tool_failure_loop_counts: dict[tuple[str, str], int] = {}
+        self._tool_success_counts: dict[str, int] = {}
         self._provider_tool_result_overrides: dict[str, ContentBlockToolResult] = {}
 
     def _context_overflow_error(self) -> ErrorEvent:
@@ -1316,6 +1441,11 @@ class Agent:
             f"{handle_line}"
             f"omitted_chars: {omitted}\n"
             f"reason: {reason}.\n"
+            "note: This call SUCCEEDED and returned the full content; only "
+            "this conversation view is condensed to fit the context budget. "
+            "Do not call the tool again to recover the omitted middle — a "
+            "repeat call gets condensed the same way. Work from the head/tail "
+            "below, or make a narrower request for the specific part needed.\n"
             f"head:\n{head}"
         )
         if tail:
@@ -1919,11 +2049,24 @@ class Agent:
         # and per-tool execution budget.
         _loop = asyncio.get_running_loop()
         _total_deadline = _loop.time() + self.config.timeout if self.config.timeout > 0 else None
-        tools_supported = True
+        tool_support_state = "supported"
         if self.config.model_capabilities is not None:
-            tools_supported = bool(getattr(self.config.model_capabilities, "supports_tools", True))
+            tool_support_state = _tool_support_state_from_capabilities(
+                self.config.model_capabilities
+            )
+        tools_supported = tool_support_state == "supported"
         provider_tool_definitions = self.tool_definitions or None
         if not tools_supported:
+            if provider_tool_definitions and _metadata_requires_tools(metadata):
+                yield self._transition(AgentState.ERROR)
+                yield ErrorEvent(
+                    message=(
+                        "This turn requires tools, but the selected model is not "
+                        "confirmed to support tool calls."
+                    ),
+                    code="tool_capability_unavailable",
+                )
+                return
             provider_tool_definitions = None
 
         def _positive_float(value: Any) -> float | None:
@@ -2151,6 +2294,7 @@ class Agent:
                     iter_reasoning_tokens = 0
                     iter_reasoning_content = None
                     iter_thinking_signature = None
+                    iter_usage_estimated = False
                     _got_error = False
                     provider_done_for_log: ProviderDoneEvent | None = None
                     provider_error_for_log: ProviderErrorEvent | None = None
@@ -2269,10 +2413,28 @@ class Agent:
                             total_deadline=_total_deadline,
                         ):
                             if isinstance(raw_ev, ProviderTextDelta):
-                                assistant_text_parts.append(raw_ev.text)
-                                if raw_ev.text:
+                                visible_text = _strip_internal_compaction_markers(raw_ev.text)
+                                if _should_forward_provider_visible_text(raw_ev.text, visible_text):
+                                    assistant_text_parts.append(visible_text)
                                     attempt_user_visible_emitted = True
-                                yield TextDeltaEvent(text=raw_ev.text)
+                                    yield TextDeltaEvent(text=visible_text)
+
+                            elif isinstance(raw_ev, ProviderTextSnapshot):
+                                visible_text = _strip_internal_compaction_markers(raw_ev.text)
+                                assistant_text_parts[:] = (
+                                    [visible_text]
+                                    if _should_forward_provider_visible_text(
+                                        raw_ev.text,
+                                        visible_text,
+                                    )
+                                    else []
+                                )
+                                if _should_forward_provider_visible_text(
+                                    raw_ev.text,
+                                    visible_text,
+                                ):
+                                    attempt_user_visible_emitted = True
+                                    yield TextSnapshotEvent(text=visible_text)
 
                             elif isinstance(raw_ev, ProviderToolUseStart):
                                 if not tools_supported_for_call:
@@ -2353,14 +2515,40 @@ class Agent:
                             elif isinstance(raw_ev, ProviderDoneEvent):
                                 provider_done_for_log = raw_ev
                                 _got_done_event = True
-                                iter_input_tokens = raw_ev.input_tokens
-                                iter_output_tokens = raw_ev.output_tokens
+                                input_tokens_for_usage = raw_ev.input_tokens
+                                output_tokens_for_usage = raw_ev.output_tokens
+                                provider_usage_missing = not (
+                                    raw_ev.input_tokens
+                                    or raw_ev.output_tokens
+                                    or raw_ev.reasoning_tokens
+                                    or raw_ev.cached_tokens
+                                    or raw_ev.cache_write_tokens
+                                    or raw_ev.billed_cost
+                                )
+                                if provider_usage_missing:
+                                    input_tokens_for_usage = self._estimate_live_request_tokens(
+                                        request_messages,
+                                        tools=provider_tools_for_call,
+                                        config=call_chat_cfg,
+                                    )
+                                    assistant_text = "".join(assistant_text_parts)
+                                    output_tokens_for_usage = (
+                                        max(1, get_approx_tokens(assistant_text))
+                                        if assistant_text
+                                        else 0
+                                    )
+                                    iter_usage_estimated = bool(
+                                        input_tokens_for_usage or output_tokens_for_usage
+                                    )
+
+                                iter_input_tokens = input_tokens_for_usage
+                                iter_output_tokens = output_tokens_for_usage
                                 iter_reasoning_tokens = raw_ev.reasoning_tokens
                                 iter_reasoning_content = raw_ev.reasoning_content
                                 iter_thinking_signature = raw_ev.thinking_signature
                                 total_billed_cost += raw_ev.billed_cost
-                                total_input_tokens += raw_ev.input_tokens
-                                total_output_tokens += raw_ev.output_tokens
+                                total_input_tokens += input_tokens_for_usage
+                                total_output_tokens += output_tokens_for_usage
                                 total_reasoning_tokens += raw_ev.reasoning_tokens
                                 total_cached_tokens += raw_ev.cached_tokens
                                 total_cache_write_tokens += raw_ev.cache_write_tokens
@@ -2380,8 +2568,8 @@ class Agent:
                                     # already carry real billed totals).
                                     self._usage_tracker.add(
                                         self._session_key,
-                                        input_tokens=raw_ev.input_tokens,
-                                        output_tokens=raw_ev.output_tokens,
+                                        input_tokens=input_tokens_for_usage,
+                                        output_tokens=output_tokens_for_usage,
                                         model_id=raw_ev.model or self.config.model_id or "",
                                         cache_read_tokens=raw_ev.cached_tokens,
                                         cache_write_tokens=raw_ev.cache_write_tokens,
@@ -2462,6 +2650,9 @@ class Agent:
                             "cache_write_tokens": provider_done_for_log.cache_write_tokens,
                             "billed_cost": provider_done_for_log.billed_cost,
                             "cost_source": getattr(provider_done_for_log, "cost_source", "none"),
+                            "estimated": iter_usage_estimated,
+                            "accounted_input_tokens": iter_input_tokens,
+                            "accounted_output_tokens": iter_output_tokens,
                             "model": provider_done_for_log.model,
                         }
                     if provider_error_for_log is not None:
@@ -3886,6 +4077,7 @@ class Agent:
         )
         source_messages = self._apply_provider_tool_result_overrides(source_messages)
         source_messages = self._strip_provider_context_marker_replay_for_provider(source_messages)
+        source_messages = _strip_internal_compaction_markers_from_messages(source_messages)
         source_messages = self._compact_aggregate_tool_results_for_provider(source_messages)
         source_messages = self._sanitize_projected_tool_use_arguments_for_provider(source_messages)
         source_messages = repair_tool_pairing(source_messages)
@@ -4972,7 +5164,47 @@ class Agent:
                 "write_file",
             }:
                 self._tool_failure_loop_counts.clear()
+            result = self._append_repetition_advice(tc, result)
         return result
+
+    def _append_repetition_advice(self, tc: ToolCall, result: ToolResult) -> ToolResult:
+        """Soft brake on futile repetition of SUCCESSFUL acquisition calls.
+
+        The failure-loop guard only sees errors; a small-context model whose
+        results get condensed re-issues near-identical successful searches
+        indefinitely (observed: 27 web calls in one turn). Past a per-turn
+        threshold, append advice to the result text — shaping, never
+        blocking, so no error envelopes reach the stream or the frontend.
+        """
+        if tc.tool_name not in {"web_search", "web_fetch", "http_request"}:
+            return result
+        threshold = max(
+            0,
+            int(getattr(self.config, "tool_repetition_advice_threshold", 0) or 0),
+        )
+        if threshold <= 0:
+            return result
+        count = self._tool_success_counts.get(tc.tool_name, 0) + 1
+        self._tool_success_counts[tc.tool_name] = count
+        if count < threshold or not isinstance(result.content, str):
+            return result
+        advice = (
+            f"\n\n[turn_usage_note] This turn has now made {count} successful "
+            f"{tc.tool_name} calls. Their results were all delivered (some "
+            "views condensed to fit the context budget) — absence of detail "
+            "here does not mean the call failed. Prefer answering from the "
+            "evidence already gathered. Make another call only for a "
+            "concretely missing fact, and say what it is in the query."
+        )
+        return ToolResult(
+            tool_use_id=result.tool_use_id,
+            tool_name=result.tool_name,
+            content=result.content + advice,
+            is_error=result.is_error,
+            artifacts=list(result.artifacts),
+            execution_status=result.execution_status,
+            terminates_turn=result.terminates_turn,
+        )
 
     def _matched_meta_skill_name_from_metadata(self) -> str | None:
         metadata = self.config.metadata or {}
@@ -5582,11 +5814,12 @@ class Agent:
                 if isinstance(ev, MetaResult):
                     result = ev
                     continue
-                # Stream nested AgentEvents through (TextDelta, ToolUseStart,
-                # ToolResult). Capture text deltas so we can render the
-                # final assistant text for the transcript / Done event.
-                from opensquilla.engine.types import TextDeltaEvent
-                if isinstance(ev, TextDeltaEvent) and ev.text:
+                # Stream nested AgentEvents through while capturing text so
+                # the final assistant text can populate transcript / Done.
+                from opensquilla.engine.types import TextDeltaEvent, TextSnapshotEvent
+                if isinstance(ev, TextSnapshotEvent):
+                    final_text_parts[:] = [ev.text] if ev.text else []
+                elif isinstance(ev, TextDeltaEvent) and ev.text:
                     final_text_parts.append(ev.text)
                 yield ev
         except Exception as exc:  # noqa: BLE001

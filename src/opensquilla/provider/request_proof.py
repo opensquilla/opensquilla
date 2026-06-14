@@ -36,6 +36,9 @@ ProviderRequestBudgetExceeded = ProviderRequestBudgetExceededError
 
 
 def _payload_chars(payload: Any) -> int:
+    # Budget unit across proof and tool-schema fitting: compact-JSON chars.
+    # The wire payload uses default (spaced) separators and is ~5-20% larger;
+    # never compare these counts against a provider's real byte limit.
     return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
 
 

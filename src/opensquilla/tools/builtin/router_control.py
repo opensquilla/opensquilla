@@ -13,6 +13,38 @@ from opensquilla.tools.registry import tool
 from opensquilla.tools.types import current_tool_context
 
 
+def _matches_turn_applied_target(
+    ctx: object,
+    store: RouterControlHoldStore,
+    session_key: str,
+    target: object,
+) -> bool:
+    if not bool(getattr(ctx, "router_control_turn_hold_applied", False)):
+        return False
+
+    active_hold = store.get_valid(session_key)
+    if active_hold is not None:
+        return active_hold.target_id == getattr(target, "target_id", None)
+
+    applied_id = str(getattr(ctx, "router_control_turn_target_id", "") or "").strip()
+    if applied_id:
+        return applied_id == getattr(target, "target_id", None)
+
+    applied_tier = str(getattr(ctx, "router_control_turn_target_tier", "") or "").strip()
+    applied_model = str(getattr(ctx, "router_control_turn_target_model", "") or "").strip()
+    applied_provider = str(
+        getattr(ctx, "router_control_turn_target_provider", "") or ""
+    ).strip()
+    if applied_tier and applied_tier != getattr(target, "tier", None):
+        return False
+    if applied_model and applied_model != getattr(target, "model", None):
+        return False
+    target_provider = getattr(target, "provider", None)
+    if applied_provider and target_provider and applied_provider != target_provider:
+        return False
+    return bool(applied_tier or applied_model or applied_provider)
+
+
 @tool(
     name="router_control",
     description=(
@@ -100,6 +132,15 @@ async def router_control(
         target = resolve_router_control_target(router_cfg, str(target_id or ""))
     except RouterControlValidationError as exc:
         return router_control_rejection_payload(reason=str(exc), evidence=evidence)
+
+    if _matches_turn_applied_target(ctx, store, session_key, target):
+        return router_control_success_payload(
+            action="set_hold",
+            target=target,
+            replay_required=False,
+            evidence=evidence,
+            already_applied=True,
+        )
 
     store.set_hold(session_key, target, evidence=evidence)
     return router_control_success_payload(

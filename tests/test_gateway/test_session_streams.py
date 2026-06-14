@@ -25,6 +25,21 @@ def test_session_stream_registry_replays_events_after_cursor() -> None:
     assert [event.payload["text"] for event in replay.events] == ["b"]
 
 
+def test_session_stream_registry_replays_text_snapshot_events() -> None:
+    registry = SessionStreamRegistry(max_events_per_session=5)
+    first = registry.record("agent:main:test", "session.event.text_delta", {"text": "draft"})
+    registry.record("agent:main:test", "session.event.text_snapshot", {"text": "final"})
+    registry.record("agent:main:test", "session.event.done", {"reason": "stop"})
+
+    replay = registry.replay("agent:main:test", first["stream_seq"])
+
+    assert replay.replay_complete is True
+    assert [(event.event_name, event.payload.get("text")) for event in replay.events] == [
+        ("session.event.text_snapshot", "final"),
+        ("session.event.done", None),
+    ]
+
+
 def test_session_stream_registry_reports_incomplete_replay() -> None:
     registry = SessionStreamRegistry(max_events_per_session=2)
     registry.record("agent:main:test", "session.event.text_delta", {"text": "a"})

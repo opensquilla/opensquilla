@@ -1752,9 +1752,20 @@ def test_savings_popup_persists_cache_hit_active_to_turn_meta() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
 
     assert "cache_hit_active: !!u.cache_hit_active," in source
-    assert "model: u.model || _usageModel || null," in source
+    assert "model: u.routed_model || u.model || _usageModel || null," in source
     assert "routed_model: u.routed_model || null," in source
     assert "__savings_ui_suppressed: !!u.__savings_ui_suppressed," in source
+
+
+def test_done_usage_model_prefers_routed_model_for_footer_and_persistence() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert (
+        "const model = msg?.routed_model || u?.routed_model || msg?.model || u?.model || '';"
+        in source
+    )
+    assert "if (u.routed_model || u.model) _usageModel = u.routed_model || u.model;" in source
+    assert "model: u.routed_model || u.model || _usageModel || null," in source
 
 
 def test_savings_fx_cleanup_removes_floating_labels() -> None:
@@ -1995,13 +2006,10 @@ def test_router_fx_history_reanchors_stranded_strip() -> None:
 
 def test_router_fx_uses_only_effective_real_candidates() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
-    builder_start = source.index("function _routerFxBuildGridCells(realEntries, seedKey) {")
-    builder_end = source.index("  function _buildRouterFxElement", builder_start)
+    builder_start = source.index("function _routerFxBuildCandidateGridCells(realEntries, seedKey) {")
+    builder_end = source.index("  function _routerFxBuildLegacyGridCells", builder_start)
     builder_body = source[builder_start:builder_end]
 
-    assert "const _ROUTER_FX_DECOY_POOL" not in source
-    assert "_ROUTER_FX_REAL_ANCHOR_CELLS" not in source
-    assert "_ROUTER_FX_GRID_CELLS" not in source
     assert "function _routerFxResolveLayoutSeed(sessionKey, hintTimestamp)" in source
     assert "function _routerFxVisualEntries(requestKind, decision) {" in source
     assert "const cachedSeed = _routerFxResolveLayoutSeed(_sessionKey, hint);" in source
@@ -2012,11 +2020,50 @@ def test_router_fx_uses_only_effective_real_candidates() -> None:
     assert "return _routerFxShuffle(cells, seedKey);" not in builder_body
 
 
-def test_router_fx_cells_render_plain_model_names_only() -> None:
+def test_router_fx_legacy_grid_is_config_driven_visual_only() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    css = CHAT_CSS.read_text(encoding="utf-8")
+
+    assert "Router panel" not in source
+    assert "data-router-panel" not in source
+    assert "const _ROUTER_FX_DECOY_POOL = [" in source
+    assert "const _ROUTER_FX_REAL_ANCHOR_CELLS" in source
+    assert "function _routerFxShuffle(items, seedKey) {" in source
+    assert "function _routerFxNormalizeVisualMode(mode) {" in source
+    assert "return 'legacy_grid';" in source
+    assert "_routerFxApplyConfigVisualMode(cfg?.squilla_router?.visual_mode);" in source
+    assert "saved.visualMode" not in source
+    assert "saved.panel" not in source
+    assert "visualMode:" not in source[
+        source.index("function _routerFxSavePref() {"):
+        source.index("function _routerFxSortTiers(", source.index("function _routerFxSavePref() {"))
+    ]
+
+    legacy_start = source.index("function _routerFxBuildLegacyGridCells(realEntries, seedKey) {")
+    legacy_end = source.index("  function _routerFxBuildGridCells", legacy_start)
+    legacy_body = source[legacy_start:legacy_end]
+    assert "Array.from({ length: _ROUTER_FX_GRID_CELLS }" in legacy_body
+    assert "cells[idx] = {" in legacy_body
+    assert "kind: 'real'," in legacy_body
+    assert "kind: 'decoy'," in legacy_body
+    assert "realNames.add(entry.displayName);" in legacy_body
+
+    builder_start = source.index("function _routerFxBuildGridCells(realEntries, seedKey, visualMode) {")
+    builder_end = source.index("  function _buildRouterFxElement", builder_start)
+    builder_body = source[builder_start:builder_end]
+    assert "_routerFxNormalizeVisualMode(visualMode) === 'legacy_grid'" in builder_body
+    assert "_routerFxBuildLegacyGridCells(realEntries, seedKey)" in builder_body
+    assert "_routerFxBuildCandidateGridCells(realEntries, seedKey)" in builder_body
+    assert "wrap.dataset.panel = _routerFxPanelDataset(visualMode);" in source
+    assert "_routerFxBuildGridCells(realEntries, seedKey || undefined, visualMode);" in source
+    assert "cells[i].kind === 'real' && cells[i].entry.tiers.indexOf(norm) >= 0" in source
+    assert '.router-fx[data-panel="legacy-grid"] .router-fx-grid' in css
+
+
+def test_router_fx_cells_render_model_labels_without_roster_metadata() -> None:
     # The panel intentionally shows the real candidates for this request. Cells
-    # show only the user-facing model name: no S/M/L/XL, no provider labels, no
-    # thinking badges, and no DOM roster metadata beyond the cell index needed
-    # for the selector.
+    # show the user-facing model label: no S/M/L/XL, no thinking badges, and no
+    # DOM roster metadata beyond the cell index needed for the selector.
     source = CHAT_JS.read_text(encoding="utf-8")
     css = CHAT_CSS.read_text(encoding="utf-8")
 
@@ -2037,6 +2084,33 @@ def test_router_fx_cells_render_plain_model_names_only() -> None:
     assert "cell.dataset.cellIdx = String(i);" in source
     assert "cell.dataset.provider" not in source
     assert "cell.dataset.thinking" not in source
+    assert "_routerFxEntryDisplayLabel(entry, duplicateDisplayNames)" in source
+    assert "cellInfo.label" in source
+
+
+def test_router_fx_distinguishes_same_display_model_by_provider() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    visual_start = source.index("function _routerFxVisualEntries(requestKind, decision) {")
+    visual_end = source.index("  function _routerFxHasMultipleCandidates", visual_start)
+    visual_body = source[visual_start:visual_end]
+
+    assert "function _routerFxProviderKey(provider)" in source
+    assert "function _routerFxVisualKey(displayName, providerKey, fallback)" in source
+    assert "function _routerFxProviderDisplayName(provider)" in source
+    assert "function _routerFxEntryDisplayLabel(entry, duplicateDisplayNames)" in source
+    assert "const providerKey = _routerFxProviderKey(tierConfig.provider);" in visual_body
+    assert "const key = _routerFxVisualKey(displayName, providerKey, tier);" in visual_body
+    assert (
+        "const decisionProviderKey = _routerFxProviderKey("
+        "decisionProvider || decisionConfig.provider);"
+        in visual_body
+    )
+    assert (
+        "const duplicateDisplayNames = _routerFxDuplicateDisplayNames(byVisualKey.values());"
+        in visual_body
+    )
+    assert "label: _routerFxEntryDisplayLabel(e, duplicateDisplayNames)," in visual_body
+    assert "const key = displayName ? displayName.toLowerCase() : tier;" not in visual_body
     for size_label in (">S<", ">M<", ">L<", ">XL<"):
         assert size_label not in source
 
@@ -2664,6 +2738,26 @@ def test_router_fx_settles_but_preserves_winner_animation_when_output_begins() -
     assert '.router-fx[data-frozen="true"]' not in css
 
 
+def test_router_fx_diffusion_models_settle_without_live_animation() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    assert "function _routerFxIsDiffusionModel" in source
+    helper_start = source.index("function _routerFxIsDiffusionModel")
+    helper_end = source.index("function _routerFxShouldSettleImmediately", helper_start)
+    helper_body = source[helper_start:helper_end]
+    assert "lowered.indexOf('mercury') >= 0" in helper_body
+    assert "lowered.indexOf('llada') >= 0" in helper_body
+
+    settle_start = source.index("function _routerFxSettleForOutput()")
+    settle_end = source.index("  // Lock an in-flight scanning strip", settle_start)
+    settle_body = source[settle_start:settle_end]
+    assert "_routerFxShouldSettleImmediately(wrap._fxDecision)" in settle_body
+    assert "_routerFxNormalizeSettledStrip(wrap, 'live', wrap._fxDecision);" in settle_body
+    assert settle_body.index("_routerFxShouldSettleImmediately(wrap._fxDecision)") < settle_body.index(
+        "_routerFxFinishScan(wrap);"
+    )
+
+
 def test_router_fx_history_mode_has_no_motion_effects() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     css = CHAT_CSS.read_text(encoding="utf-8")
@@ -2720,7 +2814,10 @@ def test_router_fx_visualisation_pref_is_client_side_localstorage() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
 
     assert "const _ROUTER_FX_PREF_KEY = 'opensquilla-router-fx';" in source
-    assert "const _routerFx = { enabled: true, variant: 'default' };" in source
+    assert (
+        "const _routerFx = { enabled: true, visualMode: 'real_candidates', "
+        "variant: 'default' };"
+    ) in source
     assert "function _routerFxLoadPref() {" in source
     assert "function _routerFxSavePref() {" in source
     assert "localStorage.getItem(_ROUTER_FX_PREF_KEY)" in source
@@ -2737,6 +2834,8 @@ def test_router_fx_visualisation_pref_is_client_side_localstorage() -> None:
     load_body = source[load_start:load_end]
     assert "const saved = JSON.parse(raw);" in load_body
     assert "if (typeof saved.enabled === 'boolean') _routerFx.enabled = saved.enabled;" in load_body
+    assert "saved.visualMode" not in load_body
+    assert "saved.panel" not in load_body
     assert "saved.variant" not in load_body
     assert "_routerFx.variant = 'default';" in load_body
     assert "} catch { /* keep defaults */ }" in load_body
@@ -2747,6 +2846,8 @@ def test_router_fx_visualisation_pref_is_client_side_localstorage() -> None:
     save_body = source[save_start:save_end]
     assert "localStorage.setItem(_ROUTER_FX_PREF_KEY, JSON.stringify({" in save_body
     assert "enabled: _routerFx.enabled," in save_body
+    assert "visualMode:" not in save_body
+    assert "panel:" not in save_body
     assert "variant:" not in save_body
     assert "} catch { /* preference is best-effort */ }" in save_body
 
@@ -2771,7 +2872,10 @@ def test_router_effects_default_on_and_cloud_choice_hidden() -> None:
         .read_text(encoding="utf-8")
     )
 
-    assert "const _routerFx = { enabled: true, variant: 'default' };" in chat_source
+    assert (
+        "const _routerFx = { enabled: true, visualMode: 'real_candidates', "
+        "variant: 'default' };"
+    ) in chat_source
     assert (
         "try { return window.localStorage.getItem(_PREF_KEY) !== '0'; } catch { return true; }"
         in savings_source
@@ -2806,8 +2910,12 @@ def test_router_fx_render_gated_in_both_live_and_history_paths() -> None:
     )
     assert pre_gate in handler_body
     assert post_gate in handler_body
-    assert handler_body.index("_routerFxRememberTierDecision(tier, payload.model || '');") < \
-        handler_body.index(pre_gate)
+    remember_call = (
+        "_routerFxRememberTierDecision("
+        "tier, payload.model || '', payload.provider || payload.routed_provider || ''"
+        ")"
+    )
+    assert handler_body.index(remember_call) < handler_body.index(pre_gate)
     assert handler_body.index(pre_gate) < \
         handler_body.index("await _routerFxAwaitConfig();")
     # Re-checked AFTER the await as well — the user may flip OFF during the
@@ -3237,6 +3345,18 @@ def test_chat_streaming_text_strips_generated_artifact_markers() -> None:
     assert "_stripGeneratedArtifactMarkers(seg.raw)" in end_body
 
 
+def test_chat_stream_end_forces_bottom_scroll_after_final_render() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    end_start = source.index("function _endStreaming")
+    end_end = source.index("  /* ── Attachments", end_start)
+    end_body = source[end_start:end_end]
+
+    assert "_autoScroll = true;" in end_body
+    assert "_scrollToBottom();" in end_body
+    assert end_body.index("_routerFxStaticizeCompletedStrips") < end_body.index("_autoScroll = true;")
+    assert end_body.index("_autoScroll = true;") < end_body.index("_scrollToBottom();")
+
+
 def test_chat_history_text_segments_use_protocol_leak_guard() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     reconstruct_start = source.index("function _reconstructToolCalls")
@@ -3457,3 +3577,35 @@ def test_chat_queue_drain_preserves_draft_typed_during_stream() -> None:
     assert "_pendingAttachments = draftAttachments;" in body
     assert "_pendingSessionIntent = draftIntent;" in body
     assert body.index("_onSend();") < body.index("_textarea.value = draftText;")
+
+
+def test_chat_tool_error_envelope_renders_summary_not_protocol_payload() -> None:
+    """Error envelopes are recovery instructions addressed to the model;
+    the user-facing card shows a one-line summary and keeps the raw
+    payload behind View full (live incident agent:main:webchat:65dfv9pc).
+    """
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    start = source.index("function _summarizeToolErrorEnvelope(content)")
+    end = source.index("function _buildToolResultDOM(", start)
+    summarizer = source[start:end]
+    assert "data.status !== 'error'" in summarizer
+    assert "data.user_message" in summarizer
+
+    build_start = source.index("function _buildToolResultDOM(")
+    build_end = source.index("function _appendToolCall(", build_start)
+    build = source[build_start:build_end]
+    assert "const summary = _summarizeToolErrorEnvelope(content)" in build
+    assert "if (summary) preview = summary;" in build
+    assert "content.length > 200 || (isError && content !== preview)" in build
+
+
+def test_chat_tool_call_unwraps_unparsed_raw_argument_envelope() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    start = source.index("function _appendToolCall(payload)")
+    end = source.index("const toolId = payload.tool_use_id || '';", start)
+    body = source[start:end]
+
+    assert "typeof inputValue._raw === 'string'" in body
+    assert "Object.keys(inputValue).length === 1" in body
+    assert "inputValue = inputValue._raw;" in body

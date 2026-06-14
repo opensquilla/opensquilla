@@ -1,6 +1,4 @@
-"""Phase 1 — RouterDecisionEvent: ensure the event helper extracts the
-post-pipeline router metadata into a stable shape that the WebUI HUD can
-consume."""
+"""RouterDecisionEvent exposes post-pipeline routing metadata to WebUI surfaces."""
 
 from __future__ import annotations
 
@@ -43,6 +41,7 @@ def test_full_router_metadata_populates_all_event_fields() -> None:
     metadata = {
         "routed_tier": "c2",
         "routed_model": "claude-sonnet-4.6",
+        "routed_provider": "openrouter",
         "baseline_model": "claude-opus-4.7",
         "routing_source": "router",
         "routing_confidence": 0.71,
@@ -59,6 +58,7 @@ def test_full_router_metadata_populates_all_event_fields() -> None:
     assert event.tier == "c2"
     assert event.tier_index == 2
     assert event.model == "claude-sonnet-4.6"
+    assert event.provider == "openrouter"
     assert event.baseline_model == "claude-opus-4.7"
     assert event.source == "router"
     assert event.confidence == 0.71

@@ -21,6 +21,14 @@ class TextDeltaEvent:
 
 
 @dataclass
+class TextSnapshotEvent:
+    """A full replacement snapshot of the assistant text seen so far."""
+
+    kind: Literal["text_snapshot"] = field(default="text_snapshot", init=False)
+    text: str = ""
+
+
+@dataclass
 class ToolUseStartEvent:
     """LLM begins a tool call."""
 
@@ -115,12 +123,14 @@ class ModelCapabilities:
     supports_tools: bool = True
     supports_streaming: bool = True
     supports_vision: bool = False
+    tool_support_state: Literal["supported", "unsupported", "unknown"] = "supported"
     reasoning_format: str = "none"
     # "none" | "openrouter" | "deepseek" | "think_tags"
 
 
 StreamEvent = (
     TextDeltaEvent
+    | TextSnapshotEvent
     | ToolUseStartEvent
     | ToolUseDeltaEvent
     | ToolUseEndEvent
@@ -181,6 +191,9 @@ class ModelInfo(BaseModel):
     supports_tools: bool = True
     supports_streaming: bool = True
     supports_vision: bool = False
+    tool_support_state: Literal["supported", "unsupported", "unknown"] = "supported"
+    supported_parameters: tuple[str, ...] = ()
+    metadata_source: str = ""
     input_cost_per_1k: float = 0.0
     output_cost_per_1k: float = 0.0
 

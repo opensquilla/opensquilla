@@ -269,10 +269,8 @@ def test_memory_tool_descriptions_name_nested_memory_sources(tmp_path):
 
     assert memory_search is not None
     assert memory_get is not None
-    assert "By default, searches curated memory source files" in memory_search.spec.description
-    assert "MEMORY.md + memory/**/*.md" in memory_search.spec.description
+    assert "Searches curated memory source files by default" in memory_search.spec.description
     assert "source=sessions for indexed transcript snippets" in memory_search.spec.description
-    assert "exact transcript full-text search" in memory_search.spec.description
     assert "MEMORY.md or memory/**/*.md" in memory_get.spec.description
     assert "sessions source results are virtual snippets" in memory_get.spec.description
     assert "MEMORY.md or memory/**/*.md" in memory_get.spec.parameters["path"][
@@ -290,8 +288,6 @@ def test_session_search_description_separates_transcripts_from_curated_memory():
     assert "session transcripts" in session_search.spec.description
     assert "exact prior chat wording" in session_search.spec.description
     assert "transcript context" in session_search.spec.description
-    assert "memory_search" in session_search.spec.description
-    assert "does not search MEMORY.md or memory/**/*.md" in session_search.spec.description
     assert "debug" not in session_search.spec.description.lower()
 
 

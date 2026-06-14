@@ -3,9 +3,20 @@ from __future__ import annotations
 import tomllib
 from types import SimpleNamespace
 
-from opensquilla.gateway.config import GatewayConfig
+import pytest
+
+from opensquilla.gateway.boot import _openai_compatible_catalog_sources
+from opensquilla.gateway.config import (
+    GatewayConfig,
+    SquillaRouterConfig,
+    _router_tier_profile_defaults,
+)
 from opensquilla.gateway.llm_runtime import resolve_llm_runtime_config
-from opensquilla.gateway.rpc_config import _handle_config_patch, _sync_provider_selector
+from opensquilla.gateway.rpc_config import (
+    _handle_config_patch,
+    _handle_config_patch_safe,
+    _sync_provider_selector,
+)
 
 
 class _CapturingSelector:
@@ -96,6 +107,96 @@ def test_direct_provider_runtime_does_not_inherit_openrouter_provider_routing() 
     assert runtime.provider_routing == {}
 
 
+def test_squilla_router_visual_mode_defaults_to_real_candidates() -> None:
+    cfg = GatewayConfig()
+
+    assert cfg.squilla_router.visual_mode == "real_candidates"
+    assert cfg.to_public_dict()["squilla_router"]["visual_mode"] == "real_candidates"
+
+
+def test_squilla_router_visual_mode_accepts_legacy_grid_and_model_space_alias() -> None:
+    legacy_cfg = GatewayConfig(squilla_router={"visual_mode": "legacy_grid"})
+    alias_cfg = GatewayConfig(squilla_router={"visual_mode": "model_space"})
+    dashed_alias_cfg = GatewayConfig(squilla_router={"visual_mode": "model-space"})
+
+    assert legacy_cfg.squilla_router.visual_mode == "legacy_grid"
+    assert alias_cfg.squilla_router.visual_mode == "legacy_grid"
+    assert dashed_alias_cfg.squilla_router.visual_mode == "legacy_grid"
+
+
+def test_squilla_router_visual_mode_rejects_unknown_value() -> None:
+    with pytest.raises(ValueError, match="visual_mode must be one of"):
+        GatewayConfig(squilla_router={"visual_mode": "all_models"})
+
+
+def test_gateway_config_rejects_invalid_router_tier_tool_support() -> None:
+    with pytest.raises(ValueError, match="tool_support must be one of"):
+        GatewayConfig(
+            squilla_router={
+                "tiers": {
+                    "c1": {
+                        "provider": "openrouter",
+                        "model": "z-ai/glm-5.1",
+                        "toolSupport": "maybe",
+                    }
+                }
+            }
+        )
+
+
+def test_openai_compatible_catalog_sources_include_router_tiers_and_dedupe(monkeypatch) -> None:
+    monkeypatch.setenv("SELF_HOSTED_OPENAI_KEY", "tier-key")
+    cfg = GatewayConfig(
+        llm={
+            "provider": "inception",
+            "model": "inception/mercury-2",
+            "api_key": "base-key",
+            "base_url": "https://api.inceptionlabs.ai/v1",
+        },
+        squilla_router={
+            "tiers": {
+                "c1": {
+                    "provider": "openai_compatible",
+                    "model": "local-a",
+                    "base_url": "http://localhost:8008/v1",
+                    "api_key_env": "SELF_HOSTED_OPENAI_KEY",
+                    "tool_probe_mode": "auto",
+                },
+                "c2": {
+                    "provider": "openai_compatible",
+                    "model": "local-b",
+                    "base_url": "http://localhost:8008",
+                    "api_key_env": "SELF_HOSTED_OPENAI_KEY",
+                },
+                "c3": {
+                    "provider": "openai_compatible",
+                    "model": "local-c",
+                    "base_url": "http://localhost:8009/v1",
+                    "api_key": "other-key",
+                },
+            }
+        },
+    )
+
+    sources = _openai_compatible_catalog_sources(
+        cfg,
+        base_provider="inception",
+        base_url="https://api.inceptionlabs.ai/v1",
+        api_key="base-key",
+        proxy="",
+    )
+
+    assert [(s.provider_name, s.base_url, s.api_key) for s in sources] == [
+        ("inception", "https://api.inceptionlabs.ai/v1", "base-key"),
+        ("openai_compatible", "http://localhost:8008/v1", "tier-key"),
+        ("openai_compatible", "http://localhost:8009/v1", "other-key"),
+    ]
+    assert [(m.model_id, m.tool_support, m.tool_probe_mode) for m in sources[1].models] == [
+        ("local-a", "auto", "auto"),
+        ("local-b", "auto", "required"),
+    ]
+
+
 def test_runtime_config_sync_resolves_selected_provider_env(monkeypatch) -> None:
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
@@ -131,3 +232,146 @@ async def test_config_patch_runtime_env_key_is_not_persisted(monkeypatch, tmp_pa
     persisted = tomllib.loads((tmp_path / "config.toml").read_text())
     assert persisted["squilla_router"]["tier_profile"] == "deepseek"
     assert "api_key" not in persisted["llm"]
+
+
+async def test_safe_config_patch_allows_tool_support_leaf_paths(tmp_path) -> None:
+    cfg = GatewayConfig(config_path=str(tmp_path / "config.toml"))
+    selector = _CapturingSelector()
+    ctx = SimpleNamespace(config=cfg, provider_selector=selector)
+
+    await _handle_config_patch_safe(
+        {
+            "patches": {
+                "llm.tool_support": "off",
+                "squilla_router.tiers.c1.tool_support": "on",
+            }
+        },
+        ctx,
+    )
+
+    assert ctx.config.llm.tool_support == "off"
+    assert ctx.config.squilla_router.tiers["c1"]["tool_support"] == "on"
+    persisted = tomllib.loads((tmp_path / "config.toml").read_text())
+    assert persisted["llm"]["tool_support"] == "off"
+    assert persisted["squilla_router"]["tiers"]["c1"]["tool_support"] == "on"
+
+
+async def test_safe_config_patch_allows_tool_schema_fit_leaf_paths(tmp_path) -> None:
+    cfg = GatewayConfig(config_path=str(tmp_path / "config.toml"))
+    selector = _CapturingSelector()
+    ctx = SimpleNamespace(config=cfg, provider_selector=selector)
+
+    await _handle_config_patch_safe(
+        {
+            "patches": {
+                "llm.toolset": "web",
+                "llm.max_tool_schema_chars": 12000,
+                "squilla_router.tiers.c1.toolset": "web",
+                "squilla_router.tiers.c1.max_tool_schema_chars": 12000,
+            }
+        },
+        ctx,
+    )
+
+    assert ctx.config.llm.toolset == "web"
+    assert ctx.config.llm.max_tool_schema_chars == 12000
+    assert ctx.config.squilla_router.tiers["c1"]["toolset"] == "web"
+    assert ctx.config.squilla_router.tiers["c1"]["max_tool_schema_chars"] == 12000
+    persisted = tomllib.loads((tmp_path / "config.toml").read_text())
+    assert persisted["llm"]["toolset"] == "web"
+    assert persisted["llm"]["max_tool_schema_chars"] == 12000
+    assert persisted["squilla_router"]["tiers"]["c1"]["toolset"] == "web"
+    assert persisted["squilla_router"]["tiers"]["c1"]["max_tool_schema_chars"] == 12000
+
+
+async def test_safe_config_patch_rejects_deprecated_router_tier_tool_keys(tmp_path) -> None:
+    cfg = GatewayConfig(config_path=str(tmp_path / "config.toml"))
+    selector = _CapturingSelector()
+    ctx = SimpleNamespace(config=cfg, provider_selector=selector)
+
+    for key, value in (
+        ("tool_route_reliability", "experimental"),
+        ("tool_call_protocol", "auto"),
+    ):
+        with pytest.raises(ValueError, match="Path is not safe"):
+            await _handle_config_patch_safe(
+                {"patches": {f"squilla_router.tiers.c1.{key}": value}},
+                ctx,
+            )
+
+
+async def test_safe_config_patch_allows_router_tier_tool_probe_mode(tmp_path) -> None:
+    cfg = GatewayConfig(config_path=str(tmp_path / "config.toml"))
+    selector = _CapturingSelector()
+    ctx = SimpleNamespace(config=cfg, provider_selector=selector)
+
+    await _handle_config_patch_safe(
+        {
+            "patches": {
+                "squilla_router.tiers.c1.tool_probe_mode": "auto",
+            }
+        },
+        ctx,
+    )
+
+    assert ctx.config.squilla_router.tiers["c1"]["tool_probe_mode"] == "auto"
+    persisted = tomllib.loads((tmp_path / "config.toml").read_text())
+    assert persisted["squilla_router"]["tiers"]["c1"]["tool_probe_mode"] == "auto"
+
+
+def test_deprecated_tier_tool_keys_warn_once_and_pass_through(monkeypatch) -> None:
+    from opensquilla.gateway import config as config_module
+
+    monkeypatch.setattr(config_module, "_DEAD_TIER_TOOL_KEYS_WARNED", False)
+    tiers = _router_tier_profile_defaults("openrouter")
+    tiers["c1"] = dict(tiers["c1"])
+    tiers["c1"]["tool_call_protocol"] = "native"
+    tiers["c1"]["tool_route_reliability"] = "verified"
+
+    with pytest.warns(DeprecationWarning, match="never consumed"):
+        cfg = SquillaRouterConfig(tiers=tiers)
+
+    assert cfg.tiers["c1"]["tool_call_protocol"] == "native"
+    assert cfg.tiers["c1"]["tool_route_reliability"] == "verified"
+
+
+async def test_safe_config_patch_rejects_tool_required_bypass_gate(tmp_path) -> None:
+    cfg = GatewayConfig(config_path=str(tmp_path / "config.toml"))
+    selector = _CapturingSelector()
+    ctx = SimpleNamespace(config=cfg, provider_selector=selector)
+
+    with pytest.raises(ValueError, match="Path is not safe"):
+        await _handle_config_patch_safe(
+            {
+                "patches": {
+                    "squilla_router.tool_required_anti_downgrade_bypass_enabled": True,
+                }
+            },
+            ctx,
+        )
+
+    assert not hasattr(ctx.config.squilla_router, "tool_required_anti_downgrade_bypass_enabled")
+
+async def test_safe_config_patch_allows_router_visual_mode(tmp_path) -> None:
+    cfg = GatewayConfig(config_path=str(tmp_path / "config.toml"))
+    ctx = SimpleNamespace(config=cfg, provider_selector=_CapturingSelector())
+
+    await _handle_config_patch_safe(
+        {"patches": {"squilla_router.visual_mode": "legacy_grid"}},
+        ctx,
+    )
+
+    assert ctx.config.squilla_router.visual_mode == "legacy_grid"
+    persisted = tomllib.loads((tmp_path / "config.toml").read_text())
+    assert persisted["squilla_router"]["visual_mode"] == "legacy_grid"
+
+
+async def test_safe_config_patch_rejects_non_tool_support_tier_paths(tmp_path) -> None:
+    cfg = GatewayConfig(config_path=str(tmp_path / "config.toml"))
+    ctx = SimpleNamespace(config=cfg, provider_selector=_CapturingSelector())
+
+    with pytest.raises(ValueError, match="Path is not safe"):
+        await _handle_config_patch_safe(
+            {"patches": {"squilla_router.tiers.c1.model": "custom/model"}},
+            ctx,
+        )

@@ -10,6 +10,8 @@ from opensquilla.provider.failures import ProviderFailureKind, classify_provider
     "provider",
     [
         "deepseek",
+        "openai_compatible",
+        "inception",
         "gemini",
         "dashscope",
         "bailian_coding",

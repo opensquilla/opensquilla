@@ -47,6 +47,10 @@ class _SynthesisStreamCollector:
             text = _optional_str(_event_value(event, "text"))
             if text:
                 self._text_deltas.append(text)
+        elif event_kind == "text_snapshot":
+            text = _optional_str(_event_value(event, "text"))
+            if text:
+                self._text_deltas[:] = [text]
         elif event_kind == "done":
             text = _optional_str(_event_value(event, "text"))
             if text:

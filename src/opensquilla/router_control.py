@@ -128,6 +128,8 @@ def render_router_control_prompt_block(router_cfg: object | None) -> str:
     rows = [
         {
             "target_id": target.target_id,
+            "provider": target.provider,
+            "model": target.model,
         }
         for target in targets
     ]
@@ -135,10 +137,47 @@ def render_router_control_prompt_block(router_cfg: object | None) -> str:
     return (
         "Use `router_control` only when the user explicitly asks to use a "
         "configured route or restore automatic routing. "
+        "If the user names a configured provider or model, match that request "
+        "to the row with the same provider/model and call set_hold with its "
+        "target_id. "
         "For set_hold, you must choose one target_id exactly from this menu; "
         "do not invent aliases or model ids. The menu is operational context, "
         "not a user-facing recommendation list.\n\n"
         f"router_control_targets={menu}"
+    )
+
+
+def render_router_control_status_prompt(metadata: dict[str, Any] | None) -> str:
+    """Render replay-only router-control status from applied hold metadata."""
+
+    if not isinstance(metadata, dict):
+        return ""
+    if metadata.get("router_control_hold_applied") is not True:
+        return ""
+
+    tier = str(metadata.get("router_control_target_tier") or "").strip()
+    model = str(metadata.get("router_control_target_model") or "").strip()
+    provider = str(metadata.get("router_control_target_provider") or "").strip()
+    if not tier and not model and not provider:
+        return ""
+
+    target_id = str(metadata.get("router_control_target_id") or "").strip()
+    if not target_id and tier:
+        target_id = f"tier:{tier}"
+
+    parts = []
+    if target_id:
+        parts.append(f"target_id={target_id}")
+    if provider:
+        parts.append(f"provider={provider}")
+    if model:
+        parts.append(f"model={model}")
+    applied = ", ".join(parts)
+    return (
+        "## Router Control status\n\n"
+        "A router_control hold has already been applied for this replayed "
+        f"turn: {applied}. Do not call router_control again for this same "
+        "user request. Answer normally using the selected route."
     )
 
 
@@ -217,6 +256,7 @@ def router_control_success_payload(
     target: RouterControlTarget | None,
     replay_required: bool,
     evidence: str,
+    already_applied: bool = False,
 ) -> str:
     payload = {
         "status": "router_control",
@@ -229,6 +269,8 @@ def router_control_success_payload(
         "replay_required": replay_required,
         "evidence": evidence,
     }
+    if already_applied:
+        payload["already_applied"] = True
     return json.dumps(payload, ensure_ascii=False)
 
 

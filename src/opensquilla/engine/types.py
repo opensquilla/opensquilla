@@ -65,6 +65,12 @@ class TextDeltaEvent:
 
 
 @dataclass
+class TextSnapshotEvent:
+    kind: Literal["text_snapshot"] = field(default="text_snapshot", init=False)
+    text: str = ""
+
+
+@dataclass
 class RunHeartbeatEvent:
     kind: Literal["run_heartbeat"] = field(default="run_heartbeat", init=False)
     phase: str = "agent"
@@ -176,6 +182,7 @@ class DoneEvent:
     vision_followup_gate_model: str | None = None
     vision_followup_needs_image: bool | None = None
     vision_followup_fallback: str | None = None
+    routed_provider: str = ""
 
     @property
     def upstream_cost_usd(self) -> float:
@@ -208,6 +215,7 @@ class RouterDecisionEvent:
     prompt_policy: str = ""
     routing_applied: bool = True
     rollout_phase: str = "full"
+    provider: str = ""
 
 
 @dataclass
@@ -329,6 +337,7 @@ class CompactionOutcome:
 AgentEvent = (
     ThinkingEvent
     | TextDeltaEvent
+    | TextSnapshotEvent
     | RunHeartbeatEvent
     | ToolUseStartEvent
     | ToolResultEvent
@@ -454,6 +463,10 @@ class AgentConfig:
     tool_use_argument_projection_enabled: bool = False
     tool_result_external_keep_recent: int = 2
     tool_failure_loop_block_threshold: int = 3
+    # Per-turn count of SUCCESSFUL web acquisition calls after which results
+    # carry a usage note nudging the model to answer from gathered evidence.
+    # Advisory shaping only — never blocks. 0 disables.
+    tool_repetition_advice_threshold: int = 6
     tool_result_store_dir: str | None = None
     tool_result_store_session_id: str | None = None
     tool_result_store_session_key: str | None = None

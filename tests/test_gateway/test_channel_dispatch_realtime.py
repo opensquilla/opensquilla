@@ -16,6 +16,7 @@ from opensquilla.engine.types import (
     ArtifactEvent,
     DoneEvent,
     TextDeltaEvent,
+    TextSnapshotEvent,
     ToolResultEvent,
     ToolUseStartEvent,
 )
@@ -1214,6 +1215,52 @@ def test_direct_streaming_path_emits_tool_events_to_webui() -> None:
 
 
 @pytest.mark.asyncio
+async def test_direct_streaming_path_turns_snapshots_into_appendable_chunks() -> None:
+    class StreamingChannel(_FakeChannel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.chunks: list[str] = []
+
+        async def send_streaming(self, chunks, **kwargs):
+            text = ""
+            async for chunk in chunks:
+                self.chunks.append(chunk)
+                text += chunk
+            self.sent.append(OutgoingMessage(content=text))
+
+    class FakeTurnRunner:
+        async def run(self, message: str, session_key: str, **kwargs):
+            yield TextSnapshotEvent(text="O")
+            yield TextSnapshotEvent(text="OK")
+            yield DoneEvent()
+
+    channel = StreamingChannel()
+    bridge = _FakeEventBridge()
+    config = SimpleNamespace(
+        agent_stream_heartbeat_interval_seconds=0.0,
+        agent_stream_idle_timeout_seconds=1.0,
+    )
+
+    await _run_turn_with_streaming(
+        channel,
+        FakeTurnRunner(),
+        _message(),
+        "agent:main:stream-snapshot",
+        bridge,
+        None,
+        config,
+    )
+
+    assert channel.chunks == ["O", "K"]
+    assert channel.sent[-1].content == "OK"
+    assert [
+        payload["text"]
+        for _, event_name, payload in bridge.events
+        if event_name == "session.event.text_snapshot"
+    ] == ["O", "OK"]
+
+
+@pytest.mark.asyncio
 async def test_direct_streaming_path_fallback_skips_delivered_chunks() -> None:
     class FailingLateStreamingChannel(_FakeChannel):
         def __init__(self) -> None:
@@ -1897,6 +1944,36 @@ async def test_runtime_channel_stream_relay_coalesces_consecutive_deltas() -> No
     # Coalescing should land them in a single chunk; allow up to two chunks
     # in case scheduler latency split the batch in half.
     assert len(channel.chunks) <= 2
+
+
+@pytest.mark.asyncio
+async def test_runtime_channel_stream_relay_converts_snapshots_to_appendable_chunks() -> None:
+    class StreamingChannel:
+        def __init__(self) -> None:
+            self.chunks: list[str] = []
+
+        async def send_streaming(self, chunks, **kwargs):
+            async for chunk in chunks:
+                self.chunks.append(chunk)
+
+    class FakeTaskRuntime:
+        async def enqueue(self, envelope, message: str, *, stream_event_sink=None):
+            return None
+
+    channel = StreamingChannel()
+    relay = _RuntimeChannelStreamRelay.maybe_start(
+        channel,
+        _message(),
+        FakeTaskRuntime(),
+    )
+
+    assert relay is not None
+
+    await relay.emit(TextSnapshotEvent(text="O"))
+    await relay.emit(TextSnapshotEvent(text="OK"))
+    await relay.close()
+
+    assert channel.chunks == ["O", "K"]
 
 
 @pytest.mark.asyncio

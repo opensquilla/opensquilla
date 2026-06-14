@@ -143,7 +143,8 @@ const ChatView = (() => {
     const out = {};
     [
       'event', 'stream_seq', 'epoch', 'from_state', 'to_state', 'toState',
-      'tier', 'model', 'routed_tier', 'routed_model', 'routing_source',
+      'tier', 'model', 'provider', 'routed_tier', 'routed_model',
+      'routed_provider', 'routing_source',
       'routing_applied', 'rollout_phase', 'reason', 'tool_name', 'name',
       'tool_use_id', 'message_id', 'sessionKey', 'session_key',
       'input_tokens', 'output_tokens',
@@ -987,7 +988,7 @@ const ChatView = (() => {
 
   function _historyTurnMeta(msg) {
     const u = msg?.usage || msg?.turn_usage || null;
-    const model = msg?.model || u?.model || u?.routed_model || '';
+    const model = msg?.routed_model || u?.routed_model || msg?.model || u?.model || '';
     const input = Number(msg?.input ?? msg?.input_tokens ?? u?.input_tokens ?? u?.inputTokens ?? 0);
     const output = Number(msg?.output ?? msg?.output_tokens ?? u?.output_tokens ?? u?.outputTokens ?? 0);
     if (!model && input <= 0 && output <= 0 && !u) return null;
@@ -1463,6 +1464,7 @@ const ChatView = (() => {
       // per browser, so it survives view re-render / navigation. Inherits the
       // visibility/focus refresh that re-runs this function for free.
       _routerFxLoadPref();
+      _routerFxApplyConfigVisualMode(cfg?.squilla_router?.visual_mode);
       const routerFxToggle = _el?.querySelector('#toggle-router-fx');
       if (routerFxToggle) routerFxToggle.checked = _routerFx.enabled;
       if (window.SavingsFX) window.SavingsFX.setEnabled(_routerFx.enabled);
@@ -1493,6 +1495,7 @@ const ChatView = (() => {
           configTierSet.add(lower);
           const rawTier = tiers[tier];
           const tierConfig = {
+            provider: typeof rawTier?.provider === 'string' ? rawTier.provider : '',
             model: typeof rawTier?.model === 'string' ? rawTier.model : '',
             supportsImage: rawTier?.supports_image === true,
             imageOnly: rawTier?.image_only === true,
@@ -3319,10 +3322,70 @@ const ChatView = (() => {
   // the whole animation (scan + ~360ms settle transition) stays under ~1s.
   const _ROUTER_FX_SCAN_MS = 600;
   const _ROUTER_FX_START_DELAY_MS = 280;
-  const _routerFx = { enabled: true, variant: 'default' };
+  const _ROUTER_FX_GRID_COLS = 5;
+  const _ROUTER_FX_GRID_ROWS = 3;
+  const _ROUTER_FX_GRID_CELLS = _ROUTER_FX_GRID_COLS * _ROUTER_FX_GRID_ROWS;
+  const _ROUTER_FX_REAL_ANCHOR_CELLS = [1, 6, 8, 13, 11, 3, 5, 9, 12, 14, 0, 4, 7, 10, 2];
+  const _ROUTER_FX_DECOY_POOL = [
+    'deepseek-v4-flash',
+    'claude-sonnet-4.6',
+    'qwen3.6-plus',
+    'minimax-m2.7',
+    'gpt-5.5',
+    'gemini-3.5-flash',
+    'glm-5-turbo',
+    'claude-opus-4.8',
+    'nemotron-3-super',
+    'deepseek-v4-pro',
+    'mimo-v2.5-pro',
+    'gpt-5.4',
+    'kimi-k2.6',
+    'claude-opus-4.7',
+    'gemini-3.1-flash-lite',
+    'glm-5.1',
+    'qwen3.6-max',
+    'claude-haiku-4.5',
+    'grok-4.3',
+    'gpt-5.4-mini',
+    'gemini-2.5-flash',
+    'step-3.5-flash',
+    'mistral-medium-3.5',
+    'ling-2.6-1t',
+    'deepseek-v3.2',
+    'trinity-large-thinking',
+    'gemini-2.5-pro',
+    'seed-2.0-mini',
+    'gpt-5.3-codex',
+    'grok-4.20',
+    'mercury-2',
+    'hunyuan-3',
+    'mimo-v2-omni',
+    'command-r-plus',
+    'llama-4-405b',
+    'sonar-large',
+  ];
+  const _routerFx = { enabled: true, visualMode: 'real_candidates', variant: 'default' };
+  function _routerFxNormalizeVisualMode(mode) {
+    const normalized = typeof mode === 'string'
+      ? mode.trim().toLowerCase().replace(/-/g, '_')
+      : '';
+    if (normalized === 'legacy_grid' || normalized === 'model_space') {
+      return 'legacy_grid';
+    }
+    return 'real_candidates';
+  }
+  function _routerFxPanelDataset(mode) {
+    return _routerFxNormalizeVisualMode(mode) === 'legacy_grid'
+      ? 'legacy-grid'
+      : 'real-candidates';
+  }
+  function _routerFxApplyConfigVisualMode(mode) {
+    _routerFx.visualMode = _routerFxNormalizeVisualMode(mode);
+  }
   function _routerFxLoadPref() {
     // Defaults stand (enabled ON, default variant) unless a stored pref
     // overrides them. localStorage may throw (private mode / quota) — swallow.
+    _routerFx.visualMode = 'real_candidates';
     _routerFx.variant = 'default';
     try {
       const raw = localStorage.getItem(_ROUTER_FX_PREF_KEY);
@@ -3377,6 +3440,53 @@ const ChatView = (() => {
     return _modelDisplayName(name);
   }
 
+  function _routerFxProviderKey(provider) {
+    return typeof provider === 'string' ? provider.trim().toLowerCase() : '';
+  }
+
+  function _routerFxVisualKey(displayName, providerKey, fallback) {
+    const modelKey = typeof displayName === 'string' ? displayName.trim().toLowerCase() : '';
+    const fallbackKey = typeof fallback === 'string' ? fallback.trim().toLowerCase() : '';
+    return (providerKey || '') + '|' + (modelKey || fallbackKey);
+  }
+
+  function _routerFxProviderDisplayName(provider) {
+    const key = _routerFxProviderKey(provider);
+    return key ? key.replace(/_/g, '-') : '';
+  }
+
+  function _routerFxDuplicateDisplayNames(entries) {
+    const counts = new Map();
+    Array.from(entries).forEach((entry) => {
+      const displayKey = String(entry.displayName || '').trim().toLowerCase();
+      if (!displayKey) return;
+      counts.set(displayKey, (counts.get(displayKey) || 0) + 1);
+    });
+    const duplicates = new Set();
+    counts.forEach((count, displayKey) => {
+      if (count > 1) duplicates.add(displayKey);
+    });
+    return duplicates;
+  }
+
+  function _routerFxEntryDisplayLabel(entry, duplicateDisplayNames) {
+    const modelLabel = entry.displayName || (entry.model ? _routerFxStripProvider(entry.model) : entry.tiers[0]);
+    const displayKey = String(modelLabel || '').trim().toLowerCase();
+    const needsProvider = displayKey && duplicateDisplayNames && duplicateDisplayNames.has(displayKey);
+    const providerLabel = needsProvider
+      ? _routerFxProviderDisplayName(entry.provider || (entry.providers && entry.providers[0]) || '')
+      : '';
+    return providerLabel ? providerLabel + ' · ' + modelLabel : modelLabel;
+  }
+
+  function _routerFxEntryTitle(entry) {
+    const providers = Array.isArray(entry.providers) ? entry.providers.filter(Boolean) : [];
+    const providerLabel = providers.length ? providers.join(', ') : (entry.provider || '');
+    const modelLabel = entry.model || entry.displayName || entry.label || '';
+    if (providerLabel && modelLabel) return providerLabel + ' · ' + modelLabel;
+    return modelLabel || providerLabel || entry.displayName || entry.key || '';
+  }
+
   function _routerFxRequestKindFromAttachments(attachments) {
     const list = Array.isArray(attachments) ? attachments : [];
     for (const item of list) {
@@ -3395,22 +3505,24 @@ const ChatView = (() => {
     const known = norm ? _routerFxTierConfigs[norm] : null;
     if (known) return known;
     return {
+      provider: '',
       model: norm && _routerFxModels[norm] ? _routerFxModels[norm] : '',
       supportsImage: false,
       imageOnly: false,
     };
   }
 
-  function _routerFxRememberTierDecision(tier, model) {
+  function _routerFxRememberTierDecision(tier, model, provider) {
     if (typeof tier !== 'string' || !tier) return;
     const norm = tier.toLowerCase();
     _routerFxRegisterTier(norm);
-    if (!model) return;
-    const modelName = String(model);
-    _routerFxModels[norm] = modelName;
     const current = _routerFxTierConfigs[norm] || {};
+    const modelName = model ? String(model) : (current.model || '');
+    const providerName = provider ? String(provider) : (current.provider || '');
+    if (modelName) _routerFxModels[norm] = modelName;
     _routerFxTierConfigs[norm] = {
       model: modelName,
+      provider: providerName,
       supportsImage: current.supportsImage === true,
       imageOnly: current.imageOnly === true,
     };
@@ -3433,43 +3545,80 @@ const ChatView = (() => {
   function _routerFxVisualEntries(requestKind, decision) {
     if (_routerFxConfigTiers === null) return [];
     const kind = _routerFxRequestKindFromDecision(decision, requestKind);
-    const byDisplay = new Map();
+    const byVisualKey = new Map();
     _routerFxSlotList.forEach((tier) => {
       if (_routerFxConfigTiers !== null && !_routerFxConfigTiers.has(tier)) return;
       const tierConfig = _routerFxTierConfig(tier);
       if (!_routerFxTierMatchesRequestKind(tierConfig, kind)) return;
       const displayName = tierConfig.model ? _routerFxStripProvider(tierConfig.model) : tier;
-      const key = displayName ? displayName.toLowerCase() : tier;
-      let entry = byDisplay.get(key);
+      const providerKey = _routerFxProviderKey(tierConfig.provider);
+      const key = _routerFxVisualKey(displayName, providerKey, tier);
+      let entry = byVisualKey.get(key);
       if (!entry) {
-        entry = { key, tiers: [], model: tierConfig.model || '', displayName };
-        byDisplay.set(key, entry);
+        entry = {
+          key,
+          provider: tierConfig.provider || '',
+          providerKey,
+          tiers: [],
+          providers: [],
+          model: tierConfig.model || '',
+          displayName,
+        };
+        byVisualKey.set(key, entry);
       }
       entry.tiers.push(tier);
+      if (tierConfig.provider && entry.providers.indexOf(tierConfig.provider) < 0) {
+        entry.providers.push(tierConfig.provider);
+      }
       if (!entry.model && tierConfig.model) entry.model = tierConfig.model;
     });
-    const decisionTier = decision && typeof decision.tier === 'string'
-      ? decision.tier.toLowerCase()
+    const decisionTier = _routerFxNormalizeTier(decision && (decision.tier || decision.routed_tier || ''));
+    const decisionModel = decision && typeof (decision.model || decision.routed_model) === 'string'
+      ? (decision.model || decision.routed_model)
       : '';
-    const decisionModel = decision && typeof decision.model === 'string' ? decision.model : '';
     if (decisionTier && decisionModel) {
       const displayName = _routerFxStripProvider(decisionModel);
-      const key = displayName ? displayName.toLowerCase() : decisionTier;
-      let entry = byDisplay.get(key);
+      const decisionConfig = _routerFxTierConfig(decisionTier);
+      const decisionProvider = decision.provider || decision.routed_provider || '';
+      const decisionProviderKey = _routerFxProviderKey(decisionProvider || decisionConfig.provider);
+      const key = _routerFxVisualKey(displayName, decisionProviderKey, decisionTier);
+      let entry = byVisualKey.get(key);
       if (!entry && _routerFxTierMatchesRequestKind(_routerFxTierConfig(decisionTier), kind)) {
-        entry = { key, tiers: [], model: decisionModel, displayName };
-        byDisplay.set(key, entry);
+        entry = {
+          key,
+          provider: decisionProvider || decisionConfig.provider || '',
+          providerKey: decisionProviderKey,
+          tiers: [],
+          providers: [],
+          model: decisionModel,
+          displayName,
+        };
+        byVisualKey.set(key, entry);
       }
       if (entry) {
         if (entry.tiers.indexOf(decisionTier) < 0) entry.tiers.push(decisionTier);
+        const effectiveDecisionProvider = decisionProvider || decisionConfig.provider || '';
+        if (effectiveDecisionProvider && entry.providers.indexOf(effectiveDecisionProvider) < 0) {
+          entry.providers.push(effectiveDecisionProvider);
+        }
+        if (!entry.provider && effectiveDecisionProvider) {
+          entry.provider = effectiveDecisionProvider;
+          entry.providerKey = _routerFxProviderKey(effectiveDecisionProvider);
+        }
         if (!entry.model) entry.model = decisionModel;
       }
     }
-    return Array.from(byDisplay.values()).map((e) => ({
+    const duplicateDisplayNames = _routerFxDuplicateDisplayNames(byVisualKey.values());
+    return Array.from(byVisualKey.values()).map((e) => ({
       key: e.key,
       tiers: _routerFxSortTiers(e.tiers),
+      provider: e.provider || (Array.isArray(e.providers) ? e.providers[0] : '') || '',
+      providerKey: e.providerKey || _routerFxProviderKey(e.provider || ''),
+      providers: Array.isArray(e.providers) ? e.providers.slice() : [],
       model: e.model,
       displayName: e.displayName || (e.model ? _routerFxStripProvider(e.model) : e.tiers[0]),
+      label: _routerFxEntryDisplayLabel(e, duplicateDisplayNames),
+      title: _routerFxEntryTitle(e),
     }));
   }
 
@@ -3553,19 +3702,37 @@ const ChatView = (() => {
   function _routerFxResolveLayoutSeed(sessionKey, hintTimestamp) {
     return _routerFxResolveSeed(sessionKey, 0, 'layout', hintTimestamp);
   }
-  function _routerFxIdentity(model, tier) {
+  function _routerFxIdentity(model, tier, provider) {
     const modelPart = typeof model === 'string' ? model.trim().toLowerCase() : '';
     const tierPart = _routerFxNormalizeTier(tier);
-    if (!modelPart && !tierPart) return '';
-    return modelPart + '|' + tierPart;
+    const providerPart = typeof provider === 'string' ? provider.trim().toLowerCase() : '';
+    if (!modelPart && !tierPart && !providerPart) return '';
+    return modelPart + '|' + tierPart + '|' + providerPart;
   }
   function _routerFxDecisionIdentity(decision) {
     if (!decision || typeof decision !== 'object') return '';
-    return _routerFxIdentity(decision.model || decision.routed_model || '', decision.tier || decision.routed_tier || '');
+    return _routerFxIdentity(
+      decision.model || decision.routed_model || '',
+      decision.tier || decision.routed_tier || '',
+      decision.provider || decision.routed_provider || '',
+    );
+  }
+  function _routerFxIsDiffusionModel(model) {
+    const label = _routerFxStripProvider(String(model || '')).toLowerCase();
+    const lowered = String(model || '').toLowerCase() + ' ' + label;
+    return lowered.indexOf('mercury') >= 0 || lowered.indexOf('llada') >= 0;
+  }
+  function _routerFxShouldSettleImmediately(decision) {
+    if (!decision || typeof decision !== 'object') return false;
+    return _routerFxIsDiffusionModel(decision.model || decision.routed_model || '');
   }
   function _routerFxUsageIdentity(usage) {
     if (!usage || typeof usage !== 'object') return '';
-    return _routerFxIdentity(usage.routed_model || usage.model || '', usage.routed_tier || '');
+    return _routerFxIdentity(
+      usage.routed_model || usage.model || '',
+      usage.routed_tier || '',
+      usage.routed_provider || usage.provider || '',
+    );
   }
   function _routerFxCountUserMessages() {
     if (!_thread) return 0;
@@ -3611,23 +3778,105 @@ const ChatView = (() => {
 
   // Build the visual roster for this turn only. Text requests exclude
   // image-only routes; image requests include only image-capable routes.
-  // Entries are deduped by display model name so provider/thinking/tier
-  // differences do not create extra visual cells.
+  // Entries are keyed by provider plus display model name so a self-hosted
+  // and hosted copy of the same model can appear as distinct candidates.
   function _routerFxRealEntries(decision, requestKind) {
     return _routerFxVisualEntries(requestKind, decision);
   }
 
-  // Assemble the grid from real candidates only. No filler/decoy wall: every
-  // visible model name is a candidate that could actually be called this turn.
-  function _routerFxBuildGridCells(realEntries, seedKey) {
+  function _routerFxShuffle(items, seedKey) {
+    const shuffled = items.slice();
+    let state = 2166136261;
+    const seed = String(seedKey || 'router-fx');
+    for (let i = 0; i < seed.length; i++) {
+      state ^= seed.charCodeAt(i);
+      state = Math.imul(state, 16777619);
+    }
+    state >>>= 0;
+    if (!state) state = 0x9e3779b9;
+    const nextRandom = () => {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return state / 0x100000000;
+    };
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(nextRandom() * (i + 1));
+      const tmp = shuffled[i];
+      shuffled[i] = shuffled[j];
+      shuffled[j] = tmp;
+    }
+    return shuffled;
+  }
+
+  // Assemble the default panel from real candidates only. No filler/decoy
+  // wall: every visible model name is callable for this turn.
+  function _routerFxBuildCandidateGridCells(realEntries, seedKey) {
     const orderedRealEntries = realEntries.slice().sort((a, b) => (
-      (a.displayName || a.key || '').localeCompare(b.displayName || b.key || '')
+      (a.label || a.displayName || a.key || '').localeCompare(b.label || b.displayName || b.key || '')
     ));
     return orderedRealEntries.map((entry) => ({
       kind: 'real',
       entry,
       displayName: entry.displayName,
+      label: entry.label || entry.displayName,
+      title: entry.title || entry.label || entry.displayName,
     }));
+  }
+
+  // Legacy grid is a visual wall only: real candidates keep their in-memory
+  // entries for winner lookup, while decoys are labels with no tier metadata.
+  function _routerFxBuildLegacyGridCells(realEntries, seedKey) {
+    const cells = Array.from({ length: _ROUTER_FX_GRID_CELLS }, () => null);
+    const realNames = new Set();
+    const orderedRealEntries = realEntries.slice().sort((a, b) => (
+      (a.label || a.displayName || a.key || '').localeCompare(b.label || b.displayName || b.key || '')
+    ));
+    orderedRealEntries.forEach((entry, i) => {
+      const anchor = _ROUTER_FX_REAL_ANCHOR_CELLS[i];
+      const idx = typeof anchor === 'number' ? anchor : cells.findIndex((cell) => cell == null);
+      if (idx < 0 || idx >= cells.length) return;
+      cells[idx] = {
+        kind: 'real',
+        entry,
+        displayName: entry.displayName,
+        label: entry.label || entry.displayName,
+        title: entry.title || entry.label || entry.displayName,
+      };
+      if (entry.displayName) realNames.add(entry.displayName);
+      if (entry.label) realNames.add(entry.label);
+    });
+
+    const decoys = [];
+    for (let i = 0; i < _ROUTER_FX_DECOY_POOL.length && decoys.length < _ROUTER_FX_GRID_CELLS; i++) {
+      const name = _ROUTER_FX_DECOY_POOL[i];
+      if (realNames.has(name)) continue;
+      decoys.push({
+        kind: 'decoy',
+        displayName: name,
+        label: name,
+        title: name,
+      });
+    }
+    while (decoys.length < _ROUTER_FX_GRID_CELLS) {
+      decoys.push({
+        kind: 'decoy',
+        displayName: '-',
+        label: '-',
+        title: '-',
+      });
+    }
+    const orderedDecoys = _routerFxShuffle(decoys, seedKey ? seedKey + ':decoy' : undefined);
+    let decoyIdx = 0;
+    for (let i = 0; i < cells.length; i++) {
+      if (cells[i] == null) cells[i] = orderedDecoys[decoyIdx++];
+    }
+    return cells;
+  }
+
+  function _routerFxBuildGridCells(realEntries, seedKey, visualMode) {
+    if (_routerFxNormalizeVisualMode(visualMode) === 'legacy_grid') {
+      return _routerFxBuildLegacyGridCells(realEntries, seedKey);
+    }
+    return _routerFxBuildCandidateGridCells(realEntries, seedKey);
   }
 
   function _buildRouterFxElement(decision, opts) {
@@ -3668,11 +3917,15 @@ const ChatView = (() => {
     // layout on every rebuild, so the field never reshuffles after lock.
     const seedKey = opts && opts.seedKey ? String(opts.seedKey) : '';
     if (seedKey) wrap.dataset.seed = seedKey;
+    const visualMode = _routerFxNormalizeVisualMode(
+      opts.visualMode != null ? opts.visualMode : _routerFx.visualMode,
+    );
+    wrap.dataset.panel = _routerFxPanelDataset(visualMode);
 
     const requestKind = _routerFxRequestKindFromDecision(decision, opts.requestKind);
     const realEntries = _routerFxRealEntries(decision, requestKind);
     if (realEntries.length <= 1) return null;
-    const gridCells = _routerFxBuildGridCells(realEntries, seedKey || undefined);
+    const gridCells = _routerFxBuildGridCells(realEntries, seedKey || undefined, visualMode);
 
     const grid = document.createElement('div');
     grid.className = 'router-fx-grid';
@@ -3684,8 +3937,10 @@ const ChatView = (() => {
       const cell = document.createElement('div');
       cell.className = 'router-fx-cell';
       cell.dataset.cellIdx = String(i);
+      const cellLabel = cellInfo.label || cellInfo.displayName || '';
+      const cellTitle = cellInfo.title || cellLabel;
       // title surfaces the full name on hover when a long one is ellipsized.
-      cell.innerHTML = `<span class="nm" title="${_esc(cellInfo.displayName)}">${_esc(cellInfo.displayName)}</span>`;
+      cell.innerHTML = `<span class="nm" title="${_esc(cellTitle)}">${_esc(cellLabel)}</span>`;
       grid.appendChild(cell);
     });
     const selector = document.createElement('div');
@@ -3853,6 +4108,16 @@ const ChatView = (() => {
     if (opts.burst) {
       requestAnimationFrame(() => _routerFxFireBurst(grid, cells[winnerIdx]));
     }
+  }
+
+  function _routerFxSettleDecisionImmediately(wrap, decision, renderMode) {
+    if (!wrap || !decision) return;
+    wrap._fxDecision = decision;
+    const winnerIdx = _routerFxWinnerCellIndex(wrap, _routerFxNormalizeTier(decision.tier));
+    if (winnerIdx >= 0) {
+      _settleRouterFxImmediate(wrap, winnerIdx, { burst: false, decision });
+    }
+    _routerFxNormalizeSettledStrip(wrap, renderMode || 'live', decision);
   }
 
   function _routerFxFireBurst(grid, cell) {
@@ -4023,6 +4288,11 @@ const ChatView = (() => {
       payload: _chatDiagSummarizePayload(pending.decision),
       liveStrip: _chatDiagDescribeElement(liveStrip),
     });
+    if (_routerFxShouldSettleImmediately(pending.decision)) {
+      _routerFxSettleDecisionImmediately(liveStrip, pending.decision, 'live');
+      _scrollToBottom();
+      return;
+    }
     if (liveStrip._fxFinished) {
       _routerFxLock(liveStrip, pending.decision);
       _scrollToBottom();
@@ -4240,7 +4510,21 @@ const ChatView = (() => {
       // onto the cached winner (no half-scan left hanging). Do not mark frozen:
       // _routerFxLockGrid owns the visible selection motion.
       if (wrap._fxDecision) {
-        _routerFxFinishScan(wrap);
+        if (_routerFxShouldSettleImmediately(wrap._fxDecision)) {
+          const winnerIdx = _routerFxWinnerCellIndex(
+            wrap,
+            _routerFxNormalizeTier(wrap._fxDecision.tier),
+          );
+          if (winnerIdx >= 0) {
+            _settleRouterFxImmediate(wrap, winnerIdx, {
+              burst: false,
+              decision: wrap._fxDecision,
+            });
+          }
+          _routerFxNormalizeSettledStrip(wrap, 'live', wrap._fxDecision);
+        } else {
+          _routerFxFinishScan(wrap);
+        }
       } else {
         _chatDiag('router_scan.keep_scanning_without_decision_on_output', {
           strip: _chatDiagDescribeElement(wrap),
@@ -4271,7 +4555,11 @@ const ChatView = (() => {
   function _routerFxLockGrid(wrap, decision) {
     const tier = _routerFxNormalizeTier(decision.tier);
     if (tier) {
-      _routerFxRememberTierDecision(tier, decision.model || '');
+      _routerFxRememberTierDecision(
+        tier,
+        decision.model || '',
+        decision.provider || decision.routed_provider || '',
+      );
     }
     const winnerIdx = _routerFxWinnerCellIndex(wrap, tier);
     if (winnerIdx >= 0) {
@@ -4417,7 +4705,7 @@ const ChatView = (() => {
       _chatDiag('router_decision.skip.no_tier', _chatDiagSummarizePayload(payload));
       return;
     }
-    _routerFxRememberTierDecision(tier, payload.model || '');
+    _routerFxRememberTierDecision(tier, payload.model || '', payload.provider || payload.routed_provider || '');
     const turnIndex = _routerFxCountUserMessages();
     if (_routerFxIsSuppressedForCompactionTurn(turnIndex)) {
       if (_thread) {
@@ -4471,6 +4759,11 @@ const ChatView = (() => {
         liveStrip: _chatDiagDescribeElement(liveStrip),
         finished: !!liveStrip._fxFinished,
       });
+      if (_routerFxShouldSettleImmediately(payload)) {
+        _routerFxSettleDecisionImmediately(liveStrip, payload, 'live');
+        _scrollToBottom();
+        return;
+      }
       if (liveStrip._fxFinished) {
         _routerFxLock(liveStrip, payload);
         _scrollToBottom();
@@ -4592,10 +4885,15 @@ const ChatView = (() => {
         && !_routerFxConfigTiers.has(tier)) {
       return null;
     }
-    _routerFxRememberTierDecision(tier, usage.routed_model || usage.model || '');
+    _routerFxRememberTierDecision(
+      tier,
+      usage.routed_model || usage.model || '',
+      usage.routed_provider || usage.provider || '',
+    );
     const decision = {
       tier,
       model: usage.routed_model || usage.model || '',
+      provider: usage.routed_provider || usage.provider || '',
       source: usage.routing_source || 'none',
       confidence: typeof usage.routing_confidence === 'number' ? usage.routing_confidence : 0,
       fallback: usage.routing_source === 'fallback',
@@ -4661,6 +4959,23 @@ const ChatView = (() => {
       _chatDiag('event.text_delta', _chatDiagSummarizePayload(payload));
       _resetStreamIdleTimer();
       _appendDelta(payload.text || '');
+    }));
+
+    // Text snapshot: provider sent a full replacement of assistant text seen so far.
+    _unsubs.push(_rpc.on('session.event.text_snapshot', (payload, meta = {}) => {
+      if (_dropForeignSessionPayload('event.text_snapshot', payload)) return;
+      if (_isStaleEpoch(payload)) {
+        _chatDiag('event.text_snapshot.drop.stale_epoch', _chatDiagSummarizePayload(payload));
+        return;
+      }
+      if (!_acceptStreamSeq(payload)) {
+        _chatDiag('event.text_snapshot.drop.stream_seq', _chatDiagSummarizePayload(payload));
+        return;
+      }
+      if (_dropReplayedLiveWaitEvent(meta, payload, 'event.text_snapshot')) return;
+      _chatDiag('event.text_snapshot', _chatDiagSummarizePayload(payload));
+      _resetStreamIdleTimer();
+      _applyTextSnapshot(payload.text || '');
     }));
 
     // Tool call events (engine emits tool_use_start)
@@ -5257,7 +5572,7 @@ const ChatView = (() => {
         if (u.savings_usd > 0) {
           _usageAccum.sessionSaved = (_usageAccum.sessionSaved || 0) + u.savings_usd;
         }
-        if (u.model) _usageModel = u.model;
+        if (u.routed_model || u.model) _usageModel = u.routed_model || u.model;
         _viz.update({ ..._usageAccum, model: _usageModel });
         _saveWidgetState();
         const turnContextStatus = u.contextStatus || u.context_status
@@ -5301,7 +5616,7 @@ const ChatView = (() => {
           _storeTurnMeta(_sessionKey, _metaIdx, _usageModel, u.input_tokens | 0, u.output_tokens | 0, {
             cached_tokens: u.cached_tokens || 0,
             cache_hit_active: !!u.cache_hit_active,
-            model: u.model || _usageModel || null,
+            model: u.routed_model || u.model || _usageModel || null,
             routed_model: u.routed_model || null,
             routed_tier: u.routed_tier || null,
             routing_source: u.routing_source || 'none',
@@ -5901,6 +6216,7 @@ const ChatView = (() => {
                 if (identityChanged) savedUsage.__savings_ui_suppressed = true;
               }
               if (window.SavingsFX) window.SavingsFX.noteTurn(savedUsage);
+              const routerPanel = _routerFxPanelDataset(_routerFx.visualMode);
               // Place a pre-settled router slider directly beneath the
               // user message that triggered this turn — never above
               // it, never with anything wedged in between.
@@ -5924,7 +6240,8 @@ const ChatView = (() => {
               if (userMsg && userMsg.parentNode === _thread) {
                 const ownStrips = Array.from(_thread.querySelectorAll('.router-fx')).filter(
                   (el) => el.dataset.sessionKey === (_sessionKey || '')
-                    && el.dataset.turnIndex === String(_histUserIdx),
+                    && el.dataset.turnIndex === String(_histUserIdx)
+                    && _routerFxPanelDataset(el.dataset.panel) === routerPanel,
                 );
                 const keep = ownStrips.find((el) => el.dataset.routerIdentity === routerIdentity)
                   || null;
@@ -5945,7 +6262,8 @@ const ChatView = (() => {
               const existingStrip = (placed && placed.classList
                   && placed.classList.contains('router-fx')) ? placed : null;
               const alreadyInPlace = existingStrip
-                && existingStrip.dataset.routerIdentity === routerIdentity;
+                && existingStrip.dataset.routerIdentity === routerIdentity
+                && _routerFxPanelDataset(existingStrip.dataset.panel) === routerPanel;
               if (!alreadyInPlace) {
                 if (existingStrip) _routerFxRemoveStrip(existingStrip);
                 const hint = msg.timestamp || msg.ts || msg.message_id || '';
@@ -6311,6 +6629,85 @@ const ChatView = (() => {
     _renderStreamArtifacts();
   }
 
+  function _streamHasToolBoundary() {
+    return _segments.some((seg) => seg && seg.type === 'tool');
+  }
+
+  function _streamRenderedTextRaw(opts = {}) {
+    const excludeActive = !!(opts && opts.excludeActive);
+    return _segments
+      .filter((seg) => seg && seg.type === 'text' && (!excludeActive || seg.el !== _activeTextSeg))
+      .map((seg) => (typeof seg.raw === 'string' ? seg.raw : ''))
+      .join('');
+  }
+
+  function _streamSnapshotOverlapLength(renderedText, snapshotText) {
+    const rendered = typeof renderedText === 'string' ? renderedText : '';
+    const snapshot = typeof snapshotText === 'string' ? snapshotText : '';
+    const max = Math.min(rendered.length, snapshot.length);
+    for (let len = max; len >= 12; len -= 1) {
+      if (rendered.slice(-len) === snapshot.slice(0, len)) return len;
+    }
+    return 0;
+  }
+
+  function _streamDisplayTextForActiveSnapshot(snapshot) {
+    const displaySnapshot = typeof snapshot === 'string' ? snapshot : '';
+    if (!displaySnapshot || !_streamHasToolBoundary()) return displaySnapshot;
+
+    const committedText = _streamRenderedTextRaw({ excludeActive: true });
+    if (committedText && displaySnapshot.startsWith(committedText)) {
+      return displaySnapshot.slice(committedText.length);
+    }
+    if (committedText && committedText.endsWith(displaySnapshot)) return '';
+
+    const renderedText = _streamRenderedTextRaw();
+    if (renderedText && displaySnapshot.startsWith(renderedText)) {
+      return displaySnapshot.slice(renderedText.length);
+    }
+    if (renderedText && renderedText.endsWith(displaySnapshot)) return '';
+
+    const previousDisplay = _streamRaw || '';
+    if (previousDisplay && displaySnapshot.startsWith(previousDisplay)) {
+      return displaySnapshot.slice(previousDisplay.length);
+    }
+    if (previousDisplay && previousDisplay.endsWith(displaySnapshot)) return '';
+    if (displaySnapshot === previousDisplay || displaySnapshot === renderedText) return '';
+
+    const overlap = Math.max(
+      _streamSnapshotOverlapLength(committedText, displaySnapshot),
+      _streamSnapshotOverlapLength(renderedText, displaySnapshot),
+      _streamSnapshotOverlapLength(previousDisplay, displaySnapshot),
+    );
+    if (overlap > 0) return displaySnapshot.slice(overlap);
+    return displaySnapshot;
+  }
+
+  function _applyTextSnapshot(snapshot) {
+    if (_aborted) return;
+    const snapshotText = typeof snapshot === 'string' ? snapshot : '';
+    if (!_isStreaming) _startStreaming();
+    _ensureStreamBubble();
+    _markVisibleStreamEvent('text_snapshot');
+    const displaySnapshot = _streamDisplayTextForActiveSnapshot(snapshotText);
+    _streamRaw = snapshotText;
+    if (!_streamBubble) return;
+    if (!_activeTextSeg || !_activeTextSeg.isConnected) _newTextSegment();
+    _activeTextRaw = displaySnapshot;
+    const lastSeg = _segments[_segments.length - 1];
+    if (lastSeg && lastSeg.type === 'text') lastSeg.raw = displaySnapshot;
+    if (_renderRafId) {
+      cancelAnimationFrame(_renderRafId);
+      _renderRafId = null;
+    }
+    if (_activeTextSeg && !displaySnapshot) {
+      _activeTextSeg.textContent = '';
+    }
+    _renderDirty = true;
+    _flushRender();
+    _renderStreamArtifacts();
+  }
+
   function _reconcileFinalStreamText(finalText) {
     if (!finalText || finalText === _streamRaw) return;
     if (_streamRaw && finalText.startsWith(_streamRaw)) {
@@ -6662,6 +7059,7 @@ const ChatView = (() => {
     return [
       'session.event.state_change',
       'session.event.text_delta',
+      'session.event.text_snapshot',
       'session.event.router_decision',
       'session.event.tool_use_start',
       'session.event.tool_result',
@@ -7126,6 +7524,8 @@ const ChatView = (() => {
     _streamArtifacts = [];
     if (_thread) _thread.setAttribute('aria-busy', 'false');
     _updateSendButton();
+    _autoScroll = true;
+    _scrollToBottom();
     _chatDiag('stream.end.done', {
       reason: reason || '',
       wasAborted,
@@ -7610,8 +8010,28 @@ const ChatView = (() => {
     return wrap;
   }
 
+  function _summarizeToolErrorEnvelope(content) {
+    // Error envelopes are protocol payloads addressed to the model
+    // (recovery instructions); users get a one-line summary, full
+    // payload stays behind "View full".
+    try {
+      const data = JSON.parse(content);
+      if (!data || typeof data !== 'object' || data.status !== 'error') return null;
+      const cls = data.error_class || data.errorClass || '';
+      const msg = data.user_message || data.userMessage || data.message || '';
+      const summary = msg ? String(msg) : 'Tool call failed.';
+      return cls ? cls + ': ' + _truncate(summary, 160) : _truncate(summary, 160);
+    } catch (e) {
+      return null;
+    }
+  }
+
   function _buildToolResultDOM(content, isError, isTruncated = false, toolName = '') {
-    const preview = _truncate(content, 200);
+    let preview = _truncate(content, 200);
+    if (isError) {
+      const summary = _summarizeToolErrorEnvelope(content);
+      if (summary) preview = summary;
+    }
     if (!preview || preview.trim() === '') return null;
 
     const div = document.createElement('div');
@@ -7629,7 +8049,7 @@ const ChatView = (() => {
       if (sources) div.appendChild(sources);
     }
 
-    if (content.length > 200) {
+    if (content.length > 200 || (isError && content !== preview)) {
       const viewBtn = document.createElement('button');
       viewBtn.className = 'btn btn--sm btn--ghost chat-tool-view-btn';
       viewBtn.type = 'button';
@@ -7655,9 +8075,19 @@ const ChatView = (() => {
       return;
     }
     try { if (name && name.startsWith('meta-step:')) console.log('[meta-step] start', name); } catch (e) {}
-    const input = typeof payload.input === 'string'
-      ? payload.input
-      : JSON.stringify(payload.input || payload.arguments || '', null, 2);
+    let inputValue = payload.input || payload.arguments || '';
+    // Unwrap the provider's unparsed-arguments envelope: show the raw text
+    // the model emitted instead of a double-escaped {"_raw": "..."} wrapper.
+    if (
+      inputValue && typeof inputValue === 'object'
+      && typeof inputValue._raw === 'string'
+      && Object.keys(inputValue).length === 1
+    ) {
+      inputValue = inputValue._raw;
+    }
+    const input = typeof inputValue === 'string'
+      ? inputValue
+      : JSON.stringify(inputValue, null, 2);
     const toolId = payload.tool_use_id || '';
 
     const bubble = _ensureStreamBubble();

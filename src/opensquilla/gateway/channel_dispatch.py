@@ -54,6 +54,7 @@ from opensquilla.engine.types import (
     RouterDecisionEvent,
     RunHeartbeatEvent,
     TextDeltaEvent,
+    TextSnapshotEvent,
     ToolResultEvent,
     ToolUseStartEvent,
 )
@@ -1073,6 +1074,17 @@ def _wrap_channel_turn_stream(stream: Any, config: Any) -> Any:
     )
 
 
+def _appendable_chunk_from_snapshot(previous_text: str, snapshot_text: str) -> str:
+    """Return the suffix a channel streaming adapter can safely append."""
+    if not snapshot_text:
+        return ""
+    if not previous_text:
+        return snapshot_text
+    if snapshot_text.startswith(previous_text):
+        return snapshot_text[len(previous_text) :]
+    return ""
+
+
 async def _emit_run_heartbeat(
     event_bridge: EventBridge | None,
     session_key: str,
@@ -1299,6 +1311,7 @@ class _RuntimeChannelStreamRelay:
         self._closed = False
         self.text_emitted = False
         self.stream_error: BaseException | None = None
+        self._streamed_text = ""
         # Buffer of chunks already yielded to ``send_streaming``. If the
         # adapter raises mid-stream the relay falls back to ``channel.send``
         # with the chunks that never made it through.
@@ -1418,7 +1431,15 @@ class _RuntimeChannelStreamRelay:
         if artifact is not None:
             self._artifacts.append(artifact)
             return
-        text = _text_delta_from_event(event)
+        snapshot = _text_snapshot_from_event(event)
+        if snapshot is not None:
+            text = _appendable_chunk_from_snapshot(self._streamed_text, snapshot)
+            if text:
+                self._streamed_text = snapshot
+        else:
+            text = _text_delta_from_event(event)
+            if text:
+                self._streamed_text += text
         if not text:
             return
         text = _strip_artifact_markers_from_channel_text(text)
@@ -1532,6 +1553,19 @@ def _text_delta_from_event(event: Any) -> str:
     return ""
 
 
+def _text_snapshot_from_event(event: Any) -> str | None:
+    if isinstance(event, TextSnapshotEvent):
+        return event.text
+    kind = getattr(event, "kind", None)
+    if kind == "text_snapshot":
+        text = getattr(event, "text", "")
+        return text if isinstance(text, str) else ""
+    if isinstance(event, dict) and event.get("kind") == "text_snapshot":
+        text = event.get("text", "")
+        return text if isinstance(text, str) else ""
+    return None
+
+
 def _artifact_event_payload(event: Any) -> dict[str, Any] | None:
     if isinstance(event, ArtifactEvent):
         return artifact_payload(event)
@@ -1547,6 +1581,8 @@ def _router_decision_payload(event: RouterDecisionEvent) -> dict[str, Any]:
         "tier": event.tier,
         "tier_index": event.tier_index,
         "model": event.model,
+        "provider": event.provider,
+        "routed_provider": event.provider,
         "baseline_model": event.baseline_model,
         "source": event.source,
         "confidence": event.confidence,
@@ -2130,6 +2166,16 @@ async def _run_turn_batch_path(
                         "session.event.text_delta",
                         {"text": event.text},
                     )
+            elif isinstance(event, TextSnapshotEvent):
+                if clarify_card_sent:
+                    continue
+                text_parts[:] = [event.text] if event.text else []
+                if event_bridge is not None:
+                    await event_bridge.emit(
+                        session_key,
+                        "session.event.text_snapshot",
+                        {"text": event.text},
+                    )
             elif artifact := _artifact_event_payload(event):
                 artifacts.append(artifact)
                 if event_bridge is not None:
@@ -2233,6 +2279,7 @@ async def _run_turn_streaming_path(
     stream_task_error: BaseException | None = None
     yielded_stream_chunks: list[str] = []
     stream_delivered_index = 0
+    stream_text = ""
     artifacts: list[dict[str, Any]] = []
     stream_sanitizer = _DirectiveTagStreamSanitizer()
     clarify_card_sent = False
@@ -2286,12 +2333,28 @@ async def _run_turn_streaming_path(
                     continue
                 cleaned = _strip_artifact_markers_from_channel_text(event.text)
                 if cleaned:
+                    stream_text += cleaned
                     text_emitted = True
                     await queue.put(cleaned)
                 if event_bridge is not None:
                     await event_bridge.emit(
                         session_key,
                         "session.event.text_delta",
+                        {"text": event.text},
+                    )
+            elif isinstance(event, TextSnapshotEvent):
+                if clarify_card_sent:
+                    continue
+                cleaned_snapshot = _strip_artifact_markers_from_channel_text(event.text)
+                cleaned = _appendable_chunk_from_snapshot(stream_text, cleaned_snapshot)
+                if cleaned:
+                    stream_text = cleaned_snapshot
+                    text_emitted = True
+                    await queue.put(cleaned)
+                if event_bridge is not None:
+                    await event_bridge.emit(
+                        session_key,
+                        "session.event.text_snapshot",
                         {"text": event.text},
                     )
             elif artifact := _artifact_event_payload(event):

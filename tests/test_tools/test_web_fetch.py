@@ -59,3 +59,26 @@ def test_resolve_effective_max_chars_allows_uncapped_run_policy() -> None:
         assert _resolve_effective_max_chars(999_999) == 999_999
     finally:
         current_tool_context.reset(token)
+
+
+def test_apply_max_chars_truncation_notice_addresses_the_model() -> None:
+    """A truncated fetch must tell the model, in prose, that the call
+    SUCCEEDED and that re-fetching cannot recover more text — bare flags
+    read as failures to small models and drive retry loops.
+    """
+    result = {
+        "url": "https://example.com/page",
+        "final_url": "https://example.com/page",
+        "text": "<content url=\"https://example.com/page\">" + ("x" * 500) + "</content>",
+        "truncated": False,
+    }
+    truncated = _apply_max_chars(result, 120)
+
+    assert truncated["truncated"] is True
+    notice = truncated["truncation_notice"]
+    assert "SUCCEEDED" in notice
+    assert "do not retry" in notice.lower()
+    assert str(truncated["original_length"]) in notice
+
+    untouched = _apply_max_chars(result, 10_000)
+    assert "truncation_notice" not in untouched

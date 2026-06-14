@@ -67,3 +67,39 @@ def test_context_budget_governor_external_caps_stay_stricter_than_local() -> Non
     assert governor.tool_result_provider_chars_for(ContextBudgetClass.EXTERNAL) < (
         governor.tool_result_provider_chars_for(ContextBudgetClass.LOCAL)
     )
+
+
+def test_single_external_acquisition_scales_with_model_window() -> None:
+    """One fetch must survive into the next iteration's request view.
+
+    Small-context routed models (LLaDA 32k) get a quarter of their proof
+    budget per acquisition; large windows keep the default web cap via the
+    ceiling (live incident agent:main:webchat:3h1bj7ek — 50k fetches on a
+    28.8k budget were elided to stubs every iteration, driving a 27-call
+    retry loop).
+    """
+    small = ContextBudgetGovernor.from_values(
+        context_window_tokens=32_768,
+        max_output_tokens=4_096,
+        thinking_budget_tokens=0,
+        context_overflow_threshold=0.85,
+    )
+    cap = small.single_external_acquisition_chars(ceiling=50_000)
+    assert cap == small.snapshot().provider_request_max_chars // 4
+    assert cap < 50_000
+
+    large = ContextBudgetGovernor.from_values(
+        context_window_tokens=200_000,
+        max_output_tokens=8_192,
+        thinking_budget_tokens=0,
+        context_overflow_threshold=0.85,
+    )
+    assert large.single_external_acquisition_chars(ceiling=50_000) == 50_000
+
+    tiny = ContextBudgetGovernor.from_values(
+        context_window_tokens=2_000,
+        max_output_tokens=512,
+        thinking_budget_tokens=0,
+        context_overflow_threshold=0.85,
+    )
+    assert tiny.single_external_acquisition_chars(ceiling=50_000) >= 2_000

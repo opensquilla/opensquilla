@@ -47,6 +47,7 @@ _TIER_KEY_ALIASES = {
     "thinkingLevel": "thinking_level",
     "supportsImage": "supports_image",
     "imageOnly": "image_only",
+    "toolSupport": "tool_support",
 }
 _REMOTE_MEMORY_EMBEDDING_PROVIDERS = {"openai", "openai-compatible"}
 _DEFAULT_REMOTE_EMBEDDING_BASE_URL = "https://api.openai.com/v1"
@@ -72,6 +73,14 @@ def _clean_optional_str(value: str | None) -> str:
     if value is None:
         return ""
     return value.strip()
+
+
+def _normalize_tool_support(value: str | None, *, existing: str = "auto") -> str:
+    raw = existing if value is None else value
+    normalized = str(raw or "auto").strip().lower()
+    if normalized not in {"auto", "on", "off"}:
+        raise ValueError("tool_support must be one of: auto, on, off")
+    return normalized
 
 
 def _positive_int(value: int | str, *, label: str) -> int:
@@ -143,6 +152,11 @@ def _normalize_tier_payload(name: str, payload: Any) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in payload.items():
         out[_TIER_KEY_ALIASES.get(str(key), str(key))] = value
+    if "tool_support" in out:
+        out["tool_support"] = _normalize_tool_support(
+            out.get("tool_support"),
+            existing="auto",
+        )
     return out
 
 
@@ -208,6 +222,7 @@ def upsert_llm_provider(
     base_url: str = "",
     proxy: str = "",
     provider_routing: dict[str, str] | None = None,
+    tool_support: str | None = None,
 ) -> MutationResult:
     spec = get_provider_setup_spec(provider_id)
     if not spec.runtime_supported:
@@ -245,6 +260,15 @@ def upsert_llm_provider(
     effective_base_url = base_url or spec.default_base_url
     if spec.requires_base_url and not effective_base_url:
         raise ValueError(f"provider {provider_id!r} requires a base_url")
+    existing_tool_support = (
+        str(getattr(config.llm, "tool_support", "auto") or "auto")
+        if config.llm.provider == provider_id
+        else "auto"
+    )
+    effective_tool_support = _normalize_tool_support(
+        tool_support,
+        existing=existing_tool_support,
+    )
 
     new_cfg = _clone(config)
     new_cfg.llm = LlmProviderConfig(
@@ -255,6 +279,7 @@ def upsert_llm_provider(
         base_url=effective_base_url,
         proxy=proxy,
         provider_routing=dict(provider_routing or {}),
+        tool_support=effective_tool_support,
     )
     _reconcile_router_profile_for_provider(new_cfg, provider_id)
     if api_key:
@@ -271,6 +296,7 @@ def upsert_llm_provider(
         "base_url": effective_base_url,
         "proxy": proxy,
         "provider_routing": dict(provider_routing or {}),
+        "tool_support": effective_tool_support,
     }
     return MutationResult(
         config=new_cfg,

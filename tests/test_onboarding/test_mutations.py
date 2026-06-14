@@ -382,6 +382,41 @@ def test_upsert_router_forces_image_model_role_invariants():
     assert image_tier["image_only"] is True
 
 
+def test_upsert_router_normalizes_tier_tool_support_alias():
+    cfg = GatewayConfig(llm={"provider": "openrouter", "model": "z-ai/glm-5.1"})
+
+    res = upsert_router(
+        cfg,
+        mode="openrouter-mix",
+        tiers={
+            "c1": {
+                "provider": "openrouter",
+                "model": "z-ai/glm-5.1",
+                "toolSupport": "off",
+            }
+        },
+    )
+
+    assert res.config.squilla_router.tiers["c1"]["tool_support"] == "off"
+
+
+def test_upsert_router_rejects_invalid_tier_tool_support():
+    cfg = GatewayConfig(llm={"provider": "openrouter", "model": "z-ai/glm-5.1"})
+
+    with pytest.raises(ValueError, match="tool_support must be one of"):
+        upsert_router(
+            cfg,
+            mode="openrouter-mix",
+            tiers={
+                "c1": {
+                    "provider": "openrouter",
+                    "model": "z-ai/glm-5.1",
+                    "toolSupport": "maybe",
+                }
+            },
+        )
+
+
 def test_upsert_router_can_disable():
     cfg = GatewayConfig(llm={"provider": "openrouter", "model": "deepseek/x"})
 

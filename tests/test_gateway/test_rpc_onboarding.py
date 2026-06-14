@@ -436,6 +436,7 @@ async def test_search_configure_accepts_webui_string_max_results(tmp_path, monke
 async def test_image_generation_configure_redacts_api_key(tmp_path, monkeypatch):
     target = tmp_path / "c.toml"
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     res = await get_dispatcher().dispatch(
         "r1",
         "onboarding.imageGeneration.configure",
@@ -630,6 +631,7 @@ async def test_onboarding_status_exposes_missing_env_keys_for_optional_capabilit
 async def test_image_generation_configure_can_enable_llm_fallback(tmp_path, monkeypatch):
     target = tmp_path / "c.toml"
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     from opensquilla.gateway.config import GatewayConfig
 
     ctx = _admin_ctx()

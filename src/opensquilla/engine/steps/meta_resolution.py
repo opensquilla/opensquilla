@@ -35,6 +35,14 @@ from typing import Any
 import structlog
 
 from opensquilla.engine.pipeline import TurnContext
+from opensquilla.router_tiers import (
+    ROUTED_MODEL_KEY,
+    ROUTED_PROVIDER_KEY,
+    ROUTED_TIER_KEY,
+    ROUTING_APPLIED_KEY,
+    ROUTING_CONFIDENCE_KEY,
+    ROUTING_SOURCE_KEY,
+)
 from opensquilla.skills.meta.clarify_autofill import autofill_required_clarify_fields
 from opensquilla.skills.meta.clarify_nl_extract import extract as _nl_extract
 from opensquilla.skills.meta.clarify_text import parse_clarify_reply
@@ -600,11 +608,21 @@ def _upgrade_meta_entry_model(
     ctx.metadata["meta_required_model"] = model
     ctx.metadata["meta_required_source"] = source
     ctx.metadata.setdefault("baseline_model", baseline_model)
-    ctx.metadata["routed_tier"] = tier_name
-    ctx.metadata["routed_model"] = model
-    ctx.metadata["routing_source"] = "meta_skill_required_tier"
-    ctx.metadata["routing_confidence"] = 1.0
-    ctx.metadata["routing_applied"] = True
+    ctx.metadata[ROUTED_TIER_KEY] = tier_name
+    ctx.metadata[ROUTED_MODEL_KEY] = model
+    router_cfg = getattr(getattr(ctx, "config", None), "squilla_router", None)
+    tiers = getattr(router_cfg, "tiers", {}) if router_cfg is not None else {}
+    tier_cfg = tiers.get(tier_name, {}) if isinstance(tiers, dict) else {}
+    provider = ""
+    if isinstance(tier_cfg, dict):
+        provider = str(tier_cfg.get("provider") or "").strip().lower()
+    if provider:
+        ctx.metadata[ROUTED_PROVIDER_KEY] = provider
+    else:
+        ctx.metadata.pop(ROUTED_PROVIDER_KEY, None)
+    ctx.metadata[ROUTING_SOURCE_KEY] = "meta_skill_required_tier"
+    ctx.metadata[ROUTING_CONFIDENCE_KEY] = 1.0
+    ctx.metadata[ROUTING_APPLIED_KEY] = True
     ctx.metadata["applied_model"] = model
     ctx.metadata["meta_resolution_model_upgrade"] = {
         "from_model": baseline_model,
@@ -1347,27 +1365,33 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
     # never needs deep reasoning.
     _clamp_thinking_for_meta(ctx)
 
-    if getattr(chosen_plan, "name", "") == "meta-skill-creator":
-        highest = _highest_text_tier(ctx)
-        if highest is not None:
-            tier_name, model = highest
-            _upgrade_meta_entry_model(
-                ctx,
-                tier_name=tier_name,
-                model=model,
-                source="meta-skill-creator",
-            )
-    else:
-        minimum = _text_tier_at_least(ctx, "c2")
-        current_tier_key = _tier_sort_key(str(ctx.metadata.get("routed_tier") or ""), 0)[0]
-        if minimum is not None and 0 <= current_tier_key < 2:
-            tier_name, model = minimum
-            _upgrade_meta_entry_model(
-                ctx,
-                tier_name=tier_name,
-                model=model,
-                source="meta-skill-entry",
-            )
+    if (
+        activation_mode == "recommend"
+        and ctx.metadata.get("router_control_hold_applied") is not True
+    ):
+        if getattr(chosen_plan, "name", "") == "meta-skill-creator":
+            highest = _highest_text_tier(ctx)
+            if highest is not None:
+                tier_name, model = highest
+                _upgrade_meta_entry_model(
+                    ctx,
+                    tier_name=tier_name,
+                    model=model,
+                    source="meta-skill-creator",
+                )
+        else:
+            minimum = _text_tier_at_least(ctx, "c2")
+            current_tier_key = _tier_sort_key(
+                str(ctx.metadata.get(ROUTED_TIER_KEY) or ""), 0
+            )[0]
+            if minimum is not None and 0 <= current_tier_key < 2:
+                tier_name, model = minimum
+                _upgrade_meta_entry_model(
+                    ctx,
+                    tier_name=tier_name,
+                    model=model,
+                    source="meta-skill-entry",
+                )
 
     # ── Soft-hint injection ────────────────────────────────────────────
     # Append to the uncached suffix slot of system_prompt so cache

@@ -55,6 +55,184 @@ from opensquilla.session.terminal_reply import build_terminal_reply, sanitize_ag
 log = structlog.get_logger(__name__)
 
 
+@dataclass(frozen=True)
+class _OpenAICompatibleProbeModel:
+    model_id: str
+    tool_support: str = "auto"
+    tool_probe_mode: str = "required"
+
+
+@dataclass
+class _OpenAICompatibleCatalogSource:
+    provider_name: str
+    base_url: str
+    api_key: str = ""
+    proxy: str = ""
+    models: list[_OpenAICompatibleProbeModel] = field(default_factory=list)
+
+
+def _catalog_base_key(base_url: str) -> str:
+    normalized = str(base_url or "").strip().rstrip("/").lower()
+    last = normalized.rsplit("/", 1)[-1]
+    if len(last) > 1 and last[0] == "v" and last[1:].isdigit():
+        return normalized.rsplit("/", 1)[0]
+    return normalized
+
+
+def _is_openai_compatible_catalog_provider(provider: str) -> bool:
+    provider_id = str(provider or "").strip().lower()
+    if not provider_id or provider_id == "openrouter":
+        return False
+    try:
+        from opensquilla.provider.registry import get_provider_spec
+
+        return get_provider_spec(provider_id).backend == "openai_compat"
+    except Exception:  # noqa: BLE001 - unknown providers have no catalog contract
+        return False
+
+
+def _normalize_tool_support_mode(value: Any) -> str:
+    normalized = str(value or "auto").strip().lower()
+    if normalized in {"auto", "on", "off"}:
+        return normalized
+    return "auto"
+
+
+def _normalize_tool_probe_mode(value: Any) -> str:
+    normalized = str(value or "required").strip().lower()
+    if normalized in {"required", "auto"}:
+        return normalized
+    return "required"
+
+
+def _openai_compatible_catalog_sources(
+    config: GatewayConfig,
+    *,
+    base_provider: str,
+    base_url: str,
+    api_key: str,
+    proxy: str,
+) -> list[_OpenAICompatibleCatalogSource]:
+    from opensquilla.gateway.llm_runtime import provider_base_url_env_name
+    from opensquilla.provider.registry import get_provider_spec
+
+    sources: list[_OpenAICompatibleCatalogSource] = []
+    seen: dict[tuple[str, str, str, str], _OpenAICompatibleCatalogSource] = {}
+
+    def add(
+        provider: str,
+        url: str,
+        key: str,
+        source_proxy: str,
+        *,
+        model_id: str = "",
+        tool_support: str = "auto",
+        tool_probe_mode: str = "required",
+    ) -> None:
+        provider_id = str(provider or "").strip().lower()
+        clean_url = str(url or "").strip()
+        if not clean_url or not _is_openai_compatible_catalog_provider(provider_id):
+            return
+        dedupe_key = (
+            provider_id,
+            _catalog_base_key(clean_url),
+            str(key or ""),
+            str(source_proxy or ""),
+        )
+        if dedupe_key in seen:
+            source = seen[dedupe_key]
+        else:
+            source = _OpenAICompatibleCatalogSource(
+                provider_name=provider_id,
+                base_url=clean_url,
+                api_key=str(key or ""),
+                proxy=str(source_proxy or ""),
+            )
+            seen[dedupe_key] = source
+            sources.append(source)
+        clean_model = str(model_id or "").strip()
+        if clean_model and not any(item.model_id == clean_model for item in source.models):
+            source.models.append(
+                _OpenAICompatibleProbeModel(
+                    model_id=clean_model,
+                    tool_support=_normalize_tool_support_mode(tool_support),
+                    tool_probe_mode=_normalize_tool_probe_mode(tool_probe_mode),
+                )
+            )
+            return
+
+    add(
+        base_provider,
+        base_url,
+        api_key,
+        proxy,
+        model_id=str(getattr(config.llm, "model", "") or ""),
+        tool_support=str(getattr(config.llm, "tool_support", "auto") or "auto"),
+        tool_probe_mode=str(getattr(config.llm, "tool_probe_mode", "required") or "required"),
+    )
+
+    router_cfg = getattr(config, "squilla_router", None)
+    tiers = getattr(router_cfg, "tiers", {}) if router_cfg is not None else {}
+    if not isinstance(tiers, dict):
+        return sources
+    for tier_cfg in tiers.values():
+        if not isinstance(tier_cfg, dict):
+            continue
+        provider = str(tier_cfg.get("provider") or "").strip().lower()
+        if not provider:
+            continue
+        try:
+            spec = get_provider_spec(provider)
+        except Exception:  # noqa: BLE001
+            continue
+        tier_api_key = str(tier_cfg.get("api_key") or "").strip()
+        tier_api_key_env = "" if tier_api_key else str(tier_cfg.get("api_key_env") or spec.env_key)
+        resolved_key = tier_api_key or (
+            os.environ.get(tier_api_key_env, "") if tier_api_key_env else ""
+        )
+        same_provider = provider == str(base_provider or "").strip().lower()
+        if not resolved_key and same_provider:
+            resolved_key = api_key
+        base_url_env = provider_base_url_env_name(provider)
+        resolved_base = (
+            os.environ.get(base_url_env, "")
+            or str(tier_cfg.get("base_url") or "").strip()
+            or (base_url if same_provider else "")
+            or spec.default_base_url
+        )
+        resolved_proxy = (
+            str(tier_cfg.get("proxy") or "").strip()
+            or os.environ.get("OPENSQUILLA_LLM_PROXY", "")
+            or (proxy if same_provider else "")
+        )
+        add(
+            provider,
+            resolved_base,
+            resolved_key,
+            resolved_proxy,
+            model_id=str(tier_cfg.get("model") or ""),
+            tool_support=str(tier_cfg.get("tool_support") or "auto"),
+            tool_probe_mode=str(tier_cfg.get("tool_probe_mode") or "required"),
+        )
+
+    return sources
+
+
+def _should_probe_openai_compatible_tools(
+    model_catalog: ModelCatalog,
+    source: _OpenAICompatibleCatalogSource,
+    model: _OpenAICompatibleProbeModel,
+) -> bool:
+    if model.tool_support != "auto" or not model.model_id:
+        return False
+    info = model_catalog.get(
+        model.model_id,
+        provider_name=source.provider_name,
+        base_url=source.base_url,
+    )
+    return info is None or not info.supported_parameters
+
+
 class _FlushReceiptSessionStorage(Protocol):
     async def get_session(self, session_key: str) -> Any | None: ...
 
@@ -1633,7 +1811,13 @@ async def build_services(
     resolved_base = llm_runtime.base_url
     proxy = llm_runtime.proxy
     if provider_selector is None:
-        if api_key:
+        from opensquilla.provider.registry import get_provider_spec as get_llm_provider_spec
+
+        provider_spec = get_llm_provider_spec(llm_runtime.provider)
+        has_required_auth = bool(api_key) or not provider_spec.requires_api_key()
+        has_required_base = bool(resolved_base) or not provider_spec.requires_base_url()
+        has_required_model = bool(llm_runtime.model)
+        if has_required_model and has_required_auth and has_required_base:
             from opensquilla.provider.selector import (
                 ModelSelector,
                 ProviderConfig,
@@ -1695,6 +1879,67 @@ async def build_services(
             log.info("build_services.pricing_cache_ready", count=len(pricing_models))
         except Exception as e:
             log.warning("build_services.pricing_cache_failed", error=str(e))
+
+    for catalog_source in _openai_compatible_catalog_sources(
+        config,
+        base_provider=config.llm.provider,
+        base_url=resolved_base,
+        api_key=api_key,
+        proxy=proxy,
+    ):
+        try:
+            await asyncio.wait_for(
+                model_catalog.fetch_openai_compatible(
+                    provider_name=catalog_source.provider_name,
+                    base_url=catalog_source.base_url,
+                    api_key=catalog_source.api_key,
+                    proxy=catalog_source.proxy,
+                ),
+                timeout=5.0,
+            )
+            log.info(
+                "build_services.model_catalog_ready",
+                provider=catalog_source.provider_name,
+                count=len(model_catalog),
+            )
+        except Exception as e:
+            log.warning(
+                "build_services.model_catalog_failed",
+                provider=catalog_source.provider_name,
+                error=str(e),
+            )
+        for probe_model in catalog_source.models:
+            if not _should_probe_openai_compatible_tools(
+                model_catalog,
+                catalog_source,
+                probe_model,
+            ):
+                continue
+            try:
+                result = await asyncio.wait_for(
+                    model_catalog.probe_openai_compatible_tools(
+                        provider_name=catalog_source.provider_name,
+                        base_url=catalog_source.base_url,
+                        model_id=probe_model.model_id,
+                        api_key=catalog_source.api_key,
+                        proxy=catalog_source.proxy,
+                        tool_probe_mode=probe_model.tool_probe_mode,
+                    ),
+                    timeout=5.0,
+                )
+                log.info(
+                    "build_services.model_tool_probe_ready",
+                    provider=catalog_source.provider_name,
+                    model=probe_model.model_id,
+                    result=result,
+                )
+            except Exception as e:
+                log.warning(
+                    "build_services.model_tool_probe_failed",
+                    provider=catalog_source.provider_name,
+                    model=probe_model.model_id,
+                    error=str(e),
+                )
 
     # ── Tool registry ───────────────────────────────────────────────
     if tool_registry is None:

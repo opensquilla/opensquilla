@@ -226,6 +226,7 @@ async def _provider_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
         api_key_env=params.get("apiKeyEnv", "") if isinstance(params, dict) else "",
         base_url=params.get("baseUrl", "") if isinstance(params, dict) else "",
         proxy=params.get("proxy", "") if isinstance(params, dict) else "",
+        tool_support=params.get("toolSupport") if isinstance(params, dict) else None,
     )
     _apply_inplace(ctx, res.config)
     _sync_provider_selector(ctx, res.config.llm)

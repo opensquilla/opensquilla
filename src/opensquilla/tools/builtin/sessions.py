@@ -298,10 +298,8 @@ async def sessions_send(session_key: str, message: str) -> str:
     name="sessions_spawn",
     description=(
         "Spawn an isolated subagent session with its own context window and transcript. "
-        "This returns immediately; after spawning one or more subagents, call "
-        "sessions_yield with no session_key so completion is pushed back to the parent session. "
-        "The task must be self-contained and preserve output constraints such as "
-        "'only reply EXACT_TEXT'; do not shorten exact-reply tasks to a bare token."
+        "Returns immediately; after spawning, call sessions_yield with no session_key "
+        "so completion is pushed back to the parent session."
     ),
     params={
         "agent_id": {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +18,7 @@ from opensquilla.router_control import (
     RouterControlValidationError,
     build_router_control_targets,
     render_router_control_prompt_block,
+    render_router_control_status_prompt,
     resolve_router_control_target,
 )
 
@@ -189,7 +191,51 @@ async def test_squilla_router_applies_hold_before_normal_classification(monkeypa
     assert out.model == "anthropic/claude-opus-4.7"
     assert out.metadata["routing_source"] == "router_control_hold"
     assert out.metadata["router_control_hold_applied"] is True
+    assert out.metadata["router_control_target_id"] == "tier:c3"
     assert out.metadata["router_control_target_tier"] == "c3"
+
+
+@pytest.mark.asyncio
+async def test_squilla_router_records_routed_provider_from_tier(monkeypatch) -> None:
+    class _Strategy:
+        async def classify(self, *_args, **_kwargs):
+            return "c2", 0.91, "test_strategy", {}
+
+    monkeypatch.setattr(
+        "opensquilla.engine.steps.squilla_router._get_strategy",
+        lambda _cfg: _Strategy(),
+    )
+    cfg = _router_cfg(
+        {
+            "c1": {
+                "provider": "inception",
+                "model": "inception/mercury-2",
+                "supports_image": False,
+            },
+            "c2": {
+                "provider": "openrouter",
+                "model": "z-ai/glm-5.1",
+                "supports_image": False,
+            },
+        }
+    )
+    ctx = TurnContext(
+        message="hard reasoning question",
+        session_key="agent:main:test-provider-route",
+        config=SimpleNamespace(squilla_router=cfg),
+        provider=None,
+        model="inception/mercury-2",
+        tool_defs=[],
+        system_prompt="system",
+        metadata={},
+    )
+
+    out = await apply_squilla_router(ctx)
+
+    assert out.model == "z-ai/glm-5.1"
+    assert out.metadata["routed_tier"] == "c2"
+    assert out.metadata["routed_model"] == "z-ai/glm-5.1"
+    assert out.metadata["routed_provider"] == "openrouter"
 
 
 @pytest.mark.asyncio
@@ -222,14 +268,71 @@ async def test_image_attachments_bypass_text_hold(monkeypatch) -> None:
     assert out.model == "moonshotai/kimi-k2.6"
 
 
-def test_prompt_block_contains_canonical_targets_not_aliases() -> None:
-    cfg = _router_cfg(_router_tier_profile_defaults("openrouter"))
+def test_prompt_block_exposes_provider_model_mapping_without_descriptions() -> None:
+    cfg = _router_cfg(
+        {
+            "c0": {
+                "provider": "inception",
+                "model": "inception/mercury-2",
+                "description": "Mercury diffusion route",
+                "supports_image": False,
+            },
+            "c1": {
+                "provider": "openai_compatible",
+                "model": "inclusionAI/LLaDA2.1-flash",
+                "description": "Self-hosted LLaDA route",
+                "supports_image": False,
+            },
+        }
+    )
 
     block = render_router_control_prompt_block(cfg)
+    menu = json.loads(block.split("router_control_targets=", 1)[1])
 
     assert "router_control" in block
-    assert "tier:c3" in block
+    assert {
+        "target_id": "tier:c0",
+        "provider": "inception",
+        "model": "inception/mercury-2",
+    } in menu
+    assert {
+        "target_id": "tier:c1",
+        "provider": "openai_compatible",
+        "model": "inclusionAI/LLaDA2.1-flash",
+    } in menu
+    assert all("label" not in row for row in menu)
+    assert all("description" not in row for row in menu)
     assert "tier:t3" not in block
-    assert "model:anthropic/claude-opus-4.7" not in block
+    assert "Mercury diffusion route" not in block
     assert "description" not in block
+    assert "thinking_level" not in block
+    assert "same provider/model" in block
     assert "must choose one target_id exactly" in block
+
+
+def test_router_control_status_prompt_renders_only_after_hold_applied() -> None:
+    assert render_router_control_status_prompt({}) == ""
+    assert (
+        render_router_control_status_prompt(
+            {
+                "router_control_hold_applied": False,
+                "router_control_target_id": "tier:c1",
+            }
+        )
+        == ""
+    )
+
+    block = render_router_control_status_prompt(
+        {
+            "router_control_hold_applied": True,
+            "router_control_target_id": "tier:c1",
+            "router_control_target_provider": "openai_compatible",
+            "router_control_target_model": "inclusionAI/LLaDA2.1-flash",
+        }
+    )
+
+    assert "Router Control status" in block
+    assert "target_id=tier:c1" in block
+    assert "provider=openai_compatible" in block
+    assert "model=inclusionAI/LLaDA2.1-flash" in block
+    assert "Do not call router_control again" in block

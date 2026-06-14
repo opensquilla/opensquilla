@@ -26,17 +26,11 @@ from opensquilla.tools.registry import tool
 @tool(
     name="meta_invoke",
     description=(
-        "Run a meta-skill end-to-end. Meta-skills are multi-step DAGs "
-        "(search → ingest → draft → compile, etc.) where the framework runs "
-        "sub-skills. Call this tool with the exact name of a "
+        "Run a meta-skill end-to-end: a multi-step DAG where the framework "
+        "runs sub-skills. Call this tool with the exact name of a "
         "<skill kind='meta'> entry from <available_skills>. Do NOT invent "
-        "names. Do NOT call skill_view for sub-skills inside the meta-skill — "
-        "the framework loads them automatically. Do not emit preamble before "
-        "calling this tool. On success, the meta-skill's "
-        "deliverable becomes the assistant's response for this turn (no further "
-        "model commentary). On failure, you receive a structured payload with "
-        "the failed step, partial outputs, and recovery hints; decide whether "
-        "to retry, switch approach, or ask the user."
+        "names. On success, the meta-skill's deliverable becomes the "
+        "assistant's response for this turn."
     ),
     params={
         "name": {

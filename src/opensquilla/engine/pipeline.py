@@ -11,6 +11,11 @@ import structlog
 from opensquilla.observability.decision_log import PipelineStepRecord, RoutingSource
 from opensquilla.provider import ToolDefinition
 from opensquilla.provider.protocol import LLMProvider
+from opensquilla.router_tiers import (
+    ROUTED_TIER_KEY,
+    ROUTING_CONFIDENCE_KEY,
+    ROUTING_SOURCE_KEY,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -84,9 +89,9 @@ async def run_pipeline(ctx: TurnContext, steps: list[TurnStep]) -> TurnContext:
 
         applied = bool(ctx.metadata.get(f"{step_name}__applied", True))
         if step_name == "apply_squilla_router":
-            routed_tier = ctx.metadata.get("routed_tier")
-            routing_source = cast(RoutingSource, ctx.metadata.get("routing_source", "none"))
-            confidence = ctx.metadata.get("routing_confidence")
+            routed_tier = ctx.metadata.get(ROUTED_TIER_KEY)
+            routing_source = cast(RoutingSource, ctx.metadata.get(ROUTING_SOURCE_KEY, "none"))
+            confidence = ctx.metadata.get(ROUTING_CONFIDENCE_KEY)
             filtered_skill_ids = None
         elif step_name == "filter_skills":
             routed_tier = None

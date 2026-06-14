@@ -9,9 +9,11 @@ import structlog.testing
 
 from opensquilla.engine import Agent, AgentConfig, ThinkingLevel, ToolResult
 from opensquilla.engine.runtime import TurnRunner
+from opensquilla.engine.types import ErrorEvent
 from opensquilla.engine.usage import UsageTracker
 from opensquilla.provider import (
     ChatConfig,
+    ContentBlockText,
     Message,
     ModelCapabilities,
     ToolDefinition,
@@ -60,6 +62,32 @@ class _FallbackSequenceProvider(_SequenceProvider):
     def fallback_after_invalid_response(self, reason: str) -> bool:
         self.fallback_reasons.append(reason)
         return True
+
+
+@pytest.mark.asyncio
+async def test_agent_does_not_call_provider_when_tools_required_but_unsupported() -> None:
+    provider = _SequenceProvider([[ProviderText(text="should not run"), ProviderDone()]])
+    tool = ToolDefinition(
+        name="web_search",
+        description="Search the web.",
+        input_schema=ToolInputSchema(),
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            metadata={"tool_required": True},
+            model_capabilities=ModelCapabilities(
+                supports_tools=False,
+            ),
+        ),
+        tool_definitions=[tool],
+    )
+
+    events = [event async for event in agent.run_turn("search latest AI news")]
+
+    assert provider.calls == []
+    error = next(event for event in events if isinstance(event, ErrorEvent))
+    assert error.code == "tool_capability_unavailable"
 
 
 def _large_reasoning_only_done() -> ProviderDone:
@@ -340,6 +368,95 @@ async def test_clean_empty_done_retries_once_then_errors() -> None:
     done = next(event for event in events if event.kind == "done")
     assert done.input_tokens == 7
     assert done.output_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_internal_compaction_marker_response_retries_without_leaking_marker() -> None:
+    marker = "[opensquilla_compacted:assistant_content:392:358b1cbc56cc06dc]"
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderText(text=marker),
+                ProviderDone(stop_reason="stop", input_tokens=15_783, output_tokens=18),
+            ],
+            [
+                ProviderText(text="ok"),
+                ProviderDone(stop_reason="stop", input_tokens=10, output_tokens=1),
+            ],
+        ]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            max_provider_retries=1,
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("please search")]
+
+    assert len(provider.calls) == 2
+    assert any(event.kind == "warning" and event.code == "provider_empty_retry" for event in events)
+    done = next(event for event in events if event.kind == "done")
+    assert done.text == "ok"
+    visible_texts = [text for event in events if (text := getattr(event, "text", ""))]
+    assert all("opensquilla_compacted" not in text for text in visible_texts)
+    assistant_messages = [msg for msg in agent._history if msg.role == "assistant"]
+    assert len(assistant_messages) == 1
+    assert "opensquilla_compacted" not in assistant_messages[0].content[0].text
+
+
+@pytest.mark.asyncio
+async def test_historical_internal_compaction_marker_is_not_replayed_to_provider() -> None:
+    marker = "[opensquilla_compacted:assistant_content:392:358b1cbc56cc06dc]"
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderText(text="ok"),
+                ProviderDone(stop_reason="stop", input_tokens=10, output_tokens=1),
+            ]
+        ]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(retry_base_backoff_ms=0, retry_max_backoff_ms=0),
+    )
+    agent.set_history(
+        [
+            Message(role="user", content=[ContentBlockText(text="previous prompt")]),
+            Message(role="assistant", content=[ContentBlockText(text=marker)]),
+        ]
+    )
+
+    events = [event async for event in agent.run_turn("continue")]
+
+    assert next(event for event in events if event.kind == "done").text == "ok"
+    request_dump = repr(provider.calls[0]["messages"])
+    assert "opensquilla_compacted" not in request_dump
+
+
+@pytest.mark.asyncio
+async def test_internal_marker_filter_preserves_normal_whitespace_deltas() -> None:
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderText(text="hello"),
+                ProviderText(text=" "),
+                ProviderText(text="world"),
+                ProviderDone(stop_reason="stop", input_tokens=10, output_tokens=3),
+            ]
+        ]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(retry_base_backoff_ms=0, retry_max_backoff_ms=0),
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+
+    done = next(event for event in events if event.kind == "done")
+    assert done.text == "hello world"
 
 
 @pytest.mark.asyncio

@@ -149,10 +149,9 @@ class ProviderFailure(Exception):  # noqa: N818 - public compatibility name
 class ProviderPlugin(Protocol):
     """Extension contract for provider-adjacent plugins.
 
-    Plugins may implement any subset of these hooks; ``ModelSelector``
-    consults them through ``resolve_failover_chain`` /
-    ``resolve_quota_status``, which return the documented defaults when
-    no hook is registered.
+    Plugins may implement any subset of these hooks. Selector/runtime callers
+    consult them directly or through the helpers below, which return the
+    documented defaults when no hook is registered.
     """
 
     def failover_hook(self, primary_failure: Exception) -> list[ProviderConfig]:

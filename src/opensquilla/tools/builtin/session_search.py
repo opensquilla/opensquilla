@@ -36,11 +36,7 @@ def create_session_search_tool(
         description=(
             "Full-text search across persisted session transcripts. Returns matching "
             "excerpts with session context. Use when exact prior chat wording, "
-            "transcript context, or code snippets from persisted sessions are needed. "
-            "Ordinary recall should start with memory_search, which defaults to "
-            "curated memory source files. To search indexed session snippets through "
-            "memory_search, use source=sessions or source=all. session_search does "
-            "not search MEMORY.md or memory/**/*.md."
+            "transcript context, or code snippets from persisted sessions are needed."
         ),
         params={
             "query": {

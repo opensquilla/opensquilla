@@ -24,6 +24,12 @@ from opensquilla.router_tiers import (
     DEFAULT_TEXT_TIER,
     HIGHEST_TEXT_TIER,
     ROUTE_CLASS_TO_TIER,
+    ROUTED_MODEL_KEY,
+    ROUTED_PROVIDER_KEY,
+    ROUTED_TIER_KEY,
+    ROUTING_APPLIED_KEY,
+    ROUTING_CONFIDENCE_KEY,
+    ROUTING_SOURCE_KEY,
     TIER_TO_ROUTE_CLASS,
     normalize_text_tier,
 )
@@ -457,6 +463,15 @@ def _compute_savings(routed_model: str, tiers: dict) -> dict:
         "savings_max_price_per_m": max_price,
         "savings_routed_price_per_m": routed_price,
     }
+
+
+def _record_routed_provider(ctx: TurnContext, tiers: dict, tier_name: str) -> None:
+    tier_cfg = tiers.get(tier_name)
+    if not isinstance(tier_cfg, dict):
+        return
+    provider = str(tier_cfg.get("provider") or "").strip().lower()
+    if provider:
+        ctx.metadata[ROUTED_PROVIDER_KEY] = provider
 
 
 def _record_thinking_metadata(ctx: TurnContext, router_cfg: object, tier_cfg: dict) -> None:
@@ -960,13 +975,14 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
         ctx.metadata["baseline_model"] = ctx.model
         if routing_applied:
             ctx.model = decision.model
-        ctx.metadata["routed_tier"] = decision.tier
-        ctx.metadata["routed_model"] = decision.model
-        ctx.metadata["routing_applied"] = routing_applied
+        ctx.metadata[ROUTED_TIER_KEY] = decision.tier
+        ctx.metadata[ROUTED_MODEL_KEY] = decision.model
+        _record_routed_provider(ctx, tiers, decision.tier)
+        ctx.metadata[ROUTING_APPLIED_KEY] = routing_applied
         ctx.metadata["rollout_phase"] = rollout_phase
         ctx.metadata["applied_model"] = ctx.model
-        ctx.metadata["routing_confidence"] = decision.confidence
-        ctx.metadata["routing_source"] = decision.source
+        ctx.metadata[ROUTING_CONFIDENCE_KEY] = decision.confidence
+        ctx.metadata[ROUTING_SOURCE_KEY] = decision.source
         image_route_reason = "current_turn" if current_turn_has_image else "gate_history"
         ctx.metadata["image_route_reason"] = image_route_reason
         history_turns = 1
@@ -997,14 +1013,16 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
             )
             ctx.metadata["baseline_model"] = ctx.model
             ctx.model = decision.model
-            ctx.metadata["routed_tier"] = decision.tier
-            ctx.metadata["routed_model"] = decision.model
-            ctx.metadata["routing_applied"] = True
+            ctx.metadata[ROUTED_TIER_KEY] = decision.tier
+            ctx.metadata[ROUTED_MODEL_KEY] = decision.model
+            _record_routed_provider(ctx, tiers, decision.tier)
+            ctx.metadata[ROUTING_APPLIED_KEY] = True
             ctx.metadata["applied_model"] = ctx.model
-            ctx.metadata["routing_confidence"] = decision.confidence
-            ctx.metadata["routing_source"] = decision.source
+            ctx.metadata[ROUTING_CONFIDENCE_KEY] = decision.confidence
+            ctx.metadata[ROUTING_SOURCE_KEY] = decision.source
             ctx.metadata["router_control_hold_applied"] = True
             ctx.metadata["router_control_action"] = "set_hold"
+            ctx.metadata["router_control_target_id"] = hold.target_id
             ctx.metadata["router_control_target_tier"] = hold.tier
             ctx.metadata["router_control_target_model"] = hold.model
             ctx.metadata["router_control_target_provider"] = hold.provider
@@ -1156,13 +1174,14 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
     routing_applied = rollout_phase != "observe"
     if routing_applied:
         ctx.model = decision.model
-    ctx.metadata["routed_tier"] = decision.tier
-    ctx.metadata["routed_model"] = decision.model
-    ctx.metadata["routing_applied"] = routing_applied
+    ctx.metadata[ROUTED_TIER_KEY] = decision.tier
+    ctx.metadata[ROUTED_MODEL_KEY] = decision.model
+    _record_routed_provider(ctx, tiers, decision.tier)
+    ctx.metadata[ROUTING_APPLIED_KEY] = routing_applied
     ctx.metadata["rollout_phase"] = rollout_phase
     ctx.metadata["applied_model"] = ctx.model
-    ctx.metadata["routing_confidence"] = decision.confidence
-    ctx.metadata["routing_source"] = decision.source
+    ctx.metadata[ROUTING_CONFIDENCE_KEY] = decision.confidence
+    ctx.metadata[ROUTING_SOURCE_KEY] = decision.source
     ctx.metadata.update(_compute_savings(decision.model, tiers))
 
     context_states = ctx.metadata.get("session_context_states") or ctx.metadata.get(

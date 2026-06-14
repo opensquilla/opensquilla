@@ -145,18 +145,7 @@ def _owns_cron_job(job: Any, sender_id: str, session_key: str) -> bool:
     description=(
         "Create, list, remove, or trigger scheduled cron jobs. "
         "Use this tool (NOT exec_command or background_process) for any recurring/timed "
-        "task scheduling or reminders. Translate any natural language into the "
-        "structured schedule shape yourself; the tool will not parse free-form text. "
-        "For proactive reminders, including reminders phrased as 'this/current "
-        "session', use job_kind=reminder and session_target=isolated so the "
-        "scheduled run delivers static text without invoking the agent/model "
-        "chain or adding a fake user turn to the visible conversation. Use "
-        "job_kind=system_event and session_target=main only for internal "
-        "main-session events. "
-        "For recurring background agent tasks such as 'every morning summarize "
-        "yesterday's emails', use job_kind=agent_turn with session_target=isolated. "
-        "Channel users can create reminders and tasks bound to the calling channel; "
-        "list / remove / run only affect jobs the caller created."
+        "task scheduling or reminders."
     ),
     params={
         "action": {

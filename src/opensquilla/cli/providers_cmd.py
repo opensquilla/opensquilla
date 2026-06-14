@@ -102,8 +102,14 @@ def providers_configure(
     provider: str = typer.Argument(..., help="Provider id (e.g. openrouter)."),
     model: str = typer.Option("", "--model", "-m"),
     api_key: str = typer.Option("", "--api-key", "-k"),
+    api_key_env: str = typer.Option("", "--api-key-env"),
     base_url: str = typer.Option("", "--base-url"),
     proxy: str = typer.Option("", "--proxy"),
+    tool_support: str = typer.Option(
+        "auto",
+        "--tool-support",
+        help="Tool-call support policy: auto, on, or off.",
+    ),
     config_path: Path | None = typer.Option(
         None, "--config", help="Override config path."
     ),
@@ -117,8 +123,10 @@ def providers_configure(
             provider_id=provider,
             model=model,
             api_key=api_key,
+            api_key_env=api_key_env,
             base_url=base_url,
             proxy=proxy,
+            tool_support=tool_support,
         )
     except (ValueError, KeyError) as exc:
         typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)

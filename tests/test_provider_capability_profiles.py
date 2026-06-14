@@ -129,6 +129,69 @@ def test_unknown_compatible_model_degrades_to_tools_only() -> None:
     assert caps.reasoning_format == "none"
 
 
+def test_generic_self_hosted_unknown_model_remains_tool_optimistic_unknown() -> None:
+    caps = ModelCatalog().get_capabilities(
+        "unknown-model",
+        provider_name="openai_compatible",
+        base_url="http://localhost:8008/v1",
+    )
+
+    assert caps.supports_reasoning is False
+    assert caps.supports_tools is True
+    assert caps.tool_support_state == "unknown"
+    assert caps.reasoning_format == "none"
+
+
+def test_generic_self_hosted_metadata_can_enable_tools() -> None:
+    catalog = ModelCatalog()
+    catalog.add_models(
+        "openai_compatible",
+        "http://localhost:8008/v1",
+        [
+            {
+                "id": "tool-model",
+                "max_model_len": 32768,
+                "supported_parameters": ["tools"],
+            }
+        ],
+    )
+
+    caps = catalog.get_capabilities(
+        "tool-model",
+        provider_name="openai_compatible",
+        base_url="http://localhost:8008/v1",
+    )
+
+    assert caps.supports_reasoning is False
+    assert caps.supports_tools is True
+    assert caps.tool_support_state == "supported"
+    assert caps.reasoning_format == "none"
+
+
+def test_generic_self_hosted_metadata_does_not_enable_provider_reasoning_shape() -> None:
+    catalog = ModelCatalog()
+    catalog.add_models(
+        "openai_compatible",
+        "http://localhost:8008/v1",
+        [
+            {
+                "id": "reasoning-model",
+                "max_model_len": 32768,
+                "supported_parameters": ["reasoning"],
+            }
+        ],
+    )
+
+    caps = catalog.get_capabilities(
+        "reasoning-model",
+        provider_name="openai_compatible",
+        base_url="http://localhost:8008/v1",
+    )
+
+    assert caps.supports_reasoning is False
+    assert caps.reasoning_format == "none"
+
+
 def test_openrouter_context_capability_profile_centralizes_prompt_cache_decision() -> None:
     deepseek = provider_context_capabilities(
         provider_kind="openrouter",

@@ -551,6 +551,49 @@ async def test_agent_blocks_repeated_missing_tool_handler_failures() -> None:
 
 
 @pytest.mark.asyncio
+async def test_agent_unknown_tool_dispatch_envelopes_feed_failure_loop_counter() -> None:
+    """ToolNotFound envelopes from real dispatch count toward the per-instance
+    failure-loop threshold: the third identical unknown call is blocked before
+    reaching dispatch again (threshold default 3, counter lives on the Agent).
+    """
+    from opensquilla.tools.dispatch import build_tool_handler
+    from opensquilla.tools.registry import ToolRegistry
+    from opensquilla.tools.types import ToolContext
+
+    dispatch_calls = 0
+    dispatch_handler = build_tool_handler(ToolRegistry(), ToolContext())
+
+    async def _counting_dispatch(call: Any) -> ToolResult:
+        nonlocal dispatch_calls
+        dispatch_calls += 1
+        return await dispatch_handler(call)
+
+    agent = Agent(
+        provider=_ContextOverflowProvider(success_after=1),
+        config=AgentConfig(tool_failure_loop_block_threshold=3),
+        tool_handler=_counting_dispatch,
+    )
+
+    first = await agent._execute_tool(
+        ToolCall(tool_use_id="ghost-1", tool_name="ghost_tool", arguments={"q": "same"})
+    )
+    second = await agent._execute_tool(
+        ToolCall(tool_use_id="ghost-2", tool_name="ghost_tool", arguments={"q": "same"})
+    )
+    third = await agent._execute_tool(
+        ToolCall(tool_use_id="ghost-3", tool_name="ghost_tool", arguments={"q": "same"})
+    )
+
+    assert dispatch_calls == 2
+    assert json.loads(first.content)["error_class"] == "ToolNotFound"
+    assert json.loads(second.content)["error_class"] == "ToolNotFound"
+    assert third.is_error is True
+    assert "Do not retry this exact call unchanged" in third.content
+    assert third.execution_status is not None
+    assert third.execution_status.get("reason") == "tool_failure_loop_exhausted"
+
+
+@pytest.mark.asyncio
 async def test_agent_provider_request_proof_budget_is_separate_from_tool_result_cap() -> None:
     provider = _ConfigCapturingProvider()
     agent = Agent(
@@ -1616,3 +1659,112 @@ def _event_index(events: list[Any], predicate: Any) -> int:
 
 def _provider_payload_is_smaller(before: list[Message], after: list[Message]) -> bool:
     return len(after) < len(before) or session_payload_chars(after) < session_payload_chars(before)
+
+
+class _RepeatedWebSearchThenDoneProvider:
+    provider_name = "fake"
+
+    def __init__(self, *, search_calls: int = 7) -> None:
+        self.search_calls = search_calls
+        self.calls: list[list[Message]] = []
+
+    def chat(
+        self,
+        messages: list[Message],
+        tools: list[Any] | None = None,
+        config: ChatConfig | None = None,
+    ) -> AsyncIterator[Any]:
+        self.calls.append(messages)
+        return self._stream(len(self.calls))
+
+    async def _stream(self, call_number: int) -> AsyncIterator[Any]:
+        if call_number > self.search_calls:
+            yield ProviderText(text="answered from evidence")
+            yield ProviderDone(stop_reason="stop", input_tokens=1, output_tokens=1)
+            return
+        tool_use_id = f"ws-{call_number}"
+        yield ProviderToolUseStart(tool_use_id=tool_use_id, tool_name="web_search")
+        yield ProviderToolUseEnd(
+            tool_use_id=tool_use_id,
+            tool_name="web_search",
+            arguments={"query": f"world cup results page {call_number}"},
+        )
+        yield ProviderDone(stop_reason="tool_calls", input_tokens=1, output_tokens=1)
+
+    async def list_models(self) -> list[Any]:
+        return []
+
+
+@pytest.mark.asyncio
+async def test_repeated_successful_web_calls_get_usage_advice_not_errors() -> None:
+    """Soft brake on futile repetition: successful acquisition results past
+    the per-turn threshold carry a usage note; nothing is blocked and no
+    error envelopes are emitted (live incident agent:main:webchat:3h1bj7ek
+    — 27 successful web calls in one turn with no brake).
+    """
+    provider = _RepeatedWebSearchThenDoneProvider(search_calls=7)
+    delivered: list[str] = []
+
+    async def _search_tool(call: Any) -> ToolResult:
+        return ToolResult(
+            tool_use_id=call.tool_use_id,
+            tool_name=call.tool_name,
+            content=f"results for {call.arguments.get('query', '')}",
+            is_error=False,
+        )
+
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            tool_repetition_advice_threshold=5,
+            max_iterations=12,
+            flush_enabled=False,
+        ),
+        tool_handler=_search_tool,
+    )
+
+    events = [event async for event in agent.run_turn("latest world cup results")]
+    for event in events:
+        if getattr(event, "kind", None) == "tool_result":
+            delivered.append(str(getattr(event, "result", "")))
+
+    with_advice = [text for text in delivered if "[turn_usage_note]" in text]
+    without_advice = [text for text in delivered if "[turn_usage_note]" not in text]
+    assert len(delivered) == 7
+    assert len(without_advice) == 4  # calls 1-4 stay untouched
+    assert len(with_advice) == 3  # calls 5-7 carry the note
+    assert "successful web_search calls" in with_advice[0]
+    assert not any(isinstance(event, ErrorEvent) for event in events)
+    assert any(isinstance(event, DoneEvent) for event in events)
+
+
+@pytest.mark.asyncio
+async def test_repetition_advice_disabled_at_zero_threshold() -> None:
+    provider = _RepeatedWebSearchThenDoneProvider(search_calls=6)
+
+    async def _search_tool(call: Any) -> ToolResult:
+        return ToolResult(
+            tool_use_id=call.tool_use_id,
+            tool_name=call.tool_name,
+            content="results",
+            is_error=False,
+        )
+
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            tool_repetition_advice_threshold=0,
+            max_iterations=10,
+            flush_enabled=False,
+        ),
+        tool_handler=_search_tool,
+    )
+
+    events = [event async for event in agent.run_turn("query")]
+    texts = [
+        str(getattr(event, "result", ""))
+        for event in events
+        if getattr(event, "kind", None) == "tool_result"
+    ]
+    assert texts
+    assert not any("[turn_usage_note]" in text for text in texts)

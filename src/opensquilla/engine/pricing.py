@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -127,7 +128,45 @@ _LIVE_PRICE_FETCHED_AT: dict[str, float] = {}
 _LIVE_PRICE_MISS_AT: dict[str, float] = {}
 
 
+def _lookup_env_price_override(model_id: str) -> PriceEntry | None:
+    raw = os.environ.get("OPENSQUILLA_PRICE_OVERRIDES_JSON", "").strip()
+    if not raw:
+        return None
+    try:
+        overrides = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        log.warning("pricing.env_override_invalid_json", error=str(exc))
+        return None
+    if not isinstance(overrides, dict):
+        log.warning("pricing.env_override_invalid_shape")
+        return None
+
+    model_lower = str(model_id or "").strip().lower()
+    for prefix, value in overrides.items():
+        if not model_lower.startswith(str(prefix).strip().lower()):
+            continue
+        if not isinstance(value, dict):
+            log.warning("pricing.env_override_invalid_entry", model_prefix=str(prefix))
+            return None
+        try:
+            return PriceEntry(
+                input_per_m=float(value["input_per_m"]),
+                output_per_m=float(value["output_per_m"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            log.warning(
+                "pricing.env_override_invalid_entry",
+                model_prefix=str(prefix),
+                error=str(exc),
+            )
+            return None
+    return None
+
+
 def _lookup_price_override(model_id: str) -> PriceEntry | None:
+    env_override = _lookup_env_price_override(model_id)
+    if env_override is not None:
+        return env_override
     model_lower = str(model_id or "").strip().lower()
     for prefix, entry in _PRICE_OVERRIDES:
         if model_lower.startswith(prefix):

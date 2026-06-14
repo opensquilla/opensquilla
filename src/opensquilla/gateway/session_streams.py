@@ -38,6 +38,7 @@ class SessionStreamRegistry:
     def _is_replay_lossy(event_name: str) -> bool:
         return event_name in {
             "session.event.text_delta",
+            "session.event.text_snapshot",
             "session.event.run_heartbeat",
         }
 

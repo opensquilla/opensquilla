@@ -212,6 +212,8 @@ class SubagentManager:
             async for event in child_agent.run_turn(spec.task):
                 if hasattr(event, "text") and event.kind == "text_delta":  # type: ignore[union-attr]
                     collected.append(event.text)  # type: ignore[union-attr]
+                elif hasattr(event, "text") and event.kind == "text_snapshot":  # type: ignore[union-attr]
+                    collected[:] = [event.text] if event.text else []  # type: ignore[union-attr]
                 elif event.kind == "done":  # type: ignore[union-attr]
                     break
             return "".join(collected)

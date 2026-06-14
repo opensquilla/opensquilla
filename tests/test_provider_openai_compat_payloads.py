@@ -17,6 +17,7 @@ from opensquilla.provider.types import (
     Message,
     ModelCapabilities,
     ProviderHeartbeatEvent,
+    TextDeltaEvent,
     ToolDefinition,
     ToolInputSchema,
     ToolUseEndEvent,
@@ -203,6 +204,69 @@ def test_openrouter_stream_timeout_emits_heartbeat_before_non_stream_fallback(
     assert event.phase == "llm_fallback"
 
 
+def test_openrouter_request_error_logs_exception_type(monkeypatch: Any) -> None:
+    captured_logs: list[tuple[str, dict[str, Any]]] = []
+
+    class ReadErrorStream:
+        async def __aenter__(self) -> Any:
+            request = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+            raise httpx.ReadError("", request=request)
+
+        async def __aexit__(self, *_exc: Any) -> None:
+            return None
+
+    class ReadErrorClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> ReadErrorClient:
+            return self
+
+        async def __aexit__(self, *_exc: Any) -> None:
+            return None
+
+        def stream(self, *args: Any, **kwargs: Any) -> ReadErrorStream:
+            return ReadErrorStream()
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", ReadErrorClient)
+    monkeypatch.setattr(
+        "opensquilla.provider.openai.log.warning",
+        lambda event, **kwargs: captured_logs.append((event, kwargs)),
+    )
+
+    provider = OpenAIProvider(
+        api_key="test",
+        model="z-ai/glm-5.1",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+
+    async def _run() -> list[Any]:
+        return [
+            event
+            async for event in provider.chat(
+                [Message(role="user", content="hi")],
+                config=ChatConfig(timeout=10),
+            )
+        ]
+
+    events = asyncio.run(_run())
+
+    assert any(isinstance(event, ErrorEvent) and event.code == "request_error" for event in events)
+    assert captured_logs == [
+        (
+            "provider.chat_request_error",
+            {
+                "provider": "openrouter",
+                "model": "z-ai/glm-5.1",
+                "error_type": "ReadError",
+                "error": "ReadError('')",
+                "emitted_stream_event": False,
+            },
+        )
+    ]
+
+
 def test_openrouter_list_models_reports_openrouter_provider(monkeypatch: Any) -> None:
     captured: dict[str, Any] = {}
     _patch_get_transport_response(
@@ -235,6 +299,68 @@ def test_openrouter_list_models_reports_openrouter_provider(monkeypatch: Any) ->
     assert captured["url"] == "https://openrouter.ai/api/v1/models"
     assert rows[0].provider == "openrouter"
     assert rows[0].model_id == "deepseek/deepseek-v4-flash"
+
+
+def test_self_hosted_list_models_reads_common_metadata_fields_without_blank_auth(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_get_transport_response(
+        monkeypatch,
+        captured,
+        httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "id": "local-model",
+                        "name": "Local Model",
+                        "max_model_len": 32768,
+                        "max_completion_tokens": 2048,
+                        "supported_parameters": ["tools"],
+                    }
+                ]
+            },
+            request=httpx.Request("GET", "http://localhost:8008/v1/models"),
+        ),
+    )
+    provider = OpenAIProvider(
+        api_key="",
+        model="local-model",
+        base_url="http://localhost:8008/v1",
+        provider_kind="self_hosted_openai",
+    )
+
+    rows = asyncio.run(provider.list_models())
+
+    assert captured["url"] == "http://localhost:8008/v1/models"
+    assert "authorization" not in captured["headers"]
+    assert rows[0].provider == "self_hosted_openai"
+    assert rows[0].model_id == "local-model"
+    assert rows[0].context_window == 32768
+    assert rows[0].max_output_tokens == 2048
+    assert rows[0].supports_tools is True
+
+
+def test_self_hosted_openai_payload_omits_blank_auth_and_stream_options(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="",
+        model="local-model",
+        base_url="http://localhost:8008/v1",
+        provider_kind="self_hosted_openai",
+    )
+
+    _collect(provider, ChatConfig(max_tokens=32, temperature=0))
+
+    assert captured["payload"]["model"] == "local-model"
+    assert captured["payload"]["max_tokens"] == 32
+    assert captured["payload"]["temperature"] == 0
+    assert "stream_options" not in captured["payload"]
+    assert "authorization" not in captured["headers"]
 
 
 def test_openrouter_http_error_names_provider_request(monkeypatch: Any) -> None:
@@ -1281,6 +1407,369 @@ def test_openai_compat_sends_named_function_tool_choice_when_configured(
     _collect_events(provider, ChatConfig(tool_choice=tool_choice), tools=[tool])
 
     assert captured["payload"]["tool_choice"] == tool_choice
+
+
+def test_openai_compat_synthesizes_wrapped_tool_call_text(monkeypatch: Any) -> None:
+    chunks = [
+        {
+            "model": "local-model",
+            "choices": [
+                {
+                    "delta": {
+                        "content": (
+                            '<tool_call>{"name":"lookup","arguments":{"q":"hi"}}</tool_call>'
+                        )
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {
+            "model": "local-model",
+            "choices": [{"delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2},
+        },
+    ]
+    body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+    captured: dict[str, Any] = {}
+    _patch_transport_body(monkeypatch, captured, body + b"data: [DONE]\n\n")
+    provider = OpenAIProvider(
+        api_key="test",
+        model="local-model",
+        base_url="http://localhost:8008/v1",
+        provider_kind="self_hosted_openai",
+    )
+    tool = ToolDefinition(
+        name="lookup",
+        description="Lookup a value.",
+        input_schema=ToolInputSchema(properties={"q": {"type": "string"}}, required=["q"]),
+    )
+
+    events = _collect_events(provider, ChatConfig(), tools=[tool])
+
+    tool_end = next(event for event in events if isinstance(event, ToolUseEndEvent))
+    assert tool_end.tool_name == "lookup"
+    assert tool_end.arguments == {"q": "hi"}
+    assert tool_end.synthetic_from_text is True
+
+
+def test_openai_compat_synthesizes_wrapped_tool_call_with_role_end_sentinel(
+    monkeypatch: Any,
+) -> None:
+    chunks = [
+        {
+            "model": "local-model",
+            "choices": [
+                {
+                    "delta": {
+                        "content": (
+                            '<tool_call>\n{"name":"lookup","arguments":{"q":"hi"}}\n'
+                            "</tool_call><|role_end|>"
+                        )
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {"model": "local-model", "choices": [{"delta": {}, "finish_reason": "stop"}]},
+    ]
+    body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+    captured: dict[str, Any] = {}
+    _patch_transport_body(monkeypatch, captured, body + b"data: [DONE]\n\n")
+    provider = OpenAIProvider(
+        api_key="test",
+        model="local-model",
+        base_url="http://localhost:8008/v1",
+        provider_kind="self_hosted_openai",
+    )
+    tool = ToolDefinition(
+        name="lookup",
+        description="Lookup a value.",
+        input_schema=ToolInputSchema(properties={"q": {"type": "string"}}, required=["q"]),
+    )
+
+    events = _collect_events(provider, ChatConfig(), tools=[tool])
+
+    tool_end = next(event for event in events if isinstance(event, ToolUseEndEvent))
+    assert tool_end.tool_name == "lookup"
+    assert tool_end.arguments == {"q": "hi"}
+    assert tool_end.synthetic_from_text is True
+
+
+def test_openai_compat_synthesizes_multiple_function_style_tool_call_text(
+    monkeypatch: Any,
+) -> None:
+    chunks = [
+        {
+            "model": "local-model",
+            "choices": [
+                {
+                    "delta": {
+                        "content": (
+                            "I'll use the tools.\n\n"
+                            'lookup({"q":"hi"})\n\n'
+                            'save({"value":1})'
+                        )
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {"model": "local-model", "choices": [{"delta": {}, "finish_reason": "stop"}]},
+    ]
+    body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+    captured: dict[str, Any] = {}
+    _patch_transport_body(monkeypatch, captured, body + b"data: [DONE]\n\n")
+    provider = OpenAIProvider(
+        api_key="test",
+        model="local-model",
+        base_url="http://localhost:8008/v1",
+        provider_kind="self_hosted_openai",
+    )
+    tools = [
+        ToolDefinition(
+            name="lookup",
+            description="Lookup a value.",
+            input_schema=ToolInputSchema(properties={"q": {"type": "string"}}, required=["q"]),
+        ),
+        ToolDefinition(
+            name="save",
+            description="Save a value.",
+            input_schema=ToolInputSchema(
+                properties={"value": {"type": "number"}},
+                required=["value"],
+            ),
+        ),
+    ]
+
+    events = _collect_events(provider, ChatConfig(), tools=tools)
+
+    tool_ends = [event for event in events if isinstance(event, ToolUseEndEvent)]
+    assert [
+        (event.tool_name, event.arguments, event.synthetic_from_text) for event in tool_ends
+    ] == [
+        ("lookup", {"q": "hi"}, True),
+        ("save", {"value": 1}, True),
+    ]
+
+
+def test_openai_compat_does_not_synthesize_unoffered_wrapped_tool_call_text(
+    monkeypatch: Any,
+) -> None:
+    chunks = [
+        {
+            "model": "local-model",
+            "choices": [
+                {
+                    "delta": {
+                        "content": ('<tool_call>{"name":"not_allowed","arguments":{}}</tool_call>')
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {"model": "local-model", "choices": [{"delta": {}, "finish_reason": "stop"}]},
+    ]
+    body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+    captured: dict[str, Any] = {}
+    _patch_transport_body(monkeypatch, captured, body + b"data: [DONE]\n\n")
+    provider = OpenAIProvider(
+        api_key="test",
+        model="local-model",
+        base_url="http://localhost:8008/v1",
+        provider_kind="self_hosted_openai",
+    )
+    tool = ToolDefinition(
+        name="lookup",
+        description="Lookup a value.",
+        input_schema=ToolInputSchema(properties={"q": {"type": "string"}}, required=["q"]),
+    )
+
+    events = _collect_events(provider, ChatConfig(), tools=[tool])
+
+    assert not any(isinstance(event, ToolUseEndEvent) for event in events)
+
+
+def test_openai_compat_does_not_synthesize_tool_call_from_embedded_prose(
+    monkeypatch: Any,
+) -> None:
+    """Prose mentioning ``tool_name{...}`` mid-sentence is not a tool call."""
+    chunks = [
+        {
+            "model": "local-model",
+            "choices": [
+                {
+                    "delta": {
+                        "content": (
+                            'You can use lookup{"q": "llada"} to search,'
+                            " then read the docs for more detail."
+                        )
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {"model": "local-model", "choices": [{"delta": {}, "finish_reason": "stop"}]},
+    ]
+    body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+    captured: dict[str, Any] = {}
+    _patch_transport_body(monkeypatch, captured, body + b"data: [DONE]\n\n")
+    provider = OpenAIProvider(
+        api_key="test",
+        model="local-model",
+        base_url="http://localhost:8008/v1",
+        provider_kind="self_hosted_openai",
+    )
+    tool = ToolDefinition(
+        name="lookup",
+        description="Lookup a value.",
+        input_schema=ToolInputSchema(properties={"q": {"type": "string"}}, required=["q"]),
+    )
+
+    events = _collect_events(provider, ChatConfig(), tools=[tool])
+
+    assert not any(isinstance(event, ToolUseEndEvent) for event in events)
+
+
+def test_openai_compat_synthesizes_trailing_plain_json_tool_call(
+    monkeypatch: Any,
+) -> None:
+    """A message ending in ``tool_name{...}`` for an offered tool is a call."""
+    chunks = [
+        {
+            "model": "local-model",
+            "choices": [
+                {
+                    "delta": {"content": 'I will search for that.\nlookup{"q": "llada"}'},
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {"model": "local-model", "choices": [{"delta": {}, "finish_reason": "stop"}]},
+    ]
+    body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+    captured: dict[str, Any] = {}
+    _patch_transport_body(monkeypatch, captured, body + b"data: [DONE]\n\n")
+    provider = OpenAIProvider(
+        api_key="test",
+        model="local-model",
+        base_url="http://localhost:8008/v1",
+        provider_kind="self_hosted_openai",
+    )
+    tool = ToolDefinition(
+        name="lookup",
+        description="Lookup a value.",
+        input_schema=ToolInputSchema(properties={"q": {"type": "string"}}, required=["q"]),
+    )
+
+    events = _collect_events(provider, ChatConfig(), tools=[tool])
+
+    tool_ends = [event for event in events if isinstance(event, ToolUseEndEvent)]
+    assert len(tool_ends) == 1
+    assert tool_ends[0].tool_name == "lookup"
+    assert tool_ends[0].arguments == {"q": "llada"}
+    assert tool_ends[0].synthetic_from_text is True
+
+
+def test_openai_compat_does_not_synthesize_unoffered_plain_json_tool_call_text(
+    monkeypatch: Any,
+) -> None:
+    """``name{...}`` text naming a tool outside this turn's offered schema is
+    NOT synthesized into a tool call; the text stays visible unstripped.
+
+    Complements the wrapped-form unoffered test above: per-turn routing can
+    narrow the offered schema, so a model trained on the wider toolset may
+    emit plain-JSON calls for tools the current route does not advertise.
+    """
+    chunks = [
+        {
+            "model": "local-model",
+            "choices": [
+                {
+                    "delta": {"content": 'I will save that.\nsave{"value": 1}'},
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {"model": "local-model", "choices": [{"delta": {}, "finish_reason": "stop"}]},
+    ]
+    body = b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+    captured: dict[str, Any] = {}
+    _patch_transport_body(monkeypatch, captured, body + b"data: [DONE]\n\n")
+    provider = OpenAIProvider(
+        api_key="test",
+        model="local-model",
+        base_url="http://localhost:8008/v1",
+        provider_kind="self_hosted_openai",
+    )
+    tool = ToolDefinition(
+        name="lookup",
+        description="Lookup a value.",
+        input_schema=ToolInputSchema(properties={"q": {"type": "string"}}, required=["q"]),
+    )
+
+    events = _collect_events(provider, ChatConfig(), tools=[tool])
+
+    assert not any(isinstance(event, ToolUseEndEvent) for event in events)
+    text = "".join(event.text for event in events if isinstance(event, TextDeltaEvent))
+    assert 'save{"value": 1}' in text
+
+
+def test_openai_compat_replays_unoffered_history_tool_name_verbatim(
+    monkeypatch: Any,
+) -> None:
+    """History tool_calls replay the recorded name even when this turn's
+    tools array no longer offers it (multi-provider routing swaps schemas
+    between turns; the transcript must stay internally consistent)."""
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="local-model",
+        base_url="http://localhost:8008/v1",
+        provider_kind="self_hosted_openai",
+    )
+    messages = [
+        Message(role="user", content="check the cache"),
+        Message(
+            role="assistant",
+            content=[
+                ContentBlockToolUse(
+                    id="call_foreign",
+                    name="foreign_probe",
+                    input={"q": "cache"},
+                )
+            ],
+        ),
+        Message(
+            role="user",
+            content=[
+                ContentBlockToolResult(
+                    tool_use_id="call_foreign",
+                    content="cache is warm",
+                )
+            ],
+        ),
+        Message(role="user", content="continue"),
+    ]
+    tool = ToolDefinition(
+        name="lookup",
+        description="Lookup a value.",
+        input_schema=ToolInputSchema(properties={"q": {"type": "string"}}, required=["q"]),
+    )
+
+    async def _run() -> None:
+        async for _ in provider.chat(messages, config=ChatConfig(), tools=[tool]):
+            pass
+
+    asyncio.run(_run())
+
+    payload = captured["payload"]
+    assistant_message = payload["messages"][1]
+    assert assistant_message["role"] == "assistant"
+    assert assistant_message["tool_calls"][0]["function"]["name"] == "foreign_probe"
+    assert assistant_message["tool_calls"][0]["id"] == "call_foreign"
+    assert [entry["function"]["name"] for entry in payload["tools"]] == ["lookup"]
 
 
 def test_gemini_stream_multiple_tool_calls_without_indexes_stay_separate(

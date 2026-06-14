@@ -16,6 +16,7 @@ from opensquilla.provider.types import (
     DoneEvent,
     ErrorEvent,
     Message,
+    TextSnapshotEvent,
     ToolDefinition,
     ToolInputSchema,
 )
@@ -31,6 +32,38 @@ def _openai_sse_body(model: str = "test-model") -> bytes:
             "model": model,
             "choices": [{"delta": {}, "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+        },
+    ]
+    return b"".join(
+        f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks
+    ) + b"data: [DONE]\n\n"
+
+
+def _openai_diffusing_sse_body(
+    model: str = "mercury-2",
+    *,
+    null_tool_calls: bool = False,
+    corrupt_final_suffix: bool = False,
+) -> bytes:
+    first_delta: dict[str, Any] = {"content": "n0isy answ3r"}
+    if null_tool_calls:
+        first_delta["tool_calls"] = None
+    final_content = "final answer"
+    if corrupt_final_suffix:
+        final_content += "\ufffd\ufffd\ufffd"
+    chunks = [
+        {
+            "model": model,
+            "choices": [{"delta": first_delta, "finish_reason": None}],
+        },
+        {
+            "model": model,
+            "choices": [{"delta": {"content": final_content}, "finish_reason": None}],
+        },
+        {
+            "model": model,
+            "choices": [{"delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2},
         },
     ]
     return b"".join(
@@ -176,6 +209,187 @@ def test_openai_final_request_proof_allows_native_image_payload(
     media_url = payloads[0]["messages"][0]["content"][1]["image_url"]["url"]
     assert media_url.startswith("data:image/png;base64,")
     assert len(media_url) > 5000
+
+
+def test_openai_inception_mercury_diffusing_uses_text_snapshots(
+    monkeypatch: Any,
+) -> None:
+    payloads: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=_openai_diffusing_sse_body(),
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="mercury-2",
+        base_url="https://api.inceptionlabs.ai/v1",
+    )
+
+    async def run() -> list[Any]:
+        return [
+            event
+            async for event in provider.chat(
+                [Message(role="user", content="hello")],
+                config=ChatConfig(provider_request_max_chars=1000),
+            )
+        ]
+
+    events = asyncio.run(run())
+
+    assert payloads[0]["stream"] is True
+    assert payloads[0]["model"] == "mercury-2"
+    assert payloads[0]["diffusing"] is True
+    assert payloads[0]["max_completion_tokens"] == ChatConfig().max_tokens
+    assert "max_tokens" not in payloads[0]
+    assert [event.text for event in events if isinstance(event, TextSnapshotEvent)] == [
+        "n0isy answ3r",
+        "final answer",
+    ]
+    assert any(isinstance(event, DoneEvent) for event in events)
+
+
+def test_openai_inception_prefixed_mercury_model_is_normalized_for_direct_api(
+    monkeypatch: Any,
+) -> None:
+    payloads: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=_openai_diffusing_sse_body(),
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="inception/mercury-2",
+        base_url="https://api.inceptionlabs.ai/v1",
+        provider_kind="inception",
+    )
+
+    async def run() -> list[Any]:
+        return [
+            event
+            async for event in provider.chat(
+                [Message(role="user", content="hello")],
+                config=ChatConfig(provider_request_max_chars=1000),
+            )
+        ]
+
+    events = asyncio.run(run())
+
+    assert payloads[0]["model"] == "mercury-2"
+    assert payloads[0]["diffusing"] is True
+    assert "max_completion_tokens" in payloads[0]
+    assert "max_tokens" not in payloads[0]
+    assert any(isinstance(event, TextSnapshotEvent) for event in events)
+
+
+def test_openai_inception_diffusing_tolerates_null_tool_calls(
+    monkeypatch: Any,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=_openai_diffusing_sse_body(null_tool_calls=True),
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="inception/mercury-2",
+        base_url="https://api.inceptionlabs.ai/v1",
+        provider_kind="inception",
+    )
+
+    async def run() -> list[Any]:
+        return [
+            event
+            async for event in provider.chat(
+                [Message(role="user", content="hello")],
+                config=ChatConfig(provider_request_max_chars=1000),
+            )
+        ]
+
+    events = asyncio.run(run())
+
+    assert [event.text for event in events if isinstance(event, TextSnapshotEvent)] == [
+        "n0isy answ3r",
+        "final answer",
+    ]
+    assert any(isinstance(event, DoneEvent) for event in events)
+
+
+def test_openai_inception_diffusing_strips_trailing_replacement_chars(
+    monkeypatch: Any,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=_openai_diffusing_sse_body(corrupt_final_suffix=True),
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="inception/mercury-2",
+        base_url="https://api.inceptionlabs.ai/v1",
+        provider_kind="inception",
+    )
+
+    async def run() -> list[Any]:
+        return [
+            event
+            async for event in provider.chat(
+                [Message(role="user", content="hello")],
+                config=ChatConfig(provider_request_max_chars=1000),
+            )
+        ]
+
+    events = asyncio.run(run())
+
+    assert [event.text for event in events if isinstance(event, TextSnapshotEvent)] == [
+        "n0isy answ3r",
+        "final answer",
+    ]
 
 
 def test_anthropic_final_request_proof_blocks_oversized_send(monkeypatch: Any) -> None:

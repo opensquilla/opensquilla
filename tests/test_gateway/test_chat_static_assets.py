@@ -210,6 +210,35 @@ def test_chat_composer_has_microphone_transcription_flow() -> None:
     assert "chat-mic-recording" in css
 
 
+def test_chat_text_snapshot_events_replace_active_stream_text() -> None:
+    source = _read_chat_js()
+
+    assert "session.event.text_snapshot" in source
+    assert "_applyTextSnapshot(payload.text || '')" in source
+    assert "function _applyTextSnapshot(snapshot)" in source
+    assert "_markVisibleStreamEvent('text_snapshot')" in source
+    assert "function _streamDisplayTextForActiveSnapshot(snapshot)" in source
+    assert "function _streamHasToolBoundary()" in source
+    assert "_eventHasSpecificSessionHandler(event)" in source
+
+
+def test_chat_router_fx_carries_routed_provider_identity() -> None:
+    source = _read_chat_js()
+
+    assert "'provider'" in source
+    assert "'routed_provider'" in source
+    assert "provider: typeof rawTier?.provider === 'string' ? rawTier.provider : ''," in source
+    assert "function _routerFxRememberTierDecision(tier, model, provider)" in source
+    routed_provider_call = (
+        "_routerFxRememberTierDecision("
+        "tier, payload.model || '', payload.provider || payload.routed_provider || ''"
+        ")"
+    )
+    assert routed_provider_call in source
+    assert "providerPart" in source
+    assert "usage.routed_provider || usage.provider || ''" in source
+
+
 def test_mobile_sidebar_closed_state_leaves_focus_order() -> None:
     app = _read_app_js()
 

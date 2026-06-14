@@ -32,8 +32,10 @@ class ProviderRecoveryAction(StrEnum):
 
 
 _OPENAI_COMPAT_PROVIDERS = {
+    "openai_compatible",
     "openrouter",
     "openai",
+    "inception",
     "azure",
     "deepseek",
     "gemini",

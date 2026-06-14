@@ -22,8 +22,18 @@ future prompt-failure early-yield branch.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+from opensquilla.router_tiers import (
+    ROUTED_MODEL_KEY,
+    ROUTED_PROVIDER_KEY,
+    ROUTED_TIER_KEY,
+    ROUTING_APPLIED_KEY,
+    ROUTING_SOURCE_KEY,
+    routing_selection_effective,
+)
 
 if TYPE_CHECKING:
     from opensquilla.engine.turn_runner.outcome import StageOutcome
@@ -75,6 +85,17 @@ class RunPipelineRequest:
     normalization_metadata: dict[str, Any] | None = None
     input_provenance: dict[str, Any] | str | None = None
 
+
+def _append_dynamic_system_prompt_block(
+    system_prompt: str | tuple[str, str],
+    block: str,
+) -> str | tuple[str, str]:
+    if isinstance(system_prompt, str):
+        return f"{system_prompt}\n\n{block}" if system_prompt else block
+    base, dynamic = system_prompt
+    return (base, f"{dynamic}\n\n{block}" if dynamic else block)
+
+
 # ---------------------------------------------------------------------------
 # Ports — narrow Protocols so the stage is unit-testable without the full
 # TurnRunner. The runtime adapters in ``harness.py`` bind these to the
@@ -102,7 +123,126 @@ class PromptAssemblerPort(Protocol):
         prompt_metadata: dict[str, Any],
         bootstrap_context_mode: str | None,
         fresh_user_session: bool = False,
+        reply_tags_enabled: bool = True,
     ) -> str | tuple[str, str]: ...
+
+
+def _reply_tags_enabled_for_tool_context(ctx: ToolContext | None) -> bool:
+    if ctx is None:
+        return True
+    caller_kind = getattr(ctx, "caller_kind", None)
+    caller_value = getattr(caller_kind, "value", caller_kind)
+    return str(caller_value or "").lower() in {"channel", "cron"}
+
+
+def _tier_cfg_for_turn(config: Any, metadata: Mapping[str, Any]) -> Mapping[str, Any]:
+    if not routing_selection_effective(metadata):
+        return {}
+    routed_tier = str(metadata.get(ROUTED_TIER_KEY) or "").strip()
+    if not routed_tier:
+        return {}
+    router_cfg = getattr(config, "squilla_router", None)
+    tiers = getattr(router_cfg, "tiers", {}) if router_cfg is not None else {}
+    if not isinstance(tiers, Mapping):
+        return {}
+    tier_cfg = tiers.get(routed_tier, {})
+    return tier_cfg if isinstance(tier_cfg, Mapping) else {}
+
+
+def _configured_tier_for_model(
+    config: Any,
+    model: str,
+) -> tuple[str, Mapping[str, Any]] | None:
+    requested = str(model or "").strip()
+    if not requested:
+        return None
+    router_cfg = getattr(config, "squilla_router", None)
+    tiers = getattr(router_cfg, "tiers", {}) if router_cfg is not None else {}
+    if not isinstance(tiers, Mapping):
+        return None
+    for tier_name, tier_cfg in tiers.items():
+        if not isinstance(tier_cfg, Mapping):
+            continue
+        configured_model = str(tier_cfg.get("model") or "").strip()
+        if configured_model == requested:
+            return str(tier_name), tier_cfg
+    return None
+
+
+def _pin_explicit_model_choice(turn: Any, explicit_model: str | None) -> None:
+    model = str(explicit_model or "").strip()
+    if not model:
+        return
+    metadata = getattr(turn, "metadata", None)
+    if not isinstance(metadata, dict):
+        metadata = {}
+        turn.metadata = metadata
+
+    turn.model = model
+    metadata[ROUTED_MODEL_KEY] = model
+    metadata[ROUTING_SOURCE_KEY] = "explicit_model"
+    metadata[ROUTING_APPLIED_KEY] = False
+
+    matched_tier = _configured_tier_for_model(getattr(turn, "config", None), model)
+    if matched_tier is None:
+        metadata.pop(ROUTED_TIER_KEY, None)
+        metadata.pop(ROUTED_PROVIDER_KEY, None)
+        return
+
+    tier_name, tier_cfg = matched_tier
+    metadata[ROUTED_TIER_KEY] = tier_name
+    provider = str(tier_cfg.get("provider") or "").strip().lower()
+    if provider:
+        metadata[ROUTED_PROVIDER_KEY] = provider
+    else:
+        metadata.pop(ROUTED_PROVIDER_KEY, None)
+
+
+def _first_text(*values: Any) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _first_positive_int(*values: Any) -> int | None:
+    for value in values:
+        try:
+            parsed = int(value or 0)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return None
+
+
+def _configured_tool_schema_policy(
+    config: Any,
+    metadata: Mapping[str, Any],
+) -> tuple[str, Mapping[str, list[str]], list[str], int | None] | None:
+    tier_cfg = _tier_cfg_for_turn(config, metadata)
+    llm_cfg = getattr(config, "llm", None)
+    tools_cfg = getattr(config, "tools", None)
+    toolset = _first_text(
+        tier_cfg.get("toolset"),
+        tier_cfg.get("toolSet"),
+        getattr(llm_cfg, "toolset", None),
+        "full",
+    )
+    max_chars = _first_positive_int(
+        tier_cfg.get("max_tool_schema_chars"),
+        tier_cfg.get("maxToolSchemaChars"),
+        getattr(llm_cfg, "max_tool_schema_chars", None),
+    )
+    if toolset == "full" and max_chars is None:
+        return None
+    raw_toolsets = getattr(tools_cfg, "toolsets", {}) if tools_cfg is not None else {}
+    toolsets = raw_toolsets if isinstance(raw_toolsets, Mapping) else {}
+    raw_priority = (
+        getattr(tools_cfg, "toolset_priority", []) if tools_cfg is not None else []
+    )
+    priority = list(raw_priority) if isinstance(raw_priority, list) else []
+    return toolset or "full", toolsets, priority, max_chars
 
 @runtime_checkable
 class PipelineExecutionPort(Protocol):
@@ -258,8 +398,10 @@ class PromptAssemblerStageOutput:
       or ``None``.
     - ``request_context_prompt``: the dynamic context for non-cached
       prefix, or ``None``.
-    - ``resolved_model``: the final model id (explicit > pipeline >
-      selector).
+    - ``resolved_model``: the final model id (explicit selection >
+      pipeline > selector). When explicit selection matches a configured
+      tier, the stage rewrites routed metadata to that tier before provider
+      resolution.
     - ``provider_name``: the provider's name attribute or class name.
     - ``session_id_for_log``: the durable session_id for trace_context.
     - ``trace_context_session_id``: the same value, surfaced explicitly so
@@ -361,6 +503,9 @@ class PromptAssemblerStage:
             prompt_metadata=prompt_metadata,
             bootstrap_context_mode=inp.bootstrap_context_mode,
             fresh_user_session=inp.fresh_user_session,
+            reply_tags_enabled=_reply_tags_enabled_for_tool_context(
+                inp.effective_tool_context
+            ),
         )
 
         # 2. Fetch router context (transcript-driven)
@@ -431,10 +576,58 @@ class PromptAssemblerStage:
             input_provenance=inp.input_provenance,
         )
         turn, provider = await self._pipeline_executor.run_pipeline(request)
+        _pin_explicit_model_choice(turn, inp.model)
 
         # 4. Merge prompt + tool metadata
         turn.metadata.update(prompt_metadata)
         turn.metadata.update(inp.tool_metadata)
+
+        tool_policy = _configured_tool_schema_policy(
+            getattr(turn, "config", None),
+            getattr(turn, "metadata", {}) or {},
+        )
+        if tool_policy is not None and getattr(turn, "tool_defs", None):
+            from opensquilla.provider.tool_schema_budget import fit_tool_schema_budget
+
+            selected_toolset, toolsets, priority, max_chars = tool_policy
+            fit_result = fit_tool_schema_budget(
+                turn.tool_defs,
+                toolset=selected_toolset,
+                toolsets=toolsets,
+                priority=priority,
+                max_tool_schema_chars=max_chars,
+            )
+            turn.tool_defs = fit_result.tool_defs
+            turn.metadata["selected_toolset"] = fit_result.selected_toolset
+            turn.metadata["dropped_tools"] = fit_result.dropped_tools
+            turn.metadata["tools_chars"] = fit_result.tools_chars
+            turn.metadata["tool_schema_chars"] = fit_result.tools_chars
+            turn.metadata["tool_schema_budget_chars"] = fit_result.budget_chars
+            if fit_result.changed:
+                prompt_metadata = {}
+                turn.system_prompt = self._prompt_assembler.assemble_prompt(
+                    inp.agent_id,
+                    turn.tool_defs,
+                    session_key=inp.session_key,
+                    semantic_message=inp.semantic_input,
+                    extra_context=inp.extra_prompt_context,
+                    prompt_metadata=prompt_metadata,
+                    bootstrap_context_mode=inp.bootstrap_context_mode,
+                    fresh_user_session=inp.fresh_user_session,
+                    reply_tags_enabled=_reply_tags_enabled_for_tool_context(
+                        inp.effective_tool_context
+                    ),
+                )
+                turn.metadata.update(prompt_metadata)
+                # apply_prompt_cache ran before the fit; re-record the
+                # breakpoint so the narrowed prompt (not the stale one)
+                # is the cache base for str-shaped prompts.
+                if "cache_base_prompt" in turn.metadata:
+                    from opensquilla.engine.steps.prompt_cache import (
+                        record_cache_base_prompt,
+                    )
+
+                    record_cache_base_prompt(turn.metadata, turn.system_prompt)
 
         # 5. Memory fingerprint merge (defensive — port returns None to skip)
         fingerprint = self._memory_fingerprint.memory_mode_fingerprint()
@@ -446,15 +639,46 @@ class PromptAssemblerStage:
                 )
             turn.metadata["memory_mode_fingerprint"] = fingerprint
 
+        from opensquilla.router_control import render_router_control_status_prompt
+
+        router_control_status = render_router_control_status_prompt(turn.metadata)
+        if router_control_status:
+            turn.system_prompt = _append_dynamic_system_prompt_block(
+                turn.system_prompt,
+                router_control_status,
+            )
+
         # 6. Effective runtime message + selector override / fallback wrap
         effective_runtime_message = getattr(turn, "message", inp.runtime_message)
-        if inp.model and inp.cloned_selector is not None:
-            inp.cloned_selector.override_model(inp.model)
-            provider = inp.cloned_selector.resolve()
+        turn_metadata = getattr(turn, "metadata", {}) or {}
         if inp.cloned_selector is not None:
             # Local import to avoid pulling _SelectorFallbackProvider name
             # into the stage's module-top namespace.
-            from opensquilla.engine.runtime import _SelectorFallbackProvider
+            from opensquilla.engine.runtime import (
+                _apply_routed_provider_override,
+                _SelectorFallbackProvider,
+            )
+
+            routed_provider = str(turn_metadata.get(ROUTED_PROVIDER_KEY) or "").strip()
+            if routed_provider and getattr(turn, "model", ""):
+                _apply_routed_provider_override(
+                    inp.cloned_selector,
+                    config=getattr(turn, "config", None),
+                    metadata=turn_metadata,
+                    model=getattr(turn, "model", "") or "",
+                )
+                provider = inp.cloned_selector.resolve()
+            elif inp.model:
+                inp.cloned_selector.override_model(inp.model)
+                provider = inp.cloned_selector.resolve()
+            elif getattr(turn, "model", ""):
+                _apply_routed_provider_override(
+                    inp.cloned_selector,
+                    config=getattr(turn, "config", None),
+                    metadata=turn_metadata,
+                    model=getattr(turn, "model", "") or "",
+                )
+                provider = inp.cloned_selector.resolve()
 
             provider = _SelectorFallbackProvider(provider, inp.cloned_selector)
 
@@ -480,7 +704,7 @@ class PromptAssemblerStage:
             tool_profile=turn.metadata.get("tool_profile"),
         )
 
-        # 9. Resolve model_id: explicit param > pipeline-routed > selector current
+        # 9. Resolve model_id: routed provider turn > explicit param > pipeline > selector
         selector_model = ""
         if inp.cloned_selector is not None:
             try:
@@ -489,7 +713,11 @@ class PromptAssemblerStage:
                 )
             except Exception:  # noqa: BLE001 - defensive
                 selector_model = ""
-        resolved_model = inp.model or turn.model or selector_model
+        routed_provider = str(turn_metadata.get(ROUTED_PROVIDER_KEY) or "").strip()
+        if routed_provider and turn.model:
+            resolved_model = turn.model
+        else:
+            resolved_model = inp.model or turn.model or selector_model
         provider_name = (
             getattr(provider, "provider_name", "") or type(provider).__name__
         )
@@ -508,6 +736,6 @@ class PromptAssemblerStage:
                 trace_context_session_id=session_id_for_log,
                 prompt_report=prompt_report,
                 selector_model=selector_model,
-                squilla_router_tier=turn.metadata.get("routed_tier"),
+                squilla_router_tier=turn.metadata.get(ROUTED_TIER_KEY),
             )
         )

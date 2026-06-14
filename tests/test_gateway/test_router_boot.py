@@ -1206,10 +1206,7 @@ async def test_build_services_registers_session_search_tool(
         assert "Full-text search across persisted session transcripts" in (
             session_search.spec.description
         )
-        assert "defaults to curated memory source files" in (
-            session_search.spec.description
-        )
-        assert "use source=sessions or source=all" in session_search.spec.description
+        assert "exact prior chat wording" in session_search.spec.description
         owner_names = {
             tool["name"]
             for tool in await registry.list_tools(
@@ -1238,6 +1235,101 @@ async def test_build_services_registers_session_search_tool(
         assert "needle" in output
         assert "agent:main:main" in output
         assert captured_memory_kwargs["session_storage"] is services.session_manager.storage
+    finally:
+        await services.close()
+
+
+async def _noop_model_catalog_fetch(*_args: Any, **_kwargs: Any) -> None:
+    return None
+
+
+def _disable_build_services_side_effects(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "opensquilla.sandbox.integration.configure_runtime",
+        lambda *args, **kwargs: SimpleNamespace(
+            effective=SimpleNamespace(as_dict=lambda: {})
+        ),
+    )
+
+    async def fake_build_memory_managers(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {}
+
+    monkeypatch.setattr(
+        "opensquilla.memory.manager.build_memory_managers",
+        fake_build_memory_managers,
+    )
+    monkeypatch.setattr(
+        "opensquilla.provider.model_catalog.ModelCatalog.fetch_openai_compatible",
+        _noop_model_catalog_fetch,
+    )
+    monkeypatch.setattr(
+        "opensquilla.provider.model_catalog.ModelCatalog.probe_openai_compatible_tools",
+        _noop_model_catalog_fetch,
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_services_creates_blank_auth_openai_compatible_selector(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _disable_build_services_side_effects(monkeypatch)
+    config = GatewayConfig(
+        state_dir=str(tmp_path / "state"),
+        workspace_dir=str(tmp_path / "workspace"),
+        control_ui={"enabled": False},
+        channels={"channels": []},
+        mcp={"enabled": False},
+        memory={"flush_enabled": False},
+    )
+    config.llm.provider = "openai_compatible"
+    config.llm.model = "local-model"
+    config.llm.base_url = "http://127.0.0.1:8000/v1"
+    config.llm.api_key = ""
+    config.llm.api_key_env = ""
+
+    services = await build_services(
+        config=config,
+        tool_registry=ToolRegistry(),
+        session_db_path=str(tmp_path / "sessions.sqlite"),
+    )
+    try:
+        assert services.provider_selector is not None
+        assert services.provider_selector.current_config.provider == "openai_compatible"
+        assert services.provider_selector.current_config.model == "local-model"
+        assert services.provider_selector.current_config.api_key == ""
+        assert services.provider_selector.current_config.base_url == "http://127.0.0.1:8000"
+    finally:
+        await services.close()
+
+
+@pytest.mark.asyncio
+async def test_build_services_keeps_openrouter_without_key_unconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _disable_build_services_side_effects(monkeypatch)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    config = GatewayConfig(
+        state_dir=str(tmp_path / "state"),
+        workspace_dir=str(tmp_path / "workspace"),
+        control_ui={"enabled": False},
+        channels={"channels": []},
+        mcp={"enabled": False},
+        memory={"flush_enabled": False},
+    )
+    config.llm.provider = "openrouter"
+    config.llm.model = "deepseek/deepseek-v4-pro"
+    config.llm.api_key = ""
+    config.llm.api_key_env = ""
+
+    services = await build_services(
+        config=config,
+        tool_registry=ToolRegistry(),
+        session_db_path=str(tmp_path / "sessions.sqlite"),
+    )
+    try:
+        assert services.provider_selector is None
     finally:
         await services.close()
 

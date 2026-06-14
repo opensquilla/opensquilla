@@ -486,6 +486,8 @@ def test_setup_view_does_not_default_env_key_over_stored_provider_key():
 def test_setup_provider_form_can_submit_api_key_env():
     txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
     assert "api_key_env" in txt
+    assert "tool_support" in txt
+    assert "toolSupport" in txt
     assert "_camel(label.dataset.name)" in txt
     assert "onboarding.provider.configure" in txt
 
@@ -538,6 +540,20 @@ def test_setup_all_wizard_controls_have_browser_field_names():
         assert f'name="{name}"' in txt
 
     assert "const tierFieldName = `setup_router_${name}_${field}`" in txt
+
+
+def test_setup_router_tiers_expose_tool_support_select():
+    txt = (VIEWS / "setup.js").read_text(encoding="utf-8")
+    css = (ROOT / "static/css/views/setup.css").read_text(encoding="utf-8")
+
+    assert "<span>Tool</span>" in txt
+    assert 'data-tier-field="toolSupport"' in txt
+    assert "tier.toolSupport || tier.tool_support || 'auto'" in txt
+    assert "['auto', 'on', 'off'].map" in txt
+    assert (
+        "grid-template-columns: 90px minmax(130px, 1fr) "
+        "minmax(220px, 1.8fr) 130px 120px 80px"
+    ) in css
     assert 'name="${_esc(tierFieldName)}"' in txt
     assert 'aria-label="${_esc(tierLabel)}' in txt
 

@@ -131,6 +131,126 @@ async def test_meta_match_upgrades_low_router_tier_to_c2_entry_model():
 
 
 @pytest.mark.asyncio
+async def test_meta_match_upgrade_replaces_stale_routed_provider():
+    skills = [_meta_spec(name="meta-synthetic-report", triggers=("synthetic-report",))]
+    tiers = {
+        "c1": {
+            "provider": "openai_compatible",
+            "model": "local-small-model",
+        },
+        "c2": {
+            "provider": "openrouter",
+            "model": "openrouter-entry-model",
+        },
+    }
+    ctx = _ctx(
+        message="synthetic-report",
+        session_id="S-META-PROVIDER-UPGRADE",
+        skills=skills,
+        model="local-small-model",
+        tiers=tiers,
+        metadata={
+            "routed_tier": "c1",
+            "routed_model": "local-small-model",
+            "routed_provider": "openai_compatible",
+            "routing_source": "v4_phase3",
+            "routing_applied": True,
+        },
+    )
+
+    out = await meta_resolution(ctx)
+
+    assert out.model == "openrouter-entry-model"
+    assert out.metadata["routed_tier"] == "c2"
+    assert out.metadata["routed_model"] == "openrouter-entry-model"
+    assert out.metadata["routed_provider"] == "openrouter"
+
+
+@pytest.mark.asyncio
+async def test_meta_match_does_not_override_router_control_hold():
+    skills = [_meta_spec(name="meta-synthetic-report", triggers=("synthetic-report",))]
+    tiers = {
+        "c1": {
+            "provider": "openai_compatible",
+            "model": "local-held-model",
+        },
+        "c2": {
+            "provider": "openrouter",
+            "model": "openrouter-entry-model",
+        },
+    }
+    ctx = _ctx(
+        message="synthetic-report",
+        session_id="S-META-HOLD",
+        skills=skills,
+        model="local-held-model",
+        tiers=tiers,
+        metadata={
+            "routed_tier": "c1",
+            "routed_model": "local-held-model",
+            "routed_provider": "openai_compatible",
+            "router_control_hold_applied": True,
+            "routing_source": "router_control_hold",
+            "routing_applied": True,
+        },
+    )
+
+    out = await meta_resolution(ctx)
+
+    assert out.model == "local-held-model"
+    assert out.metadata["routed_tier"] == "c1"
+    assert out.metadata["routed_model"] == "local-held-model"
+    assert out.metadata["routed_provider"] == "openai_compatible"
+    assert "meta_required_tier" not in out.metadata
+    assert "meta_resolution_model_upgrade" not in out.metadata
+
+
+@pytest.mark.asyncio
+async def test_semantic_meta_hint_does_not_upgrade_router_tier(monkeypatch):
+    skills = [_meta_spec(name="meta-synthetic-report", triggers=("synthetic-report",))]
+    tiers = {
+        "c1": {
+            "provider": "openai_compatible",
+            "model": "local-held-model",
+        },
+        "c2": {
+            "provider": "openrouter",
+            "model": "openrouter-entry-model",
+        },
+    }
+
+    def fake_semantic_candidate(ctx, candidates):
+        priority, name, plan, _spec = candidates[0]
+        return (priority, name, plan, "semantic")
+
+    monkeypatch.setattr(mr, "_semantic_meta_candidate", fake_semantic_candidate)
+    ctx = _ctx(
+        message="unrelated workflow wording",
+        session_id="S-META-SEMANTIC-HINT",
+        skills=skills,
+        model="local-held-model",
+        tiers=tiers,
+        metadata={
+            "routed_tier": "c1",
+            "routed_model": "local-held-model",
+            "routed_provider": "openai_compatible",
+            "routing_source": "v4_phase3",
+            "routing_applied": True,
+        },
+    )
+
+    out = await meta_resolution(ctx)
+
+    assert out.metadata["meta_activation_mode"] == "hint"
+    assert out.model == "local-held-model"
+    assert out.metadata["routed_tier"] == "c1"
+    assert out.metadata["routed_model"] == "local-held-model"
+    assert out.metadata["routed_provider"] == "openai_compatible"
+    assert "meta_required_tier" not in out.metadata
+    assert "meta_resolution_model_upgrade" not in out.metadata
+
+
+@pytest.mark.asyncio
 async def test_meta_match_without_router_tier_does_not_force_entry_model():
     skills = [_meta_spec(name="meta-short-drama", triggers=("生成一个短剧",))]
     tiers = {"c2": {"model": "deepseek-v4-pro"}}

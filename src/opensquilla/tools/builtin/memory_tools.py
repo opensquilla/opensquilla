@@ -600,18 +600,10 @@ def create_memory_tools(
         name="memory_search",
         description=(
             "Recall step for prior work, decisions, dated history, todos, and "
-            "historical memory not already present in injected context. By default, "
-            "searches curated memory source files (MEMORY.md + memory/**/*.md). "
-            "It does not search raw turn captures or raw fallback files. Returns "
-            "top snippets with source, path, and lines. Use memory_get only for "
-            "source=memory results; source=sessions results are virtual snippets. "
-            "Set source=memory for curated decisions/facts, source=sessions for "
-            "indexed transcript snippets when session source is enabled, or "
-            "source=all for both. Use session_search only when exact transcript "
-            "full-text search is needed. User identity/profile fields such as "
-            "name, preferred address, pronouns, and timezone belong in injected "
-            "USER.md when present. Do not use memory_search for current user "
-            "identity/profile questions when injected USER.md contains the answer."
+            "historical memory not already present in injected context. "
+            "Searches curated memory source files by default (source=memory); "
+            "set source=sessions for indexed transcript snippets or source=all "
+            "for both. Returns top snippets with source, path, and lines."
         ),
         params={
             "query": {"type": "string", "description": "Search query"},

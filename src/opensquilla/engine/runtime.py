@@ -153,7 +153,17 @@ from opensquilla.router_control import (
     RouterControlHoldStore,
     render_router_control_prompt_block,
 )
-from opensquilla.router_tiers import HIGHEST_TEXT_TIER, normalize_text_tier, tier_index
+from opensquilla.router_tiers import (
+    HIGHEST_TEXT_TIER,
+    ROUTED_MODEL_KEY,
+    ROUTED_PROVIDER_KEY,
+    ROUTED_TIER_KEY,
+    ROUTING_APPLIED_KEY,
+    ROUTING_CONFIDENCE_KEY,
+    normalize_text_tier,
+    routing_selection_effective,
+    tier_index,
+)
 from opensquilla.safety import injection_guard, permission_matrix, sandbox, tool_tiers
 from opensquilla.session.compaction_lifecycle import (
     COMPACTION_CHUNK_SUMMARIZED_EVENT,
@@ -581,6 +591,206 @@ def _accepts_keyword_arg(callable_obj: Any, name: str) -> bool:
     return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
+def _provider_config_from_tier(
+    *,
+    tier_cfg: Mapping[str, Any],
+    provider: str,
+    model: str,
+    current_config: Any,
+) -> Any:
+    from opensquilla.gateway.llm_runtime import (
+        _resolve_provider_routing,
+        provider_base_url_env_name,
+    )
+    from opensquilla.provider.registry import get_provider_spec
+    from opensquilla.provider.selector import ProviderConfig
+
+    provider = provider.strip().lower()
+    spec = get_provider_spec(provider)
+    same_provider = (
+        str(getattr(current_config, "provider", "") or "").strip().lower()
+        == provider
+    )
+    explicit_api_key = str(tier_cfg.get("api_key") or "").strip()
+    api_key_env = "" if explicit_api_key else str(tier_cfg.get("api_key_env") or spec.env_key)
+    api_key = explicit_api_key or (os.environ.get(api_key_env, "") if api_key_env else "")
+    if not api_key and same_provider:
+        api_key = str(getattr(current_config, "api_key", "") or "")
+
+    base_url_env = provider_base_url_env_name(provider)
+    base_url = (
+        os.environ.get(base_url_env, "")
+        or str(tier_cfg.get("base_url") or "").strip()
+        or (str(getattr(current_config, "base_url", "") or "") if same_provider else "")
+        or spec.default_base_url
+    )
+    proxy = (
+        str(tier_cfg.get("proxy") or "").strip()
+        or os.environ.get("OPENSQUILLA_LLM_PROXY", "")
+        or (str(getattr(current_config, "proxy", "") or "") if same_provider else "")
+    )
+    provider_routing = tier_cfg.get("provider_routing", {})
+    if not isinstance(provider_routing, dict):
+        provider_routing = {}
+
+    return ProviderConfig(
+        provider=provider,
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        proxy=proxy,
+        provider_routing=_resolve_provider_routing(provider, provider_routing),
+    )
+
+
+def _tier_routed_provider_config(
+    *,
+    config: Any,
+    metadata: Mapping[str, Any],
+    current_config: Any,
+    model: str,
+) -> Any | None:
+    if not routing_selection_effective(metadata):
+        return None
+    routed_provider = str(metadata.get(ROUTED_PROVIDER_KEY) or "").strip().lower()
+    routed_model = str(metadata.get(ROUTED_MODEL_KEY) or model or "").strip()
+    routed_tier = str(metadata.get(ROUTED_TIER_KEY) or "").strip()
+    if not routed_provider or not routed_model:
+        return None
+
+    router_cfg = getattr(config, "squilla_router", None)
+    tiers = getattr(router_cfg, "tiers", {}) if router_cfg is not None else {}
+    tier_cfg = tiers.get(routed_tier, {}) if isinstance(tiers, dict) else {}
+    if not isinstance(tier_cfg, dict):
+        tier_cfg = {}
+    return _provider_config_from_tier(
+        tier_cfg=tier_cfg,
+        provider=routed_provider,
+        model=routed_model,
+        current_config=current_config,
+    )
+
+
+def _tier_routed_fallback_configs(
+    *,
+    config: Any,
+    metadata: Mapping[str, Any],
+    current_config: Any,
+) -> list[Any]:
+    routed_tier = normalize_text_tier(metadata.get(ROUTED_TIER_KEY))
+    current_index = tier_index(routed_tier)
+    if current_index < 0:
+        return []
+    router_cfg = getattr(config, "squilla_router", None)
+    tiers = getattr(router_cfg, "tiers", {}) if router_cfg is not None else {}
+    if not isinstance(tiers, dict):
+        return []
+    fallbacks: list[Any] = []
+    fallback_tiers: list[tuple[int, str, dict[str, Any]]] = []
+    for tier_name, tier_cfg in tiers.items():
+        if not isinstance(tier_cfg, dict) or tier_cfg.get("image_only", False):
+            continue
+        normalized_tier = normalize_text_tier(tier_name)
+        fallback_index = tier_index(normalized_tier)
+        if normalized_tier is None or fallback_index <= current_index:
+            continue
+        fallback_tiers.append((fallback_index, tier_name, tier_cfg))
+
+    seen: set[tuple[str, str]] = set()
+    for _fallback_index, tier_name, tier_cfg in sorted(fallback_tiers, key=lambda item: item[0]):
+        provider = str(tier_cfg.get("provider") or "").strip().lower()
+        model = str(tier_cfg.get("model") or "").strip()
+        if not provider or not model:
+            continue
+        key = (provider, model)
+        if key in seen:
+            continue
+        seen.add(key)
+        fallbacks.append(
+            _provider_config_from_tier(
+                tier_cfg=tier_cfg,
+                provider=provider,
+                model=model,
+                current_config=current_config,
+            )
+        )
+    return fallbacks
+
+
+def _provider_config_key(config: Any) -> tuple[str, str, str]:
+    return (
+        str(getattr(config, "provider", "") or "").strip().lower(),
+        str(getattr(config, "model", "") or "").strip(),
+        str(getattr(config, "base_url", "") or "").strip().rstrip("/").lower(),
+    )
+
+
+def _combine_routed_and_configured_fallbacks(
+    *,
+    primary: Any,
+    routed_fallbacks: list[Any],
+    configured_fallbacks: list[Any],
+) -> list[Any]:
+    seen = {_provider_config_key(primary)}
+    combined: list[Any] = []
+    for fallback in [*routed_fallbacks, *configured_fallbacks]:
+        key = _provider_config_key(fallback)
+        if not key[0] or not key[1] or key in seen:
+            continue
+        seen.add(key)
+        combined.append(fallback)
+    return combined
+
+
+def _apply_routed_provider_override(
+    cloned_selector: Any,
+    *,
+    config: Any,
+    metadata: Mapping[str, Any],
+    model: str,
+) -> bool:
+    if cloned_selector is None:
+        return False
+    try:
+        current_config = cloned_selector.current_config
+    except Exception:  # noqa: BLE001 - selector stubs may raise defensively
+        current_config = None
+
+    provider_cfg = _tier_routed_provider_config(
+        config=config,
+        metadata=metadata,
+        current_config=current_config,
+        model=model,
+    )
+    if provider_cfg is not None and hasattr(cloned_selector, "override_primary"):
+        routed_fallbacks = _tier_routed_fallback_configs(
+            config=config,
+            metadata=metadata,
+            current_config=current_config,
+        )
+        configured_fallback_configs = getattr(
+            cloned_selector, "configured_fallback_configs", None
+        )
+        configured_fallbacks = (
+            list(configured_fallback_configs())
+            if callable(configured_fallback_configs)
+            else []
+        )
+        cloned_selector.override_primary(
+            provider_cfg,
+            _combine_routed_and_configured_fallbacks(
+                primary=provider_cfg,
+                routed_fallbacks=routed_fallbacks,
+                configured_fallbacks=configured_fallbacks,
+            ),
+        )
+        return True
+    if model and hasattr(cloned_selector, "override_model"):
+        cloned_selector.override_model(model)
+        return True
+    return False
+
+
 def _strip_context_summary_marker(content: str) -> str:
     """Return summary text from a legacy transcript summary marker."""
     if content.startswith(_CONTEXT_SUMMARY_MARKER):
@@ -627,6 +837,41 @@ def _prepend_request_context_prompt(
         return prepended_context.strip()
     return f"{prepended_context.strip()}\n\n{existing_request_context.strip()}"
 
+
+# Hard ceiling on router_control replay recursion. The router_control tool
+# already refuses to re-arm at depth > 0; this cap holds even if a future
+# emitter bypasses that guard, since each replay re-runs the whole turn.
+_MAX_ROUTER_CONTROL_REPLAYS = 2
+
+
+def _external_acquisition_policy_for_turn(agent_config: Any) -> Any:
+    """Derive the per-turn external-acquisition budget from the routed model.
+
+    The default web policy caps a single fetch at 50k chars — sized for
+    large-context models. On a routed small-context tier the same fetch is
+    larger than the whole provider-request budget, so it gets elided to a
+    projection stub on the very next iteration: the model never sees what it
+    fetched, concludes the search failed, and retries in a loop (observed:
+    agent:main:webchat:3h1bj7ek, 27 web calls in one turn). Shape the
+    acquisition at the source instead, keyed to the turn's actual budget.
+    """
+    from opensquilla.context_budget import ContextBudgetGovernor
+    from opensquilla.result_budget import (
+        DEFAULT_TOOL_RUN_BUDGET_POLICY,
+        ToolRunBudgetPolicy,
+    )
+
+    try:
+        governor = ContextBudgetGovernor.from_config(agent_config)
+        fetch_cap = governor.single_external_acquisition_chars(
+            ceiling=DEFAULT_TOOL_RUN_BUDGET_POLICY.max_single_fetch_chars,
+        )
+    except Exception:  # noqa: BLE001 - budget shaping is never fatal
+        return DEFAULT_TOOL_RUN_BUDGET_POLICY
+    return ToolRunBudgetPolicy(
+        max_single_fetch_chars=fetch_cap,
+        max_web_search_results=DEFAULT_TOOL_RUN_BUDGET_POLICY.max_web_search_results,
+    )
 
 _MAX_TOOL_RESULT_CHARS = 2000
 _MAX_TOOL_RESULT_METADATA_VALUE_CHARS = 256
@@ -2170,9 +2415,48 @@ class TurnRunner:
                 tool_context.router_control_turn_hold_applied = bool(
                     turn.metadata.get("router_control_hold_applied")
                 )
+                tool_context.router_control_turn_target_id = turn.metadata.get(
+                    "router_control_target_id"
+                )
+                tool_context.router_control_turn_target_tier = turn.metadata.get(
+                    "router_control_target_tier"
+                )
+                tool_context.router_control_turn_target_model = turn.metadata.get(
+                    "router_control_target_model"
+                )
+                tool_context.router_control_turn_target_provider = turn.metadata.get(
+                    "router_control_target_provider"
+                )
             router_event = build_router_decision_event(turn)
             if router_event is not None:
                 yield router_event
+            if turn.metadata.get("tool_required_no_tool_route"):
+                no_tool_event = ErrorEvent(
+                    message=(
+                        "This turn requires tools, but the selected router tier "
+                        "does not support tool calls and no tool-capable "
+                        "fallback tier is configured."
+                    ),
+                    code="tool_capability_unavailable",
+                )
+                self._emit_turn_event(
+                    "turn_error",
+                    trace_context,
+                    session_key=session_key,
+                    agent_id=agent_id,
+                    turn_id=turn_id,
+                    run_kind=run_kind,
+                    input_mode=input_mode,
+                    seq=3,
+                    payload={
+                        "error_type": "ToolCapabilityUnavailable",
+                        "error_code": no_tool_event.code,
+                        "error_chars": len(no_tool_event.message),
+                    },
+                )
+                await self._persist_turn_error(session_key, no_tool_event)
+                yield no_tool_event
+                return
             ab_outcome = await self._agent_bootstrap_stage.run(
                 AgentBootstrapStageInput(
                     provider=provider,
@@ -2212,6 +2496,13 @@ class TurnRunner:
             model_caps = ab_out.model_capabilities  # noqa: F841
             private_memory_allowed = ab_out.private_memory_allowed
             sync_manager = ab_out.sync_manager
+            if (
+                tool_context is not None
+                and tool_context.tool_run_budget_policy is None
+            ):
+                tool_context.tool_run_budget_policy = (
+                    _external_acquisition_policy_for_turn(agent_config)
+                )
             if turn_call_logger is not None:
                 turn_call_logger.write(
                     "agent_runtime_budget",
@@ -2294,6 +2585,17 @@ class TurnRunner:
             router_control_replay_event: RouterControlReplayEvent | None = None
             async for event in self._stream_consumer_stage.run(stream_inp):
                 if isinstance(event, RouterControlReplayEvent):
+                    if router_control_replay_depth >= _MAX_ROUTER_CONTROL_REPLAYS:
+                        # Suppress the replay request and let the turn finish
+                        # on its current route; the event is an internal
+                        # control signal, not user-facing output.
+                        log.warning(
+                            "router_control.replay_depth_capped",
+                            replay_depth=router_control_replay_depth,
+                            max_replays=_MAX_ROUTER_CONTROL_REPLAYS,
+                            session_key=session_key,
+                        )
+                        continue
                     router_control_replay_event = event
                     yield event
                     break
@@ -3410,6 +3712,7 @@ class TurnRunner:
         prompt_metadata: dict[str, Any] | None = None,
         bootstrap_context_mode: str | None = None,
         fresh_user_session: bool = False,
+        reply_tags_enabled: bool = True,
     ) -> str | tuple[str, str]:
         """Assemble identity system prompt via Jinja2 template.
 
@@ -3592,6 +3895,7 @@ class TurnRunner:
             runtime_info=runtime_info,
             docs_path=self._resolve_docs_path(),
             heartbeat_prompt=getattr(self._config, "heartbeat_prompt", None),
+            reply_tags_enabled=reply_tags_enabled,
         )
         # daily_notes, workspace_files, and extra_context are per-turn /
         # per-day volatile content. Keeping them in the cacheable base
@@ -3991,9 +4295,14 @@ class TurnRunner:
             ],
         )
 
-        # Apply routed model back to cloned selector (local, not shared)
+        # Apply routed provider/model back to cloned selector (local, not shared)
         if turn.model and cloned_selector is not None:
-            cloned_selector.override_model(turn.model)
+            _apply_routed_provider_override(
+                cloned_selector,
+                config=self._config,
+                metadata=turn.metadata,
+                model=turn.model,
+            )
             provider = cloned_selector.resolve()
 
         return turn, provider
@@ -4255,9 +4564,9 @@ class TurnRunner:
                 squilla_router_tiers = getattr(router_cfg, "tiers", {})
 
                 # Squilla router
-                savings_telemetry.routed_model = metadata.get("routed_model")
+                savings_telemetry.routed_model = metadata.get(ROUTED_MODEL_KEY)
                 savings_telemetry.baseline_model = metadata.get("baseline_model")
-                savings_telemetry.routing_confidence = metadata.get("routing_confidence")
+                savings_telemetry.routing_confidence = metadata.get(ROUTING_CONFIDENCE_KEY)
                 savings_telemetry.routing_savings_pct = metadata.get("savings_pct")
 
                 _max_p = float(metadata.get("savings_max_price_per_m") or 0.0)
@@ -4543,11 +4852,11 @@ class TurnRunner:
         if not upgrade_compaction_enabled:
             return _T3_NOT_APPLICABLE
 
-        routed_tier = normalize_text_tier(turn.metadata.get("routed_tier"))
+        routed_tier = normalize_text_tier(turn.metadata.get(ROUTED_TIER_KEY))
         if routed_tier != HIGHEST_TEXT_TIER:
             return _T3_NOT_APPLICABLE
 
-        if not turn.metadata.get("routing_applied", False):
+        if not turn.metadata.get(ROUTING_APPLIED_KEY, False):
             return _T3_NOT_APPLICABLE
 
         routing_extra = turn.metadata.get("routing_extra", {})

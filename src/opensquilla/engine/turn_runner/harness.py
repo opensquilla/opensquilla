@@ -13,7 +13,12 @@ the stage boundaries are ready to sequence.
 from __future__ import annotations
 
 import inspect
-from typing import TYPE_CHECKING, Any, cast
+import threading
+from dataclasses import replace
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, Literal, cast
+
+import structlog
 
 from opensquilla.engine.turn_runner.agent_bootstrap_stage import (
     AgentConfigBuilderPort,
@@ -64,7 +69,118 @@ from opensquilla.engine.turn_runner.turn_finalizer_stage import (
     TurnErrorPersistPort,
     TurnMemoryCapturePort,
 )
+from opensquilla.provider.model_catalog import DEFAULT_CONTEXT_WINDOW
+from opensquilla.provider.types import ModelCapabilities
+from opensquilla.router_tiers import (
+    ROUTED_PROVIDER_KEY,
+    ROUTED_TIER_KEY,
+    routing_selection_effective,
+)
 from opensquilla.session.compaction_lifecycle import normalize_flush_triggers_strict
+
+log = structlog.get_logger(__name__)
+
+
+def _normalize_tool_support(value: Any) -> str:
+    normalized = str(value or "auto").strip().lower()
+    if normalized in {"on", "off", "auto"}:
+        return normalized
+    return "auto"
+
+
+def _positive_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return parsed if parsed > 0 else 0
+
+
+def _routed_tier_cfg(config: Any, metadata: dict[str, Any]) -> dict[str, Any]:
+    if config is None or not metadata.get(ROUTED_PROVIDER_KEY):
+        return {}
+    if not routing_selection_effective(metadata):
+        return {}
+    router_cfg = getattr(config, "squilla_router", None)
+    tiers = getattr(router_cfg, "tiers", {}) if router_cfg is not None else {}
+    routed_tier = str(metadata.get(ROUTED_TIER_KEY) or "").strip()
+    tier_cfg = tiers.get(routed_tier, {}) if isinstance(tiers, dict) else {}
+    return tier_cfg if isinstance(tier_cfg, dict) else {}
+
+
+def _tool_support_mode_for_turn(config: Any, llm_cfg: Any, metadata: dict[str, Any]) -> str:
+    if (
+        config is not None
+        and metadata.get(ROUTED_PROVIDER_KEY)
+        and routing_selection_effective(metadata)
+    ):
+        tier_cfg = _routed_tier_cfg(config, metadata)
+        if "tool_support" in tier_cfg:
+            return _normalize_tool_support(tier_cfg.get("tool_support"))
+        return "auto"
+    return _normalize_tool_support(getattr(llm_cfg, "tool_support", "auto"))
+
+
+def _context_window_override_for_turn(config: Any, metadata: dict[str, Any]) -> int:
+    tier_cfg = _routed_tier_cfg(config, metadata)
+    return _positive_int(
+        tier_cfg.get("context_window_tokens", tier_cfg.get("contextWindowTokens"))
+    )
+
+
+_DEFAULT_CONTEXT_WARNED: set[str] = set()
+_DEFAULT_CONTEXT_WARN_LOCK = threading.Lock()
+
+
+def _warn_default_context_window_once(
+    *, tier: str, model_id: str, provider_name: str, default_window: int
+) -> None:
+    """Warn once per route when a routed model falls back to the default window.
+
+    Small self-hosted models silently inheriting the optimistic default can
+    overrun their real context at the provider; the fix is a per-tier
+    ``context_window_tokens`` override.
+    """
+    key = f"{tier}|{provider_name}|{model_id}"
+    with _DEFAULT_CONTEXT_WARN_LOCK:
+        if key in _DEFAULT_CONTEXT_WARNED:
+            return
+        _DEFAULT_CONTEXT_WARNED.add(key)
+    log.warning(
+        "routed_tier.context_window_defaulted",
+        tier=tier,
+        model=model_id,
+        provider=provider_name,
+        default_context_window=default_window,
+        hint="set squilla_router.tiers.<tier>.context_window_tokens for this model",
+    )
+
+
+def _apply_tool_support_mode(capabilities: Any, mode: str) -> Any:
+    if mode == "auto":
+        return capabilities
+    state: Literal["supported", "unsupported"] = (
+        "supported" if mode == "on" else "unsupported"
+    )
+    supports_tools = mode == "on"
+    if capabilities is None:
+        return ModelCapabilities(
+            supports_tools=supports_tools,
+            tool_support_state=state,
+        )
+    try:
+        return replace(
+            capabilities,
+            supports_tools=supports_tools,
+            tool_support_state=state,
+        )
+    except TypeError:
+        values = dict(getattr(capabilities, "__dict__", {}) or {})
+        values["supports_tools"] = supports_tools
+        values["tool_support_state"] = state
+        return SimpleNamespace(**values)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -174,6 +290,7 @@ class _TurnRunnerPromptAssemblerAdapter(PromptAssemblerPort):
         prompt_metadata: dict[str, Any],
         bootstrap_context_mode: str | None,
         fresh_user_session: bool = False,
+        reply_tags_enabled: bool = True,
     ) -> str | tuple[str, str]:
         return self._runner._assemble_prompt(
             agent_id,
@@ -184,6 +301,7 @@ class _TurnRunnerPromptAssemblerAdapter(PromptAssemblerPort):
             prompt_metadata=prompt_metadata,
             bootstrap_context_mode=bootstrap_context_mode,
             fresh_user_session=fresh_user_session,
+            reply_tags_enabled=reply_tags_enabled,
         )
 
 class _TurnRunnerPipelineExecutionAdapter(PipelineExecutionPort):
@@ -399,24 +517,72 @@ class _TurnRunnerModelCatalogAdapter(ModelCatalogPort):
     def __init__(self, runner: TurnRunner) -> None:
         self._runner = runner
 
-    def lookup(self, model_id: str) -> _ResolvedCatalog:
+    def lookup(self, model_id: str, *, turn: Any | None = None) -> _ResolvedCatalog:
         runner = self._runner
         llm_cfg = getattr(runner._config, "llm", None) if runner._config else None
         user_max_tokens = getattr(llm_cfg, "max_tokens", 0)
+        provider_name = getattr(llm_cfg, "provider", "openrouter")
+        base_url = getattr(llm_cfg, "base_url", "")
+        metadata = getattr(turn, "metadata", {}) or {}
+        if runner._config is not None and metadata.get(ROUTED_PROVIDER_KEY):
+            try:
+                from opensquilla.engine.runtime import _tier_routed_provider_config
+
+                routed_cfg = _tier_routed_provider_config(
+                    config=runner._config,
+                    metadata=metadata,
+                    current_config=llm_cfg,
+                    model=model_id,
+                )
+            except Exception:  # noqa: BLE001 - catalog scope fallback is non-fatal
+                routed_cfg = None
+            if routed_cfg is not None:
+                provider_name = getattr(routed_cfg, "provider", provider_name)
+                base_url = getattr(routed_cfg, "base_url", base_url)
         if runner._model_catalog is not None:
             max_tokens = runner._model_catalog.resolve_max_tokens(
-                model_id, user_override=user_max_tokens
+                model_id,
+                user_override=user_max_tokens,
+                provider_name=provider_name,
+                base_url=base_url,
             )
-            context_window = runner._model_catalog.resolve_context_window(model_id)
-            provider_name = getattr(llm_cfg, "provider", "openrouter")
-            base_url = getattr(llm_cfg, "base_url", "")
+            context_window = runner._model_catalog.resolve_context_window(
+                model_id,
+                provider_name=provider_name,
+                base_url=base_url,
+            )
             capabilities = runner._model_catalog.get_capabilities(
                 model_id, provider_name=provider_name, base_url=base_url
             )
         else:
             max_tokens = user_max_tokens if user_max_tokens > 0 else 16384
-            context_window = 200_000
+            context_window = DEFAULT_CONTEXT_WINDOW
             capabilities = None
+        context_window_override = _context_window_override_for_turn(
+            runner._config, metadata
+        )
+        if context_window_override > 0:
+            context_window = context_window_override
+        elif (
+            metadata.get(ROUTED_PROVIDER_KEY)
+            and routing_selection_effective(metadata)
+            and runner._model_catalog is not None
+            and context_window == DEFAULT_CONTEXT_WINDOW
+        ):
+            info = runner._model_catalog.get(
+                model_id, provider_name=provider_name, base_url=base_url
+            )
+            if info is None or info.context_window <= 0:
+                _warn_default_context_window_once(
+                    tier=str(metadata.get(ROUTED_TIER_KEY) or ""),
+                    model_id=model_id,
+                    provider_name=str(provider_name or ""),
+                    default_window=DEFAULT_CONTEXT_WINDOW,
+                )
+        tool_support_mode = _tool_support_mode_for_turn(runner._config, llm_cfg, metadata)
+        capabilities = _apply_tool_support_mode(capabilities, tool_support_mode)
+        if isinstance(metadata, dict):
+            metadata["tool_support"] = tool_support_mode
         return _ResolvedCatalog(
             max_tokens=max_tokens,
             context_window=context_window,

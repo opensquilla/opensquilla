@@ -799,9 +799,9 @@ details.setup-mini__advanced[open] > summary::after { content: "-"; }
 
 .setup-tier-table__row {
   display: grid;
-  grid-template-columns: 90px minmax(130px, 1fr) minmax(220px, 1.8fr) 130px 80px;
+  grid-template-columns: 90px minmax(130px, 1fr) minmax(220px, 1.8fr) 130px 120px 80px;
   gap: 1px;
-  min-width: 760px;
+  min-width: 880px;
   background: var(--border);
 }
 .setup-tier-table__row + .setup-tier-table__row { border-top: 0; }

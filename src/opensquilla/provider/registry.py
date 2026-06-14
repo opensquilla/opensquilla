@@ -49,7 +49,7 @@ class ProviderSpec:
         """True if onboarding must collect an API key for this provider."""
         if self.provider_id in self._LOCAL_PROVIDERS:
             return False
-        return bool(self.env_key) and self.env_key != "OAuth"
+        return "api_key" in self.required_fields and bool(self.env_key) and self.env_key != "OAuth"
 
     def requires_base_url(self) -> bool:
         """True if onboarding must collect a base URL for this provider."""
@@ -109,6 +109,22 @@ for _provider_spec in [
         "https://openrouter.ai/api/v1",
     ),
     _spec("openai", "openai_compat", "openai", "OPENAI_API_KEY", "https://api.openai.com/v1"),
+    _spec(
+        "inception",
+        "openai_compat",
+        "inception",
+        "INCEPTION_API_KEY",
+        "https://api.inceptionlabs.ai/v1",
+        support_level="live_verified",
+    ),
+    _spec(
+        "openai_compatible",
+        "openai_compat",
+        "self_hosted_openai",
+        "OPENAI_COMPATIBLE_API_KEY",
+        support_level="compat_configured",
+        required_fields=frozenset({"model", "base_url"}),
+    ),
     _spec(
         "openai_responses",
         "openai_responses",

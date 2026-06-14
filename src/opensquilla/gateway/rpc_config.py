@@ -274,6 +274,10 @@ def _sync_image_generation(config: Any) -> None:
 _READONLY_PATHS = frozenset({"auth.token", "auth.password"})
 _SAFE_WRITE_PATCH_PATHS = frozenset(
     {
+        "llm.tool_support",
+        "llm.tool_probe_mode",
+        "llm.toolset",
+        "llm.max_tool_schema_chars",
         "skills.filter_enabled",
         "skills.filter_lexical_top_n",
         "skills.filter_semantic_top_n",
@@ -282,10 +286,33 @@ _SAFE_WRITE_PATCH_PATHS = frozenset(
         "squilla_router.enabled",
         "squilla_router.rollout_phase",
         "squilla_router.strategy",
+        "squilla_router.visual_mode",
         "squilla_router.default_tier",
         "squilla_router.confidence_threshold",
     }
 )
+_SAFE_ROUTER_TIER_TOOL_SUPPORT_IDS = frozenset({"c0", "c1", "c2", "c3", "image_model"})
+_SAFE_ROUTER_TIER_TOOL_SCHEMA_FIELDS = frozenset(
+    {
+        "tool_support",
+        "tool_probe_mode",
+        "toolset",
+        "max_tool_schema_chars",
+    }
+)
+
+
+def _is_safe_write_patch_path(path: str) -> bool:
+    if path in _SAFE_WRITE_PATCH_PATHS:
+        return True
+    parts = path.split(".")
+    return (
+        len(parts) == 4
+        and parts[0] == "squilla_router"
+        and parts[1] == "tiers"
+        and parts[2] in _SAFE_ROUTER_TIER_TOOL_SUPPORT_IDS
+        and parts[3] in _SAFE_ROUTER_TIER_TOOL_SCHEMA_FIELDS
+    )
 
 
 def _resolve_path(obj: dict, path: str) -> Any:
@@ -463,7 +490,7 @@ async def _handle_config_patch_safe(params: dict | None, ctx: RpcContext) -> dic
     if not dot_patches:
         raise ValueError("params.patches is required")
 
-    unsafe_paths = sorted(set(dot_patches) - _SAFE_WRITE_PATCH_PATHS)
+    unsafe_paths = sorted(path for path in dot_patches if not _is_safe_write_patch_path(path))
     if unsafe_paths:
         raise ValueError(f"Path is not safe for operator.write: {unsafe_paths[0]}")
 

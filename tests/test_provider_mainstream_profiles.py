@@ -10,6 +10,7 @@ from opensquilla.provider.selector import ProviderBuildError, ProviderConfig, _b
 MAINSTREAM_PROVIDER_LEVELS = {
     "openrouter": "compat_mock_verified",
     "openai": "compat_mock_verified",
+    "inception": "live_verified",
     "anthropic": "native",
     "ollama": "native",
     "deepseek": "compat_mock_verified",
@@ -47,6 +48,7 @@ def test_mainstream_registry_exposes_support_levels() -> None:
     ("provider", "provider_kind"),
     [
         ("deepseek", "deepseek"),
+        ("inception", "inception"),
         ("gemini", "gemini"),
         ("dashscope", "dashscope"),
         ("bailian_coding", "bailian_coding"),
@@ -74,6 +76,7 @@ def test_new_openai_compatible_profiles_have_vendor_provider_kind(
     ("provider", "env_key", "base_url"),
     [
         ("deepseek", "DEEPSEEK_API_KEY", "https://api.deepseek.com"),
+        ("inception", "INCEPTION_API_KEY", "https://api.inceptionlabs.ai/v1"),
         (
             "gemini",
             "GEMINI_API_KEY",
@@ -146,6 +149,7 @@ def test_minimax_region_profiles_are_explicit_anthropic_compatible_endpoints() -
     ("provider", "model"),
     [
         ("deepseek", "deepseek-chat"),
+        ("inception", "mercury-2"),
         ("gemini", "gemini-2.5-flash"),
         ("dashscope", "qwen-plus"),
         ("bailian_coding", "kimi-k2.5"),

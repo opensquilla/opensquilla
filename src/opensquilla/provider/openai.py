@@ -23,6 +23,7 @@ from opensquilla.secrets import clean_header_secret
 
 from .context_capabilities import supports_openrouter_explicit_prompt_cache
 from .minimax_compat import contains_minimax_protocol, parse_minimax_tool_calls
+from .model_catalog import model_info_from_openai_compat_row
 from .openrouter_attribution import openrouter_app_headers
 from .protocol import ProviderConnectionConfig, ProviderMetadata
 from .request_proof import (
@@ -39,6 +40,7 @@ from .types import (
     ProviderHeartbeatEvent,
     StreamEvent,
     TextDeltaEvent,
+    TextSnapshotEvent,
     ToolDefinition,
     ToolUseDeltaEvent,
     ToolUseEndEvent,
@@ -47,15 +49,18 @@ from .types import (
 
 _OPENAI_API_BASE = "https://api.openai.com"
 log = structlog.get_logger(__name__)
-_PLAIN_JSON_TOOL_CALL_RE = re.compile(
-    r"^\s*([A-Za-z_][A-Za-z0-9_.:-]*)\s*(\{.*\})\s*$",
-    re.DOTALL,
-)
-_PLAIN_JSON_TOOL_PREFIX_RE = re.compile(
-    r"([A-Za-z_][A-Za-z0-9_.:-]*)\s*(?=\{)",
-)
 
 _OPENAI_TOOL_STATUS_OUTPUT_MAX_CHARS = 4000
+
+
+def _provider_auth_headers(api_key: str) -> dict[str, str]:
+    if not api_key:
+        return {}
+    return {"Authorization": f"Bearer {api_key}"}
+
+
+def _should_send_stream_options(provider_kind: str) -> bool:
+    return provider_kind != "self_hosted_openai"
 
 
 def _openai_tool_result_content(block: Any) -> str:
@@ -79,6 +84,7 @@ def _provider_display_name(provider_kind: str) -> str:
     return {
         "openai": "OpenAI",
         "openrouter": "OpenRouter",
+        "inception": "Inception Labs",
         "deepseek": "DeepSeek",
         "moonshot": "Moonshot",
         "dashscope": "DashScope",
@@ -190,10 +196,43 @@ def _direct_openai_uses_max_completion_tokens(
     base_url: str,
     model: str,
 ) -> bool:
+    if _is_direct_inception_diffusing_request(provider_kind, base_url, model):
+        return True
     if provider_kind != "openai" or "api.openai.com" not in base_url.lower():
         return False
     model_name = model.rsplit("/", 1)[-1].strip().lower()
     return model_name.startswith(("gpt-5", "o1", "o3", "o4"))
+
+
+def _is_direct_inception_diffusing_request(
+    provider_kind: str,
+    base_url: str,
+    model: str,
+) -> bool:
+    if provider_kind == "openrouter":
+        return False
+    model_name = model.rsplit("/", 1)[-1].strip().lower()
+    if not model_name.startswith("mercury"):
+        return False
+    base_url_lower = base_url.strip().lower()
+    return provider_kind == "inception" or "api.inceptionlabs.ai" in base_url_lower
+
+
+def _sanitize_direct_diffusing_snapshot_text(text: str) -> str:
+    if "\ufffd" not in text:
+        return text
+    stripped = text.rstrip("\ufffd")
+    return stripped if stripped else text
+
+
+def _request_model_for_direct_provider(
+    provider_kind: str,
+    base_url: str,
+    model: str,
+) -> str:
+    if _is_direct_inception_diffusing_request(provider_kind, base_url, model):
+        return model.rsplit("/", 1)[-1].strip()
+    return model
 
 
 def _is_kimi_fixed_sampling_model(provider_kind: str, model: str) -> bool:
@@ -230,56 +269,6 @@ def _resolve_llm_proxy(proxy: str | None) -> str | None:
     if proxy is None:
         return os.environ.get("OPENSQUILLA_LLM_PROXY", "").strip() or None
     return proxy.strip() or None
-
-
-def _parse_exact_plain_json_tool_call(text: str) -> tuple[str, dict[str, Any]] | None:
-    """Parse a bare ``tool_name{...}`` assistant text response."""
-    candidates = [text]
-    non_empty_lines = [line for line in text.splitlines() if line.strip()]
-    if non_empty_lines:
-        last_line = non_empty_lines[-1]
-        if last_line != text:
-            candidates.append(last_line)
-
-    match = None
-    for candidate in candidates:
-        match = _PLAIN_JSON_TOOL_CALL_RE.match(candidate)
-        if match:
-            break
-    if match is None:
-        return None
-
-    try:
-        arguments = json.loads(match.group(2))
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(arguments, dict):
-        return None
-    return match.group(1), arguments
-
-
-def _parse_trailing_plain_json_tool_call(text: str) -> tuple[str, dict[str, Any]] | None:
-    """Parse a trailing ``tool_name{...}``, allowing prose before it."""
-    decoder = json.JSONDecoder()
-    for match in reversed(list(_PLAIN_JSON_TOOL_PREFIX_RE.finditer(text))):
-        try:
-            arguments, end = decoder.raw_decode(text, match.end())
-        except json.JSONDecodeError:
-            continue
-        if text[end:].strip():
-            continue
-        if not isinstance(arguments, dict):
-            continue
-        return match.group(1), arguments
-    return None
-
-
-def _parse_plain_json_tool_call(text: str) -> tuple[str, dict[str, Any]] | None:
-    """Parse a text response ending in ``tool_name{...}``."""
-    exact_call = _parse_exact_plain_json_tool_call(text)
-    if exact_call is not None:
-        return exact_call
-    return _parse_trailing_plain_json_tool_call(text)
 
 
 def _coerce_int(value: Any) -> int:
@@ -401,8 +390,36 @@ def _synthesize_text_tool_events(
     if not tools or not full_text:
         return []
 
+    from opensquilla.engine.tool_text_compat import (
+        parse_function_style_tool_call_lines,
+        parse_plain_json_tool_call,
+        parse_wrapped_tool_call_text,
+    )
+
     events: list[ToolUseStartEvent | ToolUseEndEvent] = []
     allowed_tool_names = {tool.name for tool in tools}
+    wrapped_call = parse_wrapped_tool_call_text(full_text)
+    if wrapped_call is not None:
+        tool_name, arguments = wrapped_call
+        if tool_name in allowed_tool_names:
+            tool_use_id = f"text_compat_{uuid4().hex[:12]}"
+            events.append(
+                ToolUseStartEvent(
+                    tool_use_id=tool_use_id,
+                    tool_name=tool_name,
+                    synthetic_from_text=True,
+                )
+            )
+            events.append(
+                ToolUseEndEvent(
+                    tool_use_id=tool_use_id,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    synthetic_from_text=True,
+                )
+            )
+        return events
+
     if contains_minimax_protocol(full_text):
         for minimax_call in parse_minimax_tool_calls(full_text):
             if minimax_call.name not in allowed_tool_names:
@@ -424,7 +441,29 @@ def _synthesize_text_tool_events(
                 )
             )
     else:
-        plain_call = _parse_plain_json_tool_call(full_text)
+        function_style_calls = parse_function_style_tool_call_lines(full_text)
+        if function_style_calls:
+            for tool_name, arguments in function_style_calls:
+                if tool_name not in allowed_tool_names:
+                    continue
+                tool_use_id = f"text_compat_{uuid4().hex[:12]}"
+                events.append(
+                    ToolUseStartEvent(
+                        tool_use_id=tool_use_id,
+                        tool_name=tool_name,
+                        synthetic_from_text=True,
+                    )
+                )
+                events.append(
+                    ToolUseEndEvent(
+                        tool_use_id=tool_use_id,
+                        tool_name=tool_name,
+                        arguments=arguments,
+                        synthetic_from_text=True,
+                    )
+                )
+            return events
+        plain_call = parse_plain_json_tool_call(full_text)
         if plain_call is not None:
             tool_name, arguments = plain_call
             if tool_name in allowed_tool_names:
@@ -762,12 +801,24 @@ class OpenAIProvider:
                 )
             )
 
+        use_text_snapshots = _is_direct_inception_diffusing_request(
+            self._provider_kind,
+            self._base_url,
+            self._model,
+        )
         payload: dict[str, Any] = {
-            "model": self._model,
+            "model": _request_model_for_direct_provider(
+                self._provider_kind,
+                self._base_url,
+                self._model,
+            ),
             "messages": openai_messages,
             "stream": True,
-            "stream_options": {"include_usage": True},
         }
+        if _should_send_stream_options(self._provider_kind):
+            payload["stream_options"] = {"include_usage": True}
+        if use_text_snapshots:
+            payload["diffusing"] = True
         if _direct_openai_uses_max_completion_tokens(
             self._provider_kind,
             self._base_url,
@@ -901,10 +952,10 @@ class OpenAIProvider:
             return
 
         headers: dict[str, str] = {
-            "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
         }
+        headers.update(_provider_auth_headers(self._api_key))
         headers.update(openrouter_app_headers(self._base_url))
         if self._org_id:
             headers["OpenAI-Organization"] = self._org_id
@@ -1040,14 +1091,21 @@ class OpenAIProvider:
                             if finish:
                                 stop_reason = finish
 
-                            delta = choice.get("delta", {})
+                            delta = choice.get("delta") or {}
 
                             # Text content
                             text = delta.get("content")
                             if text:
                                 emitted_stream_event = True
-                                yield TextDeltaEvent(text=text)
-                                assistant_text_parts.append(text)
+                                if use_text_snapshots:
+                                    text = _sanitize_direct_diffusing_snapshot_text(text)
+                                    if not text:
+                                        continue
+                                    yield TextSnapshotEvent(text=text)
+                                    assistant_text_parts[:] = [text]
+                                else:
+                                    yield TextDeltaEvent(text=text)
+                                    assistant_text_parts.append(text)
 
                             # Reasoning content (always parsed, not gated on thinking)
                             reasoning_details = delta.get("reasoning_details")
@@ -1062,7 +1120,7 @@ class OpenAIProvider:
                                 reasoning_parts.append(reasoning_str)
 
                             # Tool calls (may stream over multiple chunks)
-                            for tc in delta.get("tool_calls", []):
+                            for tc in delta.get("tool_calls") or []:
                                 idx = _resolve_tool_call_index(
                                     tc,
                                     pending_calls,
@@ -1167,6 +1225,14 @@ class OpenAIProvider:
                 return
             yield ErrorEvent(message=f"Request timed out: {exc}", code="timeout")
         except httpx.RequestError as exc:
+            log.warning(
+                "provider.chat_request_error",
+                provider=self._provider_kind,
+                model=self._model,
+                error_type=type(exc).__name__,
+                error=str(exc) or repr(exc),
+                emitted_stream_event=emitted_stream_event,
+            )
             yield ErrorEvent(message=f"Request error: {exc}", code="request_error")
 
     async def _complete_non_stream(
@@ -1181,6 +1247,7 @@ class OpenAIProvider:
         fallback_payload = dict(payload)
         fallback_payload["stream"] = False
         fallback_payload.pop("stream_options", None)
+        fallback_payload.pop("diffusing", None)
         fallback_headers = dict(headers)
         fallback_headers["Accept"] = "application/json"
 
@@ -1205,6 +1272,14 @@ class OpenAIProvider:
             yield ErrorEvent(message=f"Request timed out: {timeout_exc}", code="timeout")
             return
         except httpx.RequestError as exc:
+            log.warning(
+                "provider.chat_request_error",
+                provider=self._provider_kind,
+                model=self._model,
+                error_type=type(exc).__name__,
+                error=str(exc) or repr(exc),
+                emitted_stream_event=False,
+            )
             yield ErrorEvent(message=f"Request error: {exc}", code="request_error")
             return
 
@@ -1310,7 +1385,7 @@ class OpenAIProvider:
         )
 
     async def list_models(self) -> list[ModelInfo]:
-        headers = {"Authorization": f"Bearer {self._api_key}"}
+        headers = _provider_auth_headers(self._api_key)
         headers.update(openrouter_app_headers(self._base_url))
         try:
             async with httpx.AsyncClient(
@@ -1321,16 +1396,14 @@ class OpenAIProvider:
                 resp = await client.get(self._api_url("/v1/models"), headers=headers)
                 resp.raise_for_status()
                 data = resp.json()
-                return [
-                    ModelInfo(
-                        provider=self._provider_kind,
-                        model_id=m["id"],
-                        display_name=m.get("name", m.get("id", "")),
-                        context_window=m.get("context_length", 0),
-                        max_output_tokens=(m.get("top_provider") or {}).get("max_completion_tokens")
-                        or 0,
+                rows: list[ModelInfo] = []
+                for model_row in data.get("data", []):
+                    info = model_info_from_openai_compat_row(
+                        model_row,
+                        self._provider_kind,
                     )
-                    for m in data.get("data", [])
-                ]
+                    if info is not None:
+                        rows.append(info)
+                return rows
         except Exception:
             return []

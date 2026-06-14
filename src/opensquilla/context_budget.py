@@ -262,6 +262,21 @@ class ContextBudgetGovernor:
     def snapshot(self) -> ContextBudgetSnapshot:
         return self._snapshot
 
+    def single_external_acquisition_chars(self, *, ceiling: int | None = None) -> int:
+        """Cap for one external acquisition (e.g. a web_fetch) sized to this model.
+
+        A fetch larger than a quarter of the provider-request budget cannot
+        survive into the next iteration's request view — it would be elided
+        to a projection stub immediately, wasting the acquisition and feeding
+        the model an inconsistent memory of its own results. Shaping the
+        acquisition at the source keeps what the model reads stable across
+        iterations.
+        """
+        derived = max(2_000, self._snapshot.provider_request_max_chars // 4)
+        if ceiling is not None:
+            return max(1, min(ceiling, derived))
+        return derived
+
     def tool_argument_chars_for(
         self,
         budget_class: ContextBudgetClass | str | None,

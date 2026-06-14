@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import MutableMapping
+from typing import Any
 
 import structlog
 
@@ -18,12 +20,34 @@ def _hash16(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
-def _record_prompt_cache_metrics(ctx: TurnContext, *, base: str, dynamic: str = "") -> None:
-    ctx.metadata["cache_base_chars"] = len(base)
-    ctx.metadata["cache_base_hash"] = _hash16(base)
+def _record_prompt_cache_metrics(
+    metadata: MutableMapping[str, Any], *, base: str, dynamic: str = ""
+) -> None:
+    metadata["cache_base_chars"] = len(base)
+    metadata["cache_base_hash"] = _hash16(base)
     if dynamic:
-        ctx.metadata["cache_dynamic_chars"] = len(dynamic)
-        ctx.metadata["cache_dynamic_hash"] = _hash16(dynamic)
+        metadata["cache_dynamic_chars"] = len(dynamic)
+        metadata["cache_dynamic_hash"] = _hash16(dynamic)
+
+
+def record_cache_base_prompt(
+    metadata: MutableMapping[str, Any], system_prompt: object
+) -> None:
+    """Record (or refresh) the cache breakpoint for the given system prompt.
+
+    Callers that rebuild the system prompt after ``apply_prompt_cache`` ran
+    (e.g. the tool-schema fit in the prompt assembler stage) must call this
+    again, otherwise the stale pre-rebuild prompt stays the breakpoint for
+    str-shaped prompts.
+    """
+    if isinstance(system_prompt, tuple) and len(system_prompt) == 2:
+        base, dynamic = system_prompt
+        metadata["cache_base_prompt"] = base
+        metadata["cache_dynamic_prompt"] = dynamic
+        _record_prompt_cache_metrics(metadata, base=base, dynamic=dynamic)
+    elif isinstance(system_prompt, str) and system_prompt:
+        metadata["cache_base_prompt"] = system_prompt
+        _record_prompt_cache_metrics(metadata, base=system_prompt)
 
 
 def _record_dual_track_key_metrics(ctx: TurnContext) -> None:
@@ -67,14 +91,7 @@ async def apply_prompt_cache(ctx: TurnContext) -> TurnContext:
     ctx.metadata["cache_mode"] = mode
     _record_dual_track_key_metrics(ctx)
 
-    if isinstance(ctx.system_prompt, tuple) and len(ctx.system_prompt) == 2:
-        base, dynamic = ctx.system_prompt
-        ctx.metadata["cache_base_prompt"] = base
-        ctx.metadata["cache_dynamic_prompt"] = dynamic
-        _record_prompt_cache_metrics(ctx, base=base, dynamic=dynamic)
-    elif isinstance(ctx.system_prompt, str) and ctx.system_prompt:
-        ctx.metadata["cache_base_prompt"] = ctx.system_prompt
-        _record_prompt_cache_metrics(ctx, base=ctx.system_prompt)
+    record_cache_base_prompt(ctx.metadata, ctx.system_prompt)
 
     if ctx.tool_defs:
         ctx.metadata["cache_last_tool"] = True

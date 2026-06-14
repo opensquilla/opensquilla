@@ -28,6 +28,7 @@ from opensquilla.engine.turn_runner.stream_consumer_stage import (
     _ErrorHandler,
     _StreamState,
     _TextDeltaHandler,
+    _TextSnapshotHandler,
     _ToolResultHandler,
     _ToolUseStartHandler,
     _WarningHandler,
@@ -38,6 +39,7 @@ from opensquilla.engine.types import (
     DoneEvent,
     ErrorEvent,
     TextDeltaEvent,
+    TextSnapshotEvent,
     ToolResultEvent,
     ToolUseStartEvent,
     WarningEvent,
@@ -322,6 +324,35 @@ def test_text_delta_handler_holds_split_malformed_tool_protocol_html() -> None:
     assert second.text == ""
     assert state.final_text_parts == ["Let me write the dashboard now."]
     assert "<tvoe" not in "".join(state.final_text_parts)
+
+
+def test_text_snapshot_handler_replaces_current_text_buffers() -> None:
+    state = _make_state()
+    delta_handler = _TextDeltaHandler()
+    snapshot_handler = _TextSnapshotHandler()
+    delta_handler.handle(TextDeltaEvent(text="n0isy answ3r"), state)
+
+    out = snapshot_handler.handle(TextSnapshotEvent(text="final answer"), state)
+
+    assert out.text == "final answer"
+    assert state.current_text_parts == ["final answer"]
+    assert state.final_text_parts == ["final answer"]
+
+
+def test_text_snapshot_handler_replaces_final_text_after_tool_boundary() -> None:
+    state = _make_state()
+    state.final_text_parts[:] = ["I will inspect files."]
+    state.turn_segments.append({"type": "text", "text": "I will inspect files."})
+    state.turn_segments.append({"type": "tool_result", "name": "read", "content": "ok"})
+    snapshot_handler = _TextSnapshotHandler()
+
+    snapshot_handler.handle(
+        TextSnapshotEvent(text="I will inspect files.\n\nThe issue is fixed."),
+        state,
+    )
+
+    assert state.current_text_parts == ["I will inspect files.\n\nThe issue is fixed."]
+    assert state.final_text_parts == ["I will inspect files.\n\nThe issue is fixed."]
 
 
 def test_tool_use_start_handler_drops_tool_scaffold_text_segment() -> None:
@@ -748,6 +779,29 @@ async def test_outer_stage_preserves_meta_text_when_done_text_is_empty() -> None
     assert isinstance(done, DoneEvent)
     assert done.text == "Final meta answer"
     assert inp.state.final_text_parts == ["Final meta answer"]
+
+
+@pytest.mark.asyncio
+async def test_outer_stage_suppresses_empty_protocol_text_deltas() -> None:
+    agent_run = _RecordingAgentRun(
+        events=[
+            TextDeltaEvent(text="<tool_call>"),
+            ToolUseStartEvent(tool_use_id="t1", tool_name="web_search"),
+            DoneEvent(text=""),
+        ]
+    )
+    stage, _ = _make_stage(agent_run=agent_run)
+
+    yielded = await _drain(stage, _make_input())
+
+    assert [type(event).__name__ for event in yielded] == [
+        "ToolUseStartEvent",
+        "DoneEvent",
+    ]
+    assert all(
+        not (isinstance(event, TextDeltaEvent) and event.text == "")
+        for event in yielded
+    )
 
 
 @pytest.mark.asyncio

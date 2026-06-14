@@ -21,6 +21,7 @@ class ProviderSetupField:
     default: str | bool | None = None
     description: str = ""
     secret: bool = False
+    choices: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,8 @@ class ProviderSetupSpec:
 _PROVIDER_LABELS: dict[str, str] = {
     "openrouter": "OpenRouter",
     "openai": "OpenAI",
+    "inception": "Inception Labs",
+    "openai_compatible": "OpenAI-compatible (custom)",
     "azure": "Azure OpenAI",
     "anthropic": "Anthropic",
     "ollama": "Ollama (local)",
@@ -81,6 +84,7 @@ _ONBOARDING_VERIFIED_PROVIDER_IDS = frozenset(
     {
         "openrouter",
         "openai",
+        "inception",
         "anthropic",
         "ollama",
         "deepseek",
@@ -93,6 +97,7 @@ _ONBOARDING_VERIFIED_PROVIDER_IDS = frozenset(
     }
 )
 
+_ONBOARDING_CUSTOM_CONFIGURABLE_PROVIDER_IDS = frozenset({"openai_compatible"})
 _LOCAL_PROVIDER_IDS = frozenset({"ollama", "vllm", "lm_studio", "ovms"})
 _OAUTH_PROVIDER_IDS = frozenset({"openai_codex", "github_copilot"})
 
@@ -151,6 +156,21 @@ def _model_description(spec: ProviderSpec, *, router_supported: bool) -> str:
 
 def _fields_for(spec: ProviderSpec) -> tuple[ProviderSetupField, ...]:
     router_supported = spec.provider_id in ROUTER_TIER_PROFILE_IDS
+    tool_support_fields = (
+        (
+            ProviderSetupField(
+                name="tool_support",
+                label="Tool support",
+                field_type="select",
+                required=False,
+                default="auto",
+                description="Override tool-call support for custom or self-hosted endpoints.",
+                choices=("auto", "on", "off"),
+            ),
+        )
+        if spec.requires_base_url() or spec.provider_id == "openai_compatible"
+        else ()
+    )
     return (
         ProviderSetupField(
             name="model",
@@ -182,7 +202,7 @@ def _fields_for(spec: ProviderSpec) -> tuple[ProviderSetupField, ...]:
                     description="Environment variable name the gateway reads for this key.",
                 ),
             )
-            if spec.requires_api_key()
+            if spec.env_key and spec.env_key != "OAuth"
             else ()
         ),
         ProviderSetupField(
@@ -204,13 +224,14 @@ def _fields_for(spec: ProviderSpec) -> tuple[ProviderSetupField, ...]:
                 "(e.g. http://127.0.0.1:7890)."
             ),
         ),
+        *tool_support_fields,
     )
 
 
 def _to_setup_spec(spec: ProviderSpec) -> ProviderSetupSpec:
-    runtime_supported = (
-        spec.runtime_supported
-        and spec.provider_id in _ONBOARDING_VERIFIED_PROVIDER_IDS
+    runtime_supported = spec.runtime_supported and (
+        spec.provider_id in _ONBOARDING_VERIFIED_PROVIDER_IDS
+        or spec.provider_id in _ONBOARDING_CUSTOM_CONFIGURABLE_PROVIDER_IDS
     )
     return ProviderSetupSpec(
         provider_id=spec.provider_id,
@@ -282,6 +303,7 @@ def provider_catalog_payload() -> list[dict[str, Any]]:
                     "default": f.default,
                     "description": f.description,
                     "secret": f.secret,
+                    "choices": list(f.choices),
                 }
                 for f in s.fields
             ],

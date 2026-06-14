@@ -58,9 +58,9 @@ from opensquilla.onboarding.provider_specs import (  # noqa: E402
 )
 
 EXPECTED_SUPPORTED = {
-    "openrouter", "openai", "anthropic", "ollama", "deepseek",
+    "openrouter", "openai", "inception", "anthropic", "ollama", "deepseek",
     "gemini", "dashscope", "moonshot", "zhipu", "qianfan",
-    "volcengine",
+    "volcengine", "openai_compatible",
 }
 EXPECTED_DISABLED = {
     "azure", "bailian_coding", "minimax", "minimax_openai", "minimax_cn",
@@ -144,6 +144,34 @@ def test_azure_requires_base_url_in_setup_spec():
 def test_vllm_requires_base_url_in_setup_spec():
     spec = get_provider_setup_spec("vllm")
     assert spec.requires_base_url is True
+
+
+def test_openai_compatible_is_custom_configurable_without_required_api_key():
+    registry_spec = get_provider_spec("openai_compatible")
+    assert registry_spec.backend == "openai_compat"
+    assert registry_spec.provider_kind == "self_hosted_openai"
+    assert registry_spec.requires_api_key() is False
+    assert registry_spec.requires_base_url() is True
+
+    spec = get_provider_setup_spec("openai_compatible")
+    assert spec.runtime_supported is True
+    assert spec.deployment == "custom"
+    assert spec.requires_api_key is False
+    assert spec.requires_base_url is True
+    assert spec.default_base_url == ""
+
+    api_field = next(f for f in spec.fields if f.name == "api_key")
+    api_env_field = next(f for f in spec.fields if f.name == "api_key_env")
+    base_field = next(f for f in spec.fields if f.name == "base_url")
+    tool_support_field = next(f for f in spec.fields if f.name == "tool_support")
+
+    assert api_field.required is False
+    assert api_env_field.required is False
+    assert api_env_field.default == "OPENAI_COMPATIBLE_API_KEY"
+    assert base_field.required is True
+    assert tool_support_field.field_type == "select"
+    assert tool_support_field.default == "auto"
+    assert tool_support_field.choices == ("auto", "on", "off")
 
 
 def test_unknown_provider_raises():

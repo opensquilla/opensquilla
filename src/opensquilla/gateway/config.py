@@ -140,6 +140,69 @@ class ToolsConfig(BaseModel):
     also_allow: list[str] = Field(default_factory=list)
     workspace_write_deny_globs: list[str] = Field(default_factory=list)
     trusted_fake_ip_cidrs: list[str] = Field(default_factory=list)
+    toolsets: dict[str, list[str]] = Field(
+        default_factory=lambda: {
+            "minimal": ["session_status"],
+            "web": ["web_search", "web_fetch", "session_status", "session_search"],
+            "memory": ["memory_search", "memory_get", "session_status"],
+            "files": ["read_file", "list_dir", "glob_search", "grep_search"],
+            "coding": [
+                "read_file",
+                "list_dir",
+                "glob_search",
+                "grep_search",
+                "edit_file",
+                "write_file",
+                "apply_patch",
+                "exec_command",
+                "git_status",
+                "git_diff",
+            ],
+            "core": [
+                "exec_command",
+                "read_file",
+                "write_file",
+                "edit_file",
+                "grep_search",
+                "glob_search",
+                "list_dir",
+                "web_search",
+                "web_fetch",
+                "publish_artifact",
+                "session_status",
+                "message",
+                # Control-plane escape hatch: without router_control a routed
+                # tier cannot switch tiers or release an active hold from chat.
+                "router_control",
+                # Meta entry point: meta_resolution injects prompt hints that
+                # instruct the model to call meta_invoke first; a surface
+                # without it strands those turns (visibility still gates it
+                # off when meta skills are disabled).
+                "meta_invoke",
+            ],
+        }
+    )
+    toolset_priority: list[str] = Field(
+        default_factory=lambda: [
+            "session_status",
+            "router_control",
+            "meta_invoke",
+            "web_search",
+            "web_fetch",
+            "session_search",
+            "memory_search",
+            "memory_get",
+            "read_file",
+            "grep_search",
+            "glob_search",
+            "list_dir",
+            "exec_command",
+            "write_file",
+            "edit_file",
+            "publish_artifact",
+            "message",
+        ]
+    )
 
     @field_validator("trusted_fake_ip_cidrs")
     @classmethod
@@ -240,6 +303,10 @@ class LlmProviderConfig(BaseSettings):
     # send provider.order=[name] so the provider is preferred without disabling
     # OpenRouter fallback.
     provider_routing: dict[str, str] = Field(default_factory=dict)
+    tool_support: Literal["auto", "on", "off"] = "auto"
+    tool_probe_mode: Literal["required", "auto"] = "required"
+    toolset: str | None = None
+    max_tool_schema_chars: int = 0
 
     @model_validator(mode="after")
     def _normalize_direct_deepseek_model(self) -> LlmProviderConfig:
@@ -637,6 +704,83 @@ def _merge_tier_dicts(defaults: dict, overrides: object) -> dict:
     return merged
 
 
+def _normalize_tier_tool_supports(tiers: object) -> object:
+    if not isinstance(tiers, dict):
+        return tiers
+    normalized: dict[str, Any] = {}
+    for tier_name, tier in tiers.items():
+        if not isinstance(tier, dict):
+            normalized[tier_name] = tier
+            continue
+        next_tier = dict(tier)
+        if "toolSupport" in next_tier and "tool_support" not in next_tier:
+            next_tier["tool_support"] = next_tier.pop("toolSupport")
+        elif "toolSupport" in next_tier:
+            next_tier.pop("toolSupport", None)
+        if "tool_support" in next_tier:
+            mode = str(next_tier.get("tool_support") or "auto").strip().lower()
+            if mode not in {"auto", "on", "off"}:
+                raise ValueError(
+                    f"squilla_router.tiers.{tier_name}.tool_support must be one of: "
+                    "auto, on, off"
+                )
+            next_tier["tool_support"] = mode
+        if "toolProbeMode" in next_tier and "tool_probe_mode" not in next_tier:
+            next_tier["tool_probe_mode"] = next_tier.pop("toolProbeMode")
+        elif "toolProbeMode" in next_tier:
+            next_tier.pop("toolProbeMode", None)
+        if "tool_probe_mode" in next_tier:
+            probe_mode = str(next_tier.get("tool_probe_mode") or "required").strip().lower()
+            if probe_mode not in {"required", "auto"}:
+                raise ValueError(
+                    f"squilla_router.tiers.{tier_name}.tool_probe_mode must be one of: "
+                    "required, auto"
+                )
+            next_tier["tool_probe_mode"] = probe_mode
+        _warn_dead_tier_tool_keys_once(next_tier)
+        normalized[tier_name] = next_tier
+    return normalized
+
+
+# Same atomic check-and-set dance as the prompt_cache.enabled deprecation:
+# warn outside the lock, dedupe under it.
+_DEAD_TIER_TOOL_KEYS_WARN_LOCK = threading.Lock()
+_DEAD_TIER_TOOL_KEYS_WARNED = False
+
+_DEAD_TIER_TOOL_KEYS = (
+    "tool_call_protocol",
+    "toolCallProtocol",
+    "tool_route_reliability",
+    "toolRouteReliability",
+)
+
+
+def _warn_dead_tier_tool_keys_once(tier_cfg: dict) -> None:
+    """Deprecation pass for tier keys that never gained a runtime consumer.
+
+    tool_call_protocol and tool_route_reliability were validated but never
+    wired to behavior; keys pass through unvalidated so configs keep loading.
+    Removal target: 0.next+2.
+    """
+    present = [key for key in _DEAD_TIER_TOOL_KEYS if key in tier_cfg]
+    if not present:
+        return
+    global _DEAD_TIER_TOOL_KEYS_WARNED
+    with _DEAD_TIER_TOOL_KEYS_WARN_LOCK:
+        should_warn = not _DEAD_TIER_TOOL_KEYS_WARNED
+        if should_warn:
+            _DEAD_TIER_TOOL_KEYS_WARNED = True
+    if should_warn:
+        warnings.warn(
+            f"squilla_router tier keys {present!r} are deprecated and have no "
+            "effect (tool_call_protocol / tool_route_reliability were never "
+            "consumed); use tool_support and tool_probe_mode instead. "
+            "Removal target: 0.next+2.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+
 def _router_tier_profile_defaults(profile: str | None) -> dict:
     normalized = (profile or "openrouter").strip().lower()
     if normalized not in ROUTER_TIER_PROFILE_IDS:
@@ -922,6 +1066,7 @@ class SquillaRouterConfig(BaseSettings):
     rollout_phase: str = "full"  # "observe" | "prompt_only" | "full"
     strategy: str = "v4_phase3"
     tier_profile: str | None = None
+    visual_mode: Literal["real_candidates", "legacy_grid"] = "real_candidates"
     tiers: dict = Field(default_factory=_default_tiers)
     default_tier: str = DEFAULT_TEXT_TIER
     confidence_threshold: float = 0.5
@@ -948,6 +1093,17 @@ class SquillaRouterConfig(BaseSettings):
     vision_followup_gate_fallback_recent_turns: int = Field(default=2, ge=0)
     vision_followup_gate_unknown_policy: str = "image_if_recent"
 
+    @field_validator("visual_mode", mode="before")
+    @classmethod
+    def _normalize_visual_mode(cls, value: Any) -> str:
+        raw = "real_candidates" if value is None else str(value).strip().lower()
+        normalized = raw.replace("-", "_")
+        if normalized in {"", "real_candidates", "candidates"}:
+            return "real_candidates"
+        if normalized in {"legacy_grid", "model_space", "modelspace"}:
+            return "legacy_grid"
+        raise ValueError("visual_mode must be one of: real_candidates, legacy_grid")
+
     @model_validator(mode="before")
     @classmethod
     def _resolve_tier_profile_defaults(cls, values: Any) -> Any:
@@ -966,7 +1122,9 @@ class SquillaRouterConfig(BaseSettings):
                 "default_tier"
             )
         if isinstance(values.get("tiers"), dict):
-            values["tiers"] = normalize_tier_mapping(values["tiers"])
+            values["tiers"] = _normalize_tier_tool_supports(
+                normalize_tier_mapping(values["tiers"])
+            )
         profile = values.get("tier_profile")
         if profile is None:
             return values
@@ -983,7 +1141,7 @@ class SquillaRouterConfig(BaseSettings):
         merged = _merge_tier_dicts(defaults, values.get("tiers"))
         next_values = dict(values)
         next_values["tier_profile"] = normalized
-        next_values["tiers"] = merged
+        next_values["tiers"] = _normalize_tier_tool_supports(merged)
         return next_values
 
 
@@ -1598,6 +1756,35 @@ class GatewayConfig(BaseSettings):
             raise ValueError(
                 "squilla_router.tier_profile requires llm.provider to match "
                 f"({normalized_profile!r} != {provider!r})"
+            )
+        return self
+
+    # Model-level because the check spans two sections: tier toolset names
+    # must resolve against the EFFECTIVE [tools.toolsets] dict (operator
+    # overrides REPLACE the built-ins), which SquillaRouterConfig field
+    # validators cannot see.
+    @model_validator(mode="after")
+    def _validate_squilla_router_tier_toolsets(self) -> GatewayConfig:
+        toolsets = getattr(self.tools, "toolsets", {}) or {}
+        valid = {"full", *toolsets}
+        tiers = getattr(self.squilla_router, "tiers", {})
+        if not isinstance(tiers, dict):
+            return self
+        for tier_name, tier_cfg in tiers.items():
+            if not isinstance(tier_cfg, dict):
+                continue
+            raw = tier_cfg.get("toolset")
+            if raw is None:
+                raw = tier_cfg.get("toolSet")
+            if raw is None:
+                continue
+            name = str(raw).strip()
+            if not name or name in valid:
+                continue
+            valid_names = ", ".join(sorted(valid))
+            raise ValueError(
+                f"squilla_router.tiers.{tier_name}.toolset {name!r} is not a "
+                f"configured toolset; valid names: {valid_names}"
             )
         return self
 

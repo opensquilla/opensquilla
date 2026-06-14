@@ -6,7 +6,16 @@ from typing import Any, cast
 
 from opensquilla.engine.pipeline import TurnContext
 from opensquilla.engine.types import RouterDecisionEvent
-from opensquilla.router_tiers import normalize_text_tier, tier_index
+from opensquilla.router_tiers import (
+    ROUTED_MODEL_KEY,
+    ROUTED_PROVIDER_KEY,
+    ROUTED_TIER_KEY,
+    ROUTING_APPLIED_KEY,
+    ROUTING_CONFIDENCE_KEY,
+    ROUTING_SOURCE_KEY,
+    normalize_text_tier,
+    tier_index,
+)
 
 
 def _coerce_probs(value: object) -> list[float]:
@@ -39,7 +48,7 @@ def _coerce_float(value: object, default: float = 0.0) -> float:
 def build_router_decision_event(turn: TurnContext) -> RouterDecisionEvent | None:
     """Construct a RouterDecisionEvent from post-pipeline turn metadata."""
 
-    routed_tier = turn.metadata.get("routed_tier")
+    routed_tier = turn.metadata.get(ROUTED_TIER_KEY)
     if not routed_tier:
         return None
 
@@ -57,18 +66,19 @@ def build_router_decision_event(turn: TurnContext) -> RouterDecisionEvent | None
     routed_tier = normalize_text_tier(routed_tier) or routed_tier
     tier_idx = tier_index(routed_tier)
 
-    source = str(turn.metadata.get("routing_source") or "none")
-    routing_applied = turn.metadata.get("routing_applied")
+    source = str(turn.metadata.get(ROUTING_SOURCE_KEY) or "none")
+    routing_applied = turn.metadata.get(ROUTING_APPLIED_KEY)
     if routing_applied is None:
         routing_applied = True
 
     return RouterDecisionEvent(
         tier=str(routed_tier),
         tier_index=tier_idx,
-        model=str(turn.metadata.get("routed_model") or turn.model or ""),
+        model=str(turn.metadata.get(ROUTED_MODEL_KEY) or turn.model or ""),
+        provider=str(turn.metadata.get(ROUTED_PROVIDER_KEY) or ""),
         baseline_model=str(turn.metadata.get("baseline_model") or ""),
         source=source,
-        confidence=float(turn.metadata.get("routing_confidence") or 0.0),
+        confidence=float(turn.metadata.get(ROUTING_CONFIDENCE_KEY) or 0.0),
         probs=probs,
         savings_pct=savings_pct,
         fallback=source == "fallback",

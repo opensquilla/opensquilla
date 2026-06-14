@@ -286,6 +286,7 @@ def _turn_usage_payload(
         "billed_cost": float(done_event.billed_cost or 0.0),
         "cost_source": done_event.cost_source or "none",
         "model": model,
+        "routed_provider": getattr(done_event, "routed_provider", "") or "",
         "routed_model": done_event.routed_model or "",
         "routed_tier": done_event.routed_tier or None,
         "routing_source": done_event.routing_source or "none",

@@ -30,6 +30,21 @@ def test_deepseek_v4_pro_uses_non_discount_price_when_live_pricing_is_off(
     assert price.output_per_m == pytest.approx(3.48)
 
 
+def test_env_price_override_config_wins_without_static_model_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENSQUILLA_OPENROUTER_LIVE_PRICING", "0")
+    monkeypatch.setenv(
+        "OPENSQUILLA_PRICE_OVERRIDES_JSON",
+        '{"sample/custom-model":{"input_per_m":0.5,"output_per_m":1.5}}',
+    )
+
+    price = lookup_price("sample/custom-model")
+
+    assert price.input_per_m == pytest.approx(0.5)
+    assert price.output_per_m == pytest.approx(1.5)
+
+
 @pytest.mark.asyncio
 async def test_pricing_cache_refresh_adds_openrouter_app_attribution() -> None:
     import httpx as _httpx

@@ -379,6 +379,7 @@ const SetupView = (() => {
     if (name === 'base_url') return current.base_url || field.default || '';
     if (name === 'proxy') return current.proxy || '';
     if (name === 'api_key_env') return current.api_key_env || (current.api_key ? '' : field.default || '');
+    if (name === 'tool_support') return current.tool_support || field.default || 'auto';
     return '';
   }
 
@@ -510,7 +511,7 @@ const SetupView = (() => {
         </div>
         ${provider ? `<div class="setup-tier-table" role="table">
           <div class="setup-tier-table__row is-head" role="row">
-            <span>Tier</span><span>Provider</span><span>Model</span><span>Thinking</span><span>Image</span>
+            <span>Tier</span><span>Provider</span><span>Model</span><span>Thinking</span><span>Tool</span><span>Image</span>
           </div>
           ${Object.entries(tiers).filter(([name]) => TEXT_TIERS.includes(name) || name === 'image_model').map(([name, tier]) => _tierRow(name, tier)).join('')}
         </div>` : `<div class="setup-warning" data-router-provider-needed>Choose a provider first to preview and save SquillaRouter tiers.</div>`}
@@ -533,6 +534,9 @@ const SetupView = (() => {
       <input ${_tierControlAttrs(name, 'model', 'model')} data-tier-field="model" value="${_esc(tier.model || '')}">
       <select ${_tierControlAttrs(name, 'thinkingLevel', 'thinking level')} data-tier-field="thinkingLevel">
         ${['', 'off', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh'].map(v => `<option value="${v}"${v === (tier.thinkingLevel || tier.thinking_level || '') ? ' selected' : ''}>${v || '-'}</option>`).join('')}
+      </select>
+      <select ${_tierControlAttrs(name, 'toolSupport', 'tool support')} data-tier-field="toolSupport">
+        ${['auto', 'on', 'off'].map(v => `<option value="${v}"${v === (tier.toolSupport || tier.tool_support || 'auto') ? ' selected' : ''}>${v}</option>`).join('')}
       </select>
       <input ${_tierControlAttrs(name, 'supportsImage', 'supports image')} type="checkbox" data-tier-field="supportsImage"${imageCheckedAttr}>
     </div>`;

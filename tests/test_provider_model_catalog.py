@@ -33,6 +33,8 @@ def test_direct_profile_static_fallbacks_cover_context_windows() -> None:
         "moonshot-v1-128k": 131_072,
         "kimi-k2.5": 262_144,
         "kimi-k2.6": 262_144,
+        "inception/mercury-2": 128_000,
+        "mercury-2": 128_000,
     }
 
     for model_id, context_window in expected_windows.items():
@@ -72,6 +74,102 @@ def test_openrouter_safe_default_never_raises_smaller_provider_limit() -> None:
 
     assert catalog.resolve_context_window("provider/smaller-output-model") == 12_000
     assert catalog.resolve_max_tokens("provider/smaller-output-model") == 4096
+
+
+def test_provider_qualified_metadata_keeps_same_model_ids_separate() -> None:
+    catalog = ModelCatalog()
+    catalog.add_models(
+        "openai_compatible",
+        "http://localhost:8001/v1",
+        [{"id": "shared-model", "max_model_len": 32768}],
+    )
+    catalog.add_models(
+        "openai_compatible",
+        "http://localhost:8002/v1",
+        [
+            {
+                "id": "shared-model",
+                "context_window": 65536,
+                "max_output_tokens": 4096,
+            }
+        ],
+    )
+
+    first = catalog.get(
+        "shared-model",
+        provider_name="openai_compatible",
+        base_url="http://localhost:8001/v1",
+    )
+    second = catalog.get(
+        "shared-model",
+        provider_name="openai_compatible",
+        base_url="http://localhost:8002/v1/",
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first.context_window == 32768
+    assert second.context_window == 65536
+    assert (
+        catalog.resolve_context_window(
+            "shared-model",
+            provider_name="openai_compatible",
+            base_url="http://localhost:8001/v1",
+        )
+        == 32768
+    )
+    assert (
+        catalog.resolve_context_window(
+            "shared-model",
+            provider_name="openai_compatible",
+            base_url="http://localhost:8002/v1",
+        )
+        == 65536
+    )
+    assert (
+        catalog.resolve_max_tokens(
+            "shared-model",
+            provider_name="openai_compatible",
+            base_url="http://localhost:8002/v1",
+        )
+        == 4096
+    )
+
+
+def test_provider_qualified_metadata_normalizes_versioned_base_url_suffix() -> None:
+    catalog = ModelCatalog()
+    catalog.add_models(
+        "openai_compatible",
+        "http://localhost:8008",
+        [{"id": "local-model", "max_model_len": 32768}],
+    )
+
+    assert (
+        catalog.resolve_context_window(
+            "local-model",
+            provider_name="openai_compatible",
+            base_url="http://localhost:8008/v1/",
+        )
+        == 32768
+    )
+
+
+def test_openai_compatible_metadata_without_tool_parameters_is_unknown() -> None:
+    catalog = ModelCatalog()
+    catalog.add_models(
+        "openai_compatible",
+        "http://localhost:8008/v1",
+        [{"id": "local-model", "max_model_len": 32768}],
+    )
+
+    caps = catalog.get_capabilities(
+        "local-model",
+        provider_name="openai_compatible",
+        base_url="http://localhost:8008/v1",
+    )
+
+    assert caps.supports_tools is False
+    assert caps.tool_support_state == "unknown"
 
 
 @pytest.mark.asyncio
@@ -116,3 +214,180 @@ async def test_fetch_openrouter_adds_app_attribution_headers() -> None:
     model = catalog.get("openai/gpt-4o")
     assert model is not None
     assert model.context_window == 128_000
+
+
+@pytest.mark.asyncio
+async def test_probe_openai_compatible_tools_updates_provider_scoped_capability() -> None:
+    captured: dict[str, object] = {}
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json.return_value = {
+        "choices": [
+            {
+                "message": {
+                    "tool_calls": [
+                        {
+                            "type": "function",
+                            "function": {"name": "ping", "arguments": "{}"},
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+
+    with patch("opensquilla.provider.model_catalog.httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        async def capture_post(url, *, headers, json):
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["json"] = json
+            return mock_response
+
+        mock_client.post = AsyncMock(side_effect=capture_post)
+        mock_client_cls.return_value = mock_client
+
+        catalog = ModelCatalog()
+        result = await catalog.probe_openai_compatible_tools(
+            provider_name="openai_compatible",
+            base_url="http://localhost:8008/v1",
+            model_id="local-model",
+            api_key="test-key",
+        )
+
+    assert result is True
+    assert captured["url"] == "http://localhost:8008/v1/chat/completions"
+    assert captured["headers"] == {"Authorization": "Bearer test-key"}
+    payload = captured["json"]
+    assert payload["model"] == "local-model"
+    assert payload["tool_choice"] == "required"
+    assert payload["tools"][0]["function"]["name"] == "ping"
+    caps = catalog.get_capabilities(
+        "local-model",
+        provider_name="openai_compatible",
+        base_url="http://localhost:8008/v1",
+    )
+    assert caps.supports_tools is True
+    assert caps.tool_support_state == "supported"
+
+
+@pytest.mark.asyncio
+async def test_probe_openai_compatible_tools_auto_mode_does_not_force_required() -> None:
+    captured: dict[str, object] = {}
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json.return_value = {
+        "choices": [
+            {
+                "message": {
+                    "tool_calls": [
+                        {
+                            "type": "function",
+                            "function": {"name": "ping", "arguments": "{}"},
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+
+    with patch("opensquilla.provider.model_catalog.httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        async def capture_post(url, *, headers, json):
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["json"] = json
+            return mock_response
+
+        mock_client.post = AsyncMock(side_effect=capture_post)
+        mock_client_cls.return_value = mock_client
+
+        catalog = ModelCatalog()
+        result = await catalog.probe_openai_compatible_tools(
+            provider_name="openai_compatible",
+            base_url="http://localhost:8008/v1",
+            model_id="local-model",
+            tool_probe_mode="auto",
+        )
+
+    assert result is True
+    payload = captured["json"]
+    assert payload["tool_choice"] == "auto"
+    assert payload["messages"][0]["content"] == "Call the ping tool."
+
+
+@pytest.mark.asyncio
+async def test_probe_openai_compatible_tools_timeout_keeps_capability_unknown() -> None:
+    with patch("opensquilla.provider.model_catalog.httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post = AsyncMock(side_effect=TimeoutError("probe timed out"))
+        mock_client_cls.return_value = mock_client
+
+        catalog = ModelCatalog()
+        result = await catalog.probe_openai_compatible_tools(
+            provider_name="openai_compatible",
+            base_url="http://localhost:8008/v1",
+            model_id="local-model",
+            tool_probe_mode="auto",
+        )
+
+    assert result is None
+    caps = catalog.get_capabilities(
+        "local-model",
+        provider_name="openai_compatible",
+        base_url="http://localhost:8008/v1",
+    )
+    assert caps.supports_tools is True
+    assert caps.tool_support_state == "unknown"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message", [{"content": "pong"}, {"tool_calls": []}])
+async def test_probe_openai_compatible_tools_keeps_unknown_without_returned_tool_call(
+    message: dict[str, object],
+) -> None:
+    """A 200 without tool_calls must not persist an unsupported verdict.
+
+    Endpoints like Inception diffusion models answer the probe prompt in
+    text while calling tools fine in real turns; only an explicit 400/422
+    rejection proves the endpoint cannot take tools.
+    """
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json.return_value = {
+        "choices": [{"message": message}],
+    }
+
+    with patch("opensquilla.provider.model_catalog.httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client_cls.return_value = mock_client
+
+        catalog = ModelCatalog()
+        result = await catalog.probe_openai_compatible_tools(
+            provider_name="openai_compatible",
+            base_url="http://localhost:8008/v1",
+            model_id="local-model",
+        )
+
+    assert result is None
+    caps = catalog.get_capabilities(
+        "local-model",
+        provider_name="openai_compatible",
+        base_url="http://localhost:8008/v1",
+    )
+    assert caps.supports_tools is True
+    assert caps.tool_support_state == "unknown"

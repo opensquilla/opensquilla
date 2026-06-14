@@ -72,10 +72,21 @@ class _StubModelCatalog:
     context_window_value: int = 200_000
     capabilities_value: Any = None
 
-    def resolve_max_tokens(self, model_id, user_override=0):  # noqa: ARG002
+    def resolve_max_tokens(
+        self,
+        model_id,
+        user_override=0,
+        provider_name="",
+        base_url="",
+    ):  # noqa: ARG002
         return self.max_tokens_value
 
-    def resolve_context_window(self, model_id):  # noqa: ARG002
+    def resolve_context_window(
+        self,
+        model_id,
+        provider_name="",
+        base_url="",
+    ):  # noqa: ARG002
         return self.context_window_value
 
     def get_capabilities(self, model_id, provider_name="", base_url=""):  # noqa: ARG002
@@ -212,7 +223,7 @@ def _patch_assemble_prompt(runner, base_prompt, prompt_metadata):
     def _assemble_prompt(
         self, agent_id, tool_defs, *, session_key=None, semantic_message=None,
         extra_context=None, prompt_metadata=None, bootstrap_context_mode=None,
-        fresh_user_session=False,
+        fresh_user_session=False, reply_tags_enabled=True,
     ):  # noqa: ARG001
         if prompt_metadata is not None:
             prompt_metadata.update(pm_to_emit)

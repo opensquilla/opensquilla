@@ -85,6 +85,93 @@ Supported sections:
 | Inspect current values | `opensquilla config get` |
 | Persist an advanced key | `opensquilla config set <key> <value> --config <path>` |
 
+## Router Tier Configuration
+
+Each `squilla_router.tiers.<name>` entry routes a tier to a full provider
+identity, not just a model name. Self-hosted OpenAI-compatible endpoints are
+supported, including blank-auth deployments.
+
+| Field | Meaning |
+| --- | --- |
+| `provider` | Provider id (`openrouter`, `inception`, `openai_compatible`, ...). |
+| `model` | Model id sent to that provider. |
+| `base_url` | Endpoint override; defaults to the provider's standard URL. |
+| `api_key` / `api_key_env` | Tier-scoped credential (literal value or env var name). Leave empty for blank-auth endpoints. |
+| `description` | Shown in the WebUI router panel. |
+| `supports_image` | Marks the tier eligible for image routes. |
+| `thinking_level` | Default thinking level for the tier. |
+| `context_window_tokens` | Real context window of the model. Set this for self-hosted or small models: unknown models otherwise inherit an optimistic 200k default (a one-time warning `routed_tier.context_window_defaulted` is logged when that happens). |
+| `toolset` | Named toolset to offer on this tier (`full` for everything). The name must be `full` or a key of `[tools.toolsets]`; an unknown name is a config load error. |
+| `max_tool_schema_chars` | Tool-schema budget for small-context models. Units are compact-JSON serialization characters (the same accounting as request proof), not wire bytes. |
+| `tool_support` | `auto` (probe/catalog decides), `on` (operator vouches the model calls tools; required for models that ignore the boot probe, e.g. diffusion models), `off` (never send tools). |
+| `tool_probe_mode` | `required` or `auto` `tool_choice` used by the boot-time tool probe. |
+
+A probe that gets a 200 response without a tool call leaves the capability
+`unknown`; tool-required turns are refused on `unknown`/`unsupported` routes,
+and ordinary turns proceed without tools. Set `tool_support = "on"` after
+verifying a route with `scripts/live_compat_tool_route_smoke.py`.
+
+Custom toolsets used on routed tiers should include `router_control`:
+without it, an active router hold cannot be switched or released from chat,
+locking the session on the held tier.
+
+### Named toolsets
+
+A common pattern is offering the built-in `core` toolset on a budget tier:
+
+```toml
+[squilla_router.tiers.c1]
+provider = "openrouter"
+model = "z-ai/glm-5.1"
+toolset = "core"
+max_tool_schema_chars = 24000
+```
+
+Built-in toolsets are `minimal`, `web`, `memory`, `files`, `coding`, and
+`core` (a general-purpose daily-driver set: `exec_command`, `read_file`,
+`write_file`, `edit_file`, `grep_search`, `glob_search`, `list_dir`,
+`web_search`, `web_fetch`, `publish_artifact`, `session_status`, `message`).
+
+Setting `[tools.toolsets]` in config REPLACES the built-in dict — it does not
+merge. If you define your own toolsets and still want the built-ins, restate
+them:
+
+```toml
+[tools.toolsets]
+minimal = ["session_status"]
+web = ["web_search", "web_fetch", "session_status", "session_search"]
+memory = ["memory_search", "memory_get", "session_status"]
+files = ["read_file", "list_dir", "glob_search", "grep_search"]
+coding = [
+  "read_file", "list_dir", "glob_search", "grep_search", "edit_file",
+  "write_file", "apply_patch", "exec_command", "git_status", "git_diff",
+]
+core = [
+  "exec_command", "read_file", "write_file", "edit_file", "grep_search",
+  "glob_search", "list_dir", "web_search", "web_fetch", "publish_artifact",
+  "session_status", "message",
+]
+research = ["web_search", "web_fetch", "read_file", "session_status"]
+```
+
+A tier `toolset` referencing a name missing from the effective dict fails at
+config load with a ValueError listing the valid names. (Previously a typo'd
+name silently fell back to `full` — if turn metadata shows
+`selected_toolset = "full"` where you expected `core`, that was the cause.)
+
+Runtime `config.patch` reachability for tier tool keys (`toolset`,
+`max_tool_schema_chars`, `tool_support`, `tool_probe_mode`) is limited to
+tiers `c0`, `c1`, `c2`, `c3`, and `image_model`; other tiers require a config
+file edit and restart.
+
+Per-turn debugging keys in turn metadata: `selected_toolset` (the toolset that
+was applied), `dropped_tools` (names removed by the toolset filter or the char
+budget), and `tools_chars` (compact-JSON size of the advertised schemas).
+
+Toolsets restrict which tool schemas are ADVERTISED to the model on a tier.
+The execution boundary is unchanged: the tool-policy layer (profiles,
+allow/deny) still decides what may actually run, regardless of toolset.
+
 ## Provider Configuration
 
 Inspect provider support:

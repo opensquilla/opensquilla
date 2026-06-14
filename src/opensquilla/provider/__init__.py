@@ -54,6 +54,7 @@ from .types import (
     QuotaStatus,
     StreamEvent,
     TextDeltaEvent,
+    TextSnapshotEvent,
     ToolDefinition,
     ToolInputSchema,
     ToolUseDeltaEvent,
@@ -103,6 +104,7 @@ __all__ = [
     # Types
     "StreamEvent",
     "TextDeltaEvent",
+    "TextSnapshotEvent",
     "ToolUseStartEvent",
     "ToolUseDeltaEvent",
     "ToolUseEndEvent",

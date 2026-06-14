@@ -18,6 +18,7 @@ from opensquilla.onboarding.status import get_onboarding_status
 _KEY_URLS = {
     "openrouter": "https://openrouter.ai/keys",
     "openai": "https://platform.openai.com/api-keys",
+    "inception": "https://platform.inceptionlabs.ai/",
     "anthropic": "https://console.anthropic.com/settings/keys",
     "deepseek": "https://platform.deepseek.com/api_keys",
 }

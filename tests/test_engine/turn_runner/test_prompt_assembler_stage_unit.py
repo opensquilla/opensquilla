@@ -28,6 +28,10 @@ from opensquilla.engine.turn_runner.prompt_assembler_stage import (
     SessionIdResolverPort,
 )
 from opensquilla.observability.prompt_report import PromptReport
+from opensquilla.provider.openai import _build_openai_tool
+from opensquilla.provider.request_proof import _payload_chars
+from opensquilla.provider.types import ToolDefinition, ToolInputSchema
+from opensquilla.tools.types import CallerKind, ToolContext
 
 # ---------------------------------------------------------------------------
 # Recording fakes (one per port)
@@ -52,6 +56,7 @@ class _RecordingPromptAssembler:
         prompt_metadata,
         bootstrap_context_mode,
         fresh_user_session=False,
+        reply_tags_enabled=True,
     ):
         self.calls += 1
         self.last_kwargs = dict(
@@ -62,6 +67,7 @@ class _RecordingPromptAssembler:
             extra_context=extra_context,
             bootstrap_context_mode=bootstrap_context_mode,
             fresh_user_session=fresh_user_session,
+            reply_tags_enabled=reply_tags_enabled,
         )
         prompt_metadata.update(self.metadata_to_emit)
         return self.base_prompt
@@ -143,6 +149,15 @@ class _RecordingMemoryFingerprint:
 
 
 @dataclass
+class _TurnSystemPromptResolver:
+    calls: int = 0
+
+    def resolve_prompt_config(self, turn):
+        self.calls += 1
+        return turn.system_prompt, None, None
+
+
+@dataclass
 class _StubProvider:
     name: str = "stub"
     provider_name: str = ""
@@ -156,15 +171,30 @@ class _StubProvider:
 class _StubSelector:
     label: str = "selector"
     overridden_models: list[str] = field(default_factory=list)
+    overridden_primary: list[Any] = field(default_factory=list)
     resolve_returns: Any = None
+    current_provider: str = "anthropic"
     current_model: str = "claude-sonnet-4.5"
 
     @property
     def current_config(self):
-        return SimpleNamespace(model=self.current_model)
+        return SimpleNamespace(
+            provider=self.current_provider,
+            model=self.current_model,
+            api_key="",
+            base_url="",
+            proxy="",
+        )
 
     def override_model(self, model: str) -> None:
         self.overridden_models.append(model)
+        self.current_model = model
+
+    def override_primary(self, primary: Any, fallbacks: list[Any] | None = None) -> None:
+        del fallbacks
+        self.overridden_primary.append(primary)
+        self.current_provider = primary.provider
+        self.current_model = primary.model
 
     def resolve(self):
         return self.resolve_returns
@@ -187,12 +217,16 @@ def _make_turn(
     metadata: dict[str, Any] | None = None,
     tool_defs: list[Any] | None = None,
     model: str = "",
+    system_prompt: Any = "BASE",
+    config: Any = None,
 ):
     return SimpleNamespace(
         message=message,
         metadata=dict(metadata or {}),
         tool_defs=list(tool_defs or []),
         model=model,
+        system_prompt=system_prompt,
+        config=config,
     )
 
 
@@ -303,6 +337,30 @@ async def test_prompt_assembler_forwards_fresh_user_session_flag():
 
 
 @pytest.mark.asyncio
+async def test_prompt_assembler_disables_reply_tags_for_web_surface():
+    prompt_assembler = _RecordingPromptAssembler()
+    stage = _make_stage(assembler=prompt_assembler)
+
+    await stage.run(
+        _make_input(effective_tool_context=ToolContext(caller_kind=CallerKind.WEB))
+    )
+
+    assert prompt_assembler.last_kwargs["reply_tags_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_prompt_assembler_keeps_reply_tags_for_channel_surface():
+    prompt_assembler = _RecordingPromptAssembler()
+    stage = _make_stage(assembler=prompt_assembler)
+
+    await stage.run(
+        _make_input(effective_tool_context=ToolContext(caller_kind=CallerKind.CHANNEL))
+    )
+
+    assert prompt_assembler.last_kwargs["reply_tags_enabled"] is True
+
+
+@pytest.mark.asyncio
 async def test_case02_with_tool_ctx_threads_into_pipeline() -> None:
     sentinel = object()
     executor = _RecordingPipelineExecutor(turn=_make_turn(), provider=_StubProvider())
@@ -375,7 +433,321 @@ async def test_case04_squilla_router_fires_overrides_model() -> None:
     assert "claude-haiku-4.5" in selector.overridden_models
     # explicit model wins
     assert out.output.resolved_model == "claude-haiku-4.5"
-    assert out.output.squilla_router_tier == "premium"
+    assert out.output.squilla_router_tier is None
+    assert out.output.turn.metadata["routing_source"] == "explicit_model"
+
+
+@pytest.mark.asyncio
+async def test_case04_explicit_model_matching_tier_wins_over_pipeline_route() -> None:
+    selector = _StubSelector("sel4-provider", current_model="inception/mercury-2")
+    routed_provider = _StubProvider("openrouter_routed")
+    selector.resolve_returns = routed_provider
+    config = SimpleNamespace(
+        squilla_router=SimpleNamespace(
+            tiers={
+                "c1": {
+                    "provider": "openai_compatible",
+                    "model": "inclusionAI/LLaDA2.1-flash",
+                    "base_url": "http://127.0.0.1:8008/v1",
+                    "api_key": "llada-key",
+                },
+                "c2": {
+                    "provider": "openrouter",
+                    "model": "z-ai/glm-5.1",
+                },
+            }
+        )
+    )
+    executor = _RecordingPipelineExecutor(
+        turn=_make_turn(
+            metadata={
+                "routed_tier": "c2",
+                "routed_model": "z-ai/glm-5.1",
+                "routed_provider": "openrouter",
+            },
+            model="z-ai/glm-5.1",
+            config=config,
+        ),
+        provider=_StubProvider("post_pipeline"),
+    )
+    stage = _make_stage(executor=executor)
+    inp = _make_input(
+        cloned_selector=selector,
+        model="inclusionAI/LLaDA2.1-flash",
+    )
+
+    out = await stage.run(inp)
+
+    assert selector.overridden_models == []
+    assert selector.overridden_primary
+    assert selector.overridden_primary[0].provider == "openai_compatible"
+    assert selector.overridden_primary[0].model == "inclusionAI/LLaDA2.1-flash"
+    assert out.output.resolved_model == "inclusionAI/LLaDA2.1-flash"
+    assert out.output.selector_model == "inclusionAI/LLaDA2.1-flash"
+    assert out.output.squilla_router_tier == "c1"
+    assert out.output.turn.metadata["routing_source"] == "explicit_model"
+
+
+@pytest.mark.asyncio
+async def test_routed_tier_toolset_fits_schema_budget_and_rebuilds_prompt() -> None:
+    def _tool(name: str, *, desc_size: int) -> ToolDefinition:
+        return ToolDefinition(
+            name=name,
+            description=f"{name} " + ("x" * desc_size),
+            input_schema=ToolInputSchema(
+                properties={
+                    "query": {
+                        "type": "string",
+                        "description": "q" * desc_size,
+                    }
+                },
+                required=["query"],
+            ),
+        )
+
+    web_search = _tool("web_search", desc_size=12)
+    web_fetch = _tool("web_fetch", desc_size=12)
+    exec_command = _tool("exec_command", desc_size=2000)
+    keep_budget = _payload_chars(
+        [_build_openai_tool(web_search), _build_openai_tool(web_fetch)]
+    ) + 16
+    all_tools = [web_search, web_fetch, exec_command]
+    config = SimpleNamespace(
+        llm=SimpleNamespace(toolset=None, max_tool_schema_chars=0),
+        tools=SimpleNamespace(
+            toolsets={
+                "web": ["web_search", "web_fetch", "exec_command"],
+            },
+            toolset_priority=["web_search", "web_fetch", "exec_command"],
+        ),
+        squilla_router=SimpleNamespace(
+            tiers={
+                "c1": {
+                    "toolset": "web",
+                    "max_tool_schema_chars": keep_budget,
+                }
+            }
+        ),
+    )
+    turn = _make_turn(
+        metadata={"routed_tier": "c1"},
+        tool_defs=all_tools,
+        model="small-model",
+    )
+    turn.config = config
+    assembler = _RecordingPromptAssembler()
+    executor = _RecordingPipelineExecutor(turn=turn, provider=_StubProvider())
+    stage = _make_stage(
+        assembler=assembler,
+        executor=executor,
+        resolver=_TurnSystemPromptResolver(),
+    )
+
+    out = await stage.run(
+        _make_input(
+            cloned_selector=_StubSelector(),
+            tool_defs=all_tools,
+        )
+    )
+
+    final_tool_names = [tool.name for tool in out.output.turn.tool_defs]
+    assert final_tool_names == ["web_search", "web_fetch"]
+    assert assembler.calls == 2
+    assert [tool.name for tool in assembler.last_kwargs["tool_defs"]] == final_tool_names
+    assert out.output.final_prompt == "BASE"
+    assert out.output.prompt_report.tool_count == 2
+    assert out.output.turn.metadata["selected_toolset"] == "web"
+    assert out.output.turn.metadata["dropped_tools"] == ["exec_command"]
+    assert out.output.turn.metadata["tools_chars"] <= keep_budget
+
+
+def _small_tool(name: str) -> ToolDefinition:
+    return ToolDefinition(
+        name=name,
+        description=f"{name} tool",
+        input_schema=ToolInputSchema(
+            properties={"query": {"type": "string"}},
+            required=["query"],
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_routed_tier_core_toolset_resolves_via_real_tools_config() -> None:
+    from opensquilla.gateway.config import ToolsConfig
+
+    all_tools = [
+        _small_tool("exec_command"),
+        _small_tool("read_file"),
+        _small_tool("memory_search"),
+    ]
+    config = SimpleNamespace(
+        llm=SimpleNamespace(toolset=None, max_tool_schema_chars=0),
+        tools=ToolsConfig(),
+        squilla_router=SimpleNamespace(tiers={"c1": {"toolset": "core"}}),
+    )
+    turn = _make_turn(
+        metadata={"routed_tier": "c1"},
+        tool_defs=all_tools,
+        model="small-model",
+        config=config,
+    )
+    assembler = _RecordingPromptAssembler()
+    executor = _RecordingPipelineExecutor(turn=turn, provider=_StubProvider())
+    stage = _make_stage(
+        assembler=assembler,
+        executor=executor,
+        resolver=_TurnSystemPromptResolver(),
+    )
+
+    out = await stage.run(
+        _make_input(cloned_selector=_StubSelector(), tool_defs=all_tools)
+    )
+
+    assert [tool.name for tool in out.output.turn.tool_defs] == [
+        "exec_command",
+        "read_file",
+    ]
+    assert out.output.turn.metadata["selected_toolset"] == "core"
+    assert out.output.turn.metadata["dropped_tools"] == ["memory_search"]
+    assert assembler.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_cache_base_prompt_refreshed_after_fit_changed_rebuild() -> None:
+    all_tools = [_small_tool("web_search"), _small_tool("exec_command")]
+    config = SimpleNamespace(
+        llm=SimpleNamespace(toolset=None, max_tool_schema_chars=0),
+        tools=SimpleNamespace(
+            toolsets={"web": ["web_search"]},
+            toolset_priority=["web_search"],
+        ),
+        squilla_router=SimpleNamespace(tiers={"c1": {"toolset": "web"}}),
+    )
+    stale_prompt = "STALE FULL-TOOLS PROMPT"
+    turn = _make_turn(
+        metadata={
+            "routed_tier": "c1",
+            "cache_enabled": True,
+            "cache_base_prompt": stale_prompt,
+            "cache_base_chars": len(stale_prompt),
+        },
+        tool_defs=all_tools,
+        model="small-model",
+        system_prompt=stale_prompt,
+        config=config,
+    )
+    assembler = _RecordingPromptAssembler(base_prompt="NARROWED")
+    executor = _RecordingPipelineExecutor(turn=turn, provider=_StubProvider())
+    stage = _make_stage(
+        assembler=assembler,
+        executor=executor,
+        resolver=_TurnSystemPromptResolver(),
+    )
+
+    out = await stage.run(
+        _make_input(cloned_selector=_StubSelector(), tool_defs=all_tools)
+    )
+
+    assert out.output.turn.metadata["dropped_tools"] == ["exec_command"]
+    assert out.output.turn.metadata["cache_base_prompt"] == "NARROWED"
+    assert out.output.turn.metadata["cache_base_chars"] == len("NARROWED")
+
+
+@pytest.mark.asyncio
+async def test_fit_changed_rebuild_does_not_invent_cache_base_prompt() -> None:
+    all_tools = [_small_tool("web_search"), _small_tool("exec_command")]
+    config = SimpleNamespace(
+        llm=SimpleNamespace(toolset=None, max_tool_schema_chars=0),
+        tools=SimpleNamespace(
+            toolsets={"web": ["web_search"]},
+            toolset_priority=["web_search"],
+        ),
+        squilla_router=SimpleNamespace(tiers={"c1": {"toolset": "web"}}),
+    )
+    turn = _make_turn(
+        metadata={"routed_tier": "c1"},
+        tool_defs=all_tools,
+        model="small-model",
+        config=config,
+    )
+    executor = _RecordingPipelineExecutor(turn=turn, provider=_StubProvider())
+    stage = _make_stage(executor=executor, resolver=_TurnSystemPromptResolver())
+
+    out = await stage.run(
+        _make_input(cloned_selector=_StubSelector(), tool_defs=all_tools)
+    )
+
+    assert out.output.turn.metadata["dropped_tools"] == ["exec_command"]
+    assert "cache_base_prompt" not in out.output.turn.metadata
+
+
+@pytest.mark.asyncio
+async def test_observe_mode_route_keeps_default_provider_model_and_tools() -> None:
+    def _tool(name: str, *, desc_size: int) -> ToolDefinition:
+        return ToolDefinition(
+            name=name,
+            description=f"{name} " + ("x" * desc_size),
+            input_schema=ToolInputSchema(
+                properties={
+                    "query": {
+                        "type": "string",
+                        "description": "q" * desc_size,
+                    }
+                },
+                required=["query"],
+            ),
+        )
+
+    web_search = _tool("web_search", desc_size=12)
+    exec_command = _tool("exec_command", desc_size=2000)
+    all_tools = [web_search, exec_command]
+    keep_budget = _payload_chars([_build_openai_tool(web_search)]) + 16
+    selector = _StubSelector("sel-observe", current_model="inception/mercury-2")
+    selector.resolve_returns = _StubProvider("default_provider")
+    config = SimpleNamespace(
+        llm=SimpleNamespace(toolset=None, max_tool_schema_chars=0),
+        tools=SimpleNamespace(
+            toolsets={"web": ["web_search", "exec_command"]},
+            toolset_priority=["web_search", "exec_command"],
+        ),
+        squilla_router=SimpleNamespace(
+            tiers={
+                "c2": {
+                    "provider": "openrouter",
+                    "model": "z-ai/glm-5.1",
+                    "toolset": "web",
+                    "max_tool_schema_chars": keep_budget,
+                },
+            }
+        ),
+    )
+    executor = _RecordingPipelineExecutor(
+        turn=_make_turn(
+            metadata={
+                "routed_tier": "c2",
+                "routed_model": "z-ai/glm-5.1",
+                "routed_provider": "openrouter",
+                "routing_applied": False,
+                "routing_source": "v4_phase3",
+            },
+            model="inception/mercury-2",
+            tool_defs=all_tools,
+            config=config,
+        ),
+        provider=_StubProvider("post_pipeline"),
+    )
+    stage = _make_stage(executor=executor, resolver=_TurnSystemPromptResolver())
+
+    out = await stage.run(_make_input(cloned_selector=selector, tool_defs=all_tools))
+
+    assert selector.overridden_primary == []
+    assert out.output.resolved_model == "inception/mercury-2"
+    assert [tool.name for tool in out.output.turn.tool_defs] == [
+        "web_search",
+        "exec_command",
+    ]
+    assert "dropped_tools" not in out.output.turn.metadata
 
 
 @pytest.mark.asyncio

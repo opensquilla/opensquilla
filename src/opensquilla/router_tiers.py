@@ -25,6 +25,25 @@ ROUTE_CLASS_TO_TIER: dict[str, str] = {
 }
 TIER_TO_ROUTE_CLASS: dict[str, str] = {tier: route for route, tier in ROUTE_CLASS_TO_TIER.items()}
 
+# turn.metadata keys shared by the squilla_router step, meta_resolution,
+# the prompt-assembler explicit-model pin (writers) and the runtime /
+# harness / router_decision / stream-consumer readers. Writers normalize
+# the provider with .strip().lower() before storing.
+ROUTED_TIER_KEY = "routed_tier"
+ROUTED_MODEL_KEY = "routed_model"
+ROUTED_PROVIDER_KEY = "routed_provider"
+ROUTING_SOURCE_KEY = "routing_source"
+ROUTING_CONFIDENCE_KEY = "routing_confidence"
+ROUTING_APPLIED_KEY = "routing_applied"
+
+
+def routing_selection_effective(metadata: Mapping[str, Any]) -> bool:
+    """True when the routed_* selection should bear effect on execution."""
+    if str(metadata.get(ROUTING_SOURCE_KEY) or "") == "explicit_model":
+        return True
+    applied = metadata.get(ROUTING_APPLIED_KEY)
+    return True if applied is None else bool(applied)
+
 
 def normalize_text_tier(value: object) -> str | None:
     """Return the canonical text tier id for *value*, accepting legacy t0-t3."""

@@ -569,21 +569,25 @@ def _build_openai_messages(
     parts: list[dict[str, Any]] = []
     tool_calls: list[dict[str, Any]] = []
     tool_results: list[dict[str, Any]] = []
+    thinking_signature: str | None = None
 
     for block in msg.content:
         if block.type == "text":
             parts.append({"type": "text", "text": block.text})
+        elif block.type == "thinking":
+            sig = getattr(block, "signature", None)
+            if isinstance(sig, str) and sig:
+                thinking_signature = sig
         elif block.type == "tool_use":
-            tool_calls.append(
-                {
-                    "id": block.id,
-                    "type": "function",
-                    "function": {
-                        "name": block.name,
-                        "arguments": json.dumps(block.input),
-                    },
-                }
-            )
+            tc_dict: dict[str, Any] = {
+                "id": block.id,
+                "type": "function",
+                "function": {
+                    "name": block.name,
+                    "arguments": json.dumps(block.input),
+                },
+            }
+            tool_calls.append(tc_dict)
         elif block.type == "image":
             if block.source_type == "url":
                 parts.append({"type": "image_url", "image_url": {"url": block.data}})
@@ -609,6 +613,13 @@ def _build_openai_messages(
 
     # Assistant message with tool_calls (preserve text alongside calls)
     if tool_calls:
+        # Gemini requires thought_signature on the first tool_call in each
+        # step of the current turn. Attach it if a ContentBlockThinking with
+        # a signature preceded the tool_use blocks.
+        if thinking_signature and tool_calls:
+            tool_calls[0]["extra_content"] = {
+                "google": {"thought_signature": thinking_signature},
+            }
         result: dict[str, Any] = {"role": msg.role, "tool_calls": tool_calls}
         text_content = " ".join(p["text"] for p in parts if p.get("type") == "text")
         if text_content:
@@ -1058,6 +1069,11 @@ class OpenAIProvider:
                             if reasoning_str:
                                 reasoning_parts.append(reasoning_str)
 
+                            # Gemini thought_signature on non-FC deltas
+                            ts_delta = delta.get("thought_signature")
+                            if isinstance(ts_delta, str) and ts_delta:
+                                pending_calls.setdefault("__sig__", {"thought_signature": ts_delta})
+
                             # Tool calls (may stream over multiple chunks)
                             for tc in delta.get("tool_calls", []):
                                 idx = _resolve_tool_call_index(
@@ -1070,6 +1086,7 @@ class OpenAIProvider:
                                         "id": tc.get("id", f"call_{uuid4().hex[:12]}"),
                                         "name": tc.get("function", {}).get("name", ""),
                                         "parts": [],
+                                        "thought_signature": None,
                                     }
                                     emitted_stream_event = True
                                     yield ToolUseStartEvent(
@@ -1083,6 +1100,12 @@ class OpenAIProvider:
                                     fname = tc.get("function", {}).get("name", "")
                                     if fname:
                                         pending_calls[idx]["name"] = fname
+
+                                # Gemini thought_signature (OpenAI compat format):
+                                # tool_calls[].extra_content.google.thought_signature
+                                sig = (tc.get("extra_content") or {}).get("google", {}).get("thought_signature")
+                                if isinstance(sig, str) and sig:
+                                    pending_calls[idx]["thought_signature"] = sig
 
                                 fragment = tc.get("function", {}).get("arguments", "")
                                 if fragment:
@@ -1127,11 +1150,21 @@ class OpenAIProvider:
                         full_text = "".join(assistant_text_parts)
                         reasoning_text = _extract_think_tags(full_text)
 
+                    # Gemini thought_signature: extract from the first tool call
+                    # that carries one (Gemini attaches it to the first FC only).
+                    gemini_thought_sig: str | None = None
+                    for _call in pending_calls.values():
+                        sig = _call.get("thought_signature")
+                        if isinstance(sig, str) and sig:
+                            gemini_thought_sig = sig
+                            break
+
                     yield DoneEvent(
                         stop_reason=stop_reason,
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,
                         reasoning_content=reasoning_text or None,
+                        thinking_signature=gemini_thought_sig,
                         reasoning_tokens=reasoning_tokens,
                         cached_tokens=cached_tokens,
                         cache_write_tokens=cache_write_tokens,
@@ -1235,6 +1268,7 @@ class OpenAIProvider:
         assistant_text_parts: list[str] = []
         reasoning_parts: list[str] = []
         emitted_structured_tool = False
+        non_stream_thought_sig: str | None = None
 
         for choice in data.get("choices", []):
             if choice.get("finish_reason"):
@@ -1279,6 +1313,11 @@ class OpenAIProvider:
                     tool_name=tool_name,
                     arguments=arguments,
                 )
+                # Collect Gemini thought_signature from first FC that has one.
+                if non_stream_thought_sig is None:
+                    sig = (tc.get("extra_content") or {}).get("google", {}).get("thought_signature")
+                    if isinstance(sig, str) and sig:
+                        non_stream_thought_sig = sig
 
         if not emitted_structured_tool and tools and assistant_text_parts:
             for event in _synthesize_text_tool_events("".join(assistant_text_parts), tools):
@@ -1297,6 +1336,7 @@ class OpenAIProvider:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             reasoning_content=reasoning_text or None,
+            thinking_signature=non_stream_thought_sig,
             reasoning_tokens=reasoning_tokens,
             cached_tokens=cached_tokens,
             cache_write_tokens=cache_write_tokens,

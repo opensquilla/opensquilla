@@ -68,9 +68,19 @@ def _eligibility_ctx(skills_cfg: Any) -> EligibilityContext:
     disabled = getattr(skills_cfg, "disabled", None) or []
     coding_mode = bool(getattr(skills_cfg, "coding_mode", False))
     effective = effective_disabled(disabled, coding_mode)
-    if not effective:
+    if effective == _elig_ctx.disabled_set:
         return _elig_ctx
-    return EligibilityContext.auto(disabled_set=effective)
+    # Derive from the warmed base context so the bin/env detection caches (and
+    # any test monkeypatch of ``_elig_ctx``) are preserved — only the gated set
+    # changes. Building a bare ``.auto()`` here would re-probe the environment
+    # and wrongly gate env/bin-dependent skills.
+    return EligibilityContext(
+        os_name=_elig_ctx.os_name,
+        has_bin_cache=_elig_ctx.has_bin_cache,
+        env_cache=_elig_ctx.env_cache,
+        enabled_set=_elig_ctx.enabled_set,
+        disabled_set=set(effective),
+    )
 
 
 def _deterministic_gate(

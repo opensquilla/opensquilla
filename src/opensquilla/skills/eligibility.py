@@ -254,11 +254,16 @@ CODING_MODE_SKILLS: frozenset[str] = frozenset({"code-task"})
 def effective_disabled(disabled: set[str] | list[str] | None, coding_mode: bool) -> set[str]:
     """The set of skill names to gate, given the operator config.
 
-    Always includes the explicit ``disabled`` list; additionally gates the
-    coding-mode skills when coding mode is OFF.
+    Coding mode is AUTHORITATIVE for the coding-mode skills (code-task):
+    when ON they are available regardless of the ``disabled`` list (so an
+    upgraded user whose old toggle persisted "code-task" in ``disabled`` can
+    still enable coding mode); when OFF they are gated regardless of it. All
+    other skills follow the explicit ``disabled`` list.
     """
     result = set(disabled or ())
-    if not coding_mode:
+    if coding_mode:
+        result -= CODING_MODE_SKILLS
+    else:
         result |= CODING_MODE_SKILLS
     return result
 
@@ -272,3 +277,35 @@ def is_skill_available(
     the pre-turn skill gate) so coding mode cannot be bypassed via one path.
     """
     return name not in effective_disabled(disabled, coding_mode)
+
+
+# ---------------------------------------------------------------------------
+# Live operator gate (shared by every skill-reach path)
+# ---------------------------------------------------------------------------
+# Set once at gateway boot to a callable returning the live skills config, so
+# coding-mode / disabled changes take effect immediately. Used by the skill
+# tools AND the meta-skill executors so a disabled/coding-gated skill cannot be
+# reached through any path (codex review).
+_live_skills_cfg_getter: object | None = None
+
+
+def set_live_skills_config_getter(getter: object | None) -> None:
+    """Register the live skills-config getter (called by gateway boot)."""
+    global _live_skills_cfg_getter
+    _live_skills_cfg_getter = getter
+
+
+def is_skill_available_live(name: str) -> bool:
+    """Whether ``name`` is available under the CURRENT operator config.
+
+    When no getter is registered (gate un-wired — degraded boot or a unit test),
+    coding-mode skills FAIL CLOSED: code-task is gated, because OFF is the
+    default and the safe state. All other skills remain available so the
+    un-wired case never gates ordinary skills (codex review).
+    """
+    if _live_skills_cfg_getter is None:
+        return name not in CODING_MODE_SKILLS
+    cfg = _live_skills_cfg_getter()  # type: ignore[operator]
+    disabled = getattr(cfg, "disabled", None) or []
+    coding_mode = bool(getattr(cfg, "coding_mode", False))
+    return is_skill_available(name, disabled=disabled, coding_mode=coding_mode)

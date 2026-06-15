@@ -31,10 +31,6 @@ logger = structlog.get_logger(__name__)
 
 # Module-level reference set at boot
 _loader: SkillLoader | None = None
-# Returns the live skills config (so coding-mode / disabled changes take effect
-# without rebuilding tools). None means "no operator gating" (older callers).
-_skills_cfg_getter: Callable[[], object] | None = None
-
 # Layers that user may mutate — workspace only
 _MUTABLE_LAYERS = frozenset({SkillLayer.WORKSPACE})
 
@@ -42,17 +38,13 @@ _MUTABLE_LAYERS = frozenset({SkillLayer.WORKSPACE})
 def _skill_available(name: str) -> bool:
     """Whether ``name`` may be surfaced/invoked under the live operator config.
 
-    Single chokepoint so coding mode / disabled cannot be bypassed via the
-    skill_list or skill_view tool paths.
+    Delegates to the shared eligibility gate (single source of truth) so the
+    skill_list / skill_view paths honor exactly the same coding-mode / disabled
+    rules as the pre-turn filter and the meta-skill executors.
     """
-    if _skills_cfg_getter is None:
-        return True
-    from opensquilla.skills.eligibility import is_skill_available
+    from opensquilla.skills.eligibility import is_skill_available_live
 
-    cfg = _skills_cfg_getter()
-    disabled = getattr(cfg, "disabled", None) or []
-    coding_mode = bool(getattr(cfg, "coding_mode", False))
-    return is_skill_available(name, disabled=disabled, coding_mode=coding_mode)
+    return is_skill_available_live(name)
 
 
 # Valid skill name pattern: lowercase alphanumeric + hyphens
@@ -153,7 +145,9 @@ def _find_install_spec(skill_name: str, install_id: str) -> SkillInstallSpec:
         raise ToolError("Skill loader not available")
 
     skill = _loader.get_by_name(skill_name)
-    if skill is None:
+    if skill is None or not _skill_available(skill_name):
+        # Coding-mode-gated skills are reported as not-found so deps cannot be
+        # previewed or installed via install_skill_deps while OFF (codex review).
         raise ToolError(f"Skill not found: {skill_name}")
     if skill.metadata is None or not skill.metadata.install:
         raise ToolError(f"Skill has no install metadata: {skill_name}")
@@ -211,9 +205,11 @@ def create_skill_tools(
     ``skills_cfg_getter`` returns the live skills config so operator gating
     (coding mode / disabled) is honored at call time, not boot time.
     """
-    global _loader, _skills_cfg_getter
+    from opensquilla.skills.eligibility import set_live_skills_config_getter
+
+    global _loader
     _loader = loader
-    _skills_cfg_getter = skills_cfg_getter
+    set_live_skills_config_getter(skills_cfg_getter)
 
     @tool(
         name="skill_list",

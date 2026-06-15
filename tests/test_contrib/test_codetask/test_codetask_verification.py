@@ -177,3 +177,106 @@ class TestVerifyEndToEnd:
         )
         out = verification.verify(repo=tmp_path, base_commit="x", scratch_dir=tmp_path)
         assert out.state == TaskState.INVALID_ACCEPTANCE_TEST
+
+
+class TestLocalizeCommand:
+    """Guard the absolute-cd contamination fix (flask src-layout case)."""
+
+    def test_rewrites_absolute_cd_to_worktree(self, tmp_path):
+        repo = tmp_path / "run" / "repo"
+        wt = tmp_path / "base-worktree"
+        repo.mkdir(parents=True)
+        wt.mkdir()
+        # The exact shape the flask agent emitted: cd into the task repo, then
+        # PYTHONPATH=src pytest. The absolute cd must be redirected to the wt.
+        cmd = f"cd {repo} && PYTHONPATH=src python3 -m pytest tests/test_x.py::t -v"
+        out = verification._localize_command(cmd, repo, wt)
+        assert str(repo) not in out
+        assert f"cd {wt} &&" in out
+        # The relative PYTHONPATH/test path is untouched (resolves against wt).
+        assert "PYTHONPATH=src python3 -m pytest tests/test_x.py::t" in out
+
+    def test_rewrites_absolute_subpath_before_repo(self, tmp_path):
+        # PYTHONPATH pointing at an absolute repo subdir must also be redirected.
+        repo = tmp_path / "repo"
+        wt = tmp_path / "wt"
+        repo.mkdir()
+        wt.mkdir()
+        cmd = f"PYTHONPATH={repo}/src python -m pytest {repo}/tests/t.py"
+        out = verification._localize_command(cmd, repo, wt)
+        assert str(repo) not in out
+        assert f"PYTHONPATH={wt}/src" in out
+        assert f"{wt}/tests/t.py" in out
+
+    def test_relative_command_unchanged(self, tmp_path):
+        repo = tmp_path / "repo"
+        wt = tmp_path / "wt"
+        repo.mkdir()
+        wt.mkdir()
+        cmd = "PYTHONPATH=src python -m pytest tests/test_x.py"
+        assert verification._localize_command(cmd, repo, wt) == cmd
+
+
+def test_red_phase_uses_localized_command(monkeypatch, tmp_path):
+    """End-to-end: the red-phase run must receive the worktree-localized command.
+
+    Reproduces the flask bug: agent's acceptance command hardcodes `cd <repo>`;
+    without localization the red run executes against the fixed task repo.
+    """
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    (scratch / VERIFICATION_MANIFEST_NAME).write_text(
+        json.dumps(
+            {
+                "testable": True,
+                "acceptance_tests": [
+                    {
+                        "name": "t",
+                        "command": f"cd {repo} && python -m pytest tests/t.py",
+                        "test_paths": ["tests/t.py"],
+                    }
+                ],
+            }
+        )
+    )
+    (repo / "tests").mkdir()
+    (repo / "tests" / "t.py").write_text("def test_ok():\n    assert True\n")
+
+    seen = {"green": None, "red": None}
+    calls = {"n": 0}
+
+    def fake_run_shell(command, *, cwd, timeout):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            seen["green"] = (command, str(cwd))
+        else:
+            seen["red"] = (command, str(cwd))
+        return 0, ""
+
+    class _OkWorktree:
+        def __init__(self, repo, base):
+            self.repo = repo
+
+        def __enter__(self):
+            wt = tmp_path / "base-wt"
+            wt.mkdir(exist_ok=True)
+            return wt
+
+        def __exit__(self, *a):
+            return None
+
+    monkeypatch.setattr(verification, "_run_shell", fake_run_shell)
+    monkeypatch.setattr(verification, "_BaseWorktree", _OkWorktree)
+    monkeypatch.setattr(verification, "_overlay_paths", lambda r, w, p: True)
+
+    verification.verify(repo=repo, base_commit="abc", scratch_dir=scratch)
+
+    # GREEN ran in the task repo with the original (absolute-cd) command.
+    assert str(repo) in seen["green"][0]
+    # RED ran with the localized command: the absolute repo path is gone,
+    # redirected to the worktree, so it can no longer teleport into the fix.
+    assert str(repo) not in seen["red"][0]
+    assert str(tmp_path / "base-wt") in seen["red"][0]

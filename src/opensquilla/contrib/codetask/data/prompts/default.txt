@@ -60,6 +60,12 @@ Phase 6 — RECORD THE VERIFICATION MANIFEST (required)
 
   Rules for the manifest:
   - "command" must exit 0 when your change is present and non-zero without it.
+  - "command" MUST be relative to the repository root. Do NOT `cd` to an
+    absolute path of this working copy. The runner runs the command from the
+    repo root AND re-runs it in a throwaway checkout of the original code to
+    confirm it fails there; an absolute `cd` back into this (already-fixed)
+    copy would defeat that check. Use a relative invocation, e.g.
+    `PYTHONPATH=src python -m pytest tests/test_x.py::test_y`.
   - "test_paths" must list the test files you ADDED/CHANGED so the runner can
     re-create the red state on the original code. This is required.
   - If the task genuinely cannot be expressed as an automated test (pure docs

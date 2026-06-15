@@ -153,7 +153,11 @@ def verify(
                     check.before = None
                     red_unprovable = red_unprovable or "missing_test_paths"
                     continue
-                rc, _ = _run_shell(check.command, cwd=wt, timeout=acceptance_timeout)
+                # Rewrite any hardcoded task-repo path so a ``cd /abs/repo`` in
+                # the agent's command cannot teleport the red check back into
+                # the already-fixed task repo.
+                wt_command = _localize_command(check.command, repo, wt)
+                rc, _ = _run_shell(wt_command, cwd=wt, timeout=acceptance_timeout)
                 check.before = "fail" if rc != 0 else "pass"
     except _WorktreeError as exc:
         logger.warning("base worktree unavailable, red phase skipped: %s", exc)
@@ -237,7 +241,9 @@ def _run_regression(
     base_names: set[str] | None = None
     try:
         with _BaseWorktree(repo, base_commit) as wt:
-            base_rc, base_out = _run_shell(cmd, cwd=wt, timeout=timeout)
+            base_rc, base_out = _run_shell(
+                _localize_command(cmd, repo, wt), cwd=wt, timeout=timeout
+            )
             base_fail = _parse_failures(base_out, base_rc)
             base_names = _failing_names(base_out)
     except _WorktreeError:
@@ -266,6 +272,28 @@ def _run_regression(
 # ---------------------------------------------------------------------------
 class _WorktreeError(RuntimeError):
     pass
+
+
+def _localize_command(command: str, repo: Path, target: Path) -> str:
+    """Redirect any absolute reference to the task repo onto ``target``.
+
+    The agent writes acceptance/regression commands while standing inside the
+    task repo, so they frequently hardcode its absolute path (e.g.
+    ``cd /abs/repo && PYTHONPATH=src pytest ...``). When the runner re-runs
+    such a command in the base worktree to establish the red state, that
+    absolute ``cd`` would teleport execution back into the agent-fixed task
+    repo and silently contaminate the check (the test passes against the fix,
+    so the runner wrongly concludes the behavior was already satisfied).
+
+    Rewriting the task-repo path to the worktree path keeps the command inside
+    the intended tree regardless of how the agent wrote it. Longest match
+    first so ``/abs/repo/src`` is rewritten before ``/abs/repo``.
+    """
+    candidates = sorted({str(repo), str(repo.resolve())}, key=len, reverse=True)
+    out = command
+    for src in candidates:
+        out = out.replace(src, str(target))
+    return out
 
 
 def _run_shell(command: str, *, cwd: Path, timeout: int) -> tuple[int, str]:

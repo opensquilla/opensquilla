@@ -12,6 +12,11 @@ from urllib.parse import urlsplit
 
 from opensquilla.sandbox.domain_validation import normalize_domain
 from opensquilla.sandbox.network_guard import NetworkDecision
+from opensquilla.sandbox.network_runtime import (
+    NetworkPolicyRequest,
+    NetworkProtocol,
+    call_network_policy_decider,
+)
 
 _HEADER_LIMIT = 64 * 1024
 _MAX_BODY_BYTES = 1_048_576
@@ -65,8 +70,9 @@ class _ProxyDeniedError(ValueError):
 class SandboxProxyServer:
     def __init__(
         self,
-        decide: Callable[[str], NetworkDecision],
+        decide: Callable[[str], NetworkDecision] | None = None,
         *,
+        policy_decider: object | None = None,
         host: str = "127.0.0.1",
         port: int = 0,
         header_read_timeout_seconds: float = _DEFAULT_HEADER_READ_TIMEOUT_SECONDS,
@@ -76,7 +82,13 @@ class SandboxProxyServer:
         resolver: Callable[[str, int], tuple[str, int]] | None = None,
         on_upstream_opened: Callable[[NetworkDecision], Awaitable[None] | None] | None = None,
     ) -> None:
+        if policy_decider is None and decide is not None and hasattr(decide, "decide"):
+            policy_decider = decide
+            decide = None
+        if decide is None and policy_decider is None:
+            raise TypeError("SandboxProxyServer requires decide or policy_decider")
         self._decide = decide
+        self._policy_decider = policy_decider
         self._resolver = resolver or _resolve_validated_upstream
         self._on_upstream_opened = on_upstream_opened
         self.host = host
@@ -166,7 +178,7 @@ class SandboxProxyServer:
             request = _parse_request(header)
             if not request.host:
                 raise ValueError("empty_host")
-            decision = self._decide(request.host)
+            decision = await self._decide_request(request, writer)
             if decision.status == "allow" and request.host:
                 try:
                     if request.method == "CONNECT":
@@ -210,6 +222,26 @@ class SandboxProxyServer:
             writer.close()
             with suppress(ConnectionError, RuntimeError):
                 await writer.wait_closed()
+
+    async def _decide_request(
+        self,
+        request: _ParsedRequest,
+        writer: asyncio.StreamWriter,
+    ) -> NetworkDecision:
+        if self._policy_decider is not None:
+            return await call_network_policy_decider(
+                self._policy_decider,
+                NetworkPolicyRequest(
+                    protocol=_protocol_for_request(request),
+                    host=request.host,
+                    port=request.port,
+                    method=request.method,
+                    client_addr=_client_addr(writer),
+                ),
+            )
+        if self._decide is None:
+            raise ValueError("missing_network_decider")
+        return self._decide(request.host)
 
     async def _open_upstream(
         self,
@@ -353,6 +385,21 @@ async def _relay_stream(
 
 def _extract_request_host(header: bytes) -> str:
     return _parse_request(header).host
+
+
+def _protocol_for_request(request: _ParsedRequest) -> NetworkProtocol:
+    if request.method == "CONNECT":
+        return NetworkProtocol.HTTPS_CONNECT
+    return NetworkProtocol.HTTP
+
+
+def _client_addr(writer: asyncio.StreamWriter) -> str | None:
+    peername = writer.get_extra_info("peername")
+    if not peername:
+        return None
+    if isinstance(peername, tuple) and peername:
+        return str(peername[0])
+    return str(peername)
 
 
 def _parse_request(header: bytes) -> _ParsedRequest:

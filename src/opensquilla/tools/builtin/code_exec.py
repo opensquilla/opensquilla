@@ -22,6 +22,7 @@ from opensquilla.sandbox.integration import (
     run_under_backend,
 )
 from opensquilla.sandbox.policy import LevelHints
+from opensquilla.sandbox.operation_runtime import SandboxToolDescriptor
 from opensquilla.sandbox.types import DenialResult, SandboxRequest
 from opensquilla.tools.registry import tool
 from opensquilla.tools.run_mode import full_host_access_active
@@ -310,6 +311,12 @@ def _resolve_python_bin(*, sandbox_enabled: bool) -> str:
         },
     },
     required=["code"],
+    sandbox=SandboxToolDescriptor.process(
+        kind="code.exec",
+        argv_factory=lambda a: ("execute_code", str(a.get("code", ""))),
+        enforce=False,
+        record_payload=False,
+    ),
 )
 async def execute_code(
     code: str,
@@ -360,9 +367,7 @@ async def execute_code(
     runtime = get_runtime()
     from opensquilla.tools.builtin.shell import (
         _apply_windows_session_tmp_env,
-        _consume_host_once_current_call,
         _host_execution_allowed,
-        _host_once_current_call,
     )
 
     host_execution = _host_execution_allowed()
@@ -411,6 +416,9 @@ async def execute_code(
             action_kind=request.action_kind,
             policy=request.policy,
             env=safe_env,
+            reason=getattr(request, "reason", ""),
+            session_id=getattr(request, "session_id", ""),
+            run_mode=getattr(request, "run_mode", ""),
         )
         if runtime is not None:
             preflight = await preflight_subprocess_managed_network(backend_request, runtime)
@@ -455,49 +463,13 @@ async def execute_code(
                 )
                 if isinstance(escalation, DenialResult):
                     return json.dumps(escalation.to_dict())
-                _host_once_current_call.set(True)
-                _consume_host_once_current_call()
-                try:
-                    proc = await asyncio.create_subprocess_exec(
-                        python_bin, "-c", code,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        cwd=str(workdir_path),
-                        env=safe_env,
-                    )
-                    try:
-                        stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                            proc.communicate(), timeout=timeout
-                        )
-                    except TimeoutError:
-                        proc.kill()
-                        await proc.communicate()
-                        elapsed_ms = (time.monotonic_ns() - start_ns) // 1_000_000
-                        return _execution_result_json(
-                            returncode=-1,
-                            stdout="",
-                            stderr=f"Execution timed out after {timeout}s",
-                            timed_out=True,
-                            elapsed_ms=elapsed_ms,
-                        )
-                    elapsed_ms = (time.monotonic_ns() - start_ns) // 1_000_000
-                    return _execution_result_json(
-                        returncode=proc.returncode if proc.returncode is not None else -1,
-                        stdout=stdout_bytes.decode("utf-8", errors="replace"),
-                        stderr=stderr_bytes.decode("utf-8", errors="replace"),
-                        timed_out=False,
-                        elapsed_ms=elapsed_ms,
-                    )
-                except Exception as exc:
-                    return _execution_result_json(
-                        returncode=-1,
-                        stdout="",
-                        stderr=f"Execution error: {exc}",
-                        timed_out=False,
-                        elapsed_ms=0,
-                    )
-                finally:
-                    _host_once_current_call.set(False)
+                return _execution_result_json(
+                    returncode=-1,
+                    stdout="",
+                    stderr="Sandboxed code execution denied; host fallback disabled",
+                    timed_out=False,
+                    elapsed_ms=0,
+                )
         elapsed_ms = (time.monotonic_ns() - start_ns) // 1_000_000
         stdout = sandbox_result.stdout
         stderr = sandbox_result.stderr

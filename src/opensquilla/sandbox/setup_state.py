@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 
@@ -107,6 +108,25 @@ async def _windows_setup_status(config: Any) -> SetupResult:
 
 async def _ensure_windows_setup(config: Any) -> SetupResult:
     _ = config
+    support = _probe_windows_sandbox_support()
+    if support.default_backend_available:
+        return _windows_default_setup_result()
+    if (
+        support.ctypes_available
+        and support.token_api_available
+        and support.acl_api_available
+        and not support.setup_ready
+    ):
+        try:
+            _write_windows_setup_marker(_windows_setup_marker_path())
+        except OSError as exc:
+            return SetupResult(
+                state=SandboxSetupState.FAILED,
+                platform="win32",
+                message="Windows default sandbox setup failed.",
+                requires_admin=True,
+                detail=str(exc),
+            )
     return _windows_default_setup_result()
 
 
@@ -158,6 +178,18 @@ def _probe_windows_sandbox_support() -> WindowsSetupSupport:
         setup_ready=support.setup_ready,
         proxy_allowlist_enforced=support.proxy_allowlist_enforced,
     )
+
+
+def _windows_setup_marker_path() -> Path:
+    from opensquilla.sandbox.backend.windows_default_setup import default_setup_marker_path
+
+    return default_setup_marker_path()
+
+
+def _write_windows_setup_marker(path: Path) -> None:
+    from opensquilla.sandbox.backend.windows_default_setup import write_setup_marker
+
+    write_setup_marker(path)
 
 
 async def _portable_setup_status(config: Any, *, platform: str) -> SetupResult:

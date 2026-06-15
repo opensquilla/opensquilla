@@ -32,6 +32,7 @@ from opensquilla.sandbox.backend.windows_default_setup import default_setup_mark
 from opensquilla.sandbox.backend.windows_default_support import probe_windows_default_support
 from opensquilla.sandbox.operation_runtime import (
     SANDBOX_FILESYSTEM_WRITE_KINDS,
+    FilesystemOperationRequest,
     SandboxOperation,
     SandboxOperationDomain,
     SandboxOperationResult,
@@ -63,6 +64,7 @@ class WindowsDefaultBackend(Backend):
             raise SandboxBackendError(
                 f"windows_default backend does not implement {operation.domain} operations"
             )
+        _filesystem_request(operation)
         if not _support_ready():
             raise SandboxBackendError(
                 "windows_default backend unavailable: administrator setup or Windows "
@@ -293,8 +295,9 @@ def _worker_home_env(worker_root: Path) -> dict[str, str]:
 
 
 def _filesystem_operation_target_roots(operation: SandboxOperation) -> tuple[Path, ...]:
+    request = _filesystem_request(operation)
     roots: list[Path] = []
-    for path in operation.paths:
+    for path in request.paths:
         root = path.parent if operation.kind in SANDBOX_FILESYSTEM_WRITE_KINDS else path
         roots.append(_nearest_existing_acl_root(root))
     return tuple(dict.fromkeys(roots))
@@ -313,13 +316,20 @@ def _nearest_existing_acl_root(path: Path) -> Path:
 def _validate_filesystem_operation_targets(operation: SandboxOperation) -> None:
     if operation.kind not in SANDBOX_FILESYSTEM_WRITE_KINDS:
         return
+    request = _filesystem_request(operation)
     readonly_roots = _runtime_readonly_roots()
-    for path in operation.paths:
+    for path in request.paths:
         for root in readonly_roots:
             if _is_relative_to_casefold(path, root):
                 raise SandboxBackendError(
                     f"windows_default denied read-only runtime filesystem target: {path}"
                 )
+
+
+def _filesystem_request(operation: SandboxOperation) -> FilesystemOperationRequest:
+    if not isinstance(operation.request, FilesystemOperationRequest):
+        raise SandboxBackendError("filesystem operation is missing filesystem request")
+    return operation.request
 
 
 def _runtime_readonly_roots() -> tuple[Path, ...]:

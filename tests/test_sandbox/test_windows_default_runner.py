@@ -65,7 +65,7 @@ def test_parse_payload_rejects_wrong_backend(tmp_path) -> None:
         _parse_payload([json.dumps(payload)])
 
 
-def test_runner_rejects_proxy_allowlist_in_phase_one(tmp_path) -> None:
+def test_runner_rejects_proxy_allowlist_without_proxy_endpoint(tmp_path) -> None:
     from opensquilla.sandbox.backend.windows_default_runner import (
         _parse_payload,
         _validate_policy_is_enforceable,
@@ -83,8 +83,37 @@ def test_runner_rejects_proxy_allowlist_in_phase_one(tmp_path) -> None:
 
     parsed = _parse_payload([json.dumps(payload)])
 
-    with pytest.raises(SystemExit, match="Windows network boundary is pending"):
+    with pytest.raises(SystemExit, match="requires network_proxy"):
         _validate_policy_is_enforceable(parsed.policy)
+
+
+def test_runner_accepts_proxy_allowlist_with_proxy_endpoint(tmp_path) -> None:
+    from opensquilla.sandbox.backend.windows_default_runner import (
+        _parse_payload,
+        _validate_policy_is_enforceable,
+    )
+
+    payload = {
+        "backend": "windows_default",
+        "argv": ["cmd"],
+        "cwd": str(tmp_path),
+        "env": {
+            "HTTP_PROXY": "http://127.0.0.1:48123",
+            "HTTPS_PROXY": "http://127.0.0.1:48123",
+            "NO_PROXY": "",
+        },
+        "policy": {
+            "network": "proxy_allowlist",
+            "network_proxy": {"host": "127.0.0.1", "port": 48123},
+            "mounts": [],
+        },
+        "runMode": "trusted",
+        "timeout": 5,
+    }
+
+    parsed = _parse_payload([json.dumps(payload)])
+
+    _validate_policy_is_enforceable(parsed.policy)
 
 
 def test_runner_applies_acl_refresh_before_process_launch(tmp_path, monkeypatch) -> None:
@@ -167,6 +196,18 @@ def test_restricted_token_flags_match_codex_legacy() -> None:
     assert mod.RESTRICTED_TOKEN_FLAGS == (
         mod.DISABLE_MAX_PRIVILEGE | mod.LUA_TOKEN | mod.WRITE_RESTRICTED
     )
+
+
+def test_restricting_sid_specs_match_codex_legacy_base() -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    sid_specs = mod._base_restricting_sid_specs()
+    sid_values = {sid for sid, _label in sid_specs}
+
+    assert "S-1-1-0" in sid_values
+    assert "S-1-5-11" not in sid_values
+    assert "S-1-5-32-545" not in sid_values
+    assert "S-1-5-12" not in sid_values
 
 
 def test_token_post_create_hooks_are_called(monkeypatch) -> None:

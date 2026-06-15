@@ -54,6 +54,7 @@ GEMINI.md
 !/docs/superpowers/
 !/docs/superpowers/plans/
 !/docs/superpowers/specs/
+/docs/沙箱实现及对比-2026.06.11.md
 *.png
 # Brand assets are intentionally tracked: top-level assets/ for branding,
 # and the WebUI static asset path so the gateway page renders the mark.

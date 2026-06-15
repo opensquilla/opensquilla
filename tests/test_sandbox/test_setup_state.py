@@ -91,8 +91,39 @@ async def test_windows_setup_status_reports_windows_default_not_setup(
         ),
     )
 
-    result = await setup_state.ensure_sandbox_setup(SimpleNamespace())
+    result = await setup_state.current_sandbox_setup_status(SimpleNamespace())
 
     assert result.state is setup_state.SandboxSetupState.NOT_SETUP
     assert result.requires_admin is True
     assert "setup=not ready" in str(result.detail)
+
+
+async def test_ensure_windows_setup_writes_marker_when_windows_checks_are_ready(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from opensquilla.sandbox import setup_state
+
+    marker = tmp_path / "setup_marker.json"
+
+    def fake_probe() -> setup_state.WindowsSetupSupport:
+        ready = marker.exists()
+        return setup_state.WindowsSetupSupport(
+            default_backend_available=ready,
+            ctypes_available=True,
+            token_api_available=True,
+            acl_api_available=True,
+            setup_ready=ready,
+            proxy_allowlist_enforced=False,
+        )
+
+    monkeypatch.setattr(setup_state.sys, "platform", "win32")
+    monkeypatch.setattr(setup_state, "_probe_windows_sandbox_support", fake_probe)
+    monkeypatch.setattr(setup_state, "_windows_setup_marker_path", lambda: marker, raising=False)
+
+    result = await setup_state.ensure_sandbox_setup(SimpleNamespace())
+
+    assert result.state is setup_state.SandboxSetupState.READY
+    assert result.requires_admin is False
+    assert result.message == "Windows default sandbox is ready."
+    assert marker.exists()

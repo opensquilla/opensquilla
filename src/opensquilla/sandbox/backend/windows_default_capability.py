@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import re
 import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+
+_RESTRICTING_SID_RE = re.compile(r"^S-1-5-21-(\d+)-(\d+)-(\d+)-(\d+)$")
 
 
 @dataclass(frozen=True)
@@ -27,7 +30,7 @@ def load_capability_store(path: Path) -> CapabilityStore:
     clean = {
         str(key): str(value)
         for key, value in roots.items()
-        if str(value).startswith("S-1-15-3-")
+        if _is_create_restricted_token_compatible_sid(str(value))
     }
     return CapabilityStore(root_sids=clean)
 
@@ -52,6 +55,8 @@ def capability_sid_for_root(
     if existing:
         return existing
     sid = sid_factory() if sid_factory is not None else _new_capability_sid()
+    if not _is_create_restricted_token_compatible_sid(sid):
+        sid = _new_capability_sid()
     updated = dict(store.root_sids)
     updated[key] = sid
     save_capability_store(store_path, CapabilityStore(root_sids=updated))
@@ -63,8 +68,12 @@ def capability_sids_for_command(store_path: Path, roots: tuple[Path, ...]) -> tu
 
 
 def _new_capability_sid() -> str:
-    parts = [str(secrets.randbits(31)) for _ in range(8)]
-    return "S-1-15-3-" + "-".join(parts)
+    parts = [str(secrets.randbits(32)) for _ in range(4)]
+    return "S-1-5-21-" + "-".join(parts)
+
+
+def _is_create_restricted_token_compatible_sid(value: str) -> bool:
+    return _RESTRICTING_SID_RE.match(value) is not None
 
 
 __all__ = [

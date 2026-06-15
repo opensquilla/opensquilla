@@ -103,7 +103,9 @@ async def test_windows_default_workspace_venv_creation_succeeds(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
-async def test_windows_default_proxy_allowlist_fails_closed(tmp_path: Path) -> None:
+async def test_windows_default_proxy_allowlist_without_proxy_fails_closed(
+    tmp_path: Path,
+) -> None:
     policy = _policy()
     proxy_policy = SandboxPolicy(
         level=policy.level,
@@ -127,4 +129,4 @@ async def test_windows_default_proxy_allowlist_fails_closed(tmp_path: Path) -> N
     result = await WindowsDefaultBackend().run(request)
 
     assert result.returncode != 0
-    assert "Windows network boundary is pending" in result.stderr
+    assert "requires network_proxy endpoint" in result.stderr

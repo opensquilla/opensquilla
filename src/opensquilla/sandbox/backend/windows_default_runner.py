@@ -21,6 +21,10 @@ RESTRICTED_TOKEN_FLAGS = DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED
 GENERIC_ALL = 0x10000000
 
 
+def _base_restricting_sid_specs() -> tuple[tuple[str, str], ...]:
+    return (("S-1-1-0", "everyone"),)
+
+
 @dataclass(frozen=True)
 class HelperPayload:
     argv: tuple[str, ...]
@@ -119,7 +123,27 @@ def _validate_policy_is_enforceable(policy: dict[str, Any]) -> None:
     if network not in {"none", "host", "proxy_allowlist"}:
         raise SystemExit(f"windows_default runner received unknown network mode: {network!r}")
     if network == "proxy_allowlist":
-        raise SystemExit("Windows network boundary is pending for windows_default phase 1")
+        _validate_network_proxy(policy)
+
+
+def _validate_network_proxy(policy: dict[str, Any]) -> None:
+    proxy = policy.get("network_proxy")
+    if proxy is None:
+        proxy = policy.get("networkProxy")
+    if not isinstance(proxy, dict):
+        raise SystemExit(
+            "windows_default PROXY_ALLOWLIST requires network_proxy endpoint"
+        )
+    host = proxy.get("host")
+    port = proxy.get("port")
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        raise SystemExit(
+            "windows_default PROXY_ALLOWLIST requires a local network_proxy host"
+        )
+    if not isinstance(port, int) or not (1 <= port <= 65535):
+        raise SystemExit(
+            "windows_default PROXY_ALLOWLIST requires a valid network_proxy port"
+        )
 
 
 def _run_windows_default(payload: HelperPayload) -> int:
@@ -797,13 +821,7 @@ def _run_restricted_process_native_impl(
         ):
             raise win_error("OpenProcessToken")
 
-        restricting_sids = [
-            convert_sid("S-1-5-12", "restricted"),
-            convert_sid("S-1-1-0", "everyone"),
-            convert_sid("S-1-5-11", "authenticated-users"),
-            convert_sid("S-1-5-32-545", "builtin-users"),
-        ]
-        allocated_sids.extend(restricting_sids)
+        restricting_sids = []
         for index, capability_sid in enumerate(capability_sids):
             sid = convert_sid(capability_sid, f"capability-{index}")
             allocated_sids.append(sid)
@@ -812,6 +830,10 @@ def _run_restricted_process_native_impl(
         logon_sid, logon_sid_buffer = logon_sid_from_token(source_token)
         if logon_sid:
             restricting_sids.append(logon_sid)
+        for sid_value, sid_label in _base_restricting_sid_specs():
+            sid = convert_sid(sid_value, sid_label)
+            allocated_sids.append(sid)
+            restricting_sids.append(sid)
         restricting_entries = (SID_AND_ATTRIBUTES * len(restricting_sids))()
         for index, sid in enumerate(restricting_sids):
             restricting_entries[index].Sid = sid

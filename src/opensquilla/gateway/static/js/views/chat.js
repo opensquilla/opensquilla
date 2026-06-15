@@ -25,10 +25,6 @@ const ChatView = (() => {
   };
   let _runMode = _RUN_MODE_DEFAULT;
   let _runModeRequestSeq = 0;
-  let _sandboxSetupState = 'not_setup';
-  let _sandboxSetupRequiresAdmin = false;
-  let _sandboxSetupRequestInFlight = false;
-  let _pendingRunModeAfterSetup = '';
 
   // Streaming
   let _isStreaming = false;
@@ -1229,16 +1225,6 @@ const ChatView = (() => {
           </div>
         </div>
         <div class="chat-pending hidden" id="chat-pending"></div>
-        <div class="chat-sandbox-setup-banner hidden" id="chat-sandbox-setup-banner">
-          <div class="chat-sandbox-setup-copy">
-            <strong>Establish sandboxing?</strong>
-            <span id="chat-sandbox-setup-message">Limit tool access before switching to sandbox modes.</span>
-          </div>
-          <div class="chat-sandbox-setup-actions">
-            <button type="button" class="btn btn--secondary" id="chat-sandbox-setup-dismiss">Not now</button>
-            <button type="button" class="btn btn--primary" id="chat-sandbox-setup-start">Establish sandbox</button>
-          </div>
-        </div>
         <div class="chat-composer" id="chat-composer">
           <div class="chat-attachments hidden" id="chat-attach-preview"></div>
           <div class="chat-slash hidden" id="chat-slash"></div>
@@ -1338,9 +1324,7 @@ const ChatView = (() => {
     _bindEvents();
     _bindToolbarPills();
     _bindToolbarTrigger();
-    _bindSandboxSetupBanner();
     _loadRunContext();
-    _loadSandboxSetupStatus();
     _bindSessionChip();
     _bindComposerResize();
     _bindHoverActions();
@@ -2284,10 +2268,6 @@ const ChatView = (() => {
         const mode = _normalizeRunMode(btn.dataset.runMode);
         close();
         if (mode === _runMode) return;
-        if (!_sandboxSetupReadyForMode(mode)) {
-          _requestSandboxSetupForMode(mode);
-          return;
-        }
         _setRunMode(mode, { toast: true, sync: true });
       });
     });
@@ -2305,84 +2285,6 @@ const ChatView = (() => {
     });
   }
 
-  function _sandboxSetupReadyForMode(mode) {
-    if (_normalizeRunMode(mode) === 'full') return true;
-    return _sandboxSetupState === 'ready';
-  }
-
-  function _updateSandboxSetupBanner(payload = null) {
-    if (payload && typeof payload === 'object') {
-      _sandboxSetupState = payload.state || payload.status || _sandboxSetupState || 'not_setup';
-      _sandboxSetupRequiresAdmin = !!(payload.requiresAdmin || payload.requires_admin);
-    }
-    const banner = _el && _el.querySelector('#chat-sandbox-setup-banner');
-    const message = _el && _el.querySelector('#chat-sandbox-setup-message');
-    const start = _el && _el.querySelector('#chat-sandbox-setup-start');
-    if (!banner) return;
-    const shouldShow = _runMode === 'full' && _sandboxSetupState !== 'ready';
-    banner.classList.toggle('hidden', !shouldShow);
-    if (message) {
-      const adminSuffix = _sandboxSetupRequiresAdmin ? ' Administrator approval may be required.' : '';
-      message.textContent = (payload && payload.message)
-        ? `${payload.message}${adminSuffix}`
-        : `Limit tool access before switching to sandbox modes.${adminSuffix}`;
-    }
-    if (start) start.disabled = _sandboxSetupRequestInFlight;
-  }
-
-  async function _loadSandboxSetupStatus() {
-    if (!_rpc) return;
-    try {
-      if (_rpc.waitForConnection) await _rpc.waitForConnection();
-      const payload = await _rpc.call('sandbox.setup.status', {});
-      _updateSandboxSetupBanner(payload);
-    } catch {
-      _updateSandboxSetupBanner({ state: 'not_setup' });
-    }
-  }
-
-  async function _requestSandboxSetupForMode(mode = '') {
-    const requestedMode = _normalizeRunMode(mode || _pendingRunModeAfterSetup || 'trusted');
-    if (requestedMode === 'full') return;
-    _pendingRunModeAfterSetup = requestedMode;
-    _updateSandboxSetupBanner({ state: _sandboxSetupState || 'not_setup' });
-    if (!_rpc || _sandboxSetupRequestInFlight) return;
-    _sandboxSetupRequestInFlight = true;
-    _updateSandboxSetupBanner();
-    try {
-      if (_rpc.waitForConnection) await _rpc.waitForConnection();
-      const payload = await _rpc.call('sandbox.setup.ensure', {});
-      _updateSandboxSetupBanner(payload);
-      if (_sandboxSetupState === 'ready' && _pendingRunModeAfterSetup) {
-        const nextMode = _pendingRunModeAfterSetup;
-        _pendingRunModeAfterSetup = '';
-        _setRunMode(nextMode, { toast: true, sync: true });
-      } else {
-        UI.toast(payload?.message || 'Sandbox setup is not ready.', 'warn', 3000);
-      }
-    } catch (err) {
-      UI.toast('Sandbox setup failed: ' + (err?.message || err), 'err', 3000);
-    } finally {
-      _sandboxSetupRequestInFlight = false;
-      _updateSandboxSetupBanner();
-    }
-  }
-
-  function _bindSandboxSetupBanner() {
-    const banner = _el && _el.querySelector('#chat-sandbox-setup-banner');
-    if (!banner) return;
-    const dismiss = banner.querySelector('#chat-sandbox-setup-dismiss');
-    const start = banner.querySelector('#chat-sandbox-setup-start');
-    if (dismiss) {
-      dismiss.addEventListener('click', () => {
-        banner.classList.add('hidden');
-      });
-    }
-    if (start) {
-      start.addEventListener('click', () => _requestSandboxSetupForMode('trusted'));
-    }
-  }
-
   function _normalizeRunMode(mode) {
     const value = String(mode || '').trim().toLowerCase().replace(/_/g, '-');
     if (value === 'standard' || value === 'standard-sandbox') return 'standard';
@@ -2398,7 +2300,6 @@ const ChatView = (() => {
     _toolbarState.runMode = normalized;
     _updateRunModeControl();
     _refreshToolbarTriggerGlow();
-    _updateSandboxSetupBanner();
     if (options.toast) {
       UI.toast(`Run Mode: ${_RUN_MODE_LABELS[normalized]}`, normalized === 'full' ? 'warn' : 'info', 1800);
     }
@@ -2410,8 +2311,24 @@ const ChatView = (() => {
     _setRunMode(payload.runMode || payload.run_mode, { toast: false, sync: false });
   }
 
+  async function _loadRunModeStatusFallback(sessionKey = '') {
+    if (!_rpc) return;
+    try {
+      if (_rpc.waitForConnection) await _rpc.waitForConnection();
+      const payload = await _rpc.call('sandbox.status', {});
+      if (sessionKey && sessionKey !== _sessionKey) return;
+      _setRunMode(payload?.runMode || payload?.run_mode, { toast: false, sync: false });
+    } catch {
+      // Keep the current UI state when the gateway cannot report sandbox posture.
+    }
+  }
+
   async function _loadRunContext() {
-    if (!_rpc || !_sessionKey) return;
+    if (!_rpc) return;
+    if (!_sessionKey) {
+      await _loadRunModeStatusFallback('');
+      return;
+    }
     const sessionKey = _sessionKey;
     try {
       if (_rpc.waitForConnection) await _rpc.waitForConnection();
@@ -2420,7 +2337,7 @@ const ChatView = (() => {
       _applyRunContext(payload);
     } catch {
       if (sessionKey !== _sessionKey) return;
-      _setRunMode(_RUN_MODE_DEFAULT, { toast: false, sync: false });
+      await _loadRunModeStatusFallback(sessionKey);
     }
   }
 
@@ -2474,7 +2391,6 @@ const ChatView = (() => {
     _persistSession(key);
     _setRunMode(_RUN_MODE_DEFAULT, { toast: false, sync: false });
     _loadRunContext();
-    _loadSandboxSetupStatus();
     _clearPendingDrainAfterTerminalTimer();
     _setCompactInFlight(false);
     _hideCompactionSeparator();
@@ -6597,7 +6513,8 @@ const ChatView = (() => {
       params.intent = sessionIntentForSend;
       if (textOverride === null) _pendingSessionIntent = null;
     }
-    params._source = { runMode: _normalizeRunMode(_runMode) };
+    params._source = {};
+    params._source.runMode = _normalizeRunMode(_runMode);
     if (userText !== providerText || attachmentsForSend.length > 0) {
       params.displayText = userText;
     }

@@ -18,10 +18,15 @@ def status_payload(config: Any, *, restart_required: bool = False) -> dict[str, 
     sandbox_cfg = config.sandbox
     network_default = str(getattr(sandbox_cfg, "network_default", "none"))
     target = execution_target(run_mode)
+    sandbox_enabled = target == "sandbox" and bool(sandbox_cfg.sandbox)
+    security_grading = target == "sandbox" and bool(sandbox_cfg.security_grading)
+    permissions_default_mode = (
+        "full" if target == "host" else str(config.permissions.default_mode)
+    )
     managed_network = (
         "ready"
         if target == "sandbox"
-        and bool(sandbox_cfg.sandbox)
+        and sandbox_enabled
         and network_default == "proxy_allowlist"
         else "inactive" if target == "host" else "blocked"
     )
@@ -33,8 +38,8 @@ def status_payload(config: Any, *, restart_required: bool = False) -> dict[str, 
         "backend": str(getattr(sandbox_cfg, "backend", "auto")),
         "managed_network": managed_network,
         "sandbox": {
-            "sandbox": bool(sandbox_cfg.sandbox),
-            "security_grading": bool(sandbox_cfg.security_grading),
+            "sandbox": sandbox_enabled,
+            "security_grading": security_grading,
             "network_default": network_default,
         },
         "default_allowlist": default_allowlist_payload(),
@@ -47,7 +52,7 @@ def status_payload(config: Any, *, restart_required: bool = False) -> dict[str, 
             for bundle_id, domains in PACKAGE_BUNDLES.items()
         ],
         "permissions": {
-            "default_mode": str(config.permissions.default_mode),
+            "default_mode": permissions_default_mode,
         },
         "restart_required": restart_required,
     }

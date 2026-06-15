@@ -55,6 +55,7 @@ from opensquilla.sandbox.integration import (
     run_under_backend,
 )
 from opensquilla.sandbox.operation_profile import OperationProfile, classify_command
+from opensquilla.sandbox.operation_runtime import SandboxToolDescriptor
 from opensquilla.sandbox.path_validation import MountDecision, decide_path_access
 from opensquilla.sandbox.policy import LevelHints, build_policy, select_level
 from opensquilla.sandbox.runtime_recovery import (
@@ -1250,8 +1251,24 @@ def _windows_powershell_python_process_statement(tokens: list[str]) -> str | Non
     )
 
 
+def _windows_nested_powershell_command(tokens: list[str]) -> str | None:
+    if not tokens:
+        return None
+    executable_index = 1 if tokens[0] == "&" and len(tokens) > 1 else 0
+    executable = tokens[executable_index]
+    if _windows_shell_command_name(executable) not in {"powershell", "pwsh"}:
+        return None
+    for index, token in enumerate(tokens[executable_index + 1 :], start=executable_index + 1):
+        if token.lower() in {"-c", "-command"} and index + 1 < len(tokens):
+            return _windows_strip_outer_quotes(" ".join(tokens[index + 1 :]))
+    return None
+
+
 def _windows_powershell_compat_statement(statement: str) -> str:
     tokens = _windows_shell_tokens(statement)
+    nested_powershell = _windows_nested_powershell_command(tokens)
+    if nested_powershell is not None:
+        return nested_powershell
     python_statement = _windows_powershell_python_process_statement(tokens)
     if python_statement is not None:
         return python_statement
@@ -1416,14 +1433,9 @@ def _windows_shell_write_targets(command: str) -> list[str]:
         if not tokens:
             continue
         command_name = _windows_shell_command_name(tokens[0])
-        nested: str | None = None
-        if command_name == "cmd":
+        nested: str | None = _windows_nested_powershell_command(tokens)
+        if nested is None and command_name == "cmd":
             nested = _windows_shell_command_after_option(tokens, frozenset({"/c", "/k"}))
-        elif command_name in {"powershell", "pwsh"}:
-            nested = _windows_shell_command_after_option(
-                tokens,
-                frozenset({"-c", "-command"}),
-            )
         if nested is not None:
             for target in _windows_shell_write_targets(_windows_strip_outer_quotes(nested)):
                 if target not in targets:
@@ -1501,6 +1513,18 @@ def _windows_shell_runtime_mount_paths() -> tuple[Path, ...]:
         if path not in paths:
             paths.append(path)
     return tuple(paths)
+
+
+def _windows_runtime_readonly_roots() -> tuple[Path, ...]:
+    if not _windows_sandbox_backend_active():
+        return ()
+    try:
+        from opensquilla.sandbox.backend import windows_default
+
+        roots = windows_default._runtime_readonly_roots()
+    except Exception:
+        return ()
+    return tuple(Path(root).expanduser().resolve(strict=False) for root in roots)
 
 
 def _policy_with_windows_shell_runtime_mounts(
@@ -1791,6 +1815,41 @@ def _workspace_lockdown_shell_block(
             ),
             "retryable": False,
         }
+    return None
+
+
+def _windows_runtime_readonly_shell_block(
+    tool_name: str,
+    command: str,
+    workdir: str | None,
+    *,
+    stdin: str | None = None,
+) -> dict[str, object] | None:
+    roots = _windows_runtime_readonly_roots()
+    if not roots:
+        return None
+    for target in _shell_write_targets_from_inputs(command, stdin):
+        resolved = _resolve_shell_write_target(target, workdir)
+        candidate = resolved.expanduser().resolve(strict=False)
+        for root in roots:
+            try:
+                candidate.relative_to(root)
+            except ValueError:
+                continue
+            return {
+                "status": "blocked",
+                "reason": "runtime_readonly",
+                "tool": tool_name,
+                "command": command,
+                "target": target,
+                "resolved_path": str(candidate),
+                "readonly_root": str(root),
+                "message": (
+                    f"{tool_name} blocked by sandbox runtime read-only policy: "
+                    f"shell write target {candidate} is under read-only runtime root {root}."
+                ),
+                "retryable": False,
+            }
     return None
 
 
@@ -2184,6 +2243,14 @@ async def _run_host_shell_command(
     execution_timeout_seconds=_DEFAULT_EXEC_TIMEOUT + _EXEC_TOOL_TIMEOUT_PADDING,
     execution_timeout_argument="timeout",
     execution_timeout_padding=_EXEC_TOOL_TIMEOUT_PADDING,
+    sandbox=SandboxToolDescriptor.process(
+        kind="shell.exec",
+        argv_factory=lambda a: ("exec_command", str(a.get("command", ""))),
+        cwd_factory=lambda a: a.get("workdir") if isinstance(a.get("workdir"), str) else None,
+        env_factory=lambda a: a.get("env") if isinstance(a.get("env"), dict) else None,
+        enforce=False,
+        record_payload=False,
+    ),
 )
 async def exec_command(
     command: str,
@@ -2215,36 +2282,40 @@ async def exec_command(
     )
     if sensitive_block is not None:
         return sensitive_block
-    if not windows_process_sandbox:
-        path_access = _sandbox_workdir_access_envelope(
-            cwd,
-            write=_shell_workdir_requires_write(command, profile, stdin=stdin),
-            approval_id=approval_id,
-        )
-        if path_access is not None:
-            return json.dumps(path_access, ensure_ascii=False)
-        path_access = _sandbox_read_path_access_envelope(profile, cwd, approval_id=approval_id)
-        if path_access is not None:
-            return json.dumps(path_access, ensure_ascii=False)
-        path_access = _sandbox_write_path_access_envelope(
-            profile,
-            cwd,
-            command,
-            stdin=stdin,
-            approval_id=approval_id,
-        )
-        if path_access is not None:
-            return json.dumps(path_access, ensure_ascii=False)
-        lockdown_block = _workspace_lockdown_shell_block(
-            "exec_command", command, cwd, stdin=stdin
-        )
-        if lockdown_block is not None:
-            return json.dumps(lockdown_block, ensure_ascii=False)
-        deny_block = _workspace_write_deny_shell_block(
-            "exec_command", command, cwd, stdin=stdin
-        )
-        if deny_block is not None:
-            return json.dumps(deny_block, ensure_ascii=False)
+    runtime_readonly_block = _windows_runtime_readonly_shell_block(
+        "exec_command", command, cwd, stdin=stdin
+    )
+    if runtime_readonly_block is not None:
+        return json.dumps(runtime_readonly_block, ensure_ascii=False)
+    path_access = _sandbox_workdir_access_envelope(
+        cwd,
+        write=_shell_workdir_requires_write(command, profile, stdin=stdin),
+        approval_id=approval_id,
+    )
+    if path_access is not None:
+        return json.dumps(path_access, ensure_ascii=False)
+    path_access = _sandbox_read_path_access_envelope(profile, cwd, approval_id=approval_id)
+    if path_access is not None:
+        return json.dumps(path_access, ensure_ascii=False)
+    path_access = _sandbox_write_path_access_envelope(
+        profile,
+        cwd,
+        command,
+        stdin=stdin,
+        approval_id=approval_id,
+    )
+    if path_access is not None:
+        return json.dumps(path_access, ensure_ascii=False)
+    lockdown_block = _workspace_lockdown_shell_block(
+        "exec_command", command, cwd, stdin=stdin
+    )
+    if lockdown_block is not None:
+        return json.dumps(lockdown_block, ensure_ascii=False)
+    deny_block = _workspace_write_deny_shell_block(
+        "exec_command", command, cwd, stdin=stdin
+    )
+    if deny_block is not None:
+        return json.dumps(deny_block, ensure_ascii=False)
 
     # Warnlist: two-step approval flow
     if result.needs_approval:
@@ -2290,8 +2361,7 @@ async def exec_command(
             return json.dumps(decision.to_dict())
         backend_cwd = _sandbox_shell_backend_cwd(cwd, request)
         backend_policy = request.policy
-        if not windows_process_sandbox:
-            backend_policy = _policy_with_active_tool_mounts(backend_policy)
+        backend_policy = _policy_with_active_tool_mounts(backend_policy)
         backend_policy = _policy_with_windows_shell_runtime_mounts(backend_policy, runtime)
         backend_policy = _policy_with_wall_timeout(backend_policy, effective_timeout)
         backend_request = SandboxRequest(
@@ -2318,14 +2388,12 @@ async def exec_command(
         except Exception as exc:
             raise ToolError(f"Sandboxed shell execution failed: {exc}") from exc
         if sandbox_result.backend_notes:
-            retry_request = None
-            if not windows_process_sandbox:
-                retry_request = _trusted_path_recovery_retry_request(
-                    command,
-                    backend_request,
-                    sandbox_result.backend_notes,
-                    write_default=_shell_workdir_requires_write(command, profile, stdin=stdin),
-                )
+            retry_request = _trusted_path_recovery_retry_request(
+                command,
+                backend_request,
+                sandbox_result.backend_notes,
+                write_default=_shell_workdir_requires_write(command, profile, stdin=stdin),
+            )
             if retry_request is not None:
                 try:
                     sandbox_result = await _run_backend_with_managed_network(
@@ -2487,6 +2555,13 @@ async def exec_command(
         },
     },
     required=["command"],
+    sandbox=SandboxToolDescriptor.process(
+        kind="shell.background",
+        argv_factory=lambda a: ("background_process", str(a.get("command", ""))),
+        cwd_factory=lambda a: a.get("workdir") if isinstance(a.get("workdir"), str) else None,
+        enforce=False,
+        record_payload=False,
+    ),
 )
 async def background_process(
     command: str,
@@ -2509,31 +2584,35 @@ async def background_process(
     sensitive_block = _sensitive_shell_block("background_process", command, workdir=cwd)
     if sensitive_block is not None:
         return sensitive_block
-    if not windows_process_sandbox:
-        path_access = _sandbox_workdir_access_envelope(
-            cwd,
-            write=_shell_workdir_requires_write(command, profile),
-            approval_id=approval_id,
-        )
-        if path_access is not None:
-            return json.dumps(path_access, ensure_ascii=False)
-        path_access = _sandbox_read_path_access_envelope(profile, cwd, approval_id=approval_id)
-        if path_access is not None:
-            return json.dumps(path_access, ensure_ascii=False)
-        path_access = _sandbox_write_path_access_envelope(
-            profile,
-            cwd,
-            command,
-            approval_id=approval_id,
-        )
-        if path_access is not None:
-            return json.dumps(path_access, ensure_ascii=False)
-        lockdown_block = _workspace_lockdown_shell_block("background_process", command, cwd)
-        if lockdown_block is not None:
-            return json.dumps(lockdown_block, ensure_ascii=False)
-        deny_block = _workspace_write_deny_shell_block("background_process", command, cwd)
-        if deny_block is not None:
-            return json.dumps(deny_block, ensure_ascii=False)
+    runtime_readonly_block = _windows_runtime_readonly_shell_block(
+        "background_process", command, cwd
+    )
+    if runtime_readonly_block is not None:
+        return json.dumps(runtime_readonly_block, ensure_ascii=False)
+    path_access = _sandbox_workdir_access_envelope(
+        cwd,
+        write=_shell_workdir_requires_write(command, profile),
+        approval_id=approval_id,
+    )
+    if path_access is not None:
+        return json.dumps(path_access, ensure_ascii=False)
+    path_access = _sandbox_read_path_access_envelope(profile, cwd, approval_id=approval_id)
+    if path_access is not None:
+        return json.dumps(path_access, ensure_ascii=False)
+    path_access = _sandbox_write_path_access_envelope(
+        profile,
+        cwd,
+        command,
+        approval_id=approval_id,
+    )
+    if path_access is not None:
+        return json.dumps(path_access, ensure_ascii=False)
+    lockdown_block = _workspace_lockdown_shell_block("background_process", command, cwd)
+    if lockdown_block is not None:
+        return json.dumps(lockdown_block, ensure_ascii=False)
+    deny_block = _workspace_write_deny_shell_block("background_process", command, cwd)
+    if deny_block is not None:
+        return json.dumps(deny_block, ensure_ascii=False)
     if result.needs_approval:
         prior_elevation = _approval_elevation_state()
         approval_response: dict[str, object] | None = None
@@ -2580,8 +2659,7 @@ async def background_process(
             return json.dumps(decision.to_dict())
         backend_cwd = _sandbox_shell_backend_cwd(cwd, request)
         backend_policy = policy
-        if not windows_process_sandbox:
-            backend_policy = _policy_with_active_tool_mounts(backend_policy)
+        backend_policy = _policy_with_active_tool_mounts(backend_policy)
         backend_policy = _policy_with_windows_shell_runtime_mounts(backend_policy, runtime)
         backend_policy = _policy_with_wall_timeout(backend_policy, effective_timeout)
         backend_request = SandboxRequest(
@@ -2808,6 +2886,7 @@ def get_bg_session(session_id: str) -> _BgSession | None:
         },
     },
     required=["action"],
+    sandbox=SandboxToolDescriptor.custom(kind="process", enforce=False),
 )
 async def process(
     action: str,

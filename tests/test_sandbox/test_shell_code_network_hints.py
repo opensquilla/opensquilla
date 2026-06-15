@@ -12,6 +12,7 @@ import pytest
 from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.integration import configure_runtime, get_runtime, reset_runtime
+from opensquilla.sandbox.network_runtime import NetworkPolicyRequest, NetworkProtocol
 from opensquilla.sandbox.run_context import (
     DomainGrant,
     PackageBundleGrant,
@@ -58,6 +59,120 @@ def standard_runtime_no_preflight(tmp_path: Path) -> Iterator[Path]:
     finally:
         reset_runtime()
         reset_approval_queue()
+
+
+@pytest.mark.asyncio
+async def test_shell_backend_request_preserves_resolved_run_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.types import SandboxRequest
+    from opensquilla.tools.builtin import shell
+
+    reset_approval_queue()
+    configure_runtime(
+        SandboxSettings(
+            run_mode="trusted",
+            backend="noop",
+            allow_legacy_mode=True,
+            network_default="none",
+        ),
+        workspace=tmp_path,
+    )
+    backend_calls: list[SandboxRequest] = []
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        backend_calls.append(request)
+        return SimpleNamespace(returncode=0, stdout="ok\n", stderr="", backend_notes=())
+
+    monkeypatch.setattr(shell, "run_under_backend", _fake_run_under_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(tmp_path),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.TRUSTED,
+                workspace=str(tmp_path),
+            ),
+        )
+    )
+    try:
+        result = await shell.exec_command("echo ok", workdir=str(tmp_path))
+    finally:
+        current_tool_context.reset(token)
+        reset_runtime()
+        reset_approval_queue()
+
+    assert "ok" in result
+    assert backend_calls
+    assert backend_calls[0].run_mode == "trusted"
+
+
+@pytest.mark.asyncio
+async def test_code_exec_backend_request_preserves_resolved_run_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.types import SandboxRequest
+    from opensquilla.tools.builtin import code_exec, shell
+
+    reset_approval_queue()
+    configure_runtime(
+        SandboxSettings(
+            run_mode="trusted",
+            backend="noop",
+            allow_legacy_mode=True,
+            network_default="none",
+        ),
+        workspace=tmp_path,
+    )
+    backend_calls: list[SandboxRequest] = []
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        backend_calls.append(request)
+        return SimpleNamespace(
+            returncode=0,
+            stdout="ok\n",
+            stderr="",
+            timed_out=False,
+            backend_notes=(),
+        )
+
+    monkeypatch.setattr(code_exec, "run_under_backend", _fake_run_under_backend)
+    monkeypatch.setattr(shell, "_host_execution_allowed", lambda: False)
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(tmp_path),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.TRUSTED,
+                workspace=str(tmp_path),
+            ),
+        )
+    )
+    try:
+        result = json.loads(await code_exec.execute_code("print('ok')"))
+    finally:
+        current_tool_context.reset(token)
+        reset_runtime()
+        reset_approval_queue()
+
+    assert result["stdout"] == "ok\n"
+    assert backend_calls
+    assert backend_calls[0].run_mode == "trusted"
 
 
 @pytest.mark.asyncio
@@ -225,16 +340,19 @@ async def test_code_plain_url_literal_does_not_pass_network_hint(
 
 
 @pytest.mark.asyncio
-async def test_shell_unknown_explicit_url_queues_network_approval_before_proxy_run(
+async def test_shell_unknown_explicit_url_runs_with_managed_proxy(
     managed_runtime: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from opensquilla.tools.builtin import shell
 
-    async def _fail_run_under_backend(request, *, runtime=None):
-        pytest.fail("network approval preflight should run before proxy execution")
+    backend_requests: list[object] = []
 
-    monkeypatch.setattr(shell, "run_under_backend", _fail_run_under_backend)
+    async def _fake_run_under_backend(request, *, runtime=None):
+        backend_requests.append(request)
+        return SimpleNamespace(returncode=0, stdout="ok\n", stderr="", backend_notes=())
+
+    monkeypatch.setattr(shell, "run_under_backend", _fake_run_under_backend)
     monkeypatch.setattr(
         shell,
         "check_safe_bin",
@@ -252,21 +370,21 @@ async def test_shell_unknown_explicit_url_queues_network_approval_before_proxy_r
         )
     )
     try:
-        payload = json.loads(
-            await shell.exec_command(
-                "curl https://unknown.test/path",
-                workdir=str(managed_runtime),
-            )
+        result = await shell.exec_command(
+            "curl https://unknown.test/path",
+            workdir=str(managed_runtime),
         )
     finally:
         current_tool_context.reset(token)
 
-    assert payload["status"] == "approval_required"
-    assert payload["approvalKind"] == "sandbox_network"
-    assert payload["host"] == "unknown.test"
-    pending = get_approval_queue().list_pending("exec")
-    assert len(pending) == 1
-    assert pending[0]["params"]["host"] == "unknown.test"
+    assert "exit_code=0" in result
+    assert "ok" in result
+    assert len(backend_requests) == 1
+    request = backend_requests[0]
+    assert request.policy.network.value == "proxy_allowlist"
+    assert request.policy.network_proxy is not None
+    assert request.env["HTTP_PROXY"].startswith("http://127.0.0.1:")
+    assert get_approval_queue().list_pending("exec") == []
 
 
 @pytest.mark.asyncio
@@ -398,6 +516,76 @@ async def test_windows_unready_proxy_allowlist_blocks_network_workarounds(
     assert "Do not retry with web_fetch" in result.message
     assert "Do not retry with offline wheel downloads" in result.message
     assert "Do not retry with host Python" in result.message
+
+
+@pytest.mark.asyncio
+async def test_windows_ready_proxy_allowlist_preflight_continues_to_proxy_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.sandbox import integration as integration_mod
+    from opensquilla.sandbox.types import (
+        NetworkMode,
+        ResourceLimits,
+        SandboxPolicy,
+        SandboxRequest,
+        SecurityLevel,
+    )
+
+    class _Ledger:
+        async def record_denial(self, *args: object, **kwargs: object) -> None:
+            pytest.fail("ready Windows network backend should not record denial")
+
+    policy = SandboxPolicy(
+        level=SecurityLevel.STANDARD,
+        network=NetworkMode.PROXY_ALLOWLIST,
+        mounts=(),
+        workspace_rw=True,
+        tmp_writable=True,
+        limits=ResourceLimits(wall_timeout_s=30),
+        env_allowlist=("PATH",),
+        require_approval=False,
+    )
+    request = SandboxRequest(
+        argv=("powershell", "-Command", "curl -I https://example.com"),
+        cwd=tmp_path,
+        action_kind="shell.exec",
+        policy=policy,
+        env={"PATH": r"C:\Windows\System32"},
+    )
+    runtime = SimpleNamespace(
+        backend=SimpleNamespace(name="windows_default"),
+        workspace=tmp_path,
+        ledger=_Ledger(),
+    )
+
+    monkeypatch.setattr(
+        integration_mod,
+        "_windows_proxy_allowlist_enforced",
+        lambda runtime: True,
+    )
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(tmp_path),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.TRUSTED,
+                workspace=str(tmp_path),
+            ),
+        )
+    )
+    try:
+        result = await integration_mod.preflight_subprocess_managed_network(
+            request,
+            runtime,
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert result is None
 
 
 @pytest.mark.asyncio
@@ -817,7 +1005,7 @@ async def test_standard_runtime_network_recovery_returns_package_bundle_approval
 
 
 @pytest.mark.asyncio
-async def test_standard_runtime_network_recovery_returns_host_approval_for_explicit_url(
+async def test_standard_runtime_network_recovery_does_not_preflight_explicit_url(
     standard_runtime_no_preflight: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -853,22 +1041,17 @@ async def test_standard_runtime_network_recovery_returns_host_approval_for_expli
         )
     )
     try:
-        payload = json.loads(
-            await shell.exec_command(
-                "curl https://unknown.test/path",
-                workdir=str(standard_runtime_no_preflight),
-            )
+        result = await shell.exec_command(
+            "curl https://unknown.test/path",
+            workdir=str(standard_runtime_no_preflight),
         )
     finally:
         current_tool_context.reset(token)
 
-    assert backend_calls == 1
-    assert payload["status"] == "approval_required"
-    assert payload["approvalKind"] == "sandbox_network"
-    assert payload["host"] == "unknown.test"
-    pending = get_approval_queue().list_pending("exec")
-    assert len(pending) == 1
-    assert pending[0]["params"]["host"] == "unknown.test"
+    assert backend_calls == 2
+    assert "exit_code=1" in result
+    assert "Could not resolve host: unknown.test" in result
+    assert get_approval_queue().list_pending("exec") == []
 
 
 @pytest.mark.asyncio
@@ -1011,7 +1194,14 @@ async def test_standard_runtime_network_recovery_preserves_allow_once_for_proxy_
             self._decide = decide
 
         async def start(self) -> None:
-            decision = self._decide("unknown.test")
+            decision = await self._decide.decide(
+                NetworkPolicyRequest(
+                    protocol=NetworkProtocol.HTTPS_CONNECT,
+                    host="unknown.test",
+                    port=443,
+                    method="CONNECT",
+                )
+            )
             assert decision.status == "allow"
 
         async def stop(self) -> None:
@@ -1797,12 +1987,8 @@ async def test_subprocess_network_approval_uses_session_workspace_for_external_c
     finally:
         current_tool_context.reset(token)
 
-    assert isinstance(payload, dict)
-    assert payload["status"] == "approval_required"
-    pending = get_approval_queue().list_pending("exec")
-    assert len(pending) == 1
-    assert pending[0]["params"]["workspace"] == str(managed_runtime)
-    assert pending[0]["params"]["workspace"] != str(external)
+    assert payload is None
+    assert get_approval_queue().list_pending("exec") == []
 
 
 @pytest.mark.asyncio
@@ -1866,7 +2052,7 @@ async def test_subprocess_network_once_grant_consumes_from_session_workspace(
 
     assert payload is None
     assert isinstance(ctx.sandbox_run_context, RunContext)
-    assert ctx.sandbox_run_context.temporary_grants == ()
+    assert ctx.sandbox_run_context.temporary_grants == (grant,)
 
 
 @pytest.mark.asyncio
@@ -2117,16 +2303,48 @@ async def test_trusted_code_exec_normal_user_path_denial_retries_once(
 
 
 @pytest.mark.asyncio
-async def test_code_unknown_explicit_url_queues_network_approval_before_proxy_run(
+async def test_code_unknown_explicit_url_runs_with_managed_proxy(
     managed_runtime: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from opensquilla.sandbox import integration as integration_mod
+    from opensquilla.sandbox.types import SandboxRequest
     from opensquilla.tools.builtin import code_exec, shell
 
-    async def _fail_run_under_backend(request, *, runtime=None):
-        pytest.fail("network approval preflight should run before proxy execution")
+    class _FakeProxyServer:
+        host = "127.0.0.1"
+        port = 48123
 
-    monkeypatch.setattr(code_exec, "run_under_backend", _fail_run_under_backend)
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+    monkeypatch.setattr(integration_mod, "SandboxProxyServer", _FakeProxyServer)
+    seen: dict[str, object] = {}
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        managed = await integration_mod.prepare_subprocess_managed_network_proxy(
+            request,
+            runtime=runtime,
+        )
+        try:
+            seen["request"] = managed.request
+            return SimpleNamespace(
+                returncode=0,
+                stdout="ok\n",
+                stderr="",
+                backend_notes=(),
+                timed_out=False,
+            )
+        finally:
+            await managed.cleanup()
+
+    monkeypatch.setattr(code_exec, "run_under_backend", _fake_run_under_backend)
     monkeypatch.setattr(code_exec, "_resolve_python_bin", lambda *, sandbox_enabled: sys.executable)
     monkeypatch.setattr(shell, "_host_execution_allowed", lambda: False)
 
@@ -2143,15 +2361,23 @@ async def test_code_unknown_explicit_url_queues_network_approval_before_proxy_ru
     try:
         payload = json.loads(
             await code_exec.execute_code(
-                'import requests\nrequests.get("https://unknown.test/path")'
+                "import urllib.request\n"
+                "import os\n"
+                "print(os.environ.get('HTTP_PROXY'))\n"
+                "print(os.environ.get('HTTPS_PROXY'))\n"
+                "print(os.environ.get('NO_PROXY'))\n"
+                "print('https://unknown.test/path')\n"
             )
         )
     finally:
         current_tool_context.reset(token)
 
-    assert payload["status"] == "approval_required"
-    assert payload["approvalKind"] == "sandbox_network"
-    assert payload["host"] == "unknown.test"
-    pending = get_approval_queue().list_pending("exec")
-    assert len(pending) == 1
-    assert pending[0]["params"]["host"] == "unknown.test"
+    assert payload["stdout"] == "ok\n"
+    request = seen["request"]
+    assert isinstance(request, SandboxRequest)
+    assert request.policy.network.value == "proxy_allowlist"
+    assert request.policy.network_proxy is not None
+    assert request.env["HTTP_PROXY"] == "http://127.0.0.1:48123"
+    assert request.env["HTTPS_PROXY"] == "http://127.0.0.1:48123"
+    assert request.env["NO_PROXY"] == ""
+    assert get_approval_queue().list_pending("exec") == []

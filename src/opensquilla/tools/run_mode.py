@@ -17,6 +17,11 @@ def current_run_mode() -> str | None:
         return None
     if ctx.run_mode in _VALID_RUN_MODES:
         return ctx.run_mode
+    run_context_mode = getattr(getattr(ctx, "sandbox_run_context", None), "run_mode", None)
+    run_context_mode_value = getattr(run_context_mode, "value", run_context_mode)
+    if run_context_mode_value in _VALID_RUN_MODES:
+        ctx.run_mode = run_context_mode_value
+        return run_context_mode_value
     if ctx.session_key:
         with contextlib.suppress(Exception):
             from opensquilla.gateway.approval_queue import get_approval_queue

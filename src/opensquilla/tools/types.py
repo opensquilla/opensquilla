@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from opensquilla.sandbox.operation_runtime import SandboxToolDescriptor
+
 
 class CallerKind(StrEnum):
     """Entry-point caller type — used in ToolContext for filtering decisions."""
@@ -155,6 +157,9 @@ class ToolSpec:
     execution_timeout_argument: str | None = None
     execution_timeout_padding: float = 0.0
     result_budget_class: str | None = None
+    sandbox: SandboxToolDescriptor = field(
+        default_factory=lambda: SandboxToolDescriptor.custom(kind="")
+    )
 
 
 # Registered tool implementation: async fn that accepts keyword args and returns str.

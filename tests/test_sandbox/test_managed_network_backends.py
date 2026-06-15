@@ -363,7 +363,7 @@ async def test_run_under_backend_populates_proxy_from_current_run_context(
             reader, writer = await asyncio.open_connection(proxy.host, proxy.port)
             try:
                 writer.write(
-                    b"GET http://Blocked.test/path HTTP/1.1\r\n"
+                    b"GET http://127.0.0.1/path HTTP/1.1\r\n"
                     b"\r\n"
                 )
                 await writer.drain()

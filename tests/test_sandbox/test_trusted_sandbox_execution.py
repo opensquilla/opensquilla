@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
+from opensquilla.tools.types import CallerKind, ToolContext, ToolError, current_tool_context
 
 
 @pytest.mark.asyncio
@@ -127,8 +127,7 @@ async def test_resolved_warnlist_approval_still_runs_shell_in_sandbox(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_backend_denial_host_once_does_not_persist(monkeypatch) -> None:
-    from opensquilla.sandbox.types import ALLOW
+async def test_backend_denial_does_not_fall_back_to_host(monkeypatch) -> None:
     from opensquilla.tools.builtin import shell
 
     calls: list[str] = []
@@ -181,7 +180,7 @@ async def test_backend_denial_host_once_does_not_persist(monkeypatch) -> None:
 
     async def _fake_escalate_backend_denial(*args, **kwargs):
         calls.append("escalate")
-        return ALLOW
+        return object()
 
     async def _fake_create_subprocess_shell(*args, **kwargs):
         calls.append("host")
@@ -205,7 +204,7 @@ async def test_backend_denial_host_once_does_not_persist(monkeypatch) -> None:
             return None
 
         def read(self) -> bytes:
-            return b"host once\n"
+            return b"host fallback should not run\n"
 
     monkeypatch.setattr(shell, "get_runtime", lambda: _Runtime())
     monkeypatch.setattr(shell, "gate_action", _fake_gate_action)
@@ -223,14 +222,12 @@ async def test_backend_denial_host_once_does_not_persist(monkeypatch) -> None:
         ToolContext(is_owner=True, caller_kind=CallerKind.CLI, session_key="s1")
     )
     try:
-        first = await shell.exec_command("echo hi")
-        second = await shell.exec_command("echo hi")
+        with pytest.raises(ToolError, match="host fallback disabled"):
+            await shell.exec_command("echo hi")
     finally:
         current_tool_context.reset(token)
 
-    assert "host once" in first
-    assert "sandboxed again" in second
-    assert calls == ["gate", "backend", "escalate", "host", "gate", "backend"]
+    assert calls == ["gate", "backend", "escalate"]
 
 
 @pytest.mark.asyncio

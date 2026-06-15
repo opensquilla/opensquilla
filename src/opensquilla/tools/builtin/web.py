@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlparse
@@ -16,7 +17,10 @@ import httpx
 from opensquilla.sandbox.integration import (
     current_managed_network_proxy_url,
     managed_network_httpx_kwargs,
-    sandboxed,
+)
+from opensquilla.sandbox.operation_runtime import (
+    NetworkOperationRequest,
+    SandboxToolDescriptor,
 )
 from opensquilla.search.types import SearchProviderError, SearchResult
 from opensquilla.tools.path_policy import reject_foreign_host_path
@@ -52,6 +56,35 @@ _SENSITIVE_HTTP_METHODS = {"POST", "PUT", "PATCH"}
 _TEXT_BODY_LIMIT = 10_000
 _BINARY_BODY_LIMIT = 1_000_000
 _FETCH_DIR_NAME = ".fetch"
+
+
+def _network_http_request(args: Mapping[str, Any]) -> NetworkOperationRequest:
+    url = str(args.get("url", "") or "")
+    parsed = urlparse(url)
+    raw_headers = args.get("headers")
+    headers = (
+        {str(key): str(value) for key, value in raw_headers.items()}
+        if isinstance(raw_headers, Mapping)
+        else {}
+    )
+    return NetworkOperationRequest(
+        url=url,
+        method=str(args.get("method", "GET") or "GET").upper(),
+        host=parsed.hostname or "",
+        headers=headers,
+        body=str(args.get("body")) if args.get("body") is not None else None,
+        output_path=Path(str(args["output_path"]))
+        if args.get("output_path") is not None
+        else None,
+    )
+
+
+def _network_search_request(args: Mapping[str, Any]) -> NetworkOperationRequest:
+    return NetworkOperationRequest(
+        method="SEARCH",
+        host="",
+        body=str(args.get("query", "") or ""),
+    )
 
 
 def _sensitive_body_marker(body: str | None) -> str | None:
@@ -194,16 +227,17 @@ def _save_http_response_body(raw_body: bytes, output_path: str | None) -> tuple[
     required=["url"],
     owner_only=True,
     result_budget_class="external",
-)
-@sandboxed(
-    kind="network.http",
-    argv_factory=lambda a: (
-        "http_request",
-        str(a.get("method", "GET")).upper(),
-        str(a.get("url", "")),
-        str(a.get("output_path", "")),
+    sandbox=SandboxToolDescriptor.network(
+        kind="network.http",
+        argv_factory=lambda a: (
+            "http_request",
+            str(a.get("method", "GET")).upper(),
+            str(a.get("url", "")),
+            str(a.get("output_path", "")),
+        ),
+        request_factory=_network_http_request,
+        record_payload=False,
     ),
-    record_payload=False,
 )
 async def http_request(
     url: str,
@@ -623,11 +657,16 @@ def _search_error_payload(
     },
     required=["query"],
     result_budget_class="external",
-)
-@sandboxed(
-    kind="web.fetch",
-    argv_factory=lambda a: ("web_search", str(a.get("query", "")), str(a.get("max_results", ""))),
-    record_payload=False,
+    sandbox=SandboxToolDescriptor.network(
+        kind="web.fetch",
+        argv_factory=lambda a: (
+            "web_search",
+            str(a.get("query", "")),
+            str(a.get("max_results", "")),
+        ),
+        request_factory=_network_search_request,
+        record_payload=False,
+    ),
 )
 async def web_search(query: str, max_results: int | None = None) -> str:
     payload = await run_web_search_payload(query, max_results)

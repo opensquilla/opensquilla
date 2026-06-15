@@ -60,4 +60,4 @@ def test_support_probe_accepts_current_setup_marker(
 
     assert support.setup_ready is True
     assert support.default_backend_available is True
-    assert support.proxy_allowlist_enforced is False
+    assert support.proxy_allowlist_enforced is True

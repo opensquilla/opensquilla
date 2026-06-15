@@ -13,7 +13,13 @@ from types import SimpleNamespace
 import pytest
 import structlog.testing
 
-from opensquilla.sandbox.types import SandboxResult
+from opensquilla.sandbox.types import (
+    DenialReason,
+    DenialResult,
+    SandboxResult,
+    SecurityLevel,
+    SuggestedNextStep,
+)
 from opensquilla.tools.builtin import shell
 from opensquilla.tools.types import CallerKind, ToolContext, ToolError, current_tool_context
 
@@ -242,8 +248,15 @@ async def test_exec_command_sandbox_escalation_stdin_returns_when_shell_exits(
             backend_notes=("sandbox denied",),
         )
 
-    async def fake_escalate_backend_denial(*args: object, **kwargs: object) -> object:
-        return object()
+    async def fake_escalate_backend_denial(*args: object, **kwargs: object) -> DenialResult:
+        return DenialResult(
+            reason=DenialReason.SEATBELT_DENIED,
+            suggested_next_step=SuggestedNextStep.ASK_USER,
+            level=SecurityLevel.STANDARD,
+            action_fingerprint="fp",
+            message="sandbox denied",
+            retryable=False,
+        )
 
     monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
     monkeypatch.setattr(shell, "gate_action", fake_gate_action)
@@ -254,7 +267,9 @@ async def test_exec_command_sandbox_escalation_stdin_returns_when_shell_exits(
     result = await shell.exec_command(command, stdin="payload", timeout=0.5)
     elapsed = time.monotonic() - started
 
-    assert result.startswith("exit_code=0\n")
+    payload = json.loads(result)
+    assert payload["status"] == "denied"
+    assert payload["reason"] == "seatbelt_denied"
     assert elapsed < 0.5
 
 

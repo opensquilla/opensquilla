@@ -123,4 +123,4 @@ def sandbox_reset(
 ) -> None:
     """Reset sandbox posture to OpenSquilla defaults."""
 
-    _write_run_mode(config_path, RunMode.TRUSTED)
+    _write_run_mode(config_path, RunMode.FULL)

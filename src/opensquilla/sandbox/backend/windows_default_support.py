@@ -58,7 +58,7 @@ def probe_windows_default_support(*, home: Path | None = None) -> WindowsDefault
         token_api_available=token_ready,
         acl_api_available=acl_ready,
         setup_ready=setup_ready,
-        proxy_allowlist_enforced=False,
+        proxy_allowlist_enforced=token_ready and acl_ready and setup_ready,
     )
 
 

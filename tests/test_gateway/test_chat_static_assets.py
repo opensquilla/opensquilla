@@ -125,7 +125,9 @@ def test_chat_run_mode_defaults_full_and_normalizes_standard_explicitly() -> Non
     helper = source[start:end]
 
     assert "const _RUN_MODE_DEFAULT = 'full';" in source
-    assert "Establish sandbox" in source
+    assert "Establish sandbox" not in source
+    assert "sandbox.setup.status" not in source
+    assert "sandbox.setup.ensure" not in source
     assert (
         "if (value === 'standard' || value === 'standard-sandbox') return 'standard';"
         in helper
@@ -163,8 +165,8 @@ def test_chat_run_context_load_failure_ignores_stale_sessions() -> None:
     catch_body = helper[helper.index("} catch {") :]
 
     guard_idx = catch_body.index("if (sessionKey !== _sessionKey) return;")
-    reset_idx = catch_body.index("_setRunMode(_RUN_MODE_DEFAULT")
-    assert guard_idx < reset_idx
+    fallback_idx = catch_body.index("await _loadRunModeStatusFallback(sessionKey);")
+    assert guard_idx < fallback_idx
 
 
 def test_chat_does_not_render_persistent_bypass_warning_chip() -> None:

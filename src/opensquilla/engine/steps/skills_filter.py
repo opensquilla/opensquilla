@@ -54,16 +54,31 @@ def _get_retriever(skills_cfg: Any) -> HybridRetriever:
         return _retriever
 
 
+def _eligibility_ctx(skills_cfg: Any) -> EligibilityContext:
+    """Build the eligibility context, honoring config-disabled skills.
+
+    ``skills.disabled`` lets an operator turn a skill off (e.g. from the
+    control-UI toggle). An empty list (the default) reproduces the previous
+    behavior exactly, so this is backward-compatible.
+    """
+    disabled = getattr(skills_cfg, "disabled", None) or []
+    if not disabled:
+        return _elig_ctx
+    return EligibilityContext.auto(disabled_set=set(disabled))
+
+
 def _deterministic_gate(
     skills: list[SkillSpec],
     available_tools: set[str],
+    elig_ctx: EligibilityContext | None = None,
 ) -> list[SkillSpec]:
     """Pure-Python gate: eligibility, requires_tools, fallback, visibility."""
+    ctx_elig = elig_ctx or _elig_ctx
     gated: list[SkillSpec] = []
     for s in skills:
         if s.disable_model_invocation:
             continue
-        if not check_eligibility(s, _elig_ctx):
+        if not check_eligibility(s, ctx_elig):
             continue
         if s.requires_tools and not all(t in available_tools for t in s.requires_tools):
             continue
@@ -107,11 +122,10 @@ async def filter_skills(ctx: TurnContext) -> TurnContext:
 
     # ── deterministic gate (no LLM, pure Python) ──
     available_tools = {t.name for t in ctx.tool_defs} if ctx.tool_defs else set()
-    gated = _deterministic_gate(all_skills, available_tools)
+    skills_cfg_for_gate = getattr(ctx.config, "skills", None) if ctx.config else None
+    gated = _deterministic_gate(all_skills, available_tools, _eligibility_ctx(skills_cfg_for_gate))
     if not meta_skill_enabled:
-        gated = [
-            s for s in gated if getattr(s, "kind", "skill") != "meta"
-        ]
+        gated = [s for s in gated if getattr(s, "kind", "skill") != "meta"]
         for key in (
             "meta_match",
             "meta_match_trigger",
@@ -137,9 +151,7 @@ async def filter_skills(ctx: TurnContext) -> TurnContext:
                 promoted = [s for s in filterable if getattr(s, "name", None) == hinted_name]
                 if promoted:
                     pinned = pinned + promoted
-                    filterable = [
-                        s for s in filterable if getattr(s, "name", None) != hinted_name
-                    ]
+                    filterable = [s for s in filterable if getattr(s, "name", None) != hinted_name]
 
     skills_cfg = getattr(ctx.config, "skills", None) if ctx.config else None
     filter_enabled = getattr(skills_cfg, "filter_enabled", False) if skills_cfg else False
@@ -169,9 +181,7 @@ async def filter_skills(ctx: TurnContext) -> TurnContext:
                 promoted = [s for s in filterable if getattr(s, "name", None) == hinted_name]
                 if promoted:
                     pinned = pinned + promoted
-                    filterable = [
-                        s for s in filterable if getattr(s, "name", None) != hinted_name
-                    ]
+                    filterable = [s for s in filterable if getattr(s, "name", None) != hinted_name]
 
     if filter_enabled:
         top_k = getattr(skills_cfg, "filter_top_k", 5)

@@ -190,6 +190,11 @@ async def test_squilla_router_applies_hold_before_normal_classification(monkeypa
     assert out.metadata["routing_source"] == "router_control_hold"
     assert out.metadata["router_control_hold_applied"] is True
     assert out.metadata["router_control_target_tier"] == "c3"
+    assert [item["tier"] for item in out.metadata["router_fallback_chain"]] == [
+        "c2",
+        "c1",
+        "c0",
+    ]
 
 
 @pytest.mark.asyncio

@@ -24,6 +24,7 @@ from opensquilla.router_tiers import (
     DEFAULT_TEXT_TIER,
     HIGHEST_TEXT_TIER,
     ROUTE_CLASS_TO_TIER,
+    TEXT_TIERS,
     TIER_TO_ROUTE_CLASS,
     normalize_text_tier,
 )
@@ -66,6 +67,34 @@ _ROUTER_RUNTIME_FALLBACK_MESSAGE = (
     "https://aka.ms/vs/17/release/vc_redist.x64.exe. After installing, reopen "
     "PowerShell and restart OpenSquilla."
 )
+
+
+def _router_text_fallback_chain(
+    selected_tier: object,
+    tiers: dict,
+) -> list[dict[str, str]]:
+    selected = normalize_text_tier(selected_tier)
+    if selected is None:
+        return []
+    try:
+        selected_index = TEXT_TIERS.index(selected)
+    except ValueError:
+        return []
+
+    chain: list[dict[str, str]] = []
+    for tier_name in reversed(TEXT_TIERS[:selected_index]):
+        tier_cfg = tiers.get(tier_name)
+        if not isinstance(tier_cfg, dict) or tier_cfg.get("image_only", False):
+            continue
+        model = str(tier_cfg.get("model") or "").strip()
+        if not model:
+            continue
+        provider = str(tier_cfg.get("provider") or "").strip()
+        entry = {"tier": tier_name, "model": model}
+        if provider:
+            entry["provider"] = provider
+        chain.append(entry)
+    return chain
 
 
 class RoutingHistoryStore:
@@ -1003,6 +1032,10 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
             ctx.metadata["applied_model"] = ctx.model
             ctx.metadata["routing_confidence"] = decision.confidence
             ctx.metadata["routing_source"] = decision.source
+            ctx.metadata["router_fallback_chain"] = _router_text_fallback_chain(
+                decision.tier,
+                tiers,
+            )
             ctx.metadata["router_control_hold_applied"] = True
             ctx.metadata["router_control_action"] = "set_hold"
             ctx.metadata["router_control_target_tier"] = hold.tier
@@ -1163,6 +1196,10 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
     ctx.metadata["applied_model"] = ctx.model
     ctx.metadata["routing_confidence"] = decision.confidence
     ctx.metadata["routing_source"] = decision.source
+    ctx.metadata["router_fallback_chain"] = _router_text_fallback_chain(
+        decision.tier,
+        tiers,
+    )
     ctx.metadata.update(_compute_savings(decision.model, tiers))
 
     context_states = ctx.metadata.get("session_context_states") or ctx.metadata.get(

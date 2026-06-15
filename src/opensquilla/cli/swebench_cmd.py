@@ -74,7 +74,7 @@ def _require_docker() -> None:
         "Tip: to solve a real-repository coding task WITHOUT Docker, use "
         "`opensquilla code-task` instead.",
         err=True,
-        fg=typer.colors.CYAN,
+        fg=typer.colors.BLUE,
     )
     raise typer.Exit(2)
 

@@ -118,6 +118,11 @@ class SkillsConfig(BaseSettings):
     # Names of skills the operator has turned off (e.g. via the control-UI
     # plugin toggle). A disabled skill is gated out of the agent's view.
     disabled: list[str] = Field(default_factory=list)
+    # Coding mode (control-UI toggle). When ON, the agent operates in a
+    # locked coding mode: the code-task plugin is available and a directive
+    # steers every turn through it. When OFF, code-task is unreachable through
+    # every skill API. Default OFF — coding mode is opt-in.
+    coding_mode: bool = False
     max_skills_prompt_chars: int = 8000
     filter_enabled: bool = False
     filter_top_k: int = 5

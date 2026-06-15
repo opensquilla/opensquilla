@@ -58,13 +58,19 @@ def _eligibility_ctx(skills_cfg: Any) -> EligibilityContext:
     """Build the eligibility context, honoring config-disabled skills.
 
     ``skills.disabled`` lets an operator turn a skill off (e.g. from the
-    control-UI toggle). An empty list (the default) reproduces the previous
-    behavior exactly, so this is backward-compatible.
+    control-UI toggle). Coding mode additionally gates the coding-mode skills
+    (code-task) when it is OFF, via the shared ``effective_disabled`` helper.
+    An empty result (the default: no disabled skills + coding mode off only
+    gates code-task) is handled below.
     """
+    from opensquilla.skills.eligibility import effective_disabled
+
     disabled = getattr(skills_cfg, "disabled", None) or []
-    if not disabled:
+    coding_mode = bool(getattr(skills_cfg, "coding_mode", False))
+    effective = effective_disabled(disabled, coding_mode)
+    if not effective:
         return _elig_ctx
-    return EligibilityContext.auto(disabled_set=set(disabled))
+    return EligibilityContext.auto(disabled_set=effective)
 
 
 def _deterministic_gate(
@@ -152,6 +158,15 @@ async def filter_skills(ctx: TurnContext) -> TurnContext:
                 if promoted:
                     pinned = pinned + promoted
                     filterable = [s for s in filterable if getattr(s, "name", None) != hinted_name]
+
+    # ── pin explicitly requested skills (e.g. code-task under coding mode) ──
+    for pin_name in ctx.metadata.get("pinned_skills", []) or []:
+        if any(getattr(s, "name", None) == pin_name for s in pinned):
+            continue
+        promoted = [s for s in filterable if getattr(s, "name", None) == pin_name]
+        if promoted:
+            pinned = pinned + promoted
+            filterable = [s for s in filterable if getattr(s, "name", None) != pin_name]
 
     skills_cfg = getattr(ctx.config, "skills", None) if ctx.config else None
     filter_enabled = getattr(skills_cfg, "filter_enabled", False) if skills_cfg else False

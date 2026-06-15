@@ -62,6 +62,7 @@ class _FlushReceiptSessionStorage(Protocol):
 
     async def upsert_memory_durable_receipt(self, receipt: Any) -> Any: ...
 
+
 _AUTO_PROPOSE_TOOL_ALLOWLIST = frozenset(
     {
         "emit_text",
@@ -98,6 +99,7 @@ def _make_auto_propose_tool_invoker(
 
     from opensquilla.skills.meta.orchestrator import make_tool_invoker_from_handler
     from opensquilla.tools.dispatch import build_tool_handler
+
     ctx = _make_auto_propose_tool_context(allowed_tools=allowed_tools)
     return make_tool_invoker_from_handler(
         tool_handler=build_tool_handler(registry, ctx),
@@ -755,6 +757,7 @@ async def dispatch_task_runtime_turn(
     (including the ``semantic_message`` regression surface).
     """
     from opensquilla.gateway.routing import tool_context_from_envelope
+
     workspace_dir = resolve_agent_workspace_dir(run.agent_id, config)
     workspace_strict = getattr(config, "workspace_strict", None)
     if not isinstance(workspace_strict, bool):
@@ -1017,11 +1020,7 @@ async def _emit_task_runtime_stream_events(
             is_timeout = "timeout" in code_text or "stream idle" in error_message.lower()
             is_output_truncated = code_text == "provider_output_truncated"
             terminal_reason = (
-                "timeout"
-                if is_timeout
-                else "output_truncated"
-                if is_output_truncated
-                else "error"
+                "timeout" if is_timeout else "output_truncated" if is_output_truncated else "error"
             )
             terminal_payload = {
                 "status": "timeout" if is_timeout else "failed",
@@ -1145,9 +1144,7 @@ class GatewayServer:
         # returning; only then do we stop channel delivery.
         if self._services is not None and self._services.task_runtime is not None:
             try:
-                await self._services.task_runtime.shutdown(
-                    graceful=True, graceful_timeout=30.0
-                )
+                await self._services.task_runtime.shutdown(graceful=True, graceful_timeout=30.0)
             except Exception:
                 pass
 
@@ -1415,9 +1412,10 @@ def emit_skill_filter_banner(skills_cfg: Any) -> None:
 
     onnx_ok = False
     try:
-        if importlib.util.find_spec("onnxruntime") is not None and importlib.util.find_spec(
-            "tokenizers"
-        ) is not None:
+        if (
+            importlib.util.find_spec("onnxruntime") is not None
+            and importlib.util.find_spec("tokenizers") is not None
+        ):
             from opensquilla.memory.embedding import LocalEmbeddingProvider
 
             model_name = getattr(
@@ -1444,10 +1442,7 @@ def _squilla_router_bundle_dir(router_cfg: Any) -> Path:
     if configured:
         return Path(configured).expanduser()
     return (
-        Path(__file__).resolve().parents[1]
-        / "squilla_router"
-        / "models"
-        / "v4.2_phase3_inference"
+        Path(__file__).resolve().parents[1] / "squilla_router" / "models" / "v4.2_phase3_inference"
     )
 
 
@@ -1810,10 +1805,15 @@ async def build_services(
             bundled_dir=str(layer_dirs.bundled_dir),
         )
 
-        # Register skill_list and skill_view tools
+        # Register skill_list and skill_view tools. Pass a live getter for the
+        # skills config so coding-mode / disabled gating is honored at call
+        # time (config is updated in place by config.patch).
         from opensquilla.tools.builtin.skill_tools import create_skill_tools
 
-        create_skill_tools(skill_loader)
+        create_skill_tools(
+            skill_loader,
+            skills_cfg_getter=lambda: getattr(config, "skills", None),
+        )
         log.info("build_services.skill_tools_registered")
     except Exception as e:
         log.warning("build_services.skill_loader_failed", error=str(e))
@@ -1949,8 +1949,7 @@ async def build_services(
                 agent_id: Path(root)
                 for agent_id, manager in memory_managers.items()
                 for root in [
-                    getattr(manager, "workspace_dir", None)
-                    or getattr(manager, "memory_dir", None)
+                    getattr(manager, "workspace_dir", None) or getattr(manager, "memory_dir", None)
                 ]
                 if root is not None
             }
@@ -1960,9 +1959,7 @@ async def build_services(
                 memory_roots=memory_roots,
                 agent_ids=tuple(_configured_agent_ids(config, extra_agent_ids)),
                 interval_seconds=float(getattr(config.memory, "repair_interval_seconds", 60.0)),
-                max_items_per_tick=int(
-                    getattr(config.memory, "repair_max_items_per_tick", 5)
-                ),
+                max_items_per_tick=int(getattr(config.memory, "repair_max_items_per_tick", 5)),
             )
             log.info("build_services.memory_repair_service_ready")
         except Exception as e:
@@ -1979,11 +1976,7 @@ async def build_services(
             and getattr(persistence_cfg, "enabled", False)
         ):
             meta_storage = get_session_storage(session_manager)
-            db_path = (
-                getattr(meta_storage, "_db_path", None)
-                if meta_storage is not None
-                else None
-            )
+            db_path = getattr(meta_storage, "_db_path", None) if meta_storage is not None else None
             if db_path and db_path != ":memory:":
                 from opensquilla.persistence.meta_run_writer import open_meta_run_writer
 
@@ -1991,10 +1984,7 @@ async def build_services(
                 if meta_storage is not None and hasattr(meta_storage, "_meta_run_writer"):
                     meta_storage._meta_run_writer = meta_run_writer
                 meta_run_writer.mark_orphans_failed(
-                    age_ms=int(
-                        getattr(persistence_cfg, "orphan_cleanup_age_seconds", 3600)
-                    )
-                    * 1000,
+                    age_ms=int(getattr(persistence_cfg, "orphan_cleanup_age_seconds", 3600)) * 1000,
                 )
     except Exception as e:  # noqa: BLE001 - meta traces must not block boot.
         log.warning("build_services.meta_run_writer_failed", error=str(e))
@@ -2240,9 +2230,7 @@ async def start_gateway_server(
         except RuntimeError:
             emit_coro.close()
 
-    svc._compaction_listener_remove = add_compaction_listener(
-        _emit_runtime_compaction_event
-    )
+    svc._compaction_listener_remove = add_compaction_listener(_emit_runtime_compaction_event)
 
     background_completion_manager = BackgroundCompletionManager(
         session_manager=svc.session_manager,
@@ -2470,9 +2458,7 @@ async def start_gateway_server(
         auto_cfg = config.meta_skill.auto_propose
         auto_home = _gateway_home(config)
         auto_proposals_dir = auto_home / "proposals"
-        auto_log_dir = Path(
-            os.environ.get("OPENSQUILLA_LOG_DIR", str(auto_home / "logs"))
-        )
+        auto_log_dir = Path(os.environ.get("OPENSQUILLA_LOG_DIR", str(auto_home / "logs")))
         auto_agent_ids = _configured_agent_ids(config)
 
         def _build_auto_propose_orchestrator(
@@ -2534,16 +2520,20 @@ async def start_gateway_server(
                 "routing_applied": bool(t3_model),
             }
             if t3_model:
-                auto_metadata.update({
-                    "routed_tier": HIGHEST_TEXT_TIER,
-                    "routed_model": t3_model,
-                    "applied_model": t3_model,
-                })
+                auto_metadata.update(
+                    {
+                        "routed_tier": HIGHEST_TEXT_TIER,
+                        "routed_model": t3_model,
+                        "applied_model": t3_model,
+                    }
+                )
             if t3_thinking_level:
-                auto_metadata.update({
-                    "thinking_requested": True,
-                    "thinking_level": t3_thinking_level,
-                })
+                auto_metadata.update(
+                    {
+                        "thinking_requested": True,
+                        "thinking_level": t3_thinking_level,
+                    }
+                )
 
             base_config = AgentConfig(
                 model_id=auto_model_id,
@@ -2708,12 +2698,14 @@ async def start_gateway_server(
         log.info("gateway.cron_handler_registered", handler_key="system_event")
         log.info("gateway.cron_handler_registered", handler_key="memory_dream")
         log.info("gateway.cron_handler_registered", handler_key="auto_propose")
-        register_runtime(AutoProposeRuntime(
-            config=auto_cfg,
-            home=auto_home,
-            register_crons=_register_auto_propose_runtime_crons,
-            pause_crons=_pause_auto_propose_runtime_crons,
-        ))
+        register_runtime(
+            AutoProposeRuntime(
+                config=auto_cfg,
+                home=auto_home,
+                register_crons=_register_auto_propose_runtime_crons,
+                pause_crons=_pause_auto_propose_runtime_crons,
+            )
+        )
         await _register_dream_crons(
             scheduler=svc.cron_scheduler,
             memory_config=config.memory,

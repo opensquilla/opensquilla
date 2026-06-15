@@ -1260,9 +1260,9 @@ const ChatView = (() => {
                     </div>
                   </div>
                   <div class="chat-toolbar-row">
-                    <span class="chat-toolbar-row-label">Code-task plugin</span>
-                    <div class="toggle-switch-wrap" id="pill-codetask-group" title="Enable the code-task coding plugin (solve real-repository tasks)">
-                      <label class="toggle-switch" aria-label="Code-task plugin">
+                    <span class="chat-toolbar-row-label">Coding mode</span>
+                    <div class="toggle-switch-wrap" id="pill-codetask-group" title="Lock this session into coding mode: code changes go through code-task. Off makes code-task unavailable.">
+                      <label class="toggle-switch" aria-label="Coding mode">
                         <input type="checkbox" id="toggle-codetask" />
                         <span class="toggle-track"><span class="toggle-thumb"></span></span>
                       </label>
@@ -1405,20 +1405,16 @@ const ChatView = (() => {
       });
     }
 
-    // Code-task plugin toggle — operator-level (persists to config). Checked =
-    // plugin enabled (skill visible to the agent); unchecked = skill name
-    // added to skills.disabled so it is gated out of the agent's view.
+    // Coding-mode toggle — operator-level (persists to config). ON locks the
+    // session into coding mode (code changes go through code-task); OFF makes
+    // code-task unavailable across every skill API.
     const codetaskToggle = _el.querySelector('#toggle-codetask');
     if (codetaskToggle) {
       codetaskToggle.addEventListener('change', async () => {
         const enabled = codetaskToggle.checked;
         try {
-          const cfg = await _rpc.call('config.get');
-          const current = Array.isArray(cfg?.skills?.disabled) ? cfg.skills.disabled.slice() : [];
-          const next = current.filter((n) => n !== 'code-task');
-          if (!enabled) next.push('code-task');
-          await _rpc.call('config.patch.safe', { patches: { 'skills.disabled': next } });
-          UI.toast('Code-task plugin: ' + (enabled ? 'ON' : 'OFF'), 'info');
+          await _rpc.call('config.patch.safe', { patches: { 'skills.coding_mode': enabled } });
+          UI.toast('Coding mode: ' + (enabled ? 'ON' : 'OFF'), 'info');
         } catch (e) {
           codetaskToggle.checked = !enabled;  // revert on failure
           UI.toast('Failed: ' + e.message, 'err');
@@ -1493,11 +1489,10 @@ const ChatView = (() => {
       const routerFxToggle = _el?.querySelector('#toggle-router-fx');
       if (routerFxToggle) routerFxToggle.checked = _routerFx.enabled;
       if (window.SavingsFX) window.SavingsFX.setEnabled(_routerFx.enabled);
-      // Code-task plugin: ON when NOT in skills.disabled.
+      // Coding mode: ON reflects skills.coding_mode.
       const codetaskToggle = _el?.querySelector('#toggle-codetask');
       if (codetaskToggle) {
-        const disabledSkills = Array.isArray(cfg?.skills?.disabled) ? cfg.skills.disabled : [];
-        codetaskToggle.checked = !disabledSkills.includes('code-task');
+        codetaskToggle.checked = !!(cfg?.skills?.coding_mode);
       }
       _globalElevatedMode = _normalizeElevatedMode(cfg?.permissions?.default_mode);
       _toolbarState.bypass = _isApprovalBypassMode(_effectiveElevatedMode());

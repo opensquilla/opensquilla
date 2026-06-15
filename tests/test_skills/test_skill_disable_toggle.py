@@ -25,11 +25,20 @@ def _skill(name: str) -> SkillSpec:
 
 
 class TestEligibilityContextFromConfig:
-    def test_empty_disabled_reuses_default_ctx(self):
-        # Backward compatible: no disabled skills -> the shared default ctx.
-        cfg = SkillsConfig()
+    def test_empty_effective_disabled_reuses_default_ctx(self):
+        # The shared default ctx is reused only when nothing is gated: no
+        # disabled skills AND coding mode ON (so code-task is not gated).
+        cfg = SkillsConfig(coding_mode=True)
         ctx = skills_filter._eligibility_ctx(cfg)
         assert ctx is skills_filter._elig_ctx
+
+    def test_default_config_gates_codetask(self):
+        # Default config (coding mode OFF) gates code-task, so it is NOT the
+        # shared singleton.
+        cfg = SkillsConfig()
+        ctx = skills_filter._eligibility_ctx(cfg)
+        assert ctx is not skills_filter._elig_ctx
+        assert "code-task" in ctx.disabled_set
 
     def test_disabled_list_builds_gating_ctx(self):
         cfg = SkillsConfig(disabled=["code-task"])

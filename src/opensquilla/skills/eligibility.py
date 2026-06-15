@@ -134,13 +134,7 @@ def _is_declared(spec: SkillSpec) -> bool:
         return False
     requires = spec.metadata.requires
     requires_declared = bool(
-        requires
-        and (
-            requires.bins
-            or requires.any_bins
-            or requires.env
-            or requires.env_any
-        )
+        requires and (requires.bins or requires.any_bins or requires.env or requires.env_any)
     )
     return requires_declared or bool(spec.metadata.install)
 
@@ -217,9 +211,7 @@ def diagnose_eligibility(spec: SkillSpec, ctx: EligibilityContext) -> Eligibilit
             if meta.requires.env_any:
                 if not any(_has_env(e, ctx) for e in meta.requires.env_any):
                     missing_env_any.append(list(meta.requires.env_any))
-                    reasons.append(
-                        f"Need one env var from: {', '.join(meta.requires.env_any)}"
-                    )
+                    reasons.append(f"Need one env var from: {', '.join(meta.requires.env_any)}")
 
     # Match missing bins against install specs to produce hints
     install_hints: list[InstallHint] = []
@@ -247,3 +239,36 @@ def diagnose_eligibility(spec: SkillSpec, ctx: EligibilityContext) -> Eligibilit
         wrong_os=wrong_os,
         declared=_is_declared(spec),
     )
+
+
+# ---------------------------------------------------------------------------
+# Coding-mode availability
+# ---------------------------------------------------------------------------
+# Skills whose availability is governed by the operator "coding mode" toggle
+# rather than the generic disabled list. code-task (the coding plugin) is
+# available ONLY when coding mode is ON; turning coding mode off makes it
+# unreachable through every skill API.
+CODING_MODE_SKILLS: frozenset[str] = frozenset({"code-task"})
+
+
+def effective_disabled(disabled: set[str] | list[str] | None, coding_mode: bool) -> set[str]:
+    """The set of skill names to gate, given the operator config.
+
+    Always includes the explicit ``disabled`` list; additionally gates the
+    coding-mode skills when coding mode is OFF.
+    """
+    result = set(disabled or ())
+    if not coding_mode:
+        result |= CODING_MODE_SKILLS
+    return result
+
+
+def is_skill_available(
+    name: str, *, disabled: set[str] | list[str] | None, coding_mode: bool
+) -> bool:
+    """Whether a skill may be surfaced or invoked under the operator config.
+
+    Single source of truth used by every skill surface (skill list/view,
+    the pre-turn skill gate) so coding mode cannot be bypassed via one path.
+    """
+    return name not in effective_disabled(disabled, coding_mode)

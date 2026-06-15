@@ -1,6 +1,7 @@
 """Pre-turn pipeline steps."""
 
 from opensquilla.engine.pipeline import TurnContext
+from opensquilla.engine.steps.coding_mode import enforce_coding_mode
 from opensquilla.engine.steps.inject_platform_hint import inject_platform_hint
 from opensquilla.engine.steps.inject_subagent_grounding import inject_subagent_grounding
 from opensquilla.engine.steps.meta_resolution import meta_resolution
@@ -22,6 +23,7 @@ __all__ = [
     "apply_prompt_cache",
     "apply_squilla_router",
     "apply_vision_followup_gate",
+    "enforce_coding_mode",
     "filter_skills",
     "inject_platform_hint",
     "inject_subagent_grounding",

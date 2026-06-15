@@ -617,6 +617,40 @@ def test_done_handler_normalizes_and_emits_done() -> None:
     assert extra == []
 
 
+def test_done_handler_carries_vision_followup_metadata() -> None:
+    state = _make_state()
+    handler = _DoneHandler()
+    inp = _make_input(
+        state=state,
+        turn=_make_turn(
+            metadata={
+                "image_route_reason": "gate_history",
+                "router_vision_followup_gate_decision": "needs_image",
+                "router_vision_followup_gate_confidence": 0.92,
+                "router_vision_followup_gate_reason": (
+                    "references previous image with private detail"
+                ),
+                "router_vision_followup_gate_source": "llm",
+                "router_vision_followup_gate_model": "deepseek/deepseek-v4-flash",
+                "router_vision_followup_needs_image": True,
+            }
+        ),
+    )
+
+    transformed, extra = handler.handle(DoneEvent(text="ok"), inp, state)
+
+    assert getattr(transformed, "image_route_reason") == "gate_history"
+    assert getattr(transformed, "vision_followup_gate_decision") == "needs_image"
+    assert getattr(transformed, "vision_followup_gate_confidence") == 0.92
+    assert getattr(transformed, "vision_followup_gate_reason") == "llm_needs_image"
+    assert "private detail" not in getattr(transformed, "vision_followup_gate_reason")
+    assert getattr(transformed, "vision_followup_gate_source") == "llm"
+    assert getattr(transformed, "vision_followup_gate_model") == "deepseek/deepseek-v4-flash"
+    assert getattr(transformed, "vision_followup_needs_image") is True
+    assert state.done_event is transformed
+    assert extra == []
+
+
 @pytest.mark.asyncio
 async def test_compaction_handler_runs_persist_snapshot_prompt_in_order() -> None:
     persist = _RecordingCompactionPersist()
@@ -700,6 +734,65 @@ async def test_outer_stage_yields_text_then_done_and_notifies_post_stream() -> N
     assert len(recs["memory_sync_notify"].calls) == 1
     assert recs["memory_sync_notify"].calls[0]["runtime_message"] == "hello there"
     assert recs["memory_sync_notify"].calls[0]["sync_manager_present"] is True
+
+
+@pytest.mark.asyncio
+async def test_outer_stage_surfaces_completed_meta_when_done_text_is_empty() -> None:
+    agent_run = _RecordingAgentRun(
+        events=[
+            ToolResultEvent(
+                tool_use_id="meta-1",
+                tool_name="meta_invoke",
+                result="meta-skill 'AwesomeWebpageMetaSkill' completed.",
+                is_error=False,
+                arguments={"name": "AwesomeWebpageMetaSkill"},
+            ),
+            DoneEvent(text=""),
+        ]
+    )
+    stage, _ = _make_stage(agent_run=agent_run)
+    inp = _make_input()
+
+    yielded = await _drain(stage, inp)
+
+    kinds = [type(e).__name__ for e in yielded]
+    assert kinds == ["ToolResultEvent", "TextDeltaEvent", "DoneEvent"]
+    fallback = yielded[1]
+    assert isinstance(fallback, TextDeltaEvent)
+    assert "AwesomeWebpageMetaSkill" in fallback.text
+    assert "没有生成可展示的最终回答" in fallback.text
+    done = yielded[2]
+    assert isinstance(done, DoneEvent)
+    assert done.text == "".join(inp.state.final_text_parts)
+    assert done.text == fallback.text
+
+
+@pytest.mark.asyncio
+async def test_outer_stage_preserves_meta_text_when_done_text_is_empty() -> None:
+    agent_run = _RecordingAgentRun(
+        events=[
+            TextDeltaEvent(text="Final meta answer"),
+            ToolResultEvent(
+                tool_use_id="meta-1",
+                tool_name="meta_invoke",
+                result="meta-skill 'meta-kid-project-planner' completed.",
+                is_error=False,
+                arguments={"name": "meta-kid-project-planner"},
+            ),
+            DoneEvent(text=""),
+        ]
+    )
+    stage, _ = _make_stage(agent_run=agent_run)
+    inp = _make_input()
+
+    yielded = await _drain(stage, inp)
+
+    kinds = [type(e).__name__ for e in yielded]
+    assert kinds == ["TextDeltaEvent", "ToolResultEvent", "DoneEvent"]
+    done = yielded[2]
+    assert isinstance(done, DoneEvent)
+    assert done.text == "Final meta answer"
+    assert inp.state.final_text_parts == ["Final meta answer"]
 
 
 @pytest.mark.asyncio

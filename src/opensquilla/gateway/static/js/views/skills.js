@@ -18,6 +18,8 @@ const SkillsView = (() => {
   let _filterText = '';
   let _statusFilter = 'all';
   let _activeTab = 'installed';
+  let _skillDialogRequestSeq = 0;
+  let _skillDialogSelectedName = '';
 
   const _LAYER_ORDER = ['workspace', 'bundled', 'managed', 'personal', 'project', 'extra'];
   const _LAYER_LABEL = {
@@ -114,12 +116,26 @@ const SkillsView = (() => {
         </dialog>
       </div>`;
 
-    // Dialog backdrop click → close (attach once, not per-open)
+    // Dialog backdrop and close-button click → close (attach once, not per-open).
     const _dlg = _el.querySelector('#skill-detail-dialog');
-    if (_dlg) {
+    if (_dlg && !_dlg.dataset.closeHandler) {
       _dlg.addEventListener('click', (e) => {
-        if (e.target === _dlg) _dlg.close();
+        const closeTarget = e.target && typeof e.target.closest === 'function'
+          ? e.target.closest('[data-dialog-close]')
+          : null;
+        if (closeTarget) {
+          e.preventDefault();
+          e.stopPropagation();
+          _closeSkillDialog(_dlg);
+          return;
+        }
+        if (e.target === _dlg) _closeSkillDialog(_dlg);
       });
+      _dlg.addEventListener('cancel', (e) => {
+        e.preventDefault();
+        _closeSkillDialog(_dlg);
+      });
+      _dlg.dataset.closeHandler = '1';
     }
 
     const _filterInput = _el.querySelector('#skills-filter');
@@ -235,6 +251,8 @@ const SkillsView = (() => {
     _intervals.forEach(id => clearInterval(id));
     _intervals = [];
     _allSkills = [];
+    _skillDialogRequestSeq = 0;
+    _skillDialogSelectedName = '';
     _el = null;
     _rpc = null;
   }
@@ -657,7 +675,7 @@ const SkillsView = (() => {
         </section>
       </div>`;
       const closeBtn = body.querySelector('[data-dialog-close]');
-      if (closeBtn) closeBtn.addEventListener('click', () => dlg.close());
+      if (closeBtn) closeBtn.addEventListener('click', () => _closeSkillDialog(dlg));
       dlg.showModal();
     } catch (err) {
       UI.toast('Show failed: ' + err.message, 'err');
@@ -762,6 +780,7 @@ const SkillsView = (() => {
     const kindBadge = isMeta
       ? `<span class="sk-card__kind-badge" title="${_esc(skill.kind)}">${skill.kind === 'meta_sop' ? 'SOP' : 'META'}</span>`
       : '';
+    const dependencyBadges = _renderDependencyBadges(skill);
     return `<button type="button" class="sk-card${isMeta ? ' sk-card--meta' : ''}" data-skill-card="${_esc(skill.name)}" title="${_esc(skill.name + (desc ? ': ' + desc : ''))}">
       <div class="sk-card__head">
         <span class="sk-card__dot ${dotCls}" title="${_esc(dotTitle)}"></span>
@@ -770,53 +789,70 @@ const SkillsView = (() => {
         ${kindBadge}
       </div>
       <p class="sk-card__desc" title="${_esc(desc)}">${_esc(desc)}</p>
+      ${dependencyBadges}
       ${subSkillsHtml}
     </button>`;
   }
 
-  function _renderRequirements(requirements) {
-    const items = requirements && Array.isArray(requirements.items) ? requirements.items : [];
-    if (!items.length) return '';
-    const rows = items.map(item => {
-      const missing = [];
-      (item.missing_bins || []).forEach(b => missing.push(`<code>${_esc(b)}</code>`));
-      (item.missing_env || []).forEach(e => missing.push(`<code>${_esc(e)}</code>`));
-      const requires = [];
-      (item.requires_bins || []).forEach(b => requires.push(_esc(b)));
-      if ((item.requires_any_bins || []).length) {
-        requires.push(`one of ${(item.requires_any_bins || []).map(_esc).join(' / ')}`);
-      }
-      (item.requires_env || []).forEach(e => requires.push(`${_esc(e)} env`));
-      const status = item.status || 'not_declared';
-      const statusLabel = status === 'ready' ? 'ready'
-        : status === 'needs_setup' ? 'needs setup'
-          : status === 'missing_skill' ? 'missing skill'
-            : 'no deps declared';
-      const statusClass = status === 'ready' ? 'sk-chip--ok'
-        : status === 'needs_setup' || status === 'missing_skill' ? 'sk-chip--warn'
-          : 'sk-chip--unverified';
-      const detail = missing.length
-        ? `Missing ${missing.join(', ')}`
-        : requires.length ? requires.join(', ') : 'No declared dependencies';
-      return `<div class="sk-dialog__req-row">
-        <span class="sk-dialog__req-name">${_esc(item.name || 'unknown')}</span>
-        <span class="sk-chip ${statusClass}">${statusLabel}</span>
-        <span class="sk-dialog__req-detail">${detail}</span>
-      </div>`;
-    }).join('');
-    return `<div class="sk-dialog__section">
-      <div class="sk-dialog__section-title">Requirements</div>
-      <div class="sk-dialog__requirements">${rows}</div>
-    </div>`;
+  function _renderDependencyBadges(skill) {
+    const summary = _dependencySummary(skill);
+    const packageCount = summary.declared.python_packages.length;
+    const binaryCount = summary.declared.binaries.all.length + (summary.declared.binaries.any.length ? 1 : 0);
+    const apiEnvCount = summary.declared.api_env.all.length + (summary.declared.api_env.any.length ? 1 : 0);
+    const missingCount = summary.missing.count
+      + summary.sub_skill_dependencies.missing_count
+      + summary.sub_skill_dependencies.missing_references.length;
+    const advisoryCount = summary.inferred.python_imports.length
+      + summary.inferred.api_env.length
+      + summary.inferred.scan_errors.length
+      + summary.sub_skill_dependencies.inferred_count;
+    const badges = [];
+    if (packageCount > 0) badges.push(_dependencyBadge(`py ${packageCount}`));
+    if (binaryCount > 0) badges.push(_dependencyBadge(`bin ${binaryCount}`));
+    if (apiEnvCount > 0) badges.push(_dependencyBadge(`env ${apiEnvCount}`));
+    if (missingCount > 0) badges.push(_dependencyBadge(`missing ${missingCount}`, 'missing'));
+    if (advisoryCount > 0) badges.push(_dependencyBadge(`advisory ${advisoryCount}`, 'advisory'));
+    if (!badges.length) return '';
+    return `<div class="sk-card__deps" aria-label="Dependency summary">${badges.join('')}</div>`;
   }
 
-  function _openSkillDialog(skill) {
+  function _dependencyBadge(label, tone = '') {
+    const toneClass = tone ? ` sk-card__dep-badge--${tone}` : '';
+    return `<span class="sk-card__dep-badge${toneClass}">${_esc(label)}</span>`;
+  }
+
+  async function _openSkillDialog(skill) {
     const dlg = _el.querySelector('#skill-detail-dialog');
     const body = _el.querySelector('#skill-detail-body');
     if (!dlg || !body) return;
 
-    const statusDetail = skill.status_detail || '';
-    const status = skill.status || (skill.eligible ? 'ready' : 'needs_setup');
+    const requestSeq = ++_skillDialogRequestSeq;
+    _skillDialogSelectedName = skill.name || '';
+    _renderSkillDialogBody(dlg, body, skill, { loading: true });
+    if (!dlg.open) {
+      if (typeof dlg.showModal === 'function') dlg.showModal();
+      else dlg.setAttribute('open', '');
+    }
+
+    let detail = skill;
+    let loadError = '';
+    try {
+      const data = await _rpc.call('skills.get', { name: skill.name });
+      if (data && data.name) detail = { ...skill, ...data };
+    } catch (err) {
+      detail = skill;
+      loadError = err && err.message ? err.message : 'Failed to refresh details.';
+    }
+    if (_skillDialogRequestSeq !== requestSeq) return;
+    if (_skillDialogSelectedName !== (skill.name || '')) return;
+    if (!dlg.open) return;
+
+    _renderSkillDialogBody(dlg, body, detail, { loadError });
+  }
+
+  function _renderSkillDialogBody(dlg, body, detail, { loading = false, loadError = '' } = {}) {
+    const statusDetail = detail.status_detail || '';
+    const status = detail.status || (detail.eligible ? 'ready' : 'needs_setup');
     let statusChip;
     if (status === 'ready') {
       statusChip = `<span class="sk-chip sk-chip--ok" title="${_esc(statusDetail)}">✓ ready</span>`;
@@ -825,33 +861,18 @@ const SkillsView = (() => {
     } else {
       statusChip = `<span class="sk-chip sk-chip--warn" title="${_esc(statusDetail)}">needs deps</span>`;
     }
-    const layerChip = `<span class="sk-chip" title="${_esc(_layerHelp(skill.layer))}">${_esc(_layerLabel(skill.layer))}</span>`;
-
-    let missingHtml = '';
-    if (status === 'needs_setup') {
-      const missing = [];
-      (skill.missing_bins || []).forEach(b => missing.push(`<li><code>${_esc(b)}</code> <span class="sk-dim">binary</span></li>`));
-      (skill.missing_env || []).forEach(e => missing.push(`<li><code>${_esc(e)}</code> <span class="sk-dim">env var</span></li>`));
-      if (missing.length) {
-        missingHtml = `<div class="sk-dialog__section">
-          <div class="sk-dialog__section-title">Missing</div>
-          <ul class="sk-dialog__missing">${missing.join('')}</ul>
-        </div>`;
-      }
-    }
-
-    const requirementsHtml = _renderRequirements(skill.requirements);
+    const layerChip = `<span class="sk-chip" title="${_esc(_layerHelp(detail.layer))}">${_esc(_layerLabel(detail.layer))}</span>`;
+    const dependencyHtml = _renderDependencySection(detail);
 
     let installHtml = '';
-    const hasMissingBins = (skill.missing_bins || []).length > 0;
-    const installs = hasMissingBins ? (skill.install || []) : [];
+    const installs = loading ? [] : _actionableInstallEntries(detail);
     if (installs.length) {
       const rows = installs.map(i => {
         const bins = (i.bins || []).length ? `<span class="sk-dim"> (${(i.bins || []).map(_esc).join(', ')})</span>` : '';
         const label = i.label || `Install via ${i.kind}`;
         return `<div class="sk-dialog__install-row">
           <span>${_esc(label)}${bins}</span>
-          <button class="btn btn--primary btn--sm" data-install-deps-name="${_esc(skill.name)}" data-install-deps-id="${_esc(i.id)}">Install via ${_esc(i.kind)}</button>
+          <button class="btn btn--primary btn--sm" data-install-deps-name="${_esc(detail.name)}" data-install-deps-id="${_esc(i.id)}">Install via ${_esc(i.kind)}</button>
         </div>`;
       }).join('');
       installHtml = `<div class="sk-dialog__section">
@@ -859,38 +880,44 @@ const SkillsView = (() => {
         ${rows}
       </div>`;
     }
-
-    const homepage = skill.homepage
-      ? `<a href="${_esc(skill.homepage)}" target="_blank" rel="noopener" class="sk-dialog__link">Homepage ↗</a>`
+    const loadingHtml = loading
+      ? `<div class="sk-dialog__section"><div class="sk-dialog__section-title">Refreshing</div><div class="sk-dep-note">Loading latest dependency details…</div></div>`
+      : '';
+    const loadErrorHtml = loadError
+      ? `<div class="sk-dialog__section"><div class="sk-dialog__section-title">Refresh</div><div class="sk-dep-note">${_esc(loadError)}</div></div>`
       : '';
 
-    const footer = skill.file_path
-      ? `<small class="sk-dim sk-dialog__path">${_esc(skill.file_path)}</small>`
+    const homepage = detail.homepage
+      ? `<a href="${_esc(detail.homepage)}" target="_blank" rel="noopener" class="sk-dialog__link">Homepage ↗</a>`
       : '';
 
-    const removeBtn = skill.layer === 'managed'
-      ? `<button class="btn btn--sm" data-uninstall="${_esc(skill.name)}">Remove</button>`
+    const footer = detail.file_path
+      ? `<small class="sk-dim sk-dialog__path">${_esc(detail.file_path)}</small>`
+      : '';
+
+    const removeBtn = detail.layer === 'managed'
+      ? `<button class="btn btn--sm" data-uninstall="${_esc(detail.name)}">Remove</button>`
       : '';
 
     // Meta-skill composition: render the sub-skill list as a vertical
     // chip stack. Order is preserved (parser yields composition.steps in
     // declaration order, dedup'd). Each chip is the literal skill name
     // referenced by `composition.steps[].skill` (or `routes[].skill`).
-    const isMeta = skill.kind === 'meta' || skill.kind === 'meta_sop';
+    const isMeta = detail.kind === 'meta' || detail.kind === 'meta_sop';
     let compositionHtml = '';
-    if (isMeta && Array.isArray(skill.sub_skills) && skill.sub_skills.length) {
-      const chips = skill.sub_skills
+    if (isMeta && Array.isArray(detail.sub_skills) && detail.sub_skills.length) {
+      const chips = detail.sub_skills
         .map(n => `<span class="sk-chip sk-chip--sub">${_esc(n)}</span>`)
         .join(' ');
-      const kindLabel = skill.kind === 'meta_sop' ? 'meta_sop' : 'meta';
+      const kindLabel = detail.kind === 'meta_sop' ? 'meta_sop' : 'meta';
       compositionHtml = `<div class="sk-dialog__section">
-        <div class="sk-dialog__section-title">Composition (${_esc(kindLabel)}, ${skill.sub_skills.length} sub-skills)</div>
+        <div class="sk-dialog__section-title">Composition (${_esc(kindLabel)}, ${detail.sub_skills.length} sub-skills)</div>
         <div class="sk-dialog__sub-list">${chips}</div>
       </div>`;
     }
     let triggersHtml = '';
-    if (isMeta && Array.isArray(skill.triggers) && skill.triggers.length) {
-      const triggers = skill.triggers
+    if (isMeta && Array.isArray(detail.triggers) && detail.triggers.length) {
+      const triggers = detail.triggers
         .map(t => `<code class="sk-chip sk-chip--trigger">${_esc(t)}</code>`)
         .join(' ');
       triggersHtml = `<div class="sk-dialog__section">
@@ -902,18 +929,19 @@ const SkillsView = (() => {
     body.innerHTML = `
       <header class="sk-dialog__head">
         <div class="sk-dialog__head-left">
-          ${skill.emoji ? `<span class="sk-dialog__emoji">${_esc(skill.emoji)}</span>` : ''}
-          <strong class="sk-dialog__name">${_esc(skill.name)}</strong>
+          ${detail.emoji ? `<span class="sk-dialog__emoji">${_esc(detail.emoji)}</span>` : ''}
+          <strong class="sk-dialog__name">${_esc(detail.name)}</strong>
           <div class="sk-dialog__chips">${layerChip} ${statusChip}</div>
         </div>
-        <button type="button" class="sk-iconbtn" id="skill-dialog-close" aria-label="Close">${icons.x()}</button>
+        <button type="button" class="sk-iconbtn" id="skill-dialog-close" data-dialog-close aria-label="Close">${icons.x()}</button>
       </header>
       <section class="sk-dialog__body">
-        <p class="sk-dialog__desc">${_esc(skill.description || '')}</p>
+        <p class="sk-dialog__desc">${_esc(detail.description || '')}</p>
+        ${loadingHtml}
+        ${loadErrorHtml}
         ${triggersHtml}
         ${compositionHtml}
-        ${requirementsHtml}
-        ${missingHtml}
+        ${dependencyHtml}
         ${installHtml}
         ${homepage ? `<div class="sk-dialog__section">${homepage}</div>` : ''}
       </section>
@@ -923,11 +951,352 @@ const SkillsView = (() => {
       </footer>`;
 
     const closeBtn = body.querySelector('#skill-dialog-close');
-    if (closeBtn) closeBtn.addEventListener('click', () => dlg.close(), { once: true });
+    if (closeBtn) closeBtn.addEventListener('click', () => _closeSkillDialog(dlg), { once: true });
+  }
 
-    if (dlg.open) dlg.close();
-    if (typeof dlg.showModal === 'function') dlg.showModal();
-    else dlg.setAttribute('open', '');
+  function _closeSkillDialog(dlg) {
+    if (!dlg) return;
+    _skillDialogRequestSeq += 1;
+    _skillDialogSelectedName = '';
+    try {
+      if (typeof dlg.close === 'function') dlg.close();
+    } catch (_err) {
+      // Some browsers throw if close() is called while the dialog is not open.
+    }
+    if (typeof dlg.removeAttribute === 'function') dlg.removeAttribute('open');
+    if ('open' in dlg) dlg.open = false;
+  }
+
+  function _renderDependencySection(skill) {
+    const summary = _dependencySummary(skill);
+    const blocks = [
+      _renderDependencyBlock('Suggested next steps', _renderDependencySuggestions(skill, summary), '', 'sk-dep-block--suggestions'),
+      _renderDependencyBlock('Declared Python Packages', _renderDeclaredPythonPackages(summary)),
+      _renderDependencyBlock('Declared Binaries', _renderDeclaredRequirementList({
+        all: summary.declared.binaries.all,
+        any: summary.declared.binaries.any,
+        kind: 'binary',
+      })),
+      _renderDependencyBlock('Declared API Env', _renderDeclaredRequirementList({
+        all: summary.declared.api_env.all,
+        any: summary.declared.api_env.any,
+        kind: 'env',
+      })),
+      _renderDependencyBlock('Missing Dependencies', _renderMissingDependencies(summary)),
+      _renderDependencyBlock('Advisory only', _renderAdvisoryDependencies(summary), 'Advisory only. Not enforced for readiness.'),
+    ];
+    const subSkillRollup = _renderSubSkillDependencyRollup(summary);
+    if (subSkillRollup) {
+      blocks.push(_renderDependencyBlock('Meta-skill sub-skill rollup', subSkillRollup, 'sub-skill rollup'));
+    }
+    return `<div class="sk-dialog__section">
+      <div class="sk-dialog__section-title">Dependencies</div>
+      <div class="sk-dep-grid">${blocks.join('')}</div>
+    </div>`;
+  }
+
+  function _renderDependencyBlock(title, content, note = '', extraClass = '') {
+    const noteHtml = note ? `<div class="sk-dep-note">${_esc(note)}</div>` : '';
+    const className = extraClass ? `sk-dep-block ${extraClass}` : 'sk-dep-block';
+    return `<section class="${className}">
+      <div class="sk-dep-block__title">${_esc(title)}</div>
+      ${noteHtml}
+      ${content}
+    </section>`;
+  }
+
+  function _renderDeclaredPythonPackages(summary) {
+    const packages = summary.declared.python_packages || [];
+    if (!packages.length) return '<div class="sk-dep-note">No declared Python package installs.</div>';
+    return `<ul class="sk-dep-list">${packages.map(pkg => {
+      const label = pkg.label || pkg.package || pkg.module || pkg.install_id || 'uv install';
+      const meta = [
+        pkg.install_id ? `install_id <code>${_esc(pkg.install_id)}</code>` : '',
+        pkg.package ? `package <code>${_esc(pkg.package)}</code>` : '',
+        pkg.module ? `module <code>${_esc(pkg.module)}</code>` : '',
+      ].filter(Boolean).join(' · ');
+      return `<li><strong>${_esc(label)}</strong>${meta ? `<span class="sk-dep-meta">${meta}</span>` : ''}</li>`;
+    }).join('')}</ul>`;
+  }
+
+  function _renderDeclaredRequirementList({ all, any, kind }) {
+    const items = [];
+    (all || []).forEach(name => {
+      items.push(`<li><code>${_esc(name)}</code><span class="sk-dep-meta">required ${_esc(kind)}</span></li>`);
+    });
+    if ((any || []).length) {
+      const alternatives = any.map(name => `<code>${_esc(name)}</code>`).join(' or ');
+      items.push(`<li>${alternatives}<span class="sk-dep-meta">any one ${_esc(kind)}</span></li>`);
+    }
+    if (!items.length) return '<div class="sk-dep-note">None declared.</div>';
+    return `<ul class="sk-dep-list">${items.join('')}</ul>`;
+  }
+
+  function _renderMissingDependencies(summary) {
+    const items = [];
+    summary.missing.binaries.all.forEach(name => {
+      items.push(`<li><code>${_esc(name)}</code><span class="sk-dep-meta">missing binary</span></li>`);
+    });
+    summary.missing.binaries.any.forEach(group => {
+      const alternatives = Array.isArray(group) ? group.map(name => `<code>${_esc(name)}</code>`).join(' or ') : '';
+      if (alternatives) items.push(`<li>${alternatives}<span class="sk-dep-meta">missing.binaries.any</span></li>`);
+    });
+    summary.missing.api_env.all.forEach(name => {
+      items.push(`<li><code>${_esc(name)}</code><span class="sk-dep-meta">missing env</span></li>`);
+    });
+    summary.missing.api_env.any.forEach(group => {
+      const alternatives = Array.isArray(group) ? group.map(name => `<code>${_esc(name)}</code>`).join(' or ') : '';
+      if (alternatives) items.push(`<li>${alternatives}<span class="sk-dep-meta">missing.api_env.any · env var group</span></li>`);
+    });
+    if (!items.length) return '<div class="sk-dep-note">All declared dependencies are currently satisfied.</div>';
+    return `<ul class="sk-dep-list">${items.join('')}</ul>`;
+  }
+
+  function _renderDependencySuggestions(skill, summary) {
+    const suggestions = [];
+    const actionableInstalls = _actionableInstallEntries(skill);
+    const hasPackageSetupAction = actionableInstalls.some(install =>
+      _isActionablePythonPackageInstall(install, summary, skill)
+    );
+    const hasMissing = summary.missing.count > 0
+      || summary.missing.binaries.all.length > 0
+      || summary.missing.binaries.any.length > 0
+      || summary.missing.api_env.all.length > 0
+      || summary.missing.api_env.any.length > 0
+      || summary.sub_skill_dependencies.missing_references.length > 0
+      || summary.sub_skill_dependencies.missing_count > 0;
+
+    actionableInstalls.forEach(install => {
+      const label = install.label || install.id || `Install via ${install.kind || 'installer'}`;
+      suggestions.push({
+        title: `Use WebUI install action: ${label}`,
+        command: '',
+        note: 'Prefer the install button in this dialog when it is shown; it uses the skill manifest installer and then rechecks readiness.',
+      });
+    });
+
+    if (hasMissing || hasPackageSetupAction) {
+      (summary.declared.python_packages || []).forEach(pkg => {
+        const pkgName = pkg.package || pkg.module || pkg.label || '';
+        if (!pkgName) return;
+        suggestions.push({
+          title: `Install Python package ${pkgName}`,
+          command: `uv pip install ${pkgName}`,
+          note: 'Run inside the same environment used to start this gateway, then restart or refresh the skill.',
+        });
+      });
+    }
+
+    summary.missing.binaries.all.forEach(name => {
+      suggestions.push({
+        title: `Install ${name}`,
+        command: '',
+        note: 'Install it with the skill install action if available, or with your OS package manager, then make sure it is available on PATH.',
+      });
+    });
+    summary.missing.binaries.any.forEach(group => {
+      const names = Array.isArray(group) ? group.filter(Boolean) : [];
+      if (!names.length) return;
+      suggestions.push({
+        title: `Install one of ${names.join(' or ')}`,
+        command: '',
+        note: 'Any one option satisfies this dependency group. Reopen the dialog after installation to refresh readiness.',
+      });
+    });
+    summary.missing.api_env.all.forEach(name => {
+      suggestions.push({
+        title: `Set ${name}`,
+        command: `export ${name}=...`,
+        note: 'Add it to the environment file used before starting the gateway, then restart the gateway so the process can read it.',
+      });
+    });
+    summary.missing.api_env.any.forEach(group => {
+      const names = Array.isArray(group) ? group.filter(Boolean) : [];
+      if (!names.length) return;
+      suggestions.push({
+        title: `Set one of ${names.join(' or ')}`,
+        command: `export ${names[0]}=...`,
+        note: 'Only one variable in this group is required. Prefer the provider you actually plan to use.',
+      });
+    });
+    summary.sub_skill_dependencies.missing_references.forEach(name => {
+      suggestions.push({
+        title: `Install or enable sub-skill ${name}`,
+        command: `opensquilla skills install ${name}`,
+        note: 'Meta-skills can only run after every referenced sub-skill is visible to the gateway. If this is an exp/bundled skill, enable it in a visible layer instead.',
+      });
+    });
+    summary.sub_skill_dependencies.skills.forEach(item => {
+      const childName = item && item.name ? String(item.name) : '';
+      const childSummary = item && item.summary ? item.summary : null;
+      if (!childName || !childSummary || !(childSummary.missing && childSummary.missing.count > 0)) return;
+      suggestions.push({
+        title: `Resolve dependencies for sub-skill ${childName}`,
+        command: '',
+        note: 'Open that sub-skill and follow its missing dependency suggestions first; the parent meta-skill inherits that readiness.',
+      });
+    });
+
+    if (!suggestions.length) {
+      return '<div class="sk-dep-note">No setup advice needed for the currently reported dependencies.</div>';
+    }
+    return `<ul class="sk-dep-list sk-dep-list--suggestions">${suggestions.map(item => `
+      <li>
+        <strong>${_esc(item.title)}</strong>
+        ${item.command ? `<code class="sk-dep-command">${_esc(item.command)}</code>` : ''}
+        <span class="sk-dep-meta">${_esc(item.note)}</span>
+      </li>`).join('')}</ul>`;
+  }
+
+  function _renderAdvisoryDependencies(summary) {
+    const items = [];
+    summary.inferred.python_imports.forEach(item => {
+      items.push(`<li><code>${_esc(item.module || '')}</code><span class="sk-dep-meta">import from ${_esc(item.source || 'unknown')} · Advisory only</span></li>`);
+    });
+    summary.inferred.api_env.forEach(item => {
+      const sources = Array.isArray(item.sources) ? item.sources.join(', ') : '';
+      items.push(`<li><code>${_esc(item.name || '')}</code><span class="sk-dep-meta">seen in ${_esc(sources || 'unknown')} · Advisory only</span></li>`);
+    });
+    summary.inferred.scan_errors.forEach(item => {
+      items.push(`<li><code>scan_errors</code><span class="sk-dep-meta">${_esc(item)}</span></li>`);
+    });
+    if (!items.length) return '<div class="sk-dep-note">No advisory dependencies inferred.</div>';
+    return `<ul class="sk-dep-list">${items.join('')}</ul>`;
+  }
+
+  function _renderSubSkillDependencyRollup(summary) {
+    const rollup = summary.sub_skill_dependencies || {};
+    const childRows = [];
+    (rollup.skills || []).forEach(entry => {
+      const childSummary = _dependencySummary({ dependency_summary: entry.summary || {} });
+      const childMissing = childSummary.missing.count
+        + childSummary.sub_skill_dependencies.missing_count
+        + childSummary.sub_skill_dependencies.missing_references.length;
+      const childAdvisory = childSummary.inferred.python_imports.length
+        + childSummary.inferred.api_env.length
+        + childSummary.inferred.scan_errors.length
+        + childSummary.sub_skill_dependencies.inferred_count;
+      childRows.push(`<div class="sk-dep-subskill-row">
+        <code>${_esc(entry.name || '')}</code>
+        <span class="sk-dep-subskill-metrics">missing ${childMissing} · advisory ${childAdvisory}</span>
+      </div>`);
+    });
+    (rollup.missing_references || []).forEach(name => {
+      childRows.push(`<div class="sk-dep-subskill-row">
+        <code>${_esc(name)}</code>
+        <span class="sk-dep-subskill-metrics">missing reference</span>
+      </div>`);
+    });
+    const hasRollup = childRows.length
+      || rollup.missing_count
+      || rollup.inferred_count
+      || (rollup.missing_references || []).length;
+    if (!hasRollup) return '';
+    return `
+      <div class="sk-dep-summary">
+        <span class="sk-chip">skills ${_esc((rollup.skills || []).length)}</span>
+        <span class="sk-chip sk-chip--warn">missing ${_esc(rollup.missing_count || 0)}</span>
+        <span class="sk-chip">inferred ${_esc(rollup.inferred_count || 0)}</span>
+        <span class="sk-chip">${_esc((rollup.missing_references || []).length)} unresolved refs</span>
+      </div>
+      ${childRows.length ? `<div class="sk-dep-subskills">${childRows.join('')}</div>` : '<div class="sk-dep-note">No referenced sub-skills reported.</div>'}
+    `;
+  }
+
+  function _dependencySummary(skill) {
+    const raw = skill && skill.dependency_summary ? skill.dependency_summary : {};
+    const declaredBinariesAny = Array.isArray(raw?.declared?.binaries?.any) ? raw.declared.binaries.any.slice() : [];
+    const declaredApiEnvAny = Array.isArray(raw?.declared?.api_env?.any) ? raw.declared.api_env.any.slice() : [];
+    const missingBinsAny = Array.isArray(raw?.missing?.binaries?.any) ? raw.missing.binaries.any.map(group => Array.isArray(group) ? group.slice() : []) : [];
+    const missingApiAny = Array.isArray(raw?.missing?.api_env?.any) ? raw.missing.api_env.any.map(group => Array.isArray(group) ? group.slice() : []) : [];
+    const summary = {
+      declared: {
+        binaries: {
+          all: Array.isArray(raw?.declared?.binaries?.all) ? raw.declared.binaries.all.slice() : [],
+          any: declaredBinariesAny,
+        },
+        python_packages: Array.isArray(raw?.declared?.python_packages) ? raw.declared.python_packages.slice() : [],
+        api_env: {
+          all: Array.isArray(raw?.declared?.api_env?.all) ? raw.declared.api_env.all.slice() : [],
+          any: declaredApiEnvAny,
+        },
+      },
+      missing: {
+        binaries: {
+          all: Array.isArray(raw?.missing?.binaries?.all) ? raw.missing.binaries.all.slice() : [],
+          any: missingBinsAny,
+        },
+        api_env: {
+          all: Array.isArray(raw?.missing?.api_env?.all) ? raw.missing.api_env.all.slice() : [],
+          any: missingApiAny,
+        },
+        count: Number.isFinite(raw?.missing?.count) ? raw.missing.count : 0,
+      },
+      inferred: {
+        python_imports: Array.isArray(raw?.inferred?.python_imports) ? raw.inferred.python_imports.slice() : [],
+        api_env: Array.isArray(raw?.inferred?.api_env) ? raw.inferred.api_env.slice() : [],
+        scan_errors: Array.isArray(raw?.inferred?.scan_errors) ? raw.inferred.scan_errors.slice() : [],
+      },
+      sub_skill_dependencies: {
+        skills: Array.isArray(raw?.sub_skill_dependencies?.skills) ? raw.sub_skill_dependencies.skills.slice() : [],
+        missing_count: Number.isFinite(raw?.sub_skill_dependencies?.missing_count) ? raw.sub_skill_dependencies.missing_count : 0,
+        inferred_count: Number.isFinite(raw?.sub_skill_dependencies?.inferred_count) ? raw.sub_skill_dependencies.inferred_count : 0,
+        missing_references: Array.isArray(raw?.sub_skill_dependencies?.missing_references) ? raw.sub_skill_dependencies.missing_references.slice() : [],
+      },
+      declaration_quality: raw?.declaration_quality || 'none',
+    };
+    if (!raw || Object.keys(raw).length === 0) {
+      summary.missing.binaries.all = Array.isArray(skill?.missing_bins) ? skill.missing_bins.slice() : [];
+      summary.missing.api_env.all = Array.isArray(skill?.missing_env) ? skill.missing_env.slice() : [];
+      summary.missing.api_env.any = Array.isArray(skill?.missing_env_any)
+        ? skill.missing_env_any.map(group => Array.isArray(group) ? group.slice() : [])
+        : [];
+    }
+    if (!summary.missing.count) {
+      summary.missing.count = summary.missing.binaries.all.length
+        + summary.missing.binaries.any.length
+        + summary.missing.api_env.all.length
+        + summary.missing.api_env.any.length;
+    }
+    return summary;
+  }
+
+  function _actionableInstallEntries(skill) {
+    const installs = Array.isArray(skill?.install) ? skill.install : [];
+    if (!installs.length) return [];
+    const summary = _dependencySummary(skill);
+    const missingAll = new Set(summary.missing.binaries.all || []);
+    const missingAny = Array.isArray(summary.missing.binaries.any) ? summary.missing.binaries.any : [];
+    return installs.filter(install => {
+      if (_isActionablePythonPackageInstall(install, summary, skill)) return true;
+      const bins = Array.isArray(install?.bins) ? install.bins.filter(Boolean) : [];
+      if (missingAll.size === 0 && missingAny.length === 0) return false;
+      if (!bins.length) return true;
+      if (bins.some(bin => missingAll.has(bin))) return true;
+      return missingAny.some(group =>
+        Array.isArray(group) && group.some(bin => bins.includes(bin))
+      );
+    });
+  }
+
+  function _isActionablePythonPackageInstall(install, summary, skill) {
+    if (!install || String(install.kind || '').toLowerCase() !== 'uv') return false;
+    const status = String(skill?.status || '').toLowerCase();
+    if (status === 'ready' || status === 'enabled') return false;
+    const bins = Array.isArray(install.bins) ? install.bins.filter(Boolean) : [];
+    if (bins.length) return false;
+    const packages = summary.declared.python_packages || [];
+    if (!packages.length) return false;
+    const installKeys = [install.id, install.install_id, install.package, install.module, install.label]
+      .filter(Boolean)
+      .map(value => String(value));
+    if (!installKeys.length) return false;
+    return packages.some(pkg => {
+      const packageKeys = [pkg.install_id, pkg.package, pkg.module, pkg.label]
+        .filter(Boolean)
+        .map(value => String(value));
+      return packageKeys.some(key => installKeys.includes(key));
+    });
   }
 
   async function _installDeps(name, installId, btn) {
@@ -946,7 +1315,7 @@ const SkillsView = (() => {
         UI.toast(res.message || 'Install failed', 'err');
       }
       const still = res.missing_still || {};
-      const stillMissing = (still.bins || []).length + (still.env || []).length;
+      const stillMissing = (still.bins || []).length + (still.env || []).length + (still.env_any || []).length;
       if (stillMissing === 0) {
         setTimeout(() => {
           const dlg = _el && _el.querySelector('#skill-detail-dialog');

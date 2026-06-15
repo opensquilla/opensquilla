@@ -321,6 +321,25 @@ def _workdir_is_configured_workspace(workdir: str | None) -> bool:
         return False
 
 
+def _sensitive_payload_block(tool_name: str, text: str) -> str | None:
+    from opensquilla.tools.builtin.web import (
+        _sensitive_body_block,
+        _sensitive_body_marker,
+        _sensitive_url_marker,
+    )
+
+    for token in text.split():
+        stripped = token.strip("'\"")
+        if stripped.startswith(("http://", "https://")):
+            marker = _sensitive_url_marker(stripped)
+            if marker is not None:
+                return _sensitive_body_block(tool_name, marker)
+    marker = _sensitive_body_marker(text)
+    if marker is not None:
+        return _sensitive_body_block(tool_name, marker)
+    return None
+
+
 def _iter_stdin_guard_chunks(text: str) -> Iterator[str]:
     if len(text) <= _EXEC_STDIN_GUARD_CHUNK_CHARS:
         yield text
@@ -359,21 +378,9 @@ def _sensitive_shell_block(
             ensure_ascii=False,
         )
 
-    from opensquilla.tools.builtin.web import (
-        _sensitive_body_block,
-        _sensitive_body_marker,
-        _sensitive_url_marker,
-    )
-
-    for token in checked_text.split():
-        stripped = token.strip("'\"")
-        if stripped.startswith(("http://", "https://")):
-            marker = _sensitive_url_marker(stripped)
-            if marker is not None:
-                return _sensitive_body_block(tool_name, marker)
-    marker = _sensitive_body_marker(checked_text)
-    if marker is not None:
-        return _sensitive_body_block(tool_name, marker)
+    payload_block = _sensitive_payload_block(tool_name, checked_text)
+    if payload_block is not None:
+        return payload_block
     if stdin is None:
         return None
 
@@ -389,15 +396,9 @@ def _sensitive_shell_block(
                 ensure_ascii=False,
             )
     for stdin_chunk in _iter_stdin_guard_chunks(stdin):
-        for token in stdin_chunk.split():
-            stripped = token.strip("'\"")
-            if stripped.startswith(("http://", "https://")):
-                marker = _sensitive_url_marker(stripped)
-                if marker is not None:
-                    return _sensitive_body_block(tool_name, marker)
-        marker = _sensitive_body_marker(stdin_chunk)
-        if marker is not None:
-            return _sensitive_body_block(tool_name, marker)
+        payload_block = _sensitive_payload_block(tool_name, stdin_chunk)
+        if payload_block is not None:
+            return payload_block
     return None
 
 

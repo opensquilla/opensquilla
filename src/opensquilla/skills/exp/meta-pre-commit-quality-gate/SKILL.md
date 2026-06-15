@@ -106,12 +106,13 @@ composition:
             BLOCK: <one-line summary; list every gate that failed>
             APPROVE: ruff/mypy/pytest all green
     - id: persist
-      kind: agent
-      skill: memory
+      kind: tool_call
+      tool: memory_save
+      tool_allowlist: [memory_save]
       depends_on: [arbitrate]
-      with:
-        action: save
-        topic: "pre-commit-gates"
+      tool_args:
+        path: "memory/pre-commit-gates.md"
+        mode: append
         content: |
           === pre-commit quality gate ===
           invocation: {{ inputs.user_message | xml_escape | truncate(200) }}

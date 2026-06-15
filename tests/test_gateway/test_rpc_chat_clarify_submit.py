@@ -114,14 +114,32 @@ async def test_clarify_submit_rejects_empty_fields():
 
 
 @pytest.mark.asyncio
-async def test_clarify_submit_rejects_all_empty_values():
-    """If every value is None / '' the resulting text would be empty
-    and meta_resolution couldn't tell what the user meant."""
+async def test_clarify_submit_allows_all_empty_values_for_server_autofill(monkeypatch):
+    """Empty form submissions must reach meta_resolution so required fields
+    can be inferred from context instead of trapping the user in the form."""
+    captured: dict = {}
+
+    async def _fake_send(send_params, ctx):
+        captured["send_params"] = send_params
+        return {"ok": True, "sessionKey": send_params["sessionKey"]}
+
+    monkeypatch.setattr(
+        "opensquilla.gateway.rpc_chat._handle_chat_send",
+        _fake_send,
+    )
+
     ctx = RpcContext(conn_id="c", principal=SimpleNamespace(role="operator"))
-    with pytest.raises(ValueError, match="only empty values"):
-        await _handle_chat_clarify_submit(
-            {"sessionKey": "S1", "fields": {"a": "", "b": None}}, ctx,
-        )
+    result = await _handle_chat_clarify_submit(
+        {"sessionKey": "S1", "fields": {"a": "", "b": None}},
+        ctx,
+    )
+
+    assert result["ok"] is True
+    assert captured["send_params"]["message"] == ""
+    assert captured["send_params"]["inputProvenance"] == {
+        "kind": "clarify_form",
+        "source": "webui",
+    }
 
 
 @pytest.mark.asyncio
@@ -158,10 +176,47 @@ async def test_clarify_submit_forwards_to_chat_send(monkeypatch):
     # rejects unknown values, and meta_resolution's awaiting branch keys
     # off session_key + provenance tag, not intent.
     assert "intent" not in sp
-    assert sp["inputProvenance"] == "clarify_form"
+    assert sp["inputProvenance"] == {"kind": "clarify_form", "source": "webui"}
     src = sp["_source"]
     assert src["channel_kind"] == "webchat"
     assert src["clarify_run_id"] == "r-xyz"
+
+
+@pytest.mark.asyncio
+async def test_clarify_submit_logs_safe_entry_metadata(monkeypatch):
+    """Entry logging proves the Web UI submit reached RPC without
+    exposing field values in gateway logs."""
+    captured: dict = {}
+
+    async def _fake_send(send_params, ctx):
+        return {"ok": True, "sessionKey": send_params["sessionKey"]}
+
+    def _fake_info(event, **kwargs):
+        captured["event"] = event
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(
+        "opensquilla.gateway.rpc_chat._handle_chat_send",
+        _fake_send,
+    )
+    monkeypatch.setattr("opensquilla.gateway.rpc_chat.log.info", _fake_info)
+
+    ctx = RpcContext(conn_id="c", principal=SimpleNamespace(role="operator"))
+    await _handle_chat_clarify_submit(
+        {
+            "sessionKey": "agent:main:webchat:abc",
+            "fields": {"review": "ok"},
+            "run_id": "r-xyz",
+        },
+        ctx,
+    )
+
+    assert captured["event"] == "chat.clarify_submit.params"
+    assert captured["kwargs"] == {
+        "session_key": "agent:main:webchat:abc",
+        "field_count": 1,
+        "run_id": "r-xyz",
+    }
 
 
 @pytest.mark.asyncio

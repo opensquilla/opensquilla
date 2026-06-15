@@ -866,7 +866,13 @@ async def test_iteration_timeout_does_not_interrupt_active_tool_argument_stream(
 
     events = await asyncio.wait_for(_collect_events(agent.run_turn("hello")), timeout=1.0)
 
-    assert len(provider.calls) == 2
+    assert provider.calls
+    assert any(
+        getattr(event, "kind", None) == "tool_result"
+        and getattr(event, "tool_name", None) == "write_file"
+        and getattr(event, "result", None) == "written"
+        for event in events
+    )
     assert any(isinstance(event, DoneEvent) for event in events)
     assert not any(
         isinstance(event, ErrorEvent) and event.code == "iteration_timeout"

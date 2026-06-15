@@ -33,6 +33,11 @@ def to_jsonable(plan: MetaPlan) -> dict[str, Any]:
         "priority": plan.priority,
         "fallback_body": plan.fallback_body,
         "final_text_mode": plan.final_text_mode,
+        "request_template": dict(plan.request_template),
+        "output_contract": dict(plan.output_contract),
+        "eval_prompts": [dict(item) for item in plan.eval_prompts],
+        "preference_keys": list(plan.preference_keys),
+        "policy_tags": list(plan.policy_tags),
         "steps": [
             {
                 "id": s.id,
@@ -48,6 +53,9 @@ def to_jsonable(plan: MetaPlan) -> dict[str, Any]:
                 "tool_allowlist": list(s.tool_allowlist),
                 "on_failure": s.on_failure,
                 "clarify_config": clarify_config_to_jsonable(s.clarify_config),
+                "label": s.label,
+                "label_by_language": dict(s.label_by_language),
+                "progress_emits": s.progress_emits,
             }
             for s in plan.steps
         ],
@@ -98,6 +106,31 @@ def from_jsonable(payload: dict[str, Any]) -> MetaPlan:
         steps=tuple(steps),
         fallback_body=str(plan_dict.get("fallback_body", "") or ""),
         final_text_mode=str(plan_dict.get("final_text_mode", "auto") or "auto"),
+        request_template=(
+            dict(plan_dict.get("request_template") or {})
+            if isinstance(plan_dict.get("request_template"), dict)
+            else {}
+        ),
+        output_contract=(
+            dict(plan_dict.get("output_contract") or {})
+            if isinstance(plan_dict.get("output_contract"), dict)
+            else {}
+        ),
+        eval_prompts=(
+            [dict(item) for item in plan_dict.get("eval_prompts", []) if isinstance(item, dict)]
+            if isinstance(plan_dict.get("eval_prompts", []), list)
+            else []
+        ),
+        preference_keys=(
+            tuple(str(item) for item in plan_dict.get("preference_keys", []) or [])
+            if isinstance(plan_dict.get("preference_keys", []), list)
+            else ()
+        ),
+        policy_tags=(
+            tuple(str(item) for item in plan_dict.get("policy_tags", []) or [])
+            if isinstance(plan_dict.get("policy_tags", []), list)
+            else ()
+        ),
     )
 
 
@@ -111,6 +144,14 @@ def _step_from_jsonable(raw: dict[str, Any], index: int) -> MetaStep:
         if isinstance(r, dict) and "when" in r and "to" in r
     )
 
+    kind = str(raw.get("kind", "agent"))
+    progress_emits_raw = raw.get("progress_emits")
+    progress_emits = (
+        bool(progress_emits_raw)
+        if isinstance(progress_emits_raw, bool)
+        else kind != "tool_call"
+    )
+
     return MetaStep(
         id=str(raw.get("id", "")),
         skill=str(raw.get("skill", "")),
@@ -118,7 +159,7 @@ def _step_from_jsonable(raw: dict[str, Any], index: int) -> MetaStep:
         depends_on=tuple(str(d) for d in raw.get("depends_on", []) or []),
         when=str(raw.get("when", "") or ""),
         route=route,
-        kind=str(raw.get("kind", "agent")),
+        kind=kind,
         output_choices=tuple(str(c) for c in raw.get("output_choices", []) or []),
         tool=str(raw.get("tool", "") or ""),
         tool_args=dict(raw.get("tool_args", {}) or {}),
@@ -127,6 +168,13 @@ def _step_from_jsonable(raw: dict[str, Any], index: int) -> MetaStep:
         ),
         on_failure=str(raw.get("on_failure", "") or ""),
         clarify_config=clarify_config_from_jsonable(raw.get("clarify_config")),
+        label=str(raw.get("label", "") or ""),
+        label_by_language={
+            str(key): str(value)
+            for key, value in dict(raw.get("label_by_language", {}) or {}).items()
+            if str(key).strip() and str(value).strip()
+        },
+        progress_emits=progress_emits,
     )
 
 
@@ -147,6 +195,7 @@ def clarify_config_to_jsonable(cfg: Any) -> dict[str, Any] | None:
                 "type": f.type,
                 "required": f.required,
                 "prompt": f.prompt,
+                "prompt_by_language": dict(f.prompt_by_language),
                 "choices": list(f.choices),
                 "default": f.default,
                 "min": f.min,
@@ -159,6 +208,7 @@ def clarify_config_to_jsonable(cfg: Any) -> dict[str, Any] | None:
         "cancel_keywords": list(cfg.cancel_keywords),
         "timeout_hours": cfg.timeout_hours,
         "intro": cfg.intro,
+        "intro_by_language": dict(cfg.intro_by_language),
         "nl_extract": cfg.nl_extract,
         "nl_extract_tier": cfg.nl_extract_tier,
     }
@@ -178,6 +228,11 @@ def clarify_config_from_jsonable(raw: Any) -> Any:
             type=str(f.get("type", "string")),
             required=bool(f.get("required", False)),
             prompt=str(f.get("prompt", "") or ""),
+            prompt_by_language={
+                str(key): str(value)
+                for key, value in dict(f.get("prompt_by_language", {}) or {}).items()
+                if str(key).strip() and str(value).strip()
+            },
             choices=tuple(str(c) for c in f.get("choices", []) or []),
             default=f.get("default"),
             min=f.get("min"),
@@ -193,6 +248,11 @@ def clarify_config_from_jsonable(raw: Any) -> Any:
         cancel_keywords=tuple(str(k) for k in raw.get("cancel_keywords", []) or []),
         timeout_hours=int(raw.get("timeout_hours", 24) or 24),
         intro=str(raw.get("intro", "") or ""),
+        intro_by_language={
+            str(key): str(value)
+            for key, value in dict(raw.get("intro_by_language", {}) or {}).items()
+            if str(key).strip() and str(value).strip()
+        },
         nl_extract=bool(raw.get("nl_extract", False)),
         nl_extract_tier=str(raw.get("nl_extract_tier", "") or ""),
     )

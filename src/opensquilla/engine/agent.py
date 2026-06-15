@@ -166,6 +166,21 @@ MAX_META_INVOKE_DEPTH = 3
 MAX_META_INVOKE_PER_TURN = 8
 
 
+def _meta_empty_final_text_fallback(skill_name: str, inputs: Mapping[str, Any]) -> str:
+    language = str(inputs.get("user_language") or "").lower()
+    instruction = str(inputs.get("language_instruction") or "").lower()
+    if language.startswith("en") or (not language and "english" in instruction):
+        return (
+            f"Meta skill `{skill_name}` completed, but this run did not produce "
+            "a user-visible final answer. Review the step results above, or "
+            "rerun with more specific output requirements if needed."
+        )
+    return (
+        f"Meta skill `{skill_name}` 已完成，但这次流程没有生成可展示的最终回答。"
+        "请查看上方步骤结果和产物；如果需要，可以补充更明确的输出要求后重新运行。"
+    )
+
+
 def _is_deepseek_model_id(model_id: str | None) -> bool:
     normalized = (model_id or "").strip().lower()
     return normalized.startswith("deepseek") or "/deepseek" in normalized
@@ -418,7 +433,7 @@ class _ProviderRetryPolicy:
         cls,
         max_provider_retries: int,
         *,
-        length_capped_continuations: int = 1,
+        length_capped_continuations: int = 3,
     ) -> _ProviderRetryPolicy:
         length_capped_continuations = max(1, length_capped_continuations)
         return cls(
@@ -528,13 +543,20 @@ def _chat_config_with_thinking_disabled(chat_cfg: ChatConfig) -> ChatConfig:
     )
 
 
-def _strip_historical_image_blocks(messages: list[Message]) -> list[Message]:
+def _strip_historical_image_blocks(
+    messages: list[Message],
+    *,
+    preserve_images: bool = False,
+) -> list[Message]:
     """Remove image payload blocks from history before provider calls.
 
     Current-turn uploads are passed through ``extra_messages`` and are not part
     of the history list sanitized here. This prevents a later text follow-up
     from replaying stale image input to a text-only route.
     """
+    if preserve_images:
+        return messages
+
     sanitized: list[Message] = []
     for msg in messages:
         content = msg.content
@@ -1779,7 +1801,16 @@ class Agent:
             preserve_tool_call_reasoning=thinking_enabled,
             preserve_reasoning_content=preserve_reasoning_content,
         )
-        sanitized_history = _strip_historical_image_blocks(sanitized_history)
+        preserve_historical_images = bool(
+            self.config.preserve_historical_images
+            and getattr(self.config.model_capabilities, "supports_vision", False)
+            if self.config.model_capabilities is not None
+            else False
+        )
+        sanitized_history = _strip_historical_image_blocks(
+            sanitized_history,
+            preserve_images=preserve_historical_images,
+        )
         self._write_context_stage(
             "session:sanitized",
             sanitized_history,
@@ -2532,6 +2563,51 @@ class Agent:
                                 _call_attempt += 1
                                 continue
 
+                            if (
+                                attempt_classification.kind
+                                == _ProviderAttemptKind.REASONING_ONLY
+                                and thinking_enabled
+                                and not _thinking_fallback_done
+                                and _retry_policy.can_retry_attempt(
+                                    _ProviderAttemptKind.REASONING_ONLY,
+                                    _attempt_retries_used,
+                                )
+                            ):
+                                _attempt_retries_used[_ProviderAttemptKind.REASONING_ONLY] += 1
+                                _thinking_fallback_done = True
+                                thinking_enabled = False
+                                thinking_budget = 0
+                                chat_cfg = _chat_config_with_thinking_disabled(chat_cfg)
+                                logger.warning(
+                                    "provider.large_context_visible_retry",
+                                    session_key=self._session_key,
+                                    model=last_actual_model or self.config.model_id or "",
+                                    provider=type(self.provider).__name__,
+                                    classification=attempt_classification.kind.value,
+                                    iteration=iterations,
+                                    call_attempt=_call_attempt,
+                                    attempt=_attempt_retries_used.get(
+                                        _ProviderAttemptKind.REASONING_ONLY, 0
+                                    ),
+                                    budget=_retry_policy.attempt_budgets.get(
+                                        _ProviderAttemptKind.REASONING_ONLY, 0
+                                    ),
+                                    iter_input_tokens=iter_input_tokens,
+                                    iter_output_tokens=iter_output_tokens,
+                                    iter_reasoning_tokens=iter_reasoning_tokens,
+                                    reasoning_chars=len(iter_reasoning_content or ""),
+                                )
+                                yield WarningEvent(
+                                    code="provider_large_context_visible_retry",
+                                    message=(
+                                        "The provider returned reasoning without visible "
+                                        "content for a large input; retrying once with "
+                                        "thinking disabled."
+                                    ),
+                                )
+                                _call_attempt += 1
+                                continue
+
                             yield self._transition(AgentState.ERROR)
                             terminal_error = ErrorEvent(
                                 message=(
@@ -2553,15 +2629,11 @@ class Agent:
                             )
                         ):
                             _attempt_retries_used[_ProviderAttemptKind.REASONING_ONLY] += 1
-                            _thinking_fallback_done = True
-                            thinking_enabled = False
-                            thinking_budget = 0
-                            chat_cfg = _chat_config_with_thinking_disabled(chat_cfg)
                             yield WarningEvent(
                                 code="provider_reasoning_only_retry",
                                 message=(
                                     "The provider returned reasoning without visible content; "
-                                    "retrying once with thinking disabled."
+                                    "retrying once to request visible content."
                                 ),
                             )
                             _call_attempt += 1
@@ -2636,8 +2708,17 @@ class Agent:
                                 provider=type(self.provider).__name__,
                                 iteration=iterations,
                                 call_attempt=_call_attempt,
+                                attempt=_attempt_retries_used.get(
+                                    _ProviderAttemptKind.LENGTH_CAPPED, 0
+                                ),
+                                budget=_retry_policy.attempt_budgets.get(
+                                    _ProviderAttemptKind.LENGTH_CAPPED, 0
+                                ),
                                 tool_calls=len(tool_calls),
                                 visible_chars=len(visible_text),
+                                iter_input_tokens=iter_input_tokens,
+                                iter_output_tokens=iter_output_tokens,
+                                iter_reasoning_tokens=iter_reasoning_tokens,
                             )
                             yield WarningEvent(
                                 code="provider_output_continue",
@@ -5040,7 +5121,10 @@ class Agent:
         import opensquilla.skills.creator  # noqa: F401
         from opensquilla.skills.creator.runtime_e2e import make_runtime_e2e_context
         from opensquilla.skills.meta.enabled import is_meta_skill_enabled
-        from opensquilla.skills.meta.inputs import make_meta_inputs
+        from opensquilla.skills.meta.inputs import (
+            make_meta_inputs,
+            meta_input_overrides_from_metadata,
+        )
         from opensquilla.skills.meta.orchestrator import (
             MetaOrchestrator,
             make_agent_runner_from_parent,
@@ -5267,16 +5351,30 @@ class Agent:
                 if self._context is not None
                 else self.config.system_prompt or ""
             )
-            match = MetaMatch(
-                plan=plan,
-                inputs=make_meta_inputs(
-                    user_message=(
-                        getattr(self, "_current_turn_message", "")
-                        or metadata.get("user_message", "")
+            resolved_match = metadata.get("meta_match")
+            if (
+                isinstance(resolved_match, MetaMatch)
+                and getattr(resolved_match.plan, "name", "") == plan.name
+            ):
+                match_inputs = dict(resolved_match.inputs)
+                match_inputs.setdefault("system_prompt", system_prompt)
+                match = MetaMatch(
+                    plan=plan,
+                    inputs=match_inputs,
+                    run_id=resolved_match.run_id,
+                )
+            else:
+                match = MetaMatch(
+                    plan=plan,
+                    inputs=make_meta_inputs(
+                        user_message=(
+                            getattr(self, "_current_turn_message", "")
+                            or metadata.get("user_message", "")
+                        ),
+                        system_prompt=system_prompt,
+                        **meta_input_overrides_from_metadata(metadata),
                     ),
-                    system_prompt=system_prompt,
-                ),
-            )
+                )
 
             result: MetaResult | None = None
             from opensquilla.skills.creator.proposer import (
@@ -5367,6 +5465,8 @@ class Agent:
             if not result.ok:
                 yield self._format_meta_invoke_failure(tc, result, plan)
                 return
+            if not result.final_text:
+                result.final_text = _meta_empty_final_text_fallback(name, match.inputs)
             if result.final_text:
                 yield TextDeltaEvent(text=result.final_text)
             yield ToolResult(
@@ -5561,22 +5661,120 @@ class Agent:
         if race_lost is not None:
             return "你之前的回答已被处理。", True
 
-        # Soft-clarify (free-form continuation) — pop the resolver's
-        # progress markers so they don't accumulate, then return None
-        # to let the turn flow through to the LLM normally. The model
-        # responds based on the user's actual message plus the
-        # webui's visible clarify form; we deliberately do NOT
-        # template a reply here because the whole point of
-        # soft-clarify is that the user is having a natural
-        # conversation, not getting a form-style canned response.
-        # A follow-up commit will inject a brief status hint into
-        # the system prompt so the model knows what's still missing;
-        # for now the visible form (Web) / CLI prompt is the source
-        # of truth for "what's needed".
-        metadata.pop("meta_clarify_soft_progress", None)
-        metadata.pop("meta_clarify_proceed_blocked", None)
+        proceed_blocked = metadata.pop("meta_clarify_proceed_blocked", None)
+        soft_progress = metadata.pop("meta_clarify_soft_progress", None)
+        if proceed_blocked is not None:
+            return self._render_clarify_progress(
+                proceed_blocked, proceed_blocked=True,
+            ), True
+        if soft_progress is not None:
+            return self._render_clarify_progress(
+                soft_progress, proceed_blocked=False,
+            ), True
 
         return None
+
+    def _render_clarify_progress(
+        self, payload: Any, *, proceed_blocked: bool,
+    ) -> str:
+        """Render soft-clarify progress without exposing internal state."""
+        data = payload if isinstance(payload, dict) else {}
+        filled = data.get("filled")
+        filled_summary = self._format_clarify_filled(filled)
+        missing = self._coerce_clarify_names(data.get("missing_required"))
+        ambiguous = self._format_clarify_ambiguous(
+            data.get("ambiguous_fields"),
+        )
+
+        lines: list[str] = []
+        if proceed_blocked:
+            if missing:
+                lines.append(
+                    "现在还不能开始，还需要补充："
+                    + "、".join(missing)
+                    + "。"
+                )
+            else:
+                lines.append("现在还不能开始，还需要补充必填信息。")
+            if filled_summary:
+                lines.append("已记录：" + filled_summary + "。")
+        else:
+            if filled_summary:
+                lines.append("已记录：" + filled_summary + "。")
+            else:
+                lines.append("已收到补充。")
+            if missing:
+                lines.append("还需要：" + "、".join(missing) + "。")
+            else:
+                lines.append("必填信息已补齐，可以回复“开始”继续。")
+
+        if ambiguous:
+            lines.append("仍不确定：" + ambiguous + "。")
+        lines.append("你可以直接回复缺少字段，或在上面的表单里填写。")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _coerce_clarify_names(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        names: list[str] = []
+        for item in value:
+            if item is None:
+                continue
+            text = str(item).strip()
+            if text:
+                names.append(text)
+        return names
+
+    def _format_clarify_filled(self, value: Any) -> str:
+        if not isinstance(value, dict):
+            return ""
+        parts: list[str] = []
+        for key in sorted(value):
+            label = str(key).strip()
+            if not label:
+                continue
+            parts.append(label + "=" + self._format_clarify_value(value[key]))
+            if len(parts) >= 6:
+                break
+        return "，".join(parts)
+
+    @staticmethod
+    def _format_clarify_value(value: Any) -> str:
+        if isinstance(value, str):
+            text = value
+        elif isinstance(value, (dict, list, tuple)):
+            try:
+                text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+            except TypeError:
+                text = str(value)
+        else:
+            text = str(value)
+        text = " ".join(text.split())
+        if len(text) > 80:
+            return text[:77] + "..."
+        return text
+
+    @staticmethod
+    def _format_clarify_ambiguous(value: Any) -> str:
+        if not isinstance(value, list):
+            return ""
+        parts: list[str] = []
+        for entry in value:
+            if isinstance(entry, dict):
+                name = str(entry.get("name") or "").strip()
+                reason = str(entry.get("reason") or "").strip()
+                if name and reason:
+                    parts.append(name + "（" + reason + "）")
+                elif name:
+                    parts.append(name)
+            elif entry is not None:
+                text = str(entry).strip()
+                if text:
+                    parts.append(text)
+            if len(parts) >= 4:
+                break
+        return "，".join(parts)
 
     def _render_clarify_errors(
         self, errors: Any, awaiting: Any,

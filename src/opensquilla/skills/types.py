@@ -26,6 +26,7 @@ class SkillRequires:
     bins: list[str] = field(default_factory=list)
     any_bins: list[str] = field(default_factory=list)
     env: list[str] = field(default_factory=list)
+    env_any: list[str] = field(default_factory=list)
     config: list[str] = field(default_factory=list)
 
 
@@ -104,6 +105,24 @@ class SkillSpec:
     #   "raw"            — last non-substitute step output verbatim
     #   "step:<step_id>" — outputs[step_id] verbatim
     final_text_mode: str = "auto"
+    # Optional meta-skill pre-flight request scaffold. Surfaces use this
+    # to show the user what the meta-skill is about to do before the DAG
+    # begins. Non-meta skills keep the default empty mapping.
+    request_template: dict[str, Any] = field(default_factory=dict)
+    # Optional final-answer contract surfaced after successful meta-skill
+    # runs. The orchestrator renders a deterministic coverage block from
+    # this metadata; future audit loops can consume the same shape.
+    output_contract: dict[str, Any] = field(default_factory=dict)
+    # Optional quality baseline prompts for meta-skill regression checks.
+    # CI/cron can execute these prompts and judge outputs against the
+    # manifest-owned rubric without inventing a separate eval catalog.
+    eval_prompts: list[dict[str, Any]] = field(default_factory=list)
+    # Optional stable preference keys a meta-skill may read/write across
+    # sessions. Runtime memory integration remains separate; this manifest
+    # field declares intent for authoring and policy review.
+    preference_keys: list[str] = field(default_factory=list)
+    # Optional policy tags for org-level governance and audit filters.
+    policy_tags: list[str] = field(default_factory=list)
     # Wrapped-CLI manifest: when present, the skill can be invoked
     # deterministically by meta-skill ``skill_exec`` steps without spinning up
     # a sub-Agent. Schema (all keys optional except ``command``):

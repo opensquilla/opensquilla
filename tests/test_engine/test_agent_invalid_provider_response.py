@@ -140,7 +140,7 @@ async def test_final_done_returns_openrouter_deepseek_reasoning_content() -> Non
 
 
 @pytest.mark.asyncio
-async def test_reasoning_only_first_turn_retries_with_thinking_disabled() -> None:
+async def test_reasoning_only_first_turn_retries_without_disabling_thinking() -> None:
     provider = _SequenceProvider(
         [
             [
@@ -183,6 +183,12 @@ async def test_reasoning_only_first_turn_retries_with_thinking_disabled() -> Non
         event.kind == "warning" and event.code == "provider_reasoning_only_retry"
         for event in events
     )
+    warning = next(
+        event
+        for event in events
+        if event.kind == "warning" and event.code == "provider_reasoning_only_retry"
+    )
+    assert "thinking disabled" not in warning.message
     done = next(event for event in events if event.kind == "done")
     assert done.text == "ok"
     assert done.input_tokens == 21
@@ -190,9 +196,9 @@ async def test_reasoning_only_first_turn_retries_with_thinking_disabled() -> Non
     assert done.reasoning_tokens == 5
     assert len(provider.calls) == 2
     assert provider.calls[0]["config"].thinking is True
-    assert provider.calls[1]["config"].thinking is False
-    assert provider.calls[1]["config"].thinking_level is None
-    assert provider.calls[1]["config"].thinking_budget_tokens == 0
+    assert provider.calls[1]["config"].thinking is True
+    assert provider.calls[1]["config"].thinking_level == ThinkingLevel.MEDIUM
+    assert provider.calls[1]["config"].thinking_budget_tokens > 0
     tracked = usage.get("agent:test:reasoning-only")
     assert tracked is not None
     assert tracked.input_tokens == 21
@@ -204,7 +210,7 @@ async def test_reasoning_only_first_turn_retries_with_thinking_disabled() -> Non
 
 
 @pytest.mark.asyncio
-async def test_reasoning_only_post_tool_turn_retries_with_thinking_disabled() -> None:
+async def test_reasoning_only_post_tool_turn_retries_without_disabling_thinking() -> None:
     provider = _SequenceProvider(
         [
             [
@@ -267,9 +273,16 @@ async def test_reasoning_only_post_tool_turn_retries_with_thinking_disabled() ->
         event.kind == "warning" and event.code == "provider_reasoning_only_retry"
         for event in events
     )
+    warning = next(
+        event
+        for event in events
+        if event.kind == "warning" and event.code == "provider_reasoning_only_retry"
+    )
+    assert "thinking disabled" not in warning.message
     assert len(provider.calls) == 3
     assert provider.calls[1]["config"].thinking is True
-    assert provider.calls[2]["config"].thinking is False
+    assert provider.calls[2]["config"].thinking is True
+    assert provider.calls[2]["config"].thinking_level == ThinkingLevel.MEDIUM
 
 
 @pytest.mark.asyncio
@@ -386,6 +399,50 @@ async def test_large_reasoning_only_uses_fallback_before_same_model_retry() -> N
         for event in events
     )
     assert any(event.kind == "done" and event.text == "ok" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_large_reasoning_only_without_fallback_retries_once_with_thinking_disabled() -> None:
+    provider = _SequenceProvider(
+        [
+            [_large_reasoning_only_done()],
+            [
+                ProviderText(text="ok"),
+                ProviderDone(stop_reason="stop", input_tokens=4, output_tokens=1),
+            ],
+        ]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            thinking=ThinkingLevel.MEDIUM,
+            max_provider_retries=1,
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+
+    assert len(provider.calls) == 2
+    assert provider.calls[0]["config"].thinking is True
+    assert provider.calls[1]["config"].thinking is False
+    assert provider.calls[1]["config"].thinking_level is None
+    assert provider.calls[1]["config"].thinking_budget_tokens == 0
+    assert any(
+        event.kind == "warning" and event.code == "provider_large_context_visible_retry"
+        for event in events
+    )
+    assert not any(
+        event.kind == "warning" and event.code == "provider_reasoning_only_retry"
+        for event in events
+    )
+    assert not any(event.kind == "error" for event in events)
+    done = next(event for event in events if event.kind == "done")
+    assert done.text == "ok"
+    assert done.input_tokens == 35_004
+    assert done.output_tokens == 3
+    assert done.reasoning_tokens == 2
 
 
 @pytest.mark.asyncio
@@ -646,6 +703,51 @@ async def test_length_capped_visible_text_uses_configured_continuation_budget() 
         provider=provider,
         config=AgentConfig(
             length_capped_continuations=3,
+            retry_base_backoff_ms=0,
+            retry_max_backoff_ms=0,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+
+    assert len(provider.calls) == 4
+    assert sum(
+        1
+        for event in events
+        if event.kind == "warning" and event.code == "provider_output_continue"
+    ) == 3
+    assert not any(event.kind == "error" for event in events)
+    done = next(event for event in events if event.kind == "done")
+    assert done.text == "part one part two part three done"
+    assert done.input_tokens == 16
+    assert done.output_tokens == 20
+
+
+@pytest.mark.asyncio
+async def test_length_capped_visible_text_uses_default_three_continuation_budget() -> None:
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderText(text="part one "),
+                ProviderDone(stop_reason="length", input_tokens=1, output_tokens=2),
+            ],
+            [
+                ProviderText(text="part two "),
+                ProviderDone(stop_reason="length", input_tokens=3, output_tokens=4),
+            ],
+            [
+                ProviderText(text="part three "),
+                ProviderDone(stop_reason="length", input_tokens=5, output_tokens=6),
+            ],
+            [
+                ProviderText(text="done"),
+                ProviderDone(stop_reason="stop", input_tokens=7, output_tokens=8),
+            ],
+        ]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
             retry_base_backoff_ms=0,
             retry_max_backoff_ms=0,
         ),

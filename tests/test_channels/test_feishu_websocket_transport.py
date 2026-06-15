@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
 import time
 import types
 from collections.abc import Awaitable, Callable
@@ -183,6 +184,29 @@ async def test_feishu_websocket_rejects_second_concurrent_sdk_client(
             await second.start(_noop_handler)
     finally:
         await first.stop()
+
+    await second.start(_noop_handler)
+    await second.stop()
+
+
+@pytest.mark.asyncio
+async def test_feishu_websocket_stop_releases_singleton_after_worker_thread_exits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_lark_module(monkeypatch)
+    first = FeishuWebSocketTransport(
+        FeishuChannelConfig(app_id="app-1", app_secret="secret", connection_mode="websocket")
+    )
+    second = FeishuWebSocketTransport(
+        FeishuChannelConfig(app_id="app-2", app_secret="secret", connection_mode="websocket")
+    )
+
+    first._register_active_client()
+    dead_thread = threading.Thread(target=lambda: None)
+    dead_thread.start()
+    dead_thread.join()
+    first._thread = dead_thread
+    await first.stop()
 
     await second.start(_noop_handler)
     await second.stop()

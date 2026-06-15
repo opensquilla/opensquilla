@@ -139,6 +139,32 @@ def test_skip_summary_carries_trigger_message_for_attribution() -> None:
     assert "OpenAI" in summary["trigger_message"]
 
 
+def test_skip_summary_strips_preflight_confirmation_protocol_from_trigger() -> None:
+    step = _user_input_step()
+    inputs = {
+        "user_message": (
+            "请帮我判断这份供应商续费材料。\n\n"
+            "合同摘录：\n"
+            "- 价格：每月 $4,800\n\n"
+            "Confirmed request fields:\n"
+            "- audience: decision owner\n"
+            "- decision_question: 签不签合同\n\n"
+            "<!-- opensquilla:meta_preflight_confirmed=1 -->"
+        )
+    }
+
+    summary = _build_clarify_skip_summary(step, inputs, {})
+
+    assert summary is not None
+    assert summary["trigger_message"] == (
+        "请帮我判断这份供应商续费材料。\n\n"
+        "合同摘录：\n"
+        "- 价格：每月 $4,800"
+    )
+    assert "Confirmed request fields" not in summary["trigger_message"]
+    assert "opensquilla:meta_preflight" not in summary["trigger_message"]
+
+
 def test_skip_summary_omits_empty_upstream_outputs() -> None:
     """An empty / whitespace-only upstream output is not useful
     attribution; drop it rather than ship an empty excerpt."""

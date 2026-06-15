@@ -18,15 +18,6 @@
     "judge_focus": ["negative_activation"]
   },
   {
-    "case_id": "B1_web_research_decision_memo",
-    "skill_name": "meta-web-research-to-report",
-    "prompt_file": "web_research_to_report/decision_memo_request.txt",
-    "materials": ["web_research_to_report/decision_memo_request.txt"],
-    "expected_steps": ["preferences", "report_mode", "search", "final_report"],
-    "expected_artifacts": ["docx"],
-    "judge_focus": ["material_grounding", "evidence_traceability", "artifact_validity"]
-  },
-  {
     "case_id": "B2_pdf_intelligence",
     "skill_name": "meta-pdf-intelligence",
     "prompt_file": "pdf_intelligence/question.txt",
@@ -51,20 +42,6 @@
     "expected_steps": ["migration_intake", "classify", "repo_context", "write_plan"],
     "expected_artifacts": [],
     "judge_focus": ["material_grounding", "actionability"]
-  },
-  {
-    "case_id": "B4_document_vendor_decision",
-    "skill_name": "meta-document-to-decision",
-    "prompt_file": "lifestyle_experience/document_vendor_decision/decision_question.md",
-    "materials": [
-      "lifestyle_experience/document_vendor_decision/decision_question.md",
-      "lifestyle_experience/document_vendor_decision/sales_email.md",
-      "lifestyle_experience/document_vendor_decision/contract_excerpt.docx",
-      "lifestyle_experience/document_vendor_decision/vendor_quote_a.xlsx"
-    ],
-    "expected_steps": ["intake", "extract", "decision"],
-    "expected_artifacts": [],
-    "judge_focus": ["material_grounding", "evidence_traceability", "actionability"]
   },
   {
     "case_id": "B5_family_day_coordinator",

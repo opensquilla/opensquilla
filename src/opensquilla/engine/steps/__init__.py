@@ -8,6 +8,7 @@ from opensquilla.engine.steps.prompt_cache import apply_prompt_cache
 from opensquilla.engine.steps.reasoning_hint_observer import observe_reasoning_hint
 from opensquilla.engine.steps.resolve_model import resolve_model
 from opensquilla.engine.steps.skills_filter import filter_skills
+from opensquilla.engine.steps.vision_followup_gate import apply_vision_followup_gate
 
 try:
     from opensquilla.engine.steps.squilla_router import apply_squilla_router
@@ -20,6 +21,7 @@ except ImportError:
 __all__ = [
     "apply_prompt_cache",
     "apply_squilla_router",
+    "apply_vision_followup_gate",
     "filter_skills",
     "inject_platform_hint",
     "inject_subagent_grounding",

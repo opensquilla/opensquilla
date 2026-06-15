@@ -6,6 +6,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from yoyo import get_backend, read_migrations
 
 from opensquilla.persistence.migrator import apply_pending
 
@@ -50,6 +51,10 @@ def _insert_step(conn: sqlite3.Connection, kind: str, step_id: str = "s1") -> No
     conn.commit()
 
 
+def _column_names(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
 def test_v014_accepts_user_input_step_kind(tmp_path: Path) -> None:
     db = str(tmp_path / "v014.db")
     applied = apply_pending(db, MIGRATIONS_DIR)
@@ -82,3 +87,64 @@ def test_v014_keeps_prior_step_kinds_and_rejects_unknown(tmp_path: Path) -> None
             _insert_step(conn, "made_up", step_id="bad")
     finally:
         conn.close()
+
+
+def test_v015_rollback_then_v014_rollback_recreates_step_table(tmp_path: Path) -> None:
+    db = str(tmp_path / "v015_v014_rollback.db")
+    apply_pending(db, MIGRATIONS_DIR)
+
+    conn = _open_conn(db)
+    try:
+        _insert_run(conn)
+        _insert_step(conn, "agent")
+        assert "usage_json" in _column_names(conn, "meta_skill_run_steps")
+    finally:
+        conn.close()
+
+    backend = get_backend(f"sqlite:///{db}")
+    migrations = read_migrations(str(MIGRATIONS_DIR))
+    by_id = {migration.id: migration for migration in migrations}
+    backend.rollback_migrations([by_id["V015__meta_skill_step_usage"]])
+
+    conn = _open_conn(db)
+    try:
+        assert "usage_json" not in _column_names(conn, "meta_skill_run_steps")
+    finally:
+        conn.close()
+
+    backend.rollback_migrations([
+        by_id["V014__meta_skill_run_steps_allow_user_input"]
+    ])
+
+    conn = _open_conn(db)
+    try:
+        row = conn.execute(
+            "SELECT step_id, step_kind FROM meta_skill_run_steps WHERE step_id='s1'"
+        ).fetchone()
+        assert row == ("s1", "agent")
+        with pytest.raises(sqlite3.IntegrityError):
+            _insert_step(conn, "user_input", step_id="after-rollback")
+    finally:
+        conn.close()
+
+
+def test_v014_rollback_blocks_when_user_input_step_rows_exist(tmp_path: Path) -> None:
+    db = str(tmp_path / "v014_user_input_rollback.db")
+    apply_pending(db, MIGRATIONS_DIR)
+
+    conn = _open_conn(db)
+    try:
+        _insert_run(conn)
+        _insert_step(conn, "user_input")
+    finally:
+        conn.close()
+
+    backend = get_backend(f"sqlite:///{db}")
+    migrations = read_migrations(str(MIGRATIONS_DIR))
+    by_id = {migration.id: migration for migration in migrations}
+    backend.rollback_migrations([by_id["V015__meta_skill_step_usage"]])
+
+    with pytest.raises(RuntimeError, match="user_input"):
+        backend.rollback_migrations([
+            by_id["V014__meta_skill_run_steps_allow_user_input"]
+        ])

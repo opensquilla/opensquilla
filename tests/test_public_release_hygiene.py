@@ -145,6 +145,30 @@ def test_public_testing_guidance_documents_the_private_boundary() -> None:
         assert phrase in combined
 
 
+def test_pull_request_template_uses_structured_governance_fields() -> None:
+    text = Path(".github/pull_request_template.md").read_text(encoding="utf-8")
+    required_phrases = [
+        "Scope boundary",
+        "Non-goals",
+        "Base branch: dev | main | staging/collaboration",
+        "Main exception: N/A | release | hotfix | release-docs | main-sync | maintainer-approved",
+        "Linked issue: Fixes #... | Refs #... | None",
+        "If None, reason",
+        "Release note: NONE |",
+        "Ruff:",
+        "Pytest:",
+        "Build:",
+        "Maintainer live check",
+        "contributors are not expected to provide secrets",
+        "Third-party origin",
+    ]
+
+    for phrase in required_phrases:
+        assert phrase in text
+
+    assert text.count("[ ]") <= 6
+
+
 def test_public_docs_do_not_use_key_shaped_placeholders() -> None:
     violations: list[str] = []
     placeholder_pattern = re.compile(r"sk-or-v1-[A-Za-z0-9_-]+")

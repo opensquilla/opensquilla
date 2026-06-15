@@ -15,9 +15,9 @@ read [`../authoring/meta-skills.md`](../authoring/meta-skills.md).
 | Skill | One focused task pattern, instruction set, script, or tool helper. |
 | Meta-skill | A reusable workflow made of multiple steps, skills, checks, or outputs. |
 
-For example, "summarize this document" is skill-shaped. "Turn this contract,
-quote, and email into a sign, reject, or negotiate recommendation with risks and
-next actions" is meta-skill-shaped.
+For example, "summarize this document" is skill-shaped. "Plan a safe child
+science project with materials, adult setup, child steps, presentation notes, and
+final safety review" is meta-skill-shaped.
 
 ## Stable Built-In MetaSkills
 
@@ -25,15 +25,10 @@ The retained stable catalog is intentionally small:
 
 | MetaSkill | Positioning |
 | --- | --- |
-| `meta-competitive-intel` | Turns account or competitor signals into sales, BD, or competitive-intel briefs. |
-| `meta-daily-operator-brief` | Turns today's tasks, context, and constraints into an operating brief. |
-| `meta-document-to-decision` | Turns contracts, quotes, renewals, notices, or spreadsheets into sign, reject, or negotiate decisions. |
-| `meta-job-search-pipeline` | Turns a JD, resume, and application goal into an application package and interview prep. |
 | `meta-kid-project-planner` | Produces safe, age-appropriate plans for school projects, show-and-tell, or science activities. |
 | `meta-paper-write` | Supports academic drafts, manuscript structure, citation planning, experiment placeholders, and LaTeX/PDF paths. |
 | `meta-short-drama` | Produces short-drama scripts, visual prompts, subtitles, and local video artifacts. |
 | `meta-skill-creator` | Turns repeated multi-skill collaboration patterns into new MetaSkill proposals. |
-| `meta-web-research-to-report` | Turns source-backed research needs into reports, briefs, or decision memos. |
 
 Experimental meta-skills may exist under development trees, but this page lists
 only bundled built-ins that should be presented as retained product
@@ -48,26 +43,26 @@ requirements from child skills.
 - `meta-paper-write` needs `xelatex` and `bibtex` for PDF compilation.
 - `meta-short-drama` needs `ffmpeg` and `ffprobe` for local video rendering,
   merge, and subtitle steps.
-- Document/report MetaSkills inherit readiness from child skills such as
-  `docx`, `xlsx`, `pdf-toolkit`, `pptx`, `multi-search-engine`, and `weather`.
+- MetaSkills inherit readiness from their child skills; for example,
+  `meta-paper-write` surfaces LaTeX/PDF requirements and
+  `meta-short-drama` surfaces local video-tool requirements.
 
 ## How to Ask
 
 Ask for the outcome and the standard:
 
 ```text
-Create a decision memo comparing travel eSIM, carrier roaming, and local SIM
-options for my parents' 8-day Japan trip. Include sources, risks, a final
-recommendation, and what I should order tonight.
+Plan a safe 20-minute balcony plant science project for a 7-year-old. Include
+materials, adult setup, child steps, safety notes, and a presentation outline.
 ```
 
 For important or easily confused work, name the workflow:
 
 ```text
-Use meta-skill `meta-web-research-to-report`.
+Use meta-skill `meta-kid-project-planner`.
 
-Create a source-backed decision memo comparing travel eSIM, carrier roaming,
-and local SIM options for my parents' 8-day Japan trip.
+Plan a safe 20-minute balcony plant science project for a 7-year-old. Include
+materials, adult setup, child steps, safety notes, and a presentation outline.
 ```
 
 A strong request usually includes:

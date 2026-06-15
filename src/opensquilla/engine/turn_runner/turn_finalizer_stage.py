@@ -39,6 +39,9 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
 
+from opensquilla.observability.decision_log import build_vision_followup_gate_reason_code
+from opensquilla.skills.meta.types import MetaPaused
+
 if TYPE_CHECKING:
     from opensquilla.engine.turn_runner.outcome import StageOutcome
     from opensquilla.engine.types import DoneEvent, ErrorEvent
@@ -152,6 +155,8 @@ def render_paused_outcome(result: MetaResult) -> str:
     if not result.paused or result.paused_payload is None:
         return result.final_text or ""
     payload = result.paused_payload
+    if not isinstance(payload, MetaPaused):
+        return result.final_text or ""
     schema = payload.schema
     language = str(getattr(payload, "language", "") or "").lower()
     if language not in {"en", "zh"}:
@@ -271,7 +276,7 @@ def _turn_usage_payload(
     if done_event is None:
         return None
     model = done_event.model or resolved_model or ""
-    return {
+    payload = {
         "input_tokens": int(done_event.input_tokens or 0),
         "output_tokens": int(done_event.output_tokens or 0),
         "reasoning_tokens": int(done_event.reasoning_tokens or 0),
@@ -294,6 +299,45 @@ def _turn_usage_payload(
         "total_savings_pct": float(done_event.total_savings_pct or 0.0),
         "total_savings_usd": float(done_event.total_savings_usd or 0.0),
     }
+    optional_fields = {
+        "image_route_reason": getattr(done_event, "image_route_reason", None),
+        "vision_followup_gate_decision": getattr(
+            done_event,
+            "vision_followup_gate_decision",
+            None,
+        ),
+        "vision_followup_gate_confidence": getattr(
+            done_event,
+            "vision_followup_gate_confidence",
+            None,
+        ),
+        "vision_followup_gate_reason": build_vision_followup_gate_reason_code(
+            decision=getattr(done_event, "vision_followup_gate_decision", None),
+            source=getattr(done_event, "vision_followup_gate_source", None),
+            reason=getattr(done_event, "vision_followup_gate_reason", None),
+            fallback=getattr(done_event, "vision_followup_fallback", None),
+        ),
+        "vision_followup_gate_source": getattr(
+            done_event,
+            "vision_followup_gate_source",
+            None,
+        ),
+        "vision_followup_gate_model": getattr(
+            done_event,
+            "vision_followup_gate_model",
+            None,
+        ),
+        "vision_followup_needs_image": getattr(
+            done_event,
+            "vision_followup_needs_image",
+            None,
+        ),
+        "vision_followup_fallback": getattr(done_event, "vision_followup_fallback", None),
+    }
+    for key, value in optional_fields.items():
+        if value is not None:
+            payload[key] = value
+    return payload
 
 @runtime_checkable
 class SessionTotalsPort(Protocol):

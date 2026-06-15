@@ -396,6 +396,14 @@ class FeishuWebSocketTransport:
                 ws_client.start()
                 if not self._stop_requested.is_set():
                     self._last_error = "Feishu WebSocket client stopped during startup"
+            except asyncio.CancelledError:
+                if not self._stop_requested.is_set():
+                    startup_error.append(
+                        RuntimeError("Feishu WebSocket client loop was cancelled")
+                    )
+                    self._last_error = "Feishu WebSocket client loop was cancelled"
+                    log.warning("feishu.websocket_cancelled")
+                startup_event.set()
             except Exception as exc:
                 if not self._stop_requested.is_set():
                     startup_error.append(exc)
@@ -405,13 +413,17 @@ class FeishuWebSocketTransport:
             finally:
                 self._connected = False
                 startup_event.set()
-                self._unbind_sdk_event_loop(worker_loop)
-                self._drain_worker_loop(worker_loop)
-                with contextlib.suppress(Exception):
-                    worker_loop.close()
-                if self._worker_loop is worker_loop:
-                    self._worker_loop = None
-                self._release_active_client()
+                try:
+                    self._unbind_sdk_event_loop(worker_loop)
+                    try:
+                        self._drain_worker_loop(worker_loop)
+                    finally:
+                        with contextlib.suppress(Exception):
+                            worker_loop.close()
+                        if self._worker_loop is worker_loop:
+                            self._worker_loop = None
+                finally:
+                    self._release_active_client()
 
         try:
             self._register_active_client()
@@ -451,17 +463,22 @@ class FeishuWebSocketTransport:
         if thread is not None and thread.is_alive():
             stop_deadline = time.monotonic() + _FEISHU_WS_JOIN_TIMEOUT_S
             while thread.is_alive() and time.monotonic() < stop_deadline:
+                self._stop_sdk_event_loop()
                 await asyncio.sleep(0.01)
         if thread is not None and thread.is_alive():
             self._last_error = "Feishu WebSocket worker did not stop within timeout"
+            self._release_active_client()
+            self._thread = None
+            self._worker_loop = None
         else:
             if thread is not None:
                 thread.join(timeout=0)
             self._thread = None
+            self._worker_loop = None
+            self._release_active_client()
         self._handler = None
         self._loop = None
         self._lark = None
-        self._worker_loop = None
 
     async def health_check(self) -> ChannelHealth:
         return ChannelHealth(
@@ -550,6 +567,13 @@ class FeishuWebSocketTransport:
                     except TimeoutError:
                         self._last_error = "Feishu WebSocket disconnect timed out"
                         log.warning("feishu.websocket_disconnect_failed", error=self._last_error)
+                        future.cancel()
+                        self._stop_sdk_event_loop()
+                        retry = disconnect()
+                        if inspect.isawaitable(retry):
+                            await retry
+                        elif hasattr(retry, "close"):
+                            retry.close()
                 else:
                     await result
             elif inspect.isawaitable(result):
@@ -589,8 +613,12 @@ class FeishuWebSocketTransport:
         sdk_loop = self._sdk_event_loop()
         if sdk_loop is None or sdk_loop.is_closed():
             return
+        def _cancel_pending_and_stop() -> None:
+            for task in asyncio.all_tasks(sdk_loop):
+                task.cancel()
+
         with contextlib.suppress(RuntimeError):
-            sdk_loop.call_soon_threadsafe(sdk_loop.stop)
+            sdk_loop.call_soon_threadsafe(_cancel_pending_and_stop)
 
     def _drain_worker_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         if loop.is_closed():
@@ -599,9 +627,9 @@ class FeishuWebSocketTransport:
         for task in pending:
             task.cancel()
         if pending:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(Exception, asyncio.CancelledError):
                 loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(Exception, asyncio.CancelledError):
             loop.run_until_complete(loop.shutdown_asyncgens())
 
     def _register_active_client(self) -> None:

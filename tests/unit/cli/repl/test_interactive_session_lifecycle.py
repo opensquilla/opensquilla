@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from prompt_toolkit.application.current import create_app_session
 from prompt_toolkit.formatted_text import to_formatted_text
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.input.base import DummyInput
@@ -55,6 +56,28 @@ async def test_interactive_session_ctrl_d_returns_none() -> None:
             result = await asyncio.wait_for(handle.next_line(), timeout=2.0)
 
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_cached_chat_application_can_emit_eof_after_reentry() -> None:
+    """A cached production ChatApplication must not keep EOF latched forever."""
+    prompt_module._chat_applications.clear()
+    try:
+        with create_app_session(input=DummyInput(), output=DummyOutput()):
+            app1 = prompt_module._get_or_create_chat_app(Surface.CLI_GATEWAY)
+            app1._emit_eof()
+            first = await asyncio.wait_for(app1.next_line(), timeout=0.2)
+
+            app2 = prompt_module._get_or_create_chat_app(Surface.CLI_GATEWAY)
+            same_cached_app = app1 is app2
+            app2._emit_eof()
+            second = await asyncio.wait_for(app2.next_line(), timeout=0.2)
+    finally:
+        prompt_module._chat_applications.clear()
+
+    assert first is None
+    assert same_cached_app is True
+    assert second is None
 
 
 @pytest.mark.asyncio
@@ -166,6 +189,25 @@ async def test_interactive_session_multiple_same_size_pastes_expand_distinctly()
     submitted = await asyncio.wait_for(chat_app.next_line(), timeout=2.0)
 
     assert submitted == f"{first} {second}"
+
+
+@pytest.mark.asyncio
+async def test_cached_session_reset_drops_unsubmitted_paste_marker() -> None:
+    chat_app = _fresh_chat_app()
+    pasted = "x" * 801
+
+    chat_app._insert_pasted_content(chat_app._buffer, pasted)
+    assert chat_app._buffer.text == "[Pasted Content #1 801 chars]"
+
+    chat_app.reset_session_state()
+    assert chat_app._buffer.text == ""
+    assert chat_app._pasted_content == {}
+
+    chat_app._buffer.insert_text("fresh input")
+    chat_app._on_accept(chat_app._buffer)
+    submitted = await asyncio.wait_for(chat_app.next_line(), timeout=2.0)
+
+    assert submitted == "fresh input"
 
 
 @pytest.mark.asyncio

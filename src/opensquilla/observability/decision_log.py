@@ -24,7 +24,7 @@ from typing import Literal
 from opensquilla.bootstrap_types import BootstrapFileReport
 from opensquilla.paths import default_opensquilla_home
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 _INTENT_SUMMARY_MAX_CHARS = 500
 _EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 _URL_RE = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
@@ -34,6 +34,9 @@ _SECRET_ASSIGN_RE = re.compile(
 )
 _LONG_SECRET_RE = re.compile(r"\b(?:sk-[A-Za-z0-9_-]{16,}|[A-Za-z0-9_/-]{32,})\b")
 _ABS_PATH_RE = re.compile(r"(?<!\w)(?:/home/[^/\s]+|/Users/[^/\s]+|/root)(?:/[^\s]+)*")
+_VISION_GATE_DECISIONS = {"needs_image", "text_only", "unknown"}
+_VISION_GATE_STATIC_DECISIONS = {"disabled", "current_image", "not_applicable"}
+_VISION_GATE_STATIC_REASONS = {"candidate_window_expired"}
 
 RoutingSource = Literal[
     "v4_phase3",
@@ -160,6 +163,14 @@ class DecisionEntry:
     session_flush_extraction_model: str | None = None
     session_flush_fallback_used: bool = False
     session_flush_fallback_reason: str | None = None
+    image_route_reason: str | None = None
+    vision_followup_gate_decision: str | None = None
+    vision_followup_gate_confidence: float | None = None
+    vision_followup_gate_reason: str | None = None
+    vision_followup_gate_source: str | None = None
+    vision_followup_gate_model: str | None = None
+    vision_followup_needs_image: bool | None = None
+    vision_followup_fallback: str | None = None
     skills_invoked: list[str] = field(default_factory=list)
     pipeline_steps: list[PipelineStepRecord] = field(default_factory=list)
     savings: SavingsTelemetry = field(default_factory=SavingsTelemetry)
@@ -191,6 +202,43 @@ def build_intent_summary(message: str, max_chars: int = _INTENT_SUMMARY_MAX_CHAR
     if len(text) > max_chars:
         text = text[: max(0, max_chars - 1)].rstrip() + "…"
     return text
+
+
+def build_vision_followup_gate_reason_code(
+    *,
+    decision: str | None,
+    source: str | None,
+    reason: str | None,
+    fallback: str | None,
+) -> str | None:
+    """Return a privacy-safe reason code for default decision logs.
+
+    Gate ``reason`` values may come from an LLM response or provider exception
+    and can echo prompt text. Default logs store only stable classification
+    codes; raw reason text stays out of the per-turn JSONL log.
+    """
+
+    decision_text = str(decision or "")
+    source_text = str(source or "")
+    reason_text = str(reason or "")
+
+    if reason_text in _VISION_GATE_STATIC_REASONS:
+        return reason_text
+    if decision_text in _VISION_GATE_STATIC_DECISIONS:
+        return decision_text
+    if source_text == "explicit_image_reference":
+        return "explicit_image_reference"
+    if source_text == "explicit_opt_out":
+        return "explicit_opt_out"
+    if source_text == "error":
+        return "gate_error"
+    if fallback:
+        return f"fallback_{fallback}"
+    if source_text == "llm" and decision_text in _VISION_GATE_DECISIONS:
+        return f"llm_{decision_text}"
+    if decision_text == "unknown":
+        return "unknown"
+    return None
 
 
 def _redact_path_keep_basename(match: re.Match[str]) -> str:

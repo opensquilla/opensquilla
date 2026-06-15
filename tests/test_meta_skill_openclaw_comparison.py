@@ -26,7 +26,6 @@ from scripts.compare_meta_skill_openclaw import (
 def test_comparison_catalog_covers_expected_meta_skill_scenarios() -> None:
     primary = [case for case in COMPARISON_CASES if case.scenario == "primary"]
     assert [case.skill_name for case in primary] == [
-        "meta-web-research-to-report",
         "meta-paper-write",
         "meta-pdf-intelligence",
         "meta-stack-trace-investigator",
@@ -34,7 +33,7 @@ def test_comparison_catalog_covers_expected_meta_skill_scenarios() -> None:
         "meta-skill-creator",
         "meta-migration-assistant",
     ]
-    assert len({case.case_id for case in COMPARISON_CASES}) == 21
+    assert len({case.case_id for case in COMPARISON_CASES}) == 18
     assert {
         (case.skill_name, case.scenario)
         for case in COMPARISON_CASES
@@ -588,7 +587,7 @@ def test_judge_result_becomes_final_winner_and_reported_basis() -> None:
     assert judged["score_basis"] == "llm_judge"
     assert "judge_error" not in judged
     assert "Final winner uses LLM judge for 1/1 rows." in report
-    assert "| web_research_report | 5 | 4 | opensquilla | 70-88 openclaw | openclaw |" in report
+    assert f"| {case.case_id} | 5 | 4 | opensquilla | 70-88 openclaw | openclaw |" in report
 
 
 def test_apply_judge_result_recomputes_scores_from_weighted_subscores() -> None:

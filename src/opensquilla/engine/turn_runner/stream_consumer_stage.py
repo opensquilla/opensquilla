@@ -34,6 +34,7 @@ import structlog
 
 from opensquilla.engine.hooks.types import CompactionState
 from opensquilla.engine.tool_text_compat import ProtocolTextLeakGuard
+from opensquilla.observability.decision_log import build_vision_followup_gate_reason_code
 
 if TYPE_CHECKING:
     from opensquilla.engine.agent import Agent
@@ -210,6 +211,7 @@ class _StreamState:
     turn_segments: list[dict] = field(default_factory=list)
     turn_artifacts: list[dict[str, Any]] = field(default_factory=list)
     artifact_delivery_failures: list[str] = field(default_factory=list)
+    completed_meta_skill_without_text: str | None = None
 
 # ---------------------------------------------------------------------------
 # Stage I/O dataclass
@@ -358,6 +360,8 @@ class _ToolResultHandler:
         failure_summary = _artifact_delivery_failure_summary(event)
         if failure_summary is not None:
             state.artifact_delivery_failures.append(failure_summary)
+        if _is_completed_meta_invoke(event):
+            state.completed_meta_skill_without_text = _meta_invoke_skill_name(event)
         if event.arguments is not None:
             for segment in reversed(state.turn_segments):
                 if (
@@ -534,6 +538,25 @@ class _DoneHandler:
             cache_hit_active=provider_cache_hit or opensquilla_cache_hit,
             total_savings_pct=comprehensive.pct,
             total_savings_usd=comprehensive.usd,
+            image_route_reason=metadata.get("image_route_reason"),
+            vision_followup_gate_decision=metadata.get(
+                "router_vision_followup_gate_decision"
+            ),
+            vision_followup_gate_confidence=metadata.get(
+                "router_vision_followup_gate_confidence"
+            ),
+            vision_followup_gate_reason=build_vision_followup_gate_reason_code(
+                decision=metadata.get("router_vision_followup_gate_decision"),
+                source=metadata.get("router_vision_followup_gate_source"),
+                reason=metadata.get("router_vision_followup_gate_reason"),
+                fallback=metadata.get("router_vision_followup_fallback"),
+            ),
+            vision_followup_gate_source=metadata.get(
+                "router_vision_followup_gate_source"
+            ),
+            vision_followup_gate_model=metadata.get("router_vision_followup_gate_model"),
+            vision_followup_needs_image=metadata.get("router_vision_followup_needs_image"),
+            vision_followup_fallback=metadata.get("router_vision_followup_fallback"),
         )
         state.done_event = event
 
@@ -544,6 +567,20 @@ class _DoneHandler:
 
         accumulated_text = "".join(state.final_text_parts)
         extra_yields: list[AgentEvent] = []
+        if accumulated_text.strip() and not event.text.strip():
+            event = replace(event, text=accumulated_text)
+            state.done_event = event
+        if not accumulated_text.strip() and state.completed_meta_skill_without_text:
+            event, fallback_event = _append_done_notice_delta(
+                event,
+                state,
+                _meta_completed_without_text_notice(
+                    state.completed_meta_skill_without_text
+                ),
+                accumulated_text=accumulated_text,
+            )
+            extra_yields.append(fallback_event)
+            accumulated_text = "".join(state.final_text_parts)
         from opensquilla.engine.types import ArtifactEvent as _ArtifactEvent
 
         omitted_publish_result = auto_publish_omitted_workspace_artifacts(
@@ -614,6 +651,28 @@ def _append_done_notice_delta(
     event = replace(event, text="".join(state.final_text_parts))
     state.done_event = event
     return event, _TextDeltaEvent(text=notice_delta)
+
+
+def _is_completed_meta_invoke(event: ToolResultEvent) -> bool:
+    if event.tool_name != "meta_invoke" or event.is_error:
+        return False
+    result = event.result.strip().lower()
+    return "meta-skill" in result and "completed" in result
+
+
+def _meta_invoke_skill_name(event: ToolResultEvent) -> str:
+    arguments = event.arguments if isinstance(event.arguments, dict) else {}
+    candidate = arguments.get("name")
+    if isinstance(candidate, str) and candidate.strip():
+        return candidate.strip()
+    return "meta skill"
+
+
+def _meta_completed_without_text_notice(skill_name: str) -> str:
+    return (
+        f"Meta skill `{skill_name}` 已完成，但这次流程没有生成可展示的最终回答。"
+        "请查看上方步骤结果和产物；如果需要，可以补充更明确的输出要求后重新运行。"
+    )
 
 
 def _subagent_partial_failure_disclosure(

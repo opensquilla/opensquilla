@@ -25,6 +25,12 @@ data/
 .opensquilla/
 benchmarks/
 specs/
+# Public proposals tree: docs/proposals/ overrides global specs/ + plans/
+# ignores so design notes and implementation plans intended for review
+# travel with the repository.
+!docs/proposals/
+!docs/proposals/specs/
+!docs/proposals/plans/
 # Local agent/editor instructions and runtime state.
 AGENTS.md
 !docs/agents.md

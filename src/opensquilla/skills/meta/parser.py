@@ -22,10 +22,41 @@ if TYPE_CHECKING:
 _SUPPORTED_KINDS = frozenset(
     {"agent", "llm_classify", "llm_chat", "tool_call", "skill_exec", "user_input"},
 )
+_BILINGUAL_SEPARATOR_RE = re.compile(r"\s+/\s+")
 
 
 class MetaPlanError(ValueError):
     """Raised when a meta-skill's composition is malformed."""
+
+
+def _fallback_label_from_step_id(step_id: str) -> str:
+    """Return a readable fallback label for older meta-skill steps."""
+
+    return step_id.replace("_", " ").replace("-", " ").strip().title() or step_id
+
+
+def _split_bilingual_text(text: str) -> dict[str, str]:
+    """Best-effort split for legacy ``中文 / English`` prompt strings."""
+
+    if not text.strip():
+        return {}
+    parts = _BILINGUAL_SEPARATOR_RE.split(text.strip(), maxsplit=1)
+    if len(parts) != 2:
+        return {}
+    left, right = (part.strip() for part in parts)
+    if not left or not right:
+        return {}
+    if re.search(r"[\u3400-\u9fff\uf900-\ufaff]", left) and re.search(
+        r"[A-Za-z]",
+        right,
+    ):
+        return {"zh": left, "en": right}
+    if re.search(r"[A-Za-z]", left) and re.search(
+        r"[\u3400-\u9fff\uf900-\ufaff]",
+        right,
+    ):
+        return {"en": left, "zh": right}
+    return {}
 
 
 def parse_meta_plan(spec: SkillSpec) -> MetaPlan | None:
@@ -136,6 +167,33 @@ def parse_meta_plan(spec: SkillSpec) -> MetaPlan | None:
                 f"for kind=user_input",
             )
 
+        label_raw = raw.get("label", "")
+        if not isinstance(label_raw, str):
+            raise MetaPlanError(
+                f"meta-skill {spec.name!r}: step {step_id!r} label must be "
+                f"a string (or omitted)",
+            )
+        label = label_raw.strip() or _fallback_label_from_step_id(step_id)
+        label_by_language: dict[str, str] = {}
+        for lang in ("zh", "en"):
+            localized_label = raw.get(f"label_{lang}")
+            if isinstance(localized_label, str) and localized_label.strip():
+                label_by_language[lang] = localized_label.strip()
+        if "en" not in label_by_language:
+            label_by_language["en"] = label
+
+        progress_emits_raw = raw.get("progress_emits")
+        if progress_emits_raw is None:
+            # Defaults by kind: tool_call → False; everything else → True.
+            progress_emits = kind != "tool_call"
+        elif isinstance(progress_emits_raw, bool):
+            progress_emits = progress_emits_raw
+        else:
+            raise MetaPlanError(
+                f"meta-skill {spec.name!r}: step {step_id!r} progress_emits "
+                f"must be a boolean (or omitted)",
+            )
+
         steps.append(
             MetaStep(
                 id=step_id,
@@ -151,6 +209,9 @@ def parse_meta_plan(spec: SkillSpec) -> MetaPlan | None:
                 tool_allowlist=tool_allowlist,
                 on_failure=on_failure,
                 clarify_config=clarify_config,
+                label=label,
+                label_by_language=label_by_language,
+                progress_emits=progress_emits,
             ),
         )
 
@@ -166,6 +227,36 @@ def parse_meta_plan(spec: SkillSpec) -> MetaPlan | None:
     final_text_mode = str(
         getattr(spec, "final_text_mode", "auto") or "auto",
     ).strip() or "auto"
+    request_template_raw = getattr(spec, "request_template", {}) or {}
+    request_template = (
+        dict(request_template_raw)
+        if isinstance(request_template_raw, dict)
+        else {}
+    )
+    output_contract_raw = getattr(spec, "output_contract", {}) or {}
+    output_contract = (
+        dict(output_contract_raw)
+        if isinstance(output_contract_raw, dict)
+        else {}
+    )
+    eval_prompts_raw = getattr(spec, "eval_prompts", []) or []
+    eval_prompts = (
+        [dict(item) for item in eval_prompts_raw if isinstance(item, dict)]
+        if isinstance(eval_prompts_raw, list)
+        else []
+    )
+    preference_keys_raw = getattr(spec, "preference_keys", []) or []
+    preference_keys = (
+        tuple(str(item) for item in preference_keys_raw if str(item).strip())
+        if isinstance(preference_keys_raw, list)
+        else ()
+    )
+    policy_tags_raw = getattr(spec, "policy_tags", []) or []
+    policy_tags = (
+        tuple(str(item) for item in policy_tags_raw if str(item).strip())
+        if isinstance(policy_tags_raw, list)
+        else ()
+    )
 
     return MetaPlan(
         name=spec.name,
@@ -174,6 +265,11 @@ def parse_meta_plan(spec: SkillSpec) -> MetaPlan | None:
         steps=tuple(steps),
         fallback_body=fallback_body,
         final_text_mode=final_text_mode,
+        request_template=request_template,
+        output_contract=output_contract,
+        eval_prompts=eval_prompts,
+        preference_keys=preference_keys,
+        policy_tags=policy_tags,
     )
 
 
@@ -439,6 +535,20 @@ def _ensure_acyclic(name: str, steps: list[MetaStep]) -> None:
 
 _CLARIFY_FIELD_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _CLARIFY_VALID_TYPES = frozenset({"string", "enum", "int", "bool"})
+_GENERIC_ADDITIONAL_NOTES_FIELD = ClarifyField(
+    name="additional_notes",
+    type="string",
+    required=False,
+    prompt=(
+        "其他可能有用的备注、限制或背景 / "
+        "Additional notes, constraints, or context"
+    ),
+    prompt_by_language={
+        "zh": "其他可能有用的备注、限制或背景",
+        "en": "Additional notes, constraints, or context",
+    },
+    max_chars=2000,
+)
 
 
 def _parse_clarify_field(
@@ -598,12 +708,25 @@ def _parse_clarify_field(
             f"meta-skill {skill_name!r}: step {step_id!r} clarify.fields[{index}] "
             f"{name!r}: prompt must be a string",
         )
+    prompt_by_language: dict[str, str] = {}
+    for lang in ("zh", "en"):
+        localized_prompt = raw.get(f"prompt_{lang}", "")
+        if localized_prompt and not isinstance(localized_prompt, str):
+            raise MetaPlanError(
+                f"meta-skill {skill_name!r}: step {step_id!r} "
+                f"clarify.fields[{index}] {name!r}: prompt_{lang} must be a string",
+            )
+        if isinstance(localized_prompt, str) and localized_prompt.strip():
+            prompt_by_language[lang] = localized_prompt
+    if not prompt_by_language:
+        prompt_by_language.update(_split_bilingual_text(prompt))
 
     return ClarifyField(
         name=name,
         type=type_,
         required=required,
         prompt=prompt,
+        prompt_by_language=prompt_by_language,
         choices=choices,
         default=default,
         min=min_v,
@@ -647,7 +770,10 @@ def _parse_clarify_config(
         seen_names.add(cf.name)
         fields.append(cf)
 
-    max_fields = 4 if mode == "chat" else 12
+    if _GENERIC_ADDITIONAL_NOTES_FIELD.name not in seen_names:
+        fields.append(_GENERIC_ADDITIONAL_NOTES_FIELD)
+
+    max_fields = 5 if mode == "chat" else 13
     if len(fields) > max_fields:
         raise MetaPlanError(
             f"meta-skill {skill_name!r}: step {step_id!r} clarify.fields "
@@ -694,6 +820,18 @@ def _parse_clarify_config(
             f"meta-skill {skill_name!r}: step {step_id!r} clarify.intro "
             f"must be a string",
         )
+    intro_by_language: dict[str, str] = {}
+    for lang in ("zh", "en"):
+        localized_intro = raw.get(f"intro_{lang}", "")
+        if localized_intro and not isinstance(localized_intro, str):
+            raise MetaPlanError(
+                f"meta-skill {skill_name!r}: step {step_id!r} "
+                f"clarify.intro_{lang} must be a string",
+            )
+        if isinstance(localized_intro, str) and localized_intro.strip():
+            intro_by_language[lang] = localized_intro
+    if not intro_by_language:
+        intro_by_language.update(_split_bilingual_text(intro))
 
     nl_extract = raw.get("nl_extract", False)
     if not isinstance(nl_extract, bool):
@@ -717,6 +855,7 @@ def _parse_clarify_config(
         cancel_keywords=cancel_keywords,
         timeout_hours=timeout_hours,
         intro=intro,
+        intro_by_language=intro_by_language,
         nl_extract=nl_extract,
         nl_extract_tier=nl_extract_tier,
     )

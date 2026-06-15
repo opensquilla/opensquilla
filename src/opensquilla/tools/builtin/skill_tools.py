@@ -211,6 +211,8 @@ def create_skill_tools(loader: SkillLoader) -> None:
                     missing.append(f"{b} (binary)")
                 for e in report.missing_env:
                     missing.append(f"{e} (env var)")
+                for group in report.missing_env_any:
+                    missing.append(f"{' or '.join(group)} (env var group)")
                 if report.disabled:
                     missing.append("disabled")
                 if report.wrong_os:
@@ -221,6 +223,11 @@ def create_skill_tools(loader: SkillLoader) -> None:
                     lines.append(f"      Install: {hint.command}")
                 for e in report.missing_env:
                     lines.append(f"      Hint: Set environment variable {e}")
+                for group in report.missing_env_any:
+                    lines.append(
+                        "      Hint: Set one of environment variables "
+                        + " or ".join(group)
+                    )
         return "\n".join(lines)
 
     @tool(

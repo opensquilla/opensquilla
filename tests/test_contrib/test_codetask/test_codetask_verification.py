@@ -216,6 +216,23 @@ class TestLocalizeCommand:
         cmd = "PYTHONPATH=src python -m pytest tests/test_x.py"
         assert verification._localize_command(cmd, repo, wt) == cmd
 
+    def test_sibling_path_not_corrupted(self, tmp_path):
+        # /abs/repo must NOT rewrite a sibling like /abs/repo-fixture or
+        # /abs/repo2 (codex review: raw substring replace would corrupt them).
+        repo = tmp_path / "repo"
+        wt = tmp_path / "wt"
+        repo.mkdir()
+        wt.mkdir()
+        sibling = f"{repo}-fixture"
+        sibling2 = f"{repo}2"
+        cmd = f"cat {sibling}/data && ls {sibling2} && cd {repo} && pytest"
+        out = verification._localize_command(cmd, repo, wt)
+        # The sibling paths survive intact...
+        assert sibling in out
+        assert sibling2 in out
+        # ...but the exact repo path (followed by a space) is rewritten.
+        assert f"cd {wt} && pytest" in out
+
 
 def test_red_phase_uses_localized_command(monkeypatch, tmp_path):
     """End-to-end: the red-phase run must receive the worktree-localized command.

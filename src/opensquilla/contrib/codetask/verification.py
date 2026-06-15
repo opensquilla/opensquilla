@@ -288,11 +288,19 @@ def _localize_command(command: str, repo: Path, target: Path) -> str:
     Rewriting the task-repo path to the worktree path keeps the command inside
     the intended tree regardless of how the agent wrote it. Longest match
     first so ``/abs/repo/src`` is rewritten before ``/abs/repo``.
+
+    The repo path is only rewritten at a real path boundary (end-of-string or
+    a non-filename character such as ``/`` or a space), so a legitimate SIBLING
+    path like ``/abs/repo-fixture`` is never corrupted (raw substring
+    replacement would wrongly rewrite its ``/abs/repo`` prefix).
     """
     candidates = sorted({str(repo), str(repo.resolve())}, key=len, reverse=True)
     out = command
     for src in candidates:
-        out = out.replace(src, str(target))
+        # Negative lookahead: the path must NOT be followed by a filename
+        # continuation char, so ``-fixture`` / ``2`` / ``.bak`` siblings stay.
+        pattern = re.escape(src) + r"(?![A-Za-z0-9._-])"
+        out = re.sub(pattern, lambda _m: str(target), out)
     return out
 
 

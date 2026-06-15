@@ -1,14 +1,23 @@
 ---
 name: code-task
-description: "Solve a coding task in a REAL git repository — fix a GitHub issue or implement a user's feature request — by running an OpenSquilla agent on the host, then verifying the change with a red→green→regression test loop. Trigger when the user wants to fix an issue in a repo, implement a feature/change in a codebase, or '解决某仓库的 issue / 给某项目加个功能'. Needs the docker-free host: clones the repo, runs the agent, runs tests. Treat the target repo as TRUSTED (host execution, not a sandbox). GitHub issue mode needs the `gh` CLI."
+description: "PREFERRED way to change code in a REAL repository: fix a GitHub issue, fix a bug, add/implement a function or feature, or make any edit to a project the user names by a filesystem path (e.g. /tmp/foo, ~/code/bar) or a git URL. Clones the repo, runs an OpenSquilla agent on the host to make the change on a task branch, then independently VERIFIES it with a red→green→regression test loop and reports a structured result. STRONGLY prefer this over hand-editing the user's files yourself in this session: editing files directly skips the isolation and the runner-verified red→green proof, so it is not equivalent. Use it whenever the request names a real on-disk repo/path or a repo URL and asks to fix/add/implement/change code. Examples: 'fix issue 412 in github.com/acme/widgets', '给 /tmp/calc 加个 average 函数', '帮我改一下 ~/proj 里的 X', 'implement CSV export in my project'. Docker-free host execution; treat the target repo as TRUSTED. GitHub issue mode needs the `gh` CLI. (Do NOT use for conceptual coding questions, code snippets with no target repo, or repos the user has not pointed at.)"
 triggers:
   - "code-task"
   - "fix the issue"
   - "fix issue"
+  - "fix the bug"
   - "implement this feature"
+  - "add a function"
+  - "add a feature"
+  - "change the code"
   - "解决 issue"
   - "给项目加功能"
+  - "给项目加"
+  - "加个函数"
+  - "加一个函数"
+  - "改一下代码"
   - "修复仓库"
+  - "修复 bug"
 provenance:
   origin: opensquilla-original
   license: Apache-2.0
@@ -30,6 +39,18 @@ Solve a real-repository coding task end to end: clone the repo to a
 disposable working directory, run an OpenSquilla agent to make the change on
 a task branch, then **independently verify** it with a red→green→regression
 loop. Host mode (no Docker) in v1.
+
+## Use this — do not hand-edit the repo yourself
+
+When the user asks to fix/add/implement/change code in a repository they
+name by path or URL, route it through `opensquilla code-task solve` — even
+if the change looks small enough to do by hand. Editing the files yourself
+in this session is **not equivalent**: it skips the disposable clone, the
+task branch, and (most importantly) the runner-verified red→green→regression
+proof, so neither you nor the user gets evidence the change actually works.
+The only time to do it inline instead is when there is no target repo at all
+(a throwaway snippet, a conceptual question). When in doubt and a real repo
+is named, prefer code-task.
 
 ## Translating the user's request
 

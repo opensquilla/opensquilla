@@ -176,27 +176,34 @@ def test_preflight_collects_missing_fields_inline_instead_of_editing_composer():
     assert "setError(card, err" in chat
 
 
-def test_index_html_loads_ribbon_before_chat():
-    text = _read_text(INDEX_HTML)
-    ribbon_pos = text.find("chat/meta-ribbon.js")
-    preflight_pos = text.find("chat/meta-preflight.js")
-    artifact_card_pos = text.find("chat/artifact-card.js")
-    history_pos = text.find("chat/meta-run-history.js")
-    chat_pos = text.find("views/chat.js")
-    assert ribbon_pos != -1, "meta-ribbon.js not included"
-    assert preflight_pos != -1, "meta-preflight.js not included"
-    assert artifact_card_pos != -1, "artifact-card.js not included"
-    assert history_pos != -1, "meta-run-history.js not included"
-    assert chat_pos != -1, "chat.js not included"
-    assert ribbon_pos < chat_pos, "meta-ribbon.js must load before chat.js"
-    assert preflight_pos < chat_pos, "meta-preflight.js must load before chat.js"
-    assert artifact_card_pos < chat_pos, "artifact-card.js must load before chat.js"
-    assert history_pos < chat_pos, "meta-run-history.js must load before chat.js"
+# The Vue 3 frontend (opensquilla-webui) is the active control UI; its
+# index.html is a Vite entry that bundles modules rather than listing
+# <script> tags, so the meta-skill UI is now Single-File Components mounted
+# by ChatView instead of vanilla scripts loaded before chat.js. Behavioral
+# coverage lives in opensquilla-webui/e2e/meta-ribbon.spec.ts (Playwright,
+# injecting the four session.event.meta_* frames). These checks lock the Vue
+# wiring's existence.
+_VUE_META_RIBBON = Path("opensquilla-webui/src/components/chat/MetaRibbon.vue")
+_VUE_META_PREFLIGHT = Path("opensquilla-webui/src/components/chat/MetaPreflightCard.vue")
+_VUE_CHAT_VIEW = Path("opensquilla-webui/src/views/ChatView.vue")
 
 
-def test_index_html_loads_ribbon_css():
-    text = _read_text(INDEX_HTML)
-    assert "chat-meta-ribbon.css" in text
+def test_vue_chat_view_wires_meta_ribbon_and_preflight():
+    assert _VUE_META_RIBBON.exists(), "MetaRibbon.vue missing"
+    assert _VUE_META_PREFLIGHT.exists(), "MetaPreflightCard.vue missing"
+    view = _read_text(_VUE_CHAT_VIEW)
+    assert "MetaRibbon" in view, "ChatView must mount MetaRibbon"
+    assert "MetaPreflightCard" in view, "ChatView must mount MetaPreflightCard"
+    assert "useMetaRuns" in view, "ChatView must wire the useMetaRuns controller"
+
+
+def test_vue_meta_components_preserve_ribbon_markup_contract():
+    ribbon = _read_text(_VUE_META_RIBBON)
+    # Class-name parity with the ported chat-meta-ribbon.css.
+    assert "meta-ribbon" in ribbon and "meta-ribbon-chips" in ribbon
+    assert 'role="progressbar"' in ribbon
+    preflight = _read_text(_VUE_META_PREFLIGHT)
+    assert "meta-preflight" in preflight
 
 
 def test_chat_js_references_window_metaribbon():

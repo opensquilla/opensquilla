@@ -270,6 +270,96 @@ export interface CompactionPayload extends SessionEventPayload {
   detail?: string
 }
 
+/* ── MetaSkill run events ──────────────────────────────────────────────
+ * Four `session.event.meta_*` frames drive the run-progress ribbon and the
+ * preflight checkpoint card. They are delivered through the `*` wildcard
+ * handler (handleRpcAny) rather than an explicit rpc.on, so the composable
+ * casts the raw payload to these shapes. snake_case keys mirror the gateway. */
+
+export interface MetaPreflightFieldSpec {
+  name?: string
+  label?: string
+  title?: string
+  type?: string
+  kind?: string
+  multiline?: boolean
+  required?: boolean
+  default?: unknown
+  description?: string
+  help?: string
+  hint?: string
+  options?: unknown[]
+  choices?: unknown[]
+  [key: string]: unknown
+}
+
+export interface MetaPreflightRequestTemplate {
+  language?: string
+  outcome?: string
+  deliverable?: string
+  fields?: MetaPreflightFieldSpec[]
+  [key: string]: unknown
+}
+
+export interface MetaPreflightPayload extends SessionEventPayload {
+  run_id?: string
+  meta_skill_name?: string
+  language?: string
+  interpreted_request?: string
+  missing_fields?: string[]
+  assumptions?: string[]
+  request_template?: MetaPreflightRequestTemplate
+  can_skip?: boolean
+  requires_confirmation?: boolean
+}
+
+export interface MetaRunStepSpec {
+  id?: string
+  label?: string
+  kind?: string
+  depends_on?: string[]
+}
+
+export interface MetaRunAnnouncedPayload extends SessionEventPayload {
+  run_id?: string
+  meta_skill_name?: string
+  language?: string
+  user_language?: string
+  meta_language?: string
+  steps?: MetaRunStepSpec[]
+  total?: number
+}
+
+export interface MetaStepRescueAction {
+  id?: string
+  label?: string
+  [key: string]: unknown
+}
+
+export interface MetaStepRescue {
+  actions?: MetaStepRescueAction[]
+  [key: string]: unknown
+}
+
+export interface MetaStepStatePayload extends SessionEventPayload {
+  run_id?: string
+  step_id?: string
+  state?: string
+  status_text?: string | null
+  error?: string
+  substitute_for?: string | null
+  rescue?: MetaStepRescue
+}
+
+export interface MetaRunCompletedPayload extends SessionEventPayload {
+  run_id?: string
+  outcome?: string
+  completed_steps?: string[]
+  failed_steps?: string[]
+  recovered_steps?: string[]
+  skipped_steps?: string[]
+}
+
 export interface RpcEventMap {
   'session.event.text_delta': TextDeltaPayload
   'session.event.tool_use_start': ToolUsePayload
@@ -290,4 +380,8 @@ export interface RpcEventMap {
   'session.event.task_group.synthesizing': SessionEventPayload
   'session.event.task_group.done': SessionEventPayload
   'session.event.task_group.failed': SessionEventPayload
+  'session.event.meta_preflight': MetaPreflightPayload
+  'session.event.meta_run_announced': MetaRunAnnouncedPayload
+  'session.event.meta_step_state': MetaStepStatePayload
+  'session.event.meta_run_completed': MetaRunCompletedPayload
 }

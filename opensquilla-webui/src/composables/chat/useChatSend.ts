@@ -28,6 +28,7 @@ export interface UseChatSendOptions {
   isCompactInFlightForCurrentSession: () => boolean
   hasPendingAttachmentWork: () => boolean
   enqueuePendingInput: (text: string) => boolean
+  enqueueHiddenControl?: (item: { text: string; displayText: string }) => boolean
   popAllPendingIntoComposer: () => boolean
   executeSlashCommand: (text: string) => Promise<boolean>
   closeSlashMenu: () => void
@@ -137,8 +138,77 @@ export function useChatSend(options: UseChatSendOptions) {
     options.popAllPendingIntoComposer()
   }
 
+  /**
+   * Hidden control send: dispatches chat.send with provider text that carries
+   * the meta_preflight markers, optionally with a visible displayText bubble.
+   * Unlike dispatchSend it does NOT push the provider text as a user bubble,
+   * does NOT consume composer text/attachments/intent, and does NOT clear the
+   * composer — the operator's draft is preserved. When the turn is streaming or
+   * compaction is in flight, it is queued (carrying provider + display text and
+   * a hiddenControl flag) so the drain restores both.
+   */
+  async function dispatchHiddenSend(providerText: string, displayText: string) {
+    if (!options.sessionKey.value || !providerText) return
+    const compactInFlight = options.isCompactInFlightForCurrentSession()
+    if (options.stream.isStreaming.value || compactInFlight) {
+      options.enqueueHiddenControl?.({ text: providerText, displayText })
+      return
+    }
+
+    options.aborted.value = false
+    // Show the visible confirmation as a user bubble (NOT the marker text).
+    const now = new Date().toISOString()
+    if (displayText) {
+      options.messages.value.push({ role: 'user', text: displayText, ts: now })
+      options.autoScroll.value = true
+      options.scrollToBottom()
+    }
+
+    const params: ChatSendParams = { message: providerText, sessionKey: options.sessionKey.value }
+    if (displayText && displayText !== providerText) params.displayText = displayText
+    const elevated = options.normalizeElevatedMode(options.elevatedMode.value)
+    if (elevated) params._source = { elevated }
+
+    const wasStreaming = options.stream.isStreaming.value
+    if (!wasStreaming) {
+      options.stream.startStreaming()
+      options.stream.showThinkingIndicator()
+    }
+
+    try {
+      const res = await options.rpc.call<ChatSendResponse>('chat.send', params)
+      if (res?.sessionKey && res.sessionKey !== options.sessionKey.value) options.persistSession(res.sessionKey)
+    } catch (err: unknown) {
+      if (!wasStreaming) options.stream.endStreaming()
+      const message = err instanceof Error ? err.message : String(err)
+      options.messages.value.push({ role: 'error', text: 'Send failed: ' + message, ts: new Date().toISOString() })
+    }
+  }
+
+  /**
+   * Build and dispatch the hidden meta-preflight confirmation. The
+   * server-authored confirmed.message is preferred (it carries the base64url
+   * meta_preflight_fields marker); the JS fallback embeds the two required
+   * HTML-comment markers keyed by the Python preflight protocol parser.
+   */
+  function sendHiddenMetaPreflightConfirmation(
+    confirmed: { message?: string } | null,
+    detail: { runId: string; metaSkillName: string; interpretedRequest: string; language: string },
+  ) {
+    const interpreted = (detail.interpretedRequest || '').trim()
+    const fallback =
+      `${interpreted}\n\n<!-- opensquilla:meta_preflight_confirmed=1 -->` +
+      (detail.runId ? `\n<!-- opensquilla:meta_preflight_run_id=${detail.runId} -->` : '')
+    const providerText = confirmed?.message || fallback
+    const zhFallback = detail.language === 'zh' ? '已确认，开始运行。' : 'Confirmed — starting the run.'
+    const visibleText = interpreted || zhFallback
+    void dispatchHiddenSend(providerText, visibleText)
+  }
+
   return {
     onSend,
     onStop,
+    dispatchHiddenSend,
+    sendHiddenMetaPreflightConfirmation,
   }
 }

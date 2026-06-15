@@ -28,6 +28,17 @@
           <span class="chat-share-btn__label">Deliverables ({{ sessionArtifacts.length }})</span>
         </button>
         <button
+          v-if="appStore.features.metaRuns"
+          type="button"
+          class="chat-share-btn"
+          title="MetaSkill run history"
+          aria-label="MetaSkill run history"
+          @click="metaRunsHistoryOpen = true"
+        >
+          <Icon name="clock" :size="14" />
+          <span class="chat-share-btn__label">Runs</span>
+        </button>
+        <button
           v-if="!shareMode"
           ref="shareEntryBtnRef"
           type="button"
@@ -142,6 +153,24 @@
           :message="routerStripReserve"
           aria-hidden="true"
         />
+
+        <!-- MetaSkill run cards: preflight checkpoint + progress ribbon,
+             grouped per run_id above the live activity area. -->
+        <template v-for="runId in metaRuns.ribbonOrder.value" :key="`meta-${runId}`">
+          <MetaPreflightCard
+            v-if="metaRuns.preflights.value.has(runId)"
+            :state="metaRuns.preflights.value.get(runId)!.state"
+            :phase="metaRuns.preflights.value.get(runId)!.phase"
+            :error-text="metaRuns.preflights.value.get(runId)!.errorText"
+            @action="metaRuns.onPreflightAction"
+          />
+          <MetaRibbon
+            v-if="metaRuns.ribbons.value.has(runId)"
+            :run="metaRuns.ribbons.value.get(runId)!"
+            @action="metaRuns.onRibbonAction"
+            @chip-select="metaRuns.onChipSelect"
+          />
+        </template>
 
         <!-- Streaming AI message: the live run is promoted into a centered
              work card so it owns the focus while the agent works. -->
@@ -326,6 +355,14 @@
       @download="downloadArtifact"
     />
 
+    <MetaRunHistoryDrawer
+      v-if="appStore.features.metaRuns"
+      :open="metaRunsHistoryOpen"
+      :rpc="rpc"
+      :session-key="sessionKey"
+      @close="metaRunsHistoryOpen = false"
+    />
+
     <SharePreviewModal
       :open="!!sharePreview"
       :image-url="sharePreview?.url || ''"
@@ -354,6 +391,9 @@ import ChatHistoryScopeRow from '@/components/chat/ChatHistoryScopeRow.vue'
 import ChatMessageList from '@/components/chat/ChatMessageList.vue'
 import ClarifyCard from '@/components/chat/ClarifyCard.vue'
 import EmptyStateChips from '@/components/chat/EmptyStateChips.vue'
+import MetaPreflightCard from '@/components/chat/MetaPreflightCard.vue'
+import MetaRibbon from '@/components/chat/MetaRibbon.vue'
+import MetaRunHistoryDrawer from '@/components/chat/MetaRunHistoryDrawer.vue'
 import PendingQueue from '@/components/chat/PendingQueue.vue'
 import RouterFxStrip from '@/components/chat/RouterFxStrip.vue'
 import SharePreviewModal from '@/components/chat/SharePreviewModal.vue'
@@ -382,6 +422,7 @@ import { useChatRouterDecisionRuntime } from '@/composables/chat/useChatRouterDe
 import { useChatRpcEventHandlers } from '@/composables/chat/useChatRpcEventHandlers'
 import { useChatRpcSubscriptions } from '@/composables/chat/useChatRpcSubscriptions'
 import { useChatSend } from '@/composables/chat/useChatSend'
+import { useMetaRuns } from '@/composables/chat/useMetaRuns'
 import { useChatSessionRoute } from '@/composables/chat/useChatSessionRoute'
 import { useChatSessionRuntime } from '@/composables/chat/useChatSessionRuntime'
 import { useChatSessionSubscription } from '@/composables/chat/useChatSessionSubscription'
@@ -587,6 +628,7 @@ const {
 
 let sendCurrentInput: () => void = () => {}
 let isCompactInFlightForCurrentSession: () => boolean = () => false
+let dispatchHiddenControl: (providerText: string, displayText: string) => void = () => {}
 const chatPendingQueue = useChatPendingQueue({
   inputText,
   pendingAttachments,
@@ -597,6 +639,7 @@ const chatPendingQueue = useChatPendingQueue({
   sendCurrentInput: () => sendCurrentInput(),
   resetInputHistory: () => resetComposerInputHistory(),
   hasComposer: () => Boolean(composerRef.value),
+  dispatchHiddenControl: (providerText, displayText) => dispatchHiddenControl(providerText, displayText),
 })
 const {
   pendingQueue,
@@ -604,6 +647,7 @@ const {
   busySendMode,
   maxPending,
   enqueuePendingInput,
+  enqueueHiddenControl,
   removePendingChip,
   clearPendingQueue,
   popPendingTail,
@@ -883,14 +927,16 @@ const chatSend = useChatSend({
   isCompactInFlightForCurrentSession,
   hasPendingAttachmentWork,
   enqueuePendingInput,
+  enqueueHiddenControl,
   popAllPendingIntoComposer,
   executeSlashCommand,
   closeSlashMenu,
   autoResizeTextarea,
   scrollToBottom,
 })
-const { onSend, onStop } = chatSend
+const { onSend, onStop, dispatchHiddenSend, sendHiddenMetaPreflightConfirmation } = chatSend
 sendCurrentInput = onSend
+dispatchHiddenControl = dispatchHiddenSend
 
 // Deny notes ride the normal send path: queued while the turn is streaming,
 // sent immediately otherwise.
@@ -960,6 +1006,61 @@ const {
   attachTurnReasoning,
 } = rpcEventHandlers
 const chatRpcSubscriptions = useChatRpcSubscriptions(rpc, rpcEventHandlers.handlers)
+
+// MetaSkill run UI: preflight checkpoint + run-progress ribbon, driven by the
+// four session.event.meta_* frames (delivered via the '*' wildcard, so this
+// controller must not re-consume stream_seq).
+const metaRuns = useMetaRuns({
+  rpc,
+  sessionKey,
+  currentEpoch,
+  sendHiddenConfirmation: sendHiddenMetaPreflightConfirmation,
+  scrollToStepCard,
+  sendComposerText,
+  lastUserMessageText,
+  // The composer placeholder is a computed prop, so a true placeholder setter
+  // is not exposed; surface the switch-skill hint via the toast path (keeping
+  // focus) so the vanilla guidance is not silently dropped.
+  setComposerPlaceholder: (hint: string) => pushToast(hint, { duration: 6000 }),
+  focusComposer: () => composerRef.value?.focusTextarea(),
+  pushToast,
+})
+
+// Refill the composer with `text` and fire the send path (mirrors vanilla's
+// retry/replay tail: `_textarea.value = text; _autoResizeTextarea(); _onSend()`).
+function sendComposerText(text: string) {
+  const next = String(text || '')
+  if (!next) return
+  inputText.value = next
+  autoResizeTextarea()
+  void sendCurrentInput()
+}
+
+// The most recent user message text (mirrors vanilla `_latestUserMessageText`).
+function lastUserMessageText(): string {
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    if (messages.value[i]?.role === 'user') return messages.value[i].text || ''
+  }
+  return ''
+}
+
+// Resolve a step's in-thread tool card and scroll it into view (chip click /
+// show-detail). The card carries data-tool-use-id="meta_step_<id>".
+function scrollToStepCard(toolUseId: string) {
+  const root = threadRef.value
+  if (!root) return
+  const card = root.querySelector(`[data-tool-use-id="${cssEscapeAttr(toolUseId)}"]`)
+  if (card && typeof (card as HTMLElement).scrollIntoView === 'function') {
+    ;(card as HTMLElement).scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }
+}
+
+function cssEscapeAttr(value: string): string {
+  if (typeof window !== 'undefined' && window.CSS && typeof window.CSS.escape === 'function') {
+    return window.CSS.escape(value)
+  }
+  return String(value ?? '').replace(/[^a-zA-Z0-9_-]/g, '\\$&')
+}
 
 // History syncs replace the messages array; rows carry reasoning text but
 // not the measured thinking duration — re-attach this session's records.
@@ -1186,6 +1287,7 @@ const sessionArtifacts = computed<ArtifactPayload[]>(() => {
 })
 
 const deliverablesOpen = ref(false)
+const metaRunsHistoryOpen = ref(false)
 
 function openDeliverables() {
   if (sessionArtifacts.value.length === 0) return
@@ -1511,6 +1613,7 @@ onMounted(async () => {
   // Subscribe to RPC events
   unsubs.push(chatRpcSubscriptions.subscribe())
   unsubs.push(chatApprovals.subscribe())
+  unsubs.push(metaRuns.subscribe())
 
   // Composer resize observer
   const composerEl = composerRef.value?.composerElement()
@@ -1543,6 +1646,7 @@ onUnmounted(() => {
   cleanupCompaction()
   cleanupVoiceInput()
   chatApprovals.cleanup()
+  metaRuns.cleanup()
   if (composerResizeObserver) { composerResizeObserver.disconnect(); composerResizeObserver = null }
   document.documentElement.style.removeProperty('--composer-h')
   // Drop any live share-preview object URL so the blob can be reclaimed.

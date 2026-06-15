@@ -109,6 +109,9 @@ export const useAppStore = defineStore('app', () => {
   const features = ref<Record<string, boolean>>({
     tokenViz: false,
     contractDebug: false,
+    // Opt-in MetaSkill run-history drawer + toolbar button. The preflight and
+    // ribbon cards themselves are always-on (driven by stream events).
+    metaRuns: false,
     ...((window as FeatureWindow).OPENSQUILLA_FEATURES || {}),
   })
 

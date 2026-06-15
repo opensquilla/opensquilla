@@ -16,6 +16,11 @@ export interface ChatPendingItem {
   text: string
   attachments: Attachment[]
   intent: string | null
+  // Hidden control sends (e.g. meta-preflight confirmation) carry the provider
+  // text in `text`, the visible bubble in `displayTextOverride`, and skip the
+  // normal user-bubble push / composer consumption on drain.
+  hiddenControl?: boolean
+  displayTextOverride?: string
 }
 
 export interface ChatRouterCell {

@@ -183,4 +183,43 @@ test.describe('Meta-skill ribbon (Vue port)', () => {
       )
       .toBe(true)
   })
+
+  test('replayed meta_run_announced (stale stream_seq) does not reset ribbon progress', async ({ page }) => {
+    const inject = await setup(page)
+    const announceSeq = (seq: number) =>
+      evt('session.event.meta_run_announced', {
+        run_id: RUN,
+        meta_skill_name: 'meta-web-research-to-report',
+        language: 'en',
+        stream_seq: seq,
+        steps: [
+          { id: 'gather', label: 'Gather', kind: 'task', depends_on: [] },
+          { id: 'analyze', label: 'Analyze', kind: 'task', depends_on: [] },
+          { id: 'write', label: 'Write', kind: 'task', depends_on: [] },
+        ],
+        total: 3,
+      })
+
+    await inject([announceSeq(5)])
+    const ribbon = page.locator(`.meta-ribbon[data-run-id="${RUN}"]`)
+    await expect(ribbon.locator('ol.meta-ribbon-chips li.chip')).toHaveCount(3)
+
+    // Advance a step (newer seq) — handleRpcAny advances the shared cursor to 6.
+    await inject([
+      evt('session.event.meta_step_state', {
+        run_id: RUN,
+        step_id: 'gather',
+        state: 'succeeded',
+        stream_seq: 6,
+      }),
+    ])
+    await expect(ribbon.locator('li.chip.succeeded')).toHaveCount(1)
+
+    // A replayed announce with a STALE seq (5 <= cursor 6) must be dropped —
+    // otherwise it would recreate the ribbon and reset gather to pending.
+    await inject([announceSeq(5)])
+    await page.waitForTimeout(250)
+    await expect(ribbon.locator('li.chip.succeeded')).toHaveCount(1)
+    await expect(ribbon.locator('li.chip.pending')).toHaveCount(2)
+  })
 })

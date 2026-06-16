@@ -29,12 +29,14 @@ import type {
  * useChatApprovals. Owns the four `session.event.meta_*` subscriptions, the
  * per-run_id state Maps, the action handlers, and the confirm/replay RPC.
  *
- * Seq gating: meta_* frames are NOT in the explicit rpc.on list, but the `*`
- * wildcard (handleRpcAny) catches them and already calls acceptStreamSeq for
- * every session.event.* — so this controller must NOT call acceptStreamSeq
- * again (double-consume would drop the frame). It gates only on isStaleEpoch +
- * isCurrentSessionPayload and dedups/tolerates ordering by run_id (no-op on an
- * unknown run_id, preserved from the vanilla modules).
+ * Seq gating: the `*` wildcard (handleRpcAny) advances the shared lastStreamSeq
+ * for every session.event.* and runs AFTER these exact meta handlers, so this
+ * controller must NOT call acceptStreamSeq (advancing twice would drop the next
+ * frame). Instead gatePayload reads the pre-frame cursor read-only and drops
+ * stale/duplicate frames (seq <= lastStreamSeq) — without this, a replayed
+ * meta_run_announced (e.g. on reconnect) would recreate the ribbon and reset it
+ * to all-pending. It also gates on isStaleEpoch + isCurrentSessionPayload and
+ * is a no-op on an unknown run_id (preserved from the vanilla modules).
  */
 
 type RpcClient = {
@@ -52,6 +54,11 @@ export interface UseMetaRunsOptions {
   rpc: RpcClient
   sessionKey: Ref<string>
   currentEpoch: Ref<number>
+  /**
+   * Shared stream-seq cursor (the same ref advanced by handleRpcAny for every
+   * session.event.*). Used read-only here to drop stale/duplicate meta frames.
+   */
+  lastStreamSeq: Ref<number>
   /**
    * Send the hidden preflight confirmation (provider text with markers +
    * visible bubble text). Wired from ChatView's send path.
@@ -81,7 +88,7 @@ export interface UseMetaRunsOptions {
 }
 
 export function useMetaRuns(options: UseMetaRunsOptions) {
-  const { rpc, sessionKey, currentEpoch } = options
+  const { rpc, sessionKey, currentEpoch, lastStreamSeq } = options
 
   // Reactive Maps keyed by run_id. ribbonOrder keeps render order stable.
   const ribbons = ref<Map<string, MetaRibbonState>>(new Map())
@@ -97,6 +104,14 @@ export function useMetaRuns(options: UseMetaRunsOptions) {
     if (!payload || typeof payload !== 'object') return false
     if (isStaleEpoch(payload, currentEpoch.value)) return false
     if (!isCurrentSessionPayload(payload, sessionKey.value)) return false
+    // Drop stale/duplicate stream frames (e.g. replayed on reconnect). Without
+    // this, a re-delivered meta_run_announced would reset the ribbon to
+    // all-pending and lose progress. The wildcard handleRpcAny advances
+    // lastStreamSeq for every session.event.* and runs AFTER the exact meta
+    // handlers, so we read the pre-frame cursor here (read-only, never advance).
+    // Frames without a numeric stream_seq are accepted, matching acceptStreamSeq.
+    const seq = payload.stream_seq
+    if (typeof seq === 'number' && Number.isFinite(seq) && seq <= lastStreamSeq.value) return false
     return true
   }
 

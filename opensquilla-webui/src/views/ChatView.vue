@@ -1014,6 +1014,7 @@ const metaRuns = useMetaRuns({
   rpc,
   sessionKey,
   currentEpoch,
+  lastStreamSeq,
   sendHiddenConfirmation: sendHiddenMetaPreflightConfirmation,
   scrollToStepCard,
   sendComposerText,

@@ -183,6 +183,36 @@ async def test_full_rollout_applies_routed_model_thinking_and_p0_prompt(
 
 
 @pytest.mark.asyncio
+async def test_router_records_lower_text_tier_fallback_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_strategy(
+        monkeypatch,
+        "c3",
+        0.91,
+        {
+            "route_class": "R3",
+            "thinking_mode": "T1",
+            "prompt_policy": "P0",
+        },
+    )
+
+    routed = await apply_squilla_router(make_context("Solve a difficult architecture problem."))
+
+    assert routed.metadata["routed_tier"] == "c3"
+    assert [item["tier"] for item in routed.metadata["router_fallback_chain"]] == [
+        "c2",
+        "c1",
+        "c0",
+    ]
+    assert [item["model"] for item in routed.metadata["router_fallback_chain"]] == [
+        "z-ai/glm-5.1",
+        "deepseek/deepseek-v4-pro",
+        "deepseek/deepseek-v4-flash",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_router_reports_provider_state_loss_without_changing_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

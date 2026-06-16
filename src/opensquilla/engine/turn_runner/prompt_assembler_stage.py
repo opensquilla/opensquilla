@@ -449,7 +449,23 @@ class PromptAssemblerStage:
         # 6. Effective runtime message + selector override / fallback wrap
         effective_runtime_message = getattr(turn, "message", inp.runtime_message)
         if inp.model and inp.cloned_selector is not None:
-            inp.cloned_selector.override_model(inp.model)
+            router_fallback_chain = (
+                turn.metadata.get("router_fallback_chain")
+                if turn.metadata.get("routing_applied") is True
+                else None
+            )
+            override_with_fallback_chain = getattr(
+                inp.cloned_selector,
+                "override_model_with_fallback_chain",
+                None,
+            )
+            if callable(override_with_fallback_chain) and isinstance(
+                router_fallback_chain,
+                list,
+            ):
+                override_with_fallback_chain(inp.model, router_fallback_chain)
+            else:
+                inp.cloned_selector.override_model(inp.model)
             provider = inp.cloned_selector.resolve()
         if inp.cloned_selector is not None:
             # Local import to avoid pulling _SelectorFallbackProvider name

@@ -3,7 +3,12 @@ from __future__ import annotations
 import pytest
 
 from opensquilla.engine.fallback import FallbackPolicy, ProviderErrorKind
-from opensquilla.provider.failures import ProviderFailureKind, classify_provider_error
+from opensquilla.provider.failures import (
+    ProviderFailureKind,
+    ProviderRecoveryAction,
+    classify_provider_error,
+    decide_recovery_action,
+)
 
 
 @pytest.mark.parametrize(
@@ -199,6 +204,27 @@ def test_agent_fallback_still_does_not_retry_auth_failures() -> None:
 
     assert kind is ProviderErrorKind.AUTH_FAILURE
     assert policy.should_retry(kind, attempt=0) is False
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "openai"])
+def test_openai_compatible_region_unavailable_403_falls_back_to_next_model(
+    provider: str,
+) -> None:
+    kind = classify_provider_error(
+        provider,
+        403,
+        message="HTTP 403: This model is not available in your region.",
+    )
+
+    assert kind is ProviderFailureKind.MODEL_NOT_FOUND
+    assert decide_recovery_action(kind) is ProviderRecoveryAction.FALLBACK_PROVIDER
+
+
+def test_openrouter_plain_403_still_fails_as_auth_configuration() -> None:
+    kind = classify_provider_error("openrouter", 403, message="HTTP 403: forbidden")
+
+    assert kind is ProviderFailureKind.AUTH_INVALID
+    assert decide_recovery_action(kind) is ProviderRecoveryAction.FAIL_CONFIG
 
 
 @pytest.mark.parametrize(

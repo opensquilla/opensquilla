@@ -114,6 +114,20 @@ def _is_empty_response(raw_code: str, message: str) -> bool:
     }
 
 
+def _is_model_unavailable(text: str) -> bool:
+    return any(
+        marker in text
+        for marker in (
+            "no endpoints found",
+            "model not found",
+            "model is not available",
+            "model not available",
+            "not available in your region",
+            "not available in the requested region",
+        )
+    )
+
+
 def _is_gateway_transient(text: str) -> bool:
     return bool(_GATEWAY_TRANSIENT_RE.search(text))
 
@@ -137,14 +151,14 @@ def classify_provider_error(
         return ProviderFailureKind.EMPTY_RESPONSE
 
     if provider in _OPENAI_COMPAT_PROVIDERS:
+        if _is_model_unavailable(text):
+            return ProviderFailureKind.MODEL_NOT_FOUND
         if status_code in {401, 403} or "invalid api key" in text or "unauthorized" in text:
             return ProviderFailureKind.AUTH_INVALID
         if status_code == 402 or "insufficient credits" in text or "no credits" in text:
             return ProviderFailureKind.INSUFFICIENT_CREDITS
         if status_code == 429 or "rate limit" in text or "rate_limit" in text:
             return ProviderFailureKind.RATE_LIMITED
-        if "no endpoints found" in text or "model not found" in text:
-            return ProviderFailureKind.MODEL_NOT_FOUND
         if "does not support" in text or "unsupported" in text:
             return ProviderFailureKind.UNSUPPORTED_FEATURE
         if (

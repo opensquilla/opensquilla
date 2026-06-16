@@ -222,4 +222,95 @@ test.describe('Meta-skill ribbon (Vue port)', () => {
     await expect(ribbon.locator('li.chip.succeeded')).toHaveCount(1)
     await expect(ribbon.locator('li.chip.pending')).toHaveCount(2)
   })
+
+  test('rescue actions fire their handlers: replay RPCs (failed-step / partial-context) + guidance toast', async ({ page }) => {
+    // Capture client → server frames through the proxy so we can assert the
+    // rescue buttons actually CALL meta.runs.replay (not just render). Guards
+    // the gap where the failed-run test only checked the buttons were visible.
+    const outgoing: Array<Record<string, unknown>> = []
+    let send: ((s: string) => void) | null = null
+    await page.routeWebSocket('**/ws', (ws) => {
+      const server = ws.connectToServer()
+      ws.onMessage((m) => {
+        try { outgoing.push(JSON.parse(String(m))) } catch { /* non-JSON ping */ }
+        server.send(m)
+      })
+      server.onMessage((m) => ws.send(m))
+      send = (s) => ws.send(s)
+    })
+    await page.goto(CONTROL_URL + 'chat/new')
+    await expect(page.locator('.conn-pill')).toContainText('connected', { timeout: 15000 })
+    await page.waitForSelector('.chat-textarea', { timeout: 15000 })
+    await expect.poll(() => (send ? 'ready' : 'pending'), { timeout: 15000 }).toBe('ready')
+    await page.waitForTimeout(600)
+    const inject = (frames: Frame[]) => { for (const f of frames) send!(JSON.stringify(f)) }
+
+    // Announce two steps, fail the second WITH server-provided rescue.actions,
+    // then complete(failed) so the rescue UI renders.
+    inject([announce([
+      { id: 'gather', label: 'Gather' },
+      { id: 'analyze', label: 'Analyze' },
+    ])])
+    inject([
+      evt('session.event.meta_step_state', { run_id: RUN, step_id: 'gather', state: 'succeeded' }),
+      evt('session.event.meta_step_state', {
+        run_id: RUN,
+        step_id: 'analyze',
+        state: 'failed',
+        status_text: 'Timed out',
+        error: 'Timed out',
+        rescue: {
+          actions: [
+            { id: 'retry-step', label: 'Retry failed step' },
+            { id: 'retry-with-partial-context', label: 'Retry with partial context' },
+            { id: 'install-dependency', label: 'Install dependency' },
+          ],
+        },
+      }),
+      completed({
+        outcome: 'failed',
+        completed_steps: ['gather'],
+        failed_steps: ['analyze'],
+        recovered_steps: [],
+        skipped_steps: [],
+      }),
+    ])
+    await page.waitForTimeout(200)
+
+    const ribbon = page.locator(`.meta-ribbon[data-run-id="${RUN}"]`)
+    const actions = ribbon.locator('.meta-ribbon-actions')
+    await expect(actions).toBeVisible()
+    await expect(ribbon.locator('.meta-ribbon-fail-summary')).toContainText('Timed out')
+    // The 3 server-provided rescue actions + the always-appended show-detail.
+    await expect(actions.locator('button')).toHaveCount(4)
+    await expect(actions.locator('button[data-action="retry-step"]')).toHaveText('Retry failed step')
+
+    // retry-step → meta.runs.replay with mode 'failed-step'.
+    await actions.locator('button[data-action="retry-step"]').click()
+    await expect
+      .poll(
+        () => outgoing.some(
+          (f) => f?.method === 'meta.runs.replay' &&
+            (f.params as Record<string, unknown>)?.mode === 'failed-step',
+        ),
+        { timeout: 8000 },
+      )
+      .toBe(true)
+
+    // retry-with-partial-context → meta.runs.replay with mode 'partial-context'.
+    await actions.locator('button[data-action="retry-with-partial-context"]').click()
+    await expect
+      .poll(
+        () => outgoing.some(
+          (f) => f?.method === 'meta.runs.replay' &&
+            (f.params as Record<string, unknown>)?.mode === 'partial-context',
+        ),
+        { timeout: 8000 },
+      )
+      .toBe(true)
+
+    // install-dependency → guidance toast, never a replay RPC.
+    await actions.locator('button[data-action="install-dependency"]').click()
+    await expect(page.getByText(/Install the missing dependency/i)).toBeVisible()
+  })
 })

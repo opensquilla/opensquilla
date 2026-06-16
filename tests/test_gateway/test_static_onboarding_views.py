@@ -580,7 +580,7 @@ def test_setup_view_is_loaded_and_registered_but_not_sidebar_primary():
     assert "SetupView.vue" in web_routes
     assert "path: '/setup'" in web_routes
     assert "name: 'setup'" in web_routes
-    assert "group: 'Settings'" in web_routes
+    assert "group: 'Configure'" in web_routes
     assert "group: 'Control'" not in web_routes.split("path: '/setup'", 1)[1].split("}", 1)[0]
     assert VUE_SETUP_VIEW.exists()
 

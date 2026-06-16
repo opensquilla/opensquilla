@@ -18,10 +18,12 @@ def test_health_view_is_registered_and_loaded() -> None:
 
     assert "_renderStandardView(HealthView, el)" in app
     assert 'data-path="/health"' in app
-    assert "HealthView.vue" in shared_routes
+    # The Vue shell folds readiness/doctor into Overview; the /health deep link
+    # stays valid as a redirect rather than a standalone view.
     assert "path: '/health'" in shared_routes
-    assert "name: 'health'" in shared_routes
-    assert VUE_HEALTH_VIEW.exists()
+    assert "redirect: '/overview'" in shared_routes
+    assert "HealthView.vue" not in shared_routes
+    assert not VUE_HEALTH_VIEW.exists()
 
 
 def test_health_view_calls_doctor_status_and_renders_fix_steps() -> None:

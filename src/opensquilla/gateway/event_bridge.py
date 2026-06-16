@@ -11,6 +11,7 @@ from typing import Any
 
 import structlog
 
+from opensquilla.engine.types import AgentEvent
 from opensquilla.gateway.scopes import operator_scope_satisfies
 from opensquilla.gateway.session_streams import get_session_streams
 

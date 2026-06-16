@@ -16,6 +16,16 @@ from starlette.staticfiles import StaticFiles
 from opensquilla import __version__
 from opensquilla.gateway.config import GatewayConfig
 
+# Conservative max-age for static assets. 30 days is long enough that hot
+# clients save roundtrips but short enough that any deploy without a version
+# bump still becomes visible within a release cycle. Templates already append
+# ?v={{ version }} to every asset URL so cache invalidation on actual code
+# change is immediate — this header only saves repeat hits for unchanged
+# bytes within the 30-day window.
+#
+# Skip when OPENSQUILLA_STATIC_NO_CACHE is set (debugging / forced refresh).
+# Skip on non-200 responses so 206 Range and 304 conditional reuse stay
+# untouched.
 _STATIC_CACHE_CONTROL = "public, max-age=2592000"
 
 

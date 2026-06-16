@@ -4,7 +4,7 @@ export type IconName =
   | 'chat' | 'home' | 'channels' | 'sessions' | 'usage' | 'cron'
   | 'config' | 'logs' | 'skills' | 'agents' | 'approvals'
   | 'sun' | 'moon' | 'monitor' | 'x' | 'copy' | 'check'
-  | 'send' | 'stop' | 'paperclip' | 'plus' | 'trash'
+  | 'send' | 'stop' | 'paperclip' | 'plus' | 'share' | 'trash'
   | 'refresh' | 'download' | 'save' | 'menu' | 'user' | 'search'
   | 'edit' | 'info' | 'settings' | 'gear' | 'gauge' | 'regenerate'
   | 'pencil' | 'fork' | 'chevronDown' | 'chevronRight' | 'arrowUp'

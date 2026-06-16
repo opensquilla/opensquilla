@@ -10,6 +10,8 @@ import pytest
 
 from opensquilla.skills.eligibility import EligibilityContext, check_eligibility
 from opensquilla.skills.loader import SkillLoader
+from opensquilla.skills.meta.executors.skill_exec import run_skill_exec_step
+from opensquilla.skills.meta.types import MetaStep
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLED = ROOT / "src" / "opensquilla" / "skills" / "bundled"
@@ -28,6 +30,7 @@ def test_skill_loads() -> None:
     assert spec.metadata is not None
     assert spec.provenance.origin == "clawhub-mit0"
     assert spec.provenance.license == "MIT-0"
+    assert spec.entrypoint is not None
 
 
 def test_eligibility_with_python_present(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -123,3 +126,51 @@ def test_inspect_cli_outputs_json(tmp_path: Path) -> None:
     encoded = json.dumps(payload, ensure_ascii=False)
     assert "paragraphs" in encoded
     assert "tables" in encoded
+
+
+@pytest.mark.asyncio
+async def test_skill_exec_exports_markdown_docx(tmp_path: Path) -> None:
+    sys.path.insert(0, str(SCRIPTS))
+    try:
+        import inspect_docx  # type: ignore[import-not-found]
+    finally:
+        sys.path.pop(0)
+
+    loader = SkillLoader(
+        bundled_dir=BUNDLED,
+        snapshot_path=tmp_path / "skills_snapshot.json",
+    )
+    loader.invalidate_cache()
+    out_path = tmp_path / "competitive-intel.docx"
+    step = MetaStep(
+        id="export_docx",
+        kind="skill_exec",
+        skill="docx",
+        with_args={
+            "markdown": (
+                "# Competitive intel brief\n\n"
+                "Acme has a new hiring signal.\n\n"
+                "| Account | Signal |\n"
+                "|---|---|\n"
+                "| Acme | hiring |\n"
+            ),
+            "output_path": str(out_path),
+        },
+    )
+
+    result = await run_skill_exec_step(
+        step,
+        "docx",
+        {"collected": {"intel_clarify": {"export_docx": "YES"}}},
+        {"intel_brief_audit": "Competitive intel brief"},
+        skill_loader=loader,
+        workspace_dir=str(tmp_path),
+    )
+
+    assert result == str(out_path)
+    inspected = inspect_docx.inspect(out_path)
+    texts = [p["text"] for p in inspected["paragraphs"]]
+    assert "Competitive intel brief" in texts
+    assert "Acme has a new hiring signal." in texts
+    assert inspected["tables"][0][0] == ["Account", "Signal"]
+    assert inspected["tables"][0][1] == ["Acme", "hiring"]

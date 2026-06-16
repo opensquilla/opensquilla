@@ -434,7 +434,7 @@ def _build_thumbnail(payload: bytes, mime: str) -> bytes | None:
                 source = image.convert("RGB")
             source.thumbnail(
                 (ARTIFACT_THUMBNAIL_MAX_EDGE, ARTIFACT_THUMBNAIL_MAX_EDGE),
-                Image.LANCZOS,
+                Image.Resampling.LANCZOS,
             )
             out = io.BytesIO()
             source.save(out, format="WEBP", quality=ARTIFACT_THUMBNAIL_QUALITY)

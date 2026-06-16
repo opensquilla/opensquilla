@@ -11,7 +11,7 @@ keep working unchanged.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 from opensquilla.gateway.scopes import APPROVALS_SCOPE
 
@@ -81,4 +81,4 @@ def register_approval_event_bridge(
         except RuntimeError:
             emit_coro.close()
 
-    return queue.add_event_listener(_listener)
+    return cast("Callable[[], None]", queue.add_event_listener(_listener))

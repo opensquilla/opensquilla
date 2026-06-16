@@ -134,9 +134,11 @@ def _session_key_for_history(params: dict[str, Any], ctx: RpcContext) -> str | N
         if session_key:
             return str(session_key)
         return None
+    if session_key:
+        return str(session_key)
     raise RpcHandlerError(
         ERROR_UNAUTHORIZED,
-        "meta run history requires owner/admin scope.",
+        "meta run history requires a sessionKey for read-only access.",
     )
 
 

@@ -5,24 +5,60 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import os
 import subprocess
 import sys
+import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass
-from pathlib import Path
+from dataclasses import dataclass, replace
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
+HELPER_MODULE = "opensquilla.sandbox.backend.windows_default_runner"
 DISABLE_MAX_PRIVILEGE = 0x01
 LUA_TOKEN = 0x04
 WRITE_RESTRICTED = 0x08
 RESTRICTED_TOKEN_FLAGS = DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED
 GENERIC_ALL = 0x10000000
+TOKEN_ASSIGN_PRIMARY = 0x0001
+TOKEN_DUPLICATE = 0x0002
+TOKEN_QUERY = 0x0008
+TOKEN_ADJUST_DEFAULT = 0x0080
+TOKEN_ADJUST_SESSIONID = 0x0100
+TOKEN_ADJUST_PRIVILEGES = 0x0020
+STARTF_USESHOWWINDOW = 0x00000001
+STARTF_USESTDHANDLES = 0x00000100
+SW_HIDE = 0
+CREATE_SUSPENDED = 0x00000004
+CREATE_UNICODE_ENVIRONMENT = 0x00000400
+CREATE_NO_WINDOW = 0x08000000
+SEM_FAILCRITICALERRORS = 0x0001
+SEM_NOGPFAULTERRORBOX = 0x0002
+SEM_NOOPENFILEERRORBOX = 0x8000
+OFFLINE_PAYLOAD_ENV = "OPENSQUILLA_WINDOWS_DEFAULT_PAYLOAD"
+OFFLINE_PAYLOAD_FILE_ARG = "--payload-file"
 
 
 def _base_restricting_sid_specs() -> tuple[tuple[str, str], ...]:
     return (("S-1-1-0", "everyone"),)
+
+
+def _ordered_restricting_sids(
+    *,
+    capability_sids: Sequence[object],
+    user_sid: object | None,
+    logon_sid: object | None,
+    base_sids: Sequence[object],
+) -> tuple[object, ...]:
+    ordered = list(capability_sids)
+    if user_sid is not None:
+        ordered.append(user_sid)
+    if logon_sid is not None:
+        ordered.append(logon_sid)
+    ordered.extend(base_sids)
+    return tuple(ordered)
 
 
 @dataclass(frozen=True)
@@ -34,6 +70,7 @@ class HelperPayload:
     run_mode: str
     timeout: float
     stdin: bytes | None = None
+    offline_child: bool = False
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -52,10 +89,22 @@ def main(argv: Sequence[str] | None = None) -> None:
 
 
 def _parse_payload(args: Sequence[str]) -> HelperPayload:
-    if len(args) != 1:
+    if list(args) == ["--payload-env"]:
+        env_payload = os.environ.get(OFFLINE_PAYLOAD_ENV)
+        if not env_payload:
+            raise SystemExit("windows_default runner payload env is missing")
+        raw_payload = env_payload
+    elif len(args) == 2 and args[0] == OFFLINE_PAYLOAD_FILE_ARG:
+        try:
+            raw_payload = Path(args[1]).read_text(encoding="utf-8")
+        except OSError as exc:
+            raise SystemExit(f"windows_default runner payload file is unreadable: {exc}") from exc
+    elif len(args) == 1:
+        raw_payload = args[0]
+    else:
         raise SystemExit("windows_default runner expects one JSON payload argument")
     try:
-        raw = json.loads(args[0])
+        raw = json.loads(raw_payload)
     except json.JSONDecodeError as exc:
         raise SystemExit(f"invalid windows_default payload JSON: {exc}") from exc
     if not isinstance(raw, dict):
@@ -106,6 +155,9 @@ def _parse_payload(args: Sequence[str]) -> HelperPayload:
         raise SystemExit(
             "invalid windows_default payload: stdinBase64 must be a string or null"
         )
+    offline_child = raw.get("offlineChild", False)
+    if not isinstance(offline_child, bool):
+        raise SystemExit("invalid windows_default payload: offlineChild must be boolean")
 
     return HelperPayload(
         argv=tuple(argv),
@@ -115,6 +167,7 @@ def _parse_payload(args: Sequence[str]) -> HelperPayload:
         run_mode=str(run_mode),
         timeout=float(timeout),
         stdin=stdin,
+        offline_child=offline_child,
     )
 
 
@@ -144,12 +197,39 @@ def _validate_network_proxy(policy: dict[str, Any]) -> None:
         raise SystemExit(
             "windows_default PROXY_ALLOWLIST requires a valid network_proxy port"
         )
+    _validate_windows_network_boundary(policy)
+
+
+def _validate_windows_network_boundary(policy: dict[str, Any]) -> None:
+    proxy = policy.get("network_proxy") or policy.get("networkProxy")
+    boundary = policy.get("windowsNetworkBoundary")
+    if not isinstance(proxy, dict):
+        raise SystemExit("windows_default PROXY_ALLOWLIST requires network_proxy endpoint")
+    if not isinstance(boundary, dict):
+        raise SystemExit("windows_default PROXY_ALLOWLIST requires windowsNetworkBoundary")
+    ports = boundary.get("allowedProxyPorts")
+    sid = boundary.get("offlineUserSid")
+    allow_local_binding = boundary.get("allowLocalBinding")
+    if not isinstance(sid, str) or not sid:
+        raise SystemExit("windows_default windowsNetworkBoundary requires offlineUserSid")
+    if not isinstance(ports, list) or not all(isinstance(port, int) for port in ports):
+        raise SystemExit("windows_default windowsNetworkBoundary requires allowedProxyPorts")
+    if not isinstance(allow_local_binding, bool):
+        raise SystemExit("windows_default windowsNetworkBoundary requires allowLocalBinding")
+    if proxy.get("port") not in ports:
+        raise SystemExit(
+            "windows_default network_proxy port is not allowed by windowsNetworkBoundary"
+        )
 
 
 def _run_windows_default(payload: HelperPayload) -> int:
     acl_plan = _windows_acl_plan(payload.policy)
     capability_sids = _capability_sids(acl_plan)
-    _apply_acl_refresh(acl_plan)
+    if _should_reexec_as_offline_identity(payload):
+        _apply_acl_refresh(acl_plan)
+        return _run_payload_as_offline_identity(payload)
+    if not payload.offline_child:
+        _apply_acl_refresh(acl_plan)
     return _run_restricted_process_native(payload, capability_sids)
 
 
@@ -182,6 +262,86 @@ def _apply_acl_refresh(plan: dict[str, Any]) -> None:
         if not isinstance(path, str) or access not in {"RX", "RWX"} or not isinstance(sid, str):
             raise SystemExit("invalid windows_default ACL grant shape")
         _grant_path_to_sid(Path(path), access, sid)
+
+
+def _network_boundary(policy: dict[str, Any]) -> dict[str, object] | None:
+    boundary = policy.get("windowsNetworkBoundary")
+    return boundary if isinstance(boundary, dict) else None
+
+
+def _should_reexec_as_offline_identity(payload: HelperPayload) -> bool:
+    return (
+        not payload.offline_child
+        and payload.policy.get("network") == "proxy_allowlist"
+        and _network_boundary(payload.policy) is not None
+    )
+
+
+def _run_payload_as_offline_identity(payload: HelperPayload) -> int:
+    boundary = _network_boundary(payload.policy)
+    if boundary is None:
+        raise OSError("windowsNetworkBoundary missing for offline identity launch")
+    from opensquilla.sandbox.backend.windows_default_identity import (
+        offline_identity_from_boundary,
+        unprotect_password,
+    )
+
+    identity = offline_identity_from_boundary(boundary)
+    _grant_offline_helper_runtime_access(identity.sid)
+    _grant_acl_plan_to_sid(_windows_acl_plan(payload.policy), identity.sid)
+    password = unprotect_password(identity.protected_password)
+    return _run_payload_as_offline_identity_native(
+        replace(payload, offline_child=True),
+        username=identity.username,
+        password=password,
+    )
+
+
+def _open_source_token_for_payload(payload: HelperPayload) -> int:
+    if payload.offline_child:
+        return _open_current_process_token()
+    boundary = _network_boundary(payload.policy)
+    if payload.policy.get("network") == "proxy_allowlist" and boundary is not None:
+        from opensquilla.sandbox.backend.windows_default_identity import (
+            logon_offline_identity,
+            offline_identity_from_boundary,
+        )
+
+        return logon_offline_identity(offline_identity_from_boundary(boundary))
+    return _open_current_process_token()
+
+
+def _open_current_process_token() -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    HANDLE = wintypes.HANDLE
+    DWORD = wintypes.DWORD
+    BOOL = wintypes.BOOL
+
+    advapi32.OpenProcessToken.argtypes = [HANDLE, DWORD, ctypes.POINTER(HANDLE)]
+    advapi32.OpenProcessToken.restype = BOOL
+    kernel32.GetCurrentProcess.restype = HANDLE
+
+    desired_access = (
+        TOKEN_ASSIGN_PRIMARY
+        | TOKEN_DUPLICATE
+        | TOKEN_QUERY
+        | TOKEN_ADJUST_DEFAULT
+        | TOKEN_ADJUST_SESSIONID
+        | TOKEN_ADJUST_PRIVILEGES
+    )
+    source_token = HANDLE()
+    if not advapi32.OpenProcessToken(
+        kernel32.GetCurrentProcess(),
+        desired_access,
+        ctypes.byref(source_token),
+    ):
+        code = ctypes.get_last_error()
+        raise OSError(code, f"OpenProcessToken failed: {ctypes.FormatError(code)}")
+    return int(source_token.value)
 
 
 def _grant_path_to_sid(path: Path, access: str, sid: str) -> None:
@@ -359,6 +519,421 @@ def _environment_block(env: dict[str, str]) -> str:
         for key, value in sorted(merged.items(), key=lambda item: item[0].upper())
     ]
     return "\0".join(items) + "\0\0"
+
+
+def _payload_to_json(payload: HelperPayload) -> str:
+    raw: dict[str, object] = {
+        "backend": "windows_default",
+        "argv": list(payload.argv),
+        "cwd": str(payload.cwd),
+        "env": payload.env,
+        "policy": payload.policy,
+        "runMode": payload.run_mode,
+        "timeout": payload.timeout,
+        "stdinBase64": (
+            base64.b64encode(payload.stdin).decode("ascii")
+            if payload.stdin is not None
+            else None
+        ),
+        "offlineChild": payload.offline_child,
+    }
+    return json.dumps(raw, separators=(",", ":"), sort_keys=True)
+
+
+def _helper_import_root() -> Path:
+    path = Path(__file__).resolve()
+    package_root = path.parents[2]
+    import_root = package_root.parent
+    if (import_root / "opensquilla").exists():
+        return import_root
+    return Path.cwd()
+
+
+def _helper_child_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env.pop(OFFLINE_PAYLOAD_ENV, None)
+    import_root = str(_helper_import_root())
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        import_root if not existing else f"{import_root}{os.pathsep}{existing}"
+    )
+    return env
+
+
+def _offline_helper_runtime_roots() -> tuple[Path, ...]:
+    roots: list[Path] = []
+    executable = Path(sys.executable).resolve()
+    roots.append(executable.parent)
+
+    pyvenv_cfg = executable.parent.parent / "pyvenv.cfg"
+    try:
+        for line in pyvenv_cfg.read_text(encoding="utf-8").splitlines():
+            key, _, value = line.partition("=")
+            if key.strip().lower() == "home" and value.strip():
+                roots.append(Path(value.strip()).resolve())
+                break
+    except OSError:
+        pass
+
+    base_prefix = Path(getattr(sys, "base_prefix", "") or "")
+    if str(base_prefix):
+        roots.append(base_prefix.resolve())
+    roots.append(_helper_import_root().resolve())
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        try:
+            resolved = root.resolve(strict=False)
+        except OSError:
+            resolved = root
+        key = str(resolved).casefold()
+        if key in seen or not resolved.exists():
+            continue
+        seen.add(key)
+        unique.append(resolved)
+    return tuple(unique)
+
+
+def _write_offline_payload_file(payload: HelperPayload) -> Path:
+    payload_dir = payload.cwd / ".opensquilla-cache" / "offline-helper"
+    payload_dir.mkdir(parents=True, exist_ok=True)
+    payload_path = payload_dir / f"payload-{os.getpid()}-{uuid.uuid4().hex}.json"
+    payload_path.write_text(_payload_to_json(payload), encoding="utf-8")
+    return payload_path
+
+
+def _grant_offline_helper_runtime_access(sid: str) -> None:
+    for root in _offline_helper_runtime_roots():
+        _grant_path_to_sid(root, "RX", sid)
+
+
+def _grant_acl_plan_to_sid(plan: dict[str, Any], sid: str) -> None:
+    seen: set[tuple[str, str]] = set()
+    for grant in plan["autoGrants"]:
+        if not isinstance(grant, dict):
+            raise SystemExit("invalid windows_default ACL grant: grant must be an object")
+        path = grant.get("path")
+        access = grant.get("access")
+        if not isinstance(path, str) or access not in {"RX", "RWX"}:
+            raise SystemExit("invalid windows_default ACL grant shape")
+        key = (str(Path(path)).casefold(), access)
+        if key in seen:
+            continue
+        seen.add(key)
+        _grant_path_to_sid(Path(path), access, sid)
+
+
+def _runner_error_mode_flags() -> int:
+    return SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX
+
+
+def _restricted_process_creation_flags() -> int:
+    return CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW
+
+
+def _restricted_process_application_name(argv: Sequence[str]) -> str | None:
+    if not argv:
+        return None
+    executable = argv[0]
+    if PureWindowsPath(executable).is_absolute():
+        return executable
+    return None
+
+
+def _offline_helper_creation_flags() -> int:
+    return CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW
+
+
+def _restricted_process_startup_flags() -> int:
+    return STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW
+
+
+def _run_payload_as_offline_identity_native(
+    payload: HelperPayload,
+    *,
+    username: str,
+    password: str,
+) -> int:
+    if not sys.platform.startswith("win"):
+        raise OSError("offline_identity_launch_requires_windows")
+
+    import ctypes
+    import msvcrt
+    import threading
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    LPVOID = wintypes.LPVOID
+    HANDLE = wintypes.HANDLE
+    DWORD = wintypes.DWORD
+    BOOL = wintypes.BOOL
+
+    class SECURITY_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [
+            ("nLength", DWORD),
+            ("lpSecurityDescriptor", LPVOID),
+            ("bInheritHandle", BOOL),
+        ]
+
+    class STARTUPINFO(ctypes.Structure):
+        _fields_ = [
+            ("cb", DWORD),
+            ("lpReserved", wintypes.LPWSTR),
+            ("lpDesktop", wintypes.LPWSTR),
+            ("lpTitle", wintypes.LPWSTR),
+            ("dwX", DWORD),
+            ("dwY", DWORD),
+            ("dwXSize", DWORD),
+            ("dwYSize", DWORD),
+            ("dwXCountChars", DWORD),
+            ("dwYCountChars", DWORD),
+            ("dwFillAttribute", DWORD),
+            ("dwFlags", DWORD),
+            ("wShowWindow", wintypes.WORD),
+            ("cbReserved2", wintypes.WORD),
+            ("lpReserved2", ctypes.POINTER(ctypes.c_byte)),
+            ("hStdInput", HANDLE),
+            ("hStdOutput", HANDLE),
+            ("hStdError", HANDLE),
+        ]
+
+    class PROCESS_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("hProcess", HANDLE),
+            ("hThread", HANDLE),
+            ("dwProcessId", DWORD),
+            ("dwThreadId", DWORD),
+        ]
+
+    advapi32.CreateProcessWithLogonW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        DWORD,
+        wintypes.LPCWSTR,
+        wintypes.LPWSTR,
+        DWORD,
+        LPVOID,
+        wintypes.LPCWSTR,
+        ctypes.POINTER(STARTUPINFO),
+        ctypes.POINTER(PROCESS_INFORMATION),
+    ]
+    advapi32.CreateProcessWithLogonW.restype = BOOL
+    kernel32.CreatePipe.argtypes = [
+        ctypes.POINTER(HANDLE),
+        ctypes.POINTER(HANDLE),
+        ctypes.POINTER(SECURITY_ATTRIBUTES),
+        DWORD,
+    ]
+    kernel32.CreatePipe.restype = BOOL
+    kernel32.SetHandleInformation.argtypes = [HANDLE, DWORD, DWORD]
+    kernel32.SetHandleInformation.restype = BOOL
+    kernel32.CloseHandle.argtypes = [HANDLE]
+    kernel32.CloseHandle.restype = BOOL
+    kernel32.WaitForSingleObject.argtypes = [HANDLE, DWORD]
+    kernel32.WaitForSingleObject.restype = DWORD
+    kernel32.TerminateProcess.argtypes = [HANDLE, DWORD]
+    kernel32.TerminateProcess.restype = BOOL
+    kernel32.GetExitCodeProcess.argtypes = [HANDLE, ctypes.POINTER(DWORD)]
+    kernel32.GetExitCodeProcess.restype = BOOL
+    kernel32.SetErrorMode.argtypes = [DWORD]
+    kernel32.SetErrorMode.restype = DWORD
+
+    HANDLE_FLAG_INHERIT = 0x00000001
+    LOGON_WITH_PROFILE = 0x00000001
+    WAIT_TIMEOUT = 0x00000102
+    WAIT_FAILED = 0xFFFFFFFF
+
+    def win_error(label: str) -> OSError:
+        code = ctypes.get_last_error()
+        return OSError(code, f"{label} failed: {ctypes.FormatError(code)}")
+
+    def close(handle: int) -> None:
+        if handle:
+            kernel32.CloseHandle(handle)
+
+    stdin_read = HANDLE()
+    stdin_write = HANDLE()
+    stdout_read = HANDLE()
+    stdout_write = HANDLE()
+    stderr_read = HANDLE()
+    stderr_write = HANDLE()
+    process_info = PROCESS_INFORMATION()
+    reader_threads: list[threading.Thread] = []
+    outputs: dict[str, bytes] = {"stdout": b"", "stderr": b""}
+    payload_path: Path | None = None
+
+    try:
+        sa = SECURITY_ATTRIBUTES()
+        sa.nLength = ctypes.sizeof(SECURITY_ATTRIBUTES)
+        sa.lpSecurityDescriptor = None
+        sa.bInheritHandle = True
+        if not kernel32.CreatePipe(
+            ctypes.byref(stdin_read),
+            ctypes.byref(stdin_write),
+            ctypes.byref(sa),
+            0,
+        ):
+            raise win_error("CreatePipe(stdin)")
+        kernel32.SetHandleInformation(stdin_write, HANDLE_FLAG_INHERIT, 0)
+        if not kernel32.CreatePipe(
+            ctypes.byref(stdout_read),
+            ctypes.byref(stdout_write),
+            ctypes.byref(sa),
+            0,
+        ):
+            raise win_error("CreatePipe(stdout)")
+        if not kernel32.CreatePipe(
+            ctypes.byref(stderr_read),
+            ctypes.byref(stderr_write),
+            ctypes.byref(sa),
+            0,
+        ):
+            raise win_error("CreatePipe(stderr)")
+        kernel32.SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0)
+        kernel32.SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0)
+
+        startup = STARTUPINFO()
+        startup.cb = ctypes.sizeof(STARTUPINFO)
+        startup.dwFlags = _restricted_process_startup_flags()
+        startup.wShowWindow = SW_HIDE
+        startup.hStdInput = stdin_read
+        startup.hStdOutput = stdout_write
+        startup.hStdError = stderr_write
+
+        payload_path = _write_offline_payload_file(payload)
+        command_line = ctypes.create_unicode_buffer(
+            subprocess.list2cmdline(
+                [
+                    sys.executable,
+                    "-m",
+                    HELPER_MODULE,
+                    OFFLINE_PAYLOAD_FILE_ARG,
+                    str(payload_path),
+                ]
+            )
+        )
+        child_env = _helper_child_env()
+        env_block = ctypes.create_unicode_buffer(_environment_block(child_env))
+        previous_error_mode = kernel32.SetErrorMode(_runner_error_mode_flags())
+        try:
+            created = advapi32.CreateProcessWithLogonW(
+                username,
+                ".",
+                password,
+                LOGON_WITH_PROFILE,
+                sys.executable,
+                command_line,
+                _offline_helper_creation_flags(),
+                env_block,
+                str(_helper_import_root()),
+                ctypes.byref(startup),
+                ctypes.byref(process_info),
+            )
+        finally:
+            kernel32.SetErrorMode(previous_error_mode)
+        if not created:
+            raise win_error("CreateProcessWithLogonW")
+
+        close(stdin_read)
+        stdin_read = HANDLE()
+        close(stdin_write)
+        stdin_write = HANDLE()
+        close(stdout_write)
+        stdout_write = HANDLE()
+        close(stderr_write)
+        stderr_write = HANDLE()
+
+        def read_pipe(name: str, handle: object) -> None:
+            raw_handle = getattr(handle, "value", handle)
+            fd = msvcrt.open_osfhandle(int(raw_handle), os.O_RDONLY | os.O_BINARY)
+            with os.fdopen(fd, "rb", closefd=True) as stream:
+                outputs[name] = stream.read()
+
+        for name, handle in (("stdout", stdout_read), ("stderr", stderr_read)):
+            thread = threading.Thread(target=read_pipe, args=(name, handle), daemon=True)
+            thread.start()
+            reader_threads.append(thread)
+        stdout_read = HANDLE()
+        stderr_read = HANDLE()
+
+        wait_ms = max(1, int(payload.timeout * 1000))
+        wait_result = kernel32.WaitForSingleObject(process_info.hProcess, wait_ms)
+        if wait_result == WAIT_TIMEOUT:
+            kernel32.TerminateProcess(process_info.hProcess, 124)
+            kernel32.WaitForSingleObject(process_info.hProcess, 5000)
+            exit_code = 124
+        elif wait_result == WAIT_FAILED:
+            raise win_error("WaitForSingleObject")
+        else:
+            code = DWORD()
+            if not kernel32.GetExitCodeProcess(process_info.hProcess, ctypes.byref(code)):
+                raise win_error("GetExitCodeProcess")
+            exit_code = int(code.value)
+
+        for thread in reader_threads:
+            thread.join(timeout=5)
+        sys.stdout.buffer.write(outputs["stdout"])
+        sys.stderr.buffer.write(outputs["stderr"])
+        return exit_code
+    finally:
+        close(stdin_write)
+        close(stdin_read)
+        close(stdout_write)
+        close(stderr_write)
+        close(stdout_read)
+        close(stderr_read)
+        close(process_info.hThread)
+        close(process_info.hProcess)
+        if payload_path is not None:
+            with contextlib.suppress(OSError):
+                payload_path.unlink()
+
+
+def _effective_child_env(payload: HelperPayload) -> dict[str, str]:
+    env = dict(payload.env)
+    if payload.policy.get("network") == "proxy_allowlist":
+        proxy = payload.policy.get("network_proxy") or payload.policy.get("networkProxy")
+        if isinstance(proxy, dict):
+            from opensquilla.sandbox.backend.windows_default_network import network_proxy_env
+
+            env.update(network_proxy_env(str(proxy["host"]), int(proxy["port"])))
+    _inject_git_safe_directory(env, payload.cwd)
+    return env
+
+
+def _inject_git_safe_directory(env: dict[str, str], cwd: Path) -> None:
+    root = _find_git_worktree_root_for_safe_directory(cwd)
+    if root is None:
+        return
+    _append_git_config(env, "safe.directory", str(root).replace("\\", "/"))
+
+
+def _find_git_worktree_root_for_safe_directory(start: Path) -> Path | None:
+    try:
+        current = start.resolve(strict=False)
+    except OSError:
+        current = start
+    while True:
+        if (current / ".git").exists():
+            return current
+        parent = current.parent
+        if parent == current:
+            return None
+        current = parent
+
+
+def _append_git_config(env: dict[str, str], key: str, value: str) -> None:
+    try:
+        index = int(env.get("GIT_CONFIG_COUNT", "0"))
+    except ValueError:
+        index = 0
+    env[f"GIT_CONFIG_KEY_{index}"] = key
+    env[f"GIT_CONFIG_VALUE_{index}"] = value
+    env["GIT_CONFIG_COUNT"] = str(index + 1)
 
 
 def _run_restricted_process_native(
@@ -729,18 +1304,12 @@ def _run_restricted_process_native_impl(
     kernel32.GetExitCodeProcess.restype = BOOL
     kernel32.WriteFile.argtypes = [HANDLE, LPVOID, DWORD, ctypes.POINTER(DWORD), LPVOID]
     kernel32.WriteFile.restype = BOOL
+    kernel32.SetErrorMode.argtypes = [DWORD]
+    kernel32.SetErrorMode.restype = DWORD
 
-    TOKEN_ASSIGN_PRIMARY = 0x0001
-    TOKEN_DUPLICATE = 0x0002
-    TOKEN_QUERY = 0x0008
-    TOKEN_ADJUST_DEFAULT = 0x0080
-    TOKEN_ADJUST_SESSIONID = 0x0100
-    TOKEN_ADJUST_PRIVILEGES = 0x0020
+    TOKEN_USER_CLASS = 1
     TOKEN_GROUPS_CLASS = 2
     SE_GROUP_LOGON_ID = 0xC0000000
-    STARTF_USESTDHANDLES = 0x00000100
-    CREATE_SUSPENDED = 0x00000004
-    CREATE_UNICODE_ENVIRONMENT = 0x00000400
     HANDLE_FLAG_INHERIT = 0x00000001
     JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
@@ -760,6 +1329,23 @@ def _run_restricted_process_native_impl(
         if not advapi32.ConvertStringSidToSidW(value, ctypes.byref(sid)):
             raise win_error(f"ConvertStringSidToSidW({label})")
         return sid
+
+    def user_sid_from_token(token: int) -> tuple[object | None, object | None]:
+        needed = DWORD()
+        advapi32.GetTokenInformation(token, TOKEN_USER_CLASS, None, 0, ctypes.byref(needed))
+        if not needed.value:
+            return None, None
+        buffer = ctypes.create_string_buffer(needed.value)
+        if not advapi32.GetTokenInformation(
+            token,
+            TOKEN_USER_CLASS,
+            buffer,
+            needed,
+            ctypes.byref(needed),
+        ):
+            return None, None
+        user = SID_AND_ATTRIBUTES.from_buffer(buffer)
+        return user.Sid, buffer
 
     def logon_sid_from_token(token: int) -> tuple[object | None, object | None]:
         needed = DWORD()
@@ -793,6 +1379,7 @@ def _run_restricted_process_native_impl(
     source_token = HANDLE()
     restricted_token = HANDLE()
     allocated_sids: list[object] = []
+    user_sid_buffer: object | None = None
     logon_sid_buffer: object | None = None
     stdin_read = HANDLE()
     stdin_write = HANDLE()
@@ -806,34 +1393,27 @@ def _run_restricted_process_native_impl(
     outputs: dict[str, bytes] = {"stdout": b"", "stderr": b""}
 
     try:
-        desired_access = (
-            TOKEN_ASSIGN_PRIMARY
-            | TOKEN_DUPLICATE
-            | TOKEN_QUERY
-            | TOKEN_ADJUST_DEFAULT
-            | TOKEN_ADJUST_SESSIONID
-            | TOKEN_ADJUST_PRIVILEGES
-        )
-        if not advapi32.OpenProcessToken(
-            kernel32.GetCurrentProcess(),
-            desired_access,
-            ctypes.byref(source_token),
-        ):
-            raise win_error("OpenProcessToken")
+        source_token = HANDLE(_open_source_token_for_payload(payload))
 
-        restricting_sids = []
+        capability_sid_ptrs = []
         for index, capability_sid in enumerate(capability_sids):
             sid = convert_sid(capability_sid, f"capability-{index}")
             allocated_sids.append(sid)
-            restricting_sids.append(sid)
+            capability_sid_ptrs.append(sid)
 
+        user_sid, user_sid_buffer = user_sid_from_token(source_token)
         logon_sid, logon_sid_buffer = logon_sid_from_token(source_token)
-        if logon_sid:
-            restricting_sids.append(logon_sid)
+        base_sid_ptrs = []
         for sid_value, sid_label in _base_restricting_sid_specs():
             sid = convert_sid(sid_value, sid_label)
             allocated_sids.append(sid)
-            restricting_sids.append(sid)
+            base_sid_ptrs.append(sid)
+        restricting_sids = _ordered_restricting_sids(
+            capability_sids=tuple(capability_sid_ptrs),
+            user_sid=user_sid,
+            logon_sid=logon_sid,
+            base_sids=tuple(base_sid_ptrs),
+        )
         restricting_entries = (SID_AND_ATTRIBUTES * len(restricting_sids))()
         for index, sid in enumerate(restricting_sids):
             restricting_entries[index].Sid = sid
@@ -902,41 +1482,75 @@ def _run_restricted_process_native_impl(
         startup = STARTUPINFO()
         startup.cb = ctypes.sizeof(STARTUPINFO)
         startup.lpDesktop = "winsta0\\default"
-        startup.dwFlags = STARTF_USESTDHANDLES
+        startup.dwFlags = _restricted_process_startup_flags()
+        startup.wShowWindow = SW_HIDE
         startup.hStdInput = stdin_read
         startup.hStdOutput = stdout_write
         startup.hStdError = stderr_write
 
         command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline(payload.argv))
-        env_block = ctypes.create_unicode_buffer(_environment_block(payload.env))
-        creation_flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT
-        created = advapi32.CreateProcessAsUserW(
-            restricted_token,
-            None,
-            command_line,
-            None,
-            None,
-            True,
-            creation_flags,
-            env_block,
-            str(payload.cwd),
-            ctypes.byref(startup),
-            ctypes.byref(process_info),
-        )
-        if not created:
-            command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline(payload.argv))
-            created = advapi32.CreateProcessWithTokenW(
+        application_name = _restricted_process_application_name(payload.argv)
+        env_block = ctypes.create_unicode_buffer(_environment_block(_effective_child_env(payload)))
+        creation_flags = _restricted_process_creation_flags()
+        previous_error_mode = kernel32.SetErrorMode(_runner_error_mode_flags())
+        create_failures: list[tuple[str, int, str]] = []
+        try:
+            created = advapi32.CreateProcessAsUserW(
                 restricted_token,
-                0,
-                None,
+                application_name,
                 command_line,
+                None,
+                None,
+                True,
                 creation_flags,
                 env_block,
                 str(payload.cwd),
                 ctypes.byref(startup),
                 ctypes.byref(process_info),
             )
+            if not created:
+                error_code = ctypes.get_last_error()
+                create_failures.append(
+                    (
+                        "CreateProcessAsUserW",
+                        error_code,
+                        ctypes.FormatError(error_code).strip(),
+                    )
+                )
+                command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline(payload.argv))
+                created = advapi32.CreateProcessWithTokenW(
+                    restricted_token,
+                    0,
+                    application_name,
+                    command_line,
+                    creation_flags,
+                    env_block,
+                    str(payload.cwd),
+                    ctypes.byref(startup),
+                    ctypes.byref(process_info),
+                )
+                if not created:
+                    error_code = ctypes.get_last_error()
+                    create_failures.append(
+                        (
+                            "CreateProcessWithTokenW",
+                            error_code,
+                            ctypes.FormatError(error_code).strip(),
+                        )
+                    )
+        finally:
+            kernel32.SetErrorMode(previous_error_mode)
         if not created:
+            if create_failures:
+                code = create_failures[-1][1]
+                details = "; ".join(
+                    f"{name}={error_code} {message}"
+                    for name, error_code, message in create_failures
+                )
+                raise OSError(
+                    code,
+                    f"CreateProcessAsUserW/CreateProcessWithTokenW failed: {details}",
+                )
             raise win_error("CreateProcessAsUserW/CreateProcessWithTokenW")
 
         close(stdin_read)
@@ -1000,6 +1614,7 @@ def _run_restricted_process_native_impl(
         for sid in allocated_sids:
             if sid:
                 local_free(sid)
+        _ = user_sid_buffer
         _ = logon_sid_buffer
 
 

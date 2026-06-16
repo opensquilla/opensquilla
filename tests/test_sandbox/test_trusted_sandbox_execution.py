@@ -235,6 +235,7 @@ async def test_full_host_access_code_exec_resolves_host_python(monkeypatch, tmp_
     from opensquilla.tools.builtin import code_exec
 
     resolve_calls: list[bool] = []
+    child_env: dict[str, str] = {}
 
     class _Runtime:
         effective = SimpleNamespace(sandbox_enabled=True)
@@ -252,8 +253,14 @@ async def test_full_host_access_code_exec_resolves_host_python(monkeypatch, tmp_
 
     async def _fake_create_subprocess_exec(*args, **kwargs):
         assert args[:2] == ("/host/python", "-c")
+        child_env.update(kwargs["env"])
         return _Proc()
 
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setenv("WINDIR", r"C:\Windows")
+    monkeypatch.setenv("ComSpec", r"C:\Windows\System32\cmd.exe")
+    monkeypatch.setenv("TEMP", str(tmp_path / "temp"))
+    monkeypatch.setenv("TMP", str(tmp_path / "temp"))
     monkeypatch.setattr(code_exec, "get_runtime", lambda: _Runtime())
     monkeypatch.setattr(code_exec, "_resolve_python_bin", _fake_resolve_python_bin)
     monkeypatch.setattr(code_exec.asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
@@ -276,3 +283,9 @@ async def test_full_host_access_code_exec_resolves_host_python(monkeypatch, tmp_
     assert payload["exit_code"] == 0
     assert payload["stdout"] == "host python\n"
     assert resolve_calls == [False]
+    folded_env = {key.upper(): value for key, value in child_env.items()}
+    assert folded_env["SYSTEMROOT"] == r"C:\Windows"
+    assert folded_env["WINDIR"] == r"C:\Windows"
+    assert folded_env["COMSPEC"] == r"C:\Windows\System32\cmd.exe"
+    assert folded_env["TEMP"] == str(tmp_path / "temp")
+    assert folded_env["TMP"] == str(tmp_path / "temp")

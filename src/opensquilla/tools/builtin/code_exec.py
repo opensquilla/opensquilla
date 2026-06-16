@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import dataclasses
 import json
 import os
 import re
@@ -19,13 +20,14 @@ from opensquilla.sandbox.integration import (
     gate_action,
     get_runtime,
     preflight_subprocess_managed_network,
+    prepare_subprocess_managed_network_proxy,
     run_under_backend,
 )
-from opensquilla.sandbox.policy import LevelHints
 from opensquilla.sandbox.operation_runtime import SandboxToolDescriptor
-from opensquilla.sandbox.types import DenialResult, SandboxRequest
+from opensquilla.sandbox.policy import LevelHints
+from opensquilla.sandbox.types import DenialResult, NetworkMode, SandboxRequest
 from opensquilla.tools.registry import tool
-from opensquilla.tools.run_mode import full_host_access_active
+from opensquilla.tools.run_mode import full_host_access_active, trusted_sandbox_active
 from opensquilla.tools.types import ToolError, current_tool_context
 
 # Destructive Python patterns that must go through the same approval flow as
@@ -154,6 +156,19 @@ def _windows_sandbox_backend_active(runtime: object | None) -> bool:
     return backend_name.startswith("windows_")
 
 
+def _trusted_windows_managed_network_policy(policy, runtime: object | None):
+    if getattr(policy, "network", None) is NetworkMode.PROXY_ALLOWLIST:
+        return policy
+    if not _windows_sandbox_backend_active(runtime):
+        return policy
+    settings = getattr(runtime, "settings", None) if runtime is not None else None
+    if getattr(settings, "network_default", None) != "proxy_allowlist":
+        return policy
+    if not trusted_sandbox_active():
+        return policy
+    return dataclasses.replace(policy, network=NetworkMode.PROXY_ALLOWLIST, network_proxy=None)
+
+
 def _windows_environment_subprocess_misuse(code: str) -> str | None:
     lowered = code.lower()
     if "subprocess." not in lowered and "os.system" not in lowered and "os.popen" not in lowered:
@@ -223,6 +238,26 @@ _CODE_EXEC_RECOVERY_PROFILE = CapabilityProfile(
     confidence=Confidence.MEDIUM,
     evidence=("code.exec",),
 )
+
+
+async def _run_backend_with_managed_network_if_needed(
+    request: SandboxRequest,
+    *,
+    runtime: object | None,
+):
+    if (
+        runtime is None
+        or getattr(request.policy, "network", None) is not NetworkMode.PROXY_ALLOWLIST
+    ):
+        return await run_under_backend(request, runtime=runtime)
+    managed_network = await prepare_subprocess_managed_network_proxy(
+        request,
+        runtime=runtime,
+    )
+    try:
+        return await run_under_backend(managed_network.request, runtime=runtime)
+    finally:
+        await managed_network.cleanup()
 
 
 def _execution_result_json(
@@ -395,7 +430,11 @@ async def execute_code(
         cleanup_dir = workdir
     start_ns = time.monotonic_ns()
 
-    safe_env = {k: v for k, v in os.environ.items() if k in _SAFE_ENV_KEYS}
+    safe_env = (
+        os.environ.copy()
+        if host_execution
+        else {k: v for k, v in os.environ.items() if k in _SAFE_ENV_KEYS}
+    )
     if sandbox_enabled and _windows_sandbox_backend_active(runtime):
         _apply_windows_session_tmp_env(safe_env)
     hints = LevelHints(needs_network=_code_needs_network(code))
@@ -414,7 +453,7 @@ async def execute_code(
             argv=(python_bin, "-c", code),
             cwd=request.cwd,
             action_kind=request.action_kind,
-            policy=request.policy,
+            policy=_trusted_windows_managed_network_policy(request.policy, runtime),
             env=safe_env,
             reason=getattr(request, "reason", ""),
             session_id=getattr(request, "session_id", ""),
@@ -427,7 +466,10 @@ async def execute_code(
             if isinstance(preflight, dict):
                 return json.dumps(preflight)
         try:
-            sandbox_result = await run_under_backend(backend_request, runtime=runtime)
+            sandbox_result = await _run_backend_with_managed_network_if_needed(
+                backend_request,
+                runtime=runtime,
+            )
         except Exception as exc:
             return _execution_result_json(
                 returncode=-1,
@@ -447,7 +489,10 @@ async def execute_code(
             )
             if retry_request is not None:
                 try:
-                    sandbox_result = await run_under_backend(retry_request, runtime=runtime)
+                    sandbox_result = await _run_backend_with_managed_network_if_needed(
+                        retry_request,
+                        runtime=runtime,
+                    )
                 except Exception as exc:
                     return _execution_result_json(
                         returncode=-1,

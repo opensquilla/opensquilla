@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -59,6 +60,74 @@ def test_payload_contains_cache_env_and_run_mode(
     assert payload["policy"]["network"] == "none"
 
 
+def test_payload_rehomes_user_state_for_regular_windows_commands(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default as mod
+
+    policy = SandboxPolicy(
+        level=SecurityLevel.STANDARD,
+        network=NetworkMode.NONE,
+        mounts=(),
+        workspace_rw=True,
+        tmp_writable=True,
+        limits=ResourceLimits(wall_timeout_s=2),
+        env_allowlist=("PATH", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"),
+        require_approval=False,
+    )
+    request = SandboxRequest(
+        argv=("git", "ls-remote", "https://github.com/opensquilla/opensquilla.git", "HEAD"),
+        cwd=tmp_path,
+        action_kind="shell.exec",
+        policy=policy,
+        env={
+            "PATH": r"C:\Program Files\Git\cmd",
+            "HOME": r"C:\Users\me\.opensquilla",
+            "USERPROFILE": r"C:\Users\me",
+            "HOMEDRIVE": "C:",
+            "HOMEPATH": r"\Users\me",
+        },
+        run_mode=RunMode.TRUSTED.value,
+    )
+    monkeypatch.setattr(mod, "_support_ready", lambda: True)
+    monkeypatch.setattr(mod, "_capability_store_path", lambda: tmp_path / "cap_sids.json")
+
+    payload = mod._payload_for_request(request)
+
+    home = tmp_path / ".opensquilla-cache" / "home"
+    assert payload["env"]["HOME"] == str(home)
+    assert payload["env"]["USERPROFILE"] == str(home)
+    assert payload["env"]["HOMEDRIVE"] == home.drive
+    assert payload["env"]["HOMEPATH"] == str(home)[len(home.drive) :]
+    assert payload["env"]["GIT_CONFIG_GLOBAL"] == str(
+        tmp_path / ".opensquilla-cache" / "git" / "config"
+    )
+
+
+def test_payload_preserves_windows_process_base_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default as mod
+
+    windows_root = tmp_path / "Windows"
+    windows_root.mkdir()
+    monkeypatch.setenv("SystemRoot", str(windows_root))
+    monkeypatch.setenv("WINDIR", str(windows_root))
+    monkeypatch.setenv("ComSpec", str(windows_root / "System32" / "cmd.exe"))
+
+    request = _request(tmp_path)
+    monkeypatch.setattr(mod, "_support_ready", lambda: True)
+    monkeypatch.setattr(mod, "_capability_store_path", lambda: tmp_path / "cap_sids.json")
+
+    payload = mod._payload_for_request(request)
+
+    assert payload["env"]["SystemRoot"] == str(windows_root)
+    assert payload["env"]["WINDIR"] == str(windows_root)
+    assert payload["env"]["ComSpec"] == str(windows_root / "System32" / "cmd.exe")
+
+
 def test_payload_encodes_stdin_as_base64(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -113,8 +182,9 @@ async def test_backend_returns_helper_result(
 
     captured = {}
 
-    async def fake_exec(*argv, stdout=None, stderr=None):
+    async def fake_exec(*argv, stdout=None, stderr=None, env=None):
         captured["argv"] = argv
+        captured["env"] = env
         return _Proc()
 
     monkeypatch.setattr(mod, "_support_ready", lambda: True)
@@ -128,6 +198,47 @@ async def test_backend_returns_helper_result(
     assert result.stderr == "err"
     assert result.backend_used == "windows_default"
     assert "opensquilla.sandbox.backend.windows_default_runner" in captured["argv"]
+    assert "--payload-env" in captured["argv"]
+    payload_env = captured["env"]["OPENSQUILLA_WINDOWS_DEFAULT_PAYLOAD"]
+    assert '"argv":["python","-c","print(\'ok\')"]' in payload_env
+
+
+@pytest.mark.asyncio
+async def test_backend_waits_for_helper_grace_beyond_command_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default as mod
+    from opensquilla.sandbox.backend.windows_default import WindowsDefaultBackend
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    captured = {}
+
+    async def fake_exec(*argv, stdout=None, stderr=None, env=None):
+        captured["env"] = env
+        return _Proc()
+
+    async def fake_wait_for(awaitable, timeout=None):
+        captured["wait_timeout"] = timeout
+        return await awaitable
+
+    request = _request(tmp_path)
+    monkeypatch.setattr(mod, "_support_ready", lambda: True)
+    monkeypatch.setattr(mod, "_capability_store_path", lambda: tmp_path / "cap_sids.json")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+
+    result = await WindowsDefaultBackend().run(request)
+
+    payload = json.loads(captured["env"]["OPENSQUILLA_WINDOWS_DEFAULT_PAYLOAD"])
+    assert result.returncode == 0
+    assert payload["timeout"] == request.policy.limits.wall_timeout_s
+    assert captured["wait_timeout"] > payload["timeout"]
 
 
 def test_payload_contains_required_workspace_and_runtime_acl_plan(
@@ -154,6 +265,29 @@ def test_payload_contains_required_workspace_and_runtime_acl_plan(
     assert grant_paths[str(tmp_path / ".opensquilla-cache")] == "RWX"
     assert grant_paths[str(tmp_path / "runtime" / "Scripts")] == "RX"
     assert plan["capabilitySids"]
+
+
+def test_payload_grants_opensquilla_workspace_parent_for_traversal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default as mod
+
+    state_root = tmp_path / ".opensquilla"
+    workspace = state_root / "workspace"
+    workspace.mkdir(parents=True)
+    request = _request(workspace)
+    monkeypatch.setattr(mod, "_support_ready", lambda: True)
+    monkeypatch.setattr(mod, "_capability_store_path", lambda: tmp_path / "cap_sids.json")
+
+    payload = mod._payload_for_request(request)
+
+    grants = {
+        grant["path"]: grant["access"]
+        for grant in payload["policy"]["windowsAclPlan"]["autoGrants"]
+    }
+    assert grants[str(state_root)] == "RX"
+    assert grants[str(workspace)] == "RWX"
 
 
 def test_payload_grants_process_runtime_roots_rx(

@@ -19,6 +19,23 @@ def _allow_decision(host: str) -> NetworkDecision:
     )
 
 
+def _fake_getaddrinfo(address: str):
+    def _inner(host: str, port: int, *args: object, **kwargs: object):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, port))]
+
+    return _inner
+
+
+def test_proxy_resolver_allows_rfc2544_fake_ip_dns_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox import network_proxy as mod
+
+    monkeypatch.setattr(mod.socket, "getaddrinfo", _fake_getaddrinfo("198.18.0.24"))
+
+    assert mod._resolve_validated_upstream("github.com", 443) == ("198.18.0.24", 443)
+
+
 def _route_public_destination_to_upstream(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -191,6 +208,82 @@ async def test_proxy_forwards_allowed_absolute_http_request_to_upstream(
     ]
 
 
+async def test_proxy_forwards_absolute_https_request_with_tls_to_upstream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_hosts: list[str] = []
+    open_calls: list[dict[str, object]] = []
+    upstream_writes: list[bytes] = []
+
+    class FakeReader:
+        def __init__(self) -> None:
+            self._chunks = [
+                b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n",
+                b"",
+            ]
+
+        async def read(self, _size: int) -> bytes:
+            return self._chunks.pop(0)
+
+    class FakeWriter:
+        def write(self, data: bytes) -> None:
+            upstream_writes.append(data)
+
+        async def drain(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+        async def wait_closed(self) -> None:
+            return None
+
+    def decide(host: str) -> NetworkDecision:
+        seen_hosts.append(host)
+        return _allow_decision(host)
+
+    server = SandboxProxyServer(
+        decide,
+        resolver=lambda host, port: ("198.18.0.24", port),
+    )
+    await server.start()
+    real_open_connection = asyncio.open_connection
+
+    async def fake_open_connection(host: str, port: int, **kwargs: object):
+        if str(host) == server.host and int(port) == server.port:
+            return await real_open_connection(host, port, **kwargs)
+        open_calls.append({"host": host, "port": port, **kwargs})
+        return FakeReader(), FakeWriter()
+
+    monkeypatch.setattr(asyncio, "open_connection", fake_open_connection)
+    try:
+        response = await _send_proxy_request(
+            server,
+            b"HEAD https://Allowed.test/check?q=1 HTTP/1.1\r\n"
+            b"Host: Allowed.test\r\n"
+            b"\r\n",
+        )
+    finally:
+        await server.stop()
+
+    assert response.startswith(b"HTTP/1.1 204 No Content")
+    assert seen_hosts == ["allowed.test"]
+    assert open_calls == [
+        {
+            "host": "198.18.0.24",
+            "port": 443,
+            "ssl": True,
+            "server_hostname": "allowed.test",
+        }
+    ]
+    assert upstream_writes == [
+        b"HEAD /check?q=1 HTTP/1.1\r\n"
+        b"Host: allowed.test\r\n"
+        b"Connection: close\r\n"
+        b"\r\n"
+    ]
+
+
 async def test_proxy_rejects_mismatched_host_for_absolute_http_request() -> None:
     seen_hosts: list[str] = []
     resolver_calls: list[tuple[str, int]] = []
@@ -347,6 +440,64 @@ async def test_proxy_tunnels_allowed_connect_after_validated_upstream(
     assert resolver_calls == [("allowed.test", 443)]
     assert upstream_payloads == [b"ping"]
     assert upstream_opened == [_allow_decision("allowed.test")]
+
+
+async def test_proxy_connect_opens_plain_tcp_upstream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    open_calls: list[dict[str, object]] = []
+
+    class FakeReader:
+        async def read(self, _size: int) -> bytes:
+            return b""
+
+    class FakeWriter:
+        class _Transport:
+            def abort(self) -> None:
+                return None
+
+        transport = _Transport()
+
+        def write(self, _data: bytes) -> None:
+            return None
+
+        async def drain(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+        async def wait_closed(self) -> None:
+            return None
+
+    server = SandboxProxyServer(
+        _allow_decision,
+        resolver=lambda host, port: ("198.18.0.24", port),
+    )
+    await server.start()
+    real_open_connection = asyncio.open_connection
+
+    async def fake_open_connection(host: str, port: int, **kwargs: object):
+        if str(host) == server.host and int(port) == server.port:
+            return await real_open_connection(host, port, **kwargs)
+        open_calls.append({"host": host, "port": port, **kwargs})
+        return FakeReader(), FakeWriter()
+
+    monkeypatch.setattr(asyncio, "open_connection", fake_open_connection)
+    _reader, writer = await asyncio.open_connection(server.host, server.port)
+    try:
+        writer.write(b"CONNECT Allowed.test:443 HTTP/1.1\r\n\r\n")
+        await writer.drain()
+        for _ in range(50):
+            if open_calls:
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        writer.close()
+        await writer.wait_closed()
+        await server.stop()
+
+    assert open_calls == [{"host": "198.18.0.24", "port": 443}]
 
 
 async def test_proxy_rejects_allowed_connect_when_resolver_denies_upstream() -> None:

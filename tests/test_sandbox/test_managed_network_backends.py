@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import sys
 from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
@@ -111,14 +112,18 @@ def test_bubblewrap_proxy_allowlist_without_proxy_fails_closed(
         build_bwrap_argv(_request(_policy(tmp_path), tmp_path), binary="bwrap")
 
 
-def test_noop_backend_passes_request_proxy_env_to_child(
+@pytest.mark.asyncio
+async def test_noop_backend_passes_request_proxy_env_to_child(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from opensquilla.safety.sandbox import SandboxResult as SafetySandboxResult
     from opensquilla.sandbox.backend import noop as noop_mod
 
-    policy = _policy(tmp_path, network_proxy=_proxy_spec())
+    policy = dataclasses.replace(
+        _policy(tmp_path, network_proxy=_proxy_spec()),
+        env_allowlist=("PATH", "HTTP_PROXY"),
+    )
     seen: dict[str, object] = {}
 
     def _fake_run_sandboxed(cmd, limits=None, *, stdin=None, env=None):
@@ -143,7 +148,7 @@ def test_noop_backend_passes_request_proxy_env_to_child(
         },
     )
 
-    result = noop_mod._run_request_sync(request, noop_mod._limits_from_policy(request))
+    result = await noop_mod.NoopBackend().run(request)
 
     assert result.returncode == 0
     assert seen["stdin"] is None
@@ -515,3 +520,84 @@ def test_policy_summary_includes_network_proxy_object(tmp_path: Path) -> None:
     ).summary()
 
     assert summary["network_proxy"] == {"host": "127.0.0.1", "port": 18080}
+
+
+def test_windows_proxy_allowlist_preflight_uses_marker_ports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default_support as support_mod
+
+    calls: list[tuple[int, ...]] = []
+
+    def _fake_probe_windows_default_support(*, proxy_ports=(), **kwargs):
+        calls.append(tuple(proxy_ports))
+        return SimpleNamespace(proxy_allowlist_enforced=tuple(proxy_ports) == (48123,))
+
+    monkeypatch.setattr(
+        integration_mod,
+        "_windows_allowed_proxy_ports",
+        lambda runtime: (48123,),
+    )
+    monkeypatch.setattr(
+        support_mod,
+        "probe_windows_default_support",
+        _fake_probe_windows_default_support,
+    )
+
+    assert integration_mod._windows_proxy_allowlist_enforced(
+        SimpleNamespace(backend=SimpleNamespace(name="windows_default")),
+    )
+    assert calls == [(48123,)]
+
+
+@pytest.mark.asyncio
+async def test_windows_proxy_allowlist_starts_proxy_on_allowed_marker_port(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ports_seen: list[int] = []
+
+    class FakeBackend:
+        name = "windows_default"
+
+        async def run(self, request: SandboxRequest) -> SandboxResult:
+            assert request.policy.network_proxy is not None
+            ports_seen.append(request.policy.network_proxy.port)
+            return SandboxResult(
+                returncode=0,
+                stdout="ok",
+                stderr="",
+                wall_time_s=0.0,
+                backend_used="windows_default",
+            )
+
+    monkeypatch.setattr(
+        integration_mod,
+        "_windows_proxy_allowlist_enforced",
+        lambda runtime, proxy_ports=(): tuple(proxy_ports) == (48123,),
+    )
+    monkeypatch.setattr(
+        integration_mod,
+        "_windows_allowed_proxy_ports",
+        lambda runtime: (48123,),
+    )
+
+    policy = _policy(tmp_path, network_proxy=None)
+    run_context = RunContext(run_mode=RunMode.TRUSTED)
+    envelope = build_cli_route_envelope(
+        session_key="agent:main:webchat:abc",
+        run_mode="trusted",
+    )
+    envelope.metadata["sandbox_run_context"] = run_context.to_origin_payload()
+    ctx = tool_context_from_envelope(envelope, workspace_dir=str(tmp_path))
+    token = current_tool_context.set(ctx)
+    try:
+        result = await integration_mod.run_under_backend(
+            _request(policy, tmp_path),
+            runtime=SimpleNamespace(backend=FakeBackend()),
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert result.stdout == "ok"
+    assert ports_seen == [48123]

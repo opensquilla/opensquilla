@@ -57,6 +57,7 @@ class _ParsedRequest:
     method: str
     target: str
     version: str
+    scheme: str
     host: str
     port: int
     origin_form: str | None
@@ -255,9 +256,13 @@ class SandboxProxyServer:
             )
         except Exception as exc:
             raise _ProxyDeniedError("unsafe_upstream_resolution") from exc
+        open_kwargs: dict[str, object] = {}
+        if request.scheme == "https" and request.method != "CONNECT":
+            open_kwargs = {"ssl": True, "server_hostname": request.host}
         upstream_reader, upstream_writer = await asyncio.open_connection(
             connect_host,
             connect_port,
+            **open_kwargs,
         )
         self._active_writers.add(upstream_writer)
         return upstream_reader, upstream_writer
@@ -390,6 +395,8 @@ def _extract_request_host(header: bytes) -> str:
 def _protocol_for_request(request: _ParsedRequest) -> NetworkProtocol:
     if request.method == "CONNECT":
         return NetworkProtocol.HTTPS_CONNECT
+    if request.scheme == "https":
+        return NetworkProtocol.HTTPS
     return NetworkProtocol.HTTP
 
 
@@ -428,6 +435,7 @@ def _parse_request(header: bytes) -> _ParsedRequest:
             method=method,
             target=target,
             version=version,
+            scheme="https",
             host=host,
             port=port,
             origin_form=None,
@@ -437,12 +445,12 @@ def _parse_request(header: bytes) -> _ParsedRequest:
         host_values = _host_values(lines[1:])
         if len(host_values) > 1:
             raise ValueError("invalid_host_header")
-        host, port, origin_form = _parts_from_absolute_url(target)
+        scheme, host, port, origin_form = _parts_from_absolute_url(target)
         if host_values:
             header_host, header_port = _host_port_from_authority(
                 host_values[0],
                 require_port=False,
-                default_port=80,
+                default_port=_default_port_for_scheme(scheme),
             )
             if header_host != host or header_port != port:
                 raise ValueError("host_header_mismatch")
@@ -450,6 +458,7 @@ def _parse_request(header: bytes) -> _ParsedRequest:
             method=method,
             target=target,
             version=version,
+            scheme=scheme,
             host=host,
             port=port,
             origin_form=origin_form,
@@ -468,6 +477,7 @@ def _parse_request(header: bytes) -> _ParsedRequest:
         method=method,
         target=target,
         version=version,
+        scheme="http",
         host=host,
         port=port,
         origin_form=_origin_form_target(target),
@@ -476,11 +486,11 @@ def _parse_request(header: bytes) -> _ParsedRequest:
 
 
 def _host_from_absolute_url(target: str) -> str:
-    host, _port, _origin_form = _parts_from_absolute_url(target)
+    _scheme, host, _port, _origin_form = _parts_from_absolute_url(target)
     return host
 
 
-def _parts_from_absolute_url(target: str) -> tuple[str, int, str]:
+def _parts_from_absolute_url(target: str) -> tuple[str, str, int, str]:
     try:
         parsed = urlsplit(target)
         parsed.port
@@ -488,14 +498,24 @@ def _parts_from_absolute_url(target: str) -> tuple[str, int, str]:
     except ValueError as exc:
         raise ValueError("malformed_absolute_url") from exc
 
-    if parsed.scheme.lower() != "http" or not parsed.netloc:
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("malformed_absolute_url")
     if "@" in parsed.netloc or parsed.netloc.endswith(":") or parsed.fragment:
         raise ValueError("malformed_absolute_url")
     path = parsed.path or "/"
     if parsed.query:
         path = f"{path}?{parsed.query}"
-    return _normalize_nonempty_host(hostname), parsed.port or 80, path
+    return (
+        scheme,
+        _normalize_nonempty_host(hostname),
+        parsed.port or _default_port_for_scheme(scheme),
+        path,
+    )
+
+
+def _default_port_for_scheme(scheme: str) -> int:
+    return 443 if scheme == "https" else 80
 
 
 def _host_from_connect_target(target: str) -> str:
@@ -631,7 +651,9 @@ def _hop_by_hop_header_names(header_lines: list[str]) -> set[str]:
 
 
 def _authority_for_request(request: _ParsedRequest) -> str:
-    return request.host if request.port == 80 else f"{request.host}:{request.port}"
+    if request.port == _default_port_for_scheme(request.scheme):
+        return request.host
+    return f"{request.host}:{request.port}"
 
 
 def _normalize_nonempty_host(host: str) -> str:
@@ -699,18 +721,20 @@ def _validate_resolver_destination(host: str, port: int) -> tuple[str, int]:
 
 
 def _trusted_fake_ip_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = [_RFC2544_FAKE_IP_NETWORK]
     try:
         from opensquilla.tools.ssrf import get_trusted_fake_ip_cidrs
 
         values: tuple[str, ...] = tuple(get_trusted_fake_ip_cidrs())
     except Exception:
         values = ()
-    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
     for value in values:
         try:
-            networks.append(ipaddress.ip_network(value))
+            network = ipaddress.ip_network(value)
         except ValueError:
             continue
+        if network not in networks:
+            networks.append(network)
     return tuple(networks)
 
 

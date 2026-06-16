@@ -24,7 +24,11 @@ const ChatView = (() => {
     full: 'Host execution without per-command prompts. Use only for trusted workspaces.',
   };
   let _runMode = _RUN_MODE_DEFAULT;
-  let _runModeRequestSeq = 0;
+  let _sandboxSetupStatus = null;
+  let _sandboxSetupRequestSeq = 0;
+  let _sandboxSetupInFlight = false;
+  let _pendingSandboxSetupMode = '';
+  let _sandboxSetupPromptDismissed = false;
 
   // Streaming
   let _isStreaming = false;
@@ -640,6 +644,7 @@ const ChatView = (() => {
   let _fileInput = null;
   let _toolbar = null;
   let _runModeControl = null;
+  let _sandboxSetupBanner = null;
   let _composer = null;
   let _composerObserver = null;
   let _mediaRecorder = null;
@@ -1226,6 +1231,16 @@ const ChatView = (() => {
         </div>
         <div class="chat-pending hidden" id="chat-pending"></div>
         <div class="chat-composer" id="chat-composer">
+          <div class="chat-sandbox-setup-banner hidden" id="chat-sandbox-setup-banner" role="status" aria-live="polite">
+            <div class="chat-sandbox-setup-copy">
+              <strong>Establish sandboxing?</strong>
+              <span data-sandbox-setup-detail>Limit tool access before switching to sandbox modes. Administrator approval may be required.</span>
+            </div>
+            <div class="chat-sandbox-setup-actions">
+              <button type="button" class="btn btn--ghost" id="chat-sandbox-setup-dismiss">Not now</button>
+              <button type="button" class="btn btn--primary" id="chat-sandbox-setup-ensure">Establish sandbox</button>
+            </div>
+          </div>
           <div class="chat-attachments hidden" id="chat-attach-preview"></div>
           <div class="chat-slash hidden" id="chat-slash"></div>
           <div class="chat-input-bar">
@@ -1244,8 +1259,8 @@ const ChatView = (() => {
                     <div class="chat-run-mode-control" id="chat-run-mode-control">
                       <button type="button" class="chat-run-mode-trigger" id="chat-run-mode-trigger"
                               aria-haspopup="listbox" aria-expanded="false" aria-controls="chat-run-mode-menu"
-                              data-run-mode="standard" data-run-mode-help="Sandboxed execution. Risky actions ask before running.">
-                        <span class="chat-run-mode-current">Standard-Sandbox</span>
+                              data-run-mode="full" data-run-mode-help="Host execution without per-command prompts. Use only for trusted workspaces.">
+                        <span class="chat-run-mode-current">Full Host Access</span>
                         <span class="chat-run-mode-chevron" aria-hidden="true"></span>
                       </button>
                       <div class="chat-run-mode-menu hidden" id="chat-run-mode-menu" role="listbox" aria-label="Run Mode choices">
@@ -1312,6 +1327,7 @@ const ChatView = (() => {
     _fileInput    = _el.querySelector('#chat-file-input');
     _toolbar      = _el.querySelector('#chat-toolbar');
     _runModeControl = _el.querySelector('#chat-run-mode-control');
+    _sandboxSetupBanner = _el.querySelector('#chat-sandbox-setup-banner');
     _composer     = _el.querySelector('#chat-composer');
 
     _messages = [];
@@ -1322,9 +1338,10 @@ const ChatView = (() => {
     _applySessionRunState({ run_status: 'idle' });
 
     _bindEvents();
+    _bindSandboxSetupBanner();
     _bindToolbarPills();
     _bindToolbarTrigger();
-    _loadRunContext();
+    _loadSandboxSetupStatus({ showPrompt: true });
     _bindSessionChip();
     _bindComposerResize();
     _bindHoverActions();
@@ -1783,7 +1800,6 @@ const ChatView = (() => {
     _parkCurrentSessionStreamState('session_switch');
     _updateSessionChip(key);
     _persistSession(key);
-    _setRunMode(_RUN_MODE_DEFAULT, { toast: false, sync: false });
     _messages = [];
     _pendingSessionIntent = null;
     _clearPendingDrainAfterTerminalTimer();
@@ -1791,7 +1807,6 @@ const ChatView = (() => {
     _hideCompactionSeparator();
     _pendingQueue = []; if (_pendingArea) _renderPendingQueue();
     _applySessionRunState({ run_status: 'idle' });
-    _loadRunContext();
     _clearContextStatus();
     _lastHeaderRole = '';
     _lastHeaderDay = '';
@@ -2181,6 +2196,125 @@ const ChatView = (() => {
     });
   }
 
+  function _isSandboxSetupReadyPayload(payload) {
+    return String(payload && payload.state || '').toLowerCase() === 'ready';
+  }
+
+  function _sandboxSetupReadyForMode(mode) {
+    mode = _normalizeRunMode(mode);
+    if (mode === 'full') return true;
+    return _isSandboxSetupReadyPayload(_sandboxSetupStatus);
+  }
+
+  function _sandboxSetupMessage(payload) {
+    if (!payload || typeof payload !== 'object') return '';
+    if (payload.state === 'failed' && payload.message && payload.detail) {
+      return `${payload.message}: ${payload.detail}`;
+    }
+    return payload.message || payload.detail || '';
+  }
+
+  function _refreshSandboxSetupBanner(mode = _runMode) {
+    const banner = _sandboxSetupBanner || (_el && _el.querySelector('#chat-sandbox-setup-banner'));
+    if (!banner) return;
+    _sandboxSetupBanner = banner;
+    mode = _normalizeRunMode(mode);
+    const setupKnown = _sandboxSetupStatus !== null;
+    const setupReady = _isSandboxSetupReadyPayload(_sandboxSetupStatus);
+    const optionalPrompt = mode === 'full' && !_sandboxSetupPromptDismissed;
+    const pendingPrompt = mode !== 'full' || !!_pendingSandboxSetupMode;
+    const shouldShow = !setupReady && (pendingPrompt || (setupKnown && optionalPrompt));
+    banner.classList.toggle('hidden', !shouldShow);
+    banner.dataset.state = String(_sandboxSetupStatus && _sandboxSetupStatus.state || '');
+    const detail = banner.querySelector('[data-sandbox-setup-detail]');
+    if (detail) {
+      const msg = _sandboxSetupMessage(_sandboxSetupStatus);
+      detail.textContent = msg || 'Limit tool access before switching to sandbox modes. Administrator approval may be required.';
+    }
+    const ensureBtn = banner.querySelector('#chat-sandbox-setup-ensure');
+    if (ensureBtn) ensureBtn.disabled = _sandboxSetupInFlight;
+  }
+
+  async function _loadSandboxSetupStatus(options = {}) {
+    if (!_rpc) return null;
+    const mode = _normalizeRunMode(
+      typeof options === 'string' ? options : (options && options.mode) || _runMode,
+    );
+    const requestSeq = ++_sandboxSetupRequestSeq;
+    try {
+      if (_rpc.waitForConnection) await _rpc.waitForConnection();
+      const payload = await _rpc.call('sandbox.setup.status', {});
+      if (requestSeq !== _sandboxSetupRequestSeq) return _sandboxSetupStatus;
+      _sandboxSetupStatus = payload || null;
+      _refreshSandboxSetupBanner(mode);
+      return _sandboxSetupStatus;
+    } catch {
+      return _sandboxSetupStatus;
+    }
+  }
+
+  async function _ensureSandboxSetupOnly() {
+    if (!_rpc) return false;
+    if (_sandboxSetupReadyForMode('standard')) return true;
+    _sandboxSetupInFlight = true;
+    _refreshSandboxSetupBanner(_pendingSandboxSetupMode || _runMode);
+    try {
+      if (_rpc.waitForConnection) await _rpc.waitForConnection();
+      const payload = await _rpc.call('sandbox.setup.ensure', {});
+      _sandboxSetupStatus = payload || null;
+      const ready = _isSandboxSetupReadyPayload(_sandboxSetupStatus);
+      _sandboxSetupInFlight = false;
+      _refreshSandboxSetupBanner(_pendingSandboxSetupMode || _runMode);
+      UI.toast(ready ? 'Sandbox established' : 'Sandbox setup is not ready', ready ? 'ok' : 'warn', 2200);
+      if (ready && _pendingSandboxSetupMode) {
+        const pendingMode = _pendingSandboxSetupMode;
+        _pendingSandboxSetupMode = '';
+        _setRunMode(pendingMode, { toast: true });
+      }
+      return ready;
+    } catch (err) {
+      _sandboxSetupInFlight = false;
+      if (err && err.details) _sandboxSetupStatus = err.details;
+      _refreshSandboxSetupBanner(_pendingSandboxSetupMode || _runMode);
+      UI.toast('Sandbox setup failed: ' + (err && err.message ? err.message : 'unknown error'), 'err', 3500);
+      return false;
+    }
+  }
+
+  async function _requestSandboxSetupForMode(mode) {
+    mode = _normalizeRunMode(mode);
+    if (mode === 'full') return true;
+    if (_sandboxSetupReadyForMode(mode)) return true;
+    _sandboxSetupPromptDismissed = false;
+    const status = await _loadSandboxSetupStatus(mode);
+    if (_isSandboxSetupReadyPayload(status)) return true;
+    _pendingSandboxSetupMode = mode;
+    _refreshSandboxSetupBanner(mode);
+    UI.toast('Sandbox setup is required before switching modes.', 'warn', 2400);
+    return false;
+  }
+
+  function _bindSandboxSetupBanner() {
+    const banner = _sandboxSetupBanner || (_el && _el.querySelector('#chat-sandbox-setup-banner'));
+    if (!banner) return;
+    _sandboxSetupBanner = banner;
+    const dismiss = banner.querySelector('#chat-sandbox-setup-dismiss');
+    const ensure = banner.querySelector('#chat-sandbox-setup-ensure');
+    if (dismiss) {
+      dismiss.addEventListener('click', () => {
+        _sandboxSetupPromptDismissed = true;
+        _pendingSandboxSetupMode = '';
+        _setRunMode(_RUN_MODE_DEFAULT, { toast: false });
+        banner.classList.add('hidden');
+      });
+    }
+    if (ensure) {
+      ensure.addEventListener('click', () => {
+        _ensureSandboxSetupOnly();
+      });
+    }
+  }
+
   function _runModeHelp(mode) {
     const normalized = _normalizeRunMode(mode);
     return _RUN_MODE_TITLES[normalized] || _RUN_MODE_TITLES.standard;
@@ -2264,11 +2398,12 @@ const ChatView = (() => {
     });
 
     control.querySelectorAll('.chat-run-mode-option').forEach((btn) => {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', async () => {
         const mode = _normalizeRunMode(btn.dataset.runMode);
         close();
         if (mode === _runMode) return;
-        _setRunMode(mode, { toast: true, sync: true });
+        if (!(await _requestSandboxSetupForMode(mode))) return;
+        _setRunMode(mode, { toast: true });
       });
     });
 
@@ -2294,69 +2429,14 @@ const ChatView = (() => {
   }
 
   function _setRunMode(mode, options = {}) {
-    const previous = _runMode;
     const normalized = _normalizeRunMode(mode);
     _runMode = normalized;
     _toolbarState.runMode = normalized;
     _updateRunModeControl();
     _refreshToolbarTriggerGlow();
+    _refreshSandboxSetupBanner(normalized);
     if (options.toast) {
       UI.toast(`Run Mode: ${_RUN_MODE_LABELS[normalized]}`, normalized === 'full' ? 'warn' : 'info', 1800);
-    }
-    if (options.sync) _syncRunMode(normalized, previous);
-  }
-
-  function _applyRunContext(payload) {
-    if (!payload || typeof payload !== 'object') return;
-    _setRunMode(payload.runMode || payload.run_mode, { toast: false, sync: false });
-  }
-
-  async function _loadRunModeStatusFallback(sessionKey = '') {
-    if (!_rpc) return;
-    try {
-      if (_rpc.waitForConnection) await _rpc.waitForConnection();
-      const payload = await _rpc.call('sandbox.status', {});
-      if (sessionKey && sessionKey !== _sessionKey) return;
-      _setRunMode(payload?.runMode || payload?.run_mode, { toast: false, sync: false });
-    } catch {
-      // Keep the current UI state when the gateway cannot report sandbox posture.
-    }
-  }
-
-  async function _loadRunContext() {
-    if (!_rpc) return;
-    if (!_sessionKey) {
-      await _loadRunModeStatusFallback('');
-      return;
-    }
-    const sessionKey = _sessionKey;
-    try {
-      if (_rpc.waitForConnection) await _rpc.waitForConnection();
-      const payload = await _rpc.call('sandbox.run_context.get', { sessionKey });
-      if (sessionKey !== _sessionKey) return;
-      _applyRunContext(payload);
-    } catch {
-      if (sessionKey !== _sessionKey) return;
-      await _loadRunModeStatusFallback(sessionKey);
-    }
-  }
-
-  async function _syncRunMode(mode, previousMode) {
-    if (!_rpc || !_sessionKey) return;
-    const requestSeq = ++_runModeRequestSeq;
-    const sessionKey = _sessionKey;
-    try {
-      if (_rpc.waitForConnection) await _rpc.waitForConnection();
-      const payload = await _rpc.call('sandbox.run_context.set', {
-        sessionKey,
-        runMode: mode,
-      });
-      if (requestSeq !== _runModeRequestSeq || sessionKey !== _sessionKey) return;
-      _applyRunContext(payload);
-    } catch (err) {
-      if (requestSeq !== _runModeRequestSeq || sessionKey !== _sessionKey) return;
-      _setRunMode(previousMode || _RUN_MODE_DEFAULT, { toast: false, sync: false });
-      UI.toast('Run Mode failed: ' + err.message, 'err', 3000);
     }
   }
 
@@ -2386,11 +2466,11 @@ const ChatView = (() => {
   function _startNewChatSession(source) {
     _unsubscribeSession();
     _parkCurrentSessionStreamState(source || 'new_chat');
+    const inheritedRunMode = _normalizeRunMode(_runMode);
     const key = _genKey();
     _updateSessionChip(key);
     _persistSession(key);
-    _setRunMode(_RUN_MODE_DEFAULT, { toast: false, sync: false });
-    _loadRunContext();
+    _setRunMode(inheritedRunMode, { toast: false });
     _clearPendingDrainAfterTerminalTimer();
     _setCompactInFlight(false);
     _hideCompactionSeparator();
@@ -9930,6 +10010,10 @@ const ChatView = (() => {
     _pendingAttachments = [];
     _pendingQueue = [];
     _stopRequestedByUser = false;
+    _sandboxSetupStatus = null;
+    _sandboxSetupInFlight = false;
+    _pendingSandboxSetupMode = '';
+    _sandboxSetupPromptDismissed = false;
     _messages = [];
     _clearContextStatus();
     _lastHeaderRole = '';
@@ -9949,6 +10033,7 @@ const ChatView = (() => {
     _fileInput = null;
     _toolbar = null;
     _runModeControl = null;
+    _sandboxSetupBanner = null;
     _composer = null;
     _streamBubble = null;
     _streamSessionKey = '';

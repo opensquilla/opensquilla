@@ -43,6 +43,8 @@ PUBLIC_RELEASE_MARKER_NAMES = (
 PATH_POLICY_FIXTURE_FILES = {
     "tests/test_artifacts.py",
     "tests/test_provider_image_generation.py",
+    "tests/test_sandbox/test_operation_profile.py",
+    "tests/test_sandbox/test_windows_default_cache.py",
     "tests/test_tools/test_apply_patch_gates.py",
     "tests/test_tools/test_filesystem_read_workspace.py",
     "tests/test_tools/test_git_workdir_policy.py",

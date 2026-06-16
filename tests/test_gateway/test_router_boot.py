@@ -117,6 +117,112 @@ def test_gateway_home_falls_back_to_config_path_parent(tmp_path: Path) -> None:
     assert _gateway_home(config) == tmp_path / "service"
 
 
+@pytest.mark.asyncio
+async def test_boot_sandbox_setup_gate_defers_sandbox_modes_to_user_choice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.gateway import boot
+    from opensquilla.sandbox.setup_state import SandboxSetupState, SetupResult
+
+    calls: list[str] = []
+    config = GatewayConfig(
+        sandbox={
+            "run_mode": "trusted",
+            "sandbox": True,
+            "security_grading": True,
+            "network_default": "proxy_allowlist",
+        },
+    )
+
+    async def fake_ensure(setup_config: GatewayConfig) -> SetupResult:
+        calls.append("setup")
+        assert setup_config is config
+        return SetupResult(
+            state=SandboxSetupState.READY,
+            platform="win32",
+            message="Windows default sandbox is ready.",
+            requires_admin=False,
+            detail="proxy_allowlist=ready",
+        )
+
+    monkeypatch.setattr("opensquilla.sandbox.setup_state.ensure_sandbox_setup", fake_ensure)
+
+    result = await boot._ensure_sandbox_setup_on_boot(config)
+
+    assert result is None
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_boot_sandbox_setup_gate_skips_full_host_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.gateway import boot
+
+    async def fail_if_called(config: GatewayConfig) -> object:
+        raise AssertionError("Full Host Access must not trigger sandbox setup")
+
+    monkeypatch.setattr("opensquilla.sandbox.setup_state.ensure_sandbox_setup", fail_if_called)
+
+    result = await boot._ensure_sandbox_setup_on_boot(
+        GatewayConfig(
+            sandbox={
+                "run_mode": "full",
+                "sandbox": False,
+                "security_grading": False,
+            },
+            permissions={"default_mode": "full"},
+        )
+    )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_build_services_does_not_run_sandbox_setup_before_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.gateway import boot
+
+    events: list[str] = []
+
+    async def fake_setup(config: GatewayConfig) -> None:
+        raise AssertionError("gateway boot must not establish sandbox setup")
+
+    def fake_configure_runtime(*args: Any, **kwargs: Any) -> Any:
+        events.append("runtime")
+        return SimpleNamespace(effective=SimpleNamespace(as_dict=lambda: {}))
+
+    monkeypatch.setattr(boot, "_ensure_sandbox_setup_on_boot", fake_setup)
+    monkeypatch.setattr("opensquilla.sandbox.integration.configure_runtime", fake_configure_runtime)
+
+    config = GatewayConfig(
+        state_dir=str(tmp_path / "state"),
+        workspace_dir=str(tmp_path / "workspace"),
+        control_ui={"enabled": False},
+        channels={"channels": []},
+        mcp={"enabled": False},
+        memory={"flush_enabled": False},
+        sandbox={
+            "run_mode": "trusted",
+            "sandbox": True,
+            "security_grading": True,
+            "network_default": "proxy_allowlist",
+        },
+    )
+
+    services = await build_services(
+        config=config,
+        session_db_path=str(tmp_path / "sessions.sqlite"),
+        seed_agent_workspaces=False,
+    )
+    try:
+        assert events == ["runtime"]
+    finally:
+        await services.close()
+
+
 class _FakeDreamScheduler:
     def __init__(self, jobs: list[CronJob] | None = None) -> None:
         self.jobs = jobs or []

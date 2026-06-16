@@ -26,8 +26,8 @@ class _InlineExecutorLoop:
         return func(*args)  # type: ignore[operator]
 
 
-class _FilesystemReadBackend:
-    name = "filesystem_read_backend"
+class _FilesystemBackend:
+    name = "filesystem_backend"
 
     def operation_domains_supported(self) -> frozenset[str]:
         return frozenset({"filesystem"})
@@ -37,13 +37,47 @@ class _FilesystemReadBackend:
         path = getattr(request, "path", None)
         if path is None:
             raise AssertionError("filesystem operation missing path")
-        return SandboxOperationResult(message=path.read_text(encoding="utf-8"))
+        if operation.kind == "read_file":
+            if not path.exists():
+                raise FileNotFoundError(f"File not found: {path}")
+            return SandboxOperationResult(message=path.read_text(encoding="utf-8"))
+        if operation.kind == "list_dir":
+            if not path.exists():
+                raise FileNotFoundError(f"Path not found: {path}")
+            entries = []
+            for entry in sorted(path.iterdir(), key=lambda item: item.name):
+                if entry.is_dir():
+                    entries.append(f"[dir]  {entry.name}/")
+                else:
+                    entries.append(f"[file] {entry.name} ({entry.stat().st_size} bytes)")
+            return SandboxOperationResult(
+                message="\n".join(entries) if entries else f"{path}: (empty directory)"
+            )
+        if operation.kind == "write_text":
+            created = not path.exists()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(request.content, encoding="utf-8")
+            return SandboxOperationResult(
+                message=f"Written {len(request.content)} bytes to {path}",
+                created=created,
+            )
+        if operation.kind == "edit_text":
+            original = path.read_text(encoding="utf-8")
+            updated = original.replace(request.old_text, request.new_text, 1)
+            path.write_text(updated, encoding="utf-8")
+            return SandboxOperationResult(
+                message=(
+                    f"Edited {path}: replaced {len(request.old_text)} chars "
+                    f"with {len(request.new_text)} chars"
+                )
+            )
+        raise AssertionError(f"unsupported filesystem operation: {operation.kind}")
 
 
 def _install_filesystem_read_backend() -> None:
     runtime = get_runtime()
     assert runtime is not None
-    runtime.backend = _FilesystemReadBackend()
+    runtime.backend = _FilesystemBackend()
 
 
 @contextmanager
@@ -82,10 +116,11 @@ def sandbox_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator
     reset_approval_queue()
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    configure_runtime(
+    runtime = configure_runtime(
         SandboxSettings(run_mode="standard", backend="noop", allow_legacy_mode=True),
         workspace=workspace,
     )
+    runtime.backend = _FilesystemBackend()
     try:
         yield
     finally:
@@ -842,6 +877,92 @@ async def test_trusted_shell_delete_existing_file_auto_mounts_file_without_promp
     assert ctx.sandbox_mounts == [{"path": str(outside.resolve(strict=False)), "access": "rw"}]
     request = backend_calls[0]
     assert any(mount.host_path == outside for mount in request.policy.mounts)
+
+
+@pytest.mark.asyncio
+async def test_trusted_shell_delete_existing_file_under_rw_mount_adds_file_mount(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    mounted = tmp_path / "outside"
+    mounted.mkdir()
+    outside = mounted / "outside-sandbox-smoke.txt"
+    outside.write_text("hello\n", encoding="utf-8")
+    backend_calls: list[SandboxRequest] = []
+
+    async def fake_backend(request: SandboxRequest, *, runtime: object = None) -> object:
+        backend_calls.append(request)
+        return SimpleNamespace(stdout="", stderr="", returncode=0, backend_notes=[])
+
+    monkeypatch.setattr(shell, "run_under_backend", fake_backend)
+    monkeypatch.setattr(shell, "_windows_sandbox_backend_active", lambda runtime=None: True)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=True, reason=""),
+    )
+
+    with tool_context(
+        workspace,
+        run_mode="trusted",
+        sandbox_mounts=[{"path": str(mounted.resolve(strict=False)), "access": "rw"}],
+    ) as ctx:
+        result = await shell.exec_command(f'del "{outside}"')
+
+    assert "exit_code=0" in result
+    assert backend_calls
+    assert get_approval_queue().list_pending("exec") == []
+    assert ctx.sandbox_mounts == [
+        {"path": str(mounted.resolve(strict=False)), "access": "rw"},
+        {"path": str(outside.resolve(strict=False)), "access": "rw"},
+    ]
+    request = backend_calls[0]
+    assert any(mount.host_path == outside for mount in request.policy.mounts)
+
+
+def test_windows_shell_policy_ignores_deleted_active_file_mount(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.types import (
+        MountSpec,
+        NetworkMode,
+        ResourceLimits,
+        SandboxPolicy,
+        SecurityLevel,
+    )
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    stale = workspace / "sandbox_probe_workspace.txt"
+    stale.write_text("workspace-ok", encoding="utf-8")
+    stale.unlink()
+    policy = SandboxPolicy(
+        level=SecurityLevel.STANDARD,
+        network=NetworkMode.NONE,
+        mounts=(
+            MountSpec(workspace, workspace, mode="rw"),
+            MountSpec(stale, stale, mode="rw", required=False),
+        ),
+        workspace_rw=True,
+        tmp_writable=True,
+        limits=ResourceLimits(),
+        env_allowlist=(),
+        require_approval=False,
+    )
+    monkeypatch.setattr(shell, "_windows_sandbox_backend_active", lambda runtime=None: True)
+
+    with tool_context(
+        workspace,
+        run_mode="trusted",
+        sandbox_mounts=[{"path": str(stale.resolve(strict=False)), "access": "rw"}],
+    ):
+        updated = shell._policy_with_active_tool_mounts(policy)
+
+    assert stale not in {mount.host_path for mount in updated.mounts}
+    assert workspace in {mount.host_path for mount in updated.mounts}
 
 
 @pytest.mark.asyncio

@@ -42,7 +42,7 @@ def _auto_backend_failure_message() -> str:
         probe_windows_default_support,
     )
 
-    support = probe_windows_default_support()
+    support = probe_windows_default_support(proxy_ports=_windows_marker_proxy_ports())
     diagnostics = (
         "Windows sandbox setup diagnostics: "
         f"ctypes={'ready' if support.ctypes_available else 'missing'}, "
@@ -50,6 +50,18 @@ def _auto_backend_failure_message() -> str:
         f"network boundary={'ready' if support.proxy_allowlist_enforced else 'not ready'}"
     )
     return f"{message}; {diagnostics}"
+
+
+def _windows_marker_proxy_ports() -> tuple[int, ...]:
+    from opensquilla.sandbox.backend.windows_default_setup import (
+        default_setup_marker_path,
+        read_setup_marker,
+    )
+
+    marker = read_setup_marker(default_setup_marker_path())
+    if marker is None or marker.network is None:
+        return ()
+    return marker.network.allowed_proxy_ports
 
 
 def _auto_backend() -> Backend:

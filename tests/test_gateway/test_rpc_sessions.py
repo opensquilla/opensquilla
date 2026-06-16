@@ -943,6 +943,74 @@ class TestSessionsSend:
         assert runtime.enqueue_calls[0]["fresh_user_session"] is False
 
     @pytest.mark.asyncio
+    async def test_send_uses_source_run_mode_without_persisting_to_session(
+        self, dispatcher
+    ):
+        class RecordingTaskRuntime:
+            def __init__(self) -> None:
+                self.enqueue_calls: list[dict[str, Any]] = []
+
+            async def enqueue(self, envelope, message: str, **kwargs: Any):
+                self.enqueue_calls.append(
+                    {"envelope": envelope, "message": message, **kwargs}
+                )
+                return SimpleNamespace(
+                    task_id="task-1",
+                    session_key=envelope.session_key,
+                    status="queued",
+                )
+
+        class UpdatingFakeSessionManager(FakeSessionManager):
+            def __init__(self, sessions: list[FakeSession]) -> None:
+                super().__init__(sessions)
+                self.updates: list[tuple[str, dict[str, Any]]] = []
+
+            async def update(self, session_key: str, **fields: Any):
+                self.updates.append((session_key, fields))
+                session = await self._storage.get_session(session_key)
+                if session is None:
+                    raise KeyError(f"Session not found: {session_key}")
+                for key, value in fields.items():
+                    setattr(session, key, value)
+                return session
+
+        session = FakeSession(
+            session_key="agent:main:webchat:run-mode-source",
+            origin={
+                "sandbox_run_context": {
+                    "run_mode": "standard",
+                    "workspace": "/workspace",
+                }
+            },
+        )
+        runtime = RecordingTaskRuntime()
+        manager = UpdatingFakeSessionManager([session])
+        ctx = make_ctx(session_manager=manager, task_runtime=runtime)
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.send",
+            {
+                "key": session.session_key,
+                "message": "hello",
+                "_source": {
+                    "caller_kind": "web",
+                    "channel_kind": "web",
+                    "runMode": "full",
+                },
+            },
+            ctx,
+        )
+
+        assert res.ok is True
+        envelope = runtime.enqueue_calls[0]["envelope"]
+        assert envelope.metadata["run_mode"] == "full"
+        assert envelope.metadata["sandbox_run_context"]["run_mode"] == "full"
+        assert envelope.metadata["elevated"] == "full"
+        assert session.origin["sandbox_run_context"]["run_mode"] == "standard"
+        assert manager.updates == []
+
+    @pytest.mark.asyncio
     async def test_send_strips_hidden_preflight_payload_before_task_runtime(
         self, dispatcher, session
     ):

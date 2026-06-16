@@ -19,7 +19,21 @@ _JAVA_BUILD_COMMANDS = frozenset({"mvn", "mvnw", "gradle", "gradlew"})
 _SHELL_WRAPPERS = frozenset({"bash", "dash", "fish", "ksh", "powershell", "pwsh", "sh", "zsh"})
 _DESTRUCTIVE_COMMANDS = frozenset({"del", "erase", "format", "mkfs", "remove-item", "rm"})
 _SHELL_SEPARATORS = frozenset({"&&", "||", ";", "|"})
-_URL_NETWORK_COMMANDS = frozenset({"aria2", "aria2c", "curl", "http", "httpie", "https", "wget"})
+_URL_NETWORK_COMMANDS = frozenset(
+    {
+        "aria2",
+        "aria2c",
+        "curl",
+        "http",
+        "httpie",
+        "https",
+        "invoke-restmethod",
+        "invoke-webrequest",
+        "irm",
+        "iwr",
+        "wget",
+    }
+)
 _GIT_NETWORK_COMMANDS = frozenset(
     {"clone", "fetch", "ls-remote", "pull", "push", "submodule"}
 )

@@ -9,6 +9,9 @@ from opensquilla.sandbox.backend.windows_default_roots import workspace_cache_ro
 CACHE_ENV_PATHS: dict[str, tuple[str, ...]] = {
     "TEMP": ("temp",),
     "TMP": ("temp",),
+    "HOME": ("home",),
+    "USERPROFILE": ("home",),
+    "XDG_CONFIG_HOME": ("home", ".config"),
     "PIP_CACHE_DIR": ("pip",),
     "UV_CACHE_DIR": ("uv",),
     "npm_config_cache": ("npm",),
@@ -28,10 +31,17 @@ CACHE_ENV_PATHS: dict[str, tuple[str, ...]] = {
     "GEM_SPEC_CACHE": ("ruby", "specs"),
 }
 
+_EXTRA_CACHE_DIRS: tuple[tuple[str, ...], ...] = (("git",),)
+
 
 def planned_cache_dirs(workspace: Path) -> tuple[Path, ...]:
     root = workspace_cache_root(workspace)
-    return tuple(dict.fromkeys(root.joinpath(*parts) for parts in CACHE_ENV_PATHS.values()))
+    return tuple(
+        dict.fromkeys(
+            root.joinpath(*parts)
+            for parts in (*CACHE_ENV_PATHS.values(), *_EXTRA_CACHE_DIRS)
+        )
+    )
 
 
 def ensure_cache_dirs(workspace: Path) -> tuple[Path, ...]:
@@ -48,11 +58,16 @@ def build_cache_env(
     override_user: bool = True,
 ) -> dict[str, str]:
     root = workspace_cache_root(workspace)
+    home = root / "home"
     env = dict(base_env)
     for key, parts in CACHE_ENV_PATHS.items():
         if not override_user and key in env:
             continue
         env[key] = str(root.joinpath(*parts))
+    env["HOMEDRIVE"] = home.drive
+    env["HOMEPATH"] = str(home)[len(home.drive) :] if home.drive else str(home)
+    env["GIT_CONFIG_GLOBAL"] = str(root / "git" / "config")
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
     return env
 
 

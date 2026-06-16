@@ -101,11 +101,54 @@ _MANAGED_PROXY_ENV_KEYS: tuple[str, ...] = (
     "HTTPS_PROXY",
     "http_proxy",
     "https_proxy",
+    "YARN_HTTP_PROXY",
+    "YARN_HTTPS_PROXY",
+    "npm_config_http_proxy",
+    "npm_config_https_proxy",
+    "npm_config_proxy",
+    "NPM_CONFIG_HTTP_PROXY",
+    "NPM_CONFIG_HTTPS_PROXY",
+    "NPM_CONFIG_PROXY",
+    "BUNDLE_HTTP_PROXY",
+    "BUNDLE_HTTPS_PROXY",
+    "PIP_PROXY",
+    "DOCKER_HTTP_PROXY",
+    "DOCKER_HTTPS_PROXY",
+    "WS_PROXY",
+    "WSS_PROXY",
+    "ws_proxy",
+    "wss_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "FTP_PROXY",
+    "ftp_proxy",
 )
-_MANAGED_NO_PROXY_ENV_KEYS: tuple[str, ...] = ("NO_PROXY", "no_proxy")
+_MANAGED_NO_PROXY_ENV_KEYS: tuple[str, ...] = (
+    "NO_PROXY",
+    "no_proxy",
+    "npm_config_noproxy",
+    "NPM_CONFIG_NOPROXY",
+    "YARN_NO_PROXY",
+    "BUNDLE_NO_PROXY",
+)
+_MANAGED_PROXY_CONTROL_ENV_KEYS: tuple[str, ...] = (
+    "NODE_USE_ENV_PROXY",
+    "ELECTRON_GET_USE_PROXY",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_VALUE_0",
+    "OPENSQUILLA_SANDBOX_NETWORK",
+)
+_DEFAULT_NO_PROXY_VALUE = (
+    "localhost,127.0.0.1,::1,"
+    "10.0.0.0/8,"
+    "172.16.0.0/12,"
+    "192.168.0.0/16"
+)
 _MANAGED_PROXY_ENV_ALLOWLIST: tuple[str, ...] = (
     *_MANAGED_PROXY_ENV_KEYS,
     *_MANAGED_NO_PROXY_ENV_KEYS,
+    *_MANAGED_PROXY_CONTROL_ENV_KEYS,
 )
 _MANAGED_PROXY_ENV_NAMES_UPPER: frozenset[str] = frozenset(
     key.upper() for key in _MANAGED_PROXY_ENV_ALLOWLIST
@@ -435,7 +478,11 @@ def _backend_name(runtime: SandboxRuntime | object | None) -> str:
     return str(name or "")
 
 
-def _windows_proxy_allowlist_enforced(runtime: SandboxRuntime | object | None) -> bool:
+def _windows_proxy_allowlist_enforced(
+    runtime: SandboxRuntime | object | None,
+    *,
+    proxy_ports: tuple[int, ...] = (),
+) -> bool:
     backend_name = _backend_name(runtime).lower()
     if not backend_name.startswith("windows_"):
         return True
@@ -445,15 +492,146 @@ def _windows_proxy_allowlist_enforced(runtime: SandboxRuntime | object | None) -
         )
     except Exception:
         return False
-    return bool(probe_windows_default_support().proxy_allowlist_enforced)
+    if not proxy_ports:
+        proxy_ports = _windows_allowed_proxy_ports(runtime)
+    return bool(
+        probe_windows_default_support(proxy_ports=proxy_ports).proxy_allowlist_enforced
+    )
 
 
-def _managed_proxy_env_keys(
+def _windows_allowed_proxy_ports(
+    runtime: SandboxRuntime | object | None,
+) -> tuple[int, ...]:
+    backend_name = _backend_name(runtime).lower()
+    if not backend_name.startswith("windows_"):
+        return ()
+    try:
+        from opensquilla.sandbox.backend.windows_default_setup import (
+            default_setup_marker_path,
+            read_setup_marker,
+        )
+    except Exception:
+        return ()
+    marker = read_setup_marker(default_setup_marker_path())
+    if marker is None or marker.network is None:
+        return ()
+    return marker.network.allowed_proxy_ports
+
+
+def _windows_proxy_allowlist_unavailable_detail(
+    runtime: SandboxRuntime | object | None = None,
+) -> str | None:
+    if not _backend_name(runtime).lower().startswith("windows_"):
+        return None
+    try:
+        from opensquilla.sandbox.backend.windows_default_network import (
+            FIREWALL_RULE_VERSION,
+            NETWORK_SETUP_VERSION,
+            WFP_RULE_VERSION,
+        )
+        from opensquilla.sandbox.backend.windows_default_setup import (
+            default_setup_marker_path,
+            read_setup_marker,
+        )
+    except Exception:
+        return None
+    marker = read_setup_marker(default_setup_marker_path())
+    if marker is None:
+        return "setup marker is missing"
+    if marker.network is None:
+        return "network marker is missing"
+    network = marker.network
+    parts: list[str] = []
+    if network.firewall_rule_version != FIREWALL_RULE_VERSION:
+        parts.append(
+            f"firewall={network.firewall_rule_version} required={FIREWALL_RULE_VERSION}"
+        )
+    if network.wfp_rule_version != WFP_RULE_VERSION:
+        parts.append(f"wfp={network.wfp_rule_version} required={WFP_RULE_VERSION}")
+    if network.network_setup_version != NETWORK_SETUP_VERSION:
+        parts.append(
+            "network_setup="
+            f"{network.network_setup_version} required={NETWORK_SETUP_VERSION}"
+        )
+    proxy_ports = _windows_allowed_proxy_ports(runtime)
+    if proxy_ports and network.allowed_proxy_ports != tuple(sorted(set(proxy_ports))):
+        parts.append(f"ports={network.allowed_proxy_ports} required={proxy_ports}")
+    if parts:
+        return "network marker is out of date: " + ", ".join(parts)
+    return "network marker is not enforced by Windows"
+
+
+def _windows_managed_network_unavailable_message(
+    runtime: SandboxRuntime | object | None = None,
+) -> str:
+    message = (
+        "Windows sandbox managed network is unavailable: PROXY_ALLOWLIST "
+        "is not enforced by the active Windows backend. Do not retry "
+        "with http_request. Do not retry with web_fetch. Do not retry "
+        "with offline wheel downloads. Do not retry with host Python. "
+        "Keep the operation blocked until the Windows proxy allowlist "
+        "backend is enabled or the user changes run mode."
+    )
+    detail = _windows_proxy_allowlist_unavailable_detail(runtime)
+    if detail:
+        message = f"{message} Detail: {detail}."
+    return message
+
+
+def _windows_process_is_admin() -> bool:
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+async def _ensure_windows_proxy_allowlist_setup(
+    runtime: SandboxRuntime | object | None,
+) -> bool:
+    if not _backend_name(runtime).lower().startswith("windows_"):
+        return True
+    if not _windows_process_is_admin():
+        return False
+    try:
+        from opensquilla.sandbox.setup_state import (
+            SandboxSetupState,
+            ensure_sandbox_setup,
+        )
+    except Exception:
+        return False
+    try:
+        result = await ensure_sandbox_setup(getattr(runtime, "settings", None))
+    except Exception:
+        return False
+    return getattr(result, "state", None) is SandboxSetupState.READY
+
+
+async def _windows_proxy_allowlist_ready_or_repaired(
+    runtime: SandboxRuntime | object | None,
+) -> bool:
+    if _windows_proxy_allowlist_enforced(runtime):
+        return True
+    if not _windows_process_is_admin():
+        return False
+    return await _ensure_windows_proxy_allowlist_setup(runtime)
+
+
+def _managed_proxy_env(
+    *,
     backend_name: str | None,
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    host: str,
+    port: int,
+) -> dict[str, str]:
     if str(backend_name or "").lower().startswith("windows_"):
-        return ("HTTP_PROXY", "HTTPS_PROXY"), ("NO_PROXY",)
-    return _MANAGED_PROXY_ENV_KEYS, _MANAGED_NO_PROXY_ENV_KEYS
+        from opensquilla.sandbox.backend.windows_default_network import network_proxy_env
+
+        return network_proxy_env(host, port)
+    proxy_url = f"http://{host}:{port}"
+    env = {key: proxy_url for key in _MANAGED_PROXY_ENV_KEYS}
+    env.update({key: _DEFAULT_NO_PROXY_VALUE for key in _MANAGED_NO_PROXY_ENV_KEYS})
+    return env
 
 
 def request_with_managed_network_proxy_env(
@@ -469,28 +647,28 @@ def request_with_managed_network_proxy_env(
         return request
 
     proxy = request.policy.network_proxy
-    proxy_url = f"http://{proxy.host}:{proxy.port}"
-    proxy_env_keys, no_proxy_env_keys = _managed_proxy_env_keys(backend_name)
+    proxy_env = _managed_proxy_env(
+        backend_name=backend_name,
+        host=proxy.host,
+        port=proxy.port,
+    )
+    managed_env_keys = tuple(proxy_env)
     env = {
         key: value
         for key, value in request.env.items()
         if key.upper() not in _MANAGED_PROXY_ENV_NAMES_UPPER
     }
-    for key in proxy_env_keys:
-        env[key] = proxy_url
-    for key in no_proxy_env_keys:
-        env[key] = ""
+    env.update(proxy_env)
 
     env_allowlist = tuple(
         dict.fromkeys(
             (
                 *(
                     key
-                    for key in request.policy.env_allowlist
-                    if key.upper() not in _MANAGED_PROXY_ENV_NAMES_UPPER
+                        for key in request.policy.env_allowlist
+                        if key.upper() not in _MANAGED_PROXY_ENV_NAMES_UPPER
                 ),
-                *proxy_env_keys,
-                *no_proxy_env_keys,
+                *managed_env_keys,
             )
         )
     )
@@ -838,14 +1016,24 @@ async def prepare_subprocess_managed_network_proxy(
         rt,
         context=context,
     )
+    allowed_ports = _windows_allowed_proxy_ports(rt)
+    proxy_port = allowed_ports[0] if allowed_ports else 0
     if on_upstream_opened is None:
-        proxy = SandboxProxyServer(service)
+        proxy = SandboxProxyServer(service, port=proxy_port)
     else:
         proxy = SandboxProxyServer(
             service,
+            port=proxy_port,
             on_upstream_opened=on_upstream_opened,
         )
     await proxy.start()
+    if _backend_name(rt).lower().startswith("windows_"):
+        if not _windows_proxy_allowlist_enforced(rt, proxy_ports=(proxy.port,)):
+            await proxy.stop()
+            raise SandboxBackendError(
+                "Windows sandbox managed network is unavailable: proxy port is not "
+                "covered by the enforced Windows network boundary."
+            )
 
     async def _cleanup() -> None:
         await proxy.stop()
@@ -1071,6 +1259,13 @@ async def _prepare_in_process_managed_network(
     request: SandboxRequest,
     runtime: SandboxRuntime,
 ) -> RunContext | DenialResult | dict[str, object]:
+    if not await _windows_proxy_allowlist_ready_or_repaired(runtime):
+        return await _managed_in_process_denial(
+            request,
+            runtime,
+            _windows_managed_network_unavailable_message(runtime),
+        )
+
     context = _current_run_context_for_network_proxy()
     if context is None:
         return await _managed_in_process_denial(
@@ -1101,6 +1296,13 @@ async def _prepare_network_none_in_process_action(
     request: SandboxRequest,
     runtime: SandboxRuntime,
 ) -> RunContext | DenialResult | dict[str, object]:
+    if not await _windows_proxy_allowlist_ready_or_repaired(runtime):
+        return await _managed_in_process_denial(
+            request,
+            runtime,
+            _windows_managed_network_unavailable_message(runtime),
+        )
+
     context = _current_run_context_for_network_proxy()
     if context is None:
         return await _managed_in_process_denial(
@@ -1143,18 +1345,11 @@ async def preflight_subprocess_managed_network(
     if getattr(request.policy, "network", None) != NetworkMode.PROXY_ALLOWLIST:
         return None
 
-    if not _windows_proxy_allowlist_enforced(runtime):
+    if not await _windows_proxy_allowlist_ready_or_repaired(runtime):
         return await _managed_in_process_denial(
             request,
             runtime,
-            (
-                "Windows sandbox managed network is unavailable: PROXY_ALLOWLIST "
-                "is not enforced by the active Windows backend. Do not retry "
-                "with http_request. Do not retry with web_fetch. Do not retry "
-                "with offline wheel downloads. Do not retry with host Python. "
-                "Keep the operation blocked until the Windows proxy allowlist "
-                "backend is enabled or the user changes run mode."
-            ),
+            _windows_managed_network_unavailable_message(runtime),
         )
 
     context = _current_run_context_for_network_proxy()

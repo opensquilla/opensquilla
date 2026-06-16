@@ -1928,6 +1928,62 @@
   flex-direction: column;
 }
 
+.chat-sandbox-setup-banner {
+  width: min(calc(100% - var(--sp-8)), var(--chat-measure));
+  margin: 0 auto var(--sp-2);
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid color-mix(in srgb, var(--warn) 42%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warn) 9%, var(--bg-surface));
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+
+.chat-sandbox-setup-banner.hidden {
+  display: none;
+}
+
+.chat-sandbox-setup-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.35;
+}
+
+.chat-sandbox-setup-copy strong {
+  font-weight: 600;
+}
+
+.chat-sandbox-setup-copy span {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.chat-sandbox-setup-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-shrink: 0;
+}
+
+@media (max-width: 640px) {
+  .chat-sandbox-setup-banner {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .chat-sandbox-setup-actions {
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+}
+
 /* ─── Composer toolbar trigger + popover ────────────────────────────── */
 /*
  * Composer-state controls live inside a popover anchored to a single gear

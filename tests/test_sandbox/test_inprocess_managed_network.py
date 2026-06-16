@@ -15,22 +15,26 @@ from opensquilla.env import trust_env
 from opensquilla.gateway import rpc_tools
 from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
 from opensquilla.gateway.auth import Principal
-from opensquilla.gateway.rpc import RpcContext, get_dispatcher
+from opensquilla.gateway.rpc import RpcContext
 from opensquilla.sandbox import integration as integration_mod
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.integration import configure_runtime, reset_runtime, sandboxed
-from opensquilla.sandbox.network_guard import NetworkDecision, decide_network_access
+from opensquilla.sandbox.network_guard import NetworkDecision
 from opensquilla.sandbox.network_proxy import SandboxProxyServer as RealSandboxProxyServer
 from opensquilla.sandbox.run_context import (
     DomainGrant,
-    PublicNetworkGrant,
     RunContext,
     TemporaryGrant,
     get_run_context,
-    run_context_from_origin_payload,
 )
 from opensquilla.sandbox.run_mode import RunMode
-from opensquilla.sandbox.types import NetworkMode, ResourceLimits, SandboxPolicy, SecurityLevel
+from opensquilla.sandbox.types import (
+    DenialResult,
+    NetworkMode,
+    ResourceLimits,
+    SandboxPolicy,
+    SecurityLevel,
+)
 from opensquilla.tools.builtin import web as web_mod
 from opensquilla.tools.builtin import web_fetch as web_fetch_mod
 from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
@@ -162,6 +166,9 @@ def test_request_with_managed_network_proxy_env_overrides_user_proxy_env(
             "http_proxy": "http://attacker.invalid:3",
             "HTTPS_PROXY": "http://attacker.invalid:2",
             "https_proxy": "http://attacker.invalid:4",
+            "npm_config_https_proxy": "http://attacker.invalid:5",
+            "PIP_PROXY": "http://attacker.invalid:6",
+            "WS_PROXY": "http://attacker.invalid:7",
             "NO_PROXY": "*",
             "no_proxy": "*",
         },
@@ -170,13 +177,24 @@ def test_request_with_managed_network_proxy_env_overrides_user_proxy_env(
     updated = integration_mod.request_with_managed_network_proxy_env(request)
 
     assert updated.env["PATH"] == "/bin"
-    for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+    for key in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "npm_config_https_proxy",
+        "PIP_PROXY",
+        "WS_PROXY",
+    ):
         assert updated.env[key] == "http://127.0.0.1:18080"
     for key in ("NO_PROXY", "no_proxy"):
-        assert updated.env[key] == ""
+        assert updated.env[key]
     assert "http://attacker.invalid:1" not in updated.env.values()
     assert "http://attacker.invalid:3" not in updated.env.values()
-    for key in ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"):
+    assert "http://attacker.invalid:5" not in updated.env.values()
+    assert "http://attacker.invalid:6" not in updated.env.values()
+    assert "http://attacker.invalid:7" not in updated.env.values()
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "PIP_PROXY"):
         assert key in updated.policy.env_allowlist
     assert request.env["HTTP_PROXY"] == "http://attacker.invalid:1"
 
@@ -193,7 +211,7 @@ async def test_url_shaped_inprocess_network_action_sets_context_proxy_without_en
         host = "127.0.0.1"
         port = 28080
 
-        def __init__(self, decide: object) -> None:
+        def __init__(self, decide: object, **kwargs: object) -> None:
             self._decide = decide
             events.append("proxy.init")
 
@@ -273,7 +291,7 @@ async def test_http_request_uses_explicit_context_proxy_kwargs(
         host = "127.0.0.1"
         port = 28080
 
-        def __init__(self, decide: object) -> None:
+        def __init__(self, decide: object, **kwargs: object) -> None:
             self._decide = decide
 
         async def start(self) -> None:
@@ -366,7 +384,7 @@ async def test_temporary_network_grant_allows_retry_for_explicit_target(
         host = "127.0.0.1"
         port = 28080
 
-        def __init__(self, decide: object) -> None:
+        def __init__(self, decide: object, **kwargs: object) -> None:
             self._decide = decide
 
         async def start(self) -> None:
@@ -418,6 +436,171 @@ async def test_temporary_network_grant_allows_retry_for_explicit_target(
 
 
 @pytest.mark.asyncio
+async def test_windows_unready_boundary_blocks_decorated_network_tools(
+    monkeypatch: pytest.MonkeyPatch,
+    managed_context: ToolContext,
+) -> None:
+    runtime = integration_mod.get_runtime()
+    assert runtime is not None
+    runtime.backend = SimpleNamespace(name="windows_default")
+    managed_context.sandbox_run_context = RunContext(run_mode=RunMode.TRUSTED)
+
+    class _UnexpectedClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pytest.fail("network tool bypassed Windows managed-network readiness")
+
+    monkeypatch.setattr(
+        integration_mod,
+        "_windows_proxy_allowlist_enforced",
+        lambda runtime: False,
+    )
+    async def _repair_failed(runtime) -> bool:
+        return False
+
+    monkeypatch.setattr(
+        integration_mod,
+        "_ensure_windows_proxy_allowlist_setup",
+        _repair_failed,
+    )
+    monkeypatch.setattr(web_mod.httpx, "AsyncClient", _UnexpectedClient)
+    monkeypatch.setattr(web_fetch_mod.httpx, "AsyncClient", _UnexpectedClient)
+    monkeypatch.setattr(web_fetch_mod, "_check_ssrf", lambda url: None)
+
+    http_payload = json.loads(await web_mod.http_request("https://example.com"))
+    fetch_payload = json.loads(await web_fetch_mod.web_fetch("https://example.com"))
+
+    assert http_payload["status"] == "denied"
+    assert fetch_payload["status"] == "denied"
+    assert "Windows sandbox managed network is unavailable" in http_payload["message"]
+    assert "Windows sandbox managed network is unavailable" in fetch_payload["message"]
+
+
+@pytest.mark.asyncio
+async def test_windows_unready_boundary_does_not_trigger_elevation_when_not_admin(
+    monkeypatch: pytest.MonkeyPatch,
+    managed_context: ToolContext,
+) -> None:
+    runtime = integration_mod.get_runtime()
+    assert runtime is not None
+    runtime.backend = SimpleNamespace(name="windows_default")
+    managed_context.sandbox_run_context = RunContext(run_mode=RunMode.TRUSTED)
+
+    monkeypatch.setattr(
+        integration_mod,
+        "_windows_proxy_allowlist_enforced",
+        lambda runtime: False,
+    )
+    monkeypatch.setattr(integration_mod, "_windows_process_is_admin", lambda: False)
+
+    async def fail_if_called(settings):
+        pytest.fail("Trusted managed-network repair must not trigger elevation")
+
+    monkeypatch.setattr(integration_mod, "ensure_sandbox_setup", fail_if_called, raising=False)
+
+    assert await integration_mod._windows_proxy_allowlist_ready_or_repaired(runtime) is False
+
+
+@pytest.mark.asyncio
+async def test_windows_unready_boundary_repairs_when_already_admin(
+    monkeypatch: pytest.MonkeyPatch,
+    managed_context: ToolContext,
+) -> None:
+    runtime = integration_mod.get_runtime()
+    assert runtime is not None
+    runtime.backend = SimpleNamespace(name="windows_default")
+    managed_context.sandbox_run_context = RunContext(run_mode=RunMode.TRUSTED)
+    calls: list[object] = []
+
+    monkeypatch.setattr(
+        integration_mod,
+        "_windows_proxy_allowlist_enforced",
+        lambda runtime: False,
+    )
+    monkeypatch.setattr(integration_mod, "_windows_process_is_admin", lambda: True)
+
+    async def _repair(runtime):
+        calls.append(runtime)
+        return True
+
+    monkeypatch.setattr(integration_mod, "_ensure_windows_proxy_allowlist_setup", _repair)
+
+    assert await integration_mod._windows_proxy_allowlist_ready_or_repaired(runtime) is True
+    assert calls == [runtime]
+
+
+def test_windows_unavailable_message_reports_outdated_network_marker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default_setup as setup_mod
+    from opensquilla.sandbox.backend.windows_default_network import (
+        WindowsNetworkSetup,
+    )
+
+    marker = tmp_path / "setup_marker.json"
+    setup_mod.write_setup_marker(
+        marker,
+        network=WindowsNetworkSetup(
+            offline_user_sid="S-1-5-21-100-200-300-400",
+            allowed_proxy_ports=(48123,),
+            allow_local_binding=False,
+            firewall_rule_version=1,
+            wfp_rule_version=1,
+        ),
+    )
+    monkeypatch.setattr(setup_mod, "default_setup_marker_path", lambda home=None: marker)
+    runtime = SimpleNamespace(backend=SimpleNamespace(name="windows_default"))
+
+    message = integration_mod._windows_managed_network_unavailable_message(runtime)
+
+    assert "network marker is out of date" in message
+    assert "firewall=1 required=3" in message
+    assert "wfp=1 required=2" in message
+
+
+@pytest.mark.asyncio
+async def test_windows_unready_boundary_blocks_rpc_network_action(
+    monkeypatch: pytest.MonkeyPatch,
+    managed_context: ToolContext,
+) -> None:
+    runtime = integration_mod.get_runtime()
+    assert runtime is not None
+    runtime.backend = SimpleNamespace(name="windows_default")
+    managed_context.sandbox_run_context = RunContext(run_mode=RunMode.TRUSTED)
+    called = False
+
+    async def _callback() -> str:
+        nonlocal called
+        called = True
+        return "unexpected"
+
+    monkeypatch.setattr(
+        integration_mod,
+        "_windows_proxy_allowlist_enforced",
+        lambda runtime: False,
+    )
+    async def _repair_failed(runtime) -> bool:
+        return False
+
+    monkeypatch.setattr(
+        integration_mod,
+        "_ensure_windows_proxy_allowlist_setup",
+        _repair_failed,
+    )
+
+    result = await integration_mod.run_in_process_network_action(
+        action_kind="network.http",
+        argv=("http_request", "GET", "https://example.com"),
+        callback=_callback,
+    )
+
+    assert called is False
+    assert isinstance(result, DenialResult)
+    assert result.retryable is False
+    assert "Windows sandbox managed network is unavailable" in result.message
+
+
+@pytest.mark.asyncio
 async def test_allow_once_resolve_allows_one_retry_then_expires_for_explicit_target(
     monkeypatch: pytest.MonkeyPatch,
     managed_context: ToolContext,
@@ -426,7 +609,7 @@ async def test_allow_once_resolve_allows_one_retry_then_expires_for_explicit_tar
         host = "127.0.0.1"
         port = 28080
 
-        def __init__(self, decide: object) -> None:
+        def __init__(self, decide: object, **kwargs: object) -> None:
             self._decide = decide
 
         async def start(self) -> None:
@@ -482,7 +665,7 @@ async def test_persisted_temporary_grant_from_saved_origin_does_not_allow_after_
         host = "127.0.0.1"
         port = 28080
 
-        def __init__(self, decide: object) -> None:
+        def __init__(self, decide: object, **kwargs: object) -> None:
             self._decide = decide
 
         async def start(self) -> None:
@@ -848,7 +1031,7 @@ async def test_standard_explicit_target_does_not_auto_add_recognized_default_hos
         host = "127.0.0.1"
         port = 28080
 
-        def __init__(self, decide: object) -> None:
+        def __init__(self, decide: object, **kwargs: object) -> None:
             self._decide = decide
 
         async def start(self) -> None:
@@ -936,7 +1119,7 @@ async def test_run_with_managed_network_proxy_honors_temporary_domain_grant(
         host = "127.0.0.1"
         port = 28080
 
-        def __init__(self, decide: object) -> None:
+        def __init__(self, decide: object, **kwargs: object) -> None:
             self._decide = decide
 
         async def start(self) -> None:
@@ -1146,7 +1329,7 @@ async def test_rpc_search_query_allows_search_provider_endpoint_under_managed_ne
         host = "127.0.0.1"
         port = 28080
 
-        def __init__(self, decide: object) -> None:
+        def __init__(self, decide: object, **kwargs: object) -> None:
             self._decide = decide
 
         async def start(self) -> None:
@@ -1287,7 +1470,7 @@ async def test_web_search_shaped_inprocess_action_uses_search_provider_endpoint_
         host = "127.0.0.1"
         port = 28080
 
-        def __init__(self, decide: object) -> None:
+        def __init__(self, decide: object, **kwargs: object) -> None:
             self._decide = decide
 
         async def start(self) -> None:
@@ -1357,7 +1540,7 @@ async def test_inprocess_network_action_with_network_none_defers_to_proxy_runtim
         host = "127.0.0.1"
         port = 28080
 
-        def __init__(self, decide: object) -> None:
+        def __init__(self, decide: object, **kwargs: object) -> None:
             self._decide = decide
 
         async def start(self) -> None:
@@ -1431,7 +1614,7 @@ async def test_inprocess_network_action_with_network_none_uses_granted_explicit_
         host = "127.0.0.1"
         port = 28080
 
-        def __init__(self, decide: object) -> None:
+        def __init__(self, decide: object, **kwargs: object) -> None:
             self._decide = decide
 
         async def start(self) -> None:
@@ -1494,7 +1677,7 @@ async def test_trusted_network_none_auto_allows_unknown_explicit_public_target(
         host = "127.0.0.1"
         port = 28080
 
-        def __init__(self, decide: object) -> None:
+        def __init__(self, decide: object, **kwargs: object) -> None:
             self._decide = decide
 
         async def start(self) -> None:

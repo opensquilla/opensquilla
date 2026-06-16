@@ -29,6 +29,7 @@ from opensquilla.sandbox.types import (
 
 _DEFAULT_ENV_ALLOWLIST: tuple[str, ...] = (
     "PATH",
+    "PATHEXT",
     "HOME",
     "LANG",
     "LC_ALL",

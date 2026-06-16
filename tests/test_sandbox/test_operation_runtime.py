@@ -7,6 +7,7 @@ import pytest
 from opensquilla.sandbox.operation_runtime import (
     ArtifactOperationRequest,
     FilesystemOperationRequest,
+    MediaOperationRequest,
     NetworkOperationRequest,
     OperationApproval,
     OperationPermissions,
@@ -104,6 +105,46 @@ def test_tool_descriptor_builds_common_header_and_typed_request(tmp_path) -> Non
     assert isinstance(operation.approval, OperationApproval)
     assert isinstance(operation.request, NetworkOperationRequest)
     assert operation.request.url == "https://example.com/index.html"
+
+
+def test_tool_descriptor_builds_artifact_and_media_requests(tmp_path) -> None:
+    artifact_descriptor = SandboxToolDescriptor.artifact(
+        kind="artifact.publish",
+        request_factory=lambda args: ArtifactOperationRequest(
+            path=tmp_path / str(args["path"])
+        ),
+    )
+    media_descriptor = SandboxToolDescriptor.media(
+        kind="media.generate",
+        request_factory=lambda args: MediaOperationRequest(
+            path=tmp_path / str(args["filename"]),
+            media_type="image",
+            options={"prompt": str(args["prompt"])},
+        ),
+    )
+
+    artifact_operation = artifact_descriptor.build_operation(
+        tool_name="publish_artifact",
+        arguments={"path": "out.txt"},
+        workspace=tmp_path,
+        run_mode="trusted",
+    )
+    media_operation = media_descriptor.build_operation(
+        tool_name="image_generate",
+        arguments={"filename": "image.png", "prompt": "a chart"},
+        workspace=tmp_path,
+        run_mode="trusted",
+    )
+
+    assert artifact_operation.domain == "artifact"
+    assert artifact_operation.kind == "artifact.publish"
+    assert isinstance(artifact_operation.request, ArtifactOperationRequest)
+    assert artifact_operation.request.path == tmp_path / "out.txt"
+    assert media_operation.domain == "media"
+    assert media_operation.kind == "media.generate"
+    assert isinstance(media_operation.request, MediaOperationRequest)
+    assert media_operation.request.path == tmp_path / "image.png"
+    assert media_operation.request.media_type == "image"
 
 
 def _process_request(tmp_path) -> SandboxRequest:

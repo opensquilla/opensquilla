@@ -112,3 +112,37 @@ def test_builtin_tools_no_longer_use_sandboxed_decorator() -> None:
             offenders.append(str(path))
 
     assert offenders == []
+
+
+def test_builtin_local_artifact_and_media_tools_have_explicit_descriptors() -> None:
+    import opensquilla.tools.builtin  # noqa: F401
+    from opensquilla.tools.registry import get_default_registry
+
+    expected = {
+        "publish_artifact": ("artifact", "artifact.publish"),
+        "create_csv": ("artifact", "artifact.create_csv"),
+        "create_xlsx": ("artifact", "artifact.create_xlsx"),
+        "create_pptx": ("artifact", "artifact.create_pptx"),
+        "create_pdf_report": ("artifact", "artifact.create_pdf_report"),
+        "image": ("media", "media.analyze"),
+        "image_generate": ("media", "media.generate_image"),
+        "pdf": ("media", "media.read_pdf"),
+        "voice_clone": ("media", "media.voice_clone"),
+        "voice_convert": ("media", "media.voice_convert"),
+        "dubbing_generate": ("media", "media.dubbing_generate"),
+        "dubbing_status": ("media", "media.dubbing_status"),
+        "dubbing_download": ("media", "media.dubbing_download"),
+        "music_generate": ("media", "media.music_generate"),
+        "song_generate": ("media", "media.song_generate"),
+        "audio_provider_capabilities": ("media", "media.audio_capabilities"),
+        "voice_search": ("media", "media.voice_search"),
+        "tts": ("media", "media.tts"),
+    }
+    registry = get_default_registry()
+
+    for name, (domain, kind) in expected.items():
+        registered = registry.get(name)
+        assert registered is not None, name
+        descriptor = registered.spec.sandbox
+        assert (descriptor.domain, descriptor.kind) == (domain, kind), name
+        assert descriptor.enforce is False, name

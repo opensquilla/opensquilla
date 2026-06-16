@@ -50,6 +50,8 @@ def _patch_embedding_client(monkeypatch, captured: dict[str, object]) -> None:
 
 
 def test_local_embedding_tokenizes_for_onnx_inputs() -> None:
+    pytest.importorskip("numpy", reason="local ONNX embedding tokenization needs numpy")
+
     class _Encoding:
         ids = [101, 102]
         attention_mask = [1, 1]

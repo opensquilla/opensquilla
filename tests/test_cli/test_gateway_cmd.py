@@ -114,6 +114,7 @@ def test_gateway_run_turns_missing_onboarding_env_into_recovery_hint(
             "memory.embedding.remote.api_key"
         )
 
+    monkeypatch.setattr(gateway_cmd, "_gateway_bind_available", lambda *_args: True)
     monkeypatch.setattr(gateway_cmd, "start_gateway_server", fail_start_gateway_server)
 
     result = runner.invoke(app, ["gateway", "run", "--config", str(target)])
@@ -401,6 +402,7 @@ def test_gateway_run_uses_config_host_port_when_flags_are_omitted(
 
         return FakeServer(asyncio.create_task(done()))
 
+    monkeypatch.setattr(gateway_cmd, "_gateway_bind_available", lambda *_args: True)
     monkeypatch.setattr(gateway_cmd, "start_gateway_server", fake_start_gateway_server)
 
     gateway_cmd.run_gateway(
@@ -439,6 +441,7 @@ def test_gateway_run_keeps_missing_explicit_config_path_for_setup(
 
         return FakeServer(asyncio.create_task(done()))
 
+    monkeypatch.setattr(gateway_cmd, "_gateway_bind_available", lambda *_args: True)
     monkeypatch.setattr(gateway_cmd, "start_gateway_server", fake_start_gateway_server)
 
     gateway_cmd.run_gateway(

@@ -12,25 +12,95 @@ def test_chat_view_defaults_to_full_host_access() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
 
     assert "const _RUN_MODE_DEFAULT = 'full';" in source
+    trigger_start = source.index('id="chat-run-mode-trigger"')
+    trigger_end = source.index("</button>", trigger_start)
+    trigger_markup = source[trigger_start:trigger_end]
+    assert 'data-run-mode="full"' in trigger_markup
+    assert '<span class="chat-run-mode-current">Full Host Access</span>' in trigger_markup
 
 
-def test_chat_view_does_not_gate_run_mode_with_sandbox_setup_banner() -> None:
+def test_chat_view_exposes_sandbox_setup_entry_for_sandbox_modes() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
 
-    assert 'id="chat-sandbox-setup-banner"' not in source
-    assert "Establish sandbox" not in source
-    assert "sandbox.setup.status" not in source
-    assert "sandbox.setup.ensure" not in source
-    assert "_sandboxSetupReadyForMode" not in source
-    assert "_requestSandboxSetupForMode" not in source
+    assert 'id="chat-sandbox-setup-banner"' in source
+    assert "Establish sandbox" in source
+    assert "Not now" in source
+    assert "sandbox.setup.status" in source
+    assert "sandbox.setup.ensure" in source
+    assert "_sandboxSetupReadyForMode" in source
+    assert "_requestSandboxSetupForMode" in source
+    assert "if (mode === 'full') return true;" in source
 
 
-def test_chat_sandbox_setup_banner_styles_are_removed() -> None:
+def test_chat_sandbox_setup_banner_styles_are_present() -> None:
     css = CHAT_CSS.read_text(encoding="utf-8")
 
-    assert ".chat-sandbox-setup-banner" not in css
-    assert ".chat-sandbox-setup-copy" not in css
-    assert ".chat-sandbox-setup-actions" not in css
+    assert ".chat-sandbox-setup-banner" in css
+    assert ".chat-sandbox-setup-copy" in css
+    assert ".chat-sandbox-setup-actions" in css
+
+
+def test_chat_sandbox_setup_banner_prefers_human_message_over_detail() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    start = source.index("function _sandboxSetupMessage")
+    body = source[start : source.index("  function _refreshSandboxSetupBanner", start)]
+
+    assert "payload.state === 'failed'" in body
+    assert "return `${payload.message}: ${payload.detail}`;" in body
+    assert "return payload.message || payload.detail || '';" in body
+
+
+def test_chat_sandbox_setup_prompt_is_inline_and_reopens_after_not_now() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+
+    render = source[
+        source.index("function render(el)")
+        : source.index("  function _shouldAutofocusComposer", source.index("function render(el)"))
+    ]
+    assert "_loadSandboxSetupStatus({ showPrompt: true });" in render
+    assert "_ensureSandboxSetupOnly();" not in render
+
+    refresh = source[
+        source.index("function _refreshSandboxSetupBanner")
+        : source.index("  async function _loadSandboxSetupStatus")
+    ]
+    assert "const setupKnown = _sandboxSetupStatus !== null;" in refresh
+    assert "const setupReady = _isSandboxSetupReadyPayload(_sandboxSetupStatus);" in refresh
+    assert "const optionalPrompt = mode === 'full' && !_sandboxSetupPromptDismissed;" in refresh
+    assert (
+        "const shouldShow = !setupReady && (pendingPrompt || (setupKnown && optionalPrompt));"
+        in refresh
+    )
+
+    bind = source[
+        source.index("function _bindSandboxSetupBanner")
+        : source.index("  function _runModeHelp")
+    ]
+    assert "_sandboxSetupPromptDismissed = true;" in bind
+    assert "_setRunMode(_RUN_MODE_DEFAULT, { toast: false });" in bind
+
+    request = source[
+        source.index("async function _requestSandboxSetupForMode")
+        : source.index("  function _bindSandboxSetupBanner")
+    ]
+    assert "_sandboxSetupPromptDismissed = false;" in request
+    assert "_pendingSandboxSetupMode = mode;" in request
+
+
+def test_chat_run_mode_does_not_initialize_from_gateway_status() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    render = source[
+        source.index("function render(el)")
+        : source.index("  function _shouldAutofocusComposer", source.index("function render(el)"))
+    ]
+
+    assert "_loadRunModeStatusFallback" not in source
+    assert "sandbox.status" not in source
+    assert "_loadRunContext" not in source
+    assert "_syncRunMode" not in source
+    assert "sandbox.run_context.get" not in source
+    assert "sandbox.run_context.set" not in source
+    assert "_loadSandboxSetupStatus({ showPrompt: true });" in render
 
 
 def test_global_topbar_does_not_render_duplicate_chat_title() -> None:

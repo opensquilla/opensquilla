@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -15,7 +17,7 @@ def _windows_runtime() -> SimpleNamespace:
     )
 
 
-def test_windows_exec_command_uses_direct_powershell_argv(monkeypatch, tmp_path) -> None:
+def test_windows_exec_command_uses_shell_host_wrapper(monkeypatch, tmp_path) -> None:
     from opensquilla.tools.builtin import shell
 
     runtime = _windows_runtime()
@@ -28,16 +30,15 @@ def test_windows_exec_command_uses_direct_powershell_argv(monkeypatch, tmp_path)
 
     argv = shell._sandbox_shell_backend_argv("Write-Output ok", runtime, cwd=tmp_path)
 
-    assert argv[0] == r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-    assert "-NoLogo" in argv
-    assert "-NoProfile" in argv
-    assert "-NonInteractive" in argv
-    assert "-ExecutionPolicy" in argv
-    assert "Bypass" in argv
-    assert "-Command" in argv
-    assert "Write-Output ok" in argv
-    assert "-c" not in argv[:3]
-    assert "python" not in argv[0].lower()
+    assert argv[:3] == (
+        sys.executable,
+        "-c",
+        shell._WINDOWS_SANDBOX_SHELL_HOST_CODE,
+    )
+    assert argv[3] == r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+    assert argv[4] == "Write-Output ok"
+    assert argv[5] == str(tmp_path)
+    assert argv[6] == str(tmp_path / ".opensquilla-cache" / "shell-host")
 
 
 def test_windows_exec_command_unwraps_nested_powershell_command(monkeypatch, tmp_path) -> None:
@@ -60,8 +61,13 @@ def test_windows_exec_command_unwraps_nested_powershell_command(monkeypatch, tmp
         cwd=tmp_path,
     )
 
-    assert argv[0] == r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-    assert argv[-1] == "Write-Output child-ok"
+    assert argv[:3] == (
+        sys.executable,
+        "-c",
+        shell._WINDOWS_SANDBOX_SHELL_HOST_CODE,
+    )
+    assert argv[3] == r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+    assert argv[4] == "Write-Output child-ok"
 
     direct_argv = shell._sandbox_shell_backend_argv(
         'powershell.exe -NoProfile -Command "Write-Output child-ok"',
@@ -69,7 +75,116 @@ def test_windows_exec_command_unwraps_nested_powershell_command(monkeypatch, tmp
         cwd=tmp_path,
     )
 
-    assert direct_argv[-1] == "Write-Output child-ok"
+    assert direct_argv[4] == "Write-Output child-ok"
+
+
+def test_windows_exec_command_prefers_cmd_package_manager_shims(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    runtime = _windows_runtime()
+
+    monkeypatch.setattr(
+        shell,
+        "_trusted_windows_powershell_path",
+        lambda: r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+    )
+
+    argv = shell._sandbox_shell_backend_argv("npm view lodash version", runtime, cwd=tmp_path)
+
+    assert argv[4] == "& 'npm.cmd' 'view' 'lodash' 'version'"
+
+
+@pytest.mark.asyncio
+async def test_windows_exec_command_does_not_mount_program_files_tools_per_command(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from opensquilla.sandbox.config import SandboxSettings
+    from opensquilla.sandbox.policy import build_policy
+    from opensquilla.sandbox.types import SecurityLevel
+    from opensquilla.tools.builtin import shell
+
+    runtime = _windows_runtime()
+    policy = build_policy(
+        SecurityLevel.STANDARD,
+        "shell.exec",
+        tmp_path,
+        SandboxSettings(
+            sandbox=True,
+            security_grading=True,
+            backend="windows_default",
+            network_default="none",
+        ),
+        trusted=True,
+    )
+    node_root = tmp_path / "Program Files" / "nodejs"
+    git_root = tmp_path / "Program Files" / "Git"
+    node_root.mkdir(parents=True)
+    (git_root / "cmd").mkdir(parents=True)
+
+    (node_root / "npm.cmd").write_text("@echo off\r\n", encoding="utf-8")
+    (git_root / "cmd" / "git.exe").write_text("", encoding="utf-8")
+
+    request = SimpleNamespace(
+        cwd=tmp_path,
+        action_kind="shell.exec",
+        policy=policy,
+        reason="",
+        session_id="s1",
+        run_mode="trusted",
+    )
+
+    async def _fake_gate_action(**kwargs):
+        return object(), policy, request
+
+    async def _fake_preflight(*args, **kwargs):
+        return None
+
+    backend_requests = []
+
+    async def _fake_run_backend(request, *, runtime=None):
+        backend_requests.append(request)
+        return SimpleNamespace(returncode=0, stdout="ok\n", stderr="", backend_notes=())
+
+    monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(shell, "gate_action", _fake_gate_action)
+    monkeypatch.setattr(shell, "preflight_subprocess_managed_network", _fake_preflight)
+    monkeypatch.setattr(shell, "_run_backend_with_managed_network", _fake_run_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(tmp_path),
+            session_key="s1",
+            run_mode="trusted",
+        )
+    )
+    try:
+        result = await shell.exec_command(
+            (
+                "npm view lodash version && "
+                "git ls-remote https://github.com/opensquilla/opensquilla.git HEAD"
+            ),
+            workdir=str(tmp_path),
+            env={"PATH": f"{node_root}{os.pathsep}{git_root / 'cmd'}"},
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert "ok" in result
+    assert backend_requests
+    mount_paths = {mount.host_path for mount in backend_requests[0].policy.mounts}
+    assert node_root not in mount_paths
+    assert git_root not in mount_paths
 
 
 @pytest.mark.asyncio
@@ -303,3 +418,47 @@ async def test_windows_exec_command_blocks_runtime_readonly_write_target(
     payload = json.loads(result)
     assert payload["reason"] == "runtime_readonly"
     assert payload["resolved_path"] == str(target)
+
+
+@pytest.mark.asyncio
+async def test_windows_exec_command_full_host_access_skips_runtime_readonly_block(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    runtime = _windows_runtime()
+    runtime_root = tmp_path / "runtime-src"
+    runtime_root.mkdir()
+    target = runtime_root / "__full_host_should_reach_host__.txt"
+    host_calls = []
+
+    async def _fake_run_host_shell_command(*args, **kwargs):
+        host_calls.append((args, kwargs))
+        return "exit_code=0\nhost-ok\n"
+
+    monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(shell, "_windows_runtime_readonly_roots", lambda: (runtime_root,))
+    monkeypatch.setattr(shell, "_run_host_shell_command", _fake_run_host_shell_command)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(tmp_path),
+            session_key="s1",
+            run_mode="full",
+        )
+    )
+    try:
+        result = await shell.exec_command(f'echo "test" > "{target}"')
+    finally:
+        current_tool_context.reset(token)
+
+    assert "host-ok" in result
+    assert host_calls

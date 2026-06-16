@@ -523,7 +523,7 @@ async def test_run_agent_once_defaults_to_unattended_interaction_contract(
     ctx = captured["tool_context"]
     assert ctx.caller_kind is CallerKind.CLI
     assert ctx.interaction_mode is InteractionMode.UNATTENDED
-    assert ctx.elevated == "bypass"
+    assert ctx.elevated is None
     assert captured["bootstrap_context_mode"] == "unattended"
 
 

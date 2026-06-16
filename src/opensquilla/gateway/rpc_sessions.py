@@ -33,7 +33,6 @@ from opensquilla.paths import media_root_from_config
 from opensquilla.sandbox.run_context import (
     get_run_context,
     run_context_from_origin_payload,
-    set_run_mode,
 )
 from opensquilla.sandbox.run_mode import RunMode, normalize_run_mode
 from opensquilla.session.compaction import (
@@ -1043,20 +1042,17 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
     workspace_path = resolve_agent_workspace_dir(agent_id, ctx.config)
     workspace_dir = str(workspace_path) if workspace_path is not None else None
     run_mode_hint = _trusted_run_mode_hint(ctx, source_hint)
+    run_context = await get_run_context(
+        ctx.session_manager,
+        key,
+        config=ctx.config,
+        workspace=workspace_dir,
+    )
     if run_mode_hint is not None:
-        run_context = await set_run_mode(
-            ctx.session_manager,
-            key,
-            run_mode_hint,
-            config=ctx.config,
-            workspace=workspace_dir,
-        )
-    else:
-        run_context = await get_run_context(
-            ctx.session_manager,
-            key,
-            config=ctx.config,
-            workspace=workspace_dir,
+        run_context = replace(
+            run_context,
+            run_mode=run_mode_hint,
+            source="request",
         )
     if source_hint.get("caller_kind") == "cli" or source_hint.get("channel_kind") == "cli":
         route_envelope = build_cli_route_envelope(

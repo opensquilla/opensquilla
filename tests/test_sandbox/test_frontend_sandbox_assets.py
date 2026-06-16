@@ -44,21 +44,22 @@ def test_chat_run_mode_control_remains_the_only_sandbox_frontend_control() -> No
     assert "const _RUN_MODE_DEFAULT = 'full';" in chat_js
     assert 'id="chat-run-mode-trigger"' in chat_js
     assert 'id="chat-run-mode-menu"' in chat_js
-    assert "sandbox.run_context.get" in chat_js
-    assert "sandbox.run_context.set" in chat_js
-    assert "sandbox.status" in chat_js
+    assert "sandbox.run_context.get" not in chat_js
+    assert "sandbox.run_context.set" not in chat_js
+    assert "sandbox.status" not in chat_js
+    assert "_source.runMode" in chat_js
     assert "Standard-Sandbox" in chat_js
     assert "Trusted-Sandbox" in chat_js
     assert "Full Host Access" in chat_js
-    assert "_setRunMode(mode, { toast: true, sync: true });" in chat_js
+    assert "_requestSandboxSetupForMode(mode)" in chat_js
 
-    assert "chat-sandbox-setup-banner" not in chat_js
-    assert "Establish sandbox" not in chat_js
-    assert "sandbox.setup.status" not in chat_js
-    assert "sandbox.setup.ensure" not in chat_js
-    assert "_sandboxSetupReadyForMode" not in chat_js
-    assert "_requestSandboxSetupForMode" not in chat_js
-    assert ".chat-sandbox-setup-banner" not in chat_css
+    assert "chat-sandbox-setup-banner" in chat_js
+    assert "Establish sandbox" in chat_js
+    assert "sandbox.setup.status" in chat_js
+    assert "sandbox.setup.ensure" in chat_js
+    assert "_sandboxSetupReadyForMode" in chat_js
+    assert "_requestSandboxSetupForMode" in chat_js
+    assert ".chat-sandbox-setup-banner" in chat_css
 
 
 def test_approval_monitor_inline_button_uses_modal_polling_path() -> None:

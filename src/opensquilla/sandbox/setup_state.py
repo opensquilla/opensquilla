@@ -109,16 +109,51 @@ async def _windows_setup_status(config: Any) -> SetupResult:
 async def _ensure_windows_setup(config: Any) -> SetupResult:
     _ = config
     support = _probe_windows_sandbox_support()
-    if support.default_backend_available:
+    if support.default_backend_available and support.proxy_allowlist_enforced:
         return _windows_default_setup_result()
     if (
         support.ctypes_available
         and support.token_api_available
         and support.acl_api_available
-        and not support.setup_ready
+        and (not support.setup_ready or not support.proxy_allowlist_enforced)
     ):
+        marker_path = _windows_setup_marker_path()
+        if not _windows_process_is_admin():
+            try:
+                _run_windows_setup_helper_elevated(marker_path)
+            except OSError as exc:
+                return SetupResult(
+                    state=SandboxSetupState.FAILED,
+                    platform="win32",
+                    message="Windows default sandbox setup failed.",
+                    requires_admin=True,
+                    detail=str(exc),
+                )
+            result = _windows_default_setup_result()
+            if result.state is SandboxSetupState.READY:
+                return result
+            incomplete_detail = (
+                _windows_setup_helper_report_detail(marker_path)
+                or result.detail
+                or result.message
+            )
+            return SetupResult(
+                state=SandboxSetupState.FAILED,
+                platform="win32",
+                message="Windows default sandbox setup failed.",
+                requires_admin=True,
+                detail=f"elevated_setup_incomplete: {incomplete_detail}",
+            )
         try:
-            _write_windows_setup_marker(_windows_setup_marker_path())
+            network = _establish_windows_network_setup(marker_path)
+            _write_windows_setup_marker(marker_path, network=network)
+            return SetupResult(
+                state=SandboxSetupState.READY,
+                platform="win32",
+                message="Windows default sandbox is ready.",
+                requires_admin=False,
+                detail="proxy_allowlist=ready",
+            )
         except OSError as exc:
             return SetupResult(
                 state=SandboxSetupState.FAILED,
@@ -132,14 +167,13 @@ async def _ensure_windows_setup(config: Any) -> SetupResult:
 
 def _windows_default_setup_result() -> SetupResult:
     support = _probe_windows_sandbox_support()
-    if support.default_backend_available:
-        detail = "proxy_allowlist=not ready"
+    if support.default_backend_available and support.proxy_allowlist_enforced:
         return SetupResult(
             state=SandboxSetupState.READY,
             platform="win32",
             message="Windows default sandbox is ready.",
             requires_admin=False,
-            detail=detail,
+            detail="proxy_allowlist=ready",
         )
 
     reasons: list[str] = []
@@ -151,12 +185,16 @@ def _windows_default_setup_result() -> SetupResult:
         reasons.append("acl_api=not ready")
     if not support.setup_ready:
         reasons.append("setup=not ready")
+    elif not support.proxy_allowlist_enforced:
+        reasons.append("network_boundary=not ready")
+    recoverable_setup = (
+        support.ctypes_available
+        and support.token_api_available
+        and support.acl_api_available
+        and (not support.setup_ready or not support.proxy_allowlist_enforced)
+    )
     return SetupResult(
-        state=(
-            SandboxSetupState.NOT_SETUP
-            if support.setup_ready is False
-            else SandboxSetupState.UNAVAILABLE
-        ),
+        state=SandboxSetupState.NOT_SETUP if recoverable_setup else SandboxSetupState.UNAVAILABLE,
         platform="win32",
         message="Windows default sandbox setup is required.",
         requires_admin=True,
@@ -169,7 +207,7 @@ def _probe_windows_sandbox_support() -> WindowsSetupSupport:
         probe_windows_default_support,
     )
 
-    support = probe_windows_default_support()
+    support = probe_windows_default_support(proxy_ports=_windows_marker_proxy_ports())
     return WindowsSetupSupport(
         default_backend_available=support.default_backend_available,
         ctypes_available=support.ctypes_available,
@@ -180,16 +218,66 @@ def _probe_windows_sandbox_support() -> WindowsSetupSupport:
     )
 
 
+def _windows_marker_proxy_ports() -> tuple[int, ...]:
+    from opensquilla.sandbox.backend.windows_default_setup import (
+        default_setup_marker_path,
+        read_setup_marker,
+    )
+
+    marker = read_setup_marker(default_setup_marker_path())
+    if marker is None or marker.network is None:
+        return ()
+    return marker.network.allowed_proxy_ports
+
+
 def _windows_setup_marker_path() -> Path:
     from opensquilla.sandbox.backend.windows_default_setup import default_setup_marker_path
 
     return default_setup_marker_path()
 
 
-def _write_windows_setup_marker(path: Path) -> None:
+def _windows_process_is_admin() -> bool:
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def _establish_windows_network_setup(marker_path: Path):
+    from opensquilla.sandbox.backend.windows_default_network import WindowsNetworkSetup
+    from opensquilla.sandbox.backend.windows_default_setup import (
+        establish_windows_network_setup,
+    )
+
+    network = establish_windows_network_setup(marker_path)
+    if not isinstance(network, WindowsNetworkSetup):
+        raise OSError("windows network setup did not return network marker")
+    return network
+
+
+def _write_windows_setup_marker(path: Path, *, network=None) -> None:
     from opensquilla.sandbox.backend.windows_default_setup import write_setup_marker
 
-    write_setup_marker(path)
+    write_setup_marker(path, network=network)
+
+
+def _run_windows_setup_helper_elevated(path: Path) -> None:
+    from opensquilla.sandbox.backend.windows_default_setup import run_elevated_setup_helper
+
+    run_elevated_setup_helper(path)
+
+
+def _windows_setup_helper_report_detail(path: Path) -> str | None:
+    from opensquilla.sandbox.backend.windows_default_setup import read_setup_helper_report
+
+    report = read_setup_helper_report(path)
+    if report is None:
+        return None
+    return report.get("detail") or report.get("state")
 
 
 async def _portable_setup_status(config: Any, *, platform: str) -> SetupResult:

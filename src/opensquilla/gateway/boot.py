@@ -713,6 +713,13 @@ def _gateway_home(config: GatewayConfig) -> Path:
     return default_opensquilla_home()
 
 
+async def _ensure_sandbox_setup_on_boot(config: GatewayConfig) -> Any | None:
+    """Sandbox setup is intentionally user-initiated from the WebUI."""
+
+    _ = config
+    return None
+
+
 def _task_runtime_max_concurrency(config: GatewayConfig) -> int:
     return int(config.task_runtime.max_concurrency)
 

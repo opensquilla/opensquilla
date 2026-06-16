@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -135,3 +136,63 @@ async def test_windows_default_passes_stdin(tmp_path: Path) -> None:
 
     assert result.returncode == 0
     assert "stdin-ok" in result.stdout
+
+
+@pytest.mark.asyncio
+async def test_windows_default_runs_shell_host_nested_powershell_env_probe(
+) -> None:
+    from opensquilla.sandbox.backend.windows_default import WindowsDefaultBackend
+    from opensquilla.tools.builtin import shell
+
+    workspace = Path.home() / ".opensquilla" / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    runtime = SimpleNamespace(backend=SimpleNamespace(name="windows_default"))
+    command = (
+        "powershell -NoProfile -Command "
+        "\"Write-Output ('HTTP_PROXY=' + $env:HTTP_PROXY); "
+        "Write-Output ('HTTPS_PROXY=' + $env:HTTPS_PROXY); "
+        "Write-Output ('NO_PROXY=' + $env:NO_PROXY); "
+        "Write-Output ('OPENSQUILLA_SANDBOX_NETWORK=' + "
+        "$env:OPENSQUILLA_SANDBOX_NETWORK); "
+        "Write-Output ('PWD=' + (Get-Location).Path)\""
+    )
+    policy = SandboxPolicy(
+        level=SecurityLevel.STANDARD,
+        network=NetworkMode.NONE,
+        mounts=(),
+        workspace_rw=True,
+        tmp_writable=True,
+        limits=ResourceLimits(wall_timeout_s=20),
+        env_allowlist=(
+            "PATH",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "NO_PROXY",
+            "OPENSQUILLA_SANDBOX_NETWORK",
+        ),
+        require_approval=False,
+    )
+    policy = shell._policy_with_windows_shell_runtime_mounts(policy, runtime)
+    result = await WindowsDefaultBackend().run(
+        SandboxRequest(
+            argv=shell._sandbox_shell_backend_argv(command, runtime, cwd=workspace),
+            cwd=workspace,
+            action_kind="shell.exec",
+            policy=policy,
+            env={
+                **os.environ,
+                "HTTP_PROXY": "http://127.0.0.1:48123",
+                "HTTPS_PROXY": "http://127.0.0.1:48123",
+                "NO_PROXY": "localhost,127.0.0.1",
+                "OPENSQUILLA_SANDBOX_NETWORK": "proxy_allowlist",
+            },
+            run_mode=RunMode.TRUSTED.value,
+        )
+    )
+
+    assert result.returncode == 0
+    assert "HTTP_PROXY=http://127.0.0.1:48123" in result.stdout
+    assert "HTTPS_PROXY=http://127.0.0.1:48123" in result.stdout
+    assert "OPENSQUILLA_SANDBOX_NETWORK=proxy_allowlist" in result.stdout
+    assert f"PWD={workspace}" in result.stdout
+    assert result.stderr == ""

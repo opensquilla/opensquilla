@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import sys
 import time
 import uuid
@@ -43,6 +44,13 @@ from opensquilla.sandbox.types import SandboxBackendError, SandboxRequest, Sandb
 _HELPER_MODULE = "opensquilla.sandbox.backend.windows_default_runner"
 _FILESYSTEM_WORKER_MODULE = "opensquilla.sandbox.filesystem_worker"
 _OUTPUT_BYTE_CAP = 1_048_576
+_HELPER_PAYLOAD_ENV = "OPENSQUILLA_WINDOWS_DEFAULT_PAYLOAD"
+_HELPER_TIMEOUT_GRACE_S = 30.0
+_WINDOWS_PROCESS_BASE_ENV_KEYS = (
+    "SystemRoot",
+    "WINDIR",
+    "ComSpec",
+)
 
 
 class WindowsDefaultBackend(Backend):
@@ -100,25 +108,31 @@ class WindowsDefaultBackend(Backend):
 
         ensure_cache_dirs(request.cwd)
         payload = _payload_for_request(request)
-        helper_argv = (
-            sys.executable,
-            "-m",
-            _HELPER_MODULE,
-            json.dumps(payload, separators=(",", ":"), sort_keys=True),
+        helper_env = dict(os.environ)
+        helper_env[_HELPER_PAYLOAD_ENV] = json.dumps(
+            payload,
+            separators=(",", ":"),
+            sort_keys=True,
         )
+        helper_argv = (sys.executable, "-m", _HELPER_MODULE, "--payload-env")
         wall = request.policy.limits.wall_timeout_s
+        helper_wall = _helper_supervision_timeout(wall)
         started = time.monotonic()
         try:
             proc = await asyncio.create_subprocess_exec(
                 *helper_argv,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=helper_env,
             )
         except (FileNotFoundError, OSError) as exc:
             raise SandboxBackendError(f"windows_default helper launch failed: {exc}") from exc
 
         try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=wall)
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=helper_wall,
+            )
         except TimeoutError:
             proc.kill()
             try:
@@ -156,10 +170,17 @@ def _support_ready() -> bool:
     return probe_windows_default_support().default_backend_available
 
 
+def _helper_supervision_timeout(command_timeout_s: float) -> float:
+    return max(0.01, float(command_timeout_s)) + _HELPER_TIMEOUT_GRACE_S
+
+
 def _payload_for_request(request: SandboxRequest) -> dict[str, Any]:
-    env = build_cache_env(request.cwd, base_env=_allowed_env(request))
+    env = build_cache_env(request.cwd, base_env=_process_base_env(request))
     policy = request.policy.summary()
     policy["windowsAclPlan"] = _acl_plan_payload(request)
+    network_boundary = _windows_network_boundary_payload(request)
+    if network_boundary is not None:
+        policy["windowsNetworkBoundary"] = network_boundary
     stdin_b64 = (
         base64.b64encode(request.stdin).decode("ascii")
         if request.stdin is not None
@@ -175,6 +196,22 @@ def _payload_for_request(request: SandboxRequest) -> dict[str, Any]:
         "timeout": request.policy.limits.wall_timeout_s,
         "stdinBase64": stdin_b64,
     }
+
+
+def _windows_network_boundary_payload(request: SandboxRequest) -> dict[str, object] | None:
+    if request.policy.network.value != "proxy_allowlist":
+        return None
+    if request.policy.network_proxy is None:
+        return None
+    from opensquilla.sandbox.backend.windows_default_setup import (
+        default_setup_marker_path,
+        read_setup_marker,
+    )
+
+    marker = read_setup_marker(default_setup_marker_path())
+    if marker is None or marker.network is None:
+        return None
+    return marker.network.to_json()
 
 
 def _filesystem_operation_payload_path(workspace: Path) -> Path:
@@ -378,6 +415,10 @@ def _acl_plan_payload(request: SandboxRequest) -> dict[str, object]:
     )
     required: list[AclGrant] = [
         *(AclGrant(root, AclAccess.RWX, AclGrantKind.REQUIRED) for root in write_roots.rwx_roots),
+        *(
+            AclGrant(root, AclAccess.RX, AclGrantKind.REQUIRED)
+            for root in _workspace_traversal_roots(request.cwd)
+        ),
         *(AclGrant(root, AclAccess.RX, AclGrantKind.REQUIRED) for root in runtime_acl_roots),
         *(AclGrant(root, AclAccess.RX, AclGrantKind.REQUIRED) for root in process_acl_roots),
     ]
@@ -435,6 +476,13 @@ def _rx_root_needs_acl_grant(path: Path, env: dict[str, str]) -> bool:
     )
 
 
+def _workspace_traversal_roots(cwd: Path) -> tuple[Path, ...]:
+    parent = cwd.parent
+    if parent.name.lower() != ".opensquilla":
+        return ()
+    return (parent,)
+
+
 def _acl_sensitive_marker(path: Path) -> str | None:
     return windows_sensitive_marker(path)
 
@@ -454,6 +502,15 @@ def _allowed_env(request: SandboxRequest) -> dict[str, str]:
         for key in request.policy.env_allowlist
         if isinstance((value := request.env.get(key)), str)
     }
+
+
+def _process_base_env(request: SandboxRequest) -> dict[str, str]:
+    env = _allowed_env(request)
+    for key in _WINDOWS_PROCESS_BASE_ENV_KEYS:
+        value = request.env.get(key) or os.environ.get(key)
+        if isinstance(value, str) and value:
+            env[key] = value
+    return env
 
 
 def _decode_capped(raw: bytes | None) -> tuple[str, bool]:

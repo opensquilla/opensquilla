@@ -624,6 +624,29 @@ def _trusted_windows_powershell_path() -> str:
     return r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 
 
+_WINDOWS_POWERSHELL_PROXY_PRELUDE = r"""
+$__opensquillaProxy = $env:HTTPS_PROXY;
+if ([string]::IsNullOrWhiteSpace($__opensquillaProxy)) {
+    $__opensquillaProxy = $env:HTTP_PROXY
+};
+if (-not [string]::IsNullOrWhiteSpace($__opensquillaProxy)) {
+    $PSDefaultParameterValues['Invoke-WebRequest:Proxy'] = $__opensquillaProxy;
+    $PSDefaultParameterValues['Invoke-RestMethod:Proxy'] = $__opensquillaProxy;
+    [System.Net.WebRequest]::DefaultWebProxy = [System.Net.WebProxy]::new($__opensquillaProxy);
+    [System.Net.WebRequest]::DefaultWebProxy.Credentials = `
+        [System.Net.CredentialCache]::DefaultCredentials
+};
+""".strip()
+
+
+def _windows_with_powershell_proxy_defaults(command: str) -> str:
+    prelude = _WINDOWS_POWERSHELL_PROXY_PRELUDE
+    command = command.strip()
+    if not command:
+        return prelude
+    return f"{prelude}; {command}"
+
+
 def _windows_direct_powershell_argv(command: str) -> tuple[str, ...]:
     return (
         _trusted_windows_powershell_path(),
@@ -633,8 +656,27 @@ def _windows_direct_powershell_argv(command: str) -> tuple[str, ...]:
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        command,
+        _windows_with_powershell_proxy_defaults(command),
     )
+
+
+def _windows_shell_host_argv(
+    command: str,
+    *,
+    cwd: Path | str | None = None,
+) -> tuple[str, ...]:
+    argv = [
+        sys.executable,
+        "-c",
+        _WINDOWS_SANDBOX_SHELL_HOST_CODE,
+        _trusted_windows_powershell_path(),
+        _windows_powershell_compat_command(command),
+    ]
+    if cwd is not None:
+        cwd_text = str(cwd)
+        argv.append(cwd_text)
+        argv.append(str(Path(cwd_text) / ".opensquilla-cache" / "shell-host"))
+    return tuple(argv)
 
 
 _WINDOWS_SANDBOX_SHELL_HOST_CODE = r"""
@@ -644,9 +686,15 @@ import shutil
 import stat
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 
 _REMOVE_ITEM_RE = re.compile(
     r"^(?:Remove-Item|rm|del|erase)\b(?P<rest>.*)$",
+    re.IGNORECASE,
+)
+_TEST_PATH_RE = re.compile(
+    r"^Test-Path\b(?P<rest>.*)$",
     re.IGNORECASE,
 )
 _INVOKE_PYTHON_RE = re.compile(
@@ -665,6 +713,11 @@ _EXPLICIT_BARE_PATH_RE = re.compile(
 )
 _ARG_TOKEN_RE = re.compile(r'"[^"]*"|\'[^\']*\'|\S+')
 _OUTPUT_RE = re.compile(r"^(?:Write-Output|echo)\s+(?P<text>.+)$", re.IGNORECASE)
+_HTTP_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
+_SELECT_STATUS_CODE_RE = re.compile(
+    r"\bSelect(?:-Object)?\s+-ExpandProperty\s+StatusCode\b",
+    re.IGNORECASE,
+)
 _IF_REMOVE_RE = re.compile(
     r"^if\s*\(.*?Test-Path.+?\)\s*\{\s*(?P<remove>Remove-Item\b.+?)\s*\}$",
     re.IGNORECASE | re.DOTALL,
@@ -765,7 +818,17 @@ def _remove_statement_path(statement):
     match = _REMOVE_ITEM_RE.match(statement)
     if not match:
         return None
-    rest = match.group("rest")
+    return _statement_path_from_rest(match.group("rest"))
+
+
+def _test_path_statement_path(statement):
+    match = _TEST_PATH_RE.match(statement)
+    if not match:
+        return None
+    return _statement_path_from_rest(match.group("rest"))
+
+
+def _statement_path_from_rest(rest):
     path_match = _PATH_TOKEN_RE.search(rest)
     if not path_match:
         explicit_bare = _EXPLICIT_BARE_PATH_RE.search(rest)
@@ -802,6 +865,8 @@ def _output_statement_text(statement):
         return None
     text = match.group("text")
     if re.search(r"[<>|&]", text):
+        return None
+    if re.search(r"[$(){}\[\]+]", text):
         return None
     return _strip_outer_quotes(text)
 
@@ -851,6 +916,10 @@ def _handle_simple_delete_script(script):
         if output is not None:
             operations.append(("output", output))
             continue
+        path = _test_path_statement_path(statement)
+        if path is not None:
+            operations.append(("test_path", path))
+            continue
         return None
     errors = [
         error
@@ -864,6 +933,8 @@ def _handle_simple_delete_script(script):
     for operation, value in operations:
         if operation == "output":
             print(value)
+        elif operation == "test_path":
+            print("True" if os.path.exists(value) else "False")
     return 0
 
 
@@ -1042,6 +1113,119 @@ def _handle_python_process_script(script, cwd, site_dir):
     return result.returncode
 
 
+def _host_command_name(token):
+    name = os.path.basename(token).lower()
+    return name.removesuffix(".exe")
+
+
+def _host_tokens(script):
+    return [_strip_outer_quotes(token) for token in _ARG_TOKEN_RE.findall(script)]
+
+
+def _host_executable_index(tokens):
+    return 1 if tokens and tokens[0] == "&" and len(tokens) > 1 else 0
+
+
+def _http_proxy_for_url(url):
+    if url.lower().startswith("https://"):
+        return os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    return os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
+
+
+def _managed_http_open(method, url, timeout):
+    proxy_url = _http_proxy_for_url(url)
+    if not proxy_url:
+        return None
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+    )
+    request = urllib.request.Request(url, method=method.upper())
+    try:
+        response = opener.open(request, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        response = exc
+    try:
+        body = response.read()
+        status = int(getattr(response, "status", getattr(response, "code", 0)) or 0)
+        reason = str(getattr(response, "reason", "") or "")
+        headers = list(response.headers.items())
+        return status, reason, headers, body
+    finally:
+        response.close()
+
+
+def _option_value(tokens, names, default=None):
+    folded = {name.lower() for name in names}
+    for index, token in enumerate(tokens):
+        if token.lower() in folded and index + 1 < len(tokens):
+            return tokens[index + 1]
+    return default
+
+
+def _http_url_from_tokens(tokens):
+    uri = _option_value(tokens, {"-Uri", "-Url"})
+    if isinstance(uri, str) and _HTTP_URL_RE.match(uri):
+        return uri
+    for token in tokens[1:]:
+        if _HTTP_URL_RE.match(token):
+            return token
+    return None
+
+
+def _handle_managed_invoke_webrequest(script):
+    command, _pipe, pipeline = script.partition("|")
+    tokens = _host_tokens(command)
+    if not tokens or _host_command_name(tokens[0]) not in {"invoke-webrequest", "iwr", "wget"}:
+        return None
+    url = _http_url_from_tokens(tokens)
+    if not url:
+        return None
+    method = str(_option_value(tokens, {"-Method"}, "GET"))
+    timeout_raw = _option_value(tokens, {"-TimeoutSec"}, "30")
+    try:
+        timeout = max(1, int(timeout_raw))
+    except (TypeError, ValueError):
+        timeout = 30
+    result = _managed_http_open(method, url, timeout)
+    if result is None:
+        return None
+    status, _reason, _headers, body = result
+    if _SELECT_STATUS_CODE_RE.search(pipeline):
+        sys.stdout.write(f"{status}\n")
+    else:
+        sys.stdout.write(body.decode("utf-8", "replace"))
+    return 0
+
+
+def _handle_managed_curl(script):
+    tokens = _host_tokens(script)
+    if not tokens or _host_command_name(tokens[0]) != "curl":
+        return None
+    url = _http_url_from_tokens(tokens)
+    if not url:
+        return None
+    head = "-I" in tokens or "--head" in tokens
+    result = _managed_http_open("HEAD" if head else "GET", url, 30)
+    if result is None:
+        return None
+    status, reason, headers, body = result
+    sys.stdout.write(f"HTTP/1.1 {status} {reason}".rstrip() + "\r\n")
+    for name, value in headers:
+        sys.stdout.write(f"{name}: {value}\r\n")
+    sys.stdout.write("\r\n")
+    if not head:
+        sys.stdout.buffer.write(body)
+    return 0
+
+
+def _handle_managed_http_script(script):
+    for handler in (_handle_managed_invoke_webrequest, _handle_managed_curl):
+        result = handler(script)
+        if result is not None:
+            return result
+    return None
+
+
 def _with_sandbox_environment(command, cwd, tmp, python_site_dir):
     prelude = ""
     if tmp:
@@ -1090,6 +1274,9 @@ def main():
     python_site_dir = _prepare_python_sitecustomize(tmp)
     nested_command = _nested_powershell_command(command)
     effective_command = nested_command if nested_command is not None else command
+    managed_http_result = _handle_managed_http_script(effective_command)
+    if managed_http_result is not None:
+        return managed_http_result
     remove_result = _handle_simple_delete_script(effective_command)
     if remove_result is not None:
         return remove_result
@@ -1137,7 +1324,7 @@ def _sandbox_shell_backend_argv(
     backend = getattr(runtime, "backend", None)
     backend_name = getattr(backend, "name", "")
     if backend_name.startswith("windows_"):
-        return _windows_direct_powershell_argv(_windows_powershell_compat_command(command))
+        return _windows_shell_host_argv(command, cwd=cwd)
     return ("sh", "-lc", command)
 
 
@@ -1162,6 +1349,22 @@ async def _run_backend_with_managed_network(
         return await run_under_backend(managed_network.request, runtime=runtime)
     finally:
         await managed_network.cleanup()
+
+
+def _trusted_windows_managed_network_policy(
+    policy: SandboxPolicy,
+    runtime: object | None,
+) -> SandboxPolicy:
+    if getattr(policy, "network", None) is NetworkMode.PROXY_ALLOWLIST:
+        return policy
+    if not _windows_sandbox_backend_active(runtime):
+        return policy
+    settings = getattr(runtime, "settings", None) if runtime is not None else None
+    if getattr(settings, "network_default", None) != "proxy_allowlist":
+        return policy
+    if not trusted_sandbox_active():
+        return policy
+    return dataclasses.replace(policy, network=NetworkMode.PROXY_ALLOWLIST, network_proxy=None)
 
 
 def _windows_strip_outer_quotes(value: str) -> str:
@@ -1251,6 +1454,22 @@ def _windows_powershell_python_process_statement(tokens: list[str]) -> str | Non
     )
 
 
+def _windows_cmd_shim_statement(tokens: list[str]) -> str | None:
+    if not tokens:
+        return None
+    executable_index = 1 if tokens[0] == "&" and len(tokens) > 1 else 0
+    executable = tokens[executable_index]
+    command = _windows_shell_command_name(executable)
+    if command not in {"npm", "npx", "pnpm", "yarn"}:
+        return None
+    if any(separator in executable for separator in ("\\", "/", ":")):
+        return None
+    if ntpath.splitext(ntpath.basename(executable))[1]:
+        return None
+    argv = [f"{command}.cmd", *tokens[executable_index + 1 :]]
+    return "& " + " ".join(_windows_ps_single_quote(arg) for arg in argv)
+
+
 def _windows_nested_powershell_command(tokens: list[str]) -> str | None:
     if not tokens:
         return None
@@ -1272,6 +1491,9 @@ def _windows_powershell_compat_statement(statement: str) -> str:
     python_statement = _windows_powershell_python_process_statement(tokens)
     if python_statement is not None:
         return python_statement
+    cmd_shim_statement = _windows_cmd_shim_statement(tokens)
+    if cmd_shim_statement is not None:
+        return cmd_shim_statement
     if len(tokens) < 3:
         return statement
     if _windows_shell_command_name(tokens[0]) != "mkdir":
@@ -1336,7 +1558,10 @@ def _windows_split_statements(script: str) -> list[str]:
 
 def _windows_shell_command_name(token: str) -> str:
     name = ntpath.basename(token).lower()
-    return name.removesuffix(".exe")
+    for suffix in (".exe", ".cmd", ".bat", ".ps1"):
+        if name.endswith(suffix):
+            return name.removesuffix(suffix)
+    return name
 
 
 def _windows_shell_command_after_option(
@@ -1480,7 +1705,12 @@ def _backend_denial_target_path(
 def _policy_with_active_tool_mounts(policy: SandboxPolicy) -> SandboxPolicy:
     if not hasattr(policy, "mounts"):
         return policy
-    mounts_by_path = {str(mount.host_path): mount for mount in policy.mounts}
+    windows_backend = _windows_sandbox_backend_active()
+    mounts_by_path = {
+        str(mount.host_path): mount
+        for mount in policy.mounts
+        if not _windows_optional_mount_is_stale(mount, windows_backend=windows_backend)
+    }
     for mount in _active_sandbox_mounts():
         raw_path = mount.get("path")
         if not isinstance(raw_path, str) or not raw_path.strip():
@@ -1488,6 +1718,8 @@ def _policy_with_active_tool_mounts(policy: SandboxPolicy) -> SandboxPolicy:
         access = str(mount.get("access") or "ro").strip()
         mode = "rw" if access == "rw" else "ro"
         host_path = Path(raw_path).expanduser().resolve(strict=False)
+        if windows_backend and not host_path.exists():
+            continue
         mounts_by_path[str(host_path)] = MountSpec(
             host_path=host_path,
             sandbox_path=host_path,
@@ -1495,6 +1727,10 @@ def _policy_with_active_tool_mounts(policy: SandboxPolicy) -> SandboxPolicy:
             required=False,
         )
     return dataclasses.replace(policy, mounts=tuple(mounts_by_path.values()))
+
+
+def _windows_optional_mount_is_stale(mount: MountSpec, *, windows_backend: bool) -> bool:
+    return windows_backend and not mount.required and not mount.host_path.exists()
 
 
 def _windows_shell_runtime_mount_paths() -> tuple[Path, ...]:
@@ -1691,6 +1927,11 @@ def _sandbox_write_path_access_envelope(
             write=True,
         )
         if decision.status == "allowed":
+            _grant_precise_windows_file_mount_for_allowed_write_target(
+                raw_path,
+                decision,
+                shell_file_targets,
+            )
             continue
         if decision.status == "blocked":
             return _path_access_blocked_envelope(decision)
@@ -1701,6 +1942,40 @@ def _sandbox_write_path_access_envelope(
             continue
         return _path_access_required_envelope(decision, approval_id=approval_id)
     return None
+
+
+def _grant_precise_windows_file_mount_for_allowed_write_target(
+    raw_path: str,
+    decision: MountDecision,
+    shell_file_targets: frozenset[str],
+) -> None:
+    if not trusted_sandbox_active() or not _windows_sandbox_backend_active():
+        return
+    if not _shell_write_target_prefers_file(raw_path, shell_file_targets):
+        return
+    candidate = Path(decision.normalized_path).expanduser().resolve(strict=False)
+    if not candidate.exists() or candidate.is_dir():
+        return
+    candidate_text = str(candidate)
+    for mount in _active_sandbox_mounts():
+        raw_mount_path = mount.get("path")
+        access = str(mount.get("access") or "ro").strip()
+        if (
+            isinstance(raw_mount_path, str)
+            and raw_mount_path.strip()
+            and access == "rw"
+            and str(Path(raw_mount_path).expanduser().resolve(strict=False)) == candidate_text
+        ):
+            return
+    grant_temporary_mount_for_current_tool(
+        MountDecision(
+            status="request",
+            normalized_path=candidate_text,
+            access="rw",
+            reason="windows_existing_file_write_target",
+        ),
+        prefer_file=True,
+    )
 
 
 def _shell_write_access_targets(
@@ -1825,6 +2100,8 @@ def _windows_runtime_readonly_shell_block(
     *,
     stdin: str | None = None,
 ) -> dict[str, object] | None:
+    if full_host_access_active():
+        return None
     roots = _windows_runtime_readonly_roots()
     if not roots:
         return None
@@ -2364,6 +2641,7 @@ async def exec_command(
         backend_policy = _policy_with_active_tool_mounts(backend_policy)
         backend_policy = _policy_with_windows_shell_runtime_mounts(backend_policy, runtime)
         backend_policy = _policy_with_wall_timeout(backend_policy, effective_timeout)
+        backend_policy = _trusted_windows_managed_network_policy(backend_policy, runtime)
         backend_request = SandboxRequest(
             argv=_sandbox_shell_backend_argv(command, runtime, cwd=backend_cwd),
             cwd=backend_cwd,

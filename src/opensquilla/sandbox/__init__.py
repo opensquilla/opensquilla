@@ -33,12 +33,6 @@ from opensquilla.sandbox.integration import (
     run_under_backend,
     sandboxed,
 )
-from opensquilla.sandbox.policy import LevelHints, build_policy, select_level
-from opensquilla.sandbox.stale_output_cache import (
-    StaleOutputCache,
-    get_stale_output_cache,
-    reset_stale_output_cache,
-)
 from opensquilla.sandbox.operation_runtime import (
     ArtifactOperationRequest,
     CustomOperationRequest,
@@ -58,6 +52,12 @@ from opensquilla.sandbox.operation_runtime import (
     prepare_tool_operation_guard,
     record_tool_operation_success,
     run_tool_handler_with_operation_guard,
+)
+from opensquilla.sandbox.policy import LevelHints, build_policy, select_level
+from opensquilla.sandbox.stale_output_cache import (
+    StaleOutputCache,
+    get_stale_output_cache,
+    reset_stale_output_cache,
 )
 from opensquilla.sandbox.types import (
     ALLOW,

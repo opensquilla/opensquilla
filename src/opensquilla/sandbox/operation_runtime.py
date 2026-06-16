@@ -312,6 +312,40 @@ class SandboxToolDescriptor:
             record_payload=record_payload,
         )
 
+    @classmethod
+    def artifact(
+        cls,
+        *,
+        kind: str,
+        request_factory: OperationRequestFactory | None = None,
+        enforce: bool = False,
+        record_payload: bool = False,
+    ) -> SandboxToolDescriptor:
+        return cls(
+            domain="artifact",
+            kind=kind,
+            request_factory=request_factory,
+            enforce=enforce,
+            record_payload=record_payload,
+        )
+
+    @classmethod
+    def media(
+        cls,
+        *,
+        kind: str,
+        request_factory: OperationRequestFactory | None = None,
+        enforce: bool = False,
+        record_payload: bool = False,
+    ) -> SandboxToolDescriptor:
+        return cls(
+            domain="media",
+            kind=kind,
+            request_factory=request_factory,
+            enforce=enforce,
+            record_payload=record_payload,
+        )
+
     def build_operation(
         self,
         *,

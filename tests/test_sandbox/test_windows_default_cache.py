@@ -11,6 +11,8 @@ def test_cache_dirs_cover_common_language_tools(tmp_path: Path) -> None:
     names = {path.relative_to(tmp_path / ".opensquilla-cache").parts[0] for path in dirs}
     assert {
         "temp",
+        "home",
+        "git",
         "pip",
         "uv",
         "npm",
@@ -36,6 +38,11 @@ def test_cache_env_points_to_workspace_cache(tmp_path: Path) -> None:
     root = tmp_path / ".opensquilla-cache"
     assert env["TEMP"] == str(root / "temp")
     assert env["TMP"] == str(root / "temp")
+    assert env["HOME"] == str(root / "home")
+    assert env["USERPROFILE"] == str(root / "home")
+    assert env["XDG_CONFIG_HOME"] == str(root / "home" / ".config")
+    assert env["GIT_CONFIG_GLOBAL"] == str(root / "git" / "config")
+    assert env["GIT_CONFIG_NOSYSTEM"] == "1"
     assert env["PIP_CACHE_DIR"] == str(root / "pip")
     assert env["UV_CACHE_DIR"] == str(root / "uv")
     assert env["npm_config_cache"] == str(root / "npm")

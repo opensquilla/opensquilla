@@ -8,7 +8,9 @@ from pathlib import Path
 
 from opensquilla.sandbox.backend.windows_default_setup import (
     default_setup_marker_path,
+    read_setup_marker,
     setup_marker_is_current,
+    setup_marker_proxy_allowlist_ready,
 )
 
 
@@ -36,7 +38,11 @@ class WindowsDefaultSupport:
         )
 
 
-def probe_windows_default_support(*, home: Path | None = None) -> WindowsDefaultSupport:
+def probe_windows_default_support(
+    *,
+    home: Path | None = None,
+    proxy_ports: tuple[int, ...] = (),
+) -> WindowsDefaultSupport:
     is_windows = sys.platform.startswith("win")
     if not is_windows:
         return WindowsDefaultSupport(
@@ -51,14 +57,23 @@ def probe_windows_default_support(*, home: Path | None = None) -> WindowsDefault
     ctypes_ready = _ctypes_available()
     token_ready = ctypes_ready and _token_api_available()
     acl_ready = ctypes_ready and _acl_api_available()
-    setup_ready = setup_marker_is_current(default_setup_marker_path(home))
+    marker_path = default_setup_marker_path(home)
+    setup_ready = setup_marker_is_current(marker_path)
+    if not proxy_ports:
+        marker = read_setup_marker(marker_path)
+        if marker is not None and marker.network is not None:
+            proxy_ports = marker.network.allowed_proxy_ports
+    network_ready = bool(proxy_ports) and setup_marker_proxy_allowlist_ready(
+        marker_path,
+        ports=tuple(sorted(set(proxy_ports))),
+    )
     return WindowsDefaultSupport(
         is_windows=True,
         ctypes_available=ctypes_ready,
         token_api_available=token_ready,
         acl_api_available=acl_ready,
         setup_ready=setup_ready,
-        proxy_allowlist_enforced=token_ready and acl_ready and setup_ready,
+        proxy_allowlist_enforced=token_ready and acl_ready and setup_ready and network_ready,
     )
 
 

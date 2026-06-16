@@ -88,8 +88,8 @@ def test_chat_run_mode_control_replaces_elevated_bypass_copy() -> None:
     assert "chat-run-mode-option" in source
     assert "chat-run-mode-tooltip" in source
     assert ".chat-run-mode-tooltip" in chat_css
-    assert "sandbox.run_context.get" in source
-    assert "sandbox.run_context.set" in source
+    assert "sandbox.run_context.get" not in source
+    assert "sandbox.run_context.set" not in source
     assert "Standard-Sandbox" in source
     assert "Trusted-Sandbox" in source
     assert "Full Host Access" in source
@@ -125,16 +125,16 @@ def test_chat_run_mode_defaults_full_and_normalizes_standard_explicitly() -> Non
     helper = source[start:end]
 
     assert "const _RUN_MODE_DEFAULT = 'full';" in source
-    assert "Establish sandbox" not in source
-    assert "sandbox.setup.status" not in source
-    assert "sandbox.setup.ensure" not in source
+    assert "Establish sandbox" in source
+    assert "sandbox.setup.status" in source
+    assert "sandbox.setup.ensure" in source
     assert (
         "if (value === 'standard' || value === 'standard-sandbox') return 'standard';"
         in helper
     )
 
 
-def test_chat_session_transitions_reset_run_mode_before_loading_context() -> None:
+def test_chat_session_transitions_do_not_change_current_run_mode() -> None:
     source = _read_chat_js()
 
     start = source.index("function _startNewChatSession(")
@@ -145,28 +145,41 @@ def test_chat_session_transitions_reset_run_mode_before_loading_context() -> Non
     end = source.index("  function _bindSessionChip()", start)
     switch_helper = source[start:end]
 
-    for helper in (new_chat_helper, switch_helper):
-        persist_idx = helper.index("_persistSession(key);")
-        reset_idx = helper.index("_setRunMode(_RUN_MODE_DEFAULT")
-        load_idx = helper.index("_loadRunContext()")
-        assert "_updateSessionChip(key);" in helper
-        assert persist_idx < reset_idx < load_idx
+    assert "_updateSessionChip(key);" in switch_helper
+    assert "_setRunMode(_RUN_MODE_DEFAULT" not in switch_helper
+    assert "_loadRunContext()" not in switch_helper
+    assert "_syncRunMode(" not in switch_helper
+
+    new_persist_idx = new_chat_helper.index("_persistSession(key);")
+    inherit_idx = new_chat_helper.index(
+        "_setRunMode(inheritedRunMode, { toast: false });"
+    )
+    assert "_updateSessionChip(key);" in new_chat_helper
+    assert "const inheritedRunMode = _normalizeRunMode(_runMode);" in new_chat_helper
+    assert "_setRunMode(_RUN_MODE_DEFAULT" not in new_chat_helper
+    assert "_loadRunContext()" not in new_chat_helper
+    assert "_syncRunMode(" not in new_chat_helper
+    assert new_persist_idx < inherit_idx
 
     assert "function _startNewChatSession(source)" in new_chat_helper
     assert "_parkCurrentSessionStreamState(source || 'new_chat')" in new_chat_helper
     assert "newBtn.addEventListener('click', () => _startNewChatSession('new_chat'))" in source
 
 
-def test_chat_run_context_load_failure_ignores_stale_sessions() -> None:
+def test_chat_run_mode_is_client_state_not_gateway_status() -> None:
     source = _read_chat_js()
-    start = source.index("async function _loadRunContext()")
-    end = source.index("  async function _syncRunMode", start)
-    helper = source[start:end]
-    catch_body = helper[helper.index("} catch {") :]
+    render = source[
+        source.index("function render(el)")
+        : source.index("  function _shouldAutofocusComposer", source.index("function render(el)"))
+    ]
 
-    guard_idx = catch_body.index("if (sessionKey !== _sessionKey) return;")
-    fallback_idx = catch_body.index("await _loadRunModeStatusFallback(sessionKey);")
-    assert guard_idx < fallback_idx
+    assert "_loadRunModeStatusFallback" not in source
+    assert "sandbox.status" not in source
+    assert "_loadRunContext" not in source
+    assert "_syncRunMode" not in source
+    assert "sandbox.run_context.get" not in source
+    assert "sandbox.run_context.set" not in source
+    assert "_loadSandboxSetupStatus({ showPrompt: true });" in render
 
 
 def test_chat_does_not_render_persistent_bypass_warning_chip() -> None:

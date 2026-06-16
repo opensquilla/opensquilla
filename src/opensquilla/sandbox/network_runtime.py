@@ -30,6 +30,7 @@ from opensquilla.sandbox.types import SandboxRequest
 
 class NetworkProtocol(StrEnum):
     HTTP = "http"
+    HTTPS = "https"
     HTTPS_CONNECT = "https_connect"
     SOCKS5_TCP = "socks5_tcp"
     SOCKS5_UDP = "socks5_udp"

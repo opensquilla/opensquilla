@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import socket
+import subprocess
 import sys
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -118,6 +122,436 @@ async def test_shell_backend_request_preserves_resolved_run_mode(
 
 
 @pytest.mark.asyncio
+async def test_trusted_windows_shell_receives_managed_proxy_without_network_hint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.types import NetworkMode, SandboxRequest
+    from opensquilla.tools.builtin import shell
+
+    reset_approval_queue()
+    configure_runtime(
+        SandboxSettings(
+            run_mode="trusted",
+            backend="noop",
+            allow_legacy_mode=True,
+            network_default="proxy_allowlist",
+        ),
+        workspace=tmp_path,
+    )
+    runtime = get_runtime()
+    assert runtime is not None
+    runtime.backend = SimpleNamespace(name="windows_default")
+    backend_calls: list[SandboxRequest] = []
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        backend_calls.append(request)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=request.env["HTTP_PROXY"],
+            stderr="",
+            backend_notes=(),
+        )
+
+    monkeypatch.setattr(shell, "run_under_backend", _fake_run_under_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+    async def _fake_preflight_subprocess_managed_network(request, runtime, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        shell,
+        "preflight_subprocess_managed_network",
+        _fake_preflight_subprocess_managed_network,
+    )
+    async def _fake_cleanup() -> None:
+        return None
+
+    async def _fake_prepare_subprocess_managed_network_proxy(request, *, runtime=None):
+        from dataclasses import replace
+
+        proxy_policy = replace(request.policy, network=NetworkMode.PROXY_ALLOWLIST)
+        proxy_request = request.with_policy(proxy_policy)
+        proxy_request.env["HTTP_PROXY"] = "http://127.0.0.1:48123"
+        proxy_request.env["HTTPS_PROXY"] = "http://127.0.0.1:48123"
+        proxy_request.env["NO_PROXY"] = ""
+        return SimpleNamespace(request=proxy_request, cleanup=_fake_cleanup)
+
+    monkeypatch.setattr(
+        shell,
+        "prepare_subprocess_managed_network_proxy",
+        _fake_prepare_subprocess_managed_network_proxy,
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(tmp_path),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.TRUSTED,
+                workspace=str(tmp_path),
+            ),
+        )
+    )
+    try:
+        result = await shell.exec_command(
+            "powershell -NoProfile -Command \"Write-Output $env:HTTP_PROXY\"",
+            workdir=str(tmp_path),
+        )
+    finally:
+        current_tool_context.reset(token)
+        reset_runtime()
+        reset_approval_queue()
+
+    assert result.startswith("exit_code=0")
+    assert backend_calls
+    assert backend_calls[0].policy.network is NetworkMode.PROXY_ALLOWLIST
+    assert backend_calls[0].env["HTTP_PROXY"].startswith("http://127.0.0.1:")
+
+
+@pytest.mark.asyncio
+async def test_trusted_windows_code_exec_receives_managed_proxy_without_network_hint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.types import NetworkMode, NetworkProxySpec
+    from opensquilla.tools.builtin import code_exec, shell
+
+    reset_approval_queue()
+    configure_runtime(
+        SandboxSettings(
+            run_mode="trusted",
+            backend="noop",
+            allow_legacy_mode=True,
+            network_default="proxy_allowlist",
+        ),
+        workspace=tmp_path,
+    )
+    runtime = get_runtime()
+    assert runtime is not None
+    runtime.backend = SimpleNamespace(name="windows_default")
+    seen: dict[str, object] = {}
+    prepare_calls: list[object] = []
+
+    async def _fake_preflight_subprocess_managed_network(request, runtime):
+        return None
+
+    async def _fake_cleanup() -> None:
+        return None
+
+    async def _fake_prepare_subprocess_managed_network_proxy(request, *, runtime=None):
+        from dataclasses import replace
+
+        prepare_calls.append(request)
+        proxy_policy = replace(
+            request.policy,
+            network=NetworkMode.PROXY_ALLOWLIST,
+            network_proxy=NetworkProxySpec(host="127.0.0.1", port=48123),
+        )
+        proxy_request = request.with_policy(proxy_policy)
+        proxy_request.env["HTTP_PROXY"] = "http://127.0.0.1:48123"
+        proxy_request.env["HTTPS_PROXY"] = "http://127.0.0.1:48123"
+        return SimpleNamespace(request=proxy_request, cleanup=_fake_cleanup)
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        seen["policy"] = request.policy
+        seen["env"] = request.env
+        return SimpleNamespace(
+            returncode=0,
+            stdout="ok\n",
+            stderr="",
+            timed_out=False,
+            backend_notes=(),
+        )
+
+    monkeypatch.setattr(code_exec, "_resolve_python_bin", lambda *, sandbox_enabled: sys.executable)
+    monkeypatch.setattr(shell, "_host_execution_allowed", lambda: False)
+    monkeypatch.setattr(
+        code_exec,
+        "preflight_subprocess_managed_network",
+        _fake_preflight_subprocess_managed_network,
+    )
+    monkeypatch.setattr(
+        code_exec,
+        "prepare_subprocess_managed_network_proxy",
+        _fake_prepare_subprocess_managed_network_proxy,
+    )
+    monkeypatch.setattr(code_exec, "run_under_backend", _fake_run_under_backend)
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(tmp_path),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.TRUSTED,
+                workspace=str(tmp_path),
+            ),
+        )
+    )
+    try:
+        result = json.loads(await code_exec.execute_code("print('no network token here')"))
+    finally:
+        current_tool_context.reset(token)
+        reset_runtime()
+        reset_approval_queue()
+
+    assert result["exit_code"] == 0, result
+    assert prepare_calls
+    assert prepare_calls[0].policy.network is NetworkMode.PROXY_ALLOWLIST
+    assert seen["policy"].network is NetworkMode.PROXY_ALLOWLIST
+    env = seen["env"]
+    assert isinstance(env, dict)
+    assert env["HTTP_PROXY"] == "http://127.0.0.1:48123"
+
+
+def test_trusted_windows_tools_collapse_host_network_to_managed_proxy(
+    tmp_path: Path,
+) -> None:
+    from opensquilla.sandbox.types import (
+        NetworkMode,
+        ResourceLimits,
+        SandboxPolicy,
+        SecurityLevel,
+    )
+    from opensquilla.tools.builtin import code_exec, shell
+
+    policy = SandboxPolicy(
+        level=SecurityLevel.STANDARD,
+        network=NetworkMode.HOST,
+        mounts=(),
+        workspace_rw=True,
+        tmp_writable=True,
+        limits=ResourceLimits(),
+        env_allowlist=("PATH",),
+        require_approval=False,
+    )
+    runtime = SimpleNamespace(
+        backend=SimpleNamespace(name="windows_default"),
+        settings=SimpleNamespace(network_default="proxy_allowlist"),
+    )
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(tmp_path),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(run_mode=RunMode.TRUSTED),
+        )
+    )
+    try:
+        shell_policy = shell._trusted_windows_managed_network_policy(policy, runtime)
+        code_policy = code_exec._trusted_windows_managed_network_policy(policy, runtime)
+    finally:
+        current_tool_context.reset(token)
+
+    assert shell_policy.network is NetworkMode.PROXY_ALLOWLIST
+    assert code_policy.network is NetworkMode.PROXY_ALLOWLIST
+
+
+def test_windows_direct_powershell_argv_injects_proxy_defaults() -> None:
+    from opensquilla.tools.builtin import shell
+
+    argv = shell._windows_direct_powershell_argv(
+        "Invoke-WebRequest -UseBasicParsing https://example.com"
+    )
+    command = argv[-1]
+
+    assert "$PSDefaultParameterValues['Invoke-WebRequest:Proxy']" in command
+    assert "$PSDefaultParameterValues['Invoke-RestMethod:Proxy']" in command
+    assert "[System.Net.WebRequest]::DefaultWebProxy" in command
+    assert "Invoke-WebRequest -UseBasicParsing https://example.com" in command
+    assert "System.Net.Sockets.TcpClient" not in command
+    assert "Invoke-OpenSquillaProxyNetworkFallback" not in command
+
+
+def test_windows_shell_host_handles_invoke_webrequest_status_via_managed_proxy(
+    tmp_path: Path,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    with _SingleResponseHttpProxy(
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nexample"
+    ) as proxy_port:
+        env = {
+            **os.environ,
+            "HTTP_PROXY": f"http://127.0.0.1:{proxy_port}",
+            "HTTPS_PROXY": f"http://127.0.0.1:{proxy_port}",
+            "NO_PROXY": "",
+        }
+        result = subprocess.run(
+            (
+                sys.executable,
+                "-c",
+                shell._WINDOWS_SANDBOX_SHELL_HOST_CODE,
+                "powershell.exe",
+                (
+                    "Invoke-WebRequest -UseBasicParsing http://example.test "
+                    "| Select-Object -ExpandProperty StatusCode"
+                ),
+                str(tmp_path),
+                str(tmp_path),
+            ),
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "200"
+
+
+def test_windows_shell_host_handles_curl_head_via_managed_proxy(
+    tmp_path: Path,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    with _SingleResponseHttpProxy(
+        b"HTTP/1.1 204 No Content\r\nX-Test: yes\r\n\r\n"
+    ) as proxy_port:
+        env = {
+            **os.environ,
+            "HTTP_PROXY": f"http://127.0.0.1:{proxy_port}",
+            "HTTPS_PROXY": f"http://127.0.0.1:{proxy_port}",
+            "NO_PROXY": "",
+        }
+        result = subprocess.run(
+            (
+                sys.executable,
+                "-c",
+                shell._WINDOWS_SANDBOX_SHELL_HOST_CODE,
+                "powershell.exe",
+                "curl.exe -I http://example.test",
+                str(tmp_path),
+                str(tmp_path),
+            ),
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    assert result.returncode == 0, result.stderr
+    assert "HTTP/1.1 204 No Content" in result.stdout
+    assert "X-Test: yes" in result.stdout
+
+
+def test_windows_shell_host_handles_remove_item_then_test_path_without_powershell(
+    tmp_path: Path,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    target = tmp_path / "delete-me.txt"
+    target.write_text("x", encoding="utf-8")
+
+    result = subprocess.run(
+        (
+            sys.executable,
+            "-c",
+            shell._WINDOWS_SANDBOX_SHELL_HOST_CODE,
+            "missing-powershell.exe",
+            f"Remove-Item '{target}' -Force; Test-Path '{target}'",
+            str(tmp_path),
+            str(tmp_path),
+        ),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "False"
+    assert not target.exists()
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("win") or shutil.which("powershell.exe") is None,
+    reason="requires native Windows PowerShell",
+)
+def test_windows_shell_host_leaves_output_expressions_to_powershell(
+    tmp_path: Path,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    result = subprocess.run(
+        (
+            sys.executable,
+            "-c",
+            shell._WINDOWS_SANDBOX_SHELL_HOST_CODE,
+            "powershell.exe",
+            "Write-Output ('HTTP_PROXY=' + $env:HTTP_PROXY)",
+            str(tmp_path),
+            str(tmp_path),
+        ),
+        env={**os.environ, "HTTP_PROXY": "http://127.0.0.1:48123"},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "HTTP_PROXY=http://127.0.0.1:48123"
+
+
+class _SingleResponseHttpProxy:
+    def __init__(self, response: bytes) -> None:
+        self._response = response
+        self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._socket.bind(("127.0.0.1", 0))
+        self._socket.listen(1)
+        self._socket.settimeout(5)
+        self.port = int(self._socket.getsockname()[1])
+        self._thread = threading.Thread(target=self._serve_once, daemon=True)
+
+    def __enter__(self) -> int:
+        self._thread.start()
+        return self.port
+
+    def __exit__(self, *args: object) -> None:
+        self._thread.join(timeout=5)
+        self._socket.close()
+
+    def _serve_once(self) -> None:
+        try:
+            conn, _addr = self._socket.accept()
+        except OSError:
+            return
+        with conn:
+            conn.settimeout(5)
+            data = b""
+            while b"\r\n\r\n" not in data:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+            conn.sendall(self._response)
+
+
+def test_windows_direct_powershell_argv_does_not_install_socket_fallbacks() -> None:
+    from opensquilla.tools.builtin import shell
+
+    argv = shell._windows_direct_powershell_argv(
+        "curl.exe -I https://example.com"
+    )
+    command = argv[-1]
+
+    assert "function Invoke-WebRequest" not in command
+    assert "function curl.exe" not in command
+    assert "Invoke-OpenSquillaProxyNetworkFallback" not in command
+    assert "System.Net.Sockets.TcpClient" not in command
+
+
+@pytest.mark.asyncio
 async def test_code_exec_backend_request_preserves_resolved_run_mode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -204,6 +638,47 @@ async def test_shell_network_command_passes_network_hint(monkeypatch: pytest.Mon
     )
 
     result = await shell.exec_command("curl https://example.com")
+
+    assert "ok" in result
+    assert len(calls) == 1
+    hints = calls[0]["hints"]
+    assert hints.needs_network is True
+    assert hints.high_impact is False
+
+
+@pytest.mark.asyncio
+async def test_powershell_invoke_webrequest_passes_network_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    calls: list[dict[str, object]] = []
+
+    class _Runtime:
+        effective = SimpleNamespace(sandbox_enabled=True)
+
+    async def _fake_gate_action(**kwargs):
+        calls.append(kwargs)
+        policy = SimpleNamespace()
+        request = SimpleNamespace(cwd="/tmp", action_kind="shell.exec", policy=policy)
+        return object(), policy, request
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        return SimpleNamespace(returncode=0, stdout="ok\n", stderr="", backend_notes=())
+
+    monkeypatch.setattr(shell, "get_runtime", lambda: _Runtime())
+    monkeypatch.setattr(shell, "gate_action", _fake_gate_action)
+    monkeypatch.setattr(shell, "run_under_backend", _fake_run_under_backend)
+    monkeypatch.setattr(shell, "_host_execution_allowed", lambda: False)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    result = await shell.exec_command(
+        'powershell -NoProfile -Command "Invoke-WebRequest -UseBasicParsing https://example.com"'
+    )
 
     assert "ok" in result
     assert len(calls) == 1
@@ -516,6 +991,96 @@ async def test_windows_unready_proxy_allowlist_blocks_network_workarounds(
     assert "Do not retry with web_fetch" in result.message
     assert "Do not retry with offline wheel downloads" in result.message
     assert "Do not retry with host Python" in result.message
+
+
+@pytest.mark.asyncio
+async def test_windows_proxy_allowlist_preflight_does_not_repair_during_command(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.sandbox import integration as integration_mod
+    from opensquilla.sandbox.types import (
+        NetworkMode,
+        ResourceLimits,
+        SandboxPolicy,
+        SandboxRequest,
+        SecurityLevel,
+    )
+
+    class _Ledger:
+        def __init__(self) -> None:
+            self.denials: list[tuple[object, ...]] = []
+
+        async def record_denial(self, *args: object, **kwargs: object) -> None:
+            self.denials.append(args)
+
+    policy = SandboxPolicy(
+        level=SecurityLevel.STANDARD,
+        network=NetworkMode.PROXY_ALLOWLIST,
+        mounts=(),
+        workspace_rw=True,
+        tmp_writable=True,
+        limits=ResourceLimits(wall_timeout_s=30),
+        env_allowlist=("PATH",),
+        require_approval=False,
+    )
+    request = SandboxRequest(
+        argv=("powershell", "-Command", "curl -I https://example.com"),
+        cwd=tmp_path,
+        action_kind="shell.exec",
+        policy=policy,
+        env={"PATH": r"C:\Windows\System32"},
+    )
+    runtime = SimpleNamespace(
+        backend=SimpleNamespace(name="windows_default"),
+        workspace=tmp_path,
+        settings=SandboxSettings(run_mode="trusted", backend="windows_default"),
+        ledger=_Ledger(),
+    )
+    ledger = _Ledger()
+    runtime.ledger = ledger
+
+    monkeypatch.setattr(
+        integration_mod,
+        "_windows_proxy_allowlist_enforced",
+        lambda runtime: False,
+    )
+
+    async def _fake_ensure_windows_proxy_allowlist_setup(runtime):
+        pytest.fail("command preflight must not repair Windows setup or trigger elevation")
+
+    monkeypatch.setattr(
+        integration_mod,
+        "_ensure_windows_proxy_allowlist_setup",
+        _fake_ensure_windows_proxy_allowlist_setup,
+        raising=False,
+    )
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(tmp_path),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.TRUSTED,
+                workspace=str(tmp_path),
+            ),
+        )
+    )
+    try:
+        result = await integration_mod.preflight_subprocess_managed_network(
+            request,
+            runtime,
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert result is not None
+    assert not isinstance(result, dict)
+    assert result.retryable is False
+    assert "Windows sandbox managed network is unavailable" in result.message
+    assert ledger.denials
 
 
 @pytest.mark.asyncio
@@ -2136,7 +2701,8 @@ async def test_background_shell_network_spawn_receives_managed_proxy(
     assert isinstance(env, dict)
     assert env["HTTP_PROXY"].startswith("http://127.0.0.1:")
     assert env["HTTPS_PROXY"] == env["HTTP_PROXY"]
-    assert env["NO_PROXY"] == ""
+    assert "127.0.0.1" in env["NO_PROXY"]
+    assert env["PIP_PROXY"] == env["HTTP_PROXY"]
 
 
 @pytest.mark.asyncio
@@ -2222,7 +2788,100 @@ async def test_code_network_subprocess_receives_managed_proxy_env(
     assert isinstance(env, dict)
     assert env["HTTP_PROXY"].startswith("http://127.0.0.1:")
     assert env["HTTPS_PROXY"] == env["HTTP_PROXY"]
+    assert "127.0.0.1" in env["NO_PROXY"]
+    assert env["npm_config_https_proxy"] == env["HTTP_PROXY"]
+
+
+@pytest.mark.asyncio
+async def test_code_exec_prepares_managed_proxy_before_backend_run(
+    managed_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import dataclasses
+
+    from opensquilla.sandbox.types import NetworkProxySpec
+    from opensquilla.tools.builtin import code_exec, shell
+
+    class _Managed:
+        def __init__(self, request) -> None:
+            self.request = request
+            self.cleaned = False
+
+        async def cleanup(self) -> None:
+            self.cleaned = True
+
+    monkeypatch.setattr(code_exec, "_resolve_python_bin", lambda *, sandbox_enabled: sys.executable)
+    monkeypatch.setattr(shell, "_host_execution_allowed", lambda: False)
+    seen: dict[str, object] = {}
+    managed_objects: list[_Managed] = []
+
+    async def _fake_preflight(request, runtime):
+        return None
+
+    async def _fake_prepare(request, *, runtime=None):
+        policy = dataclasses.replace(
+            request.policy,
+            network_proxy=NetworkProxySpec(host="127.0.0.1", port=48123),
+        )
+        managed = _Managed(
+            request.with_policy(policy).with_policy(policy)
+        )
+        managed.request.env["HTTP_PROXY"] = "http://127.0.0.1:48123"
+        managed.request.env["HTTPS_PROXY"] = "http://127.0.0.1:48123"
+        managed.request.env["NO_PROXY"] = ""
+        managed_objects.append(managed)
+        return managed
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        seen["env"] = request.env
+        seen["policy"] = request.policy
+        return SimpleNamespace(
+            returncode=0,
+            stdout="ok\n",
+            stderr="",
+            timed_out=False,
+            backend_notes=(),
+        )
+
+    monkeypatch.setattr(code_exec, "preflight_subprocess_managed_network", _fake_preflight)
+    monkeypatch.setattr(
+        code_exec,
+        "prepare_subprocess_managed_network_proxy",
+        _fake_prepare,
+        raising=False,
+    )
+    monkeypatch.setattr(code_exec, "run_under_backend", _fake_run_under_backend)
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.TRUSTED,
+                domains=(DomainGrant(domain="example.com"),),
+            ),
+        )
+    )
+    try:
+        result = json.loads(
+            await code_exec.execute_code(
+                "import urllib.request\nurllib.request.urlopen('https://example.com')"
+            )
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert result["exit_code"] == 0, result
+    env = seen["env"]
+    assert isinstance(env, dict)
+    assert env["HTTP_PROXY"] == "http://127.0.0.1:48123"
+    assert env["HTTPS_PROXY"] == env["HTTP_PROXY"]
     assert env["NO_PROXY"] == ""
+    assert managed_objects
+    assert managed_objects[0].cleaned
 
 
 @pytest.mark.asyncio
@@ -2379,5 +3038,5 @@ async def test_code_unknown_explicit_url_runs_with_managed_proxy(
     assert request.policy.network_proxy is not None
     assert request.env["HTTP_PROXY"] == "http://127.0.0.1:48123"
     assert request.env["HTTPS_PROXY"] == "http://127.0.0.1:48123"
-    assert request.env["NO_PROXY"] == ""
+    assert "127.0.0.1" in request.env["NO_PROXY"]
     assert get_approval_queue().list_pending("exec") == []

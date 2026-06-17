@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createComposer } from "./composer.mjs";
+import { textWidth } from "./primitives.mjs";
 
 // Minimal fake renderable that records its children by id, mirroring the
 // add/remove/getChildren contract the composer relies on. Nodes carry the
@@ -27,9 +28,10 @@ class FakeNode {
   }
 }
 
-function makeHarness() {
+function makeHarness({ terminalWidth = 100 } = {}) {
   const keypressHandlers = [];
   const renderer = {
+    terminalWidth,
     keyInput: {
       on(event, handler) {
         if (event === "keypress") keypressHandlers.push(handler);
@@ -123,4 +125,45 @@ test("re-rendering the active menu does not stack duplicate nodes", () => {
     .getChildren()
     .filter((child) => child.id === "completion-menu");
   assert.equal(menus.length, 1, "exactly one menu node should exist after several re-renders");
+});
+
+test("completion menu clips long rows to the menu body width", () => {
+  const { composer, press, overlayLayer } = makeHarness({ terminalWidth: 72 });
+  composer.setCompletionContext({
+    catalog: [
+      {
+        label: "/cost",
+        description: "Show current REPL session usage.",
+        insert_text: "/cost ",
+      },
+      {
+        label: "/compact",
+        description: "Compact older context in the current session.",
+        insert_text: "/compact ",
+      },
+      {
+        label: "Cost",
+        description: "Show current session usage and cost.",
+        insert_text: "/cost",
+      },
+      {
+        label: "/html-coder",
+        description: "Expert HTML development skill for building web pages and forms.",
+        insert_text: "use the html-coder skill: ",
+      },
+    ],
+  });
+
+  press({ name: "/", sequence: "/" });
+  press({ name: "c", sequence: "c" });
+  press({ name: "o", sequence: "o" });
+
+  const menu = findDeep(overlayLayer, "completion-menu");
+  const rowContents = menu.getChildren().map((child) => child.options.content);
+
+  assert.ok(rowContents.some((content) => content.includes("/compact")));
+  assert.ok(
+    rowContents.every((content) => textWidth(content) <= 33),
+    "row content must fit the 72-column menu body",
+  );
 });

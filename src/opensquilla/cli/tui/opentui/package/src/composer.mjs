@@ -1,5 +1,10 @@
 import { THEME, STATUS_PULSE_FRAMES } from "./theme.mjs";
-import { cellWidth } from "./primitives.mjs";
+import { cellWidth, clipToCells } from "./primitives.mjs";
+
+const COMPLETION_MENU_LEFT = 1;
+const COMPLETION_MENU_RIGHT = 34;
+const COMPLETION_MENU_CHROME_CELLS = 4; // left/right border plus left/right padding
+const MIN_COMPLETION_ROW_CELLS = 16;
 
 // Last path segment of a model id ("vendor/big-model" -> "big-model").
 export function shortModel(m) {
@@ -384,11 +389,20 @@ export function createComposer(deps) {
       const marker = index === selected ? "› " : "  ";
       const label = String(item.label ?? "");
       const description = String(item.description ?? "");
+      const content = `${marker}${label}${description ? `  ${description}` : ""}`;
       return {
-        content: `${marker}${label}${description ? `  ${description}` : ""}`,
+        content: clipToCells(content, completionMenuRowCells()),
         fg: index === selected ? THEME.toolAccent : THEME.text,
       };
     });
+  }
+
+  function completionMenuRowCells() {
+    const terminalWidth = Number(renderer?.terminalWidth) || 100;
+    return Math.max(
+      MIN_COMPLETION_ROW_CELLS,
+      terminalWidth - COMPLETION_MENU_LEFT - COMPLETION_MENU_RIGHT - COMPLETION_MENU_CHROME_CELLS,
+    );
   }
 
   // Remove any previously mounted completion menu from the overlay layer so a
@@ -414,8 +428,8 @@ export function createComposer(deps) {
     const menuNode = new BoxRenderable(renderer, {
       id: "completion-menu",
       position: "absolute",
-      left: 1,
-      right: 34,
+      left: COMPLETION_MENU_LEFT,
+      right: COMPLETION_MENU_RIGHT,
       bottom: footerHeight,
       height: Math.min(8, rows.length + 2),
       borderStyle: "rounded",

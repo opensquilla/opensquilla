@@ -398,6 +398,17 @@ _COMMANDS: tuple[CommandDef, ...] = (
         execution={_C: _rpc("doctor.memory.status", _empty)},
     ),
     CommandDef(
+        name="/meta",
+        usage="/meta [skill-name]",
+        description="List meta-skills, or run one with /meta <skill-name>.",
+        execution={
+            _W: _local("meta.menu"),
+            _T: _local("meta.menu"),
+            _S: _local("meta.menu"),
+            _C: _rpc("meta.list", _empty),
+        },
+    ),
+    CommandDef(
         name="/skills",
         usage="/skills",
         description="List loaded skills.",

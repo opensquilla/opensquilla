@@ -142,12 +142,15 @@ test.describe('Sidebar', () => {
     await expect(page).toHaveURL(/\/chat\/new\?agent=[a-z0-9_-]+$/i)
   })
 
-  test('footer pins Settings with the connection state', async ({ page }) => {
+  test('footer pins Settings; connection state shows in the topbar', async ({ page }) => {
     await openControl(page)
 
     const foot = page.locator('.sidebar-foot')
     await expect(foot.getByText('Settings', { exact: true })).toBeVisible()
-    const conn = (await foot.locator('.sidebar-conn').innerText()).toLowerCase()
+    // Connection state is shown once, in the global topbar pill — not duplicated
+    // in the sidebar footer.
+    await expect(foot.locator('.sidebar-conn')).toHaveCount(0)
+    const conn = (await page.locator('.topbar .conn-pill').innerText()).toLowerCase()
     expect(conn).toMatch(/connected|connecting/)
   })
 

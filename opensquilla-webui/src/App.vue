@@ -114,9 +114,6 @@
       >
         <Icon name="settings" :size="16" />
         <span class="sidebar-fn-label">Settings</span>
-        <span class="sidebar-conn" :class="rpcStore.state">
-          <span class="sidebar-conn-dot" aria-hidden="true"></span>{{ rpcStore.state }}
-        </span>
       </button>
     </div>
   </nav>

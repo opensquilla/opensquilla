@@ -50,8 +50,10 @@
   flex-shrink: 0;
   /* The fixed topbar's right cluster (connection pill, theme) floats over
      this band at every width and intercepts pointer events; reserve its full
-     width so the header action buttons stay clickable. */
-  margin-right: 168px;
+     width so the header action buttons stay clickable and never sit under the
+     pill — sized for the pill's widest state (DISCONNECTED) plus the theme
+     button and inset, matching the narrow-screen reservation below. */
+  margin-right: 204px;
 }
 
 .chat-share-banner {

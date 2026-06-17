@@ -41,6 +41,7 @@ GATEWAY_SLASH_HANDLER_WORDS = frozenset(
         "/forget",
         "/help",
         "/image",
+        "/meta",
         "/model",
         "/models",
         "/new",
@@ -59,6 +60,8 @@ GATEWAY_SLASH_HANDLER_WORDS = frozenset(
 
 
 class GatewayClientLike(Protocol):
+    async def call(self, method: str, params: dict | None = None) -> Any: ...
+
     async def create_session(
         self,
         agent_id: str = "main",
@@ -327,6 +330,32 @@ async def handle_gateway_slash_command(
         state.usage.apply(result.usage)
         return True
 
+    if parts := _slash_parts(cmd, "/meta"):
+        name = parts[1].strip() if len(parts) > 1 else ""
+        if not name:
+            payload = await client.call("meta.list", {})
+            _print_meta_skills_table(payload)
+            return True
+        run_result = await client.call("meta.run", {"name": name, "sessionKey": state.session_key})
+        if not (isinstance(run_result, dict) and run_result.get("ok")):
+            error = ""
+            if isinstance(run_result, dict):
+                error = str(run_result.get("error") or "")
+            console.print(error_panel(error or f"Could not run meta-skill {name!r}."))
+            return True
+        prompt = f"/meta {name}"
+        result = await stream(
+            client,
+            state.session_key,
+            prompt,
+            elevated_state,
+            tui_output=tui_output,
+        )
+        state.transcript.add("user", prompt)
+        state.transcript.add("assistant", result.text)
+        state.usage.apply(result.usage)
+        return True
+
     if parts := _slash_parts(cmd, "/path"):
         if len(parts) == 1 or not parts[1].strip():
             console.print("[red]Usage: /path <path> [prompt][/red]")
@@ -468,6 +497,30 @@ def _print_sessions_table(rows: list[dict[str, Any]]) -> None:
             str(row.get("status") or ""),
             str(row.get("model") or ""),
             str(row.get("message_count") or row.get("entry_count") or 0),
+        )
+    console.print(table)
+
+
+def _print_meta_skills_table(payload: Any) -> None:
+    if not isinstance(payload, dict) or payload.get("disabled"):
+        console.print("[dim]meta-skills are disabled.[/dim]")
+        return
+    skills = payload.get("skills")
+    rows = (
+        [skill for skill in skills if isinstance(skill, dict)]
+        if isinstance(skills, list)
+        else []
+    )
+    if not rows:
+        console.print("[dim]No meta-skills available.[/dim]")
+        return
+    table = Table(title="Meta-skills", show_header=True, header_style=ACCENT_HEADER)
+    table.add_column("Name")
+    table.add_column("Description")
+    for row in rows:
+        table.add_row(
+            str(row.get("name") or ""),
+            str(row.get("description") or ""),
         )
     console.print(table)
 

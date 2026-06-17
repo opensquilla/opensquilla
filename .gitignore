@@ -24,13 +24,6 @@ data/
 .opensquilla/
 benchmarks/
 specs/
-!docs/superpowers/specs/
-docs/superpowers/specs/*
-!docs/superpowers/specs/2026-05-28-tui-frontend-architecture-design.md
-!docs/superpowers/specs/2026-05-28-tui-real-terminal-harness-design.md
-!docs/superpowers/specs/2026-05-29-live-textual-tui-design.md
-!docs/superpowers/specs/2026-05-30-opentui-tui-protocol-refactor-and-visual-hierarchy-design.md
-!docs/superpowers/specs/2026-05-31-opentui-fullscreen-conversation-design.md
 # Local agent/editor instructions and runtime state.
 AGENTS.md
 !docs/agents.md

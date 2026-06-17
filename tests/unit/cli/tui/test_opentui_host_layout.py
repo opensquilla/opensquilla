@@ -26,6 +26,7 @@ def _node_json(script: str) -> object:
         check=True,
         cwd=Path(__file__).resolve().parents[4],
         text=True,
+        encoding="utf-8",
         capture_output=True,
     )
     return json.loads(result.stdout)

@@ -267,6 +267,15 @@ def _int_field(payload: Mapping[str, Any], key: str, default: int) -> int:
     return default
 
 
+def _optional_int_field(payload: Mapping[str, Any], key: str) -> int | None:
+    value = payload.get(key)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
+
+
 def _float_list_field(payload: Mapping[str, Any], key: str) -> list[float]:
     value = payload.get(key)
     if not isinstance(value, list):
@@ -304,6 +313,7 @@ def normalize_router_decision_payload(payload: Mapping[str, Any]) -> dict[str, A
         "prompt_policy": _string_field(payload, "prompt_policy"),
         "routing_applied": _bool_field(payload, "routing_applied", True),
         "rollout_phase": _string_field(payload, "rollout_phase", "full"),
+        "context_window": _optional_int_field(payload, "context_window"),
     }
 
 
@@ -376,10 +386,8 @@ async def _finish_text_delta_stream(
 
 async def _flush_streaming_reasoning(
     renderer: Any,
-    plane: StreamingPlane,
     text: str,
 ) -> None:
-    del plane
     append = getattr(renderer, "aappend_reasoning", None)
     if append is not None:
         await append(text)
@@ -395,11 +403,11 @@ async def _append_reasoning_delta(
     turn_id: str | None,
 ) -> None:
     if plane is None:
-        await _flush_streaming_reasoning(renderer, plane, delta)
+        await _flush_streaming_reasoning(renderer, delta)
         return
     flush = plane.append(delta)
     if flush is not None:
-        await _flush_streaming_reasoning(renderer, plane, flush.text)
+        await _flush_streaming_reasoning(renderer, flush.text)
 
 
 async def _finish_reasoning_stream(
@@ -414,7 +422,7 @@ async def _finish_reasoning_stream(
         return
     flush = plane.finish()
     if flush is not None:
-        await _flush_streaming_reasoning(renderer, plane, flush.text)
+        await _flush_streaming_reasoning(renderer, flush.text)
 
 
 def _async_renderer_method(method: object) -> Callable[..., Awaitable[None]]:

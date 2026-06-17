@@ -202,6 +202,7 @@ class RouterDecisionEvent:
     prompt_policy: str = ""
     routing_applied: bool = True
     rollout_phase: str = "full"
+    context_window: int | None = None
 
 
 @dataclass

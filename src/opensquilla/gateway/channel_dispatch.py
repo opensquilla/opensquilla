@@ -1557,6 +1557,7 @@ def _router_decision_payload(event: RouterDecisionEvent) -> dict[str, Any]:
         "prompt_policy": event.prompt_policy,
         "routing_applied": event.routing_applied,
         "rollout_phase": event.rollout_phase,
+        "context_window": event.context_window,
     }
 
 

@@ -121,13 +121,23 @@ def probe_terminal_capabilities() -> TerminalCapabilities:
     else:
         preferred_driver = "none"
 
+    if preferred_driver != "none":
+        skip_reason: str | None = None
+    elif sys.platform == "win32":
+        skip_reason = (
+            "real-terminal harness needs tmux or a Unix PTY, which native Windows "
+            "lacks; run under WSL2 (see docs/tui-real-terminal-harness.md)"
+        )
+    else:
+        skip_reason = "tmux and PTY are unavailable"
+
     return TerminalCapabilities(
         tmux_available=tmux_available,
         pty_available=pty_available,
         screenshot_available=False,
         resize_available=tmux_available or pty_available,
         preferred_driver=preferred_driver,
-        skip_reason=None if preferred_driver != "none" else "tmux and PTY are unavailable",
+        skip_reason=skip_reason,
     )
 
 

@@ -67,9 +67,9 @@
           <svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
             <defs>
               <radialGradient id="cg2" cx="50%" cy="50%" r="50%">
-                <stop offset="0%" stop-color="rgba(240,160,48,0.18)" />
-                <stop offset="60%" stop-color="rgba(240,160,48,0.04)" />
-                <stop offset="100%" stop-color="rgba(240,160,48,0)" />
+                <stop offset="0%" stop-color="color-mix(in srgb, var(--accent) 18%, transparent)" />
+                <stop offset="60%" stop-color="color-mix(in srgb, var(--accent) 4%, transparent)" />
+                <stop offset="100%" stop-color="transparent" />
               </radialGradient>
             </defs>
             <circle cx="60" cy="60" r="58" fill="url(#cg2)" />

@@ -798,7 +798,7 @@ function rpcErrorCode(err: unknown): string {
 /* Drawer */
 .drawer-overlay {
   align-items: flex-end;
-  background: rgba(0, 0, 0, 0.4);
+  background: var(--scrim);
   bottom: 0;
   display: flex;
   justify-content: flex-end;
@@ -942,7 +942,7 @@ function rpcErrorCode(err: unknown): string {
 /* Modal */
 .modal-overlay {
   align-items: center;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--scrim);
   bottom: 0;
   display: flex;
   justify-content: center;

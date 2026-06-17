@@ -216,6 +216,19 @@ input[type="radio"], input[type="checkbox"] {
 }
 input::placeholder, textarea::placeholder { color: var(--text-dim); }
 
+/* Keyboard focus ring for buttons and nav, mirroring the input focus treatment. */
+.btn:focus-visible,
+.btn--ghost:focus-visible,
+.btn--icon:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.sidebar-fn-item:focus-visible,
+.nav-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 code, pre {
   font-family: var(--font-mono);
   font-size: var(--fs-sm);

@@ -697,7 +697,7 @@ async function uninstallSkillAndClose(name: string) {
   margin: 0;
 }
 .sk-dialog::backdrop {
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--scrim);
 }
 .sk-detail {
   display: flex;

@@ -22,7 +22,7 @@
         :data-tiers="cell.tiers?.join(',')"
         :class="{ win: cellIndex === message.winnerIdx }"
       >
-        <span class="nm" :title="cell.displayName">
+        <span class="nm" :title="cell.displayName" :aria-label="cell.displayName">
           <span class="nm-base">{{ cell.displayName }}</span>
           <span class="nm-win" aria-hidden="true">{{ cell.displayName }}</span>
         </span>

@@ -4,7 +4,7 @@
     <header class="ov-stage__header control-stage__header">
       <div class="ov-stage__title-block control-stage__title-block">
         <h2 class="ov-stage__title control-stage__title">OpenSquilla</h2>
-        <p class="ov-stage__subtitle control-stage__subtitle">Live status, recent sessions, and the live event stream.</p>
+        <p class="ov-stage__subtitle control-stage__subtitle">Live status, recent sessions, and the event stream.</p>
       </div>
       <div class="ov-stage__actions control-stage__actions">
         <button class="btn btn--ghost" title="Refresh" @click="refresh">

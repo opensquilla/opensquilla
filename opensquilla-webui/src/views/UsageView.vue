@@ -165,7 +165,7 @@ const {
 }
 .usage-currency__btn.is-active {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-foreground);
 }
 
 /* Chart */
@@ -204,7 +204,7 @@ const {
 }
 .usage-seg.is-active {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-foreground);
 }
 .usage-range {
   display: inline-flex;

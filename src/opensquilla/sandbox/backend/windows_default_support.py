@@ -1,5 +1,7 @@
 """Readiness probe for the Windows default sandbox."""
 
+# mypy: disable-error-code=attr-defined
+
 from __future__ import annotations
 
 import sys

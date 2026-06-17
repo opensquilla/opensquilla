@@ -511,15 +511,15 @@ def test_shell_allows_explicit_project_venv_ensurepip(monkeypatch, tmp_path) -> 
 def test_shell_blocks_windows_runtime_python_environment_bootstrap(monkeypatch) -> None:
     from opensquilla.tools.builtin import shell
 
-    runtime_root = Path(r"D:\opensquilla\.venv")
+    runtime_root = Path(r"X:\workspace\.venv")
 
     monkeypatch.setattr(shell, "_runtime_readonly_roots", lambda runtime=None: (runtime_root,))
     monkeypatch.setattr(shell, "full_host_access_active", lambda: False)
 
     payload = shell._runtime_readonly_shell_block(
         "exec_command",
-        r"D:\opensquilla\.venv\Scripts\python.exe -m ensurepip --upgrade",
-        r"D:\opensquilla",
+        r"X:\workspace\.venv\Scripts\python.exe -m ensurepip --upgrade",
+        r"X:\workspace",
         runtime=SimpleNamespace(backend=SimpleNamespace(name="windows_default")),
     )
 
@@ -532,15 +532,15 @@ def test_shell_blocks_windows_runtime_python_environment_bootstrap(monkeypatch) 
 def test_shell_allows_windows_project_venv_ensurepip(monkeypatch) -> None:
     from opensquilla.tools.builtin import shell
 
-    runtime_root = Path(r"D:\opensquilla\.venv")
+    runtime_root = Path(r"X:\workspace\.venv")
 
     monkeypatch.setattr(shell, "_runtime_readonly_roots", lambda runtime=None: (runtime_root,))
     monkeypatch.setattr(shell, "full_host_access_active", lambda: False)
 
     payload = shell._runtime_readonly_shell_block(
         "exec_command",
-        r"D:\opensquilla\.tmp\proj\.venv\Scripts\python.exe -m ensurepip --upgrade",
-        r"D:\opensquilla",
+        r"X:\workspace\.tmp\proj\.venv\Scripts\python.exe -m ensurepip --upgrade",
+        r"X:\workspace",
         runtime=SimpleNamespace(backend=SimpleNamespace(name="windows_default")),
     )
 

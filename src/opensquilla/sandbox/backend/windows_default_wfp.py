@@ -6,6 +6,8 @@ that should never be left to proxy environment variables: ICMP, DNS, SMB, and
 loopback traffic outside the managed proxy port.
 """
 
+# mypy: disable-error-code=attr-defined
+
 from __future__ import annotations
 
 import ctypes

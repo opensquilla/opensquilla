@@ -8,6 +8,7 @@ import socket
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import urlsplit
 
 from opensquilla.sandbox.domain_validation import normalize_domain
@@ -256,7 +257,7 @@ class SandboxProxyServer:
             )
         except Exception as exc:
             raise _ProxyDeniedError("unsafe_upstream_resolution") from exc
-        open_kwargs: dict[str, object] = {}
+        open_kwargs: dict[str, Any] = {}
         if request.scheme == "https" and request.method != "CONNECT":
             open_kwargs = {"ssl": True, "server_hostname": request.host}
         upstream_reader, upstream_writer = await asyncio.open_connection(

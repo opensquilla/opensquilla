@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
-import resource
+import sys
 from collections.abc import Callable
 
 from opensquilla.sandbox.types import ResourceLimits
+
+try:
+    import resource
+except ImportError:
+    resource = None  # type: ignore[assignment]
 
 
 def resource_preexec_from_limits(limits: ResourceLimits) -> Callable[[], None] | None:
@@ -19,6 +24,9 @@ def resource_preexec_from_limits(limits: ResourceLimits) -> Callable[[], None] |
 
 
 def resource_preexec_from_policy(policy: dict[str, object]) -> Callable[[], None] | None:
+    if not sys.platform.startswith("linux") or resource is None:
+        return None
+
     limits: list[tuple[int, int]] = []
     cpu_seconds = _positive_int(policy.get("cpuSeconds"))
     if cpu_seconds is not None:
@@ -47,6 +55,9 @@ def _positive_int(value: object) -> int | None:
 
 
 def _set_soft_limit(resource_id: int, value: int) -> None:
+    if resource is None:
+        return
+
     try:
         _, hard = resource.getrlimit(resource_id)
         soft = value if hard == resource.RLIM_INFINITY else min(value, hard)

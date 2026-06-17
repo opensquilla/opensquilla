@@ -8,7 +8,7 @@ import inspect
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import structlog
 
@@ -406,17 +406,18 @@ def tool(
                 if ctx is not None and ctx.workspace_dir
                 else None
             )
+            run_mode = getattr(ctx, "run_mode", None)
             guard = await prepare_tool_operation_guard(
                 spec.sandbox,
                 tool_name=name,
                 arguments=arguments,
                 workspace=workspace,
-                run_mode=getattr(ctx, "run_mode", None),
+                run_mode=run_mode if isinstance(run_mode, str) else None,
             )
             result = await run_tool_handler_with_operation_guard(fn, arguments, guard)
             if guard.denial_payload is None and guard.record_payload:
                 await record_tool_operation_success(guard, result)
-            return result
+            return cast(str, result)
 
         if spec.sandbox.enforce:
             @functools.wraps(fn)

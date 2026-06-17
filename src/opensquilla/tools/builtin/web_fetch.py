@@ -287,7 +287,7 @@ async def web_fetch(
         except SSRFBlockedError:
             raise
         except httpx.TimeoutException:
-            result = {
+            timeout_result = {
                 "url": url,
                 "final_url": url,
                 "status": 0,
@@ -304,7 +304,7 @@ async def web_fetch(
                     "or use another source."
                 ),
             }
-            return json.dumps(result, ensure_ascii=False)
+            return json.dumps(timeout_result, ensure_ascii=False)
         except Exception as exc:
             last_error = str(exc)
             if attempt_idx == 0:

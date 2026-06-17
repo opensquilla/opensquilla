@@ -83,10 +83,10 @@ def test_payload_rehomes_user_state_for_regular_windows_commands(
         policy=policy,
         env={
             "PATH": r"C:\Program Files\Git\cmd",
-            "HOME": r"C:\Users\me\.opensquilla",
-            "USERPROFILE": r"C:\Users\me",
+            "HOME": r"C:\SandboxUser\me\.opensquilla",
+            "USERPROFILE": r"C:\SandboxUser\me",
             "HOMEDRIVE": "C:",
-            "HOMEPATH": r"\Users\me",
+            "HOMEPATH": r"\SandboxUser\me",
         },
         run_mode=RunMode.TRUSTED.value,
     )

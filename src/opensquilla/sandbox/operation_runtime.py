@@ -570,11 +570,14 @@ class SandboxOperationRuntime:
         return await self._run_backend_operation(operation)
 
     async def _run_process(self, operation: SandboxOperation) -> object:
+        runtime = self.runtime
+        if runtime is None:
+            raise SandboxBackendError("process operation is missing sandbox runtime")
         if not isinstance(operation.request, ProcessOperationRequest):
             raise SandboxBackendError("process operation is missing SandboxRequest")
         if operation.request.request is None:
             raise SandboxBackendError("process operation is missing resolved SandboxRequest")
-        result = await self.runtime.backend.run(operation.request.request)
+        result = await runtime.backend.run(operation.request.request)
         if isinstance(result, SandboxResult):
             return result
         returncode = getattr(result, "returncode", None)
@@ -592,15 +595,18 @@ class SandboxOperationRuntime:
             stderr=stderr,
             wall_time_s=float(getattr(result, "wall_time_s", 0.0)),
             timed_out=bool(getattr(result, "timed_out", False)),
-            backend_used=str(getattr(result, "backend_used", self.runtime.backend.name)),
+            backend_used=str(getattr(result, "backend_used", runtime.backend.name)),
             backend_notes=tuple(getattr(result, "backend_notes", ())),
         )
 
     async def _run_backend_operation(self, operation: SandboxOperation) -> object:
-        result = await run_with_backend_if_supported(self.runtime.backend, operation)
+        runtime = self.runtime
+        if runtime is None:
+            raise SandboxBackendError(f"{operation.domain} operation is missing sandbox runtime")
+        result = await run_with_backend_if_supported(runtime.backend, operation)
         if result is not None:
             return result
-        backend_name = str(getattr(self.runtime.backend, "name", "") or "")
+        backend_name = str(getattr(runtime.backend, "name", "") or "")
         if operation.domain == "filesystem":
             detail = "must sandbox filesystem operations"
         else:

@@ -1,6 +1,7 @@
 """Windows default sandbox runner helper."""
 
 # ruff: noqa: N801, N806
+# mypy: disable-error-code="attr-defined,arg-type,assignment,call-overload"
 
 from __future__ import annotations
 

@@ -1,5 +1,7 @@
 """Offline sandbox identity helpers for windows_default."""
 
+# mypy: disable-error-code="attr-defined,arg-type"
+
 from __future__ import annotations
 
 import base64

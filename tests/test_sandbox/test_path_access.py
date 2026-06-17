@@ -71,6 +71,21 @@ class _FilesystemBackend:
                     f"with {len(request.new_text)} chars"
                 )
             )
+        if operation.kind == "grep_search":
+            matches = []
+            for entry in sorted(path.rglob("*")):
+                if entry.is_symlink() or not entry.is_file():
+                    continue
+                try:
+                    text = entry.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    continue
+                for line_no, line in enumerate(text.splitlines(), start=1):
+                    if request.pattern in line:
+                        matches.append(f"{entry}:{line_no}:{line}")
+            return SandboxOperationResult(
+                message="\n".join(matches) if matches else "No matches"
+            )
         raise AssertionError(f"unsupported filesystem operation: {operation.kind}")
 
 
@@ -115,7 +130,7 @@ def sandbox_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator
     )
     reset_approval_queue()
     workspace = tmp_path / "workspace"
-    workspace.mkdir()
+    workspace.mkdir(exist_ok=True)
     runtime = configure_runtime(
         SandboxSettings(run_mode="standard", backend="noop", allow_legacy_mode=True),
         workspace=workspace,
@@ -880,6 +895,48 @@ async def test_trusted_shell_delete_existing_file_auto_mounts_file_without_promp
 
 
 @pytest.mark.asyncio
+async def test_shell_write_to_protected_metadata_is_blocked_before_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / ".codex").mkdir()
+    backend_calls: list[SandboxRequest] = []
+
+    async def fake_backend(request: SandboxRequest, *, runtime: object = None) -> object:
+        backend_calls.append(request)
+        return SimpleNamespace(stdout="", stderr="", returncode=0, backend_notes=[])
+
+    monkeypatch.setattr(shell, "run_under_backend", fake_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    with tool_context(workspace, run_mode="trusted"):
+        git_result = await shell.exec_command(
+            f"sh -lc 'printf \"%s\\n\" blocked > {repo}/.git/_sandbox_should_not_write.txt'"
+        )
+        codex_result = await shell.exec_command(
+            f"sh -lc 'printf \"%s\\n\" blocked > {repo}/.codex/_sandbox_should_not_write.txt'"
+        )
+
+    git_payload = json.loads(git_result)
+    codex_payload = json.loads(codex_result)
+    assert git_payload["reason"] == "protected_metadata"
+    assert git_payload["protected_name"] == ".git"
+    assert codex_payload["reason"] == "protected_metadata"
+    assert codex_payload["protected_name"] == ".codex"
+    assert backend_calls == []
+    assert not (repo / ".git/_sandbox_should_not_write.txt").exists()
+    assert not (repo / ".codex/_sandbox_should_not_write.txt").exists()
+
+
+@pytest.mark.asyncio
 async def test_trusted_shell_delete_existing_file_under_rw_mount_adds_file_mount(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -963,6 +1020,52 @@ def test_windows_shell_policy_ignores_deleted_active_file_mount(
 
     assert stale not in {mount.host_path for mount in updated.mounts}
     assert workspace in {mount.host_path for mount in updated.mounts}
+
+
+def test_shell_policy_preserves_workspace_rw_absolute_alias(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.types import (
+        SANDBOX_WORKSPACE_PATH,
+        MountSpec,
+        NetworkMode,
+        ResourceLimits,
+        SandboxPolicy,
+        SecurityLevel,
+    )
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    policy = SandboxPolicy(
+        level=SecurityLevel.STANDARD,
+        network=NetworkMode.NONE,
+        mounts=(
+            MountSpec(
+                host_path=workspace,
+                sandbox_path=SANDBOX_WORKSPACE_PATH,
+                mode="rw",
+                required=True,
+            ),
+        ),
+        workspace_rw=True,
+        tmp_writable=True,
+        limits=ResourceLimits(),
+        env_allowlist=(),
+        require_approval=False,
+    )
+    monkeypatch.setattr(shell, "_windows_sandbox_backend_active", lambda runtime=None: False)
+
+    with tool_context(
+        workspace,
+        run_mode="trusted",
+        sandbox_mounts=[{"path": str(workspace), "access": "ro"}],
+    ):
+        updated = shell._policy_with_active_tool_mounts(policy)
+
+    mounts_by_sandbox = {str(mount.sandbox_path): mount for mount in updated.mounts}
+    assert mounts_by_sandbox["/workspace"].mode == "rw"
+    assert mounts_by_sandbox[str(workspace)].mode == "rw"
 
 
 @pytest.mark.asyncio

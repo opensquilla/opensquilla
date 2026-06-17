@@ -168,6 +168,16 @@ def test_profile_keeps_workspace_ro_when_policy_ro(tmp_path: Path) -> None:
     assert f'(allow file-write* (subpath "{tmp_path}"))' not in profile
 
 
+def test_profile_denies_writes_to_protected_metadata_under_workspace(tmp_path: Path) -> None:
+    for name in (".git", ".codex", ".agents"):
+        (tmp_path / name).mkdir()
+
+    profile = render_seatbelt_profile(_request(_policy(tmp_path), tmp_path))
+
+    for name in (".git", ".codex", ".agents"):
+        assert f'(deny file-write* (subpath "{tmp_path / name}"))' in profile
+
+
 def test_profile_escapes_paths(tmp_path: Path) -> None:
     hostile = tmp_path / 'quote"path'
     hostile.mkdir()
@@ -340,8 +350,17 @@ async def test_run_injects_proxy_env_for_proxy_allowlist(
     assert result.returncode == 0
     env = captured["env"]
     assert isinstance(env, dict)
-    for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+    for key in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "npm_config_proxy",
+        "PIP_PROXY",
+    ):
         assert env[key] == "http://127.0.0.1:18080"
+    assert env["NODE_USE_ENV_PROXY"] == "1"
+    assert env["OPENSQUILLA_SANDBOX_NETWORK"] == "proxy_allowlist"
     assert "http://attacker.invalid:1" not in env.values()
 
 

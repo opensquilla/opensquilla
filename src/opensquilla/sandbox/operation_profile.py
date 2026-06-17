@@ -11,6 +11,7 @@ from opensquilla.sandbox.domain_validation import normalize_domain
 _PYTHON_EXE_RE = re.compile(r"python(?:\d+(?:\.\d+)*)?$")
 _URL_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
 _NODE_INSTALL_COMMANDS = frozenset({"add", "ci", "install"})
+_NODE_REGISTRY_QUERY_COMMANDS = frozenset({"info", "search", "show", "view"})
 _ENV_CREATE_OPTION_TOKENS = frozenset({"--help", "-h", "--version", "-V"})
 _ENV_CREATE_OPTIONS_WITH_VALUE = frozenset({"--prompt", "-p", "--python"})
 _PYTHON_ENV_COMMANDS = frozenset({"virtualenv"})
@@ -76,6 +77,8 @@ def classify_command(argv: tuple[str, ...] | list[str]) -> OperationProfile:
         return classify_command(unwrapped)
     if _is_python_install(lowered):
         return OperationProfile("package_install", True, "python")
+    if _is_python_package_query(lowered):
+        return OperationProfile("package_query", True, "python")
     if _is_python_env_create(lowered):
         return OperationProfile(
             "create_env",
@@ -90,6 +93,8 @@ def classify_command(argv: tuple[str, ...] | list[str]) -> OperationProfile:
         return OperationProfile("package_install", True, "java")
     if _is_node_install(lowered):
         return OperationProfile("package_install", True, "node")
+    if _is_node_package_query(lowered):
+        return OperationProfile("package_query", True, "node")
     if _is_rust_package_install(lowered):
         return OperationProfile("package_install", True, "rust")
     if _is_go_package_install(lowered):
@@ -165,6 +170,22 @@ def _is_python_install(lowered: tuple[str, ...]) -> bool:
         and _command_name(lowered[0]) == "uv"
         and lowered[1] == "pip"
         and lowered[2] == "install"
+    )
+
+
+def _is_python_package_query(lowered: tuple[str, ...]) -> bool:
+    return (
+        len(lowered) >= 5
+        and _PYTHON_EXE_RE.fullmatch(_command_name(lowered[0])) is not None
+        and lowered[1:4] == ("-m", "pip", "index")
+    ) or (
+        len(lowered) >= 4
+        and _command_name(lowered[0]) in {"pip", "pip3"}
+        and lowered[1] == "index"
+    ) or (
+        len(lowered) >= 4
+        and _command_name(lowered[0]) == "uv"
+        and lowered[1:3] == ("pip", "index")
     )
 
 
@@ -268,6 +289,12 @@ def _is_node_install(lowered: tuple[str, ...]) -> bool:
     if not lowered or _command_name(lowered[0]) not in {"bun", "npm", "pnpm", "yarn"}:
         return False
     return len(lowered) >= 2 and lowered[1] in _NODE_INSTALL_COMMANDS
+
+
+def _is_node_package_query(lowered: tuple[str, ...]) -> bool:
+    if not lowered or _command_name(lowered[0]) not in {"bun", "npm", "pnpm", "yarn"}:
+        return False
+    return len(lowered) >= 2 and lowered[1] in _NODE_REGISTRY_QUERY_COMMANDS
 
 
 def _is_rust_package_install(lowered: tuple[str, ...]) -> bool:
@@ -381,6 +408,14 @@ def _classify_shell_script(parts: tuple[str, ...]) -> OperationProfile:
             requested_write_paths=tuple(requested_write_paths),
             high_impact=network_profile.high_impact,
         )
+    script = _shell_script(parts)
+    script_domains = _domains_from_argv((script,))
+    if script_domains and _script_uses_python_network_runtime(script):
+        return OperationProfile(
+            "url_fetch",
+            needs_network=True,
+            requested_domains=script_domains,
+        )
     if requested_paths or requested_write_paths:
         return OperationProfile(
             "path_transfer" if requested_write_paths else "workspace_read",
@@ -388,6 +423,22 @@ def _classify_shell_script(parts: tuple[str, ...]) -> OperationProfile:
             requested_write_paths=tuple(requested_write_paths),
         )
     return OperationProfile("unknown_shell")
+
+
+def _script_uses_python_network_runtime(script: str) -> bool:
+    if re.search(r"(?m)(?:^|[;&|]\s*)python(?:3(?:\.\d+)?)?\b", script) is None:
+        return False
+    lowered = script.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "urllib.request",
+            "requests.",
+            "http.client",
+            "aiohttp.",
+            "httpx.",
+        )
+    )
 
 
 def _shell_commands(parts: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:

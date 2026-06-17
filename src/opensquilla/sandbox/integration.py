@@ -38,7 +38,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 from urllib.parse import urlparse
 
 from opensquilla.sandbox.backend import Backend, NoopBackend, UnavailableBackend, select_backend
@@ -59,6 +59,10 @@ from opensquilla.sandbox.governance import (
     action_fingerprint,
     gate_execution,
     on_successful_exec,
+)
+from opensquilla.sandbox.managed_proxy_env import (
+    managed_proxy_env,
+    managed_proxy_env_names_upper,
 )
 from opensquilla.sandbox.network_guard import NetworkDecision, decide_network_access
 from opensquilla.sandbox.network_proxy import SandboxProxyServer
@@ -96,62 +100,8 @@ _MANAGED_NETWORK_PROXY_URL: contextvars.ContextVar[str | None] = contextvars.Con
     "opensquilla_managed_network_proxy_url",
     default=None,
 )
-_MANAGED_PROXY_ENV_KEYS: tuple[str, ...] = (
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "http_proxy",
-    "https_proxy",
-    "YARN_HTTP_PROXY",
-    "YARN_HTTPS_PROXY",
-    "npm_config_http_proxy",
-    "npm_config_https_proxy",
-    "npm_config_proxy",
-    "NPM_CONFIG_HTTP_PROXY",
-    "NPM_CONFIG_HTTPS_PROXY",
-    "NPM_CONFIG_PROXY",
-    "BUNDLE_HTTP_PROXY",
-    "BUNDLE_HTTPS_PROXY",
-    "PIP_PROXY",
-    "DOCKER_HTTP_PROXY",
-    "DOCKER_HTTPS_PROXY",
-    "WS_PROXY",
-    "WSS_PROXY",
-    "ws_proxy",
-    "wss_proxy",
-    "ALL_PROXY",
-    "all_proxy",
-    "FTP_PROXY",
-    "ftp_proxy",
-)
-_MANAGED_NO_PROXY_ENV_KEYS: tuple[str, ...] = (
-    "NO_PROXY",
-    "no_proxy",
-    "npm_config_noproxy",
-    "NPM_CONFIG_NOPROXY",
-    "YARN_NO_PROXY",
-    "BUNDLE_NO_PROXY",
-)
-_MANAGED_PROXY_CONTROL_ENV_KEYS: tuple[str, ...] = (
-    "NODE_USE_ENV_PROXY",
-    "ELECTRON_GET_USE_PROXY",
-    "GIT_CONFIG_COUNT",
-    "GIT_CONFIG_KEY_0",
-    "GIT_CONFIG_VALUE_0",
-    "OPENSQUILLA_SANDBOX_NETWORK",
-)
-_DEFAULT_NO_PROXY_VALUE = (
-    "localhost,127.0.0.1,::1,"
-    "10.0.0.0/8,"
-    "172.16.0.0/12,"
-    "192.168.0.0/16"
-)
-_MANAGED_PROXY_ENV_ALLOWLIST: tuple[str, ...] = (
-    *_MANAGED_PROXY_ENV_KEYS,
-    *_MANAGED_NO_PROXY_ENV_KEYS,
-    *_MANAGED_PROXY_CONTROL_ENV_KEYS,
-)
-_MANAGED_PROXY_ENV_NAMES_UPPER: frozenset[str] = frozenset(
-    key.upper() for key in _MANAGED_PROXY_ENV_ALLOWLIST
+_MANAGED_PROXY_ENV_NAMES_UPPER = managed_proxy_env_names_upper(
+    include_windows_git=True,
 )
 
 _IN_PROCESS_NETWORK_TAGS: frozenset[str] = frozenset(
@@ -582,7 +532,8 @@ def _windows_process_is_admin() -> bool:
     try:
         import ctypes
 
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        windll = cast(Any, ctypes).windll
+        return bool(windll.shell32.IsUserAnAdmin())
     except Exception:
         return False
 
@@ -618,6 +569,14 @@ async def _windows_proxy_allowlist_ready_or_repaired(
     return await _ensure_windows_proxy_allowlist_setup(runtime)
 
 
+async def _platform_proxy_allowlist_ready_or_repaired(
+    runtime: SandboxRuntime | object | None,
+) -> bool:
+    if not _backend_name(runtime).lower().startswith("windows_"):
+        return True
+    return await _windows_proxy_allowlist_ready_or_repaired(runtime)
+
+
 def _managed_proxy_env(
     *,
     backend_name: str | None,
@@ -625,13 +584,8 @@ def _managed_proxy_env(
     port: int,
 ) -> dict[str, str]:
     if str(backend_name or "").lower().startswith("windows_"):
-        from opensquilla.sandbox.backend.windows_default_network import network_proxy_env
-
-        return network_proxy_env(host, port)
-    proxy_url = f"http://{host}:{port}"
-    env = {key: proxy_url for key in _MANAGED_PROXY_ENV_KEYS}
-    env.update({key: _DEFAULT_NO_PROXY_VALUE for key in _MANAGED_NO_PROXY_ENV_KEYS})
-    return env
+        return managed_proxy_env(host, port, windows_git_ssl_backend=True)
+    return managed_proxy_env(host, port)
 
 
 def request_with_managed_network_proxy_env(
@@ -953,7 +907,7 @@ async def _prepare_platform_network_boundary(
 async def _cleanup_platform_network_boundary(context: object | None) -> None:
     if context is None:
         return
-    boundary, boundary_context = context
+    boundary, boundary_context = cast(tuple[Any, Any], context)
     await boundary.cleanup(boundary_context)
 
 
@@ -1259,7 +1213,7 @@ async def _prepare_in_process_managed_network(
     request: SandboxRequest,
     runtime: SandboxRuntime,
 ) -> RunContext | DenialResult | dict[str, object]:
-    if not await _windows_proxy_allowlist_ready_or_repaired(runtime):
+    if not await _platform_proxy_allowlist_ready_or_repaired(runtime):
         return await _managed_in_process_denial(
             request,
             runtime,
@@ -1296,7 +1250,7 @@ async def _prepare_network_none_in_process_action(
     request: SandboxRequest,
     runtime: SandboxRuntime,
 ) -> RunContext | DenialResult | dict[str, object]:
-    if not await _windows_proxy_allowlist_ready_or_repaired(runtime):
+    if not await _platform_proxy_allowlist_ready_or_repaired(runtime):
         return await _managed_in_process_denial(
             request,
             runtime,
@@ -1345,7 +1299,7 @@ async def preflight_subprocess_managed_network(
     if getattr(request.policy, "network", None) != NetworkMode.PROXY_ALLOWLIST:
         return None
 
-    if not await _windows_proxy_allowlist_ready_or_repaired(runtime):
+    if not await _platform_proxy_allowlist_ready_or_repaired(runtime):
         return await _managed_in_process_denial(
             request,
             runtime,

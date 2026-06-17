@@ -222,6 +222,8 @@ def _filesystem_operation_request(
     operation: SandboxOperation,
     payload_path: Path,
 ) -> SandboxRequest:
+    if operation.workspace is None:
+        raise SandboxBackendError("filesystem operation is missing workspace")
     worker_root = workspace_cache_root(operation.workspace) / "fs-worker"
     worker_root.mkdir(parents=True, exist_ok=True)
     _validate_filesystem_operation_targets(operation)
@@ -319,8 +321,11 @@ def _filesystem_operation_policy(
 
 def _worker_home_env(worker_root: Path) -> dict[str, str]:
     home = str(worker_root)
-    drive = worker_root.drive
-    homepath = home[len(drive) :] if drive else home
+    raw_drive = worker_root.drive
+    drive = raw_drive or "C:"
+    homepath = home[len(raw_drive) :] if raw_drive else home
+    if not homepath.startswith(("\\", "/")):
+        homepath = "\\" + homepath
     return {
         "HOME": home,
         "USERPROFILE": home,

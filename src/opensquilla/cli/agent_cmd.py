@@ -124,6 +124,7 @@ async def run_agent_once(
     from opensquilla.gateway.config import GatewayConfig
     from opensquilla.gateway.routing import build_cli_route_envelope, tool_context_from_envelope
     from opensquilla.paths import media_root_from_config
+    from opensquilla.permissions import configured_default_elevated
     from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id
     from opensquilla.tools.types import InteractionMode
 
@@ -249,6 +250,7 @@ async def run_agent_once(
             is_owner=True,
             workspace_dir=tool_workspace_dir,
             workspace_strict=effective_workspace_strict,
+            default_elevated=configured_default_elevated(service_cfg),
         )
         tool_ctx.scratch_dir = effective_scratch_dir
         tool_ctx.workspace_lockdown = workspace_lockdown

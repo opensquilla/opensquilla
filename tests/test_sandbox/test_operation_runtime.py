@@ -195,7 +195,7 @@ async def test_operation_runtime_bypasses_for_full_host_access(tmp_path) -> None
 async def test_operation_runtime_filesystem_fails_closed_without_backend_worker(tmp_path) -> None:
     runtime = SimpleNamespace(
         effective=SimpleNamespace(sandbox_enabled=True),
-        backend=SimpleNamespace(name="bubblewrap"),
+        backend=SimpleNamespace(name="custom_backend"),
     )
 
     with pytest.raises(SandboxBackendError, match="must sandbox filesystem operations"):

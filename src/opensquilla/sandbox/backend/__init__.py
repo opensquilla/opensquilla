@@ -35,6 +35,11 @@ log = logging.getLogger(__name__)
 
 def _auto_backend_failure_message() -> str:
     message = "sandbox=true but no real sandbox backend is available for backend=auto"
+    if sys.platform.startswith("linux"):
+        from opensquilla.sandbox.backend.linux_readiness import probe_bwrap
+
+        probe = probe_bwrap()
+        return f"{message}; Linux sandbox diagnostics: {probe.message}"
     if not sys.platform.startswith("win"):
         return message
 

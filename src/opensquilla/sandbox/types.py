@@ -153,6 +153,7 @@ class SandboxPolicy:
     require_approval: bool
     description: str = ""
     network_proxy: NetworkProxySpec | None = None
+    unreadable_globs: tuple[str, ...] = ()
 
     def summary(self) -> dict[str, object]:
         """Flat structured summary used in log lines and debug output."""
@@ -179,6 +180,7 @@ class SandboxPolicy:
             "memory_mb": self.limits.memory_mb,
             "wall_timeout_s": self.limits.wall_timeout_s,
             "require_approval": self.require_approval,
+            "unreadable_globs": list(self.unreadable_globs),
         }
 
 

@@ -1011,6 +1011,43 @@ class TestSessionsSend:
         assert manager.updates == []
 
     @pytest.mark.asyncio
+    async def test_chat_send_forwards_source_run_mode_to_sessions_send(
+        self, dispatcher
+    ):
+        chat_session = FakeSession(
+            session_key="agent:main:webchat:chat-run-mode-source",
+            session_id="chat-run-mode-source",
+            origin={
+                "sandbox_run_context": {
+                    "run_mode": "standard",
+                    "workspace": "/workspace",
+                }
+            },
+        )
+        chat_manager = FakeSessionManager([chat_session])
+        chat_runner = _RecordingTurnRunner()
+        chat_ctx = make_ctx(session_manager=chat_manager, turn_runner=chat_runner)
+
+        res = await dispatcher.dispatch(
+            "r-chat-run-mode",
+            "chat.send",
+            {
+                "sessionKey": chat_session.session_key,
+                "message": "hello",
+                "_source": {"runMode": "full"},
+            },
+            chat_ctx,
+        )
+
+        assert res.ok is True
+        chat_task = get_agent_task_registry().get(chat_session.session_key)
+        if chat_task is not None:
+            await chat_task
+        assert chat_runner.run_calls[0]["tool_context"].run_mode == "full"
+        assert chat_runner.run_calls[0]["tool_context"].elevated == "full"
+        assert chat_session.origin["sandbox_run_context"]["run_mode"] == "standard"
+
+    @pytest.mark.asyncio
     async def test_send_strips_hidden_preflight_payload_before_task_runtime(
         self, dispatcher, session
     ):

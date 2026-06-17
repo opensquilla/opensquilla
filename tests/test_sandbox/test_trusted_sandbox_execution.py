@@ -289,3 +289,154 @@ async def test_full_host_access_code_exec_resolves_host_python(monkeypatch, tmp_
     assert folded_env["COMSPEC"] == r"C:\Windows\System32\cmd.exe"
     assert folded_env["TEMP"] == str(tmp_path / "temp")
     assert folded_env["TMP"] == str(tmp_path / "temp")
+
+
+@pytest.mark.asyncio
+async def test_full_host_access_shell_uses_host_and_skips_sandbox_gates(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    calls: list[str] = []
+
+    class _Runtime:
+        effective = SimpleNamespace(sandbox_enabled=True)
+
+    async def _fail_gate_action(**kwargs):
+        pytest.fail("Full Host Access shell should not enter sandbox gate_action")
+
+    async def _fake_host_shell_command(*args, **kwargs):
+        calls.append("host")
+        return "exit_code=1\nhead: cannot open '/etc/shadow' for reading: Permission denied\n"
+
+    monkeypatch.setattr(shell, "get_runtime", lambda: _Runtime())
+    monkeypatch.setattr(shell, "gate_action", _fail_gate_action)
+    monkeypatch.setattr(shell, "_run_host_shell_command", _fake_host_shell_command)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            session_key="s1",
+            run_mode="full",
+            workspace_dir=str(tmp_path),
+        )
+    )
+    try:
+        result = await shell.exec_command("head -n 1 /etc/shadow 2>&1; echo exit=$?")
+    finally:
+        current_tool_context.reset(token)
+
+    assert calls == ["host"]
+    assert "Permission denied" in result
+    assert "sensitive_path" not in result
+
+
+@pytest.mark.asyncio
+async def test_full_host_access_shell_strips_managed_proxy_environment(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    seen_env: dict[str, str] = {}
+
+    class _Runtime:
+        effective = SimpleNamespace(sandbox_enabled=True)
+
+    async def _fake_host_shell_command(*args, **kwargs):
+        seen_env.update(kwargs["env"])
+        return "exit_code=0\n"
+
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:48123")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:48123")
+    monkeypatch.setenv("OPENSQUILLA_SANDBOX_NETWORK", "proxy_allowlist")
+    monkeypatch.setattr(shell, "get_runtime", lambda: _Runtime())
+    monkeypatch.setattr(shell, "_run_host_shell_command", _fake_host_shell_command)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            session_key="s1",
+            run_mode="full",
+            workspace_dir=str(tmp_path),
+        )
+    )
+    try:
+        await shell.exec_command("env")
+    finally:
+        current_tool_context.reset(token)
+
+    assert "OPENSQUILLA_SANDBOX_NETWORK" not in seen_env
+    assert "HTTP_PROXY" not in seen_env
+    assert "HTTPS_PROXY" not in seen_env
+
+
+@pytest.mark.asyncio
+async def test_full_host_access_background_strips_managed_proxy_environment(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    seen_env: dict[str, str] = {}
+
+    class _Runtime:
+        effective = SimpleNamespace(sandbox_enabled=True)
+
+    class _FakeProcess:
+        stdout = None
+        stdin = None
+        returncode = 0
+
+        async def wait(self) -> int:
+            return 0
+
+    async def _fake_create_subprocess_shell(*args, **kwargs):
+        seen_env.update(kwargs["env"])
+        return _FakeProcess()
+
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:48123")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:48123")
+    monkeypatch.setenv("OPENSQUILLA_SANDBOX_NETWORK", "proxy_allowlist")
+    monkeypatch.setattr(shell, "get_runtime", lambda: _Runtime())
+    monkeypatch.setattr(shell.asyncio, "create_subprocess_shell", _fake_create_subprocess_shell)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            session_key="s1",
+            run_mode="full",
+            workspace_dir=str(tmp_path),
+        )
+    )
+    try:
+        result = await shell.background_process("env")
+        session_id = result.splitlines()[0].split("=", 1)[1]
+        session = shell._bg_sessions[session_id]
+        assert session.collector_task is not None
+        await session.collector_task
+    finally:
+        current_tool_context.reset(token)
+
+    assert "OPENSQUILLA_SANDBOX_NETWORK" not in seen_env
+    assert "HTTP_PROXY" not in seen_env
+    assert "HTTPS_PROXY" not in seen_env

@@ -216,6 +216,88 @@ async def test_trusted_windows_shell_receives_managed_proxy_without_network_hint
 
 
 @pytest.mark.asyncio
+async def test_trusted_linux_shell_receives_managed_proxy_without_network_hint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.types import NetworkMode, SandboxRequest
+    from opensquilla.tools.builtin import shell
+
+    reset_approval_queue()
+    configure_runtime(
+        SandboxSettings(
+            run_mode="trusted",
+            backend="noop",
+            allow_legacy_mode=True,
+            network_default="proxy_allowlist",
+        ),
+        workspace=tmp_path,
+    )
+    runtime = get_runtime()
+    assert runtime is not None
+    runtime.backend = SimpleNamespace(name="bubblewrap")
+    backend_calls: list[SandboxRequest] = []
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        backend_calls.append(request)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=(
+                request.env["HTTP_PROXY"]
+                + "\n"
+                + request.env["OPENSQUILLA_SANDBOX_NETWORK"]
+                + "\n"
+            ),
+            stderr="",
+            backend_notes=(),
+        )
+
+    async def _windows_ready_should_not_run(runtime):
+        raise AssertionError("linux managed-network preflight used windows readiness")
+
+    monkeypatch.setattr(shell, "run_under_backend", _fake_run_under_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+    monkeypatch.setattr(
+        "opensquilla.sandbox.integration._windows_proxy_allowlist_ready_or_repaired",
+        _windows_ready_should_not_run,
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(tmp_path),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.TRUSTED,
+                workspace=str(tmp_path),
+            ),
+        )
+    )
+    try:
+        result = await shell.exec_command(
+            "sh -lc 'printf \"HTTP_PROXY=%s\\nOPENSQUILLA_SANDBOX_NETWORK=%s\\n\" "
+            "\"$HTTP_PROXY\" \"$OPENSQUILLA_SANDBOX_NETWORK\"'",
+            workdir=str(tmp_path),
+        )
+    finally:
+        current_tool_context.reset(token)
+        reset_runtime()
+        reset_approval_queue()
+
+    assert result.startswith("exit_code=0")
+    assert backend_calls
+    assert backend_calls[0].policy.network is NetworkMode.PROXY_ALLOWLIST
+    assert backend_calls[0].env["HTTP_PROXY"].startswith("http://127.0.0.1:")
+    assert backend_calls[0].env["OPENSQUILLA_SANDBOX_NETWORK"] == "proxy_allowlist"
+
+
+@pytest.mark.asyncio
 async def test_trusted_windows_code_exec_receives_managed_proxy_without_network_hint(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1429,6 +1511,193 @@ async def test_trusted_uv_pip_install_receives_managed_proxy_without_prompt(
     assert isinstance(env, dict)
     assert env["HTTP_PROXY"] == "http://127.0.0.1:48123"
     assert env["HTTPS_PROXY"] == env["HTTP_PROXY"]
+    assert env["npm_config_proxy"] == env["HTTP_PROXY"]
+    assert env["NODE_USE_ENV_PROXY"] == "1"
+    assert env["CODEX_NETWORK_PROXY_ACTIVE"] == "1"
+    assert env["CODEX_NETWORK_ALLOW_LOCAL_BINDING"] == "0"
+    assert env["OPENSQUILLA_SANDBOX_NETWORK"] == "proxy_allowlist"
+    assert "GIT_CONFIG_KEY_0" not in env
+    assert "GIT_CONFIG_VALUE_0" not in env
+
+
+@pytest.mark.asyncio
+async def test_trusted_python_explicit_url_uses_managed_proxy_before_execution(
+    managed_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.types import NetworkMode, SandboxRequest
+    from opensquilla.tools.builtin import shell
+
+    backend_calls: list[SandboxRequest] = []
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        backend_calls.append(request)
+        return SimpleNamespace(returncode=0, stdout="ok\n", stderr="", backend_notes=())
+
+    async def _fake_cleanup() -> None:
+        return None
+
+    async def _fake_prepare_subprocess_managed_network_proxy(request, *, runtime=None):
+        return SimpleNamespace(request=request, cleanup=_fake_cleanup)
+
+    monkeypatch.setattr(shell, "run_under_backend", _fake_run_under_backend)
+    monkeypatch.setattr(
+        shell,
+        "prepare_subprocess_managed_network_proxy",
+        _fake_prepare_subprocess_managed_network_proxy,
+    )
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.TRUSTED,
+                workspace=str(managed_runtime),
+            ),
+        )
+    )
+    try:
+        result = await shell.exec_command(
+            "python - <<'PY'\n"
+            "import urllib.request\n"
+            "urllib.request.urlopen('https://example.com')\n"
+            "PY",
+            workdir=str(managed_runtime),
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert "ok" in result
+    assert len(backend_calls) == 1
+    assert backend_calls[0].policy.network is NetworkMode.PROXY_ALLOWLIST
+
+
+@pytest.mark.asyncio
+async def test_trusted_python_caught_network_error_still_uses_proxy_before_execution(
+    managed_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.types import NetworkMode, SandboxRequest
+    from opensquilla.tools.builtin import shell
+
+    backend_calls: list[SandboxRequest] = []
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        backend_calls.append(request)
+        return SimpleNamespace(returncode=0, stdout="handled\n", stderr="", backend_notes=())
+
+    async def _fake_cleanup() -> None:
+        return None
+
+    async def _fake_prepare_subprocess_managed_network_proxy(request, *, runtime=None):
+        return SimpleNamespace(request=request, cleanup=_fake_cleanup)
+
+    monkeypatch.setattr(shell, "run_under_backend", _fake_run_under_backend)
+    monkeypatch.setattr(
+        shell,
+        "prepare_subprocess_managed_network_proxy",
+        _fake_prepare_subprocess_managed_network_proxy,
+    )
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.TRUSTED,
+                workspace=str(managed_runtime),
+            ),
+        )
+    )
+    try:
+        result = await shell.exec_command(
+            "python - <<'PY'\n"
+            "import urllib.request\n"
+            "try:\n"
+            "    urllib.request.urlopen('https://httpbin.org/get', timeout=10)\n"
+            "except Exception as e:\n"
+            "    print(type(e).__name__ + ': ' + str(e))\n"
+            "PY",
+            workdir=str(managed_runtime),
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert "handled" in result
+    assert len(backend_calls) == 1
+    assert backend_calls[0].policy.network is NetworkMode.PROXY_ALLOWLIST
+
+
+@pytest.mark.asyncio
+async def test_trusted_npm_view_uses_managed_proxy_before_execution(
+    managed_runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.types import NetworkMode, SandboxRequest
+    from opensquilla.tools.builtin import shell
+
+    backend_calls: list[SandboxRequest] = []
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        backend_calls.append(request)
+        return SimpleNamespace(returncode=0, stdout="4.17.21\n", stderr="", backend_notes=())
+
+    async def _fake_cleanup() -> None:
+        return None
+
+    async def _fake_prepare_subprocess_managed_network_proxy(request, *, runtime=None):
+        return SimpleNamespace(request=request, cleanup=_fake_cleanup)
+
+    monkeypatch.setattr(shell, "run_under_backend", _fake_run_under_backend)
+    monkeypatch.setattr(
+        shell,
+        "prepare_subprocess_managed_network_proxy",
+        _fake_prepare_subprocess_managed_network_proxy,
+    )
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(managed_runtime),
+            session_key="s1",
+            run_mode="trusted",
+            sandbox_run_context=RunContext(
+                run_mode=RunMode.TRUSTED,
+                workspace=str(managed_runtime),
+            ),
+        )
+    )
+    try:
+        result = await shell.exec_command("npm view lodash version", workdir=str(managed_runtime))
+    finally:
+        current_tool_context.reset(token)
+
+    assert "4.17.21" in result
+    assert len(backend_calls) == 1
+    assert backend_calls[0].policy.network is NetworkMode.PROXY_ALLOWLIST
 
 
 @pytest.mark.asyncio
@@ -1515,7 +1784,7 @@ async def test_trusted_unknown_install_uses_managed_proxy_without_redundant_retr
 
 
 @pytest.mark.asyncio
-async def test_standard_runtime_network_recovery_returns_package_bundle_approval(
+async def test_standard_network_failure_does_not_return_package_bundle_recovery_approval(
     standard_runtime_no_preflight: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1551,26 +1820,21 @@ async def test_standard_runtime_network_recovery_returns_package_bundle_approval
         )
     )
     try:
-        payload = json.loads(
-            await shell.exec_command(
-                "pip install demo",
-                workdir=str(standard_runtime_no_preflight),
-            )
+        result = await shell.exec_command(
+            "pip install demo",
+            workdir=str(standard_runtime_no_preflight),
         )
     finally:
         current_tool_context.reset(token)
 
     assert backend_calls == 1
-    assert payload["status"] == "approval_required"
-    assert payload["approvalKind"] == "sandbox_network"
-    assert payload["bundle_id"] == "python-package-install"
-    pending = get_approval_queue().list_pending("exec")
-    assert len(pending) == 1
-    assert pending[0]["params"]["bundle_id"] == "python-package-install"
+    assert "exit_code=1" in result
+    assert "Could not resolve host: pypi.org" in result
+    assert get_approval_queue().list_pending("exec") == []
 
 
 @pytest.mark.asyncio
-async def test_standard_runtime_network_recovery_does_not_preflight_explicit_url(
+async def test_standard_network_failure_does_not_retry_explicit_url(
     standard_runtime_no_preflight: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1613,14 +1877,14 @@ async def test_standard_runtime_network_recovery_does_not_preflight_explicit_url
     finally:
         current_tool_context.reset(token)
 
-    assert backend_calls == 2
+    assert backend_calls == 1
     assert "exit_code=1" in result
     assert "Could not resolve host: unknown.test" in result
     assert get_approval_queue().list_pending("exec") == []
 
 
 @pytest.mark.asyncio
-async def test_standard_runtime_network_recovery_retries_once_with_approved_bundle(
+async def test_standard_network_failure_does_not_retry_with_approved_bundle(
     standard_runtime_no_preflight: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1695,17 +1959,15 @@ async def test_standard_runtime_network_recovery_retries_once_with_approved_bund
     finally:
         current_tool_context.reset(token)
 
-    assert "installed" in result
-    assert len(backend_calls) == 2
-    assert cleanup_calls == 1
+    assert "Could not resolve host: pypi.org" in result
+    assert len(backend_calls) == 1
+    assert cleanup_calls == 0
     assert backend_calls[0].policy.network is NetworkMode.NONE
-    assert backend_calls[1].policy.network is NetworkMode.PROXY_ALLOWLIST
-    assert backend_calls[1].env["HTTP_PROXY"] == "http://127.0.0.1:48123"
     assert get_approval_queue().list_pending("exec") == []
 
 
 @pytest.mark.asyncio
-async def test_standard_runtime_network_recovery_preserves_allow_once_for_proxy_retry(
+async def test_standard_network_failure_does_not_consume_allow_once_grant(
     standard_runtime_no_preflight: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1827,13 +2089,11 @@ async def test_standard_runtime_network_recovery_preserves_allow_once_for_proxy_
     finally:
         current_tool_context.reset(token)
 
-    assert "downloaded" in result
-    assert len(backend_calls) == 2
+    assert "Could not resolve host: unknown.test" in result
+    assert len(backend_calls) == 1
     assert backend_calls[0].policy.network is NetworkMode.NONE
-    assert backend_calls[1].policy.network is NetworkMode.PROXY_ALLOWLIST
-    assert backend_calls[1].env["HTTP_PROXY"] == "http://127.0.0.1:48123"
     assert isinstance(tool_context.sandbox_run_context, RunContext)
-    assert tool_context.sandbox_run_context.temporary_grants == ()
+    assert tool_context.sandbox_run_context.temporary_grants == (grant,)
     assert get_approval_queue().list_pending("exec") == []
 
 
@@ -1960,7 +2220,7 @@ async def test_trusted_metadata_target_is_not_auto_retried(
 
 
 @pytest.mark.asyncio
-async def test_trusted_recovery_rewrites_retry_policy_to_managed_proxy(
+async def test_trusted_network_failure_does_not_retry_after_managed_proxy_execution(
     managed_runtime: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2043,15 +2303,14 @@ async def test_trusted_recovery_rewrites_retry_policy_to_managed_proxy(
     finally:
         current_tool_context.reset(token)
 
-    assert "installed" in result
-    assert len(backend_calls) == 2
-    assert backend_calls[0].policy.network is NetworkMode.NONE
-    assert backend_calls[1].policy.network is NetworkMode.PROXY_ALLOWLIST
-    assert backend_calls[1].env["HTTP_PROXY"] == "http://127.0.0.1:48123"
+    assert "Could not resolve host: pypi.org" in result
+    assert len(backend_calls) == 1
+    assert backend_calls[0].policy.network is NetworkMode.PROXY_ALLOWLIST
+    assert backend_calls[0].policy.network_proxy is not None
 
 
 @pytest.mark.asyncio
-async def test_trusted_normal_user_path_denial_retries_once(
+async def test_trusted_normal_user_path_denial_escalates_without_retry(
     managed_runtime: Path,
     tmp_path_factory: pytest.TempPathFactory,
     monkeypatch: pytest.MonkeyPatch,
@@ -2064,14 +2323,12 @@ async def test_trusted_normal_user_path_denial_retries_once(
 
     async def _fake_run_under_backend(request, *, runtime=None):
         backend_calls.append(request)
-        if len(backend_calls) == 1:
-            return SimpleNamespace(
-                returncode=1,
-                stdout="",
-                stderr="",
-                backend_notes=(f"mount denied: {outside}",),
-            )
-        return SimpleNamespace(returncode=0, stdout="ok\n", stderr="", backend_notes=())
+        return SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="",
+            backend_notes=(f"mount denied: {outside}",),
+        )
 
     monkeypatch.setattr(shell, "run_under_backend", _fake_run_under_backend)
     monkeypatch.setattr(shell, "_sensitive_shell_block", lambda *args, **kwargs: None)
@@ -2102,17 +2359,12 @@ async def test_trusted_normal_user_path_denial_retries_once(
     finally:
         current_tool_context.reset(token)
 
-    assert "ok" in result
-    assert len(backend_calls) == 2
-    retry_mounts = backend_calls[1].policy.mounts
-    assert any(
-        mount.mode == "rw" and outside.resolve(strict=False).is_relative_to(mount.host_path)
-        for mount in retry_mounts
-    )
+    assert json.loads(result)["status"] == "denied"
+    assert len(backend_calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_trusted_read_path_denial_retries_with_ro_mount(
+async def test_trusted_read_path_denial_escalates_without_retry(
     managed_runtime: Path,
     tmp_path_factory: pytest.TempPathFactory,
     monkeypatch: pytest.MonkeyPatch,
@@ -2127,14 +2379,12 @@ async def test_trusted_read_path_denial_retries_with_ro_mount(
 
     async def _fake_run_under_backend(request, *, runtime=None):
         backend_calls.append(request)
-        if len(backend_calls) == 1:
-            return SimpleNamespace(
-                returncode=1,
-                stdout="",
-                stderr="",
-                backend_notes=(f"filesystem.read.denied: {target}",),
-            )
-        return SimpleNamespace(returncode=0, stdout="data\n", stderr="", backend_notes=())
+        return SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="",
+            backend_notes=(f"filesystem.read.denied: {target}",),
+        )
 
     monkeypatch.setattr(shell, "run_under_backend", _fake_run_under_backend)
     monkeypatch.setattr(shell, "_sensitive_shell_block", lambda *args, **kwargs: None)
@@ -2164,21 +2414,12 @@ async def test_trusted_read_path_denial_retries_with_ro_mount(
     finally:
         current_tool_context.reset(token)
 
-    assert "data" in result
-    assert len(backend_calls) == 2
-    retry_mounts = backend_calls[1].policy.mounts
-    assert any(
-        mount.mode == "ro" and target.resolve(strict=False).is_relative_to(mount.host_path)
-        for mount in retry_mounts
-    )
-    assert not any(
-        mount.mode == "rw" and target.resolve(strict=False).is_relative_to(mount.host_path)
-        for mount in retry_mounts
-    )
+    assert json.loads(result)["status"] == "denied"
+    assert len(backend_calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_trusted_execve_path_denial_retries_with_ro_mount(
+async def test_trusted_execve_path_denial_escalates_without_retry(
     managed_runtime: Path,
     tmp_path_factory: pytest.TempPathFactory,
     monkeypatch: pytest.MonkeyPatch,
@@ -2193,14 +2434,12 @@ async def test_trusted_execve_path_denial_retries_with_ro_mount(
 
     async def _fake_run_under_backend(request, *, runtime=None):
         backend_calls.append(request)
-        if len(backend_calls) == 1:
-            return SimpleNamespace(
-                returncode=1,
-                stdout="",
-                stderr="",
-                backend_notes=(f"execve.denied: {target}",),
-            )
-        return SimpleNamespace(returncode=0, stdout="ran\n", stderr="", backend_notes=())
+        return SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="",
+            backend_notes=(f"execve.denied: {target}",),
+        )
 
     monkeypatch.setattr(shell, "run_under_backend", _fake_run_under_backend)
     monkeypatch.setattr(shell, "_sensitive_shell_block", lambda *args, **kwargs: None)
@@ -2230,20 +2469,12 @@ async def test_trusted_execve_path_denial_retries_with_ro_mount(
     finally:
         current_tool_context.reset(token)
 
-    assert "ran" in result
-    retry_mounts = backend_calls[1].policy.mounts
-    assert any(
-        mount.mode == "ro" and target.resolve(strict=False).is_relative_to(mount.host_path)
-        for mount in retry_mounts
-    )
-    assert not any(
-        mount.mode == "rw" and target.resolve(strict=False).is_relative_to(mount.host_path)
-        for mount in retry_mounts
-    )
+    assert json.loads(result)["status"] == "denied"
+    assert len(backend_calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_trusted_path_recovery_preserves_mount_without_redundant_network_retry(
+async def test_trusted_managed_network_denial_escalates_without_retry(
     managed_runtime: Path,
     tmp_path_factory: pytest.TempPathFactory,
     monkeypatch: pytest.MonkeyPatch,
@@ -2257,21 +2488,12 @@ async def test_trusted_path_recovery_preserves_mount_without_redundant_network_r
 
     async def _fake_run_under_backend(request, *, runtime=None):
         backend_calls.append(request)
-        if len(backend_calls) == 1:
-            return SimpleNamespace(
-                returncode=1,
-                stdout="",
-                stderr="",
-                backend_notes=(f"mount denied: {outside}",),
-            )
-        if len(backend_calls) == 2:
-            return SimpleNamespace(
-                returncode=1,
-                stdout="",
-                stderr="curl: (6) Could not resolve host: pypi.org\n",
-                backend_notes=(),
-            )
-        return SimpleNamespace(returncode=0, stdout="installed\n", stderr="", backend_notes=())
+        return SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="",
+            backend_notes=(f"mount denied: {outside}",),
+        )
 
     async def _fake_prepare_subprocess_managed_network_proxy(request, *, runtime=None):
         managed_env = dict(request.env)
@@ -2327,14 +2549,10 @@ async def test_trusted_path_recovery_preserves_mount_without_redundant_network_r
     finally:
         current_tool_context.reset(token)
 
-    assert "Could not resolve host: pypi.org" in result
-    assert len(backend_calls) == 2
-    assert cleanup_calls == 2
-    assert backend_calls[1].env["HTTP_PROXY"] == "http://127.0.0.1:48123"
-    assert any(
-        mount.mode == "rw" and outside.resolve(strict=False).is_relative_to(mount.host_path)
-        for mount in backend_calls[1].policy.mounts
-    )
+    assert json.loads(result)["status"] == "denied"
+    assert len(backend_calls) == 1
+    assert cleanup_calls == 1
+    assert backend_calls[0].env["HTTP_PROXY"] == "http://127.0.0.1:48123"
 
 
 @pytest.mark.asyncio
@@ -2885,7 +3103,7 @@ async def test_code_exec_prepares_managed_proxy_before_backend_run(
 
 
 @pytest.mark.asyncio
-async def test_trusted_code_exec_normal_user_path_denial_retries_once(
+async def test_trusted_code_exec_path_denial_escalates_without_retry(
     managed_runtime: Path,
     tmp_path_factory: pytest.TempPathFactory,
     monkeypatch: pytest.MonkeyPatch,
@@ -2904,20 +3122,12 @@ async def test_trusted_code_exec_normal_user_path_denial_retries_once(
 
     async def _fake_run_under_backend(request, *, runtime=None):
         backend_calls.append(request)
-        if len(backend_calls) == 1:
-            return SimpleNamespace(
-                returncode=1,
-                stdout="",
-                stderr="",
-                timed_out=False,
-                backend_notes=(f"filesystem.read.denied: {outside}",),
-            )
         return SimpleNamespace(
-            returncode=0,
-            stdout="ok\n",
+            returncode=1,
+            stdout="",
             stderr="",
             timed_out=False,
-            backend_notes=(),
+            backend_notes=(f"filesystem.read.denied: {outside}",),
         )
 
     async def _fake_escalate_backend_denial(*args, **kwargs):
@@ -2953,12 +3163,8 @@ async def test_trusted_code_exec_normal_user_path_denial_retries_once(
     finally:
         current_tool_context.reset(token)
 
-    assert result["stdout"] == "ok\n"
-    assert len(backend_calls) == 2
-    assert any(
-        mount.mode == "ro" and outside.resolve(strict=False).is_relative_to(mount.host_path)
-        for mount in backend_calls[1].policy.mounts
-    )
+    assert result["status"] == "denied"
+    assert len(backend_calls) == 1
 
 
 @pytest.mark.asyncio

@@ -14,8 +14,8 @@ import tempfile
 import time
 from pathlib import Path
 
-from opensquilla.sandbox.capability_profile import Capability, CapabilityProfile, Confidence
 from opensquilla.sandbox.integration import (
+    SandboxRuntime,
     escalate_backend_denial,
     gate_action,
     get_runtime,
@@ -156,17 +156,23 @@ def _windows_sandbox_backend_active(runtime: object | None) -> bool:
     return backend_name.startswith("windows_")
 
 
-def _trusted_windows_managed_network_policy(policy, runtime: object | None):
+def _trusted_managed_network_policy(policy, runtime: object | None):
     if getattr(policy, "network", None) is NetworkMode.PROXY_ALLOWLIST:
-        return policy
-    if not _windows_sandbox_backend_active(runtime):
         return policy
     settings = getattr(runtime, "settings", None) if runtime is not None else None
     if getattr(settings, "network_default", None) != "proxy_allowlist":
         return policy
     if not trusted_sandbox_active():
         return policy
+    ctx = current_tool_context.get()
+    if getattr(policy, "network", None) is NetworkMode.NONE and (
+        ctx is None or getattr(ctx, "sandbox_run_context", None) is None
+    ):
+        return policy
     return dataclasses.replace(policy, network=NetworkMode.PROXY_ALLOWLIST, network_proxy=None)
+
+
+_trusted_windows_managed_network_policy = _trusted_managed_network_policy
 
 
 def _windows_environment_subprocess_misuse(code: str) -> str | None:
@@ -233,17 +239,10 @@ _SAFE_ENV_KEYS = frozenset(
     }
 )
 
-_CODE_EXEC_RECOVERY_PROFILE = CapabilityProfile(
-    capabilities=frozenset({Capability.VERIFY_IMPORT_OR_BUILD}),
-    confidence=Confidence.MEDIUM,
-    evidence=("code.exec",),
-)
-
-
 async def _run_backend_with_managed_network_if_needed(
     request: SandboxRequest,
     *,
-    runtime: object | None,
+    runtime: SandboxRuntime | None,
 ):
     if (
         runtime is None
@@ -282,16 +281,16 @@ def _execution_result_json(
 
 def _append_code_exec_sandbox_network_hint(*, stdout: str, stderr: str) -> str:
     from opensquilla.tools.builtin.shell import (
-        _SANDBOX_NETWORK_HINT,
         _append_sandbox_network_hint,
         _looks_like_sandbox_network_failure,
+        _sandbox_network_hint,
     )
 
     if not _looks_like_sandbox_network_failure(stdout + "\n" + stderr):
         return stderr
     if stderr:
         return _append_sandbox_network_hint(stderr, force=True)
-    return _SANDBOX_NETWORK_HINT
+    return _sandbox_network_hint()
 
 
 def _resolve_python_bin(*, sandbox_enabled: bool) -> str:
@@ -453,7 +452,7 @@ async def execute_code(
             argv=(python_bin, "-c", code),
             cwd=request.cwd,
             action_kind=request.action_kind,
-            policy=_trusted_windows_managed_network_policy(request.policy, runtime),
+            policy=_trusted_managed_network_policy(request.policy, runtime),
             env=safe_env,
             reason=getattr(request, "reason", ""),
             session_id=getattr(request, "session_id", ""),
@@ -479,42 +478,18 @@ async def execute_code(
                 elapsed_ms=0,
             )
         if sandbox_result.backend_notes:
-            from opensquilla.tools.builtin.shell import _trusted_path_recovery_retry_request
-
-            retry_request = _trusted_path_recovery_retry_request(
-                "execute_code",
-                backend_request,
-                sandbox_result.backend_notes,
-                capability_profile=_CODE_EXEC_RECOVERY_PROFILE,
+            escalation = await escalate_backend_denial(
+                sandbox_result, request, _policy, runtime=runtime
             )
-            if retry_request is not None:
-                try:
-                    sandbox_result = await _run_backend_with_managed_network_if_needed(
-                        retry_request,
-                        runtime=runtime,
-                    )
-                except Exception as exc:
-                    return _execution_result_json(
-                        returncode=-1,
-                        stdout="",
-                        stderr=f"Execution error: {exc}",
-                        timed_out=False,
-                        elapsed_ms=0,
-                    )
-                backend_request = retry_request
-            if sandbox_result.backend_notes:
-                escalation = await escalate_backend_denial(
-                    sandbox_result, request, _policy, runtime=runtime
-                )
-                if isinstance(escalation, DenialResult):
-                    return json.dumps(escalation.to_dict())
-                return _execution_result_json(
-                    returncode=-1,
-                    stdout="",
-                    stderr="Sandboxed code execution denied; host fallback disabled",
-                    timed_out=False,
-                    elapsed_ms=0,
-                )
+            if isinstance(escalation, DenialResult):
+                return json.dumps(escalation.to_dict())
+            return _execution_result_json(
+                returncode=-1,
+                stdout="",
+                stderr="Sandboxed code execution denied; host fallback disabled",
+                timed_out=False,
+                elapsed_ms=0,
+            )
         elapsed_ms = (time.monotonic_ns() - start_ns) // 1_000_000
         stdout = sandbox_result.stdout
         stderr = sandbox_result.stderr

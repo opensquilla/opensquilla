@@ -59,11 +59,11 @@ class _UnsupportedWindowsBackend:
         return frozenset()
 
 
-def test_linux_and_macos_backends_keep_filesystem_operations_disabled() -> None:
+def test_linux_backend_supports_filesystem_operations() -> None:
     from opensquilla.sandbox.backend.bubblewrap import BubblewrapBackend
     from opensquilla.sandbox.backend.seatbelt import SeatbeltBackend
 
-    assert "filesystem" not in BubblewrapBackend().operation_domains_supported()
+    assert "filesystem" in BubblewrapBackend().operation_domains_supported()
     assert "filesystem" not in SeatbeltBackend().operation_domains_supported()
 
 
@@ -103,22 +103,34 @@ async def test_write_file_uses_backend_filesystem_operation_when_supported(
 
 
 @pytest.mark.asyncio
-async def test_write_file_refuses_host_fallback_for_sandbox_backend_without_worker(
+async def test_write_file_uses_linux_backend_filesystem_worker_when_supported(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     target = workspace / "notes.txt"
+    calls: list[object] = []
 
-    _configure_with_backend(workspace, SimpleNamespace(name="bubblewrap"))
+    class _Backend:
+        name = "bubblewrap"
+
+        def operation_domains_supported(self) -> frozenset[str]:
+            return frozenset({"filesystem"})
+
+        async def run_operation(self, operation: object) -> object:
+            calls.append(operation)
+            return SimpleNamespace(message=f"Written 5 bytes to {target}", created=True)
+
+    _configure_with_backend(workspace, _Backend())
     monkeypatch.setattr(fs.asyncio, "get_event_loop", lambda: _InlineExecutorLoop())
 
     with _tool_context(workspace):
-        with pytest.raises(SandboxBackendError, match="filesystem operations"):
-            await fs.write_file(str(target), "hello")
+        result = await fs.write_file(str(target), "hello")
 
+    assert result == f"Written 5 bytes to {target}"
     assert not target.exists()
+    assert len(calls) == 1
 
 
 @pytest.mark.asyncio

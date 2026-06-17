@@ -91,6 +91,13 @@ def capability_profile_from_operation(operation: OperationProfile) -> Capability
         if bundle is not None:
             package_bundles.append(bundle)
             evidence.append(bundle)
+    elif operation.name == "package_query":
+        capabilities.add(Capability.INSTALL_PACKAGES)
+        network_intent = NetworkIntent.PACKAGE_REGISTRY
+        bundle = package_bundle_for_manager(operation.package_manager)
+        if bundle is not None:
+            package_bundles.append(bundle)
+            evidence.append(bundle)
     elif operation.name == "url_fetch":
         capabilities.add(Capability.FETCH_SOURCE)
         network_intent = NetworkIntent.EXPLICIT_PUBLIC_URL

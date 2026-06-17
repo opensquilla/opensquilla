@@ -26,6 +26,7 @@ from pathlib import Path, PurePath
 from typing import Any, cast
 
 from opensquilla.sandbox.backend.base import Backend
+from opensquilla.sandbox.managed_proxy_env import managed_proxy_env
 from opensquilla.sandbox.types import (
     NetworkMode,
     NetworkProxySpec,
@@ -53,7 +54,7 @@ _BASE_RO_PATHS: tuple[Path, ...] = (
     Path("/Library/Developer/CommandLineTools"),
 )
 _BREW_PREFIXES: tuple[Path, ...] = (Path("/opt/homebrew"), Path("/usr/local"))
-_PROXY_ENV_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+_PROTECTED_SUBPATH_NAMES = (".git", ".codex", ".agents")
 
 
 def _sandbox_exec_binary(binary: str | None = None) -> str | None:
@@ -169,7 +170,7 @@ def _extra_runtime_read_paths(request: SandboxRequest) -> list[Path]:
     return paths
 
 
-def _env_for_policy(
+def seatbelt_env_for_policy(
     policy: SandboxPolicy,
     override_env: dict[str, str],
     *,
@@ -194,10 +195,16 @@ def _env_for_policy(
                 "NetworkMode.PROXY_ALLOWLIST requires a network proxy "
                 "for the seatbelt backend"
             )
-        proxy_url = f"http://{policy.network_proxy.host}:{policy.network_proxy.port}"
-        for key in _PROXY_ENV_KEYS:
-            resolved[key] = proxy_url
+        resolved.update(
+            managed_proxy_env(
+                policy.network_proxy.host,
+                policy.network_proxy.port,
+            )
+        )
     return resolved
+
+
+_env_for_policy = seatbelt_env_for_policy
 
 
 def _read_rules(paths: Iterable[Path]) -> list[str]:
@@ -210,6 +217,18 @@ def _read_rules(paths: Iterable[Path]) -> list[str]:
 
 def _write_rules(paths: Iterable[Path]) -> list[str]:
     return [f"(allow file-write* {_subpath(path)})" for path in _unique_existing(paths)]
+
+
+def _protected_write_deny_rules(paths: Iterable[Path]) -> list[str]:
+    rules: list[str] = []
+    for root in _unique_existing(paths):
+        if root.is_file():
+            continue
+        for name in _PROTECTED_SUBPATH_NAMES:
+            protected = root / name
+            if protected.exists():
+                rules.append(f"(deny file-write* {_subpath(protected)})")
+    return rules
 
 
 def _network_proxy_rule(proxy: NetworkProxySpec) -> str:
@@ -283,6 +302,7 @@ def render_seatbelt_profile(
 
     lines.extend(_read_rules(read_paths))
     lines.extend(_write_rules(write_paths))
+    lines.extend(_protected_write_deny_rules(write_paths))
     return "\n".join(lines) + "\n"
 
 
@@ -556,5 +576,6 @@ __all__ = [
     "SeatbeltBackend",
     "build_seatbelt_argv",
     "render_seatbelt_profile",
+    "seatbelt_env_for_policy",
     "_render_sbpl_skeleton",
 ]

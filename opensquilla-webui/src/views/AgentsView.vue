@@ -158,9 +158,17 @@
     <Teleport to="body">
       <Transition name="drawer">
         <div v-if="drawerOpen" class="drawer-overlay" @click="onOverlayClick">
-          <div class="drawer" :class="{ 'drawer--wide': true }" @click.stop>
+          <div
+            ref="drawerRef"
+            class="drawer"
+            :class="{ 'drawer--wide': true }"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="agents-drawer-title"
+            @click.stop
+          >
             <div class="drawer__header">
-              <h3 class="drawer__title">{{ drawerTitle }}</h3>
+              <h3 id="agents-drawer-title" class="drawer__title">{{ drawerTitle }}</h3>
               <button class="drawer__close" aria-label="Close" @click="closeDrawer">
                 <Icon name="x" :size="20" />
               </button>
@@ -239,15 +247,22 @@
     <!-- Confirm modal -->
     <Teleport to="body">
       <Transition name="modal">
-        <div v-if="confirmOpen" class="modal-overlay" @click="confirmOpen = false">
-          <div class="modal" @click.stop>
-            <h3 class="modal__title">{{ confirmTitle }}</h3>
+        <div v-if="confirmOpen" class="modal-overlay" @click="cancelConfirm">
+          <div
+            ref="confirmRef"
+            class="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="agents-confirm-title"
+            @click.stop
+          >
+            <h3 id="agents-confirm-title" class="modal__title">{{ confirmTitle }}</h3>
             <div class="modal__body">
               <p>{{ confirmBody }}</p>
             </div>
             <div class="modal__footer">
               <button :class="['btn', confirmPrimaryClass]" @click="onConfirmPrimary">{{ confirmPrimaryLabel }}</button>
-              <button class="btn btn--ghost" @click="confirmOpen = false">Cancel</button>
+              <button ref="confirmCancelBtn" class="btn btn--ghost" @click="cancelConfirm">Cancel</button>
             </div>
           </div>
         </div>
@@ -264,6 +279,7 @@ import { useRpcStore } from '@/stores/rpc'
 import Icon from '@/components/Icon.vue'
 import { useAgentsData } from '@/composables/agents/useAgentsData'
 import { isAgentBuiltin, useAgentDrawer } from '@/composables/agents/useAgentDrawer'
+import { useDialogA11y } from '@/composables/useDialogA11y'
 import type { Agent } from '@/types/agents'
 
 // ---------------------------------------------------------------------------
@@ -284,6 +300,10 @@ const confirmBody = ref('')
 const confirmPrimaryLabel = ref('Confirm')
 const confirmPrimaryClass = ref('btn--danger')
 let confirmResolve: ((value: boolean) => void) | null = null
+
+const drawerRef = ref<HTMLElement | null>(null)
+const confirmRef = ref<HTMLElement | null>(null)
+const confirmCancelBtn = ref<HTMLElement | null>(null)
 
 const {
   drawerOpen,
@@ -306,6 +326,9 @@ const {
   buildSavePayload,
   applyUpdatedAgent,
 } = useAgentDrawer(agents, confirmDiscard)
+
+useDialogA11y(drawerRef, drawerOpen, closeDrawer)
+useDialogA11y(confirmRef, confirmOpen, cancelConfirm, { initialFocus: confirmCancelBtn })
 
 // ---------------------------------------------------------------------------
 // Computed
@@ -477,6 +500,14 @@ function onConfirmPrimary() {
   confirmOpen.value = false
   if (confirmResolve) {
     confirmResolve(true)
+    confirmResolve = null
+  }
+}
+
+function cancelConfirm() {
+  confirmOpen.value = false
+  if (confirmResolve) {
+    confirmResolve(false)
     confirmResolve = null
   }
 }

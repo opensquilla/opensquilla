@@ -195,7 +195,7 @@ async def test_runtime_pipeline_runs_meta_resolution_before_skill_filter(
     monkeypatch.setattr("opensquilla.engine.steps.apply_squilla_router", noop_router)
 
     loader = _make_loader_with_meta(tmp_path)
-    runner = TurnRunner(provider_selector=None, config=None)
+    runner = TurnRunner(provider_selector=None, config=_meta_cfg(auto_trigger=True))
     runner._skill_loader = loader
 
     turn, _provider = await runner._run_pipeline(
@@ -262,7 +262,7 @@ async def test_runtime_pipeline_pins_meta_skill_when_skill_filter_enabled(
     )
     runner = TurnRunner(
         provider_selector=None,
-        config=SimpleNamespace(skills=skills_cfg),
+        config=SimpleNamespace(skills=skills_cfg, meta_skill=SimpleNamespace(enabled=True, auto_trigger=True)),
     )
     runner._skill_loader = loader
 
@@ -294,4 +294,71 @@ async def test_runtime_pipeline_pins_meta_skill_when_skill_filter_enabled(
         "type": "function",
         "function": {"name": "meta_invoke"},
     }
+    assert "meta-tiny" in str(turn.system_prompt)
+
+
+def _meta_cfg(auto_trigger: bool) -> "SimpleNamespace":
+    from types import SimpleNamespace
+    return SimpleNamespace(meta_skill=SimpleNamespace(enabled=True, auto_trigger=auto_trigger))
+
+
+@pytest.mark.asyncio
+async def test_pipeline_hides_meta_skill_from_prompt_when_auto_trigger_off(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def noop_router(ctx: TurnContext) -> TurnContext:
+        return ctx
+
+    noop_router.__name__ = "apply_squilla_router"
+    monkeypatch.setattr("opensquilla.engine.steps.apply_squilla_router", noop_router)
+
+    loader = _make_loader_with_meta(tmp_path)
+    runner = TurnRunner(provider_selector=None, config=_meta_cfg(auto_trigger=False))
+    runner._skill_loader = loader
+
+    turn, _provider = await runner._run_pipeline(
+        "what is the capital of France?",  # non-triggering: isolates skills_filter
+        "agent:main:test-meta-hidden",
+        None,
+        None,
+        [
+            ToolDefinition(name="web_search", description="search", input_schema=ToolInputSchema()),
+        ],
+        "base prompt",
+        [],
+    )
+
+    assert "meta-tiny" not in str(turn.system_prompt)
+    assert "meta-tiny" not in (turn.metadata.get("filtered_skill_ids") or [])
+
+
+@pytest.mark.asyncio
+async def test_pipeline_shows_meta_skill_when_auto_trigger_on(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def noop_router(ctx: TurnContext) -> TurnContext:
+        return ctx
+
+    noop_router.__name__ = "apply_squilla_router"
+    monkeypatch.setattr("opensquilla.engine.steps.apply_squilla_router", noop_router)
+
+    loader = _make_loader_with_meta(tmp_path)
+    runner = TurnRunner(provider_selector=None, config=_meta_cfg(auto_trigger=True))
+    runner._skill_loader = loader
+
+    turn, _provider = await runner._run_pipeline(
+        "what is the capital of France?",  # non-triggering: isolates skills_filter
+        "agent:main:test-meta-shown",
+        None,
+        None,
+        [
+            ToolDefinition(name="meta_invoke", description="invoke", input_schema=ToolInputSchema()),
+            ToolDefinition(name="web_search", description="search", input_schema=ToolInputSchema()),
+        ],
+        "base prompt",
+        [],
+    )
+
     assert "meta-tiny" in str(turn.system_prompt)

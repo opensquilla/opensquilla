@@ -3,6 +3,7 @@
 from opensquilla.engine.pipeline import TurnContext
 from opensquilla.engine.steps.inject_platform_hint import inject_platform_hint
 from opensquilla.engine.steps.inject_subagent_grounding import inject_subagent_grounding
+from opensquilla.engine.steps.meta_command import meta_command_launch
 from opensquilla.engine.steps.meta_resolution import meta_resolution
 from opensquilla.engine.steps.prompt_cache import apply_prompt_cache
 from opensquilla.engine.steps.reasoning_hint_observer import observe_reasoning_hint
@@ -25,6 +26,7 @@ __all__ = [
     "filter_skills",
     "inject_platform_hint",
     "inject_subagent_grounding",
+    "meta_command_launch",
     "meta_resolution",
     "observe_reasoning_hint",
     "resolve_model",

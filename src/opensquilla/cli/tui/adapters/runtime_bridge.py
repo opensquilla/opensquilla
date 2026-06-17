@@ -1,19 +1,20 @@
 """TUI runtime launch bridge for chat command wiring.
 
-This module owns concrete runtime dependency assembly and terminal bridge
+This module owns concrete runtime dependency assembly and OpenTUI bridge
 defaults. ``chat_cmd.py`` supplies mode-level CLI parameters; the TUI bridge
-decides how terminal, slash-command, and turn-stream callbacks become gateway
+decides how frontend, slash-command, and turn-stream callbacks become gateway
 or standalone runtime dependencies.
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Coroutine
-from typing import Any, Protocol
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
+from typing import TYPE_CHECKING, Any, Protocol
 
 from rich.panel import Panel
 
-import opensquilla.cli.tui.adapters.terminal_bridge as _terminal_bridge
+import opensquilla.cli.tui.adapters.native_bridge as _native_bridge
+import opensquilla.cli.tui.adapters.opentui_bridge as _opentui_bridge
 from opensquilla.cli.chat import gateway_runtime as _gateway_runtime
 from opensquilla.cli.chat.session_context import (
     GatewayRuntimeScope,
@@ -22,16 +23,35 @@ from opensquilla.cli.chat.session_context import (
 from opensquilla.cli.chat.turn import TurnResult
 from opensquilla.cli.tui import standalone_runtime as _standalone_runtime
 from opensquilla.cli.tui.adapters import commands as _commands
+from opensquilla.cli.tui.adapters import runtime_helpers as _runtime_helpers
 from opensquilla.cli.tui.adapters import slash_bridge as _slash_bridge
 from opensquilla.cli.tui.backend.contracts import TuiOutputHandle
 from opensquilla.cli.ui import ACCENT, console, error_panel
 from opensquilla.engine.commands import Surface
+
+if TYPE_CHECKING:
+    from opensquilla.engine.agent_injection import PendingInputProvider
 
 PENDING_QUEUE_MAX_SIZE = 8
 
 GatewayRuntimeDependencies = _gateway_runtime.GatewayRuntimeDependencies
 GatewayClientLike = _gateway_runtime.GatewayClientLike
 StandaloneRuntimeDependencies = _standalone_runtime.StandaloneRuntimeDependencies
+
+
+def validate_tui_backend_selection(env: Mapping[str, str] | None = None) -> str:
+    from opensquilla.cli.tui.renderers.selection import (  # noqa: PLC0415
+        select_renderer_backend_from_env,
+    )
+
+    return select_renderer_backend_from_env(env).backend_id
+
+
+def _runtime_bridge_for_selected_backend() -> Any:
+    backend_id = validate_tui_backend_selection()
+    if backend_id == "opentui":
+        return _opentui_bridge
+    return _native_bridge
 
 
 class GatewayTerminalReplRunner(Protocol):
@@ -55,7 +75,7 @@ async def run_concurrent_repl(
     abort_active_turn: Callable[[], Awaitable[None]] | None = None,
     queue_max_size: int | None = None,
 ) -> None:
-    await _terminal_bridge.run_concurrent_repl(
+    await _runtime_bridge_for_selected_backend().run_concurrent_repl(
         surface=surface,
         scope=scope,
         dispatch=dispatch,
@@ -69,11 +89,12 @@ async def run_concurrent_repl(
 def get_tui_output(
     scope: GatewayRuntimeScope | StandaloneRuntimeScope,
 ) -> TuiOutputHandle | None:
-    return _terminal_bridge.get_tui_output(scope)
+    output = _runtime_bridge_for_selected_backend().get_tui_output(scope)
+    return output if isinstance(output, TuiOutputHandle) else None
 
 
 def clear_current_cancel() -> None:
-    _terminal_bridge.clear_current_cancel()
+    _runtime_helpers.clear_current_cancel()
 
 
 def cli_sender_id() -> str:
@@ -98,8 +119,16 @@ def standalone_slash_services_from_runtime(
 
 def _turn_stream_dependencies() -> Any:
     from opensquilla.cli.tui import turn_bridge as _turn_bridge
+    from opensquilla.cli.tui.native.renderer import NativeStreamRenderer
+    from opensquilla.cli.tui.opentui.renderer import OpenTuiStreamRenderer
 
-    return _turn_bridge.default_turn_stream_dependencies()
+    backend_id = validate_tui_backend_selection()
+    renderer_factory = (
+        OpenTuiStreamRenderer if backend_id == "opentui" else NativeStreamRenderer
+    )
+    return _turn_bridge.default_turn_stream_dependencies(
+        renderer_factory=renderer_factory
+    )
 
 
 async def stream_response_gateway(
@@ -194,6 +223,7 @@ def _gateway_runtime_notifier(
                     "input. Ctrl+D exits. /help lists commands.[/dim]",
                     title="Gateway",
                     border_style=ACCENT,
+                    expand=False,
                 )
             )
             return
@@ -219,6 +249,7 @@ async def stream_response_turnrunner(
     timeout: float | None = None,
     *,
     tui_output: TuiOutputHandle | None = None,
+    pending_input_provider: PendingInputProvider | None = None,
 ) -> TurnResult:
     from opensquilla.cli.tui import turn_bridge as _turn_bridge
 
@@ -232,6 +263,7 @@ async def stream_response_turnrunner(
         timeout=timeout,
         tui_output=tui_output,
         deps=_turn_stream_dependencies(),
+        pending_input_provider=pending_input_provider,
     )
 
 
@@ -245,6 +277,7 @@ async def handle_image_command_turnrunner(
     timeout: float | None = None,
     *,
     tui_output: TuiOutputHandle | None = None,
+    pending_input_provider: PendingInputProvider | None = None,
 ) -> TurnResult:
     from opensquilla.cli.tui import turn_bridge as _turn_bridge
 
@@ -258,6 +291,7 @@ async def handle_image_command_turnrunner(
         timeout=timeout,
         tui_output=tui_output,
         deps=_turn_stream_dependencies(),
+        pending_input_provider=pending_input_provider,
     )
 
 

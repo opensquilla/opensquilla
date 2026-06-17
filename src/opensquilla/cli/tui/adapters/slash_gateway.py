@@ -1,7 +1,7 @@
 """Gateway slash-command adapter for the chat REPL backend.
 
 This module owns gateway-mode slash command dispatch. It is intentionally
-independent from prompt-toolkit and raw chat application objects: callers pass
+independent from raw frontend and chat application objects: callers pass
 typed session state, a gateway client, and an optional TUI output handle.
 """
 
@@ -32,6 +32,7 @@ GATEWAY_SLASH_HANDLER_WORDS = frozenset(
         "/approvals",
         "/clear",
         "/compact",
+        "/cmp",
         "/cost",
         "/delete",
         "/elevated",
@@ -244,7 +245,7 @@ async def handle_gateway_slash_command(
         console.print(f"[{ACCENT}]cleared[/] [dim]{state.session_key}[/dim]")
         return True
 
-    if cmd == "/compact":
+    if cmd in {"/compact", "/cmp"}:
         console.print(f"[{ACCENT}]compacting context...[/]")
         try:
             payload = await client.compact_session(state.session_key)

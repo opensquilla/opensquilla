@@ -62,6 +62,12 @@ class ThinkingEvent:
 class TextDeltaEvent:
     kind: Literal["text_delta"] = field(default="text_delta", init=False)
     text: str = ""
+    # Whether this text is the turn's final answer (render as a card) or
+    # intermediate narration between tool calls (render as a lightweight purple
+    # ✱ line). Decided by the agent from whether the producing provider call
+    # ended up making tool calls — see agent.py. Defaults to "answer" so any
+    # producer that does not set it keeps the pre-existing card behavior.
+    presentation: Literal["intermediate", "answer"] = "answer"
 
 
 @dataclass
@@ -216,6 +222,7 @@ class RouterDecisionEvent:
     prompt_policy: str = ""
     routing_applied: bool = True
     rollout_phase: str = "full"
+    context_window: int | None = None
 
 
 @dataclass

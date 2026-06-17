@@ -83,6 +83,21 @@ to a particular model:
 opensquilla diagnostics on
 ```
 
+## Terminal Router HUD
+
+Interactive terminal chat also surfaces routing decisions through the TUI Router
+HUD when router metadata is present. The HUD is display-only: it consumes the
+same turn metadata and does not change model selection.
+
+The HUD can show the selected tier, selected model, baseline model, route
+source, confidence, estimated savings, fallback state, thinking mode, prompt
+policy, whether routing was applied, and rollout phase.
+
+Full routing is shown as an active route. Observe-only routing is shown as an
+observe decision, which means OpenSquilla recorded what the router would have
+chosen while keeping the configured baseline behavior. Fallback decisions use a
+warning style so provider or policy recovery is visible during the turn.
+
 ## Recommended Operating Modes
 
 | Goal | Suggested mode |

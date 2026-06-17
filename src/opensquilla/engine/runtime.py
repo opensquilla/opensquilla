@@ -50,6 +50,7 @@ from opensquilla.contracts.attachments import (
     attachment_size_limit_for_mime as _attachment_size_limit_for_mime,
 )
 from opensquilla.engine.agent import Agent, ToolHandler
+from opensquilla.engine.agent_injection import PendingInputProvider
 from opensquilla.engine.cache_break_monitor import notify_compaction
 from opensquilla.engine.hooks import (
     CompactionHook,
@@ -1839,6 +1840,8 @@ class TurnRunner:
         no_memory_capture: bool = False,
         ingress_pipeline_steps: list[PipelineStepRecord] | None = None,
         router_control_replay_depth: int = 0,
+        *,
+        pending_input_provider: PendingInputProvider | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Run one agent turn with full orchestration.
 
@@ -1896,6 +1899,7 @@ class TurnRunner:
                     fresh_user_session=fresh_user_session,
                     session_intent=session_intent,
                     semantic_message=semantic_message,
+                    pending_input_provider=pending_input_provider,
                     run_kind=run_kind,
                     heartbeat_ack_max_chars=heartbeat_ack_max_chars,
                     bootstrap_context_mode=bootstrap_context_mode,
@@ -1936,6 +1940,7 @@ class TurnRunner:
                         fresh_user_session=fresh_user_session,
                         session_intent=session_intent,
                         semantic_message=semantic_message,
+                        pending_input_provider=pending_input_provider,
                         run_kind=run_kind,
                         heartbeat_ack_max_chars=heartbeat_ack_max_chars,
                         bootstrap_context_mode=bootstrap_context_mode,
@@ -1976,6 +1981,8 @@ class TurnRunner:
         no_memory_capture: bool = False,
         ingress_pipeline_steps: list[PipelineStepRecord] | None = None,
         router_control_replay_depth: int = 0,
+        *,
+        pending_input_provider: PendingInputProvider | None = None,
     ) -> AsyncIterator[AgentEvent]:
         # Observability: bracket turn setup + stream loop with monotonic clock
         # so latency_ms reflects the full turn.
@@ -2290,6 +2297,7 @@ class TurnRunner:
                 session_manager_present=self._session_manager is not None,
                 state=stream_state,
                 tool_context=tool_context,
+                pending_input_provider=pending_input_provider,
             )
             router_control_replay_event: RouterControlReplayEvent | None = None
             async for event in self._stream_consumer_stage.run(stream_inp):
@@ -2320,6 +2328,7 @@ class TurnRunner:
                     fresh_user_session=False,
                     session_intent=session_intent,
                     semantic_message=semantic_message,
+                    pending_input_provider=pending_input_provider,
                     run_kind=run_kind,
                     heartbeat_ack_max_chars=heartbeat_ack_max_chars,
                     bootstrap_context_mode=bootstrap_context_mode,

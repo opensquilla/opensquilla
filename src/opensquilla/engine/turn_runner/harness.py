@@ -70,6 +70,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from opensquilla.engine.agent import Agent, ToolHandler
+    from opensquilla.engine.agent_injection import PendingInputProvider
     from opensquilla.engine.runtime import TurnRunner
     from opensquilla.engine.types import AgentConfig, AgentEvent, DoneEvent, ErrorEvent
     from opensquilla.observability.prompt_report import PromptReport
@@ -723,11 +724,10 @@ class _RequestContextPrependAdapter(RequestContextPrependPort):
 class _TurnRunnerAgentRunAdapter(AgentRunPort):
     """Bind ``agent.run_turn(turn_input, extra_messages=..., **kwargs)``.
 
-    Folds the ``_accepts_keyword_arg(agent.run_turn, "semantic_message")``
-    introspection inside the adapter so the stage body never imports
-    ``inspect``. ``semantic_message`` is forwarded only when the agent
-    accepts the keyword; otherwise the call uses the two-arg
-    invocation. The agent is supplied per-call so the stage can be
+    Folds ``_accepts_keyword_arg(agent.run_turn, ...)`` introspection inside
+    the adapter so the stage body never imports ``inspect``. Optional keywords
+    are forwarded only when the agent accepts them; otherwise the call uses the
+    older invocation. The agent is supplied per-call so the stage can be
     instantiated once and reused across turns.
     """
 
@@ -738,12 +738,15 @@ class _TurnRunnerAgentRunAdapter(AgentRunPort):
         turn_input: str,
         extra_messages: list[Any] | None,
         semantic_message: str | None,
+        pending_input_provider: PendingInputProvider | None = None,
     ) -> AsyncIterator[AgentEvent]:
         from opensquilla.engine.runtime import _accepts_keyword_arg
 
         kwargs: dict[str, Any] = {}
         if _accepts_keyword_arg(agent.run_turn, "semantic_message"):
             kwargs["semantic_message"] = semantic_message
+        if _accepts_keyword_arg(agent.run_turn, "pending_input_provider"):
+            kwargs["pending_input_provider"] = pending_input_provider
         return agent.run_turn(
             turn_input,
             extra_messages=extra_messages,

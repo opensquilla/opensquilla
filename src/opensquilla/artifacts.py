@@ -24,6 +24,8 @@ ARTIFACT_MATERIAL_NAME = "data"
 ARTIFACT_THUMBNAIL_NAME = "thumb.webp"
 ARTIFACT_THUMBNAIL_MAX_EDGE = 512
 ARTIFACT_THUMBNAIL_QUALITY = 80
+ARTIFACT_STORE_TOKEN_CHARS = 12
+LEGACY_ARTIFACT_STORE_TOKEN_CHARS = 16
 DEFAULT_ARTIFACT_MAX_BYTES = 30 * 1024 * 1024
 DEFAULT_ARTIFACT_DISK_BUDGET_BYTES = 512 * 1024 * 1024
 
@@ -314,30 +316,25 @@ class ArtifactStore:
         sha256 = _validate_sha256(sha256)
         safe_name = _safe_filename(name)
         safe_mime = _safe_mime(mime) if mime else None
-        root = (
-            self.media_root
-            / ARTIFACT_STORE
-            / ARTIFACT_SESSION_BUCKET
-            / _session_store_token(session_id)
-        )
-        if not root.exists():
-            return None
-        for meta_path in sorted(root.glob("*/meta.json")):
-            try:
-                ref = ArtifactRef.from_dict(json.loads(meta_path.read_text(encoding="utf-8")))
-            except (OSError, ValueError, json.JSONDecodeError):
+        for root in self._artifact_session_roots(session_id):
+            if not root.exists():
                 continue
-            if ref.session_id != session_id or ref.session_key != session_key:
-                continue
-            if ref.sha256 != sha256 or ref.name != safe_name:
-                continue
-            if safe_mime is not None and ref.mime != safe_mime:
-                continue
-            try:
-                self.resolve_for_download(ref.id, session_id=session_id)
-            except (ArtifactNotFoundError, ArtifactIntegrityError):
-                continue
-            return ref
+            for meta_path in sorted(root.glob("*/meta.json")):
+                try:
+                    ref = ArtifactRef.from_dict(json.loads(meta_path.read_text(encoding="utf-8")))
+                except (OSError, ValueError, json.JSONDecodeError):
+                    continue
+                if ref.session_id != session_id or ref.session_key != session_key:
+                    continue
+                if ref.sha256 != sha256 or ref.name != safe_name:
+                    continue
+                if safe_mime is not None and ref.mime != safe_mime:
+                    continue
+                try:
+                    self.resolve_for_download(ref.id, session_id=session_id)
+                except (ArtifactNotFoundError, ArtifactIntegrityError):
+                    continue
+                return ref
         return None
 
     def resolve_thumbnail_for_download(
@@ -364,21 +361,58 @@ class ArtifactStore:
 
     def path_for(self, ref: ArtifactRef) -> Path:
         _validate_sha256(ref.sha256)
-        material_path = self._artifact_dir(ref.session_id, ref.id) / ARTIFACT_MATERIAL_NAME
-        if material_path.exists():
-            return material_path
+        for artifact_dir in (
+            self._artifact_dir(ref.session_id, ref.id),
+            self._legacy_short_artifact_dir(ref.session_id, ref.id),
+        ):
+            material_path = artifact_dir / ARTIFACT_MATERIAL_NAME
+            if material_path.exists():
+                return material_path
         return self._legacy_artifact_dir(ref.session_id, ref.id) / ref.sha256
 
     def thumbnail_path_for(self, ref: ArtifactRef) -> Path:
+        for artifact_dir in (
+            self._artifact_dir(ref.session_id, ref.id),
+            self._legacy_short_artifact_dir(ref.session_id, ref.id),
+        ):
+            thumbnail_path = artifact_dir / ARTIFACT_THUMBNAIL_NAME
+            if thumbnail_path.exists():
+                return thumbnail_path
         return self._artifact_dir(ref.session_id, ref.id) / ARTIFACT_THUMBNAIL_NAME
 
     def _artifact_dir(self, session_id: str, artifact_id: str) -> Path:
+        return self._short_artifact_dir(
+            session_id,
+            artifact_id,
+            token_chars=ARTIFACT_STORE_TOKEN_CHARS,
+        )
+
+    def _legacy_short_artifact_dir(self, session_id: str, artifact_id: str) -> Path:
+        return self._short_artifact_dir(
+            session_id,
+            artifact_id,
+            token_chars=LEGACY_ARTIFACT_STORE_TOKEN_CHARS,
+        )
+
+    def _short_artifact_dir(self, session_id: str, artifact_id: str, *, token_chars: int) -> Path:
         return (
             self.media_root
             / ARTIFACT_STORE
             / ARTIFACT_SESSION_BUCKET
-            / _session_store_token(session_id)
-            / _artifact_store_token(artifact_id)
+            / _session_store_token(session_id, chars=token_chars)
+            / _artifact_store_token(artifact_id, chars=token_chars)
+        )
+
+    def _artifact_session_roots(self, session_id: str) -> tuple[Path, ...]:
+        return (
+            self.media_root
+            / ARTIFACT_STORE
+            / ARTIFACT_SESSION_BUCKET
+            / _session_store_token(session_id, chars=ARTIFACT_STORE_TOKEN_CHARS),
+            self.media_root
+            / ARTIFACT_STORE
+            / ARTIFACT_SESSION_BUCKET
+            / _session_store_token(session_id, chars=LEGACY_ARTIFACT_STORE_TOKEN_CHARS),
         )
 
     def _legacy_artifact_dir(self, session_id: str, artifact_id: str) -> Path:
@@ -392,6 +426,7 @@ class ArtifactStore:
     def _resolve_meta_path(self, session_id: str, artifact_id: str) -> Path:
         for artifact_dir in (
             self._artifact_dir(session_id, artifact_id),
+            self._legacy_short_artifact_dir(session_id, artifact_id),
             self._legacy_artifact_dir(session_id, artifact_id),
         ):
             meta_path = artifact_dir / "meta.json"
@@ -463,14 +498,14 @@ def _safe_token(value: str) -> str:
     return cleaned[:180] or "session"
 
 
-def _session_store_token(session_id: str) -> str:
+def _session_store_token(session_id: str, *, chars: int = ARTIFACT_STORE_TOKEN_CHARS) -> str:
     raw = _validate_non_empty("session_id", session_id)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:chars]
 
 
-def _artifact_store_token(artifact_id: str) -> str:
+def _artifact_store_token(artifact_id: str, *, chars: int = ARTIFACT_STORE_TOKEN_CHARS) -> str:
     raw = _validate_artifact_id(artifact_id)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:chars]
 
 
 def _validate_artifact_id(value: Any) -> str:

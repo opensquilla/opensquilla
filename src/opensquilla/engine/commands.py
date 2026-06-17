@@ -244,6 +244,7 @@ _COMMANDS: tuple[CommandDef, ...] = (
             _S: _local("session.compact"),
             _C: _rpc("sessions.contextCompact", _key),
         },
+        aliases=("/cmp",),
     ),
     # ---- TUI + Channel ----------------------------------------------------
     CommandDef(

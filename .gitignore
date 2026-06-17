@@ -49,6 +49,17 @@ GEMINI.md
 /progress.txt
 /plans/
 /docs/superpowers/
+!/docs/superpowers/
+!/docs/superpowers/plans/
+!/docs/superpowers/plans/**
+!/docs/superpowers/specs/
+!/docs/superpowers/specs/2026-05-28-tui-frontend-architecture-design.md
+!/docs/superpowers/specs/2026-05-28-tui-real-terminal-harness-design.md
+!/docs/superpowers/specs/2026-05-29-live-textual-tui-design.md
+!/docs/superpowers/specs/2026-05-30-opentui-tui-protocol-refactor-and-visual-hierarchy-design.md
+!/docs/superpowers/specs/2026-05-31-opentui-fullscreen-conversation-design.md
+!/docs/superpowers/specs/2026-05-30-opentui-footer-tui-design.md
+!/docs/superpowers/specs/2026-06-02-opentui-block-protocol-architecture-design.md
 *.png
 # Brand assets are intentionally tracked: top-level assets/ for branding,
 # and the WebUI static asset path so the gateway page renders the mark.

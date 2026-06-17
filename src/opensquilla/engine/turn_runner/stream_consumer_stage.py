@@ -38,6 +38,7 @@ from opensquilla.observability.decision_log import build_vision_followup_gate_re
 
 if TYPE_CHECKING:
     from opensquilla.engine.agent import Agent
+    from opensquilla.engine.agent_injection import PendingInputProvider
     from opensquilla.engine.hooks.types import CompactionHook
     from opensquilla.engine.types import (
         AgentEvent,
@@ -80,6 +81,7 @@ class AgentRunPort(Protocol):
         turn_input: str,
         extra_messages: list[Any] | None,
         semantic_message: str | None,
+        pending_input_provider: PendingInputProvider | None = None,
     ) -> AsyncIterator[AgentEvent]: ...
 
 @runtime_checkable
@@ -261,6 +263,8 @@ class StreamConsumerStageInput:
     tool_context: Any | None = None
     # Original input provenance for runtime-generated disclosures.
     input_provenance: dict[str, Any] | None = None
+    # In-process pending submitted-line provider for mid-turn injection.
+    pending_input_provider: PendingInputProvider | None = None
 
 # ---------------------------------------------------------------------------
 # Per-event handler classes
@@ -956,6 +960,7 @@ class StreamConsumerStage:
             turn_input=inp.turn_input,
             extra_messages=inp.extra_messages,
             semantic_message=inp.semantic_input,
+            pending_input_provider=inp.pending_input_provider,
         ):
             transformed: AgentEvent | object
             extra_yields: list[AgentEvent] = []

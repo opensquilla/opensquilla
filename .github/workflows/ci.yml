@@ -142,6 +142,15 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install OpenTUI host dependencies
+        shell: bash
+        run: bun install --frozen-lockfile --cwd=src/opensquilla/cli/tui/opentui/package
+
       - name: Install dependencies
         shell: bash
         run: uv sync --extra dev --extra recommended --extra mcp --frozen
@@ -212,6 +221,15 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install OpenTUI host dependencies
+        shell: bash
+        run: bun install --frozen-lockfile --cwd=src/opensquilla/cli/tui/opentui/package
 
       - name: Install dependencies
         shell: bash

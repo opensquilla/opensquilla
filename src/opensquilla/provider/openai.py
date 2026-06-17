@@ -29,6 +29,7 @@ from .request_proof import (
     ProviderRequestBudgetExceededError,
     prove_provider_payload_from_env,
 )
+from .stream_assembly import ReasoningAccumulator
 from .types import (
     ChatConfig,
     DoneEvent,
@@ -911,7 +912,7 @@ class OpenAIProvider:
 
         # tool_call accumulator: index -> {id, name, json_parts}
         pending_calls: dict[int, dict[str, Any]] = {}
-        reasoning_parts: list[str] = []
+        reasoning = ReasoningAccumulator()
         assistant_text_parts: list[str] = []
         input_tokens = 0
         output_tokens = 0
@@ -1049,17 +1050,19 @@ class OpenAIProvider:
                                 yield TextDeltaEvent(text=text)
                                 assistant_text_parts.append(text)
 
-                            # Reasoning content (always parsed, not gated on thinking)
+                            # Reasoning content (always parsed, not gated on thinking).
+                            # Streamed in real time as ReasoningDeltaEvent; the
+                            # accumulator also retains the joined text for DoneEvent.
                             reasoning_details = delta.get("reasoning_details")
                             if reasoning_details:
                                 for detail in reasoning_details:
                                     if isinstance(detail, dict):
-                                        text_val = detail.get("text", "")
-                                        if text_val:
-                                            reasoning_parts.append(text_val)
-                            reasoning_str = delta.get("reasoning_content")
-                            if reasoning_str:
-                                reasoning_parts.append(reasoning_str)
+                                        reasoning_event = reasoning.emit(detail.get("text", ""))
+                                        if reasoning_event is not None:
+                                            yield reasoning_event
+                            reasoning_event = reasoning.emit(delta.get("reasoning_content"))
+                            if reasoning_event is not None:
+                                yield reasoning_event
 
                             # Tool calls (may stream over multiple chunks)
                             for tc in delta.get("tool_calls", []):
@@ -1121,14 +1124,18 @@ class OpenAIProvider:
                             emitted_stream_event = True
                             yield event
 
-                    # Assemble reasoning from structured fields
-                    reasoning_text = "".join(reasoning_parts)
+                    # Assemble reasoning from the structured fields already
+                    # streamed in real time via ReasoningDeltaEvent.
+                    reasoning_text = reasoning.finalize()
 
-                    # Fallback: <think> tag extraction from accumulated text
+                    # Fallback: <think> tag extraction from accumulated text.
+                    # This format embeds reasoning inside the answer text, so it
+                    # can only be recovered after the full text arrives — it is
+                    # inherently non-streamable and stays a turn-end assembly.
                     caps = cfg.model_capabilities
                     if not reasoning_text and caps and caps.reasoning_format == "think_tags":
                         full_text = "".join(assistant_text_parts)
-                        reasoning_text = _extract_think_tags(full_text)
+                        reasoning_text = _extract_think_tags(full_text) or None
 
                     yield DoneEvent(
                         stop_reason=stop_reason,
@@ -1237,7 +1244,7 @@ class OpenAIProvider:
         billed_cost, cost_source = _provider_billed_cost(self._provider_kind, raw_billed_cost)
         stop_reason = "stop"
         assistant_text_parts: list[str] = []
-        reasoning_parts: list[str] = []
+        reasoning = ReasoningAccumulator()
         emitted_structured_tool = False
 
         for choice in data.get("choices", []):
@@ -1254,13 +1261,15 @@ class OpenAIProvider:
             if reasoning_details:
                 for detail in reasoning_details:
                     if isinstance(detail, dict):
-                        text_val = detail.get("text", "")
-                        if text_val:
-                            reasoning_parts.append(text_val)
+                        reasoning_event = reasoning.emit(detail.get("text", ""))
+                        if reasoning_event is not None:
+                            yield reasoning_event
             for key in ("reasoning_content", "reasoning"):
                 reasoning_str = message.get(key)
-                if isinstance(reasoning_str, str) and reasoning_str:
-                    reasoning_parts.append(reasoning_str)
+                if isinstance(reasoning_str, str):
+                    reasoning_event = reasoning.emit(reasoning_str)
+                    if reasoning_event is not None:
+                        yield reasoning_event
 
             for tc in message.get("tool_calls") or []:
                 function = tc.get("function") or {}
@@ -1288,13 +1297,13 @@ class OpenAIProvider:
             for event in _synthesize_text_tool_events("".join(assistant_text_parts), tools):
                 yield event
 
-        reasoning_text = "".join(reasoning_parts)
+        reasoning_text = reasoning.finalize()
         if (
             not reasoning_text
             and cfg.model_capabilities
             and cfg.model_capabilities.reasoning_format == "think_tags"
         ):
-            reasoning_text = _extract_think_tags("".join(assistant_text_parts))
+            reasoning_text = _extract_think_tags("".join(assistant_text_parts)) or None
 
         yield DoneEvent(
             stop_reason=stop_reason,

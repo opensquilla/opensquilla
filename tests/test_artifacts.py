@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -124,6 +126,65 @@ def test_artifact_store_uses_short_material_paths_for_uuid_sessions(tmp_path: Pa
     resolved_ref, resolved_path = store.resolve_for_download(ref.id, session_id=session_id)
     assert resolved_ref == ref
     assert resolved_path == material_path
+
+
+def test_artifact_store_resolves_legacy_short_material_paths(tmp_path: Path) -> None:
+    store = ArtifactStore(tmp_path)
+    session_id = "532d5065-abce-499f-97b0-bbf2a067d5ab"
+
+    ref = store.publish_bytes(
+        b"pptx",
+        session_id=session_id,
+        session_key="agent:main:webchat:default",
+        name="brief.pptx",
+        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        source="publish_artifact",
+    )
+
+    current_dir = store.path_for(ref).parent
+    legacy_session_token = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:16]
+    legacy_artifact_token = hashlib.sha256(ref.id.encode("utf-8")).hexdigest()[:16]
+    legacy_dir = tmp_path / "artifacts" / "s" / legacy_session_token / legacy_artifact_token
+    legacy_dir.parent.mkdir(parents=True)
+    current_dir.rename(legacy_dir)
+
+    resolved_ref, resolved_path = store.resolve_for_download(ref.id, session_id=session_id)
+
+    assert resolved_ref == ref
+    assert resolved_path == legacy_dir / "data"
+
+
+def test_artifact_store_resolves_legacy_short_thumbnail_paths(tmp_path: Path) -> None:
+    from PIL import Image
+
+    store = ArtifactStore(tmp_path)
+    session_id = "532d5065-abce-499f-97b0-bbf2a067d5ab"
+    out = io.BytesIO()
+    Image.new("RGB", (8, 8), color="red").save(out, format="PNG")
+
+    ref = store.publish_bytes(
+        out.getvalue(),
+        session_id=session_id,
+        session_key="agent:main:webchat:default",
+        name="chart.png",
+        mime="image/png",
+        source="publish_artifact",
+    )
+    assert ref.has_thumbnail is True
+
+    current_dir = store.path_for(ref).parent
+    legacy_session_token = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:16]
+    legacy_artifact_token = hashlib.sha256(ref.id.encode("utf-8")).hexdigest()[:16]
+    legacy_dir = tmp_path / "artifacts" / "s" / legacy_session_token / legacy_artifact_token
+    legacy_dir.parent.mkdir(parents=True)
+    current_dir.rename(legacy_dir)
+
+    thumbnail = store.resolve_thumbnail_for_download(ref.id, session_id=session_id)
+
+    assert thumbnail is not None
+    resolved_ref, thumbnail_path = thumbnail
+    assert resolved_ref == ref
+    assert thumbnail_path == legacy_dir / "thumb.webp"
 
 
 def test_artifact_payload_omits_session_key_and_query_token(tmp_path: Path) -> None:

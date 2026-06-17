@@ -19,20 +19,91 @@ from opensquilla.cli.chat.launch import ChatCommandLaunchOverrides, ChatCommandR
 from opensquilla.cli.ui import ACCENT, console
 
 ChatRunner = Callable[..., Coroutine[Any, Any, None]]
+_INTERACTIVE_STRUCTLOG_FILE: Any | None = None
+_INTERACTIVE_STDLIB_LOG_HANDLER: Any | None = None
+_INTERACTIVE_LOG_HANDLER_ATTR = "_opensquilla_interactive_log_handler"
+
+
+def validate_tui_backend_or_exit() -> str:
+    from opensquilla.cli.tui.adapters import runtime_bridge  # noqa: PLC0415
+    from opensquilla.cli.tui.renderers.selection import (  # noqa: PLC0415
+        RendererBackendSelectionError,
+        RendererBackendUnavailableError,
+    )
+
+    try:
+        return runtime_bridge.validate_tui_backend_selection()
+    except (RendererBackendSelectionError, RendererBackendUnavailableError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
 
 
 def quiet_logs_for_interactive_chat() -> None:
-    """Filter chat-process log output to WARNING+ during the interactive REPL."""
+    """Keep chat-process logs out of the interactive terminal surface."""
     import logging  # noqa: PLC0415 - keep launch imports light until chat starts
 
     import structlog  # noqa: PLC0415
 
+    global _INTERACTIVE_STDLIB_LOG_HANDLER  # noqa: PLW0603 - process-wide logging sink
+    global _INTERACTIVE_STRUCTLOG_FILE  # noqa: PLW0603 - process-wide logging sink
+
     level_name = os.environ.get("OPENSQUILLA_LOG_LEVEL", "warning").strip().upper()
     level = getattr(logging, level_name, logging.WARNING)
+    log_dir = os.environ.get("OPENSQUILLA_LOG_DIR", "").strip()
+    log_file = None
+    if log_dir:
+        from pathlib import Path  # noqa: PLC0415
+
+        path = Path(log_dir) / "interactive.log"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            log_file = path.open("a", encoding="utf-8")
+        except OSError:
+            log_file = None
+    if log_file is None:
+        log_file = open(os.devnull, "a", encoding="utf-8")  # noqa: SIM115
+    root_logger = logging.getLogger()
+
+    def _targets_interactive_stream(handler: logging.Handler) -> bool:
+        if not isinstance(handler, logging.StreamHandler) or isinstance(
+            handler, logging.FileHandler
+        ):
+            return False
+        stream = getattr(handler, "stream", None)
+        if stream in (sys.stdout, sys.stderr):
+            return True
+        isatty = getattr(stream, "isatty", None)
+        if not callable(isatty):
+            return False
+        try:
+            return bool(isatty())
+        except OSError:
+            return False
+
+    for handler in list(root_logger.handlers):
+        if getattr(handler, _INTERACTIVE_LOG_HANDLER_ATTR, False) or _targets_interactive_stream(
+            handler
+        ):
+            root_logger.removeHandler(handler)
+            handler.close()
+    if _INTERACTIVE_STRUCTLOG_FILE is not None:
+        try:
+            _INTERACTIVE_STRUCTLOG_FILE.close()
+        except OSError:
+            pass
+    _INTERACTIVE_STRUCTLOG_FILE = log_file
+    _INTERACTIVE_STDLIB_LOG_HANDLER = logging.StreamHandler(log_file)
+    _INTERACTIVE_STDLIB_LOG_HANDLER.setLevel(level)
+    _INTERACTIVE_STDLIB_LOG_HANDLER.setFormatter(
+        logging.Formatter("%(levelname)s:%(name)s:%(message)s")
+    )
+    setattr(_INTERACTIVE_STDLIB_LOG_HANDLER, _INTERACTIVE_LOG_HANDLER_ATTR, True)
+    root_logger.addHandler(_INTERACTIVE_STDLIB_LOG_HANDLER)
     structlog.configure(
+        logger_factory=structlog.PrintLoggerFactory(file=log_file),
         wrapper_class=structlog.make_filtering_bound_logger(level),
     )
-    logging.getLogger().setLevel(level)
+    root_logger.setLevel(level)
     try:
         import jieba  # type: ignore[import-untyped]  # noqa: F401, PLC0415
     except ImportError:
@@ -86,6 +157,7 @@ def launch_chat(
     input_stream: Any | None = None,
 ) -> None:
     active_console = console if output_console is None else output_console
+    validate_tui_backend_or_exit()
     prepare_interactive_chat(
         input_stream=input_stream,
         output_console=active_console,
@@ -100,6 +172,7 @@ def launch_chat(
                 "Ctrl+D exits. /help lists commands.[/dim]",
                 title="OpenSquilla",
                 border_style=ACCENT,
+                expand=False,
             )
         )
         if model:

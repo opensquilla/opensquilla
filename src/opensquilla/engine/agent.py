@@ -22,6 +22,7 @@ import structlog
 
 from opensquilla.artifacts import artifact_payload
 from opensquilla.context_budget import ContextBudgetClass, ContextBudgetGovernor
+from opensquilla.engine.agent_injection import PendingInputProvider
 from opensquilla.engine.cache_break_monitor import (
     check_response_for_cache_break,
     notify_compaction,
@@ -67,6 +68,9 @@ from opensquilla.provider import (
 )
 from opensquilla.provider import (
     ErrorEvent as ProviderErrorEvent,
+)
+from opensquilla.provider import (
+    ReasoningDeltaEvent as ProviderReasoningDelta,
 )
 from opensquilla.provider import (
     TextDeltaEvent as ProviderTextDelta,
@@ -120,6 +124,7 @@ from .types import (
     RunHeartbeatEvent,
     StateChangeEvent,
     TextDeltaEvent,
+    ThinkingEvent,
     ThinkingLevel,
     ToolCall,
     ToolResult,
@@ -1720,13 +1725,20 @@ class Agent:
         message: str,
         extra_messages: list[Message] | None = None,
         semantic_message: str | None = None,
+        *,
+        pending_input_provider: PendingInputProvider | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Run one agent turn, yielding AgentEvents.
 
         Explicit state machine — no recursion. Tool loop iterates until
         the model finishes, unless config.max_iterations is a positive cap.
         """
-        async for event in self._turn_generator(message, extra_messages, semantic_message):
+        async for event in self._turn_generator(
+            message,
+            extra_messages,
+            semantic_message,
+            pending_input_provider=pending_input_provider,
+        ):
             yield event
 
     async def _turn_generator(
@@ -1734,6 +1746,8 @@ class Agent:
         message: str,
         extra_messages: list[Message] | None = None,
         semantic_message: str | None = None,
+        *,
+        pending_input_provider: PendingInputProvider | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Async generator that drives the state machine."""
         self._provider_tool_result_overrides = {}
@@ -2154,6 +2168,15 @@ class Agent:
                     assistant_text_parts = []
                     tool_calls = []
                     pending_tools = {}
+                    # Buffer for plain assistant text on a tools-enabled call. We
+                    # cannot know whether the text is the final answer (-> card)
+                    # or intermediate narration before a tool (-> purple) until a
+                    # tool_use appears or the call ends, so we hold the deltas and
+                    # classify them once that is known. text_presentation_decided
+                    # flips to True the moment we commit to "intermediate" (a tool
+                    # showed up), after which later text streams straight through.
+                    pending_text_deltas: list[str] = []
+                    text_presentation_decided = False
                     tool_argument_heartbeat_chars = {}
                     iter_input_tokens = 0
                     iter_output_tokens = 0
@@ -2281,7 +2304,31 @@ class Agent:
                                 assistant_text_parts.append(raw_ev.text)
                                 if raw_ev.text:
                                     attempt_user_visible_emitted = True
-                                yield TextDeltaEvent(text=raw_ev.text)
+                                if not tools_supported_for_call:
+                                    # No tool can follow on this call, so the text
+                                    # is the final answer: stream it as a card,
+                                    # token by token, right now.
+                                    yield TextDeltaEvent(
+                                        text=raw_ev.text, presentation="answer"
+                                    )
+                                elif text_presentation_decided:
+                                    # A tool already appeared this call, so all
+                                    # text here is intermediate narration.
+                                    yield TextDeltaEvent(
+                                        text=raw_ev.text, presentation="intermediate"
+                                    )
+                                else:
+                                    # Ambiguous: hold until a tool appears
+                                    # (-> intermediate) or the call ends with no
+                                    # tools (-> answer).
+                                    pending_text_deltas.append(raw_ev.text)
+
+                            elif isinstance(raw_ev, ProviderReasoningDelta):
+                                # Reasoning is the model's thinking, not the
+                                # answer: re-emit as ThinkingEvent and keep it
+                                # out of assistant_text_parts. The joined text
+                                # still arrives via DoneEvent.reasoning_content.
+                                yield ThinkingEvent(text=raw_ev.text)
 
                             elif isinstance(raw_ev, ProviderToolUseStart):
                                 if not tools_supported_for_call:
@@ -2291,6 +2338,16 @@ class Agent:
                                     ):
                                         ignored_post_delivery_tool_use = True
                                     continue
+                                # A tool follows, so any text held this call was
+                                # intermediate narration: flush it as purple now,
+                                # before the tool block opens.
+                                if pending_text_deltas:
+                                    for _held in pending_text_deltas:
+                                        yield TextDeltaEvent(
+                                            text=_held, presentation="intermediate"
+                                        )
+                                    pending_text_deltas = []
+                                text_presentation_decided = True
                                 pending_tools[raw_ev.tool_use_id] = _StreamAccumulator(
                                     tool_use_id=raw_ev.tool_use_id,
                                     tool_name=raw_ev.tool_name,
@@ -2365,6 +2422,17 @@ class Agent:
                                 )
 
                             elif isinstance(raw_ev, ProviderDoneEvent):
+                                # Call ended. If text is still held here, no tool
+                                # ever appeared, so it is the final answer: flush
+                                # it as a card. (If a tool had appeared, the held
+                                # text was already flushed as intermediate above.)
+                                if pending_text_deltas:
+                                    for _held in pending_text_deltas:
+                                        yield TextDeltaEvent(
+                                            text=_held, presentation="answer"
+                                        )
+                                    pending_text_deltas = []
+                                    text_presentation_decided = True
                                 provider_done_for_log = raw_ev
                                 _got_done_event = True
                                 iter_input_tokens = raw_ev.input_tokens
@@ -2449,6 +2517,14 @@ class Agent:
                         yield terminal_error
                         break
 
+                    # Safety net: if the stream ended without a Done event (e.g.
+                    # truncated) and text is still held, surface it as the answer
+                    # rather than silently dropping it.
+                    if pending_text_deltas:
+                        for _held in pending_text_deltas:
+                            yield TextDeltaEvent(text=_held, presentation="answer")
+                        pending_text_deltas = []
+
                     call_duration_ms = int((time.monotonic() - call_started_at) * 1000)
                     response_payload = {
                         "call_id": call_id,
@@ -2514,7 +2590,7 @@ class Agent:
                         if response_text:
                             assistant_text_parts.append(response_text)
                             attempt_user_visible_emitted = True
-                            yield TextDeltaEvent(text=response_text)
+                            yield TextDeltaEvent(text=response_text, presentation="answer")
                     last_request_msg = request_messages[-1] if request_messages else None
                     post_tool_turn = _message_has_tool_result(last_request_msg)
                     stop_reason = (
@@ -3692,6 +3768,18 @@ class Agent:
                 turn_messages.append(
                     Message(role="user", content=tool_result_blocks)  # type: ignore[arg-type]
                 )
+                if pending_input_provider is not None:
+                    pending_inputs = pending_input_provider.drain_pending()
+                    if pending_inputs:
+                        turn_messages.append(
+                            Message(
+                                role="user",
+                                content=[
+                                    ContentBlockText(text=pending_input)
+                                    for pending_input in pending_inputs
+                                ],
+                            )
+                        )
                 if terminal_projection_preflight_error:
                     self._write_turn_call_log(
                         "tool_argument_projection_rehydrate_recovery",

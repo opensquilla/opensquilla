@@ -14,7 +14,7 @@ from opensquilla.cli.tui.adapters.runtime_helpers import (
 )
 from opensquilla.cli.tui.backend.contracts import TuiSurface
 from opensquilla.cli.tui.native.runtime import run_native_chat_runtime
-from opensquilla.cli.ui import console
+from opensquilla.cli.ui import ACCENT_SOFT, console
 from opensquilla.engine.commands import Surface
 
 
@@ -54,7 +54,7 @@ class NativeTerminalSurface:
         if self._eof_emitted:
             return None
         try:
-            return await asyncio.to_thread(console.input, "[bold cyan]>[/bold cyan] ")
+            return await asyncio.to_thread(console.input, f"[bold {ACCENT_SOFT}]>[/] ")
         except (EOFError, KeyboardInterrupt):
             self._eof_emitted = True
             if self._shutdown_callback is not None:

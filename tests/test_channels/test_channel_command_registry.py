@@ -77,3 +77,67 @@ async def test_channel_compact_command_reports_failure_shortly() -> None:
     assert reply is not None
     assert reply.content == "Compact failed: provider down"
     assert reply.metadata["command"] == "compact"
+
+
+@pytest.mark.asyncio
+async def test_channel_meta_command_renders_skill_names() -> None:
+    msg = IncomingMessage(sender_id="u1", channel_id="c1", content="/meta")
+    envelope = build_channel_route_envelope(
+        msg,
+        session_key="agent:main:feishu:u1",
+        session_prefix="feishu",
+        agent_id="main",
+    )
+
+    class FakeDispatcher:
+        async def dispatch(self, req_id, method, params, ctx):
+            assert method == "meta.list"
+            return make_ok_res(
+                req_id,
+                {
+                    "skills": [
+                        {"name": "researcher", "description": "Deep research"},
+                        {"name": "planner", "description": "Plan work"},
+                    ]
+                },
+            )
+
+    reply = await DEFAULT_COMMAND_REGISTRY.dispatch(
+        envelope=envelope,
+        message_content="/meta",
+        rpc_dispatcher=FakeDispatcher(),
+        context_factory=lambda _envelope: object(),
+    )
+
+    assert reply is not None
+    assert reply.content.startswith("Available meta-skills:")
+    assert "- researcher — Deep research" in reply.content
+    assert "- planner — Plan work" in reply.content
+    assert reply.metadata["command"] == "meta"
+    assert reply.metadata["method"] == "meta.list"
+
+
+@pytest.mark.asyncio
+async def test_channel_meta_command_handles_empty_or_disabled() -> None:
+    msg = IncomingMessage(sender_id="u1", channel_id="c1", content="/meta")
+    envelope = build_channel_route_envelope(
+        msg,
+        session_key="agent:main:feishu:u1",
+        session_prefix="feishu",
+        agent_id="main",
+    )
+
+    class FakeDispatcher:
+        async def dispatch(self, req_id, method, params, ctx):
+            return make_ok_res(req_id, {"skills": [], "disabled": True})
+
+    reply = await DEFAULT_COMMAND_REGISTRY.dispatch(
+        envelope=envelope,
+        message_content="/meta",
+        rpc_dispatcher=FakeDispatcher(),
+        context_factory=lambda _envelope: object(),
+    )
+
+    assert reply is not None
+    assert reply.content == "No meta-skills available."
+    assert reply.metadata["command"] == "meta"

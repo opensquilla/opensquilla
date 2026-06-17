@@ -8,9 +8,13 @@ import errno
 import json
 import os
 import platform
-import resource
 import sys
 from collections.abc import Sequence
+
+try:
+    import resource
+except ImportError:
+    resource = None  # type: ignore[assignment]
 
 _PR_SET_NO_NEW_PRIVS = 38
 _SECCOMP_SET_MODE_FILTER = 1
@@ -82,6 +86,9 @@ def _decode_policy(raw: str) -> dict[str, object]:
 
 
 def _apply_limits(policy: dict[str, object]) -> None:
+    if resource is None:
+        return
+
     for resource_id, value in (
         (resource.RLIMIT_CPU, _positive_int(policy.get("cpuSeconds"))),
         (

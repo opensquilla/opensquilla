@@ -47,6 +47,11 @@ export interface UseChatSlashCommandsOptions {
   resetCurrentSession: () => void
   setCompactInFlight: (active: boolean, key?: string) => void
   showCompactStatus: (status: string, message: string, options?: { tone?: string; detail?: string; dismissMs?: number }) => void
+  // Surface a short, client-side notice (e.g. the meta-skill list). No LLM call.
+  notify: (message: string) => void
+  // Send a turn whose provider text bypasses slash parsing (mirrors the TUI
+  // override path). Used by /meta <name> to trigger the launch after meta.run.
+  dispatchHidden: (providerText: string, displayText: string) => void
 }
 
 function slashCommandKey(value: string): string {
@@ -109,7 +114,7 @@ export function useChatSlashCommands(options: UseChatSlashCommandsOptions) {
     filteredSlashCmds.value = []
   }
 
-  function selectSlashCmd(cmd: ChatSlashCommand, _args = '') {
+  function selectSlashCmd(cmd: ChatSlashCommand, args = '') {
     closeSlashMenu()
     options.inputText.value = ''
     options.autoResizeTextarea()
@@ -157,6 +162,36 @@ export function useChatSlashCommands(options: UseChatSlashCommandsOptions) {
           })
           .catch((err: unknown) => console.warn('Usage failed:', err instanceof Error ? err.message : String(err)))
         break
+      case 'meta.menu': {
+        const skillName = String(args || '').trim()
+        if (!skillName) {
+          // /meta with no argument → list the available meta-skills (no LLM).
+          options.rpc.call<{ skills?: Array<{ name?: string }>; disabled?: boolean }>('meta.list')
+            .then((result) => {
+              const skills = Array.isArray(result?.skills) ? result.skills : []
+              if (result?.disabled || skills.length === 0) {
+                options.notify('No meta-skills available.')
+                return
+              }
+              const names = skills.map(s => s?.name).filter(Boolean).join(', ')
+              options.notify('Meta-skills: ' + names + ' — run one with /meta <name>')
+            })
+            .catch((err: unknown) => options.notify('Could not list meta-skills: ' + (err instanceof Error ? err.message : String(err))))
+        } else {
+          // /meta <name> → stamp the launch, then trigger a turn so the
+          // pipeline seeds the marker and the orchestrator runs the skill.
+          options.rpc.call<{ ok?: boolean; error?: string }>('meta.run', { name: skillName, sessionKey: options.sessionKey.value })
+            .then((result) => {
+              if (result?.ok) {
+                options.dispatchHidden('/meta ' + skillName, '/meta ' + skillName)
+              } else {
+                options.notify(result?.error || ('Could not run meta-skill ' + skillName + '.'))
+              }
+            })
+            .catch((err: unknown) => options.notify('Could not run meta-skill: ' + (err instanceof Error ? err.message : String(err))))
+        }
+        break
+      }
     }
   }
 

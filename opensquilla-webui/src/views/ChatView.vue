@@ -627,6 +627,9 @@ const {
 } = chatAttachments
 
 let sendCurrentInput: () => void = () => {}
+// Late-bound: dispatchHiddenSend is created below (useChatSend) but the /meta
+// slash handler (useChatSlashCommands, created earlier) needs it at call time.
+let dispatchHiddenForMeta: (providerText: string, displayText: string) => void = () => {}
 let isCompactInFlightForCurrentSession: () => boolean = () => false
 let dispatchHiddenControl: (providerText: string, displayText: string) => void = () => {}
 const chatPendingQueue = useChatPendingQueue({
@@ -874,6 +877,8 @@ const chatSlashCommands = useChatSlashCommands({
   resetCurrentSession: resetCurrentSessionAfterSlash,
   setCompactInFlight,
   showCompactStatus,
+  notify: (message: string) => pushToast(message, { duration: 6000 }),
+  dispatchHidden: (providerText: string, displayText: string) => dispatchHiddenForMeta(providerText, displayText),
 })
 const {
   slashOpen,
@@ -936,6 +941,7 @@ const chatSend = useChatSend({
 })
 const { onSend, onStop, dispatchHiddenSend, sendHiddenMetaPreflightConfirmation } = chatSend
 sendCurrentInput = onSend
+dispatchHiddenForMeta = dispatchHiddenSend
 dispatchHiddenControl = dispatchHiddenSend
 
 // Deny notes ride the normal send path: queued while the turn is streaming,

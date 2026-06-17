@@ -298,7 +298,52 @@ async def test_run_meta_launch_refuses_disabled_skill(
 
 
 # ---------------------------------------------------------------------------
-# 3. Awaiting-guard — refuse while a prior run is waiting for input
+# 3. Master gate — meta_skill.enabled=false refuses launch entirely
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_meta_launch_refused_when_meta_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the master meta_skill gate is off (meta_skill_enabled=False in
+    metadata), _run_meta_launch emits the 'disabled by configuration' message
+    and the orchestrator is never built."""
+    from opensquilla.skills.meta.types import MetaResult
+
+    spec = _meta_spec("meta-tiny")
+    loader = _StubLoader(spec)
+    writer = _StubWriter(awaiting=None)
+    agent = _build_agent(
+        loader=loader,
+        writer=writer,
+        extra_metadata={
+            "meta_launch": {"name": "meta-tiny"},
+            "meta_skill_enabled": False,
+        },
+    )
+
+    captured = _install_orchestrator_spy(
+        agent,
+        monkeypatch,
+        result=MetaResult(ok=True, final_text="SHOULD NOT RUN"),
+    )
+
+    events = await _drain(agent, "meta-tiny")
+
+    text = _streamed_text(events)
+    assert "disabled" in text, (
+        f"expected 'disabled' in refusal text; got {text!r}"
+    )
+    assert captured["called"] is False, (
+        "orchestrator must not be built when meta_skill is disabled"
+    )
+    # Must still emit a terminal DoneEvent so the caller can finalize cleanly.
+    _done_event_of(events)
+
+
+# ---------------------------------------------------------------------------
+# 4. Awaiting-guard — refuse while a prior run is waiting for input
 # ---------------------------------------------------------------------------
 
 

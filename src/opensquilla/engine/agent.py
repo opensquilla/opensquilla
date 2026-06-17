@@ -5207,6 +5207,74 @@ class Agent:
             origin_trace=tc.origin_trace,
         )
 
+    def _build_meta_orchestrator(
+        self,
+        *,
+        workspace_dir: Any,
+        triggered_by: str,
+        skill_loader: Any,
+    ) -> tuple[Any, Any, Any]:
+        """Construct a MetaOrchestrator wired to this agent's provider/tools.
+
+        Shared by the model-tool path (``_run_one_streaming``), resume
+        (``_run_meta_resume``), and the manual ``/meta`` path
+        (``_run_meta_launch``). Only ``triggered_by`` differs between callers.
+
+        Returns ``(orchestrator, llm_chat, tool_invoker)``. The latter two are
+        returned (not just consumed internally) because ``_run_one_streaming``
+        and ``_run_meta_launch`` reuse them to build the runtime-e2e context
+        around ``iter_events``. Callers that don't need them unpack into ``_``.
+        """
+        from opensquilla.skills.meta.orchestrator import (
+            MetaOrchestrator,
+            make_agent_runner_from_parent,
+            make_llm_chat_from_provider,
+            make_tool_invoker_from_handler,
+        )
+
+        runner = make_agent_runner_from_parent(
+            provider=self.provider,
+            base_config=self.config,
+            tool_definitions=self.tool_definitions,
+            tool_handler=self.tool_handler,
+            agent_factory=type(self),
+            workspace_dir=str(workspace_dir) if workspace_dir else None,
+            usage_tracker=self._usage_tracker,
+            session_key=self._session_key,
+        )
+        llm_chat = (
+            getattr(self, "_test_llm_chat_override", None)
+            or (
+                make_llm_chat_from_provider(
+                    provider=self.provider,
+                    base_config=self.config,
+                    usage_tracker=self._usage_tracker,
+                    session_key=self._session_key,
+                )
+                if self.provider is not None
+                else None
+            )
+        )
+        tool_invoker = (
+            make_tool_invoker_from_handler(tool_handler=self.tool_handler)
+            if self.tool_handler is not None
+            else None
+        )
+        orch = MetaOrchestrator(
+            agent_runner=runner,
+            skill_loader=skill_loader,
+            llm_chat=llm_chat,
+            tool_invoker=tool_invoker,
+            workspace_dir=str(workspace_dir) if workspace_dir else None,
+            run_writer=self._meta_run_writer,
+            triggered_by=triggered_by,
+            session_key=getattr(self, "_session_key", None),
+            turn_id=getattr(self, "_turn_id", None),
+            memory_persist_enabled=True,
+            usage_tracker=self._usage_tracker,
+        )
+        return orch, llm_chat, tool_invoker
+
     async def _run_one_streaming(
         self,
         tc: ToolCall,
@@ -5220,12 +5288,6 @@ class Agent:
         from opensquilla.skills.meta.inputs import (
             make_meta_inputs,
             meta_input_overrides_from_metadata,
-        )
-        from opensquilla.skills.meta.orchestrator import (
-            MetaOrchestrator,
-            make_agent_runner_from_parent,
-            make_llm_chat_from_provider,
-            make_tool_invoker_from_handler,
         )
         from opensquilla.skills.meta.parser import MetaPlanError, parse_meta_plan
         from opensquilla.skills.meta.types import MetaMatch, MetaResult
@@ -5398,48 +5460,10 @@ class Agent:
                 )
                 return
 
-            runner = make_agent_runner_from_parent(
-                provider=self.provider,
-                base_config=self.config,
-                tool_definitions=self.tool_definitions,
-                tool_handler=self.tool_handler,
-                agent_factory=type(self),
-                workspace_dir=str(workspace_dir) if workspace_dir else None,
-                usage_tracker=self._usage_tracker,
-                session_key=self._session_key,
-            )
-            llm_chat = (
-                getattr(self, "_test_llm_chat_override", None)
-                or (
-                    make_llm_chat_from_provider(
-                        provider=self.provider,
-                        base_config=self.config,
-                        usage_tracker=self._usage_tracker,
-                        session_key=self._session_key,
-                    )
-                    if self.provider is not None
-                    else None
-                )
-            )
-            tool_invoker = (
-                make_tool_invoker_from_handler(tool_handler=self.tool_handler)
-                if self.tool_handler is not None
-                else None
-            )
-
-            memory_persist_enabled = True
-            orch = MetaOrchestrator(
-                agent_runner=runner,
-                skill_loader=skill_loader,
-                llm_chat=llm_chat,
-                tool_invoker=tool_invoker,
-                workspace_dir=str(workspace_dir) if workspace_dir else None,
-                run_writer=self._meta_run_writer,
+            orch, llm_chat, tool_invoker = self._build_meta_orchestrator(
+                workspace_dir=workspace_dir,
                 triggered_by="soft_meta_invoke",
-                session_key=getattr(self, "_session_key", None),
-                turn_id=getattr(self, "_turn_id", None),
-                memory_persist_enabled=memory_persist_enabled,
-                usage_tracker=self._usage_tracker,
+                skill_loader=skill_loader,
             )
 
             system_prompt = (
@@ -5593,12 +5617,6 @@ class Agent:
         outer stream pipeline can finalize the turn.
         """
         from opensquilla.engine.types import DoneEvent
-        from opensquilla.skills.meta.orchestrator import (
-            MetaOrchestrator,
-            make_agent_runner_from_parent,
-            make_llm_chat_from_provider,
-            make_tool_invoker_from_handler,
-        )
         from opensquilla.skills.meta.types import MetaResult
         from opensquilla.tools.types import current_tool_context
 
@@ -5631,47 +5649,10 @@ class Agent:
             or getattr(self.config, "workspace_dir", None)
         )
 
-        runner = make_agent_runner_from_parent(
-            provider=self.provider,
-            base_config=self.config,
-            tool_definitions=self.tool_definitions,
-            tool_handler=self.tool_handler,
-            agent_factory=type(self),
-            workspace_dir=str(workspace_dir) if workspace_dir else None,
-            usage_tracker=self._usage_tracker,
-            session_key=self._session_key,
-        )
-        llm_chat = (
-            getattr(self, "_test_llm_chat_override", None)
-            or (
-                make_llm_chat_from_provider(
-                    provider=self.provider,
-                    base_config=self.config,
-                    usage_tracker=self._usage_tracker,
-                    session_key=self._session_key,
-                )
-                if self.provider is not None
-                else None
-            )
-        )
-        tool_invoker = (
-            make_tool_invoker_from_handler(tool_handler=self.tool_handler)
-            if self.tool_handler is not None
-            else None
-        )
-
-        orch = MetaOrchestrator(
-            agent_runner=runner,
-            skill_loader=skill_loader,
-            llm_chat=llm_chat,
-            tool_invoker=tool_invoker,
-            workspace_dir=str(workspace_dir) if workspace_dir else None,
-            run_writer=self._meta_run_writer,
+        orch, _llm_chat, _tool_invoker = self._build_meta_orchestrator(
+            workspace_dir=workspace_dir,
             triggered_by="resume",
-            session_key=getattr(self, "_session_key", None),
-            turn_id=getattr(self, "_turn_id", None),
-            memory_persist_enabled=True,
-            usage_tracker=self._usage_tracker,
+            skill_loader=skill_loader,
         )
 
         result: Any = None

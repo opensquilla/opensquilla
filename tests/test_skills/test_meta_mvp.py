@@ -803,6 +803,7 @@ async def test_meta_resolution_matches_trigger() -> None:
         message="please make me a PDF briefing on rust",
         semantic_message="please make me a PDF briefing on rust",
         metadata={"skill_loader": loader},
+        config=SimpleNamespace(meta_skill=SimpleNamespace(enabled=True, auto_trigger=True)),
     )
     out = await meta_resolution(ctx)  # type: ignore[arg-type]
     match = out.metadata["meta_match"]
@@ -831,6 +832,7 @@ async def test_meta_resolution_threads_preference_metadata_into_match_inputs() -
             "meta_audience": "executives",
             "meta_language": "zh-CN",
         },
+        config=SimpleNamespace(meta_skill=SimpleNamespace(enabled=True, auto_trigger=True)),
     )
 
     out = await meta_resolution(ctx)  # type: ignore[arg-type]
@@ -900,7 +902,10 @@ async def test_meta_resolution_semantic_fallback_matches_without_trigger(
         session_key="semantic-session",
         metadata={"skill_loader": loader},
         system_prompt=("base prompt", ""),
-        config=SimpleNamespace(skills=SimpleNamespace(filter_strategy="lexical")),
+        config=SimpleNamespace(
+            skills=SimpleNamespace(filter_strategy="lexical"),
+            meta_skill=SimpleNamespace(enabled=True, auto_trigger=True),
+        ),
     )
 
     out = await meta_resolution(ctx)  # type: ignore[arg-type]
@@ -930,6 +935,7 @@ async def test_meta_resolution_soft_hint_directs_meta_invoke_not_skill_view() ->
         semantic_message="please make a travel plan for Dalian",
         metadata={"skill_loader": loader},
         system_prompt=("base prompt", ""),
+        config=SimpleNamespace(meta_skill=SimpleNamespace(enabled=True, auto_trigger=True)),
     )
 
     out = await meta_resolution(ctx)  # type: ignore[arg-type]
@@ -986,6 +992,7 @@ async def test_meta_resolution_highest_priority_wins() -> None:
         message="produce a report",
         semantic_message="produce a report",
         metadata={"skill_loader": loader},
+        config=SimpleNamespace(meta_skill=SimpleNamespace(enabled=True, auto_trigger=True)),
     )
     out = await meta_resolution(ctx)  # type: ignore[arg-type]
     assert out.metadata["meta_match"].plan.name == "meta-hi"
@@ -1036,6 +1043,7 @@ async def test_meta_resolution_invokes_explicit_named_meta_skill_request() -> No
         semantic_message="invoke AwesomeWebpageMetaSkill to create a webpage",
         system_prompt=("base prompt", ""),
         metadata={"skill_loader": loader},
+        config=SimpleNamespace(meta_skill=SimpleNamespace(enabled=True, auto_trigger=True)),
     )
 
     out = await meta_resolution(ctx)  # type: ignore[arg-type]
@@ -1061,6 +1069,7 @@ async def test_meta_resolution_still_matches_current_cjk_intent() -> None:
         semantic_message="帮我安排明天的家庭日程",
         system_prompt="base",
         metadata={"skill_loader": loader},
+        config=SimpleNamespace(meta_skill=SimpleNamespace(enabled=True, auto_trigger=True)),
     )
 
     out = await meta_resolution(ctx)  # type: ignore[arg-type]
@@ -1093,6 +1102,7 @@ async def test_meta_resolution_promotes_meta_skill_creator_to_highest_text_tier(
                     "image": {"model": "vision-model", "image_only": True},
                 },
             ),
+            meta_skill=SimpleNamespace(enabled=True, auto_trigger=True),
         ),
     )
 
@@ -1136,6 +1146,7 @@ async def test_meta_resolution_does_not_promote_non_creator_meta_to_highest_text
                     "vision": {"model": "vision-model", "image_only": True},
                 },
             ),
+            meta_skill=SimpleNamespace(enabled=True, auto_trigger=True),
         ),
     )
 

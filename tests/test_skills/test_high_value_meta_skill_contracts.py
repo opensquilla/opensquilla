@@ -340,7 +340,10 @@ async def test_pdf_intelligence_matches_lived_chinese_pdf_request(
         session_key="test-session",
         metadata={"skill_loader": loader},
         system_prompt=("base prompt", ""),
-        config=SimpleNamespace(squilla_router=SimpleNamespace(tiers={})),
+        config=SimpleNamespace(
+            squilla_router=SimpleNamespace(tiers={}),
+            meta_skill=SimpleNamespace(enabled=True, auto_trigger=True),
+        ),
         surface_kind="web",
     )
 

@@ -62,7 +62,10 @@ def _ctx(
         metadata=meta,
         model=model,
         system_prompt="",
-        config=SimpleNamespace(squilla_router=SimpleNamespace(tiers=tiers or {})),
+        config=SimpleNamespace(
+            squilla_router=SimpleNamespace(tiers=tiers or {}),
+            meta_skill=SimpleNamespace(enabled=True, auto_trigger=True),
+        ),
         surface_kind="cli",
     )
 

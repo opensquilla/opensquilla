@@ -2758,6 +2758,42 @@ const ChatView = (() => {
           .catch((err) => UI.toast('Usage failed: ' + err.message, 'err'));
         break;
       }
+      case 'meta.menu': {
+        const skillName = args.trim();
+        if (!skillName) {
+          // No arg → list available meta-skills.
+          _rpc.call('meta.list')
+            .then((result) => {
+              const skills = Array.isArray(result?.skills) ? result.skills : [];
+              if (result?.disabled || skills.length === 0) {
+                _addMessage('system', 'No meta-skills available.');
+                return;
+              }
+              const lines = skills.map((s) => {
+                const name = s?.name || '';
+                const desc = s?.description ? ` — ${s.description}` : '';
+                return `- ${name}${desc}`;
+              });
+              _addMessage('system', 'Available meta-skills:\n' + lines.join('\n'));
+            })
+            .catch((err) => UI.toast('meta.list failed: ' + err.message, 'err'));
+          break;
+        }
+        // With <name> → stamp the run, then send a normal turn so the
+        // pipeline seed auto-launches the skill on the next turn.
+        _rpc.call('meta.run', { name: skillName, sessionKey: _sessionKey })
+          .then((result) => {
+            if (result && result.ok) {
+              _sendTextOverride = `/meta ${skillName}`;
+              _onSend();
+              return;
+            }
+            const error = (result && result.error) || 'meta.run failed';
+            _addMessage('error', `meta.run failed: ${error}`);
+          })
+          .catch((err) => UI.toast('meta.run failed: ' + err.message, 'err'));
+        break;
+      }
     }
   }
 

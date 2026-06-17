@@ -68,14 +68,23 @@ class CommandRegistry:
             params_factory(envelope),
             context_factory(envelope),
         )
+        reply_to = envelope.thread_id or envelope.channel_id
         compact_reply = _format_channel_compact_reply(
             name=name,
             method=method,
             res=res,
-            reply_to=envelope.thread_id or envelope.channel_id,
+            reply_to=reply_to,
         )
         if compact_reply is not None:
             return compact_reply
+        meta_reply = _format_channel_meta_list_reply(
+            name=name,
+            method=method,
+            res=res,
+            reply_to=reply_to,
+        )
+        if meta_reply is not None:
+            return meta_reply
         denied = bool(not res.ok and getattr(res.error, "code", "") == "UNAUTHORIZED")
         reason = "" if res.ok else f": {getattr(res.error, 'message', 'command failed')}"
         state = "completed" if res.ok else ("denied" if denied else "failed")
@@ -122,6 +131,48 @@ def _format_channel_compact_reply(
         )
     return OutgoingMessage(
         content="/compact completed",
+        reply_to=reply_to,
+        metadata=metadata,
+    )
+
+
+def _format_channel_meta_list_reply(
+    *,
+    name: str,
+    method: str,
+    res: Any,
+    reply_to: str | None,
+) -> OutgoingMessage | None:
+    if name != "meta" or method != "meta.list":
+        return None
+    denied = bool(not res.ok and getattr(res.error, "code", "") == "UNAUTHORIZED")
+    metadata = {"command": name, "method": method, "denied": denied}
+    if not res.ok:
+        error_message = getattr(res.error, "message", "command failed")
+        state = "denied" if denied else "failed"
+        return OutgoingMessage(
+            content=f"/meta {state}: {error_message}",
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+    payload = res.payload if isinstance(res.payload, dict) else {}
+    skills = payload.get("skills") if isinstance(payload.get("skills"), list) else []
+    if payload.get("disabled") or not skills:
+        return OutgoingMessage(
+            content="No meta-skills available.",
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+    lines = ["Available meta-skills:"]
+    for skill in skills:
+        if not isinstance(skill, dict):
+            continue
+        skill_name = str(skill.get("name") or "")
+        description = skill.get("description")
+        suffix = f" — {description}" if description else ""
+        lines.append(f"- {skill_name}{suffix}")
+    return OutgoingMessage(
+        content="\n".join(lines),
         reply_to=reply_to,
         metadata=metadata,
     )

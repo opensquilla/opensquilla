@@ -100,12 +100,20 @@ class ControlUiConfig(BaseSettings):
 
     enabled: bool = True
     base_path: str = "/control"
+    frontend: Literal["vue", "legacy"] = "vue"
     allowed_origins: list[str] = Field(default_factory=list)
 
     @field_validator("base_path")
     @classmethod
     def _strip_trailing_slash(cls, v: str) -> str:
         return v.rstrip("/")
+
+    @field_validator("frontend", mode="before")
+    @classmethod
+    def _normalize_frontend(cls, v: object) -> object:
+        if isinstance(v, str):
+            return v.strip().lower()
+        return v
 
 
 class SkillsConfig(BaseSettings):

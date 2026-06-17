@@ -60,6 +60,8 @@ GEMINI.md
 # and the WebUI static asset path so the gateway page renders the mark.
 !/assets/*.png
 !/src/opensquilla/gateway/static/img/*.png
+!/opensquilla-webui/public/opensquilla-mark.png
+!/src/opensquilla/gateway/static/dist/opensquilla-mark.png
 site/
 /plugins/
 crontab-*
@@ -69,6 +71,10 @@ crontab-*
 /bench-mem
 .omx/
 tests/functional/reports/
+
+# Frontend build artifacts
+opensquilla-webui/node_modules/
+opensquilla-webui/dist/
 
 # Local-only release-hygiene tests that reference legacy artifact names
 # kept off the public tree.
@@ -89,3 +95,9 @@ tests/functional/reports/
 # helper stay out of the published tree.
 /_clawhub_skills/
 /scripts/_fetch_clawhub_skills.py
+
+# Playwright e2e output (reports, traces, screenshots) — regenerated per run.
+test-results/
+
+# Runtime config-write backups the gateway leaves when it rewrites config.toml.
+opensquilla.toml.backup.*

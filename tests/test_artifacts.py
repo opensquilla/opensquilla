@@ -144,6 +144,57 @@ def test_artifact_payload_omits_session_key_and_query_token(tmp_path: Path) -> N
     assert payload["download_url"] == f"/api/v1/artifacts/{ref.id}"
 
 
+def test_artifact_payload_keeps_thumbnail_url_across_persist_and_replay() -> None:
+    # Live event carries the internal has_thumbnail boolean; the public payload
+    # exposes only the reconstructed thumbnail_url string.
+    live = artifact_payload(
+        SimpleNamespace(
+            id="art-bmYMIceM2Ddx3rkFM4BOmZ7A",
+            kind="artifact_ref",
+            sha256="a" * 64,
+            name="chart.png",
+            mime="image/png",
+            size=954199,
+            session_id="session-1",
+            source="publish_artifact",
+            created_at="2026-06-13T00:00:00Z",
+            store="artifacts",
+            download_url="/api/v1/artifacts/art-bmYMIceM2Ddx3rkFM4BOmZ7A",
+            has_thumbnail=True,
+        )
+    )
+    assert "has_thumbnail" not in live
+    assert live["thumbnail_url"] == "/api/v1/artifacts/art-bmYMIceM2Ddx3rkFM4BOmZ7A?variant=thumb"
+
+    # Replaying the persisted public payload (which no longer carries the boolean)
+    # must rebuild the same thumbnail_url instead of falling back to the full file.
+    persisted = json.loads(json.dumps(live))
+    replayed = artifact_payload(persisted)
+    assert replayed["thumbnail_url"] == live["thumbnail_url"]
+
+
+def test_artifact_payload_omits_thumbnail_url_without_thumbnail() -> None:
+    no_thumb = artifact_payload(
+        SimpleNamespace(
+            id="art-NoThumbXXXXXXXXXXXXXXXXX",
+            kind="artifact_ref",
+            sha256="b" * 64,
+            name="doc.pdf",
+            mime="application/pdf",
+            size=1000,
+            session_id="session-1",
+            source="publish_artifact",
+            created_at="2026-06-13T00:00:00Z",
+            store="artifacts",
+            download_url="/api/v1/artifacts/art-NoThumbXXXXXXXXXXXXXXXXX",
+            has_thumbnail=False,
+        )
+    )
+    assert "thumbnail_url" not in no_thumb
+    replayed = artifact_payload(json.loads(json.dumps(no_thumb)))
+    assert "thumbnail_url" not in replayed
+
+
 def test_artifact_store_preserves_unicode_filename_and_normalizes_mime_params(
     tmp_path: Path,
 ) -> None:

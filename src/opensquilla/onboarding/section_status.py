@@ -81,6 +81,11 @@ def llm_section_status(cfg: GatewayConfig) -> SectionStatus:
     env_key = _str(llm, "api_key_env")
     if env_key:
         return SectionStatus.OK if os.environ.get(env_key) else SectionStatus.DEGRADED
+    # Fall back to the provider's default env var (e.g. OPENROUTER_API_KEY) just
+    # like the runtime (resolve_llm_runtime_config) and the image-generation
+    # credential check: a resolvable default env var counts as configured.
+    if spec.env_key and os.environ.get(spec.env_key):
+        return SectionStatus.OK
     return SectionStatus.MISSING
 
 
@@ -112,6 +117,10 @@ def search_section_status(cfg: GatewayConfig) -> SectionStatus:
     env_key = _str(cfg, "search_api_key_env")
     if env_key:
         return SectionStatus.OK if os.environ.get(env_key) else SectionStatus.DEGRADED
+    # Mirror the LLM/image-gen credential checks: the provider's default env var
+    # (e.g. BRAVE_SEARCH_API_KEY) resolving in the environment counts as configured.
+    if spec.env_key and os.environ.get(spec.env_key):
+        return SectionStatus.OK
     return SectionStatus.MISSING
 
 

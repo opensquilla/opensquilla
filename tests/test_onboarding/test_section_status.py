@@ -73,6 +73,30 @@ def test_llm_unknown_for_unsupported_provider(cfg):
     assert llm_section_status(cfg) is SectionStatus.UNKNOWN
 
 
+def test_llm_ok_with_default_env_var_when_config_omits_key(cfg, monkeypatch):
+    # No explicit api_key / api_key_env, but the provider's default env var is
+    # present — mirrors the runtime (resolve_llm_runtime_config) and image-gen.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "from-env")
+    cfg.llm = LlmProviderConfig(
+        provider="openrouter",
+        model="m",
+        api_key="",
+        base_url="https://openrouter.ai/api/v1",
+    )
+    assert llm_section_status(cfg) is SectionStatus.OK
+
+
+def test_llm_missing_without_key_or_default_env_var(cfg, monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    cfg.llm = LlmProviderConfig(
+        provider="openrouter",
+        model="m",
+        api_key="",
+        base_url="https://openrouter.ai/api/v1",
+    )
+    assert llm_section_status(cfg) is SectionStatus.MISSING
+
+
 # ── router ──────────────────────────────────────────────────────────────────
 
 def test_router_disabled_is_optional(cfg):
@@ -112,6 +136,17 @@ def test_search_brave_without_credentials_is_missing(cfg, monkeypatch):
     cfg.search_api_key_env = ""
     monkeypatch.delenv("BRAVE_API_KEY", raising=False)
     assert search_section_status(cfg) is SectionStatus.MISSING
+
+
+def test_search_brave_with_default_env_var_is_ok(cfg, monkeypatch):
+    from opensquilla.onboarding.search_specs import get_search_provider_setup_spec
+
+    # No explicit key/env declared, but the provider's default env var resolves.
+    cfg.search_provider = "brave"
+    cfg.search_api_key = ""
+    cfg.search_api_key_env = ""
+    monkeypatch.setenv(get_search_provider_setup_spec("brave").env_key, "from-env")
+    assert search_section_status(cfg) is SectionStatus.OK
 
 
 def test_search_brave_with_env_key_missing_is_degraded(cfg, monkeypatch):

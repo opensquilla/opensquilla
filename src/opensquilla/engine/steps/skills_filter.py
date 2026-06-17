@@ -100,15 +100,22 @@ async def filter_skills(ctx: TurnContext) -> TurnContext:
     if not all_skills:
         return ctx
 
-    from opensquilla.skills.meta.enabled import is_meta_skill_enabled
+    from opensquilla.skills.meta.enabled import (
+        is_meta_auto_trigger_enabled,
+        is_meta_skill_enabled,
+    )
 
     meta_skill_enabled = is_meta_skill_enabled(ctx.config)
+    meta_auto_trigger = is_meta_auto_trigger_enabled(ctx.config)
     ctx.metadata["meta_skill_enabled"] = meta_skill_enabled
 
     # ── deterministic gate (no LLM, pure Python) ──
     available_tools = {t.name for t in ctx.tool_defs} if ctx.tool_defs else set()
     gated = _deterministic_gate(all_skills, available_tools)
-    if not meta_skill_enabled:
+    # Hide meta-skills from the model whenever auto-trigger is off (manual-only
+    # mode) or the subsystem is fully disabled. They remain in the loader so the
+    # /meta command can still enumerate and run them.
+    if not (meta_skill_enabled and meta_auto_trigger):
         gated = [
             s for s in gated if getattr(s, "kind", "skill") != "meta"
         ]

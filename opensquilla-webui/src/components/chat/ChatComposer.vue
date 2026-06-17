@@ -63,6 +63,15 @@
                 @set-visual-effects-enabled="emit('setVisualEffectsEnabled', $event)"
               />
             </div>
+            <ChatRunModeMenu
+              :run-mode="runMode"
+              :sandbox-setup-busy="sandboxSetupBusy"
+              :sandbox-setup-message="sandboxSetupMessage"
+              :sandbox-setup-visible="sandboxSetupVisible"
+              @dismiss-sandbox-setup="emit('dismissSandboxSetup')"
+              @ensure-sandbox-setup="emit('ensureSandboxSetup')"
+              @set-run-mode="emit('setRunMode', $event)"
+            />
             <button
               class="btn btn--icon btn--ghost"
               :class="{ 'is-active': voiceRecording }"
@@ -124,7 +133,9 @@ import { nextTick, ref } from 'vue'
 import Icon from '@/components/Icon.vue'
 import type { IconName } from '@/utils/icons'
 import ChatComposerSettings from '@/components/chat/ChatComposerSettings.vue'
+import ChatRunModeMenu from '@/components/chat/ChatRunModeMenu.vue'
 import type { Attachment } from '@/types/chat'
+import type { RunMode } from '@/types/rpc'
 
 interface ChatComposerExpose {
   composerElement: () => HTMLElement | null
@@ -146,6 +157,10 @@ defineProps<{
   routerEnabled: boolean
   routerVisualEffectsEnabled: boolean
   routerSettingsBusy: boolean
+  runMode: RunMode
+  sandboxSetupBusy: boolean
+  sandboxSetupMessage: string
+  sandboxSetupVisible: boolean
   voiceBusy: boolean
   voiceRecording: boolean
 }>()
@@ -156,9 +171,12 @@ const emit = defineEmits<{
   input: []
   keydown: [event: KeyboardEvent]
   removeAttachment: [index: number]
+  dismissSandboxSetup: []
+  ensureSandboxSetup: []
   send: []
   setBusySendMode: [mode: 'queue' | 'steer']
   setElevatedMode: [mode: string]
+  setRunMode: [mode: RunMode]
   setRouterEnabled: [enabled: boolean]
   setVisualEffectsEnabled: [enabled: boolean]
   voiceInput: []

@@ -7,6 +7,7 @@ export type IconName =
   | 'send' | 'stop' | 'paperclip' | 'plus' | 'share' | 'trash'
   | 'refresh' | 'download' | 'save' | 'menu' | 'user' | 'search'
   | 'edit' | 'info' | 'settings' | 'gear' | 'gauge' | 'regenerate'
+  | 'shield'
   | 'pencil' | 'fork' | 'chevronDown' | 'chevronRight' | 'arrowUp'
   | 'panel-left-open' | 'panel-left-close' | 'clock' | 'microphone'
   | 'cloud' | 'fileText' | 'fileCode' | 'image' | 'table' | 'externalLink';
@@ -29,6 +30,7 @@ const ICONS: Record<IconName, IconDef> = {
   skills:     { path: '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>' },
   agents:     { path: '<rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="9" cy="16" r="1"/><circle cx="15" cy="16" r="1"/><path d="M12 2v4"/><circle cx="12" cy="2" r="1"/><path d="M8 11V9a4 4 0 0 1 8 0v2"/>' },
   approvals:  { path: '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>' },
+  shield:     { path: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>', strokeWidth: 1.7 },
   sun:        { path: '<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>' },
   moon:       { path: '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>' },
   monitor:    { path: '<rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>' },

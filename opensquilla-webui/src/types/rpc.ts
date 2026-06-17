@@ -1,5 +1,7 @@
 import type { Attachment } from './chat'
 
+export type RunMode = 'standard' | 'trusted' | 'full'
+
 export interface AgentOption {
   id: string
   name: string
@@ -205,7 +207,7 @@ export interface ChatSendAttachmentPayload {
 export interface ChatSendParams {
   message: string
   sessionKey: string
-  _source?: { elevated?: string }
+  _source?: { elevated?: string; runMode?: RunMode }
   intent?: string
   displayText?: string
   attachments?: ChatSendAttachmentPayload[]

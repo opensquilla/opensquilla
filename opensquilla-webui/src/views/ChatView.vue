@@ -322,15 +322,22 @@
       :router-enabled="routerEnabled"
       :router-visual-effects-enabled="routerVisualEffectsEnabled"
       :router-settings-busy="routerSettingsBusy"
+      :run-mode="runMode"
+      :sandbox-setup-busy="sandboxSetupBusy"
+      :sandbox-setup-message="sandboxSetupDetail"
+      :sandbox-setup-visible="sandboxSetupVisible"
       :voice-busy="voiceBusy"
       :voice-recording="voiceRecording"
       @composition-change="composing = $event"
+      @dismiss-sandbox-setup="dismissSandboxSetupPrompt"
+      @ensure-sandbox-setup="ensureSandboxSetupOnly"
       @file-change="onFileInputChange"
       @input="onTextareaInput"
       @keydown="onTextareaKeydown"
       @remove-attachment="removeAttachment"
       @set-busy-send-mode="busySendMode = $event"
       @set-elevated-mode="setComposerElevatedMode"
+      @set-run-mode="setComposerRunMode"
       @set-router-enabled="setComposerRouterEnabled"
       @set-visual-effects-enabled="setComposerVisualEffectsEnabled"
       @voice-input="onVoiceInput"
@@ -421,6 +428,7 @@ import {
 import { useChatRouterDecisionRuntime } from '@/composables/chat/useChatRouterDecisionRuntime'
 import { useChatRpcEventHandlers } from '@/composables/chat/useChatRpcEventHandlers'
 import { useChatRpcSubscriptions } from '@/composables/chat/useChatRpcSubscriptions'
+import { useChatRunMode } from '@/composables/chat/useChatRunMode'
 import { useChatSend } from '@/composables/chat/useChatSend'
 import { useMetaRuns } from '@/composables/chat/useMetaRuns'
 import { useChatSessionRoute } from '@/composables/chat/useChatSessionRoute'
@@ -442,6 +450,7 @@ import type {
 } from '@/types/chat'
 import type {
   ArtifactPayload,
+  RunMode,
 } from '@/types/rpc'
 import { artifactDownloadUrl } from '@/utils/chat/artifacts'
 import { copyTextWithFallback, copyImageToClipboard, downloadBlob, shareCopyImageSupported } from '@/utils/browser'
@@ -535,6 +544,22 @@ const {
   setGlobalElevatedMode,
   normalizeElevatedMode,
 } = chatElevatedMode
+
+const chatRunMode = useChatRunMode({
+  rpc,
+  pushToast,
+})
+const {
+  runMode,
+  sandboxSetupBusy,
+  sandboxSetupDetail,
+  sandboxSetupVisible,
+  dismissSandboxSetupPrompt,
+  ensureSandboxSetupOnly,
+  loadSandboxSetupStatus,
+  normalizeRunMode,
+  setRunMode,
+} = chatRunMode
 
 // Run status
 const runStatus = ref<ChatRunStatus>({ status: 'idle', label: 'Idle', task: null })
@@ -917,12 +942,14 @@ const chatSend = useChatSend({
   sessionKey,
   busySendMode,
   elevatedMode,
+  runMode,
   pendingAttachments,
   pendingSessionIntent,
   aborted,
   autoScroll,
   stream: chatStream,
   normalizeElevatedMode,
+  normalizeRunMode,
   persistSession,
   isCompactInFlightForCurrentSession,
   hasPendingAttachmentWork,
@@ -1146,6 +1173,10 @@ function readAuthToken(): string {
 
 function setComposerElevatedMode(mode: string) {
   setElevatedMode(mode, { persist: true, sync: true })
+}
+
+function setComposerRunMode(mode: RunMode) {
+  void setRunMode(mode)
 }
 
 async function setComposerRouterEnabled(enabled: boolean) {
@@ -1606,6 +1637,7 @@ onMounted(async () => {
 
   // Load elevated mode
   loadElevatedMode()
+  void loadSandboxSetupStatus({ showPrompt: true })
 
   // Load feature toggles
   await loadFeatureToggles()

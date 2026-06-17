@@ -1771,6 +1771,15 @@ class Agent:
             async for ev in self._run_meta_resume(meta_resume):
                 yield ev
             return
+        meta_launch = metadata.get("meta_launch")
+        if meta_launch is not None:
+            launch_name = (
+                meta_launch.get("name") if isinstance(meta_launch, dict) else None
+            )
+            if launch_name:
+                async for ev in self._run_meta_launch(launch_name):
+                    yield ev
+                return
         clarify_outcome = self._read_clarify_outcome(metadata)
         if clarify_outcome is not None:
             text, terminates = clarify_outcome
@@ -5695,6 +5704,202 @@ class Agent:
                 yield TextDeltaEvent(text=final_text)
         else:
             final_text = "".join(final_text_parts)
+
+        yield DoneEvent(
+            text=final_text,
+            input_tokens=0,
+            output_tokens=0,
+            iterations=1,
+            cost_usd=0.0,
+            cost_source="none",
+            model=self.config.model_id or "",
+        )
+
+    async def _run_meta_launch(self, name: str) -> AsyncIterator[Any]:
+        """Run a meta-skill by name from the explicit /meta command.
+
+        Models its streaming/finalization on ``_run_meta_resume`` and reuses the
+        resolution + guards from ``_run_one_streaming`` (enabled gate,
+        awaiting-guard, kind/disable validation). Yields nested AgentEvents plus
+        a terminal DoneEvent so the turn pipeline finalizes normally.
+        """
+        import opensquilla.skills.creator  # noqa: F401  (registers e2e hooks)
+        from opensquilla.engine.types import DoneEvent, TextDeltaEvent
+        from opensquilla.skills.creator.proposer import (
+            reset_runtime_e2e_context,
+            reset_smoke_fixture_context,
+            set_runtime_e2e_context,
+            set_smoke_fixture_context,
+        )
+        from opensquilla.skills.creator.runtime_e2e import make_runtime_e2e_context
+        from opensquilla.skills.meta.enabled import is_meta_skill_enabled
+        from opensquilla.skills.meta.inputs import (
+            make_meta_inputs,
+            meta_input_overrides_from_metadata,
+        )
+        from opensquilla.skills.meta.parser import MetaPlanError, parse_meta_plan
+        from opensquilla.skills.meta.types import MetaMatch, MetaResult
+        from opensquilla.tools.types import current_tool_context
+
+        metadata = self.config.metadata or {}
+        # One-shot: drop the marker so a re-enter through this turn cannot re-run.
+        if isinstance(metadata, dict):
+            metadata.pop("meta_launch", None)
+
+        if not is_meta_skill_enabled(self.config):
+            async for ev in self._emit_terminal_text(
+                "Meta-skills are disabled by configuration.", iterations=0
+            ):
+                yield ev
+            return
+
+        skill_loader = metadata.get("skill_loader")
+        if skill_loader is None or self._meta_run_writer is None:
+            async for ev in self._emit_terminal_text(
+                f"Cannot run meta-skill {name!r}: runtime is not fully configured.",
+                iterations=0,
+            ):
+                yield ev
+            return
+
+        # Awaiting-guard parity with _run_one_streaming: refuse a new launch
+        # while a prior run is waiting for input (avoids the opaque CAS error).
+        if self._session_key:
+            try:
+                existing_awaiting = self._meta_run_writer.peek_awaiting(
+                    session_id=self._session_key,
+                )
+            except Exception:  # noqa: BLE001 — fail-open
+                existing_awaiting = None
+            if existing_awaiting is not None:
+                async for ev in self._emit_terminal_text(
+                    "A previous meta-skill is still waiting for your answer. "
+                    "Please complete the form or reply 'cancel' before starting "
+                    "a new meta-skill.",
+                    iterations=0,
+                ):
+                    yield ev
+                return
+
+        skill_spec = skill_loader.get_by_name(name)
+        if skill_spec is None or getattr(skill_spec, "kind", "skill") != "meta":
+            async for ev in self._emit_terminal_text(
+                f"{name!r} is not a meta-skill. Type /meta to list available "
+                "meta-skills.",
+                iterations=0,
+            ):
+                yield ev
+            return
+        # Parity with _run_one_streaming and meta.list: skills flagged
+        # disable_model_invocation are neither listed nor runnable via /meta.
+        if getattr(skill_spec, "disable_model_invocation", False):
+            async for ev in self._emit_terminal_text(
+                f"{name!r} is not available for invocation.", iterations=0
+            ):
+                yield ev
+            return
+
+        try:
+            plan = parse_meta_plan(skill_spec)
+        except MetaPlanError as exc:
+            async for ev in self._emit_terminal_text(
+                f"meta-skill {name!r} plan invalid: {exc}", iterations=0
+            ):
+                yield ev
+            return
+        if plan is None:
+            async for ev in self._emit_terminal_text(
+                f"meta-skill {name!r} parsed to None", iterations=0
+            ):
+                yield ev
+            return
+
+        effective_ctx = current_tool_context.get() or None
+        workspace_dir = (
+            (getattr(effective_ctx, "workspace_dir", None) if effective_ctx else None)
+            or metadata.get("bootstrap_workspace_dir")
+            or getattr(self.config, "workspace_dir", None)
+        )
+        system_prompt = (
+            self._context.system_prompt
+            if self._context is not None
+            else self.config.system_prompt or ""
+        )
+
+        orch, llm_chat, tool_invoker = self._build_meta_orchestrator(
+            workspace_dir=workspace_dir,
+            triggered_by="manual_command",
+            skill_loader=skill_loader,
+        )
+        match = MetaMatch(
+            plan=plan,
+            inputs=make_meta_inputs(
+                user_message=(
+                    getattr(self, "_current_turn_message", "")
+                    or metadata.get("user_message", "")
+                ),
+                system_prompt=system_prompt,
+                **meta_input_overrides_from_metadata(metadata),
+            ),
+        )
+
+        # Mirror _run_one_streaming: wrap iter_events in the runtime-e2e / smoke
+        # ContextVars so a manually launched meta-skill that spawns sub-agents
+        # behaves identically to one launched via the meta_invoke tool.
+        runtime_e2e_ctx = make_runtime_e2e_context(
+            provider=self.provider,
+            base_config=self.config,
+            skill_loader=skill_loader,
+            tool_definitions=self.tool_definitions,
+            tool_handler=self.tool_handler,
+            agent_factory=type(self),
+            llm_chat=llm_chat,
+            tool_invoker=tool_invoker,
+            workspace_dir=str(workspace_dir) if workspace_dir else None,
+            usage_tracker=self._usage_tracker,
+            session_key=getattr(self, "_session_key", None) or "",
+            tool_registry=self._tool_registry,
+            tool_context=effective_ctx,
+            system_prompt=system_prompt,
+            baseline_model=getattr(self.config, "model_id", "") or "",
+        )
+        runtime_e2e_token = set_runtime_e2e_context(runtime_e2e_ctx)
+        smoke_fixture_token = set_smoke_fixture_context({"llm_chat": llm_chat})
+
+        result: Any = None
+        final_text_parts: list[str] = []
+        try:
+            async for ev in orch.iter_events(match):
+                if isinstance(ev, MetaResult):
+                    result = ev
+                    continue
+                if isinstance(ev, TextDeltaEvent) and ev.text:
+                    final_text_parts.append(ev.text)
+                yield ev
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "agent.meta_launch_failed", extra={"error": str(exc), "name": name}
+            )
+            yield DoneEvent(text="", input_tokens=0, output_tokens=0, iterations=0)
+            return
+        finally:
+            reset_smoke_fixture_context(smoke_fixture_token)
+            reset_runtime_e2e_context(runtime_e2e_token)
+
+        if result is not None and getattr(result, "paused", False):
+            from opensquilla.engine.turn_runner.turn_finalizer_stage import (
+                render_paused_outcome,
+            )
+
+            final_text = render_paused_outcome(result)
+        elif result is not None:
+            final_text = result.final_text or "".join(final_text_parts)
+        else:
+            final_text = "".join(final_text_parts)
+
+        already_streamed = "".join(final_text_parts)
+        if final_text and final_text != already_streamed:
+            yield TextDeltaEvent(text=final_text)
 
         yield DoneEvent(
             text=final_text,

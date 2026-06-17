@@ -452,8 +452,8 @@ async function confirmDelete() {
 }
 
 @keyframes cron-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(var(--accent-rgb, 240, 160, 48), 0.3); }
-  50% { box-shadow: 0 0 0 4px rgba(var(--accent-rgb, 240, 160, 48), 0); }
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 30%, transparent); }
+  50% { box-shadow: 0 0 0 4px transparent; }
 }
 
 .cron-card__head {

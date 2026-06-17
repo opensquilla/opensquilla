@@ -131,7 +131,7 @@
 .control-stat--clickable:hover,
 .control-card--interactive:hover {
   border-color: var(--border-focus);
-  box-shadow: 0 8px 24px -16px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 8px 24px -16px var(--shadow-color);
   transform: translateY(-1px);
 }
 

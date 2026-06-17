@@ -185,7 +185,12 @@ async def test_default_prompt_only_injects_retained_bundled_skills(
     )
     loader = SkillLoader(bundled_dir=BUNDLED, snapshot_path=tmp_path / "snapshot.json")
 
-    ctx = await filter_skills(_ctx(loader))
+    ctx = _ctx(loader)
+    # Meta-skills are injected only when meta auto-trigger is opted in
+    # (manual-only is the default), so enable it here to assert the full
+    # default catalog, including the kind="meta" entries.
+    ctx.config.meta_skill = SimpleNamespace(enabled=True, auto_trigger=True)
+    ctx = await filter_skills(ctx)
 
     prompt = ctx.system_prompt[1]
     for name in PROMPT_DEFAULTS_WITHOUT_AUDIO_TOOLS:
@@ -203,7 +208,11 @@ async def test_default_prompt_prefers_matching_meta_skills_over_direct_answers(
 ) -> None:
     loader = SkillLoader(bundled_dir=BUNDLED, snapshot_path=tmp_path / "snapshot.json")
 
-    ctx = await filter_skills(_ctx(loader))
+    ctx = _ctx(loader)
+    # The meta-orchestration guidance is part of the prompt only when meta
+    # auto-trigger is enabled; the manual-only default omits it.
+    ctx.config.meta_skill = SimpleNamespace(enabled=True, auto_trigger=True)
+    ctx = await filter_skills(ctx)
 
     prompt = ctx.system_prompt[1]
     assert "When a kind=\"meta\" entry clearly matches" in prompt

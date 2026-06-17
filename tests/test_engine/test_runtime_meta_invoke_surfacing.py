@@ -68,7 +68,7 @@ def test_build_tools_surfaces_meta_invoke_when_meta_skill_present(
 ) -> None:
     registry = get_default_registry()
     loader = _make_loader_with_meta(tmp_path)
-    runner = TurnRunner(provider_selector=None, config=None)
+    runner = TurnRunner(provider_selector=None, config=_meta_cfg(auto_trigger=True))
     runner._tool_registry = registry
     runner._skill_loader = loader
 
@@ -153,7 +153,7 @@ def test_build_tools_preserves_existing_surfaced_tools(tmp_path: Path) -> None:
     per-request tool surface), _build_tools must add to it, not overwrite."""
     registry = get_default_registry()
     loader = _make_loader_with_meta(tmp_path)
-    runner = TurnRunner(provider_selector=None, config=None)
+    runner = TurnRunner(provider_selector=None, config=_meta_cfg(auto_trigger=True))
     runner._tool_registry = registry
     runner._skill_loader = loader
 
@@ -362,3 +362,19 @@ async def test_pipeline_shows_meta_skill_when_auto_trigger_on(
     )
 
     assert "meta-tiny" in str(turn.system_prompt)
+
+
+def test_build_tools_hides_meta_invoke_when_auto_trigger_off(tmp_path: Path) -> None:
+    """Default manual-only: meta-skill present but auto_trigger off => no meta_invoke."""
+    registry = get_default_registry()
+    loader = _make_loader_with_meta(tmp_path)
+    runner = TurnRunner(provider_selector=None, config=_meta_cfg(auto_trigger=False))
+    runner._tool_registry = registry
+    runner._skill_loader = loader
+
+    ctx = ToolContext(is_owner=True, workspace_dir=str(tmp_path))
+    tool_defs, _handler = runner._build_tools(ctx)
+    names = {getattr(td, "name", "") for td in tool_defs}
+
+    assert "meta_invoke" not in names
+    assert ctx.surfaced_tools is None or "meta_invoke" not in ctx.surfaced_tools

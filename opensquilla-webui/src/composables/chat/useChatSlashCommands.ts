@@ -5,6 +5,11 @@ type RpcClient = {
   call: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
+export interface ArgumentChoice {
+  value: string
+  description: string
+}
+
 export interface ChatSlashCommand {
   name: string
   cmd: string
@@ -14,6 +19,10 @@ export interface ChatSlashCommand {
   execution?: {
     action?: string
   }
+  // Tab-completable argument candidates for this command (e.g. meta-skill names).
+  argumentChoices?: ArgumentChoice[]
+  // Set on synthetic entries that represent a chosen argument ("/meta <skill>").
+  argValue?: string
   [key: string]: unknown
 }
 
@@ -62,6 +71,9 @@ function slashCommandKey(value: string): string {
 
 function normalizeSlashCommand(cmd: SlashCommandPayload): ChatSlashCommand {
   const name = cmd?.name || cmd?.cmd || ''
+  const rawChoices = Array.isArray((cmd as { argument_choices?: unknown })?.argument_choices)
+    ? (cmd as { argument_choices: Array<{ value?: unknown; description?: unknown }> }).argument_choices
+    : []
   return {
     ...cmd,
     name,
@@ -69,6 +81,22 @@ function normalizeSlashCommand(cmd: SlashCommandPayload): ChatSlashCommand {
     label: cmd?.label || name,
     desc: cmd?.description || cmd?.desc || cmd?.usage || '',
     aliases: Array.isArray(cmd?.aliases) ? cmd.aliases : [],
+    argumentChoices: rawChoices
+      .map((c) => ({ value: String(c?.value ?? ''), description: String(c?.description ?? '') }))
+      .filter((c) => c.value),
+  }
+}
+
+function makeArgCandidate(parent: ChatSlashCommand, choice: ArgumentChoice): ChatSlashCommand {
+  const full = parent.cmd + ' ' + choice.value
+  return {
+    name: full,
+    cmd: full,
+    label: full,
+    desc: choice.description,
+    aliases: [],
+    execution: parent.execution,
+    argValue: choice.value,
   }
 }
 
@@ -91,20 +119,41 @@ export function useChatSlashCommands(options: UseChatSlashCommandsOptions) {
     }
   }
 
+  function openWith(cmds: ChatSlashCommand[]): void {
+    filteredSlashCmds.value = cmds
+    if (cmds.length > 0) {
+      slashOpen.value = true
+      slashIdx.value = 0
+    } else {
+      closeSlashMenu()
+    }
+  }
+
   function handleSlashInput() {
     const val = options.inputText.value
-    if (val.startsWith('//')) {
+    if (val.startsWith('//') || !val.startsWith('/')) {
       closeSlashMenu()
       return
     }
-    if (val.startsWith('/') && !val.includes(' ')) {
+    const firstSpace = val.indexOf(' ')
+    if (firstSpace === -1) {
+      // Command-name completion: "/me" -> matching commands.
       const query = val.slice(1).toLowerCase()
-      filteredSlashCmds.value = slashCmds.value.filter(c => c.cmd.slice(1).startsWith(query))
-      if (filteredSlashCmds.value.length > 0) {
-        slashOpen.value = true
-        slashIdx.value = 0
-        return
-      }
+      openWith(slashCmds.value.filter(c => c.cmd.slice(1).startsWith(query)))
+      return
+    }
+    // Argument completion: "/meta <partial>" -> the command's argument choices.
+    const head = '/' + val.slice(1, firstSpace).toLowerCase()
+    const partial = val.slice(firstSpace + 1).trimStart().toLowerCase()
+    const parent = slashCmds.value.find(c => slashCommandKey(c.name) === slashCommandKey(head))
+    const choices = parent?.argumentChoices || []
+    if (parent && choices.length > 0) {
+      openWith(
+        choices
+          .filter(ch => ch.value.toLowerCase().startsWith(partial))
+          .map(ch => makeArgCandidate(parent, ch)),
+      )
+      return
     }
     closeSlashMenu()
   }
@@ -115,6 +164,24 @@ export function useChatSlashCommands(options: UseChatSlashCommandsOptions) {
   }
 
   function selectSlashCmd(cmd: ChatSlashCommand, args = '') {
+    // Argument candidate ("/meta <skill>"): Tab-completes into the composer;
+    // the user presses Enter to run it.
+    if (cmd.argValue) {
+      closeSlashMenu()
+      options.inputText.value = cmd.cmd
+      options.autoResizeTextarea()
+      return
+    }
+    // A command that takes arguments, selected with none yet: complete to
+    // "/cmd " and reopen the menu showing its argument candidates.
+    if (!args && (cmd.argumentChoices?.length ?? 0) > 0) {
+      closeSlashMenu()
+      options.inputText.value = cmd.cmd + ' '
+      options.autoResizeTextarea()
+      handleSlashInput()
+      return
+    }
+
     closeSlashMenu()
     options.inputText.value = ''
     options.autoResizeTextarea()
@@ -163,33 +230,22 @@ export function useChatSlashCommands(options: UseChatSlashCommandsOptions) {
           .catch((err: unknown) => console.warn('Usage failed:', err instanceof Error ? err.message : String(err)))
         break
       case 'meta.menu': {
+        // Bare "/meta" is handled by the argument-completion branch above
+        // (it reopens the menu with the skill choices). Here we only reach the
+        // run path, with a skill name supplied (e.g. Enter on "/meta <skill>").
         const skillName = String(args || '').trim()
-        if (!skillName) {
-          // /meta with no argument → list the available meta-skills (no LLM).
-          options.rpc.call<{ skills?: Array<{ name?: string }>; disabled?: boolean }>('meta.list')
-            .then((result) => {
-              const skills = Array.isArray(result?.skills) ? result.skills : []
-              if (result?.disabled || skills.length === 0) {
-                options.notify('No meta-skills available.')
-                return
-              }
-              const names = skills.map(s => s?.name).filter(Boolean).join(', ')
-              options.notify('Meta-skills: ' + names + ' — run one with /meta <name>')
-            })
-            .catch((err: unknown) => options.notify('Could not list meta-skills: ' + (err instanceof Error ? err.message : String(err))))
-        } else {
-          // /meta <name> → stamp the launch, then trigger a turn so the
-          // pipeline seeds the marker and the orchestrator runs the skill.
-          options.rpc.call<{ ok?: boolean; error?: string }>('meta.run', { name: skillName, sessionKey: options.sessionKey.value })
-            .then((result) => {
-              if (result?.ok) {
-                options.dispatchHidden('/meta ' + skillName, '/meta ' + skillName)
-              } else {
-                options.notify(result?.error || ('Could not run meta-skill ' + skillName + '.'))
-              }
-            })
-            .catch((err: unknown) => options.notify('Could not run meta-skill: ' + (err instanceof Error ? err.message : String(err))))
-        }
+        if (!skillName) break
+        // Stamp the launch, then trigger a turn so the pipeline seeds the
+        // marker and the orchestrator runs the skill.
+        options.rpc.call<{ ok?: boolean; error?: string }>('meta.run', { name: skillName, sessionKey: options.sessionKey.value })
+          .then((result) => {
+            if (result?.ok) {
+              options.dispatchHidden('/meta ' + skillName, '/meta ' + skillName)
+            } else {
+              options.notify(result?.error || ('Could not run meta-skill ' + skillName + '.'))
+            }
+          })
+          .catch((err: unknown) => options.notify('Could not run meta-skill: ' + (err instanceof Error ? err.message : String(err))))
         break
       }
     }

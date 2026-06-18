@@ -27,6 +27,10 @@ _CODING_MODE_DIRECTIVE = (
     "For building an app or UI from scratch (e.g. an Electron + React "
     "desktop app), add --verification-mode build so code-task verifies the "
     "app compiles and packages instead of running red->green tests.\n"
+    "For a follow-up change to an app you already built (e.g. add a section "
+    "or change the color), point --repo at that app's repo and keep "
+    "--verification-mode build; code-task edits the existing app in place and "
+    "applies the verified change back to the repo so the next edit builds on it.\n"
     "code-task usually runs for several minutes; if you launch it via "
     'background_process, await it with process(action="wait", session_id=...) '
     "rather than polling process(action=\"poll\") in a loop.\n"

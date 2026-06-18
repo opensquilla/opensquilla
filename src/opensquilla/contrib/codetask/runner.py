@@ -82,7 +82,8 @@ def solve(
 
     # 3. Probe environment + render prompt.
     probe = envprobe.probe(prepared.path)
-    prompt = _render_prompt(task_md, probe.as_hints(), scratch, verification_mode)
+    is_edit = verification_mode == "build" and _repo_has_app(prepared.path)
+    prompt = _render_prompt(task_md, probe.as_hints(), scratch, verification_mode, is_edit)
     config.artifact_path(rid, "prompt.txt").write_text(prompt)
 
     result = TaskResult(
@@ -159,6 +160,21 @@ def solve(
         if vout.detail and not result.error:
             result.error = vout.detail
 
+    # Build mode: promote a VERIFIED change back onto the stable LOCAL source
+    # repo so follow-up edits iterate on the same app (URLs are not touched).
+    if verification_mode == "build" and result.state == TaskState.VERIFIED and patch.strip():
+        _is_local = ("://" not in repo) and not repo.startswith("git@")
+        _src = Path(repo).expanduser()
+        if _is_local and _src.exists() and (_src.resolve() / ".git").is_dir():
+            ok, info = workspace.persist_to_source(
+                _src.resolve(), prepared.base_commit, patch, f"code-task: {spec.slug}"
+            )
+            result.persisted = ok
+            if ok:
+                result.source_repo = str(_src.resolve())
+            elif not result.error:
+                result.error = f"verified but not persisted to source: {info}"
+
     _persist(result)
     return result
 
@@ -174,10 +190,19 @@ def _archive_manifest(scratch: Path, run_id: str) -> None:
         pass
 
 
+def _repo_has_app(repo: Path) -> bool:
+    """True if the cloned repo already contains a JS app (edit, not scaffold)."""
+    return (repo / "package.json").is_file() and (repo / "src").is_dir()
+
+
 def _render_prompt(
-    task_md: str, hints: str, scratch: Path, verification_mode: str = "red-green"
+    task_md: str,
+    hints: str,
+    scratch: Path,
+    verification_mode: str = "red-green",
+    is_edit: bool = False,
 ) -> str:
-    template = config.prompt_template_path(verification_mode).read_text()
+    template = config.prompt_template_path(verification_mode, is_edit).read_text()
     hints_block = f"\n{hints}\n" if hints else ""
     return template.format(
         task=task_md,

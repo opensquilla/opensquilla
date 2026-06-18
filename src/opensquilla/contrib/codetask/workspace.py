@@ -162,10 +162,47 @@ def collect_change(repo: Path, base_commit: str) -> tuple[int, str, str]:
     """
     _git(["add", "-A"], repo)
     diffstat = _git(["diff", "--stat", base_commit], repo).stdout.strip()
-    patch = _git(["diff", "--no-color", base_commit], repo).stdout
+    patch = _git(["diff", "--binary", "--no-color", base_commit], repo).stdout
     names = _git(["diff", "--name-only", base_commit], repo).stdout.strip()
     files_changed = len([n for n in names.splitlines() if n.strip()])
     return files_changed, diffstat, patch
+
+
+def persist_to_source(
+    source_repo: Path, base_commit: str, patch: str, message: str
+) -> tuple[bool, str]:
+    """Apply a VERIFIED build-mode change back onto a stable LOCAL source repo.
+
+    Lets follow-up edits iterate on the same app. Guarded: the source must be a
+    clean git repo whose HEAD still equals ``base_commit`` (no drift since the
+    run started). Returns ``(ok, new_commit_or_reason)``.
+    """
+    if not (source_repo / ".git").is_dir():
+        return False, "source is not a git repo"
+    if is_dirty(source_repo):
+        return False, "source repo has uncommitted changes"
+    head = _git(["rev-parse", "HEAD"], source_repo).stdout.strip()
+    if head != base_commit:
+        return False, f"source HEAD moved ({head[:12]} != base {base_commit[:12]})"
+    if not patch.strip():
+        return False, "no change to persist"
+    proc = subprocess.run(
+        ["git", "apply", "--whitespace=nowarn"],
+        cwd=str(source_repo),
+        input=patch,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if proc.returncode != 0:
+        return False, f"git apply failed: {(proc.stderr or '').strip()[-300:]}"
+    _git(["config", "user.email", GIT_USER_EMAIL], source_repo)
+    _git(["config", "user.name", GIT_USER_NAME], source_repo)
+    _git(["add", "-A"], source_repo)
+    c = _git(["commit", "-m", message], source_repo)
+    if c.returncode != 0:
+        return False, f"commit failed: {(c.stderr or '').strip()[-200:]}"
+    return True, _git(["rev-parse", "HEAD"], source_repo).stdout.strip()
 
 
 def count_commits(repo: Path, base_commit: str) -> int:

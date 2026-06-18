@@ -113,6 +113,8 @@ class TaskResult:
     regression: RegressionResult | None = None
     verification_kind: str = "red_green"  # red_green | build
     build: BuildResult | None = None
+    persisted: bool = False  # build edit applied back to the source repo
+    source_repo: str | None = None
     commits: int = 0
     files_changed: int = 0
     diffstat: str = ""

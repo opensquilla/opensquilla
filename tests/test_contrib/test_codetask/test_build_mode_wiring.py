@@ -50,3 +50,17 @@ def test_taskresult_new_field_defaults():
     fields = TaskResult.__dataclass_fields__
     assert fields["verification_kind"].default == "red_green"
     assert fields["build"].default is None
+
+
+def test_template_selection_edit_mode():
+    assert config.prompt_template_path("build", True).name == "app_edit.txt"
+    assert config.prompt_template_path("build", False).name == "app_build.txt"
+
+
+def test_repo_has_app_detection(tmp_path):
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "src").mkdir()
+    assert runner._repo_has_app(tmp_path) is True
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert runner._repo_has_app(empty) is False

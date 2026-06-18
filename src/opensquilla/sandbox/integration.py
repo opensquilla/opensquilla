@@ -1299,7 +1299,10 @@ async def preflight_subprocess_managed_network(
     if getattr(request.policy, "network", None) != NetworkMode.PROXY_ALLOWLIST:
         return None
 
-    if not await _platform_proxy_allowlist_ready_or_repaired(runtime):
+    if (
+        _backend_name(runtime).lower().startswith("windows_")
+        and not _windows_proxy_allowlist_enforced(runtime)
+    ):
         return await _managed_in_process_denial(
             request,
             runtime,

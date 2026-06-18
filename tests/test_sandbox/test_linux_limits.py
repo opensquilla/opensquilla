@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 
+import pytest
+
 from opensquilla.sandbox.backend.linux_limits import resource_preexec_from_policy
+
+pytestmark = pytest.mark.skipif(
+    sys.platform.startswith("win"),
+    reason="Linux resource-limit tests require POSIX platform semantics",
+)
 
 
 def test_resource_preexec_from_policy_sets_cpu_and_pid_limits_without_address_space_cap(

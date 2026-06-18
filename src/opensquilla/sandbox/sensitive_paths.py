@@ -398,7 +398,7 @@ def linux_runtime_sensitive_deny_roots(
         return ()
     roots: list[Path] = []
     for raw in _LINUX_RUNTIME_SENSITIVE_PREFIXES:
-        root = Path(raw).expanduser().resolve(strict=False)
+        root = Path(raw).expanduser()
         if workspace is not None and _path_contains(
             _comparison_path(str(workspace)),
             _comparison_path(str(root)),

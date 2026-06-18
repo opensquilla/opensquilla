@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,11 @@ from opensquilla.sandbox.backend.linux_bwrap import (
 )
 from opensquilla.sandbox.backend.linux_permissions import LinuxPermissions, LinuxRoot
 from opensquilla.sandbox.types import NetworkMode, SandboxBackendError
+
+pytestmark = pytest.mark.skipif(
+    sys.platform.startswith("win"),
+    reason="Linux bubblewrap backend tests require POSIX path and process semantics",
+)
 
 
 def _permissions(tmp_path: Path, *, network: NetworkMode = NetworkMode.NONE) -> LinuxPermissions:

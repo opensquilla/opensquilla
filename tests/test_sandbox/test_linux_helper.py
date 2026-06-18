@@ -25,6 +25,11 @@ from opensquilla.sandbox.backend.linux_protected_create import (
     register_synthetic_mount_targets,
 )
 
+pytestmark = pytest.mark.skipif(
+    sys.platform.startswith("win"),
+    reason="Linux helper tests require POSIX process-group and seccomp semantics",
+)
+
 
 @pytest.mark.asyncio
 async def test_run_process_payload_captures_stdout_and_stderr(tmp_path) -> None:

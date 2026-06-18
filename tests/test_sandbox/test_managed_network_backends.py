@@ -79,6 +79,7 @@ def _request(policy: SandboxPolicy, cwd: Path) -> SandboxRequest:
     )
 
 
+@_BWRAP_PROXY_BRIDGE_LINUX_ONLY
 def test_bubblewrap_treats_sandbox_paths_as_posix_on_windows(
     tmp_path: Path,
 ) -> None:
@@ -268,6 +269,7 @@ def test_bubblewrap_preserves_home_when_workspace_mount_is_canonicalized(
     assert argv[home_index + 1] == "/home/lrk"
 
 
+@_BWRAP_PROXY_BRIDGE_LINUX_ONLY
 def test_bubblewrap_masks_protected_metadata_under_writable_roots(tmp_path: Path) -> None:
     policy = SandboxPolicy(
         level=SecurityLevel.STANDARD,
@@ -310,6 +312,7 @@ def test_bubblewrap_masks_protected_metadata_under_writable_roots(tmp_path: Path
         )
 
 
+@_BWRAP_PROXY_BRIDGE_LINUX_ONLY
 def test_bubblewrap_upgrades_duplicate_host_alias_to_writable(tmp_path: Path) -> None:
     policy = SandboxPolicy(
         level=SecurityLevel.STANDARD,
@@ -348,6 +351,7 @@ def test_bubblewrap_upgrades_duplicate_host_alias_to_writable(tmp_path: Path) ->
     )
 
 
+@_BWRAP_PROXY_BRIDGE_LINUX_ONLY
 def test_bubblewrap_available_uses_readiness_probe(monkeypatch) -> None:
     monkeypatch.setattr(
         bubblewrap_mod,

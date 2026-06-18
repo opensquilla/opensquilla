@@ -233,6 +233,7 @@ def test_bubblewrap_proxy_allowlist_injects_package_manager_proxy_env(
     assert argv[network_index + 1] == "proxy_allowlist"
 
 
+@_BWRAP_PROXY_BRIDGE_LINUX_ONLY
 def test_bubblewrap_preserves_home_when_workspace_mount_is_canonicalized(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

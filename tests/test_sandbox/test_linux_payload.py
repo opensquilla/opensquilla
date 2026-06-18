@@ -153,7 +153,7 @@ def test_build_process_helper_payload_from_sandbox_request(tmp_path: Path) -> No
     assert payload.process.argv == ["sh", "-lc", "echo ok"]
     assert payload.policy["network"] == "none"
     assert payload.policy["mounts"][0]["host"] == str(tmp_path)
-    assert payload.policy["mounts"][0]["sandbox"] == str(tmp_path)
+    assert payload.policy["mounts"][0]["sandbox"] == tmp_path.as_posix()
     assert payload.policy["cpuSeconds"] == 30
     assert payload.policy["memoryMb"] == 1024
     assert payload.policy["pids"] == 256

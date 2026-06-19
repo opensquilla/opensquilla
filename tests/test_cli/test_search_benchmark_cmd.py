@@ -63,6 +63,10 @@ def _assert_benchmark_metrics(payload: dict[str, object]) -> None:
         "external_tool_calls_per_question",
         "avg_returned_chars",
     }
+    v1 = cast(dict[str, object], payload["v1"])
+    v2 = cast(dict[str, object], payload["v2"])
+    assert v2["external_tool_calls_per_question"] < v1["external_tool_calls_per_question"]
+    assert v2["avg_returned_chars"] < v1["avg_returned_chars"]
 
 
 def test_search_benchmark_smoke_json_uses_real_synthetic_output():

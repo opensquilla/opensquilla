@@ -136,6 +136,7 @@ markers = [
     "webui_browser: real browser Web UI tests driven by Playwright",
     "tui_real_terminal: real terminal TUI integration tests driven through tmux or PTY",
     "live_channel: marks tests that hit a real channel platform (deselect with '-m \"not live_channel\"')",
+    "live_search: marks opt-in tests that hit real search providers (deselect with '-m \"not live_search\"')",
 ]
 
 [tool.ruff]

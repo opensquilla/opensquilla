@@ -14,7 +14,6 @@ _provider_specs: dict[str, SearchProviderSpec] = {
     "duckduckgo": SearchProviderSpec(provider_id="duckduckgo"),
     "tavily": SearchProviderSpec(
         provider_id="tavily",
-        runtime_supported=False,
         requires_api_key=True,
         env_key="TAVILY_API_KEY",
     ),

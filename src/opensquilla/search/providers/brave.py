@@ -24,6 +24,7 @@ class BraveSearchProvider:
         proxy: str = "",
         use_env_proxy: bool = False,
         diagnostics: bool = False,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._api_key = clean_header_secret(
             api_key or os.environ.get("BRAVE_SEARCH_API_KEY", ""),
@@ -32,6 +33,7 @@ class BraveSearchProvider:
         self._proxy = proxy or None
         self._trust_env = bool(use_env_proxy) and not self._proxy
         self._diagnostics = bool(diagnostics)
+        self._transport = transport
 
     async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
         if not self._api_key:
@@ -47,6 +49,7 @@ class BraveSearchProvider:
                 timeout=15.0,
                 proxy=self._proxy,
                 trust_env=self._trust_env,
+                transport=self._transport,
             ) as client:
                 response = await client.get(
                     _API_URL,
@@ -96,6 +99,11 @@ class BraveSearchProvider:
                     title=item.get("title", ""),
                     url=item.get("url", ""),
                     snippet=item.get("description", ""),
+                    source="brave",
+                    provider="brave",
+                    published_at=(
+                        item.get("age") or item.get("page_age") or item.get("published_at")
+                    ),
                 )
             )
 

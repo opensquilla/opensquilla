@@ -15,6 +15,7 @@ import httpx
 
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.sandbox.integration import sandboxed
+from opensquilla.search.normalize import canonicalize_url, extract_domain
 from opensquilla.search.types import SearchProviderError, SearchResult
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
@@ -384,7 +385,7 @@ def _search_provider_kwargs(provider_name: str) -> dict[str, object]:
         "proxy": _active_search_proxy,
         "use_env_proxy": _active_search_use_env_proxy,
     }
-    if provider_name == "brave" and _active_search_api_key:
+    if provider_name in {"brave", "tavily"} and _active_search_api_key:
         kwargs["api_key"] = _active_search_api_key
     if _active_search_diagnostics or provider_name == "duckduckgo":
         kwargs["diagnostics"] = _active_search_diagnostics
@@ -394,6 +395,7 @@ def _search_provider_kwargs(provider_name: str) -> dict[str, object]:
 def _ensure_builtin_search_providers() -> None:
     import opensquilla.search.providers.brave  # noqa: F401
     import opensquilla.search.providers.duckduckgo  # noqa: F401
+    import opensquilla.search.providers.tavily  # noqa: F401
 
 
 def _search_success_payload(payload: dict) -> dict:
@@ -572,12 +574,35 @@ def _search_payload(
     payload = {
         "query": query,
         "provider": provider_name,
-        "results": [{"title": r.title, "url": r.url, "snippet": r.snippet} for r in results],
+        "results": [_search_result_payload(provider_name, r) for r in results],
     }
     if fallback_from:
         payload["fallback_from"] = fallback_from
     if attempts is not None:
         payload["attempts"] = attempts
+    return payload
+
+
+def _search_result_payload(provider_name: str, result: SearchResult) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "title": result.title,
+        "url": result.url,
+        "snippet": result.snippet,
+    }
+    provider = result.provider or result.source or provider_name
+    if provider:
+        payload["provider"] = provider
+    if result.published_at:
+        payload["published_at"] = result.published_at
+    if result.score is not None:
+        payload["score"] = result.score
+    if result.url:
+        domain = extract_domain(result.url)
+        canonical_url = canonicalize_url(result.url)
+        if domain:
+            payload["domain"] = domain
+        if canonical_url:
+            payload["canonical_url"] = canonical_url
     return payload
 
 

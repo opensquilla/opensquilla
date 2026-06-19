@@ -18,7 +18,7 @@ def test_search_catalog_marks_unsupported_providers_disabled():
     specs = {s.provider_id: s for s in list_search_provider_setup_specs()}
     assert specs["brave"].runtime_supported is True
     assert specs["duckduckgo"].runtime_supported is True
-    assert specs["tavily"].runtime_supported is False
+    assert specs["tavily"].runtime_supported is True
     assert specs["exa"].runtime_supported is False
     assert specs["perplexity"].runtime_supported is False
 
@@ -27,6 +27,12 @@ def test_brave_search_spec_requires_api_key():
     spec = get_search_provider_setup_spec("brave")
     assert spec.requires_api_key is True
     assert spec.env_key == "BRAVE_SEARCH_API_KEY"
+
+
+def test_tavily_search_spec_requires_api_key():
+    spec = get_search_provider_setup_spec("tavily")
+    assert spec.requires_api_key is True
+    assert spec.env_key == "TAVILY_API_KEY"
 
 
 def test_duckduckgo_search_spec_does_not_require_api_key():

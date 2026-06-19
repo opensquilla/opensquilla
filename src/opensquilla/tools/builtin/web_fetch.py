@@ -63,6 +63,8 @@ _XML_ATTR_ESCAPES = {
     "'": "&apos;",
 }
 
+_RAW_TOOL_RESULT_KEY = "_raw_tool_result"
+
 
 def _check_ssrf(url: str) -> None:
     """Raise ValueError if the URL resolves to a private/internal address."""
@@ -162,57 +164,18 @@ def _active_run_budget_policy() -> ToolRunBudgetPolicy:
     return DEFAULT_TOOL_RUN_BUDGET_POLICY
 
 
-@tool(
-    name="web_fetch",
-    description=(
-        "Fetch a URL and extract readable content as markdown or plain text. "
-        "Uses a multi-extractor pipeline (readability → Firecrawl escalation → "
-        "html2text). Includes SSRF protection and a 15-minute response cache."
-    ),
-    params={
-        "url": {
-            "type": "string",
-            "description": "HTTP or HTTPS URL to fetch.",
-        },
-        "extract_mode": {
-            "type": "string",
-            "description": 'Extraction format: "markdown" (default) or "text".',
-            "enum": ["markdown", "text"],
-        },
-        "max_chars": {
-            "type": "integer",
-            "description": (
-                "Maximum characters to return (minimum 100). "
-                "Defaults to 20,000 when omitted; override default with "
-                "OPENSQUILLA_WEB_FETCH_MAX_CHARS."
-            ),
-            "minimum": 100,
-        },
-    },
-    required=["url"],
-    result_budget_class="external",
-)
-@sandboxed(
-    kind="web.fetch",
-    argv_factory=lambda a: (
-        "web_fetch",
-        str(a.get("url", "")),
-        str(a.get("extract_mode", "markdown")),
-    ),
-    record_payload=False,
-)
-async def web_fetch(
+async def run_web_fetch_payload(
     url: str,
     extract_mode: str = "markdown",
     max_chars: int | None = None,
-) -> str:
+) -> dict[str, Any]:
     # --- SSRF guard ---
     _check_ssrf(url)
     from opensquilla.tools.builtin.web import _sensitive_body_block, _sensitive_url_marker
 
     marker = _sensitive_url_marker(url)
     if marker is not None:
-        return _sensitive_body_block("web_fetch", marker)
+        return {_RAW_TOOL_RESULT_KEY: _sensitive_body_block("web_fetch", marker)}
 
     effective_max_chars = _resolve_effective_max_chars(max_chars)
 
@@ -220,7 +183,7 @@ async def web_fetch(
     cache_key = (url, extract_mode)
     if cache_key in _cache:
         cached: dict[str, Any] = dict(_cache[cache_key])
-        return json.dumps(_apply_max_chars(cached, effective_max_chars), ensure_ascii=False)
+        return _apply_max_chars(cached, effective_max_chars)
 
     # --- Fetch ---
     title = ""
@@ -288,7 +251,7 @@ async def web_fetch(
                 "text": "",
                 "error": last_error,
             }
-            return json.dumps(result, ensure_ascii=False)
+            return result
 
         is_transient = status in _TRANSIENT_STATUSES
         is_empty_success = 200 <= status < 300 and not raw_html.strip()
@@ -313,7 +276,7 @@ async def web_fetch(
             "text": _wrap_content(final_url, raw_html),
         }
         _cache[cache_key] = result
-        return json.dumps(_apply_max_chars(result, effective_max_chars), ensure_ascii=False)
+        return _apply_max_chars(result, effective_max_chars)
 
     # --- Error HTTP status: return empty ---
     if status >= 400:
@@ -338,7 +301,7 @@ async def web_fetch(
         }
         if status not in _TRANSIENT_STATUSES:
             _cache[cache_key] = result
-        return json.dumps(result, ensure_ascii=False)
+        return result
 
     # --- Extraction pipeline ---
     # Try local extractors first (zero-cost, handles ~90% of mainstream pages),
@@ -388,7 +351,58 @@ async def web_fetch(
         "text": _wrap_content(final_url, extracted_content),
     }
     _cache[cache_key] = result
-    return json.dumps(_apply_max_chars(result, effective_max_chars), ensure_ascii=False)
+    return _apply_max_chars(result, effective_max_chars)
+
+
+@tool(
+    name="web_fetch",
+    description=(
+        "Fetch a URL and extract readable content as markdown or plain text. "
+        "Uses a multi-extractor pipeline (readability → Firecrawl escalation → "
+        "html2text). Includes SSRF protection and a 15-minute response cache."
+    ),
+    params={
+        "url": {
+            "type": "string",
+            "description": "HTTP or HTTPS URL to fetch.",
+        },
+        "extract_mode": {
+            "type": "string",
+            "description": 'Extraction format: "markdown" (default) or "text".',
+            "enum": ["markdown", "text"],
+        },
+        "max_chars": {
+            "type": "integer",
+            "description": (
+                "Maximum characters to return (minimum 100). "
+                "Defaults to 20,000 when omitted; override default with "
+                "OPENSQUILLA_WEB_FETCH_MAX_CHARS."
+            ),
+            "minimum": 100,
+        },
+    },
+    required=["url"],
+    result_budget_class="external",
+)
+@sandboxed(
+    kind="web.fetch",
+    argv_factory=lambda a: (
+        "web_fetch",
+        str(a.get("url", "")),
+        str(a.get("extract_mode", "markdown")),
+    ),
+    record_payload=False,
+)
+async def web_fetch(
+    url: str,
+    extract_mode: str = "markdown",
+    max_chars: int | None = None,
+) -> str:
+    payload = await run_web_fetch_payload(url, extract_mode=extract_mode, max_chars=max_chars)
+    raw_tool_result = payload.get(_RAW_TOOL_RESULT_KEY)
+    if isinstance(raw_tool_result, str):
+        return raw_tool_result
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def _wrap_content(source: str, content: str) -> str:

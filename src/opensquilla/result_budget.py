@@ -16,9 +16,13 @@ import asyncio
 import json
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import Any, TypeGuard
+
+from opensquilla.search.normalize import canonicalize_query_key
 
 WEB_FETCH_MIN_MAX_CHARS = 100
+RESEARCH_MIN_MAX_CHARS_PER_SOURCE = 200
+RetrievalKey = tuple[str, str, str, str]
 
 
 class ToolResultBudgetClass(StrEnum):
@@ -33,6 +37,7 @@ class ToolResultBudgetClass(StrEnum):
 EXTERNAL_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "http_request",
+        "research_search",
         "web_fetch",
         "web_search",
     }
@@ -61,10 +66,15 @@ DEFAULT_TOOL_RESULT_BUDGET_POLICY = ToolResultBudgetPolicy()
 @dataclass(frozen=True)
 class ToolRunBudgetPolicy:
     max_web_search_calls_per_turn: int | None = None
+    max_research_search_calls_per_turn: int | None = None
     max_web_fetch_calls_per_turn: int | None = None
     max_external_text_chars_per_turn: int | None = None
     max_single_fetch_chars: int | None = 50_000
     max_web_search_results: int | None = 10
+    max_research_search_results: int | None = 10
+    max_research_fetch_top_k: int | None = 3
+    max_research_chars_per_source: int | None = 1500
+    max_repeated_retrievals_per_turn: int | None = 2
 
 
 DEFAULT_TOOL_RUN_BUDGET_POLICY = ToolRunBudgetPolicy()
@@ -73,10 +83,15 @@ DEFAULT_TOOL_RUN_BUDGET_POLICY = ToolRunBudgetPolicy()
 def build_webresearch_tool_run_budget_policy(
     *,
     max_web_search_calls_per_turn: int | None = None,
+    max_research_search_calls_per_turn: int | None = None,
     max_web_fetch_calls_per_turn: int | None = None,
     max_external_text_chars_per_turn: int | None = None,
     max_single_fetch_chars: int | None = 50_000,
     max_web_search_results: int | None = 10,
+    max_research_search_results: int | None = 10,
+    max_research_fetch_top_k: int | None = 3,
+    max_research_chars_per_source: int | None = 1500,
+    max_repeated_retrievals_per_turn: int | None = 2,
 ) -> ToolRunBudgetPolicy:
     """Build an explicit webresearch budget policy for benchmark/profile use.
 
@@ -86,10 +101,15 @@ def build_webresearch_tool_run_budget_policy(
     """
     return ToolRunBudgetPolicy(
         max_web_search_calls_per_turn=max_web_search_calls_per_turn,
+        max_research_search_calls_per_turn=max_research_search_calls_per_turn,
         max_web_fetch_calls_per_turn=max_web_fetch_calls_per_turn,
         max_external_text_chars_per_turn=max_external_text_chars_per_turn,
         max_single_fetch_chars=max_single_fetch_chars,
         max_web_search_results=max_web_search_results,
+        max_research_search_results=max_research_search_results,
+        max_research_fetch_top_k=max_research_fetch_top_k,
+        max_research_chars_per_source=max_research_chars_per_source,
+        max_repeated_retrievals_per_turn=max_repeated_retrievals_per_turn,
     )
 
 
@@ -109,6 +129,7 @@ class ToolRunBudgetReservation:
     counted_as_fetch: bool = False
     counted_as_search: bool = False
     counted_as_external_text: bool = False
+    retrieval_key: RetrievalKey | None = None
 
 
 class ToolRunBudgetTracker:
@@ -118,9 +139,11 @@ class ToolRunBudgetTracker:
         self.policy = policy or DEFAULT_TOOL_RUN_BUDGET_POLICY
         self._lock = asyncio.Lock()
         self._web_search_calls_used = 0
+        self._research_search_calls_used = 0
         self._web_fetch_calls_used = 0
         self._external_text_chars_used = 0
         self._external_text_chars_reserved = 0
+        self._retrieval_keys_used: dict[RetrievalKey, int] = {}
 
     async def reserve_tool_call(
         self,
@@ -137,12 +160,32 @@ class ToolRunBudgetTracker:
                     limit=self.policy.max_web_search_calls_per_turn,
                 )
                 self._check_external_text_available(tool_name)
+                retrieval_key = self._reserve_retrieval_key(tool_name, args)
                 self._web_search_calls_used += 1
             return ToolRunBudgetReservation(
                 tool_name=tool_name,
                 arguments=args,
                 counted_as_search=True,
                 counted_as_external_text=True,
+                retrieval_key=retrieval_key,
+            )
+
+        if tool_name == "research_search":
+            async with self._lock:
+                self._check_call_budget(
+                    tool_name=tool_name,
+                    used=self._research_search_calls_used,
+                    limit=self.policy.max_research_search_calls_per_turn,
+                )
+                self._check_external_text_available(tool_name)
+                retrieval_key = self._reserve_retrieval_key(tool_name, args)
+                self._research_search_calls_used += 1
+            return ToolRunBudgetReservation(
+                tool_name=tool_name,
+                arguments=args,
+                counted_as_search=True,
+                counted_as_external_text=True,
+                retrieval_key=retrieval_key,
             )
 
         if tool_name not in EXTERNAL_TOOL_NAMES:
@@ -187,16 +230,38 @@ class ToolRunBudgetTracker:
             self._release_external_reservation(reservation)
             if reservation.counted_as_fetch:
                 self._web_fetch_calls_used = max(0, self._web_fetch_calls_used - 1)
-            if reservation.counted_as_search:
+            if reservation.counted_as_search and reservation.tool_name == "web_search":
                 self._web_search_calls_used = max(0, self._web_search_calls_used - 1)
+            if reservation.counted_as_search and reservation.tool_name == "research_search":
+                self._research_search_calls_used = max(
+                    0,
+                    self._research_search_calls_used - 1,
+                )
+            self._release_retrieval_key(reservation.retrieval_key)
 
-    async def snapshot(self) -> dict[str, int]:
+    async def snapshot(self) -> dict[str, object]:
         async with self._lock:
             return {
                 "web_search_calls_used": self._web_search_calls_used,
+                "research_search_calls_used": self._research_search_calls_used,
                 "web_fetch_calls_used": self._web_fetch_calls_used,
                 "external_text_chars_used": self._external_text_chars_used,
                 "external_text_chars_reserved": self._external_text_chars_reserved,
+                "retrieval_loop_guard": [
+                    {
+                        "tool_name": tool_name,
+                        "query": query,
+                        "provider": provider,
+                        "mode": mode,
+                        "count": count,
+                    }
+                    for (
+                        tool_name,
+                        query,
+                        provider,
+                        mode,
+                    ), count in sorted(self._retrieval_keys_used.items())
+                ],
             }
 
     def _reserve_external_text_budget(
@@ -260,6 +325,40 @@ class ToolRunBudgetTracker:
                 self._external_text_chars_reserved
                 - reservation.reserved_external_text_chars,
             )
+
+    def _reserve_retrieval_key(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> RetrievalKey | None:
+        limit = self.policy.max_repeated_retrievals_per_turn
+        if limit is None:
+            return None
+        key = self._retrieval_key(tool_name, arguments)
+        used = self._retrieval_keys_used.get(key, 0)
+        if used >= limit:
+            raise ToolRunBudgetExceededError(
+                tool_name,
+                f"Tool '{tool_name}' blocked repeated retrieval for the same request key.",
+            )
+        self._retrieval_keys_used[key] = used + 1
+        return key
+
+    def _release_retrieval_key(self, key: RetrievalKey | None) -> None:
+        if key is None:
+            return
+        used = self._retrieval_keys_used.get(key, 0)
+        if used <= 1:
+            self._retrieval_keys_used.pop(key, None)
+        else:
+            self._retrieval_keys_used[key] = used - 1
+
+    @staticmethod
+    def _retrieval_key(tool_name: str, arguments: dict[str, Any]) -> RetrievalKey:
+        query = canonicalize_query_key(str(arguments.get("query") or ""))
+        provider = str(arguments.get("provider") or "auto").strip().lower() or "auto"
+        mode = str(arguments.get("mode") or "auto").strip().lower() or "auto"
+        return (tool_name, query, provider, mode)
 
     @staticmethod
     def _check_call_budget(
@@ -418,7 +517,7 @@ def clamp_tool_arguments(
     if tool_name == "web_fetch":
         requested = next_args.get("max_chars")
         cap = policy.max_single_fetch_chars
-        if isinstance(requested, int):
+        if _is_plain_int(requested):
             value = max(100, requested)
             next_args["max_chars"] = min(value, cap) if cap is not None else value
         elif requested is None and cap is not None:
@@ -426,12 +525,46 @@ def clamp_tool_arguments(
     elif tool_name == "web_search":
         requested = next_args.get("max_results")
         cap = policy.max_web_search_results
-        if isinstance(requested, int):
+        if _is_plain_int(requested):
             value = max(1, requested)
             next_args["max_results"] = min(value, cap) if cap is not None else value
         elif requested is None and cap is not None:
             next_args["max_results"] = cap
+    elif tool_name == "research_search":
+        requested_results = next_args.get("max_results")
+        results_cap = policy.max_research_search_results
+        if _is_plain_int(requested_results):
+            value = max(1, requested_results)
+            next_args["max_results"] = (
+                min(value, results_cap) if results_cap is not None else value
+            )
+        elif requested_results is None and results_cap is not None:
+            next_args["max_results"] = results_cap
+
+        requested_fetch_top_k = next_args.get("fetch_top_k")
+        fetch_top_k_cap = policy.max_research_fetch_top_k
+        if _is_plain_int(requested_fetch_top_k):
+            value = max(0, requested_fetch_top_k)
+            next_args["fetch_top_k"] = (
+                min(value, fetch_top_k_cap) if fetch_top_k_cap is not None else value
+            )
+        elif requested_fetch_top_k is None and fetch_top_k_cap is not None:
+            next_args["fetch_top_k"] = fetch_top_k_cap
+
+        requested_chars = next_args.get("max_chars_per_source")
+        chars_cap = policy.max_research_chars_per_source
+        if _is_plain_int(requested_chars):
+            value = max(RESEARCH_MIN_MAX_CHARS_PER_SOURCE, requested_chars)
+            next_args["max_chars_per_source"] = (
+                min(value, chars_cap) if chars_cap is not None else value
+            )
+        elif requested_chars is None and chars_cap is not None:
+            next_args["max_chars_per_source"] = chars_cap
     return next_args
+
+
+def _is_plain_int(value: object) -> TypeGuard[int]:
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def compact_tool_result_content(

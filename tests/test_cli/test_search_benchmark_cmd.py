@@ -7,8 +7,8 @@ from typing import cast
 
 from typer.testing import CliRunner
 
-import opensquilla.cli.search_cmd as search_cmd
-from opensquilla.cli.main import app
+import opensquilla.cli.search_cmd as search_cmd  # type: ignore[import-untyped]
+from opensquilla.cli.main import app  # type: ignore[import-untyped]
 
 runner = CliRunner()
 
@@ -43,6 +43,12 @@ def _benchmark_payload() -> dict[str, object]:
     }
 
 
+def _numeric_metric(metrics: dict[str, object], key: str) -> int | float:
+    value = metrics[key]
+    assert isinstance(value, int | float)
+    return value
+
+
 def _assert_benchmark_metrics(payload: dict[str, object]) -> None:
     assert set(payload) >= {"v1", "v2", "delta"}
     for arm in ("v1", "v2"):
@@ -65,8 +71,10 @@ def _assert_benchmark_metrics(payload: dict[str, object]) -> None:
     }
     v1 = cast(dict[str, object], payload["v1"])
     v2 = cast(dict[str, object], payload["v2"])
-    assert v2["external_tool_calls_per_question"] < v1["external_tool_calls_per_question"]
-    assert v2["avg_returned_chars"] < v1["avg_returned_chars"]
+    assert _numeric_metric(v2, "external_tool_calls_per_question") < _numeric_metric(
+        v1, "external_tool_calls_per_question"
+    )
+    assert _numeric_metric(v2, "avg_returned_chars") < _numeric_metric(v1, "avg_returned_chars")
 
 
 def test_search_benchmark_smoke_json_uses_real_synthetic_output():

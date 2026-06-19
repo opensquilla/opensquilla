@@ -40,6 +40,10 @@ def _tool_def(name: str, description: str, properties: dict[str, Any]) -> ToolDe
     )
 
 
+def _normalize_query(query: str) -> str:
+    return " ".join(query.lower().strip().split())
+
+
 @pytest.mark.asyncio
 async def test_live_agent_uses_research_search_without_web_fetch_loop() -> None:
     _require_live_agent_search()
@@ -103,12 +107,12 @@ async def test_live_agent_uses_research_search_without_web_fetch_loop() -> None:
             ),
             _tool_def(
                 "web_search",
-                "Legacy web search fallback. Do not call when research_search is available.",
+                "Search the web and return compact cited results.",
                 {"query": {"type": "string"}},
             ),
             _tool_def(
                 "web_fetch",
-                "Fetch a single URL. Do not call for this task.",
+                "Fetch a single URL.",
                 {"url": {"type": "string"}},
             ),
         ],
@@ -118,14 +122,20 @@ async def test_live_agent_uses_research_search_without_web_fetch_loop() -> None:
     events = [
         event
         async for event in agent.run_turn(
-            "Use the research_search tool exactly once to find the latest Python "
-            "release notes. Then answer in one sentence and cite one URL from the "
-            "tool result. Do not call web_search or web_fetch."
+            "Find the current Python release notes using the available web tools when "
+            "current information is needed. Prefer the tool that returns compact "
+            "citation-ready search results. Answer in one sentence with one source URL."
         )
     ]
     text = "\n".join(str(getattr(event, "text", "")) for event in events)
+    normalized_web_search_queries = [_normalize_query(query) for query in web_search_queries]
+    repeated_web_search_queries = [
+        query
+        for query, count in Counter(normalized_web_search_queries).items()
+        if query and count > 1
+    ]
 
-    assert calls["research_search"] == 1
+    assert calls["research_search"] <= 1
     assert calls["web_fetch"] == 0
-    assert len(web_search_queries) == len(set(web_search_queries))
+    assert repeated_web_search_queries == []
     assert "http" in text

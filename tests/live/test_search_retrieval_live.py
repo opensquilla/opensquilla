@@ -43,7 +43,7 @@ async def test_tavily_research_search_live_smoke() -> None:
     results = cast(list[dict[str, Any]], payload["results"])
     assert results
     first = results[0]
-    assert first["url"]
+    assert str(first["url"]).startswith("http")
     assert first["domain"]
     assert first.get("snippet") or first.get("excerpt")
     assert payload["provider_attempts"][0]["provider"] == "tavily"

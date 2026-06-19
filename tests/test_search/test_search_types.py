@@ -36,8 +36,8 @@ def test_search_options_clamps_public_limits() -> None:
     assert options.max_results == 20
     assert options.fetch_top_k == 5
     assert options.max_chars_per_source == 5000
-    assert options.include_domains == ("Example.com",)
-    assert options.exclude_domains == ("Spam.example",)
+    assert options.include_domains == ("example.com",)
+    assert options.exclude_domains == ("spam.example",)
 
 
 def test_search_options_clamps_lower_bounds_and_is_frozen() -> None:

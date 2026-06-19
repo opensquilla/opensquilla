@@ -104,6 +104,33 @@ async def test_tavily_search_uses_raw_content_when_present() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tavily_search_posts_supported_filter_options() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"results": []})
+
+    provider = TavilySearchProvider(
+        api_key="dummy-tavily-key",
+        transport=httpx.MockTransport(handler),
+    )
+
+    await provider.search(
+        "python",
+        max_results=4,
+        recency="week",
+        include_domains=("python.org", "docs.python.org"),
+        exclude_domains=("notpython.org",),
+    )
+
+    body = json.loads(requests[0].content)
+    assert body["time_range"] == "week"
+    assert body["include_domains"] == ["python.org", "docs.python.org"]
+    assert body["exclude_domains"] == ["notpython.org"]
+
+
+@pytest.mark.asyncio
 async def test_tavily_missing_api_key_raises_auth_error(monkeypatch) -> None:
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     provider = TavilySearchProvider()

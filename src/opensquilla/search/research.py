@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
@@ -57,6 +58,14 @@ async def run_research_search(
             error="Search query must not be empty.",
         )
 
+    if options.provider == "duckduckgo" and options.recency is not None:
+        return _failure_payload(
+            options,
+            diagnostics,
+            error_kind="invalid_request",
+            error="DuckDuckGo search does not support recency filtering.",
+        )
+
     factory = provider_factory or _default_provider_factory
     provider_names = _provider_order(options)
     selected_provider = ""
@@ -67,7 +76,7 @@ async def run_research_search(
     for provider_name in provider_names:
         try:
             provider = factory(provider_name)
-            raw_results = await provider.search(options.query, max_results=options.max_results)
+            raw_results = await _search_provider(provider, options)
         except Exception as exc:  # noqa: BLE001 - orchestrator converts provider failures to payloads
             terminal_error = exc
             search_error = _coerce_search_error(provider_name, exc)
@@ -102,6 +111,7 @@ async def run_research_search(
         )
 
     hits = [_search_result_to_hit(result, selected_provider, options) for result in raw_results]
+    hits = _filter_hits_by_domain_options(hits, options)
     hits, diagnostics.duplicate_count = dedupe_hits_by_canonical_url(hits)
     for rank, hit in enumerate(hits, start=1):
         hit.rank = rank
@@ -143,6 +153,35 @@ def _ensure_builtin_search_providers() -> None:
         importlib.import_module(module_name)
 
 
+async def _search_provider(provider: SearchProvider, options: SearchOptions) -> list[SearchResult]:
+    kwargs: dict[str, Any] = {
+        "max_results": options.max_results,
+        "recency": options.recency,
+        "include_domains": options.include_domains,
+        "exclude_domains": options.exclude_domains,
+    }
+    supported_kwargs = _supported_search_kwargs(provider, kwargs)
+    return await provider.search(options.query, **supported_kwargs)
+
+
+def _supported_search_kwargs(
+    provider: SearchProvider,
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    signature = inspect.signature(provider.search)
+    if any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    ):
+        return {key: value for key, value in kwargs.items() if value not in (None, ())}
+
+    return {
+        key: value
+        for key, value in kwargs.items()
+        if key in signature.parameters and value not in (None, ())
+    }
+
+
 async def _default_fetcher(url: str, max_chars: int) -> dict[str, Any]:
     from opensquilla.tools.builtin.web_fetch import run_web_fetch_payload
 
@@ -150,6 +189,10 @@ async def _default_fetcher(url: str, max_chars: int) -> dict[str, Any]:
 
 
 def _provider_order(options: SearchOptions) -> tuple[str, ...]:
+    if options.recency is not None:
+        if options.provider:
+            return (options.provider,)
+        return ("tavily", "brave")
     if options.provider:
         if options.provider == "duckduckgo":
             return ("duckduckgo",)
@@ -222,6 +265,45 @@ def _search_result_to_hit(
         highlights=list(result.highlights),
         raw_metadata=dict(result.raw_metadata),
     )
+
+
+def _filter_hits_by_domain_options(
+    hits: list[SearchHit],
+    options: SearchOptions,
+) -> list[SearchHit]:
+    if not options.include_domains and not options.exclude_domains:
+        return hits
+
+    return [
+        hit
+        for hit in hits
+        if _domain_allowed(
+            hit.domain,
+            include_domains=options.include_domains,
+            exclude_domains=options.exclude_domains,
+        )
+    ]
+
+
+def _domain_allowed(
+    domain: str,
+    *,
+    include_domains: tuple[str, ...],
+    exclude_domains: tuple[str, ...],
+) -> bool:
+    normalized_domain = domain.lower().strip(".")
+    if not normalized_domain:
+        return False
+    if include_domains and not any(
+        _domain_matches_rule(normalized_domain, rule) for rule in include_domains
+    ):
+        return False
+    return not any(_domain_matches_rule(normalized_domain, rule) for rule in exclude_domains)
+
+
+def _domain_matches_rule(domain: str, rule: str) -> bool:
+    normalized_rule = rule.lower().strip(".")
+    return domain == normalized_rule or domain.endswith(f".{normalized_rule}")
 
 
 async def _fetch_compact_excerpts(

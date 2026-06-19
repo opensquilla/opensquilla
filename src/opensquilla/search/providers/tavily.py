@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 
 from opensquilla.search.registry import register_provider
-from opensquilla.search.types import SearchErrorKind, SearchProviderError, SearchResult
+from opensquilla.search.types import Recency, SearchErrorKind, SearchProviderError, SearchResult
 from opensquilla.secrets import clean_header_secret
 
 _API_URL = "https://api.tavily.com/search"
@@ -45,7 +45,15 @@ class TavilySearchProvider:
         self._diagnostics = bool(diagnostics)
         self._transport = transport
 
-    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+    async def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        *,
+        recency: Recency | None = None,
+        include_domains: tuple[str, ...] = (),
+        exclude_domains: tuple[str, ...] = (),
+    ) -> list[SearchResult]:
         if not self._api_key:
             raise SearchProviderError(
                 provider=self.name,
@@ -64,6 +72,12 @@ class TavilySearchProvider:
             "include_answer": False,
             "include_images": False,
         }
+        if recency:
+            body["time_range"] = recency
+        if include_domains:
+            body["include_domains"] = list(include_domains)
+        if exclude_domains:
+            body["exclude_domains"] = list(exclude_domains)
 
         try:
             async with httpx.AsyncClient(

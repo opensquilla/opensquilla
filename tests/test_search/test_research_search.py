@@ -164,6 +164,71 @@ class UsefulTopResultsProvider:
         ][:max_results]
 
 
+class DomainFilteringProvider:
+    name = "tavily"
+
+    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+        return [
+            SearchResult(
+                title="Allowed exact",
+                url="https://python.org/about",
+                snippet="Allowed exact domain",
+                provider="tavily",
+                source="tavily",
+                content="Short.",
+            ),
+            SearchResult(
+                title="Allowed subdomain",
+                url="https://www.python.org/downloads",
+                snippet="Allowed subdomain",
+                provider="tavily",
+                source="tavily",
+                content="Short.",
+            ),
+            SearchResult(
+                title="Blocked suffix lookalike",
+                url="https://notpython.org/article",
+                snippet="Must not match python.org",
+                provider="tavily",
+                source="tavily",
+                content="Short.",
+            ),
+            SearchResult(
+                title="Excluded docs",
+                url="https://docs.python.org/3/",
+                snippet="Explicitly excluded subdomain",
+                provider="tavily",
+                source="tavily",
+                content="Short.",
+            ),
+        ][:max_results]
+
+
+class RecencyAwareProvider:
+    name = "tavily"
+
+    def __init__(self, calls: list[tuple[str, dict[str, Any]]]) -> None:
+        self._calls = calls
+
+    async def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        *,
+        recency: str | None = None,
+    ) -> list[SearchResult]:
+        self._calls.append((query, {"max_results": max_results, "recency": recency}))
+        return [
+            SearchResult(
+                title="Fresh result",
+                url="https://example.com/fresh",
+                snippet="Fresh snippet",
+                provider="tavily",
+                source="tavily",
+            )
+        ]
+
+
 @pytest.mark.asyncio
 async def test_research_search_dedupes_and_uses_provider_content_without_fetch() -> None:
     payload = await run_research_search(
@@ -363,6 +428,95 @@ async def test_research_search_fetch_top_k_only_considers_top_ranked_slice() -> 
     assert payload["results"][2]["rank"] == 3
     assert payload["results"][2]["fetched"] is False
     assert payload["diagnostics"]["fetched_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_research_search_filters_include_and_exclude_domains_before_fetch() -> None:
+    fetch_calls: list[str] = []
+
+    async def fetcher(url: str, max_chars: int) -> dict[str, Any]:
+        fetch_calls.append(url)
+        return {
+            "text": (
+                '<external-content source="https://example.com">'
+                "Fetched body text"
+                "</external-content>"
+            ),
+            "extractor": "readability",
+            "truncated": False,
+            "status": 200,
+        }
+
+    payload = await run_research_search(
+        SearchOptions(
+            query="python",
+            include_domains=("https://PYTHON.org/docs",),
+            exclude_domains=("docs.python.org",),
+            fetch_top_k=5,
+        ),
+        provider_factory=lambda name: DomainFilteringProvider(),
+        fetcher=fetcher,
+    )
+
+    assert payload["ok"] is True
+    assert [result["title"] for result in payload["results"]] == [
+        "Allowed exact",
+        "Allowed subdomain",
+    ]
+    assert [result["rank"] for result in payload["results"]] == [1, 2]
+    assert fetch_calls == [
+        "https://python.org/about",
+        "https://www.python.org/downloads",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_research_search_rejects_explicit_duckduckgo_recency_without_provider_call() -> None:
+    def provider_factory(name: str) -> FakeProvider:
+        raise AssertionError("provider_factory should not be called")
+
+    payload = await run_research_search(
+        SearchOptions(query="q", provider="duckduckgo", recency="week"),
+        provider_factory=provider_factory,
+    )
+
+    assert payload["ok"] is False
+    assert payload["error_kind"] == "invalid_request"
+    assert payload["provider_attempts"] == []
+
+
+@pytest.mark.asyncio
+async def test_research_search_auto_recency_does_not_fallback_to_duckduckgo() -> None:
+    attempted: list[str] = []
+
+    def provider_factory(name: str) -> MissingKeyAuthProvider:
+        attempted.append(name)
+        return MissingKeyAuthProvider()
+
+    payload = await run_research_search(
+        SearchOptions(query="q", recency="week", fetch_top_k=0),
+        provider_factory=provider_factory,
+    )
+
+    assert payload["ok"] is False
+    assert attempted == ["tavily", "brave"]
+    assert [attempt["provider"] for attempt in payload["provider_attempts"]] == [
+        "tavily",
+        "brave",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_research_search_passes_supported_recency_kwarg_only() -> None:
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    payload = await run_research_search(
+        SearchOptions(query="q", recency="week", fetch_top_k=0),
+        provider_factory=lambda name: RecencyAwareProvider(calls),
+    )
+
+    assert payload["ok"] is True
+    assert calls == [("q", {"max_results": 10, "recency": "week"})]
 
 
 @pytest.mark.asyncio

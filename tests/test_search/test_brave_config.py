@@ -76,6 +76,24 @@ async def test_brave_provider_maps_provider_source_and_published_at() -> None:
 
 
 @pytest.mark.asyncio
+async def test_brave_provider_passes_recency_as_freshness() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"web": {"results": []}})
+
+    provider = BraveSearchProvider(
+        api_key="brave-test-key",
+        transport=httpx.MockTransport(handler),
+    )
+
+    await provider.search("brave", recency="week")
+
+    assert requests[0].url.params["freshness"] == "pw"
+
+
+@pytest.mark.asyncio
 async def test_duckduckgo_provider_maps_provider_and_source() -> None:
     html = """
     <html>

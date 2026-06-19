@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, runtime_checkable
+from urllib.parse import urlsplit
 
 SearchErrorKind = Literal["auth", "rate_limit", "timeout", "network", "http", "parse", "unknown"]
 SearchMode = Literal["auto", "news", "technical", "broad"]
@@ -67,9 +68,37 @@ class SearchOptions:
 
 
 def _normalize_domains(value: str | Iterable[str]) -> tuple[str, ...]:
+    values: tuple[str, ...]
     if isinstance(value, str):
-        return (value,)
-    return tuple(value)
+        values = (value,)
+    else:
+        values = tuple(value)
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        domain = _normalize_domain_item(item)
+        if not domain or domain in seen:
+            continue
+        normalized.append(domain)
+        seen.add(domain)
+    return tuple(normalized)
+
+
+def _normalize_domain_item(value: str) -> str:
+    raw = value.strip().lower()
+    if not raw:
+        return ""
+
+    parsed = urlsplit(raw)
+    if parsed.netloc:
+        host = parsed.hostname or ""
+    elif "/" in raw:
+        host = urlsplit(f"//{raw}").hostname or ""
+    else:
+        host = raw
+
+    return host.strip(".")
 
 
 @dataclass

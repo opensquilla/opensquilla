@@ -98,6 +98,7 @@ def test_policy_config_expands_current_groups_patterns_and_profiles() -> None:
             "image_generate",
             "install_skill_deps",
             "message",
+            "research_search",
             "session_status",
             "web_fetch",
             "web_search",
@@ -109,6 +110,7 @@ def test_policy_config_expands_current_groups_patterns_and_profiles() -> None:
             {
                 "channel:media",
                 "channel:perm",
+                "group:web",
                 "group:trusted_host",
                 "web_*",
                 "missing",
@@ -118,11 +120,15 @@ def test_policy_config_expands_current_groups_patterns_and_profiles() -> None:
     ) == {
         "create_pptx",
         "feishu_perm_grant_member",
+        "http_request",
         "image_generate",
         "install_skill_deps",
+        "research_search",
         "web_fetch",
         "web_search",
     }
+    assert expand_selectors(frozenset({"web_*"}), available) == {"web_fetch", "web_search"}
+    assert "research_search" in expand_selectors(frozenset({"group:web"}), available)
     assert profile_allowlist("minimal", available) == {"session_status"}
     assert profile_allowlist("full", available) is None
 

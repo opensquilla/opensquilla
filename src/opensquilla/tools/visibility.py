@@ -68,6 +68,7 @@ _CHANNEL_DEFAULT_ALLOW: frozenset[str] = frozenset(
         "feishu_wiki_list_nodes",
         "feishu_wiki_list_spaces",
         "read_file",
+        "research_search",
         "session_status",
         "sessions_history",
         "sessions_list",

@@ -44,12 +44,19 @@ def _normalize_query(query: str) -> str:
     return " ".join(query.lower().strip().split())
 
 
+def _answer_cites_source_url(text: str, urls: set[str]) -> bool:
+    cited_urls = {url for url in urls if url}
+    cited_urls.update(url.rstrip("/") for url in urls if url.rstrip("/"))
+    return any(url in text for url in cited_urls)
+
+
 @pytest.mark.asyncio
 async def test_live_agent_uses_research_search_without_web_fetch_loop() -> None:
     _require_live_agent_search()
 
     calls: Counter[str] = Counter()
     web_search_queries: list[str] = []
+    research_result_urls: set[str] = set()
 
     async def tool_handler(call: ToolCall) -> ToolResult:
         calls[call.tool_name] += 1
@@ -65,6 +72,14 @@ async def test_live_agent_uses_research_search_without_web_fetch_loop() -> None:
                     provider="tavily",
                 )
             )
+            results = payload.get("results")
+            if isinstance(results, list):
+                for result in results:
+                    if not isinstance(result, dict):
+                        continue
+                    url = result.get("url")
+                    if isinstance(url, str):
+                        research_result_urls.add(url)
             return ToolResult(
                 tool_use_id=call.tool_use_id,
                 tool_name=call.tool_name,
@@ -135,7 +150,7 @@ async def test_live_agent_uses_research_search_without_web_fetch_loop() -> None:
         if query and count > 1
     ]
 
-    assert calls["research_search"] <= 1
+    assert calls["research_search"] == 1
     assert calls["web_fetch"] == 0
     assert repeated_web_search_queries == []
-    assert "http" in text
+    assert _answer_cites_source_url(text, research_result_urls)

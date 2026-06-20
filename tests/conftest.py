@@ -22,11 +22,14 @@ _PROVIDER_ENV_KEYS = (
     "BRAVE_API_KEY",
     "BRAVE_SEARCH_API_KEY",
     "DEEPSEEK_API_KEY",
+    "EXA_API_KEY",
+    "FIRECRAWL_API_KEY",
     "GEMINI_API_KEY",
     "GOOGLE_API_KEY",
     "MOONSHOT_API_KEY",
     "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
+    "TAVILY_API_KEY",
 )
 
 _LIVE_MARKERS = (
@@ -40,6 +43,7 @@ _LIVE_MARKERS = (
     "llm_image",
     "llm_router_acc",
     "live_channel",
+    "live_search",
 )
 
 

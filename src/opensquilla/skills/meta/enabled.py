@@ -53,7 +53,7 @@ def is_meta_auto_trigger_enabled(config: Any) -> bool:
 
     When False (the default when unset), meta-skills are manual-only: no
     system-prompt guidance, no keyword/semantic auto-trigger, ``meta_invoke`` is
-    not surfaced to the model, and meta-skills are hidden from
+    not exposed for automatic invocation, and meta-skills are hidden from
     ``<available_skills>``. Explicit invocation via the ``/meta`` command path is
     unaffected.
 

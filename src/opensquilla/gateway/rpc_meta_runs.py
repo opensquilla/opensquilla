@@ -329,9 +329,8 @@ async def _handle_meta_list(params: Any, ctx: RpcContext) -> dict[str, Any]:
 
     Gated by the master ``meta_skill.enabled`` flag: when disabled the surface
     receives an explicit empty list rather than a partial enumeration. Skills
-    are filtered to ``kind == "meta"`` entries that are still model-invokable
-    (``disable_model_invocation`` is False) and sorted by name for stable
-    ordering across calls.
+    are filtered to launchable ``kind == "meta"`` entries and sorted by name
+    for stable ordering across calls.
     """
     if not is_meta_skill_enabled(ctx.config):
         return {"skills": [], "disabled": True}

@@ -467,7 +467,7 @@ export function shortModelName(model: string): string {
   const raw = String(model || '').trim()
   if (!raw) return ''
   const last = raw.includes('/') ? raw.split('/').pop() || raw : raw
-  return last.replace(/^claude-/, '').replace(/^gpt-/, 'gpt-')
+  return last
 }
 
 function routerFxStripProvider(name: string): string {

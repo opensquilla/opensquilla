@@ -1,2 +1,0 @@
-import{C as e,T as t,h as n,u as r}from"./runtime-core.esm-bundler-DendcFBz.js";import{C as i,T as a}from"./index-DWiN3X0r.js";var o={"aria-hidden":`true`},s=n({__name:`ConfigView`,setup(n){let s=i(),c=a();return e(()=>{s.setSettingsOpen(!0),c.replace(`/`)}),(e,n)=>(t(),r(`div`,o))}});export{s as default};
-//# sourceMappingURL=ConfigView-DQ0LTwsM.js.map

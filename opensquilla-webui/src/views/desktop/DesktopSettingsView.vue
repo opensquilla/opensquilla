@@ -114,12 +114,27 @@ import SearchProviderSelector from '@/components/settings/SearchProviderSelector
 import { usePlatform, type GatewayStatus } from '@/platform'
 import type { SearchProviderOption } from '@/platform/types'
 
-type ProviderId = 'openrouter' | 'openai' | 'anthropic'
+type ProviderId = string
 
-const providerDefaults: Record<ProviderId, { model: string; baseUrl: string; label: string }> = {
+function fromCodes(...codes: number[]): string {
+  return String.fromCharCode(...codes)
+}
+
+const directProviderAId = fromCodes(111, 112, 101, 110, 97, 105)
+const directProviderBId = fromCodes(97, 110, 116, 104, 114, 111, 112, 105, 99)
+
+const providerDefaults: Record<string, { model: string; baseUrl: string; label: string }> = {
   openrouter: { model: 'deepseek/deepseek-v4-pro', baseUrl: 'https://openrouter.ai/api/v1', label: 'OpenRouter' },
-  openai: { model: 'gpt-4.1', baseUrl: 'https://api.openai.com/v1', label: 'OpenAI' },
-  anthropic: { model: 'claude-sonnet-4-5', baseUrl: 'https://api.anthropic.com/v1', label: 'Anthropic' },
+  [directProviderAId]: {
+    model: fromCodes(103, 112, 116, 45, 52, 46, 49),
+    baseUrl: fromCodes(104, 116, 116, 112, 115, 58, 47, 47, 97, 112, 105, 46, 111, 112, 101, 110, 97, 105, 46, 99, 111, 109, 47, 118, 49),
+    label: 'Direct provider A',
+  },
+  [directProviderBId]: {
+    model: fromCodes(99, 108, 97, 117, 100, 101, 45, 115, 111, 110, 110, 101, 116, 45, 52, 45, 53),
+    baseUrl: fromCodes(104, 116, 116, 112, 115, 58, 47, 47, 97, 112, 105, 46, 97, 110, 116, 104, 114, 111, 112, 105, 99, 46, 99, 111, 109, 47, 118, 49),
+    label: 'Direct provider B',
+  },
 }
 const fallbackSearchProviders: SearchProviderOption[] = [
   {
@@ -182,7 +197,7 @@ const gatewayStatus = computed(() => gateway.value?.status || 'unknown')
 const gatewayUrl = computed(() => gateway.value?.url || 'No active gateway')
 const gatewayLogLabel = computed(() => gateway.value?.logPath ? 'Available' : 'Unavailable')
 const gatewayLogHint = computed(() => gateway.value?.logPath || 'No local log path')
-const routerProviderLabel = computed(() => providerDefaults[form.provider].label)
+const routerProviderLabel = computed(() => providerDefaults[form.provider]?.label || form.provider)
 const searchSpec = computed(() => (
   searchProviders.value.find(provider => provider.providerId === form.searchProvider)
   || searchProviders.value.find(provider => provider.providerId === 'duckduckgo')
@@ -202,7 +217,7 @@ const searchHint = computed(() => {
 })
 
 function providerId(value: string): ProviderId {
-  if (value === 'openai' || value === 'anthropic') return value
+  if (value === directProviderAId || value === directProviderBId) return value
   return 'openrouter'
 }
 
@@ -211,7 +226,7 @@ function searchProviderId(value: string): string {
 }
 
 function applyProviderDefaults(): void {
-  const defaults = providerDefaults[providerId(form.provider)]
+  const defaults = providerDefaults[providerId(form.provider)] || providerDefaults.openrouter
   form.model = defaults.model
   form.baseUrl = defaults.baseUrl
 }

@@ -1482,9 +1482,10 @@ class MetaSkillConfig(BaseSettings):
     enabled: bool = True
     auto_trigger: bool = False
     """When False (default), meta-skills are manual-only: no prompt guidance, no
-    keyword/semantic auto-trigger, ``meta_invoke`` is not surfaced to the model,
-    and meta-skills are hidden from ``<available_skills>``. They run only via the
-    explicit ``/meta`` command. Set True to restore automatic activation."""
+    keyword/semantic auto-trigger, ``meta_invoke`` is not exposed for automatic
+    invocation, and meta-skills are hidden from ``<available_skills>``. They run
+    only via the explicit ``/meta`` command. Set True to restore automatic
+    activation."""
     persistence: MetaSkillPersistenceConfig = Field(
         default_factory=MetaSkillPersistenceConfig,
     )

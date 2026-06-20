@@ -321,7 +321,8 @@ default_mode = "bypass"                 # off | on | bypass | full
 
 # Automatic activation. When false (the default), meta-skills are MANUAL-ONLY:
 # no system-prompt guidance, no keyword/semantic auto-trigger, meta_invoke is not
-# offered to the model, and meta-skills are hidden from the model's skill list.
+# offered for automatic invocation, and meta-skills are hidden from automatic
+# skill listings.
 # They run only via the explicit `/meta <name>` command. Set true to restore the
 # previous automatic behavior. Default: false.
 # auto_trigger = false

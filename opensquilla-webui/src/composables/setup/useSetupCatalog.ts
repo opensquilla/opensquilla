@@ -354,7 +354,7 @@ const searchNeeds = computed(() => credentialNeedList(searchSpec.value?.whatYouN
 const memorySpec = computed(() => memoryProviders.value.find(p => p.providerId === capabilitiesForm.selectedMemoryProvider.value) || memoryProviders.value[0] || null)
 const memoryApiKeyEnabled = computed(() => capabilitiesForm.selectedMemoryProvider.value === 'auto' || memorySpec.value?.requiresApiKey === true)
 const memoryApiKeyPlaceholder = computed(() => memoryApiKeyEnabled.value ? 'leave blank to keep current' : 'not required for this provider')
-const memoryEnvPlaceholder = computed(() => memorySpec.value?.envKey || 'OPENAI_API_KEY')
+const memoryEnvPlaceholder = computed(() => memorySpec.value?.envKey || 'PROVIDER_API_KEY')
 const memoryNeeds = computed(() => memoryNeedList(memorySpec.value, capabilitiesForm.selectedMemoryProvider.value, capabilitiesForm.memoryApiKeyEnvValue.value || memorySpec.value?.envKey))
 const memoryStatusText = computed(() => _memoryEmbeddingStatusText(capabilitiesForm.selectedMemoryProvider.value))
 
@@ -369,7 +369,7 @@ const audioKeyReferenced = computed(() => promotedForm.audioKeyConfigured.value 
 const audioStatusText = computed(() => {
   if (!promotedForm.audioEnabled.value) return 'Voice and audio tools are hidden from agents until this capability is enabled.'
   if (audioKeyReferenced.value) return 'Voice and audio tools will be available in new turns once the gateway sees the key.'
-  return 'Audio is enabled but still needs an ElevenLabs key before agents can use it.'
+  return 'Audio is enabled but still needs an audio provider key before agents can use it.'
 })
 const audioBadgeTone = computed(() => {
   if (!promotedForm.audioEnabled.value) return 'is-muted'
@@ -379,7 +379,7 @@ const audioBadgeLabel = computed(() => {
   if (!promotedForm.audioEnabled.value) return 'Optional'
   return audioKeyReferenced.value ? 'Ready' : 'Needs action'
 })
-const audioKeyPlaceholder = computed(() => promotedForm.audioKeyConfigured.value ? 'leave blank to keep current' : 'paste an ElevenLabs key')
+const audioKeyPlaceholder = computed(() => promotedForm.audioKeyConfigured.value ? 'leave blank to keep current' : 'paste an audio provider key')
 
 const providerPanel = providerForm.createPanel({
   currentConfig: currentProviderConfig,

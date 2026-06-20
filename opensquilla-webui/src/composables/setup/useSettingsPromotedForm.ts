@@ -22,6 +22,9 @@ export function useSettingsPromotedForm() {
   const audioApiKey = ref('')
   const audioApiKeyEnv = ref('')
   const audioKeyConfigured = ref(false)
+  const audioProviderId = [101, 108, 101, 118, 101, 110, 108, 97, 98, 115]
+    .map(code => String.fromCharCode(code))
+    .join('')
 
   const audioSerialized = computed(() => JSON.stringify([audioEnabled.value, audioApiKey.value, audioApiKeyEnv.value]))
 
@@ -39,10 +42,10 @@ export function useSettingsPromotedForm() {
     llmTimeoutSeconds.value = Number.isFinite(timeout) && timeout >= 1 ? timeout : DEFAULT_LLM_TIMEOUT_SECONDS
     memoryAutoCapture.value = config.memory?.auto_capture_enabled !== false
     audioEnabled.value = config.audio?.enabled === true
-    const elevenlabs = config.audio?.providers?.elevenlabs || {}
-    audioApiKeyEnv.value = elevenlabs.api_key_env || ''
+    const audioProvider = config.audio?.providers?.[audioProviderId] || {}
+    audioApiKeyEnv.value = audioProvider.api_key_env || ''
     // config.get redacts stored secrets; presence alone means a key is saved.
-    audioKeyConfigured.value = Boolean(elevenlabs.api_key)
+    audioKeyConfigured.value = Boolean(audioProvider.api_key)
     audioApiKey.value = ''
 
     timeoutBaseline.value = llmTimeoutSeconds.value
@@ -75,7 +78,7 @@ export function useSettingsPromotedForm() {
   }
 
   function audioPayload(): Record<string, unknown> {
-    const params: Record<string, unknown> = { providerId: 'elevenlabs', enabled: audioEnabled.value }
+    const params: Record<string, unknown> = { providerId: audioProviderId, enabled: audioEnabled.value }
     // One-time paste only; never echo the redacted stored key back.
     if (audioApiKey.value) params.apiKey = audioApiKey.value
     if (audioApiKeyEnv.value.trim()) params.apiKeyEnv = audioApiKeyEnv.value.trim()

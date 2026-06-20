@@ -1,0 +1,2 @@
+import{C as e,T as t,h as n,u as r}from"./runtime-core.esm-bundler-DendcFBz.js";import{C as i,T as a}from"./index-7HFo_F2O.js";var o={"aria-hidden":`true`},s=n({__name:`SetupView`,setup(n){let s=i(),c=a();return e(()=>{s.setSettingsOpen(!0,`auto`),c.replace(`/`)}),(e,n)=>(t(),r(`div`,o))}});export{s as default};
+//# sourceMappingURL=SetupView-BWPIVoww.js.map

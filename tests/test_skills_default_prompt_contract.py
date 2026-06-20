@@ -167,6 +167,7 @@ async def test_default_prompt_only_injects_retained_bundled_skills(
                 "curl": True,
                 "ffmpeg": True,
                 "ffprobe": True,
+                "gh": True,
                 "xelatex": True,
                 "nano-pdf": True,
                 "python": True,

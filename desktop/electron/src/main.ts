@@ -31,6 +31,15 @@ interface ProviderCatalogEntry {
   note: string
 }
 
+interface SearchProviderCatalogEntry {
+  providerId: string
+  label: string
+  envKey: string
+  requiresApiKey: boolean
+  note: string
+  keyPlaceholder: string
+}
+
 interface RouterTier {
   provider: string
   model: string
@@ -82,6 +91,7 @@ interface DesktopSettingsSnapshot {
   searchProvider: string
   searchApiKeyEnv: string
   searchApiKeyConfigured: boolean
+  searchProviders: SearchProviderCatalogEntry[]
   gateway: GatewayState
 }
 
@@ -301,6 +311,45 @@ const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
 
 const PROVIDER_BY_ID = new Map(PROVIDER_CATALOG.map((provider) => [provider.id, provider]))
 
+const SEARCH_PROVIDER_CATALOG: SearchProviderCatalogEntry[] = [
+  {
+    providerId: 'duckduckgo',
+    label: 'DuckDuckGo',
+    envKey: '',
+    requiresApiKey: false,
+    note: 'No key required. Good default for getting started.',
+    keyPlaceholder: 'not required',
+  },
+  {
+    providerId: 'brave',
+    label: 'Brave Search',
+    envKey: 'BRAVE_SEARCH_API_KEY',
+    requiresApiKey: true,
+    note: 'Managed search access with freshness support.',
+    keyPlaceholder: 'BRAVE_SEARCH_API_KEY',
+  },
+  {
+    providerId: 'tavily',
+    label: 'Tavily',
+    envKey: 'TAVILY_API_KEY',
+    requiresApiKey: true,
+    note: 'Freshness-oriented web search for current research.',
+    keyPlaceholder: 'TAVILY_API_KEY',
+  },
+  {
+    providerId: 'exa',
+    label: 'Exa',
+    envKey: 'EXA_API_KEY',
+    requiresApiKey: true,
+    note: 'Semantic and content-oriented search for research workflows.',
+    keyPlaceholder: 'EXA_API_KEY',
+  },
+]
+
+const SEARCH_PROVIDER_BY_ID = new Map(
+  SEARCH_PROVIDER_CATALOG.map((provider) => [provider.providerId, provider]),
+)
+
 const ROUTER_PROFILES: Record<string, Record<string, RouterTier>> = {
   openrouter: {
     t0: { provider: 'openrouter', model: 'deepseek/deepseek-v4-flash', description: 'Fast everyday work', thinkingLevel: 'high' },
@@ -419,13 +468,13 @@ function routerDefaultModel(tiers: Record<string, RouterTier>, defaultTier: Text
   return tiers[defaultTier]?.model || tiers.t1?.model || tiers.t0?.model || ''
 }
 
-function searchProviderDefaults(provider: string): { apiKeyEnv: string; requiresApiKey: boolean } {
-  if (provider === 'brave') return { apiKeyEnv: 'BRAVE_SEARCH_API_KEY', requiresApiKey: true }
-  return { apiKeyEnv: '', requiresApiKey: false }
+function searchProviderDefaults(provider: string): SearchProviderCatalogEntry {
+  return SEARCH_PROVIDER_BY_ID.get(provider) || SEARCH_PROVIDER_BY_ID.get('duckduckgo')!
 }
 
 function normalizeSearchProvider(raw: unknown): string {
-  return String(raw || '').trim().toLowerCase() === 'brave' ? 'brave' : 'duckduckgo'
+  const provider = String(raw || '').trim().toLowerCase()
+  return SEARCH_PROVIDER_BY_ID.has(provider) ? provider : 'duckduckgo'
 }
 
 function tomlString(value: string): string {
@@ -527,7 +576,7 @@ async function loadDesktopCredential(): Promise<DesktopConnection | null> {
       routerDefaultTier,
       routerTiers,
       searchProvider,
-      searchApiKeyEnv: parsed.searchApiKeyEnv || searchDefaults.apiKeyEnv,
+      searchApiKeyEnv: parsed.searchApiKeyEnv || searchDefaults.envKey,
       encryptedSearchApiKey: parsed.encryptedSearchApiKey || '',
       encryption: parsed.encryption === 'safeStorage' ? 'safeStorage' : 'plain',
       createdAt: parsed.createdAt || new Date().toISOString(),
@@ -573,7 +622,7 @@ async function saveDesktopCredential(payload: OnboardingPayload): Promise<Deskto
   if (!routerModel && routerMode !== 'disabled') throw new Error('Router tiers require a default model.')
   if (!model) throw new Error('Model is required.')
   if (searchDefaults.requiresApiKey && !encryptedSearchApiKey) {
-    throw new Error('Search API key is required for Brave Search.')
+    throw new Error(`${searchDefaults.label} search API key is required.`)
   }
 
   const now = new Date().toISOString()
@@ -587,7 +636,7 @@ async function saveDesktopCredential(payload: OnboardingPayload): Promise<Deskto
     routerDefaultTier,
     routerTiers,
     searchProvider,
-    searchApiKeyEnv: searchDefaults.apiKeyEnv,
+    searchApiKeyEnv: searchDefaults.envKey,
     encryptedSearchApiKey,
     encryption,
     createdAt: existing?.createdAt || now,
@@ -631,6 +680,8 @@ function settingsSnapshot(connection: DesktopConnection | null): DesktopSettings
   const routerMode = normalizeRouterMode(connection?.routerMode, provider)
   const routerDefaultTier = normalizeTextTier(connection?.routerDefaultTier)
   const routerTiers = normalizeRouterTiers(connection?.routerTiers, defaultRouterTiers(provider, routerMode))
+  const searchProvider = normalizeSearchProvider(connection?.searchProvider)
+  const searchDefaults = searchProviderDefaults(searchProvider)
   return {
     provider,
     model: connection?.model || routerDefaultModel(routerTiers, routerDefaultTier) || defaults.model,
@@ -639,9 +690,10 @@ function settingsSnapshot(connection: DesktopConnection | null): DesktopSettings
     routerMode,
     routerDefaultTier,
     routerTiers,
-    searchProvider: connection?.searchProvider || 'duckduckgo',
-    searchApiKeyEnv: connection?.searchApiKeyEnv || '',
+    searchProvider,
+    searchApiKeyEnv: connection?.searchApiKeyEnv || searchDefaults.envKey,
     searchApiKeyConfigured: Boolean(connection?.encryptedSearchApiKey),
+    searchProviders: SEARCH_PROVIDER_CATALOG,
     gateway: { ...gatewayState },
   }
 }
@@ -1454,23 +1506,16 @@ function onboardingHtml(): string {
           <div>
             <p class="eyebrow">Step 05</p>
             <h2>Choose web search</h2>
-            <p>Search is optional. Start without another key, or connect Brave Search if you already use it.</p>
+            <p>Search is optional. Start without another key, or connect a runtime-supported search provider.</p>
           </div>
           <span class="card-badge">Optional</span>
         </header>
         <div class="card-body">
-        <div class="choice-row" role="radiogroup" aria-label="Search provider">
-          <button class="choice active" type="button" data-search-provider="duckduckgo">
-            <strong>DuckDuckGo</strong><small>No key required. Good default for getting started.</small>
-          </button>
-          <button class="choice" type="button" data-search-provider="brave">
-            <strong>Brave Search</strong><small>Bring your own API key for managed search access.</small>
-          </button>
-        </div>
+        <div class="choice-row" id="searchProviderGrid" role="radiogroup" aria-label="Search provider"></div>
         <input id="searchProvider" type="hidden" value="duckduckgo" />
         <label id="searchKeyLabel" hidden>
           Search API key
-          <input id="searchApiKey" name="searchApiKey" type="password" autocomplete="off" placeholder="BRAVE_SEARCH_API_KEY" />
+          <input id="searchApiKey" name="searchApiKey" type="password" autocomplete="off" placeholder="SEARCH_API_KEY" />
         </label>
         <div class="note" id="searchHint">DuckDuckGo is enough to start.</div>
         </div>
@@ -1484,6 +1529,7 @@ function onboardingHtml(): string {
   </main>
   <script>
     const providers = ${JSON.stringify(PROVIDER_CATALOG)};
+    const searchProviders = ${JSON.stringify(SEARCH_PROVIDER_CATALOG)};
     const routerProfiles = ${JSON.stringify(ROUTER_PROFILES)};
     const textTiers = ${JSON.stringify(TEXT_ROUTER_TIERS)};
     const featuredProviderIds = ['openrouter'];
@@ -1503,6 +1549,7 @@ function onboardingHtml(): string {
     const errorBox = document.getElementById('error');
     const finish = document.getElementById('finish');
     const searchProvider = document.getElementById('searchProvider');
+    const searchProviderGrid = document.getElementById('searchProviderGrid');
     const searchKeyLabel = document.getElementById('searchKeyLabel');
     function clone(value) {
       return JSON.parse(JSON.stringify(value || {}));
@@ -1665,6 +1712,29 @@ function onboardingHtml(): string {
       const parts = text.split('/');
       return parts[parts.length - 1] || text;
     }
+    function currentSearchProvider() {
+      return searchProviders.find((item) => item.providerId === searchProvider.value) || searchProviders[0];
+    }
+    function renderSearchProviderGrid() {
+      searchProviderGrid.innerHTML = searchProviders.map((item) => (
+        '<button class="choice' + (item.providerId === searchProvider.value ? ' active' : '') + '" type="button" data-search-provider="' + escapeAttr(item.providerId) + '">' +
+        '<strong>' + escapeHtml(item.label) + '</strong><small>' + escapeHtml(item.note || (item.requiresApiKey ? 'Requires an API key.' : 'No key required.')) + '</small></button>'
+      )).join('');
+      searchProviderGrid.querySelectorAll('[data-search-provider]').forEach((button) => {
+        button.addEventListener('click', () => {
+          searchProvider.value = button.dataset.searchProvider || 'duckduckgo';
+          renderSearchProviderGrid();
+          render();
+        });
+      });
+    }
+    function syncSearchProviderControls() {
+      const selected = currentSearchProvider();
+      searchKeyLabel.hidden = !selected.requiresApiKey;
+      const input = document.getElementById('searchApiKey');
+      if (input) input.placeholder = selected.keyPlaceholder || selected.envKey || 'SEARCH_API_KEY';
+      searchHint.textContent = selected.note || (selected.requiresApiKey ? selected.label + ' will be available to browser-capable agents.' : 'DuckDuckGo is enough to start.');
+    }
     function isSimpleSetup() {
       return setupMode.value === 'simple';
     }
@@ -1722,7 +1792,7 @@ function onboardingHtml(): string {
       }
       if (step === 2) renderRouterModes();
       if (step === 3) renderTiers();
-      searchHint.textContent = searchProvider.value === 'brave' ? 'Brave Search will be available to browser-capable agents.' : 'DuckDuckGo is enough to start.';
+      syncSearchProviderControls();
     }
     document.querySelectorAll('.step').forEach((button) => {
       button.addEventListener('click', () => {
@@ -1749,23 +1819,16 @@ function onboardingHtml(): string {
         render();
       });
     });
-    document.querySelectorAll('[data-search-provider]').forEach((button) => {
-      button.addEventListener('click', () => {
-        searchProvider.value = button.dataset.searchProvider || 'duckduckgo';
-        document.querySelectorAll('[data-search-provider]').forEach((item) => item.classList.toggle('active', item === button));
-        searchKeyLabel.hidden = searchProvider.value !== 'brave';
-        render();
-      });
-    });
     function validateStep() {
       const selected = currentProvider();
+      const selectedSearch = currentSearchProvider();
       if (step === 1 && selected.requiresApiKey && !document.getElementById('apiKey').value.trim()) return selected.label + ' API key is required.';
       if (step === 3 && routerMode.value === 'disabled' && !model.value.trim()) return 'Direct model is required when Smart Router is disabled.';
       if (step === 3 && routerMode.value !== 'disabled') {
         const defaultTier = document.getElementById('routerDefaultTier')?.value || 't1';
         if (!routerTiers[defaultTier] || !routerTiers[defaultTier].model) return 'Default router tier requires a model.';
       }
-      if (step === 4 && searchProvider.value === 'brave' && !document.getElementById('searchApiKey').value.trim()) return 'Brave Search API key is required.';
+      if (step === 4 && selectedSearch.requiresApiKey && !document.getElementById('searchApiKey').value.trim()) return selectedSearch.label + ' search API key is required.';
       return '';
     }
     document.getElementById('cancel').addEventListener('click', () => {
@@ -1812,6 +1875,7 @@ function onboardingHtml(): string {
       }
     });
     renderProviderGrid();
+    renderSearchProviderGrid();
     syncProviderDefaults(true);
     render();
   </script>
@@ -2174,6 +2238,7 @@ ipcMain.handle('desktop:boot:quit', () => {
 })
 ipcMain.handle('desktop:onboarding:defaults', () => ({
   providers: PROVIDER_CATALOG,
+  searchProviders: SEARCH_PROVIDER_CATALOG,
   router: {
     modes: ['recommended', 'openrouter-mix', 'disabled'],
     defaultTier: 't1',

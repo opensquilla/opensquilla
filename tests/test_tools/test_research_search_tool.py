@@ -15,8 +15,12 @@ async def test_research_search_tool_builds_options_and_returns_json(
 ) -> None:
     seen_options: list[SearchOptions] = []
 
-    async def fake_run_research_search(options: SearchOptions) -> dict[str, object]:
+    async def fake_run_research_search(
+        options: SearchOptions,
+        **kwargs: object,
+    ) -> dict[str, object]:
         seen_options.append(options)
+        assert "fetcher" in kwargs
         return {
             "ok": True,
             "query": options.query,
@@ -81,8 +85,12 @@ async def test_research_search_tool_maps_auto_provider_to_default_orchestrator(
 ) -> None:
     seen_options: list[SearchOptions] = []
 
-    async def fake_run_research_search(options: SearchOptions) -> dict[str, object]:
+    async def fake_run_research_search(
+        options: SearchOptions,
+        **kwargs: object,
+    ) -> dict[str, object]:
         seen_options.append(options)
+        assert "fetcher" in kwargs
         return {"ok": True, "query": options.query, "results": []}
 
     monkeypatch.setattr(

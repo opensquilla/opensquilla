@@ -27,4 +27,5 @@ export type {
   PlatformId,
   PlatformOnboardingApi,
   PlatformSettingsApi,
+  SearchProviderOption,
 } from './types'

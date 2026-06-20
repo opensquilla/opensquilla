@@ -1,30 +1,31 @@
 <template>
   <div class="settings-choice-grid">
     <button
+      v-for="provider in providers"
+      :key="provider.providerId"
       type="button"
       class="settings-choice"
-      :class="{ 'is-selected': model === 'duckduckgo' }"
-      @click="model = 'duckduckgo'"
+      :class="{ 'is-selected': model === provider.providerId }"
+      @click="model = provider.providerId"
     >
       <Icon name="search" :size="18" />
-      <span><strong>DuckDuckGo</strong><small>No key required</small></span>
-    </button>
-    <button
-      type="button"
-      class="settings-choice"
-      :class="{ 'is-selected': model === 'brave' }"
-      @click="model = 'brave'"
-    >
-      <Icon name="search" :size="18" />
-      <span><strong>Brave Search</strong><small>Requires your API key</small></span>
+      <span>
+        <strong>{{ provider.label }}</strong>
+        <small>{{ provider.requiresApiKey ? `Key: ${provider.envKey || 'SEARCH_API_KEY'}` : 'No key required' }}</small>
+      </span>
     </button>
   </div>
 </template>
 
 <script setup lang="ts">
 import Icon from '@/components/Icon.vue'
+import type { SearchProviderOption } from '@/platform/types'
 
-const model = defineModel<'duckduckgo' | 'brave'>({ required: true })
+defineProps<{
+  providers: SearchProviderOption[]
+}>()
+
+const model = defineModel<string>({ required: true })
 </script>
 
 <style scoped>

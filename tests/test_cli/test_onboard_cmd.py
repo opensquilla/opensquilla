@@ -1083,10 +1083,13 @@ def test_onboard_catalog_focused_image_and_metadata_search_examples_are_specific
     ) in image.stdout
 
     assert search.exit_code == 0, search.stdout
-    assert "- exa: Exa | metadata only" in search.stdout
-    assert "Try: opensquilla onboard configure search --search-provider exa" not in (
-        search.stdout
-    )
+    assert "- exa: Exa | ready | key EXA_API_KEY | cloud" in search.stdout
+    assert (
+        "Try: opensquilla onboard configure search --search-provider exa "
+        "--api-key-env EXA_API_KEY "
+        f"--config {_config_arg(target)}"
+    ) in search.stdout
+    assert "- perplexity: Perplexity | metadata only" in search.stdout
     assert "Try: not configurable in this build" in search.stdout
     assert not target.exists()
 

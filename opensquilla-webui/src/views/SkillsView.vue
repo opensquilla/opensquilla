@@ -919,7 +919,7 @@ async function uninstallSkillAndClose(name: string) {
   margin: 0;
   font-size: var(--fs-sm);
 }
-.state-text :deep(strong) {
+.state-text strong {
   color: var(--text);
 }
 

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import sys
+import types
 from typing import Any
 
 import pytest
 
 import opensquilla.search.research as research_module
 from opensquilla.search.research import run_research_search
+from opensquilla.search.runtime_config import SearchRuntimeConfig, resolve_search_runtime
 from opensquilla.search.types import SearchOptions, SearchProviderError, SearchResult
 
 
@@ -310,7 +313,10 @@ async def test_research_search_primary_auth_failure_does_not_silent_fallback() -
 
 
 @pytest.mark.asyncio
-async def test_research_search_missing_key_auth_can_fallback_in_auto_mode() -> None:
+async def test_research_search_no_key_auto_skips_known_missing_key_providers(monkeypatch) -> None:
+    for key in ("BRAVE_SEARCH_API_KEY", "TAVILY_API_KEY", "EXA_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+
     def provider_factory(name: str) -> MissingKeyAuthProvider | FallbackProvider:
         if name in {"tavily", "brave"}:
             return MissingKeyAuthProvider()
@@ -318,15 +324,35 @@ async def test_research_search_missing_key_auth_can_fallback_in_auto_mode() -> N
 
     payload = await run_research_search(
         SearchOptions(query="q", fetch_top_k=0),
+        runtime=resolve_search_runtime(SearchRuntimeConfig(provider="duckduckgo")),
         provider_factory=provider_factory,
     )
 
     assert payload["ok"] is True
     assert payload["provider_attempts"] == [
-        {"provider": "tavily", "status": "auth_missing"},
-        {"provider": "brave", "status": "auth_missing"},
         {"provider": "duckduckgo", "status": "success"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_research_search_no_key_default_uses_duckduckgo_directly(monkeypatch) -> None:
+    for key in ("BRAVE_SEARCH_API_KEY", "TAVILY_API_KEY", "EXA_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    attempted: list[str] = []
+
+    def provider_factory(name: str) -> FallbackProvider:
+        attempted.append(name)
+        return FallbackProvider()
+
+    payload = await run_research_search(
+        SearchOptions(query="q", fetch_top_k=0),
+        runtime=resolve_search_runtime(SearchRuntimeConfig(provider="duckduckgo")),
+        provider_factory=provider_factory,
+    )
+
+    assert payload["ok"] is True
+    assert attempted == ["duckduckgo"]
+    assert payload["provider_attempts"] == [{"provider": "duckduckgo", "status": "success"}]
 
 
 @pytest.mark.asyncio
@@ -337,7 +363,10 @@ async def test_research_search_configured_auth_failure_does_not_fallback_or_leak
         return FallbackProvider()
 
     payload = await run_research_search(
-        SearchOptions(query="q", fetch_top_k=0),
+        SearchOptions(query="q", provider="tavily", fetch_top_k=0),
+        runtime=resolve_search_runtime(
+            SearchRuntimeConfig(provider="tavily", api_key="configured-bad-key")
+        ),
         provider_factory=provider_factory,
     )
 
@@ -409,6 +438,44 @@ async def test_research_search_keeps_provider_excerpt_when_fetch_fails() -> None
 
 
 @pytest.mark.asyncio
+async def test_research_search_default_fetcher_fetches_compact_excerpt(
+    monkeypatch,
+) -> None:
+    fetch_calls: list[tuple[str, int]] = []
+
+    async def fake_run_web_fetch_payload(url: str, max_chars: int) -> dict[str, Any]:
+        fetch_calls.append((url, max_chars))
+        return {
+            "text": (
+                '<external-content source="https://example.com/article">'
+                "Fetched by default fetcher"
+                "</external-content>"
+            ),
+            "extractor": "web_fetch",
+            "truncated": False,
+            "status": 200,
+        }
+
+    fake_web_fetch = types.SimpleNamespace(
+        run_web_fetch_payload=fake_run_web_fetch_payload,
+    )
+    monkeypatch.setitem(sys.modules, "opensquilla.tools.builtin.web_fetch", fake_web_fetch)
+
+    payload = await run_research_search(
+        SearchOptions(query="q", fetch_top_k=1, max_chars_per_source=500),
+        provider_factory=lambda name: ShortContentProvider(),
+        use_cache=False,
+    )
+
+    assert payload["ok"] is True
+    assert fetch_calls == [("https://example.com/article", 500)]
+    assert payload["results"][0]["fetched"] is True
+    assert payload["results"][0]["extractor"] == "web_fetch"
+    assert "Fetched by default fetcher" in payload["results"][0]["excerpt"]
+    assert payload["diagnostics"]["fetched_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_research_search_treats_malformed_fetch_payload_as_fetch_failure() -> None:
     async def fetcher(url: str, max_chars: int) -> None:
         return None
@@ -434,6 +501,9 @@ async def test_research_search_falls_back_on_retryable_network_error() -> None:
 
     payload = await run_research_search(
         SearchOptions(query="q", provider="tavily", fetch_top_k=0),
+        runtime=resolve_search_runtime(
+            SearchRuntimeConfig(provider="tavily", api_key="tavily-key", fallback_policy="network")
+        ),
         provider_factory=provider_factory,
     )
 
@@ -444,6 +514,28 @@ async def test_research_search_falls_back_on_retryable_network_error() -> None:
     ]
     assert payload["diagnostics"]["fallback_from"] == "tavily"
     assert payload["results"][0]["provider"] == "duckduckgo"
+
+
+@pytest.mark.asyncio
+async def test_research_search_explicit_provider_does_not_fallback_when_policy_off() -> None:
+    def provider_factory(name: str) -> NetworkFailProvider | FallbackProvider:
+        if name == "tavily":
+            return NetworkFailProvider()
+        return FallbackProvider()
+
+    payload = await run_research_search(
+        SearchOptions(query="q", provider="tavily", fetch_top_k=0),
+        runtime=resolve_search_runtime(
+            SearchRuntimeConfig(provider="tavily", api_key="tavily-key", fallback_policy="off")
+        ),
+        provider_factory=provider_factory,
+    )
+
+    assert payload["ok"] is False
+    assert payload["error_kind"] == "network"
+    assert payload["provider_attempts"] == [
+        {"provider": "tavily", "status": "error", "error_kind": "network"}
+    ]
 
 
 @pytest.mark.asyncio
@@ -531,7 +623,9 @@ async def test_research_search_rejects_explicit_duckduckgo_recency_without_provi
 
 
 @pytest.mark.asyncio
-async def test_research_search_auto_recency_does_not_fallback_to_duckduckgo() -> None:
+async def test_research_search_auto_recency_does_not_fallback_to_duckduckgo(monkeypatch) -> None:
+    for key in ("BRAVE_SEARCH_API_KEY", "TAVILY_API_KEY", "EXA_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
     attempted: list[str] = []
 
     def provider_factory(name: str) -> MissingKeyAuthProvider:
@@ -540,19 +634,24 @@ async def test_research_search_auto_recency_does_not_fallback_to_duckduckgo() ->
 
     payload = await run_research_search(
         SearchOptions(query="q", recency="week", fetch_top_k=0),
+        runtime=resolve_search_runtime(SearchRuntimeConfig(provider="duckduckgo")),
         provider_factory=provider_factory,
     )
 
     assert payload["ok"] is False
-    assert attempted == ["tavily", "brave"]
+    assert attempted == ["tavily", "brave", "exa"]
     assert [attempt["provider"] for attempt in payload["provider_attempts"]] == [
         "tavily",
         "brave",
+        "exa",
     ]
 
 
 @pytest.mark.asyncio
-async def test_research_search_technical_mode_prefers_exa_then_brave() -> None:
+async def test_research_search_technical_mode_prefers_exa_then_brave(monkeypatch) -> None:
+    monkeypatch.setenv("EXA_API_KEY", "exa-key")
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "brave-key")
+    monkeypatch.setenv("TAVILY_API_KEY", "tavily-key")
     attempted: list[str] = []
 
     def provider_factory(name: str) -> MissingKeyAuthProvider | FallbackProvider:

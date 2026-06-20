@@ -65,15 +65,15 @@
           <span class="desktop-panel__icon"><Icon name="search" :size="17" /></span>
           <div>
             <h2>Search</h2>
-            <p>Choose the web search engine available to agents.</p>
+            <p>Store the desktop search credential available to agents.</p>
           </div>
         </header>
-        <SearchProviderSelector v-model="form.searchProvider" />
+        <SearchProviderSelector v-model="form.searchProvider" :providers="searchProviders" />
         <ApiKeyField
-          v-if="form.searchProvider === 'brave'"
+          v-if="searchProviderRequiresKey"
           v-model="form.searchApiKey"
           label="Search API key"
-          :placeholder="searchApiKeyConfigured ? 'Saved key will be kept' : 'BRAVE_SEARCH_API_KEY'"
+          :placeholder="searchApiKeyPlaceholder"
         />
       </section>
 
@@ -112,15 +112,47 @@ import GatewayStatusBlock from '@/components/settings/GatewayStatusBlock.vue'
 import ProviderSelector from '@/components/settings/ProviderSelector.vue'
 import SearchProviderSelector from '@/components/settings/SearchProviderSelector.vue'
 import { usePlatform, type GatewayStatus } from '@/platform'
+import type { SearchProviderOption } from '@/platform/types'
 
 type ProviderId = 'openrouter' | 'openai' | 'anthropic'
-type SearchProviderId = 'duckduckgo' | 'brave'
 
 const providerDefaults: Record<ProviderId, { model: string; baseUrl: string; label: string }> = {
   openrouter: { model: 'deepseek/deepseek-v4-pro', baseUrl: 'https://openrouter.ai/api/v1', label: 'OpenRouter' },
   openai: { model: 'gpt-4.1', baseUrl: 'https://api.openai.com/v1', label: 'OpenAI' },
   anthropic: { model: 'claude-sonnet-4-5', baseUrl: 'https://api.anthropic.com/v1', label: 'Anthropic' },
 }
+const fallbackSearchProviders: SearchProviderOption[] = [
+  {
+    providerId: 'duckduckgo',
+    label: 'DuckDuckGo',
+    requiresApiKey: false,
+    note: 'No key required. Good default for getting started.',
+  },
+  {
+    providerId: 'brave',
+    label: 'Brave Search',
+    envKey: 'BRAVE_SEARCH_API_KEY',
+    requiresApiKey: true,
+    note: 'Managed search access with freshness support.',
+    keyPlaceholder: 'BRAVE_SEARCH_API_KEY',
+  },
+  {
+    providerId: 'tavily',
+    label: 'Tavily',
+    envKey: 'TAVILY_API_KEY',
+    requiresApiKey: true,
+    note: 'Freshness-oriented web search for current research.',
+    keyPlaceholder: 'TAVILY_API_KEY',
+  },
+  {
+    providerId: 'exa',
+    label: 'Exa',
+    envKey: 'EXA_API_KEY',
+    requiresApiKey: true,
+    note: 'Semantic and content-oriented search for research workflows.',
+    keyPlaceholder: 'EXA_API_KEY',
+  },
+]
 
 const platform = usePlatform()
 const desktopSettings = platform.settings
@@ -136,12 +168,13 @@ const error = ref('')
 const apiKeyConfigured = ref(false)
 const searchApiKeyConfigured = ref(false)
 const gateway = shallowRef<GatewayStatus | null>(null)
+const searchProviders = ref<SearchProviderOption[]>(fallbackSearchProviders)
 const form = reactive({
   provider: 'openrouter' as ProviderId,
   apiKey: '',
   model: providerDefaults.openrouter.model,
   baseUrl: providerDefaults.openrouter.baseUrl,
-  searchProvider: 'duckduckgo' as SearchProviderId,
+  searchProvider: 'duckduckgo',
   searchApiKey: '',
 })
 
@@ -150,12 +183,22 @@ const gatewayUrl = computed(() => gateway.value?.url || 'No active gateway')
 const gatewayLogLabel = computed(() => gateway.value?.logPath ? 'Available' : 'Unavailable')
 const gatewayLogHint = computed(() => gateway.value?.logPath || 'No local log path')
 const routerProviderLabel = computed(() => providerDefaults[form.provider].label)
+const searchSpec = computed(() => (
+  searchProviders.value.find(provider => provider.providerId === form.searchProvider)
+  || searchProviders.value.find(provider => provider.providerId === 'duckduckgo')
+  || searchProviders.value[0]
+))
+const searchProviderRequiresKey = computed(() => searchSpec.value?.requiresApiKey === true)
+const searchApiKeyPlaceholder = computed(() => {
+  if (searchApiKeyConfigured.value) return 'Saved key will be kept'
+  return searchSpec.value?.keyPlaceholder || searchSpec.value?.envKey || 'SEARCH_API_KEY'
+})
 const searchStatusLabel = computed(() => {
-  if (form.searchProvider === 'duckduckgo') return 'Ready'
+  if (!searchProviderRequiresKey.value) return 'Ready'
   return searchApiKeyConfigured.value ? 'Set' : 'Missing'
 })
 const searchHint = computed(() => {
-  return form.searchProvider === 'duckduckgo' ? 'DuckDuckGo' : 'Brave Search'
+  return searchSpec.value?.label || form.searchProvider
 })
 
 function providerId(value: string): ProviderId {
@@ -163,8 +206,8 @@ function providerId(value: string): ProviderId {
   return 'openrouter'
 }
 
-function searchProviderId(value: string): SearchProviderId {
-  return value === 'brave' ? 'brave' : 'duckduckgo'
+function searchProviderId(value: string): string {
+  return searchProviders.value.some(provider => provider.providerId === value) ? value : 'duckduckgo'
 }
 
 function applyProviderDefaults(): void {
@@ -183,6 +226,9 @@ async function loadSettings(): Promise<void> {
   saved.value = false
   try {
     const settings = await desktopSettings.getDesktopSettings()
+    if (Array.isArray(settings.searchProviders) && settings.searchProviders.length) {
+      searchProviders.value = settings.searchProviders
+    }
     form.provider = providerId(settings.provider)
     form.model = settings.model
     form.baseUrl = settings.baseUrl

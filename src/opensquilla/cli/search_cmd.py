@@ -257,7 +257,13 @@ def _run_local_research_query(
         recency=cast(Recency | None, recency),
         provider=provider,
     )
-    return asyncio.run(run_research_search(options))
+    return asyncio.run(run_research_search(options, fetcher=_research_web_fetcher))
+
+
+async def _research_web_fetcher(url: str, max_chars: int) -> dict[str, object]:
+    from opensquilla.tools.builtin.web_fetch import run_web_fetch_payload
+
+    return await run_web_fetch_payload(url, max_chars=max_chars)
 
 
 def _emit_invalid_request(message: str, *, json_output: bool) -> NoReturn:

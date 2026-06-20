@@ -120,6 +120,23 @@ export BRAVE_SEARCH_API_KEY="..."
 opensquilla configure search --search-provider brave --api-key-env BRAVE_SEARCH_API_KEY
 ```
 
+Use Tavily or Exa when your workflow needs freshness, domain filtering, semantic
+search, or content-oriented retrieval:
+
+```sh
+export TAVILY_API_KEY="..."
+opensquilla configure search --search-provider tavily --api-key-env TAVILY_API_KEY
+
+export EXA_API_KEY="..."
+opensquilla configure search --search-provider exa --api-key-env EXA_API_KEY
+```
+
+For no-key, partial-key, or all-key setups, inspect the effective runtime state:
+
+```sh
+opensquilla search status --json
+```
+
 ## Channel Config Saved but Channel Is Offline
 
 Restart the gateway after editing channel config:

@@ -9,7 +9,7 @@ import time
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from dataclasses import asdict
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit, urlunsplit
 
 from opensquilla.search.normalize import (
@@ -17,6 +17,10 @@ from opensquilla.search.normalize import (
     canonicalize_url,
     dedupe_hits_by_canonical_url,
     extract_domain,
+)
+from opensquilla.search.runtime_config import (
+    ResolvedSearchRuntime,
+    get_resolved_search_runtime,
 )
 from opensquilla.search.types import (
     SearchDiagnostics,
@@ -30,8 +34,6 @@ from opensquilla.search.types import (
 ProviderFactory = Callable[[str], SearchProvider]
 Fetcher = Callable[[str, int], Awaitable[Any]]
 
-_DEFAULT_PROVIDER_ORDER = ("tavily", "brave", "duckduckgo")
-_TECHNICAL_PROVIDER_ORDER = ("exa", "brave", "tavily", "duckduckgo")
 _FETCH_MIN_USEFUL_CHARS = 240
 _ROOT_DOMAIN_RESULT_LIMIT = 3
 _SEARCH_CACHE_TTL_SECONDS = 900
@@ -45,6 +47,7 @@ _SEARCH_CACHE: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
 async def run_research_search(
     options: SearchOptions,
     *,
+    runtime: ResolvedSearchRuntime | None = None,
     provider_factory: ProviderFactory | None = None,
     fetcher: Fetcher | None = None,
     loop_guard: dict[str, Any] | None = None,
@@ -74,12 +77,15 @@ async def run_research_search(
             error="DuckDuckGo search does not support recency filtering.",
         )
 
+    resolved_runtime = runtime or get_resolved_search_runtime()
+    provider_names = resolved_runtime.provider_order(options)
+
     cache_enabled = (
-        provider_factory is None and fetcher is None
+        runtime is None and provider_factory is None
         if use_cache is None
         else use_cache
     )
-    cache_key = _cache_key(options)
+    cache_key = _cache_key(options, provider_names)
     if cache_enabled:
         diagnostics.cache_status = "miss"
         cached_payload = _get_cached_payload(cache_key)
@@ -88,8 +94,7 @@ async def run_research_search(
             cached_payload["diagnostics"]["loop_guard"] = dict(loop_guard or {})
             return cached_payload
 
-    factory = provider_factory or _default_provider_factory
-    provider_names = _provider_order(options)
+    factory = provider_factory or resolved_runtime.build_provider
     selected_provider = ""
     raw_results: list[SearchResult] = []
     terminal_error: Exception | None = None
@@ -106,7 +111,10 @@ async def run_research_search(
                 _provider_error_attempt(provider_name, search_error)
             )
 
-            if _should_fallback(search_error, explicit_provider=explicit_provider):
+            if resolved_runtime.should_fallback(
+                search_error,
+                explicit_provider=explicit_provider,
+            ):
                 diagnostics.fallback_from = diagnostics.fallback_from or provider_name
                 continue
             return _failure_payload(
@@ -169,13 +177,6 @@ def clear_research_search_cache_for_tests() -> None:
     _SEARCH_CACHE.clear()
 
 
-def _default_provider_factory(name: str) -> SearchProvider:
-    _ensure_builtin_search_providers()
-    from opensquilla.search.registry import get_provider
-
-    return get_provider(name)
-
-
 def _ensure_builtin_search_providers() -> None:
     for module_name in (
         "opensquilla.search.providers.tavily",
@@ -216,17 +217,20 @@ def _supported_search_kwargs(
 
 
 async def _default_fetcher(url: str, max_chars: int) -> dict[str, Any]:
-    from opensquilla.tools.builtin.web_fetch import run_web_fetch_payload
+    web_fetch = importlib.import_module("opensquilla.tools.builtin.web_fetch")
+    return cast(
+        dict[str, Any],
+        await web_fetch.run_web_fetch_payload(url, max_chars=max_chars),
+    )
 
-    return await run_web_fetch_payload(url, max_chars=max_chars)
 
-
-def _cache_key(options: SearchOptions) -> tuple[Any, ...]:
+def _cache_key(options: SearchOptions, provider_names: tuple[str, ...]) -> tuple[Any, ...]:
     return (
         canonicalize_query_key(options.query),
         options.provider or "auto",
         options.mode,
         options.recency or "",
+        provider_names,
         options.max_results,
         options.fetch_top_k,
         options.max_chars_per_source,
@@ -254,17 +258,7 @@ def _set_cached_payload(cache_key: tuple[Any, ...], payload: dict[str, Any]) -> 
 
 
 def _provider_order(options: SearchOptions) -> tuple[str, ...]:
-    if options.recency is not None:
-        if options.provider:
-            return (options.provider,)
-        return ("tavily", "brave")
-    if options.provider:
-        if options.provider == "duckduckgo":
-            return ("duckduckgo",)
-        return (options.provider, "duckduckgo")
-    if options.mode == "technical":
-        return _TECHNICAL_PROVIDER_ORDER
-    return _DEFAULT_PROVIDER_ORDER
+    return get_resolved_search_runtime().provider_order(options)
 
 
 def _coerce_search_error(provider_name: str, exc: Exception) -> SearchProviderError:
@@ -284,14 +278,6 @@ def _provider_error_attempt(provider_name: str, error: SearchProviderError) -> d
             return {"provider": provider_name, "status": "auth_missing"}
         return {"provider": provider_name, "status": "auth_failed"}
     return {"provider": provider_name, "status": "error", "error_kind": error.kind}
-
-
-def _should_fallback(error: SearchProviderError, *, explicit_provider: bool) -> bool:
-    if error.provider == "duckduckgo":
-        return False
-    if error.kind == "auth":
-        return (not explicit_provider) and _is_missing_key_error(error)
-    return error.retryable or error.kind in {"network", "timeout", "rate_limit", "http"}
 
 
 def _is_missing_key_error(error: SearchProviderError) -> bool:

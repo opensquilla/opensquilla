@@ -57,7 +57,8 @@ opensquilla configure provider --provider openrouter --api-key-env OPENROUTER_AP
 opensquilla configure router --router recommended
 opensquilla configure router --router openrouter-mix
 opensquilla configure router --router disabled
-opensquilla configure search --search-provider brave --api-key-env BRAVE_SEARCH_API_KEY
+opensquilla configure search --search-provider duckduckgo
+opensquilla configure search --search-provider tavily --api-key-env TAVILY_API_KEY
 opensquilla configure channels
 opensquilla configure image-generation
 opensquilla configure memory-embedding
@@ -152,10 +153,18 @@ Configure search:
 ```sh
 opensquilla configure search --search-provider duckduckgo
 opensquilla configure search --search-provider brave --api-key-env BRAVE_SEARCH_API_KEY
+opensquilla configure search --search-provider tavily --api-key-env TAVILY_API_KEY
+opensquilla configure search --search-provider exa --api-key-env EXA_API_KEY
 ```
 
-Runtime-supported search providers in this build include Brave Search and
-DuckDuckGo. Additional provider metadata may be present for future or
+Runtime-supported search providers in this build include DuckDuckGo, Brave
+Search, Tavily, and Exa. DuckDuckGo is the no-key path. A partial-key setup can
+configure only one keyed provider; an all-key setup can expose
+`BRAVE_SEARCH_API_KEY`, `TAVILY_API_KEY`, and `EXA_API_KEY` so runtime provider
+selection can choose by mode and capability unless a request names an explicit
+provider. `search_provider` is the credential anchor for `search_api_key` and
+`search_api_key_env`; it is not a hard routing promise for automatic searches.
+Additional provider metadata may be present for future or
 not-yet-runtime-supported integrations.
 
 Read: [`search.md`](search.md)

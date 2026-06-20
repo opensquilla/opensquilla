@@ -16,8 +16,12 @@ runner = CliRunner()
 def test_search_query_research_options_use_local_search(monkeypatch):
     seen_options: list[SearchOptions] = []
 
-    async def fake_run_research_search(options: SearchOptions) -> dict[str, object]:
+    async def fake_run_research_search(
+        options: SearchOptions,
+        **kwargs: object,
+    ) -> dict[str, object]:
         seen_options.append(options)
+        assert "fetcher" in kwargs
         return {
             "ok": True,
             "query": options.query,
@@ -68,7 +72,11 @@ def test_search_query_research_options_use_local_search(monkeypatch):
 
 
 def test_search_query_research_text_output_renders_results(monkeypatch):
-    async def fake_run_research_search(options: SearchOptions) -> dict[str, object]:
+    async def fake_run_research_search(
+        options: SearchOptions,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        assert "fetcher" in kwargs
         return {
             "ok": True,
             "query": options.query,
@@ -102,7 +110,11 @@ def test_search_query_research_text_output_renders_results(monkeypatch):
 
 
 def test_search_query_research_json_failure_exits_nonzero(monkeypatch):
-    async def fake_run_research_search(options: SearchOptions) -> dict[str, object]:
+    async def fake_run_research_search(
+        options: SearchOptions,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        assert "fetcher" in kwargs
         return {
             "ok": False,
             "query": options.query,

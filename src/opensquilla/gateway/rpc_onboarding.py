@@ -103,6 +103,7 @@ def _sync_search_provider(config: Any) -> None:
         provider_name=config.search_provider,
         max_results=config.search_max_results,
         api_key=config.search_api_key,
+        api_key_env=getattr(config, "search_api_key_env", ""),
         proxy=config.search_proxy,
         use_env_proxy=config.search_use_env_proxy,
         fallback_policy=config.search_fallback_policy,

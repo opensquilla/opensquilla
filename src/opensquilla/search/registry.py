@@ -10,17 +10,23 @@ _provider_specs: dict[str, SearchProviderSpec] = {
         provider_id="brave",
         requires_api_key=True,
         env_key="BRAVE_SEARCH_API_KEY",
+        capabilities=frozenset({"web", "freshness"}),
     ),
-    "duckduckgo": SearchProviderSpec(provider_id="duckduckgo"),
+    "duckduckgo": SearchProviderSpec(
+        provider_id="duckduckgo",
+        capabilities=frozenset({"web", "no_key"}),
+    ),
     "tavily": SearchProviderSpec(
         provider_id="tavily",
         requires_api_key=True,
         env_key="TAVILY_API_KEY",
+        capabilities=frozenset({"web", "freshness", "domain_filter"}),
     ),
     "exa": SearchProviderSpec(
         provider_id="exa",
         requires_api_key=True,
         env_key="EXA_API_KEY",
+        capabilities=frozenset({"web", "freshness", "domain_filter", "semantic", "content"}),
     ),
     "perplexity": SearchProviderSpec(
         provider_id="perplexity",

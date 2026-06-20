@@ -223,6 +223,6 @@ register_provider(
         provider_id="exa",
         requires_api_key=True,
         env_key="EXA_API_KEY",
-        capabilities=frozenset({"web", "semantic", "content"}),
+        capabilities=frozenset({"web", "freshness", "domain_filter", "semantic", "content"}),
     ),
 )

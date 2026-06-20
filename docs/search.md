@@ -16,6 +16,8 @@ Runtime-supported providers in this build include:
 
 - Brave Search
 - DuckDuckGo
+- Tavily
+- Exa
 
 The catalog may include metadata for providers that are not runtime-supported
 in the current build. Check JSON output when integrating.
@@ -41,9 +43,47 @@ export BRAVE_SEARCH_API_KEY="..."
 opensquilla configure search --search-provider brave --api-key-env BRAVE_SEARCH_API_KEY
 ```
 
+Tavily:
+
+```sh
+export TAVILY_API_KEY="..."
+opensquilla configure search --search-provider tavily --api-key-env TAVILY_API_KEY
+```
+
+Exa:
+
+```sh
+export EXA_API_KEY="..."
+opensquilla configure search --search-provider exa --api-key-env EXA_API_KEY
+```
+
+In configuration files, `search_provider` can be `"duckduckgo", "brave", "tavily", or "exa"`.
+It identifies the provider tied to `search_api_key` and
+`search_api_key_env`; automatic searches without `--provider` still rank all
+available providers by mode, recency needs, and provider capabilities. Use
+`search_api_key_env` for an environment-variable reference, or paste a one-time
+key through onboarding. `search_fallback_policy = "network"` retries through
+DuckDuckGo only after network/timeout errors, while `search_diagnostics = true`
+includes provider-attempt details in tool results.
+
+Configuration matrix:
+
+- **no-key**: choose DuckDuckGo, or leave search unconfigured and the runtime
+  uses DuckDuckGo for general web search.
+- **partial-key**: configure one keyed provider, such as Tavily or Exa; the
+  runtime uses that provider when it is available and can still use DuckDuckGo
+  for no-key fallback paths.
+- **all-key**: expose `BRAVE_SEARCH_API_KEY`, `TAVILY_API_KEY`, and
+  `EXA_API_KEY`; runtime selection ranks providers by mode, recency needs, and
+  provider capabilities unless the request names an explicit provider.
+
 Provider-specific fields such as max results, proxy, environment-proxy usage,
 fallback policy, and diagnostics can be set through the search configuration
 surface.
+
+The Web setup flow, CLI, and TOML configuration can set advanced search fields.
+Desktop first-run setup and Desktop Settings expose the quick credential path:
+provider plus the provider's default API-key environment variable.
 
 ## Test Search
 

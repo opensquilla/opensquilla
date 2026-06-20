@@ -158,5 +158,11 @@ async def research_search(
         recency=cast(Recency | None, recency),
         provider=None if provider in (None, "auto") else provider,
     )
-    payload = await run_research_search(options)
+    payload = await run_research_search(options, fetcher=_research_web_fetcher)
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+async def _research_web_fetcher(url: str, max_chars: int) -> dict[str, object]:
+    from opensquilla.tools.builtin.web_fetch import run_web_fetch_payload
+
+    return await run_web_fetch_payload(url, max_chars=max_chars)

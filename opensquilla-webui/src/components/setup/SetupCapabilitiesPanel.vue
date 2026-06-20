@@ -135,7 +135,7 @@ function onImageProviderSelect(event: Event) {
         />
         <SetupNeedList :items="panel.state.searchNeeds" label="Search needs" />
         <label>
-          <span>Provider</span>
+          <span>Credential provider</span>
           <select :value="panel.form.searchProvider" name="setup_search_provider" @change="onSearchProviderSelect">
             <option v-for="p in panel.options.searchProviders" :key="p.providerId" :value="p.providerId">{{ p.label }}</option>
           </select>

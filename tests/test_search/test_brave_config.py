@@ -6,6 +6,7 @@ import pytest
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.search.providers.brave import BraveSearchProvider
 from opensquilla.search.providers.duckduckgo import DuckDuckGoProvider
+from opensquilla.search.providers.exa import ExaSearchProvider
 from opensquilla.search.types import SearchResult
 from opensquilla.tools.builtin import web
 
@@ -42,6 +43,20 @@ def test_web_search_kwargs_pass_tavily_api_key() -> None:
     web.configure_search("tavily", api_key="tavily-test-key")
 
     assert web._search_provider_kwargs("tavily")["api_key"] == "tavily-test-key"
+
+
+def test_web_search_kwargs_pass_exa_api_key() -> None:
+    web.configure_search("exa", api_key="exa-test-key")
+
+    assert web._search_provider_kwargs("exa")["api_key"] == "exa-test-key"
+
+
+def test_exa_provider_prefers_explicit_api_key(monkeypatch) -> None:
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+
+    provider = ExaSearchProvider(api_key="exa-test-key")
+
+    assert provider._api_key == "exa-test-key"
 
 
 @pytest.mark.asyncio

@@ -53,12 +53,15 @@
 frontend = "vue"
 
 # Web search settings
-# Use Brave when a key is configured, otherwise keep DuckDuckGo.
-# search_provider = "duckduckgo"  # "duckduckgo" or "brave"
-# search_api_key = ""             # Brave Search API key; env BRAVE_SEARCH_API_KEY also works
+# Use DuckDuckGo for the no-key path, or configure Brave, Tavily, or Exa.
+# search_provider = "duckduckgo"  # "duckduckgo", "brave", "tavily", or "exa"
+# search_api_key = ""             # one-time pasted key; prefer search_api_key_env
+# search_api_key_env = ""         # BRAVE_SEARCH_API_KEY, TAVILY_API_KEY, or EXA_API_KEY
 # search_max_results = 5
 # search_proxy = ""               # e.g. "http://127.0.0.1:7890"
 # search_use_env_proxy = false    # true = allow HTTP_PROXY/HTTPS_PROXY if search_proxy is empty
+# search_fallback_policy = "off"  # "off" or "network" retry via DuckDuckGo
+# search_diagnostics = false      # true = include provider-attempt diagnostics
 
 [llm]
 provider = "openrouter"

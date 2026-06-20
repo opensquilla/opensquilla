@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 
+import opensquilla.search.research as research_module
 from opensquilla.search.research import run_research_search
 from opensquilla.search.types import SearchOptions, SearchProviderError, SearchResult
 
@@ -223,6 +224,50 @@ class RecencyAwareProvider:
                 title="Fresh result",
                 url="https://example.com/fresh",
                 snippet="Fresh snippet",
+                provider="tavily",
+                source="tavily",
+            )
+        ]
+
+
+class RootDomainSpamProvider:
+    name = "tavily"
+
+    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+        return [
+            SearchResult(
+                title=f"Example result {index}",
+                url=url,
+                snippet="Short.",
+                provider="tavily",
+                source="tavily",
+            )
+            for index, url in enumerate(
+                (
+                    "https://www.example.com/a",
+                    "https://docs.example.com/b",
+                    "https://blog.example.com/c",
+                    "https://news.example.com/d",
+                    "https://python.org/e",
+                ),
+                start=1,
+            )
+        ][:max_results]
+
+
+class CountingShortProvider:
+    name = "tavily"
+
+    def __init__(self, calls: list[str]) -> None:
+        self._calls = calls
+
+    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+        self._calls.append(query)
+        return [
+            SearchResult(
+                title="Cached result",
+                url="https://example.com/cached",
+                snippet="Short.",
                 provider="tavily",
                 source="tavily",
             )
@@ -507,6 +552,29 @@ async def test_research_search_auto_recency_does_not_fallback_to_duckduckgo() ->
 
 
 @pytest.mark.asyncio
+async def test_research_search_technical_mode_prefers_exa_then_brave() -> None:
+    attempted: list[str] = []
+
+    def provider_factory(name: str) -> MissingKeyAuthProvider | FallbackProvider:
+        attempted.append(name)
+        if name == "exa":
+            return MissingKeyAuthProvider()
+        return FallbackProvider()
+
+    payload = await run_research_search(
+        SearchOptions(query="python sqlite api docs", mode="technical", fetch_top_k=0),
+        provider_factory=provider_factory,
+    )
+
+    assert payload["ok"] is True
+    assert attempted == ["exa", "brave"]
+    assert payload["provider_attempts"] == [
+        {"provider": "exa", "status": "auth_missing"},
+        {"provider": "brave", "status": "success"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_research_search_passes_supported_recency_kwarg_only() -> None:
     calls: list[tuple[str, dict[str, Any]]] = []
 
@@ -532,3 +600,95 @@ async def test_research_search_rejects_empty_query_without_calling_provider() ->
     assert payload["ok"] is False
     assert payload["error_kind"] == "invalid_request"
     assert payload["provider_attempts"] == []
+
+
+@pytest.mark.asyncio
+async def test_research_search_limits_root_domain_spam_without_include_filter() -> None:
+    research_module.clear_research_search_cache_for_tests()
+
+    payload = await run_research_search(
+        SearchOptions(query="root domain spam", max_results=5, fetch_top_k=0),
+        provider_factory=lambda name: RootDomainSpamProvider(),
+    )
+
+    assert payload["ok"] is True
+    assert [result["domain"] for result in payload["results"]] == [
+        "www.example.com",
+        "docs.example.com",
+        "blog.example.com",
+        "python.org",
+    ]
+    assert payload["diagnostics"]["domain_limited_count"] == 1
+    assert [result["rank"] for result in payload["results"]] == [1, 2, 3, 4]
+
+
+@pytest.mark.asyncio
+async def test_research_search_preserves_include_domain_depth_without_spam_limit() -> None:
+    research_module.clear_research_search_cache_for_tests()
+
+    payload = await run_research_search(
+        SearchOptions(
+            query="root domain spam include",
+            max_results=5,
+            fetch_top_k=0,
+            include_domains=("example.com",),
+        ),
+        provider_factory=lambda name: RootDomainSpamProvider(),
+    )
+
+    assert payload["ok"] is True
+    assert [result["domain"] for result in payload["results"]] == [
+        "www.example.com",
+        "docs.example.com",
+        "blog.example.com",
+        "news.example.com",
+    ]
+    assert payload["diagnostics"]["domain_limited_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_research_search_caches_complete_payload_for_repeated_request() -> None:
+    research_module.clear_research_search_cache_for_tests()
+    provider_calls: list[str] = []
+    fetch_calls: list[str] = []
+
+    async def fetcher(url: str, max_chars: int) -> dict[str, Any]:
+        fetch_calls.append(url)
+        return {
+            "text": (
+                '<external-content source="https://example.com">'
+                "Fetched cache body"
+                "</external-content>"
+            ),
+            "extractor": "readability",
+            "truncated": False,
+            "status": 200,
+        }
+
+    options = SearchOptions(
+        query="cache me",
+        provider="tavily",
+        max_results=2,
+        fetch_top_k=1,
+        max_chars_per_source=500,
+    )
+    first = await run_research_search(
+        options,
+        provider_factory=lambda name: CountingShortProvider(provider_calls),
+        fetcher=fetcher,
+        use_cache=True,
+    )
+    second = await run_research_search(
+        options,
+        provider_factory=lambda name: CountingShortProvider(provider_calls),
+        fetcher=fetcher,
+        use_cache=True,
+    )
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert provider_calls == ["cache me"]
+    assert fetch_calls == ["https://example.com/cached"]
+    assert first["diagnostics"]["cache_status"] == "miss"
+    assert second["diagnostics"]["cache_status"] == "hit"
+    assert second["results"][0]["excerpt"] == "Fetched cache body"

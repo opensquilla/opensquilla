@@ -48,6 +48,19 @@ class _FakeAsyncClient:
         return _PlainTextResponse(current_url, self.response_text)
 
 
+class _FirecrawlResponse:
+    status_code = 200
+
+    def json(self) -> dict[str, object]:
+        return {
+            "success": True,
+            "data": {
+                "markdown": "Firecrawl markdown body",
+                "metadata": {"title": "Firecrawl title"},
+            },
+        }
+
+
 @pytest.mark.asyncio
 async def test_run_web_fetch_payload_matches_public_tool_for_non_html(
     monkeypatch: pytest.MonkeyPatch,
@@ -98,6 +111,69 @@ async def test_run_web_fetch_payload_applies_max_chars_per_cached_call(
     assert second["truncated"] is True
     assert second["returned_length"] == 220
     assert len(str(second["text"])) > len(str(first["text"]))
+
+
+@pytest.mark.asyncio
+async def test_run_web_fetch_payload_can_explicitly_use_firecrawl_v2(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    web_fetch_module._cache.clear()
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    class FirecrawlClient:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> FirecrawlClient:
+            return self
+
+        async def __aexit__(
+            self,
+            _exc_type: type[BaseException] | None,
+            _exc: BaseException | None,
+            _tb: object,
+        ) -> None:
+            return None
+
+        async def post(
+            self,
+            current_url: str,
+            *,
+            headers: dict[str, str],
+            json: dict[str, object],
+        ) -> _FirecrawlResponse:
+            requests.append((current_url, json))
+            assert headers["Authorization"] == "Bearer firecrawl-test-key"
+            return _FirecrawlResponse()
+
+        async def get(self, current_url: str) -> _PlainTextResponse:
+            raise AssertionError("explicit firecrawl fetch should not perform local GET")
+
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "firecrawl-test-key")
+    monkeypatch.setattr(web_fetch_module, "_check_ssrf", lambda _url: None)
+    monkeypatch.setattr(web_fetch_module.httpx, "AsyncClient", FirecrawlClient)
+
+    payload = await run_web_fetch_payload(
+        "https://example.test/js",
+        max_chars=500,
+        extractor="firecrawl",
+    )
+
+    assert requests == [
+        (
+            "https://api.firecrawl.dev/v2/scrape",
+            {
+                "url": "https://example.test/js",
+                "formats": ["markdown"],
+                "onlyMainContent": True,
+                "maxAge": 900000,
+            },
+        )
+    ]
+    assert payload["status"] == 200
+    assert payload["extractor"] == "firecrawl"
+    assert payload["title"] == "Firecrawl title"
+    assert "Firecrawl markdown body" in str(payload["text"])
 
 
 @pytest.mark.asyncio

@@ -19,7 +19,6 @@ _provider_specs: dict[str, SearchProviderSpec] = {
     ),
     "exa": SearchProviderSpec(
         provider_id="exa",
-        runtime_supported=False,
         requires_api_key=True,
         env_key="EXA_API_KEY",
     ),

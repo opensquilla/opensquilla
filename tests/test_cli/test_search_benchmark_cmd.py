@@ -21,6 +21,7 @@ def _benchmark_payload() -> dict[str, object]:
         "v1": {
             "p50_latency_ms": 10,
             "p95_latency_ms": 20,
+            "success_at_k": 0.7,
             "external_tool_calls_per_question": 2,
             "avg_returned_chars": 500,
             "duplicate_url_rate": 0.2,
@@ -30,6 +31,7 @@ def _benchmark_payload() -> dict[str, object]:
         "v2": {
             "p50_latency_ms": 12,
             "p95_latency_ms": 24,
+            "success_at_k": 0.9,
             "external_tool_calls_per_question": 1,
             "avg_returned_chars": 300,
             "duplicate_url_rate": 0.0,
@@ -37,9 +39,13 @@ def _benchmark_payload() -> dict[str, object]:
             "provider_fallback_count": 0,
         },
         "delta": {
+            "success_at_k": 0.2,
             "external_tool_calls_per_question": -1,
             "avg_returned_chars": -200,
         },
+        "cases": [
+            {"id": "official_docs", "query": "python release", "kind": "technical_docs"}
+        ],
     }
 
 
@@ -57,6 +63,7 @@ def _assert_benchmark_metrics(payload: dict[str, object]) -> None:
         assert set(metrics) >= {
             "p50_latency_ms",
             "p95_latency_ms",
+            "success_at_k",
             "external_tool_calls_per_question",
             "avg_returned_chars",
             "duplicate_url_rate",
@@ -68,7 +75,12 @@ def _assert_benchmark_metrics(payload: dict[str, object]) -> None:
     assert set(delta) >= {
         "external_tool_calls_per_question",
         "avg_returned_chars",
+        "success_at_k",
     }
+    assert isinstance(payload.get("cases"), list)
+    assert payload["cases"]
+    for row in cast(list[dict[str, object]], payload["cases"]):
+        assert set(row) >= {"id", "query", "kind"}
     v1 = cast(dict[str, object], payload["v1"])
     v2 = cast(dict[str, object], payload["v2"])
     assert _numeric_metric(v2, "external_tool_calls_per_question") < _numeric_metric(
@@ -86,6 +98,7 @@ def test_search_benchmark_smoke_json_uses_real_synthetic_output():
     assert payload["measurement_kind"] == "synthetic_smoke"
     assert payload["live"] is False
     _assert_benchmark_metrics(payload)
+    assert payload["query_count"] == len(payload["cases"])
 
 
 def test_search_benchmark_passes_options_to_helper(monkeypatch):

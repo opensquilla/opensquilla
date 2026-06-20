@@ -14,12 +14,12 @@ def test_search_catalog_includes_known_providers():
     assert {"brave", "duckduckgo", "tavily", "exa", "perplexity"} <= ids
 
 
-def test_search_catalog_marks_unsupported_providers_disabled():
+def test_search_catalog_marks_runtime_providers_supported():
     specs = {s.provider_id: s for s in list_search_provider_setup_specs()}
     assert specs["brave"].runtime_supported is True
     assert specs["duckduckgo"].runtime_supported is True
     assert specs["tavily"].runtime_supported is True
-    assert specs["exa"].runtime_supported is False
+    assert specs["exa"].runtime_supported is True
     assert specs["perplexity"].runtime_supported is False
 
 

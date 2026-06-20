@@ -134,8 +134,10 @@ class SearchDiagnostics:
     fetched_count: int = 0
     fetch_failed_count: int = 0
     duplicate_count: int = 0
+    domain_limited_count: int = 0
     returned_chars: int = 0
     budget_clamped: bool = False
+    cache_status: str = "disabled"
     loop_guard: dict[str, Any] = field(default_factory=dict)
 
 

@@ -42,6 +42,7 @@ async def test_research_search_tool_builds_options_and_returns_json(
     result = await bare_research_search(
         "python release",
         mode="auto",
+        provider="exa",
         max_results=10,
         fetch_top_k=3,
         max_chars_per_source=1500,
@@ -68,9 +69,58 @@ async def test_research_search_tool_builds_options_and_returns_json(
             include_domains=("python.org",),
             exclude_domains=(),
             recency="month",
+            provider="exa",
         )
     ]
     assert seen_options[0].include_domains == ("python.org",)
+
+
+@pytest.mark.asyncio
+async def test_research_search_tool_maps_auto_provider_to_default_orchestrator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_options: list[SearchOptions] = []
+
+    async def fake_run_research_search(options: SearchOptions) -> dict[str, object]:
+        seen_options.append(options)
+        return {"ok": True, "query": options.query, "results": []}
+
+    monkeypatch.setattr(
+        research_search_module,
+        "run_research_search",
+        fake_run_research_search,
+    )
+
+    bare_research_search = inspect.unwrap(research_search_module.research_search)
+    result = await bare_research_search("python release", provider="auto")
+    payload = json.loads(result)
+
+    assert payload["ok"] is True
+    assert seen_options[0].provider is None
+
+
+@pytest.mark.asyncio
+async def test_research_search_tool_rejects_invalid_provider_without_calling_orchestrator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_run_research_search(options: SearchOptions) -> dict[str, object]:
+        raise AssertionError("run_research_search should not be called")
+
+    monkeypatch.setattr(
+        research_search_module,
+        "run_research_search",
+        fake_run_research_search,
+    )
+
+    bare_research_search = inspect.unwrap(research_search_module.research_search)
+    result = await bare_research_search("python release", provider="serpapi")
+    payload = json.loads(result)
+
+    assert payload == {
+        "ok": False,
+        "error_kind": "invalid_request",
+        "error": "Invalid provider. Expected one of: auto, brave, duckduckgo, exa, tavily.",
+    }
 
 
 @pytest.mark.asyncio

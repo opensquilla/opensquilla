@@ -118,6 +118,32 @@ async def test_live_brave_provider_accepts_recency_filter() -> None:
 
 
 @pytest.mark.asyncio
+async def test_live_exa_research_search_returns_content_metadata() -> None:
+    _require_live_matrix()
+    _require_env("EXA_API_KEY")
+
+    payload = await run_research_search(
+        SearchOptions(
+            query=_QUERY,
+            mode="technical",
+            max_results=3,
+            fetch_top_k=0,
+            max_chars_per_source=1000,
+            include_domains=(_PYTHON_DOMAIN,),
+            provider="exa",
+        )
+    )
+
+    assert payload["ok"] is True
+    assert payload["provider_attempts"][0] == {"provider": "exa", "status": "success"}
+    results = _results(payload)
+    assert results
+    assert all(row.get("provider") == "exa" for row in results)
+    assert all(_domain_matches(row.get("domain"), _PYTHON_DOMAIN) for row in results)
+    assert any(str(row.get("excerpt") or "").strip() for row in results)
+
+
+@pytest.mark.asyncio
 async def test_live_web_fetch_extracts_public_python_homepage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -136,6 +162,25 @@ async def test_live_web_fetch_extracts_public_python_homepage(
     assert text.startswith('<external-content source="')
     assert "Python" in text
     assert len(text) <= 1200
+
+
+@pytest.mark.asyncio
+async def test_live_web_fetch_can_explicitly_use_firecrawl() -> None:
+    _require_live_matrix()
+    _require_env("FIRECRAWL_API_KEY")
+
+    payload = await run_web_fetch_payload(
+        "https://www.python.org/",
+        extract_mode="markdown",
+        max_chars=1200,
+        extractor="firecrawl",
+    )
+
+    assert 200 <= int(payload["status"]) < 400
+    assert payload["extractor"] == "firecrawl"
+    text = str(payload["text"])
+    assert text.startswith('<external-content source="')
+    assert "Python" in text
 
 
 def test_live_cli_research_query_returns_json() -> None:

@@ -35,9 +35,17 @@ _SEARCH_MODES = {"auto", "news", "technical", "broad"}
 _RECENCIES = {"day", "week", "month", "year"}
 _BENCHMARK_PROFILES = {
     "smoke": (
-        "python release",
-        "sqlite json functions",
-        "starlette websocket docs",
+        {"id": "release_notes", "query": "python release", "kind": "release_notes"},
+        {
+            "id": "technical_docs",
+            "query": "sqlite json functions",
+            "kind": "technical_docs",
+        },
+        {
+            "id": "official_docs",
+            "query": "starlette websocket docs",
+            "kind": "official_docs",
+        },
     )
 }
 
@@ -316,6 +324,7 @@ def search_benchmark(
     for metric in (
         "p50_latency_ms",
         "p95_latency_ms",
+        "success_at_k",
         "external_tool_calls_per_question",
         "avg_returned_chars",
         "duplicate_url_rate",
@@ -347,12 +356,14 @@ def _run_search_benchmark(
     if fetch_top_k > 5:
         raise ValueError("fetch_top_k must be less than or equal to 5.")
 
-    query_count = len(_BENCHMARK_PROFILES[profile])
+    cases = [dict(row) for row in _BENCHMARK_PROFILES[profile]]
+    query_count = len(cases)
     v1_latencies = [18 + (idx * 2) for idx in range(query_count)]
     v2_latencies = [12 + fetch_top_k + idx for idx in range(query_count)]
     v1 = {
         "p50_latency_ms": _percentile(v1_latencies, 50),
         "p95_latency_ms": _percentile(v1_latencies, 95),
+        "success_at_k": round(max(0.0, min(1.0, 0.55 + (max_results * 0.04))), 3),
         "external_tool_calls_per_question": 2,
         "avg_returned_chars": max_results * 100,
         "duplicate_url_rate": 0.2,
@@ -362,6 +373,7 @@ def _run_search_benchmark(
     v2 = {
         "p50_latency_ms": _percentile(v2_latencies, 50),
         "p95_latency_ms": _percentile(v2_latencies, 95),
+        "success_at_k": round(max(0.0, min(1.0, 0.72 + (max_results * 0.04))), 3),
         "external_tool_calls_per_question": 1,
         "avg_returned_chars": max_results * 60,
         "duplicate_url_rate": 0.0,
@@ -375,7 +387,9 @@ def _run_search_benchmark(
         "live": False,
         "v1": v1,
         "v2": v2,
+        "cases": cases,
         "delta": {
+            "success_at_k": round(v2["success_at_k"] - v1["success_at_k"], 3),
             "external_tool_calls_per_question": (
                 v2["external_tool_calls_per_question"] - v1["external_tool_calls_per_question"]
             ),

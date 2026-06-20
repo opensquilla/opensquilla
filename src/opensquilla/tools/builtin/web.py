@@ -395,6 +395,7 @@ def _search_provider_kwargs(provider_name: str) -> dict[str, object]:
 def _ensure_builtin_search_providers() -> None:
     import opensquilla.search.providers.brave  # noqa: F401
     import opensquilla.search.providers.duckduckgo  # noqa: F401
+    import opensquilla.search.providers.exa  # noqa: F401
     import opensquilla.search.providers.tavily  # noqa: F401
 
 

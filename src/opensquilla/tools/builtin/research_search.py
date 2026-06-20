@@ -12,6 +12,9 @@ from opensquilla.tools.registry import tool
 
 _VALID_MODES: frozenset[str] = frozenset({"auto", "news", "technical", "broad"})
 _VALID_RECENCIES: frozenset[str] = frozenset({"day", "week", "month", "year"})
+_VALID_PROVIDERS: frozenset[str] = frozenset(
+    {"auto", "tavily", "brave", "duckduckgo", "exa"}
+)
 
 
 def _invalid_request(message: str) -> str:
@@ -84,6 +87,11 @@ def _domain_list(value: object, name: str) -> tuple[tuple[str, ...], str | None]
             "description": "Optional recency filter.",
             "enum": ["day", "week", "month", "year"],
         },
+        "provider": {
+            "type": "string",
+            "description": "Optional provider override.",
+            "enum": ["auto", "tavily", "brave", "duckduckgo", "exa"],
+        },
     },
     required=["query"],
     result_budget_class="external",
@@ -106,6 +114,7 @@ async def research_search(
     include_domains: list[str] | tuple[str, ...] | None = None,
     exclude_domains: list[str] | tuple[str, ...] | None = None,
     recency: str | None = None,
+    provider: str | None = None,
 ) -> str:
     if not isinstance(query, str) or not query.strip():
         return _invalid_request("query must be a non-empty string.")
@@ -115,6 +124,9 @@ async def research_search(
     if recency is not None and recency not in _VALID_RECENCIES:
         expected = ", ".join(sorted(_VALID_RECENCIES))
         return _invalid_request(f"Invalid recency. Expected one of: {expected}.")
+    if provider is not None and provider not in _VALID_PROVIDERS:
+        expected = ", ".join(sorted(_VALID_PROVIDERS))
+        return _invalid_request(f"Invalid provider. Expected one of: {expected}.")
 
     resolved_max_results, error = _optional_int(max_results, "max_results")
     if error is not None:
@@ -144,6 +156,7 @@ async def research_search(
         include_domains=resolved_include_domains,
         exclude_domains=resolved_exclude_domains,
         recency=cast(Recency | None, recency),
+        provider=None if provider in (None, "auto") else provider,
     )
     payload = await run_research_search(options)
     return json.dumps(payload, ensure_ascii=False, indent=2)

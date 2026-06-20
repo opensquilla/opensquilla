@@ -5,12 +5,15 @@ from __future__ import annotations
 import importlib
 import inspect
 import re
+import time
 from collections.abc import Awaitable, Callable
+from copy import deepcopy
 from dataclasses import asdict
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from opensquilla.search.normalize import (
+    canonicalize_query_key,
     canonicalize_url,
     dedupe_hits_by_canonical_url,
     extract_domain,
@@ -28,11 +31,15 @@ ProviderFactory = Callable[[str], SearchProvider]
 Fetcher = Callable[[str, int], Awaitable[Any]]
 
 _DEFAULT_PROVIDER_ORDER = ("tavily", "brave", "duckduckgo")
+_TECHNICAL_PROVIDER_ORDER = ("exa", "brave", "tavily", "duckduckgo")
 _FETCH_MIN_USEFUL_CHARS = 240
+_ROOT_DOMAIN_RESULT_LIMIT = 3
+_SEARCH_CACHE_TTL_SECONDS = 900
 _EXTERNAL_CONTENT_RE = re.compile(
     r"<external-content\b[^>]*>(?P<content>.*?)</external-content>",
     re.DOTALL | re.IGNORECASE,
 )
+_SEARCH_CACHE: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
 
 
 async def run_research_search(
@@ -41,6 +48,7 @@ async def run_research_search(
     provider_factory: ProviderFactory | None = None,
     fetcher: Fetcher | None = None,
     loop_guard: dict[str, Any] | None = None,
+    use_cache: bool | None = None,
 ) -> dict[str, Any]:
     """Search, normalize, dedupe, optionally fetch excerpts, and return JSON-safe payload."""
 
@@ -65,6 +73,20 @@ async def run_research_search(
             error_kind="invalid_request",
             error="DuckDuckGo search does not support recency filtering.",
         )
+
+    cache_enabled = (
+        provider_factory is None and fetcher is None
+        if use_cache is None
+        else use_cache
+    )
+    cache_key = _cache_key(options)
+    if cache_enabled:
+        diagnostics.cache_status = "miss"
+        cached_payload = _get_cached_payload(cache_key)
+        if cached_payload is not None:
+            cached_payload["diagnostics"]["cache_status"] = "hit"
+            cached_payload["diagnostics"]["loop_guard"] = dict(loop_guard or {})
+            return cached_payload
 
     factory = provider_factory or _default_provider_factory
     provider_names = _provider_order(options)
@@ -113,6 +135,7 @@ async def run_research_search(
     hits = [_search_result_to_hit(result, selected_provider, options) for result in raw_results]
     hits = _filter_hits_by_domain_options(hits, options)
     hits, diagnostics.duplicate_count = dedupe_hits_by_canonical_url(hits)
+    hits, diagnostics.domain_limited_count = _limit_root_domain_spam(hits, options)
     for rank, hit in enumerate(hits, start=1):
         hit.rank = rank
 
@@ -127,7 +150,7 @@ async def run_research_search(
     diagnostics.returned_chars = sum(len(hit.excerpt) for hit in hits)
     diagnostics.budget_clamped = any(hit.content_truncated for hit in hits)
 
-    return {
+    payload = {
         "ok": True,
         "query": options.query,
         "mode": options.mode,
@@ -135,6 +158,15 @@ async def run_research_search(
         "diagnostics": _diagnostics_payload(diagnostics),
         "results": [_public_hit_payload(hit) for hit in hits],
     }
+    if cache_enabled:
+        _set_cached_payload(cache_key, payload)
+    return payload
+
+
+def clear_research_search_cache_for_tests() -> None:
+    """Clear the in-process search cache for deterministic tests."""
+
+    _SEARCH_CACHE.clear()
 
 
 def _default_provider_factory(name: str) -> SearchProvider:
@@ -148,6 +180,7 @@ def _ensure_builtin_search_providers() -> None:
     for module_name in (
         "opensquilla.search.providers.tavily",
         "opensquilla.search.providers.brave",
+        "opensquilla.search.providers.exa",
         "opensquilla.search.providers.duckduckgo",
     ):
         importlib.import_module(module_name)
@@ -188,6 +221,38 @@ async def _default_fetcher(url: str, max_chars: int) -> dict[str, Any]:
     return await run_web_fetch_payload(url, max_chars=max_chars)
 
 
+def _cache_key(options: SearchOptions) -> tuple[Any, ...]:
+    return (
+        canonicalize_query_key(options.query),
+        options.provider or "auto",
+        options.mode,
+        options.recency or "",
+        options.max_results,
+        options.fetch_top_k,
+        options.max_chars_per_source,
+        options.include_domains,
+        options.exclude_domains,
+    )
+
+
+def _get_cached_payload(cache_key: tuple[Any, ...]) -> dict[str, Any] | None:
+    entry = _SEARCH_CACHE.get(cache_key)
+    if entry is None:
+        return None
+    expires_at, payload = entry
+    if expires_at <= time.monotonic():
+        _SEARCH_CACHE.pop(cache_key, None)
+        return None
+    return deepcopy(payload)
+
+
+def _set_cached_payload(cache_key: tuple[Any, ...], payload: dict[str, Any]) -> None:
+    _SEARCH_CACHE[cache_key] = (
+        time.monotonic() + _SEARCH_CACHE_TTL_SECONDS,
+        deepcopy(payload),
+    )
+
+
 def _provider_order(options: SearchOptions) -> tuple[str, ...]:
     if options.recency is not None:
         if options.provider:
@@ -197,6 +262,8 @@ def _provider_order(options: SearchOptions) -> tuple[str, ...]:
         if options.provider == "duckduckgo":
             return ("duckduckgo",)
         return (options.provider, "duckduckgo")
+    if options.mode == "technical":
+        return _TECHNICAL_PROVIDER_ORDER
     return _DEFAULT_PROVIDER_ORDER
 
 
@@ -283,6 +350,37 @@ def _filter_hits_by_domain_options(
             exclude_domains=options.exclude_domains,
         )
     ]
+
+
+def _limit_root_domain_spam(
+    hits: list[SearchHit],
+    options: SearchOptions,
+) -> tuple[list[SearchHit], int]:
+    if options.include_domains:
+        return hits, 0
+
+    root_counts: dict[str, int] = {}
+    limited: list[SearchHit] = []
+    limited_count = 0
+    for hit in hits:
+        root_domain = _root_domain(hit.domain)
+        count = root_counts.get(root_domain, 0)
+        if root_domain and count >= _ROOT_DOMAIN_RESULT_LIMIT:
+            limited_count += 1
+            continue
+        root_counts[root_domain] = count + 1
+        limited.append(hit)
+    return limited, limited_count
+
+
+def _root_domain(domain: str) -> str:
+    normalized = domain.lower().strip(".")
+    if not normalized:
+        return ""
+    labels = [label for label in normalized.split(".") if label]
+    if len(labels) <= 2:
+        return normalized
+    return ".".join(labels[-2:])
 
 
 def _domain_allowed(

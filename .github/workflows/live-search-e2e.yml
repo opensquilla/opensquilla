@@ -64,6 +64,11 @@ jobs:
             echo "TAVILY_API_KEY GitHub secret is required"
             exit 1
           fi
+          if [ "${{ inputs.run_extended_matrix }}" = "true" ] \
+            && [ -z "$BRAVE_SEARCH_API_KEY" ]; then
+            echo "BRAVE_SEARCH_API_KEY GitHub secret is required for the extended matrix"
+            exit 1
+          fi
 
       - name: Run core live search gates
         run: |

@@ -56,7 +56,7 @@ export interface UseChatSlashCommandsOptions {
   resetCurrentSession: () => void
   setCompactInFlight: (active: boolean, key?: string) => void
   showCompactStatus: (status: string, message: string, options?: { tone?: string; detail?: string; dismissMs?: number }) => void
-  // Surface a short, client-side notice (e.g. the meta-skill list). No LLM call.
+  // Surface a short, client-side notice (e.g. the meta-skill list). No provider call.
   notify: (message: string) => void
   // Send a turn whose provider text bypasses slash parsing (mirrors the TUI
   // override path). Used by /meta <name> to trigger the launch after meta.run.

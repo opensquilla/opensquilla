@@ -186,7 +186,7 @@ export function useSetupCapabilitiesForm() {
   const memoryDirty = computed(() => memorySerialized.value !== memoryBaseline.value)
   const imageDirty = computed(() => imageSerialized.value !== imageBaseline.value)
 
-  const memoryRemoteControlEnabled = computed(() => ['auto', 'openai', 'openai-compatible', 'ollama'].includes(memoryProvider.value))
+  const memoryRemoteControlEnabled = computed(() => !['none', 'local'].includes(memoryProvider.value))
   const memoryLocalControlEnabled = computed(() => memoryProvider.value === 'local')
   const selectedSearchProvider = computed(() => searchProvider.value)
   const selectedMemoryProvider = computed(() => memoryProvider.value)
@@ -198,8 +198,8 @@ export function useSetupCapabilitiesForm() {
   const imageApiKeyEnvValue = computed(() => imageApiKeyEnv.value)
   const memoryRemoteOptionsOpen = computed(() => memoryProvider.value !== 'auto' || Boolean(memoryModel.value || memoryApiKey.value || memoryApiKeyEnv.value || memoryBaseUrl.value))
   const memoryRemoteOptionsSummary = computed(() => memoryProvider.value === 'auto' ? 'Remote fallback options' : 'Connection options')
-  const memoryModelPlaceholder = computed(() => memoryProvider.value === 'ollama' ? 'nomic-embed-text' : (memoryRemoteControlEnabled.value ? 'text-embedding-3-small' : 'not used by this provider'))
-  const memoryBasePlaceholder = computed(() => memoryProvider.value === 'ollama' ? 'http://localhost:11434' : (memoryRemoteControlEnabled.value ? 'https://api.openai.com/v1' : 'not used by this provider'))
+  const memoryModelPlaceholder = computed(() => memoryProvider.value === 'ollama' ? 'nomic-embed-text' : (memoryRemoteControlEnabled.value ? 'remote-embedding-model' : 'not used by this provider'))
+  const memoryBasePlaceholder = computed(() => memoryProvider.value === 'ollama' ? 'http://localhost:11434' : (memoryRemoteControlEnabled.value ? 'https://api.example.com/v1' : 'not used by this provider'))
   const memoryOnnxPlaceholder = computed(() => memoryLocalControlEnabled.value ? 'models/bge-onnx' : 'only for bundled local provider')
   const memoryApiKeyLabel = computed(() => memoryProvider.value === 'auto' ? 'Fallback API key' : 'API key')
 

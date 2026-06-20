@@ -268,7 +268,7 @@ function onImageProviderSelect(event: Event) {
           </label>
           <label>
             <span>Base URL</span>
-            <input :value="panel.form.imageBaseUrl" name="setup_image_base_url" :placeholder="panel.options.imageSpec?.defaultBaseUrl || 'https://api.openai.com/v1'" @input="emit('updateField', 'image', 'baseUrl', ($event.target as HTMLInputElement).value)">
+            <input :value="panel.form.imageBaseUrl" name="setup_image_base_url" :placeholder="panel.options.imageSpec?.defaultBaseUrl || 'https://api.example.com/v1'" @input="emit('updateField', 'image', 'baseUrl', ($event.target as HTMLInputElement).value)">
           </label>
         </div>
         <label class="setup-check">
@@ -291,12 +291,12 @@ function onImageProviderSelect(event: Event) {
           </label>
           <label>
             <span>API key env</span>
-            <input :value="panel.form.audioApiKeyEnv" name="setup_audio_api_key_env" placeholder="ELEVENLABS_API_KEY" @input="emit('updateField', 'audio', 'apiKeyEnv', ($event.target as HTMLInputElement).value)">
+            <input :value="panel.form.audioApiKeyEnv" name="setup_audio_api_key_env" placeholder="AUDIO_PROVIDER_API_KEY" @input="emit('updateField', 'audio', 'apiKeyEnv', ($event.target as HTMLInputElement).value)">
           </label>
         </div>
         <label class="setup-check">
           <input :checked="panel.form.audioEnabled" name="setup_audio_enabled" type="checkbox" @change="emit('updateField', 'audio', 'enabled', ($event.target as HTMLInputElement).checked)">
-          <span>Enable voice &amp; audio tools (text-to-speech and speech-to-text via ElevenLabs).</span>
+          <span>Enable voice &amp; audio tools (text-to-speech and speech-to-text).</span>
         </label>
         <button class="setup-btn" @click="emit('saveAudio')">Save audio</button>
       </div>

@@ -4,7 +4,7 @@ and ``Agent._run_meta_launch``.
 Part 2 / Task 2 of the meta-skill manual-trigger plan adds a ``meta_launch``
 marker (read at the top of ``_turn_generator`` next to ``meta_resume``) that
 drives a new ``Agent._run_meta_launch(name)`` method. These tests exercise
-``_run_meta_launch`` directly so they need no real LLM/provider calls.
+``_run_meta_launch`` directly so they need no external provider calls.
 
 Isolation strategy (mirrors the spy patterns in
 ``tests/test_skills/test_meta_invoke_tool.py``):

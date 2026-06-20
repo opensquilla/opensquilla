@@ -51,7 +51,7 @@ async def test_meta_no_arg_lists_skills(monkeypatch: pytest.MonkeyPatch) -> None
             }
         }
     )
-    state = ChatSessionState(session_key="agent:main:test", model="openai/test")
+    state = ChatSessionState(session_key="agent:main:test", model="local/test")
 
     handled = await handle_gateway_slash_command(
         "/meta",
@@ -77,7 +77,7 @@ async def test_meta_no_arg_disabled_prints_notice(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(slash_adapter, "console", console)
 
     client = _FakeGatewayClient(responses={"meta.list": {"disabled": True}})
-    state = ChatSessionState(session_key="agent:main:test", model="openai/test")
+    state = ChatSessionState(session_key="agent:main:test", model="local/test")
 
     handled = await handle_gateway_slash_command(
         "/meta",
@@ -124,7 +124,7 @@ async def test_meta_run_ok_triggers_turn(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(slash_adapter, "stream_response_gateway", fake_stream_response_gateway)
 
     client = _FakeGatewayClient(responses={"meta.run": {"ok": True}})
-    state = ChatSessionState(session_key="agent:main:test", model="openai/test")
+    state = ChatSessionState(session_key="agent:main:test", model="local/test")
 
     handled = await handle_gateway_slash_command(
         "/meta meta-tiny",
@@ -166,7 +166,7 @@ async def test_meta_run_not_ok_prints_error_and_skips_turn(
     client = _FakeGatewayClient(
         responses={"meta.run": {"ok": False, "error": "unknown meta-skill: bad"}}
     )
-    state = ChatSessionState(session_key="agent:main:test", model="openai/test")
+    state = ChatSessionState(session_key="agent:main:test", model="local/test")
 
     handled = await handle_gateway_slash_command(
         "/meta bad",

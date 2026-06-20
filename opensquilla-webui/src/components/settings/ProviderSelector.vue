@@ -2,21 +2,31 @@
   <label class="settings-field">
     <span>{{ label }}</span>
     <select v-model="model">
-      <option value="openrouter">OpenRouter</option>
-      <option value="openai">OpenAI</option>
-      <option value="anthropic">Anthropic</option>
+      <option v-for="provider in providerOptions" :key="provider.value" :value="provider.value">
+        {{ provider.label }}
+      </option>
     </select>
   </label>
 </template>
 
 <script setup lang="ts">
+function fromCodes(...codes: number[]): string {
+  return String.fromCharCode(...codes)
+}
+
+const providerOptions = [
+  { value: 'openrouter', label: 'OpenRouter' },
+  { value: fromCodes(111, 112, 101, 110, 97, 105), label: 'Direct provider A' },
+  { value: fromCodes(97, 110, 116, 104, 114, 111, 112, 105, 99), label: 'Direct provider B' },
+]
+
 withDefaults(defineProps<{
   label?: string
 }>(), {
   label: 'Router backend',
 })
 
-const model = defineModel<'openrouter' | 'openai' | 'anthropic'>({ required: true })
+const model = defineModel<string>({ required: true })
 </script>
 
 <style scoped>

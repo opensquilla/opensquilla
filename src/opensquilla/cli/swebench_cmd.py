@@ -17,8 +17,9 @@ swebench_app = typer.Typer(
 )
 
 _INSTALL_HINT = (
-    "SWE-bench support needs optional dependencies. "
-    "Install them with: pip install 'opensquilla[swebench]'"
+    "SWE-bench support needs optional dependencies (swebench, datasets). "
+    "Install them with:  uv sync --extra swebench  "
+    "(or, for a non-uv install:  pip install 'opensquilla[swebench]')"
 )
 
 
@@ -56,27 +57,55 @@ def _docker_install_hint() -> str:
 def _require_docker() -> None:
     """Preflight: SWE-bench runs official Docker images. Guide install if missing.
 
-    Rather than dead-ending, tell the user exactly what to install so they
-    can come back and run it.
+    Checks two things, because "installed" is not "usable":
+    1. the ``docker`` CLI is on PATH, and
+    2. the Docker daemon is actually reachable (``docker info``) — Docker
+       Desktop is commonly installed but not started, which otherwise fails
+       later with a cryptic daemon-connection error.
+
+    Rather than dead-ending, tell the user exactly what to install/start so
+    they can come back and run it.
     """
     import shutil
+    import subprocess
 
-    if shutil.which("docker") is not None:
-        return
-    typer.secho(
-        "SWE-bench mode needs the Docker CLI to run the official evaluation "
-        "images, but `docker` was not found on PATH.",
-        err=True,
-        fg=typer.colors.RED,
-    )
-    typer.secho(_docker_install_hint(), err=True, fg=typer.colors.YELLOW)
-    typer.secho(
-        "Tip: to solve a real-repository coding task WITHOUT Docker, use "
-        "`opensquilla code-task` instead.",
-        err=True,
-        fg=typer.colors.BLUE,
-    )
-    raise typer.Exit(2)
+    if shutil.which("docker") is None:
+        typer.secho(
+            "SWE-bench mode needs the Docker CLI to run the official evaluation "
+            "images, but `docker` was not found on PATH.",
+            err=True,
+            fg=typer.colors.RED,
+        )
+        typer.secho(_docker_install_hint(), err=True, fg=typer.colors.YELLOW)
+        typer.secho(
+            "Tip: to solve a real-repository coding task WITHOUT Docker, use "
+            "`opensquilla code-task` instead.",
+            err=True,
+            fg=typer.colors.BLUE,
+        )
+        raise typer.Exit(2)
+
+    # Docker is installed — is the daemon running? `docker info` talks to it.
+    try:
+        proc = subprocess.run(
+            ["docker", "info"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        daemon_ok = proc.returncode == 0
+    except (subprocess.TimeoutExpired, OSError):
+        daemon_ok = False
+    if not daemon_ok:
+        typer.secho(
+            "Docker is installed but its daemon is not reachable — start Docker "
+            "Desktop (or the docker service) and wait for it to be ready, then "
+            "re-run.",
+            err=True,
+            fg=typer.colors.RED,
+        )
+        typer.secho(_docker_install_hint(), err=True, fg=typer.colors.YELLOW)
+        raise typer.Exit(2)
 
 
 @swebench_app.command("solve")

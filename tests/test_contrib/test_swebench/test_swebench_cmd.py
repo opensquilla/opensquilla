@@ -13,16 +13,28 @@ cli_runner = CliRunner()
 
 @pytest.fixture
 def docker_present(monkeypatch):
-    """Stub `docker` as installed so the preflight does not mask the assertion.
+    """Stub `docker` as installed AND its daemon as reachable, so the preflight
+    does not mask the assertion.
 
-    The docker preflight runs first in solve/eval/pull; without this, the
-    optional-dependency tests below would assert the docker hint on a
+    The docker preflight runs first in solve/eval/pull and now checks both that
+    the CLI is on PATH and that `docker info` succeeds; without stubbing both,
+    the optional-dependency tests below would assert the docker hint on a
     Dockerless machine (codex review).
     """
+    import subprocess
+
     real_which = shutil.which
     monkeypatch.setattr(
         shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else real_which(name)
     )
+    real_run = subprocess.run
+
+    def fake_run(argv, *a, **k):
+        if argv[:2] == ["docker", "info"]:
+            return subprocess.CompletedProcess(argv, 0, "Server: ok", "")
+        return real_run(argv, *a, **k)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
 
 
 def test_missing_docker_guides_install_not_dead_end(monkeypatch):
@@ -35,6 +47,27 @@ def test_missing_docker_guides_install_not_dead_end(monkeypatch):
     assert "docker" in out
     assert "install" in out or "get-docker" in out or "get.docker" in out
     assert "code-task" in result.output
+
+
+def test_docker_installed_but_daemon_down_guides_start(monkeypatch):
+    # Docker CLI present but daemon unreachable (`docker info` fails) — the
+    # preflight must say to START Docker, not pass and fail cryptically later.
+    import subprocess
+
+    monkeypatch.setattr(
+        shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None
+    )
+
+    def fake_run(argv, *a, **k):
+        if argv[:2] == ["docker", "info"]:
+            return subprocess.CompletedProcess(argv, 1, "", "Cannot connect to the Docker daemon")
+        raise AssertionError(f"unexpected run: {argv}")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = cli_runner.invoke(swebench_app, ["solve", "django__django-16429"])
+    assert result.exit_code == 2
+    out = result.output.lower()
+    assert "daemon" in out and "start docker" in out
 
 
 def test_help_runs_without_optional_deps():

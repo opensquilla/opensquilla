@@ -1,4 +1,4 @@
-# OpenSquilla MetaSkill User Guide
+﻿# OpenSquilla MetaSkill User Guide
 
 MetaSkill lets OpenSquilla move from figuring out complex work from scratch on
 every turn to reusable, triggerable, auditable, and improvable task protocols.
@@ -75,12 +75,12 @@ A strong MetaSkill request contains four things:
 Example:
 
 ```text
-Use meta-skill `meta-document-to-decision`.
+Use meta-skill `meta-paper-write`.
 
-I need a decision memo, not a generic explanation.
-Use only the contract terms I pasted unless you can cite sources.
-Separate facts, assumptions, risks, and next actions.
-Do not invent missing dates, and do not sign or send anything for me.
+I need a compact workshop-paper skeleton, not a generic essay.
+Mark citation and experiment placeholders clearly.
+Separate claims, assumptions, and missing evidence.
+Do not invent completed experiments or verified sources.
 ```
 
 The user defines the target and standard; OpenSquilla organizes the execution.
@@ -91,15 +91,10 @@ The retained built-in MetaSkills cover a focused set of high-value task classes.
 
 | MetaSkill | Positioning |
 | --- | --- |
-| `meta-competitive-intel` | Turns account or competitor signals into sales, BD, or competitive-intel briefs. |
-| `meta-daily-operator-brief` | Turns today/tomorrow tasks, context, and constraints into an operating brief. |
-| `meta-document-to-decision` | Turns contracts, quotes, renewals, notices, or spreadsheets into sign, reject, or negotiate decisions. |
-| `meta-job-search-pipeline` | Turns a JD, resume, and application goal into an application package and interview prep. |
 | `meta-kid-project-planner` | Produces safe, age-appropriate plans for school projects, show-and-tell, or science activities. |
 | `meta-paper-write` | Supports academic drafts, manuscript structure, citation planning, experiment placeholders, and LaTeX/PDF paths. |
 | `meta-short-drama` | Produces short-drama scripts, visual prompts, video assembly plans, subtitles, and rendered local video artifacts. |
 | `meta-skill-creator` | Turns repeated multi-skill collaboration patterns into new MetaSkill proposals. |
-| `meta-web-research-to-report` | Turns source-backed research needs into reports, briefs, or decision memos. |
 
 These are designed around quality over quantity. Immature, duplicate, or
 single-skill wrapper MetaSkills should not remain in the bundled catalog.
@@ -131,8 +126,8 @@ Common setup surfaces:
 Describe the outcome directly:
 
 ```text
-Research whether my parents should use a travel eSIM, carrier roaming, or a
-local SIM for an 8-day Japan trip, and produce a source-backed decision memo.
+Draft a compact research paper skeleton on retrieval-augmented generation for
+customer-support knowledge bases, with citation and experiment placeholders.
 ```
 
 OpenSquilla selects the appropriate MetaSkill based on current intent. This is
@@ -145,10 +140,10 @@ stable.
 Name the capability:
 
 ```text
-Use meta-skill `meta-web-research-to-report`.
+Use meta-skill `meta-paper-write`.
 
-Research whether my parents should use a travel eSIM, carrier roaming, or a
-local SIM for an 8-day Japan trip, and produce a source-backed decision memo.
+Draft a compact research paper skeleton on retrieval-augmented generation for
+customer-support knowledge bases, with citation and experiment placeholders.
 ```
 
 This is best for important, expensive, or easily confused tasks.
@@ -171,16 +166,15 @@ Do not:
 Example:
 
 ```text
-Use meta-skill `meta-document-to-decision`.
+Use meta-skill `meta-paper-write`.
 
-Outcome: decide whether to sign, reject, or negotiate this vendor renewal.
-Context: annual fee RMB 18,600; payment due June 3; auto-renewal unless
-cancelled 30 days before renewal; 30% penalty after the notice window.
-Decision standard: include an evidence table, risks, vendor questions, and next
-24-hour actions.
-Expected output: a decision memo I can forward to my manager.
-Constraints: use only the terms I provided; do not invent missing dates.
-Do not: sign, send, or commit payment for me.
+Outcome: draft a compact workshop-paper skeleton.
+Context: the topic is local-first agent orchestration.
+Decision standard: include section structure, citation plan, and experiment
+placeholders.
+Expected output: a LaTeX-ready outline I can review.
+Constraints: mark unverified citations as placeholders.
+Do not: invent completed experiments or verified sources.
 ```
 
 Useful constraints:
@@ -193,176 +187,6 @@ Useful constraints:
 
 ## Built-In MetaSkill Usage Patterns
 
-### `meta-web-research-to-report`
-
-Use for source-backed research deliverables.
-
-Good fit:
-
-- decision memo with sources;
-- market or technical brief;
-- option comparison;
-- search-backed recommendation.
-
-Poor fit:
-
-- one-off fact lookup;
-- generic advice;
-- academic paper writing;
-- simple translation or summarization.
-
-High-quality request:
-
-```text
-Use meta-skill `meta-web-research-to-report`.
-
-Research whether my parents should use a travel eSIM, carrier roaming, or a
-local SIM for an 8-day Japan trip. They mainly need messaging, maps,
-translation, and occasional video calls. They are not comfortable changing phone
-settings.
-
-Give me:
-- key findings with sources
-- option comparison
-- risks
-- recommendation
-- what I should order tonight
-```
-
-Expected result: key findings, sources or source limits, option comparison,
-risks, recommendation, and next action.
-
-### `meta-document-to-decision`
-
-Use when documents must become a decision, not merely a summary.
-
-Good fit:
-
-- vendor renewal;
-- contract excerpt;
-- quote;
-- payment or cancellation-window risk;
-- sign, reject, or negotiate decision.
-
-High-quality request:
-
-```text
-Use meta-skill `meta-document-to-decision`.
-
-I need to decide tomorrow whether to sign this vendor renewal. Key terms:
-annual fee RMB 18,600, payment due June 3, auto-renewal unless cancelled 30 days
-before renewal, and a 30% penalty after the notice window.
-
-Give me:
-- sign, reject, or negotiate recommendation
-- evidence table
-- risks
-- vendor questions
-- next 24-hour actions
-
-Do not invent missing dates.
-```
-
-Expected result: decision-support material, not a plain document recap.
-
-### `meta-competitive-intel`
-
-Use for account or competitor monitoring, not generic company research.
-
-Good fit:
-
-- competitor monitoring;
-- account signal tracking;
-- baseline comparison;
-- sales, BD, or competitive-intel follow-up.
-
-High-quality request:
-
-```text
-Use meta-skill `meta-competitive-intel`.
-
-Monitor ByteDance and Xiaohongshu for the last 30 days. Compare product,
-pricing, hiring, partnerships, leadership, funding, and news signals against
-this baseline: last month ByteDance had no visible pricing change and
-Xiaohongshu was hiring for merchant tooling.
-
-Give me:
-- signal table
-- changes against baseline
-- source limits
-- high, medium, or low urgency
-- who I should follow up with today
-```
-
-Expected result: account- and dimension-structured output, not a generic company
-profile.
-
-### `meta-daily-operator-brief`
-
-Use when a day needs to become an actionable operating brief.
-
-Good fit:
-
-- morning brief;
-- today/tomorrow plan;
-- task priority;
-- time blocks;
-- follow-up list;
-- weather or commute caveats.
-
-High-quality request:
-
-```text
-Use meta-skill `meta-daily-operator-brief`.
-
-Build my morning brief for today. I have a customer demo at 15:00, finance needs
-my reimbursement answer before 11:30, HR asked about interview timing, and my
-boss asked me yesterday to finish the router evaluation sheet. I am in Shanghai.
-
-Give me:
-- top three priorities
-- time blocks
-- risks
-- follow-ups
-- weather or commute caveats
-- assumptions
-```
-
-Expected result: an operating brief, not generic productivity advice.
-
-### `meta-job-search-pipeline`
-
-Use when job-search material needs to become application-ready.
-
-Good fit:
-
-- tailoring a resume to a JD;
-- cover note;
-- interview prep;
-- role-fit analysis;
-- application tracker review.
-
-High-quality request:
-
-```text
-Use meta-skill `meta-job-search-pipeline`.
-
-Tailor my resume to this Product Operations Manager role. The JD focuses on
-merchant tooling, KPI dashboards, launch coordination, and cross-functional
-execution. My resume includes internal operations dashboards, beta launches, and
-sales/support collaboration.
-
-Give me:
-- rewritten resume bullets
-- cover note
-- interview prep
-- gaps I should explain
-
-Do not auto-apply.
-```
-
-Expected result: application preparation, with no claim that the application was
-submitted.
 
 ### `meta-kid-project-planner`
 
@@ -436,6 +260,37 @@ Keep it compact first. Do not write a full manuscript unless I ask.
 
 Expected result: a paper-shaped deliverable, not a generic essay. Citations
 should not be presented as verified sources unless actually verified.
+
+### `meta-short-drama`
+
+Use for short-drama generation workflows that need script, visual prompts,
+clip assembly, subtitles, and a local video artifact.
+
+Good fit:
+
+- short-drama production request;
+- shot list and image prompt planning;
+- consistent character setup;
+- subtitle burn-in;
+- final local MP4 assembly.
+
+High-quality request:
+
+```text
+Use meta-skill `meta-short-drama`.
+
+Create a five-shot short drama about a delivery rider discovering a hidden note
+inside a returned package. Keep the tone warm and suspenseful.
+
+Give me:
+- shot-by-shot script
+- character identity notes
+- visual prompt plan
+- subtitle-ready dialogue
+- final video artifact if generation is available
+```
+
+Expected result: a production workflow, not just a script idea.
 
 ### `meta-skill-creator`
 
@@ -566,4 +421,4 @@ For the authoring protocol, read [`../authoring/meta-skills.md`](../authoring/me
 
 ---
 
-[Docs index](../README.md) · [Product guide](../../README.product.md) · [Improve this page](../contributing-docs.md) · [Report a docs issue](https://github.com/opensquilla/opensquilla/issues/new?template=docs_report.yml)
+[Docs index](../README.md) 路 [Product guide](../../README.product.md) 路 [Improve this page](../contributing-docs.md) 路 [Report a docs issue](https://github.com/opensquilla/opensquilla/issues/new?template=docs_report.yml)

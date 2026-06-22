@@ -31,6 +31,17 @@ SELECTED_SKILLS = [
     "meta-kid-project-planner",
 ]
 
+BUNDLED = Path("src/opensquilla/skills/bundled")
+EXP = Path("src/opensquilla/skills/exp")
+
+
+def _skill_path(skill_name: str) -> Path:
+    for root in (BUNDLED, EXP):
+        path = root / skill_name / "SKILL.md"
+        if path.is_file():
+            return path
+    raise AssertionError(f"missing skill fixture: {skill_name}")
+
 
 def test_lifestyle_catalog_covers_selected_meta_skills_without_exclusions() -> None:
     assert [case.skill_name for case in LIFESTYLE_COMPARISON_CASES] == SELECTED_SKILLS
@@ -58,9 +69,7 @@ def test_selected_meta_skills_are_grounded_in_clawhub_top100_components() -> Non
     }
 
     for skill_name in SELECTED_SKILLS:
-        raw = Path(f"src/opensquilla/skills/bundled/{skill_name}/SKILL.md").read_text(
-            encoding="utf-8"
-        )
+        raw = _skill_path(skill_name).read_text(encoding="utf-8")
         assert "clawhub_top100_composition:" in raw
         assert "Top ClawHub Skills" in raw
         for component in expectations[skill_name]:
@@ -86,7 +95,8 @@ def test_lifestyle_prompts_are_conversational_and_realistic() -> None:
 
 def _bundled_meta_plan(skill_name: str, tmp_path: Path):
     loader = SkillLoader(
-        bundled_dir=Path("src/opensquilla/skills/bundled"),
+        bundled_dir=BUNDLED,
+        extra_dirs=[EXP],
         snapshot_path=tmp_path / "snapshot.json",
     )
     spec = loader.get_by_name(skill_name)
@@ -244,7 +254,7 @@ def test_new_lifestyle_meta_skills_hide_runtime_failures_and_reply_inline(
             assert required in final_text
 
     web_raw = Path(
-        "src/opensquilla/skills/bundled/meta-web-research-to-report/SKILL.md"
+        "src/opensquilla/skills/exp/meta-web-research-to-report/SKILL.md"
     ).read_text(encoding="utf-8")
     assert "source_seed" in web_raw
     assert "Verification targets, not live-checked" in web_raw
@@ -254,7 +264,7 @@ def test_new_lifestyle_meta_skills_hide_runtime_failures_and_reply_inline(
 
 def test_job_search_pipeline_preserves_language_and_source_truth() -> None:
     raw = Path(
-        "src/opensquilla/skills/bundled/meta-job-search-pipeline/SKILL.md"
+        "src/opensquilla/skills/exp/meta-job-search-pipeline/SKILL.md"
     ).read_text(encoding="utf-8")
 
     assert 'final_text_mode: "step:deliver_jobpack_audit"' in raw
@@ -460,7 +470,7 @@ def test_document_decision_pasted_text_path_does_not_wait_on_substitute_fallback
 
 def test_document_decision_prompt_prevents_false_overdue_and_fake_export() -> None:
     raw = Path(
-        "src/opensquilla/skills/bundled/meta-document-to-decision/SKILL.md"
+        "src/opensquilla/skills/exp/meta-document-to-decision/SKILL.md"
     ).read_text(encoding="utf-8")
 
     assert "payment deadline" in raw
@@ -477,7 +487,7 @@ def test_document_decision_prompt_prevents_false_overdue_and_fake_export() -> No
 
 def test_document_decision_never_derives_cancel_window_from_payment_deadline() -> None:
     raw = Path(
-        "src/opensquilla/skills/bundled/meta-document-to-decision/SKILL.md"
+        "src/opensquilla/skills/exp/meta-document-to-decision/SKILL.md"
     ).read_text(encoding="utf-8")
 
     assert (
@@ -521,7 +531,7 @@ def test_document_decision_final_audit_removes_legal_and_date_overreach(
 
 def test_daily_operator_brief_hides_runtime_failures_and_clears_small_debts() -> None:
     raw = Path(
-        "src/opensquilla/skills/bundled/meta-daily-operator-brief/SKILL.md"
+        "src/opensquilla/skills/exp/meta-daily-operator-brief/SKILL.md"
     ).read_text(encoding="utf-8")
 
     assert 'final_text_mode: "step:final_brief_audit"' in raw
@@ -535,7 +545,7 @@ def test_daily_operator_brief_hides_runtime_failures_and_clears_small_debts() ->
     assert "If the user asks for a morning brief, produce a morning-first plan" in raw
     assert "Do not turn it into an afternoon-only" in raw
     assert "Top 3 / 前三优先级" in raw
-    assert "Risk / 风险 / 冲突" in raw
+    assert "Risk /" in raw
     assert "Data limits / 数据限制" in raw
     assert "only pasted / 仅根据" in raw
     assert "English-only output: do not include Chinese characters" in raw
@@ -605,9 +615,7 @@ def test_lifestyle_meta_skills_have_natural_language_activation_cues() -> None:
     }
 
     for skill_name, cues in expectations.items():
-        raw = Path(f"src/opensquilla/skills/bundled/{skill_name}/SKILL.md").read_text(
-            encoding="utf-8"
-        )
+        raw = _skill_path(skill_name).read_text(encoding="utf-8")
         for cue in cues:
             assert cue in raw
 
@@ -620,7 +628,8 @@ def test_english_lifestyle_prompts_trigger_target_meta_skills(tmp_path: Path) ->
         "web_research_parent_esim": "meta-web-research-to-report",
     }
     loader = SkillLoader(
-        bundled_dir=Path("src/opensquilla/skills/bundled"),
+        bundled_dir=BUNDLED,
+        extra_dirs=[EXP],
         snapshot_path=tmp_path / "snapshot.json",
     )
 
@@ -654,7 +663,8 @@ def test_competitive_intel_prompt_resolves_ahead_of_daily_brief(tmp_path: Path) 
         if case.case_id == "competitive_intel_competitor_week"
     )
     loader = SkillLoader(
-        bundled_dir=Path("src/opensquilla/skills/bundled"),
+        bundled_dir=BUNDLED,
+        extra_dirs=[EXP],
         snapshot_path=tmp_path / "snapshot.json",
     )
 

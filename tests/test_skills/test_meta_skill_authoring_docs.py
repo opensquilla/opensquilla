@@ -23,14 +23,10 @@ def test_meta_skill_user_guide_contains_user_contract_and_retained_catalog() -> 
         "Avoiding Accidental Activation",
         "Reading the Result",
         "Correcting a Bad Run",
-        "meta-competitive-intel",
-        "meta-daily-operator-brief",
-        "meta-document-to-decision",
-        "meta-job-search-pipeline",
         "meta-kid-project-planner",
         "meta-paper-write",
+        "meta-short-drama",
         "meta-skill-creator",
-        "meta-web-research-to-report",
     ]
     for snippet in required_snippets:
         assert snippet in text

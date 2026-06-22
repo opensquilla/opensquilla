@@ -182,6 +182,7 @@ def test_competitive_intel_description_avoids_single_company_research_pull(
 ) -> None:
     loader = SkillLoader(
         bundled_dir=BUNDLED,
+        extra_dirs=[EXP],
         snapshot_path=tmp_path / "competitive-intel-description-snap.json",
     )
     loader.invalidate_cache()

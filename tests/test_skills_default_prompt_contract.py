@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,15 +34,10 @@ DEFAULTS = {
     "http-fetch",
     "latex-compile",
     "memory",
-    "meta-competitive-intel",
-    "meta-daily-operator-brief",
-    "meta-document-to-decision",
-    "meta-job-search-pipeline",
     "meta-kid-project-planner",
     "meta-paper-write",
     "meta-short-drama",
     "meta-skill-creator",
-    "meta-web-research-to-report",
     "multi-search-engine",
     "nano-banana-pro",
     "nano-pdf",
@@ -85,32 +80,9 @@ INTERNAL_HELPERS = {
 }
 STABLE_META_BOUNDARY_CASES = [
     (
-        "meta-competitive-intel",
-        "Build a competitive intelligence brief for these two named competitors.",
-        (
-            "inception labs,创始团队和核心员工有哪些？现在估值，"
-            "核心技术路线和进展是啥？然后每一轮交割大概节奏和估值股东等信息列出来。"
-        ),
-    ),
-    (
-        "meta-daily-operator-brief",
-        "Create my daily operating brief from calendar, tasks, weather, and open loops.",
-        "Today plan: remind me to call Alex at 4pm.",
-    ),
-    (
-        "meta-document-to-decision",
-        "Analyze this contract excerpt for a decision: sign, reject, or negotiate.",
-        "Summarize this contract excerpt generally; I am not deciding whether to sign.",
-    ),
-    (
-        "meta-job-search-pipeline",
-        "Tailor my resume to this job using the pasted JD and build a job application pack.",
-        "Give me career advice and better resume tips in general, without a target role.",
-    ),
-    (
         "meta-kid-project-planner",
         "Help my kid build a child science fair school project with safe materials.",
-        "帮我设计一个成人手工 logo 展示方案，不是孩子作业。",
+        "Help me design an adult craft logo display, not a child school project.",
     ),
     (
         "meta-paper-write",
@@ -126,11 +98,6 @@ STABLE_META_BOUNDARY_CASES = [
         "meta-skill-creator",
         "Create a meta-skill that orchestrates existing skills for PDF digest workflows.",
         "Create a normal standalone skill, not a meta-skill.",
-    ),
-    (
-        "meta-web-research-to-report",
-        "Write a cited research report with sources, key findings, and risks.",
-        "Who founded Inception Labs? Just answer briefly, no report.",
     ),
 ]
 
@@ -227,6 +194,7 @@ async def test_default_prompt_only_injects_retained_bundled_skills(
                 "curl": True,
                 "ffmpeg": True,
                 "ffprobe": True,
+                "gh": True,
                 "xelatex": True,
                 "nano-pdf": True,
                 "python": True,
@@ -264,66 +232,18 @@ async def test_default_prompt_prefers_matching_meta_skills_over_direct_answers(
     assert "multi-skill orchestration" in prompt
 
 
-@pytest.mark.asyncio
-async def test_hybrid_filter_hides_competitive_intel_for_single_company_profile(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    loader = SkillLoader(bundled_dir=BUNDLED, snapshot_path=tmp_path / "snapshot.json")
-    prompt = (
-        "inception labs,创始团队和核心员工有哪些？现在估值，"
-        "核心技术路线和进展是啥？然后每一轮交割大概节奏和"
-        "估值股东等信息列出来。"
-    )
-
-    class FakeRetriever:
-        def retrieve(self, skills, query: str, top_k: int = 5):
-            assert query == prompt
-            by_name = {s.name: s for s in skills}
-            return [
-                by_name["meta-competitive-intel"],
-                by_name["meta-web-research-to-report"],
-            ][:top_k]
-
-    monkeypatch.setattr(skills_filter_step, "_get_retriever", lambda _cfg: FakeRetriever())
-
-    ctx = await filter_skills(
-        _ctx(
-            loader,
-            message=prompt,
-            skills_config=SimpleNamespace(
-                filter_enabled=True,
-                filter_top_k=5,
-                filter_strategy="hybrid",
-                filter_lexical_top_n=20,
-                filter_semantic_top_n=20,
-                filter_rrf_k=60,
-                filter_embedding_model="BAAI/bge-small-zh-v1.5",
-                max_skills_prompt_chars=100_000,
-                injection_mode="system",
-            ),
-        )
-    )
-
-    assert "meta-competitive-intel" not in ctx.metadata["filtered_skill_ids"]
-    assert "meta-web-research-to-report" in ctx.metadata["filtered_skill_ids"]
-
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("skill_name", "prompt"),
     [
         (
-            "meta-daily-operator-brief",
-            "Today plan: remind me to call Alex at 4pm.",
-        ),
-        (
             "meta-short-drama",
             "Write a short script idea, not a video or MP4.",
         ),
         (
             "meta-kid-project-planner",
-            "帮我设计一个成人手工 logo 展示方案，不是孩子作业。",
+            "Help me design an adult craft logo display, not a child school project.",
         ),
     ],
 )

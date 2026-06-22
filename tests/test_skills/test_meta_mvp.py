@@ -947,10 +947,11 @@ async def test_orchestrator_refuses_meta_inside_meta() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_bundled_sample_loads(tmp_path: Path) -> None:
+def test_experimental_report_sample_loads(tmp_path: Path) -> None:
     bundled = Path(__file__).resolve().parents[2] / "src" / "opensquilla" / "skills" / "bundled"
+    exp = Path(__file__).resolve().parents[2] / "src" / "opensquilla" / "skills" / "exp"
     snapshot = tmp_path / "snap.json"
-    loader = SkillLoader(bundled_dir=bundled, snapshot_path=snapshot)
+    loader = SkillLoader(bundled_dir=bundled, extra_dirs=[exp], snapshot_path=snapshot)
     loader.invalidate_cache()
     specs = {s.name: s for s in loader.load_all()}
     meta = specs.get("meta-web-research-to-report")
@@ -3134,12 +3135,14 @@ async def test_drain_agent_runner_uses_done_event_text_when_deltas_absent() -> N
     assert result.step_outputs["a"] == "final answer from done"
 
 
-def test_bundled_competitive_intel_has_quality_gate_and_exports() -> None:
+def test_experimental_competitive_intel_has_quality_gate_and_exports() -> None:
     bundled = Path(__file__).resolve().parents[2] / "src" / "opensquilla" / "skills" / "bundled"
-    skill_path = bundled / "meta-competitive-intel" / "SKILL.md"
+    exp = Path(__file__).resolve().parents[2] / "src" / "opensquilla" / "skills" / "exp"
+    skill_path = exp / "meta-competitive-intel" / "SKILL.md"
     assert skill_path.is_file()
     loader = SkillLoader(
         bundled_dir=bundled,
+        extra_dirs=[exp],
         snapshot_path=Path("/tmp/_competitive_intel_snap.json"),
     )
     loader.invalidate_cache()

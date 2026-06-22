@@ -25,15 +25,10 @@ The retained stable catalog is intentionally small:
 
 | MetaSkill | Positioning |
 | --- | --- |
-| `meta-competitive-intel` | Turns account or competitor signals into sales, BD, or competitive-intel briefs. |
-| `meta-daily-operator-brief` | Turns today's tasks, context, and constraints into an operating brief. |
-| `meta-document-to-decision` | Turns contracts, quotes, renewals, notices, or spreadsheets into sign, reject, or negotiate decisions. |
-| `meta-job-search-pipeline` | Turns a JD, resume, and application goal into an application package and interview prep. |
 | `meta-kid-project-planner` | Produces safe, age-appropriate plans for school projects, show-and-tell, or science activities. |
 | `meta-paper-write` | Supports academic drafts, manuscript structure, citation planning, experiment placeholders, and LaTeX/PDF paths. |
 | `meta-short-drama` | Produces short-drama scripts, visual prompts, subtitles, and local video artifacts. |
 | `meta-skill-creator` | Turns repeated multi-skill collaboration patterns into new MetaSkill proposals. |
-| `meta-web-research-to-report` | Turns source-backed research needs into reports, briefs, or decision memos. |
 
 Experimental meta-skills may exist under development trees, but this page lists
 only bundled built-ins that should be presented as retained product
@@ -64,10 +59,10 @@ recommendation, and what I should order tonight.
 For important or easily confused work, name the workflow:
 
 ```text
-Use meta-skill `meta-web-research-to-report`.
+Use meta-skill `meta-paper-write`.
 
-Create a source-backed decision memo comparing travel eSIM, carrier roaming,
-and local SIM options for my parents' 8-day Japan trip.
+Draft a workshop paper about local-first agent orchestration with citation
+planning, a clear experiment placeholder section, and a LaTeX-ready outline.
 ```
 
 A strong request usually includes:

@@ -128,12 +128,10 @@ Bundled user-facing skills include:
 - `sub-agent`
 - `skill-creator`
 
-Retained bundled MetaSkills include `meta-competitive-intel`,
-`meta-daily-operator-brief`, `meta-document-to-decision`,
-`meta-job-search-pipeline`, `meta-kid-project-planner`, `meta-paper-write`,
-`meta-skill-creator`, and `meta-web-research-to-report`. Experimental
-MetaSkills may exist in development trees, but they are not presented as stable
-built-in product capabilities.
+Retained bundled MetaSkills include `meta-kid-project-planner`,
+`meta-paper-write`, `meta-short-drama`, and `meta-skill-creator`.
+Experimental MetaSkills may exist in development trees, but they are not
+presented as stable built-in product capabilities.
 
 Read: [`features/skills.md`](features/skills.md)
 

@@ -33,12 +33,12 @@ VERIFICATION (the runner re-checks with the FIXED build checklist -- keep it gre
 After your change, the runner runs from the repo root:
     npm ci
     npm run build
-    npx electron-builder        # host target: --mac (.dmg) on macOS, --linux --dir on Linux
+    npx electron-builder        # host OS installer: --mac (.dmg) / --win (.exe) / --linux (.AppImage/.deb)
 So:
 - If you added an npm package, install it and make sure BOTH package.json and
   package-lock.json are updated and consistent (the runner uses `npm ci`).
 - Make sure `npm run build` still type-checks and builds with NO errors; optionally
-  run electron-builder for your platform (`--mac` / `--linux --dir`) to confirm packaging.
+  run electron-builder for the host OS (`--mac` / `--win` / `--linux`) to confirm packaging.
 - Do NOT commit node_modules, out, or dist.
 
 COMMIT

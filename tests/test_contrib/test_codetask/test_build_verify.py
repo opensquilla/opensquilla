@@ -33,18 +33,20 @@ def test_missing_lockfile_is_environment_blocked(tmp_path):
 
 
 def test_all_checks_pass_is_verified(tmp_path, monkeypatch):
-    # Pin a non-darwin host so this exercises the platform-agnostic
-    # "all checks pass -> VERIFIED" path deterministically. The darwin path
-    # (which additionally requires a produced .dmg) is covered separately by
-    # test_darwin_package_with_dmg_is_verified / _without_dmg_is_failed.
+    # Pin a deterministic host (linux) and provide its installer, exercising the
+    # "all checks pass + installer present -> VERIFIED" path. Every platform now
+    # requires its own installer; per-platform cases are covered below.
     monkeypatch.setattr(build_verify.sys, "platform", "linux")
     repo = _make_repo(tmp_path)
+    (repo / "dist").mkdir()
+    (repo / "dist" / "app-1.0.0.AppImage").write_text("y")
     monkeypatch.setattr(build_verify.subprocess, "run", lambda *a, **k: _FakeProc(0, "ok"))
     out = build_verify.verify_build(repo)
     assert out.state is TaskState.VERIFIED
     assert out.build.all_passed is True
     assert [c.name for c in out.build.checks] == ["npm_ci", "build", "package"]
     assert all(c.ok and c.ran for c in out.build.checks)
+    assert out.build.installer_path.endswith("app-1.0.0.AppImage")
 
 
 def test_npm_ci_failure_is_environment_blocked_and_stops_early(tmp_path, monkeypatch):
@@ -105,20 +107,44 @@ def test_command_not_found_is_recorded(tmp_path, monkeypatch):
 def test_package_step_is_mac_dmg_on_darwin(monkeypatch):
     monkeypatch.setattr(build_verify.sys, "platform", "darwin")
     name, argv = build_verify._package_step()
-    assert name == "package" and "--mac" in argv
+    assert name == "package" and "--mac" in argv and "dmg" in argv
 
 
-def test_package_step_is_linux_dir_off_darwin(monkeypatch):
+def test_package_step_is_linux_appimage_on_linux(monkeypatch):
+    # Linux builds a real, tooling-free installer (AppImage), not just --dir.
     monkeypatch.setattr(build_verify.sys, "platform", "linux")
     name, argv = build_verify._package_step()
-    assert "--linux" in argv and "--dir" in argv
+    assert "--linux" in argv and "AppImage" in argv and "--dir" not in argv
 
 
-def test_find_installers_empty_off_darwin(tmp_path, monkeypatch):
+def test_package_step_is_win_nsis_on_win32(monkeypatch):
+    monkeypatch.setattr(build_verify.sys, "platform", "win32")
+    name, argv = build_verify._package_step()
+    assert name == "package" and "--win" in argv and "nsis" in argv
+
+
+def test_find_installers_finds_appimage_and_deb_on_linux(tmp_path, monkeypatch):
     monkeypatch.setattr(build_verify.sys, "platform", "linux")
     (tmp_path / "dist").mkdir()
-    (tmp_path / "dist" / "x.dmg").write_text("y")
-    assert build_verify._find_installers(tmp_path) == []
+    (tmp_path / "dist" / "app-1.0.0.AppImage").write_text("y")
+    (tmp_path / "dist" / "app_1.0.0_amd64.deb").write_text("y")
+    (tmp_path / "dist" / "app-1.0.0.dmg").write_text("y")  # wrong platform: ignore
+    got = build_verify._find_installers(tmp_path)
+    assert len(got) == 2
+    assert any(p.endswith(".AppImage") for p in got)
+    assert any(p.endswith(".deb") for p in got)
+    assert not any(p.endswith(".dmg") for p in got)
+
+
+def test_find_installers_finds_exe_and_skips_unpacked_on_win(tmp_path, monkeypatch):
+    monkeypatch.setattr(build_verify.sys, "platform", "win32")
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist" / "App Setup 1.0.0.exe").write_text("y")  # the installer
+    unpacked = tmp_path / "dist" / "win-unpacked"
+    unpacked.mkdir()
+    (unpacked / "App.exe").write_text("y")  # raw app exe — must NOT be picked up
+    got = build_verify._find_installers(tmp_path)
+    assert got == [str(tmp_path / "dist" / "App Setup 1.0.0.exe")]
 
 
 def test_find_installers_lists_all_dmgs_on_darwin(tmp_path, monkeypatch):
@@ -150,13 +176,13 @@ def test_find_installers_ignores_node_modules_dmgs(tmp_path, monkeypatch):
     assert got == [str(tmp_path / "release" / "real.dmg")]
 
 
-def test_darwin_clean_package_without_dmg_is_failed(tmp_path, monkeypatch):
+def test_clean_package_without_installer_is_failed(tmp_path, monkeypatch):
     repo = _make_repo(tmp_path)
     monkeypatch.setattr(build_verify.sys, "platform", "darwin")
     monkeypatch.setattr(build_verify.subprocess, "run", lambda *a, **k: _FakeProc(0, "ok"))
-    out = build_verify.verify_build(repo)  # all steps exit 0 but dist/ has no .dmg
+    out = build_verify.verify_build(repo)  # all steps exit 0 but no installer
     assert out.state is TaskState.FAILED
-    assert "no .dmg" in out.detail
+    assert "no installer" in out.detail
     assert out.build.all_passed is False
 
 
@@ -170,3 +196,25 @@ def test_darwin_package_with_dmg_is_verified(tmp_path, monkeypatch):
     assert out.state is TaskState.VERIFIED
     assert out.build.installer_path.endswith("app-1.0.0.dmg")
     assert out.build.installer_paths == [out.build.installer_path]
+
+
+def test_win_package_with_exe_is_verified(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path)
+    monkeypatch.setattr(build_verify.sys, "platform", "win32")
+    monkeypatch.setattr(build_verify.subprocess, "run", lambda *a, **k: _FakeProc(0, "ok"))
+    (repo / "dist").mkdir()
+    (repo / "dist" / "App Setup 1.0.0.exe").write_text("y")
+    out = build_verify.verify_build(repo)
+    assert out.state is TaskState.VERIFIED
+    assert out.build.installer_path.endswith(".exe")
+
+
+def test_linux_package_with_appimage_is_verified(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path)
+    monkeypatch.setattr(build_verify.sys, "platform", "linux")
+    monkeypatch.setattr(build_verify.subprocess, "run", lambda *a, **k: _FakeProc(0, "ok"))
+    (repo / "dist").mkdir()
+    (repo / "dist" / "app-1.0.0.AppImage").write_text("y")
+    out = build_verify.verify_build(repo)
+    assert out.state is TaskState.VERIFIED
+    assert out.build.installer_path.endswith(".AppImage")

@@ -152,5 +152,5 @@ back. Therefore:
 
 `code-task solve` defaults to `--verification-mode red-green`: the agent writes acceptance tests, the runner proves red on the base and green on the change, then runs regression.
 
-For building an app or UI **from scratch** (e.g. an Electron + Vite + React desktop app) there is no red->green test loop. Use `--verification-mode build`: the runner owns a fixed checklist (`npm ci` -> `npm run build` -> `npx electron-builder --linux --dir --publish never`) and `state=verified` means the app actually builds and packages. The result carries `verification_kind=build`. Preview/launch is intentionally out of scope (a desktop GUI is not run on a headless server).
+For building an app or UI **from scratch** (e.g. an Electron + Vite + React desktop app) there is no red->green test loop. Use `--verification-mode build`: the runner owns a fixed checklist (`npm ci` -> `npm run build` -> `npx electron-builder` for the HOST OS, with the target pinned — `--mac dmg` -> `.dmg`, `--win nsis` -> `.exe`, `--linux AppImage` -> `.AppImage`) and `state=verified` means the app actually builds and packages into an installer. Each OS only builds its own installer, so run on each OS (or a CI matrix) to collect all three. The result carries `verification_kind=build` and `build.installer_path(s)`. Preview/launch is intentionally out of scope (no GUI is run).
 

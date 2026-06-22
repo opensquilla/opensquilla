@@ -62,14 +62,21 @@ VERIFICATION (the runner checks you with a FIXED build checklist — make it pas
 After you finish, the runner independently runs, from the repo root:
     npm ci
     npm run build
-    npx electron-builder        # host target: --mac (.dmg) on macOS, --linux --dir on Linux
+    npx electron-builder        # one installer for the HOST OS, target pinned by
+                                # the runner: --mac dmg (.dmg) / --win nsis
+                                # (.exe) / --linux AppImage (.AppImage). You do
+                                # NOT need to configure target lists; just keep a
+                                # valid electron-builder config (appId, product
+                                # name, icons) so dmg/nsis/AppImage can build.
 For these to pass you MUST:
 - Run `npm install` yourself so package-lock.json EXISTS and is committed (the
   runner uses `npm ci`, which installs strictly from the lockfile and will fail
   if it is missing or out of date).
 - Ensure `npm run build` type-checks and builds with NO errors.
-- Confirm `npm run build` succeeds, and optionally run electron-builder for your
-  platform (`--mac` on macOS, `--linux --dir` on Linux) to confirm it packages.
+- Confirm `npm run build` succeeds. The runner packages one installer for the
+  host OS with the target pinned (`--mac dmg` / `--win nsis` / `--linux
+  AppImage`), so you do NOT need to configure target lists — just keep a valid
+  electron-builder config (appId, product name, icons) so those targets build.
 - Do NOT commit node_modules, out, or dist.
 
 COMMIT

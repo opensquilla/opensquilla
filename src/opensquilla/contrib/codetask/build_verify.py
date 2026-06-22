@@ -5,12 +5,15 @@ an app has no such test loop, so build mode instead runs a FIXED, runner-owned
 checklist that proves the app actually builds: install from the committed
 lockfile, build, and PACKAGE for the host platform.
 
-The package step is host-aware:
-- macOS  -> `electron-builder --mac`, which validates packaging AND produces the
-  deliverable installer (a .dmg). Signing auto-discovery is disabled so an
-  unsigned .dmg is built deterministically with no keychain/identity prompt.
-- other  -> `electron-builder --linux --dir`, which validates the packaging
-  chain without an installer (a macOS .dmg can only be built on macOS).
+The package step is host-aware and builds the installer for whatever OS it runs
+on (each platform's installer can only be built on that platform):
+- macOS    -> `electron-builder --mac`   -> a .dmg (signing auto-discovery is
+  disabled so an unsigned .dmg is built deterministically, no keychain prompt).
+- Windows  -> `electron-builder --win`   -> an .exe (NSIS) installer.
+- Linux    -> `electron-builder --linux` -> an .AppImage / .deb installer.
+
+To collect all three, run code-task on each OS (or a CI matrix); a single host
+only produces its own platform's installer.
 """
 
 from __future__ import annotations
@@ -32,12 +35,25 @@ _PACKAGE_ENV = {"CSC_IDENTITY_AUTO_DISCOVERY": "false"}
 
 
 def _package_step() -> tuple[str, list[str]]:
-    """Host-platform electron packaging command (name, argv)."""
+    """Host-platform electron packaging command (name, argv).
+
+    Builds ONE tooling-free installer target for the OS we are running on, so
+    packaging succeeds on a clean machine without extra build tools and without
+    depending on the app's own target list:
+      macOS   -> dmg       (needs only macOS' built-in hdiutil)
+      Windows -> nsis      (.exe; electron-builder's built-in installer)
+      Linux   -> AppImage  (self-contained; no dpkg/snapcraft/rpm tooling needed)
+    Pinning the target (vs a bare ``--mac``/``--win``/``--linux``) also avoids
+    triggering extra targets a generated app may have configured (deb/snap/rpm),
+    which would need host tooling and fail on a clean machine. Each target can
+    only be built on its own platform, so to get all three, run on each OS.
+    """
     if sys.platform == "darwin":
-        # Produces the .dmg installer (the deliverable) and validates packaging.
-        return "package", ["npx", "electron-builder", "--mac", "--publish", "never"]
-    # Linux/other: validate the packaging chain without producing an installer.
-    return "package", ["npx", "electron-builder", "--linux", "--dir", "--publish", "never"]
+        return "package", ["npx", "electron-builder", "--mac", "dmg", "--publish", "never"]
+    if sys.platform == "win32":
+        return "package", ["npx", "electron-builder", "--win", "nsis", "--publish", "never"]
+    # Linux (and other unix): AppImage is self-contained, no extra tooling.
+    return "package", ["npx", "electron-builder", "--linux", "AppImage", "--publish", "never"]
 
 
 def _checklist() -> list[tuple[str, list[str]]]:
@@ -50,25 +66,36 @@ def _checklist() -> list[tuple[str, list[str]]]:
     ]
 
 
-def _find_installers(repo: Path) -> list[str]:
-    """Produced installer artifacts (the .dmg files) on macOS — the deliverables.
+def _installer_suffixes() -> tuple[str, ...]:
+    """Installer file extension(s) electron-builder emits for the HOST platform."""
+    if sys.platform == "darwin":
+        return (".dmg",)
+    if sys.platform == "win32":
+        return (".exe", ".msi")
+    return (".AppImage", ".deb", ".rpm", ".snap")
 
-    electron-builder's output directory is configurable (``directories.output``,
-    default ``dist``, but a generated app may set ``release/`` or another name),
-    so search the whole repo tree for ``*.dmg`` instead of only ``dist/`` — else
-    a real, successful build whose installer landed elsewhere is misreported as
-    "produced no .dmg". ``node_modules`` and ``.git`` are pruned (no build output
-    lives there and walking them is slow). Multi-arch/universal builds can emit
-    more than one .dmg, so return all. Empty off macOS (the Linux/CI package step
-    intentionally builds no installer).
+
+def _find_installers(repo: Path) -> list[str]:
+    """Produced installer artifacts for the HOST platform — the deliverables.
+
+    build mode packages for whatever OS it runs on (macOS -> .dmg,
+    Windows -> .exe, Linux -> .AppImage/.deb). electron-builder's output dir is
+    configurable (``directories.output``, default ``dist``, but a generated app
+    may set ``release/``), so search the whole repo tree for the host's
+    installer extension(s) rather than a fixed dir — else a real, successful
+    build whose installer landed elsewhere is misreported as "no installer".
+    ``node_modules``/``.git`` and the unpacked app dirs (``win-unpacked`` etc.,
+    which also contain a raw ``.exe``) are pruned. Multi-arch builds can emit
+    more than one installer, so return all.
     """
-    if sys.platform != "darwin":
-        return []
+    suffixes = _installer_suffixes()
     skip = {"node_modules", ".git"}
     found: list[str] = []
     for root, dirs, files in os.walk(repo):
-        dirs[:] = [d for d in dirs if d not in skip]
-        found.extend(os.path.join(root, f) for f in files if f.endswith(".dmg"))
+        dirs[:] = [
+            d for d in dirs if d not in skip and not d.endswith("-unpacked")
+        ]
+        found.extend(os.path.join(root, f) for f in files if f.endswith(suffixes))
     return sorted(found)
 
 
@@ -140,19 +167,20 @@ def verify_build(
     build = BuildResult(checks=checks, all_passed=all_passed)
 
     if all_passed:
-        # On macOS the package step must yield the .dmg deliverable; a clean exit
-        # with no .dmg (e.g. config emits only a zip/dir) is NOT a real success.
-        if sys.platform == "darwin":
-            installers = _find_installers(repo)
-            if not installers:
-                build.all_passed = False
-                return BuildVerificationOutcome(
-                    state=TaskState.FAILED,
-                    build=build,
-                    detail="packaging exited cleanly but produced no .dmg installer",
-                )
-            build.installer_paths = installers
-            build.installer_path = installers[0]
+        # The package step must yield the host platform's installer deliverable
+        # (.dmg on macOS, .exe on Windows, .AppImage/.deb on Linux). A clean exit
+        # with no installer (e.g. config emitted only an unpacked dir) is NOT a
+        # real success.
+        installers = _find_installers(repo)
+        if not installers:
+            build.all_passed = False
+            return BuildVerificationOutcome(
+                state=TaskState.FAILED,
+                build=build,
+                detail="packaging exited cleanly but produced no installer",
+            )
+        build.installer_paths = installers
+        build.installer_path = installers[0]
         return BuildVerificationOutcome(state=TaskState.VERIFIED, build=build)
 
     failed = next((c for c in checks if not c.ok), None)

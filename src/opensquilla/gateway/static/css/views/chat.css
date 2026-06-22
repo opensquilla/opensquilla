@@ -3027,8 +3027,8 @@ select.clarify-form-input {
 }
 
 .router-fx[data-panel="legacy-grid"] .router-fx-grid {
-  grid-template-columns: repeat(5, 1fr);
-  grid-template-rows: repeat(3, 30px);
+  grid-template-columns: repeat(var(--router-fx-cols, 5), minmax(0, 1fr));
+  grid-template-rows: repeat(var(--router-fx-rows, 3), 30px);
   grid-auto-rows: auto;
 }
 

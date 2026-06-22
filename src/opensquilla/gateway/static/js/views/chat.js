@@ -3607,6 +3607,36 @@ const ChatView = (() => {
   function _routerFxResolveLayoutSeed(sessionKey, hintTimestamp) {
     return _routerFxResolveSeed(sessionKey, 0, 'layout', hintTimestamp);
   }
+  function _routerFxSeedHash(seedKey) {
+    const text = seedKey == null ? '' : String(seedKey);
+    let hash = 2166136261;
+    for (let i = 0; i < text.length; i++) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return hash >>> 0;
+  }
+  function _routerFxSeededRandom(seedKey) {
+    let state = _routerFxSeedHash(seedKey) || 0x9e3779b9;
+    return () => {
+      state += 0x6d2b79f5;
+      let t = state;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function _routerFxShuffle(items, seedKey) {
+    const out = items.slice();
+    const random = seedKey ? _routerFxSeededRandom(seedKey) : Math.random;
+    for (let i = out.length - 1; i > 0; i--) {
+      const j = Math.floor(random() * (i + 1));
+      const tmp = out[i];
+      out[i] = out[j];
+      out[j] = tmp;
+    }
+    return out;
+  }
   function _routerFxIdentity(model, tier) {
     const modelPart = typeof model === 'string' ? model.trim().toLowerCase() : '';
     const tierPart = _routerFxNormalizeTier(tier);
@@ -3791,9 +3821,12 @@ const ChatView = (() => {
 
     const grid = document.createElement('div');
     grid.className = 'router-fx-grid';
-    const cols = Math.min(4, Math.max(2, gridCells.length));
-    const mobileCols = gridCells.length > 2 ? 2 : gridCells.length;
+    const isLegacyGrid = visualMode === 'legacy_grid';
+    const cols = isLegacyGrid ? _ROUTER_FX_GRID_COLS : Math.min(4, Math.max(2, gridCells.length));
+    const rows = isLegacyGrid ? _ROUTER_FX_GRID_ROWS : 1;
+    const mobileCols = isLegacyGrid ? 3 : (gridCells.length > 2 ? 2 : gridCells.length);
     grid.style.setProperty('--router-fx-cols', String(cols));
+    grid.style.setProperty('--router-fx-rows', String(rows));
     grid.style.setProperty('--router-fx-mobile-cols', String(Math.max(1, mobileCols)));
     gridCells.forEach((cellInfo, i) => {
       const cell = document.createElement('div');

@@ -1976,8 +1976,11 @@ def test_router_fx_legacy_grid_is_config_driven_visual_only() -> None:
     assert "Router panel" not in source
     assert "data-router-panel" not in source
     assert "const _ROUTER_FX_DECOY_POOL = [" in source
+    assert "const _ROUTER_FX_GRID_COLS = 5;" in source
+    assert "const _ROUTER_FX_GRID_ROWS = 3;" in source
     assert "const _ROUTER_FX_REAL_ANCHOR_CELLS" in source
     assert "function _routerFxNormalizeVisualMode(mode) {" in source
+    assert "function _routerFxShuffle(items, seedKey) {" in source
     assert "return 'legacy_grid';" in source
     assert "_routerFxApplyConfigVisualMode(cfg?.squilla_router?.visual_mode);" in source
     assert "saved.visualMode" not in source
@@ -2006,8 +2009,14 @@ def test_router_fx_legacy_grid_is_config_driven_visual_only() -> None:
     assert "_routerFxBuildCandidateGridCells(realEntries, seedKey)" in builder_body
     assert "wrap.dataset.panel = _routerFxPanelDataset(visualMode);" in source
     assert "_routerFxBuildGridCells(realEntries, seedKey || undefined, visualMode);" in source
+    assert "const isLegacyGrid = visualMode === 'legacy_grid';" in source
+    assert "const cols = isLegacyGrid ? _ROUTER_FX_GRID_COLS" in source
+    assert "const rows = isLegacyGrid ? _ROUTER_FX_GRID_ROWS : 1;" in source
     assert "cells[i].kind === 'real' && cells[i].entry.tiers.indexOf(norm) >= 0" in source
     assert '.router-fx[data-panel="legacy-grid"] .router-fx-grid' in css
+    assert "repeat(var(--router-fx-cols, 5), minmax(0, 1fr));" in css
+    assert "repeat(var(--router-fx-rows, 3), 30px);" in css
+    assert "max-width: min(100%, 820px);" not in css
 
 
 def test_router_fx_cells_render_plain_model_names_only() -> None:

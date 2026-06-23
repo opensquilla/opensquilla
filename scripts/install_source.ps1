@@ -228,14 +228,26 @@ function Install-WindowsVCRedistIfNeeded {
 $installer = $null
 $installArgs = @()
 
+# Probe the ambient python version once (used only for the pip fallback gate).
+$pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+$pythonOk = $false
+if ($pythonCmd) {
+    & python -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' 2>$null
+    $pythonOk = ($LASTEXITCODE -eq 0)
+}
+
 if (Get-Command uv -ErrorAction SilentlyContinue) {
     $installer = 'uv'
-    $installArgs = @('tool', 'install', '--force', '--reinstall-package', 'opensquilla', $installTarget)
-} elseif (Get-Command python -ErrorAction SilentlyContinue) {
+    $installArgs = @('tool', 'install', '--python', '3.12', '--force', '--reinstall-package', 'opensquilla', $installTarget)
+} elseif ($pythonOk) {
     $installer = 'pip'
     $installArgs = @('-m', 'pip', 'install', '--user', $installTarget)
 } else {
-    Write-Error "install_source.ps1: neither 'uv' nor 'python' is available on PATH. Install uv (https://docs.astral.sh/uv/) or Python 3.12+ and retry."
+    # No uv, and the ambient python is missing or older than 3.12. Do NOT
+    # silently pip-install onto an unsupported interpreter: a broken
+    # opensquilla makes coding mode fall back to manual edits. Fail loud.
+    $pyver = if ($pythonCmd) { (& python -V 2>&1) } else { 'none' }
+    Write-Error "install_source.ps1: cannot install - uv not found and python ($pyver) is older than 3.12. OpenSquilla requires Python >= 3.12. Install uv (it brings its own 3.12): 'irm https://astral.sh/uv/install.ps1 | iex', then re-run scripts/install_source.ps1."
     exit 1
 }
 

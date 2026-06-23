@@ -118,7 +118,7 @@
               </div>
             </span>
           </div>
-          <div class="msg-ai-actions">
+          <div v-if="!shareMode" class="msg-ai-actions">
             <button
               type="button"
               class="msg-action"

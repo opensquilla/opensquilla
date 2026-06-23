@@ -8,6 +8,8 @@ interface StageProbe {
   metrics: {
     width: number
     contentWidth: number
+    exportScale: number
+    bottomSafeArea: number
     top: number
     brandHeight: number
     brandGap: number
@@ -18,6 +20,7 @@ interface StageProbe {
   stageWidth: number
   stageHeight: number
   clones: number
+  roles: string[]
   thinkingFolds: number
   costEls: number
   metaMore: number
@@ -25,6 +28,10 @@ interface StageProbe {
   selectionChrome: number
   modelEls: number
   savedEls: number
+  finalVisibleContentRole: string | null
+  finalVisibleContentSelector: string | null
+  finalVisibleContentBottomGap: number | null
+  interMessageGap: number | null
   text: string
 }
 
@@ -36,18 +43,52 @@ test.describe('Share export', () => {
     // Capture the offscreen export stage (the template DOM) before the
     // composable rasterizes and removes it.
     await page.addInitScript(() => {
-      const w = window as unknown as { __shareStageProbe?: Record<string, unknown> }
+      const w = window as unknown as { __shareStageProbe?: StageProbe }
       w.__shareStageProbe = undefined
+      const cloneRole = (clone: HTMLElement | null) => {
+        if (!clone) return null
+        if (clone.classList.contains('msg-user')) return 'user'
+        if (clone.classList.contains('msg-ai')) return 'assistant'
+        return 'unknown'
+      }
+      const finalContent = (clone: HTMLElement | null) => {
+        if (!clone) return { element: null, selector: null }
+        if (clone.classList.contains('msg-user')) {
+          return {
+            element: clone.querySelector<HTMLElement>('.msg-user-bubble') || clone,
+            selector: clone.querySelector('.msg-user-bubble') ? '.msg-user-bubble' : '.msg-user',
+          }
+        }
+        if (clone.classList.contains('msg-ai')) {
+          const meta = clone.querySelector<HTMLElement>('.msg-ai-meta')
+          if (meta) return { element: meta, selector: '.msg-ai-meta' }
+          const ending = clone.querySelector<HTMLElement>('.msg-ai-ending')
+          if (ending) return { element: ending, selector: '.msg-ai-ending' }
+          return {
+            element: clone.querySelector<HTMLElement>('.msg-ai-text') || clone,
+            selector: clone.querySelector('.msg-ai-text') ? '.msg-ai-text' : '.msg-ai',
+          }
+        }
+        return { element: clone, selector: null }
+      }
       new MutationObserver((mutations) => {
         for (const mutation of mutations) {
           mutation.addedNodes.forEach((node) => {
             if (!(node instanceof HTMLElement) || node.id !== 'opensquilla-share-export-stage') return
             requestAnimationFrame(() => {
+              const clones = Array.from(node.querySelectorAll<HTMLElement>('[data-share-message-id]'))
+              const lastClone = clones[clones.length - 1] || null
+              const firstBox = clones[0]?.getBoundingClientRect()
+              const secondBox = clones[1]?.getBoundingClientRect()
+              const stageBox = node.getBoundingClientRect()
+              const final = finalContent(lastClone)
+              const finalBox = final.element?.getBoundingClientRect()
               w.__shareStageProbe = {
                 metrics: JSON.parse(node.dataset.shareTemplateMetrics || '{}'),
-                stageWidth: node.getBoundingClientRect().width,
+                stageWidth: stageBox.width,
                 stageHeight: Math.max(node.scrollHeight, node.offsetHeight),
-                clones: node.querySelectorAll('[data-share-message-id]').length,
+                clones: clones.length,
+                roles: clones.map(cloneRole).filter(Boolean) as string[],
                 thinkingFolds: node.querySelectorAll('.thinking-fold').length,
                 costEls: node.querySelectorAll('.msg-meta__cost').length,
                 metaMore: node.querySelectorAll('.msg-meta__more').length,
@@ -62,6 +103,10 @@ test.describe('Share export', () => {
                 ].join(',')).length,
                 modelEls: node.querySelectorAll('.msg-meta__model').length,
                 savedEls: node.querySelectorAll('.savings-indicator').length,
+                finalVisibleContentRole: cloneRole(lastClone),
+                finalVisibleContentSelector: final.selector,
+                finalVisibleContentBottomGap: finalBox ? stageBox.bottom - finalBox.bottom : null,
+                interMessageGap: firstBox && secondBox ? secondBox.top - firstBox.bottom : null,
                 text: node.innerText,
               }
             })
@@ -112,6 +157,8 @@ test.describe('Share export', () => {
     await expect(dialog).toBeVisible()
     const previewImg = dialog.getByRole('img', { name: 'Share preview' })
     await expect(previewImg).toBeVisible()
+    await expect.poll(async () => previewImg.evaluate((img: HTMLImageElement) => img.naturalWidth))
+      .toBeGreaterThan(0)
 
     // The export defaults to a light theme; the segmented toggle re-renders the
     // preview on demand. Exercise Dark then return to Light (the asset the rest
@@ -174,7 +221,9 @@ test.describe('Share export', () => {
     // PNG dimensions follow the template: fixed width, height = chrome +
     // content scaled to the content column.
     const scale = pngWidth / metrics.width
-    expect(scale).toBeGreaterThanOrEqual(1)
+    expect(scale).toBeGreaterThanOrEqual(2)
+    expect(scale).toBe(metrics.exportScale)
+    expect(probe!.stageWidth).toBe(metrics.contentWidth)
     const contentDrawn = Math.ceil((probe!.stageHeight * metrics.contentWidth) / probe!.stageWidth)
     expect(Math.abs(pngHeight / scale - (chrome + contentDrawn))).toBeLessThanOrEqual(12)
 
@@ -188,6 +237,14 @@ test.describe('Share export', () => {
     expect(probe!.costEls).toBe(0)
     expect(probe!.text).not.toMatch(/\$\d/)
     expect(probe!.text).not.toMatch(/Token-Efficient|Meta-Skills/i)
+    expect(metrics.bottomSafeArea).toBeGreaterThan(0)
+    expect(probe!.roles).toEqual(['user', 'assistant'])
+    expect(probe!.finalVisibleContentRole).toBe('assistant')
+    expect(probe!.finalVisibleContentSelector).toBe('.msg-ai-meta')
+    expect(probe!.finalVisibleContentBottomGap).not.toBeNull()
+    expect(probe!.finalVisibleContentBottomGap ?? 0).toBeGreaterThanOrEqual(metrics.bottomSafeArea)
+    expect(probe!.interMessageGap).not.toBeNull()
+    expect(probe!.interMessageGap ?? 0).toBeLessThanOrEqual(1)
     if (liveModelCount > 0) expect(probe!.modelEls).toBeGreaterThan(0)
     if (liveSavedCount > 0) expect(probe!.savedEls).toBeGreaterThan(0)
 

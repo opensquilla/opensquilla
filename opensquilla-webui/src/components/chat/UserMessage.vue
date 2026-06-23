@@ -39,7 +39,7 @@
         </template>
       </div>
     </div>
-    <div class="msg-user-actions">
+    <div v-if="!shareMode" class="msg-user-actions">
       <button
         type="button"
         class="msg-action"

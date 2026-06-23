@@ -19,9 +19,6 @@ export interface ShareImageResult {
 }
 
 const EXPORT_WIDTH = 704
-const CAPTURE_STAGE_GUTTER = 48
-const CAPTURE_STAGE_MIN_WIDTH = 640
-const CAPTURE_STAGE_MAX_WIDTH = 1040
 const MAX_EXPORT_HEIGHT = 24000
 const SHARE_TEMPLATE_WIDTH = 760
 const SHARE_TEMPLATE_MARGIN = 28
@@ -30,7 +27,9 @@ const SHARE_TEMPLATE_BRAND_HEIGHT = 24
 const SHARE_TEMPLATE_BRAND_GAP = 14
 const SHARE_TEMPLATE_FOOTER_HEIGHT = 96
 const SHARE_TEMPLATE_QR_SIZE = 64
-const CAPTURE_SCALE_LIMIT = 2
+const EXPORT_SCALE = 2
+const SHARE_EXPORT_BOTTOM_SAFE_AREA = 32
+const SHARE_EXPORT_USER_BUBBLE_RIGHT_OFFSET = 10
 
 const SHARE_FILENAME_PREFIX = 'opensquilla'
 const SHARE_FILENAME_FALLBACK = 'chat'
@@ -160,7 +159,7 @@ function selectedShareElements(thread: HTMLElement | null, selectedIds: Set<stri
 }
 
 export function buildShareDom(sourceElements: HTMLElement[], theme: ShareExportTheme = 'light'): HTMLElement {
-  const stageWidth = captureStageWidth(sourceElements)
+  const stageWidth = EXPORT_WIDTH
   const stage = document.createElement('section')
   stage.id = SHARE_STAGE_ID
   // Forcing data-theme on the stage root re-resolves the token custom
@@ -178,7 +177,7 @@ export function buildShareDom(sourceElements: HTMLElement[], theme: ShareExportT
     'top:16px',
     `width:${stageWidth}px`,
     `max-width:${stageWidth}px`,
-    'padding:0 0 8px',
+    'padding:0',
     'box-sizing:border-box',
     `background:${tokens.card}`,
     `color:${tokens.text}`,
@@ -206,6 +205,9 @@ function shareTemplateMetrics() {
   return {
     width: SHARE_TEMPLATE_WIDTH,
     contentWidth: EXPORT_WIDTH,
+    exportScale: captureScale(),
+    bottomSafeArea: SHARE_EXPORT_BOTTOM_SAFE_AREA,
+    userBubbleRightOffset: SHARE_EXPORT_USER_BUBBLE_RIGHT_OFFSET,
     top: SHARE_TEMPLATE_TOP,
     brandHeight: SHARE_TEMPLATE_BRAND_HEIGHT,
     brandGap: SHARE_TEMPLATE_BRAND_GAP,
@@ -229,15 +231,6 @@ function shareThemeTokens(themeEl: HTMLElement) {
     muted: token('--text-muted', '#4f5550'),
     fontSans: token('--font-sans', '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'),
   }
-}
-
-function captureStageWidth(sourceElements: HTMLElement[]): number {
-  const sourceWidth = Math.max(
-    ...sourceElements.map(element => element.getBoundingClientRect().width),
-    0,
-  )
-  const naturalWidth = Math.ceil(sourceWidth + CAPTURE_STAGE_GUTTER)
-  return Math.max(CAPTURE_STAGE_MIN_WIDTH, Math.min(CAPTURE_STAGE_MAX_WIDTH, naturalWidth))
 }
 
 function cleanupShareClone(clone: HTMLElement): HTMLElement {
@@ -305,6 +298,13 @@ function shareExportCss(): string {
       flex-direction: column;
       gap: 0;
       width: 100%;
+      padding-bottom: ${SHARE_EXPORT_BOTTOM_SAFE_AREA}px;
+      box-sizing: border-box;
+    }
+
+    #${SHARE_STAGE_ID} .msg-user {
+      padding-right: ${SHARE_EXPORT_USER_BUBBLE_RIGHT_OFFSET}px;
+      box-sizing: border-box;
     }
 
     #${SHARE_STAGE_ID} button,
@@ -553,7 +553,7 @@ async function waitForStablePaint(): Promise<void> {
 }
 
 function captureScale(): number {
-  return Math.min(window.devicePixelRatio || 1, CAPTURE_SCALE_LIMIT)
+  return EXPORT_SCALE
 }
 
 function blobFromCanvas(canvas: HTMLCanvasElement): Promise<Blob> {

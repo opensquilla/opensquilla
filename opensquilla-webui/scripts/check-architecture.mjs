@@ -1,7 +1,8 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const root = new URL('..', import.meta.url).pathname
+const root = fileURLToPath(new URL('..', import.meta.url))
 const srcRoot = join(root, 'src')
 const allowedDesktopGlobal = new Set([
   'src/platform/capabilities.ts',
@@ -35,7 +36,7 @@ function walk(dir, files = []) {
 
 const failures = []
 for (const file of walk(srcRoot)) {
-  const rel = relative(root, file)
+  const rel = relative(root, file).replace(/\\/g, '/')
   const body = readFileSync(file, 'utf8')
   for (const rule of bannedPatterns) {
     if (body.includes(rule.pattern) && !rule.allow.has(rel)) {

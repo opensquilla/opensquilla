@@ -9,6 +9,7 @@ from opensquilla.provider.selector import ProviderBuildError, ProviderConfig, _b
 
 MAINSTREAM_PROVIDER_LEVELS = {
     "openrouter": "compat_mock_verified",
+    "requesty": "compat_mock_verified",
     "openai": "compat_mock_verified",
     "anthropic": "native",
     "ollama": "native",

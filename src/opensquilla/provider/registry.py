@@ -108,6 +108,13 @@ for _provider_spec in [
         "OPENROUTER_API_KEY",
         "https://openrouter.ai/api/v1",
     ),
+    _spec(
+        "requesty",
+        "openai_compat",
+        "requesty",
+        "REQUESTY_API_KEY",
+        "https://router.requesty.ai/v1",
+    ),
     _spec("openai", "openai_compat", "openai", "OPENAI_API_KEY", "https://api.openai.com/v1"),
     _spec(
         "openai_responses",

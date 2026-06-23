@@ -61,6 +61,14 @@ The user speaks naturally ("fix issue 412 in github.com/acme/widgets",
 opensquilla code-task solve --repo <url-or-path> ( --issue N | --task "<text>" | --task-file <path> ) [--yes]
 ```
 
+> Invocation: do NOT assume a bare `opensquilla` (or bare `python`) is on PATH —
+> the gateway commonly runs from an absolute interpreter path. When coding mode
+> is active it injects the EXACT, resolved, PATH-independent command: use ONLY
+> that. Otherwise invoke via an ABSOLUTE interpreter, e.g.
+> `/abs/path/python -P -m opensquilla.cli.main code-task solve ...`. Never
+> `pip install` OpenSquilla or run an installer to "get" the command; if it
+> cannot be run, stop and report the environment is broken.
+
 - **A GitHub issue** → `--issue N` (needs `gh`; see below).
 - **A short request in the message** → `--task "<their request>"`.
 - **A long spec, or pasted from Jira/GitLab/内网** → save it to a file and

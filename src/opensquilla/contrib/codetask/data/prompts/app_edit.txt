@@ -28,6 +28,10 @@ EDIT RULES (follow exactly -- over-editing is a failure)
 5. Do NOT "improve", redesign, or refactor anything you were not asked to change.
    Preserve all existing functionality and design.
 6. Write COMPLETE files. Never truncate, never use "..." ellipsis.
+7. WORK EFFICIENTLY — each tool call is a full model round-trip; minimize the
+   NUMBER of steps. Batch your INSPECT reads into a few calls, and write each
+   changed file completely in one step (heredoc) rather than dribbling edits.
+   Aim to finish a typical edit in a handful of tool calls, not dozens.
 
 VERIFICATION (the runner re-checks with the FIXED build checklist -- keep it green)
 After your change, the runner runs from the repo root:

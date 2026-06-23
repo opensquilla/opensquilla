@@ -18,6 +18,19 @@ TASK
 
 HOW TO PROCEED
 
+WORK EFFICIENTLY — each tool call is a full model round-trip (tens of
+seconds); total wall time is dominated by the NUMBER of steps, not the work
+per step. Do as much as possible per step:
+- Batch exploration: prefer ONE shell command that runs several greps/reads
+  (e.g. `grep -rn PATTERN src/ ; sed -n '1,60p' a.py b.py`) over many tiny
+  single-purpose calls. Gather what you need in a few steps, not dozens.
+- Write complete files and make all related edits in as few calls as
+  possible; do not dribble one small change per step.
+- While iterating, run the TARGETED acceptance test (not the whole suite
+  every time); save the full regression for Phase 5.
+- Prefer a few large steps over many tiny ones. This does NOT mean cutting
+  corners — correctness still beats speed — it means not wasting round-trips.
+
 Phase 1 — UNDERSTAND
   Restate the task in your own words. Identify the expected behavior change:
   what is wrong or missing now, and what should be true after your change.

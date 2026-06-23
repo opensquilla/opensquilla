@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 from types import SimpleNamespace
 
 import pytest
@@ -58,6 +59,13 @@ class TestSkillsFilterGate:
 
 
 class TestDirectiveInjection:
+    @pytest.fixture(autouse=True)
+    def _stub_resolver(self, monkeypatch):
+        # Deterministic, no subprocess: the directive's command line is the
+        # resolved code-task invocation; pin it for these assertions.
+        from opensquilla.engine.steps import coding_mode as _cm
+        monkeypatch.setattr(_cm, "resolve_code_task_command", lambda: "/opt/x/opensquilla code-task")
+
     def _ctx(self, coding_mode: bool):
         return SimpleNamespace(
             config=SimpleNamespace(skills=SimpleNamespace(coding_mode=coding_mode)),
@@ -188,3 +196,96 @@ class TestWriteToolDenyEnforcement:
         names = self._surface(coding_mode_denied_tools(False))
         assert "write_file" in names
         assert "edit_file" in names
+
+
+class TestCodeTaskResolution:
+    """resolve_code_task_command picks a PATH-independent, runnable invocation."""
+
+    def test_prefers_adjacent_cli(self, monkeypatch, tmp_path):
+        from opensquilla.engine.steps import coding_mode as cm
+        cm._reset_resolution_cache()
+        cli = tmp_path / "opensquilla"
+        cli.write_text("")
+        cli.chmod(0o755)
+        monkeypatch.setattr(cm.sys, "executable", str(tmp_path / "python"))
+        monkeypatch.setattr(cm, "_runs_code_task", lambda argv: argv[0] == str(cli))
+        assert cm.resolve_code_task_command() == f"{shlex.quote(str(cli))} code-task"
+        cm._reset_resolution_cache()
+
+    def test_falls_back_to_module_invocation(self, monkeypatch, tmp_path):
+        from opensquilla.engine.steps import coding_mode as cm
+        cm._reset_resolution_cache()
+        py = str(tmp_path / "python")  # no adjacent opensquilla file exists
+        monkeypatch.setattr(cm.sys, "executable", py)
+        monkeypatch.setattr(cm.shutil, "which", lambda name: None)
+        monkeypatch.setattr(cm, "_runs_code_task", lambda argv: argv[:2] == [py, "-P"])
+        assert cm.resolve_code_task_command() == f"{shlex.quote(py)} -P -m opensquilla.cli.main code-task"
+        cm._reset_resolution_cache()
+
+    def test_adjacent_exists_but_preflight_fails_falls_through(self, monkeypatch, tmp_path):
+        from opensquilla.engine.steps import coding_mode as cm
+        cm._reset_resolution_cache()
+        cli = tmp_path / "opensquilla"
+        cli.write_text("")
+        cli.chmod(0o755)
+        py = str(tmp_path / "python")
+        monkeypatch.setattr(cm.sys, "executable", py)
+        monkeypatch.setattr(cm.shutil, "which", lambda name: None)
+        # adjacent CLI exists but its --help fails; module invocation works
+        monkeypatch.setattr(cm, "_runs_code_task", lambda argv: argv[:2] == [py, "-P"])
+        assert cm.resolve_code_task_command() == f"{shlex.quote(py)} -P -m opensquilla.cli.main code-task"
+        cm._reset_resolution_cache()
+
+    def test_failure_is_not_cached_retries(self, monkeypatch, tmp_path):
+        from opensquilla.engine.steps import coding_mode as cm
+        cm._reset_resolution_cache()
+        monkeypatch.setattr(cm.sys, "executable", str(tmp_path / "python"))
+        monkeypatch.setattr(cm.shutil, "which", lambda name: None)
+        calls = {"n": 0}
+        def flaky(argv):
+            calls["n"] += 1
+            return calls["n"] > 1  # first probe fails, later succeed
+        monkeypatch.setattr(cm, "_runs_code_task", flaky)
+        assert cm.resolve_code_task_command() is None      # transient failure, NOT cached
+        monkeypatch.setattr(cm, "_runs_code_task", lambda argv: True)
+        assert cm.resolve_code_task_command() is not None  # retried, resolves
+        cm._reset_resolution_cache()
+
+    def test_falls_back_to_path_which(self, monkeypatch, tmp_path):
+        from opensquilla.engine.steps import coding_mode as cm
+        cm._reset_resolution_cache()
+        monkeypatch.setattr(cm.sys, "executable", str(tmp_path / "python"))
+        monkeypatch.setattr(cm.shutil, "which", lambda name: "/usr/bin/opensquilla")
+        monkeypatch.setattr(cm, "_runs_code_task", lambda argv: argv[0] == "/usr/bin/opensquilla")
+        assert cm.resolve_code_task_command() == "/usr/bin/opensquilla code-task"
+        cm._reset_resolution_cache()
+
+    def test_none_when_nothing_runs(self, monkeypatch, tmp_path):
+        from opensquilla.engine.steps import coding_mode as cm
+        cm._reset_resolution_cache()
+        monkeypatch.setattr(cm.sys, "executable", str(tmp_path / "python"))
+        monkeypatch.setattr(cm.shutil, "which", lambda name: None)
+        monkeypatch.setattr(cm, "_runs_code_task", lambda argv: False)
+        assert cm.resolve_code_task_command() is None
+        cm._reset_resolution_cache()
+
+    def test_directive_uses_resolved_command_not_bare(self, monkeypatch):
+        from opensquilla.engine.steps import coding_mode as cm
+        monkeypatch.setattr(
+            cm, "resolve_code_task_command",
+            lambda: "/opt/env/bin/python -P -m opensquilla.cli.main code-task",
+        )
+        d = cm._build_coding_mode_directive()
+        assert "/opt/env/bin/python -P -m opensquilla.cli.main code-task solve --repo" in d
+        low = d.lower()
+        assert "pip install" in low and "do not" in low
+        assert "stop and report" in low
+
+    def test_directive_fail_loud_when_unavailable(self, monkeypatch):
+        from opensquilla.engine.steps import coding_mode as cm
+        monkeypatch.setattr(cm, "resolve_code_task_command", lambda: None)
+        d = cm._build_coding_mode_directive()
+        assert "UNAVAILABLE" in d
+        low = d.lower()
+        assert "hand-edit" in low and "pip install" in low
+        assert "stop and tell the user" in low

@@ -66,6 +66,7 @@ base_url = "https://openrouter.ai/api/v1"
 #
 # provider      env var                 default base_url
 # openrouter    OPENROUTER_API_KEY       https://openrouter.ai/api/v1
+# requesty      REQUESTY_API_KEY         https://router.requesty.ai/v1
 # openai        OPENAI_API_KEY           https://api.openai.com/v1
 # anthropic     ANTHROPIC_API_KEY        https://api.anthropic.com
 # ollama        none                     http://localhost:11434

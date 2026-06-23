@@ -46,6 +46,7 @@ Direct provider examples:
 opensquilla configure provider --provider openai --model gpt-5.4-mini --api-key-env OPENAI_API_KEY
 opensquilla configure provider --provider anthropic --model claude-sonnet-4-5 --api-key-env ANTHROPIC_API_KEY
 opensquilla configure provider --provider gemini --model gemini-2.5-flash --api-key-env GEMINI_API_KEY
+opensquilla configure provider --provider requesty --model openai/gpt-4o-mini --api-key-env REQUESTY_API_KEY
 opensquilla configure provider --provider ollama --model llama3.1
 ```
 
@@ -57,6 +58,7 @@ directly into configuration files.
 This build exposes onboarding support for:
 
 - OpenRouter
+- Requesty
 - OpenAI
 - Anthropic
 - Ollama

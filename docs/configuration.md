@@ -98,6 +98,7 @@ opensquilla providers status
 Onboarding-verified providers include:
 
 - OpenRouter
+- Requesty
 - OpenAI
 - Anthropic
 - Ollama

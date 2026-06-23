@@ -58,7 +58,7 @@ from opensquilla.onboarding.provider_specs import (  # noqa: E402
 )
 
 EXPECTED_SUPPORTED = {
-    "openrouter", "openai", "anthropic", "ollama", "deepseek",
+    "openrouter", "requesty", "openai", "anthropic", "ollama", "deepseek",
     "gemini", "dashscope", "moonshot", "zhipu", "qianfan",
     "volcengine",
 }

@@ -47,6 +47,7 @@ class ProviderSetupSpec:
 
 _PROVIDER_LABELS: dict[str, str] = {
     "openrouter": "OpenRouter",
+    "requesty": "Requesty",
     "openai": "OpenAI",
     "azure": "Azure OpenAI",
     "anthropic": "Anthropic",
@@ -80,6 +81,7 @@ _PROVIDER_LABELS: dict[str, str] = {
 _ONBOARDING_VERIFIED_PROVIDER_IDS = frozenset(
     {
         "openrouter",
+        "requesty",
         "openai",
         "anthropic",
         "ollama",

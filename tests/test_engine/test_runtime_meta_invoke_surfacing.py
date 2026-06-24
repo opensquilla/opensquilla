@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import inspect
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -245,8 +246,6 @@ async def test_runtime_pipeline_pins_meta_skill_when_skill_filter_enabled(
     pinned, and deterministic trigger matches force meta_invoke as the first
     tool call while leaving the broader tool surface intact for later turns.
     """
-    from types import SimpleNamespace
-
     async def noop_router(ctx: TurnContext) -> TurnContext:
         return ctx
 
@@ -262,7 +261,10 @@ async def test_runtime_pipeline_pins_meta_skill_when_skill_filter_enabled(
     )
     runner = TurnRunner(
         provider_selector=None,
-        config=SimpleNamespace(skills=skills_cfg, meta_skill=SimpleNamespace(enabled=True, auto_trigger=True)),
+        config=SimpleNamespace(
+            skills=skills_cfg,
+            meta_skill=SimpleNamespace(enabled=True, auto_trigger=True),
+        ),
     )
     runner._skill_loader = loader
 
@@ -297,8 +299,7 @@ async def test_runtime_pipeline_pins_meta_skill_when_skill_filter_enabled(
     assert "meta-tiny" in str(turn.system_prompt)
 
 
-def _meta_cfg(auto_trigger: bool) -> "SimpleNamespace":
-    from types import SimpleNamespace
+def _meta_cfg(auto_trigger: bool) -> SimpleNamespace:
     return SimpleNamespace(meta_skill=SimpleNamespace(enabled=True, auto_trigger=auto_trigger))
 
 
@@ -354,7 +355,11 @@ async def test_pipeline_shows_meta_skill_when_auto_trigger_on(
         None,
         None,
         [
-            ToolDefinition(name="meta_invoke", description="invoke", input_schema=ToolInputSchema()),
+            ToolDefinition(
+                name="meta_invoke",
+                description="invoke",
+                input_schema=ToolInputSchema(),
+            ),
             ToolDefinition(name="web_search", description="search", input_schema=ToolInputSchema()),
         ],
         "base prompt",

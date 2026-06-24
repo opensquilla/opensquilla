@@ -10,7 +10,6 @@ import pytest
 from opensquilla.engine.pipeline import TurnContext
 from opensquilla.engine.runtime import TurnRunner
 from opensquilla.provider import ToolDefinition, ToolInputSchema
-
 from tests.test_engine.test_runtime_meta_invoke_surfacing import _make_loader_with_meta
 
 
@@ -68,7 +67,11 @@ async def test_meta_match_fires_when_auto_trigger_on(
         None,
         None,
         [
-            ToolDefinition(name="meta_invoke", description="invoke", input_schema=ToolInputSchema()),
+            ToolDefinition(
+                name="meta_invoke",
+                description="invoke",
+                input_schema=ToolInputSchema(),
+            ),
             ToolDefinition(name="web_search", description="search", input_schema=ToolInputSchema()),
         ],
         "base prompt",

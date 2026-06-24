@@ -39,6 +39,10 @@ def test_go_project(tmp_path):
     assert "Makefile" in p.notable
 
 
-def test_empty_repo_no_hints(tmp_path):
+def test_empty_repo_only_host_os_hint(tmp_path):
     p = envprobe.probe(tmp_path)
-    assert p.as_hints() == ""
+    hints = p.as_hints()
+    # An empty repo still gets the always-on Host OS line (intentional),
+    # but no language / package-manager / CI hints.
+    assert "Host OS:" in hints
+    assert "Language(s):" not in hints

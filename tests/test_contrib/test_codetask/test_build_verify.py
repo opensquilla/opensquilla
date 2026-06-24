@@ -62,6 +62,7 @@ def test_npm_ci_failure_is_environment_blocked_and_stops_early(tmp_path, monkeyp
 
 def test_build_failure_is_failed(tmp_path, monkeypatch):
     repo = _make_repo(tmp_path)
+    monkeypatch.setattr(build_verify, "_resolve_cli", lambda name: name)
 
     def fake_run(argv, **k):
         if argv[:2] == ["npm", "run"]:  # the build step
@@ -78,6 +79,7 @@ def test_build_failure_is_failed(tmp_path, monkeypatch):
 
 def test_package_failure_is_failed(tmp_path, monkeypatch):
     repo = _make_repo(tmp_path)
+    monkeypatch.setattr(build_verify, "_resolve_cli", lambda name: name)
 
     def fake_run(argv, **k):
         if argv[0] == "npx":  # electron-builder
@@ -119,6 +121,7 @@ def test_package_step_is_linux_appimage_on_linux(monkeypatch):
 
 def test_package_step_is_win_nsis_on_win32(monkeypatch):
     monkeypatch.setattr(build_verify.sys, "platform", "win32")
+    monkeypatch.setattr(build_verify, "_resolve_cli", lambda name: name)
     name, argv = build_verify._package_step()
     assert name == "package" and "--win" in argv and "nsis" in argv
 
@@ -201,6 +204,7 @@ def test_darwin_package_with_dmg_is_verified(tmp_path, monkeypatch):
 def test_win_package_with_exe_is_verified(tmp_path, monkeypatch):
     repo = _make_repo(tmp_path)
     monkeypatch.setattr(build_verify.sys, "platform", "win32")
+    monkeypatch.setattr(build_verify, "_resolve_cli", lambda name: name)
     monkeypatch.setattr(build_verify.subprocess, "run", lambda *a, **k: _FakeProc(0, "ok"))
     (repo / "dist").mkdir()
     (repo / "dist" / "App Setup 1.0.0.exe").write_text("y")

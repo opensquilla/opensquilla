@@ -16,9 +16,9 @@ from typing import Any, cast
 import pytest
 from typer.testing import CliRunner
 
-import opensquilla.tools.builtin.research_search as research_search_module
+import opensquilla.tools.builtin.web as web_module
 from opensquilla.cli.main import app
-from opensquilla.search.research import run_research_search
+from opensquilla.search.canonical import run_canonical_web_search
 from opensquilla.search.types import SearchOptions, SearchResult
 from opensquilla.tools.builtin.web_fetch import run_web_fetch_payload
 
@@ -55,11 +55,11 @@ def _domain_matches(domain: object, expected: str) -> bool:
 
 
 @pytest.mark.asyncio
-async def test_live_tavily_research_search_enforces_domain_filter() -> None:
+async def test_live_tavily_canonical_web_search_enforces_domain_filter() -> None:
     _require_live_matrix()
     _require_env("TAVILY_API_KEY")
 
-    payload = await run_research_search(
+    payload = await run_canonical_web_search(
         SearchOptions(
             query=_QUERY,
             mode="technical",
@@ -80,12 +80,12 @@ async def test_live_tavily_research_search_enforces_domain_filter() -> None:
 
 
 @pytest.mark.asyncio
-async def test_live_research_search_tool_returns_bounded_json() -> None:
+async def test_live_web_search_tool_returns_bounded_json() -> None:
     _require_live_matrix()
     _require_env("TAVILY_API_KEY")
 
-    bare_research_search = inspect.unwrap(research_search_module.research_search)
-    raw = await bare_research_search(
+    bare_web_search = inspect.unwrap(web_module.web_search)
+    raw = await bare_web_search(
         _QUERY,
         mode="technical",
         max_results=3,
@@ -118,11 +118,11 @@ async def test_live_brave_provider_accepts_recency_filter() -> None:
 
 
 @pytest.mark.asyncio
-async def test_live_exa_research_search_returns_content_metadata() -> None:
+async def test_live_exa_canonical_web_search_returns_content_metadata() -> None:
     _require_live_matrix()
     _require_env("EXA_API_KEY")
 
-    payload = await run_research_search(
+    payload = await run_canonical_web_search(
         SearchOptions(
             query=_QUERY,
             mode="technical",
@@ -183,7 +183,7 @@ async def test_live_web_fetch_can_explicitly_use_firecrawl() -> None:
     assert "Python" in text
 
 
-def test_live_cli_research_query_returns_json() -> None:
+def test_live_cli_canonical_web_search_query_returns_json() -> None:
     _require_live_matrix()
     _require_env("TAVILY_API_KEY")
 

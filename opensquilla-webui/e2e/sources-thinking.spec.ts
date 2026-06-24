@@ -1,7 +1,137 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type Page } from '@playwright/test'
 
 const CONTROL_URL = '/control/'
 const LIVE = process.env.OPENSQUILLA_E2E_LIVE === '1'
+const RESEARCH_SESSION_KEY = 'agent:main:webchat:e2eresearchsources'
+
+async function seedSearchHistory(page: Page, toolName: string) {
+  await page.routeWebSocket(/\/ws$/, ws => {
+    ws.onMessage(message => {
+      let frame: Record<string, unknown>
+      try {
+        frame = JSON.parse(String(message)) as Record<string, unknown>
+      } catch {
+        return
+      }
+      if (frame?.type !== 'req' || frame.id === undefined) return
+      if (frame.method === 'connect') {
+        ws.send(JSON.stringify({ protocol: 3, policy: {} }))
+        return
+      }
+      if (frame?.type === 'req' && frame.method === 'chat.history') {
+        ws.send(JSON.stringify({
+          type: 'res',
+          id: frame.id,
+          ok: true,
+          payload: {
+            messages: [
+              {
+                role: 'assistant',
+                text: 'The answer cites the research result.',
+                id: 'msg-e2e-research-source',
+                timestamp: Math.floor(Date.now() / 1000) - 60,
+                tool_calls: [
+                  {
+                    tool_use_id: 'tool-e2e-research-source',
+                    name: toolName,
+                    input: { query: 'OpenSquilla web search' },
+                    result: JSON.stringify({
+                      ok: true,
+                      results: [
+                        {
+                          title: 'OpenSquilla Search Notes',
+                          url: 'https://example.com/opensquilla-search',
+                          domain: 'example.com',
+                          provider: 'tavily',
+                          excerpt: 'Compact citation-ready excerpt.',
+                          fetched: true,
+                        },
+                      ],
+                    }),
+                    status: 'success',
+                  },
+                ],
+              },
+            ],
+            has_more: false,
+          },
+        }))
+        return
+      }
+      ws.send(JSON.stringify({ type: 'res', id: frame.id, ok: true, payload: {} }))
+    })
+    ws.send(JSON.stringify({ type: 'event', event: 'connect.challenge', payload: {} }))
+  })
+}
+
+async function seedPersistedSearchSourcesHistory(page: Page) {
+  await page.routeWebSocket(/\/ws$/, ws => {
+    ws.onMessage(message => {
+      let frame: Record<string, unknown>
+      try {
+        frame = JSON.parse(String(message)) as Record<string, unknown>
+      } catch {
+        return
+      }
+      if (frame?.type !== 'req' || frame.id === undefined) return
+      if (frame.method === 'connect') {
+        ws.send(JSON.stringify({ protocol: 3, policy: {} }))
+        return
+      }
+      if (frame?.type === 'req' && frame.method === 'chat.history') {
+        ws.send(JSON.stringify({
+          type: 'res',
+          id: frame.id,
+          ok: true,
+          payload: {
+            messages: [
+              {
+                role: 'assistant',
+                text: 'The answer cites the persisted source.',
+                id: 'msg-e2e-persisted-source',
+                timestamp: Math.floor(Date.now() / 1000) - 60,
+                tool_calls: [
+                  {
+                    tool_use_id: 'tool-e2e-persisted-source',
+                    name: 'web_search',
+                    input: { query: 'OpenSquilla persisted source' },
+                    sources: [
+                      {
+                        title: 'OpenSquilla Persisted Source',
+                        url: 'https://example.com/opensquilla-persisted-source',
+                        domain: 'example.com',
+                        provider: 'duckduckgo',
+                        fetched: true,
+                      },
+                    ],
+                    result: JSON.stringify({
+                      ok: true,
+                      results: [
+                        {
+                          title: 'Truncated fallback source',
+                          url: 'https://example.com/opensquilla-persisted-sour…',
+                          domain: 'example.com',
+                          provider: 'duckduckgo',
+                          excerpt: 'Compacted persisted result with a dead-link URL.',
+                          fetched: true,
+                        },
+                      ],
+                    }),
+                    status: 'success',
+                  },
+                ],
+              },
+            ],
+            has_more: false,
+          },
+        }))
+        return
+      }
+      ws.send(JSON.stringify({ type: 'res', id: frame.id, ok: true, payload: {} }))
+    })
+    ws.send(JSON.stringify({ type: 'event', event: 'connect.challenge', payload: {} }))
+  })
+}
 
 test.describe('Sources row and thinking disclosure', () => {
   test('idle chat renders no sources row or thinking disclosure', async ({ page }) => {
@@ -10,6 +140,49 @@ test.describe('Sources row and thinking disclosure', () => {
 
     await expect(page.locator('.sources-row')).toHaveCount(0)
     await expect(page.locator('.thinking-fold')).toHaveCount(0)
+  })
+
+  test('replayed web_search results render a sources row with links', async ({ page }) => {
+    await seedSearchHistory(page, 'web_search')
+    await page.goto(CONTROL_URL + 'chat?session=' + encodeURIComponent(RESEARCH_SESSION_KEY))
+    await page.waitForSelector('.conn-pill', { timeout: 10000 })
+
+    await expect(page.locator('.msg-ai .tool-row[data-op="web.search"]').first()).toBeVisible({ timeout: 10000 })
+
+    const sourcesRow = page.locator('.msg-ai .sources-row').first()
+    await expect(sourcesRow).toBeVisible({ timeout: 10000 })
+    await expect(sourcesRow.locator('.sources-row__count')).toHaveText('1')
+
+    await sourcesRow.locator('.sources-row__toggle').click()
+    const link = sourcesRow.locator('.sources-row__link')
+    await expect(link).toHaveAttribute('href', 'https://example.com/opensquilla-search')
+    await expect(sourcesRow.locator('.sources-row__title')).toHaveText('OpenSquilla Search Notes')
+  })
+
+  test('replayed web_search prefers persisted sources over truncated result URLs', async ({ page }) => {
+    await seedPersistedSearchSourcesHistory(page)
+    await page.goto(CONTROL_URL + 'chat?session=' + encodeURIComponent(RESEARCH_SESSION_KEY))
+    await page.waitForSelector('.conn-pill', { timeout: 10000 })
+
+    await expect(page.locator('.msg-ai .tool-row[data-op="web.search"]').first()).toBeVisible({ timeout: 10000 })
+
+    const sourcesRow = page.locator('.msg-ai .sources-row').first()
+    await expect(sourcesRow).toBeVisible({ timeout: 10000 })
+    await expect(sourcesRow.locator('.sources-row__count')).toHaveText('1')
+
+    await sourcesRow.locator('.sources-row__toggle').click()
+    const link = sourcesRow.locator('.sources-row__link')
+    await expect(link).toHaveAttribute('href', 'https://example.com/opensquilla-persisted-source')
+    await expect(sourcesRow.locator('.sources-row__title')).toHaveText('OpenSquilla Persisted Source')
+  })
+
+  test('replayed web_discover results render as discovery without sources row', async ({ page }) => {
+    await seedSearchHistory(page, 'web_discover')
+    await page.goto(CONTROL_URL + 'chat?session=' + encodeURIComponent(RESEARCH_SESSION_KEY))
+    await page.waitForSelector('.conn-pill', { timeout: 10000 })
+
+    await expect(page.locator('.msg-ai .tool-row[data-op="web.discover"]').first()).toBeVisible({ timeout: 10000 })
+    await expect(page.locator('.msg-ai .sources-row')).toHaveCount(0)
   })
 
   test('live search turn renders a sources row with real links', async ({ page }) => {

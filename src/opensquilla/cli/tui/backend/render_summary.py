@@ -34,7 +34,7 @@ def summarize_args(name: str, args: dict | None) -> str:
     if name in {"read_file", "write_file", "list_dir", "apply_patch"}:
         path = args.get("path") or args.get("file_path") or args.get("target") or ""
         return clip_arg(str(path), keep_end=True) if path else ""
-    if name == "web_search":
+    if name in {"web_search", "web_discover"}:
         query = args.get("query") or ""
         return clip_arg(str(query)) if query else ""
     if name == "web_fetch":

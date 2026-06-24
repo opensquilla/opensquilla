@@ -17,7 +17,7 @@ For a focused permissions guide, see
 | Filesystem | `read_file`, `write_file`, `edit_file`, `list_dir`, `glob_search`, `grep_search`, spreadsheet reads. |
 | Shell and code | `exec_command`, `background_process`, `process`, `execute_code`. |
 | Git | `git_status`, `git_diff`, `git_log`, `git_commit`, `apply_patch`. |
-| Web | `web_search`, `web_fetch`, `http_request`. |
+| Web | `web_search`, `web_discover`, `web_fetch`, `http_request`. |
 | Memory | `memory_search`, `memory_save`, `memory_get`, `memory_delete`. |
 | Sessions | `sessions_send`, `sessions_spawn`, `sessions_list`, `sessions_history`, `session_status`. |
 | Artifacts | `publish_artifact`. |
@@ -119,6 +119,10 @@ opensquilla diagnostics on
 
 Search results and fetched pages are external data. They should inform the
 answer, not override tool policy or user instructions.
+
+For source-backed answers, `web_search` is the default high-level web tool.
+`web_discover` is lightweight link discovery, `web_fetch` reads a specific
+page, and `http_request` is reserved for raw HTTP/API requests.
 
 ## Tool Compression
 

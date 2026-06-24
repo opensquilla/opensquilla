@@ -25,7 +25,7 @@ _TOOL_GROUPS: Mapping[str, frozenset[str]] = {
         {"sessions_list", "sessions_history", "sessions_send", "sessions_spawn", "session_status"}
     ),
     "group:memory": frozenset({"memory_search", "memory_get"}),
-    "group:web": frozenset({"research_search", "web_search", "web_fetch", "http_request"}),
+    "group:web": frozenset({"web_search", "web_discover", "web_fetch", "http_request"}),
     "group:messaging": frozenset({"message"}),
     "channel:chat": frozenset(
         {
@@ -65,7 +65,7 @@ _TOOL_GROUPS: Mapping[str, frozenset[str]] = {
             "feishu_doc_create",
             "feishu_doc_list_blocks",
             "feishu_doc_read_raw",
-            "research_search",
+            "web_discover",
             "web_fetch",
             "web_search",
         }
@@ -75,7 +75,7 @@ _TOOL_GROUPS: Mapping[str, frozenset[str]] = {
             "feishu_wiki_get_node",
             "feishu_wiki_list_nodes",
             "feishu_wiki_list_spaces",
-            "research_search",
+            "web_discover",
             "web_fetch",
             "web_search",
         }

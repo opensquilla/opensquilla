@@ -49,6 +49,7 @@ export interface ChatToolCall {
   isError: boolean
   result: string
   resultPreview: string
+  sources?: unknown
   isOpen: boolean
 }
 
@@ -127,6 +128,7 @@ export interface RawToolCallPayload extends Record<string, unknown> {
   result?: unknown
   content?: unknown
   output?: unknown
+  sources?: unknown
   is_error?: boolean
   isError?: boolean
   error?: unknown

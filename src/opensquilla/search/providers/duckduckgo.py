@@ -51,17 +51,26 @@ class DuckDuckGoProvider:
                 )
                 response.raise_for_status()
         except httpx.HTTPError as exc:
-            if self._diagnostics:
-                kind: SearchErrorKind = (
-                    "timeout" if isinstance(exc, httpx.TimeoutException) else "network"
-                )
-                raise SearchProviderError(
-                    provider=self.name,
-                    kind=kind,
-                    message=str(exc) or "DuckDuckGo search network request failed.",
-                    retryable=True,
-                ) from exc
-            return []
+            if isinstance(exc, httpx.TimeoutException):
+                kind: SearchErrorKind = "timeout"
+                retryable = True
+            elif isinstance(exc, httpx.HTTPStatusError):
+                kind = "http"
+                retryable = 500 <= exc.response.status_code < 600
+            else:
+                kind = "network"
+                retryable = True
+            raise SearchProviderError(
+                provider=self.name,
+                kind=kind,
+                message=str(exc) or "DuckDuckGo search request failed.",
+                retryable=retryable,
+                status_code=(
+                    exc.response.status_code
+                    if isinstance(exc, httpx.HTTPStatusError)
+                    else None
+                ),
+            ) from exc
 
         soup = BeautifulSoup(response.text, "html.parser")
         results: list[SearchResult] = []

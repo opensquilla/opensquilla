@@ -26,6 +26,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Final, Literal, SupportsInt, TypeGuard, cast
+from urllib.parse import urlsplit
 
 import structlog
 
@@ -296,6 +297,7 @@ _SAFE_TOOL_NAMES: frozenset[str] = frozenset(
         "skill_search_community",
         "skill_view",
         "tts",
+        "web_discover",
         "web_fetch",
         "web_search",
     }
@@ -631,6 +633,7 @@ def _prepend_request_context_prompt(
 
 _MAX_TOOL_RESULT_CHARS = 2000
 _MAX_TOOL_RESULT_METADATA_VALUE_CHARS = 256
+_MAX_PERSISTED_TOOL_SOURCES = 12
 _MAX_PERSISTED_TOOL_ARGUMENT_FIELD_CHARS = 4096
 _PERSISTED_TOOL_ARGUMENT_PREVIEW_CHARS = 512
 _PERSISTED_TOOL_ARGUMENT_PROJECTION_PREFIX = "[historical_tool_argument_omitted]\n"
@@ -640,12 +643,23 @@ _TOOL_ARGUMENT_PAYLOAD_FIELDS: Final[dict[str, frozenset[str]]] = {
 }
 _TOOL_RESULT_METADATA_KEYS: Final[frozenset[str]] = frozenset(
     {
+        "budget_clamped",
+        "cache_status",
+        "domain_limited_count",
+        "duplicate_count",
         "provider",
         "query",
         "fallback_from",
+        "fetch_failed_count",
+        "fetched_count",
         "error",
         "error_class",
         "error_kind",
+        "mode",
+        "recency_degraded",
+        "recency_supported",
+        "returned_chars",
+        "selected_provider",
     }
 )
 _SENTINELS: Final[frozenset[str]] = frozenset({"NO_REPLY", "HEARTBEAT_OK"})
@@ -713,15 +727,41 @@ def _bounded_tool_result_metadata(
     for key in _TOOL_RESULT_METADATA_KEYS:
         if key not in parsed:
             continue
-        value = parsed[key]
-        if isinstance(value, str):
-            metadata[key] = _truncate_json_string(
-                value,
-                _MAX_TOOL_RESULT_METADATA_VALUE_CHARS,
-            )
-        elif isinstance(value, int | float | bool) or value is None:
-            metadata[key] = value
+        _add_bounded_tool_result_metadata(metadata, key, parsed[key])
+
+    diagnostics = parsed.get("diagnostics")
+    if isinstance(diagnostics, Mapping):
+        for key in _TOOL_RESULT_METADATA_KEYS:
+            if key not in diagnostics or key in metadata:
+                continue
+            _add_bounded_tool_result_metadata(metadata, key, diagnostics[key])
+
+        diagnostic_attempts = diagnostics.get("provider_attempts")
+        if (
+            "provider_attempt_count" not in metadata
+            and isinstance(diagnostic_attempts, list | tuple)
+        ):
+            metadata["provider_attempt_count"] = len(diagnostic_attempts)
+
+    attempts = parsed.get("provider_attempts")
+    if isinstance(attempts, list | tuple):
+        metadata["provider_attempt_count"] = len(attempts)
+
     return metadata
+
+
+def _add_bounded_tool_result_metadata(
+    metadata: dict[str, str | int | float | bool | None],
+    key: str,
+    value: Any,
+) -> None:
+    if isinstance(value, str):
+        metadata[key] = _truncate_json_string(
+            value,
+            _MAX_TOOL_RESULT_METADATA_VALUE_CHARS,
+        )
+    elif isinstance(value, int | float | bool) or value is None:
+        metadata[key] = value
 
 
 def _json_tool_result_preview(parsed: Any, original_chars: int, max_chars: int) -> str:
@@ -762,6 +802,90 @@ def _json_tool_result_preview(parsed: Any, original_chars: int, max_chars: int) 
     if len(rendered) <= max_chars:
         return rendered
     return json.dumps({"result_truncated": True}, ensure_ascii=False)
+
+
+def _persisted_web_search_sources(parsed: Any) -> list[dict[str, Any]]:
+    if not isinstance(parsed, Mapping):
+        return []
+    candidates = parsed.get("sources")
+    if not isinstance(candidates, list | tuple):
+        candidates = parsed.get("results")
+    if not isinstance(candidates, list | tuple):
+        return []
+
+    sources: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        source = _persisted_web_search_source(candidate)
+        if source is None:
+            continue
+        key = str(source.get("url") or "").split("#", 1)[0]
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        sources.append(source)
+        if len(sources) >= _MAX_PERSISTED_TOOL_SOURCES:
+            break
+    return sources
+
+
+def _persisted_web_search_source(candidate: Any) -> dict[str, Any] | None:
+    if not isinstance(candidate, Mapping):
+        return None
+    url = _persisted_source_url(candidate.get("url") or candidate.get("final_url"))
+    if url is None:
+        return None
+
+    source: dict[str, Any] = {"url": url}
+    canonical_url = _persisted_source_url(candidate.get("canonical_url"))
+    if canonical_url is not None:
+        source["canonical_url"] = canonical_url
+    title = _persisted_source_text(candidate.get("title"), max_chars=256)
+    if title:
+        source["title"] = title
+    domain = _persisted_source_text(candidate.get("domain"), max_chars=128)
+    if not domain:
+        domain = _domain_from_source_url(url)
+    if domain:
+        source["domain"] = domain
+    provider = _persisted_source_text(candidate.get("provider"), max_chars=64)
+    if provider:
+        source["provider"] = provider
+    rank = candidate.get("rank")
+    if isinstance(rank, int):
+        source["rank"] = rank
+    fetched = candidate.get("fetched")
+    if isinstance(fetched, bool):
+        source["fetched"] = fetched
+    return source
+
+
+def _persisted_source_url(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    url = value.strip()
+    if not url or url.endswith("…"):
+        return None
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return None
+    if parts.scheme not in {"http", "https"} or not parts.netloc:
+        return None
+    return url
+
+
+def _persisted_source_text(value: Any, *, max_chars: int) -> str:
+    if not isinstance(value, str):
+        return ""
+    return _truncate_json_string(value.strip(), max_chars)
+
+
+def _domain_from_source_url(url: str) -> str:
+    try:
+        return urlsplit(url).hostname or ""
+    except ValueError:
+        return ""
 
 
 def _tool_argument_text(value: Any) -> str:
@@ -850,6 +974,17 @@ def _persisted_tool_result_segment(
     }
     if event.execution_status is not None:
         segment["execution_status"] = normalize_execution_status(event.execution_status)
+
+    parsed_result: Any = None
+    parsed_result_available = False
+    if event.tool_name == "web_search" or len(result) > max_chars:
+        with contextlib.suppress(json.JSONDecodeError, TypeError):
+            parsed_result = json.loads(result)
+            parsed_result_available = True
+    if event.tool_name == "web_search" and parsed_result_available:
+        sources = _persisted_web_search_sources(parsed_result)
+        if sources:
+            segment["sources"] = sources
     if len(result) <= max_chars:
         return segment
 
@@ -857,14 +992,16 @@ def _persisted_tool_result_segment(
     segment["result_original_chars"] = len(result)
     if "execution_status" in segment:
         segment["execution_status"] = mark_execution_status_truncated(segment["execution_status"])
-    try:
-        parsed = json.loads(result)
-    except (json.JSONDecodeError, TypeError):
+    if not parsed_result_available:
         segment["result"] = result[:max_chars]
         return segment
 
+    parsed = parsed_result
     if isinstance(parsed, dict):
         segment.update(_bounded_tool_result_metadata(parsed))
+        sources = _persisted_web_search_sources(parsed)
+        if sources:
+            segment["sources"] = sources
     segment["result"] = _json_tool_result_preview(parsed, len(result), max_chars)
     return segment
 

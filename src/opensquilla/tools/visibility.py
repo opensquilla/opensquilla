@@ -68,7 +68,6 @@ _CHANNEL_DEFAULT_ALLOW: frozenset[str] = frozenset(
         "feishu_wiki_list_nodes",
         "feishu_wiki_list_spaces",
         "read_file",
-        "research_search",
         "session_status",
         "sessions_history",
         "sessions_list",
@@ -76,6 +75,7 @@ _CHANNEL_DEFAULT_ALLOW: frozenset[str] = frozenset(
         "voice_clone",
         "voice_convert",
         "voice_search",
+        "web_discover",
         "web_fetch",
         "web_search",
     }

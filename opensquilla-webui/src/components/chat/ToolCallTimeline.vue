@@ -103,6 +103,66 @@ import type { ChatToolCallRenderItem } from '@/types/chat'
 
 const SECTION_PREVIEW_LIMIT = 200
 
+function parseToolResultRecord(raw: string): Record<string, unknown> | null {
+  const text = String(raw || '').trim()
+  if (!text.startsWith('{')) return null
+  try {
+    const parsed = JSON.parse(text)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null
+  } catch {
+    return null
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function webDiagnosticsSummary(raw: string): string {
+  const payload = parseToolResultRecord(raw)
+  if (!payload) return ''
+  const diagnostics = asRecord(payload.diagnostics)
+  if (!diagnostics) return ''
+
+  const attempts = Array.isArray(payload.provider_attempts)
+    ? payload.provider_attempts
+    : Array.isArray(diagnostics.provider_attempts)
+      ? diagnostics.provider_attempts
+      : []
+  const successfulAttempt = attempts
+    .map(item => asRecord(item))
+    .find(item => item?.status === 'success' && item?.provider)
+  const selected = String(
+    diagnostics.selected_provider ||
+    payload.provider ||
+    successfulAttempt?.provider ||
+    '',
+  )
+  const fallbackFrom = String(diagnostics.fallback_from || '')
+  const fetchedCount = asNumber(diagnostics.fetched_count)
+  const fetchFailedCount = asNumber(diagnostics.fetch_failed_count)
+  const returnedChars = asNumber(diagnostics.returned_chars)
+  const truncated = diagnostics.budget_clamped === true
+
+  const parts: string[] = []
+  if (selected) parts.push(`provider ${selected}`)
+  if (attempts.length) parts.push(`${attempts.length} attempt${attempts.length === 1 ? '' : 's'}`)
+  if (fallbackFrom) parts.push(`fallback from ${fallbackFrom}`)
+  if (fetchedCount !== null) parts.push(`${fetchedCount} fetched`)
+  if (fetchFailedCount) parts.push(`${fetchFailedCount} fetch failed`)
+  if (returnedChars !== null) parts.push(`${returnedChars} chars`)
+  if (truncated) parts.push('truncated')
+  return parts.join(' · ')
+}
+
 // Labeled input / result / error sections shown in an expanded row body.
 const ToolRowSections = defineComponent({
   name: 'ToolRowSections',
@@ -130,6 +190,13 @@ const ToolRowSections = defineComponent({
                 },
               }, 'view full')
             : null,
+        ]))
+      }
+      const diagnostics = webDiagnosticsSummary(call.result)
+      if (diagnostics) {
+        sections.push(h('section', { class: 'tool-row-section' }, [
+          h('div', { class: 'tool-row-section__label' }, 'diagnostics'),
+          h('pre', { class: 'tool-row-section__pre' }, diagnostics),
         ]))
       }
       if (call.result) {
@@ -173,7 +240,7 @@ const MAX_TOOL_ROWS = 30
 // Reads and searches collapse to a pill by default; writes, exec, and unknown
 // tools stay expanded; error rows auto-expand. Manual toggles invert the
 // default, so a user collapse is always respected.
-const COLLAPSED_BY_DEFAULT = new Set(['web.search', 'web.read', 'file.inspect', 'memory.search'])
+const COLLAPSED_BY_DEFAULT = new Set(['web.discover', 'web.search', 'web.read', 'file.inspect', 'memory.search'])
 
 type TimelineRenderItem =
   | ChatStreamTimelineItem

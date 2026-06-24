@@ -26,7 +26,7 @@ from opensquilla.onboarding.search_specs import (
     list_search_provider_setup_specs,
     search_provider_catalog_payload,
 )
-from opensquilla.search.research import run_research_search
+from opensquilla.search.canonical import run_canonical_web_search
 from opensquilla.search.types import Recency, SearchMode, SearchOptions
 
 search_app = typer.Typer(help="Configure and inspect web search providers.")
@@ -257,10 +257,10 @@ def _run_local_research_query(
         recency=cast(Recency | None, recency),
         provider=provider,
     )
-    return asyncio.run(run_research_search(options, fetcher=_research_web_fetcher))
+    return asyncio.run(run_canonical_web_search(options, fetcher=_web_search_fetcher))
 
 
-async def _research_web_fetcher(url: str, max_chars: int) -> dict[str, object]:
+async def _web_search_fetcher(url: str, max_chars: int) -> dict[str, object]:
     from opensquilla.tools.builtin.web_fetch import run_web_fetch_payload
 
     return await run_web_fetch_payload(url, max_chars=max_chars)

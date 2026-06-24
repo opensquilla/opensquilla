@@ -86,6 +86,7 @@ export function toolIconName(name: string): IconName {
 
 export function toolOperationKey(name: string): string {
   const n = String(name || '').toLowerCase()
+  if (n.includes('web_discover')) return 'web.discover'
   if (n.includes('web_search') || n === 'search' || n.includes('google') || n.includes('bing')) return 'web.search'
   if (n.includes('web_fetch') || n.includes('http') || n.includes('fetch') || n.includes('curl') || n.includes('wget')) return 'web.read'
   if (n.includes('python') || n === 'py') return 'code.python'
@@ -100,6 +101,7 @@ export function toolOperationKey(name: string): string {
 
 export function toolActionLabel(name: string): string {
   const key = toolOperationKey(name)
+  if (key === 'web.discover') return 'Discover links'
   if (key === 'web.search') return 'Search web'
   if (key === 'web.read') return 'Read web page'
   if (key === 'code.python') return 'Run Python'

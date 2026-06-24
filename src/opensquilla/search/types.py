@@ -129,6 +129,7 @@ class SearchDiagnostics:
 
     query: str
     mode: SearchMode
+    selected_provider: str = ""
     provider_attempts: list[dict[str, Any]] = field(default_factory=list)
     fallback_from: str = ""
     fetched_count: int = 0
@@ -137,6 +138,8 @@ class SearchDiagnostics:
     domain_limited_count: int = 0
     returned_chars: int = 0
     budget_clamped: bool = False
+    recency_supported: bool = True
+    recency_degraded: bool = False
     cache_status: str = "disabled"
     loop_guard: dict[str, Any] = field(default_factory=dict)
 

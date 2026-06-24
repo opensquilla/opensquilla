@@ -117,6 +117,7 @@ CRON_AGENT_ALLOW: frozenset[str] = frozenset(
         "session_status",
         "sessions_history",
         "sessions_list",
+        "web_discover",
         "web_fetch",
         "web_search",
     }

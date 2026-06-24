@@ -7,7 +7,7 @@ from opensquilla.gateway.config import GatewayConfig
 from opensquilla.search.providers.brave import BraveSearchProvider
 from opensquilla.search.providers.duckduckgo import DuckDuckGoProvider
 from opensquilla.search.providers.exa import ExaSearchProvider
-from opensquilla.search.types import SearchResult
+from opensquilla.search.types import SearchProviderError, SearchResult
 from opensquilla.tools.builtin import web
 
 
@@ -130,6 +130,21 @@ async def test_duckduckgo_provider_maps_provider_and_source() -> None:
 
     assert result.provider == "duckduckgo"
     assert result.source == "duckduckgo"
+
+
+@pytest.mark.asyncio
+async def test_duckduckgo_provider_surfaces_network_failures() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("network down", request=request)
+
+    provider = DuckDuckGoProvider(transport=httpx.MockTransport(handler))
+
+    with pytest.raises(SearchProviderError) as exc_info:
+        await provider.search("duck")
+
+    assert exc_info.value.provider == "duckduckgo"
+    assert exc_info.value.kind == "network"
+    assert exc_info.value.retryable is True
 
 
 def test_search_payload_keeps_lightweight_metadata() -> None:

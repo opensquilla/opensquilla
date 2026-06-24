@@ -86,7 +86,7 @@ jobs:
         run: |
           timeout 180s uv run pytest \
             tests/live/test_search_retrieval_live.py \
-            tests/live/test_research_search_agent_e2e.py \
+            tests/live/test_web_search_agent_e2e.py \
             -m live_search \
             -q -s
 

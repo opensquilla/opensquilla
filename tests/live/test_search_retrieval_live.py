@@ -1,4 +1,4 @@
-"""Opt-in live research search smoke tests.
+"""Opt-in live canonical web search smoke tests.
 
 These tests use public, synthetic prompts only and skip unless explicitly enabled
 with local credentials.
@@ -11,7 +11,7 @@ from typing import Any, cast
 
 import pytest
 
-from opensquilla.search.research import run_research_search
+from opensquilla.search.canonical import run_canonical_web_search
 from opensquilla.search.types import SearchOptions
 
 pytestmark = pytest.mark.live_search
@@ -23,12 +23,12 @@ def _require_live_search() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tavily_research_search_live_smoke() -> None:
+async def test_tavily_canonical_web_search_live_smoke() -> None:
     _require_live_search()
     if not os.environ.get("TAVILY_API_KEY"):
         pytest.skip("TAVILY_API_KEY not set")
 
-    payload = await run_research_search(
+    payload = await run_canonical_web_search(
         SearchOptions(
             query="Python latest release notes",
             mode="news",

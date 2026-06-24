@@ -34,6 +34,7 @@ const SQUILLA_DWELL_MS = 2500
 const STALE_SIGNAL_MS = 20000
 
 const TOOL_PROGRESS_VERBS: Record<string, string> = {
+  'web.discover': 'Discovering links',
   'web.search': 'Searching the web',
   'web.read': 'Reading a web page',
   'code.python': 'Running Python',

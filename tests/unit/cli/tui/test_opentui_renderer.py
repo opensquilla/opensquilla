@@ -3,9 +3,18 @@ from __future__ import annotations
 import pytest
 
 from opensquilla.cli.chat.turn import UsageSummary
-from opensquilla.cli.tui.backend.render_summary import summarize_result
+from opensquilla.cli.tui.backend.render_summary import summarize_args, summarize_result
 from opensquilla.cli.tui.opentui.renderer import OpenTuiStreamRenderer, _format_tokens
 from opensquilla.engine.usage import SessionTotalsSnapshot
+
+
+def test_web_search_args_render_query_summary() -> None:
+    assert summarize_args("web_search", {"query": "OpenSquilla canonical search"}) == (
+        "OpenSquilla canonical search"
+    )
+    assert summarize_args("web_discover", {"query": "OpenSquilla discover links"}) == (
+        "OpenSquilla discover links"
+    )
 
 
 class _RecordingHandle:

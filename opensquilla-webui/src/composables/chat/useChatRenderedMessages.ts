@@ -350,6 +350,7 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
         call.status = call.isError ? 'error' : 'success'
         call.result = resultStr
         call.resultPreview = truncate(resultStr, 200)
+        if (segment.sources !== undefined) call.sources = segment.sources
       }
     })
 
@@ -514,6 +515,7 @@ function normalizeToolCalls(raw: RawToolCallPayload[] | undefined): ChatToolCall
         isError: false,
         result: '',
         resultPreview: '',
+        sources: undefined,
         isOpen: false,
       }
       byId.set(toolId, item)
@@ -529,24 +531,26 @@ function normalizeToolCalls(raw: RawToolCallPayload[] | undefined): ChatToolCall
       item.resultPreview = truncate(resultStr, 200)
       item.status = isError ? 'error' : 'success'
     }
+    if (tc.sources !== undefined) item.sources = tc.sources
     if (isError) {
       item.isError = true
       item.status = 'error'
     }
   })
 
-  return merged.map(tc => ({
-    toolId: tc.toolId,
-    name: tc.name,
-    displayName: tc.displayName,
-    groupId: tc.groupId,
-    inputRaw: tc.inputRaw,
-    inputPreview: tc.inputPreview,
-    isRunning: tc.isRunning,
-    status: tc.status,
-    isError: tc.isError,
-    result: tc.result,
-    resultPreview: tc.resultPreview,
+  return merged.map(item => ({
+    toolId: item.toolId,
+    name: item.name,
+    displayName: item.displayName,
+    groupId: item.groupId,
+    inputRaw: item.inputRaw,
+    inputPreview: item.inputPreview,
+    isRunning: item.isRunning,
+    status: item.status,
+    isError: item.isError,
+    result: item.result,
+    resultPreview: item.resultPreview,
+    sources: item.sources,
     isOpen: false,
   }))
 }

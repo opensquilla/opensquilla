@@ -98,8 +98,8 @@ def test_policy_config_expands_current_groups_patterns_and_profiles() -> None:
             "image_generate",
             "install_skill_deps",
             "message",
-            "research_search",
             "session_status",
+            "web_discover",
             "web_fetch",
             "web_search",
         }
@@ -123,12 +123,17 @@ def test_policy_config_expands_current_groups_patterns_and_profiles() -> None:
         "http_request",
         "image_generate",
         "install_skill_deps",
-        "research_search",
+        "web_discover",
         "web_fetch",
         "web_search",
     }
-    assert expand_selectors(frozenset({"web_*"}), available) == {"web_fetch", "web_search"}
-    assert "research_search" in expand_selectors(frozenset({"group:web"}), available)
+    assert expand_selectors(frozenset({"web_*"}), available) == {
+        "web_discover",
+        "web_fetch",
+        "web_search",
+    }
+    assert "research_search" not in expand_selectors(frozenset({"group:web"}), available)
+    assert "web_discover" in expand_selectors(frozenset({"group:web"}), available)
     assert profile_allowlist("minimal", available) == {"session_status"}
     assert profile_allowlist("full", available) is None
 

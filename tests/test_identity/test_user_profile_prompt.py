@@ -126,6 +126,34 @@ def test_system_prompt_disambiguates_session_send_from_channel_message() -> None
     assert "send_message" not in prompt
 
 
+def test_prompt_guides_web_tool_selection_for_source_backed_answers() -> None:
+    prompt = assemble_system_prompt(
+        AgentProfile(agent_id="main", prompt_mode="full"),
+        tools=["web_search", "web_discover", "web_fetch"],
+    )
+
+    assert "## Web Research Tools" in prompt
+    assert "Prefer `web_search`" in prompt
+    assert "`web_search`" in prompt
+    assert "`web_discover` for lightweight link discovery" in prompt
+    assert "`web_fetch` for a specific URL" in prompt
+    assert "citation-ready excerpts" in prompt
+    assert "research_search" not in prompt
+
+
+def test_prompt_handles_partial_web_tool_availability() -> None:
+    prompt = assemble_system_prompt(
+        AgentProfile(agent_id="main", prompt_mode="full"),
+        tools=["web_fetch"],
+    )
+
+    assert "## Web Research Tools" in prompt
+    assert "Prefer `research_search`" not in prompt
+    assert "research_search" not in prompt
+    assert "`web_fetch` for a specific URL" in prompt
+    assert "known page needs deeper inspection" in prompt
+
+
 def test_system_prompt_guides_generated_file_delivery() -> None:
     prompt = assemble_system_prompt(
         AgentProfile(agent_id="main", prompt_mode="full"),

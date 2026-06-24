@@ -98,6 +98,18 @@ function addSource(out: SourceLink[], seen: Map<string, SourceLink>, url: unknow
   out.push(source)
 }
 
+function extractSources(raw: unknown, out: SourceLink[], seen: Map<string, SourceLink>): number {
+  if (!Array.isArray(raw)) return 0
+  const before = out.length
+  for (const item of raw) {
+    if (item && typeof item === 'object') {
+      const entry = item as Record<string, unknown>
+      addSource(out, seen, entry.url || entry.final_url || entry.canonical_url, entry.title)
+    }
+  }
+  return out.length - before
+}
+
 // Truncated persisted results can break JSON.parse; recover what is left by
 // scanning the raw text for title/url field pairs in order.
 const SOURCE_FIELD_RE = /"(title|url|final_url)"\s*:\s*"((?:[^"\\]|\\.)*)"/g
@@ -120,15 +132,23 @@ function scanSourceFields(raw: string, out: SourceLink[], seen: Map<string, Sour
   }
 }
 
+function operationHasSearchResults(operation: string): boolean {
+  return operation === 'web.search'
+}
+
 const sources = computed<SourceLink[]>(() => {
   const out: SourceLink[] = []
   const seen = new Map<string, SourceLink>()
   for (const call of props.calls || []) {
     const operation = toolOperationKey(call.name)
-    if (operation !== 'web.search' && operation !== 'web.read') continue
+    if (!operationHasSearchResults(operation) && operation !== 'web.read') continue
     if (call.isError || call.status === 'error') continue
     const record = parseJsonRecord(call.result)
-    if (operation === 'web.search') {
+    if (operationHasSearchResults(operation)) {
+      const directSources = extractSources(call.sources, out, seen)
+      if (directSources > 0) continue
+      const recordSources = record ? extractSources(record.sources, out, seen) : 0
+      if (recordSources > 0) continue
       const results = record && Array.isArray(record.results) ? record.results as unknown[] : null
       if (results) {
         for (const item of results) {

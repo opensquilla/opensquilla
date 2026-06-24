@@ -1,4 +1,4 @@
-"""CLI tests for `opensquilla search query` research mode."""
+"""CLI tests for `opensquilla search query` canonical web search mode."""
 
 from __future__ import annotations
 
@@ -13,10 +13,10 @@ from opensquilla.search.types import SearchOptions
 runner = CliRunner()
 
 
-def test_search_query_research_options_use_local_search(monkeypatch):
+def test_search_query_web_search_options_use_local_search(monkeypatch):
     seen_options: list[SearchOptions] = []
 
-    async def fake_run_research_search(
+    async def fake_run_canonical_web_search(
         options: SearchOptions,
         **kwargs: object,
     ) -> dict[str, object]:
@@ -41,7 +41,11 @@ def test_search_query_research_options_use_local_search(monkeypatch):
             ],
         }
 
-    monkeypatch.setattr(search_cmd, "run_research_search", fake_run_research_search)
+    monkeypatch.setattr(
+        search_cmd,
+        "run_canonical_web_search",
+        fake_run_canonical_web_search,
+    )
 
     result = runner.invoke(
         app,
@@ -71,8 +75,8 @@ def test_search_query_research_options_use_local_search(monkeypatch):
     ]
 
 
-def test_search_query_research_text_output_renders_results(monkeypatch):
-    async def fake_run_research_search(
+def test_search_query_web_search_text_output_renders_results(monkeypatch):
+    async def fake_run_canonical_web_search(
         options: SearchOptions,
         **kwargs: object,
     ) -> dict[str, object]:
@@ -96,7 +100,11 @@ def test_search_query_research_text_output_renders_results(monkeypatch):
             ],
         }
 
-    monkeypatch.setattr(search_cmd, "run_research_search", fake_run_research_search)
+    monkeypatch.setattr(
+        search_cmd,
+        "run_canonical_web_search",
+        fake_run_canonical_web_search,
+    )
 
     result = runner.invoke(
         app,
@@ -109,8 +117,8 @@ def test_search_query_research_text_output_renders_results(monkeypatch):
     assert "https://www.python.org/downloads/" in result.stdout
 
 
-def test_search_query_research_json_failure_exits_nonzero(monkeypatch):
-    async def fake_run_research_search(
+def test_search_query_web_search_json_failure_exits_nonzero(monkeypatch):
+    async def fake_run_canonical_web_search(
         options: SearchOptions,
         **kwargs: object,
     ) -> dict[str, object]:
@@ -125,7 +133,11 @@ def test_search_query_research_json_failure_exits_nonzero(monkeypatch):
             "error": {"message": "network down"},
         }
 
-    monkeypatch.setattr(search_cmd, "run_research_search", fake_run_research_search)
+    monkeypatch.setattr(
+        search_cmd,
+        "run_canonical_web_search",
+        fake_run_canonical_web_search,
+    )
 
     result = runner.invoke(
         app,

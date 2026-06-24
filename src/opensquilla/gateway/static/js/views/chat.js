@@ -508,6 +508,7 @@ const ChatView = (() => {
     write_file: '\u270F\uFE0F',   // ✏️
     edit_file: '\u270F\uFE0F',    // ✏️
     web_search: '\uD83D\uDD0D',   // 🔍
+    web_discover: '\uD83D\uDD0E', // 🔎
     search: '\uD83D\uDD0D',       // 🔍
     http_request: '\uD83C\uDF10', // 🌐
     web_fetch: '\uD83C\uDF10',    // 🌐

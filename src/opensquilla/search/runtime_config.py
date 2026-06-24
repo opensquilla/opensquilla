@@ -122,12 +122,8 @@ class ResolvedSearchRuntime:
     def provider_order(self, options: SearchOptions) -> tuple[str, ...]:
         if options.provider:
             return self._explicit_provider_order(options.provider, recency=options.recency)
-        if options.recency is not None:
-            return self._ranked_available(
-                _FRESHNESS_TIE_BREAKER,
-                required_capability="freshness",
-                include_unavailable_if_empty=True,
-            )
+        if options.recency is not None or options.mode == "news":
+            return self._freshness_provider_order()
         if options.mode == "technical":
             return self._ranked_available(_TECHNICAL_TIE_BREAKER)
         return self._ranked_available(_GENERAL_TIE_BREAKER)
@@ -150,10 +146,21 @@ class ResolvedSearchRuntime:
         if (
             self.fallback_policy == "network"
             and provider_id != "duckduckgo"
-            and recency is None
         ):
             return (provider_id, "duckduckgo")
         return (provider_id,)
+
+    def _freshness_provider_order(self) -> tuple[str, ...]:
+        ranked = list(
+            self._ranked_available(
+                _FRESHNESS_TIE_BREAKER,
+                required_capability="freshness",
+            )
+        )
+        duckduckgo = self.providers.get("duckduckgo")
+        if duckduckgo is not None and duckduckgo.available and "duckduckgo" not in ranked:
+            ranked.append("duckduckgo")
+        return tuple(ranked)
 
     def _ranked_available(
         self,

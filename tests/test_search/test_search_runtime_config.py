@@ -94,6 +94,13 @@ def test_resolver_all_key_mode_tie_breakers(monkeypatch) -> None:
         "tavily",
         "brave",
         "exa",
+        "duckduckgo",
+    )
+    assert runtime.provider_order(SearchOptions(query="q", mode="news")) == (
+        "tavily",
+        "brave",
+        "exa",
+        "duckduckgo",
     )
 
 

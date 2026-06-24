@@ -114,6 +114,24 @@ Find the latest release notes for this project and summarize only breaking chang
 The agent can use search and fetch tools when the tool policy and configured
 provider allow it.
 
+### Search Tool Roles
+
+- `web_search`: preferred for source-backed answers. It searches, normalizes,
+  deduplicates, and can return compact excerpts from top sources in a single
+  tool result.
+- `web_discover`: lightweight link discovery. It returns titles, URLs, and
+  snippets.
+- `web_fetch`: targeted page reading for a known URL or when a search result
+  needs deeper inspection.
+
+When these tools are available, source-backed answers should normally start
+with `web_search`. Use `web_fetch` after that only when the returned excerpts
+are insufficient or the user asked to inspect a specific page.
+
+The Web UI renders `web_search` as source-backed web search. `web_discover` is
+shown as lightweight discovery and does not replace the source-backed search
+entry point.
+
 For deeper multi-source work, ask for a research report or use an installed
 research skill.
 

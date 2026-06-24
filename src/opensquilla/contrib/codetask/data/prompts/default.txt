@@ -93,14 +93,19 @@ Phase 6 — RECORD THE VERIFICATION MANIFEST (required)
     repo root AND re-runs it in a throwaway checkout of the original code to
     confirm it fails there; an absolute `cd` back into this (already-fixed)
     copy would defeat that check. Use a relative invocation, e.g.
-    `PYTHONPATH=src .venv/bin/python -m pytest tests/test_x.py::test_y`.
-  - The runner re-runs "command" / "regression_command" in a PLAIN shell: it
-    does NOT activate any virtualenv you created, and bare `python` often does
-    not exist (only `python3`). Make the command SELF-CONTAINED — invoke the
-    interpreter EXPLICITLY: `.venv/bin/python -m pytest ...` if you made a venv
-    (`uv venv` / `python3 -m venv`), else `python3 -m pytest ...`. NEVER use a
-    bare `python`, and do NOT rely on `source .venv/bin/activate` or shell
-    state — the command must work on its own from the repo root.
+    `PYTHONPATH=src python -m pytest tests/test_x.py::test_y`.
+  - The runner re-runs "command" / "regression_command" in a PLAIN shell (your
+    venv is NOT activated; the red check also re-runs in a base worktree that
+    has no venv). WHEN your project has a `.venv`, the runner makes BOTH
+    `python` and `python3` resolve to it — prefer `python` (a venv always
+    provides it). If you did NOT create a `.venv`, use `python3` (the name
+    that exists on a bare host; `python` often does not). EITHER way do NOT
+    write `.venv/bin/python` or any `.venv/...` path (the base worktree has
+    none) and do NOT rely on `source .venv/bin/activate`. ALWAYS make
+    imports repo-relative (e.g. `PYTHONPATH=src python -m pytest ...`); do NOT
+    rely on an editable / `pip install -e` install for the test to import your
+    code — the red check must import the BASE code from the worktree, not your
+    fix.
   - "test_paths" must list the test files you ADDED/CHANGED so the runner can
     re-create the red state on the original code. This is required.
   - If the task genuinely cannot be expressed as a DETERMINISTIC automated

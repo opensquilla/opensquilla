@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -135,7 +136,7 @@ def verify(
 
     # GREEN: run each acceptance command at the current (post-change) tree.
     for check in checks:
-        rc, _ = _run_shell(check.command, cwd=repo, timeout=acceptance_timeout)
+        rc, _ = _run_shell(check.command, cwd=repo, timeout=acceptance_timeout, repo=repo)
         check.after = "pass" if rc == 0 else "fail"
 
     # RED: re-run each acceptance command at base, with the agent's test files
@@ -159,7 +160,7 @@ def verify(
                 # the agent's command cannot teleport the red check back into
                 # the already-fixed task repo.
                 wt_command = _localize_command(check.command, repo, wt)
-                rc, _ = _run_shell(wt_command, cwd=wt, timeout=acceptance_timeout)
+                rc, _ = _run_shell(wt_command, cwd=wt, timeout=acceptance_timeout, repo=repo)
                 check.before = "fail" if rc != 0 else "pass"
     except _WorktreeError as exc:
         logger.warning("base worktree unavailable, red phase skipped: %s", exc)
@@ -229,7 +230,7 @@ def _run_regression(
     cmd = str(command).strip()
     result = RegressionResult(command=cmd, ran=True)
 
-    head_rc, head_out = _run_shell(cmd, cwd=repo, timeout=timeout)
+    head_rc, head_out = _run_shell(cmd, cwd=repo, timeout=timeout, repo=repo)
     head_fail = _parse_failures(head_out, head_rc)
     head_names = _failing_names(head_out)
     result.passed = _parse_passes(head_out)
@@ -244,7 +245,7 @@ def _run_regression(
     try:
         with _BaseWorktree(repo, base_commit) as wt:
             base_rc, base_out = _run_shell(
-                _localize_command(cmd, repo, wt), cwd=wt, timeout=timeout
+                _localize_command(cmd, repo, wt), cwd=wt, timeout=timeout, repo=repo
             )
             base_fail = _parse_failures(base_out, base_rc)
             base_names = _failing_names(base_out)
@@ -347,7 +348,9 @@ def _localize_command(command: str, repo: Path, target: Path) -> str:
     return out
 
 
-def _run_shell(command: str, *, cwd: Path, timeout: int) -> tuple[int, str]:
+def _run_shell(
+    command: str, *, cwd: Path, timeout: int, repo: Path | None = None
+) -> tuple[int, str]:
     """Run a manifest acceptance/regression command in a POSIX-flavored shell.
 
     Verification commands the agent records use POSIX shell semantics
@@ -362,9 +365,32 @@ def _run_shell(command: str, *, cwd: Path, timeout: int) -> tuple[int, str]:
             + (" (install Git Bash or WSL)" if os.name != "posix" else "")
         )
         return -1, f"OSERROR: {hint}"
+    shim: Path | None = None
+    prefixed = command
+    if repo is not None:
+        venv_python = Path(repo) / ".venv" / "bin" / "python"
+        if venv_python.exists():
+            # Make BOTH `python` and `python3` resolve to the run repo's venv,
+            # for verification commands re-run in a plain (non-activated) shell
+            # and in the base worktree (which has no venv of its own). uv venvs
+            # often expose only `.venv/bin/python`, so a small shim covers
+            # `python3` too. The export runs AFTER `bash -lc` startup files, so
+            # it wins over any login-profile PATH.
+            try:
+                shim = Path(tempfile.mkdtemp(prefix="codetask-pyshim-"))
+                for _name in ("python", "python3"):
+                    try:
+                        (shim / _name).symlink_to(venv_python)
+                    except OSError:
+                        pass
+                _vbin = shlex.quote(f"{shim}:{venv_python.parent}")
+                prefixed = f'export PATH={_vbin}:"$PATH"; {command}'
+            except OSError:
+                shim = None
+                prefixed = command
     try:
         proc = subprocess.run(
-            [bash, "-lc", command],
+            [bash, "-lc", prefixed],
             cwd=str(cwd),
             capture_output=True,
             text=True,
@@ -377,6 +403,9 @@ def _run_shell(command: str, *, cwd: Path, timeout: int) -> tuple[int, str]:
         return -1, "TIMEOUT"
     except OSError as exc:
         return -1, f"OSERROR: {exc}"
+    finally:
+        if shim is not None:
+            shutil.rmtree(shim, ignore_errors=True)
 
 
 class _BaseWorktree:

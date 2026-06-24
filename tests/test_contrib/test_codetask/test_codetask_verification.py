@@ -97,7 +97,7 @@ class TestRegressionFailClosed:
     def test_unparseable_nonzero_is_treated_as_regressed(self, monkeypatch):
         # npm/go-style failure with no parseable count must NOT report clean
         # (codex review #3).
-        def fake_shell(command, *, cwd, timeout):
+        def fake_shell(command, *, cwd, timeout, repo=None):
             return 1, "npm ERR! test failed"
 
         monkeypatch.setattr(verification, "_run_shell", fake_shell)
@@ -120,7 +120,7 @@ class TestRegressionFailClosed:
         # NEW failure must still be detected (codex review #4).
         calls = {"n": 0}
 
-        def fake_shell(command, *, cwd, timeout):
+        def fake_shell(command, *, cwd, timeout, repo=None):
             calls["n"] += 1
             if calls["n"] == 1:  # head
                 return 1, "FAILED tests/t.py::test_new\n1 failed"
@@ -289,7 +289,7 @@ def test_red_phase_uses_localized_command(monkeypatch, tmp_path):
     seen = {"green": None, "red": None}
     calls = {"n": 0}
 
-    def fake_run_shell(command, *, cwd, timeout):
+    def fake_run_shell(command, *, cwd, timeout, repo=None):
         calls["n"] += 1
         if calls["n"] == 1:
             seen["green"] = (command, str(cwd))
@@ -321,3 +321,23 @@ def test_red_phase_uses_localized_command(monkeypatch, tmp_path):
     # redirected to the worktree, so it can no longer teleport into the fix.
     assert str(repo) not in seen["red"][0]
     assert str(tmp_path / "base-wt") in seen["red"][0]
+
+
+def test_run_shell_resolves_python_from_repo_venv_in_foreign_cwd(tmp_path):
+    """Even when cwd has NO venv (the base worktree), repo= makes bare
+    python AND python3 resolve to the run repo's .venv interpreter."""
+    from opensquilla.contrib.codetask import verification
+
+    repo = tmp_path / "repo"
+    venv_bin = repo / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    fake = venv_bin / "python"
+    fake.write_text("#!/bin/sh\necho VENV_PY_OK\n")
+    fake.chmod(0o755)
+    foreign = tmp_path / "wt"  # like the base worktree: no .venv here
+    foreign.mkdir()
+
+    rc, out = verification._run_shell("python", cwd=foreign, timeout=30, repo=repo)
+    assert rc == 0 and "VENV_PY_OK" in out, (rc, out)
+    rc, out = verification._run_shell("python3", cwd=foreign, timeout=30, repo=repo)
+    assert rc == 0 and "VENV_PY_OK" in out, (rc, out)  # python3 too (uv-venv safety)

@@ -9,7 +9,7 @@ import pytest
 
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.provider.selector import ProviderConfig
-from opensquilla.provider.types import DoneEvent, Message, TextDeltaEvent
+from opensquilla.provider.types import DoneEvent, ErrorEvent, Message, TextDeltaEvent
 from scripts.run_draco_ensemble import (
     GROUP_SPECS,
     amain,
@@ -71,6 +71,26 @@ class _SlowProvider:
         await asyncio.sleep(1.0)
         yield TextDeltaEvent(text="late")
         yield DoneEvent(model="slow")
+
+    async def list_models(self) -> list:
+        return []
+
+
+class _DiagnosticErrorProvider:
+    provider_name = "diagnostic-error"
+
+    async def chat(self, messages: list[Message], tools=None, config=None):  # noqa: ANN001, ARG002
+        yield ErrorEvent(
+            message="boom",
+            code="diagnostic_boom",
+            diagnostic_done=DoneEvent(
+                input_tokens=7,
+                output_tokens=3,
+                billed_cost=0.12,
+                model="diagnostic-model",
+                ensemble_trace={"kept": True},
+            ),
+        )
 
     async def list_models(self) -> list:
         return []
@@ -164,7 +184,7 @@ async def test_draco_runner_dry_run_writes_jsonl_and_summary(tmp_path: Path) -> 
     assert manifest["rows_written"] == len(rows)
     assert manifest["artifacts"]["trace_jsonl"] == str(trace_path)
     assert manifest["artifacts"]["command_txt"] == str(command_path)
-    assert manifest["command"]["shell"].startswith(".venv/bin/python")
+    assert ".venv/bin/python scripts/run_draco_ensemble.py" in manifest["command"]["shell"]
     assert manifest["tool_policy"]["tool_mode"] == "provider_only"
     assert "huggingface.co" in manifest["tool_policy"]["contamination_blocked_domains"]
 
@@ -285,6 +305,8 @@ def test_draco_summary_compares_avg_quality_and_cost_pct_against_baselines() -> 
     summary = summarize(rows)
     g2 = summary["groups"]["G2"]
 
+    assert g2["scored_rows"] == 1
+    assert g2["avg_quality_scored"] == pytest.approx(45.0)
     assert g2["avg_quality_pct_delta_vs_b0"] == pytest.approx(12.5)
     assert g2["avg_cost_pct_delta_vs_b0"] == pytest.approx(-50.0)
     assert g2["avg_quality_pct_delta_vs_b1"] == pytest.approx(50.0)
@@ -292,8 +314,92 @@ def test_draco_summary_compares_avg_quality_and_cost_pct_against_baselines() -> 
     markdown = render_markdown(summary, Path("reports/draco/draco_ensemble_test.jsonl"))
     assert "Win vs" not in markdown
     assert "AvgQ % vs B0" in markdown
+    assert "AvgQ Scored" in markdown
     assert "+12.50%" in markdown
     assert "-50.00%" in markdown
+
+
+def test_draco_summary_counts_unscored_rows_as_zero_quality() -> None:
+    rows = [
+        {
+            "task_id": "task-1",
+            "group": "B0",
+            "latency_ms": 100,
+            "quality_total": 40.0,
+            "judge": {"pass_rate": 40.0, "judge_error_count": 0},
+            "usage": {"billed_cost": 0.10, "input_tokens": 10, "output_tokens": 5},
+            "error": "",
+        },
+        {
+            "task_id": "task-2",
+            "group": "B0",
+            "latency_ms": 110,
+            "quality_total": 40.0,
+            "judge": {"pass_rate": 40.0, "judge_error_count": 0},
+            "usage": {"billed_cost": 0.10, "input_tokens": 10, "output_tokens": 5},
+            "error": "",
+        },
+        {
+            "task_id": "task-1",
+            "group": "G2",
+            "latency_ms": 200,
+            "quality_total": 50.0,
+            "judge": {"pass_rate": 50.0, "judge_error_count": 0},
+            "usage": {"billed_cost": 0.05, "input_tokens": 20, "output_tokens": 5},
+            "error": "",
+        },
+        {
+            "task_id": "task-2",
+            "group": "G2",
+            "latency_ms": 210,
+            "quality_total": None,
+            "judge": {"judge_error_count": 1},
+            "usage": {"billed_cost": 0.01, "input_tokens": 6, "output_tokens": 1},
+            "error": "",
+        },
+    ]
+
+    summary = summarize(rows)
+    g2 = summary["groups"]["G2"]
+
+    assert g2["rows"] == 2
+    assert g2["completed"] == 2
+    assert g2["scored_rows"] == 1
+    assert g2["score_coverage_pct"] == 50.0
+    assert g2["avg_quality"] == 25.0
+    assert g2["avg_quality_scored"] == 50.0
+    assert g2["avg_quality_pct_delta_vs_b0"] == pytest.approx(-37.5)
+    assert g2["avg_cost_usd"] == pytest.approx(0.03)
+    assert g2["avg_cost_completed_usd"] == pytest.approx(0.03)
+
+
+def test_draco_summary_leaves_quality_blank_when_no_judge_ran() -> None:
+    rows = [
+        {
+            "task_id": "task-1",
+            "group": "B0",
+            "latency_ms": 100,
+            "quality_total": None,
+            "judge": None,
+            "usage": {"billed_cost": 0.10, "input_tokens": 10, "output_tokens": 5},
+            "error": "",
+        },
+        {
+            "task_id": "task-1",
+            "group": "G2",
+            "latency_ms": 200,
+            "quality_total": None,
+            "judge": None,
+            "usage": {"billed_cost": 0.05, "input_tokens": 20, "output_tokens": 5},
+            "error": "",
+        },
+    ]
+
+    summary = summarize(rows)
+
+    assert summary["groups"]["B0"]["avg_quality"] is None
+    assert summary["groups"]["G2"]["avg_quality"] is None
+    assert summary["groups"]["G2"]["avg_quality_pct_delta_vs_b0"] is None
 
 
 def test_load_tasks_accepts_official_draco_problem_and_answer(tmp_path: Path) -> None:
@@ -462,3 +568,22 @@ async def test_collect_run_enforces_outer_timeout() -> None:
     assert result.final_text == ""
     assert "TimeoutError" in result.error
     assert result.trace_events[-1]["kind"] == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_collect_run_preserves_error_diagnostic_done() -> None:
+    result = await collect_run(
+        _DiagnosticErrorProvider(),
+        "diagnostic task",
+        timeout=1.0,
+    )
+
+    assert result.error == "boom"
+    assert result.done is not None
+    assert result.done.model == "diagnostic-model"
+    assert result.done.billed_cost == 0.12
+    assert result.done.ensemble_trace == {"kept": True}
+    assert [event["kind"] for event in result.trace_events] == [
+        "diagnostic_done",
+        "error",
+    ]

@@ -100,6 +100,7 @@ class ErrorEvent:
     kind: Literal["error"] = field(default="error", init=False)
     message: str = ""
     code: str = ""
+    diagnostic_done: DoneEvent | None = None
 
 
 @dataclass

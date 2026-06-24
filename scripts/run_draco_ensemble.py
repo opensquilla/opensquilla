@@ -569,6 +569,14 @@ async def collect_run(
                         has_ensemble_trace=bool(event.ensemble_trace),
                     )
                 elif isinstance(event, ErrorEvent):
+                    if done is None and isinstance(event.diagnostic_done, DoneEvent):
+                        done = event.diagnostic_done
+                        _trace(
+                            "diagnostic_done",
+                            stop_reason=done.stop_reason,
+                            usage=done_payload(done),
+                            has_ensemble_trace=bool(done.ensemble_trace),
+                        )
                     error = event.message
                     _trace("error", message=event.message, code=event.code)
                     break
@@ -1229,10 +1237,20 @@ def numeric_pct_delta(value: Any, baseline: Any) -> float | None:
 
 def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     summary: dict[str, Any] = {"groups": {}}
+    judging_enabled = any(isinstance(row.get("judge"), dict) for row in rows)
     for group in sorted({row["group"] for row in rows}):
         group_rows = [row for row in rows if row["group"] == group]
+        completed_rows = [row for row in group_rows if not row.get("error")]
         latencies = [int(row["latency_ms"] or 0) for row in group_rows]
-        totals = [row["quality_total"] for row in group_rows if row["quality_total"] is not None]
+        scored_totals = [
+            float(row["quality_total"])
+            for row in group_rows
+            if row["quality_total"] is not None
+        ]
+        quality_values = [
+            float(row["quality_total"]) if row["quality_total"] is not None else 0.0
+            for row in group_rows
+        ] if judging_enabled else []
         pass_rates = [
             float((row.get("judge") or {}).get("pass_rate"))
             for row in group_rows
@@ -1242,6 +1260,10 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
             float((row.get("usage") or {}).get("billed_cost") or 0.0)
             for row in group_rows
         ]
+        completed_costs = [
+            float((row.get("usage") or {}).get("billed_cost") or 0.0)
+            for row in completed_rows
+        ]
         tokens = [
             int((row.get("usage") or {}).get("input_tokens") or 0)
             + int((row.get("usage") or {}).get("output_tokens") or 0)
@@ -1249,14 +1271,24 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         ]
         summary["groups"][group] = {
             "rows": len(group_rows),
-            "completed": sum(1 for row in group_rows if not row.get("error")),
-            "avg_quality": statistics.mean(totals) if totals else None,
+            "completed": len(completed_rows),
+            "scored_rows": len(scored_totals),
+            "score_coverage_pct": (
+                len(scored_totals) / len(group_rows) * 100.0 if group_rows else 0.0
+            ),
+            "avg_quality": statistics.mean(quality_values) if quality_values else None,
+            "avg_quality_scored": (
+                statistics.mean(scored_totals) if scored_totals else None
+            ),
             "avg_pass_rate": statistics.mean(pass_rates) if pass_rates else None,
             "judge_errors": sum(
                 int((row.get("judge") or {}).get("judge_error_count") or 0)
                 for row in group_rows
             ),
             "avg_cost_usd": statistics.mean(costs) if costs else 0.0,
+            "avg_cost_completed_usd": (
+                statistics.mean(completed_costs) if completed_costs else None
+            ),
             "avg_total_tokens": statistics.mean(tokens) if tokens else 0.0,
             "latency_p50_ms": percentile(latencies, 50),
             "latency_p95_ms": percentile(latencies, 95),
@@ -1308,22 +1340,30 @@ def render_markdown(
         "Contamination blocked domains: "
         f"`{', '.join(blocked_domains) if blocked_domains else '(none)'}`.",
         "",
-        "| Group | Rows | Done | Avg Quality | Avg Pass | Judge Err | Avg $ | "
-        "Avg Tokens | p50 ms | p95 ms | AvgQ % vs B0 | Avg$ % vs B0 | "
+        "| Group | Rows | Done | Scored | Avg Quality | AvgQ Scored | Avg Pass | "
+        "Judge Err | Avg $ | Avg $ Done | Avg Tokens | p50 ms | p95 ms | "
+        "AvgQ % vs B0 | Avg$ % vs B0 | "
         "AvgQ % vs B1 | Avg$ % vs B1 |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | "
-        "---: | ---: | ---: | ---: |",
+        "---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for group, item in sorted(summary["groups"].items()):
         lines.append(
-            "| {group} | {rows} | {done} | {quality} | {pass_rate} | "
-            "{judge_errors} | {cost:.6f} | {tokens:.1f} | {p50:.0f} | "
-            "{p95:.0f} | {q_b0} | {cost_b0} | {q_b1} | {cost_b1} |".format(
+            "| {group} | {rows} | {done} | {scored} | {quality} | "
+            "{quality_scored} | {pass_rate} | {judge_errors} | {cost:.6f} | "
+            "{cost_done} | {tokens:.1f} | {p50:.0f} | {p95:.0f} | "
+            "{q_b0} | {cost_b0} | {q_b1} | {cost_b1} |".format(
                 group=group,
                 rows=item["rows"],
                 done=item["completed"],
+                scored=item["scored_rows"],
                 quality=(
                     f"{item['avg_quality']:.2f}" if item["avg_quality"] is not None else ""
+                ),
+                quality_scored=(
+                    f"{item['avg_quality_scored']:.2f}"
+                    if item["avg_quality_scored"] is not None
+                    else ""
                 ),
                 pass_rate=(
                     f"{item['avg_pass_rate']:.2f}"
@@ -1332,6 +1372,11 @@ def render_markdown(
                 ),
                 judge_errors=item["judge_errors"],
                 cost=item["avg_cost_usd"],
+                cost_done=(
+                    f"{item['avg_cost_completed_usd']:.6f}"
+                    if item["avg_cost_completed_usd"] is not None
+                    else ""
+                ),
                 tokens=item["avg_total_tokens"],
                 p50=item["latency_p50_ms"],
                 p95=item["latency_p95_ms"],
@@ -1395,12 +1440,16 @@ def command_argv(args: argparse.Namespace) -> list[str]:
 
 def command_payload(args: argparse.Namespace) -> dict[str, Any]:
     argv = command_argv(args)
+    pythonpath = os.environ.get("PYTHONPATH", "")
+    shell = shlex.join(argv)
+    if pythonpath:
+        shell = f"PYTHONPATH={shlex.quote(pythonpath)} {shell}"
     return {
         "cwd": str(Path.cwd()),
         "python": sys.executable,
         "argv": argv,
-        "shell": shlex.join(argv),
-        "pythonpath": os.environ.get("PYTHONPATH", ""),
+        "shell": shell,
+        "pythonpath": pythonpath,
         "parsed_args": manifest_args(args),
     }
 

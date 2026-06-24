@@ -394,6 +394,28 @@ class EnsembleProvider:
                 ensemble_trace=trace,
             )
 
+        def _diagnostic_done(message: str, code: str) -> DoneEvent:
+            failure_trace = {
+                **trace,
+                "aggregator_error": {
+                    "code": code,
+                    "message": message,
+                },
+            }
+            return DoneEvent(
+                stop_reason=code,
+                input_tokens=_summed_int(proposer_rows, "input_tokens"),
+                output_tokens=_summed_int(proposer_rows, "output_tokens"),
+                reasoning_tokens=_summed_int(proposer_rows, "reasoning_tokens"),
+                cached_tokens=_summed_int(proposer_rows, "cached_tokens"),
+                cache_write_tokens=_summed_int(proposer_rows, "cache_write_tokens"),
+                billed_cost=_summed_float(proposer_rows, "billed_cost"),
+                model=self.aggregator.provider_config.model,
+                cost_source=_rollup_cost_source(proposer_rows),
+                model_usage_breakdown=proposer_rows,
+                ensemble_trace=failure_trace,
+            )
+
         yielded_done = False
         try:
             stream = provider.chat(aggregator_messages, tools=tools, config=aggregator_cfg)
@@ -413,24 +435,30 @@ class EnsembleProvider:
                     else:
                         yield event
         except TimeoutError:
+            message = (
+                "ensemble aggregator timed out after "
+                f"{self.aggregator_timeout_seconds:g}s"
+            )
             yield ErrorEvent(
-                message=(
-                    "ensemble aggregator timed out after "
-                    f"{self.aggregator_timeout_seconds:g}s"
-                ),
+                message=message,
                 code="ensemble_aggregator_timeout",
+                diagnostic_done=_diagnostic_done(message, "ensemble_aggregator_timeout"),
             )
             return
         except Exception as exc:  # noqa: BLE001 - provider boundary returns ErrorEvent
+            message = f"ensemble aggregator failed: {exc}"
             yield ErrorEvent(
-                message=f"ensemble aggregator failed: {exc}",
+                message=message,
                 code="ensemble_aggregator_error",
+                diagnostic_done=_diagnostic_done(message, "ensemble_aggregator_error"),
             )
             return
         if not yielded_done:
+            message = "ensemble aggregator stream ended before DoneEvent"
             yield ErrorEvent(
-                message="ensemble aggregator stream ended before DoneEvent",
+                message=message,
                 code="ensemble_aggregator_incomplete",
+                diagnostic_done=_diagnostic_done(message, "ensemble_aggregator_incomplete"),
             )
 
     async def _run_proposers(

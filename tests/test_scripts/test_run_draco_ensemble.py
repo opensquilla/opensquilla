@@ -13,12 +13,14 @@ from opensquilla.provider.types import DoneEvent, Message, TextDeltaEvent
 from scripts.run_draco_ensemble import (
     GROUP_SPECS,
     amain,
+    benchmark_tool_policy,
     build_parser,
     build_profile_provider,
     collect_run,
     group_timeout_seconds,
     judge_text,
     load_tasks,
+    parse_domain_list,
     quality_total,
     render_markdown,
     score_criterion_judgments,
@@ -123,8 +125,16 @@ async def test_draco_runner_dry_run_writes_jsonl_and_summary(tmp_path: Path) -> 
     assert g3["usage"]["model_usage_breakdown"]
     assert g3["run_trace"]["event_count"] >= 2
     assert g3["final_text_sha256"]
+    assert g3["runner_mode"] == "provider_only"
+    assert g3["tools_enabled"] is False
+    assert "huggingface.co" in g3["contamination_blocked_domains"]
+    assert g3["tool_policy"]["contamination_controls"]["status"] == (
+        "not_applicable_no_external_tools"
+    )
     md_path = jsonl_path.with_suffix(".md")
-    assert "DRACO Ensemble Summary" in md_path.read_text(encoding="utf-8")
+    markdown = md_path.read_text(encoding="utf-8")
+    assert "DRACO Ensemble Summary" in markdown
+    assert "Contamination blocked domains" in markdown
     summary_json_path = jsonl_path.with_suffix(".summary.json")
     assert summary_json_path.exists()
     [trace_path] = output_dir.glob("draco_run_*.trace.jsonl")
@@ -140,6 +150,8 @@ async def test_draco_runner_dry_run_writes_jsonl_and_summary(tmp_path: Path) -> 
     assert manifest["status"] == "complete"
     assert manifest["rows_written"] == len(rows)
     assert manifest["artifacts"]["trace_jsonl"] == str(trace_path)
+    assert manifest["tool_policy"]["tool_mode"] == "provider_only"
+    assert "huggingface.co" in manifest["tool_policy"]["contamination_blocked_domains"]
 
 
 def test_draco_runner_default_groups_include_g1() -> None:
@@ -147,8 +159,31 @@ def test_draco_runner_default_groups_include_g1() -> None:
 
     assert "G1" in args.groups.split(",")
     assert GROUP_SPECS["G1"]["profile"] == "g1_code"
+    assert args.judge_repeats == 3
     assert args.judge_concurrency == 1
     assert args.judge_max_attempts == 3
+    assert args.tool_mode == "provider_only"
+    assert "huggingface.co" in parse_domain_list(args.contamination_blocked_domains)
+
+
+def test_draco_runner_contamination_domains_normalize_and_dedupe() -> None:
+    domains = parse_domain_list(
+        "https://HuggingFace.co/datasets/x,*.OPENROUTER.AI, huggingface.co"
+    )
+
+    assert domains == ["huggingface.co", "openrouter.ai"]
+
+
+def test_draco_runner_rejects_unwired_openrouter_server_tools() -> None:
+    args = build_parser().parse_args([
+        "--input",
+        "draco.jsonl",
+        "--tool-mode",
+        "openrouter_server_tools",
+    ])
+
+    with pytest.raises(ValueError, match="not wired"):
+        benchmark_tool_policy(args)
 
 
 def test_draco_runner_profile_groups_exist_in_default_config() -> None:

@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -50,7 +51,20 @@ GROUP_SPECS: dict[str, dict[str, str]] = {
     "G8": {"kind": "profile", "profile": "g8_four_proposers"},
 }
 
-RUNNER_MODE = "provider_only"
+TOOL_MODE_PROVIDER_ONLY = "provider_only"
+TOOL_MODE_OPENROUTER_SERVER_TOOLS = "openrouter_server_tools"
+RUNNER_MODE = TOOL_MODE_PROVIDER_ONLY
+SUPPORTED_TOOL_MODES = (TOOL_MODE_PROVIDER_ONLY, TOOL_MODE_OPENROUTER_SERVER_TOOLS)
+DEFAULT_CONTAMINATION_BLOCKED_DOMAINS = (
+    "huggingface.co",
+    "datasets-server.huggingface.co",
+    "github.com",
+    "raw.githubusercontent.com",
+    "arxiv.org",
+    "openrouter.ai",
+    "perplexity.ai",
+    "research.perplexity.ai",
+)
 PROFILE_TIMEOUT_MARGIN_SECONDS = 30.0
 JUDGE_MAX_ATTEMPTS = 3
 
@@ -207,6 +221,64 @@ def parse_groups(raw: str) -> list[str]:
     if unknown:
         raise ValueError(f"unknown group(s): {', '.join(unknown)}")
     return groups
+
+
+def normalize_domain(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    if "://" in raw:
+        parsed = urlparse(raw)
+        host = parsed.hostname or parsed.netloc
+    else:
+        host = raw.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+        host = urlparse(f"//{host}").hostname or host
+    return host.strip().lstrip("*.").strip(".")
+
+
+def parse_domain_list(raw: Any) -> list[str]:
+    if raw is None:
+        values: list[Any] = list(DEFAULT_CONTAMINATION_BLOCKED_DOMAINS)
+    elif isinstance(raw, str):
+        values = raw.split(",")
+    else:
+        values = list(raw)
+    domains: list[str] = []
+    for value in values:
+        domain = normalize_domain(value)
+        if domain and domain not in domains:
+            domains.append(domain)
+    return domains
+
+
+def benchmark_tool_policy(args: argparse.Namespace | None = None) -> dict[str, Any]:
+    mode = str(getattr(args, "tool_mode", RUNNER_MODE) or RUNNER_MODE).strip()
+    blocked_domains = parse_domain_list(
+        getattr(args, "contamination_blocked_domains", None)
+    )
+    if mode not in SUPPORTED_TOOL_MODES:
+        raise ValueError(f"unknown tool mode: {mode}")
+    if mode != TOOL_MODE_PROVIDER_ONLY:
+        if not blocked_domains:
+            raise ValueError(
+                "DRACO research-tool runs require contamination-blocked domains"
+            )
+        raise ValueError(
+            "DRACO OpenRouter server tools are not wired into this runner yet; "
+            "refusing to run until web_search excluded_domains and web_fetch "
+            "blocked_domains are enforceable."
+        )
+    return {
+        "tool_mode": mode,
+        "tools_enabled": False,
+        "tool_names": [],
+        "contamination_blocked_domains": blocked_domains,
+        "contamination_controls": {
+            "status": "not_applicable_no_external_tools",
+            "web_search_field": "excluded_domains",
+            "web_fetch_field": "blocked_domains",
+        },
+    }
 
 
 def parse_maybe_json(value: Any) -> Any:
@@ -957,6 +1029,7 @@ async def run_one(
     judge_concurrency: int,
     judge_max_attempts: int,
     timeout: float,
+    tool_policy: dict[str, Any],
 ) -> dict[str, Any]:
     spec = GROUP_SPECS[group]
     started = time.time()
@@ -1028,8 +1101,12 @@ async def run_one(
         "prompt_sha256": prompt_sha,
         "metadata": task.get("metadata", {}),
         "provider_spec": dict(spec),
-        "runner_mode": RUNNER_MODE,
-        "tools_enabled": False,
+        "runner_mode": tool_policy.get("tool_mode") or RUNNER_MODE,
+        "tools_enabled": bool(tool_policy.get("tools_enabled")),
+        "tool_policy": tool_policy,
+        "contamination_blocked_domains": (
+            tool_policy.get("contamination_blocked_domains") or []
+        ),
         "started_at": started,
         "completed_at": completed_at,
         "total_elapsed_ms": int((completed_at - started) * 1000),
@@ -1112,6 +1189,9 @@ def trace_row(row: dict[str, Any]) -> dict[str, Any]:
         "task_id": row.get("task_id"),
         "group": row.get("group"),
         "domain": row.get("domain"),
+        "runner_mode": row.get("runner_mode"),
+        "tools_enabled": row.get("tools_enabled"),
+        "tool_policy": row.get("tool_policy") or {},
         "started_at": row.get("started_at"),
         "completed_at": row.get("completed_at"),
         "prompt_sha256": row.get("prompt_sha256"),
@@ -1194,9 +1274,24 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return summary
 
 
-def render_markdown(summary: dict[str, Any], jsonl_path: Path) -> str:
+def render_markdown(
+    summary: dict[str, Any],
+    jsonl_path: Path,
+    tool_policy: dict[str, Any] | None = None,
+) -> str:
     stamp = jsonl_path.stem.removeprefix("draco_ensemble_")
     trace_path = jsonl_path.parent / f"draco_run_{stamp}.trace.jsonl"
+    policy = tool_policy or benchmark_tool_policy()
+    blocked_domains = policy.get("contamination_blocked_domains") or []
+    tool_line = (
+        f"Runner mode: `{policy.get('tool_mode') or RUNNER_MODE}`; tools enabled: "
+        f"`{str(bool(policy.get('tools_enabled'))).lower()}`."
+    )
+    if not policy.get("tools_enabled"):
+        tool_line = (
+            f"Runner mode: `{policy.get('tool_mode') or RUNNER_MODE}`; "
+            "external research tools are not attached."
+        )
 
     def _signed_pct(value: Any) -> str:
         return f"{float(value):+.2f}%" if isinstance(value, int | float) else ""
@@ -1207,7 +1302,9 @@ def render_markdown(summary: dict[str, Any], jsonl_path: Path) -> str:
         f"Raw JSONL: `{jsonl_path}`",
         f"Trace JSONL: `{trace_path}`",
         "",
-        f"Runner mode: `{RUNNER_MODE}`; external research tools are not attached.",
+        tool_line,
+        "Contamination blocked domains: "
+        f"`{', '.join(blocked_domains) if blocked_domains else '(none)'}`.",
         "",
         "| Group | Rows | Done | Avg Quality | Avg Pass | Judge Err | Avg $ | "
         "Avg Tokens | p50 ms | p95 ms | AvgQ % vs B0 | Avg$ % vs B0 | "
@@ -1260,6 +1357,8 @@ def manifest_args(args: argparse.Namespace) -> dict[str, Any]:
         "judge_concurrency",
         "judge_max_attempts",
         "judge_candidates",
+        "tool_mode",
+        "contamination_blocked_domains",
     ]
     payload: dict[str, Any] = {}
     for key in keys:
@@ -1281,11 +1380,14 @@ def write_manifest(
     rows_written: int = 0,
     finished_at: float | None = None,
     summary: dict[str, Any] | None = None,
+    tool_policy: dict[str, Any] | None = None,
 ) -> None:
+    policy = tool_policy or benchmark_tool_policy(args)
     payload: dict[str, Any] = {
         "benchmark": "DRACO",
         "runner": "scripts/run_draco_ensemble.py",
-        "runner_mode": RUNNER_MODE,
+        "runner_mode": policy.get("tool_mode") or RUNNER_MODE,
+        "tool_policy": policy,
         "stamp": stamp,
         "status": status,
         "started_at": started_at,
@@ -1309,6 +1411,7 @@ def write_manifest(
 async def amain(args: argparse.Namespace) -> int:
     tasks = load_tasks(args.input, max_tasks=args.max_tasks)
     groups = parse_groups(args.groups)
+    tool_policy = benchmark_tool_policy(args)
     config = GatewayConfig.load(args.config)
     inherited = inherited_provider_config(config)
     judge_provider = None
@@ -1345,6 +1448,7 @@ async def amain(args: argparse.Namespace) -> int:
         tasks=tasks,
         groups=groups,
         artifacts=artifacts,
+        tool_policy=tool_policy,
     )
 
     async def _guarded(task: dict[str, Any], group: str) -> dict[str, Any]:
@@ -1361,6 +1465,7 @@ async def amain(args: argparse.Namespace) -> int:
                 judge_concurrency=getattr(args, "judge_concurrency", 1),
                 judge_max_attempts=getattr(args, "judge_max_attempts", JUDGE_MAX_ATTEMPTS),
                 timeout=args.timeout,
+                tool_policy=tool_policy,
             )
 
     pending = [_guarded(task, group) for task in tasks for group in groups]
@@ -1378,7 +1483,10 @@ async def amain(args: argparse.Namespace) -> int:
             print(f"{row['group']} {row['task_id']} error={bool(row['error'])}", flush=True)
     summary = summarize(rows)
     summary_path = jsonl_path.with_suffix(".md")
-    summary_path.write_text(render_markdown(summary, jsonl_path), encoding="utf-8")
+    summary_path.write_text(
+        render_markdown(summary, jsonl_path, tool_policy=tool_policy),
+        encoding="utf-8",
+    )
     summary_json_path.write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -1395,6 +1503,7 @@ async def amain(args: argparse.Namespace) -> int:
         rows_written=len(rows),
         artifacts=artifacts,
         summary=summary,
+        tool_policy=tool_policy,
     )
     print(f"wrote {jsonl_path}")
     print(f"wrote {trace_path}")
@@ -1415,10 +1524,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--judge-model", default="")
-    parser.add_argument("--judge-repeats", type=int, default=1)
+    parser.add_argument("--judge-repeats", type=int, default=3)
     parser.add_argument("--judge-concurrency", type=int, default=1)
     parser.add_argument("--judge-max-attempts", type=int, default=JUDGE_MAX_ATTEMPTS)
     parser.add_argument("--judge-candidates", action="store_true")
+    parser.add_argument(
+        "--tool-mode",
+        choices=SUPPORTED_TOOL_MODES,
+        default=RUNNER_MODE,
+        help=(
+            "Benchmark tool mode. provider_only is the only executable mode today; "
+            "openrouter_server_tools is rejected until conflict domains are enforced."
+        ),
+    )
+    parser.add_argument(
+        "--contamination-blocked-domains",
+        default=",".join(DEFAULT_CONTAMINATION_BLOCKED_DOMAINS),
+        help=(
+            "Comma-separated benchmark leakage domains to exclude from web search "
+            "and block from web fetch when research tools are wired."
+        ),
+    )
     return parser
 
 

@@ -119,6 +119,15 @@ class TestDirectiveInjection:
         assert "status.json" in low
 
     @pytest.mark.asyncio
+    async def test_directive_mandates_background_not_blocking_exec(self):
+        ctx = await enforce_coding_mode(self._ctx(True))
+        _, suffix = ctx.system_prompt
+        low = suffix.lower()
+        assert "always launch it with background_process" in low
+        assert "do not run code-task with a" in low and "blocking exec_command" in low
+        assert "600s" in suffix
+
+    @pytest.mark.asyncio
     async def test_off_injects_nothing(self):
         ctx = await enforce_coding_mode(self._ctx(False))
         # system_prompt unchanged (still a plain str), no pin.

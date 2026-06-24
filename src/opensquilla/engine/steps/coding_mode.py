@@ -136,9 +136,13 @@ _CODING_MODE_DIRECTIVE_TEMPLATE = (
     "or change the color), point --repo at that app's repo and keep "
     "--verification-mode build; code-task edits the existing app in place and "
     "applies the verified change back to the repo so the next edit builds on it.\n"
-    "code-task usually runs for several minutes; if you launch it via "
-    'background_process, await it with process(action="wait", session_id=...) '
-    "rather than polling process(action=\"poll\") in a loop.\n"
+    "code-task runs for MANY minutes (often 20-40), so it is a long-running "
+    "task: ALWAYS launch it with background_process and then await it with "
+    'process(action="wait", session_id=...). Do NOT run code-task with a '
+    "blocking exec_command — exec_command is hard-capped at 600s (10 min) no "
+    "matter what timeout you pass, so it would kill code-task mid-run and "
+    "waste the attempt. Do not poll process(action=\"poll\") in a loop "
+    "either — just wait for the result.\n"
     "code-task works in an ISOLATED run directory, NOT in the --repo source you "
     "pass it: that source stays EMPTY until a run finishes and VERIFIES, then "
     "the change is committed back. So do NOT judge progress by the source "

@@ -16,11 +16,14 @@ STACK (fixed)
   SQLite file via Electron's filesystem access). NO backend, NO server, NO
   remote API.
 - No live preview is needed; you will NOT launch the GUI.
-- Scaffold with electron-vite, non-interactively, e.g.:
-    yes "" | npm create @quick-start/electron@latest app -- --template react-ts
-  then move the generated project into the repo root (replace any placeholder
-  README). That template already provides an `npm run build` script that
-  type-checks and builds main/preload/renderer, plus an electron-builder config.
+- Scaffold with electron-vite, non-interactively:
+    npm create @quick-start/electron@latest app -- --template react-ts --yes
+  (the `--yes` flag accepts defaults so no interactive prompt is needed;
+  POSIX-only piping like `yes "" | ...` will NOT work under cmd.exe /
+  PowerShell — see the Host OS hint above). Then move the generated project
+  into the repo root (replace any placeholder README). That template already
+  provides an `npm run build` script that type-checks and builds
+  main/preload/renderer, plus an electron-builder config.
 
 HOW TO BUILD IT (methodology — keep it simple)
 1. DO EXACTLY WHAT THE TASK ASKS — nothing more, nothing less.
@@ -39,19 +42,12 @@ HOW TO BUILD IT (methodology — keep it simple)
 WORK IN BIG BATCHES (do NOT write one file per step — that is far too slow)
 - Each step/tool call is expensive (a full model round-trip). Minimize the
   NUMBER of steps by doing as much as possible per step, not by writing less.
-- Plan the full file list up front, then create MANY files per shell command
-  using one heredoc-laden script, e.g.:
-      cat > src/renderer/src/pages/Home.tsx <<'EOF'
-      ...full file...
-      EOF
-      cat > src/renderer/src/pages/Fans.tsx <<'EOF'
-      ...full file...
-      EOF
-      cat > src/renderer/src/data/content.ts <<'EOF'
-      ...full file...
-      EOF
-  Group related files (all pages, then all components, then all data) into a
-  handful of batched commands instead of dozens of single-file writes.
+- Plan the full file list up front, then create MANY files per step. Prefer
+  the dedicated file-writing tool you have (write_file / create_*) over
+  shell heredocs — the tool is shell-agnostic and works the same on every
+  host OS. Batch many file writes per step rather than one tool call per
+  file. (If you fall back to shell, `cat > path <<'EOF' ... EOF` works under
+  bash but NOT under cmd.exe / PowerShell — see the Host OS hint.)
 - Do scaffold + `npm install` as early as possible so a buildable skeleton with
   a committed package-lock.json exists before you flesh out the UI — that way a
   long build still yields something that compiles.

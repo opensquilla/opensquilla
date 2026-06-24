@@ -231,7 +231,7 @@ def create_resource_dirs(skill_dir, skill_name, skill_title, resources, include_
         if resource == "scripts":
             if include_examples:
                 example_script = resource_dir / "example.py"
-                example_script.write_text(EXAMPLE_SCRIPT.format(skill_name=skill_name))
+                example_script.write_text(EXAMPLE_SCRIPT.format(skill_name=skill_name), encoding="utf-8")
                 example_script.chmod(0o755)
                 print("[OK] Created scripts/example.py")
             else:
@@ -239,14 +239,14 @@ def create_resource_dirs(skill_dir, skill_name, skill_title, resources, include_
         elif resource == "references":
             if include_examples:
                 example_reference = resource_dir / "api_reference.md"
-                example_reference.write_text(EXAMPLE_REFERENCE.format(skill_title=skill_title))
+                example_reference.write_text(EXAMPLE_REFERENCE.format(skill_title=skill_title), encoding="utf-8")
                 print("[OK] Created references/api_reference.md")
             else:
                 print("[OK] Created references/")
         elif resource == "assets":
             if include_examples:
                 example_asset = resource_dir / "example_asset.txt"
-                example_asset.write_text(EXAMPLE_ASSET)
+                example_asset.write_text(EXAMPLE_ASSET, encoding="utf-8")
                 print("[OK] Created assets/example_asset.txt")
             else:
                 print("[OK] Created assets/")
@@ -287,7 +287,7 @@ def init_skill(skill_name, path, resources, include_examples):
 
     skill_md_path = skill_dir / "SKILL.md"
     try:
-        skill_md_path.write_text(skill_content)
+        skill_md_path.write_text(skill_content, encoding="utf-8")
         print("[OK] Created SKILL.md")
     except Exception as e:
         print(f"[ERROR] Error creating SKILL.md: {e}")

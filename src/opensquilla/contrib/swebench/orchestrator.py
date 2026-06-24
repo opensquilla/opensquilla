@@ -54,7 +54,7 @@ def _save_metadata(
             "session_id": agent_result.session_id,
             "usage": agent_result.usage,
         }
-    (artifact_dir / "metadata.json").write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    (artifact_dir / "metadata.json").write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def _append_state(state_path: Path, record: InstanceRecord) -> None:
@@ -71,7 +71,7 @@ def _append_state(state_path: Path, record: InstanceRecord) -> None:
         "patch_empty": record.patch_empty,
         "error": record.error,
     }
-    with open(state_path, "a") as f:
+    with open(state_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
@@ -80,7 +80,7 @@ def _load_completed_ids(state_path: Path) -> set[str]:
     completed: set[str] = set()
     if not state_path.exists():
         return completed
-    with open(state_path) as f:
+    with open(state_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -152,7 +152,7 @@ def run_one_instance(
 
         # 3. Build and save prompt
         prompt = build_prompt(instance)
-        (artifact_dir / "prompt.txt").write_text(prompt)
+        (artifact_dir / "prompt.txt").write_text(prompt, encoding="utf-8")
 
         # 4. Run agent
         logger.info("Sending task to OpenSquilla for %s (agent=%s)...", instance_id, agent_id)
@@ -172,9 +172,9 @@ def run_one_instance(
         patch_empty = is_empty_patch(cleaned)
 
         # Save raw and cleaned patch
-        (artifact_dir / "git.patch").write_text(cleaned if not patch_empty else "")
+        (artifact_dir / "git.patch").write_text(cleaned if not patch_empty else "", encoding="utf-8")
         if raw_patch != cleaned:
-            (artifact_dir / "git.patch.raw").write_text(raw_patch)
+            (artifact_dir / "git.patch.raw").write_text(raw_patch, encoding="utf-8")
 
         # 6. Backup session log before deleting agent
         adapter.backup_session(agent_id, artifact_dir)

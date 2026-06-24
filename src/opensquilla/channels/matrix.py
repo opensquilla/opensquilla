@@ -191,7 +191,7 @@ class MatrixChannel:
         if not path.exists():
             return None
         try:
-            data = json.loads(path.read_text())
+            data = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as exc:
             log.warning("matrix.session_load_failed", error=str(exc))
             return None
@@ -216,7 +216,7 @@ class MatrixChannel:
             "device_id": device_id,
             "access_token": access_token,
         }
-        path.write_text(json.dumps(payload))
+        path.write_text(json.dumps(payload), encoding="utf-8")
 
     # ------------------------------------------------------------------
     # Olm gating

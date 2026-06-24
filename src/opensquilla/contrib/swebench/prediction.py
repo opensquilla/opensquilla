@@ -70,7 +70,7 @@ def validate_prediction_file(path: str | Path, expected_ids: set[str] | None = N
     seen_ids = set()
     line_count = 0
 
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for i, line in enumerate(f, 1):
             line = line.strip()
             if not line:

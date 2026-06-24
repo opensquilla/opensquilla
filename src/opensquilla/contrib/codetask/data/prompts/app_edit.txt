@@ -30,7 +30,10 @@ EDIT RULES (follow exactly -- over-editing is a failure)
 6. Write COMPLETE files. Never truncate, never use "..." ellipsis.
 7. WORK EFFICIENTLY — each tool call is a full model round-trip; minimize the
    NUMBER of steps. Batch your INSPECT reads into a few calls, and write each
-   changed file completely in one step (heredoc) rather than dribbling edits.
+   changed file completely in one step using the file-writing tool
+   (write_file / create_*) rather than dribbling edits. The dedicated tool
+   works the same on every host OS; shell heredocs (`cat <<'EOF'`) are
+   bash-only and break under cmd.exe / PowerShell.
    Aim to finish a typical edit in a handful of tool calls, not dozens.
 
 VERIFICATION (the runner re-checks with the FIXED build checklist -- keep it green)

@@ -8,6 +8,7 @@ The biggest signal is CI config: it is the maintainers' own recipe.
 
 from __future__ import annotations
 
+import platform
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -47,10 +48,11 @@ class EnvProbe:
     notable: list[str] = field(default_factory=list)  # devcontainer, Makefile...
 
     def as_hints(self) -> str:
-        """Render a compact hints block for the prompt (empty if nothing found)."""
-        if not (self.languages or self.package_managers or self.ci_files or self.notable):
-            return ""
+        """Render a compact hints block for the prompt (always non-empty: it
+        always includes the host OS, since templates assume POSIX shell idioms
+        the agent must avoid when running on Windows)."""
         lines = ["Environment hints (auto-detected — verify before relying on them):"]
+        lines.append(f"- Host OS: {_host_os_hint()}")
         if self.languages:
             lines.append(f"- Language(s): {', '.join(self.languages)}")
         if self.package_managers:
@@ -63,6 +65,27 @@ class EnvProbe:
         if self.notable:
             lines.append(f"- Also present: {', '.join(self.notable)}")
         return "\n".join(lines)
+
+
+def _host_os_hint() -> str:
+    """One-line host-OS hint, with Windows-specific shell guidance.
+
+    Templates assume POSIX shell (``yes`` piped to ``npm create``, ``cat
+    <<'EOF'`` heredocs). On Windows the agent must NOT use those — they only
+    work under Git Bash / WSL and silently break under cmd.exe / PowerShell.
+    """
+    system = platform.system()
+    if system == "Windows":
+        return (
+            "Windows — DO NOT use POSIX-only shell tricks the templates show "
+            "(no `yes \"\" | ...`, no `cat <<'EOF'` heredocs). Write files via "
+            "Python (`python -c \"open(..., 'w', encoding='utf-8').write(...)\"`) "
+            "or PowerShell `Set-Content`; for interactive prompts use `--yes` / "
+            "non-interactive flags. npm/npx are .cmd shims."
+        )
+    if system == "Darwin":
+        return "macOS"
+    return system or "Unknown"
 
 
 def probe(repo: Path) -> EnvProbe:

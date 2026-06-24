@@ -13,6 +13,7 @@ from ("narrow waist").
 from __future__ import annotations
 
 import json
+import locale
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -77,7 +78,17 @@ def resolve_task(
         path = Path(task_file).expanduser()
         if not path.is_file():
             raise InputError(f"Task file not found: {path}")
-        body = path.read_text()
+        # User-supplied task files are arbitrary text. Try UTF-8 first (the
+        # cross-platform default); fall back to the host locale with
+        # replacement so a GBK/ANSI file from a Windows editor still loads
+        # without crashing.
+        try:
+            body = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            body = path.read_text(
+                encoding=locale.getpreferredencoding(False) or "utf-8",
+                errors="replace",
+            )
         title = body.strip().splitlines()[0][:80] if body.strip() else "code task"
         return TaskSpec(source="file", title=title, body=body, slug=slugify(title))
 
@@ -102,6 +113,8 @@ def _resolve_issue(issue_number: int, repo_dir: Path | None) -> TaskSpec:
             cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=60,
             cwd=str(repo_dir) if repo_dir is not None else None,
         )

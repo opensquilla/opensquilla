@@ -209,9 +209,9 @@ class OpenSquillaAdapter:
         _cleanup_opensquilla_metadata(container_name)
 
         if stdout_path:
-            stdout_path.write_text(stdout)
+            stdout_path.write_text(stdout, encoding="utf-8")
         if stderr_path:
-            stderr_path.write_text(stderr)
+            stderr_path.write_text(stderr, encoding="utf-8")
 
         envelope = _parse_json_envelope(stdout)
 
@@ -277,7 +277,7 @@ def _save_container_file(container_name: str, src_in_container: str, dest: Path)
             timeout=30,
         )
         if result.returncode == 0 and result.stdout:
-            dest.write_text(result.stdout)
+            dest.write_text(result.stdout, encoding="utf-8")
     except Exception:
         pass
 

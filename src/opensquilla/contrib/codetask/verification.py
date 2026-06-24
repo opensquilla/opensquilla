@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -65,7 +67,7 @@ def load_manifest(scratch_dir: Path) -> dict | None:
     if not path.is_file():
         return None
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
     return data if isinstance(data, dict) else None
@@ -274,6 +276,29 @@ class _WorktreeError(RuntimeError):
     pass
 
 
+def _path_variants(p: Path) -> list[str]:
+    """All plausible string forms an agent may use for an absolute path.
+
+    On Windows the agent runs under Git Bash (so ``_run_shell`` invokes
+    bash), but may write any of three equivalent forms:
+      - native:     ``C:\\src\\opensquilla``
+      - forward:    ``C:/src/opensquilla``
+      - MSYS/posix: ``/c/src/opensquilla``
+
+    On POSIX, native and forward forms collapse to the same string.
+    """
+    native = str(p)
+    forms = {native}
+    if os.name == "nt":
+        forward = native.replace("\\", "/")
+        forms.add(forward)
+        # Drive-letter -> MSYS form: "C:/foo" -> "/c/foo".
+        if len(forward) >= 2 and forward[1] == ":":
+            drive = forward[0].lower()
+            forms.add(f"/{drive}{forward[2:]}")
+    return list(forms)
+
+
 def _localize_command(command: str, repo: Path, target: Path) -> str:
     """Redirect any absolute reference to the task repo onto ``target``.
 
@@ -287,7 +312,10 @@ def _localize_command(command: str, repo: Path, target: Path) -> str:
 
     Rewriting the task-repo path to the worktree path keeps the command inside
     the intended tree regardless of how the agent wrote it. Longest match
-    first so ``/abs/repo/src`` is rewritten before ``/abs/repo``.
+    first so ``/abs/repo/src`` is rewritten before ``/abs/repo``. We match
+    every plausible form (native, forward-slash, MSYS) since ``_run_shell``
+    invokes bash on Windows. On Windows the match is case-insensitive
+    because the underlying file system is.
 
     The repo path is only rewritten when it is followed by ``/`` (a subpath),
     end-of-string, or an unambiguous shell path-terminator (whitespace, quote,
@@ -296,23 +324,52 @@ def _localize_command(command: str, repo: Path, target: Path) -> str:
     SIBLING path (e.g. ``/abs/repo-fixture``, ``/abs/repo+x``) and left intact,
     rather than trying to enumerate the near-infinite set of filename chars.
     """
-    candidates = sorted({str(repo), str(repo.resolve())}, key=len, reverse=True)
+    sources: set[str] = set()
+    for base in {repo, repo.resolve()}:
+        sources.update(_path_variants(base))
+    candidates = sorted(sources, key=len, reverse=True)
+
+    # Use a forward-slash form of the target so the rewritten command stays
+    # bash-friendly on Windows (backslashes inside double-quoted shell args
+    # are escapes).
+    target_str = str(target)
+    if os.name == "nt":
+        target_str = target_str.replace("\\", "/")
+
+    flags = re.IGNORECASE if os.name == "nt" else 0
     out = command
     for src in candidates:
-        # Positive lookahead for a real path boundary: '/', whitespace,
-        # end-of-string, or a shell word terminator.
-        pattern = re.escape(src) + r"(?=/|\s|$|[" + re.escape("'\"`:;&|<>()") + r"])"
-        out = re.sub(pattern, lambda _m: str(target), out)
+        # Positive lookahead for a real path boundary: a path separator
+        # ('/' on POSIX, also '\\' on Windows), whitespace, end-of-string, or
+        # a shell word terminator.
+        pattern = re.escape(src) + r"(?=[/\\]|\s|$|[" + re.escape("'\"`:;&|<>()") + r"])"
+        out = re.sub(pattern, lambda _m: target_str, out, flags=flags)
     return out
 
 
 def _run_shell(command: str, *, cwd: Path, timeout: int) -> tuple[int, str]:
+    """Run a manifest acceptance/regression command in a POSIX-flavored shell.
+
+    Verification commands the agent records use POSIX shell semantics
+    (``VAR=val command``, pipelines, ``&&``). We require ``bash`` to honor
+    them. On Windows the user must have Git Bash / WSL installed; we surface
+    a clear error instead of an opaque ``FileNotFoundError`` if it is not.
+    """
+    bash = shutil.which("bash")
+    if bash is None:
+        hint = (
+            "bash not found on PATH"
+            + (" (install Git Bash or WSL)" if os.name != "posix" else "")
+        )
+        return -1, f"OSERROR: {hint}"
     try:
         proc = subprocess.run(
-            ["bash", "-lc", command],
+            [bash, "-lc", command],
             cwd=str(cwd),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
         return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
@@ -340,6 +397,8 @@ class _BaseWorktree:
                 cwd=str(self.repo),
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=120,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -372,10 +431,15 @@ def _safe_rel_paths(paths: list[str]) -> list[str]:
     """
     safe: list[str] = []
     for rel in paths:
-        p = str(rel).strip()
+        # Accept either separator — an agent running on Windows may emit
+        # ``tests\test_x.py``; normalize to POSIX before validating so the
+        # downstream copy still works.
+        p = str(rel).strip().replace("\\", "/")
         if not p:
             continue
-        if PurePosixPath(p).is_absolute() or p.startswith("/") or "\\" in p:
+        # Reject POSIX-absolute, UNC ("//server/share"), and Windows
+        # drive-letter absolute ("C:/...") paths.
+        if p.startswith("/") or (len(p) >= 2 and p[1] == ":"):
             continue
         if any(part == ".." for part in PurePosixPath(p).parts):
             continue

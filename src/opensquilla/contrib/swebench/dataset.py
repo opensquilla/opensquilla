@@ -36,7 +36,7 @@ def load_instances(
         path = Path(instance_file)
         if not path.exists():
             raise FileNotFoundError(f"Instance file not found: {path}")
-        for line in path.read_text().splitlines():
+        for line in path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if line and not line.startswith("#"):
                 filter_ids.add(line)

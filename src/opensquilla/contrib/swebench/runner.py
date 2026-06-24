@@ -59,7 +59,7 @@ def _eval_resolved_status(eval_cwd_run_id: str, instance_id: str) -> bool | None
         return None
     for report in sorted(eval_dir.glob("*.json")):
         try:
-            data = json.loads(report.read_text())
+            data = json.loads(report.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
         resolved_ids = data.get("resolved_ids")
@@ -127,7 +127,7 @@ def solve_instance(
     usage_path = artifact_dir / "usage.json"
     if usage_path.exists():
         try:
-            usage = json.loads(usage_path.read_text())
+            usage = json.loads(usage_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             pass
 
@@ -161,5 +161,5 @@ def solve_instance(
     }
     # Persist the result next to the other per-instance artifacts so
     # non-JSON callers can still find it.
-    (artifact_dir / "result.json").write_text(json.dumps(result, indent=2, ensure_ascii=False))
+    (artifact_dir / "result.json").write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
     return result

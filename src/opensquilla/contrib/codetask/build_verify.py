@@ -19,6 +19,7 @@ only produces its own platform's installer.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -28,6 +29,18 @@ from pathlib import Path
 from opensquilla.contrib.codetask.types import BuildCheck, BuildResult, TaskState
 
 _TAIL_LINES = 25
+
+
+def _resolve_cli(name: str) -> str:
+    """Resolve a node CLI shim (npm/npx) to its actual executable path.
+
+    On Windows, ``npm``/``npx`` are ``.cmd`` shims that ``subprocess.run`` with
+    ``shell=False`` cannot find by the bare name. ``shutil.which`` returns the
+    fully-qualified ``npm.cmd``/``npx.cmd`` path, which Python can launch
+    directly. Falls back to the bare name on POSIX (or when not found, so the
+    later ``FileNotFoundError`` surfaces with a clear message).
+    """
+    return shutil.which(name) or name
 
 # Build unsigned, deterministically: never auto-discover a keychain identity
 # (which can prompt/hang or sign host-dependently in an automated run).
@@ -48,20 +61,22 @@ def _package_step() -> tuple[str, list[str]]:
     which would need host tooling and fail on a clean machine. Each target can
     only be built on its own platform, so to get all three, run on each OS.
     """
+    npx = _resolve_cli("npx")
     if sys.platform == "darwin":
-        return "package", ["npx", "electron-builder", "--mac", "dmg", "--publish", "never"]
+        return "package", [npx, "electron-builder", "--mac", "dmg", "--publish", "never"]
     if sys.platform == "win32":
-        return "package", ["npx", "electron-builder", "--win", "nsis", "--publish", "never"]
+        return "package", [npx, "electron-builder", "--win", "nsis", "--publish", "never"]
     # Linux (and other unix): AppImage is self-contained, no extra tooling.
-    return "package", ["npx", "electron-builder", "--linux", "AppImage", "--publish", "never"]
+    return "package", [npx, "electron-builder", "--linux", "AppImage", "--publish", "never"]
 
 
 def _checklist() -> list[tuple[str, list[str]]]:
     # `npm ci` (NOT install) installs strictly from the committed lockfile and
     # never mutates it, so build verification leaves the collected change clean.
+    npm = _resolve_cli("npm")
     return [
-        ("npm_ci", ["npm", "ci"]),
-        ("build", ["npm", "run", "build"]),
+        ("npm_ci", [npm, "ci"]),
+        ("build", [npm, "run", "build"]),
         _package_step(),
     ]
 
@@ -143,6 +158,8 @@ def verify_build(
                 cwd=str(repo),
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=check_timeout,
                 env=env,
             )

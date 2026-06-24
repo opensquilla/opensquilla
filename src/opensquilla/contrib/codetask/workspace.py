@@ -11,6 +11,7 @@ execution. Only point code-task at repositories you trust.
 
 from __future__ import annotations
 
+import locale
 import logging
 import shutil
 import subprocess
@@ -45,7 +46,13 @@ class PreparedRepo:
 
 def _git(args: list[str], cwd: Path, timeout: int = 120) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["git", *args], cwd=str(cwd), capture_output=True, text=True, timeout=timeout
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
     )
 
 
@@ -78,7 +85,14 @@ def prepare_repo(
         clone_cmd += ["--depth", "1"]
     clone_cmd += [_normalize_source(repo), str(dest)]
     try:
-        result = subprocess.run(clone_cmd, capture_output=True, text=True, timeout=CLONE_TIMEOUT)
+        result = subprocess.run(
+            clone_cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=CLONE_TIMEOUT,
+        )
     except FileNotFoundError as exc:
         raise WorkspaceError("git is not installed.") from exc
     except subprocess.TimeoutExpired as exc:
@@ -136,11 +150,23 @@ def _write_repo_excludes(dest: Path) -> None:
     exclude_file = dest / ".git" / "info" / "exclude"
     try:
         exclude_file.parent.mkdir(parents=True, exist_ok=True)
-        existing = exclude_file.read_text() if exclude_file.exists() else ""
+        # The existing exclude file is git/user controlled with no UTF-8
+        # guarantee; we only need to know whether it ends in a newline, so
+        # mojibake from a locale fallback is fine.
+        if exclude_file.exists():
+            try:
+                existing = exclude_file.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                existing = exclude_file.read_text(
+                    encoding=locale.getpreferredencoding(False) or "utf-8",
+                    errors="replace",
+                )
+        else:
+            existing = ""
         block = "\n# opensquilla code-task build-artifact excludes\n" + "\n".join(
             BUILD_ARTIFACT_EXCLUDES
         )
-        with exclude_file.open("a") as fh:
+        with exclude_file.open("a", encoding="utf-8") as fh:
             if not existing.endswith("\n") and existing:
                 fh.write("\n")
             fh.write(block + "\n")
@@ -168,11 +194,21 @@ def _empty_tree(repo: Path) -> str:
 
     Diffing the index against it yields every tracked file as an addition.
     Computed via ``git hash-object`` (not hardcoded) so it is correct for both
-    SHA-1 and SHA-256 repositories.
+    SHA-1 and SHA-256 repositories. Uses ``--stdin`` with empty input so it
+    works on Windows too (``/dev/null`` does not exist there).
     """
-    r = _git(["hash-object", "-t", "tree", "/dev/null"], repo)
+    r = subprocess.run(
+        ["git", "hash-object", "-t", "tree", "--stdin"],
+        cwd=str(repo),
+        input="",
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+    )
     if r.returncode != 0:
-        raise WorkspaceError(f"could not compute empty tree: {r.stderr.strip()}")
+        raise WorkspaceError(f"could not compute empty tree: {(r.stderr or '').strip()}")
     return r.stdout.strip()
 
 
@@ -254,6 +290,8 @@ def persist_to_source(
         input=patch,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=120,
     )
     if proc.returncode != 0:

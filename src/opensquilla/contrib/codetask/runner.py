@@ -85,13 +85,13 @@ def solve(
     task_md = render_task_md(
         spec, repo=repo, base_ref=prepared.base_ref, commit=prepared.base_commit
     )
-    config.artifact_path(rid, "task.md").write_text(task_md)
+    config.artifact_path(rid, "task.md").write_text(task_md, encoding="utf-8")
 
     # 3. Probe environment + render prompt.
     probe = envprobe.probe(prepared.path)
     is_edit = verification_mode == "build" and _repo_has_app(prepared.path)
     prompt = _render_prompt(task_md, probe.as_hints(), scratch, verification_mode, is_edit)
-    config.artifact_path(rid, "prompt.txt").write_text(prompt)
+    config.artifact_path(rid, "prompt.txt").write_text(prompt, encoding="utf-8")
 
     result = TaskResult(
         task_slug=spec.slug,
@@ -128,7 +128,7 @@ def solve(
     result.commits = workspace.count_commits(prepared.path, prepared.base_commit)
     if patch.strip():
         patch_path = config.artifact_path(rid, "change.patch")
-        patch_path.write_text(patch)
+        patch_path.write_text(patch, encoding="utf-8")
         result.patch_path = str(patch_path)
 
     # Persist the agent's verification manifest into the run dir for the
@@ -195,7 +195,9 @@ def _archive_manifest(scratch: Path, run_id: str) -> None:
     if not src.is_file():
         return
     try:
-        config.artifact_path(run_id, config.VERIFICATION_MANIFEST_NAME).write_text(src.read_text())
+        config.artifact_path(run_id, config.VERIFICATION_MANIFEST_NAME).write_text(
+            src.read_text(encoding="utf-8"), encoding="utf-8"
+        )
     except OSError:
         pass
 
@@ -212,7 +214,7 @@ def _render_prompt(
     verification_mode: str = "red-green",
     is_edit: bool = False,
 ) -> str:
-    template = config.prompt_template_path(verification_mode, is_edit).read_text()
+    template = config.prompt_template_path(verification_mode, is_edit).read_text(encoding="utf-8")
     hints_block = f"\n{hints}\n" if hints else ""
     return template.format(
         task=task_md,
@@ -250,7 +252,7 @@ def _write_status(run_id: str, phase: str, **extra: Any) -> None:
         # status.json, never a half-written one (tmp is in the same dir, so the
         # replace is a same-filesystem rename).
         tmp = d / "status.json.tmp"
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(d / "status.json")
     except OSError:
         pass
@@ -258,7 +260,8 @@ def _write_status(run_id: str, phase: str, **extra: Any) -> None:
 
 def _persist(result: TaskResult) -> None:
     config.artifact_path(result.run_id, "result.json").write_text(
-        json.dumps(_result_to_dict(result), indent=2, ensure_ascii=False)
+        json.dumps(_result_to_dict(result), indent=2, ensure_ascii=False),
+        encoding="utf-8",
     )
     # Terminal heartbeat so a watcher sees the run is done (and its outcome)
     # without parsing result.json.

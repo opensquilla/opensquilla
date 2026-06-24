@@ -121,23 +121,29 @@ class LocalAdapter:
         # env inherits OPENROUTER_API_KEY and points the agent at code-task's
         # own config (OPENSQUILLA_GATEWAY_CONFIG_PATH) so coding-irrelevant tools
         # are denied while network + squilla_router stay on.
-        # start_new_session puts the agent and any install/test descendants in
-        # their own process group so a timeout can kill the WHOLE tree, not
-        # just the direct python child (codex review #6).
+        # Isolate the agent and any install/test descendants into their own
+        # process group / job so a timeout can kill the WHOLE tree, not just
+        # the direct python child (codex review #6). POSIX uses
+        # start_new_session (setsid); Windows uses CREATE_NEW_PROCESS_GROUP.
         agent_env = {
             **os.environ,
             "OPENSQUILLA_GATEWAY_CONFIG_PATH": str(agent_config_path()),
         }
+        popen_kwargs = dict(
+            cwd=str(repo),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=agent_env,
+        )
+        if os.name == "posix":
+            popen_kwargs["start_new_session"] = True
+        else:
+            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         try:
-            proc = subprocess.Popen(
-                cmd,
-                cwd=str(repo),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                start_new_session=True,
-                env=agent_env,
-            )
+            proc = subprocess.Popen(cmd, **popen_kwargs)
         except FileNotFoundError as exc:
             raise RuntimeError(f"could not launch agent interpreter: {exc}") from exc
 
@@ -152,8 +158,8 @@ class LocalAdapter:
             logger.warning("agent subprocess timed out after %ds; killed group", self.timeout)
 
         duration = time.time() - start
-        (artifact_dir / "agent_stdout.log").write_text(stdout or "")
-        (artifact_dir / "agent_stderr.log").write_text(stderr or "")
+        (artifact_dir / "agent_stdout.log").write_text(stdout or "", encoding="utf-8")
+        (artifact_dir / "agent_stderr.log").write_text(stderr or "", encoding="utf-8")
 
         envelope = _parse_json_envelope(stdout)
         if timed_out:
@@ -186,17 +192,47 @@ class LocalAdapter:
 
 
 def _kill_process_group(proc) -> None:
-    """SIGKILL the agent subprocess's whole process group (best effort)."""
+    """Kill the agent subprocess and its descendants (best effort).
+
+    On POSIX we signal the entire process group via ``killpg`` so install /
+    test grandchildren die too. On Windows there is no POSIX process group;
+    ``taskkill /F /T /PID <pid>`` walks the Windows parent-tree, which is
+    enough for ordinary subprocess descendants but is NOT a containment
+    boundary (a child that detaches, re-parents to a service, or is launched
+    via a scheduler is not bound to the tree and can survive). We fall back
+    to ``proc.kill()`` (direct child only) if taskkill is unavailable or
+    reports failure, so the outer ``proc.communicate()`` cannot hang on a
+    still-running direct child.
+    """
     import os
     import signal
 
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
+    if os.name == "posix":
         try:
-            proc.kill()
-        except OSError:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
             pass
+    else:
+        try:
+            r = subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True,
+                timeout=10,
+            )
+            # taskkill returns nonzero when the target is already gone or it
+            # can't reach a descendant. The direct child may still be alive,
+            # so we only short-circuit on a clean exit; otherwise we fall
+            # through to proc.kill() so the outer proc.communicate() can't
+            # block forever on a half-killed tree.
+            if r.returncode == 0:
+                return
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
 
 
 def _parse_json_envelope(stdout: str) -> dict | None:

@@ -24,7 +24,7 @@ def build_prompt(
         Rendered prompt string.
     """
     path = template_path or prompt_template_path()
-    template = path.read_text()
+    template = path.read_text(encoding="utf-8")
 
     prompt = template.format(
         problem_statement=instance["problem_statement"],

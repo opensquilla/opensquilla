@@ -15,8 +15,8 @@ import httpx
 
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.sandbox.integration import sandboxed
-from opensquilla.search.normalize import canonicalize_url, extract_domain
 from opensquilla.search.canonical import run_canonical_web_search
+from opensquilla.search.normalize import canonicalize_url, extract_domain
 from opensquilla.search.types import (
     Recency,
     SearchMode,

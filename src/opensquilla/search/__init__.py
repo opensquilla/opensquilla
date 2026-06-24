@@ -1,7 +1,7 @@
 """Web search abstraction layer."""
 
-from opensquilla.search.registry import get_provider, register_provider
 from opensquilla.search.canonical import run_canonical_web_search
+from opensquilla.search.registry import get_provider, register_provider
 from opensquilla.search.types import (
     SearchDiagnostics,
     SearchHit,

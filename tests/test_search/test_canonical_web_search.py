@@ -343,7 +343,9 @@ async def test_canonical_web_search_primary_auth_failure_does_not_silent_fallbac
 
 
 @pytest.mark.asyncio
-async def test_canonical_web_search_no_key_auto_skips_known_missing_key_providers(monkeypatch) -> None:
+async def test_canonical_web_search_no_key_auto_skips_known_missing_key_providers(
+    monkeypatch,
+) -> None:
     for key in ("BRAVE_SEARCH_API_KEY", "TAVILY_API_KEY", "EXA_API_KEY"):
         monkeypatch.delenv(key, raising=False)
 

@@ -39,7 +39,7 @@ def solve(
     shallow: bool = typer.Option(False, "--shallow", help="Shallow clone (no history)."),
     model: str = typer.Option("", help="Model override; empty lets the router/config decide."),
     thinking: str = typer.Option("", help="Thinking effort; empty lets config decide."),
-    timeout: int = typer.Option(1800, help="Agent timeout in seconds."),
+    timeout: int = typer.Option(5400, help="Agent timeout in seconds (default 90 min; heavy repos need time to install deps)."),
     verification_mode: str = typer.Option(
         "red-green",
         "--verification-mode",

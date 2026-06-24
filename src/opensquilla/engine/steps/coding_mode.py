@@ -111,7 +111,7 @@ _CODING_MODE_DIRECTIVE_TEMPLATE = (
     "path or a git URL (fix a bug, add/implement a feature, edit a file, "
     "resolve a GitHub issue), you MUST do the work by running\n"
     "    __CODE_TASK_CMD__ solve --repo <url-or-path> "
-    '(--issue N | --task "<text>" | --task-file <path>) --yes\n'
+    '(--issue N | --task "<text>" | --task-file <path>) --shallow --yes\n'
     "Use that command EXACTLY as written above — it is resolved to run in THIS "
     "environment regardless of PATH. Do NOT replace it with a bare "
     "`opensquilla`, do NOT `pip install` OpenSquilla, and if that command fails "
@@ -136,13 +136,14 @@ _CODING_MODE_DIRECTIVE_TEMPLATE = (
     "or change the color), point --repo at that app's repo and keep "
     "--verification-mode build; code-task edits the existing app in place and "
     "applies the verified change back to the repo so the next edit builds on it.\n"
-    "code-task runs for MANY minutes (often 20-40), so it is a long-running "
-    "task: ALWAYS launch it with background_process and then await it with "
-    'process(action="wait", session_id=...). Do NOT run code-task with a '
-    "blocking exec_command — exec_command is hard-capped at 600s (10 min) no "
-    "matter what timeout you pass, so it would kill code-task mid-run and "
-    "waste the attempt. Do not poll process(action=\"poll\") in a loop "
-    "either — just wait for the result.\n"
+    "code-task runs for MANY minutes (often 20-40, up to ~90 on a heavy repo "
+    "that must install dependencies), so it is a long-running task: ALWAYS "
+    "launch it with background_process(timeout=5400) and then await it with "
+    'process(action="wait", session_id=..., timeout=5400). Do NOT run '
+    "code-task with a blocking exec_command — exec_command is hard-capped at "
+    "600s (10 min) no matter what timeout you pass, so it would kill "
+    "code-task mid-run and waste the attempt. Do not poll "
+    "process(action=\"poll\") in a loop either — just wait for the result.\n"
     "code-task works in an ISOLATED run directory, NOT in the --repo source you "
     "pass it: that source stays EMPTY until a run finishes and VERIFIES, then "
     "the change is committed back. So do NOT judge progress by the source "

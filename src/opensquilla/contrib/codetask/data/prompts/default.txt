@@ -37,8 +37,12 @@ Phase 1 — UNDERSTAND
 
 Phase 2 — RUN THE PROJECT
   Find how the project builds, installs, and tests (check CI config, README,
-  Makefile). Install dependencies and run the existing tests to confirm the
-  harness works before you change anything.
+  Makefile). Install only what you NEED to run the specific test you will
+  write — the minimal, fastest path (core deps + the relevant module), NOT
+  every optional extra, heavy model/data download, or unrelated component;
+  on a big repo a lighter install reaches red->green far faster. Then run
+  the existing tests (or the relevant subset) to confirm the harness works
+  before you change anything.
 
 Phase 3 — WRITE ACCEPTANCE TESTS FIRST (red)
   TESTABILITY GATE — decide this FAST, up front, before sinking time: can

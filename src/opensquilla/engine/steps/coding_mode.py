@@ -83,24 +83,31 @@ def resolve_code_task_command() -> str | None:
     return cmd
 
 
+def _quote(path: str) -> str:
+    """Shell-quote a path for the HOST shell (POSIX sh vs Windows cmd/PowerShell)."""
+    if os.name == "nt":
+        return f'"{path}"' if any(c in path for c in ' ()&') else path
+    return shlex.quote(path)
+
+
 def _resolve_code_task_command_uncached() -> str | None:
-    # 1) The console script next to the running interpreter (venv / pip install).
-    adjacent = Path(sys.executable).with_name("opensquilla")
-    if (
-        adjacent.is_file()
-        and os.access(adjacent, os.X_OK)
-        and _runs_code_task([str(adjacent)])
-    ):
-        return f"{shlex.quote(str(adjacent))} code-task"
+    base = Path(sys.executable).parent
+    # 1) The console script next to the running interpreter. On Windows it is
+    #    opensquilla.exe / .cmd in the venv Scripts dir, not a bare name.
+    for name in ("opensquilla", "opensquilla.exe", "opensquilla.cmd", "opensquilla.bat"):
+        cand = base / name
+        if cand.is_file() and os.access(cand, os.X_OK) and _runs_code_task([str(cand)]):
+            return f"{_quote(str(cand))} code-task"
     # 2) Module invocation via the EXACT interpreter the gateway runs on. ``-P``
     #    (Python 3.11+) keeps a cwd ``opensquilla`` package from shadowing the
     #    import once the agent cd's into a target repo.
     if _runs_code_task([sys.executable, "-P", "-m", "opensquilla.cli.main"]):
-        return f"{shlex.quote(sys.executable)} -P -m opensquilla.cli.main code-task"
-    # 3) Whatever ``opensquilla`` is on PATH — but only if it actually runs.
+        return f"{_quote(sys.executable)} -P -m opensquilla.cli.main code-task"
+    # 3) Whatever ``opensquilla`` is on PATH (shutil.which honors PATHEXT on
+    #    Windows) — but only if it actually runs.
     on_path = shutil.which("opensquilla")
     if on_path and _runs_code_task([on_path]):
-        return f"{shlex.quote(on_path)} code-task"
+        return f"{_quote(on_path)} code-task"
     return None
 
 

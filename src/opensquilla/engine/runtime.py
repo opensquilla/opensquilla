@@ -2894,6 +2894,24 @@ class TurnRunner:
         session_key: str,
         explicit: float | None = None,
     ) -> float:
+        """Per-iteration timeout, with a coding-mode floor.
+
+        A coding-mode turn delegates to code-task and then blocks in a single
+        long ``process(action="wait")`` (code-task can run ~90 min). The
+        per-iteration watchdog must not clamp that wait, so floor the timeout
+        at 5400s while coding mode is on.
+        """
+        value = self._resolve_agent_iteration_timeout_base(session_key, explicit)
+        skills_cfg = getattr(self._config, "skills", None)
+        if bool(getattr(skills_cfg, "coding_mode", False)) and value < 5400.0:
+            return 5400.0
+        return value
+
+    def _resolve_agent_iteration_timeout_base(
+        self,
+        session_key: str,
+        explicit: float | None = None,
+    ) -> float:
         """Resolve per-iteration timeout for this turn.
 
         Precedence: explicit arg > session config > env > gateway config > default.

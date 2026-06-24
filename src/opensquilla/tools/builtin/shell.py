@@ -890,7 +890,7 @@ async def exec_command(
         "workdir": {"type": "string", "description": "Working directory (default: cwd)."},
         "timeout": {
             "type": "number",
-            "description": "Timeout in seconds (default 1800, max 3600).",
+            "description": "Timeout in seconds (default 1800, max 5400).",
         },
         "approval_id": {
             "type": "string",
@@ -1164,7 +1164,7 @@ def get_bg_session(session_id: str) -> _BgSession | None:
             "type": "number",
             "description": (
                 "For wait: max seconds to block for the process to exit (default "
-                "600, max 3600). On timeout, returns with the process still "
+                "600, max 5400). On timeout, returns with the process still "
                 "running so you can wait again."
             ),
         },

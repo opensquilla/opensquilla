@@ -39,6 +39,8 @@ class GatewayRuntimeNotice:
 
 
 class GatewayClientLike(Protocol):
+    async def call(self, method: str, params: dict | None = None) -> Any: ...
+
     async def create_session(
         self,
         agent_id: str = "main",

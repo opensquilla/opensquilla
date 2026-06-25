@@ -26,6 +26,7 @@ from scripts.run_draco_ensemble import (
     amain,
     benchmark_tool_policy,
     benchmark_tools_for_policy,
+    configure_benchmark_sandbox_runtime,
     build_parser,
     build_benchmark_tool_context,
     build_local_web_tool_registry,
@@ -49,6 +50,15 @@ from scripts.run_draco_ensemble import (
     score_criterion_judgments,
     summarize,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_sandbox_runtime_for_draco_tests() -> None:
+    from opensquilla.sandbox.integration import reset_runtime
+
+    reset_runtime()
+    yield
+    reset_runtime()
 
 
 class _CriterionJudgeProvider:
@@ -471,6 +481,28 @@ def test_draco_runner_local_web_tool_context_matches_recorded_budget() -> None:
     assert policy["local_web_tools"]["web_fetch"]["max_content_chars"] == 4936
 
 
+def test_draco_runner_configures_sandbox_runtime_for_local_web_tools() -> None:
+    from opensquilla.sandbox.integration import get_runtime
+
+    args = build_parser().parse_args([
+        "--input",
+        "draco.jsonl",
+        "--tool-mode",
+        "local_web_tools",
+    ])
+
+    runtime = configure_benchmark_sandbox_runtime(
+        GatewayConfig(),
+        benchmark_tool_policy(args),
+    )
+
+    assert runtime["configured"] is True
+    assert runtime["backend"] == "noop"
+    assert runtime["approval_queue"] == "auto_deny_unattended"
+    assert runtime["effective"]["sandbox_enabled"] is False
+    assert get_runtime() is not None
+
+
 @pytest.mark.asyncio
 async def test_draco_runner_local_web_search_clamps_model_max_results(
     monkeypatch: pytest.MonkeyPatch,
@@ -537,6 +569,69 @@ async def test_draco_runner_local_web_fetch_clamps_model_max_chars(
     await registered.handler(url="https://example.com/source", max_chars="bad")
 
     assert calls == [4936, 100, 4936]
+
+
+@pytest.mark.asyncio
+async def test_draco_runner_local_web_fetch_uses_configured_sandbox_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib
+
+    from opensquilla.tools.types import current_tool_context
+
+    web_fetch_mod = importlib.import_module("opensquilla.tools.builtin.web_fetch")
+    web_fetch_mod._cache.clear()
+    monkeypatch.setattr(web_fetch_mod, "_check_ssrf", lambda url: None)
+
+    class _FakeResponse:
+        def __init__(self, url: str) -> None:
+            self.status_code = 200
+            self.url = url
+            self.headers = {"content-type": "text/plain"}
+            self.text = "benchmark fetch ok"
+
+    class _FakeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> _FakeClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def get(self, url: str) -> _FakeResponse:
+            return _FakeResponse(url)
+
+    monkeypatch.setattr(web_fetch_mod.httpx, "AsyncClient", _FakeClient)
+    args = build_parser().parse_args([
+        "--input",
+        "draco.jsonl",
+        "--tool-mode",
+        "local_web_tools",
+    ])
+    policy = benchmark_tool_policy(args)
+    configure_benchmark_sandbox_runtime(GatewayConfig(), policy)
+    ctx = build_benchmark_tool_context(
+        task_id="task-1",
+        group="G3",
+        tool_policy=policy,
+    )
+    registry = build_local_web_tool_registry(policy)
+    registered = registry.get("web_fetch")
+
+    assert registered is not None
+    token = current_tool_context.set(ctx)
+    try:
+        raw = await registered.handler(url="https://example.com/draco-runtime")
+    finally:
+        current_tool_context.reset(token)
+
+    payload = json.loads(raw)
+    assert payload["status"] == 200
+    assert payload["extractor"] == "raw"
+    assert "benchmark fetch ok" in payload["text"]
+    assert "runtime_unconfigured" not in raw
 
 
 def test_draco_runner_configures_local_search_runtime_without_secrets(

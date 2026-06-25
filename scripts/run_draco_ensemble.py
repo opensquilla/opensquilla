@@ -128,6 +128,19 @@ GENERATION_EMPTY_OUTPUT_ERROR = "empty_generation_output"
 GENERATION_MISSING_DONE_ERROR = "generation_missing_done"
 
 
+class _BenchmarkApprovalQueue:
+    """Non-interactive approval queue for unattended benchmark runs."""
+
+    def request(self, namespace: str = "exec", params: dict | None = None) -> str:
+        return "draco-benchmark:auto-deny"
+
+    async def wait(self, approval_id: str, timeout: float | None = None) -> bool:
+        return False
+
+    def resolve(self, approval_id: str, approved: bool) -> None:
+        return None
+
+
 @dataclass
 class RunResult:
     final_text: str
@@ -657,6 +670,30 @@ def configure_local_web_search_runtime(
         "use_env_proxy": use_env_proxy,
         "fallback_policy": fallback_policy,
         "diagnostics": diagnostics,
+    }
+
+
+def configure_benchmark_sandbox_runtime(
+    config: GatewayConfig,
+    tool_policy: dict[str, Any],
+) -> dict[str, Any]:
+    if tool_policy.get("tool_mode") != TOOL_MODE_LOCAL_WEB_TOOLS:
+        return {}
+
+    from opensquilla.sandbox.integration import configure_runtime
+
+    workspace = Path(config.workspace_dir) if config.workspace_dir else ROOT
+    runtime = configure_runtime(
+        config.sandbox,
+        approval_queue=_BenchmarkApprovalQueue(),
+        workspace=workspace,
+    )
+    return {
+        "configured": True,
+        "backend": runtime.backend.name,
+        "workspace": str(runtime.workspace),
+        "approval_queue": "auto_deny_unattended",
+        "effective": runtime.effective.as_dict(),
     }
 
 
@@ -3329,10 +3366,14 @@ async def amain(args: argparse.Namespace) -> int:
         )
     generation_policy = generation_thinking_policy(args)
     config = GatewayConfig.load(args.config)
+    sandbox_runtime = configure_benchmark_sandbox_runtime(config, tool_policy)
     search_runtime = configure_local_web_search_runtime(config, tool_policy)
-    if search_runtime:
+    if search_runtime or sandbox_runtime:
         local_web_tools = dict(tool_policy.get("local_web_tools") or {})
-        local_web_tools["search_runtime"] = search_runtime
+        if search_runtime:
+            local_web_tools["search_runtime"] = search_runtime
+        if sandbox_runtime:
+            local_web_tools["sandbox_runtime"] = sandbox_runtime
         tool_policy = {**tool_policy, "local_web_tools": local_web_tools}
     benchmark_tools = benchmark_tools_for_policy(tool_policy)
     inherited = inherited_provider_config(config)

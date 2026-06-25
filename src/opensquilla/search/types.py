@@ -11,13 +11,20 @@ SearchErrorKind = Literal["auth", "rate_limit", "timeout", "network", "http", "p
 SearchMode = Literal["auto", "news", "technical", "broad"]
 Recency = Literal["day", "week", "month", "year"]
 
+# Single source of truth for the web-search result count.
+# DEFAULT_SEARCH_MAX_RESULTS is the count used when a caller does not request an
+# explicit number; MAX_SEARCH_RESULTS is the hard ceiling every surface clamps to
+# (it matches the per-provider upper bound, e.g. Brave's count cap).
+DEFAULT_SEARCH_MAX_RESULTS = 10
+MAX_SEARCH_RESULTS = 20
+
 
 @dataclass
 class SearchRequest:
     """A search request with the same defaults as provider.search(...)."""
 
     query: str
-    max_results: int = 5
+    max_results: int = DEFAULT_SEARCH_MAX_RESULTS
 
 
 @dataclass
@@ -46,7 +53,7 @@ class SearchOptions:
 
     query: str
     mode: SearchMode = "auto"
-    max_results: int = 10
+    max_results: int = DEFAULT_SEARCH_MAX_RESULTS
     fetch_top_k: int = 3
     max_chars_per_source: int = 1500
     include_domains: tuple[str, ...] = ()
@@ -56,7 +63,9 @@ class SearchOptions:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "query", self.query.strip())
-        object.__setattr__(self, "max_results", min(max(self.max_results, 1), 20))
+        object.__setattr__(
+            self, "max_results", min(max(self.max_results, 1), MAX_SEARCH_RESULTS)
+        )
         object.__setattr__(self, "fetch_top_k", min(max(self.fetch_top_k, 0), 5))
         object.__setattr__(
             self,

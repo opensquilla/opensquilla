@@ -140,9 +140,9 @@ function onImageProviderSelect(event: Event) {
         </div>
       </label>
       <label class="control-row">
-        <div class="control-row__label-block"><span class="control-row__label">Max results</span></div>
+        <div class="control-row__label-block"><span class="control-row__label">Default results per search</span></div>
         <div class="control-row__control">
-          <input class="control-input control-input--narrow" :value="panel.form.searchMaxResults" name="setup_search_max_results" type="number" min="1" step="1" inputmode="numeric" @input="emit('updateField', 'search', 'maxResults', Number(($event.target as HTMLInputElement).value))">
+          <input class="control-input control-input--narrow" :value="panel.form.searchMaxResults" name="setup_search_max_results" type="number" min="1" max="20" step="1" inputmode="numeric" @input="emit('updateField', 'search', 'maxResults', Number(($event.target as HTMLInputElement).value))">
         </div>
       </label>
       <template v-if="panel.state.searchRequiresKey">

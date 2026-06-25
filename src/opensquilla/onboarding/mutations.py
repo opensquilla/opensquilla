@@ -37,6 +37,7 @@ from opensquilla.router_tiers import (
     TEXT_TIERS,
     normalize_text_tier,
 )
+from opensquilla.search.types import DEFAULT_SEARCH_MAX_RESULTS
 from opensquilla.secrets import clean_header_secret
 
 SearchFallbackPolicy = Literal["off", "network"]
@@ -356,7 +357,7 @@ def upsert_search_provider(
     provider_id: str,
     api_key: str = "",
     api_key_env: str = "",
-    max_results: int | str = 5,
+    max_results: int | str = DEFAULT_SEARCH_MAX_RESULTS,
     proxy: str = "",
     use_env_proxy: bool = False,
     fallback_policy: str = "off",

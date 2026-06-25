@@ -43,6 +43,7 @@ from opensquilla.onboarding.setup_engine import (
 )
 from opensquilla.onboarding.setup_paths import web_setup_url
 from opensquilla.onboarding.status import OnboardingStatus, get_onboarding_status
+from opensquilla.search.types import DEFAULT_SEARCH_MAX_RESULTS
 
 _STATUS_BLOCKING = {SectionStatus.MISSING, SectionStatus.DEGRADED, SectionStatus.UNKNOWN}
 _STATUS_DISPLAY: dict[SectionStatus, str] = {
@@ -1095,7 +1096,7 @@ def configure_command(
         rich_help_panel="Search",
     ),
     max_results: int = typer.Option(
-        5,
+        DEFAULT_SEARCH_MAX_RESULTS,
         "--max-results",
         help="Default Web search result limit.",
         rich_help_panel="Search",

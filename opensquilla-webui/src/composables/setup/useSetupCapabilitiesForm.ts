@@ -144,7 +144,7 @@ export function buildImagePayload(values: ImageFormValues): Record<string, unkno
 
 export function useSetupCapabilitiesForm() {
   const searchProvider = ref('duckduckgo')
-  const searchMaxResults = ref(5)
+  const searchMaxResults = ref(10)
   const searchApiKey = ref('')
   const searchApiKeyEnv = ref('')
   const searchProxy = ref('')
@@ -205,7 +205,7 @@ export function useSetupCapabilitiesForm() {
 
   function initSearchFromConfig(config: ConfigData, providers: ProviderSpec[]) {
     searchProvider.value = config.search_provider || providers.find(p => p.providerId === 'duckduckgo')?.providerId || providers[0]?.providerId || 'duckduckgo'
-    searchMaxResults.value = config.search_max_results || 5
+    searchMaxResults.value = config.search_max_results || 10
     searchApiKeyEnv.value = config.search_api_key_env || ''
     searchProxy.value = config.search_proxy || ''
     searchUseEnvProxy.value = config.search_use_env_proxy === true

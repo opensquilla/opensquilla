@@ -33,6 +33,7 @@ from opensquilla.router_tiers import (
     normalize_tier_mapping,
 )
 from opensquilla.sandbox.config import SandboxSettings
+from opensquilla.search.types import DEFAULT_SEARCH_MAX_RESULTS, MAX_SEARCH_RESULTS
 from opensquilla.session.compaction_lifecycle import (
     DEFAULT_FLUSH_TRIGGERS,
     FlushTrigger,
@@ -1712,7 +1713,9 @@ class GatewayConfig(BaseSettings):
     search_provider: str = "duckduckgo"
     search_api_key: str = ""
     search_api_key_env: str = ""
-    search_max_results: int = 5
+    search_max_results: int = Field(
+        DEFAULT_SEARCH_MAX_RESULTS, ge=1, le=MAX_SEARCH_RESULTS
+    )
     search_proxy: str = ""
     search_use_env_proxy: bool = False
     search_fallback_policy: Literal["off", "network"] = "off"

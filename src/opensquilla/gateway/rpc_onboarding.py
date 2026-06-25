@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
+from opensquilla.search.types import DEFAULT_SEARCH_MAX_RESULTS
 
 _d = get_dispatcher()
 
@@ -299,7 +300,11 @@ async def _search_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
         provider_id=provider_id,
         api_key=params.get("apiKey", "") if isinstance(params, dict) else "",
         api_key_env=params.get("apiKeyEnv", "") if isinstance(params, dict) else "",
-        max_results=params.get("maxResults", 5) if isinstance(params, dict) else 5,
+        max_results=(
+            params.get("maxResults", DEFAULT_SEARCH_MAX_RESULTS)
+            if isinstance(params, dict)
+            else DEFAULT_SEARCH_MAX_RESULTS
+        ),
         proxy=params.get("proxy", "") if isinstance(params, dict) else "",
         use_env_proxy=(params.get("useEnvProxy", False) if isinstance(params, dict) else False),
         fallback_policy=(

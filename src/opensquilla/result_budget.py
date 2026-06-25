@@ -495,13 +495,15 @@ def clamp_tool_arguments(
         elif requested is None and cap is not None:
             next_args["max_chars"] = cap
     elif tool_name == "web_discover":
+        # ``max_web_search_results`` is a pure ceiling: only clamp an explicit
+        # value down. When the caller omits ``max_results`` we leave it absent so
+        # the runtime default (the configured ``search_max_results``) governs,
+        # rather than overriding it with the cap.
         requested = next_args.get("max_results")
         cap = policy.max_web_search_results
         if _is_plain_int(requested):
             value = max(1, requested)
             next_args["max_results"] = min(value, cap) if cap is not None else value
-        elif requested is None and cap is not None:
-            next_args["max_results"] = cap
     elif tool_name == "web_search":
         requested_results = next_args.get("max_results")
         results_cap = policy.max_web_search_results
@@ -510,8 +512,6 @@ def clamp_tool_arguments(
             next_args["max_results"] = (
                 min(value, results_cap) if results_cap is not None else value
             )
-        elif requested_results is None and results_cap is not None:
-            next_args["max_results"] = results_cap
 
         requested_fetch_top_k = next_args.get("fetch_top_k")
         fetch_top_k_cap = policy.max_web_search_fetch_top_k

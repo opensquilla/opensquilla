@@ -27,7 +27,7 @@ from opensquilla.onboarding.search_specs import (
     search_provider_catalog_payload,
 )
 from opensquilla.search.canonical import run_canonical_web_search
-from opensquilla.search.types import Recency, SearchMode, SearchOptions
+from opensquilla.search.types import DEFAULT_SEARCH_MAX_RESULTS, Recency, SearchMode, SearchOptions
 
 search_app = typer.Typer(help="Configure and inspect web search providers.")
 
@@ -304,7 +304,7 @@ def search_benchmark(
     profile: str = typer.Option("smoke", "--profile"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     fetch_top_k: int = typer.Option(3, "--fetch-top-k"),
-    max_results: int = typer.Option(5, "--max-results"),
+    max_results: int = typer.Option(DEFAULT_SEARCH_MAX_RESULTS, "--max-results"),
     live: bool = typer.Option(False, "--live"),
 ) -> None:
     """Compare legacy and normalized search output shapes for synthetic queries."""
@@ -417,7 +417,7 @@ def search_configure(
     provider: str = typer.Argument(..., help="Search provider id (e.g. brave)."),
     api_key: str = typer.Option("", "--api-key", "-k"),
     api_key_env: str = typer.Option("", "--api-key-env"),
-    max_results: int = typer.Option(5, "--max-results"),
+    max_results: int = typer.Option(DEFAULT_SEARCH_MAX_RESULTS, "--max-results"),
     proxy: str = typer.Option("", "--proxy"),
     use_env_proxy: bool = typer.Option(
         False, "--use-env-proxy/--no-use-env-proxy"

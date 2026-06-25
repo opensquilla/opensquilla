@@ -31,6 +31,7 @@ from opensquilla.onboarding.provider_specs import provider_catalog_payload
 from opensquilla.onboarding.router_specs import router_catalog_payload
 from opensquilla.onboarding.search_specs import search_provider_catalog_payload
 from opensquilla.onboarding.status import OnboardingStatus, get_onboarding_status
+from opensquilla.search.types import DEFAULT_SEARCH_MAX_RESULTS
 
 IMAGE_GENERATION_SECTION_ALIASES = frozenset(
     {"image", "image-generation", "image_generation"}
@@ -117,7 +118,7 @@ class SetupEngine:
                 provider_id=str(payload["providerId"]),
                 api_key=str(payload.get("apiKey", "")),
                 api_key_env=str(payload.get("apiKeyEnv", "")),
-                max_results=int(payload.get("maxResults", 5)),
+                max_results=int(payload.get("maxResults", DEFAULT_SEARCH_MAX_RESULTS)),
                 proxy=str(payload.get("proxy", "")),
                 use_env_proxy=bool(payload.get("useEnvProxy", False)),
                 fallback_policy=str(payload.get("fallbackPolicy", "off")),

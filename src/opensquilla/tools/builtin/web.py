@@ -18,6 +18,8 @@ from opensquilla.sandbox.integration import sandboxed
 from opensquilla.search.canonical import run_canonical_web_search
 from opensquilla.search.normalize import canonicalize_url, extract_domain
 from opensquilla.search.types import (
+    DEFAULT_SEARCH_MAX_RESULTS,
+    MAX_SEARCH_RESULTS,
     Recency,
     SearchMode,
     SearchOptions,
@@ -306,7 +308,7 @@ async def http_request(
 
 # Active search provider name — set during boot
 _active_provider: str = "duckduckgo"
-_active_max_results: int = 5
+_active_max_results: int = DEFAULT_SEARCH_MAX_RESULTS
 _active_search_proxy: str = ""
 _active_search_api_key: str = ""
 _active_search_use_env_proxy: bool = False
@@ -316,7 +318,7 @@ _active_search_diagnostics: bool = False
 
 def configure_search(
     provider_name: str,
-    max_results: int = 5,
+    max_results: int = DEFAULT_SEARCH_MAX_RESULTS,
     *,
     api_key: str = "",
     api_key_env: str = "",
@@ -506,7 +508,10 @@ async def run_web_discover_payload(
             retryable=False,
         )
 
-    limit = max_results or _active_max_results
+    # Defence in depth: clamp to the shared ceiling before hitting the provider so
+    # an out-of-range configured/active value cannot ask an uncapped provider
+    # (e.g. duckduckgo) for an unbounded number of results.
+    limit = min(max(max_results or _active_max_results, 1), MAX_SEARCH_RESULTS)
     attempts: list[dict[str, str]] | None = [] if _active_search_diagnostics else None
     try:
         provider = get_provider(

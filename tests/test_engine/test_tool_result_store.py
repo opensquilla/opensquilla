@@ -67,6 +67,17 @@ def test_dedup_hit_still_enforces_retention(tmp_path: Path) -> None:
     assert store.read(hot.handle, session_id=_SESSION_ID).content == "hot output"
 
 
+def test_dedup_hit_with_zero_retention_returns_usable_handle(tmp_path: Path) -> None:
+    store = ToolResultStore(tmp_path)
+    _write(store, "recurring output", tool_use_id="t1")
+
+    # retention_seconds=0 expires everything written before "now"; a repeat write must
+    # still return a handle that resolves (the record is re-created, never dangling).
+    second = _write(store, "recurring output", tool_use_id="t2", retention_seconds=0)
+
+    assert store.read(second.handle, session_id=_SESSION_ID).content == "recurring output"
+
+
 def test_distinct_content_gets_distinct_handles(tmp_path: Path) -> None:
     store = ToolResultStore(tmp_path)
     a = _write(store, "alpha" * 100, tool_use_id="t1")

@@ -86,12 +86,20 @@ class ToolResultStore:
             )
 
         sha = hashlib.sha256(payload).hexdigest()
-
-        # Content-addressed snapshots: identical content reuses the same record. A
-        # repeated snapshot of already-stored content costs a single existence check
-        # and skips both the cleanup scan and the rewrite, so re-projecting the same
-        # tool result every turn no longer re-walks (and re-grows) the whole store.
         primary_handle = f"tr-{sha[:_CONTENT_HANDLE_HEX]}"
+
+        # Enforce retention first — a cheap, dedup-bounded stat scan — so a deduped
+        # write never bypasses cleanup and, crucially, never reuses a record that
+        # retention is about to evict. (If reuse ran before expiry, a small/zero
+        # retention_seconds would hand back a handle to an immediately-reaped record.)
+        # An expired record is removed here, so the lookup below falls through to a
+        # fresh write rather than returning a dangling handle.
+        self._remove_expired(retention_seconds)
+
+        # Content-addressed snapshots: identical content that survived retention is
+        # reused instead of rewritten — refreshing its access time so a frequently
+        # re-projected record stays hot — and only genuinely new content pays the
+        # budget prune and the write below, so the store stops re-growing on repeats.
         reused = self._existing_record(
             primary_handle,
             sha=sha,
@@ -104,14 +112,9 @@ class ToolResultStore:
             size_bytes=size_bytes,
         )
         if reused is not None:
-            # Deduped turn: skip the rewrite and the budget prune (no new bytes are
-            # added), but refresh this record's access time and still enforce
-            # retention, so a store that only ever sees repeat writes keeps expiring.
             self._touch(primary_handle, session_id=session_id)
-            self._remove_expired(retention_seconds)
             return reused
 
-        self._remove_expired(retention_seconds)
         if disk_budget_bytes is not None:
             self._prune_to_fit(size_bytes, disk_budget_bytes)
 

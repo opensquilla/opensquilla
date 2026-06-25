@@ -1,5 +1,8 @@
 """Unit tests for opensquilla.contrib.codetask.verification."""
 
+import pytest
+import shutil
+import subprocess
 import json
 
 from opensquilla.contrib.codetask import verification
@@ -341,3 +344,72 @@ def test_run_shell_resolves_python_from_repo_venv_in_foreign_cwd(tmp_path):
     assert rc == 0 and "VENV_PY_OK" in out, (rc, out)
     rc, out = verification._run_shell("python3", cwd=foreign, timeout=30, repo=repo)
     assert rc == 0 and "VENV_PY_OK" in out, (rc, out)  # python3 too (uv-venv safety)
+
+
+def test_run_shell_sets_uv_project_for_uv_repo(tmp_path):
+    """For a uv project (has uv.lock), _run_shell exports UV_PROJECT=<repo> so
+    `uv run` reuses the run repo's env even from the base worktree; non-uv repos
+    get no UV_PROJECT."""
+    from opensquilla.contrib.codetask import verification
+
+    uv_repo = tmp_path / "uvrepo"
+    uv_repo.mkdir()
+    (uv_repo / "uv.lock").write_text("", encoding="utf-8")
+    foreign = tmp_path / "wt"  # like the base worktree
+    foreign.mkdir()
+
+    rc, out = verification._run_shell(
+        'echo "UVP=[$UV_PROJECT]"', cwd=foreign, timeout=30, repo=uv_repo
+    )
+    assert rc == 0 and f"UVP=[{uv_repo}]" in out, out
+
+    plain = tmp_path / "plainrepo"
+    plain.mkdir()  # no uv.lock
+    rc, out = verification._run_shell(
+        'echo "UVP=[$UV_PROJECT]"', cwd=foreign, timeout=30, repo=plain
+    )
+    assert rc == 0 and "UVP=[]" in out, out
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv not installed")
+def test_uv_run_from_worktree_reuses_repo_venv(tmp_path):
+    """End-to-end: with UV_PROJECT injected by _run_shell, `uv run` from a base
+    worktree (which has NO .venv) reuses the RUN REPO's .venv -- deps are present
+    and no separate wt/.venv is built. Skips offline (uv sync needs the cache)."""
+    from opensquilla.contrib.codetask import verification
+
+    def g(cmd, cwd):
+        return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    g(["git", "init", "-q"], proj)
+    g(["git", "config", "user.email", "s@s"], proj)
+    g(["git", "config", "user.name", "s"], proj)
+    (proj / "pyproject.toml").write_text(
+        '[project]\nname = "p"\nversion = "0.1.0"\nrequires-python = ">=3.10"\n'
+        'dependencies = []\n[dependency-groups]\ndev = ["pytest>=8"]\n',
+        encoding="utf-8",
+    )
+    (proj / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    (proj / "test_calc.py").write_text(
+        "from calc import add\n\ndef test_add():\n    assert add(1, 2) == 3\n",
+        encoding="utf-8",
+    )
+    sync = g(["uv", "sync", "--all-groups"], proj)
+    if sync.returncode != 0:
+        pytest.skip(f"uv sync unavailable (offline?): {(sync.stderr or '')[-160:]}")
+    g(["git", "add", "-A"], proj)
+    g(["git", "commit", "-qm", "init"], proj)
+
+    wt = tmp_path / "wt"
+    g(["git", "worktree", "add", "-q", "--detach", str(wt)], proj)
+    assert not (wt / ".venv").exists()
+
+    rc, out = verification._run_shell(
+        "uv run --locked python -c 'import sys, pytest; print(\"PREFIX=\" + sys.prefix)'",
+        cwd=wt, timeout=180, repo=proj,
+    )
+    assert rc == 0, out
+    assert f"PREFIX={proj}/.venv" in out, out  # reused the repo venv, not wt/.venv
+    assert not (wt / ".venv").exists(), "uv built a separate worktree venv"

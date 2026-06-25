@@ -95,17 +95,25 @@ Phase 6 — RECORD THE VERIFICATION MANIFEST (required)
     copy would defeat that check. Use a relative invocation, e.g.
     `PYTHONPATH=src python -m pytest tests/test_x.py::test_y`.
   - The runner re-runs "command" / "regression_command" in a PLAIN shell (your
-    venv is NOT activated; the red check also re-runs in a base worktree that
-    has no venv). WHEN your project has a `.venv`, the runner makes BOTH
-    `python` and `python3` resolve to it — prefer `python` (a venv always
-    provides it). If you did NOT create a `.venv`, use `python3` (the name
-    that exists on a bare host; `python` often does not). EITHER way do NOT
+    venv is NOT activated; the red check also re-runs in a base worktree). Pick
+    the interpreter the SAME way you actually verified the test:
+      * uv project (a `uv.lock` exists): use `uv run` so test deps are
+        GUARANTEED present, e.g.
+        `PYTHONPATH=src uv run --locked python -m pytest tests/test_x.py::test_y`
+        (if pytest lives in an optional group, add the RIGHT flag: `--extra
+        <name>` for `[project.optional-dependencies]` (e.g. `--extra dev`), or
+        `--group <name>` for `[dependency-groups]` (e.g. `--group dev`)). The
+        runner pins UV_PROJECT to this repo, so
+        `uv run` reuses THIS repo's environment even in the base worktree. Use
+        `--locked` (NOT a bare `uv run`) so verification never rewrites uv.lock.
+      * non-uv project: use a BARE interpreter name — `python` if you made a
+        `.venv` (the runner makes `python`/`python3` resolve to it), else
+        `python3`. Ensure its test deps (pytest) are installed first.
+    EITHER way: ALWAYS keep imports repo-relative (`PYTHONPATH=src ...`); NEVER
     write `.venv/bin/python` or any `.venv/...` path (the base worktree has
-    none) and do NOT rely on `source .venv/bin/activate`. ALWAYS make
-    imports repo-relative (e.g. `PYTHONPATH=src python -m pytest ...`); do NOT
-    rely on an editable / `pip install -e` install for the test to import your
-    code — the red check must import the BASE code from the worktree, not your
-    fix.
+    none), never `source .venv/bin/activate`, and do NOT rely on an editable /
+    `pip install -e` install — the red check must import the BASE code from the
+    worktree, not your fix.
   - "test_paths" must list the test files you ADDED/CHANGED so the runner can
     re-create the red state on the original code. This is required.
   - If the task genuinely cannot be expressed as a DETERMINISTIC automated

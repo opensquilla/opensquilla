@@ -368,14 +368,22 @@ def _run_shell(
     shim: Path | None = None
     prefixed = command
     if repo is not None:
-        venv_python = Path(repo) / ".venv" / "bin" / "python"
+        repo = Path(repo)
+        exports = ""
+        # uv project: point `uv run` at THIS run repo's project + .venv even when
+        # cwd is the base worktree (which has no venv of its own), via UV_PROJECT.
+        # Without it a manifest `uv run ...` re-run from the worktree would build
+        # a SEPARATE wt/.venv (slow), and "deps missing" there could masquerade
+        # as a valid red. UV_PROJECT keeps the one-venv reuse while ensuring deps.
+        if (repo / "uv.lock").exists():
+            exports += f"export UV_PROJECT={shlex.quote(str(repo))}; "
+        # Make BOTH `python` and `python3` resolve to the run repo's venv, for
+        # bare-interpreter manifests re-run in a plain (non-activated) shell and
+        # in the base worktree. uv venvs often expose only `.venv/bin/python`,
+        # so a small shim covers `python3` too. Exports run AFTER `bash -lc`
+        # startup files, so they win over any login-profile PATH.
+        venv_python = repo / ".venv" / "bin" / "python"
         if venv_python.exists():
-            # Make BOTH `python` and `python3` resolve to the run repo's venv,
-            # for verification commands re-run in a plain (non-activated) shell
-            # and in the base worktree (which has no venv of its own). uv venvs
-            # often expose only `.venv/bin/python`, so a small shim covers
-            # `python3` too. The export runs AFTER `bash -lc` startup files, so
-            # it wins over any login-profile PATH.
             try:
                 shim = Path(tempfile.mkdtemp(prefix="codetask-pyshim-"))
                 for _name in ("python", "python3"):
@@ -384,10 +392,11 @@ def _run_shell(
                     except OSError:
                         pass
                 _vbin = shlex.quote(f"{shim}:{venv_python.parent}")
-                prefixed = f'export PATH={_vbin}:"$PATH"; {command}'
+                exports += f'export PATH={_vbin}:"$PATH"; '
             except OSError:
                 shim = None
-                prefixed = command
+        if exports:
+            prefixed = exports + command
     try:
         proc = subprocess.run(
             [bash, "-lc", prefixed],

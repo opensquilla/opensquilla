@@ -8,12 +8,13 @@ import json
 import logging
 import re
 import secrets
-from dataclasses import asdict, dataclass
+from collections.abc import Iterator
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from opensquilla.attachment_refs import _atomic_write_bytes, _validate_sha256
+from opensquilla.attachment_refs import _atomic_write_bytes, _link_or_copy, _validate_sha256
 
 _log = logging.getLogger(__name__)
 
@@ -336,6 +337,106 @@ class ArtifactStore:
                     continue
                 return ref
         return None
+
+    def copy_session_artifacts(
+        self,
+        *,
+        source_session_id: str,
+        target_session_id: str,
+        target_session_key: str,
+    ) -> int:
+        """Duplicate every artifact owned by ``source_session_id`` into ``target_session_id``.
+
+        Used when a session is forked: the child transcript references each artifact by
+        its stable id and a session-less download URL, but the store is session-scoped
+        and ``resolve_for_download`` rejects a mismatched session id, so the child needs
+        its own copy. Each artifact keeps its id; the copied ``meta.json`` is rebound to
+        the child's session id/key and the material (plus any thumbnail) is materialized
+        under the child's session bucket. Idempotent and best-effort: already-copied or
+        unreadable artifacts are skipped. Returns the number of artifacts copied.
+        """
+        source_session_id = _validate_non_empty("source_session_id", source_session_id)
+        target_session_id = _validate_non_empty("target_session_id", target_session_id)
+        target_session_key = _validate_non_empty("target_session_key", target_session_key)
+        if target_session_id == source_session_id:
+            return 0
+        copied = 0
+        for meta_path in self._iter_session_meta_paths(source_session_id):
+            try:
+                ref = ArtifactRef.from_dict(json.loads(meta_path.read_text(encoding="utf-8")))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if ref.session_id != source_session_id:
+                continue
+            try:
+                if self._copy_one_artifact(ref, target_session_id, target_session_key):
+                    copied += 1
+            except (OSError, ValueError):
+                # Best-effort: a single bad artifact (filesystem error, invalid sha)
+                # must not stop the rest. ArtifactError is a ValueError subclass.
+                continue
+        return copied
+
+    def _iter_session_meta_paths(self, session_id: str) -> Iterator[Path]:
+        """Yield every artifact ``meta.json`` for ``session_id`` across all store layouts."""
+        roots = (
+            *self._artifact_session_roots(session_id),
+            self.media_root
+            / ARTIFACT_STORE
+            / _safe_token(_validate_non_empty("session_id", session_id)),
+        )
+        seen: set[Path] = set()
+        for root in roots:
+            if not root.exists():
+                continue
+            for meta_path in sorted(root.glob("*/meta.json")):
+                resolved = meta_path.resolve()
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
+                yield meta_path
+
+    def _copy_one_artifact(
+        self,
+        ref: ArtifactRef,
+        target_session_id: str,
+        target_session_key: str,
+    ) -> bool:
+        """Materialize one artifact under the child session; return True when copied."""
+        source_material = self.path_for(ref)
+        if not source_material.exists():
+            return False
+        target_dir = self._artifact_dir(target_session_id, ref.id)
+        target_material = target_dir / ARTIFACT_MATERIAL_NAME
+        target_meta = target_dir / "meta.json"
+        if target_meta.exists() and target_material.exists():
+            return False
+        target_dir.mkdir(parents=True, exist_ok=True)
+        if not target_material.exists():
+            _link_or_copy(source_material, target_material)
+        has_thumbnail = False
+        if ref.has_thumbnail:
+            target_thumb = target_dir / ARTIFACT_THUMBNAIL_NAME
+            source_thumb = self.thumbnail_path_for(ref)
+            if target_thumb.exists():
+                has_thumbnail = True
+            elif source_thumb.exists():
+                _link_or_copy(source_thumb, target_thumb)
+                has_thumbnail = True
+        # Only advertise a thumbnail the child actually has on disk: a source whose
+        # sidecar cannot be located (e.g. a legacy layout without one) is copied
+        # without it rather than leaving a dangling has_thumbnail in the child meta.
+        child_ref = replace(
+            ref,
+            session_id=target_session_id,
+            session_key=target_session_key,
+            has_thumbnail=has_thumbnail,
+        )
+        _atomic_write_bytes(
+            target_meta,
+            json.dumps(child_ref.to_dict(), ensure_ascii=False, sort_keys=True).encode("utf-8"),
+        )
+        return True
 
     def resolve_thumbnail_for_download(
         self,

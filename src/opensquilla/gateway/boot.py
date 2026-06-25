@@ -1641,6 +1641,7 @@ async def build_services(
 
     # ── Session manager ─────────────────────────────────────────────
     if session_manager is None:
+        from opensquilla.paths import media_root_from_config
         from opensquilla.session.manager import SessionManager
         from opensquilla.session.storage import SessionStorage
 
@@ -1651,6 +1652,7 @@ async def build_services(
             storage,
             agent_registry=agent_registry,
             checkpoint_workspace_dir=config.workspace_dir,
+            media_root=media_root_from_config(config),
         )
 
     # Wire session manager into tool layer (like set_scheduler, set_gateway_config)

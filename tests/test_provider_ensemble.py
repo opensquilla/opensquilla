@@ -136,6 +136,9 @@ async def test_ensemble_runs_proposers_text_only_and_aggregator_with_tools(
     assert done.model == "agg"
     assert [row["model"] for row in done.model_usage_breakdown] == ["p1", "p2", "agg"]
     assert done.ensemble_trace["successful_proposers"] == 2
+    assert done.ensemble_trace["shuffle_candidates"] is False
+    assert done.ensemble_trace["final_request_role"] == "aggregator"
+    assert done.ensemble_trace["llm_request_count"] == 3
     assert "draft from p1" in done.ensemble_trace["candidates"][0]["text"]
     assert calls[0]["model"] in {"p1", "p2"}
     proposer_calls = [call for call in calls if call["model"] in {"p1", "p2"}]
@@ -253,6 +256,7 @@ async def test_ensemble_partial_failure_still_aggregates_when_min_success_met(
     failed = [row for row in done.ensemble_trace["candidates"] if not row["ok"]]
     assert failed[0]["error_code"] == "429"
     assert [row["model"] for row in done.model_usage_breakdown] == ["p1", "agg"]
+    assert done.ensemble_trace["llm_request_count"] == 3
 
 
 @pytest.mark.asyncio
@@ -299,6 +303,7 @@ async def test_ensemble_aggregator_error_preserves_proposer_diagnostics(
     assert error.diagnostic_done.billed_cost == 0.25
     assert [row["model"] for row in error.diagnostic_done.model_usage_breakdown] == ["p1"]
     assert error.diagnostic_done.ensemble_trace["successful_proposers"] == 1
+    assert error.diagnostic_done.ensemble_trace["llm_request_count"] == 2
     assert error.diagnostic_done.ensemble_trace["aggregator_error"]["code"] == (
         "ensemble_aggregator_error"
     )

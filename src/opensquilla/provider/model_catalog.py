@@ -49,6 +49,27 @@ _STATIC_FALLBACK: dict[str, tuple[int, int]] = {
     "moonshotai/kimi-k2.5": (65_535, 262_144),
 }
 
+_OPENROUTER_STATIC_REASONING_PREFIXES = (
+    "anthropic/claude-opus-4",
+    "anthropic/claude-sonnet-4",
+    "deepseek/deepseek-r1",
+    "deepseek/deepseek-v4",
+    "google/gemini-2.5",
+    "google/gemini-3",
+    "moonshotai/kimi-k2",
+    "openai/gpt-5",
+    "qwen/qwen3",
+    "qwen/qwq",
+    "x-ai/grok-4",
+    "z-ai/glm-4.5",
+    "z-ai/glm-5",
+)
+
+
+def _openrouter_static_supports_reasoning(model_id: str) -> bool:
+    model_l = model_id.strip().lower()
+    return model_l.startswith(_OPENROUTER_STATIC_REASONING_PREFIXES)
+
 
 class ModelCatalog:
     """In-memory cache of model metadata fetched from provider API.
@@ -121,6 +142,13 @@ class ModelCatalog:
                 reasoning_format="openrouter",
             )
         model_l = model_id.strip().lower()
+        if provider_id == "openrouter" and _openrouter_static_supports_reasoning(model_l):
+            return ModelCapabilities(
+                supports_reasoning=True,
+                supports_tools=info.supports_tools if info else True,
+                supports_vision=info.supports_vision if info else model_l.startswith("google/"),
+                reasoning_format="openrouter",
+            )
         if (
             provider_name == "openai"
             and "api.openai.com" in base_url.lower()

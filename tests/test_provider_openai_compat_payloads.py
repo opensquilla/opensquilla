@@ -203,6 +203,76 @@ def test_openrouter_stream_timeout_emits_heartbeat_before_non_stream_fallback(
     assert event.phase == "llm_fallback"
 
 
+def test_openrouter_stream_timeout_non_stream_fallback_keeps_capabilities(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class TimeoutStream:
+        async def __aenter__(self) -> Any:
+            raise httpx.ReadTimeout("stream idle")
+
+        async def __aexit__(self, *_exc: Any) -> None:
+            return None
+
+    class TimeoutThenPostClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> TimeoutThenPostClient:
+            return self
+
+        async def __aexit__(self, *_exc: Any) -> None:
+            return None
+
+        def stream(self, *args: Any, **kwargs: Any) -> TimeoutStream:
+            captured["stream_payload"] = kwargs["json"]
+            return TimeoutStream()
+
+        async def post(self, *args: Any, **kwargs: Any) -> httpx.Response:
+            captured["fallback_payload"] = kwargs["json"]
+            return httpx.Response(
+                200,
+                json={
+                    "model": "openai/gpt-5.5",
+                    "choices": [
+                        {
+                            "message": {"content": "ok"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 3,
+                        "completion_tokens": 2,
+                        "cost": 0.001,
+                        "server_tool_use": {"web_search_requests": 1},
+                    },
+                },
+                request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions"),
+            )
+
+    monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", TimeoutThenPostClient)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="openai/gpt-5.5",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+
+    events = _collect_events(
+        provider,
+        ChatConfig(thinking=True, thinking_level=ThinkingLevel.HIGH, timeout=1.0),
+    )
+
+    done = next(event for event in events if isinstance(event, DoneEvent))
+    assert any(isinstance(event, ProviderHeartbeatEvent) for event in events)
+    assert captured["stream_payload"]["reasoning"] == {"effort": "high"}
+    assert captured["fallback_payload"]["stream"] is False
+    assert captured["fallback_payload"]["reasoning"] == {"effort": "high"}
+    assert done.model == "openai/gpt-5.5"
+    assert done.provider_usage["server_tool_use"] == {"web_search_requests": 1}
+
+
 def test_openrouter_list_models_reports_openrouter_provider(monkeypatch: Any) -> None:
     captured: dict[str, Any] = {}
     _patch_get_transport_response(
@@ -318,6 +388,73 @@ def test_openrouter_deepseek_v4_returns_reasoning_content_from_details(
     }
     assert captured["payload"]["reasoning"] == {"effort": "high"}
     assert done.reasoning_content == "I considered the request."
+
+
+def test_openrouter_gpt55_non_thinking_explicitly_disables_reasoning(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="openai/gpt-5.5",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+    cfg = ChatConfig(
+        thinking=False,
+        model_capabilities=ModelCapabilities(
+            supports_reasoning=True,
+            supports_tools=True,
+            reasoning_format="openrouter",
+        ),
+    )
+
+    _collect(provider, cfg)
+
+    assert captured["payload"]["reasoning"] == {"enabled": False}
+
+
+def test_openrouter_gpt55_thinking_infers_reasoning_without_catalog_capabilities(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="openai/gpt-5.5",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+
+    _collect(
+        provider,
+        ChatConfig(
+            thinking=True,
+            thinking_level=ThinkingLevel.HIGH,
+            temperature=0,
+        ),
+    )
+
+    assert captured["payload"]["reasoning"] == {"effort": "high"}
+    assert captured["payload"]["temperature"] == 0
+
+
+def test_openrouter_glm52_non_thinking_infers_disable_without_catalog_capabilities(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="z-ai/glm-5.2",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+
+    _collect(provider, ChatConfig(thinking=False))
+
+    assert captured["payload"]["reasoning"] == {"enabled": False}
 
 
 def _collect_events(
@@ -1258,6 +1395,41 @@ def test_openai_compat_sends_required_tool_choice_when_configured(
     _collect_events(provider, ChatConfig(tool_choice="required"), tools=[tool])
 
     assert captured["payload"]["tool_choice"] == "required"
+
+
+def test_openrouter_compat_sends_provider_tool_payload_verbatim(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="gpt-test",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+    tool = ToolDefinition(
+        name="openrouter:web_search",
+        description="OpenRouter web search.",
+        input_schema=ToolInputSchema(),
+        provider_tool={
+            "type": "openrouter:web_search",
+            "parameters": {
+                "engine": "exa",
+                "excluded_domains": ["huggingface.co"],
+            },
+        },
+    )
+
+    _collect_events(provider, ChatConfig(), tools=[tool])
+
+    assert captured["payload"]["tools"] == [
+        {
+            "type": "openrouter:web_search",
+            "parameters": {
+                "engine": "exa",
+                "excluded_domains": ["huggingface.co"],
+            },
+        }
+    ]
 
 
 def test_openai_compat_sends_named_function_tool_choice_when_configured(

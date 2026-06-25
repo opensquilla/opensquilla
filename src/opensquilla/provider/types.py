@@ -86,6 +86,7 @@ class DoneEvent:
     cost_source: str = "none"
     model_usage_breakdown: list[dict[str, Any]] = field(default_factory=list)
     ensemble_trace: dict[str, Any] = field(default_factory=dict)
+    provider_usage: dict[str, Any] = field(default_factory=dict)
 
     @property
     def upstream_cost_usd(self) -> float:
@@ -179,6 +180,7 @@ class ToolDefinition(BaseModel):
     name: str
     description: str
     input_schema: ToolInputSchema
+    provider_tool: dict[str, Any] | None = None
     execution_timeout_seconds: float | None = None
     execution_timeout_argument: str | None = None
     execution_timeout_padding: float = 0.0

@@ -7,7 +7,7 @@ import os
 import random
 import time
 from collections.abc import AsyncIterator, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from .protocol import LLMProvider, ProviderMetadata
@@ -57,6 +57,7 @@ class _CandidateResult:
     cache_write_tokens: int = 0
     billed_cost: float = 0.0
     cost_source: str = "none"
+    provider_usage: dict[str, Any] = field(default_factory=dict)
     stop_reason: str = ""
     elapsed_ms: int = 0
     ttft_ms: int | None = None
@@ -68,7 +69,7 @@ class _CandidateResult:
         return not self.error and bool(self.text.strip())
 
     def usage_row(self, *, role: str, profile: str) -> dict[str, Any]:
-        return {
+        row = {
             "role": role,
             "profile": profile,
             "label": self.label,
@@ -83,6 +84,9 @@ class _CandidateResult:
             "billed_cost": self.billed_cost,
             "cost_source": self.cost_source,
         }
+        if self.provider_usage:
+            row["provider_usage"] = self.provider_usage
+        return row
 
     def trace_row(self, *, include_text: bool) -> dict[str, Any]:
         row: dict[str, Any] = {
@@ -118,6 +122,7 @@ class _AggregatorAccumulator:
     billed_cost: float = 0.0
     cost_source: str = "none"
     model: str = ""
+    provider_usage: dict[str, Any] = field(default_factory=dict)
 
     def usage_row(
         self,
@@ -126,7 +131,7 @@ class _AggregatorAccumulator:
         member: EnsembleMemberConfig,
     ) -> dict[str, Any]:
         cfg = member.provider_config
-        return {
+        row = {
             "role": "aggregator",
             "profile": profile,
             "label": member.label or "aggregator",
@@ -141,6 +146,9 @@ class _AggregatorAccumulator:
             "billed_cost": self.billed_cost,
             "cost_source": self.cost_source,
         }
+        if self.provider_usage:
+            row["provider_usage"] = self.provider_usage
+        return row
 
 
 def _normalize_thinking(value: str | None) -> tuple[bool | None, Any | None]:
@@ -234,7 +242,7 @@ def _done_usage_row(
     provider: str,
     model: str,
 ) -> dict[str, Any]:
-    return {
+    row = {
         "role": role,
         "profile": profile,
         "label": label,
@@ -249,6 +257,9 @@ def _done_usage_row(
         "billed_cost": event.billed_cost,
         "cost_source": event.cost_source,
     }
+    if event.provider_usage:
+        row["provider_usage"] = event.provider_usage
+    return row
 
 
 class EnsembleProvider:
@@ -363,6 +374,7 @@ class EnsembleProvider:
             successful_count=len(successful),
             fallback_used=False,
             fallback_reason="",
+            final_request_role="aggregator",
         )
 
         def _ensemble_done(event: DoneEvent) -> DoneEvent:
@@ -374,6 +386,7 @@ class EnsembleProvider:
                 cache_write_tokens=event.cache_write_tokens,
                 billed_cost=event.billed_cost,
                 cost_source=event.cost_source,
+                provider_usage=event.provider_usage,
                 model=event.model or self.aggregator.provider_config.model,
             )
             rows = [
@@ -576,6 +589,7 @@ class EnsembleProvider:
                 result.cache_write_tokens = event.cache_write_tokens
                 result.billed_cost = event.billed_cost
                 result.cost_source = event.cost_source
+                result.provider_usage = event.provider_usage
                 result.stop_reason = event.stop_reason
                 result.model = event.model or result.model
             elif isinstance(event, ErrorEvent):
@@ -621,6 +635,7 @@ class EnsembleProvider:
         successful_count: int,
         fallback_used: bool,
         fallback_reason: str,
+        final_request_role: str = "",
     ) -> dict[str, Any]:
         return {
             "mode": "b5_fusion",
@@ -629,6 +644,9 @@ class EnsembleProvider:
             "total_candidates": len(candidates),
             "fallback_used": fallback_used,
             "fallback_reason": fallback_reason,
+            "shuffle_candidates": self.shuffle_candidates,
+            "final_request_role": final_request_role,
+            "llm_request_count": len(candidates) + (1 if final_request_role else 0),
             "candidates": [
                 candidate.trace_row(include_text=self.record_candidates)
                 for candidate in candidates
@@ -653,6 +671,7 @@ class EnsembleProvider:
             successful_count=sum(1 for candidate in candidates if candidate.ok),
             fallback_used=True,
             fallback_reason=reason,
+            final_request_role="fallback_single",
         )
         proposer_rows = _candidate_usage_rows(candidates, profile=self.profile_name)
         async for event in self.fallback_provider.chat(messages, tools=tools, config=config):

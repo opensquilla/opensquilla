@@ -23,6 +23,7 @@ from opensquilla.secrets import clean_header_secret
 
 from .context_capabilities import supports_openrouter_explicit_prompt_cache
 from .minimax_compat import contains_minimax_protocol, parse_minimax_tool_calls
+from .model_catalog import ModelCatalog
 from .openrouter_attribution import openrouter_app_headers
 from .protocol import ProviderConnectionConfig, ProviderMetadata
 from .request_proof import (
@@ -175,16 +176,23 @@ def _should_disable_openrouter_reasoning_by_default(model: str) -> bool:
     """Return True for OpenRouter models known to default into reasoning streams.
 
     OpenRouter's reasoning controls are model/provider-specific: GLM 4.5 can be
-    stabilized by explicitly disabling reasoning when OpenSquilla has not requested
-    thinking, while MiniMax reasoning endpoints reject that same payload.
+    stabilized by explicitly disabling reasoning when OpenSquilla has not
+    requested thinking. OpenAI GPT-5-family models on OpenRouter can also
+    produce reasoning tokens even when OpenSquilla's ChatConfig has
+    ``thinking=False`` unless we send the explicit off switch. MiniMax
+    reasoning endpoints reject that same payload, so keep this list targeted.
     """
-    return model.strip().lower() in {
+    model_l = model.strip().lower()
+    model_name = model_l.rsplit("/", 1)[-1]
+    if model_l in {
         "z-ai/glm-4.5",
         "z-ai/glm-4.5-air",
         "z-ai/glm-5",
         "z-ai/glm-5.1",
         "z-ai/glm-5.2",
-    }
+    }:
+        return True
+    return model_name.startswith(("gpt-5.4", "gpt-5.5"))
 
 
 def _direct_openai_uses_max_completion_tokens(
@@ -226,6 +234,24 @@ def _should_send_temperature(
         if model_name.startswith(("gpt-5.4", "gpt-5.5")):
             return False
     return True
+
+
+def _resolve_chat_capabilities(
+    *,
+    provider_kind: str,
+    base_url: str,
+    model: str,
+    cfg: ChatConfig,
+) -> ModelCapabilities | None:
+    if cfg.model_capabilities is not None:
+        return cfg.model_capabilities
+    if not cfg.thinking and provider_kind != "openrouter":
+        return None
+    return ModelCatalog().get_capabilities(
+        model,
+        provider_name=provider_kind,
+        base_url=base_url,
+    )
 
 
 def _resolve_llm_proxy(proxy: str | None) -> str | None:
@@ -450,6 +476,8 @@ def _synthesize_text_tool_events(
 
 
 def _build_openai_tool(tool: ToolDefinition) -> dict[str, Any]:
+    if tool.provider_tool is not None:
+        return dict(tool.provider_tool)
     return {
         "type": "function",
         "function": {
@@ -728,7 +756,12 @@ class OpenAIProvider:
         cfg: ChatConfig,
     ) -> AsyncIterator[StreamEvent]:
         openai_messages: list[dict[str, Any]] = []
-        caps = cfg.model_capabilities
+        caps = _resolve_chat_capabilities(
+            provider_kind=self._provider_kind,
+            base_url=self._base_url,
+            model=self._model,
+            cfg=cfg,
+        )
         include_reasoning_content = _should_replay_reasoning_content(
             provider_kind=self._provider_kind,
             model=self._model,
@@ -922,6 +955,7 @@ class OpenAIProvider:
         cache_write_tokens = 0
         billed_cost = 0.0
         cost_source = "none"
+        provider_usage: dict[str, Any] = {}
         actual_model = self._model
         stop_reason = "stop"
         emitted_stream_event = False
@@ -1024,6 +1058,7 @@ class OpenAIProvider:
 
                         # Usage may appear in the final chunk
                         if chunk.get("usage"):
+                            provider_usage = dict(chunk["usage"])
                             (
                                 input_tokens,
                                 output_tokens,
@@ -1133,7 +1168,6 @@ class OpenAIProvider:
                     # This format embeds reasoning inside the answer text, so it
                     # can only be recovered after the full text arrives — it is
                     # inherently non-streamable and stays a turn-end assembly.
-                    caps = cfg.model_capabilities
                     if not reasoning_text and caps and caps.reasoning_format == "think_tags":
                         full_text = "".join(assistant_text_parts)
                         reasoning_text = _extract_think_tags(full_text) or None
@@ -1149,6 +1183,7 @@ class OpenAIProvider:
                         billed_cost=billed_cost,
                         model=actual_model,
                         cost_source=cost_source,
+                        provider_usage=provider_usage,
                     )
 
         except httpx.TimeoutException as exc:
@@ -1169,6 +1204,7 @@ class OpenAIProvider:
                     headers=headers,
                     cfg=cfg,
                     tools=tools,
+                    caps=caps,
                     timeout_exc=exc,
                 ):
                     yield fallback_event
@@ -1184,6 +1220,7 @@ class OpenAIProvider:
         headers: dict[str, str],
         cfg: ChatConfig,
         tools: list[ToolDefinition] | None,
+        caps: ModelCapabilities | None,
         timeout_exc: httpx.TimeoutException,
     ) -> AsyncIterator[StreamEvent]:
         fallback_payload = dict(payload)
@@ -1234,6 +1271,9 @@ class OpenAIProvider:
             return
 
         actual_model = data.get("model") or self._model
+        provider_usage = (
+            dict(data.get("usage") or {}) if isinstance(data.get("usage"), Mapping) else {}
+        )
         (
             input_tokens,
             output_tokens,
@@ -1301,8 +1341,8 @@ class OpenAIProvider:
         reasoning_text = reasoning.finalize()
         if (
             not reasoning_text
-            and cfg.model_capabilities
-            and cfg.model_capabilities.reasoning_format == "think_tags"
+            and caps
+            and caps.reasoning_format == "think_tags"
         ):
             reasoning_text = _extract_think_tags("".join(assistant_text_parts)) or None
 
@@ -1317,6 +1357,7 @@ class OpenAIProvider:
             billed_cost=billed_cost,
             model=actual_model,
             cost_source=cost_source,
+            provider_usage=provider_usage,
         )
 
     async def list_models(self) -> list[ModelInfo]:

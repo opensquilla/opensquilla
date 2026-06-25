@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from opensquilla.engine.types import THINKING_BUDGETS, ThinkingLevel
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.llm_runtime import resolve_llm_runtime_config
 from opensquilla.provider.ensemble import build_ensemble_provider_from_config
@@ -33,6 +34,8 @@ from opensquilla.provider.types import (
     ProviderHeartbeatEvent,
     ReasoningDeltaEvent,
     TextDeltaEvent,
+    ToolDefinition,
+    ToolInputSchema,
     ToolUseDeltaEvent,
     ToolUseEndEvent,
     ToolUseStartEvent,
@@ -57,12 +60,31 @@ TOOL_MODE_PROVIDER_ONLY = "provider_only"
 TOOL_MODE_OPENROUTER_SERVER_TOOLS = "openrouter_server_tools"
 RUNNER_MODE = TOOL_MODE_PROVIDER_ONLY
 SUPPORTED_TOOL_MODES = (TOOL_MODE_PROVIDER_ONLY, TOOL_MODE_OPENROUTER_SERVER_TOOLS)
+DEFAULT_OPENROUTER_WEB_SEARCH_ENGINE = "exa"
+DEFAULT_OPENROUTER_WEB_SEARCH_MAX_RESULTS = 5
+DEFAULT_OPENROUTER_WEB_SEARCH_MAX_TOTAL_RESULTS = 10
+DEFAULT_OPENROUTER_WEB_SEARCH_CONTEXT_SIZE = "medium"
+DEFAULT_OPENROUTER_WEB_FETCH_ENGINE = "openrouter"
+DEFAULT_OPENROUTER_WEB_FETCH_MAX_USES = 5
+DEFAULT_OPENROUTER_WEB_FETCH_MAX_CONTENT_TOKENS = 50_000
+GENERATION_THINKING_PROFILE = "profile"
+DEFAULT_GENERATION_THINKING = "high"
+DEFAULT_GENERATION_TEMPERATURE = 0.0
+SUPPORTED_GENERATION_THINKING = (
+    GENERATION_THINKING_PROFILE,
+    "off",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+)
 DEFAULT_CONTAMINATION_BLOCKED_DOMAINS = (
+    "hf.co",
     "huggingface.co",
     "datasets-server.huggingface.co",
     "github.com",
     "raw.githubusercontent.com",
-    "arxiv.org",
     "openrouter.ai",
     "perplexity.ai",
     "research.perplexity.ai",
@@ -187,6 +209,9 @@ class DryEnsembleProvider:
                 "total_candidates": 2,
                 "fallback_used": False,
                 "candidates": candidates,
+                "shuffle_candidates": False,
+                "final_request_role": "aggregator",
+                "llm_request_count": 3,
             },
         )
 
@@ -253,6 +278,89 @@ def parse_domain_list(raw: Any) -> list[str]:
     return domains
 
 
+def positive_int_value(raw: Any, *, default: int, field: str) -> int:
+    value = default if raw is None else raw
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be a positive integer") from exc
+    if parsed <= 0:
+        raise ValueError(f"{field} must be a positive integer")
+    return parsed
+
+
+def openrouter_server_tool_settings(
+    args: argparse.Namespace | None,
+    *,
+    blocked_domains: list[str],
+) -> dict[str, Any]:
+    search_context_size = str(
+        getattr(
+            args,
+            "openrouter_web_search_context_size",
+            DEFAULT_OPENROUTER_WEB_SEARCH_CONTEXT_SIZE,
+        )
+        or DEFAULT_OPENROUTER_WEB_SEARCH_CONTEXT_SIZE
+    ).strip().lower()
+    if search_context_size not in {"low", "medium", "high"}:
+        raise ValueError(
+            "openrouter_web_search_context_size must be one of: low, medium, high"
+        )
+    web_search = {
+        "type": "openrouter:web_search",
+        "parameters": {
+            "engine": str(
+                getattr(
+                    args,
+                    "openrouter_web_search_engine",
+                    DEFAULT_OPENROUTER_WEB_SEARCH_ENGINE,
+                )
+                or DEFAULT_OPENROUTER_WEB_SEARCH_ENGINE
+            ).strip(),
+            "max_results": positive_int_value(
+                getattr(args, "openrouter_web_search_max_results", None),
+                default=DEFAULT_OPENROUTER_WEB_SEARCH_MAX_RESULTS,
+                field="openrouter_web_search_max_results",
+            ),
+            "max_total_results": positive_int_value(
+                getattr(args, "openrouter_web_search_max_total_results", None),
+                default=DEFAULT_OPENROUTER_WEB_SEARCH_MAX_TOTAL_RESULTS,
+                field="openrouter_web_search_max_total_results",
+            ),
+            "search_context_size": search_context_size,
+            "excluded_domains": blocked_domains,
+        },
+    }
+    web_fetch = {
+        "type": "openrouter:web_fetch",
+        "parameters": {
+            "engine": str(
+                getattr(
+                    args,
+                    "openrouter_web_fetch_engine",
+                    DEFAULT_OPENROUTER_WEB_FETCH_ENGINE,
+                )
+                or DEFAULT_OPENROUTER_WEB_FETCH_ENGINE
+            ).strip(),
+            "max_uses": positive_int_value(
+                getattr(args, "openrouter_web_fetch_max_uses", None),
+                default=DEFAULT_OPENROUTER_WEB_FETCH_MAX_USES,
+                field="openrouter_web_fetch_max_uses",
+            ),
+            "max_content_tokens": positive_int_value(
+                getattr(args, "openrouter_web_fetch_max_content_tokens", None),
+                default=DEFAULT_OPENROUTER_WEB_FETCH_MAX_CONTENT_TOKENS,
+                field="openrouter_web_fetch_max_content_tokens",
+            ),
+            "blocked_domains": blocked_domains,
+        },
+    }
+    return {
+        "web_search": web_search,
+        "web_fetch": web_fetch,
+    }
+
+
 def benchmark_tool_policy(args: argparse.Namespace | None = None) -> dict[str, Any]:
     mode = str(getattr(args, "tool_mode", RUNNER_MODE) or RUNNER_MODE).strip()
     blocked_domains = parse_domain_list(
@@ -265,11 +373,25 @@ def benchmark_tool_policy(args: argparse.Namespace | None = None) -> dict[str, A
             raise ValueError(
                 "DRACO research-tool runs require contamination-blocked domains"
             )
-        raise ValueError(
-            "DRACO OpenRouter server tools are not wired into this runner yet; "
-            "refusing to run until web_search excluded_domains and web_fetch "
-            "blocked_domains are enforceable."
+        server_tools = openrouter_server_tool_settings(
+            args,
+            blocked_domains=blocked_domains,
         )
+        return {
+            "tool_mode": mode,
+            "tools_enabled": True,
+            "tool_names": [
+                server_tools["web_search"]["type"],
+                server_tools["web_fetch"]["type"],
+            ],
+            "openrouter_server_tools": server_tools,
+            "contamination_blocked_domains": blocked_domains,
+            "contamination_controls": {
+                "status": "enforced_by_openrouter_server_tools",
+                "web_search_field": "excluded_domains",
+                "web_fetch_field": "blocked_domains",
+            },
+        }
     return {
         "tool_mode": mode,
         "tools_enabled": False,
@@ -280,6 +402,134 @@ def benchmark_tool_policy(args: argparse.Namespace | None = None) -> dict[str, A
             "web_search_field": "excluded_domains",
             "web_fetch_field": "blocked_domains",
         },
+    }
+
+
+def benchmark_tools_for_policy(tool_policy: dict[str, Any]) -> list[ToolDefinition] | None:
+    if not tool_policy.get("tools_enabled"):
+        return None
+    server_tools = tool_policy.get("openrouter_server_tools") or {}
+    tools: list[ToolDefinition] = []
+    for key, description in (
+        ("web_search", "OpenRouter server-side web search."),
+        ("web_fetch", "OpenRouter server-side web fetch."),
+    ):
+        provider_tool = server_tools.get(key)
+        if not isinstance(provider_tool, dict):
+            continue
+        tool_type = str(provider_tool.get("type") or key)
+        tools.append(
+            ToolDefinition(
+                name=tool_type,
+                description=description,
+                input_schema=ToolInputSchema(),
+                provider_tool=provider_tool,
+            )
+        )
+    return tools or None
+
+
+def normalize_generation_thinking(raw: Any) -> str:
+    value = str(raw or DEFAULT_GENERATION_THINKING).strip().lower()
+    if value not in SUPPORTED_GENERATION_THINKING:
+        allowed = ", ".join(SUPPORTED_GENERATION_THINKING)
+        raise ValueError(
+            f"unknown generation thinking policy {value!r}; expected one of {allowed}"
+        )
+    return value
+
+
+def generation_thinking_policy(args: argparse.Namespace | None = None) -> dict[str, Any]:
+    mode = normalize_generation_thinking(
+        getattr(args, "generation_thinking", DEFAULT_GENERATION_THINKING)
+    )
+    if mode == GENERATION_THINKING_PROFILE:
+        return {
+            "generation_thinking": mode,
+            "temperature": DEFAULT_GENERATION_TEMPERATURE,
+            "thinking_enabled": "profile_default",
+            "thinking_level": None,
+            "thinking_budget_tokens": None,
+            "applies_to": (
+                "profile members keep configured thinking; single baselines use "
+                "ChatConfig defaults"
+            ),
+        }
+    if mode == "off":
+        return {
+            "generation_thinking": mode,
+            "temperature": DEFAULT_GENERATION_TEMPERATURE,
+            "thinking_enabled": False,
+            "thinking_level": ThinkingLevel.OFF.value,
+            "thinking_budget_tokens": 0,
+            "applies_to": "single baselines and ensemble members",
+        }
+    level = ThinkingLevel(mode)
+    return {
+        "generation_thinking": mode,
+        "temperature": DEFAULT_GENERATION_TEMPERATURE,
+        "thinking_enabled": True,
+        "thinking_level": level.value,
+        "thinking_budget_tokens": THINKING_BUDGETS[level],
+        "applies_to": "single baselines and ensemble members",
+    }
+
+
+def generation_chat_config(policy: dict[str, Any]) -> ChatConfig:
+    mode = str(policy.get("generation_thinking") or DEFAULT_GENERATION_THINKING)
+    if mode == GENERATION_THINKING_PROFILE:
+        return ChatConfig(temperature=DEFAULT_GENERATION_TEMPERATURE)
+    if mode == "off":
+        return ChatConfig(
+            temperature=DEFAULT_GENERATION_TEMPERATURE,
+            thinking=False,
+            thinking_level=ThinkingLevel.OFF,
+            thinking_budget_tokens=0,
+        )
+    level = ThinkingLevel(mode)
+    return ChatConfig(
+        temperature=DEFAULT_GENERATION_TEMPERATURE,
+        thinking=True,
+        thinking_level=level,
+        thinking_budget_tokens=THINKING_BUDGETS[level],
+    )
+
+
+def apply_generation_policy_to_profile(profile: Any, policy: dict[str, Any]) -> Any:
+    mode = str(policy.get("generation_thinking") or DEFAULT_GENERATION_THINKING)
+    member_update: dict[str, Any] = {"temperature": DEFAULT_GENERATION_TEMPERATURE}
+    if mode != GENERATION_THINKING_PROFILE:
+        member_update["thinking"] = "off" if mode == "off" else mode
+    proposers = [
+        proposer.model_copy(update=member_update)
+        for proposer in profile.proposers
+    ]
+    aggregator = profile.aggregator.model_copy(update=member_update)
+    return profile.model_copy(update={"proposers": proposers, "aggregator": aggregator})
+
+
+def compact_chat_config(
+    config: ChatConfig | None,
+    policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    mode = str((policy or {}).get("generation_thinking") or "")
+    if config is None or mode == GENERATION_THINKING_PROFILE:
+        return {
+            "thinking": "profile_default",
+            "thinking_level": None,
+            "thinking_budget_tokens": None,
+            "temperature": (
+                config.temperature if config is not None else DEFAULT_GENERATION_TEMPERATURE
+            ),
+            "max_tokens": config.max_tokens if config is not None else None,
+        }
+    level = config.thinking_level
+    return {
+        "thinking": config.thinking,
+        "thinking_level": level.value if isinstance(level, ThinkingLevel) else level,
+        "thinking_budget_tokens": config.thinking_budget_tokens,
+        "temperature": config.temperature,
+        "max_tokens": config.max_tokens,
     }
 
 
@@ -460,6 +710,8 @@ def build_profile_provider(
     group: str,
     profile: str,
     dry_run: bool,
+    generation_policy: dict[str, Any] | None = None,
+    enable_proposer_tools: bool = False,
 ):
     if dry_run:
         return DryEnsembleProvider(group=group, profile=profile)
@@ -467,9 +719,16 @@ def build_profile_provider(
         raise ValueError(f"profile {profile!r} for group {group} is not configured")
     config.llm_ensemble.enabled = True
     config.llm_ensemble.active_profile = profile
-    config.llm_ensemble.profiles[profile] = config.llm_ensemble.profiles[
-        profile
-    ].model_copy(update={"record_candidates": True})
+    config.llm_ensemble.proposer_tools = bool(enable_proposer_tools)
+    profile_config = config.llm_ensemble.profiles[profile]
+    if generation_policy is not None:
+        profile_config = apply_generation_policy_to_profile(
+            profile_config,
+            generation_policy,
+        )
+    config.llm_ensemble.profiles[profile] = profile_config.model_copy(
+        update={"record_candidates": True, "shuffle_candidates": False}
+    )
     fallback = build_single_provider(
         inherited=inherited,
         group=f"{group}-fallback",
@@ -489,6 +748,7 @@ async def collect_run(
     *,
     timeout: float,
     config: ChatConfig | None = None,
+    tools: list[ToolDefinition] | None = None,
 ) -> RunResult:
     messages = [Message(role="user", content=prompt)]
     text_parts: list[str] = []
@@ -517,7 +777,7 @@ async def collect_run(
         )
         stream = provider.chat(
             messages,
-            tools=None,
+            tools=tools,
             config=chat_config,
         )
         async def _consume() -> None:
@@ -606,10 +866,74 @@ async def collect_run(
     )
 
 
+def coerce_metric_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int | float):
+        return max(0, int(value))
+    try:
+        return max(0, int(str(value).strip()))
+    except (TypeError, ValueError):
+        return 0
+
+
+def server_tool_counts_from_provider_usage(provider_usage: Any) -> dict[str, int]:
+    if not isinstance(provider_usage, dict):
+        return {}
+    raw_counts = provider_usage.get("server_tool_use")
+    if not isinstance(raw_counts, dict):
+        return {}
+    counts: dict[str, int] = {}
+    for key, value in raw_counts.items():
+        count = coerce_metric_int(value)
+        if count:
+            counts[str(key)] = counts.get(str(key), 0) + count
+    return counts
+
+
+def add_metric_counts(target: dict[str, int], source: dict[str, int]) -> None:
+    for key, value in source.items():
+        target[key] = target.get(key, 0) + int(value)
+
+
+def server_tool_counts_from_usage_payload(usage: dict[str, Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    breakdown = usage.get("model_usage_breakdown")
+    if isinstance(breakdown, list):
+        for row in breakdown:
+            if isinstance(row, dict):
+                add_metric_counts(
+                    counts,
+                    server_tool_counts_from_provider_usage(row.get("provider_usage")),
+                )
+        if counts:
+            return counts
+    return server_tool_counts_from_provider_usage(usage.get("provider_usage"))
+
+
+def llm_request_count_for_run(
+    *,
+    spec: dict[str, str],
+    done: DoneEvent | None,
+    provider_attempted: bool,
+) -> int:
+    if not provider_attempted:
+        return 0
+    if done is not None and isinstance(done.ensemble_trace, dict):
+        traced = coerce_metric_int(done.ensemble_trace.get("llm_request_count"))
+        if traced:
+            return traced
+    if done is not None and done.model_usage_breakdown:
+        return len(done.model_usage_breakdown)
+    if spec.get("kind") == "single":
+        return 1
+    return 1
+
+
 def done_payload(done: DoneEvent | None) -> dict[str, Any]:
     if done is None:
         return {}
-    return {
+    payload = {
         "model": done.model,
         "stop_reason": done.stop_reason,
         "input_tokens": done.input_tokens,
@@ -619,10 +943,15 @@ def done_payload(done: DoneEvent | None) -> dict[str, Any]:
         "cache_write_tokens": done.cache_write_tokens,
         "billed_cost": done.billed_cost,
         "cost_source": done.cost_source,
+        "provider_usage": done.provider_usage,
         "model_usage_breakdown": done.model_usage_breakdown,
         "reasoning_content_chars": len(done.reasoning_content or ""),
         "thinking_signature_present": bool(done.thinking_signature),
     }
+    server_tool_use = server_tool_counts_from_usage_payload(payload)
+    payload["server_tool_use"] = server_tool_use
+    payload["server_tool_call_count"] = sum(server_tool_use.values())
+    return payload
 
 
 def candidate_texts(done: DoneEvent | None) -> list[str]:
@@ -644,14 +973,35 @@ def text_sha256(text: str) -> str:
 
 
 def run_result_summary(result: RunResult) -> dict[str, Any]:
+    usage = done_payload(result.done)
+    server_tool_call_count = coerce_metric_int(usage.get("server_tool_call_count"))
+    total_tool_call_count = result.tool_call_count + server_tool_call_count
+    llm_request_count = 0
+    if result.done is not None:
+        if isinstance(result.done.ensemble_trace, dict):
+            llm_request_count = coerce_metric_int(
+                result.done.ensemble_trace.get("llm_request_count")
+            )
+        if not llm_request_count and result.done.model_usage_breakdown:
+            llm_request_count = len(result.done.model_usage_breakdown)
+        if not llm_request_count:
+            llm_request_count = 1
+    elif result.error or result.final_text:
+        llm_request_count = 1
     return {
         "latency_ms": result.latency_ms,
         "ttft_ms": result.ttft_ms,
         "tool_call_count": result.tool_call_count,
+        "stream_tool_call_count": result.tool_call_count,
+        "server_tool_call_count": server_tool_call_count,
+        "server_tool_use": usage.get("server_tool_use") or {},
+        "total_tool_call_count": total_tool_call_count,
+        "trajectory_steps": total_tool_call_count + llm_request_count,
+        "llm_request_count": llm_request_count,
         "error": result.error,
         "final_text_chars": len(result.final_text),
         "final_text_sha256": text_sha256(result.final_text),
-        "usage": done_payload(result.done),
+        "usage": usage,
         "trace_events": result.trace_events,
     }
 
@@ -1040,11 +1390,14 @@ async def run_one(
     judge_max_attempts: int,
     timeout: float,
     tool_policy: dict[str, Any],
+    generation_policy: dict[str, Any],
+    tools: list[ToolDefinition] | None = None,
 ) -> dict[str, Any]:
     spec = GROUP_SPECS[group]
     started = time.time()
     provider = None
     provider_error = ""
+    generation_config = generation_chat_config(generation_policy)
     try:
         if spec["kind"] == "single":
             provider = build_single_provider(
@@ -1060,6 +1413,8 @@ async def run_one(
                 group=group,
                 profile=spec["profile"],
                 dry_run=dry_run,
+                generation_policy=generation_policy,
+                enable_proposer_tools=bool(tool_policy.get("tools_enabled")),
             )
     except Exception as exc:  # noqa: BLE001 - report config errors per row
         provider_error = f"{type(exc).__name__}: {exc}"
@@ -1069,7 +1424,13 @@ async def run_one(
         group=group,
     )
     run = (
-        await collect_run(provider, str(task["prompt"]), timeout=effective_timeout)
+        await collect_run(
+            provider,
+            str(task["prompt"]),
+            timeout=effective_timeout,
+            config=generation_config,
+            tools=tools,
+        )
         if provider is not None
         else RunResult(final_text="", done=None, error=provider_error)
     )
@@ -1103,6 +1464,18 @@ async def run_one(
     completed_at = time.time()
     final_text_sha = text_sha256(run.final_text)
     prompt_sha = text_sha256(str(task["prompt"]))
+    usage_payload = done_payload(run.done)
+    server_tool_call_count = coerce_metric_int(
+        usage_payload.get("server_tool_call_count")
+    )
+    server_tool_use = usage_payload.get("server_tool_use") or {}
+    total_tool_call_count = run.tool_call_count + server_tool_call_count
+    llm_request_count = llm_request_count_for_run(
+        spec=spec,
+        done=run.done,
+        provider_attempted=provider is not None,
+    )
+    trajectory_steps = total_tool_call_count + llm_request_count
     return {
         "task_id": task["id"],
         "group": group,
@@ -1114,6 +1487,8 @@ async def run_one(
         "runner_mode": tool_policy.get("tool_mode") or RUNNER_MODE,
         "tools_enabled": bool(tool_policy.get("tools_enabled")),
         "tool_policy": tool_policy,
+        "generation_policy": generation_policy,
+        "generation_config": compact_chat_config(generation_config, generation_policy),
         "contamination_blocked_domains": (
             tool_policy.get("contamination_blocked_domains") or []
         ),
@@ -1123,7 +1498,12 @@ async def run_one(
         "latency_ms": run.latency_ms,
         "ttft_ms": run.ttft_ms,
         "tool_call_count": run.tool_call_count,
-        "trajectory_steps": run.tool_call_count,
+        "stream_tool_call_count": run.tool_call_count,
+        "server_tool_call_count": server_tool_call_count,
+        "server_tool_use": server_tool_use,
+        "total_tool_call_count": total_tool_call_count,
+        "trajectory_steps": trajectory_steps,
+        "llm_request_count": llm_request_count,
         "error": run.error,
         "final_text": run.final_text,
         "final_text_chars": len(run.final_text),
@@ -1137,12 +1517,18 @@ async def run_one(
             "ttft_ms": run.ttft_ms,
             "total_elapsed_ms": int((completed_at - started) * 1000),
             "tool_call_count": run.tool_call_count,
+            "stream_tool_call_count": run.tool_call_count,
+            "server_tool_call_count": server_tool_call_count,
+            "server_tool_use": server_tool_use,
+            "total_tool_call_count": total_tool_call_count,
+            "trajectory_steps": trajectory_steps,
+            "llm_request_count": llm_request_count,
         },
         "run_trace": {
             "event_count": len(run.trace_events),
             "events": run.trace_events,
         },
-        "usage": done_payload(run.done),
+        "usage": usage_payload,
         "ensemble_trace": (run.done.ensemble_trace if run.done is not None else {}),
         "judge": judge,
         "candidate_judges": candidate_judges,
@@ -1202,12 +1588,20 @@ def trace_row(row: dict[str, Any]) -> dict[str, Any]:
         "runner_mode": row.get("runner_mode"),
         "tools_enabled": row.get("tools_enabled"),
         "tool_policy": row.get("tool_policy") or {},
+        "generation_policy": row.get("generation_policy") or {},
+        "generation_config": row.get("generation_config") or {},
         "started_at": row.get("started_at"),
         "completed_at": row.get("completed_at"),
         "prompt_sha256": row.get("prompt_sha256"),
         "final_text_sha256": row.get("final_text_sha256"),
         "final_text_chars": row.get("final_text_chars"),
         "error": row.get("error"),
+        "stream_tool_call_count": row.get("stream_tool_call_count"),
+        "server_tool_call_count": row.get("server_tool_call_count"),
+        "server_tool_use": row.get("server_tool_use") or {},
+        "total_tool_call_count": row.get("total_tool_call_count"),
+        "trajectory_steps": row.get("trajectory_steps"),
+        "llm_request_count": row.get("llm_request_count"),
         "execution": row.get("execution") or {},
         "usage": row.get("usage") or {},
         "run_trace": row.get("run_trace") or {},
@@ -1233,6 +1627,54 @@ def numeric_pct_delta(value: Any, baseline: Any) -> float | None:
             return None
         return (float(value) - baseline_float) / baseline_float * 100.0
     return None
+
+
+def row_metric_int(row: dict[str, Any], key: str, fallback_key: str | None = None) -> int:
+    value = row.get(key)
+    if value is None and fallback_key is not None:
+        value = row.get(fallback_key)
+    return coerce_metric_int(value)
+
+
+def row_server_tool_call_count(row: dict[str, Any]) -> int:
+    direct = row_metric_int(row, "server_tool_call_count")
+    if direct:
+        return direct
+    usage = row.get("usage") or {}
+    if isinstance(usage, dict):
+        return sum(server_tool_counts_from_usage_payload(usage).values())
+    return 0
+
+
+def row_total_tool_call_count(row: dict[str, Any]) -> int:
+    direct = row_metric_int(row, "total_tool_call_count")
+    if direct:
+        return direct
+    stream_count = row_metric_int(row, "stream_tool_call_count", "tool_call_count")
+    return stream_count + row_server_tool_call_count(row)
+
+
+def row_llm_request_count(row: dict[str, Any]) -> int:
+    direct = row_metric_int(row, "llm_request_count")
+    if direct:
+        return direct
+    usage = row.get("usage") or {}
+    breakdown = usage.get("model_usage_breakdown") if isinstance(usage, dict) else None
+    if isinstance(breakdown, list) and breakdown:
+        return len(breakdown)
+    provider_spec = row.get("provider_spec") or {}
+    execution = row.get("execution") or {}
+    if provider_spec.get("kind") == "single" and not execution.get("provider_error"):
+        return 1
+    return 0
+
+
+def row_trajectory_steps(row: dict[str, Any]) -> int:
+    llm_requests = row_llm_request_count(row)
+    tool_calls = row_total_tool_call_count(row)
+    if llm_requests or tool_calls:
+        return llm_requests + tool_calls
+    return row_metric_int(row, "trajectory_steps")
 
 
 def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1264,11 +1706,36 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
             float((row.get("usage") or {}).get("billed_cost") or 0.0)
             for row in completed_rows
         ]
-        tokens = [
+        visible_tokens = [
             int((row.get("usage") or {}).get("input_tokens") or 0)
             + int((row.get("usage") or {}).get("output_tokens") or 0)
             for row in group_rows
         ]
+        reasoning_tokens = [
+            int((row.get("usage") or {}).get("reasoning_tokens") or 0)
+            for row in group_rows
+        ]
+        all_tokens = [
+            visible + reasoning
+            for visible, reasoning in zip(visible_tokens, reasoning_tokens, strict=False)
+        ]
+        stream_tool_calls = [
+            row_metric_int(row, "stream_tool_call_count", "tool_call_count")
+            for row in group_rows
+        ]
+        server_tool_calls = [
+            row_server_tool_call_count(row)
+            for row in group_rows
+        ]
+        total_tool_calls = [
+            row_total_tool_call_count(row)
+            for row in group_rows
+        ]
+        trajectory_steps = [
+            row_trajectory_steps(row)
+            for row in group_rows
+        ]
+        llm_requests = [row_llm_request_count(row) for row in group_rows]
         summary["groups"][group] = {
             "rows": len(group_rows),
             "completed": len(completed_rows),
@@ -1289,7 +1756,37 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "avg_cost_completed_usd": (
                 statistics.mean(completed_costs) if completed_costs else None
             ),
-            "avg_total_tokens": statistics.mean(tokens) if tokens else 0.0,
+            "avg_visible_tokens": (
+                statistics.mean(visible_tokens) if visible_tokens else 0.0
+            ),
+            "avg_reasoning_tokens": (
+                statistics.mean(reasoning_tokens) if reasoning_tokens else 0.0
+            ),
+            "avg_total_tokens": statistics.mean(all_tokens) if all_tokens else 0.0,
+            "avg_stream_tool_calls": (
+                statistics.mean(stream_tool_calls) if stream_tool_calls else 0.0
+            ),
+            "avg_server_tool_calls": (
+                statistics.mean(server_tool_calls) if server_tool_calls else 0.0
+            ),
+            "avg_tool_calls": (
+                statistics.mean(total_tool_calls) if total_tool_calls else 0.0
+            ),
+            "total_tool_calls": sum(total_tool_calls),
+            "tool_call_rate_pct": (
+                sum(1 for count in total_tool_calls if count > 0)
+                / len(total_tool_calls)
+                * 100.0
+                if total_tool_calls
+                else 0.0
+            ),
+            "avg_trajectory_steps": (
+                statistics.mean(trajectory_steps) if trajectory_steps else 0.0
+            ),
+            "avg_llm_requests": (
+                statistics.mean(llm_requests) if llm_requests else 0.0
+            ),
+            "total_llm_requests": sum(llm_requests),
             "latency_p50_ms": percentile(latencies, 50),
             "latency_p95_ms": percentile(latencies, 95),
         }
@@ -1312,15 +1809,23 @@ def render_markdown(
     summary: dict[str, Any],
     jsonl_path: Path,
     tool_policy: dict[str, Any] | None = None,
+    generation_policy: dict[str, Any] | None = None,
 ) -> str:
     stamp = jsonl_path.stem.removeprefix("draco_ensemble_")
     trace_path = jsonl_path.parent / f"draco_run_{stamp}.trace.jsonl"
     policy = tool_policy or benchmark_tool_policy()
+    generation = generation_policy or generation_thinking_policy()
     blocked_domains = policy.get("contamination_blocked_domains") or []
     tool_line = (
         f"Runner mode: `{policy.get('tool_mode') or RUNNER_MODE}`; tools enabled: "
-        f"`{str(bool(policy.get('tools_enabled'))).lower()}`."
+        f"`{str(bool(policy.get('tools_enabled'))).lower()}`"
     )
+    if policy.get("tools_enabled"):
+        tool_names = ", ".join(str(name) for name in policy.get("tool_names") or [])
+        if tool_names:
+            tool_line = f"{tool_line}; tools: `{tool_names}`."
+        else:
+            tool_line = f"{tool_line}."
     if not policy.get("tools_enabled"):
         tool_line = (
             f"Runner mode: `{policy.get('tool_mode') or RUNNER_MODE}`; "
@@ -1336,22 +1841,32 @@ def render_markdown(
         f"Raw JSONL: `{jsonl_path}`",
         f"Trace JSONL: `{trace_path}`",
         "",
+        "Generation thinking: "
+        f"`{generation.get('generation_thinking')}` "
+        f"(enabled: `{generation.get('thinking_enabled')}`, "
+        f"level: `{generation.get('thinking_level')}`, "
+        f"budget: `{generation.get('thinking_budget_tokens')}`, "
+        f"temperature: `{generation.get('temperature')}`).",
         tool_line,
         "Contamination blocked domains: "
         f"`{', '.join(blocked_domains) if blocked_domains else '(none)'}`.",
         "",
         "| Group | Rows | Done | Scored | Avg Quality | AvgQ Scored | Avg Pass | "
-        "Judge Err | Avg $ | Avg $ Done | Avg Tokens | p50 ms | p95 ms | "
+        "Judge Err | Avg $ | Avg $ Done | Avg Visible | Avg Reason | Avg Tokens | "
+        "Avg Tools | Tool % | Avg Steps | Avg LLM Req | p50 ms | p95 ms | "
         "AvgQ % vs B0 | Avg$ % vs B0 | "
         "AvgQ % vs B1 | Avg$ % vs B1 |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | "
-        "---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | "
+        "---: | ---: | ---: |",
     ]
     for group, item in sorted(summary["groups"].items()):
         lines.append(
             "| {group} | {rows} | {done} | {scored} | {quality} | "
             "{quality_scored} | {pass_rate} | {judge_errors} | {cost:.6f} | "
-            "{cost_done} | {tokens:.1f} | {p50:.0f} | {p95:.0f} | "
+            "{cost_done} | {visible_tokens:.1f} | {reasoning_tokens:.1f} | "
+            "{tokens:.1f} | {tool_calls:.1f} | {tool_rate:.1f}% | "
+            "{steps:.1f} | {llm_requests:.1f} | {p50:.0f} | {p95:.0f} | "
             "{q_b0} | {cost_b0} | {q_b1} | {cost_b1} |".format(
                 group=group,
                 rows=item["rows"],
@@ -1377,7 +1892,13 @@ def render_markdown(
                     if item["avg_cost_completed_usd"] is not None
                     else ""
                 ),
+                visible_tokens=item["avg_visible_tokens"],
+                reasoning_tokens=item["avg_reasoning_tokens"],
                 tokens=item["avg_total_tokens"],
+                tool_calls=item["avg_tool_calls"],
+                tool_rate=item["tool_call_rate_pct"],
+                steps=item["avg_trajectory_steps"],
+                llm_requests=item["avg_llm_requests"],
                 p50=item["latency_p50_ms"],
                 p95=item["latency_p95_ms"],
                 q_b0=_signed_pct(item.get("avg_quality_pct_delta_vs_b0")),
@@ -1404,8 +1925,16 @@ def manifest_args(args: argparse.Namespace) -> dict[str, Any]:
         "judge_concurrency",
         "judge_max_attempts",
         "judge_candidates",
+        "generation_thinking",
         "tool_mode",
         "contamination_blocked_domains",
+        "openrouter_web_search_engine",
+        "openrouter_web_search_max_results",
+        "openrouter_web_search_max_total_results",
+        "openrouter_web_search_context_size",
+        "openrouter_web_fetch_engine",
+        "openrouter_web_fetch_max_uses",
+        "openrouter_web_fetch_max_content_tokens",
     ]
     payload: dict[str, Any] = {}
     for key in keys:
@@ -1500,11 +2029,13 @@ def write_manifest(
     command: dict[str, Any] | None = None,
 ) -> None:
     policy = tool_policy or benchmark_tool_policy(args)
+    generation_policy = generation_thinking_policy(args)
     payload: dict[str, Any] = {
         "benchmark": "DRACO",
         "runner": "scripts/run_draco_ensemble.py",
         "runner_mode": policy.get("tool_mode") or RUNNER_MODE,
         "tool_policy": policy,
+        "generation_policy": generation_policy,
         "stamp": stamp,
         "status": status,
         "started_at": started_at,
@@ -1530,9 +2061,22 @@ def write_manifest(
 async def amain(args: argparse.Namespace) -> int:
     tasks = load_tasks(args.input, max_tasks=args.max_tasks)
     groups = parse_groups(args.groups)
+    args.generation_thinking = normalize_generation_thinking(
+        getattr(args, "generation_thinking", DEFAULT_GENERATION_THINKING)
+    )
     tool_policy = benchmark_tool_policy(args)
+    benchmark_tools = benchmark_tools_for_policy(tool_policy)
+    generation_policy = generation_thinking_policy(args)
     config = GatewayConfig.load(args.config)
     inherited = inherited_provider_config(config)
+    if (
+        tool_policy.get("tools_enabled")
+        and inherited.provider != "openrouter"
+        and not getattr(args, "dry_run", False)
+    ):
+        raise ValueError(
+            "--tool-mode=openrouter_server_tools requires an OpenRouter runtime provider"
+        )
     judge_provider = None
     if args.judge_model:
         judge_provider = build_single_provider(
@@ -1589,6 +2133,8 @@ async def amain(args: argparse.Namespace) -> int:
                 judge_max_attempts=getattr(args, "judge_max_attempts", JUDGE_MAX_ATTEMPTS),
                 timeout=args.timeout,
                 tool_policy=tool_policy,
+                generation_policy=generation_policy,
+                tools=benchmark_tools,
             )
 
     pending = [_guarded(task, group) for task in tasks for group in groups]
@@ -1607,7 +2153,12 @@ async def amain(args: argparse.Namespace) -> int:
     summary = summarize(rows)
     summary_path = jsonl_path.with_suffix(".md")
     summary_path.write_text(
-        render_markdown(summary, jsonl_path, tool_policy=tool_policy),
+        render_markdown(
+            summary,
+            jsonl_path,
+            tool_policy=tool_policy,
+            generation_policy=generation_policy,
+        ),
         encoding="utf-8",
     )
     summary_json_path.write_text(
@@ -1654,12 +2205,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--judge-max-attempts", type=int, default=JUDGE_MAX_ATTEMPTS)
     parser.add_argument("--judge-candidates", action="store_true")
     parser.add_argument(
+        "--generation-thinking",
+        choices=SUPPORTED_GENERATION_THINKING,
+        default=DEFAULT_GENERATION_THINKING,
+        help=(
+            "Thinking policy for answer generation. Use 'profile' to preserve "
+            "configured profile defaults; otherwise the chosen level is applied "
+            "to both single baselines and ensemble members."
+        ),
+    )
+    parser.add_argument(
         "--tool-mode",
         choices=SUPPORTED_TOOL_MODES,
         default=RUNNER_MODE,
         help=(
-            "Benchmark tool mode. provider_only is the only executable mode today; "
-            "openrouter_server_tools is rejected until conflict domains are enforced."
+            "Benchmark tool mode. provider_only attaches no external tools; "
+            "openrouter_server_tools attaches OpenRouter web_search and web_fetch "
+            "server tools with benchmark leakage domains excluded."
         ),
     )
     parser.add_argument(
@@ -1669,6 +2231,46 @@ def build_parser() -> argparse.ArgumentParser:
             "Comma-separated benchmark leakage domains to exclude from web search "
             "and block from web fetch when research tools are wired."
         ),
+    )
+    parser.add_argument(
+        "--openrouter-web-search-engine",
+        default=DEFAULT_OPENROUTER_WEB_SEARCH_ENGINE,
+        help="OpenRouter web_search engine used when --tool-mode=openrouter_server_tools.",
+    )
+    parser.add_argument(
+        "--openrouter-web-search-max-results",
+        type=int,
+        default=DEFAULT_OPENROUTER_WEB_SEARCH_MAX_RESULTS,
+        help="Maximum results per OpenRouter web_search call.",
+    )
+    parser.add_argument(
+        "--openrouter-web-search-max-total-results",
+        type=int,
+        default=DEFAULT_OPENROUTER_WEB_SEARCH_MAX_TOTAL_RESULTS,
+        help="Maximum total results across OpenRouter web_search calls.",
+    )
+    parser.add_argument(
+        "--openrouter-web-search-context-size",
+        choices=("low", "medium", "high"),
+        default=DEFAULT_OPENROUTER_WEB_SEARCH_CONTEXT_SIZE,
+        help="Search context size for OpenRouter web_search.",
+    )
+    parser.add_argument(
+        "--openrouter-web-fetch-engine",
+        default=DEFAULT_OPENROUTER_WEB_FETCH_ENGINE,
+        help="OpenRouter web_fetch engine used when --tool-mode=openrouter_server_tools.",
+    )
+    parser.add_argument(
+        "--openrouter-web-fetch-max-uses",
+        type=int,
+        default=DEFAULT_OPENROUTER_WEB_FETCH_MAX_USES,
+        help="Maximum OpenRouter web_fetch uses per request.",
+    )
+    parser.add_argument(
+        "--openrouter-web-fetch-max-content-tokens",
+        type=int,
+        default=DEFAULT_OPENROUTER_WEB_FETCH_MAX_CONTENT_TOKENS,
+        help="Maximum content tokens returned by OpenRouter web_fetch.",
     )
     return parser
 

@@ -47,6 +47,29 @@ def test_direct_openai_gpt_5_models_use_openai_reasoning_effort_format() -> None
         assert caps.reasoning_format == "openai"
 
 
+def test_openrouter_static_reasoning_models_use_openrouter_reasoning_format() -> None:
+    catalog = ModelCatalog()
+
+    for model in (
+        "anthropic/claude-opus-4.8",
+        "deepseek/deepseek-v4-pro",
+        "google/gemini-3-flash-preview",
+        "moonshotai/kimi-k2.7-code",
+        "openai/gpt-5.5",
+        "qwen/qwen3.7-plus",
+        "z-ai/glm-5.2",
+    ):
+        caps = catalog.get_capabilities(
+            model,
+            provider_name="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+        )
+
+        assert caps.supports_reasoning is True
+        assert caps.supports_tools is True
+        assert caps.reasoning_format == "openrouter"
+
+
 def test_zai_glm5_models_use_zai_reasoning_format() -> None:
     catalog = ModelCatalog()
 

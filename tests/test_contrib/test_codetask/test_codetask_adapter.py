@@ -128,5 +128,56 @@ def test_run_points_agent_at_codetask_config(monkeypatch, tmp_path):
     )
     env = captured["env"]
     assert env is not None
-    assert env["OPENSQUILLA_GATEWAY_CONFIG_PATH"] == str(agent_config_path())
+    # The agent now loads a PER-RUN config (derived from code-task's base config)
+    # so its tool-result store is isolated to this run instead of the shared
+    # global media root -- avoids the quadratic global-store rescan / spin.
+    per_run_cfg = tmp_path / "a" / "agent-config.toml"
+    assert env["OPENSQUILLA_GATEWAY_CONFIG_PATH"] == str(per_run_cfg)
+    import tomllib
+
+    cfg_text = per_run_cfg.read_text(encoding="utf-8")
+    parsed = tomllib.loads(cfg_text)
+    base = tomllib.loads(agent_config_path().read_text(encoding="utf-8"))
+    # every base section survives the merge (deny list + router preserved)...
+    for section in base:
+        assert section in parsed, section
+    # ...and media_root is pinned under THIS run's scratch (absolute).
+    assert parsed["attachments"]["media_root"] == str(
+        (tmp_path / "s").resolve() / "media"
+    )
+    from opensquilla.gateway.config import GatewayConfig
+    from opensquilla.paths import media_root_from_config
+
+    conf = GatewayConfig.load(str(per_run_cfg))
+    assert media_root_from_config(conf) == (tmp_path / "s").resolve() / "media"
     assert "PATH" in env  # inherits parent env (OPENROUTER_API_KEY passes through)
+
+
+def test_per_run_config_merges_existing_attachments(monkeypatch, tmp_path):
+    """If the base agent config ever gains an [attachments] table, the per-run
+    config must OVERRIDE media_root (merge), not append a duplicate table that
+    breaks tomllib parsing."""
+    import tomllib
+
+    from opensquilla.contrib.codetask import adapter as adapter_mod
+
+    base = tmp_path / "base.toml"
+    base.write_text(
+        '[attachments]\nmedia_root = "/old/global"\npersist_transcripts = true\n'
+        "[tools]\ndeny = [\"x\"]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(adapter_mod, "agent_config_path", lambda: base)
+
+    captured = {}
+    _install_popen(monkeypatch, captured, stdout='{"status": "ok", "text": "done"}')
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    adapter_mod.LocalAdapter().run(
+        "x", repo=repo, scratch_dir=tmp_path / "s", artifact_dir=tmp_path / "a"
+    )
+    cfg = tomllib.loads((tmp_path / "a" / "agent-config.toml").read_text("utf-8"))
+    # overridden, not duplicated; sibling key + other sections preserved
+    assert cfg["attachments"]["media_root"] == str((tmp_path / "s").resolve() / "media")
+    assert cfg["attachments"]["persist_transcripts"] is True
+    assert cfg["tools"]["deny"] == ["x"]

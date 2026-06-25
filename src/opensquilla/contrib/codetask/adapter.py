@@ -16,6 +16,9 @@ import re
 import shutil
 import subprocess
 import time
+import tomllib
+
+import tomli_w
 from pathlib import Path
 
 from opensquilla.contrib.codetask.config import (
@@ -125,9 +128,25 @@ class LocalAdapter:
         # process group / job so a timeout can kill the WHOLE tree, not just
         # the direct python child (codex review #6). POSIX uses
         # start_new_session (setsid); Windows uses CREATE_NEW_PROCESS_GROUP.
+        # Give the agent a PER-RUN tool-result/media store under scratch instead
+        # of the shared global media root. The tool-result store rescans every
+        # record on disk on each provider request; against the global store (all
+        # sessions' accumulated history) that becomes a quadratic disk scan that
+        # can saturate the event loop and burn the whole timeout doing nothing.
+        # A fresh per-run dir keeps the scanned set tiny (this run only) and stops
+        # code-task polluting the global store. attachments.media_root wins in
+        # media_root_from_config(); tool_result_store_dir = media_root/tool-results.
+        run_media_root = scratch_dir.expanduser().resolve() / "media"
+        per_run_config = artifact_dir / "agent-config.toml"
+        _base_cfg = tomllib.loads(agent_config_path().read_text(encoding="utf-8"))
+        _attachments = _base_cfg.setdefault("attachments", {})
+        if not isinstance(_attachments, dict):
+            raise RuntimeError("code-task agent config has invalid [attachments]")
+        _attachments["media_root"] = str(run_media_root)
+        per_run_config.write_text(tomli_w.dumps(_base_cfg), encoding="utf-8")
         agent_env = {
             **os.environ,
-            "OPENSQUILLA_GATEWAY_CONFIG_PATH": str(agent_config_path()),
+            "OPENSQUILLA_GATEWAY_CONFIG_PATH": str(per_run_config),
         }
         popen_kwargs = dict(
             cwd=str(repo),

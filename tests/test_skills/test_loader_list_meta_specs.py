@@ -37,13 +37,19 @@ def test_list_meta_specs_includes_compiled_meta_sop(loader: SkillLoader) -> None
 def test_list_meta_specs_includes_known_meta_bundles(loader: SkillLoader) -> None:
     names = {s.name for s in loader.list_meta_specs()}
     assert names == {
-        "meta-competitive-intel",
-        "meta-daily-operator-brief",
-        "meta-document-to-decision",
-        "meta-job-search-pipeline",
+        "AwesomeWebpageMetaSkill",
         "meta-kid-project-planner",
         "meta-paper-write",
         "meta-short-drama",
         "meta-skill-creator",
-        "meta-web-research-to-report",
     }
+
+
+def test_meta_short_drama_script_draft_requires_visible_script_text() -> None:
+    skill_md = (BUNDLED / "meta-short-drama" / "SKILL.md").read_text(encoding="utf-8")
+
+    assert "Do not call publish_artifact or any other tool." in skill_md
+    assert "final" in skill_md
+    assert "complete script itself" in skill_md
+    assert "artifact marker" in skill_md
+    assert '"[Used tool: ...]" placeholder' in skill_md

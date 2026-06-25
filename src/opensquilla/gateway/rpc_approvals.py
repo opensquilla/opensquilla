@@ -14,7 +14,7 @@ from opensquilla.application.approval_rpc import (
     approval_status_rpc_payload,
     approval_wait_decision_rpc_payload,
 )
-from opensquilla.gateway.rpc import RpcContext, get_dispatcher
+from opensquilla.gateway.rpc import RpcContext, RpcHandlerError, get_dispatcher
 from opensquilla.sandbox.escalation import (
     apply_sandbox_approval_choice,
     deny_matching_pending_sandbox_approvals,
@@ -24,6 +24,14 @@ from opensquilla.sandbox.escalation import (
 )
 
 _d = get_dispatcher()
+
+
+def _require_owner_for_sandbox_approval_resolution(ctx: RpcContext) -> None:
+    if not getattr(ctx.principal, "is_owner", False):
+        raise RpcHandlerError(
+            "UNAUTHORIZED",
+            "exec.approval.resolve requires owner principal.",
+        )
 
 
 def _complete_sandbox_resolution_claim(
@@ -168,6 +176,8 @@ async def _handle_exec_approval_resolve(params: dict | None, ctx: RpcContext) ->
     pending = queue.get(params["id"])
     normalized_choice = str(choice).strip() if isinstance(choice, str) and choice.strip() else None
     sandbox_approval = is_sandbox_approval_kind(pending.params.get("approvalKind"))
+    if sandbox_approval and approved:
+        _require_owner_for_sandbox_approval_resolution(ctx)
 
     validate_sandbox_approval_choice(
         pending.params,

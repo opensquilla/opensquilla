@@ -15,22 +15,26 @@ from opensquilla.env import trust_env
 from opensquilla.gateway import rpc_tools
 from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
 from opensquilla.gateway.auth import Principal
-from opensquilla.gateway.rpc import RpcContext, get_dispatcher
+from opensquilla.gateway.rpc import RpcContext
 from opensquilla.sandbox import integration as integration_mod
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.integration import configure_runtime, reset_runtime, sandboxed
-from opensquilla.sandbox.network_guard import NetworkDecision, decide_network_access
+from opensquilla.sandbox.network_guard import NetworkDecision
 from opensquilla.sandbox.network_proxy import SandboxProxyServer as RealSandboxProxyServer
 from opensquilla.sandbox.run_context import (
     DomainGrant,
-    PublicNetworkGrant,
     RunContext,
     TemporaryGrant,
     get_run_context,
-    run_context_from_origin_payload,
 )
 from opensquilla.sandbox.run_mode import RunMode
-from opensquilla.sandbox.types import NetworkMode, ResourceLimits, SandboxPolicy, SecurityLevel
+from opensquilla.sandbox.types import (
+    DenialResult,
+    NetworkMode,
+    ResourceLimits,
+    SandboxPolicy,
+    SecurityLevel,
+)
 from opensquilla.tools.builtin import web as web_mod
 from opensquilla.tools.builtin import web_fetch as web_fetch_mod
 from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
@@ -137,6 +141,64 @@ def _install_trusted_session_handles(
     return workspace, manager, config
 
 
+def test_request_with_managed_network_proxy_env_overrides_user_proxy_env(
+    tmp_path: Path,
+) -> None:
+    policy = SandboxPolicy(
+        level=SecurityLevel.STANDARD,
+        network=NetworkMode.PROXY_ALLOWLIST,
+        mounts=(),
+        workspace_rw=True,
+        tmp_writable=True,
+        limits=ResourceLimits(),
+        env_allowlist=("PATH",),
+        require_approval=False,
+        network_proxy=integration_mod.NetworkProxySpec(host="127.0.0.1", port=18080),
+    )
+    request = integration_mod.SandboxRequest(
+        argv=("sh", "-lc", "curl https://example.com"),
+        cwd=tmp_path,
+        action_kind="shell.exec",
+        policy=policy,
+        env={
+            "PATH": "/bin",
+            "HTTP_PROXY": "http://attacker.invalid:1",
+            "http_proxy": "http://attacker.invalid:3",
+            "HTTPS_PROXY": "http://attacker.invalid:2",
+            "https_proxy": "http://attacker.invalid:4",
+            "npm_config_https_proxy": "http://attacker.invalid:5",
+            "PIP_PROXY": "http://attacker.invalid:6",
+            "WS_PROXY": "http://attacker.invalid:7",
+            "NO_PROXY": "*",
+            "no_proxy": "*",
+        },
+    )
+
+    updated = integration_mod.request_with_managed_network_proxy_env(request)
+
+    assert updated.env["PATH"] == "/bin"
+    for key in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "npm_config_https_proxy",
+        "PIP_PROXY",
+        "WS_PROXY",
+    ):
+        assert updated.env[key] == "http://127.0.0.1:18080"
+    for key in ("NO_PROXY", "no_proxy"):
+        assert updated.env[key]
+    assert "http://attacker.invalid:1" not in updated.env.values()
+    assert "http://attacker.invalid:3" not in updated.env.values()
+    assert "http://attacker.invalid:5" not in updated.env.values()
+    assert "http://attacker.invalid:6" not in updated.env.values()
+    assert "http://attacker.invalid:7" not in updated.env.values()
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "PIP_PROXY"):
+        assert key in updated.policy.env_allowlist
+    assert request.env["HTTP_PROXY"] == "http://attacker.invalid:1"
+
+
 @pytest.mark.asyncio
 async def test_url_shaped_inprocess_network_action_sets_context_proxy_without_env_mutation(
     monkeypatch: pytest.MonkeyPatch,
@@ -149,7 +211,7 @@ async def test_url_shaped_inprocess_network_action_sets_context_proxy_without_en
         host = "127.0.0.1"
         port = 28080
 
-        def __init__(self, decide: object) -> None:
+        def __init__(self, decide: object, **kwargs: object) -> None:
             self._decide = decide
             events.append("proxy.init")
 
@@ -229,7 +291,7 @@ async def test_http_request_uses_explicit_context_proxy_kwargs(
         host = "127.0.0.1"
         port = 28080
 
-        def __init__(self, decide: object) -> None:
+        def __init__(self, decide: object, **kwargs: object) -> None:
             self._decide = decide
 
         async def start(self) -> None:
@@ -274,7 +336,7 @@ async def test_http_request_uses_explicit_context_proxy_kwargs(
 
 
 @pytest.mark.asyncio
-async def test_unknown_explicit_target_queues_sandbox_network_approval(
+async def test_unknown_explicit_target_does_not_preflight_without_network_request(
     managed_context: ToolContext,
 ) -> None:
     @sandboxed(
@@ -285,35 +347,32 @@ async def test_unknown_explicit_target_queues_sandbox_network_approval(
     async def dummy_http_request(url: str) -> str:
         return "ok"
 
-    payload = json.loads(await dummy_http_request("http://unknown.test/path"))
+    result = await dummy_http_request("http://unknown.test/path")
 
-    assert payload["status"] == "approval_required"
-    assert payload["approval_id"]
-    assert payload["approvalKind"] == "sandbox_network"
-    assert payload["host"] == "unknown.test"
-    assert payload["fingerprint"]
-    assert [choice["id"] for choice in payload["choices"]] == [
-        "allow_once",
-        "allow_chat",
-        "allow_user",
-        "allow_public_chat",
-        "allow_public_user",
-        "deny",
-    ]
-    pending = get_approval_queue().list_pending("exec")
-    assert len(pending) == 1
-    assert pending[0]["id"] == payload["approval_id"]
-    params = pending[0]["params"]
-    assert params["approvalKind"] == "sandbox_network"
-    assert params["host"] == "unknown.test"
-    assert [choice["id"] for choice in params["choices"]] == [
-        "allow_once",
-        "allow_chat",
-        "allow_user",
-        "allow_public_chat",
-        "allow_public_user",
-        "deny",
-    ]
+    assert result == "ok"
+    assert get_approval_queue().list_pending("exec") == []
+
+
+@pytest.mark.asyncio
+async def test_parallel_unknown_targets_do_not_preflight_without_network_request(
+    managed_context: ToolContext,
+) -> None:
+    @sandboxed(
+        "network.http",
+        argv_factory=lambda a: ("http_request", "GET", str(a["url"])),
+        record_payload=False,
+    )
+    async def dummy_http_request(url: str) -> str:
+        return "ok"
+
+    first, second = await asyncio.gather(
+        dummy_http_request("http://first-unknown.test/path"),
+        dummy_http_request("http://second-unknown.test/path"),
+    )
+
+    assert first == "ok"
+    assert second == "ok"
+    assert get_approval_queue().list_pending("exec") == []
 
 
 @pytest.mark.asyncio
@@ -325,7 +384,7 @@ async def test_temporary_network_grant_allows_retry_for_explicit_target(
         host = "127.0.0.1"
         port = 28080
 
-        def __init__(self, decide: object) -> None:
+        def __init__(self, decide: object, **kwargs: object) -> None:
             self._decide = decide
 
         async def start(self) -> None:
@@ -377,6 +436,171 @@ async def test_temporary_network_grant_allows_retry_for_explicit_target(
 
 
 @pytest.mark.asyncio
+async def test_windows_unready_boundary_blocks_decorated_network_tools(
+    monkeypatch: pytest.MonkeyPatch,
+    managed_context: ToolContext,
+) -> None:
+    runtime = integration_mod.get_runtime()
+    assert runtime is not None
+    runtime.backend = SimpleNamespace(name="windows_default")
+    managed_context.sandbox_run_context = RunContext(run_mode=RunMode.TRUSTED)
+
+    class _UnexpectedClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pytest.fail("network tool bypassed Windows managed-network readiness")
+
+    monkeypatch.setattr(
+        integration_mod,
+        "_windows_proxy_allowlist_enforced",
+        lambda runtime: False,
+    )
+    async def _repair_failed(runtime) -> bool:
+        return False
+
+    monkeypatch.setattr(
+        integration_mod,
+        "_ensure_windows_proxy_allowlist_setup",
+        _repair_failed,
+    )
+    monkeypatch.setattr(web_mod.httpx, "AsyncClient", _UnexpectedClient)
+    monkeypatch.setattr(web_fetch_mod.httpx, "AsyncClient", _UnexpectedClient)
+    monkeypatch.setattr(web_fetch_mod, "_check_ssrf", lambda url: None)
+
+    http_payload = json.loads(await web_mod.http_request("https://example.com"))
+    fetch_payload = json.loads(await web_fetch_mod.web_fetch("https://example.com"))
+
+    assert http_payload["status"] == "denied"
+    assert fetch_payload["status"] == "denied"
+    assert "Windows sandbox managed network is unavailable" in http_payload["message"]
+    assert "Windows sandbox managed network is unavailable" in fetch_payload["message"]
+
+
+@pytest.mark.asyncio
+async def test_windows_unready_boundary_does_not_trigger_elevation_when_not_admin(
+    monkeypatch: pytest.MonkeyPatch,
+    managed_context: ToolContext,
+) -> None:
+    runtime = integration_mod.get_runtime()
+    assert runtime is not None
+    runtime.backend = SimpleNamespace(name="windows_default")
+    managed_context.sandbox_run_context = RunContext(run_mode=RunMode.TRUSTED)
+
+    monkeypatch.setattr(
+        integration_mod,
+        "_windows_proxy_allowlist_enforced",
+        lambda runtime: False,
+    )
+    monkeypatch.setattr(integration_mod, "_windows_process_is_admin", lambda: False)
+
+    async def fail_if_called(settings):
+        pytest.fail("Trusted managed-network repair must not trigger elevation")
+
+    monkeypatch.setattr(integration_mod, "ensure_sandbox_setup", fail_if_called, raising=False)
+
+    assert await integration_mod._windows_proxy_allowlist_ready_or_repaired(runtime) is False
+
+
+@pytest.mark.asyncio
+async def test_windows_unready_boundary_repairs_when_already_admin(
+    monkeypatch: pytest.MonkeyPatch,
+    managed_context: ToolContext,
+) -> None:
+    runtime = integration_mod.get_runtime()
+    assert runtime is not None
+    runtime.backend = SimpleNamespace(name="windows_default")
+    managed_context.sandbox_run_context = RunContext(run_mode=RunMode.TRUSTED)
+    calls: list[object] = []
+
+    monkeypatch.setattr(
+        integration_mod,
+        "_windows_proxy_allowlist_enforced",
+        lambda runtime: False,
+    )
+    monkeypatch.setattr(integration_mod, "_windows_process_is_admin", lambda: True)
+
+    async def _repair(runtime):
+        calls.append(runtime)
+        return True
+
+    monkeypatch.setattr(integration_mod, "_ensure_windows_proxy_allowlist_setup", _repair)
+
+    assert await integration_mod._windows_proxy_allowlist_ready_or_repaired(runtime) is True
+    assert calls == [runtime]
+
+
+def test_windows_unavailable_message_reports_outdated_network_marker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default_setup as setup_mod
+    from opensquilla.sandbox.backend.windows_default_network import (
+        WindowsNetworkSetup,
+    )
+
+    marker = tmp_path / "setup_marker.json"
+    setup_mod.write_setup_marker(
+        marker,
+        network=WindowsNetworkSetup(
+            offline_user_sid="S-1-5-21-100-200-300-400",
+            allowed_proxy_ports=(48123,),
+            allow_local_binding=False,
+            firewall_rule_version=1,
+            wfp_rule_version=1,
+        ),
+    )
+    monkeypatch.setattr(setup_mod, "default_setup_marker_path", lambda home=None: marker)
+    runtime = SimpleNamespace(backend=SimpleNamespace(name="windows_default"))
+
+    message = integration_mod._windows_managed_network_unavailable_message(runtime)
+
+    assert "network marker is out of date" in message
+    assert "firewall=1 required=3" in message
+    assert "wfp=1 required=2" in message
+
+
+@pytest.mark.asyncio
+async def test_windows_unready_boundary_blocks_rpc_network_action(
+    monkeypatch: pytest.MonkeyPatch,
+    managed_context: ToolContext,
+) -> None:
+    runtime = integration_mod.get_runtime()
+    assert runtime is not None
+    runtime.backend = SimpleNamespace(name="windows_default")
+    managed_context.sandbox_run_context = RunContext(run_mode=RunMode.TRUSTED)
+    called = False
+
+    async def _callback() -> str:
+        nonlocal called
+        called = True
+        return "unexpected"
+
+    monkeypatch.setattr(
+        integration_mod,
+        "_windows_proxy_allowlist_enforced",
+        lambda runtime: False,
+    )
+    async def _repair_failed(runtime) -> bool:
+        return False
+
+    monkeypatch.setattr(
+        integration_mod,
+        "_ensure_windows_proxy_allowlist_setup",
+        _repair_failed,
+    )
+
+    result = await integration_mod.run_in_process_network_action(
+        action_kind="network.http",
+        argv=("http_request", "GET", "https://example.com"),
+        callback=_callback,
+    )
+
+    assert called is False
+    assert isinstance(result, DenialResult)
+    assert result.retryable is False
+    assert "Windows sandbox managed network is unavailable" in result.message
+
+
+@pytest.mark.asyncio
 async def test_allow_once_resolve_allows_one_retry_then_expires_for_explicit_target(
     monkeypatch: pytest.MonkeyPatch,
     managed_context: ToolContext,
@@ -385,43 +609,17 @@ async def test_allow_once_resolve_allows_one_retry_then_expires_for_explicit_tar
         host = "127.0.0.1"
         port = 28080
 
-        def __init__(self, decide: object) -> None:
+        def __init__(self, decide: object, **kwargs: object) -> None:
             self._decide = decide
 
         async def start(self) -> None:
-            decision = self._decide("unknown.test")
-            assert isinstance(decision, NetworkDecision)
-            assert decision.status == "allow"
+            return None
 
         async def stop(self) -> None:
             return None
 
     monkeypatch.setattr(integration_mod, "SandboxProxyServer", FakeProxy)
 
-    manager = SimpleNamespace()
-    manager.node = SimpleNamespace(
-        session_key="s1",
-        agent_id="main",
-        origin={
-            "sandbox_run_context": managed_context.sandbox_run_context.to_origin_payload(),
-        },
-    )
-
-    async def _get_session(session_key: str):
-        return manager.node if session_key == manager.node.session_key else None
-
-    async def _update(session_key: str, **fields):
-        for key, value in fields.items():
-            setattr(manager.node, key, value)
-        return manager.node
-
-    manager.get_session = _get_session
-    manager.update = _update
-    config = SimpleNamespace(
-        sandbox=SimpleNamespace(run_mode="standard", sandbox=True, security_grading=True),
-        permissions=SimpleNamespace(default_mode="off"),
-    )
-
     @sandboxed(
         "network.http",
         argv_factory=lambda a: ("http_request", "GET", str(a["url"])),
@@ -430,90 +628,18 @@ async def test_allow_once_resolve_allows_one_retry_then_expires_for_explicit_tar
     async def dummy_http_request(url: str) -> str:
         return "ok"
 
-    first = json.loads(await dummy_http_request("http://unknown.test/path"))
-    approval_id = str(first["approval_id"])
+    first = await dummy_http_request("http://unknown.test/path")
+    second = await dummy_http_request("http://unknown.test/path")
 
-    result = await get_dispatcher().dispatch(
-        "r1",
-        "exec.approval.resolve",
-        {"id": approval_id, "approved": True, "choice": "allow_once"},
-        RpcContext(conn_id="test", session_manager=manager, config=config),
-    )
-    assert result.error is None, result.error
-    saved_after_resolve = await get_run_context(
-        manager,
-        "s1",
-        config=config,
-        workspace=managed_context.workspace_dir,
-    )
-    assert saved_after_resolve.temporary_grants == ()
-
-    allowed = await dummy_http_request("http://unknown.test/path")
-    assert allowed == "ok"
-
-    saved = await get_run_context(
-        manager,
-        "s1",
-        config=config,
-        workspace=managed_context.workspace_dir,
-    )
-    assert saved.temporary_grants == ()
-
-    second = json.loads(await dummy_http_request("http://unknown.test/path"))
-    assert second["status"] == "approval_required"
-    assert second["approvalKind"] == "sandbox_network"
-    assert second["host"] == "unknown.test"
-
-    fresh_context = ToolContext(
-        is_owner=True,
-        caller_kind=CallerKind.CLI,
-        workspace_dir=str(managed_context.workspace_dir),
-        session_key="s1",
-        run_mode="standard",
-        sandbox_run_context=run_context_from_origin_payload(
-            manager.node.origin["sandbox_run_context"],
-            source="saved",
-        ),
-    )
-    token = current_tool_context.set(fresh_context)
-    try:
-        fresh_attempt = json.loads(await dummy_http_request("http://unknown.test/path"))
-    finally:
-        current_tool_context.reset(token)
-
-    assert fresh_attempt["status"] == "approval_required"
-    assert fresh_attempt["approvalKind"] == "sandbox_network"
-    assert fresh_attempt["host"] == "unknown.test"
+    assert first == "ok"
+    assert second == "ok"
+    assert get_approval_queue().list_pending("exec") == []
 
 
 @pytest.mark.asyncio
 async def test_allow_public_chat_choice_allows_later_unknown_public_targets(
     managed_context: ToolContext,
 ) -> None:
-    manager = SimpleNamespace()
-    manager.node = SimpleNamespace(
-        session_key="s1",
-        agent_id="main",
-        origin={
-            "sandbox_run_context": managed_context.sandbox_run_context.to_origin_payload(),
-        },
-    )
-
-    async def _get_session(session_key: str):
-        return manager.node if session_key == manager.node.session_key else None
-
-    async def _update(session_key: str, **fields):
-        for key, value in fields.items():
-            setattr(manager.node, key, value)
-        return manager.node
-
-    manager.get_session = _get_session
-    manager.update = _update
-    config = SimpleNamespace(
-        sandbox=SimpleNamespace(run_mode="standard", sandbox=True, security_grading=True),
-        permissions=SimpleNamespace(default_mode="off"),
-    )
-
     @sandboxed(
         "network.http",
         argv_factory=lambda a: ("http_request", "GET", str(a["url"])),
@@ -522,28 +648,10 @@ async def test_allow_public_chat_choice_allows_later_unknown_public_targets(
     async def dummy_http_request(url: str) -> str:
         return "ok"
 
-    first = json.loads(await dummy_http_request("http://docs.example.com/path"))
-    approval_id = str(first["approval_id"])
+    result = await dummy_http_request("http://docs.example.com/path")
 
-    result = await get_dispatcher().dispatch(
-        "r1",
-        "exec.approval.resolve",
-        {"id": approval_id, "approved": True, "choice": "allow_public_chat"},
-        RpcContext(conn_id="test", session_manager=manager, config=config),
-    )
-    assert result.error is None, result.error
-
-    context = await get_run_context(
-        manager,
-        "s1",
-        config=config,
-        workspace=str(managed_context.workspace_dir),
-    )
-    decision = decide_network_access("another-docs.example.com", context)
-
-    assert PublicNetworkGrant(scope="chat", source="manual") in context.public_network
-    assert decision.status == "allow"
-    assert decision.reason == "public_network"
+    assert result == "ok"
+    assert get_approval_queue().list_pending("exec") == []
 
 
 @pytest.mark.asyncio
@@ -551,15 +659,19 @@ async def test_persisted_temporary_grant_from_saved_origin_does_not_allow_after_
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    seen: dict[str, object] = {}
+
     class FakeProxy:
         host = "127.0.0.1"
         port = 28080
 
-        def __init__(self, decide: object) -> None:
+        def __init__(self, decide: object, **kwargs: object) -> None:
             self._decide = decide
 
         async def start(self) -> None:
-            pytest.fail("proxy should not start when request still needs approval")
+            decision = self._decide("unknown.test")
+            assert isinstance(decision, NetworkDecision)
+            seen["decision"] = decision.status
 
         async def stop(self) -> None:
             return None
@@ -598,13 +710,12 @@ async def test_persisted_temporary_grant_from_saved_origin_does_not_allow_after_
         )
     )
     try:
-        payload = json.loads(await dummy_http_request("http://unknown.test/path"))
+        result = await dummy_http_request("http://unknown.test/path")
     finally:
         current_tool_context.reset(token)
 
-    assert payload["status"] == "approval_required"
-    assert payload["approvalKind"] == "sandbox_network"
-    assert payload["host"] == "unknown.test"
+    assert result == "ok"
+    assert seen["decision"] == "ask"
 
 
 @pytest.mark.asyncio
@@ -745,11 +856,30 @@ async def test_trusted_inprocess_auto_trust_persists_after_safe_proxy_upstream(
     upstream_socket = next(iter(upstream.sockets or ()), None)
     assert upstream_socket is not None
     upstream_host, upstream_port = upstream_socket.getsockname()[:2]
+    public_upstream_host = "93.184.216.34"
+    real_open_connection = asyncio.open_connection
+
+    async def fake_open_connection(
+        host: str,
+        port: int,
+        *args: object,
+        **kwargs: object,
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        if str(host) == public_upstream_host and int(port) == int(upstream_port):
+            return await real_open_connection(
+                str(upstream_host),
+                int(upstream_port),
+                *args,
+                **kwargs,
+            )
+        return await real_open_connection(host, port, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "open_connection", fake_open_connection)
 
     def proxy_factory(decide: object, **kwargs: object) -> RealSandboxProxyServer:
         return RealSandboxProxyServer(
             decide,
-            resolver=lambda host, port: (str(upstream_host), int(upstream_port)),
+            resolver=lambda host, port: (public_upstream_host, int(upstream_port)),
             **kwargs,
         )
 
@@ -901,7 +1031,7 @@ async def test_standard_explicit_target_does_not_auto_add_recognized_default_hos
         host = "127.0.0.1"
         port = 28080
 
-        def __init__(self, decide: object) -> None:
+        def __init__(self, decide: object, **kwargs: object) -> None:
             self._decide = decide
 
         async def start(self) -> None:
@@ -989,7 +1119,7 @@ async def test_run_with_managed_network_proxy_honors_temporary_domain_grant(
         host = "127.0.0.1"
         port = 28080
 
-        def __init__(self, decide: object) -> None:
+        def __init__(self, decide: object, **kwargs: object) -> None:
             self._decide = decide
 
         async def start(self) -> None:
@@ -1199,7 +1329,7 @@ async def test_rpc_search_query_allows_search_provider_endpoint_under_managed_ne
         host = "127.0.0.1"
         port = 28080
 
-        def __init__(self, decide: object) -> None:
+        def __init__(self, decide: object, **kwargs: object) -> None:
             self._decide = decide
 
         async def start(self) -> None:
@@ -1340,7 +1470,7 @@ async def test_web_search_shaped_inprocess_action_uses_search_provider_endpoint_
         host = "127.0.0.1"
         port = 28080
 
-        def __init__(self, decide: object) -> None:
+        def __init__(self, decide: object, **kwargs: object) -> None:
             self._decide = decide
 
         async def start(self) -> None:
@@ -1379,7 +1509,7 @@ async def test_web_search_shaped_inprocess_action_uses_search_provider_endpoint_
 
 
 @pytest.mark.asyncio
-async def test_inprocess_network_action_with_network_none_fails_closed(
+async def test_inprocess_network_action_with_network_none_defers_to_proxy_runtime(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1404,11 +1534,22 @@ async def test_inprocess_network_action_with_network_none_fails_closed(
         sandbox_run_context=RunContext(run_mode=RunMode.STANDARD),
     )
     token = current_tool_context.set(ctx)
-    monkeypatch.setattr(
-        integration_mod,
-        "SandboxProxyServer",
-        lambda *args, **kwargs: pytest.fail("proxy should not start when network is none"),
-    )
+    seen: dict[str, object] = {}
+
+    class FakeProxy:
+        host = "127.0.0.1"
+        port = 28080
+
+        def __init__(self, decide: object, **kwargs: object) -> None:
+            self._decide = decide
+
+        async def start(self) -> None:
+            seen["started"] = True
+
+        async def stop(self) -> None:
+            seen["stopped"] = True
+
+    monkeypatch.setattr(integration_mod, "SandboxProxyServer", FakeProxy)
     called = False
 
     @sandboxed(
@@ -1426,8 +1567,148 @@ async def test_inprocess_network_action_with_network_none_fails_closed(
     finally:
         current_tool_context.reset(token)
 
-    payload = json.loads(result)
-    assert payload["status"] == "denied"
-    assert payload["reason"] == "policy_denied"
-    assert "network is disabled" in payload["message"]
-    assert called is False
+    assert result == "http://example.com"
+    assert called is True
+    assert seen == {"started": True, "stopped": True}
+    assert get_approval_queue().list_pending("exec") == []
+
+
+@pytest.mark.asyncio
+async def test_inprocess_network_action_with_network_none_uses_granted_explicit_target(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    reset_runtime()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    configure_runtime(
+        SandboxSettings(
+            run_mode="standard",
+            backend="noop",
+            allow_legacy_mode=True,
+            network_default="none",
+        ),
+        workspace=workspace,
+    )
+    ctx = ToolContext(
+        is_owner=True,
+        caller_kind=CallerKind.CLI,
+        workspace_dir=str(tmp_path),
+        session_key="s1",
+        run_mode="standard",
+        sandbox_run_context=RunContext(
+            run_mode=RunMode.STANDARD,
+            domains=(
+                DomainGrant(
+                    domain="example.com",
+                    scope="chat",
+                    source="user",
+                ),
+            ),
+        ),
+    )
+    token = current_tool_context.set(ctx)
+    seen: dict[str, object] = {}
+
+    class FakeProxy:
+        host = "127.0.0.1"
+        port = 28080
+
+        def __init__(self, decide: object, **kwargs: object) -> None:
+            self._decide = decide
+
+        async def start(self) -> None:
+            decision = self._decide("example.com")
+            assert isinstance(decision, NetworkDecision)
+            seen["decision"] = decision.status
+
+        async def stop(self) -> None:
+            seen["stopped"] = True
+
+    monkeypatch.setattr(integration_mod, "SandboxProxyServer", FakeProxy)
+
+    @sandboxed(
+        "network.http",
+        argv_factory=lambda a: ("http_request", "GET", str(a["url"])),
+        record_payload=False,
+    )
+    async def dummy_http_request(url: str) -> str:
+        seen["called"] = True
+        return "ok"
+
+    try:
+        result = await dummy_http_request("http://example.com/path")
+    finally:
+        current_tool_context.reset(token)
+
+    assert result == "ok"
+    assert seen == {"decision": "allow", "called": True, "stopped": True}
+
+
+@pytest.mark.asyncio
+async def test_trusted_network_none_auto_allows_unknown_explicit_public_target(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    reset_runtime()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    configure_runtime(
+        SandboxSettings(
+            run_mode="trusted",
+            backend="noop",
+            allow_legacy_mode=True,
+            network_default="none",
+        ),
+        workspace=workspace,
+    )
+    ctx = ToolContext(
+        is_owner=True,
+        caller_kind=CallerKind.CLI,
+        workspace_dir=str(tmp_path),
+        session_key="s1",
+        run_mode="trusted",
+        sandbox_run_context=RunContext(run_mode=RunMode.TRUSTED),
+    )
+    token = current_tool_context.set(ctx)
+    seen: dict[str, object] = {}
+
+    class FakeProxy:
+        host = "127.0.0.1"
+        port = 28080
+
+        def __init__(self, decide: object, **kwargs: object) -> None:
+            self._decide = decide
+
+        async def start(self) -> None:
+            decision = self._decide("new-public.example")
+            assert isinstance(decision, NetworkDecision)
+            seen["decision"] = decision.status
+            seen["reason"] = decision.reason
+
+        async def stop(self) -> None:
+            seen["stopped"] = True
+
+    monkeypatch.setattr(integration_mod, "SandboxProxyServer", FakeProxy)
+
+    @sandboxed(
+        "network.http",
+        argv_factory=lambda a: ("http_request", "GET", str(a["url"])),
+        record_payload=False,
+    )
+    async def dummy_http_request(url: str) -> str:
+        seen["called"] = True
+        return "ok"
+
+    try:
+        result = await dummy_http_request("http://new-public.example/path")
+    finally:
+        current_tool_context.reset(token)
+
+    assert result == "ok"
+    assert seen == {
+        "decision": "allow",
+        "reason": "auto_trusted",
+        "called": True,
+        "stopped": True,
+    }

@@ -244,7 +244,7 @@ def test_agent_iteration_defaults_are_unbounded() -> None:
     assert AgentConfig().max_turn_output_tokens == 0
     assert AgentConfig().max_turn_billed_cost_usd == 0.0
     assert AgentConfig().max_turn_tool_errors == 0
-    assert AgentConfig().length_capped_continuations == 1
+    assert AgentConfig().length_capped_continuations == 3
 
 
 @pytest.mark.asyncio

@@ -10,8 +10,11 @@ import pytest
 
 from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
 from opensquilla.sandbox.config import SandboxSettings
-from opensquilla.sandbox.integration import configure_runtime, reset_runtime
+from opensquilla.sandbox.integration import configure_runtime, get_runtime, reset_runtime
+from opensquilla.sandbox.operation_runtime import SandboxOperation, SandboxOperationResult
 from opensquilla.sandbox.path_validation import decide_path_access
+from opensquilla.sandbox.run_context import RunContext
+from opensquilla.sandbox.run_mode import RunMode
 from opensquilla.sandbox.types import SandboxRequest
 from opensquilla.tools.builtin import filesystem as fs
 from opensquilla.tools.builtin import shell
@@ -23,11 +26,80 @@ class _InlineExecutorLoop:
         return func(*args)  # type: ignore[operator]
 
 
+class _FilesystemBackend:
+    name = "filesystem_backend"
+
+    def operation_domains_supported(self) -> frozenset[str]:
+        return frozenset({"filesystem"})
+
+    async def run_operation(self, operation: SandboxOperation) -> SandboxOperationResult:
+        request = getattr(operation, "request", None)
+        path = getattr(request, "path", None)
+        if path is None:
+            raise AssertionError("filesystem operation missing path")
+        if operation.kind == "read_file":
+            if not path.exists():
+                raise FileNotFoundError(f"File not found: {path}")
+            return SandboxOperationResult(message=path.read_text(encoding="utf-8"))
+        if operation.kind == "list_dir":
+            if not path.exists():
+                raise FileNotFoundError(f"Path not found: {path}")
+            entries = []
+            for entry in sorted(path.iterdir(), key=lambda item: item.name):
+                if entry.is_dir():
+                    entries.append(f"[dir]  {entry.name}/")
+                else:
+                    entries.append(f"[file] {entry.name} ({entry.stat().st_size} bytes)")
+            return SandboxOperationResult(
+                message="\n".join(entries) if entries else f"{path}: (empty directory)"
+            )
+        if operation.kind == "write_text":
+            created = not path.exists()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(request.content, encoding="utf-8")
+            return SandboxOperationResult(
+                message=f"Written {len(request.content)} bytes to {path}",
+                created=created,
+            )
+        if operation.kind == "edit_text":
+            original = path.read_text(encoding="utf-8")
+            updated = original.replace(request.old_text, request.new_text, 1)
+            path.write_text(updated, encoding="utf-8")
+            return SandboxOperationResult(
+                message=(
+                    f"Edited {path}: replaced {len(request.old_text)} chars "
+                    f"with {len(request.new_text)} chars"
+                )
+            )
+        if operation.kind == "grep_search":
+            matches = []
+            for entry in sorted(path.rglob("*")):
+                if entry.is_symlink() or not entry.is_file():
+                    continue
+                try:
+                    text = entry.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    continue
+                for line_no, line in enumerate(text.splitlines(), start=1):
+                    if request.pattern in line:
+                        matches.append(f"{entry}:{line_no}:{line}")
+            return SandboxOperationResult(
+                message="\n".join(matches) if matches else "No matches"
+            )
+        raise AssertionError(f"unsupported filesystem operation: {operation.kind}")
+
+
+def _install_filesystem_read_backend() -> None:
+    runtime = get_runtime()
+    assert runtime is not None
+    runtime.backend = _FilesystemBackend()
+
+
 @contextmanager
 def tool_context(
     workspace: Path,
     *,
-    run_mode: str = "standard",
+    run_mode: str | None = "standard",
     sandbox_mounts: list[dict[str, object]] | None = None,
     workspace_strict: bool = False,
 ) -> Iterator[ToolContext]:
@@ -58,11 +130,12 @@ def sandbox_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator
     )
     reset_approval_queue()
     workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    configure_runtime(
+    workspace.mkdir(exist_ok=True)
+    runtime = configure_runtime(
         SandboxSettings(run_mode="standard", backend="noop", allow_legacy_mode=True),
         workspace=workspace,
     )
+    runtime.backend = _FilesystemBackend()
     try:
         yield
     finally:
@@ -153,7 +226,7 @@ def test_request_path_builds_structured_mount_escalation_choices(tmp_path: Path)
         "deny",
     ]
     assert [choice["label"] for choice in proposal["choices"]] == [
-        "Allow read/write for this chat",
+        "Allow read/write",
         "Deny",
     ]
     assert proposal["choices"][0]["style"] == "primary"
@@ -273,7 +346,6 @@ async def test_filesystem_read_outside_workspace_requests_ro_mount(tmp_path: Pat
     assert [choice["id"] for choice in payload["choices"]] == [
         "mount_ro_chat",
         "mount_rw_chat",
-        "mount_ro_user",
         "deny",
     ]
     assert "outside the current workspace" in payload["message"]
@@ -386,9 +458,9 @@ async def test_denied_sandbox_path_request_clears_duplicate_pending_prompts(
         second = json.loads(await fs.list_dir(str(outside)))
 
     assert first["status"] == "approval_required"
-    assert second["status"] == "approval_required"
-    assert first["approval_id"] != second["approval_id"]
-    assert len(get_approval_queue().list_pending("exec")) == 2
+    assert second["status"] == "approval_pending"
+    assert second["approval_id"] == first["approval_id"]
+    assert len(get_approval_queue().list_pending("exec")) == 1
 
     await _handle_exec_approval_resolve(
         {"id": first["approval_id"], "approved": False, "choice": "deny"},
@@ -396,9 +468,6 @@ async def test_denied_sandbox_path_request_clears_duplicate_pending_prompts(
     )
 
     assert get_approval_queue().list_pending("exec") == []
-    duplicate = get_approval_queue().get(second["approval_id"])
-    assert duplicate.resolved is True
-    assert duplicate.approved is False
 
 
 @pytest.mark.asyncio
@@ -417,6 +486,27 @@ async def test_filesystem_write_outside_workspace_requests_rw_mount(tmp_path: Pa
     assert payload["approvalKind"] == "sandbox_path"
     assert [choice["id"] for choice in payload["choices"]] == ["mount_rw_chat", "deny"]
     assert not outside.exists()
+
+
+@pytest.mark.asyncio
+async def test_trusted_sandbox_write_outside_workspace_auto_grants_rw_mount(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    outside = tmp_path / "outside" / "notes.txt"
+    monkeypatch.setattr(fs.asyncio, "get_event_loop", lambda: _InlineExecutorLoop())
+
+    with tool_context(workspace, run_mode="trusted") as ctx:
+        result = await fs.write_file(str(outside), "outside body\n")
+
+    assert "Written 13 bytes" in result
+    assert outside.read_text(encoding="utf-8") == "outside body\n"
+    assert get_approval_queue().list_pending("exec") == []
+    assert ctx.sandbox_mounts == [
+        {"path": str(outside.parent.resolve(strict=False)), "access": "rw"}
+    ]
 
 
 @pytest.mark.asyncio
@@ -520,7 +610,12 @@ async def test_grep_search_does_not_follow_workspace_symlink_to_unmounted_path(
     outside_file = outside / "secret.txt"
     outside_file.write_text("needle secret-token\n", encoding="utf-8")
     link = workspace / "linked-secret.txt"
-    link.symlink_to(outside_file)
+    try:
+        link.symlink_to(outside_file)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("creating symlinks requires Windows developer mode or elevation")
+        raise
     monkeypatch.setattr(fs.asyncio, "get_event_loop", lambda: _InlineExecutorLoop())
 
     with tool_context(workspace):
@@ -696,12 +791,39 @@ async def test_trusted_filesystem_read_path_outside_workspace_auto_mounts_withou
     outside.mkdir()
     target = outside / "notes.txt"
     target.write_text("trusted read\n", encoding="utf-8")
+    _install_filesystem_read_backend()
     monkeypatch.setattr(fs.asyncio, "get_event_loop", lambda: _InlineExecutorLoop())
 
     with tool_context(workspace, run_mode="trusted") as ctx:
         result = await fs.read_file(str(target))
 
     assert "trusted read" in result
+    assert get_approval_queue().list_pending("exec") == []
+    assert ctx.sandbox_mounts == [{"path": str(target.resolve(strict=False)), "access": "ro"}]
+
+
+@pytest.mark.asyncio
+async def test_trusted_run_context_read_path_outside_workspace_auto_mounts_without_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = outside / "notes.txt"
+    target.write_text("trusted context read\n", encoding="utf-8")
+    _install_filesystem_read_backend()
+    monkeypatch.setattr(fs.asyncio, "get_event_loop", lambda: _InlineExecutorLoop())
+
+    with tool_context(workspace, run_mode=None) as ctx:
+        ctx.sandbox_run_context = RunContext(
+            run_mode=RunMode.TRUSTED,
+            workspace=str(workspace),
+        )
+        result = await fs.read_file(str(target))
+
+    assert "trusted context read" in result
     assert get_approval_queue().list_pending("exec") == []
     assert ctx.sandbox_mounts == [{"path": str(target.resolve(strict=False)), "access": "ro"}]
 
@@ -739,6 +861,214 @@ async def test_trusted_shell_simple_read_path_outside_workspace_auto_mounts_with
 
 
 @pytest.mark.asyncio
+async def test_trusted_shell_delete_existing_file_auto_mounts_file_without_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    outside = tmp_path / "outside" / "outside-sandbox-smoke.txt"
+    outside.parent.mkdir()
+    outside.write_text("hello\n", encoding="utf-8")
+    backend_calls: list[SandboxRequest] = []
+
+    async def fake_backend(request: SandboxRequest, *, runtime: object = None) -> object:
+        backend_calls.append(request)
+        return SimpleNamespace(stdout="", stderr="", returncode=0, backend_notes=[])
+
+    monkeypatch.setattr(shell, "run_under_backend", fake_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=True, reason=""),
+    )
+
+    with tool_context(workspace, run_mode="trusted") as ctx:
+        result = await shell.exec_command(f'del "{outside}"')
+
+    assert "exit_code=0" in result
+    assert backend_calls
+    assert get_approval_queue().list_pending("exec") == []
+    assert ctx.sandbox_mounts == [{"path": str(outside.resolve(strict=False)), "access": "rw"}]
+    request = backend_calls[0]
+    assert any(mount.host_path == outside for mount in request.policy.mounts)
+
+
+@pytest.mark.asyncio
+async def test_shell_write_to_protected_metadata_is_blocked_before_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / ".codex").mkdir()
+    backend_calls: list[SandboxRequest] = []
+
+    async def fake_backend(request: SandboxRequest, *, runtime: object = None) -> object:
+        backend_calls.append(request)
+        return SimpleNamespace(stdout="", stderr="", returncode=0, backend_notes=[])
+
+    monkeypatch.setattr(shell, "run_under_backend", fake_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    with tool_context(workspace, run_mode="trusted"):
+        git_result = await shell.exec_command(
+            f"sh -lc 'printf \"%s\\n\" blocked > {repo}/.git/_sandbox_should_not_write.txt'"
+        )
+        codex_result = await shell.exec_command(
+            f"sh -lc 'printf \"%s\\n\" blocked > {repo}/.codex/_sandbox_should_not_write.txt'"
+        )
+
+    git_payload = json.loads(git_result)
+    codex_payload = json.loads(codex_result)
+    assert git_payload["reason"] == "protected_metadata"
+    assert git_payload["protected_name"] == ".git"
+    assert codex_payload["reason"] == "protected_metadata"
+    assert codex_payload["protected_name"] == ".codex"
+    assert backend_calls == []
+    assert not (repo / ".git/_sandbox_should_not_write.txt").exists()
+    assert not (repo / ".codex/_sandbox_should_not_write.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_trusted_shell_delete_existing_file_under_rw_mount_adds_file_mount(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    mounted = tmp_path / "outside"
+    mounted.mkdir()
+    outside = mounted / "outside-sandbox-smoke.txt"
+    outside.write_text("hello\n", encoding="utf-8")
+    backend_calls: list[SandboxRequest] = []
+
+    async def fake_backend(request: SandboxRequest, *, runtime: object = None) -> object:
+        backend_calls.append(request)
+        return SimpleNamespace(stdout="", stderr="", returncode=0, backend_notes=[])
+
+    monkeypatch.setattr(shell, "run_under_backend", fake_backend)
+    monkeypatch.setattr(shell, "_windows_sandbox_backend_active", lambda runtime=None: True)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=True, reason=""),
+    )
+
+    with tool_context(
+        workspace,
+        run_mode="trusted",
+        sandbox_mounts=[{"path": str(mounted.resolve(strict=False)), "access": "rw"}],
+    ) as ctx:
+        result = await shell.exec_command(f'del "{outside}"')
+
+    assert "exit_code=0" in result
+    assert backend_calls
+    assert get_approval_queue().list_pending("exec") == []
+    assert ctx.sandbox_mounts == [
+        {"path": str(mounted.resolve(strict=False)), "access": "rw"},
+        {"path": str(outside.resolve(strict=False)), "access": "rw"},
+    ]
+    request = backend_calls[0]
+    assert any(mount.host_path == outside for mount in request.policy.mounts)
+
+
+def test_windows_shell_policy_ignores_deleted_active_file_mount(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.types import (
+        MountSpec,
+        NetworkMode,
+        ResourceLimits,
+        SandboxPolicy,
+        SecurityLevel,
+    )
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    stale = workspace / "sandbox_probe_workspace.txt"
+    stale.write_text("workspace-ok", encoding="utf-8")
+    stale.unlink()
+    policy = SandboxPolicy(
+        level=SecurityLevel.STANDARD,
+        network=NetworkMode.NONE,
+        mounts=(
+            MountSpec(workspace, workspace, mode="rw"),
+            MountSpec(stale, stale, mode="rw", required=False),
+        ),
+        workspace_rw=True,
+        tmp_writable=True,
+        limits=ResourceLimits(),
+        env_allowlist=(),
+        require_approval=False,
+    )
+    monkeypatch.setattr(shell, "_windows_sandbox_backend_active", lambda runtime=None: True)
+
+    with tool_context(
+        workspace,
+        run_mode="trusted",
+        sandbox_mounts=[{"path": str(stale.resolve(strict=False)), "access": "rw"}],
+    ):
+        updated = shell._policy_with_active_tool_mounts(policy)
+
+    assert stale not in {mount.host_path for mount in updated.mounts}
+    assert workspace in {mount.host_path for mount in updated.mounts}
+
+
+def test_shell_policy_preserves_workspace_rw_absolute_alias(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.types import (
+        SANDBOX_WORKSPACE_PATH,
+        MountSpec,
+        NetworkMode,
+        ResourceLimits,
+        SandboxPolicy,
+        SecurityLevel,
+    )
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    policy = SandboxPolicy(
+        level=SecurityLevel.STANDARD,
+        network=NetworkMode.NONE,
+        mounts=(
+            MountSpec(
+                host_path=workspace,
+                sandbox_path=SANDBOX_WORKSPACE_PATH,
+                mode="rw",
+                required=True,
+            ),
+        ),
+        workspace_rw=True,
+        tmp_writable=True,
+        limits=ResourceLimits(),
+        env_allowlist=(),
+        require_approval=False,
+    )
+    monkeypatch.setattr(shell, "_windows_sandbox_backend_active", lambda runtime=None: False)
+
+    with tool_context(
+        workspace,
+        run_mode="trusted",
+        sandbox_mounts=[{"path": str(workspace), "access": "ro"}],
+    ):
+        updated = shell._policy_with_active_tool_mounts(policy)
+
+    mounts_by_sandbox = {str(mount.sandbox_path): mount for mount in updated.mounts}
+    assert mounts_by_sandbox["/workspace"].mode == "rw"
+    assert mounts_by_sandbox[str(workspace)].mode == "rw"
+
+
+@pytest.mark.asyncio
 async def test_shell_copy_from_outside_workspace_requests_ro_mount_before_backend(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -773,7 +1103,7 @@ async def test_shell_copy_from_outside_workspace_requests_ro_mount_before_backen
 
 
 @pytest.mark.asyncio
-async def test_shell_copy_to_outside_workspace_requests_rw_mount_before_backend(
+async def test_standard_shell_copy_to_outside_workspace_requests_rw_mount_before_backend(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -794,7 +1124,7 @@ async def test_shell_copy_to_outside_workspace_requests_rw_mount_before_backend(
         lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
     )
 
-    with tool_context(workspace, run_mode="trusted"):
+    with tool_context(workspace, run_mode="standard"):
         payload = json.loads(await shell.exec_command(f"cp {source} {target}"))
 
     assert payload["status"] == "approval_required"
@@ -802,6 +1132,75 @@ async def test_shell_copy_to_outside_workspace_requests_rw_mount_before_backend(
     assert payload["access"] == "rw"
     assert payload["approvalKind"] == "sandbox_path"
     assert backend_calls == []
+
+
+@pytest.mark.asyncio
+async def test_trusted_shell_copy_to_outside_workspace_auto_mounts_rw(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    source = workspace / "notes.txt"
+    source.write_text("hello\n", encoding="utf-8")
+    target = tmp_path / "outside" / "notes.txt"
+    backend_calls: list[SandboxRequest] = []
+
+    async def fake_backend(request: SandboxRequest, *, runtime: object = None) -> object:
+        backend_calls.append(request)
+        return SimpleNamespace(stdout="", stderr="", returncode=0, backend_notes=[])
+
+    monkeypatch.setattr(shell, "run_under_backend", fake_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    with tool_context(workspace, run_mode="trusted") as ctx:
+        result = await shell.exec_command(f"cp {source} {target}")
+
+    assert "exit_code=0" in result
+    assert backend_calls
+    assert get_approval_queue().list_pending("exec") == []
+    assert ctx.sandbox_mounts == [
+        {"path": str(target.parent.resolve(strict=False)), "access": "rw"}
+    ]
+    request = backend_calls[0]
+    assert any(mount.host_path == target.parent for mount in request.policy.mounts)
+
+
+@pytest.mark.asyncio
+async def test_trusted_shell_external_workdir_write_auto_mounts_rw(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    backend_calls: list[SandboxRequest] = []
+
+    async def fake_backend(request: SandboxRequest, *, runtime: object = None) -> object:
+        backend_calls.append(request)
+        return SimpleNamespace(stdout="", stderr="", returncode=0, backend_notes=[])
+
+    monkeypatch.setattr(shell, "run_under_backend", fake_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    with tool_context(workspace, run_mode="trusted") as ctx:
+        result = await shell.exec_command("echo hi > out.txt", workdir=str(outside))
+
+    assert "exit_code=0" in result
+    assert backend_calls
+    assert get_approval_queue().list_pending("exec") == []
+    assert ctx.sandbox_mounts == [{"path": str(outside.resolve(strict=False)), "access": "rw"}]
+    request = backend_calls[0]
+    assert any(mount.host_path == outside for mount in request.policy.mounts)
 
 
 @pytest.mark.asyncio
@@ -856,7 +1255,8 @@ async def test_shell_simple_read_path_full_host_access_does_not_request_mount(
         *,
         cwd: str | None,
         env: dict[str, str],
-        timeout: float,
+        stdin_bytes: bytes | None,
+        effective_timeout: float,
     ) -> str:
         host_calls.append((command, cwd))
         return "host-ran"

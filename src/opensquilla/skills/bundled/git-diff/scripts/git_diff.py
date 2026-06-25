@@ -30,6 +30,8 @@ def _run_git(args: list[str], cwd: Path) -> tuple[int, str, str]:
         cwd=str(cwd),
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     return proc.returncode, proc.stdout, proc.stderr

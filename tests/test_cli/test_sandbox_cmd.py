@@ -16,7 +16,7 @@ def _invoke(config_path: Path, *args: str):
     return runner.invoke(app, ["sandbox", *args, "--config", str(config_path)])
 
 
-def test_sandbox_status_reports_legacy_default_as_trusted_run_mode(tmp_path: Path) -> None:
+def test_sandbox_status_reports_default_full_host_access(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
 
     result = runner.invoke(
@@ -26,13 +26,13 @@ def test_sandbox_status_reports_legacy_default_as_trusted_run_mode(tmp_path: Pat
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert payload["run_mode"] == "trusted"
-    assert payload["run_mode_label"] == "Trusted-Sandbox"
-    assert payload["execution_target"] == "sandbox"
-    assert payload["posture"] == "trusted"
+    assert payload["run_mode"] == "full"
+    assert payload["run_mode_label"] == "Full Host Access"
+    assert payload["execution_target"] == "host"
+    assert payload["posture"] == "full"
     assert payload["sandbox"]["sandbox"] is False
     assert payload["sandbox"]["security_grading"] is False
-    assert payload["permissions"]["default_mode"] == "bypass"
+    assert payload["permissions"]["default_mode"] == "full"
     assert payload["restart_required"] is False
 
 
@@ -66,7 +66,7 @@ def test_sandbox_bypass_fails_without_mutating_config(tmp_path: Path) -> None:
     assert "removed" in result.output.lower()
     assert "sandbox trust" in result.output
     cfg = load_config(config_path)
-    assert cfg.sandbox.run_mode == "standard"
+    assert cfg.sandbox.run_mode == "trusted"
     assert cfg.sandbox.sandbox is True
     assert cfg.sandbox.security_grading is True
     assert cfg.permissions.default_mode == "off"
@@ -86,13 +86,13 @@ def test_sandbox_full_and_on_are_reversible(tmp_path: Path) -> None:
     on = _invoke(config_path, "on")
     assert on.exit_code == 0, on.output
     cfg = load_config(config_path)
-    assert cfg.sandbox.run_mode == "standard"
+    assert cfg.sandbox.run_mode == "trusted"
     assert cfg.sandbox.sandbox is True
     assert cfg.sandbox.security_grading is True
     assert cfg.permissions.default_mode == "off"
 
 
-def test_sandbox_reset_restores_standard_sandbox(tmp_path: Path) -> None:
+def test_sandbox_reset_restores_full_host_access(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
 
     full = _invoke(config_path, "full")
@@ -101,7 +101,7 @@ def test_sandbox_reset_restores_standard_sandbox(tmp_path: Path) -> None:
     assert full.exit_code == 0, full.output
     assert reset.exit_code == 0, reset.output
     cfg = load_config(config_path)
-    assert cfg.sandbox.run_mode == "standard"
-    assert cfg.sandbox.sandbox is True
-    assert cfg.sandbox.security_grading is True
-    assert cfg.permissions.default_mode == "off"
+    assert cfg.sandbox.run_mode == "full"
+    assert cfg.sandbox.sandbox is False
+    assert cfg.sandbox.security_grading is False
+    assert cfg.permissions.default_mode == "full"

@@ -9,10 +9,11 @@ import pytest
 import opensquilla.engine.agent as agent_mod
 import opensquilla.engine.tokenjuice_adapter as tokenjuice_adapter_mod
 from opensquilla.engine import Agent, AgentConfig, ToolCall, ToolResult
-from opensquilla.engine.types import ToolResultEvent
+from opensquilla.engine.types import ToolResultEvent, ToolUseDeltaEvent
 from opensquilla.plugins.tokenjuice import reduce_tool_result as backend_reduce_tool_result
 from opensquilla.provider import DoneEvent as ProviderDoneEvent
 from opensquilla.provider import TextDeltaEvent, ToolDefinition, ToolInputSchema
+from opensquilla.provider import ToolUseDeltaEvent as ProviderToolUseDeltaEvent
 from opensquilla.provider import ToolUseEndEvent as ProviderToolUseEndEvent
 from opensquilla.provider import ToolUseStartEvent as ProviderToolUseStartEvent
 
@@ -51,6 +52,14 @@ class _ToolCallingProvider:
     async def _stream(self, call_number: int):
         if call_number == 1:
             yield ProviderToolUseStartEvent(tool_use_id="tool-1", tool_name="exec_command")
+            yield ProviderToolUseDeltaEvent(
+                tool_use_id="tool-1",
+                json_fragment='{"command": "pytest -q"',
+            )
+            yield ProviderToolUseDeltaEvent(
+                tool_use_id="tool-1",
+                json_fragment=', "workdir": "/repo"}',
+            )
             yield ProviderToolUseEndEvent(
                 tool_use_id="tool-1",
                 tool_name="exec_command",
@@ -373,6 +382,10 @@ async def test_run_turn_feeds_tokenjuice_reduced_tool_result_to_next_provider_ca
     assert "rootdir:" not in second_call_tool_result
     assert agent.config.metadata["tool_projection_backend"] == "tokenjuice"
     projected_event = next(event for event in events if isinstance(event, ToolResultEvent))
+    delta_fragments = [
+        event.json_fragment for event in events if isinstance(event, ToolUseDeltaEvent)
+    ]
+    assert delta_fragments == ['{"command": "pytest -q"', ', "workdir": "/repo"}']
     assert projected_event.result == second_call_tool_result
     assert projected_event.result != output
     assert "rootdir:" not in projected_event.result

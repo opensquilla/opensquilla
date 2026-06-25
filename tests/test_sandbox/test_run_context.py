@@ -42,6 +42,28 @@ class _SessionManager:
 
 
 @pytest.mark.asyncio
+async def test_default_run_context_is_full_host_access() -> None:
+    from opensquilla.sandbox.config import SandboxSettings
+    from opensquilla.sandbox.run_context import get_run_context
+
+    manager = _SessionManager()
+    config = SimpleNamespace(
+        sandbox=SandboxSettings(),
+        permissions=SimpleNamespace(default_mode="off"),
+    )
+
+    context = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=config,
+        workspace="/workspace",
+    )
+
+    assert context.run_mode is RunMode.FULL
+    assert context.source == "default"
+
+
+@pytest.mark.asyncio
 async def test_run_context_initializes_from_global_default_and_persists_override() -> None:
     from opensquilla.sandbox.run_context import get_run_context, set_run_mode
 
@@ -213,10 +235,13 @@ async def test_rpc_run_context_set_allows_owner_full_mode() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rpc_run_context_set_creates_owner_new_webchat_session() -> None:
+async def test_rpc_run_context_set_creates_owner_new_webchat_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.gateway import rpc_sandbox
     from opensquilla.gateway.auth import Principal
     from opensquilla.gateway.rpc import RpcContext
-    from opensquilla.gateway.rpc_sandbox import _handle_sandbox_run_context_set
+    from opensquilla.sandbox.setup_state import SandboxSetupState, SetupResult
 
     manager = _SessionManager()
     session_key = "agent:main:webchat:dkkwi6so"
@@ -238,7 +263,17 @@ async def test_rpc_run_context_set_creates_owner_new_webchat_session() -> None:
         config=config,
     )
 
-    result = await _handle_sandbox_run_context_set(
+    async def fake_status(config: object) -> SetupResult:
+        return SetupResult(
+            state=SandboxSetupState.READY,
+            platform="win32",
+            message="ready",
+            requires_admin=True,
+        )
+
+    monkeypatch.setattr(rpc_sandbox, "current_sandbox_setup_status", fake_status)
+
+    result = await rpc_sandbox._handle_sandbox_run_context_set(
         {"sessionKey": session_key, "runMode": "trusted"},
         ctx,
     )

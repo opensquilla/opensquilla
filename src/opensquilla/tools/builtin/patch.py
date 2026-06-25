@@ -6,11 +6,17 @@ import asyncio
 import hashlib
 import json
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from opensquilla.identity.workspace import BOOTSTRAP_FILENAMES
-from opensquilla.sandbox.integration import sandboxed
+from opensquilla.sandbox.operation_runtime import (
+    FilesystemOperationRequest,
+    SandboxOperation,
+    SandboxToolDescriptor,
+)
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
 from opensquilla.tools.run_mode import full_host_access_active
@@ -52,6 +58,10 @@ PatchOp = AddFile | UpdateFile | DeleteFile
 _BOOTSTRAP_SOURCE_FILENAMES = frozenset(BOOTSTRAP_FILENAMES)
 _APPLY_PATCH_APPROVAL_TOOL = "apply_patch"
 _APPLY_PATCH_APPROVAL_NAMESPACE = "exec"
+
+
+def _patch_request(args: Mapping[str, Any]) -> FilesystemOperationRequest:
+    return FilesystemOperationRequest(patch=str(args.get("patch", "") or ""))
 
 
 # ---------------------------------------------------------------------------
@@ -565,11 +575,12 @@ def _apply_ops(ops: list[PatchOp], root: Path | None = None) -> tuple[int, int, 
         },
     },
     required=["patch"],
-)
-@sandboxed(
-    kind="patch.apply",
-    argv_factory=lambda a: ("patch.apply", str(len(a.get("patch", "") or ""))),
-    record_payload=False,
+    sandbox=SandboxToolDescriptor.filesystem(
+        kind="patch.apply",
+        argv_factory=lambda a: ("patch.apply", str(len(a.get("patch", "") or ""))),
+        request_factory=_patch_request,
+        record_payload=False,
+    ),
 )
 async def apply_patch(patch: str, approval_id: str | None = None) -> str:
     loop = asyncio.get_event_loop()
@@ -578,6 +589,24 @@ async def apply_patch(patch: str, approval_id: str | None = None) -> str:
     blocked = _gate_patch_ops(patch, ops, root, approval_id)
     if blocked is not None:
         return json.dumps(blocked, ensure_ascii=False)
+    from opensquilla.tools.builtin import filesystem
+
+    paths = tuple(_validate_path(op.path, root) for op in ops)
+    sandbox_result = await filesystem._run_sandbox_operation_if_required(
+        SandboxOperation.filesystem(
+            kind="apply_patch",
+            workspace=filesystem._filesystem_operation_workspace() or root,
+            run_mode=filesystem._active_filesystem_run_mode(),
+            root=root,
+            paths=paths,
+            patch=patch,
+        )
+    )
+    if sandbox_result is not None:
+        _record_workspace_file_writes(ops, root)
+        _notify_memory_source_writes(ops, root)
+        _notify_bootstrap_source_writes(ops, root)
+        return str(getattr(sandbox_result, "message"))
 
     def _run() -> tuple[int, int, int]:
         return _apply_ops(ops, root)

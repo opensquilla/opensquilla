@@ -4,13 +4,15 @@ from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any
 
-import numpy as np
+import pytest
 import yaml
 
 from opensquilla.squilla_router.v4_phase3 import (
     default_bundle_dir,
     runtime_src_import_path,
 )
+
+np = pytest.importorskip("numpy", reason="router inference postprocess tests need numpy")
 
 BUNDLE_DIR = default_bundle_dir()
 

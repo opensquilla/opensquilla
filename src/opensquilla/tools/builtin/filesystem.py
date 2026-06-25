@@ -10,21 +10,34 @@ import os
 import posixpath
 import re
 import zipfile
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 from xml.etree import ElementTree as ET
 
 from opensquilla.identity.workspace import BOOTSTRAP_FILENAMES
 from opensquilla.sandbox.escalation import (
     build_path_approval_params,
     current_tool_mounts,
+    current_tool_run_context,
     grant_temporary_mount_for_current_tool,
     request_sandbox_approval,
 )
-from opensquilla.sandbox.integration import get_runtime, sandboxed
+from opensquilla.sandbox.integration import get_runtime
+from opensquilla.sandbox.operation_runtime import (
+    FilesystemOperationRequest,
+    SandboxOperation,
+    SandboxOperationRuntime,
+    SandboxToolDescriptor,
+)
 from opensquilla.sandbox.path_validation import MountDecision, decide_path_access
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
-from opensquilla.tools.run_mode import full_host_access_active, trusted_sandbox_active
+from opensquilla.tools.run_mode import (
+    current_run_mode,
+    full_host_access_active,
+    trusted_sandbox_active,
+)
 from opensquilla.tools.types import ToolError, WorkspaceAccessError, current_tool_context
 from opensquilla.tools.write_tracking import record_workspace_file_write
 
@@ -46,6 +59,27 @@ _XLSX_MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 _XLSX_PACKAGE_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 _XLSX_OFFICE_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 _BOOTSTRAP_SOURCE_FILENAMES = frozenset(BOOTSTRAP_FILENAMES)
+
+
+def _tool_path_request(args: Mapping[str, Any]) -> FilesystemOperationRequest:
+    raw_path = args.get("path")
+    path = Path(str(raw_path)) if raw_path else None
+    return FilesystemOperationRequest(
+        path=path,
+        paths=(path,) if path is not None else (),
+    )
+
+
+def _tool_search_request(args: Mapping[str, Any]) -> FilesystemOperationRequest:
+    raw_path = args.get("path")
+    path = Path(str(raw_path)) if raw_path else None
+    return FilesystemOperationRequest(
+        path=path,
+        paths=(path,) if path is not None else (),
+        pattern=str(args.get("pattern", "") or ""),
+        include=str(args["include"]) if args.get("include") is not None else None,
+        max_results=int(args["max_results"]) if args.get("max_results") is not None else None,
+    )
 
 
 def _workspace_root() -> Path | None:
@@ -317,7 +351,7 @@ def _sandbox_path_access_envelope(
         return None
     if decision.status == "blocked":
         return _path_access_blocked_envelope(decision)
-    if not write and trusted_sandbox_active():
+    if trusted_sandbox_active():
         if grant_temporary_mount_for_current_tool(decision):
             return None
     return _path_access_required_envelope(decision, approval_id=approval_id)
@@ -345,6 +379,32 @@ def _active_sandbox_mount_allows(resolved: Path, *, write: bool) -> bool:
         write=write,
     )
     return decision.status == "allowed"
+
+
+def _active_filesystem_run_mode() -> str:
+    context = current_tool_run_context()
+    if context is not None:
+        return context.run_mode.value
+    return current_run_mode() or "standard"
+
+
+async def _run_sandbox_operation_if_required(
+    operation: SandboxOperation,
+) -> object | None:
+    return await SandboxOperationRuntime(
+        get_runtime(),
+        host_execution_active=full_host_access_active(),
+    ).run(operation)
+
+
+def _filesystem_operation_workspace() -> Path | None:
+    root = _workspace_root()
+    if root is not None:
+        return root
+    runtime = get_runtime()
+    if runtime is not None and runtime.effective.sandbox_enabled:
+        return runtime.workspace.expanduser().resolve(strict=False)
+    return None
 
 
 def _strict_read_workspace_root() -> Path | None:
@@ -633,6 +693,13 @@ async def _gate_out_of_workspace_write(
         "limit": {"type": "integer", "description": "Maximum number of lines to read."},
     },
     required=["path"],
+    sandbox=SandboxToolDescriptor.filesystem(
+        kind="read_file",
+        argv_factory=lambda a: ("read_file", str(a.get("path", ""))),
+        request_factory=_tool_path_request,
+        enforce=False,
+        record_payload=False,
+    ),
 )
 async def read_file(path: str, offset: int | None = None, limit: int | None = None) -> str:
     p = _resolve_path(path)
@@ -643,6 +710,22 @@ async def read_file(path: str, offset: int | None = None, limit: int | None = No
     if path_access is not None:
         return json.dumps(path_access)
     _gate_workspace_strict_read("read_file", p, path)
+    workspace = _filesystem_operation_workspace()
+    if workspace is not None:
+        sandbox_result = await _run_sandbox_operation_if_required(
+            SandboxOperation.filesystem(
+                kind="read_file",
+                workspace=workspace,
+                run_mode=_active_filesystem_run_mode(),
+                path=p,
+                paths=(p,),
+                display_path=path,
+                offset=offset,
+                limit=limit,
+            )
+        )
+        if sandbox_result is not None:
+            return str(getattr(sandbox_result, "message"))
     if not p.exists():
         raise FileNotFoundError(f"File not found: {path}")
     if not p.is_file():
@@ -686,6 +769,13 @@ async def read_file(path: str, offset: int | None = None, limit: int | None = No
         },
     },
     required=["path"],
+    sandbox=SandboxToolDescriptor.filesystem(
+        kind="read_spreadsheet",
+        argv_factory=lambda a: ("read_spreadsheet", str(a.get("path", ""))),
+        request_factory=_tool_path_request,
+        enforce=False,
+        record_payload=False,
+    ),
 )
 async def read_spreadsheet(
     path: str,
@@ -903,17 +993,36 @@ def _format_spreadsheet(
         },
     },
     required=["path", "content"],
-)
-@sandboxed(
-    kind="fs.write",
-    argv_factory=lambda a: ("fs.write", str(a.get("path", ""))),
-    record_payload=False,
+    sandbox=SandboxToolDescriptor.filesystem(
+        kind="fs.write",
+        argv_factory=lambda a: ("fs.write", str(a.get("path", ""))),
+        request_factory=_tool_path_request,
+        record_payload=False,
+    ),
 )
 async def write_file(path: str, content: str, approval_id: str | None = None) -> str:
     p = _resolve_path(path)
     approval = await _gate_out_of_workspace_write("write_file", p, path, approval_id)
     if approval is not None:
         return json.dumps(approval)
+    workspace = _filesystem_operation_workspace()
+    if workspace is not None:
+        sandbox_result = await _run_sandbox_operation_if_required(
+            SandboxOperation.filesystem(
+                kind="write_text",
+                workspace=workspace,
+                run_mode=_active_filesystem_run_mode(),
+                path=p,
+                paths=(p,),
+                content=content,
+            )
+        )
+        if sandbox_result is not None:
+            if getattr(sandbox_result, "created", False):
+                record_workspace_file_write(p)
+            _notify_memory_source_write(p)
+            _notify_bootstrap_source_write(p)
+            return str(getattr(sandbox_result, "message"))
 
     loop = asyncio.get_event_loop()
     created = not p.exists()
@@ -943,11 +1052,12 @@ async def write_file(path: str, content: str, approval_id: str | None = None) ->
         },
     },
     required=["path", "old_text", "new_text"],
-)
-@sandboxed(
-    kind="fs.edit",
-    argv_factory=lambda a: ("fs.edit", str(a.get("path", ""))),
-    record_payload=False,
+    sandbox=SandboxToolDescriptor.filesystem(
+        kind="fs.edit",
+        argv_factory=lambda a: ("fs.edit", str(a.get("path", ""))),
+        request_factory=_tool_path_request,
+        record_payload=False,
+    ),
 )
 async def edit_file(
     path: str, old_text: str, new_text: str, approval_id: str | None = None
@@ -956,6 +1066,23 @@ async def edit_file(
     approval = await _gate_out_of_workspace_write("edit_file", p, path, approval_id)
     if approval is not None:
         return json.dumps(approval)
+    workspace = _filesystem_operation_workspace()
+    if workspace is not None:
+        sandbox_result = await _run_sandbox_operation_if_required(
+            SandboxOperation.filesystem(
+                kind="edit_text",
+                workspace=workspace,
+                run_mode=_active_filesystem_run_mode(),
+                path=p,
+                paths=(p,),
+                old_text=old_text,
+                new_text=new_text,
+            )
+        )
+        if sandbox_result is not None:
+            _notify_memory_source_write(p)
+            _notify_bootstrap_source_write(p)
+            return str(getattr(sandbox_result, "message"))
     if not p.exists():
         raise FileNotFoundError(f"File not found: {path}")
 
@@ -991,6 +1118,13 @@ async def edit_file(
         },
     },
     required=["path"],
+    sandbox=SandboxToolDescriptor.filesystem(
+        kind="list_dir",
+        argv_factory=lambda a: ("list_dir", str(a.get("path", ""))),
+        request_factory=_tool_path_request,
+        enforce=False,
+        record_payload=False,
+    ),
 )
 async def list_dir(path: str, approval_id: str | None = None) -> str:
     p = _resolve_path(path)
@@ -1001,6 +1135,20 @@ async def list_dir(path: str, approval_id: str | None = None) -> str:
     if path_access is not None:
         return json.dumps(path_access)
     _gate_workspace_strict_read("list_dir", p, path)
+    workspace = _filesystem_operation_workspace()
+    if workspace is not None:
+        sandbox_result = await _run_sandbox_operation_if_required(
+            SandboxOperation.filesystem(
+                kind="list_dir",
+                workspace=workspace,
+                run_mode=_active_filesystem_run_mode(),
+                path=p,
+                paths=(p,),
+                display_path=path,
+            )
+        )
+        if sandbox_result is not None:
+            return str(getattr(sandbox_result, "message"))
     if not p.exists():
         raise FileNotFoundError(f"Path not found: {path}")
     if not p.is_dir():
@@ -1046,6 +1194,17 @@ async def list_dir(path: str, approval_id: str | None = None) -> str:
         "path": {"type": "string", "description": "Base directory to search from (default: cwd)."},
     },
     required=["pattern"],
+    sandbox=SandboxToolDescriptor.filesystem(
+        kind="glob_search",
+        argv_factory=lambda a: (
+            "glob_search",
+            str(a.get("pattern", "")),
+            str(a.get("path", "")),
+        ),
+        request_factory=_tool_search_request,
+        enforce=False,
+        record_payload=False,
+    ),
 )
 async def glob_search(pattern: str, path: str | None = None) -> str:
     base = _resolve_base(path)
@@ -1056,6 +1215,21 @@ async def glob_search(pattern: str, path: str | None = None) -> str:
     if path_access is not None:
         return json.dumps(path_access)
     _gate_workspace_strict_read("glob_search", base, path or str(base))
+    workspace = _filesystem_operation_workspace()
+    if workspace is not None:
+        sandbox_result = await _run_sandbox_operation_if_required(
+            SandboxOperation.filesystem(
+                kind="glob_search",
+                workspace=workspace,
+                run_mode=_active_filesystem_run_mode(),
+                path=base,
+                paths=(base,),
+                display_path=path or str(base),
+                pattern=pattern,
+            )
+        )
+        if sandbox_result is not None:
+            return str(getattr(sandbox_result, "message"))
 
     loop = asyncio.get_event_loop()
     strict_roots = _strict_read_roots()
@@ -1096,6 +1270,17 @@ async def glob_search(pattern: str, path: str | None = None) -> str:
         },
     },
     required=["pattern"],
+    sandbox=SandboxToolDescriptor.filesystem(
+        kind="grep_search",
+        argv_factory=lambda a: (
+            "grep_search",
+            str(a.get("pattern", "")),
+            str(a.get("path", "")),
+        ),
+        request_factory=_tool_search_request,
+        enforce=False,
+        record_payload=False,
+    ),
 )
 async def grep_search(
     pattern: str,
@@ -1111,6 +1296,23 @@ async def grep_search(
     if path_access is not None:
         return json.dumps(path_access)
     _gate_workspace_strict_read("grep_search", base, path or str(base))
+    workspace = _filesystem_operation_workspace()
+    if workspace is not None:
+        sandbox_result = await _run_sandbox_operation_if_required(
+            SandboxOperation.filesystem(
+                kind="grep_search",
+                workspace=workspace,
+                run_mode=_active_filesystem_run_mode(),
+                path=base,
+                paths=(base,),
+                display_path=path or str(base),
+                pattern=pattern,
+                include=include,
+                max_results=max_results,
+            )
+        )
+        if sandbox_result is not None:
+            return str(getattr(sandbox_result, "message"))
 
     loop = asyncio.get_event_loop()
     strict_roots = _strict_read_roots()

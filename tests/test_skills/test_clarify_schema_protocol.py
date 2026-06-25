@@ -56,6 +56,45 @@ def test_field_to_protocol_enum_with_default():
     assert payload["required"] is False
 
 
+def test_field_to_protocol_zh_enum_options_keep_values_but_localize_labels():
+    f = ClarifyField(
+        name="language",
+        type="enum",
+        choices=("en", "zh", "mixed"),
+        default="zh",
+        prompt="输出语言",
+    )
+
+    payload = field_to_protocol(f, language="zh")
+
+    assert payload["choices"] == ["en", "zh", "mixed"]
+    assert payload["options"] == [
+        {"value": "en", "label": "英文"},
+        {"value": "zh", "label": "中文"},
+        {"value": "mixed", "label": "中英混合"},
+    ]
+    assert payload["default"] == "zh"
+
+
+def test_field_to_protocol_en_enum_options_are_english_labels():
+    f = ClarifyField(
+        name="time_window",
+        type="enum",
+        choices=("LAST_WEEK", "LAST_MONTH", "LAST_QUARTER"),
+        default="LAST_MONTH",
+        prompt="Time window",
+    )
+
+    payload = field_to_protocol(f, language="en")
+
+    assert payload["choices"] == ["LAST_WEEK", "LAST_MONTH", "LAST_QUARTER"]
+    assert payload["options"] == [
+        {"value": "LAST_WEEK", "label": "Last week"},
+        {"value": "LAST_MONTH", "label": "Last month"},
+        {"value": "LAST_QUARTER", "label": "Last quarter"},
+    ]
+
+
 def test_field_to_protocol_xml_escapes_prompt():
     """Author-supplied prompt strings are XML-escaped so embedding the
     payload in HTML/XML cannot be hijacked by injecting tags."""
@@ -91,6 +130,29 @@ def test_schema_to_protocol_full():
     assert len(payload["fields"]) == 2
     assert payload["fields"][0]["name"] == "destination"
     assert payload["fields"][1]["min"] == 1
+
+
+def test_schema_to_protocol_passes_language_to_field_options():
+    schema = ClarifyStepConfig(
+        mode="form",
+        fields=(
+            ClarifyField(
+                name="export_docx",
+                type="enum",
+                choices=("YES", "NO"),
+                default="NO",
+                prompt="是否导出 DOCX",
+            ),
+        ),
+        intro="请确认",
+    )
+
+    payload = schema_to_protocol(schema, language="zh")
+
+    assert payload["fields"][0]["options"] == [
+        {"value": "YES", "label": "是"},
+        {"value": "NO", "label": "否"},
+    ]
 
 
 def test_schema_to_protocol_intro_override_takes_precedence():

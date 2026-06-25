@@ -6,8 +6,9 @@ import asyncio
 import json
 import os
 import re
+from collections.abc import Mapping
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import httpx
 import structlog
@@ -17,7 +18,11 @@ from opensquilla.result_budget import (
     DEFAULT_TOOL_RUN_BUDGET_POLICY,
     ToolRunBudgetPolicy,
 )
-from opensquilla.sandbox.integration import managed_network_httpx_kwargs, sandboxed
+from opensquilla.sandbox.integration import managed_network_httpx_kwargs
+from opensquilla.sandbox.operation_runtime import (
+    NetworkOperationRequest,
+    SandboxToolDescriptor,
+)
 from opensquilla.tools.registry import tool
 from opensquilla.tools.ssrf import validate_http_url_for_fetch
 from opensquilla.tools.types import SSRFBlockedError, current_tool_context
@@ -61,6 +66,16 @@ _XML_ATTR_ESCAPES = {
     '"': "&quot;",
     "'": "&apos;",
 }
+
+
+def _web_fetch_request(args: Mapping[str, Any]) -> NetworkOperationRequest:
+    url = str(args.get("url", "") or "")
+    parsed = urlparse(url)
+    return NetworkOperationRequest(
+        url=url,
+        method="GET",
+        host=parsed.hostname or "",
+    )
 
 
 def _check_ssrf(url: str) -> None:
@@ -193,15 +208,16 @@ def _active_run_budget_policy() -> ToolRunBudgetPolicy:
     },
     required=["url"],
     result_budget_class="external",
-)
-@sandboxed(
-    kind="web.fetch",
-    argv_factory=lambda a: (
-        "web_fetch",
-        str(a.get("url", "")),
-        str(a.get("extract_mode", "markdown")),
+    sandbox=SandboxToolDescriptor.network(
+        kind="web.fetch",
+        argv_factory=lambda a: (
+            "web_fetch",
+            str(a.get("url", "")),
+            str(a.get("extract_mode", "markdown")),
+        ),
+        request_factory=_web_fetch_request,
+        record_payload=False,
     ),
-    record_payload=False,
 )
 async def web_fetch(
     url: str,
@@ -271,7 +287,24 @@ async def web_fetch(
         except SSRFBlockedError:
             raise
         except httpx.TimeoutException:
-            raise
+            timeout_result = {
+                "url": url,
+                "final_url": url,
+                "status": 0,
+                "content_type": "",
+                "title": "",
+                "extract_mode": extract_mode,
+                "extractor": "none",
+                "truncated": False,
+                "length": 0,
+                "text": "",
+                "error": "timed_out",
+                "hint": (
+                    "The source timed out while loading; skip it, retry later, "
+                    "or use another source."
+                ),
+            }
+            return json.dumps(timeout_result, ensure_ascii=False)
         except Exception as exc:
             last_error = str(exc)
             if attempt_idx == 0:

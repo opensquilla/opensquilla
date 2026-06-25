@@ -31,9 +31,9 @@ MAX_SKILL_FILE_BYTES = 256_000  # 256KB per SKILL.md
 MAX_SKILLS_PER_SOURCE = 200  # per layer cap
 
 # Bump when on-disk snapshot fields change so stale caches are invalidated
-# instead of silently losing new fields. v6 adds skill risk/capability metadata
-# for unattended meta-skill auto-enable decisions.
-_SNAPSHOT_SCHEMA_VERSION = 7
+# instead of silently losing new fields. v11 adds P1/P2 meta quality,
+# preference, and policy metadata.
+_SNAPSHOT_SCHEMA_VERSION = 11
 
 
 def _string_list(value: object) -> list[str]:
@@ -114,6 +114,7 @@ def _resolve_metadata(frontmatter: dict) -> SkillPlatformMeta | None:
             bins=bins_value if isinstance(bins_value, list) else [],
             any_bins=raw_req.get("anyBins", []),
             env=raw_req.get("env", []),
+            env_any=raw_req.get("envAny", []),
             config=raw_req.get("config", []),
         )
 
@@ -305,6 +306,9 @@ class SkillLoader:
                         "requires_env": s.metadata.requires.env
                         if s.metadata and s.metadata.requires
                         else [],
+                        "requires_env_any": s.metadata.requires.env_any
+                        if s.metadata and s.metadata.requires
+                        else [],
                         "install": [
                             {
                                 "kind": i.kind,
@@ -328,6 +332,11 @@ class SkillLoader:
                     "meta_priority": s.meta_priority,
                     "composition_raw": s.composition_raw,
                     "final_text_mode": s.final_text_mode,
+                    "request_template": s.request_template,
+                    "output_contract": s.output_contract,
+                    "eval_prompts": s.eval_prompts,
+                    "preference_keys": s.preference_keys,
+                    "policy_tags": s.policy_tags,
                     "entrypoint": s.entrypoint,
                 }
                 for s in skills
@@ -391,6 +400,7 @@ class SkillLoader:
                         bins=raw_meta.get("requires_bins", []),
                         any_bins=raw_meta.get("requires_any_bins", []),
                         env=raw_meta.get("requires_env", []),
+                        env_any=raw_meta.get("requires_env_any", []),
                     ),
                     install=install_specs,
                     risk_level=str(raw_meta.get("risk_level", "")).strip().lower(),
@@ -419,6 +429,23 @@ class SkillLoader:
                     meta_priority=int(s.get("meta_priority", 0) or 0),
                     composition_raw=s.get("composition_raw"),
                     final_text_mode=str(s.get("final_text_mode", "auto") or "auto"),
+                    request_template=(
+                        dict(s.get("request_template") or {})
+                        if isinstance(s.get("request_template"), dict)
+                        else {}
+                    ),
+                    output_contract=(
+                        dict(s.get("output_contract") or {})
+                        if isinstance(s.get("output_contract"), dict)
+                        else {}
+                    ),
+                    eval_prompts=(
+                        [dict(item) for item in s.get("eval_prompts", []) if isinstance(item, dict)]
+                        if isinstance(s.get("eval_prompts", []), list)
+                        else []
+                    ),
+                    preference_keys=_string_list(s.get("preference_keys", [])),
+                    policy_tags=_string_list(s.get("policy_tags", [])),
                     entrypoint=(
                         s["entrypoint"]
                         if isinstance(s.get("entrypoint"), dict)
@@ -606,6 +633,26 @@ class SkillLoader:
             final_text_mode = (
                 str(final_text_mode_raw).strip() if final_text_mode_raw else "auto"
             ) or "auto"
+            request_template_raw = frontmatter.get("request_template")
+            request_template = (
+                dict(request_template_raw)
+                if isinstance(request_template_raw, dict)
+                else {}
+            )
+            output_contract_raw = frontmatter.get("output_contract")
+            output_contract = (
+                dict(output_contract_raw)
+                if isinstance(output_contract_raw, dict)
+                else {}
+            )
+            eval_prompts_raw = frontmatter.get("eval_prompts")
+            eval_prompts = (
+                [dict(item) for item in eval_prompts_raw if isinstance(item, dict)]
+                if isinstance(eval_prompts_raw, list)
+                else []
+            )
+            preference_keys = _string_list(frontmatter.get("preference_keys", []))
+            policy_tags = _string_list(frontmatter.get("policy_tags", []))
 
             return SkillSpec(
                 name=name,
@@ -630,6 +677,11 @@ class SkillLoader:
                 meta_priority=meta_priority,
                 composition_raw=composition_raw,
                 final_text_mode=final_text_mode,
+                request_template=request_template,
+                output_contract=output_contract,
+                eval_prompts=eval_prompts,
+                preference_keys=preference_keys,
+                policy_tags=policy_tags,
                 entrypoint=entrypoint,
             )
         except Exception as exc:

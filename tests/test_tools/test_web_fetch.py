@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import inspect
+import json
+
+import httpx
+import pytest
+
 from opensquilla.result_budget import ToolResultBudgetPolicy, ToolRunBudgetPolicy
 from opensquilla.tools.builtin.web_fetch import (
     _apply_max_chars,
+    _cache,
     _resolve_effective_max_chars,
     _wrap_content,
+    web_fetch,
 )
 from opensquilla.tools.types import ToolContext, current_tool_context
 
@@ -59,3 +67,35 @@ def test_resolve_effective_max_chars_allows_uncapped_run_policy() -> None:
         assert _resolve_effective_max_chars(999_999) == 999_999
     finally:
         current_tool_context.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_timeout_returns_skipped_source_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class TimeoutClient:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> TimeoutClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def get(self, url: str) -> object:
+            raise httpx.ReadTimeout("timed out")
+
+    _cache.clear()
+    monkeypatch.setattr("opensquilla.tools.builtin.web_fetch.httpx.AsyncClient", TimeoutClient)
+    monkeypatch.setattr("opensquilla.tools.builtin.web_fetch._check_ssrf", lambda url: None)
+
+    raw_web_fetch = inspect.unwrap(web_fetch)
+    result = await raw_web_fetch("https://slow.example/page")
+    payload = json.loads(result)
+
+    assert payload["status"] == 0
+    assert payload["extractor"] == "none"
+    assert payload["text"] == ""
+    assert payload["error"] == "timed_out"
+    assert "timed out" in payload["hint"]

@@ -684,6 +684,124 @@ async def test_run_one_streaming_propagates_current_turn_message_to_inputs(
     )
 
 
+@pytest.mark.asyncio
+async def test_run_one_streaming_reuses_resolved_meta_match_control_inputs(
+    tmp_path,
+) -> None:
+    from opensquilla.engine.agent import Agent
+    from opensquilla.engine.types import AgentConfig
+    from opensquilla.skills.loader import SkillLoader
+    from opensquilla.skills.meta.parser import parse_meta_plan
+    from opensquilla.skills.meta.types import MetaMatch, MetaResult
+    from opensquilla.tool_boundary import ToolCall, ToolResult
+    from opensquilla.tools.registry import get_default_registry
+    from opensquilla.tools.types import ToolContext
+
+    bundled = tmp_path / "skills" / "bundled"
+    bundled.mkdir(parents=True)
+    skill_dir = bundled / "meta-tiny"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: meta-tiny\n"
+        "kind: meta\n"
+        "description: t\n"
+        "triggers: [t]\n"
+        "composition:\n"
+        "  request:\n"
+        "    mode: confirm\n"
+        "    fields:\n"
+        "      - name: audience\n"
+        "        required: true\n"
+        "  steps:\n"
+        "    - id: c\n"
+        "      kind: llm_classify\n"
+        "      output_choices: [A, B]\n"
+        "      with: {text: x}\n"
+        "---\n# meta-tiny\n",
+        encoding="utf-8",
+    )
+    loader = SkillLoader(bundled_dir=bundled, snapshot_path=tmp_path / "snap.json")
+    loader.invalidate_cache()
+    specs = loader.load_all()
+    plan = parse_meta_plan(next(spec for spec in specs if spec.name == "meta-tiny"))
+    assert plan is not None
+    resolved = MetaMatch(
+        plan=plan,
+        inputs={
+            "user_message": "Visible request only",
+            "audience": "decision owner",
+            "meta_preflight_confirmed": True,
+            "meta_preflight_run_id": "01CONTROL",
+        },
+        run_id="01CONTROL",
+    )
+
+    class _NullProvider:
+        provider_name = "null"
+
+        async def chat(self, *_a, **_kw):
+            raise AssertionError("provider.chat must not fire")
+
+        async def list_models(self):
+            return []
+
+    agent = Agent(
+        provider=_NullProvider(),  # type: ignore[arg-type]
+        config=AgentConfig(
+            model_id="stub",
+            max_iterations=1,
+            system_prompt="outer system prompt",
+            metadata={
+                "skill_loader": loader,
+                "bootstrap_workspace_dir": str(tmp_path),
+                "meta_match": resolved,
+            },
+        ),
+        tool_definitions=[],
+        tool_handler=None,
+        tool_registry=get_default_registry(),
+    )
+    agent._current_turn_message = "Visible request only"  # type: ignore[attr-defined]
+
+    captured: dict[str, object] = {}
+    import opensquilla.skills.meta.orchestrator as orch_mod
+
+    original_iter_events = orch_mod.MetaOrchestrator.iter_events
+
+    async def fake_iter_events(self, match):  # noqa: ARG001
+        captured["inputs"] = dict(match.inputs)
+        captured["run_id"] = match.run_id
+        yield MetaResult(ok=True, final_text="captured")
+
+    orch_mod.MetaOrchestrator.iter_events = fake_iter_events  # type: ignore[assignment]
+    try:
+        tc = ToolCall(
+            tool_use_id="u1",
+            tool_name="meta_invoke",
+            arguments={"name": "meta-tiny"},
+        )
+        tool_ctx = ToolContext(workspace_dir=str(tmp_path), is_owner=True)
+
+        final: ToolResult | None = None
+        async for ev in agent._run_one_streaming(tc, tool_ctx):
+            if isinstance(ev, ToolResult):
+                final = ev
+    finally:
+        orch_mod.MetaOrchestrator.iter_events = original_iter_events  # type: ignore[assignment]
+
+    assert final is not None
+    assert final.is_error is False
+    assert captured["run_id"] == "01CONTROL"
+    assert captured["inputs"] == {
+        "user_message": "Visible request only",
+        "audience": "decision owner",
+        "meta_preflight_confirmed": True,
+        "meta_preflight_run_id": "01CONTROL",
+        "system_prompt": "outer system prompt",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Task 6: Dispatch loop intercepts meta_invoke and terminates turn on success
 # ---------------------------------------------------------------------------

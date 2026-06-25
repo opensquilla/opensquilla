@@ -4,7 +4,6 @@ import types
 
 import pytest
 
-from opensquilla.sandbox.backend import select_backend
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.run_mode import (
     RunMode,
@@ -15,7 +14,6 @@ from opensquilla.sandbox.run_mode import (
     normalize_run_mode,
     run_mode_config_patch,
 )
-from opensquilla.sandbox.types import SandboxBackendError
 
 
 def test_trusted_sandbox_is_sandboxed_and_skips_only_routine_prompts() -> None:
@@ -34,6 +32,13 @@ def test_full_host_access_is_the_only_global_host_target() -> None:
     assert execution_target(RunMode.FULL) == "host"
 
 
+def test_normalize_run_mode_defaults_to_full() -> None:
+    assert normalize_run_mode(None) == RunMode.FULL
+    assert normalize_run_mode("") == RunMode.FULL
+    assert normalize_run_mode("trusted") == RunMode.TRUSTED
+    assert normalize_run_mode("standard") == RunMode.STANDARD
+
+
 def test_legacy_bypass_state_maps_to_trusted_without_preserving_host_bypass() -> None:
     mode = legacy_state_to_run_mode(
         sandbox_enabled=False,
@@ -44,7 +49,7 @@ def test_legacy_bypass_state_maps_to_trusted_without_preserving_host_bypass() ->
     assert mode == RunMode.TRUSTED
 
 
-def test_default_sandbox_settings_resolve_to_full_host_access() -> None:
+def test_default_sandbox_settings_resolve_to_full_host_access_run_mode() -> None:
     settings = SandboxSettings()
     config = types.SimpleNamespace(
         sandbox=settings,
@@ -53,8 +58,28 @@ def test_default_sandbox_settings_resolve_to_full_host_access() -> None:
 
     effective = settings.validate_combination()
 
-    assert effective.sandbox_enabled is False
-    assert effective.grading_enabled is False
+    assert effective.sandbox_enabled is True
+    assert effective.grading_enabled is True
+    assert config_run_mode(config) == RunMode.FULL
+
+
+def test_legacy_off_state_maps_to_trusted_sandbox_default() -> None:
+    mode = legacy_state_to_run_mode(
+        sandbox_enabled=False,
+        grading_enabled=False,
+        permissions_default_mode="off",
+    )
+
+    assert mode == RunMode.TRUSTED
+
+
+def test_explicit_legacy_sandbox_disabled_config_preserves_full_host_access() -> None:
+    settings = SandboxSettings(sandbox=False, security_grading=False)
+    config = types.SimpleNamespace(
+        sandbox=settings,
+        permissions=types.SimpleNamespace(default_mode="off"),
+    )
+
     assert config_run_mode(config) == RunMode.FULL
 
 
@@ -100,20 +125,9 @@ def test_explicit_full_run_mode_disables_sandbox_booleans() -> None:
     assert config_run_mode(config) == RunMode.FULL
 
 
-def test_windows_restricted_token_backend_fails_closed_when_unavailable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from opensquilla.sandbox.backend import WindowsRestrictedTokenBackend
-
-    monkeypatch.setattr(WindowsRestrictedTokenBackend, "available", lambda self: False)
-    settings = SandboxSettings(
-        sandbox=True,
-        security_grading=True,
-        backend="windows_restricted_token",
-    )
-
-    with pytest.raises(SandboxBackendError, match="windows_restricted_token.*unavailable"):
-        select_backend(settings)
+def test_removed_windows_restricted_token_backend_config_is_rejected() -> None:
+    with pytest.raises(ValueError, match="windows_restricted_token.*windows_default"):
+        SandboxSettings(backend="windows_restricted_token")
 
 
 def test_configured_default_elevated_only_returns_full() -> None:

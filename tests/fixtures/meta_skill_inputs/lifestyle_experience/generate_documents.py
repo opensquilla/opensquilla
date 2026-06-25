@@ -10,54 +10,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from docx import Document
 from openpyxl import Workbook
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
 ROOT = Path(__file__).resolve().parent
-
-
-def make_vendor_docs() -> None:
-    target = ROOT / "document_vendor_decision"
-    target.mkdir(parents=True, exist_ok=True)
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Quote A"
-    rows = [
-        ("Field", "Value"),
-        ("Vendor", "Acme DailyOps Cloud"),
-        ("Annual service fee", "RMB 18,600"),
-        ("Payment due", "2026-06-03"),
-        ("Seats included", "20"),
-        ("Overage", "RMB 120 per extra seat per month"),
-        ("Billing contact", "finance@acme-dailyops.example"),
-    ]
-    for row in rows:
-        ws.append(row)
-    ws.column_dimensions["A"].width = 24
-    ws.column_dimensions["B"].width = 42
-    wb.save(target / "vendor_quote_a.xlsx")
-
-    doc = Document()
-    doc.add_heading("Service Renewal Contract Excerpt", level=1)
-    doc.add_paragraph("Vendor: Acme DailyOps Cloud")
-    doc.add_paragraph("Customer: Example Operations Team")
-    doc.add_paragraph(
-        "The subscription renews automatically for another twelve months unless "
-        "the customer sends written cancellation notice at least 30 days before "
-        "the renewal effective date."
-    )
-    doc.add_paragraph(
-        "If the customer cancels after the notice window, the vendor may charge "
-        "a cancellation penalty equal to 30% of the annual service fee."
-    )
-    doc.add_paragraph(
-        "The excerpt does not state the current contract end date or the renewal "
-        "effective date."
-    )
-    doc.save(target / "contract_excerpt.docx")
 
 
 def make_travel_pdf() -> None:
@@ -135,7 +92,6 @@ def make_finance_xlsx() -> None:
 
 
 def main() -> None:
-    make_vendor_docs()
     make_travel_pdf()
     make_finance_xlsx()
 

@@ -623,11 +623,15 @@ class SessionManager:
         new_session_key: str,
         fork_transcript: bool = False,
         max_fork_tokens: int | None = None,
+        status: SessionStatus | str = SessionStatus.RUNNING,
     ) -> SessionNode:
         """
         Create a child session branched from parent.
         If fork_transcript=True and parent token budget permits, copy parent transcript
         as initial context in the child (forkedFromParent flag set).
+        ``status`` sets the child's initial lifecycle status; pass a resting
+        status such as ``SessionStatus.DONE`` when the child should not appear
+        as an active run until its first turn starts.
         """
         parent_session_key = canonicalize_session_key(parent_session_key)
         new_session_key = canonicalize_session_key(new_session_key)
@@ -646,7 +650,7 @@ class SessionManager:
             created_at=now,
             updated_at=now,
             started_at=now,
-            status=SessionStatus.RUNNING,
+            status=status,
             model=parent.model,
             model_provider=parent.model_provider,
             channel=parent.channel,

@@ -1,21 +1,17 @@
 """Sandbox backend implementations and selection helper.
 
-Five concrete backends ship today:
+Four concrete backends ship today:
 
-* :class:`~opensquilla.sandbox.backend.bubblewrap.BubblewrapBackend` — the Linux
+* :class:`~opensquilla.sandbox.backend.bubblewrap.BubblewrapBackend` - the Linux
   primary path; uses the ``bwrap`` binary for namespace isolation.
-* :class:`~opensquilla.sandbox.backend.seatbelt.SeatbeltBackend` — macOS
+* :class:`~opensquilla.sandbox.backend.seatbelt.SeatbeltBackend` - macOS
   primary path; uses ``sandbox-exec`` with a generated SBPL profile.
-* :class:`~opensquilla.sandbox.backend.windows_appcontainer.WindowsAppContainerBackend` —
-  native Windows primary path; delegates to an AppContainer helper and fails
-  closed until policy enforcement is implemented.
-* :class:`~opensquilla.sandbox.backend.windows_restricted_token.WindowsRestrictedTokenBackend` —
-  legacy/degraded native Windows path; delegates to a restricted-token helper
-  and fails closed when policy enforcement is unavailable.
-* :class:`~opensquilla.sandbox.backend.noop.NoopBackend` — used when the sandbox
-  feature switch is off; runs the command through the existing rlimit
-  wrapper and emits a warning on every invocation so the bypass is visible
-  in logs.
+* :class:`~opensquilla.sandbox.backend.windows_default.WindowsDefaultBackend`
+  - native Windows path; prepares Windows sandbox grants and fails closed when
+  policy enforcement is unavailable.
+* :class:`~opensquilla.sandbox.backend.noop.NoopBackend` - used when the sandbox
+  feature switch is off; runs the command through the existing rlimit wrapper
+  and emits a warning on every invocation so the bypass is visible in logs.
 
 :func:`select_backend` picks one based on the settings + host capabilities.
 """
@@ -29,12 +25,48 @@ from opensquilla.sandbox.backend.base import Backend
 from opensquilla.sandbox.backend.bubblewrap import BubblewrapBackend
 from opensquilla.sandbox.backend.noop import NoopBackend
 from opensquilla.sandbox.backend.seatbelt import SeatbeltBackend
-from opensquilla.sandbox.backend.windows_appcontainer import WindowsAppContainerBackend
-from opensquilla.sandbox.backend.windows_restricted_token import WindowsRestrictedTokenBackend
+from opensquilla.sandbox.backend.unavailable import UnavailableBackend
+from opensquilla.sandbox.backend.windows_default import WindowsDefaultBackend
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.types import SandboxBackendError
 
 log = logging.getLogger(__name__)
+
+
+def _auto_backend_failure_message() -> str:
+    message = "sandbox=true but no real sandbox backend is available for backend=auto"
+    if sys.platform.startswith("linux"):
+        from opensquilla.sandbox.backend.linux_readiness import probe_bwrap
+
+        probe = probe_bwrap()
+        return f"{message}; Linux sandbox diagnostics: {probe.message}"
+    if not sys.platform.startswith("win"):
+        return message
+
+    from opensquilla.sandbox.backend.windows_default_support import (
+        probe_windows_default_support,
+    )
+
+    support = probe_windows_default_support(proxy_ports=_windows_marker_proxy_ports())
+    diagnostics = (
+        "Windows sandbox setup diagnostics: "
+        f"ctypes={'ready' if support.ctypes_available else 'missing'}, "
+        f"windows_default={'ready' if support.default_backend_available else 'not ready'}, "
+        f"network boundary={'ready' if support.proxy_allowlist_enforced else 'not ready'}"
+    )
+    return f"{message}; {diagnostics}"
+
+
+def _windows_marker_proxy_ports() -> tuple[int, ...]:
+    from opensquilla.sandbox.backend.windows_default_setup import (
+        default_setup_marker_path,
+        read_setup_marker,
+    )
+
+    marker = read_setup_marker(default_setup_marker_path())
+    if marker is None or marker.network is None:
+        return ()
+    return marker.network.allowed_proxy_ports
 
 
 def _auto_backend() -> Backend:
@@ -48,12 +80,9 @@ def _auto_backend() -> Backend:
         if seatbelt.available():
             return seatbelt
     if sys.platform.startswith("win"):
-        appcontainer = WindowsAppContainerBackend()
-        if appcontainer.available():
-            return appcontainer
-        restricted_token = WindowsRestrictedTokenBackend()
-        if restricted_token.available():
-            return restricted_token
+        windows_default = WindowsDefaultBackend()
+        if windows_default.available():
+            return windows_default
     return NoopBackend()
 
 
@@ -61,7 +90,7 @@ def select_backend(settings: SandboxSettings) -> Backend:
     """Return the backend matching ``settings.backend``.
 
     ``"auto"`` defers to :func:`_auto_backend`. Explicit choices are honoured
-    even when the backend is unavailable — the caller will see an honest
+    even when the backend is unavailable - the caller will see an honest
     ``available() is False`` and can decide whether to degrade or abort.
     Selection is logged so operators can correlate runtime behaviour with
     config.
@@ -78,11 +107,9 @@ def select_backend(settings: SandboxSettings) -> Backend:
         backend = SeatbeltBackend()
     elif choice == "noop":
         backend = NoopBackend()
-    elif choice == "windows_appcontainer":
-        backend = WindowsAppContainerBackend()
-    elif choice == "windows_restricted_token":
-        backend = WindowsRestrictedTokenBackend()
-    else:  # pragma: no cover — pydantic Literal constrains this upstream
+    elif choice == "windows_default":
+        backend = WindowsDefaultBackend()
+    else:  # pragma: no cover - pydantic Literal constrains this upstream
         raise ValueError(f"unknown sandbox backend: {choice!r}")
 
     log.info(
@@ -92,9 +119,7 @@ def select_backend(settings: SandboxSettings) -> Backend:
         backend.available(),
     )
     if settings.sandbox and choice == "auto" and isinstance(backend, NoopBackend):
-        raise SandboxBackendError(
-            "sandbox=true but no real sandbox backend is available for backend=auto"
-        )
+        raise SandboxBackendError(_auto_backend_failure_message())
     if settings.sandbox and choice != "noop" and not backend.available():
         raise SandboxBackendError(
             f"sandbox backend {backend.name!r} is unavailable while sandbox=true"
@@ -107,7 +132,7 @@ __all__ = [
     "BubblewrapBackend",
     "NoopBackend",
     "SeatbeltBackend",
-    "WindowsAppContainerBackend",
-    "WindowsRestrictedTokenBackend",
+    "UnavailableBackend",
+    "WindowsDefaultBackend",
     "select_backend",
 ]

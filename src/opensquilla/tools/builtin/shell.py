@@ -5,15 +5,19 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import dataclasses
 import json
+import ntpath
 import os
 import re
+import shlex
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -21,12 +25,28 @@ from typing import Any, cast
 import structlog
 
 from opensquilla.gateway.approval_queue import get_approval_queue
-from opensquilla.sandbox.backend.bubblewrap import BubblewrapBackend, build_bwrap_argv
+from opensquilla.sandbox.backend.bubblewrap import (
+    BubblewrapBackend,
+    LinuxProxyBridgeHost,
+    build_bwrap_plan,
+    materialize_linux_exec_wrapper,
+)
+from opensquilla.sandbox.backend.linux_limits import resource_preexec_from_limits
+from opensquilla.sandbox.backend.linux_protected_create import (
+    ProtectedCreateRegistration,
+    SyntheticMountRegistration,
+    cleanup_protected_create_registrations,
+    cleanup_synthetic_mount_registrations,
+    register_protected_create_targets,
+    register_synthetic_mount_targets,
+)
+from opensquilla.sandbox.backend.linux_readiness import probe_bwrap
 from opensquilla.sandbox.backend.noop import NoopBackend
 from opensquilla.sandbox.backend.seatbelt import (
     SeatbeltBackend,
     build_seatbelt_argv,
     render_seatbelt_profile,
+    seatbelt_env_for_policy,
 )
 from opensquilla.sandbox.escalation import (
     build_path_approval_params,
@@ -36,6 +56,7 @@ from opensquilla.sandbox.escalation import (
 )
 from opensquilla.sandbox.governance import action_fingerprint
 from opensquilla.sandbox.integration import (
+    SandboxRuntime,
     build_request,
     escalate_backend_denial,
     gate_action,
@@ -44,10 +65,28 @@ from opensquilla.sandbox.integration import (
     prepare_subprocess_managed_network_proxy,
     run_under_backend,
 )
+from opensquilla.sandbox.managed_proxy_env import (
+    NO_PROXY_ENV_KEYS,
+    OPENSQUILLA_NETWORK_ENV_KEY,
+    PROXY_ACTIVE_ENV_KEY,
+    PROXY_CONTROL_ENV,
+    PROXY_ENV_KEYS,
+)
 from opensquilla.sandbox.operation_profile import OperationProfile, classify_command
+from opensquilla.sandbox.operation_runtime import SandboxToolDescriptor
 from opensquilla.sandbox.path_validation import MountDecision, decide_path_access
 from opensquilla.sandbox.policy import LevelHints, build_policy, select_level
-from opensquilla.sandbox.types import DenialReason, DenialResult, SandboxPolicy, SandboxRequest
+from opensquilla.sandbox.types import (
+    DenialReason,
+    DenialResult,
+    MountMode,
+    MountSpec,
+    NetworkMode,
+    SandboxPolicy,
+    SandboxRequest,
+    SandboxResult,
+    sandbox_path_text,
+)
 from opensquilla.tools.builtin.shell_policy import check_safe_bin
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
@@ -76,11 +115,25 @@ _BACKGROUND_TERMINATE_TIMEOUT = 1.0
 _BACKGROUND_KILL_TIMEOUT = 1.0
 _EXEC_TERMINATE_TIMEOUT = 0.25
 _EXEC_KILL_TIMEOUT = 0.25
+_EXEC_STDIN_WRITE_CHUNK_BYTES = 64 * 1024
+_EXEC_STDIN_GUARD_CHUNK_CHARS = 64 * 1024
+_EXEC_STDIN_GUARD_OVERLAP_CHARS = 1024
 _COMMAND_AUDIT_MAX_CHARS = 4096
 _SANDBOX_NETWORK_HINT = (
-    "Hint: sandboxed shell/code has no network. Use http_request or web_fetch, "
-    "or run trusted benchmark work with --permissions bypass."
+    "Hint: sandboxed shell/code has no direct network. Use sandbox_network approval "
+    "or trusted managed-network mode, then retry the shell command through the "
+    "managed proxy. Do not switch to separate web download tools for package "
+    "installs unless the user explicitly asks for an offline workaround."
 )
+_SANDBOX_NETWORK_DISABLED_HINT = (
+    "Hint: sandboxed shell/code has no direct network because sandbox "
+    "network_default is configured as 'none'. Set [sandbox] "
+    "network_default = \"proxy_allowlist\" in the gateway config and restart "
+    "the gateway to enable the managed proxy. Do not switch to separate web "
+    "download tools for package installs unless the user explicitly asks for "
+    "an offline workaround."
+)
+_SANDBOX_NETWORK_HINT_PREFIX = "Hint: sandboxed shell/code has no direct network"
 _SANDBOX_NETWORK_FAILURE_MARKERS: tuple[str, ...] = (
     "could not resolve host",
     "could not resolve proxy",
@@ -96,6 +149,59 @@ _SANDBOX_NETWORK_FAILURE_MARKERS: tuple[str, ...] = (
 _SHELL_NULL_REDIRECT_RE = re.compile(
     r"(?:(?<=^)|(?<=[\s;|&]))\d*[<>]{1,2}\s*/dev/null(?=$|[\s;|&])"
 )
+_PROTECTED_METADATA_NAMES = frozenset({".git", ".codex", ".agents"})
+_WINDOWS_ABSOLUTE_PATH_IN_SCRIPT_RE = re.compile(
+    r"(?<![A-Za-z0-9_])[A-Za-z]:[\\/]",
+    re.IGNORECASE,
+)
+_WINDOWS_POSIX_TMP_QUOTED_RE = re.compile(
+    r"(?P<quote>['\"])(?P<path>/tmp(?:/[^'\"]*)?)(?P=quote)"
+)
+_WINDOWS_POSIX_TMP_BARE_RE = re.compile(
+    r"(?<![A-Za-z0-9_./:\\-])(?P<path>/tmp(?:/[^\s'\";&|<>)]*)?)"
+)
+_WINDOWS_ROOT_TMP_QUOTED_RE = re.compile(
+    r"(?P<quote>['\"])(?P<path>(?:[A-Za-z]:[\\/]|[\\/])tmp(?:[\\/][^'\"]*)?)(?P=quote)",
+    re.IGNORECASE,
+)
+_WINDOWS_ROOT_TMP_BARE_RE = re.compile(
+    r"(?<![A-Za-z0-9_./:\\-])"
+    r"(?P<path>(?:[A-Za-z]:[\\/]|[\\/])tmp(?:[\\/][^\s'\";&|<>)]*)?)",
+    re.IGNORECASE,
+)
+_WINDOWS_SHELL_ARG_RE = re.compile(r'"[^"]*"|\'[^\']*\'|\S+')
+_WINDOWS_SHELL_PATH_FLAGS = frozenset(
+    {
+        "-destination",
+        "-filepath",
+        "-literalpath",
+        "-name",
+        "-path",
+    }
+)
+_WINDOWS_SHELL_VALUE_FLAGS = frozenset(
+    {
+        "-encoding",
+        "-erroraction",
+        "-errorvariable",
+        "-ev",
+        "-exclude",
+        "-filter",
+        "-include",
+        "-inputobject",
+        "-itemtype",
+        "-outvariable",
+        "-ov",
+        "-stream",
+        "-type",
+        "-value",
+        "-warningaction",
+        "-warningvariable",
+    }
+)
+_WINDOWS_SHELL_CREATE_COMMANDS = frozenset({"md", "mkdir", "new-item", "ni"})
+_WINDOWS_SHELL_CONTENT_COMMANDS = frozenset({"add-content", "out-file", "set-content"})
+_WINDOWS_SHELL_REMOVE_COMMANDS = frozenset({"del", "erase", "remove-item", "rm"})
 PROCESS_ACTIONS: frozenset[str] = frozenset(
     {"eof", "kill", "list", "log", "poll", "remove", "submit", "write"}
 )
@@ -154,11 +260,19 @@ def _looks_like_sandbox_network_failure(text: str) -> bool:
 
 
 def _append_sandbox_network_hint(text: str, *, force: bool = False) -> str:
-    if _SANDBOX_NETWORK_HINT in text:
+    if _SANDBOX_NETWORK_HINT_PREFIX in text:
         return text
     if not force and not _looks_like_sandbox_network_failure(text):
         return text
-    return text.rstrip() + "\n" + _SANDBOX_NETWORK_HINT + "\n"
+    return text.rstrip() + "\n" + _sandbox_network_hint() + "\n"
+
+
+def _sandbox_network_hint() -> str:
+    runtime = get_runtime()
+    settings = getattr(runtime, "settings", None) if runtime is not None else None
+    if getattr(settings, "network_default", None) == "none":
+        return _SANDBOX_NETWORK_DISABLED_HINT
+    return _SANDBOX_NETWORK_HINT
 
 
 def _profile_shell_command(command: str) -> OperationProfile:
@@ -223,11 +337,45 @@ def _workdir_is_configured_workspace(workdir: str | None) -> bool:
         return False
 
 
+def _sensitive_payload_block(tool_name: str, text: str) -> str | None:
+    from opensquilla.tools.builtin.web import (
+        _sensitive_body_block,
+        _sensitive_body_marker,
+        _sensitive_url_marker,
+    )
+
+    for token in text.split():
+        stripped = token.strip("'\"")
+        if stripped.startswith(("http://", "https://")):
+            marker = _sensitive_url_marker(stripped)
+            if marker is not None:
+                return _sensitive_body_block(tool_name, marker)
+    marker = _sensitive_body_marker(text)
+    if marker is not None:
+        return _sensitive_body_block(tool_name, marker)
+    return None
+
+
+def _iter_stdin_guard_chunks(text: str) -> Iterator[str]:
+    if len(text) <= _EXEC_STDIN_GUARD_CHUNK_CHARS:
+        yield text
+        return
+    step = _EXEC_STDIN_GUARD_CHUNK_CHARS - _EXEC_STDIN_GUARD_OVERLAP_CHARS
+    start = 0
+    while start < len(text):
+        end = min(len(text), start + _EXEC_STDIN_GUARD_CHUNK_CHARS)
+        yield text[start:end]
+        if end >= len(text):
+            break
+        start += step
+
+
 def _sensitive_shell_block(
     tool_name: str,
     command: str,
     *,
     workdir: str | None = None,
+    stdin: str | None = None,
 ) -> str | None:
     if _context_elevated_mode() == "full":
         return None
@@ -246,21 +394,27 @@ def _sensitive_shell_block(
             ensure_ascii=False,
         )
 
-    from opensquilla.tools.builtin.web import (
-        _sensitive_body_block,
-        _sensitive_body_marker,
-        _sensitive_url_marker,
-    )
+    payload_block = _sensitive_payload_block(tool_name, checked_text)
+    if payload_block is not None:
+        return payload_block
+    if stdin is None:
+        return None
 
-    for token in checked_text.split():
-        stripped = token.strip("'\"")
-        if stripped.startswith(("http://", "https://")):
-            marker = _sensitive_url_marker(stripped)
-            if marker is not None:
-                return _sensitive_body_block(tool_name, marker)
-    marker = _sensitive_body_marker(checked_text)
-    if marker is not None:
-        return _sensitive_body_block(tool_name, marker)
+    for stdin_chunk in _iter_stdin_guard_chunks(stdin):
+        marker = sensitive_path_in_text(stdin_chunk, workspace=workspace)
+        if marker is not None:
+            return json.dumps(
+                build_block_envelope(
+                    f"{checked_command}\n[stdin omitted]",
+                    marker,
+                    tool_name=tool_name,
+                ),
+                ensure_ascii=False,
+            )
+    for stdin_chunk in _iter_stdin_guard_chunks(stdin):
+        payload_block = _sensitive_payload_block(tool_name, stdin_chunk)
+        if payload_block is not None:
+            return payload_block
     return None
 
 
@@ -360,6 +514,95 @@ def _workspace_root_for_path_access() -> Path | None:
     return None
 
 
+def _windows_sandbox_backend_active(runtime: object | None = None) -> bool:
+    runtime = get_runtime() if runtime is None else runtime
+    backend = getattr(runtime, "backend", None) if runtime is not None else None
+    backend_name = str(getattr(backend, "name", "") or "")
+    return backend_name.startswith("windows_")
+
+
+def _windows_session_slug() -> str:
+    ctx = current_tool_context.get()
+    raw = str(getattr(ctx, "session_key", None) or "default")
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw).strip("-._")
+    if not slug:
+        return "default"
+    return slug[:80]
+
+
+def _windows_session_tmp_root() -> Path | None:
+    workspace = _workspace_root_for_path_access()
+    if workspace is None:
+        return None
+    return (
+        workspace
+        / ".opensquilla"
+        / "tmp"
+        / _windows_session_slug()
+    ).resolve(strict=False)
+
+
+def _windows_tmp_tail(path: str) -> str | None:
+    normalized = path.replace("\\", "/")
+    lower = normalized.lower()
+    if lower == "/tmp" or lower.startswith("/tmp/"):
+        return normalized[4:].lstrip("/")
+    match = re.match(r"^[A-Za-z]:/tmp(?:/(.*))?$", normalized, re.IGNORECASE)
+    if match:
+        return match.group(1) or ""
+    return None
+
+
+def _windows_translate_tmp_path(path: str) -> str:
+    tail = _windows_tmp_tail(path)
+    if tail is None:
+        return path
+    root = _windows_session_tmp_root()
+    if root is None:
+        return path
+    mapped = root.joinpath(*[part for part in tail.split("/") if part]) if tail else root
+    mapped.parent.mkdir(parents=True, exist_ok=True)
+    if not tail:
+        mapped.mkdir(parents=True, exist_ok=True)
+    return str(mapped)
+
+
+def _windows_translate_posix_tmp_path(path: str) -> str:
+    return _windows_translate_tmp_path(path)
+
+
+def _windows_translate_tmp_references(command: str) -> str:
+    def replace_quoted(match: re.Match[str]) -> str:
+        quote = match.group("quote")
+        return f"{quote}{_windows_translate_tmp_path(match.group('path'))}{quote}"
+
+    translated = _WINDOWS_POSIX_TMP_QUOTED_RE.sub(replace_quoted, command)
+    translated = _WINDOWS_ROOT_TMP_QUOTED_RE.sub(replace_quoted, translated)
+    translated = _WINDOWS_POSIX_TMP_BARE_RE.sub(
+        lambda match: _windows_translate_tmp_path(match.group("path")),
+        translated,
+    )
+    return _WINDOWS_ROOT_TMP_BARE_RE.sub(
+        lambda match: _windows_translate_tmp_path(match.group("path")),
+        translated,
+    )
+
+
+def _windows_translate_posix_tmp_references(command: str) -> str:
+    return _windows_translate_tmp_references(command)
+
+
+def _apply_windows_session_tmp_env(env: dict[str, str]) -> None:
+    root = _windows_session_tmp_root()
+    if root is None:
+        return
+    root.mkdir(parents=True, exist_ok=True)
+    value = str(root)
+    env["TEMP"] = value
+    env["TMP"] = value
+    env["TMPDIR"] = value
+
+
 def _sandbox_shell_policy_cwd(cwd: str | None) -> Path | None:
     workspace = _workspace_root_for_path_access()
     if workspace is not None:
@@ -369,14 +612,1221 @@ def _sandbox_shell_policy_cwd(cwd: str | None) -> Path | None:
     return None
 
 
+def _trusted_windows_cmd_path() -> str:
+    comspec = os.environ.get("COMSPEC", "")
+    if _is_absolute_cmd_exe(comspec):
+        return comspec
+    system_root = os.environ.get("SystemRoot") or os.environ.get("SYSTEMROOT") or ""
+    if system_root and "\x00" not in system_root and ntpath.isabs(system_root):
+        return ntpath.join(system_root, "System32", "cmd.exe")
+    return r"C:\Windows\System32\cmd.exe"
+
+
+def _is_absolute_cmd_exe(path: str) -> bool:
+    return "\x00" not in path and ntpath.isabs(path) and ntpath.basename(path).lower() == "cmd.exe"
+
+
+def _trusted_windows_powershell_path() -> str:
+    system_root = os.environ.get("SystemRoot") or os.environ.get("SYSTEMROOT") or ""
+    if system_root and "\x00" not in system_root and ntpath.isabs(system_root):
+        return ntpath.join(
+            system_root,
+            "System32",
+            "WindowsPowerShell",
+            "v1.0",
+            "powershell.exe",
+        )
+    return r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+
+
+_WINDOWS_POWERSHELL_PROXY_PRELUDE = r"""
+$__opensquillaProxy = $env:HTTPS_PROXY;
+if ([string]::IsNullOrWhiteSpace($__opensquillaProxy)) {
+    $__opensquillaProxy = $env:HTTP_PROXY
+};
+if (-not [string]::IsNullOrWhiteSpace($__opensquillaProxy)) {
+    $PSDefaultParameterValues['Invoke-WebRequest:Proxy'] = $__opensquillaProxy;
+    $PSDefaultParameterValues['Invoke-RestMethod:Proxy'] = $__opensquillaProxy;
+    [System.Net.WebRequest]::DefaultWebProxy = [System.Net.WebProxy]::new($__opensquillaProxy);
+    [System.Net.WebRequest]::DefaultWebProxy.Credentials = `
+        [System.Net.CredentialCache]::DefaultCredentials
+};
+""".strip()
+
+
+def _windows_with_powershell_proxy_defaults(command: str) -> str:
+    prelude = _WINDOWS_POWERSHELL_PROXY_PRELUDE
+    command = command.strip()
+    if not command:
+        return prelude
+    return f"{prelude}; {command}"
+
+
+def _windows_direct_powershell_argv(command: str) -> tuple[str, ...]:
+    return (
+        _trusted_windows_powershell_path(),
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        _windows_with_powershell_proxy_defaults(command),
+    )
+
+
+def _windows_shell_host_argv(
+    command: str,
+    *,
+    cwd: Path | str | None = None,
+) -> tuple[str, ...]:
+    argv = [
+        sys.executable,
+        "-c",
+        _WINDOWS_SANDBOX_SHELL_HOST_CODE,
+        _trusted_windows_powershell_path(),
+        _windows_powershell_compat_command(command),
+    ]
+    if cwd is not None:
+        cwd_text = str(cwd)
+        argv.append(cwd_text)
+        argv.append(str(Path(cwd_text) / ".opensquilla-cache" / "shell-host"))
+    return tuple(argv)
+
+
+_WINDOWS_SANDBOX_SHELL_HOST_CODE = r"""
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+_REMOVE_ITEM_RE = re.compile(
+    r"^(?:Remove-Item|rm|del|erase)\b(?P<rest>.*)$",
+    re.IGNORECASE,
+)
+_TEST_PATH_RE = re.compile(
+    r"^Test-Path\b(?P<rest>.*)$",
+    re.IGNORECASE,
+)
+_INVOKE_PYTHON_RE = re.compile(
+    r"^Invoke-OpenSquillaPythonProcess\s+"
+    r"-FilePath\s+'(?P<path>(?:''|[^'])*)'\s+"
+    r"-Arguments\s+@\((?P<args>.*)\)\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+_PATH_TOKEN_RE = re.compile(
+    r"(?:-(?:LiteralPath|Path)\s+)?(?P<quote>['\"])(?P<path>.*?)(?P=quote)",
+    re.IGNORECASE,
+)
+_EXPLICIT_BARE_PATH_RE = re.compile(
+    r"-(?:LiteralPath|Path)\s+(?P<path>(?!['\"])[^\s;{}]+)",
+    re.IGNORECASE,
+)
+_ARG_TOKEN_RE = re.compile(r'"[^"]*"|\'[^\']*\'|\S+')
+_OUTPUT_RE = re.compile(r"^(?:Write-Output|echo)\s+(?P<text>.+)$", re.IGNORECASE)
+_HTTP_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
+_SELECT_STATUS_CODE_RE = re.compile(
+    r"\bSelect(?:-Object)?\s+-ExpandProperty\s+StatusCode\b",
+    re.IGNORECASE,
+)
+_IF_REMOVE_RE = re.compile(
+    r"^if\s*\(.*?Test-Path.+?\)\s*\{\s*(?P<remove>Remove-Item\b.+?)\s*\}$",
+    re.IGNORECASE | re.DOTALL,
+)
+_VALUE_FLAGS = {
+    "-credential",
+    "-ea",
+    "-erroraction",
+    "-ev",
+    "-errorvariable",
+    "-exclude",
+    "-filter",
+    "-include",
+    "-ov",
+    "-outvariable",
+    "-stream",
+    "-wa",
+    "-warningaction",
+    "-wv",
+    "-warningvariable",
+}
+
+
+def _strip_outer_quotes(value):
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        return value[1:-1]
+    return value
+
+
+def _looks_like_path(value):
+    return bool(
+        re.match(r"^[A-Za-z]:[\\/]", value)
+        or value.startswith("\\\\")
+        or value.startswith(".\\")
+        or value.startswith("./")
+        or value.startswith("\\")
+        or value.startswith("/")
+    )
+
+
+def _split_statements(script):
+    statements = []
+    current = []
+    quote = ""
+    escaped = False
+    for char in script:
+        if escaped:
+            current.append(char)
+            escaped = False
+            continue
+        if char == "`":
+            current.append(char)
+            escaped = True
+            continue
+        if quote:
+            current.append(char)
+            if char == quote:
+                quote = ""
+            continue
+        if char in "'\"":
+            current.append(char)
+            quote = char
+            continue
+        if char == ";":
+            statement = "".join(current).strip()
+            if statement:
+                statements.append(statement)
+            current = []
+            continue
+        current.append(char)
+    statement = "".join(current).strip()
+    if statement:
+        statements.append(statement)
+    return statements
+
+
+def _nested_powershell_command(command):
+    match = re.match(
+        r"^\s*powershell(?:\.exe)?\b(?P<args>.*)$",
+        command,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return None
+    args = match.group("args")
+    command_match = re.search(
+        r"(?:^|\s)-(?:Command|c)\s+(?P<script>.+)$",
+        args,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not command_match:
+        return None
+    return _strip_outer_quotes(command_match.group("script"))
+
+
+def _remove_statement_path(statement):
+    match = _REMOVE_ITEM_RE.match(statement)
+    if not match:
+        return None
+    return _statement_path_from_rest(match.group("rest"))
+
+
+def _test_path_statement_path(statement):
+    match = _TEST_PATH_RE.match(statement)
+    if not match:
+        return None
+    return _statement_path_from_rest(match.group("rest"))
+
+
+def _statement_path_from_rest(rest):
+    path_match = _PATH_TOKEN_RE.search(rest)
+    if not path_match:
+        explicit_bare = _EXPLICIT_BARE_PATH_RE.search(rest)
+        if explicit_bare:
+            return explicit_bare.group("path")
+        skip_next = False
+        for token in _ARG_TOKEN_RE.findall(rest):
+            token = _strip_outer_quotes(token)
+            folded = token.lower()
+            if skip_next:
+                skip_next = False
+                continue
+            if folded in _VALUE_FLAGS:
+                skip_next = True
+                continue
+            if token.startswith("-"):
+                continue
+            if _looks_like_path(token):
+                return token
+        return None
+    return path_match.group("path")
+
+
+def _if_remove_statement_path(statement):
+    match = _IF_REMOVE_RE.match(statement)
+    if not match:
+        return None
+    return _remove_statement_path(match.group("remove"))
+
+
+def _output_statement_text(statement):
+    match = _OUTPUT_RE.match(statement)
+    if not match:
+        return None
+    text = match.group("text")
+    if re.search(r"[<>|&]", text):
+        return None
+    if re.search(r"[$(){}\[\]+]", text):
+        return None
+    return _strip_outer_quotes(text)
+
+
+def _remove_path(path, *, recurse, force):
+    try:
+        if os.path.isdir(path) and not os.path.islink(path):
+            if recurse:
+                shutil.rmtree(path)
+            else:
+                os.rmdir(path)
+        else:
+            if force:
+                try:
+                    os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+                except OSError:
+                    pass
+            os.remove(path)
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        return f"{path}: {type(exc).__name__}: {exc}"
+    return None
+
+
+def _handle_simple_delete_script(script):
+    statements = _split_statements(script)
+    if not statements:
+        return None
+    operations = []
+    recurse = False
+    force = False
+    for statement in statements:
+        path = _remove_statement_path(statement)
+        if path is not None:
+            recurse = recurse or bool(re.search(r"\s-Recurse\b", statement, re.IGNORECASE))
+            force = force or bool(re.search(r"\s-Force\b", statement, re.IGNORECASE))
+            operations.append(("remove", path))
+            continue
+        path = _if_remove_statement_path(statement)
+        if path is not None:
+            recurse = recurse or bool(re.search(r"\s-Recurse\b", statement, re.IGNORECASE))
+            force = force or bool(re.search(r"\s-Force\b", statement, re.IGNORECASE))
+            operations.append(("remove", path))
+            continue
+        output = _output_statement_text(statement)
+        if output is not None:
+            operations.append(("output", output))
+            continue
+        path = _test_path_statement_path(statement)
+        if path is not None:
+            operations.append(("test_path", path))
+            continue
+        return None
+    errors = [
+        error
+        for operation, value in operations
+        if operation == "remove"
+        if (error := _remove_path(value, recurse=recurse, force=force))
+    ]
+    if errors:
+        sys.stderr.write("\n".join(errors))
+        return 1
+    for operation, value in operations:
+        if operation == "output":
+            print(value)
+        elif operation == "test_path":
+            print("True" if os.path.exists(value) else "False")
+    return 0
+
+
+def _ps_single_quote(value):
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _python_process_prelude():
+    target = _ps_single_quote(sys.executable)
+    return (
+        "function ConvertTo-OpenSquillaNativeArgumentLine { "
+        "param([string[]]$Arguments) "
+        "$quoted = foreach ($arg in $Arguments) { "
+        "$value = [string]$arg; "
+        "if ($value.Length -eq 0) { '\"\"' } "
+        "elseif ($value -notmatch '[\\s\"]') { $value } "
+        "else { '\"' + (($value -replace '\\\\', '\\\\') -replace '\"', '\\\"') + '\"' } "
+        "}; "
+        "$quoted -join ' ' "
+        "}; "
+        "function Invoke-OpenSquillaPythonProcess { "
+        "param([Parameter(Mandatory=$true)][string]$FilePath, [string[]]$Arguments = @()) "
+        "$argumentLine = ConvertTo-OpenSquillaNativeArgumentLine -Arguments $Arguments; "
+        "$psi = New-Object System.Diagnostics.ProcessStartInfo; "
+        "$psi.FileName = $FilePath; "
+        "$psi.Arguments = $argumentLine; "
+        "$psi.WorkingDirectory = (Get-Location).Path; "
+        "$psi.UseShellExecute = $false; "
+        "$psi.RedirectStandardOutput = $true; "
+        "$psi.RedirectStandardError = $true; "
+        "$process = New-Object System.Diagnostics.Process; "
+        "$process.StartInfo = $psi; "
+        "[void]$process.Start(); "
+        "$stdout = $process.StandardOutput.ReadToEnd(); "
+        "$stderr = $process.StandardError.ReadToEnd(); "
+        "$process.WaitForExit(); "
+        "if ($stdout) { [Console]::Out.Write($stdout) }; "
+        "if ($stderr) { [Console]::Error.Write($stderr) }; "
+        "$global:LASTEXITCODE = $process.ExitCode; "
+        "if ($process.ExitCode -ne 0) { "
+        "Write-Error ('Python process exited with code ' + $process.ExitCode) "
+        "} "
+        "}; "
+        "function python { "
+        f"Invoke-OpenSquillaPythonProcess -FilePath {target} -Arguments $args "
+        "}; "
+        "function python3 { "
+        f"Invoke-OpenSquillaPythonProcess -FilePath {target} -Arguments $args "
+        "}; "
+        f"function py {{ Invoke-OpenSquillaPythonProcess -FilePath {target} -Arguments $args }}; "
+    )
+
+
+def _with_python_aliases(command):
+    return _python_process_prelude() + command
+
+
+def _python_sitecustomize_source():
+    return r'''
+import os
+import subprocess
+import tempfile
+
+if os.name == "nt" and os.environ.get("OPENSQUILLA_WINDOWS_APPCONTAINER_TEMPFILE_PATCH") == "1":
+    def _opensquilla_mkdtemp(suffix=None, prefix=None, dir=None):
+        sanitized = tempfile._sanitize_params(prefix, suffix, dir)
+        prefix, suffix, dir = sanitized[:3]
+        names = tempfile._get_candidate_names()
+        for _ in range(tempfile.TMP_MAX):
+            name = next(names)
+            path = os.path.join(dir, prefix + name + suffix)
+            try:
+                os.mkdir(path)
+            except FileExistsError:
+                continue
+            return os.path.abspath(path)
+        raise FileExistsError(tempfile._errno.EEXIST, "No usable temporary directory name found")
+
+    tempfile.mkdtemp = _opensquilla_mkdtemp
+
+    _opensquilla_check_output = subprocess.check_output
+
+    def _opensquilla_patched_check_output(*popenargs, **kwargs):
+        env = kwargs.get("env")
+        site_dir = os.environ.get("OPENSQUILLA_WINDOWS_APPCONTAINER_SITE_DIR")
+        if isinstance(env, dict) and site_dir:
+            env = dict(env)
+            env["OPENSQUILLA_WINDOWS_APPCONTAINER_TEMPFILE_PATCH"] = "1"
+            env["OPENSQUILLA_WINDOWS_APPCONTAINER_SITE_DIR"] = site_dir
+            existing = env.get("PYTHONPATH")
+            env["PYTHONPATH"] = site_dir + (os.pathsep + existing if existing else "")
+            kwargs["env"] = env
+        return _opensquilla_check_output(*popenargs, **kwargs)
+
+    subprocess.check_output = _opensquilla_patched_check_output
+'''.strip()
+
+
+def _prepare_python_sitecustomize(tmp):
+    if not tmp:
+        return ""
+    site_dir = os.path.join(tmp, "opensquilla-python-sitecustomize")
+    os.makedirs(site_dir, exist_ok=True)
+    sitecustomize = os.path.join(site_dir, "sitecustomize.py")
+    with open(sitecustomize, "w", encoding="utf-8") as handle:
+        handle.write(_python_sitecustomize_source())
+        handle.write("\n")
+    return site_dir
+
+
+def _split_ps_single_quoted_array(raw):
+    args = []
+    index = 0
+    while index < len(raw):
+        while index < len(raw) and raw[index] in " \t\r\n,":
+            index += 1
+        if index >= len(raw):
+            break
+        if raw[index] != "'":
+            return None
+        index += 1
+        value = []
+        while index < len(raw):
+            char = raw[index]
+            if char == "'":
+                if index + 1 < len(raw) and raw[index + 1] == "'":
+                    value.append("'")
+                    index += 2
+                    continue
+                index += 1
+                break
+            value.append(char)
+            index += 1
+        else:
+            return None
+        args.append("".join(value))
+        while index < len(raw) and raw[index] in " \t\r\n":
+            index += 1
+        if index < len(raw):
+            if raw[index] != ",":
+                return None
+            index += 1
+    return args
+
+
+def _env_with_python_sitecustomize(site_dir):
+    env = os.environ.copy()
+    if not site_dir:
+        return env
+    env["OPENSQUILLA_WINDOWS_APPCONTAINER_TEMPFILE_PATCH"] = "1"
+    env["OPENSQUILLA_WINDOWS_APPCONTAINER_SITE_DIR"] = site_dir
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = site_dir + (os.pathsep + existing if existing else "")
+    return env
+
+
+def _handle_python_process_script(script, cwd, site_dir):
+    match = _INVOKE_PYTHON_RE.match(script.strip())
+    if match is None:
+        return None
+    args = _split_ps_single_quoted_array(match.group("args"))
+    if args is None:
+        return None
+    executable = match.group("path").replace("''", "'")
+    result = subprocess.run(
+        [executable, *args],
+        cwd=cwd or None,
+        env=_env_with_python_sitecustomize(site_dir),
+        text=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    sys.stdout.buffer.write(result.stdout)
+    sys.stderr.buffer.write(result.stderr)
+    return result.returncode
+
+
+def _host_command_name(token):
+    name = os.path.basename(token).lower()
+    return name.removesuffix(".exe")
+
+
+def _host_tokens(script):
+    return [_strip_outer_quotes(token) for token in _ARG_TOKEN_RE.findall(script)]
+
+
+def _host_executable_index(tokens):
+    return 1 if tokens and tokens[0] == "&" and len(tokens) > 1 else 0
+
+
+def _http_proxy_for_url(url):
+    if url.lower().startswith("https://"):
+        return os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    return os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
+
+
+def _managed_http_open(method, url, timeout):
+    proxy_url = _http_proxy_for_url(url)
+    if not proxy_url:
+        return None
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+    )
+    request = urllib.request.Request(url, method=method.upper())
+    try:
+        response = opener.open(request, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        response = exc
+    try:
+        body = response.read()
+        status = int(getattr(response, "status", getattr(response, "code", 0)) or 0)
+        reason = str(getattr(response, "reason", "") or "")
+        headers = list(response.headers.items())
+        return status, reason, headers, body
+    finally:
+        response.close()
+
+
+def _option_value(tokens, names, default=None):
+    folded = {name.lower() for name in names}
+    for index, token in enumerate(tokens):
+        if token.lower() in folded and index + 1 < len(tokens):
+            return tokens[index + 1]
+    return default
+
+
+def _http_url_from_tokens(tokens):
+    uri = _option_value(tokens, {"-Uri", "-Url"})
+    if isinstance(uri, str) and _HTTP_URL_RE.match(uri):
+        return uri
+    for token in tokens[1:]:
+        if _HTTP_URL_RE.match(token):
+            return token
+    return None
+
+
+def _handle_managed_invoke_webrequest(script):
+    command, _pipe, pipeline = script.partition("|")
+    tokens = _host_tokens(command)
+    if not tokens or _host_command_name(tokens[0]) not in {"invoke-webrequest", "iwr", "wget"}:
+        return None
+    url = _http_url_from_tokens(tokens)
+    if not url:
+        return None
+    method = str(_option_value(tokens, {"-Method"}, "GET"))
+    timeout_raw = _option_value(tokens, {"-TimeoutSec"}, "30")
+    try:
+        timeout = max(1, int(timeout_raw))
+    except (TypeError, ValueError):
+        timeout = 30
+    result = _managed_http_open(method, url, timeout)
+    if result is None:
+        return None
+    status, _reason, _headers, body = result
+    if _SELECT_STATUS_CODE_RE.search(pipeline):
+        sys.stdout.write(f"{status}\n")
+    else:
+        sys.stdout.write(body.decode("utf-8", "replace"))
+    return 0
+
+
+def _handle_managed_curl(script):
+    tokens = _host_tokens(script)
+    if not tokens or _host_command_name(tokens[0]) != "curl":
+        return None
+    url = _http_url_from_tokens(tokens)
+    if not url:
+        return None
+    head = "-I" in tokens or "--head" in tokens
+    result = _managed_http_open("HEAD" if head else "GET", url, 30)
+    if result is None:
+        return None
+    status, reason, headers, body = result
+    sys.stdout.write(f"HTTP/1.1 {status} {reason}".rstrip() + "\r\n")
+    for name, value in headers:
+        sys.stdout.write(f"{name}: {value}\r\n")
+    sys.stdout.write("\r\n")
+    if not head:
+        sys.stdout.buffer.write(body)
+    return 0
+
+
+def _handle_managed_http_script(script):
+    for handler in (_handle_managed_invoke_webrequest, _handle_managed_curl):
+        result = handler(script)
+        if result is not None:
+            return result
+    return None
+
+
+def _with_sandbox_environment(command, cwd, tmp, python_site_dir):
+    prelude = ""
+    if tmp:
+        quoted_tmp = _ps_single_quote(tmp)
+        prelude += (
+            f"$env:TEMP = {quoted_tmp}; "
+            f"$env:TMP = {quoted_tmp}; "
+            f"$env:TMPDIR = {quoted_tmp}; "
+        )
+    if python_site_dir:
+        quoted_site_dir = _ps_single_quote(python_site_dir)
+        prelude += (
+            "$env:OPENSQUILLA_WINDOWS_APPCONTAINER_TEMPFILE_PATCH = '1'; "
+            f"$env:OPENSQUILLA_WINDOWS_APPCONTAINER_SITE_DIR = {quoted_site_dir}; "
+            "if ($env:PYTHONPATH) { "
+            f"$env:PYTHONPATH = {quoted_site_dir} + ';' + $env:PYTHONPATH "
+            "} "
+            f"else {{ $env:PYTHONPATH = {quoted_site_dir} }}; "
+        )
+    if not cwd:
+        return prelude + command
+    quoted_cwd = _ps_single_quote(cwd)
+    return prelude + (
+        f"try {{ Set-Location -LiteralPath {quoted_cwd} -ErrorAction Stop }} "
+        f"catch {{ Write-Error $_; exit 1 }}; {command}"
+    )
+
+
+def _with_final_exit_code(command):
+    return (
+        f"{command}; "
+        "if ($global:LASTEXITCODE -is [int] -and $global:LASTEXITCODE -ne 0) "
+        "{ exit $global:LASTEXITCODE }; "
+        "if (-not $?) { exit 1 }"
+    )
+
+
+def main():
+    if len(sys.argv) not in {3, 4, 5}:
+        sys.stderr.write("windows sandbox shell host expects powershell path and command")
+        return 2
+    powershell = sys.argv[1]
+    command = sys.argv[2]
+    cwd = sys.argv[3] if len(sys.argv) >= 4 else ""
+    tmp = sys.argv[4] if len(sys.argv) == 5 else ""
+    python_site_dir = _prepare_python_sitecustomize(tmp)
+    nested_command = _nested_powershell_command(command)
+    effective_command = nested_command if nested_command is not None else command
+    managed_http_result = _handle_managed_http_script(effective_command)
+    if managed_http_result is not None:
+        return managed_http_result
+    remove_result = _handle_simple_delete_script(effective_command)
+    if remove_result is not None:
+        return remove_result
+    python_process_result = _handle_python_process_script(
+        effective_command,
+        cwd,
+        python_site_dir,
+    )
+    if python_process_result is not None:
+        return python_process_result
+
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            _with_final_exit_code(
+                _with_sandbox_environment(
+                    _with_python_aliases(effective_command),
+                    cwd,
+                    tmp,
+                    python_site_dir,
+                )
+            ),
+        ],
+        check=False,
+    )
+    return result.returncode
+
+
+raise SystemExit(main())
+""".strip()
+
+
+def _sandbox_shell_backend_argv(
+    command: str,
+    runtime: object,
+    *,
+    cwd: Path | str | None = None,
+) -> tuple[str, ...]:
+    backend = getattr(runtime, "backend", None)
+    backend_name = getattr(backend, "name", "")
+    if backend_name.startswith("windows_"):
+        return _windows_shell_host_argv(command, cwd=cwd)
+    return ("sh", "-lc", command)
+
+
 def _sandbox_shell_backend_cwd(cwd: str | None, request: SandboxRequest) -> Path:
     if cwd:
         return Path(cwd).expanduser().resolve(strict=False)
     return request.cwd
 
 
+async def _run_backend_with_managed_network(
+    request: SandboxRequest,
+    *,
+    runtime: SandboxRuntime | None,
+) -> SandboxResult:
+    if getattr(request.policy, "network", None) is not NetworkMode.PROXY_ALLOWLIST:
+        return await run_under_backend(request, runtime=runtime)
+    managed_network = await prepare_subprocess_managed_network_proxy(
+        request,
+        runtime=runtime,
+    )
+    try:
+        return await run_under_backend(managed_network.request, runtime=runtime)
+    finally:
+        await managed_network.cleanup()
+
+
+def _trusted_managed_network_policy(
+    policy: SandboxPolicy,
+    runtime: object | None,
+) -> SandboxPolicy:
+    if getattr(policy, "network", None) is NetworkMode.PROXY_ALLOWLIST:
+        return policy
+    settings = getattr(runtime, "settings", None) if runtime is not None else None
+    if getattr(settings, "network_default", None) != "proxy_allowlist":
+        return policy
+    if not trusted_sandbox_active():
+        return policy
+    ctx = current_tool_context.get()
+    if getattr(policy, "network", None) is NetworkMode.NONE and (
+        ctx is None or getattr(ctx, "sandbox_run_context", None) is None
+    ):
+        return policy
+    return dataclasses.replace(policy, network=NetworkMode.PROXY_ALLOWLIST, network_proxy=None)
+
+
+_trusted_windows_managed_network_policy = _trusted_managed_network_policy
+
+
+def _windows_strip_outer_quotes(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        return value[1:-1]
+    return value
+
+
+def _windows_shell_tokens(script: str) -> list[str]:
+    return [_windows_strip_outer_quotes(token) for token in _WINDOWS_SHELL_ARG_RE.findall(script)]
+
+
+def _windows_split_logical_and(script: str) -> list[str]:
+    statements: list[str] = []
+    current: list[str] = []
+    quote = ""
+    escaped = False
+    index = 0
+    while index < len(script):
+        char = script[index]
+        if escaped:
+            current.append(char)
+            escaped = False
+            index += 1
+            continue
+        if char == "`":
+            current.append(char)
+            escaped = True
+            index += 1
+            continue
+        if quote:
+            current.append(char)
+            if char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char in "'\"":
+            current.append(char)
+            quote = char
+            index += 1
+            continue
+        if char == "&" and index + 1 < len(script) and script[index + 1] == "&":
+            statement = "".join(current).strip()
+            if statement:
+                statements.append(statement)
+            current = []
+            index += 2
+            continue
+        current.append(char)
+        index += 1
+    statement = "".join(current).strip()
+    if statement:
+        statements.append(statement)
+    return statements
+
+
+def _windows_ps_single_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _windows_ps_array_literal(values: list[str]) -> str:
+    if not values:
+        return "@()"
+    return "@(" + ",".join(_windows_ps_single_quote(value) for value in values) + ")"
+
+
+def _windows_python_executable_token(token: str) -> bool:
+    command = _windows_shell_command_name(token)
+    if command not in {"python", "python3", "pythonw"}:
+        return False
+    return any(separator in token for separator in ("\\", "/", ":"))
+
+
+def _windows_powershell_python_process_statement(tokens: list[str]) -> str | None:
+    if not tokens:
+        return None
+    executable_index = 1 if tokens[0] == "&" and len(tokens) > 1 else 0
+    executable = tokens[executable_index]
+    if not _windows_python_executable_token(executable):
+        return None
+    arguments = tokens[executable_index + 1 :]
+    return (
+        "Invoke-OpenSquillaPythonProcess "
+        f"-FilePath {_windows_ps_single_quote(executable)} "
+        f"-Arguments {_windows_ps_array_literal(arguments)}"
+    )
+
+
+def _windows_cmd_shim_statement(tokens: list[str]) -> str | None:
+    if not tokens:
+        return None
+    executable_index = 1 if tokens[0] == "&" and len(tokens) > 1 else 0
+    executable = tokens[executable_index]
+    command = _windows_shell_command_name(executable)
+    if command not in {"npm", "npx", "pnpm", "yarn"}:
+        return None
+    if any(separator in executable for separator in ("\\", "/", ":")):
+        return None
+    if ntpath.splitext(ntpath.basename(executable))[1]:
+        return None
+    argv = [f"{command}.cmd", *tokens[executable_index + 1 :]]
+    return "& " + " ".join(_windows_ps_single_quote(arg) for arg in argv)
+
+
+def _windows_nested_powershell_command(tokens: list[str]) -> str | None:
+    if not tokens:
+        return None
+    executable_index = 1 if tokens[0] == "&" and len(tokens) > 1 else 0
+    executable = tokens[executable_index]
+    if _windows_shell_command_name(executable) not in {"powershell", "pwsh"}:
+        return None
+    for index, token in enumerate(tokens[executable_index + 1 :], start=executable_index + 1):
+        if token.lower() in {"-c", "-command"} and index + 1 < len(tokens):
+            return _windows_strip_outer_quotes(" ".join(tokens[index + 1 :]))
+    return None
+
+
+def _windows_powershell_compat_statement(statement: str) -> str:
+    tokens = _windows_shell_tokens(statement)
+    nested_powershell = _windows_nested_powershell_command(tokens)
+    if nested_powershell is not None:
+        return nested_powershell
+    python_statement = _windows_powershell_python_process_statement(tokens)
+    if python_statement is not None:
+        return python_statement
+    cmd_shim_statement = _windows_cmd_shim_statement(tokens)
+    if cmd_shim_statement is not None:
+        return cmd_shim_statement
+    if len(tokens) < 3:
+        return statement
+    if _windows_shell_command_name(tokens[0]) != "mkdir":
+        return statement
+    if tokens[1].lower() != "-p":
+        return statement
+    paths = [token for token in tokens[2:] if token and not token.startswith("-")]
+    if not paths:
+        return statement
+    return "; ".join(
+        "New-Item -ItemType Directory -Force -Path "
+        f"{_windows_ps_single_quote(path)} | Out-Null"
+        for path in paths
+    )
+
+
+def _windows_powershell_compat_command(command: str) -> str:
+    statements = _windows_split_logical_and(command)
+    if not statements:
+        return command
+    converted = [_windows_powershell_compat_statement(statement) for statement in statements]
+    if len(converted) == 1:
+        return converted[0]
+    return " ; if (-not $?) { exit 1 }; ".join(converted)
+
+
+def _windows_split_statements(script: str) -> list[str]:
+    statements: list[str] = []
+    current: list[str] = []
+    quote = ""
+    escaped = False
+    for char in script:
+        if escaped:
+            current.append(char)
+            escaped = False
+            continue
+        if char == "`":
+            current.append(char)
+            escaped = True
+            continue
+        if quote:
+            current.append(char)
+            if char == quote:
+                quote = ""
+            continue
+        if char in "'\"":
+            current.append(char)
+            quote = char
+            continue
+        if char in ";&":
+            statement = "".join(current).strip()
+            if statement:
+                statements.append(statement)
+            current = []
+            continue
+        current.append(char)
+    statement = "".join(current).strip()
+    if statement:
+        statements.append(statement)
+    return statements
+
+
+def _windows_shell_command_name(token: str) -> str:
+    name = ntpath.basename(token).lower()
+    for suffix in (".exe", ".cmd", ".bat", ".ps1"):
+        if name.endswith(suffix):
+            return name.removesuffix(suffix)
+    return name
+
+
+def _windows_shell_command_after_option(
+    tokens: list[str],
+    options: frozenset[str],
+) -> str | None:
+    for index, token in enumerate(tokens[1:], start=1):
+        if token.lower() in options and index + 1 < len(tokens):
+            return " ".join(tokens[index + 1 :])
+    return None
+
+
+def _windows_shell_token_looks_like_path(token: str) -> bool:
+    if not token or token == "-":
+        return False
+    lowered = token.lower()
+    if lowered.startswith(("http://", "https://")):
+        return False
+    return (
+        lowered in {".venv", "venv"}
+        or token.startswith(("/", "\\", "./", ".\\", "../", "..\\"))
+        or ntpath.isabs(token)
+        or "\\" in token
+        or "/" in token
+    )
+
+
+def _windows_paths_from_tokens(tokens: list[str], *, positional: bool = True) -> list[str]:
+    paths: list[str] = []
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        lowered = token.lower()
+        if lowered in _WINDOWS_SHELL_PATH_FLAGS and index + 1 < len(tokens):
+            paths.append(tokens[index + 1])
+            index += 2
+            continue
+        if any(lowered.startswith(f"{flag}:") for flag in _WINDOWS_SHELL_PATH_FLAGS):
+            paths.append(token.split(":", 1)[1])
+            index += 1
+            continue
+        if lowered in _WINDOWS_SHELL_VALUE_FLAGS:
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        if positional and _windows_shell_token_looks_like_path(token):
+            paths.append(token)
+        index += 1
+    return paths
+
+
+def _windows_python_venv_targets(tokens: list[str]) -> list[str]:
+    if len(tokens) < 4:
+        return []
+    command = _windows_shell_command_name(tokens[0])
+    if not re.fullmatch(r"py|python(?:\d+(?:\.\d+)*)?", command):
+        return []
+    if tokens[1].lower() != "-m" or tokens[2].lower() != "venv":
+        return []
+    for token in tokens[3:]:
+        if not token.startswith("-"):
+            return [token]
+    return []
+
+
+def _windows_uv_venv_targets(tokens: list[str]) -> list[str]:
+    if len(tokens) < 2 or _windows_shell_command_name(tokens[0]) != "uv":
+        return []
+    if tokens[1].lower() != "venv":
+        return []
+    index = 2
+    while index < len(tokens):
+        token = tokens[index]
+        lowered = token.lower()
+        if lowered in {"--python", "-p", "--seed", "--prompt"}:
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return [token]
+    return [".venv"]
+
+
+def _windows_shell_write_targets(command: str) -> list[str]:
+    targets: list[str] = []
+    for target in _basic_shell_write_targets(command):
+        if target not in targets:
+            targets.append(target)
+    for statement in _windows_split_statements(command):
+        tokens = _windows_shell_tokens(statement)
+        if not tokens:
+            continue
+        command_name = _windows_shell_command_name(tokens[0])
+        nested: str | None = _windows_nested_powershell_command(tokens)
+        if nested is None and command_name == "cmd":
+            nested = _windows_shell_command_after_option(tokens, frozenset({"/c", "/k"}))
+        if nested is not None:
+            for target in _windows_shell_write_targets(_windows_strip_outer_quotes(nested)):
+                if target not in targets:
+                    targets.append(target)
+            continue
+        if command_name in _WINDOWS_SHELL_REMOVE_COMMANDS:
+            for target in _windows_paths_from_tokens(tokens):
+                if target not in targets:
+                    targets.append(target)
+            continue
+        if command_name in _WINDOWS_SHELL_CREATE_COMMANDS:
+            for target in _windows_paths_from_tokens(tokens):
+                if target not in targets:
+                    targets.append(target)
+            continue
+        if command_name in _WINDOWS_SHELL_CONTENT_COMMANDS:
+            for target in _windows_paths_from_tokens(tokens):
+                if target not in targets:
+                    targets.append(target)
+            continue
+        for target in (*_windows_python_venv_targets(tokens), *_windows_uv_venv_targets(tokens)):
+            if target not in targets:
+                targets.append(target)
+    return targets
+
+
 def _active_sandbox_mounts() -> list[dict[str, object]]:
     return current_tool_mounts()
+
+
+def _policy_with_active_tool_mounts(policy: SandboxPolicy) -> SandboxPolicy:
+    if not hasattr(policy, "mounts"):
+        return policy
+    windows_backend = _windows_sandbox_backend_active()
+    initial_mounts = tuple(
+        mount
+        for mount in policy.mounts
+        if not _windows_optional_mount_is_stale(mount, windows_backend=windows_backend)
+    )
+    writable_host_paths = {str(mount.host_path) for mount in initial_mounts if mount.mode == "rw"}
+    mounts_by_target = {
+        (str(mount.host_path), sandbox_path_text(mount.sandbox_path)): mount
+        for mount in initial_mounts
+    }
+    for mount in _active_sandbox_mounts():
+        raw_path = mount.get("path")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            continue
+        access = str(mount.get("access") or "ro").strip()
+        mode: MountMode = "rw" if access == "rw" else "ro"
+        host_path = Path(raw_path).expanduser().resolve(strict=False)
+        if windows_backend and not host_path.exists():
+            continue
+        if str(host_path) in writable_host_paths:
+            mode = "rw"
+        mounts_by_target[(str(host_path), sandbox_path_text(host_path))] = MountSpec(
+            host_path=host_path,
+            sandbox_path=host_path,
+            mode=mode,
+            required=False,
+        )
+    return dataclasses.replace(policy, mounts=tuple(mounts_by_target.values()))
+
+
+def _windows_optional_mount_is_stale(mount: MountSpec, *, windows_backend: bool) -> bool:
+    return windows_backend and not mount.required and not mount.host_path.exists()
+
+
+def _windows_shell_runtime_mount_paths() -> tuple[Path, ...]:
+    paths: list[Path] = []
+    for raw in (
+        sys.prefix,
+        sys.base_prefix,
+        str(Path(sys.executable).parent),
+        str(Path(getattr(sys, "_base_executable", "")).parent),
+    ):
+        if not raw:
+            continue
+        path = Path(raw).expanduser().resolve(strict=False)
+        if not path.exists():
+            continue
+        if path not in paths:
+            paths.append(path)
+    return tuple(paths)
+
+
+def _windows_runtime_readonly_roots() -> tuple[Path, ...]:
+    if not _windows_sandbox_backend_active():
+        return ()
+    try:
+        from opensquilla.sandbox.backend import windows_default
+
+        roots = windows_default._runtime_readonly_roots()
+    except Exception:
+        return ()
+    return tuple(Path(root).expanduser().resolve(strict=False) for root in roots)
+
+
+def _runtime_readonly_roots(runtime: object | None = None) -> tuple[Path, ...]:
+    if _windows_sandbox_backend_active(runtime):
+        return _windows_runtime_readonly_roots()
+
+    roots: list[Path] = []
+    for raw in (sys.prefix,):
+        if not raw:
+            continue
+        path = Path(raw).expanduser().resolve(strict=False)
+        if path.exists() and path not in roots:
+            roots.append(path)
+    return tuple(roots)
+
+
+def _policy_with_windows_shell_runtime_mounts(
+    policy: SandboxPolicy,
+    runtime: object | None,
+) -> SandboxPolicy:
+    if not _windows_sandbox_backend_active(runtime) or not hasattr(policy, "mounts"):
+        return policy
+    mounts_by_path = {str(mount.host_path): mount for mount in policy.mounts}
+    for path in _windows_shell_runtime_mount_paths():
+        existing = mounts_by_path.get(str(path))
+        if existing is not None and existing.mode == "rw":
+            continue
+        mounts_by_path[str(path)] = MountSpec(
+            host_path=path,
+            sandbox_path=path,
+            mode="ro",
+            required=True,
+        )
+    return dataclasses.replace(policy, mounts=tuple(mounts_by_path.values()))
+
+
+def _policy_with_wall_timeout(
+    policy: SandboxPolicy,
+    wall_timeout_s: float,
+) -> SandboxPolicy:
+    if not hasattr(policy, "limits"):
+        return policy
+    return dataclasses.replace(
+        policy,
+        limits=dataclasses.replace(
+            policy.limits,
+            wall_timeout_s=max(0.01, float(wall_timeout_s)),
+        ),
+    )
 
 
 def _sandbox_workdir_access_envelope(
@@ -397,6 +1847,8 @@ def _sandbox_workdir_access_envelope(
         return None
     if decision.status == "blocked":
         return _path_access_blocked_envelope(decision)
+    if trusted_sandbox_active() and grant_temporary_mount_for_current_tool(decision):
+        return None
     return _path_access_required_envelope(decision, approval_id=approval_id)
 
 
@@ -430,11 +1882,13 @@ def _sandbox_write_path_access_envelope(
     workdir: str | None,
     command: str,
     *,
+    stdin: str | None = None,
     approval_id: str | None = None,
 ) -> dict[str, object] | None:
-    write_paths = _shell_write_access_targets(command, profile)
+    write_paths = _shell_write_access_targets(command, profile, stdin=stdin)
     if not write_paths or not _sandbox_path_access_enabled():
         return None
+    shell_file_targets = frozenset(_shell_write_targets_from_inputs(command, stdin))
     for raw_path in write_paths:
         decision = decide_path_access(
             _resolve_shell_write_target(raw_path, workdir),
@@ -443,19 +1897,113 @@ def _sandbox_write_path_access_envelope(
             write=True,
         )
         if decision.status == "allowed":
+            _grant_precise_windows_file_mount_for_allowed_write_target(
+                raw_path,
+                decision,
+                shell_file_targets,
+            )
             continue
         if decision.status == "blocked":
             return _path_access_blocked_envelope(decision)
+        if trusted_sandbox_active() and grant_temporary_mount_for_current_tool(
+            decision,
+            prefer_file=_shell_write_target_prefers_file(raw_path, shell_file_targets),
+        ):
+            continue
         return _path_access_required_envelope(decision, approval_id=approval_id)
     return None
 
 
-def _shell_write_access_targets(command: str, profile: OperationProfile) -> tuple[str, ...]:
+def _protected_metadata_write_block(
+    tool_name: str,
+    command: str,
+    workdir: str | None,
+    profile: OperationProfile,
+    *,
+    stdin: str | None = None,
+) -> dict[str, object] | None:
+    for raw_path in _shell_write_access_targets(command, profile, stdin=stdin):
+        resolved = _resolve_shell_write_target(raw_path, workdir)
+        protected_name = next(
+            (part for part in resolved.parts if part in _PROTECTED_METADATA_NAMES),
+            None,
+        )
+        if protected_name is None:
+            continue
+        return {
+            "status": "blocked",
+            "reason": "protected_metadata",
+            "tool": tool_name,
+            "command": command,
+            "target": raw_path,
+            "resolved_path": str(resolved),
+            "protected_name": protected_name,
+            "message": (
+                f"Refusing to write inside protected metadata path {protected_name}. "
+                "This path remains read-only inside the sandbox."
+            ),
+        }
+    return None
+
+
+def _grant_precise_windows_file_mount_for_allowed_write_target(
+    raw_path: str,
+    decision: MountDecision,
+    shell_file_targets: frozenset[str],
+) -> None:
+    if not trusted_sandbox_active() or not _windows_sandbox_backend_active():
+        return
+    if not _shell_write_target_prefers_file(raw_path, shell_file_targets):
+        return
+    candidate = Path(decision.normalized_path).expanduser().resolve(strict=False)
+    if not candidate.exists() or candidate.is_dir():
+        return
+    candidate_text = str(candidate)
+    for mount in _active_sandbox_mounts():
+        raw_mount_path = mount.get("path")
+        access = str(mount.get("access") or "ro").strip()
+        if (
+            isinstance(raw_mount_path, str)
+            and raw_mount_path.strip()
+            and access == "rw"
+            and str(Path(raw_mount_path).expanduser().resolve(strict=False)) == candidate_text
+        ):
+            return
+    grant_temporary_mount_for_current_tool(
+        MountDecision(
+            status="request",
+            normalized_path=candidate_text,
+            access="rw",
+            reason="windows_existing_file_write_target",
+        ),
+        prefer_file=True,
+    )
+
+
+def _shell_write_access_targets(
+    command: str,
+    profile: OperationProfile,
+    *,
+    stdin: str | None = None,
+) -> tuple[str, ...]:
     targets: list[str] = []
-    for target in (*_shell_write_targets(command), *getattr(profile, "requested_write_paths", ())):
+    for target in (
+        *_shell_write_targets_from_inputs(command, stdin),
+        *getattr(profile, "requested_write_paths", ()),
+    ):
         if target not in targets:
             targets.append(target)
     return tuple(targets)
+
+
+def _shell_write_target_prefers_file(
+    raw_target: str,
+    shell_file_targets: frozenset[str],
+) -> bool:
+    if raw_target in shell_file_targets:
+        return True
+    cleaned = raw_target.strip().strip("'\"")
+    return bool(ntpath.splitext(cleaned)[1] or Path(cleaned).suffix)
 
 
 def _resolve_shell_write_target(raw_target: str, workdir: str | None) -> Path:
@@ -476,7 +2024,7 @@ def _shell_target_is_relative(raw_target: str) -> bool:
     return not Path(cleaned).expanduser().is_absolute()
 
 
-def _shell_write_targets(command: str) -> list[str]:
+def _basic_shell_write_targets(command: str) -> list[str]:
     targets: list[str] = []
     redirection_pattern = r"(?:^|\s)(?:\d?>{1,2}|&>{1,2})\s*(['\"]?)([^'\"\s|&;]+)\1"
     targets.extend(match.group(2) for match in re.finditer(redirection_pattern, command))
@@ -485,8 +2033,29 @@ def _shell_write_targets(command: str) -> list[str]:
     return targets
 
 
-def _shell_workdir_requires_write(command: str, profile: OperationProfile) -> bool:
-    for target in _shell_write_targets(command):
+def _shell_write_targets(command: str) -> list[str]:
+    targets = _basic_shell_write_targets(command)
+    if _windows_sandbox_backend_active():
+        for target in _windows_shell_write_targets(command):
+            if target not in targets:
+                targets.append(target)
+    return targets
+
+
+def _shell_write_targets_from_inputs(command: str, stdin: str | None = None) -> list[str]:
+    targets = _shell_write_targets(command)
+    if stdin is not None:
+        for stdin_chunk in _iter_stdin_guard_chunks(stdin):
+            targets.extend(_shell_write_targets(stdin_chunk))
+    return targets
+
+
+def _shell_workdir_requires_write(
+    command: str,
+    profile: OperationProfile,
+    stdin: str | None = None,
+) -> bool:
+    for target in _shell_write_targets_from_inputs(command, stdin):
         if _shell_target_is_relative(target):
             return True
     for target in getattr(profile, "requested_write_paths", ()):
@@ -499,11 +2068,13 @@ def _workspace_lockdown_shell_block(
     tool_name: str,
     command: str,
     workdir: str | None,
+    *,
+    stdin: str | None = None,
 ) -> dict[str, object] | None:
     roots = _workspace_lockdown_roots()
     if not roots:
         return None
-    for target in _shell_write_targets(command):
+    for target in _shell_write_targets_from_inputs(command, stdin):
         resolved = _resolve_shell_write_target(target, workdir)
         if _path_inside_any_root(resolved, roots):
             continue
@@ -524,10 +2095,304 @@ def _workspace_lockdown_shell_block(
     return None
 
 
+def _runtime_readonly_shell_block(
+    tool_name: str,
+    command: str,
+    workdir: str | None,
+    *,
+    stdin: str | None = None,
+    runtime: object | None = None,
+) -> dict[str, object] | None:
+    if full_host_access_active():
+        return None
+    roots = _runtime_readonly_roots(runtime)
+    if not roots:
+        return None
+    runtime_mutation = _runtime_python_environment_mutation(command, workdir, roots)
+    if runtime_mutation is not None:
+        operation, root = runtime_mutation
+        return {
+            "status": "blocked",
+            "reason": "runtime_readonly",
+            "tool": tool_name,
+            "command": command,
+            "runtime_operation": operation,
+            "readonly_root": str(root),
+            "message": (
+                f"{tool_name} blocked by sandbox runtime read-only policy: "
+                f"{operation} would modify the OpenSquilla runtime environment under {root}. "
+                "Create a project virtual environment in a writable workspace path, or install "
+                "runtime dependencies outside Trusted-Sandbox."
+            ),
+            "retryable": False,
+        }
+    for target in _shell_write_targets_from_inputs(command, stdin):
+        resolved = _resolve_shell_write_target(target, workdir)
+        candidate = resolved.expanduser().resolve(strict=False)
+        for root in roots:
+            try:
+                candidate.relative_to(root)
+            except ValueError:
+                continue
+            return {
+                "status": "blocked",
+                "reason": "runtime_readonly",
+                "tool": tool_name,
+                "command": command,
+                "target": target,
+                "resolved_path": str(candidate),
+                "readonly_root": str(root),
+                "message": (
+                    f"{tool_name} blocked by sandbox runtime read-only policy: "
+                    f"shell write target {candidate} is under read-only runtime root {root}."
+                ),
+                "retryable": False,
+            }
+    return None
+
+
+def _windows_runtime_readonly_shell_block(
+    tool_name: str,
+    command: str,
+    workdir: str | None,
+    *,
+    stdin: str | None = None,
+) -> dict[str, object] | None:
+    return _runtime_readonly_shell_block(
+        tool_name,
+        command,
+        workdir,
+        stdin=stdin,
+        runtime=get_runtime(),
+    )
+
+
+def _runtime_python_environment_mutation(
+    command: str,
+    workdir: str | None,
+    roots: tuple[Path, ...],
+) -> tuple[str, Path] | None:
+    for tokens in _iter_shell_command_tokens(command):
+        result = _runtime_python_environment_mutation_from_tokens(tokens, workdir, roots)
+        if result is not None:
+            return result
+    return None
+
+
+def _iter_shell_command_tokens(command: str) -> Iterator[list[str]]:
+    for statement in _split_shell_statements(command):
+        try:
+            tokens = shlex.split(statement, posix=not _statement_has_windows_path(statement))
+        except ValueError:
+            continue
+        if not tokens:
+            continue
+        nested = _nested_posix_shell_command(tokens)
+        if nested is not None:
+            yield from _iter_shell_command_tokens(nested)
+            continue
+        yield tokens
+
+
+def _split_shell_statements(command: str) -> list[str]:
+    statements: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if quote is not None:
+            current.append(char)
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in "'\"":
+            current.append(char)
+            quote = char
+            index += 1
+            continue
+        if char == "&" and index + 1 < len(command) and command[index + 1] == "&":
+            statement = "".join(current).strip()
+            if statement:
+                statements.append(statement)
+            current = []
+            index += 2
+            continue
+        if char in ";|":
+            statement = "".join(current).strip()
+            if statement:
+                statements.append(statement)
+            current = []
+            index += 1
+            continue
+        current.append(char)
+        index += 1
+    statement = "".join(current).strip()
+    if statement:
+        statements.append(statement)
+    return statements
+
+
+def _statement_has_windows_path(statement: str) -> bool:
+    return _WINDOWS_ABSOLUTE_PATH_IN_SCRIPT_RE.search(statement) is not None
+
+
+def _nested_posix_shell_command(tokens: list[str]) -> str | None:
+    if not tokens:
+        return None
+    command = Path(tokens[0]).name.lower()
+    if command not in {"bash", "dash", "fish", "ksh", "sh", "zsh"}:
+        return None
+    for index, token in enumerate(tokens[1:], start=1):
+        if token in {"-c", "-lc"} and index + 1 < len(tokens):
+            return tokens[index + 1]
+    return None
+
+
+def _runtime_python_environment_mutation_from_tokens(
+    tokens: list[str],
+    workdir: str | None,
+    roots: tuple[Path, ...],
+) -> tuple[str, Path] | None:
+    command = Path(tokens[0]).name.lower()
+    explicit_runtime_python = _explicit_python_command_targets_runtime(
+        tokens[0],
+        workdir,
+        roots,
+    )
+    if len(tokens) >= 3 and _python_command_name(tokens[0]):
+        if tokens[1:3] == ["-m", "ensurepip"]:
+            if _explicit_command_path(tokens[0]) and not explicit_runtime_python:
+                return None
+            return "python -m ensurepip", (
+                _runtime_root_for_command(tokens[0], workdir, roots)
+                if explicit_runtime_python
+                else roots[0]
+            )
+        if (
+            explicit_runtime_python
+            and len(tokens) >= 4
+            and tokens[1:3] == ["-m", "pip"]
+            and tokens[3] == "install"
+        ):
+            return "python -m pip install", _runtime_root_for_command(tokens[0], workdir, roots)
+
+    if (
+        command in {"pip", "pip3"}
+        and len(tokens) >= 2
+        and tokens[1] == "install"
+        and _explicit_command_inside_runtime(tokens[0], workdir, roots)
+    ):
+        return "pip install", _runtime_root_for_command(tokens[0], workdir, roots)
+
+    return None
+
+
+def _python_command_name(executable: str) -> bool:
+    name = ntpath.basename(executable.strip("'\"")).lower()
+    for suffix in (".exe", ".cmd", ".bat"):
+        name = name.removesuffix(suffix)
+    return re.fullmatch(
+        r"python(?:\d+(?:\.\d+)*)?",
+        name,
+    ) is not None
+
+
+def _explicit_python_command_targets_runtime(
+    executable: str,
+    workdir: str | None,
+    roots: tuple[Path, ...],
+) -> bool:
+    if not _python_command_name(executable):
+        return False
+    return _explicit_command_inside_runtime(executable, workdir, roots)
+
+
+def _explicit_command_inside_runtime(
+    executable: str,
+    workdir: str | None,
+    roots: tuple[Path, ...],
+) -> bool:
+    path_text = executable.strip().strip("'\"")
+    if _windows_explicit_path(path_text):
+        candidate_text = _normalize_windows_path_text(path_text)
+        return any(
+            _windows_path_inside(candidate_text, _normalize_windows_path_text(str(root)))
+            for root in roots
+        )
+    path = Path(path_text).expanduser()
+    if path_text.startswith(("/", "~", "./", "../")):
+        if not path.is_absolute():
+            base = Path(workdir).expanduser() if workdir else Path.cwd()
+            path = base / path
+        candidate = path.resolve(strict=False)
+        return any(_path_inside_any_root(candidate, [root]) for root in roots)
+    return False
+
+
+def _explicit_command_path(executable: str) -> bool:
+    path_text = executable.strip().strip("'\"")
+    return _windows_explicit_path(path_text) or path_text.startswith(("/", "~", "./", "../"))
+
+
+def _windows_explicit_path(path_text: str) -> bool:
+    return bool(
+        re.match(r"^[A-Za-z]:[\\/]", path_text)
+        or path_text.startswith(("\\\\", ".\\", "..\\"))
+    )
+
+
+def _normalize_windows_path_text(path_text: str) -> str:
+    return path_text.replace("\\", "/").rstrip("/").lower()
+
+
+def _windows_path_inside(candidate: str, root: str) -> bool:
+    return candidate == root or candidate.startswith(root + "/")
+
+
+def _runtime_root_for_command(
+    executable: str,
+    workdir: str | None,
+    roots: tuple[Path, ...],
+) -> Path:
+    path_text = executable.strip().strip("'\"")
+    if _windows_explicit_path(path_text):
+        candidate_text = _normalize_windows_path_text(path_text)
+        for root in roots:
+            if _windows_path_inside(candidate_text, _normalize_windows_path_text(str(root))):
+                return root
+        return roots[0]
+    path = Path(path_text).expanduser()
+    if path_text.startswith(("/", "~", "./", "../")):
+        if not path.is_absolute():
+            base = Path(workdir).expanduser() if workdir else Path.cwd()
+            path = base / path
+        candidate = path.resolve(strict=False)
+        for root in roots:
+            if _path_inside_any_root(candidate, [root]):
+                return root
+    return roots[0]
+
+
+def _host_shell_env(env: dict[str, str]) -> dict[str, str]:
+    cleaned = dict(env)
+    if cleaned.get(OPENSQUILLA_NETWORK_ENV_KEY) != "proxy_allowlist":
+        return cleaned
+    for key in (*PROXY_ENV_KEYS, *NO_PROXY_ENV_KEYS):
+        cleaned.pop(key, None)
+    for key, _value in PROXY_CONTROL_ENV:
+        cleaned.pop(key, None)
+    cleaned.pop(PROXY_ACTIVE_ENV_KEY, None)
+    return cleaned
+
+
 def _workspace_write_deny_shell_block(
     tool_name: str,
     command: str,
     workdir: str | None,
+    *,
+    stdin: str | None = None,
 ) -> dict[str, object] | None:
     from opensquilla.tools.write_policy import (
         match_workspace_write_deny,
@@ -540,7 +2405,7 @@ def _workspace_write_deny_shell_block(
         if ctx is not None and ctx.workspace_dir
         else None
     )
-    for target in _shell_write_targets(command):
+    for target in _shell_write_targets_from_inputs(command, stdin):
         resolved = _resolve_shell_write_target(target, workdir)
         deny_match = match_workspace_write_deny(
             resolved,
@@ -584,8 +2449,13 @@ def _resolve_background_timeout(timeout: float | int | None) -> float:
 def _effective_workdir(workdir: str | None) -> str | None:
     ctx = current_tool_context.get()
     if workdir:
-        reject_foreign_host_path(workdir, platform=os.name)
-        raw = Path(workdir).expanduser()
+        translated = (
+            _windows_translate_posix_tmp_path(workdir)
+            if _windows_sandbox_backend_active()
+            else workdir
+        )
+        reject_foreign_host_path(translated, platform=os.name)
+        raw = Path(translated).expanduser()
         if not raw.is_absolute() and ctx and ctx.workspace_dir:
             return str((Path(ctx.workspace_dir).expanduser().resolve() / raw).resolve())
         return str(raw.resolve())
@@ -805,6 +2675,20 @@ async def _terminate_exec_process_tree(proc: Any) -> None:
         log.warning("exec_command_termination_timeout", pid=proc.pid)
 
 
+async def _write_exec_stdin(proc: Any, stdin_bytes: bytes | None) -> None:
+    if stdin_bytes is None or proc.stdin is None:
+        return
+    try:
+        for offset in range(0, len(stdin_bytes), _EXEC_STDIN_WRITE_CHUNK_BYTES):
+            proc.stdin.write(stdin_bytes[offset : offset + _EXEC_STDIN_WRITE_CHUNK_BYTES])
+            await proc.stdin.drain()
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+    finally:
+        if proc.stdin is not None and not proc.stdin.is_closing():
+            proc.stdin.close()
+
+
 async def _await_bg_output_task(output_task: asyncio.Task[None]) -> None:
     try:
         await asyncio.wait_for(output_task, timeout=_BACKGROUND_KILL_TIMEOUT)
@@ -819,11 +2703,13 @@ async def _run_host_shell_command(
     *,
     cwd: str | None,
     env: dict[str, str],
-    timeout: float,
+    stdin_bytes: bytes | None,
+    effective_timeout: float,
 ) -> str:
     try:
         with tempfile.TemporaryFile() as output_file:
             subprocess_kwargs: dict[str, Any] = {
+                "stdin": asyncio.subprocess.PIPE if stdin_bytes is not None else None,
                 "stdout": output_file,
                 "stderr": asyncio.subprocess.STDOUT,
                 "cwd": cwd,
@@ -836,10 +2722,25 @@ async def _run_host_shell_command(
                 if creationflags:
                     subprocess_kwargs["creationflags"] = creationflags
 
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + effective_timeout
+            timeout_result = f"[timeout after {effective_timeout}s]\ncommand: {command}"
+
             proc = await asyncio.create_subprocess_shell(command, **subprocess_kwargs)
-            if not await _wait_exec_process(proc, timeout):
+            remaining = deadline - loop.time()
+            if remaining <= 0:
                 await _terminate_exec_process_tree(proc)
-                return f"[timeout after {timeout}s]\ncommand: {command}"
+                return timeout_result
+            try:
+                await asyncio.wait_for(_write_exec_stdin(proc, stdin_bytes), timeout=remaining)
+            except TimeoutError:
+                await _terminate_exec_process_tree(proc)
+                return timeout_result
+
+            remaining = deadline - loop.time()
+            if remaining <= 0 or not await _wait_exec_process(proc, remaining):
+                await _terminate_exec_process_tree(proc)
+                return timeout_result
             if os.name == "posix":
                 _signal_exec_process_tree(proc, signal.SIGTERM)
 
@@ -863,6 +2764,10 @@ async def _run_host_shell_command(
             "description": "Extra environment variable overrides.",
             "additionalProperties": {"type": "string"},
         },
+        "stdin": {
+            "type": "string",
+            "description": "Data to write to the command's standard input.",
+        },
         "approval_id": {
             "type": "string",
             "description": "Approval record to consume for warned commands.",
@@ -872,15 +2777,47 @@ async def _run_host_shell_command(
     execution_timeout_seconds=_DEFAULT_EXEC_TIMEOUT + _EXEC_TOOL_TIMEOUT_PADDING,
     execution_timeout_argument="timeout",
     execution_timeout_padding=_EXEC_TOOL_TIMEOUT_PADDING,
+    sandbox=SandboxToolDescriptor.process(
+        kind="shell.exec",
+        argv_factory=lambda a: ("exec_command", str(a.get("command", ""))),
+        cwd_factory=lambda a: a.get("workdir") if isinstance(a.get("workdir"), str) else None,
+        env_factory=lambda a: a.get("env") if isinstance(a.get("env"), dict) else None,
+        enforce=False,
+        record_payload=False,
+    ),
 )
 async def exec_command(
     command: str,
     workdir: str | None = None,
     timeout: float = _DEFAULT_EXEC_TIMEOUT,
     env: dict[str, str] | None = None,
+    stdin: str | None = None,
     approval_id: str | None = None,
 ) -> str:
     import os
+
+    runtime = get_runtime()
+    windows_process_sandbox = _windows_sandbox_backend_active(runtime)
+    runtime_readonly_block = _runtime_readonly_shell_block(
+        "exec_command", command, workdir, stdin=stdin, runtime=runtime
+    )
+    if runtime_readonly_block is not None:
+        return json.dumps(runtime_readonly_block, ensure_ascii=False)
+    if windows_process_sandbox:
+        original_profile = _profile_shell_command(command)
+        path_access = _sandbox_write_path_access_envelope(
+            original_profile,
+            workdir,
+            command,
+            stdin=stdin,
+            approval_id=approval_id,
+        )
+        if path_access is not None:
+            return json.dumps(path_access, ensure_ascii=False)
+    if windows_process_sandbox:
+        command = _windows_translate_posix_tmp_references(command)
+        if workdir:
+            workdir = _windows_translate_posix_tmp_path(workdir)
 
     result = check_safe_bin(command)
     cwd = _effective_workdir(workdir)
@@ -890,12 +2827,14 @@ async def exec_command(
     if not result.allowed:
         raise ToolError(result.reason)
 
-    sensitive_block = _sensitive_shell_block("exec_command", command, workdir=cwd)
+    sensitive_block = _sensitive_shell_block(
+        "exec_command", command, workdir=cwd, stdin=stdin
+    )
     if sensitive_block is not None:
         return sensitive_block
     path_access = _sandbox_workdir_access_envelope(
         cwd,
-        write=_shell_workdir_requires_write(command, profile),
+        write=_shell_workdir_requires_write(command, profile, stdin=stdin),
         approval_id=approval_id,
     )
     if path_access is not None:
@@ -903,18 +2842,28 @@ async def exec_command(
     path_access = _sandbox_read_path_access_envelope(profile, cwd, approval_id=approval_id)
     if path_access is not None:
         return json.dumps(path_access, ensure_ascii=False)
+    protected_block = _protected_metadata_write_block(
+        "exec_command", command, cwd, profile, stdin=stdin
+    )
+    if protected_block is not None:
+        return json.dumps(protected_block, ensure_ascii=False)
     path_access = _sandbox_write_path_access_envelope(
         profile,
         cwd,
         command,
+        stdin=stdin,
         approval_id=approval_id,
     )
     if path_access is not None:
         return json.dumps(path_access, ensure_ascii=False)
-    lockdown_block = _workspace_lockdown_shell_block("exec_command", command, cwd)
+    lockdown_block = _workspace_lockdown_shell_block(
+        "exec_command", command, cwd, stdin=stdin
+    )
     if lockdown_block is not None:
         return json.dumps(lockdown_block, ensure_ascii=False)
-    deny_block = _workspace_write_deny_shell_block("exec_command", command, cwd)
+    deny_block = _workspace_write_deny_shell_block(
+        "exec_command", command, cwd, stdin=stdin
+    )
     if deny_block is not None:
         return json.dumps(deny_block, ensure_ascii=False)
 
@@ -940,11 +2889,14 @@ async def exec_command(
     if env:
         merged_env.update(env)
     effective_timeout = _resolve_exec_timeout(timeout)
+    stdin_bytes = stdin.encode("utf-8") if stdin is not None else None
 
     host_execution = _host_execution_allowed()
+    effective_timeout = _resolve_background_timeout(timeout)
 
-    runtime = get_runtime()
     if runtime is not None and runtime.effective.sandbox_enabled and not host_execution:
+        if windows_process_sandbox:
+            _apply_windows_session_tmp_env(merged_env)
         decision, policy, request = await gate_action(
             action_kind="shell.exec",
             argv=("exec_command", command),
@@ -957,14 +2909,22 @@ async def exec_command(
         )
         if isinstance(decision, DenialResult):
             return json.dumps(decision.to_dict())
+        backend_cwd = _sandbox_shell_backend_cwd(cwd, request)
+        backend_policy = request.policy
+        backend_policy = _policy_with_active_tool_mounts(backend_policy)
+        backend_policy = _policy_with_windows_shell_runtime_mounts(backend_policy, runtime)
+        backend_policy = _policy_with_wall_timeout(backend_policy, effective_timeout)
+        backend_policy = _trusted_managed_network_policy(backend_policy, runtime)
         backend_request = SandboxRequest(
-            argv=("sh", "-lc", command),
-            cwd=_sandbox_shell_backend_cwd(cwd, request),
+            argv=_sandbox_shell_backend_argv(command, runtime, cwd=backend_cwd),
+            cwd=backend_cwd,
             action_kind=request.action_kind,
-            policy=request.policy,
-            stdin=None,
+            policy=backend_policy,
+            stdin=stdin_bytes,
             env=dict(merged_env),
             reason=getattr(request, "reason", ""),
+            session_id=getattr(request, "session_id", ""),
+            run_mode=getattr(request, "run_mode", ""),
         )
         preflight = await preflight_subprocess_managed_network(backend_request, runtime)
         if isinstance(preflight, DenialResult):
@@ -972,7 +2932,10 @@ async def exec_command(
         if isinstance(preflight, dict):
             return json.dumps(preflight)
         try:
-            sandbox_result = await run_under_backend(backend_request, runtime=runtime)
+            sandbox_result = await _run_backend_with_managed_network(
+                backend_request,
+                runtime=runtime,
+            )
         except Exception as exc:
             raise ToolError(f"Sandboxed shell execution failed: {exc}") from exc
         if sandbox_result.backend_notes:
@@ -981,17 +2944,7 @@ async def exec_command(
             )
             if isinstance(escalation, DenialResult):
                 return json.dumps(escalation.to_dict())
-            _host_once_current_call.set(True)
-            _consume_host_once_current_call()
-            try:
-                return await _run_host_shell_command(
-                    command,
-                    cwd=cwd,
-                    env=merged_env,
-                    timeout=effective_timeout,
-                )
-            finally:
-                _host_once_current_call.set(False)
+            raise ToolError("Sandboxed shell execution denied; host fallback disabled")
         output = sandbox_result.stdout
         if sandbox_result.stderr:
             output += sandbox_result.stderr
@@ -1000,12 +2953,14 @@ async def exec_command(
 
     if host_execution:
         log.info("shell_exec_host", command=_audit_command(command), run_mode=_context_run_mode())
+        merged_env = _host_shell_env(merged_env)
 
     return await _run_host_shell_command(
         command,
         cwd=cwd,
         env=merged_env,
-        timeout=effective_timeout,
+        stdin_bytes=stdin_bytes,
+        effective_timeout=effective_timeout,
     )
 
 
@@ -1025,6 +2980,13 @@ async def exec_command(
         },
     },
     required=["command"],
+    sandbox=SandboxToolDescriptor.process(
+        kind="shell.background",
+        argv_factory=lambda a: ("background_process", str(a.get("command", ""))),
+        cwd_factory=lambda a: a.get("workdir") if isinstance(a.get("workdir"), str) else None,
+        enforce=False,
+        record_payload=False,
+    ),
 )
 async def background_process(
     command: str,
@@ -1032,6 +2994,28 @@ async def background_process(
     timeout: float = _DEFAULT_BACKGROUND_TIMEOUT,
     approval_id: str | None = None,
 ) -> str:
+    runtime = get_runtime()
+    windows_process_sandbox = _windows_sandbox_backend_active(runtime)
+    runtime_readonly_block = _runtime_readonly_shell_block(
+        "background_process", command, workdir, runtime=runtime
+    )
+    if runtime_readonly_block is not None:
+        return json.dumps(runtime_readonly_block, ensure_ascii=False)
+    if windows_process_sandbox:
+        original_profile = _profile_shell_command(command)
+        path_access = _sandbox_write_path_access_envelope(
+            original_profile,
+            workdir,
+            command,
+            approval_id=approval_id,
+        )
+        if path_access is not None:
+            return json.dumps(path_access, ensure_ascii=False)
+    if windows_process_sandbox:
+        command = _windows_translate_posix_tmp_references(command)
+        if workdir:
+            workdir = _windows_translate_posix_tmp_path(workdir)
+
     result = check_safe_bin(command)
     cwd = _effective_workdir(workdir)
     profile = _profile_shell_command(command)
@@ -1050,6 +3034,11 @@ async def background_process(
     path_access = _sandbox_read_path_access_envelope(profile, cwd, approval_id=approval_id)
     if path_access is not None:
         return json.dumps(path_access, ensure_ascii=False)
+    protected_block = _protected_metadata_write_block(
+        "background_process", command, cwd, profile
+    )
+    if protected_block is not None:
+        return json.dumps(protected_block, ensure_ascii=False)
     path_access = _sandbox_write_path_access_envelope(
         profile,
         cwd,
@@ -1090,14 +3079,17 @@ async def background_process(
             return json.dumps(approval_response)
 
     host_execution = _host_execution_allowed()
+    effective_timeout = _resolve_background_timeout(timeout)
 
-    runtime = get_runtime()
     if runtime is not None and runtime.effective.sandbox_enabled and not host_execution:
+        merged_env = dict(os.environ)
+        if windows_process_sandbox:
+            _apply_windows_session_tmp_env(merged_env)
         decision, policy, request = await gate_action(
             action_kind="shell.background",
             argv=("background_process", command),
             cwd=_sandbox_shell_policy_cwd(cwd),
-            env=dict(os.environ),
+            env=merged_env,
             hints=_level_hints_for_shell_profile(
                 profile,
                 warnlist_handled=result.needs_approval,
@@ -1105,12 +3097,20 @@ async def background_process(
         )
         if isinstance(decision, DenialResult):
             return json.dumps(decision.to_dict())
+        backend_cwd = _sandbox_shell_backend_cwd(cwd, request)
+        backend_policy = policy
+        backend_policy = _policy_with_active_tool_mounts(backend_policy)
+        backend_policy = _policy_with_windows_shell_runtime_mounts(backend_policy, runtime)
+        backend_policy = _policy_with_wall_timeout(backend_policy, effective_timeout)
+        backend_policy = _trusted_managed_network_policy(backend_policy, runtime)
         backend_request = SandboxRequest(
-            argv=("sh", "-lc", command),
-            cwd=_sandbox_shell_backend_cwd(cwd, request),
+            argv=_sandbox_shell_backend_argv(command, runtime, cwd=backend_cwd),
+            cwd=backend_cwd,
             action_kind=request.action_kind,
-            policy=policy,
-            env=dict(os.environ),
+            policy=backend_policy,
+            env=merged_env,
+            session_id=getattr(request, "session_id", ""),
+            run_mode=getattr(request, "run_mode", ""),
         )
         preflight = await preflight_subprocess_managed_network(backend_request, runtime)
         if isinstance(preflight, DenialResult):
@@ -1146,8 +3146,6 @@ async def background_process(
             ],
         )
         _bg_sessions[session_id] = session
-        effective_timeout = _resolve_background_timeout(timeout)
-
         async def _collect_restricted() -> None:
             output_task = asyncio.create_task(_read_bg_output(session))
             try:
@@ -1171,6 +3169,7 @@ async def background_process(
         )
 
     session_id = str(uuid.uuid4())[:8]
+    host_env = _host_shell_env(os.environ.copy())
 
     if os.name == "posix":
         proc = await asyncio.create_subprocess_shell(
@@ -1179,7 +3178,7 @@ async def background_process(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             cwd=cwd,
-            env=os.environ.copy(),
+            env=host_env,
             start_new_session=True,
         )
     else:
@@ -1189,7 +3188,7 @@ async def background_process(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             cwd=cwd,
-            env=os.environ.copy(),
+            env=host_env,
         )
 
     ctx = current_tool_context.get()
@@ -1203,7 +3202,6 @@ async def background_process(
         local_urls=_local_server_urls_from_command(command),
     )
     _bg_sessions[session_id] = session
-    effective_timeout = _resolve_background_timeout(timeout)
 
     async def _collect_host() -> None:
         output_task = asyncio.create_task(_read_bg_output(session))
@@ -1229,15 +3227,118 @@ async def _spawn_sandboxed_background_process(
 ) -> _SpawnedBackgroundProcess:
     backend = runtime.backend
     if isinstance(backend, BubblewrapBackend):
-        argv = build_bwrap_argv(request)
-        process = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            start_new_session=True,
-        )
-        return _SpawnedBackgroundProcess(process=process)
+        bridge: LinuxProxyBridgeHost | None = None
+        bridge_tmp: tempfile.TemporaryDirectory[str] | None = None
+        wrapper_tmp: tempfile.TemporaryDirectory[str] | None = None
+        async_cleanup_callbacks: list[Callable[[], Awaitable[None]]] = []
+        cleanup_callbacks: list[Callable[[], None]] = []
+        synthetic_registrations: tuple[SyntheticMountRegistration, ...] = ()
+        protected_create_registrations: tuple[ProtectedCreateRegistration, ...] = ()
+        try:
+            bridge_uds_path: Path | None = None
+            bridge_script_path: Path | None = None
+            exec_wrapper_path: Path | None = None
+            if request.policy.network is NetworkMode.PROXY_ALLOWLIST:
+                proxy = request.policy.network_proxy
+                if proxy is None:
+                    raise ToolError(
+                        "NetworkMode.PROXY_ALLOWLIST requires a network proxy "
+                        "for bubblewrap background processes"
+                    )
+                bridge_tmp = tempfile.TemporaryDirectory(
+                    prefix="opensquilla-bwrap-background-proxy-"
+                )
+                bridge_uds_path = Path(bridge_tmp.name) / "proxy.sock"
+                bridge = LinuxProxyBridgeHost(
+                    bridge_uds_path,
+                    proxy.host,
+                    proxy.port,
+                )
+                await bridge.start()
+                bridge_uds_path = bridge.uds_path
+                bridge_script_path = bridge.script_path
+                exec_wrapper_path = bridge.exec_wrapper_path
+
+                async def cleanup_bridge() -> None:
+                    assert bridge is not None
+                    assert bridge_tmp is not None
+                    await bridge.stop()
+                    bridge_tmp.cleanup()
+
+                async_cleanup_callbacks.append(cleanup_bridge)
+            else:
+                wrapper_tmp = tempfile.TemporaryDirectory(
+                    prefix="opensquilla-bwrap-background-exec-"
+                )
+                exec_wrapper_path = Path(wrapper_tmp.name) / "linux_exec_wrapper.py"
+                materialize_linux_exec_wrapper(exec_wrapper_path)
+
+                def cleanup_wrapper() -> None:
+                    assert wrapper_tmp is not None
+                    wrapper_tmp.cleanup()
+
+                cleanup_callbacks.append(cleanup_wrapper)
+            plan = build_bwrap_plan(
+                request,
+                bridge_uds_path=bridge_uds_path,
+                bridge_script_path=bridge_script_path,
+                exec_wrapper_path=exec_wrapper_path,
+                mount_proc=bool(getattr(probe_bwrap(), "supports_proc", True)),
+            )
+            argv = plan.argv
+            synthetic_registrations = register_synthetic_mount_targets(
+                plan.synthetic_mount_targets,
+            )
+            protected_create_registrations = register_protected_create_targets(
+                plan.protected_create_targets,
+            )
+            if plan.preserved_files:
+                def cleanup_preserved_files() -> None:
+                    for file in plan.preserved_files:
+                        file.close()
+
+                cleanup_callbacks.append(cleanup_preserved_files)
+            if plan.synthetic_mount_targets:
+                def cleanup_synthetic_mounts() -> None:
+                    cleanup_synthetic_mount_registrations(synthetic_registrations)
+
+                cleanup_callbacks.append(cleanup_synthetic_mounts)
+            if plan.protected_create_targets:
+                def cleanup_protected_create() -> None:
+                    messages = cleanup_protected_create_registrations(
+                        protected_create_registrations,
+                    )
+                    for message in messages:
+                        log.warning("background_process_policy_violation", message=message)
+
+                cleanup_callbacks.append(cleanup_protected_create)
+            process = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                start_new_session=True,
+                preexec_fn=resource_preexec_from_limits(request.policy.limits),
+                pass_fds=tuple(file.fileno() for file in plan.preserved_files),
+            )
+            return _SpawnedBackgroundProcess(
+                process=process,
+                cleanup_callbacks=cleanup_callbacks,
+                async_cleanup_callbacks=async_cleanup_callbacks,
+            )
+        except Exception:
+            cleanup_synthetic_mount_registrations(synthetic_registrations)
+            cleanup_protected_create_registrations(protected_create_registrations)
+            plan_obj = locals().get("plan")
+            for file in getattr(plan_obj, "preserved_files", ()):
+                file.close()
+            if bridge is not None:
+                await bridge.stop()
+            if bridge_tmp is not None:
+                bridge_tmp.cleanup()
+            if wrapper_tmp is not None:
+                wrapper_tmp.cleanup()
+            raise
     if isinstance(backend, NoopBackend):
         process = await asyncio.create_subprocess_exec(
             *request.argv,
@@ -1277,13 +3378,14 @@ async def _spawn_sandboxed_background_process(
                 profile_file.flush()
                 profile_path = Path(profile_file.name)
             argv = build_seatbelt_argv(request, profile_path)
+            env = seatbelt_env_for_policy(request.policy, request.env, tmp_dir=tmp_dir)
             process = await asyncio.create_subprocess_exec(
                 *argv,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 cwd=str(request.cwd),
-                env=request.env,
+                env=env,
                 start_new_session=True,
             )
             return _SpawnedBackgroundProcess(process=process, cleanup_callbacks=[cleanup])
@@ -1330,6 +3432,7 @@ def get_bg_session(session_id: str) -> _BgSession | None:
         },
     },
     required=["action"],
+    sandbox=SandboxToolDescriptor.custom(kind="process", enforce=False),
 )
 async def process(
     action: str,

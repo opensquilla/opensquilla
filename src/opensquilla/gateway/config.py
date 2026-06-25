@@ -100,12 +100,20 @@ class ControlUiConfig(BaseSettings):
 
     enabled: bool = True
     base_path: str = "/control"
+    frontend: Literal["vue", "legacy"] = "vue"
     allowed_origins: list[str] = Field(default_factory=list)
 
     @field_validator("base_path")
     @classmethod
     def _strip_trailing_slash(cls, v: str) -> str:
         return v.rstrip("/")
+
+    @field_validator("frontend", mode="before")
+    @classmethod
+    def _normalize_frontend(cls, v: object) -> object:
+        if isinstance(v, str):
+            return v.strip().lower()
+        return v
 
 
 class SkillsConfig(BaseSettings):
@@ -154,7 +162,7 @@ class PermissionsConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    default_mode: Literal["off", "on", "bypass", "full"] = "bypass"
+    default_mode: Literal["off", "on", "bypass", "full"] = "off"
 
 
 class TaskRuntimeConfig(BaseModel):
@@ -925,6 +933,7 @@ class SquillaRouterConfig(BaseSettings):
     tiers: dict = Field(default_factory=_default_tiers)
     default_tier: str = DEFAULT_TEXT_TIER
     confidence_threshold: float = 0.5
+    confidence_high_tier_margin: float = Field(default=0.05, ge=0.0)
     v4_bundle_dir: str | None = None  # V4 Phase 3 bundle root; defaults to bundled assets
     v4_use_aux_head: bool | None = True  # override router.runtime.yaml aux head when set
     routing_timeout_seconds: float = Field(default=5.0, gt=0.0)
@@ -936,6 +945,16 @@ class SquillaRouterConfig(BaseSettings):
     require_router_runtime: bool = True
     estimated_output_savings_pct: float = 0.03
     upgrade_to_c3_compaction_enabled: bool = True
+    vision_history_lookback_turns: int = Field(default=8, ge=0)
+    vision_history_candidate_turns: int = Field(default=8, ge=0)
+    vision_sticky_followup_turns: int = Field(default=3, ge=0)
+    vision_followup_gate_enabled: bool = True
+    vision_followup_gate_tier: str = "c0"
+    vision_followup_gate_model: str | None = None
+    vision_followup_gate_timeout_seconds: float = Field(default=10.0, ge=0.1)
+    vision_followup_gate_max_output_tokens: int = Field(default=512, ge=16)
+    vision_followup_gate_fallback_recent_turns: int = Field(default=2, ge=0)
+    vision_followup_gate_unknown_policy: str = "image_if_recent"
 
     @model_validator(mode="before")
     @classmethod

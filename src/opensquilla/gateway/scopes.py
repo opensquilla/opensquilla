@@ -113,6 +113,7 @@ METHOD_SCOPES: dict[str, str] = {
     "tools.effective": READ_SCOPE,
     "tools.search_provider": READ_SCOPE,  # OpenSquilla-only; classified read.
     "sandbox.status": READ_SCOPE,  # OpenSquilla-only; sandbox posture summary.
+    "sandbox.setup.status": READ_SCOPE,  # OpenSquilla-only; setup readiness.
     "sandbox.explain": READ_SCOPE,  # OpenSquilla-only; deterministic sandbox explanation.
     "sandbox.run_context.get": READ_SCOPE,  # OpenSquilla-only; session sandbox mode.
     "sandbox.path.list": READ_SCOPE,  # OpenSquilla-only; inline path browser listing.
@@ -134,6 +135,9 @@ METHOD_SCOPES: dict[str, str] = {
     "cron.unsubscribe": READ_SCOPE,  # OpenSquilla-only; classified read.
     "usage.status": READ_SCOPE,
     "usage.cost": READ_SCOPE,
+    "meta.runs.list": READ_SCOPE,
+    "meta.runs.failures": READ_SCOPE,
+    "meta.runs.cost": READ_SCOPE,
     # OpenSquilla-only — onboarding catalog and status are operator-readable.
     "onboarding.status": READ_SCOPE,
     "onboarding.catalog": READ_SCOPE,
@@ -148,6 +152,7 @@ METHOD_SCOPES: dict[str, str] = {
     "chat.clarify_submit": WRITE_SCOPE,
     "search.query": WRITE_SCOPE,
     "sessions.create": WRITE_SCOPE,
+    "sessions.fork": WRITE_SCOPE,
     "sessions.send": WRITE_SCOPE,
     "sessions.abort": WRITE_SCOPE,
     "sessions.reset": WRITE_SCOPE,
@@ -161,6 +166,7 @@ METHOD_SCOPES: dict[str, str] = {
     "sandbox.domain.remove": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded handler.
     "sandbox.bundle.enable": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded handler.
     "sandbox.bundle.disable": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded handler.
+    "sandbox.setup.ensure": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded setup.
     "sandbox.run_context.set": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded handler.
     "sandbox.path.pick": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded host directory picker.
     # OpenSquilla-only; explicit override of `config.` admin prefix.
@@ -201,6 +207,13 @@ METHOD_SCOPES: dict[str, str] = {
     "skills.update": ADMIN_SCOPE,
     "skills.uninstall": ADMIN_SCOPE,
     "skills.deps.install": ADMIN_SCOPE,
+    "meta.runs.show": ADMIN_SCOPE,
+    "meta.runs.draft": ADMIN_SCOPE,
+    "meta.runs.confirm_preflight": ADMIN_SCOPE,
+    "meta.runs.diff": ADMIN_SCOPE,
+    "meta.runs.replay": ADMIN_SCOPE,
+    "meta.runs.validate": ADMIN_SCOPE,
+    "meta.runs.eval_baseline": ADMIN_SCOPE,
     # Proposal mutation changes the managed skill layer or unattended
     # synthesis state, so require authenticated admin rather than remote
     # no-auth operator.proposals.

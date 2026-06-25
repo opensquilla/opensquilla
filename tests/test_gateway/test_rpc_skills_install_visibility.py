@@ -7,9 +7,39 @@ import pytest
 
 from opensquilla.gateway import rpc_skills
 from opensquilla.gateway.rpc import RpcContext
+from opensquilla.skills.hub.deps import DepResult
 from opensquilla.skills.hub.installer import InstallResult
 from opensquilla.skills.loader import SkillLoader
 from opensquilla.skills.types import SkillLayer, SkillPlatformMeta, SkillRequires, SkillSpec
+
+
+def _write_skill(dir_path: Path, name: str, body: str) -> None:
+    skill_dir = dir_path / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(body, encoding="utf-8")
+
+
+def _write_needs_key_skill(dir_path: Path) -> None:
+    _write_skill(
+        dir_path,
+        "needs-key",
+        """---
+name: needs-key
+description: Needs one of two API keys.
+metadata:
+  opensquilla:
+    requires:
+      envAny: [OPENROUTER_API_KEY, ARK_API_KEY]
+    install:
+      - id: helper
+        kind: uv
+        label: Install helper
+        package: helper-pkg
+---
+
+# body
+""",
+    )
 
 
 def test_rpc_skill_install_uses_loader_managed_dir_and_list_sees_skill(
@@ -75,6 +105,151 @@ def test_rpc_skill_install_uses_loader_managed_dir_and_list_sees_skill(
         assert row["description"] == "Installed from chat"
 
     asyncio.run(run())
+
+
+@pytest.mark.asyncio
+async def test_rpc_skills_list_exposes_dependency_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("ARK_API_KEY", raising=False)
+    managed_dir = tmp_path / "managed"
+    _write_needs_key_skill(managed_dir)
+    loader = SkillLoader(managed_dir=managed_dir, snapshot_path=tmp_path / "snapshot.json")
+    ctx = RpcContext(conn_id="test", skill_loader=loader)
+
+    listed = await rpc_skills._handle_skills_list(None, ctx)
+
+    row = next(skill for skill in listed["skills"] if skill["name"] == "needs-key")
+    assert row["status"] == "needs_setup"
+    assert row["eligible"] is False
+    assert row["dependency_summary"]["declared"]["api_env"]["any"] == [
+        "OPENROUTER_API_KEY",
+        "ARK_API_KEY",
+    ]
+    assert row["dependency_summary"]["missing"]["api_env"]["any"] == [
+        ["OPENROUTER_API_KEY", "ARK_API_KEY"]
+    ]
+    assert row["missing_env_any"] == [["OPENROUTER_API_KEY", "ARK_API_KEY"]]
+    assert "OPENROUTER_API_KEY or ARK_API_KEY" in row["status_detail"]
+
+
+@pytest.mark.asyncio
+async def test_rpc_skills_status_exposes_dependency_summary_and_legacy_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("ARK_API_KEY", raising=False)
+    managed_dir = tmp_path / "managed"
+    _write_needs_key_skill(managed_dir)
+    loader = SkillLoader(managed_dir=managed_dir, snapshot_path=tmp_path / "snapshot.json")
+    ctx = RpcContext(conn_id="test", skill_loader=loader)
+
+    status_rows = await rpc_skills._handle_skills_status(None, ctx)
+
+    row = next(skill for skill in status_rows if skill["name"] == "needs-key")
+    assert row["status"] == "needs_setup"
+    assert row["install"] == [
+        {
+            "id": "helper",
+            "kind": "uv",
+            "label": "Install helper",
+            "bins": [],
+        }
+    ]
+    assert row["dependency_summary"]["declared"]["api_env"]["any"] == [
+        "OPENROUTER_API_KEY",
+        "ARK_API_KEY",
+    ]
+    assert row["dependency_summary"]["missing"]["api_env"]["any"] == [
+        ["OPENROUTER_API_KEY", "ARK_API_KEY"]
+    ]
+    assert row["missing_env_any"] == [["OPENROUTER_API_KEY", "ARK_API_KEY"]]
+    assert row["missing_env"] == []
+    assert row["missing_bins"] == []
+
+
+@pytest.mark.asyncio
+async def test_rpc_skills_get_exposes_dependency_summary_and_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("ARK_API_KEY", raising=False)
+    managed_dir = tmp_path / "managed"
+    _write_needs_key_skill(managed_dir)
+    loader = SkillLoader(managed_dir=managed_dir, snapshot_path=tmp_path / "snapshot.json")
+    ctx = RpcContext(conn_id="test", skill_loader=loader)
+
+    result = await rpc_skills._handle_skills_get({"name": "needs-key"}, ctx)
+
+    assert result["name"] == "needs-key"
+    assert result["status"] == "needs_setup"
+    assert result["install"] == [
+        {
+            "id": "helper",
+            "kind": "uv",
+            "label": "Install helper",
+            "bins": [],
+        }
+    ]
+    assert result["dependency_summary"]["declared"]["api_env"]["any"] == [
+        "OPENROUTER_API_KEY",
+        "ARK_API_KEY",
+    ]
+    assert result["dependency_summary"]["missing"]["api_env"]["any"] == [
+        ["OPENROUTER_API_KEY", "ARK_API_KEY"]
+    ]
+    assert result["missing_env_any"] == [["OPENROUTER_API_KEY", "ARK_API_KEY"]]
+    assert result["content"] == "# body"
+    assert Path(result["file_path"]).name == "SKILL.md"
+    assert Path(result["base_dir"]).name == "needs-key"
+
+
+@pytest.mark.asyncio
+async def test_rpc_skills_deps_install_reports_env_any_missing_still(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("ARK_API_KEY", raising=False)
+    _write_skill(
+        tmp_path,
+        "env-any-install",
+        """---
+name: env-any-install
+description: Has install metadata but still needs one API key.
+metadata:
+  opensquilla:
+    requires:
+      envAny: [OPENROUTER_API_KEY, ARK_API_KEY]
+    install:
+      - id: helper
+        kind: uv
+        label: Install helper
+        package: helper-pkg
+---
+
+# body
+""",
+    )
+    loader = SkillLoader(bundled_dir=tmp_path, snapshot_path=tmp_path / "snapshot.json")
+    ctx = RpcContext(conn_id="test", skill_loader=loader)
+
+    async def fake_install_deps(_specs: list[object]) -> list[DepResult]:
+        return [DepResult(kind="uv", identifier="helper", success=True, message="Installed")]
+
+    monkeypatch.setattr(rpc_skills, "install_deps", fake_install_deps)
+
+    result = await rpc_skills._handle_skills_deps_install(
+        {"name": "env-any-install", "install_id": "helper"},
+        ctx,
+    )
+
+    assert result["success"] is True
+    assert result["missing_still"]["env_any"] == [["OPENROUTER_API_KEY", "ARK_API_KEY"]]
 
 
 def test_skill_payload_rolls_up_meta_subskill_requirements() -> None:
@@ -175,3 +350,50 @@ def test_meta_paper_write_declares_pdf_compile_binaries() -> None:
         item for item in payload["requirements"]["items"] if item["source"] == "self"
     )
     assert own_requirements["requires_bins"] == ["xelatex", "bibtex"]
+
+
+@pytest.mark.asyncio
+async def test_rpc_skills_list_exposes_meta_skill_dependency_rollup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PATH", "")
+    managed_dir = tmp_path / "managed"
+    _write_skill(
+        managed_dir,
+        "child-needs-bin",
+        """---
+name: child-needs-bin
+description: Child skill requiring a missing binary.
+metadata:
+  opensquilla:
+    requires:
+      bins: [missing-child-tool]
+---
+
+# body
+""",
+    )
+    _write_skill(
+        managed_dir,
+        "parent-meta",
+        """---
+name: parent-meta
+description: Meta skill referencing a child.
+kind: meta
+composition:
+  steps:
+    - id: child
+      skill: child-needs-bin
+---
+
+# body
+""",
+    )
+    loader = SkillLoader(managed_dir=managed_dir, snapshot_path=tmp_path / "snapshot.json")
+    ctx = RpcContext(conn_id="test", skill_loader=loader)
+
+    listed = await rpc_skills._handle_skills_list(None, ctx)
+
+    row = next(skill for skill in listed["skills"] if skill["name"] == "parent-meta")
+    assert row["dependency_summary"]["sub_skill_dependencies"]["missing_count"] == 1

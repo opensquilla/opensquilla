@@ -114,6 +114,7 @@ def test_gateway_run_turns_missing_onboarding_env_into_recovery_hint(
             "memory.embedding.remote.api_key"
         )
 
+    monkeypatch.setattr(gateway_cmd, "_gateway_bind_available", lambda *_args: True)
     monkeypatch.setattr(gateway_cmd, "start_gateway_server", fail_start_gateway_server)
 
     result = runner.invoke(app, ["gateway", "run", "--config", str(target)])
@@ -401,6 +402,7 @@ def test_gateway_run_uses_config_host_port_when_flags_are_omitted(
 
         return FakeServer(asyncio.create_task(done()))
 
+    monkeypatch.setattr(gateway_cmd, "_gateway_bind_available", lambda *_args: True)
     monkeypatch.setattr(gateway_cmd, "start_gateway_server", fake_start_gateway_server)
 
     gateway_cmd.run_gateway(
@@ -439,6 +441,7 @@ def test_gateway_run_keeps_missing_explicit_config_path_for_setup(
 
         return FakeServer(asyncio.create_task(done()))
 
+    monkeypatch.setattr(gateway_cmd, "_gateway_bind_available", lambda *_args: True)
     monkeypatch.setattr(gateway_cmd, "start_gateway_server", fake_start_gateway_server)
 
     gateway_cmd.run_gateway(
@@ -451,6 +454,28 @@ def test_gateway_run_keeps_missing_explicit_config_path_for_setup(
 
     assert captured["config"].config_path == str(custom_config)
     assert not custom_config.exists()
+
+
+def test_gateway_run_preflights_occupied_port_before_building_services(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    custom_config = tmp_path / "custom.toml"
+    custom_config.write_text('host = "127.0.0.2"\nport = 19999\n', encoding="utf-8")
+
+    async def fail_start_gateway_server(**_kwargs):
+        raise AssertionError("gateway services should not build when bind preflight fails")
+
+    monkeypatch.setattr(gateway_cmd, "start_gateway_server", fail_start_gateway_server)
+    monkeypatch.setattr(gateway_cmd, "_gateway_bind_available", lambda host, port: False)
+
+    result = runner.invoke(
+        app,
+        ["gateway", "run", "--config", str(custom_config)],
+    )
+
+    assert result.exit_code == 1
+    assert "127.0.0.2:19999 is already in use" in result.stdout
 
 
 def test_gateway_start_waits_for_readiness_after_liveness(tmp_path, monkeypatch) -> None:

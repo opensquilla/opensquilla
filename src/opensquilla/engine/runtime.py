@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import concurrent.futures
 import contextlib
 import contextvars
 import copy
@@ -31,6 +32,7 @@ import structlog
 from opensquilla.artifacts import artifact_marker
 from opensquilla.attachment_refs import (
     is_attachment_ref,
+    make_attachment_ref,
     read_attachment_ref_bytes,
     transcript_material_path,
 )
@@ -131,6 +133,7 @@ from opensquilla.observability.decision_log import (
     PipelineStepRecord,
     SavingsTelemetry,
     build_intent_summary,
+    build_vision_followup_gate_reason_code,
     compute_hashes,
     write_decision_entry,
 )
@@ -1724,6 +1727,16 @@ class TurnRunner:
         kind = input_provenance.get("kind")
         return str(kind) if kind is not None and str(kind) else None
 
+    @staticmethod
+    def _normalize_input_provenance(
+        input_provenance: dict[str, Any] | str | None,
+    ) -> dict[str, Any] | None:
+        if isinstance(input_provenance, dict):
+            return dict(input_provenance)
+        if input_provenance:
+            return {"kind": str(input_provenance)}
+        return None
+
     @classmethod
     def _turn_memory_capture_allowed(
         cls,
@@ -1816,7 +1829,7 @@ class TurnRunner:
         length_capped_continuations: int | None = None,
         input_mode: str = "user",
         persist_input: bool = False,
-        input_provenance: dict[str, Any] | None = None,
+        input_provenance: dict[str, Any] | str | None = None,
         history_has_persisted_user: bool = True,
         fresh_user_session: bool | None = None,
         session_intent: str | None = None,
@@ -1841,6 +1854,7 @@ class TurnRunner:
         """
         session_key = canonicalize_session_key(session_key)
         agent_id = normalize_agent_id(agent_id)
+        normalized_input_provenance = self._normalize_input_provenance(input_provenance)
         lock = self.get_session_lock(session_key)
         effective_tool_context = replace(
             tool_context,
@@ -1878,7 +1892,7 @@ class TurnRunner:
                     length_capped_continuations=length_capped_continuations,
                     input_mode=input_mode,
                     persist_input=persist_input,
-                    input_provenance=input_provenance,
+                    input_provenance=normalized_input_provenance,
                     history_has_persisted_user=history_has_persisted_user,
                     fresh_user_session=fresh_user_session,
                     session_intent=session_intent,
@@ -1918,7 +1932,7 @@ class TurnRunner:
                         length_capped_continuations=length_capped_continuations,
                         input_mode=input_mode,
                         persist_input=persist_input,
-                        input_provenance=input_provenance,
+                        input_provenance=normalized_input_provenance,
                         history_has_persisted_user=history_has_persisted_user,
                         fresh_user_session=fresh_user_session,
                         session_intent=session_intent,
@@ -2088,6 +2102,7 @@ class TurnRunner:
                     ),
                     ingress_pipeline_steps=ingress_pipeline_steps,
                     normalization_metadata=normalization_metadata,
+                    input_provenance=input_provenance,
                 )
             )
             pa_out = pa_outcome.require_output()
@@ -3733,6 +3748,56 @@ class TurnRunner:
             session_key=session_key,
         )
 
+    def _resolve_vision_followup_gate_model(self) -> str | None:
+        router_cfg = getattr(self._config, "squilla_router", None)
+        if router_cfg is None:
+            return None
+        configured_model = str(
+            getattr(router_cfg, "vision_followup_gate_model", "") or ""
+        ).strip()
+        if configured_model:
+            return configured_model
+        tier_name = str(getattr(router_cfg, "vision_followup_gate_tier", "c0") or "").strip()
+        if not tier_name:
+            return None
+        tiers = getattr(router_cfg, "tiers", {})
+        if not isinstance(tiers, Mapping):
+            return None
+        tier = tiers.get(tier_name)
+        if not isinstance(tier, Mapping):
+            return None
+        model = tier.get("model")
+        if not isinstance(model, str):
+            return None
+        model = model.strip()
+        return model or None
+
+    def _make_vision_followup_gate_chat(
+        self,
+        cloned_selector: Any,
+    ) -> tuple[Any | None, str | None]:
+        gate_model = self._resolve_vision_followup_gate_model()
+        if not gate_model or cloned_selector is None:
+            return None, gate_model
+        if not hasattr(cloned_selector, "clone"):
+            return None, gate_model
+        try:
+            gate_selector = cloned_selector.clone()
+            gate_selector.override_model(gate_model)
+            gate_provider = gate_selector.resolve()
+        except Exception:
+            return None, gate_model
+
+        async def _chat(
+            messages: list[Any],
+            tools: Any = None,
+            config: Any = None,
+        ) -> AsyncIterator[Any]:
+            async for event in gate_provider.chat(messages, tools=tools, config=config):
+                yield event
+
+        return _chat, gate_model
+
     def _load_daily_notes(self, workspace_dir: Any) -> dict[str, str]:
         from opensquilla.identity.workspace import load_daily_notes
 
@@ -3757,9 +3822,16 @@ class TurnRunner:
         prev_assistant_text: str | None = None,
         prev_assistant_usage: dict[str, Any] | None = None,
         history_user_texts: list[str] | None = None,
+        history_has_recent_image: bool = False,
+        history_image_turn_count: int = 0,
+        vision_sticky_remaining: int = 0,
+        turns_since_last_image: int | None = None,
+        last_image_turn_text: str | None = None,
+        vision_candidate_turns: int = 0,
         flags_text_override: str | None = None,
         tool_context: ToolContext | None = None,
         normalization_metadata: dict[str, Any] | None = None,
+        input_provenance: dict[str, Any] | None = None,
     ) -> tuple[Any, Any]:
         """Run the pre-turn pipeline and re-resolve provider if model changed.
 
@@ -3774,6 +3846,7 @@ class TurnRunner:
         from opensquilla.engine.steps import (
             apply_prompt_cache,
             apply_squilla_router,
+            apply_vision_followup_gate,
             filter_skills,
             inject_platform_hint,
             inject_subagent_grounding,
@@ -3807,20 +3880,30 @@ class TurnRunner:
             )
 
         async def _bounded_apply_squilla_router(turn: TurnContext) -> TurnContext:
-            async def _run_router_step() -> TurnContext:
-                return await apply_squilla_router(_copy_router_turn(turn))
+            def _run_router_step_sync() -> TurnContext:
+                return asyncio.run(apply_squilla_router(_copy_router_turn(turn)))
 
+            loop = asyncio.get_running_loop()
+            executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="opensquilla-router-timeout",
+            )
+            future = loop.run_in_executor(executor, _run_router_step_sync)
             try:
                 routed = await asyncio.wait_for(
-                    asyncio.to_thread(lambda: asyncio.run(_run_router_step())),
+                    future,
                     timeout=router_timeout,
                 )
                 return commit_deferred_router_history(routed)
             except TimeoutError as exc:
+                future.cancel()
                 raise TimeoutError(f"squilla router timed out after {router_timeout:g}s") from exc
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
 
         _bounded_apply_squilla_router.__name__ = "apply_squilla_router"
 
+        gate_chat, gate_model = self._make_vision_followup_gate_chat(cloned_selector)
         initial_metadata: dict[str, Any] = {
             "skill_loader": self._skill_loader,
             "meta_run_writer": getattr(self, "_meta_run_writer", None),
@@ -3852,11 +3935,24 @@ class TurnRunner:
                 )
             ),
         }
+        if gate_chat is not None:
+            initial_metadata["router_vision_followup_gate_chat"] = gate_chat
+        if gate_model:
+            initial_metadata["router_vision_followup_gate_model"] = gate_model
         if normalization_metadata is not None:
             initial_metadata["input_normalization"] = dict(normalization_metadata)
             material_tokens = normalization_metadata.get("material_estimated_tokens")
             if type(material_tokens) is int and material_tokens > 0:
                 initial_metadata["material_estimated_tokens"] = material_tokens
+        if input_provenance:
+            if isinstance(input_provenance, dict):
+                normalized_provenance = dict(input_provenance)
+            else:
+                normalized_provenance = {"kind": str(input_provenance)}
+            initial_metadata["input_provenance"] = normalized_provenance
+            provenance_kind = self._input_provenance_kind(normalized_provenance)
+            if provenance_kind:
+                initial_metadata["input_provenance_kind"] = provenance_kind
         if ingress_pipeline_steps:
             initial_metadata["pipeline_steps"] = list(ingress_pipeline_steps)
         if prev_assistant_text:
@@ -3865,6 +3961,26 @@ class TurnRunner:
             initial_metadata["router_prev_assistant_usage"] = dict(prev_assistant_usage)
         if history_user_texts:
             initial_metadata["router_history_user_texts"] = list(history_user_texts)
+        if history_has_recent_image:
+            initial_metadata["router_history_has_recent_image"] = True
+            initial_metadata["router_history_image_turn_count"] = max(
+                int(history_image_turn_count),
+                1,
+            )
+        if vision_sticky_remaining > 0:
+            initial_metadata["router_vision_sticky_remaining"] = int(
+                vision_sticky_remaining
+            )
+        if turns_since_last_image is not None:
+            initial_metadata["router_turns_since_last_image"] = int(
+                turns_since_last_image
+            )
+        if last_image_turn_text:
+            initial_metadata["router_last_image_turn_text"] = last_image_turn_text
+        if vision_candidate_turns > 0:
+            initial_metadata["router_vision_candidate_turns"] = int(
+                vision_candidate_turns
+            )
         if flags_text_override:
             initial_metadata["router_flags_text_override"] = flags_text_override
         if tool_context is not None:
@@ -3887,6 +4003,7 @@ class TurnRunner:
             turn,
             [
                 resolve_model,
+                apply_vision_followup_gate,
                 _bounded_apply_squilla_router,
                 observe_reasoning_hint,
                 meta_resolution,
@@ -3899,7 +4016,23 @@ class TurnRunner:
 
         # Apply routed model back to cloned selector (local, not shared)
         if turn.model and cloned_selector is not None:
-            cloned_selector.override_model(turn.model)
+            router_fallback_chain = (
+                turn.metadata.get("router_fallback_chain")
+                if turn.metadata.get("routing_applied") is True
+                else None
+            )
+            override_with_fallback_chain = getattr(
+                cloned_selector,
+                "override_model_with_fallback_chain",
+                None,
+            )
+            if callable(override_with_fallback_chain) and isinstance(
+                router_fallback_chain,
+                list,
+            ):
+                override_with_fallback_chain(turn.model, router_fallback_chain)
+            else:
+                cloned_selector.override_model(turn.model)
             provider = cloned_selector.resolve()
 
         return turn, provider
@@ -3925,6 +4058,7 @@ class TurnRunner:
             return {}
         entries = list(transcript or [])
         user_texts: list[str] = []
+        user_contents: list[str] = []
         for index, entry in enumerate(entries):
             if getattr(entry, "role", None) != "user":
                 continue
@@ -3933,6 +4067,7 @@ class TurnRunner:
             content = getattr(entry, "content", None)
             if not isinstance(content, str) or not content.strip():
                 continue
+            user_contents.append(content)
             unpacked = self._maybe_unpack_attachments(content)
             text = unpacked.strip() if isinstance(unpacked, str) else content.strip()
             if len(text) > _ROUTER_HISTORY_USER_MAX_CHARS:
@@ -3942,6 +4077,57 @@ class TurnRunner:
         context: dict[str, Any] = {}
         if user_texts:
             context["history_user_texts"] = user_texts[-_ROUTER_HISTORY_USER_MAX_TURNS:]
+        router_cfg = getattr(self._config, "squilla_router", None)
+        lookback = int(
+            getattr(
+                router_cfg,
+                "vision_history_lookback_turns",
+                8,
+            )
+            or 0
+        )
+        candidate_turns = int(
+            getattr(
+                router_cfg,
+                "vision_history_candidate_turns",
+                lookback,
+            )
+            or 0
+        )
+        if lookback > 0 or candidate_turns > 0:
+            recent_limit = max(lookback, candidate_turns)
+            recent_user_contents = user_contents[-recent_limit:]
+            image_positions = [
+                index
+                for index, content in enumerate(recent_user_contents)
+                if self._attachment_envelope_has_image(content)
+            ]
+            image_turn_count = len(image_positions)
+            if image_turn_count:
+                context["history_has_recent_image"] = True
+                context["history_image_turn_count"] = image_turn_count
+                turns_since_last_image = (
+                    len(recent_user_contents) - image_positions[-1] - 1
+                )
+                context["turns_since_last_image"] = turns_since_last_image
+                context["vision_candidate_turns"] = candidate_turns
+                absolute_image_index = (
+                    len(user_contents) - len(recent_user_contents) + image_positions[-1]
+                )
+                if 0 <= absolute_image_index < len(user_texts):
+                    context["last_image_turn_text"] = user_texts[absolute_image_index]
+                sticky_turns = int(
+                    getattr(
+                        router_cfg,
+                        "vision_sticky_followup_turns",
+                        2,
+                    )
+                    or 0
+                )
+                if sticky_turns > 0 and turns_since_last_image < sticky_turns:
+                    context["vision_sticky_remaining"] = (
+                        sticky_turns - turns_since_last_image
+                    )
 
         for entry in reversed(entries):
             if getattr(entry, "role", None) != "assistant":
@@ -4319,6 +4505,53 @@ class TurnRunner:
                 ),
                 session_flush_fallback_reason=(
                     prompt_report.session_flush_fallback_reason if prompt_report else None
+                ),
+                image_route_reason=(
+                    turn_obj.metadata.get("image_route_reason")
+                    if turn_obj is not None
+                    else None
+                ),
+                vision_followup_gate_decision=(
+                    turn_obj.metadata.get("router_vision_followup_gate_decision")
+                    if turn_obj is not None
+                    else None
+                ),
+                vision_followup_gate_confidence=(
+                    turn_obj.metadata.get("router_vision_followup_gate_confidence")
+                    if turn_obj is not None
+                    else None
+                ),
+                vision_followup_gate_reason=(
+                    build_vision_followup_gate_reason_code(
+                        decision=turn_obj.metadata.get(
+                            "router_vision_followup_gate_decision"
+                        ),
+                        source=turn_obj.metadata.get("router_vision_followup_gate_source"),
+                        reason=turn_obj.metadata.get("router_vision_followup_gate_reason"),
+                        fallback=turn_obj.metadata.get("router_vision_followup_fallback"),
+                    )
+                    if turn_obj is not None
+                    else None
+                ),
+                vision_followup_gate_source=(
+                    turn_obj.metadata.get("router_vision_followup_gate_source")
+                    if turn_obj is not None
+                    else None
+                ),
+                vision_followup_gate_model=(
+                    turn_obj.metadata.get("router_vision_followup_gate_model")
+                    if turn_obj is not None
+                    else None
+                ),
+                vision_followup_needs_image=(
+                    turn_obj.metadata.get("router_vision_followup_needs_image")
+                    if turn_obj is not None
+                    else None
+                ),
+                vision_followup_fallback=(
+                    turn_obj.metadata.get("router_vision_followup_fallback")
+                    if turn_obj is not None
+                    else None
                 ),
             )
             write_decision_entry(entry)
@@ -5423,8 +5656,43 @@ class TurnRunner:
         if emergency_override is not None:
             transcript = list(emergency_override.kept_entries)
             summary_markers.append(emergency_override.summary)
+        model_caps = getattr(getattr(agent, "config", None), "model_capabilities", None)
+        preserve_image_history = bool(
+            getattr(getattr(agent, "config", None), "preserve_historical_images", False)
+            and getattr(model_caps, "supports_vision", False)
+        )
+        lookback = int(
+            getattr(
+                getattr(self._config, "squilla_router", None),
+                "vision_history_lookback_turns",
+                3,
+            )
+            or 0
+        )
+        image_replay_entry_indexes: set[int] = set()
+        image_replay_session_id: str | None = None
+        if preserve_image_history and lookback > 0:
+            current_user_entry_index = (
+                len(transcript) - 1
+                if trim_last_user
+                and transcript
+                and getattr(transcript[-1], "role", None) == "user"
+                else None
+            )
+            user_entry_indexes = [
+                index
+                for index, entry in enumerate(transcript)
+                if getattr(entry, "role", None) == "user"
+                and index != current_user_entry_index
+                and isinstance(getattr(entry, "content", None), str)
+                and bool(str(getattr(entry, "content", "")).strip())
+            ]
+            image_replay_entry_indexes = set(user_entry_indexes[-lookback:])
+            image_replay_session_id = await self._resolve_session_id_for_log(session_key)
+            if image_replay_session_id is None:
+                image_replay_session_id = session_key
         last_entry_was_user = False
-        for entry in transcript:
+        for entry_index, entry in enumerate(transcript):
             if (
                 entry.role == "system"
                 and entry.content
@@ -5439,7 +5707,12 @@ class TurnRunner:
             # may carry artifact metadata. Both become text-only safe markers
             # for model-context replay.
             if raw_content and entry.role == "user":
-                content: Any = self._maybe_unpack_attachments(raw_content)
+                content: Any = self._maybe_unpack_attachments(
+                    raw_content,
+                    preserve_image_attachments=entry_index in image_replay_entry_indexes,
+                    media_root=self._attachment_media_root(),
+                    session_id=image_replay_session_id,
+                )
             elif raw_content and entry.role == "assistant":
                 content = self._maybe_unpack_assistant_artifacts(raw_content)
             else:
@@ -5557,17 +5830,49 @@ class TurnRunner:
         return _format_compaction_summary_context(context_items)
 
     @staticmethod
-    def _maybe_unpack_attachments(content: str) -> Any:
+    def _attachment_envelope_has_image(content: str) -> bool:
+        if not content or not content.lstrip().startswith("{"):
+            return False
+        try:
+            parsed = json.loads(content)
+        except (json.JSONDecodeError, ValueError):
+            return False
+        if not isinstance(parsed, dict):
+            return False
+        atts = parsed.get("attachments") or []
+        if not isinstance(atts, list):
+            return False
+        for att in atts:
+            if not isinstance(att, dict):
+                continue
+            media_type = att.get("type") or att.get("mime") or att.get("media_type")
+            if not (isinstance(media_type, str) and media_type.startswith("image/")):
+                continue
+            if media_type not in _ALLOWED_ENGINE_MEDIA_TYPES:
+                continue
+            if isinstance(att.get("data"), str) and att.get("data"):
+                return True
+            if isinstance(att.get("sha256_ref"), str) and att.get("sha256_ref"):
+                return True
+        return False
+
+    @staticmethod
+    def _maybe_unpack_attachments(
+        content: str,
+        *,
+        preserve_image_attachments: bool = False,
+        media_root: Path | None = None,
+        session_id: str | None = None,
+    ) -> Any:
         """Reduce persisted attachment envelopes to text-only history.
 
         User messages with attachments are persisted as a JSON envelope
         ``{"text": "...", "attachments": [{"type": "image/png", "data": "<b64>"}...]}``
         in ``transcript_entries.content`` (see rpc_sessions._persist_user_message).
-        Historical images must not be sent again on later turns: OpenRouter can
-        route a text follow-up to a text model, and replaying an old image block
-        then fails with "No endpoints found that support image input". Keep the
-        original text and a compact non-image marker so the model knows an
-        attachment existed without receiving its bytes.
+        Historical images are text markers by default so text routes do not
+        replay old image blocks to providers that cannot consume them. When the
+        caller has already selected a vision model, a bounded recent window can
+        be hydrated back into image blocks.
 
         Returns the original string for non-envelope content so non-attachment
         history (assistant text, tool results) is unaffected. On any parse error,
@@ -5590,6 +5895,12 @@ class TurnRunner:
             return text
 
         omitted: list[str] = []
+        replay_blocks: list[Any] = []
+        preserved_image = False
+        if preserve_image_attachments and text:
+            from opensquilla.provider.types import ContentBlockText
+
+            replay_blocks.append(ContentBlockText(text=text))
         for att in atts:
             if not isinstance(att, dict):
                 continue
@@ -5597,8 +5908,8 @@ class TurnRunner:
             if not (isinstance(media_type, str) and media_type in _ALLOWED_ENGINE_MEDIA_TYPES):
                 continue
             # Persisted attachment envelope: ``sha256_ref`` indicates the bytes live on
-            # disk under media/transcripts/<session>/<sha>; for replay we
-            # emit a marker (the engine never re-sends the bytes anyway).
+            # disk under media/transcripts/<session>/<sha>. Text routes keep
+            # a marker; vision routes may replay a bounded recent image window.
             data = att.get("data")
             sha_ref = att.get("sha256_ref")
             missing_reason = att.get("missing_reason")
@@ -5611,7 +5922,51 @@ class TurnRunner:
             name = att.get("name")
             fallback = "image" if media_type.startswith("image/") else "attachment"
             label = name if isinstance(name, str) and name.strip() else fallback
+            if preserve_image_attachments and media_type.startswith("image/"):
+                from opensquilla.provider.types import ContentBlockImage
+
+                if isinstance(data, str) and data:
+                    try:
+                        base64.b64decode(data, validate=True)
+                    except (binascii.Error, ValueError):
+                        omitted.append(f"[attachment unavailable: {label} ({media_type})]")
+                    else:
+                        replay_blocks.append(
+                            ContentBlockImage(media_type=media_type, data=data)
+                        )
+                        preserved_image = True
+                    continue
+                if isinstance(sha_ref, str) and sha_ref and media_root and session_id:
+                    raw_size = att.get("size")
+                    size = raw_size if isinstance(raw_size, int) else -1
+                    ref = make_attachment_ref(
+                        sha256=sha_ref,
+                        name=label,
+                        mime=media_type,
+                        size=size,
+                        session_id=session_id,
+                        source="transcript",
+                    )
+                    try:
+                        raw_bytes = read_attachment_ref_bytes(ref, media_root=media_root)
+                    except (FileNotFoundError, ValueError) as exc:
+                        omitted.append(f"[attachment unavailable: {label}: {exc}]")
+                    else:
+                        replay_blocks.append(
+                            ContentBlockImage(
+                                media_type=media_type,
+                                data=base64.b64encode(raw_bytes).decode("ascii"),
+                            )
+                        )
+                        preserved_image = True
+                    continue
             omitted.append(f"[historical attachment omitted: {label} ({media_type})]")
+        if preserved_image:
+            if omitted:
+                from opensquilla.provider.types import ContentBlockText
+
+                replay_blocks.extend(ContentBlockText(text=marker) for marker in omitted)
+            return replay_blocks
         if not omitted:
             return text
         return "\n".join([text, *omitted]).strip()

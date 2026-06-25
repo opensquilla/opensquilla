@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
 import time
 import types
 from collections.abc import Awaitable, Callable
@@ -74,7 +75,9 @@ def _install_fake_lark_module(monkeypatch: pytest.MonkeyPatch) -> tuple[types.Mo
     class FakeClient:
         instances: list[FakeClient] = []
 
-        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.args = args
+            self.kwargs = kwargs
             self.disconnect_called = False
             self.started = False
             self.start_loop: asyncio.AbstractEventLoop | None = None
@@ -131,6 +134,7 @@ async def test_feishu_websocket_stop_stops_sdk_loop_thread(
 
     client = fake_client.instances[-1]
     assert client.start_loop is sdk_module.loop
+    assert client.args[:2] == ("app", "secret")
 
     await transport.stop()
 
@@ -180,6 +184,29 @@ async def test_feishu_websocket_rejects_second_concurrent_sdk_client(
             await second.start(_noop_handler)
     finally:
         await first.stop()
+
+    await second.start(_noop_handler)
+    await second.stop()
+
+
+@pytest.mark.asyncio
+async def test_feishu_websocket_stop_releases_singleton_after_worker_thread_exits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_lark_module(monkeypatch)
+    first = FeishuWebSocketTransport(
+        FeishuChannelConfig(app_id="app-1", app_secret="secret", connection_mode="websocket")
+    )
+    second = FeishuWebSocketTransport(
+        FeishuChannelConfig(app_id="app-2", app_secret="secret", connection_mode="websocket")
+    )
+
+    first._register_active_client()
+    dead_thread = threading.Thread(target=lambda: None)
+    dead_thread.start()
+    dead_thread.join()
+    first._thread = dead_thread
+    await first.stop()
 
     await second.start(_noop_handler)
     await second.stop()

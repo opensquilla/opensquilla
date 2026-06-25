@@ -99,6 +99,21 @@ def test_network_hint_does_not_widen_non_network_non_exec_actions(
     assert policy.network is NetworkMode.NONE
 
 
+def test_shell_exec_policy_allows_meta_skill_workspace_env(tmp_path: Path) -> None:
+    policy = build_policy(
+        SecurityLevel.STANDARD,
+        "shell.exec",
+        tmp_path,
+        SandboxSettings(),
+        trusted=True,
+    )
+
+    assert "WORKSPACE_DIR" in policy.env_allowlist
+    assert "PROJECT_ROOT" in policy.env_allowlist
+    assert "PSModulePath" in policy.env_allowlist
+    assert "PATHEXT" in policy.env_allowlist
+
+
 def test_network_default_proxy_allowlist_uses_proxy_for_network_actions(
     tmp_path: Path,
 ) -> None:

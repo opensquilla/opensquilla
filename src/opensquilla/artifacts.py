@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import logging
 import re
 import secrets
 from dataclasses import asdict, dataclass
@@ -13,10 +15,15 @@ from typing import Any
 
 from opensquilla.attachment_refs import _atomic_write_bytes, _validate_sha256
 
+_log = logging.getLogger(__name__)
+
 ARTIFACT_REF_KIND = "artifact_ref"
 ARTIFACT_STORE = "artifacts"
 ARTIFACT_SESSION_BUCKET = "s"
 ARTIFACT_MATERIAL_NAME = "data"
+ARTIFACT_THUMBNAIL_NAME = "thumb.webp"
+ARTIFACT_THUMBNAIL_MAX_EDGE = 512
+ARTIFACT_THUMBNAIL_QUALITY = 80
 DEFAULT_ARTIFACT_MAX_BYTES = 30 * 1024 * 1024
 DEFAULT_ARTIFACT_DISK_BUDGET_BYTES = 512 * 1024 * 1024
 
@@ -75,6 +82,7 @@ class ArtifactRef:
     download_url: str
     kind: str = ARTIFACT_REF_KIND
     store: str = ARTIFACT_STORE
+    has_thumbnail: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -94,6 +102,7 @@ class ArtifactRef:
             download_url=str(payload.get("download_url") or ""),
             kind=str(payload.get("kind") or ARTIFACT_REF_KIND),
             store=str(payload.get("store") or ARTIFACT_STORE),
+            has_thumbnail=bool(payload.get("has_thumbnail")),
         )
 
 
@@ -120,7 +129,7 @@ def artifact_payload(event_or_ref: Any) -> dict[str, Any]:
     else:
         raw = {
             field: getattr(event_or_ref, field)
-            for field in (*_PUBLIC_ARTIFACT_FIELDS, "download_url")
+            for field in (*_PUBLIC_ARTIFACT_FIELDS, "download_url", "has_thumbnail")
             if hasattr(event_or_ref, field)
         }
     payload = {field: raw[field] for field in _PUBLIC_ARTIFACT_FIELDS if field in raw}
@@ -128,11 +137,40 @@ def artifact_payload(event_or_ref: Any) -> dict[str, Any]:
     if artifact_id:
         payload["id"] = _validate_artifact_id(artifact_id)
         payload["download_url"] = artifact_download_url(payload["id"])
+        # The public payload drops the internal ``has_thumbnail`` boolean and only
+        # carries the reconstructed ``thumbnail_url`` string. A persisted transcript
+        # artifact is therefore a public payload replayed through this helper: honor
+        # an already-present ``thumbnail_url`` so the thumbnail survives history replay,
+        # falling back to reconstruction from ``has_thumbnail`` for live events.
+        if raw.get("has_thumbnail") or raw.get("thumbnail_url"):
+            payload["thumbnail_url"] = artifact_thumbnail_url(payload["id"])
     return payload
 
 
 def artifact_download_url(artifact_id: str) -> str:
     return f"/api/v1/artifacts/{_validate_artifact_id(artifact_id)}"
+
+
+def artifact_thumbnail_url(artifact_id: str) -> str:
+    return f"{artifact_download_url(artifact_id)}?variant=thumb"
+
+
+def enrich_artifact_event_dict(event_dict: dict[str, Any]) -> dict[str, Any]:
+    """Add a client-facing ``thumbnail_url`` to a serialized artifact event dict.
+
+    The event dataclass carries the ``has_thumbnail`` boolean; this rebuilds the
+    public variant URL from the artifact id when a thumbnail exists. The internal
+    boolean is dropped so the wire payload matches the public artifact contract.
+    """
+
+    has_thumbnail = bool(event_dict.pop("has_thumbnail", False))
+    artifact_id = event_dict.get("id")
+    if has_thumbnail and isinstance(artifact_id, str) and artifact_id:
+        try:
+            event_dict["thumbnail_url"] = artifact_thumbnail_url(artifact_id)
+        except ValueError:
+            pass
+    return event_dict
 
 
 class ArtifactStore:
@@ -171,25 +209,31 @@ class ArtifactStore:
         session_key = _validate_non_empty("session_key", session_key)
         artifact_id = f"art-{secrets.token_urlsafe(18)}"
         safe_name = _safe_filename(name)
+        safe_mime = _safe_mime(mime)
         sha = hashlib.sha256(payload).hexdigest()
         created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+        thumbnail_bytes = _build_thumbnail(payload, safe_mime)
         ref = ArtifactRef(
             id=artifact_id,
             sha256=sha,
             name=safe_name,
-            mime=_safe_mime(mime),
+            mime=safe_mime,
             size=len(payload),
             session_id=session_id,
             session_key=session_key,
             source=source,
             created_at=created_at,
             download_url=artifact_download_url(artifact_id),
+            has_thumbnail=thumbnail_bytes is not None,
         )
 
         artifact_dir = self._artifact_dir(session_id, artifact_id)
         artifact_dir.mkdir(parents=True, exist_ok=False)
         try:
             _atomic_write_bytes(artifact_dir / ARTIFACT_MATERIAL_NAME, payload)
+            if thumbnail_bytes is not None:
+                _atomic_write_bytes(artifact_dir / ARTIFACT_THUMBNAIL_NAME, thumbnail_bytes)
             _atomic_write_bytes(
                 artifact_dir / "meta.json",
                 json.dumps(ref.to_dict(), ensure_ascii=False, sort_keys=True).encode("utf-8"),
@@ -296,12 +340,37 @@ class ArtifactStore:
             return ref
         return None
 
+    def resolve_thumbnail_for_download(
+        self,
+        artifact_id: str,
+        *,
+        session_id: str,
+    ) -> tuple[ArtifactRef, Path] | None:
+        """Return the webp thumbnail sidecar for an artifact, or None if absent.
+
+        Validates and resolves the artifact exactly like ``resolve_for_download`` so
+        auth/session scoping is identical, then returns the thumbnail path only when
+        the sidecar exists. Older artifacts without a thumbnail yield None so callers
+        can fall back to the full file.
+        """
+
+        ref, _path = self.resolve_for_download(artifact_id, session_id=session_id)
+        if not ref.has_thumbnail:
+            return None
+        thumb_path = self.thumbnail_path_for(ref)
+        if not thumb_path.exists():
+            return None
+        return ref, thumb_path
+
     def path_for(self, ref: ArtifactRef) -> Path:
         _validate_sha256(ref.sha256)
         material_path = self._artifact_dir(ref.session_id, ref.id) / ARTIFACT_MATERIAL_NAME
         if material_path.exists():
             return material_path
         return self._legacy_artifact_dir(ref.session_id, ref.id) / ref.sha256
+
+    def thumbnail_path_for(self, ref: ArtifactRef) -> Path:
+        return self._artifact_dir(ref.session_id, ref.id) / ARTIFACT_THUMBNAIL_NAME
 
     def _artifact_dir(self, session_id: str, artifact_id: str) -> Path:
         return (
@@ -342,6 +411,37 @@ class ArtifactStore:
             except OSError:
                 continue
         return total
+
+
+def _build_thumbnail(payload: bytes, mime: str) -> bytes | None:
+    """Render a small webp thumbnail for image artifacts.
+
+    Returns the encoded webp bytes, or None when the artifact is not an image,
+    Pillow is unavailable, or the bytes cannot be decoded. Any failure here is
+    non-fatal: the caller publishes the artifact without a thumbnail.
+    """
+
+    if not mime.startswith("image/"):
+        return None
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(payload)) as image:
+            image.load()
+            if image.mode in ("RGBA", "LA", "P"):
+                source = image.convert("RGBA")
+            else:
+                source = image.convert("RGB")
+            source.thumbnail(
+                (ARTIFACT_THUMBNAIL_MAX_EDGE, ARTIFACT_THUMBNAIL_MAX_EDGE),
+                Image.Resampling.LANCZOS,
+            )
+            out = io.BytesIO()
+            source.save(out, format="WEBP", quality=ARTIFACT_THUMBNAIL_QUALITY)
+            return out.getvalue()
+    except Exception:
+        _log.debug("artifact thumbnail generation failed for mime=%s", mime, exc_info=True)
+        return None
 
 
 def _safe_filename(name: str) -> str:

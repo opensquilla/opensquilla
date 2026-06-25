@@ -90,7 +90,6 @@ def test_high_value_meta_skill_descriptions_signal_orchestration_priority(
 ) -> None:
     loader = _loader(tmp_path)
     names = {
-        "meta-web-research-to-report",
         "meta-paper-write",
         "meta-pdf-intelligence",
         "meta-stack-trace-investigator",
@@ -105,98 +104,6 @@ def test_high_value_meta_skill_descriptions_signal_orchestration_priority(
         description = spec.description.lower()
         assert "multi-skill orchestration" in description, name
         assert "instead of answering directly" in description, name
-
-
-def test_report_meta_skill_has_preferences_sources_outline_and_quality_gate(
-    tmp_path: Path,
-) -> None:
-    ids = _step_ids(_loader(tmp_path), "meta-web-research-to-report")
-
-    assert {
-        "preferences",
-        "source_quality",
-        "outline",
-        "report_draft",
-        "quality_gate",
-        "export",
-    } <= ids
-
-
-def test_report_meta_skill_uses_fast_final_report_path(tmp_path: Path) -> None:
-    loader = _loader(tmp_path)
-    _assert_composes_at_least_two_skills(loader, "meta-web-research-to-report")
-    steps, plan = _steps_by_id(loader, "meta-web-research-to-report")
-
-    assert plan.final_text_mode == "step:final_report_audit"
-    assert steps["report_mode"].kind == "llm_classify"
-    assert set(steps["report_mode"].output_choices) == {
-        "QUICK_DECISION_MEMO",
-        "DEEP_REPORT",
-        "EXPORT_DOCX",
-    }
-    assert steps["research"].when == "outputs.report_mode in ('DEEP_REPORT', 'EXPORT_DOCX')"
-    assert steps["export"].when == "outputs.report_mode == 'EXPORT_DOCX'"
-    assert set(steps["final_report"].depends_on) == {
-        "quality_gate",
-        "source_quality",
-        "source_to_claim",
-    }
-    assert set(steps["final_report_audit"].depends_on) == {
-        "preferences",
-        "report_mode",
-        "source_quality",
-        "final_report",
-    }
-    for step_id in (
-        "preferences",
-        "source_quality",
-        "outline",
-        "source_to_claim",
-        "final_report",
-        "final_report_audit",
-    ):
-        assert steps[step_id].kind == "llm_chat"
-    assert steps["search"].skill == "multi-search-engine"
-    assert set(steps["search"].depends_on) == {
-        "preferences",
-        "report_clarify",
-        "report_mode",
-        "source_seed",
-    }
-    assert steps["research"].skill == "deep-research"
-    assert steps["export"].skill == "docx"
-    final_prompt = str(steps["final_report"].with_args)
-    quality_prompt = str(steps["quality_gate"].with_args)
-    source_prompt = str(steps["source_quality"].with_args)
-    preferences_prompt = str(steps["preferences"].with_args)
-    search_args = str(steps["search"].with_args)
-    assert "SEARCH_QUERY:" in preferences_prompt
-    assert "inputs.user_message | xml_escape" in search_args
-    assert "Source list" in final_prompt
-    assert "Assumptions / Decision Context" in final_prompt
-    assert "audience, decision being made, scope" in final_prompt
-    assert "under 900 words" in final_prompt
-    assert "exactly five numbered" in final_prompt
-    assert "Source pack below as authoritative evidence input" in final_prompt
-    assert "Never output \"No sources were provided\"" in final_prompt
-    assert "copy title + URL entries from the Source pack" in final_prompt
-    assert "Five Key Findings" in final_prompt
-    assert "Do not cite [S#]" in final_prompt
-    assert "Remove invented cost, latency" in final_prompt
-    assert "Evidence limits" in final_prompt
-    assert "not directly" in final_prompt
-    assert "Do not use Reddit" in final_prompt
-    assert "visible \"Sources\"" in quality_prompt
-    assert "INDIRECT or INFERENCE" in quality_prompt
-    assert "Source" in quality_prompt and "list" in quality_prompt
-    assert "[S#] Title" in source_prompt
-    assert "best 5-8 sources" in source_prompt
-    assert "Avoid Reddit" in source_prompt
-    assert "Evidence type: <direct|indirect|background>" in source_prompt
-    assert "indirect/background" in source_prompt
-    report_mode_prompt = str(steps["report_mode"].with_args)
-    assert "Prefer this even when the phrase" in report_mode_prompt
-    assert "planning-meeting memo" in report_mode_prompt
 
 
 def test_paper_meta_skill_has_pre_compile_quality_gates(tmp_path: Path) -> None:
@@ -843,32 +750,6 @@ def test_migration_assistant_routes_guides_and_optional_repo_context(
     assert "dual-package hazards" in write_plan_prompt
     assert "eslint --fix" in write_plan_prompt
     assert "Avoid obsolete Node flags" in write_plan_prompt
-
-
-def test_report_meta_skill_clarifies_only_broad_or_decision_critical_requests(
-    tmp_path: Path,
-) -> None:
-    loader = _loader(tmp_path)
-    steps, _plan = _steps_by_id(loader, "meta-web-research-to-report")
-
-    _assert_user_input_step(
-        steps,
-        "report_clarify",
-        when_contains="NEEDS_CLARIFICATION: yes",
-        required_fields={"topic", "audience", "decision_context"},
-    )
-    assert steps["report_mode"].depends_on == ("preferences", "report_clarify")
-    assert set(steps["search"].depends_on) == {
-        "preferences",
-        "report_clarify",
-        "report_mode",
-        "source_seed",
-    }
-    preferences_prompt = str(steps["preferences"].with_args)
-    report_mode_prompt = str(steps["report_mode"].with_args)
-    assert "NEEDS_CLARIFICATION" in preferences_prompt
-    assert "only when the topic is too broad" in preferences_prompt
-    assert "Clarification answers" in report_mode_prompt
 
 
 # ── A8: high-risk experimental meta-skills carry enforced metadata ──

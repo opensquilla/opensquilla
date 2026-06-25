@@ -23,3 +23,9 @@ this workspace, what it should prioritize, and what it must avoid.
 - Do not store secrets, credentials, or one-off task notes here.
 - In shared, channel, cron, or subagent contexts, avoid exposing private user or
   long-term memory content unless runtime policy explicitly makes it available.
+- When writing commit messages, pull request titles, pull request bodies, release
+  notes, or other project-facing change summaries, describe only the product
+  change, rationale, and verification. Ignore assistant-internal workflow
+  documents and do not mention process/tooling names such as Superpowers, OMX,
+  Codex, Claude, or similar agent infrastructure unless the user explicitly asks
+  for that internal provenance.

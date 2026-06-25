@@ -37,7 +37,7 @@ _RUN_MODE_ALIASES = {
 }
 
 
-def normalize_run_mode(value: Any, default: RunMode = RunMode.STANDARD) -> RunMode:
+def normalize_run_mode(value: Any, default: RunMode = RunMode.FULL) -> RunMode:
     if isinstance(value, RunMode):
         return value
     if value is None or str(value).strip() == "":
@@ -94,15 +94,15 @@ def legacy_state_to_run_mode(
     permission_mode = str(permissions_default_mode or "").strip().lower()
     if permission_mode == "full":
         return RunMode.FULL
-    if permission_mode == "bypass":
+    if permission_mode in {"bypass", "off", "on", ""}:
         return RunMode.TRUSTED
+    if permission_mode in {"standard", "standard-sandbox", "standard_sandbox", "restricted"}:
+        return RunMode.STANDARD
     if not bool(sandbox_enabled):
-        return RunMode.FULL
-    if bool(sandbox_enabled) and bool(grading_enabled):
+        return RunMode.TRUSTED
+    if bool(sandbox_enabled) and not bool(grading_enabled):
         return RunMode.STANDARD
-    if permission_mode in {"off", "restricted", "on"}:
-        return RunMode.STANDARD
-    return RunMode.STANDARD
+    return RunMode.TRUSTED
 
 
 def config_run_mode(config: Any) -> RunMode:
@@ -112,11 +112,29 @@ def config_run_mode(config: Any) -> RunMode:
         return normalize_run_mode(explicit)
 
     permissions = getattr(config, "permissions", None)
+    permission_mode = str(getattr(permissions, "default_mode", "off") or "").strip().lower()
+    if permission_mode == "full":
+        return RunMode.FULL
+    if _field_was_set(sandbox, "sandbox") and not bool(getattr(sandbox, "sandbox", False)):
+        return RunMode.FULL
+    if not _field_was_set(sandbox, "sandbox") and not _field_was_set(
+        sandbox,
+        "security_grading",
+    ):
+        return RunMode.FULL
+
     return legacy_state_to_run_mode(
         sandbox_enabled=getattr(sandbox, "sandbox", False),
         grading_enabled=getattr(sandbox, "security_grading", False),
-        permissions_default_mode=getattr(permissions, "default_mode", "off"),
+        permissions_default_mode=permission_mode,
     )
+
+
+def _field_was_set(model: Any, field_name: str) -> bool:
+    fields_set = getattr(model, "model_fields_set", None)
+    if fields_set is None:
+        fields_set = getattr(model, "__fields_set__", None)
+    return field_name in fields_set if fields_set is not None else False
 
 
 __all__ = [

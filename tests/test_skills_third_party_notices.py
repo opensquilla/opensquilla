@@ -10,6 +10,9 @@ NOTICES = ROOT / "THIRD_PARTY_NOTICES.md"
 ORIGINALS = {
     "advanced-dubbing-studio",
     "cron",
+    "AwesomeWebpageMetaSkill",
+    "awesome-webpage-image-download",
+    "awesome-webpage-research",
     "deep-research",
     "docx",
     "git-diff",
@@ -19,18 +22,14 @@ ORIGINALS = {
     "http-fetch",
     "latex-compile",
     "memory",
-    "meta-competitive-intel",
-    "meta-daily-operator-brief",
-    "meta-document-to-decision",
-    "meta-job-search-pipeline",
     "meta-kid-project-planner",
     "meta-paper-write",
     "meta-short-drama",
     "meta-skill-creator",
-    "meta-web-research-to-report",
     "multi-search-engine",
     "music-and-singing-studio",
     "nano-pdf",
+    "openrouter-video-generator",
     "paper-abstract-author",
     "paper-citation-planner",
     "paper-experiment-stub",
@@ -82,6 +81,7 @@ def test_all_bundled_skills_have_complete_provenance(tmp_path: Path) -> None:
             "opensquilla-original",
             "bundled-derived",
             "openclaw-derived",
+            "clawhub-mit",
             "clawhub-mit0",
         }, skill.name
         assert provenance.maintained_by == "OpenSquilla", skill.name
@@ -94,6 +94,9 @@ def test_all_bundled_skills_have_complete_provenance(tmp_path: Path) -> None:
         elif provenance.origin == "clawhub-mit0":
             assert provenance.upstream_url.startswith("https://clawhub.ai/"), skill.name
             assert provenance.license == "MIT-0", skill.name
+        elif provenance.origin == "clawhub-mit":
+            assert provenance.upstream_url.startswith("https://clawhub.ai/"), skill.name
+            assert provenance.license == "MIT", skill.name
         else:
             assert skill.name in ORIGINALS
             assert provenance.license == "Apache-2.0", skill.name
@@ -108,17 +111,22 @@ def test_third_party_notices_match_bundled_provenance(tmp_path: Path) -> None:
     openclaw_derived = sorted(
         name for name, origin in skills.items() if origin == "openclaw-derived"
     )
+    clawhub_mit = sorted(name for name, origin in skills.items() if origin == "clawhub-mit")
     clawhub_derived = sorted(name for name, origin in skills.items() if origin == "clawhub-mit0")
 
     assert "## OpenClaw-derived bundled skill descriptors" in text
     assert "## OpenSquilla-original bundled skills" in text
     if clawhub_derived:
         assert "## ClawHub-derived bundled skill descriptors" in text
+    if clawhub_mit:
+        assert "## ClawHub MIT bundled skill descriptors" in text
     for name in derived:
         assert f"- `{name}`" in text
     for name in originals:
         assert f"- `{name}`" in text
     for name in openclaw_derived:
+        assert f"- `{name}`" in text
+    for name in clawhub_mit:
         assert f"- `{name}`" in text
     for name in clawhub_derived:
         assert f"- `{name}`" in text
@@ -129,6 +137,23 @@ def test_third_party_notices_match_bundled_provenance(tmp_path: Path) -> None:
         if line.strip().startswith("- `") and line.strip().endswith("`")
     }
     assert listed == set(skills)
+
+    if "filesystem" in clawhub_mit:
+        assert "Copyright (c) 2026 Clawdbot Community" in text
+        assert "clawdbot-filesystem" in text
+
+
+def test_filesystem_skill_records_mit_notice_provenance(tmp_path: Path) -> None:
+    text = NOTICES.read_text(encoding="utf-8")
+    loader = SkillLoader(bundled_dir=BUNDLED, snapshot_path=tmp_path / "snapshot.json")
+    filesystem = loader.get_by_name("filesystem")
+
+    assert filesystem is not None
+    assert filesystem.provenance.origin == "clawhub-mit"
+    assert filesystem.provenance.license == "MIT"
+    assert "## ClawHub MIT bundled skill descriptors" in text
+    assert "- `filesystem`" in text
+    assert "Copyright (c) 2026 Clawdbot Community" in text
 
 
 def test_tokenjuice_backend_has_third_party_provenance() -> None:

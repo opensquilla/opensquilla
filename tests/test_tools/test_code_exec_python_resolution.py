@@ -4,6 +4,7 @@ import os
 import stat
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,6 +23,44 @@ def test_code_exec_prefers_current_interpreter_when_path_has_no_python(
     monkeypatch.setattr(code_exec.shutil, "which", lambda _name: None)
 
     assert code_exec._resolve_python_bin(sandbox_enabled=False) == str(python_bin)
+
+
+def test_code_exec_prefers_current_interpreter_for_non_bubblewrap_sandbox(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    python_bin = tmp_path / ("python.exe" if os.name == "nt" else "python")
+    python_bin.write_text("", encoding="utf-8")
+    python_bin.chmod(python_bin.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setattr(sys, "executable", str(python_bin))
+    monkeypatch.setattr(code_exec.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        code_exec,
+        "get_runtime",
+        lambda: SimpleNamespace(backend=SimpleNamespace(name="noop")),
+    )
+
+    assert code_exec._resolve_python_bin(sandbox_enabled=True) == str(python_bin)
+
+
+def test_code_exec_bubblewrap_sandbox_prefers_visible_system_python(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    host_python = tmp_path / ("venv-python.exe" if os.name == "nt" else "venv-python")
+    sandbox_python = tmp_path / ("python3.exe" if os.name == "nt" else "python3")
+    host_python.write_text("", encoding="utf-8")
+    sandbox_python.write_text("", encoding="utf-8")
+    host_python.chmod(host_python.stat().st_mode | stat.S_IXUSR)
+    sandbox_python.chmod(sandbox_python.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setattr(sys, "executable", str(host_python))
+    monkeypatch.setattr(code_exec.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(code_exec, "_SANDBOX_PYTHON_CANDIDATES", (sandbox_python,))
+    monkeypatch.setattr(
+        code_exec,
+        "get_runtime",
+        lambda: SimpleNamespace(backend=SimpleNamespace(name="bubblewrap")),
+    )
+
+    assert code_exec._resolve_python_bin(sandbox_enabled=True) == str(sandbox_python)
 
 
 def test_code_exec_allows_active_workspace_under_sensitive_parent(

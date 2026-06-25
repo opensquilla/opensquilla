@@ -8,10 +8,16 @@ import socket
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import urlsplit
 
 from opensquilla.sandbox.domain_validation import normalize_domain
 from opensquilla.sandbox.network_guard import NetworkDecision
+from opensquilla.sandbox.network_runtime import (
+    NetworkPolicyRequest,
+    NetworkProtocol,
+    call_network_policy_decider,
+)
 
 _HEADER_LIMIT = 64 * 1024
 _MAX_BODY_BYTES = 1_048_576
@@ -52,6 +58,7 @@ class _ParsedRequest:
     method: str
     target: str
     version: str
+    scheme: str
     host: str
     port: int
     origin_form: str | None
@@ -65,8 +72,9 @@ class _ProxyDeniedError(ValueError):
 class SandboxProxyServer:
     def __init__(
         self,
-        decide: Callable[[str], NetworkDecision],
+        decide: Callable[[str], NetworkDecision] | None = None,
         *,
+        policy_decider: object | None = None,
         host: str = "127.0.0.1",
         port: int = 0,
         header_read_timeout_seconds: float = _DEFAULT_HEADER_READ_TIMEOUT_SECONDS,
@@ -76,7 +84,13 @@ class SandboxProxyServer:
         resolver: Callable[[str, int], tuple[str, int]] | None = None,
         on_upstream_opened: Callable[[NetworkDecision], Awaitable[None] | None] | None = None,
     ) -> None:
+        if policy_decider is None and decide is not None and hasattr(decide, "decide"):
+            policy_decider = decide
+            decide = None
+        if decide is None and policy_decider is None:
+            raise TypeError("SandboxProxyServer requires decide or policy_decider")
         self._decide = decide
+        self._policy_decider = policy_decider
         self._resolver = resolver or _resolve_validated_upstream
         self._on_upstream_opened = on_upstream_opened
         self.host = host
@@ -166,7 +180,7 @@ class SandboxProxyServer:
             request = _parse_request(header)
             if not request.host:
                 raise ValueError("empty_host")
-            decision = self._decide(request.host)
+            decision = await self._decide_request(request, writer)
             if decision.status == "allow" and request.host:
                 try:
                     if request.method == "CONNECT":
@@ -211,17 +225,45 @@ class SandboxProxyServer:
             with suppress(ConnectionError, RuntimeError):
                 await writer.wait_closed()
 
+    async def _decide_request(
+        self,
+        request: _ParsedRequest,
+        writer: asyncio.StreamWriter,
+    ) -> NetworkDecision:
+        if self._policy_decider is not None:
+            return await call_network_policy_decider(
+                self._policy_decider,
+                NetworkPolicyRequest(
+                    protocol=_protocol_for_request(request),
+                    host=request.host,
+                    port=request.port,
+                    method=request.method,
+                    client_addr=_client_addr(writer),
+                ),
+            )
+        if self._decide is None:
+            raise ValueError("missing_network_decider")
+        return self._decide(request.host)
+
     async def _open_upstream(
         self,
         request: _ParsedRequest,
     ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
         try:
             connect_host, connect_port = self._resolver(request.host, request.port)
+            connect_host, connect_port = _validate_resolver_destination(
+                connect_host,
+                connect_port,
+            )
         except Exception as exc:
             raise _ProxyDeniedError("unsafe_upstream_resolution") from exc
+        open_kwargs: dict[str, Any] = {}
+        if request.scheme == "https" and request.method != "CONNECT":
+            open_kwargs = {"ssl": True, "server_hostname": request.host}
         upstream_reader, upstream_writer = await asyncio.open_connection(
             connect_host,
             connect_port,
+            **open_kwargs,
         )
         self._active_writers.add(upstream_writer)
         return upstream_reader, upstream_writer
@@ -351,6 +393,23 @@ def _extract_request_host(header: bytes) -> str:
     return _parse_request(header).host
 
 
+def _protocol_for_request(request: _ParsedRequest) -> NetworkProtocol:
+    if request.method == "CONNECT":
+        return NetworkProtocol.HTTPS_CONNECT
+    if request.scheme == "https":
+        return NetworkProtocol.HTTPS
+    return NetworkProtocol.HTTP
+
+
+def _client_addr(writer: asyncio.StreamWriter) -> str | None:
+    peername = writer.get_extra_info("peername")
+    if not peername:
+        return None
+    if isinstance(peername, tuple) and peername:
+        return str(peername[0])
+    return str(peername)
+
+
 def _parse_request(header: bytes) -> _ParsedRequest:
     text = header.decode("iso-8859-1", errors="replace")
     lines = text.split("\r\n")
@@ -377,6 +436,7 @@ def _parse_request(header: bytes) -> _ParsedRequest:
             method=method,
             target=target,
             version=version,
+            scheme="https",
             host=host,
             port=port,
             origin_form=None,
@@ -386,12 +446,12 @@ def _parse_request(header: bytes) -> _ParsedRequest:
         host_values = _host_values(lines[1:])
         if len(host_values) > 1:
             raise ValueError("invalid_host_header")
-        host, port, origin_form = _parts_from_absolute_url(target)
+        scheme, host, port, origin_form = _parts_from_absolute_url(target)
         if host_values:
             header_host, header_port = _host_port_from_authority(
                 host_values[0],
                 require_port=False,
-                default_port=80,
+                default_port=_default_port_for_scheme(scheme),
             )
             if header_host != host or header_port != port:
                 raise ValueError("host_header_mismatch")
@@ -399,6 +459,7 @@ def _parse_request(header: bytes) -> _ParsedRequest:
             method=method,
             target=target,
             version=version,
+            scheme=scheme,
             host=host,
             port=port,
             origin_form=origin_form,
@@ -417,6 +478,7 @@ def _parse_request(header: bytes) -> _ParsedRequest:
         method=method,
         target=target,
         version=version,
+        scheme="http",
         host=host,
         port=port,
         origin_form=_origin_form_target(target),
@@ -425,11 +487,11 @@ def _parse_request(header: bytes) -> _ParsedRequest:
 
 
 def _host_from_absolute_url(target: str) -> str:
-    host, _port, _origin_form = _parts_from_absolute_url(target)
+    _scheme, host, _port, _origin_form = _parts_from_absolute_url(target)
     return host
 
 
-def _parts_from_absolute_url(target: str) -> tuple[str, int, str]:
+def _parts_from_absolute_url(target: str) -> tuple[str, str, int, str]:
     try:
         parsed = urlsplit(target)
         parsed.port
@@ -437,14 +499,24 @@ def _parts_from_absolute_url(target: str) -> tuple[str, int, str]:
     except ValueError as exc:
         raise ValueError("malformed_absolute_url") from exc
 
-    if parsed.scheme.lower() != "http" or not parsed.netloc:
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("malformed_absolute_url")
     if "@" in parsed.netloc or parsed.netloc.endswith(":") or parsed.fragment:
         raise ValueError("malformed_absolute_url")
     path = parsed.path or "/"
     if parsed.query:
         path = f"{path}?{parsed.query}"
-    return _normalize_nonempty_host(hostname), parsed.port or 80, path
+    return (
+        scheme,
+        _normalize_nonempty_host(hostname),
+        parsed.port or _default_port_for_scheme(scheme),
+        path,
+    )
+
+
+def _default_port_for_scheme(scheme: str) -> int:
+    return 443 if scheme == "https" else 80
 
 
 def _host_from_connect_target(target: str) -> str:
@@ -580,7 +652,9 @@ def _hop_by_hop_header_names(header_lines: list[str]) -> set[str]:
 
 
 def _authority_for_request(request: _ParsedRequest) -> str:
-    return request.host if request.port == 80 else f"{request.host}:{request.port}"
+    if request.port == _default_port_for_scheme(request.scheme):
+        return request.host
+    return f"{request.host}:{request.port}"
 
 
 def _normalize_nonempty_host(host: str) -> str:
@@ -624,19 +698,44 @@ def _resolve_validated_upstream(host: str, port: int) -> tuple[str, int]:
     return first_destination
 
 
+def _validate_resolver_destination(host: str, port: int) -> tuple[str, int]:
+    try:
+        normalized_port = int(port)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Invalid resolved port") from exc
+    if not 0 <= normalized_port <= 65535:
+        raise ValueError("Invalid resolved port")
+
+    raw_host = str(host or "").strip()
+    if not raw_host:
+        raise ValueError("Empty resolved host")
+
+    try:
+        addr = ipaddress.ip_address(raw_host.strip("[]"))
+    except ValueError:
+        return _resolve_validated_upstream(raw_host, normalized_port)
+
+    reason = _unsafe_resolved_address_reason(addr, _trusted_fake_ip_networks())
+    if reason is not None:
+        raise ValueError(f"Blocked: resolver returned {addr} ({reason})")
+    return str(addr), normalized_port
+
+
 def _trusted_fake_ip_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = [_RFC2544_FAKE_IP_NETWORK]
     try:
         from opensquilla.tools.ssrf import get_trusted_fake_ip_cidrs
 
         values: tuple[str, ...] = tuple(get_trusted_fake_ip_cidrs())
     except Exception:
         values = ()
-    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
     for value in values:
         try:
-            networks.append(ipaddress.ip_network(value))
+            network = ipaddress.ip_network(value)
         except ValueError:
             continue
+        if network not in networks:
+            networks.append(network)
     return tuple(networks)
 
 

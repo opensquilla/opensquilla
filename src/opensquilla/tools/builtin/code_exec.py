@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import dataclasses
 import json
 import os
 import re
@@ -14,16 +15,19 @@ import time
 from pathlib import Path
 
 from opensquilla.sandbox.integration import (
+    SandboxRuntime,
     escalate_backend_denial,
     gate_action,
     get_runtime,
     preflight_subprocess_managed_network,
+    prepare_subprocess_managed_network_proxy,
     run_under_backend,
 )
+from opensquilla.sandbox.operation_runtime import SandboxToolDescriptor
 from opensquilla.sandbox.policy import LevelHints
-from opensquilla.sandbox.types import DenialResult, SandboxRequest
+from opensquilla.sandbox.types import DenialResult, NetworkMode, SandboxRequest
 from opensquilla.tools.registry import tool
-from opensquilla.tools.run_mode import full_host_access_active
+from opensquilla.tools.run_mode import full_host_access_active, trusted_sandbox_active
 from opensquilla.tools.types import ToolError, current_tool_context
 
 # Destructive Python patterns that must go through the same approval flow as
@@ -146,6 +150,68 @@ def _code_needs_network(code: str) -> bool:
     return any(token in lowered for token in _CODE_NETWORK_TOKENS)
 
 
+def _windows_sandbox_backend_active(runtime: object | None) -> bool:
+    backend = getattr(runtime, "backend", None) if runtime is not None else None
+    backend_name = str(getattr(backend, "name", "") or "")
+    return backend_name.startswith("windows_")
+
+
+def _trusted_managed_network_policy(policy, runtime: object | None):
+    if getattr(policy, "network", None) is NetworkMode.PROXY_ALLOWLIST:
+        return policy
+    settings = getattr(runtime, "settings", None) if runtime is not None else None
+    if getattr(settings, "network_default", None) != "proxy_allowlist":
+        return policy
+    if not trusted_sandbox_active():
+        return policy
+    ctx = current_tool_context.get()
+    if getattr(policy, "network", None) is NetworkMode.NONE and (
+        ctx is None or getattr(ctx, "sandbox_run_context", None) is None
+    ):
+        return policy
+    return dataclasses.replace(policy, network=NetworkMode.PROXY_ALLOWLIST, network_proxy=None)
+
+
+_trusted_windows_managed_network_policy = _trusted_managed_network_policy
+
+
+def _windows_environment_subprocess_misuse(code: str) -> str | None:
+    lowered = code.lower()
+    if "subprocess." not in lowered and "os.system" not in lowered and "os.popen" not in lowered:
+        return None
+    if re.search(r"\bpython(?:\d+(?:\.\d+)*)?\b[^\"'\n;]{0,120}-m[^\"'\n;]{0,40}venv", lowered):
+        return "python -m venv"
+    if re.search(r"\buv\b[^\"'\n;]{0,80}\bvenv\b", lowered):
+        return "uv venv"
+    if re.search(r"\b(?:pip|pip3)\b[^\"'\n;]{0,80}\binstall\b", lowered):
+        return "pip install"
+    if re.search(r"\buv\b[^\"'\n;]{0,80}\bpip\b[^\"'\n;]{0,80}\binstall\b", lowered):
+        return "uv pip install"
+    if re.search(r"\b(?:npm|pnpm|yarn)\b[^\"'\n;]{0,80}\b(?:add|ci|install)\b", lowered):
+        return "node package install"
+    if "venv" in lowered:
+        return "venv"
+    return None
+
+
+def _unsupported_windows_environment_subprocess_payload(reason: str) -> str:
+    return json.dumps(
+        {
+            "status": "unsupported_tool_use",
+            "tool": "execute_code",
+            "recommended_tool": "exec_command",
+            "reason": "windows_sandbox_environment_subprocess",
+            "message": (
+                "execute_code is for short Python calculations and import checks. "
+                f"Windows sandbox detected {reason} through a Python subprocess; "
+                "use exec_command so the Windows shell path translation, sandbox filesystem "
+                "grants, and managed network approvals run before the process starts."
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
 _MAX_TIMEOUT = 120
 _DEFAULT_TIMEOUT = 30
 _MAX_OUTPUT_CHARS = 50_000
@@ -173,6 +239,25 @@ _SAFE_ENV_KEYS = frozenset(
     }
 )
 
+async def _run_backend_with_managed_network_if_needed(
+    request: SandboxRequest,
+    *,
+    runtime: SandboxRuntime | None,
+):
+    if (
+        runtime is None
+        or getattr(request.policy, "network", None) is not NetworkMode.PROXY_ALLOWLIST
+    ):
+        return await run_under_backend(request, runtime=runtime)
+    managed_network = await prepare_subprocess_managed_network_proxy(
+        request,
+        runtime=runtime,
+    )
+    try:
+        return await run_under_backend(managed_network.request, runtime=runtime)
+    finally:
+        await managed_network.cleanup()
+
 
 def _execution_result_json(
     *,
@@ -196,28 +281,35 @@ def _execution_result_json(
 
 def _append_code_exec_sandbox_network_hint(*, stdout: str, stderr: str) -> str:
     from opensquilla.tools.builtin.shell import (
-        _SANDBOX_NETWORK_HINT,
         _append_sandbox_network_hint,
         _looks_like_sandbox_network_failure,
+        _sandbox_network_hint,
     )
 
     if not _looks_like_sandbox_network_failure(stdout + "\n" + stderr):
         return stderr
     if stderr:
         return _append_sandbox_network_hint(stderr, force=True)
-    return _SANDBOX_NETWORK_HINT
+    return _sandbox_network_hint()
 
 
 def _resolve_python_bin(*, sandbox_enabled: bool) -> str:
     """Resolve a Python executable that is visible from the execution mode."""
+    backend_name = ""
     if sandbox_enabled:
+        runtime = get_runtime()
+        backend = getattr(runtime, "backend", None) if runtime is not None else None
+        backend_name = str(getattr(backend, "name", "") or "")
+
+    if sandbox_enabled and backend_name == "bubblewrap":
         # The bubblewrap backend exposes host /usr and /bin inside the sandbox,
         # but not the caller's project venv. `uv run` commonly puts
         # .venv/bin/python3 first on PATH, which is invisible after isolation.
         for candidate in _SANDBOX_PYTHON_CANDIDATES:
             if candidate.is_file() and os.access(candidate, os.X_OK):
                 return str(candidate)
-    else:
+
+    if not sandbox_enabled or backend_name != "bubblewrap":
         current_python = Path(sys.executable)
         if current_python.is_file():
             return str(current_python)
@@ -253,6 +345,12 @@ def _resolve_python_bin(*, sandbox_enabled: bool) -> str:
         },
     },
     required=["code"],
+    sandbox=SandboxToolDescriptor.process(
+        kind="code.exec",
+        argv_factory=lambda a: ("execute_code", str(a.get("code", ""))),
+        enforce=False,
+        record_payload=False,
+    ),
 )
 async def execute_code(
     code: str,
@@ -302,15 +400,18 @@ async def execute_code(
     ctx = current_tool_context.get()
     runtime = get_runtime()
     from opensquilla.tools.builtin.shell import (
-        _consume_host_once_current_call,
+        _apply_windows_session_tmp_env,
         _host_execution_allowed,
-        _host_once_current_call,
     )
 
     host_execution = _host_execution_allowed()
     sandbox_enabled = bool(
         runtime is not None and runtime.effective.sandbox_enabled and not host_execution
     )
+    if sandbox_enabled and _windows_sandbox_backend_active(runtime):
+        misuse = _windows_environment_subprocess_misuse(code)
+        if misuse is not None:
+            return _unsupported_windows_environment_subprocess_payload(misuse)
     python_bin = _resolve_python_bin(sandbox_enabled=sandbox_enabled)
     workspace = (
         Path(ctx.workspace_dir).expanduser().resolve() if ctx and ctx.workspace_dir else None
@@ -328,7 +429,13 @@ async def execute_code(
         cleanup_dir = workdir
     start_ns = time.monotonic_ns()
 
-    safe_env = {k: v for k, v in os.environ.items() if k in _SAFE_ENV_KEYS}
+    safe_env = (
+        os.environ.copy()
+        if host_execution
+        else {k: v for k, v in os.environ.items() if k in _SAFE_ENV_KEYS}
+    )
+    if sandbox_enabled and _windows_sandbox_backend_active(runtime):
+        _apply_windows_session_tmp_env(safe_env)
     hints = LevelHints(needs_network=_code_needs_network(code))
 
     if runtime is None or (runtime.effective.sandbox_enabled and not host_execution):
@@ -345,8 +452,11 @@ async def execute_code(
             argv=(python_bin, "-c", code),
             cwd=request.cwd,
             action_kind=request.action_kind,
-            policy=request.policy,
+            policy=_trusted_managed_network_policy(request.policy, runtime),
             env=safe_env,
+            reason=getattr(request, "reason", ""),
+            session_id=getattr(request, "session_id", ""),
+            run_mode=getattr(request, "run_mode", ""),
         )
         if runtime is not None:
             preflight = await preflight_subprocess_managed_network(backend_request, runtime)
@@ -355,7 +465,10 @@ async def execute_code(
             if isinstance(preflight, dict):
                 return json.dumps(preflight)
         try:
-            sandbox_result = await run_under_backend(backend_request, runtime=runtime)
+            sandbox_result = await _run_backend_with_managed_network_if_needed(
+                backend_request,
+                runtime=runtime,
+            )
         except Exception as exc:
             return _execution_result_json(
                 returncode=-1,
@@ -370,43 +483,13 @@ async def execute_code(
             )
             if isinstance(escalation, DenialResult):
                 return json.dumps(escalation.to_dict())
-            _host_once_current_call.set(True)
-            _consume_host_once_current_call()
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    python_bin, "-c", code,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=str(workdir_path),
-                    env=safe_env,
-                )
-                try:
-                    stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                        proc.communicate(), timeout=timeout
-                    )
-                except TimeoutError:
-                    proc.kill()
-                    await proc.communicate()
-                    elapsed_ms = (time.monotonic_ns() - start_ns) // 1_000_000
-                    return _execution_result_json(
-                        returncode=-1, stdout="", stderr=f"Execution timed out after {timeout}s",
-                        timed_out=True, elapsed_ms=elapsed_ms,
-                    )
-                elapsed_ms = (time.monotonic_ns() - start_ns) // 1_000_000
-                return _execution_result_json(
-                    returncode=proc.returncode if proc.returncode is not None else -1,
-                    stdout=stdout_bytes.decode("utf-8", errors="replace"),
-                    stderr=stderr_bytes.decode("utf-8", errors="replace"),
-                    timed_out=False,
-                    elapsed_ms=elapsed_ms,
-                )
-            except Exception as exc:
-                return _execution_result_json(
-                    returncode=-1, stdout="", stderr=f"Execution error: {exc}",
-                    timed_out=False, elapsed_ms=0,
-                )
-            finally:
-                _host_once_current_call.set(False)
+            return _execution_result_json(
+                returncode=-1,
+                stdout="",
+                stderr="Sandboxed code execution denied; host fallback disabled",
+                timed_out=False,
+                elapsed_ms=0,
+            )
         elapsed_ms = (time.monotonic_ns() - start_ns) // 1_000_000
         stdout = sandbox_result.stdout
         stderr = sandbox_result.stderr

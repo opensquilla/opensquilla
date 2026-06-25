@@ -24,10 +24,19 @@ from opensquilla.provider import (
     Message,
     ModelCapabilities,
 )
-from opensquilla.provider import DoneEvent as ProviderDone
-from opensquilla.provider import TextDeltaEvent as ProviderText
-from opensquilla.provider import ToolUseEndEvent as ProviderToolUseEnd
-from opensquilla.provider import ToolUseStartEvent as ProviderToolUseStart
+from opensquilla.provider import (
+    DoneEvent as ProviderDone,
+)
+from opensquilla.provider import (
+    TextDeltaEvent as ProviderText,
+)
+from opensquilla.provider import (
+    ToolUseEndEvent as ProviderToolUseEnd,
+)
+from opensquilla.provider import (
+    ToolUseStartEvent as ProviderToolUseStart,
+)
+from opensquilla.provider.types import ContentBlockImage
 
 
 def test_agent_config_disables_tool_argument_projection_by_default() -> None:
@@ -1515,6 +1524,57 @@ async def test_agent_provider_view_prunes_non_adjacent_tool_results() -> None:
 
 
 @pytest.mark.asyncio
+async def test_agent_provider_view_keeps_latest_duplicate_tool_result() -> None:
+    provider = CapturingProvider()
+    agent = Agent(provider=provider, config=AgentConfig(max_iterations=1))
+    agent.set_history(
+        [
+            Message(role="user", content="old task"),
+            Message(
+                role="assistant",
+                content=[
+                    ContentBlockToolUse(
+                        id="call_lookup",
+                        name="lookup",
+                        input={"q": "old"},
+                    )
+                ],
+            ),
+            Message(
+                role="user",
+                content=[
+                    ContentBlockToolResult(
+                        tool_use_id="call_lookup",
+                        content='{"status":"approval_required"}',
+                        is_error=False,
+                    ),
+                    ContentBlockToolResult(
+                        tool_use_id="call_lookup",
+                        content='{"status":"approval_denied"}',
+                        is_error=True,
+                    ),
+                ],
+            ),
+        ]
+    )
+
+    events = [event async for event in agent.run_turn("continue")]
+
+    assert any(event.kind == "done" for event in events)
+    tool_results = [
+        block
+        for message in provider.calls[0]["messages"]
+        if isinstance(message.content, list)
+        for block in message.content
+        if isinstance(block, ContentBlockToolResult)
+    ]
+    assert len(tool_results) == 1
+    assert tool_results[0].tool_use_id == "call_lookup"
+    assert tool_results[0].content == '{"status":"approval_denied"}'
+    assert tool_results[0].is_error is True
+
+
+@pytest.mark.asyncio
 async def test_agent_provider_view_preserves_split_adjacent_tool_results() -> None:
     provider = CapturingProvider()
     agent = Agent(provider=provider, config=AgentConfig(max_iterations=1))
@@ -2146,6 +2206,37 @@ async def test_agent_preserves_reasoning_content_for_deepseek_tool_replay() -> N
         and any(getattr(block, "type", None) == "tool_use" for block in message.content)
     )
     assert assistant_replay.reasoning_content == "I should call echo before finalizing."
+
+
+@pytest.mark.asyncio
+async def test_agent_preserves_allowed_historical_image_blocks_for_vision_models() -> None:
+    provider = CapturingProvider()
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            max_iterations=1,
+            model_id="vision-model",
+            model_capabilities=ModelCapabilities(supports_vision=True),
+            preserve_historical_images=True,
+        ),
+    )
+    agent.set_history(
+        [
+            Message(
+                role="user",
+                content=[
+                    ContentBlockText(text="describe this"),
+                    ContentBlockImage(media_type="image/png", data="aW1hZ2U="),
+                ],
+            )
+        ]
+    )
+
+    events = [event async for event in agent.run_turn("continue")]
+
+    assert any(event.kind == "done" for event in events)
+    sent_blocks = provider.calls[0]["messages"][0].content
+    assert any(isinstance(block, ContentBlockImage) for block in sent_blocks)
 
 
 @pytest.mark.asyncio

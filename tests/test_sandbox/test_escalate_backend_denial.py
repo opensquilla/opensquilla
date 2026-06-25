@@ -13,7 +13,6 @@ from opensquilla.sandbox.integration import (
 from opensquilla.sandbox.run_context import RunContext
 from opensquilla.sandbox.run_mode import RunMode
 from opensquilla.sandbox.types import (
-    ALLOW,
     DenialReason,
     DenialResult,
     MountSpec,
@@ -83,7 +82,7 @@ def _reset() -> None:
 
 
 @pytest.mark.asyncio
-async def test_escalate_routes_to_approval_gate_with_require_approval(tmp_path: Path) -> None:
+async def test_sandbox_backend_denial_does_not_route_to_host_once(tmp_path: Path) -> None:
     queue = _ApproveQueue(approve=True)
     configure_runtime(
         SandboxSettings(sandbox=True, backend="noop", security_grading=False),
@@ -96,15 +95,10 @@ async def test_escalate_routes_to_approval_gate_with_require_approval(tmp_path: 
 
     decision = await escalate_backend_denial(result, request, policy)
 
-    assert decision is ALLOW
-    assert queue.last_params is not None
-    assert queue.last_params["approvalKind"] == "host_once"
-    assert [choice["id"] for choice in queue.last_params["choices"]] == [
-        "host_once",
-        "host_switch_chat_full",
-        "deny",
-    ]
-    assert "host once requested after sandbox denied" in queue.last_params["reason"]
+    assert isinstance(decision, DenialResult)
+    assert decision.reason == DenialReason.SEATBELT_DENIED
+    assert decision.retryable is False
+    assert queue.last_params is None
 
 
 @pytest.mark.asyncio
@@ -201,7 +195,7 @@ async def test_current_tool_context_full_host_access_skips_backend_host_once(
 
 
 @pytest.mark.asyncio
-async def test_escalate_returns_allow_on_user_approval(tmp_path: Path) -> None:
+async def test_escalate_returns_denial_without_host_once_prompt(tmp_path: Path) -> None:
     configure_runtime(
         SandboxSettings(sandbox=True, backend="noop", security_grading=False),
         approval_queue=_ApproveQueue(approve=True),
@@ -212,7 +206,8 @@ async def test_escalate_returns_allow_on_user_approval(tmp_path: Path) -> None:
 
     decision = await escalate_backend_denial(result, _request(tmp_path, policy), policy)
 
-    assert decision is ALLOW
+    assert isinstance(decision, DenialResult)
+    assert decision.reason == DenialReason.SEATBELT_DENIED
 
 
 @pytest.mark.asyncio

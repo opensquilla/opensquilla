@@ -45,6 +45,7 @@ from opensquilla.provider.image_generation import (
     parse_image_generation_model_ref,
     reset_image_generation_providers,
 )
+from opensquilla.sandbox.operation_runtime import SandboxToolDescriptor
 from opensquilla.tools.path_aliases import resolve_workspace_alias
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
@@ -120,6 +121,7 @@ def configure_audio(config: Any | None) -> None:
         },
     },
     required=["path", "prompt"],
+    sandbox=SandboxToolDescriptor.media(kind="media.analyze"),
     execution_timeout_seconds=_VISION_ANALYSIS_TIMEOUT_SECONDS,
 )
 async def image(path: str, prompt: str = "Describe this image") -> str:
@@ -420,6 +422,7 @@ async def _call_vision_provider(b64_data: str, media_type: str, prompt: str) -> 
         },
     },
     required=["prompt"],
+    sandbox=SandboxToolDescriptor.media(kind="media.generate_image"),
 )
 async def image_generate(
     prompt: str,
@@ -643,6 +646,7 @@ def _resolve_generated_image_path(filename: str | None, output_format: str) -> P
         },
     },
     required=["path"],
+    sandbox=SandboxToolDescriptor.media(kind="media.read_pdf"),
 )
 async def pdf(
     path: str,
@@ -1250,6 +1254,7 @@ def _short_song_preview_lyrics(lyrics: str) -> str:
         },
     },
     required=["sample_audio", "name"],
+    sandbox=SandboxToolDescriptor.media(kind="media.voice_clone"),
 )
 async def voice_clone(
     sample_audio: str,
@@ -1320,6 +1325,7 @@ async def voice_clone(
         },
     },
     required=["source_audio", "target_voice"],
+    sandbox=SandboxToolDescriptor.media(kind="media.voice_convert"),
 )
 async def voice_convert(
     source_audio: str,
@@ -1390,6 +1396,7 @@ async def voice_convert(
         "num_speakers": {"type": "integer", "description": "Optional speaker count."},
     },
     required=["source_media", "target_language"],
+    sandbox=SandboxToolDescriptor.media(kind="media.dubbing_generate"),
 )
 async def dubbing_generate(
     source_media: str,
@@ -1452,6 +1459,7 @@ async def dubbing_generate(
     description="Check the status of an ElevenLabs dubbing job.",
     params={"dubbing_id": {"type": "string", "description": "ElevenLabs dubbing job id."}},
     required=["dubbing_id"],
+    sandbox=SandboxToolDescriptor.media(kind="media.dubbing_status"),
 )
 async def dubbing_status(dubbing_id: str) -> str:
     if not dubbing_id or not dubbing_id.strip():
@@ -1500,6 +1508,7 @@ _DUBBING_FAILED_STATUSES = {"failed", "error", "cancelled", "canceled"}
         "timeout_seconds": {"type": "number", "description": "Max wait time."},
     },
     required=["dubbing_id", "language_code"],
+    sandbox=SandboxToolDescriptor.media(kind="media.dubbing_download"),
 )
 async def dubbing_download(
     dubbing_id: str,
@@ -1584,6 +1593,7 @@ async def dubbing_download(
         "output_path": {"type": "string", "description": "Optional output audio path."},
     },
     required=["prompt"],
+    sandbox=SandboxToolDescriptor.media(kind="media.music_generate"),
 )
 async def music_generate(
     prompt: str,
@@ -1642,6 +1652,7 @@ async def music_generate(
         "output_path": {"type": "string", "description": "Optional output audio path."},
     },
     required=["lyrics"],
+    sandbox=SandboxToolDescriptor.media(kind="media.song_generate"),
 )
 async def song_generate(
     lyrics: str,
@@ -1740,6 +1751,7 @@ async def song_generate(
         }
     },
     required=[],
+    sandbox=SandboxToolDescriptor.media(kind="media.audio_capabilities"),
 )
 async def audio_provider_capabilities(probe_live: bool = False) -> str:
     config = _resolve_audio_config()
@@ -1818,6 +1830,7 @@ async def audio_provider_capabilities(probe_live: bool = False) -> str:
         },
     },
     required=[],
+    sandbox=SandboxToolDescriptor.media(kind="media.voice_search"),
 )
 async def voice_search(
     language: str = "",
@@ -1926,6 +1939,7 @@ async def voice_search(
         },
     },
     required=["text"],
+    sandbox=SandboxToolDescriptor.media(kind="media.tts"),
 )
 async def tts(
     text: str,

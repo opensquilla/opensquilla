@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -117,6 +118,67 @@ def test_image_ref_hydrates_for_current_provider_call(tmp_path: Path) -> None:
     image_blocks = [b for b in out[0].content if isinstance(b, ContentBlockImage)]
     assert len(image_blocks) == 1
     assert image_blocks[0].data == _b64(b"\x89PNG\r\n\x1a\n")
+
+
+def test_historical_inline_image_envelope_can_replay_for_vision() -> None:
+    content = json.dumps(
+        {
+            "text": "continue from this",
+            "attachments": [
+                {
+                    "type": "image/png",
+                    "data": _b64(b"\x89PNG\r\n\x1a\n"),
+                    "name": "p.png",
+                }
+            ],
+        }
+    )
+
+    out = TurnRunner._maybe_unpack_attachments(
+        content,
+        preserve_image_attachments=True,
+    )
+
+    assert isinstance(out, list)
+    assert isinstance(out[0], ContentBlockText)
+    assert out[0].text == "continue from this"
+    image_blocks = [b for b in out if isinstance(b, ContentBlockImage)]
+    assert len(image_blocks) == 1
+    assert image_blocks[0].media_type == "image/png"
+    assert image_blocks[0].data == _b64(b"\x89PNG\r\n\x1a\n")
+
+
+def test_historical_image_ref_envelope_can_replay_for_vision(tmp_path: Path) -> None:
+    payload = b"\x89PNG\r\n\x1a\n"
+    sha = hashlib.sha256(payload).hexdigest()
+    material_dir = tmp_path / "transcripts" / "s1"
+    material_dir.mkdir(parents=True)
+    (material_dir / sha).write_bytes(payload)
+    content = json.dumps(
+        {
+            "text": "continue from stored image",
+            "attachments": [
+                {
+                    "sha256_ref": sha,
+                    "mime": "image/png",
+                    "name": "stored.png",
+                    "size": len(payload),
+                }
+            ],
+        }
+    )
+
+    out = TurnRunner._maybe_unpack_attachments(
+        content,
+        preserve_image_attachments=True,
+        media_root=tmp_path,
+        session_id="s1",
+    )
+
+    assert isinstance(out, list)
+    image_blocks = [b for b in out if isinstance(b, ContentBlockImage)]
+    assert len(image_blocks) == 1
+    assert image_blocks[0].data == _b64(payload)
 
 
 # ---------------------------------------------------------------------------

@@ -26,11 +26,13 @@ composition:
         style: bulleted
         max_words: 400
     - id: memorize
-      skill: memory
+      kind: tool_call
+      tool: memory_save
+      tool_allowlist: [memory_save]
       depends_on: [digest]
-      with:
-        action: save
-        topic: "pr-watch"
+      tool_args:
+        path: "memory/pr-watch.md"
+        mode: append
         content: "{{ outputs.digest }}"
 ---
 

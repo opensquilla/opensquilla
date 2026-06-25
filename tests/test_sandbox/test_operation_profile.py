@@ -19,11 +19,70 @@ def test_classify_python_package_install_variants() -> None:
         ("python3", "-m", "pip", "install", "requests"),
         ("python3.11", "-m", "pip", "install", "requests"),
         ("/usr/bin/python3", "-m", "pip", "install", "requests"),
+        ("python.cmd", "-m", "pip", "install", "requests"),
+        ("uv", "pip", "install", "--no-cache-dir", "requests"),
     ):
         profile = classify_command(command)
         assert profile.name == "package_install"
         assert profile.package_manager == "python"
         assert profile.needs_network is True
+
+
+def test_classify_python_package_install_in_powershell_call_operator() -> None:
+    script = (
+        '& "D:\\opensquilla\\.tmp\\proj\\.venv\\Scripts\\python.exe" '
+        "-m pip install --no-cache-dir httpx[http2] pendulum"
+    )
+    for command in (
+        ("sh", "-lc", script),
+        ("powershell", "-Command", script),
+        ("pwsh", "-c", script),
+    ):
+        profile = classify_command(command)
+        assert profile.name == "package_install"
+        assert profile.package_manager == "python"
+        assert profile.needs_network is True
+
+
+def test_classify_python_package_install_in_windows_shell_host_wrapper() -> None:
+    script = (
+        '& "D:\\opensquilla\\.tmp\\proj\\.venv\\Scripts\\python.exe" '
+        "-m pip install --no-cache-dir httpx[http2] pendulum"
+    )
+    profile = classify_command(
+        (
+            "D:\\opensquilla\\.venv\\Scripts\\python.exe",
+            "-c",
+            "windows sandbox shell host expects powershell path and command",
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            script,
+        )
+    )
+
+    assert profile.name == "package_install"
+    assert profile.package_manager == "python"
+    assert profile.needs_network is True
+
+
+def test_classify_rewritten_python_package_install_in_windows_shell_host_wrapper() -> None:
+    script = (
+        "Invoke-OpenSquillaPythonProcess "
+        "-FilePath 'D:\\opensquilla\\.tmp\\proj\\.venv\\Scripts\\python.exe' "
+        "-Arguments @('-m','pip','install','--no-cache-dir','httpx[http2]','pendulum')"
+    )
+    profile = classify_command(
+        (
+            "D:\\opensquilla\\.venv\\Scripts\\python.exe",
+            "-c",
+            "windows sandbox shell host expects powershell path and command",
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            script,
+        )
+    )
+
+    assert profile.name == "package_install"
+    assert profile.package_manager == "python"
+    assert profile.needs_network is True
 
 
 def test_pip_help_install_is_not_package_install() -> None:
@@ -50,6 +109,14 @@ def test_classify_alternate_node_package_installers() -> None:
         assert profile.name == "package_install"
         assert profile.package_manager == "node"
         assert profile.needs_network is True
+
+
+def test_classify_node_package_install_behind_timeout_wrapper() -> None:
+    profile = classify_command(("timeout", "30", "npm", "install", "lodash"))
+
+    assert profile.name == "package_install"
+    assert profile.package_manager == "node"
+    assert profile.needs_network is True
 
 
 def test_npm_run_install_is_not_package_install() -> None:
@@ -184,6 +251,21 @@ def test_shell_wrapper_preserves_windows_read_path_arguments() -> None:
     assert profile.requested_paths == (r"C:\workspace\outside",)
 
 
+def test_shell_wrapper_tracks_windows_delete_paths() -> None:
+    for command in (
+        r'del "C:\Users\me\outside-sandbox-smoke.txt"',
+        r"Remove-Item C:\Users\me\outside-sandbox-smoke.txt -Force",
+        r"Remove-Item -LiteralPath C:\Users\me\outside-sandbox-smoke.txt -Force",
+    ):
+        profile = classify_command(("sh", "-lc", command))
+
+        assert profile.name == "destructive_shell"
+        assert profile.high_impact is True
+        assert profile.requested_write_paths == (
+            r"C:\Users\me\outside-sandbox-smoke.txt",
+        )
+
+
 def test_shell_wrapper_preserves_copy_source_and_destination_paths() -> None:
     profile = classify_command(
         ("sh", "-lc", "cp /workspace-src/opensquilla/LICENSE /workspace/license.txt")
@@ -286,10 +368,111 @@ def test_shell_wrapper_detects_env_prefixed_destructive_command() -> None:
     assert profile.high_impact is True
 
 
+def test_classify_python_environment_creation() -> None:
+    for command in (
+        ("python", "-m", "venv", "/tmp/proj/.venv"),
+        ("python3", "-m", "venv", "/tmp/proj/.venv"),
+        ("virtualenv", "/tmp/proj/.venv"),
+        ("uv", "venv", "/tmp/proj/.venv"),
+        ("python", "-m", "venv", ".venv"),
+        ("virtualenv", ".venv"),
+        ("uv", "venv", ".venv"),
+    ):
+        profile = classify_command(command)
+        assert profile.name == "create_env"
+        assert profile.package_manager == "python"
+        assert profile.requested_write_paths == (
+            "/tmp/proj/.venv" if "/tmp/proj/.venv" in command else ".venv",
+        )
+
+
+def test_classify_python_environment_creation_with_prompt_option_and_relative_target() -> None:
+    profile = classify_command(("python", "-m", "venv", "--prompt", "name", ".venv"))
+
+    assert profile.name == "create_env"
+    assert profile.package_manager == "python"
+    assert profile.requested_write_paths == (".venv",)
+
+
+def test_python_environment_create_help_or_version_is_not_classified_as_create_env() -> None:
+    for command in (
+        ("python", "-m", "venv", "--help"),
+        ("python", "-m", "venv", "--version"),
+        ("virtualenv", "--help"),
+        ("uv", "venv", "--help"),
+        ("virtualenv", "-V"),
+    ):
+        profile = classify_command(command)
+
+        assert profile.name != "create_env"
+
+
+def test_python_environment_create_with_version_named_target() -> None:
+    for command in (
+        ("python", "-m", "venv", "version"),
+        ("virtualenv", "version"),
+        ("uv", "venv", "version"),
+    ):
+        profile = classify_command(command)
+
+        assert profile.name == "create_env"
+        assert profile.package_manager == "python"
+        assert profile.requested_write_paths == ("version",)
+
+
+def test_classify_additional_package_managers() -> None:
+    cases = {
+        ("poetry", "install"): "python",
+        ("rye", "sync"): "python",
+        ("pixi", "install"): "python",
+        ("bun", "install"): "node",
+        ("composer", "install"): "php",
+        ("mvn", "package"): "java",
+        ("gradle", "build"): "java",
+        ("./gradlew", "build"): "java",
+    }
+    for command, manager in cases.items():
+        profile = classify_command(command)
+        assert profile.name == "package_install"
+        assert profile.package_manager == manager
+        assert profile.needs_network is True
+
+
+def test_shell_wrapper_merges_create_env_and_install_packages() -> None:
+    profile = classify_command(
+        (
+            "sh",
+            "-lc",
+            "python -m venv /tmp/proj/.venv && "
+            "/tmp/proj/.venv/bin/python -m pip install requests",
+        )
+    )
+
+    assert profile.name == "package_install"
+    assert profile.package_manager == "python"
+    assert profile.requested_write_paths == ("/tmp/proj/.venv",)
+
+
+def test_shell_wrapper_merges_relative_create_env_and_install_packages() -> None:
+    profile = classify_command(
+        (
+            "sh",
+            "-lc",
+            "python -m venv .venv && .venv/bin/python -m pip install requests",
+        )
+    )
+
+    assert profile.name == "package_install"
+    assert profile.package_manager == "python"
+    assert profile.requested_write_paths == (".venv",)
+
+
 def test_package_bundle_for_manager() -> None:
     assert package_bundle_for_manager("python") == "python-package-install"
     assert package_bundle_for_manager("node") == "node-package-install"
     assert package_bundle_for_manager("rust") == "rust-package-install"
     assert package_bundle_for_manager("go") == "go-package-install"
+    assert package_bundle_for_manager("java") == "java-package-install"
+    assert package_bundle_for_manager("php") == "php-package-install"
     assert package_bundle_for_manager(None) is None
     assert package_bundle_for_manager("unknown") is None

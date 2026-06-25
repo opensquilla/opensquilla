@@ -38,11 +38,13 @@ composition:
           </body></html>
         page_size: A4
     - id: memorize
-      skill: memory
+      kind: tool_call
+      tool: memory_save
+      tool_allowlist: [memory_save]
       depends_on: [research]
-      with:
-        action: save
-        topic: "compliance-audit"
+      tool_args:
+        path: "memory/compliance-audit.md"
+        mode: append
         content: "{{ outputs.research }}"
 ---
 

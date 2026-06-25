@@ -33,6 +33,17 @@ PACKAGE_BUNDLES: dict[str, tuple[str, ...]] = {
         "golang.org",
         "storage.googleapis.com",
     ),
+    "java-package-install": (
+        "repo.maven.apache.org",
+        "repo1.maven.org",
+        "plugins.gradle.org",
+        "services.gradle.org",
+    ),
+    "php-package-install": (
+        "packagist.org",
+        "repo.packagist.org",
+        "getcomposer.org",
+    ),
     "github-default": (
         "github.com",
         "api.github.com",

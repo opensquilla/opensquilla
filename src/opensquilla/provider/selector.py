@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from .anthropic import AnthropicProvider
@@ -46,6 +47,21 @@ def _unsupported_runtime_message(provider: str) -> str:
 
 def _missing_base_url_message(provider: str) -> str:
     return f"Provider '{provider}' requires an explicit base_url"
+
+
+def _provider_config_identity(
+    cfg: ProviderConfig,
+) -> tuple[str, str, str, str, str, str, tuple[tuple[str, str], ...]]:
+    provider_routing = tuple(sorted((str(k), str(v)) for k, v in cfg.provider_routing.items()))
+    return (
+        cfg.provider,
+        cfg.model,
+        cfg.api_key,
+        cfg.base_url,
+        cfg.org_id,
+        cfg.proxy,
+        provider_routing,
+    )
 
 
 def _build_provider(cfg: ProviderConfig) -> LLMProvider:
@@ -173,17 +189,22 @@ class ModelSelector:
         replaces the static fallback chain from ``SelectorConfig``. An
         empty chain raises ``IndexError`` exactly like ``next_fallback``.
         """
-        chain = resolve_failover_chain(primary_failure, self._config, self._plugin)
+        current = self._chain[self._index]
+        if self._plugin is not None and hasattr(self._plugin, "failover_hook"):
+            chain = resolve_failover_chain(primary_failure, self._config, self._plugin)
+        else:
+            chain = list(self._chain[self._index + 1 :])
         if not chain:
             raise IndexError("No fallback chain available")
-        self._chain = [self._chain[0], *chain]
+        self._chain = [current, *chain]
         self._index = 1
         return _build_provider(self._chain[self._index])
 
     def override_model(self, model: str) -> None:
         """Update the model on the primary provider config (for runtime switching)."""
         if model and model != self._chain[0].model:
-            self._chain[0] = ProviderConfig(
+            original_primary = self._chain[0]
+            overridden_primary = ProviderConfig(
                 provider=self._chain[0].provider,
                 model=model,
                 api_key=self._chain[0].api_key,
@@ -192,6 +213,83 @@ class ModelSelector:
                 proxy=self._chain[0].proxy,
                 provider_routing=self._chain[0].provider_routing,
             )
+            fallback_chain = [original_primary, *self._chain[1:]]
+            deduped_fallbacks: list[ProviderConfig] = []
+            seen: set[tuple[str, str, str, str, str, str, tuple[tuple[str, str], ...]]] = {
+                _provider_config_identity(overridden_primary)
+            }
+            for cfg in fallback_chain:
+                identity = _provider_config_identity(cfg)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                deduped_fallbacks.append(cfg)
+            self._chain = [overridden_primary, *deduped_fallbacks]
+            self._index = 0
+
+    def override_model_with_fallback_chain(
+        self,
+        model: str,
+        fallback_chain: list[object],
+    ) -> None:
+        """Override primary model and prefer router-provided fallback models.
+
+        Router fallback entries are intentionally small metadata dictionaries.
+        The selector can safely synthesize same-provider fallbacks by reusing
+        the current provider credentials. Cross-provider entries require a
+        configured fallback with matching credentials; otherwise they are
+        skipped instead of guessing secrets.
+        """
+        self.override_model(model)
+        if not fallback_chain:
+            return
+
+        current = self._chain[0]
+        existing_tail = list(self._chain[1:])
+        existing_by_provider_model = {
+            (cfg.provider, cfg.model): cfg for cfg in existing_tail
+        }
+
+        router_fallbacks: list[ProviderConfig] = []
+        for entry in fallback_chain:
+            if not isinstance(entry, Mapping):
+                continue
+            candidate_model = str(entry.get("model") or "").strip()
+            if not candidate_model:
+                continue
+            candidate_provider = (
+                str(entry.get("provider") or current.provider).strip() or current.provider
+            )
+            existing = existing_by_provider_model.get((candidate_provider, candidate_model))
+            if existing is not None:
+                router_fallbacks.append(existing)
+                continue
+            if candidate_provider != current.provider:
+                continue
+            router_fallbacks.append(
+                ProviderConfig(
+                    provider=current.provider,
+                    model=candidate_model,
+                    api_key=current.api_key,
+                    base_url=current.base_url,
+                    org_id=current.org_id,
+                    proxy=current.proxy,
+                    provider_routing=current.provider_routing,
+                )
+            )
+
+        deduped_tail: list[ProviderConfig] = []
+        seen: set[tuple[str, str, str, str, str, str, tuple[tuple[str, str], ...]]] = {
+            _provider_config_identity(current)
+        }
+        for cfg in [*router_fallbacks, *existing_tail]:
+            identity = _provider_config_identity(cfg)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            deduped_tail.append(cfg)
+        self._chain = [current, *deduped_tail]
+        self._index = 0
 
     def sync_primary(self, cfg: ProviderConfig) -> None:
         """Replace the primary provider config for future resolves and clones."""

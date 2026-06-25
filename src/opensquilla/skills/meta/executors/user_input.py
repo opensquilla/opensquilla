@@ -13,7 +13,9 @@ Behavior (design §8.1):
 
 The executor itself is async to fit the scheduler's contract; DAO calls
 are sync (MetaRunWriter holds a sync sqlite3 connection) and run off
-the event loop via `asyncio.to_thread`.
+the short sqlite CAS directly; the writer owns locking, and keeping the
+call in the current task avoids thread-pool wake-up stalls on App/native-hook
+surfaces.
 """
 
 from __future__ import annotations
@@ -43,6 +45,7 @@ from opensquilla.skills.meta.types import (
 # it out of any field-name collision since clarify field names cannot
 # start with ``__`` (parser invariant).
 _PREFILL_AUDIT_KEY = "__prefill_audit__"
+_EMPTY_PREFILL_SENTINELS: frozenset[str] = frozenset({"", "(empty)"})
 
 LLMChatProto = Callable[[str, str], Awaitable[str]]
 
@@ -73,36 +76,48 @@ def _english_field_prompt(field: ClarifyField) -> str:
     return prompt
 
 
+def _language_key(inputs: Mapping[str, Any]) -> str:
+    raw = str(inputs.get("user_language") or "").strip().lower()
+    if raw.startswith("zh") or raw in {"chinese", "中文"}:
+        return "zh"
+    if raw.startswith("en") or raw in {"english", "英文"}:
+        return "en"
+    return ""
+
+
 def _localize_clarify_config(
     cfg: ClarifyStepConfig,
     inputs: dict[str, Any],
 ) -> ClarifyStepConfig:
-    if str(inputs.get("user_language") or "").lower() != "en":
+    language = _language_key(inputs)
+    if not language:
         return cfg
     fields = tuple(
-        ClarifyField(
-            name=field.name,
-            type=field.type,
-            required=field.required,
-            prompt=_english_field_prompt(field),
-            choices=field.choices,
-            default=field.default,
-            min=field.min,
-            max=field.max,
-            max_chars=field.max_chars,
+        replace(
+            field,
+            prompt=(
+                field.prompt_by_language.get(language)
+                or (_english_field_prompt(field) if language == "en" else field.prompt)
+            ),
         )
         for field in cfg.fields
     )
     intro = cfg.intro
-    if not intro.strip() or _contains_cjk(intro):
+    if cfg.intro_by_language.get(language):
+        intro = cfg.intro_by_language[language]
+    elif language == "en" and (not intro.strip() or _contains_cjk(intro)):
         intro = _EN_INTRO
+    cancel_keywords = cfg.cancel_keywords
+    if language == "en":
+        cancel_keywords = tuple(kw for kw in cfg.cancel_keywords if not _contains_cjk(kw))
     return ClarifyStepConfig(
         mode=cfg.mode,
         fields=fields,
         skip_if=cfg.skip_if,
-        cancel_keywords=tuple(kw for kw in cfg.cancel_keywords if not _contains_cjk(kw)),
+        cancel_keywords=cancel_keywords,
         timeout_hours=cfg.timeout_hours,
         intro=intro,
+        intro_by_language=cfg.intro_by_language,
         nl_extract=cfg.nl_extract,
         nl_extract_tier=cfg.nl_extract_tier,
     )
@@ -188,8 +203,8 @@ async def run_user_input_step(
             log.info("meta_user_input.skipped", step=step.id)
             return ""
 
-    rendered_cfg = _render_clarify_config(cfg, inputs=inputs, outputs=outputs)
-    rendered_cfg = _localize_clarify_config(rendered_cfg, inputs)
+    localized_cfg = _localize_clarify_config(cfg, inputs)
+    rendered_cfg = _render_clarify_config(localized_cfg, inputs=inputs, outputs=outputs)
 
     # Step c: pre-fill scan — pull field values out of the context the
     # user already supplied (original_user_message,
@@ -229,6 +244,10 @@ async def run_user_input_step(
             llm_chat=llm_chat,
             context=prefill_context,
             step_id=step.id,
+        )
+        prefilled_values, prefill_audit = _drop_empty_prefill_sentinels(
+            prefilled_values,
+            prefill_audit,
         )
         # Deterministic hits win on conflict — they came directly
         # from an upstream emitter that we know followed the
@@ -288,8 +307,7 @@ async def run_user_input_step(
     # no broad ``TypeError`` swallow here, otherwise a legitimate
     # call-site signature mismatch silently dumps the prefill.
     try:
-        claimed = await asyncio.to_thread(
-            dao.try_claim_awaiting,
+        claimed = dao.try_claim_awaiting(
             run_id=run_id,
             step_id=step.id,
             schema_json=schema_json,
@@ -381,6 +399,41 @@ async def _run_prefill_scan(
     if result.errors:
         audit["errors"] = list(result.errors)
     return dict(result.fields), audit
+
+
+def _drop_empty_prefill_sentinels(
+    prefilled_values: dict[str, Any],
+    prefill_audit: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Remove extractor placeholders that only mean "no user reply yet".
+
+    Prefill scanning intentionally calls NL extraction with ``reply_text=""``.
+    Catch-all fields may instruct the extractor to emit ``(empty)`` for a blank
+    user reply; that sentinel is useful during real resume parsing, but it must
+    not become an auto-confirmed value before the user has responded.
+    """
+    dropped = sorted(
+        name
+        for name, value in prefilled_values.items()
+        if isinstance(value, str)
+        and value.strip().lower() in _EMPTY_PREFILL_SENTINELS
+    )
+    if not dropped:
+        return prefilled_values, prefill_audit
+
+    cleaned = {
+        name: value
+        for name, value in prefilled_values.items()
+        if name not in dropped
+    }
+    audit = dict(prefill_audit) if isinstance(prefill_audit, dict) else {}
+    raw_fields = audit.get("fields")
+    if isinstance(raw_fields, list | tuple | set):
+        audit["fields"] = [name for name in raw_fields if name not in dropped]
+    else:
+        audit["fields"] = []
+    audit["dropped_empty_sentinels"] = dropped
+    return cleaned, audit
 
 
 def _render_clarify_config(

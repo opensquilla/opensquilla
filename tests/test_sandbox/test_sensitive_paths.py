@@ -4,6 +4,7 @@ from pathlib import Path
 
 from opensquilla.sandbox.sensitive_paths import (
     is_sensitive_path,
+    linux_runtime_sensitive_deny_roots,
     sensitive_path_in_text,
     sensitive_path_marker,
     sensitive_target_in_command,
@@ -103,3 +104,15 @@ def test_posix_sensitive_paths_stay_blocked_on_windows_runners() -> None:
         sensitive_path_in_text("cat /root/.ssh/id_rsa", workspace=workspace)
         == "~/.ssh"
     )
+
+
+def test_linux_runtime_sensitive_deny_roots_excludes_workspace_parent() -> None:
+    workspace = Path("/root/.opensquilla/workspace")
+
+    roots = {path.as_posix() for path in linux_runtime_sensitive_deny_roots(workspace=workspace)}
+
+    assert "/etc" not in roots
+    assert "/etc/shadow" in roots
+    assert "/root" not in roots
+    assert "/root/.ssh" in roots
+    assert workspace.as_posix() not in roots

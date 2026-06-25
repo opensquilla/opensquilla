@@ -166,7 +166,9 @@ def _llm_source(cfg: GatewayConfig, status: SectionStatus) -> tuple[str, str]:
         return "env", env_key
     if env_key:
         return "missing_env", env_key
-    return "none", ""
+    if status is SectionStatus.OK:
+        return "env", spec.env_key
+    return "none", spec.env_key
 
 
 def _search_annotations(

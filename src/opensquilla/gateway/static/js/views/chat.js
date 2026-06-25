@@ -24,7 +24,11 @@ const ChatView = (() => {
     full: 'Host execution without per-command prompts. Use only for trusted workspaces.',
   };
   let _runMode = _RUN_MODE_DEFAULT;
-  let _runModeRequestSeq = 0;
+  let _sandboxSetupStatus = null;
+  let _sandboxSetupRequestSeq = 0;
+  let _sandboxSetupInFlight = false;
+  let _pendingSandboxSetupMode = '';
+  let _sandboxSetupPromptDismissed = false;
 
   // Streaming
   let _isStreaming = false;
@@ -334,6 +338,8 @@ const ChatView = (() => {
   //   - in-memory only; localStorage + cross-tab sync are follow-ups
   const _MAX_PENDING = 5;
   let _pendingQueue = []; // [{text, attachments, intent}]
+  let _sendTextOverride = null;
+  let _sendDisplayTextOverride = null;
   let _pendingDrainAfterTerminalTimer = null;
   let _compactInFlight = false;
   let _compactInFlightKey = '';
@@ -638,6 +644,7 @@ const ChatView = (() => {
   let _fileInput = null;
   let _toolbar = null;
   let _runModeControl = null;
+  let _sandboxSetupBanner = null;
   let _composer = null;
   let _composerObserver = null;
   let _mediaRecorder = null;
@@ -1224,6 +1231,16 @@ const ChatView = (() => {
         </div>
         <div class="chat-pending hidden" id="chat-pending"></div>
         <div class="chat-composer" id="chat-composer">
+          <div class="chat-sandbox-setup-banner hidden" id="chat-sandbox-setup-banner" role="status" aria-live="polite">
+            <div class="chat-sandbox-setup-copy">
+              <strong>Establish sandboxing?</strong>
+              <span data-sandbox-setup-detail>Limit tool access before switching to sandbox modes. Administrator approval may be required.</span>
+            </div>
+            <div class="chat-sandbox-setup-actions">
+              <button type="button" class="btn btn--ghost" id="chat-sandbox-setup-dismiss">Not now</button>
+              <button type="button" class="btn btn--primary" id="chat-sandbox-setup-ensure">Establish sandbox</button>
+            </div>
+          </div>
           <div class="chat-attachments hidden" id="chat-attach-preview"></div>
           <div class="chat-slash hidden" id="chat-slash"></div>
           <div class="chat-input-bar">
@@ -1242,8 +1259,8 @@ const ChatView = (() => {
                     <div class="chat-run-mode-control" id="chat-run-mode-control">
                       <button type="button" class="chat-run-mode-trigger" id="chat-run-mode-trigger"
                               aria-haspopup="listbox" aria-expanded="false" aria-controls="chat-run-mode-menu"
-                              data-run-mode="standard" data-run-mode-help="Sandboxed execution. Risky actions ask before running.">
-                        <span class="chat-run-mode-current">Standard-Sandbox</span>
+                              data-run-mode="full" data-run-mode-help="Host execution without per-command prompts. Use only for trusted workspaces.">
+                        <span class="chat-run-mode-current">Full Host Access</span>
                         <span class="chat-run-mode-chevron" aria-hidden="true"></span>
                       </button>
                       <div class="chat-run-mode-menu hidden" id="chat-run-mode-menu" role="listbox" aria-label="Run Mode choices">
@@ -1284,6 +1301,7 @@ const ChatView = (() => {
                         aria-label="Message to send"></textarea>
             </div>
             <button class="btn btn--icon btn--ghost" id="chat-btn-mic" title="Record voice input" aria-label="Record voice input">${icons.microphone ? icons.microphone() : icons.chat()}</button>
+            <button class="btn btn--icon btn--ghost" id="chat-btn-meta-history" title="MetaSkill run history" aria-label="MetaSkill run history">${icons.logs ? icons.logs() : icons.chat()}</button>
             <button class="btn btn--icon btn--ghost" id="chat-btn-new" title="New chat session in the current agent" aria-label="New chat session in the current agent">${icons.plus()}</button>
             <button class="btn btn--icon btn--ghost" id="chat-btn-export" title="Export as Markdown" aria-label="Export as Markdown">${icons.download()}</button>
             <button class="btn btn--icon btn--primary" id="chat-btn-send" title="Send (queues while streaming)" aria-label="Send message">${icons.send()}</button>
@@ -1309,6 +1327,7 @@ const ChatView = (() => {
     _fileInput    = _el.querySelector('#chat-file-input');
     _toolbar      = _el.querySelector('#chat-toolbar');
     _runModeControl = _el.querySelector('#chat-run-mode-control');
+    _sandboxSetupBanner = _el.querySelector('#chat-sandbox-setup-banner');
     _composer     = _el.querySelector('#chat-composer');
 
     _messages = [];
@@ -1319,9 +1338,10 @@ const ChatView = (() => {
     _applySessionRunState({ run_status: 'idle' });
 
     _bindEvents();
+    _bindSandboxSetupBanner();
     _bindToolbarPills();
     _bindToolbarTrigger();
-    _loadRunContext();
+    _loadSandboxSetupStatus({ showPrompt: true });
     _bindSessionChip();
     _bindComposerResize();
     _bindHoverActions();
@@ -1780,7 +1800,6 @@ const ChatView = (() => {
     _parkCurrentSessionStreamState('session_switch');
     _updateSessionChip(key);
     _persistSession(key);
-    _setRunMode(_RUN_MODE_DEFAULT, { toast: false, sync: false });
     _messages = [];
     _pendingSessionIntent = null;
     _clearPendingDrainAfterTerminalTimer();
@@ -1788,7 +1807,6 @@ const ChatView = (() => {
     _hideCompactionSeparator();
     _pendingQueue = []; if (_pendingArea) _renderPendingQueue();
     _applySessionRunState({ run_status: 'idle' });
-    _loadRunContext();
     _clearContextStatus();
     _lastHeaderRole = '';
     _lastHeaderDay = '';
@@ -2178,6 +2196,125 @@ const ChatView = (() => {
     });
   }
 
+  function _isSandboxSetupReadyPayload(payload) {
+    return String(payload && payload.state || '').toLowerCase() === 'ready';
+  }
+
+  function _sandboxSetupReadyForMode(mode) {
+    mode = _normalizeRunMode(mode);
+    if (mode === 'full') return true;
+    return _isSandboxSetupReadyPayload(_sandboxSetupStatus);
+  }
+
+  function _sandboxSetupMessage(payload) {
+    if (!payload || typeof payload !== 'object') return '';
+    if (payload.state === 'failed' && payload.message && payload.detail) {
+      return `${payload.message}: ${payload.detail}`;
+    }
+    return payload.message || payload.detail || '';
+  }
+
+  function _refreshSandboxSetupBanner(mode = _runMode) {
+    const banner = _sandboxSetupBanner || (_el && _el.querySelector('#chat-sandbox-setup-banner'));
+    if (!banner) return;
+    _sandboxSetupBanner = banner;
+    mode = _normalizeRunMode(mode);
+    const setupKnown = _sandboxSetupStatus !== null;
+    const setupReady = _isSandboxSetupReadyPayload(_sandboxSetupStatus);
+    const optionalPrompt = mode === 'full' && !_sandboxSetupPromptDismissed;
+    const pendingPrompt = mode !== 'full' || !!_pendingSandboxSetupMode;
+    const shouldShow = !setupReady && (pendingPrompt || (setupKnown && optionalPrompt));
+    banner.classList.toggle('hidden', !shouldShow);
+    banner.dataset.state = String(_sandboxSetupStatus && _sandboxSetupStatus.state || '');
+    const detail = banner.querySelector('[data-sandbox-setup-detail]');
+    if (detail) {
+      const msg = _sandboxSetupMessage(_sandboxSetupStatus);
+      detail.textContent = msg || 'Limit tool access before switching to sandbox modes. Administrator approval may be required.';
+    }
+    const ensureBtn = banner.querySelector('#chat-sandbox-setup-ensure');
+    if (ensureBtn) ensureBtn.disabled = _sandboxSetupInFlight;
+  }
+
+  async function _loadSandboxSetupStatus(options = {}) {
+    if (!_rpc) return null;
+    const mode = _normalizeRunMode(
+      typeof options === 'string' ? options : (options && options.mode) || _runMode,
+    );
+    const requestSeq = ++_sandboxSetupRequestSeq;
+    try {
+      if (_rpc.waitForConnection) await _rpc.waitForConnection();
+      const payload = await _rpc.call('sandbox.setup.status', {});
+      if (requestSeq !== _sandboxSetupRequestSeq) return _sandboxSetupStatus;
+      _sandboxSetupStatus = payload || null;
+      _refreshSandboxSetupBanner(mode);
+      return _sandboxSetupStatus;
+    } catch {
+      return _sandboxSetupStatus;
+    }
+  }
+
+  async function _ensureSandboxSetupOnly() {
+    if (!_rpc) return false;
+    if (_sandboxSetupReadyForMode('standard')) return true;
+    _sandboxSetupInFlight = true;
+    _refreshSandboxSetupBanner(_pendingSandboxSetupMode || _runMode);
+    try {
+      if (_rpc.waitForConnection) await _rpc.waitForConnection();
+      const payload = await _rpc.call('sandbox.setup.ensure', {});
+      _sandboxSetupStatus = payload || null;
+      const ready = _isSandboxSetupReadyPayload(_sandboxSetupStatus);
+      _sandboxSetupInFlight = false;
+      _refreshSandboxSetupBanner(_pendingSandboxSetupMode || _runMode);
+      UI.toast(ready ? 'Sandbox established' : 'Sandbox setup is not ready', ready ? 'ok' : 'warn', 2200);
+      if (ready && _pendingSandboxSetupMode) {
+        const pendingMode = _pendingSandboxSetupMode;
+        _pendingSandboxSetupMode = '';
+        _setRunMode(pendingMode, { toast: true });
+      }
+      return ready;
+    } catch (err) {
+      _sandboxSetupInFlight = false;
+      if (err && err.details) _sandboxSetupStatus = err.details;
+      _refreshSandboxSetupBanner(_pendingSandboxSetupMode || _runMode);
+      UI.toast('Sandbox setup failed: ' + (err && err.message ? err.message : 'unknown error'), 'err', 3500);
+      return false;
+    }
+  }
+
+  async function _requestSandboxSetupForMode(mode) {
+    mode = _normalizeRunMode(mode);
+    if (mode === 'full') return true;
+    if (_sandboxSetupReadyForMode(mode)) return true;
+    _sandboxSetupPromptDismissed = false;
+    const status = await _loadSandboxSetupStatus(mode);
+    if (_isSandboxSetupReadyPayload(status)) return true;
+    _pendingSandboxSetupMode = mode;
+    _refreshSandboxSetupBanner(mode);
+    UI.toast('Sandbox setup is required before switching modes.', 'warn', 2400);
+    return false;
+  }
+
+  function _bindSandboxSetupBanner() {
+    const banner = _sandboxSetupBanner || (_el && _el.querySelector('#chat-sandbox-setup-banner'));
+    if (!banner) return;
+    _sandboxSetupBanner = banner;
+    const dismiss = banner.querySelector('#chat-sandbox-setup-dismiss');
+    const ensure = banner.querySelector('#chat-sandbox-setup-ensure');
+    if (dismiss) {
+      dismiss.addEventListener('click', () => {
+        _sandboxSetupPromptDismissed = true;
+        _pendingSandboxSetupMode = '';
+        _setRunMode(_RUN_MODE_DEFAULT, { toast: false });
+        banner.classList.add('hidden');
+      });
+    }
+    if (ensure) {
+      ensure.addEventListener('click', () => {
+        _ensureSandboxSetupOnly();
+      });
+    }
+  }
+
   function _runModeHelp(mode) {
     const normalized = _normalizeRunMode(mode);
     return _RUN_MODE_TITLES[normalized] || _RUN_MODE_TITLES.standard;
@@ -2261,11 +2398,12 @@ const ChatView = (() => {
     });
 
     control.querySelectorAll('.chat-run-mode-option').forEach((btn) => {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', async () => {
         const mode = _normalizeRunMode(btn.dataset.runMode);
         close();
         if (mode === _runMode) return;
-        _setRunMode(mode, { toast: true, sync: true });
+        if (!(await _requestSandboxSetupForMode(mode))) return;
+        _setRunMode(mode, { toast: true });
       });
     });
 
@@ -2284,59 +2422,21 @@ const ChatView = (() => {
 
   function _normalizeRunMode(mode) {
     const value = String(mode || '').trim().toLowerCase().replace(/_/g, '-');
+    if (value === 'standard' || value === 'standard-sandbox') return 'standard';
     if (value === 'trusted' || value === 'trust' || value === 'trusted-sandbox') return 'trusted';
     if (value === 'full' || value === 'full-host-access' || value === 'host') return 'full';
     return _RUN_MODE_DEFAULT;
   }
 
   function _setRunMode(mode, options = {}) {
-    const previous = _runMode;
     const normalized = _normalizeRunMode(mode);
     _runMode = normalized;
     _toolbarState.runMode = normalized;
     _updateRunModeControl();
     _refreshToolbarTriggerGlow();
+    _refreshSandboxSetupBanner(normalized);
     if (options.toast) {
       UI.toast(`Run Mode: ${_RUN_MODE_LABELS[normalized]}`, normalized === 'full' ? 'warn' : 'info', 1800);
-    }
-    if (options.sync) _syncRunMode(normalized, previous);
-  }
-
-  function _applyRunContext(payload) {
-    if (!payload || typeof payload !== 'object') return;
-    _setRunMode(payload.runMode || payload.run_mode, { toast: false, sync: false });
-  }
-
-  async function _loadRunContext() {
-    if (!_rpc || !_sessionKey) return;
-    const sessionKey = _sessionKey;
-    try {
-      if (_rpc.waitForConnection) await _rpc.waitForConnection();
-      const payload = await _rpc.call('sandbox.run_context.get', { sessionKey });
-      if (sessionKey !== _sessionKey) return;
-      _applyRunContext(payload);
-    } catch {
-      if (sessionKey !== _sessionKey) return;
-      _setRunMode(_RUN_MODE_DEFAULT, { toast: false, sync: false });
-    }
-  }
-
-  async function _syncRunMode(mode, previousMode) {
-    if (!_rpc || !_sessionKey) return;
-    const requestSeq = ++_runModeRequestSeq;
-    const sessionKey = _sessionKey;
-    try {
-      if (_rpc.waitForConnection) await _rpc.waitForConnection();
-      const payload = await _rpc.call('sandbox.run_context.set', {
-        sessionKey,
-        runMode: mode,
-      });
-      if (requestSeq !== _runModeRequestSeq || sessionKey !== _sessionKey) return;
-      _applyRunContext(payload);
-    } catch (err) {
-      if (requestSeq !== _runModeRequestSeq || sessionKey !== _sessionKey) return;
-      _setRunMode(previousMode || _RUN_MODE_DEFAULT, { toast: false, sync: false });
-      UI.toast('Run Mode failed: ' + err.message, 'err', 3000);
     }
   }
 
@@ -2366,11 +2466,11 @@ const ChatView = (() => {
   function _startNewChatSession(source) {
     _unsubscribeSession();
     _parkCurrentSessionStreamState(source || 'new_chat');
+    const inheritedRunMode = _normalizeRunMode(_runMode);
     const key = _genKey();
     _updateSessionChip(key);
     _persistSession(key);
-    _setRunMode(_RUN_MODE_DEFAULT, { toast: false, sync: false });
-    _loadRunContext();
+    _setRunMode(inheritedRunMode, { toast: false });
     _clearPendingDrainAfterTerminalTimer();
     _setCompactInFlight(false);
     _hideCompactionSeparator();
@@ -4739,6 +4839,261 @@ const ChatView = (() => {
       _appendToolResult(payload);
     }));
 
+    // MetaSkill run progress ribbon — design §8.
+    // 3 handlers + 1 action delegate. Ribbon lives in window.MetaRibbon
+    // (loaded as a classic script before chat.js, see index.html).
+    const _metaPreflightEl = new Map();  // run_id → DOM section element
+    const _metaRibbonState = new Map();   // run_id → ribbon state
+    const _metaRibbonEl = new Map();      // run_id → DOM section element
+
+    function _openMetaRunHistory() {
+      if (!window.MetaRunHistory || typeof window.MetaRunHistory.openRunHistory !== 'function') {
+        UI.toast('Meta run history is not available', 'warn', 2000);
+        return;
+      }
+      window.MetaRunHistory.openRunHistory({
+        rpc: _rpc,
+        sessionKey: _sessionKey,
+      });
+    }
+
+    const metaHistoryBtn = _el.querySelector('#chat-btn-meta-history');
+    if (metaHistoryBtn) {
+      metaHistoryBtn.addEventListener('click', _openMetaRunHistory);
+      _unsubs.push(() => metaHistoryBtn.removeEventListener('click', _openMetaRunHistory));
+    }
+
+    document.addEventListener('meta-run-history-open', _openMetaRunHistory);
+    _unsubs.push(() => document.removeEventListener(
+      'meta-run-history-open',
+      _openMetaRunHistory,
+    ));
+
+    function _insertMetaRibbonElement(el) {
+      const runId = el && el.dataset ? el.dataset.runId : '';
+      const preflight = runId ? _metaPreflightEl.get(runId) : null;
+      if (
+        preflight
+        && preflight.parentNode
+        && preflight.parentNode === (_thread || preflight.parentNode)
+      ) {
+        preflight.parentNode.insertBefore(el, preflight.nextSibling);
+        return;
+      }
+      const host = _thread || document.body;
+      if (_thread && _streamBubble && _streamBubble.parentNode === _thread) {
+        _thread.insertBefore(el, _streamBubble);
+        return;
+      }
+      const liveUserAnchor = _currentSessionLiveUserAnchor(_sessionKey || '');
+      if (_thread && liveUserAnchor && liveUserAnchor.parentNode === _thread) {
+        _thread.insertBefore(el, liveUserAnchor.nextSibling);
+        return;
+      }
+      host.insertBefore(el, host.firstChild || null);
+    }
+
+    function _insertMetaPreflightElement(el) {
+      _insertMetaRibbonElement(el);
+    }
+
+    function _findRibbonUserMessage(ribbonEl) {
+      let node = ribbonEl ? ribbonEl.previousElementSibling : null;
+      while (node) {
+        if (node.matches && (
+          node.matches('.msg.user')
+          || node.getAttribute('data-history-role') === 'user'
+        )) return node;
+        node = node.previousElementSibling;
+      }
+      return null;
+    }
+
+    function _latestUserMessageText() {
+      for (let i = _messages.length - 1; i >= 0; i--) {
+        if (_messages[i] && _messages[i].role === 'user') {
+          return _messages[i].text || '';
+        }
+      }
+      const userBubbles = _thread
+        ? Array.from(_thread.querySelectorAll(':scope > .msg.user, :scope > .msg[data-history-role="user"]'))
+        : [];
+      const last = userBubbles[userBubbles.length - 1];
+      return last ? _extractBubbleText(last) : '';
+    }
+
+    function _retryMetaRibbonRun(ribbonEl) {
+      if (_isStreaming) {
+        UI.toast('Wait for the current response to finish', 'warn', 2000);
+        return;
+      }
+      const userBubble = _findRibbonUserMessage(ribbonEl);
+      const text = userBubble ? _extractBubbleText(userBubble) : _latestUserMessageText();
+      if (!text) {
+        UI.toast('No previous message to retry', 'info', 2000);
+        return;
+      }
+      if (!_textarea) return;
+      _textarea.value = text;
+      _autoResizeTextarea();
+      _onSend();
+    }
+
+    async function _replayMetaRibbonRun(ribbonEl, mode) {
+      if (_isStreaming) {
+        UI.toast('Wait for the current response to finish', 'warn', 2000);
+        return;
+      }
+      const runId = ribbonEl && ribbonEl.dataset ? ribbonEl.dataset.runId : '';
+      if (!runId || !_textarea) {
+        UI.toast('No MetaSkill run selected to replay', 'info', 2000);
+        return;
+      }
+      try {
+        const payload = await _rpc.call('meta.runs.replay', {
+          runId,
+          mode: mode || 'failed-step',
+        });
+        const replay = payload && payload.replay ? payload.replay : payload;
+        _textarea.value = replay && replay.message ? replay.message : '';
+        _autoResizeTextarea();
+        if (_textarea.value) _onSend();
+      } catch (err) {
+        UI.toast(err && err.message ? err.message : 'MetaSkill replay failed', 'warn', 3000);
+      }
+    }
+
+    async function _confirmMetaPreflight(detail) {
+      const confirmed = await _rpc.call('meta.runs.confirm_preflight', {
+        runId: detail.runId || '',
+        interpretedRequest: detail.interpretedRequest || '',
+        fields: detail.confirmedFields || {},
+      });
+      return confirmed || {};
+    }
+
+    _unsubs.push(_rpc.on('session.event.meta_preflight', (payload) => {
+      if (_dropForeignSessionPayload('event.meta_preflight', payload)) return;
+      if (!window.MetaPreflight) return;
+      const state = window.MetaPreflight.createPreflight(payload);
+      if (!state.runId) return;
+      const el = document.createElement('section');
+      el.dataset.runId = state.runId;
+      _insertMetaPreflightElement(el);
+      _metaPreflightEl.set(state.runId, el);
+      window.MetaPreflight.renderPreflight(el, state);
+    }));
+
+    _unsubs.push(_rpc.on('session.event.meta_run_announced', (payload) => {
+      if (_dropForeignSessionPayload('event.meta_run_announced', payload)) return;
+      if (!window.MetaRibbon) return;
+      const state = window.MetaRibbon.createRibbon(payload);
+      if (!state.runId) return;
+      _metaRibbonState.set(state.runId, state);
+      const el = document.createElement('section');
+      el.dataset.runId = state.runId;
+      _insertMetaRibbonElement(el);
+      _metaRibbonEl.set(state.runId, el);
+      window.MetaRibbon.renderRibbon(el, state);
+    }));
+
+    _unsubs.push(_rpc.on('session.event.meta_step_state', (payload) => {
+      if (_dropForeignSessionPayload('event.meta_step_state', payload)) return;
+      if (!window.MetaRibbon) return;
+      const state = _metaRibbonState.get(payload.run_id);
+      const el = _metaRibbonEl.get(payload.run_id);
+      if (!state || !el) return;
+      window.MetaRibbon.updateStep(state, payload);
+      window.MetaRibbon.renderRibbon(el, state);
+    }));
+
+    _unsubs.push(_rpc.on('session.event.meta_run_completed', (payload) => {
+      if (_dropForeignSessionPayload('event.meta_run_completed', payload)) return;
+      if (!window.MetaRibbon) return;
+      const state = _metaRibbonState.get(payload.run_id);
+      const el = _metaRibbonEl.get(payload.run_id);
+      if (!state || !el) return;
+      window.MetaRibbon.completeRun(state, payload);
+      window.MetaRibbon.renderRibbon(el, state);
+    }));
+
+    // Action chip delegate (retry / switch-skill / show-detail). Listens on
+    // document so dynamically-rendered ribbons all flow through one handler.
+    const _onMetaRibbonAction = (ev) => {
+      const { action, stepId } = (ev && ev.detail) || {};
+      if (action === 'retry-run') {
+        _retryMetaRibbonRun(ev && ev.target ? ev.target.closest('.meta-ribbon') : null);
+      } else if (action === 'retry-step' || action === 'retry-with-partial-context') {
+        const mode = action === 'retry-step' ? 'failed-step' : 'partial-context';
+        _replayMetaRibbonRun(
+          ev && ev.target ? ev.target.closest('.meta-ribbon') : null,
+          mode,
+        );
+      } else if (action === 'switch-skill' || action === 'switch-meta-skill') {
+        if (_textarea) {
+          _textarea.placeholder = '想换哪个 meta-skill？例如：Use meta-skill `meta-kid-project-planner`';
+          _textarea.focus();
+        }
+      } else if (action === 'install-dependency') {
+        UI.toast('Install the missing dependency, then retry this MetaSkill run.', 'info', 3000);
+      } else if (action === 'continue-text-only') {
+        UI.toast('Continue with text outputs only, then retry if an artifact is still needed.', 'info', 3000);
+      } else if (action === 'show-detail' && stepId) {
+        const card = document.querySelector(`[data-tool-use-id="meta_step_${stepId}"]`);
+        if (card) {
+          card.setAttribute('data-expanded', 'true');
+          if (typeof card.scrollIntoView === 'function') {
+            card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          }
+        }
+      }
+    };
+    document.addEventListener('meta-ribbon-action', _onMetaRibbonAction);
+    _unsubs.push(() => document.removeEventListener('meta-ribbon-action', _onMetaRibbonAction));
+
+    const _onMetaPreflightAction = async (ev) => {
+      const detail = (ev && ev.detail) || {};
+      const card = ev && ev.target ? ev.target.closest('.meta-preflight') : null;
+      if (detail.action === 'dismiss') {
+        if (card && window.MetaPreflight && window.MetaPreflight.renderCollapsed) {
+          window.MetaPreflight.renderCollapsed(card, detail, 'cancelled');
+        } else if (card) {
+          card.remove();
+        }
+        if (detail.runId) _metaPreflightEl.delete(detail.runId);
+        return;
+      }
+      if ((detail.action === 'continue' || detail.action === 'defaults') && _textarea) {
+        try {
+          if (card && window.MetaPreflight && window.MetaPreflight.setSubmitting) {
+            window.MetaPreflight.setSubmitting(card, true);
+          }
+          const confirmed = await _confirmMetaPreflight(detail);
+          if (card && window.MetaPreflight && window.MetaPreflight.renderCollapsed) {
+            window.MetaPreflight.renderCollapsed(card, detail, 'running');
+          } else if (card) {
+            card.remove();
+          }
+          if (detail.runId) _metaPreflightEl.delete(detail.runId);
+          _sendHiddenMetaPreflightConfirmation(confirmed, detail);
+        } catch (err) {
+          if (card && window.MetaPreflight && window.MetaPreflight.setSubmitting) {
+            window.MetaPreflight.setSubmitting(card, false);
+          }
+          if (card && window.MetaPreflight && window.MetaPreflight.setError) {
+            window.MetaPreflight.setError(card, err);
+          }
+          UI.toast(err && err.message ? err.message : 'MetaSkill confirmation failed', 'warn', 3000);
+        }
+        return;
+      }
+    };
+    document.addEventListener('meta-preflight-action', _onMetaPreflightAction);
+    _unsubs.push(() => document.removeEventListener(
+      'meta-preflight-action',
+      _onMetaPreflightAction,
+    ));
+
     _unsubs.push(_rpc.on('session.event.artifact', (payload) => {
       if (_dropForeignSessionPayload('event.artifact', payload)) return;
       if (_isStaleEpoch(payload)) {
@@ -4864,6 +5219,11 @@ const ChatView = (() => {
     _unsubs.push(_rpc.on('session.event.warning', (payload) => {
       if (_dropForeignSessionPayload('event.warning', payload)) return;
       if (_isStaleEpoch(payload)) return;
+      const code = String((payload && payload.code) || '');
+      const silentWarningCodes = new Set([
+        'provider_reasoning_only_retry',
+      ]);
+      if (silentWarningCodes.has(code)) return;
       const msg = (payload && payload.message) || 'Squilla warning';
       UI.toast(msg, 'warn', 5000);
     }));
@@ -6103,12 +6463,45 @@ const ChatView = (() => {
 
   /* ── Send Message ───────────────────────────────────────────────────── */
 
+  function _metaPreflightFallbackMessage(detail) {
+    const interpreted = (detail && detail.interpretedRequest) || '';
+    const runId = (detail && detail.runId) || '';
+    const lines = [
+      interpreted,
+      '',
+      '<!-- opensquilla:meta_preflight_confirmed=1 -->',
+    ];
+    if (runId) lines.push(`<!-- opensquilla:meta_preflight_run_id=${runId} -->`);
+    return lines.join('\n');
+  }
+
+  function _metaPreflightDisplayText(detail) {
+    const interpreted = detail && typeof detail.interpretedRequest === 'string'
+      ? detail.interpretedRequest.trim()
+      : '';
+    return interpreted || '已确认，开始运行。';
+  }
+
+  function _sendHiddenMetaPreflightConfirmation(confirmed, detail) {
+    _sendTextOverride = confirmed && confirmed.message
+      ? confirmed.message
+      : _metaPreflightFallbackMessage(detail);
+    _sendDisplayTextOverride = _metaPreflightDisplayText(detail);
+    _onSend();
+  }
+
   async function _onSend() {
-    let text = _textarea.value.trim();
-    let hasPayload = text || _pendingAttachments.length > 0;
+    const textOverride = _sendTextOverride;
+    const displayTextOverride = _sendDisplayTextOverride;
+    _sendTextOverride = null;
+    _sendDisplayTextOverride = null;
+    let text = (textOverride !== null ? textOverride : _textarea.value).trim();
+    let attachmentsForSend = textOverride !== null ? [] : _pendingAttachments;
+    const sessionIntentForSend = textOverride !== null ? null : _pendingSessionIntent;
+    let hasPayload = text || attachmentsForSend.length > 0;
     let isLiteralSlash = false;
 
-    if (_hasPendingAttachmentWork()) {
+    if (textOverride === null && _hasPendingAttachmentWork()) {
       UI.toast('Wait for file attachment processing to finish', 'warn', 2500);
       return;
     }
@@ -6116,18 +6509,18 @@ const ChatView = (() => {
     if (text.startsWith('//')) {
       isLiteralSlash = true;
       text = text.slice(1);
-      hasPayload = text || _pendingAttachments.length > 0;
+      hasPayload = text || attachmentsForSend.length > 0;
     }
     const isSlashCommand = !isLiteralSlash && text.startsWith('/')
       && !!(await _lookupSlashCommand(text));
     const normalized = await _normalizeOutgoingComposerPayload(
       text,
-      _pendingAttachments,
+      attachmentsForSend,
       { allowSlashCommand: isSlashCommand },
     );
     if (!normalized) return;
     text = normalized.text;
-    _pendingAttachments = normalized.attachments;
+    attachmentsForSend = normalized.attachments;
 
     // While a turn is streaming, Send enqueues. Use ESC or the
     // Stop button to actually halt the current response. Manual compaction uses
@@ -6150,7 +6543,10 @@ const ChatView = (() => {
         _isCompactInFlightForCurrentSession()
           ? 'context compaction'
           : 'the current response',
-        _pendingAttachments,
+        attachmentsForSend,
+        displayTextOverride,
+        sessionIntentForSend,
+        textOverride !== null,
       );
       return;
     }
@@ -6170,7 +6566,7 @@ const ChatView = (() => {
 
     // Record message for export
     const now = new Date().toISOString();
-    const userText = text;
+    const userText = displayTextOverride !== null ? displayTextOverride : text;
     const providerText = text || 'Describe these attachments';
     _messages.push({ role: 'user', text: userText, ts: now });
 
@@ -6179,11 +6575,11 @@ const ChatView = (() => {
     _stampHistoryElement(userDiv, '', 'user', userText);
     const userBody = userDiv.querySelector('.msg-body');
     let userHtml = _esc(userText);
-    if (_pendingAttachments.length > 0) {
+    if (attachmentsForSend.length > 0) {
       userBody.classList.add('msg-body--has-attachments');
       userHtml = userText ? `<div class="msg-attachment-text">${_esc(userText)}</div>` : '';
       userHtml += '<div class="msg-attachments">';
-      _pendingAttachments.forEach((a) => { userHtml += _renderMessageAttachmentHtml(a); });
+      attachmentsForSend.forEach((a) => { userHtml += _renderMessageAttachmentHtml(a); });
       userHtml += '</div>';
     }
     userBody.innerHTML = userHtml;
@@ -6193,30 +6589,34 @@ const ChatView = (() => {
 
     // Build RPC params
     const params = { message: providerText, sessionKey: _sessionKey };
+    if (sessionIntentForSend) {
+      params.intent = sessionIntentForSend;
+      if (textOverride === null) _pendingSessionIntent = null;
+    }
     params._source = {};
     params._source.runMode = _normalizeRunMode(_runMode);
-    if (_pendingSessionIntent) {
-      params.intent = _pendingSessionIntent;
-      _pendingSessionIntent = null;
-    }
-    if (_pendingAttachments.length > 0) {
+    if (userText !== providerText || attachmentsForSend.length > 0) {
       params.displayText = userText;
-      params.attachments = _pendingAttachments.map((a) => {
+    }
+    if (attachmentsForSend.length > 0) {
+      params.attachments = attachmentsForSend.map((a) => {
         if (a.kind === 'staged') {
           return { type: a.mime, file_uuid: a.file_uuid, mime: a.mime, name: a.name };
         }
         return { type: a.mime || 'image/png', data: a.data, mime: a.mime, name: a.name };
       });
     }
-    const normalizationProvenance = _inputNormalizationProvenanceFromAttachments(_pendingAttachments);
+    const normalizationProvenance = _inputNormalizationProvenanceFromAttachments(attachmentsForSend);
     if (normalizationProvenance) params.inputProvenance = normalizationProvenance;
     const routerFxRequestKind = _routerFxRequestKindFromAttachments(params.attachments || []);
 
     // Clear input and attachments
-    _textarea.value = '';
-    _autoResizeTextarea();
-    _pendingAttachments = [];
-    _renderAttachmentPreview();
+    if (textOverride === null) {
+      _textarea.value = '';
+      _autoResizeTextarea();
+      _pendingAttachments = [];
+      _renderAttachmentPreview();
+    }
 
     // Start streaming UI. Delay the routing scan briefly so request-time
     // compaction can claim the turn without a competing one-frame router flash.
@@ -6429,10 +6829,9 @@ const ChatView = (() => {
       _chatDiag('thinking.skip.compaction_in_flight', {});
       return;
     }
-    // Timer starts at send so "Watching · N.Ns" reads total wait. The indicator
-    // is RETAINED — but _showThinkingIndicatorNow defers it until the router
-    // panel has settled, so routing animates first and "Watching…" only appears
-    // afterwards (while the model is still generating), not before it.
+    // Timer starts at send so "Watching · N.Ns" reads total wait. Keep this
+    // independent from router scanning: provider first-byte waits can be long,
+    // and the user still needs an immediate progress signal.
     _thinkingStartTime = Date.now();
 
     // Delay showing the indicator — fast responses won't flash it
@@ -6450,16 +6849,6 @@ const ChatView = (() => {
       _thinkingDelayTimer = setTimeout(_showThinkingIndicatorNow, 150);
       return;
     }
-    // Defer while the router panel is still animating to its final state — the
-    // "Watching…" indicator belongs AFTER routing settles, not during the scan.
-    // Re-check shortly; the panel locks within ~1s, then this shows (with the
-    // elapsed counted from send).
-    if (_thread && _thread.querySelector('.router-fx[data-scanning="true"]')) {
-      _chatDiag('thinking.defer.router_scan', {});
-      _thinkingDelayTimer = setTimeout(_showThinkingIndicatorNow, 150);
-      return;
-    }
-
     const empty = _thread.querySelector('.chat-empty');
     if (empty) empty.remove();
 
@@ -7105,6 +7494,21 @@ const ChatView = (() => {
     return name || 'tool';
   }
 
+  function _metaStepRunningHint(name) {
+    if (!name || !name.startsWith('meta-step:')) return '';
+    const stepId = name.slice('meta-step:'.length);
+    if (stepId.endsWith('_video')) {
+      return '正在生成视频素材，可能需要几分钟。Generating video assets; this may take several minutes.';
+    }
+    if (stepId.endsWith('_image') || stepId.endsWith('_img_prompt')) {
+      return '正在生成视觉素材，可能需要稍等。Generating visual assets; this can take a little while.';
+    }
+    if (stepId.includes('duration') || stepId.includes('prompt')) {
+      return '正在准备这一生成步骤。Preparing this generation step.';
+    }
+    return '正在运行这个 meta-skill 步骤。Running this meta-skill step.';
+  }
+
   function _isControlPlaneToolName(name) {
     return name === 'router_control';
   }
@@ -7144,6 +7548,14 @@ const ChatView = (() => {
 
     const toolsBody = document.createElement('div');
     toolsBody.className = 'chat-tools-body';
+
+    const runningHint = isRunning ? _metaStepRunningHint(name) : '';
+    if (runningHint) {
+      const hint = document.createElement('div');
+      hint.className = 'chat-meta-step-running-hint';
+      hint.textContent = runningHint;
+      toolsBody.appendChild(hint);
+    }
 
     // Only show input preview if non-empty (arguments may arrive later via tool_use_delta)
     const emptyInputs = ['', '""', '{}', 'null', 'undefined'];
@@ -7576,6 +7988,55 @@ const ChatView = (() => {
     ].join('\n');
     const schemaLang = /[\u4e00-\u9fff]/.test(schemaCopy) ? 'zh' : 'en';
     const clarifyText = (zh, en) => schemaLang === 'zh' ? zh : en;
+    const zhChoiceLabels = {
+      "en": "英文",
+      "zh": "中文",
+      "ja": "日文",
+      "other": "其他",
+      "mixed": "中英混合",
+      "YES": "是",
+      "NO": "否",
+      "LAST_WEEK": "过去一周",
+      "LAST_MONTH": "过去一个月",
+      "LAST_QUARTER": "过去一个季度",
+      "ENTRY": "初级",
+      "MID": "中级",
+      "SENIOR": "高级",
+      "STAFF": "专家级",
+      "PRE_K": "学龄前（3-5 岁）",
+      "EARLY_GRADE": "小学低年级（6-9 岁）",
+      "TWEEN": "小学高年级/初中前（10-12 岁）",
+      "TEEN": "青少年（13-17 岁）",
+      "SHOESTRING": "低预算",
+      "MODEST": "适中预算",
+      "COMFORTABLE": "宽裕预算",
+      "SOLO": "孩子独立完成",
+      "LIGHT": "家长偶尔帮忙",
+      "HANDS_ON": "家长全程陪同",
+      "budget": "低预算",
+      "mid": "中等",
+      "premium": "高预算",
+      "academic": "学术读者",
+      "technical": "技术读者",
+      "business": "商业读者",
+      "general": "普通读者",
+      "FULL_MANUSCRIPT": "完整论文",
+      "COMPACT_SKELETON": "快速草稿",
+      "REPAIR_EXISTING": "修复已有稿件",
+      "COMPILE_ONLY": "仅编译",
+      "readable_pdf": "可读取 PDF",
+      "inline_excerpts_only": "仅使用粘贴摘录",
+      "reference_only": "只有引用/文件名",
+    };
+    const localizedChoiceLabel = (choice, language) => {
+      const raw = String(choice || '');
+      if (language === 'zh') return zhChoiceLabels[raw] || raw;
+      if (/^[A-Z0-9_-]+$/.test(raw)) {
+        const humanized = raw.replace(/[_-]+/g, ' ').toLowerCase();
+        return humanized.charAt(0).toUpperCase() + humanized.slice(1);
+      }
+      return raw;
+    };
 
     const card = document.createElement('div');
     card.className = 'clarify-form chat-tools-collapse';
@@ -7632,6 +8093,84 @@ const ChatView = (() => {
         ambiguousByName[entry.name] = entry;
       }
     });
+
+    const requiredFields = fields.filter((field) => field && field.required);
+    const confirmedRequiredFields = requiredFields.filter((field) => (
+      confirmedByName[field.name] !== undefined
+    ));
+    const missingRequiredFields = requiredFields.filter((field) => (
+      confirmedByName[field.name] === undefined
+    ));
+    const clarifyFieldPromptText = (field) => {
+      if (!field) return '';
+      return String(field.prompt || '').replace(/\s+/g, ' ').trim();
+    };
+    const clarifyFieldDisplayLabel = (field) => {
+      if (!field) return '';
+      const nameText = String(field.name || '').replace(/[_-]+/g, ' ').trim();
+      const promptText = clarifyFieldPromptText(field);
+      const promptLower = promptText.toLowerCase();
+      const nameLower = nameText.toLowerCase();
+      const promptLooksLikeScriptReplyField = (
+        (
+          promptLower.includes('script draft')
+          && promptLower.includes('verbatim reply')
+        )
+        || (
+          promptText.includes('脚本草稿')
+          && promptText.includes('原样')
+        )
+      );
+      const looksLikeScriptReplyField = (
+        promptLooksLikeScriptReplyField
+        || nameLower === 'reply'
+        || nameLower === 'reply text'
+      );
+      if (looksLikeScriptReplyField) {
+        return clarifyText('回复内容', 'Reply');
+      }
+      if (promptText && promptText.length <= 60) return promptText;
+      if (nameText) {
+        return nameText.replace(/\b[a-z]/g, (char) => char.toUpperCase());
+      }
+      if (promptText) return promptText.slice(0, 60).trim() + '...';
+      return '';
+    };
+
+    if (fields.length > 0) {
+      const progress = document.createElement('div');
+      progress.className = 'clarify-form-progress';
+
+      const metric = document.createElement('div');
+      metric.className = 'clarify-form-progress-metric';
+      metric.textContent = clarifyText(
+        '已收集 ' + confirmedRequiredFields.length + '/' + requiredFields.length + ' 项必填信息',
+        'Captured ' + confirmedRequiredFields.length + '/' + requiredFields.length + ' required details',
+      );
+      progress.appendChild(metric);
+
+      const next = document.createElement('div');
+      next.className = 'clarify-form-progress-next';
+      if (missingRequiredFields.length > 0) {
+        const missingLabels = missingRequiredFields.map(clarifyFieldDisplayLabel).filter(Boolean);
+        next.textContent = clarifyText(
+          '建议下一步：补充 ' + missingLabels.join('、') + '。可在表单中填写，也可直接继续聊天补充。',
+          'Suggested next steps: add ' + missingLabels.join(', ') + '. You can fill the form or keep chatting.',
+        );
+      } else if (ambiguousFields.length > 0) {
+        next.textContent = clarifyText(
+          '建议下一步：检查不确定的信息，确认无误后提交。',
+          'Suggested next steps: review the unclear details, then submit.',
+        );
+      } else {
+        next.textContent = clarifyText(
+          '建议下一步：检查已识别的信息，确认无误后提交。',
+          'Suggested next steps: review the captured details, then submit.',
+        );
+      }
+      progress.appendChild(next);
+      card.appendChild(progress);
+    }
 
     if (
       confirmedFields.length > 0
@@ -7695,9 +8234,9 @@ const ChatView = (() => {
       card.appendChild(prefill);
     }
 
-    const form = document.createElement('form');
+    const form = document.createElement('div');
     form.className = 'clarify-form-fields';
-    form.setAttribute('novalidate', '');
+    form.setAttribute('role', 'form');
 
     fields.forEach((field) => {
       const row = document.createElement('div');
@@ -7709,25 +8248,52 @@ const ChatView = (() => {
       const label = document.createElement('label');
       label.className = 'clarify-form-label';
       const requiredFlag = field.required ? ' *' : '';
-      label.textContent = (field.prompt || field.name) + requiredFlag;
+      const fieldPromptText = clarifyFieldPromptText(field);
+      label.textContent = clarifyFieldDisplayLabel(field) + requiredFlag;
       label.setAttribute('for', 'clarify-' + field.name);
       row.appendChild(label);
+
+      if (field.prompt && clarifyFieldDisplayLabel(field) !== fieldPromptText) {
+        const help = document.createElement('details');
+        help.className = 'clarify-form-field-help';
+        const helpSummary = document.createElement('summary');
+        helpSummary.className = 'clarify-form-field-help-summary';
+        helpSummary.textContent = clarifyText('填写要求', 'Requirements');
+        help.appendChild(helpSummary);
+        const helpBody = document.createElement('div');
+        helpBody.className = 'clarify-form-field-help-body';
+        helpBody.textContent = fieldPromptText;
+        help.appendChild(helpBody);
+        row.appendChild(help);
+      }
 
       let input;
       if (field.type === 'enum' && Array.isArray(field.choices)) {
         input = document.createElement('select');
+        const optionByValue = new Map();
+        if (Array.isArray(field.options)) {
+          field.options.forEach((option) => {
+            if (!option || typeof option !== 'object') return;
+            const value = option.value != null ? String(option.value) : '';
+            if (!value) return;
+            optionByValue.set(value, option.label != null ? String(option.label) : value);
+          });
+        }
         if (!field.required) {
           const blank = document.createElement('option');
           blank.value = '';
+          const defaultLabel = optionByValue.get(String(field.default)) || field.default;
           blank.textContent = field.default
-            ? clarifyText('(默认: ' + field.default + ')', '(default: ' + field.default + ')')
+            ? clarifyText('(默认: ' + defaultLabel + ')', '(default: ' + defaultLabel + ')')
             : clarifyText('(可选)', '(optional)');
           input.appendChild(blank);
         }
         field.choices.forEach((choice) => {
+          const choiceValue = String(choice);
           const opt = document.createElement('option');
-          opt.value = choice;
-          opt.textContent = choice;
+          opt.value = choiceValue;
+          opt.textContent = optionByValue.get(choiceValue)
+            || localizedChoiceLabel(choiceValue, schemaLang);
           if (field.default === choice) opt.selected = true;
           input.appendChild(opt);
         });
@@ -7817,7 +8383,7 @@ const ChatView = (() => {
     actions.className = 'clarify-form-actions';
 
     const submitBtn = document.createElement('button');
-    submitBtn.type = 'submit';
+    submitBtn.type = 'button';
     submitBtn.className = 'clarify-form-submit';
     submitBtn.textContent = clarifyText('提交', 'Submit');
     actions.appendChild(submitBtn);
@@ -7827,8 +8393,9 @@ const ChatView = (() => {
         ? schema.cancel_keywords[0]
         : ''
     );
+    let cancelBtn = null;
     if (cancelKeyword) {
-      const cancelBtn = document.createElement('button');
+      cancelBtn = document.createElement('button');
       cancelBtn.type = 'button';
       cancelBtn.className = 'clarify-form-cancel';
       cancelBtn.textContent = clarifyText('取消', 'Cancel');
@@ -7848,8 +8415,23 @@ const ChatView = (() => {
     }
     form.appendChild(actions);
 
-    form.addEventListener('submit', (evt) => {
-      evt.preventDefault();
+    const submitStatus = document.createElement('div');
+    submitStatus.className = 'clarify-form-submit-status';
+    submitStatus.hidden = true;
+    form.appendChild(submitStatus);
+
+    let clarifySubmitInFlight = false;
+    const waitForClarifySubmitConnection = () => Promise.race([
+      _rpc.waitForConnection(),
+      new Promise((_, reject) => {
+        setTimeout(() => reject(new Error(clarifyText(
+          '连接超时，请刷新页面后重试。',
+          'Connection timed out; refresh the page and retry.',
+        ))), 10000);
+      }),
+    ]);
+    const submitClarifyForm = () => {
+      if (clarifySubmitInFlight) return;
       const collected = {};
       let firstErrorEl = null;
       form.querySelectorAll('[data-clarify-field]').forEach((el) => {
@@ -7884,16 +8466,54 @@ const ChatView = (() => {
         UI.toast(clarifyText('请至少填写一个字段', 'Please fill in at least one field'), 'warn');
         return;
       }
+      clarifySubmitInFlight = true;
       submitBtn.disabled = true;
+      if (cancelBtn) cancelBtn.disabled = true;
+      card.classList.add('clarify-form--submitting');
+      submitStatus.hidden = false;
+      submitStatus.textContent = clarifyText(
+        '正在提交；如果连接刚恢复，会自动继续。',
+        'Submitting; if the connection just recovered, this will continue automatically.',
+      );
       const sessionKey = _currentSessionKey();
-      _rpc.call('chat.clarify_submit', {
-        sessionKey: sessionKey,
-        run_id: runId,
-        fields: collected,
-      }).catch((err) => {
-        submitBtn.disabled = false;
-        UI.toast(clarifyText('提交失败: ', 'Submit failed: ') + (err && err.message || err), 'error');
-      });
+      waitForClarifySubmitConnection()
+        .then(() => _rpc.call('chat.clarify_submit', {
+          sessionKey: sessionKey,
+          run_id: runId,
+          fields: collected,
+        }))
+        .then(() => {
+          clarifySubmitInFlight = false;
+          card.classList.remove('clarify-form--submitting');
+          card.classList.add('clarify-form--submitted');
+          submitStatus.textContent = clarifyText(
+            '已提交，正在继续流程...',
+            'Submitted, continuing...',
+          );
+          UI.toast(clarifyText('已提交，正在继续流程', 'Submitted, continuing'), 'info');
+        })
+        .catch((err) => {
+          clarifySubmitInFlight = false;
+          submitBtn.disabled = false;
+          if (cancelBtn) cancelBtn.disabled = false;
+          card.classList.remove('clarify-form--submitting');
+          submitStatus.hidden = true;
+          submitStatus.textContent = '';
+          UI.toast(clarifyText('提交失败: ', 'Submit failed: ') + (err && err.message || err), 'error');
+        });
+    };
+
+    submitBtn.addEventListener('click', (evt) => {
+      evt.preventDefault();
+      submitClarifyForm();
+    });
+    form.addEventListener('keydown', (evt) => {
+      if (evt.key !== 'Enter' || evt.shiftKey || evt.altKey || evt.ctrlKey || evt.metaKey) {
+        return;
+      }
+      if (evt.target && evt.target.tagName === 'TEXTAREA') return;
+      evt.preventDefault();
+      submitClarifyForm();
     });
 
     card.appendChild(form);
@@ -8155,6 +8775,13 @@ const ChatView = (() => {
 
   function _renderArtifacts(artifacts) {
     if (!Array.isArray(artifacts) || artifacts.length === 0) return '';
+    if (window.ArtifactCard && typeof window.ArtifactCard.renderArtifacts === 'function') {
+      return window.ArtifactCard.renderArtifacts(artifacts, {
+        origin: window.location.origin,
+        sessionKey: _sessionKey,
+        token: (App.getAuthToken && App.getAuthToken()) || '',
+      });
+    }
     let html = '<div class="msg-artifacts">';
     let openGroup = '';
     const token = (App.getAuthToken && App.getAuthToken()) || '';
@@ -9053,7 +9680,7 @@ const ChatView = (() => {
     }
     html += `</div><div class="chat-pending-chips">`;
     _pendingQueue.forEach((p, i) => {
-      const raw = p.text || (p.attachments && p.attachments.length ? '(attachment only)' : '');
+      const raw = p.displayText || p.text || (p.attachments && p.attachments.length ? '(attachment only)' : '');
       const preview = _esc(raw.slice(0, 30)) + (raw.length > 30 ? '…' : '');
       const attChip = p.attachments && p.attachments.length > 0
         ? ` <span class="chat-pending-attch">📎${p.attachments.length}</span>` : '';
@@ -9073,6 +9700,9 @@ const ChatView = (() => {
     toastMessage = null,
     waitReason = 'the current response',
     attachmentsOverride = null,
+    displayTextOverride = null,
+    intentOverride = undefined,
+    preserveComposer = false,
   ) {
     if (_pendingQueue.length >= _MAX_PENDING) {
       UI.toast(
@@ -9085,15 +9715,19 @@ const ChatView = (() => {
     const queuedAttachments = attachmentsOverride || _pendingAttachments;
     _pendingQueue.push({
       text,
+      displayText: displayTextOverride,
       attachments: queuedAttachments.map((a) => ({ ...a })),
-      intent: _pendingSessionIntent,
+      intent: intentOverride === undefined ? _pendingSessionIntent : intentOverride,
+      hiddenControl: preserveComposer === true,
     });
-    _textarea.value = '';
-    _pendingAttachments = [];
-    _pendingSessionIntent = null;
-    _renderAttachmentPreview();
+    if (!preserveComposer) {
+      _textarea.value = '';
+      _pendingAttachments = [];
+      if (intentOverride === undefined) _pendingSessionIntent = null;
+      _renderAttachmentPreview();
+      _autoResizeTextarea();
+    }
     _renderPendingQueue();
-    _autoResizeTextarea();
     UI.toast(toastMessage || `Queued (${_pendingQueue.length}/${_MAX_PENDING})`, 'info', 1500);
     return true;
   }
@@ -9108,11 +9742,18 @@ const ChatView = (() => {
       const draftText = _textarea.value;
       const draftAttachments = _pendingAttachments.map(att => ({ ...att }));
       const draftIntent = _pendingSessionIntent;
-      _textarea.value = head.text || '';
-      _pendingAttachments = head.attachments || [];
-      _pendingSessionIntent = head.intent || null;
-      _renderAttachmentPreview();
-      _onSend();
+      if (head.hiddenControl) {
+        _sendTextOverride = head.text || '';
+        _sendDisplayTextOverride = typeof head.displayText === 'string' ? head.displayText : null;
+        _onSend();
+      } else {
+        _textarea.value = head.text || '';
+        _sendDisplayTextOverride = typeof head.displayText === 'string' ? head.displayText : null;
+        _pendingAttachments = head.attachments || [];
+        _pendingSessionIntent = head.intent || null;
+        _renderAttachmentPreview();
+        _onSend();
+      }
       if (draftText.trim() || draftAttachments.length || draftIntent) {
         _textarea.value = draftText;
         _pendingAttachments = draftAttachments;
@@ -9126,7 +9767,9 @@ const ChatView = (() => {
   function _popPendingTail() {
     if (_pendingQueue.length === 0) return false;
     const tail = _pendingQueue.pop();
-    _textarea.value = tail.text || '';
+    _textarea.value = tail.hiddenControl
+      ? (tail.displayText || '')
+      : (tail.text || '');
     _pendingAttachments = tail.attachments || [];
     _pendingSessionIntent = tail.intent || null;
     _renderAttachmentPreview();
@@ -9163,7 +9806,10 @@ const ChatView = (() => {
     _clearPendingDrainAfterTerminalTimer();
     if (!_textarea || _pendingQueue.length === 0) return false;
     const queuedTexts = _pendingQueue
-      .map((p) => (typeof p.text === 'string' ? p.text : ''))
+      .map((p) => {
+        if (typeof p.displayText === 'string') return p.displayText;
+        return typeof p.text === 'string' ? p.text : '';
+      })
       .filter(Boolean);
     const queuedAttachments = _pendingQueue.flatMap((p) => p.attachments || []);
     const headIntent = _pendingQueue[0] && _pendingQueue[0].intent;
@@ -9364,6 +10010,10 @@ const ChatView = (() => {
     _pendingAttachments = [];
     _pendingQueue = [];
     _stopRequestedByUser = false;
+    _sandboxSetupStatus = null;
+    _sandboxSetupInFlight = false;
+    _pendingSandboxSetupMode = '';
+    _sandboxSetupPromptDismissed = false;
     _messages = [];
     _clearContextStatus();
     _lastHeaderRole = '';
@@ -9383,6 +10033,7 @@ const ChatView = (() => {
     _fileInput = null;
     _toolbar = null;
     _runModeControl = null;
+    _sandboxSetupBanner = null;
     _composer = null;
     _streamBubble = null;
     _streamSessionKey = '';

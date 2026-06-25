@@ -19,6 +19,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 
 BUNDLED = ROOT / "src" / "opensquilla" / "skills" / "bundled"
+EXP = ROOT / "src" / "opensquilla" / "skills" / "exp"
 
 
 # The paper-experiment-stub and paper-plot-stub skills were removed
@@ -189,14 +190,25 @@ def test_paper_preference_planner_declares_two_generation_modes() -> None:
 
 def test_bundled_meta_skills_do_not_exec_prompt_only_memory_skill() -> None:
     offenders: list[str] = []
-    for skill_md in sorted(BUNDLED.glob("meta-*/SKILL.md")):
+    for skill_md in sorted([*BUNDLED.glob("meta-*/SKILL.md"), *EXP.glob("meta-*/SKILL.md")]):
         text = skill_md.read_text(encoding="utf-8")
         if not text.startswith("---\n"):
             continue
-        frontmatter = text.split("---", 2)[1]
+        lines = text.splitlines()
+        end = next(
+            (index for index, line in enumerate(lines[1:], start=1) if line == "---"),
+            None,
+        )
+        assert end is not None, f"{skill_md}: missing YAML frontmatter terminator"
+        frontmatter = "\n".join(lines[1:end])
         data = yaml.safe_load(frontmatter) or {}
         for step in (data.get("composition") or {}).get("steps") or []:
             if step.get("kind") == "skill_exec" and step.get("skill") == "memory":
+                offenders.append(f"{data.get('name')}:{step.get('id')}")
+            if (
+                step.get("kind", "agent") == "agent"
+                and step.get("skill") == "memory"
+            ):
                 offenders.append(f"{data.get('name')}:{step.get('id')}")
 
     assert offenders == []

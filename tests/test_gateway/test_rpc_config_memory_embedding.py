@@ -119,8 +119,8 @@ async def test_config_patch_same_permissions_default_does_not_report_restart_req
 async def test_config_apply_sandbox_posture_reports_restart_required(tmp_path):
     cfg = GatewayConfig(config_path=str(tmp_path / "c.toml"))
     payload = cfg.model_dump(mode="python")
-    payload["sandbox"]["sandbox"] = True
-    payload["sandbox"]["security_grading"] = True
+    payload["sandbox"]["sandbox"] = False
+    payload["sandbox"]["security_grading"] = False
     payload["permissions"]["default_mode"] = "off"
 
     res = await get_dispatcher().dispatch(

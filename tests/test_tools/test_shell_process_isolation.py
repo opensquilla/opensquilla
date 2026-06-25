@@ -4,15 +4,31 @@ import asyncio
 import json
 import os
 import shlex
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pytest
 import structlog.testing
 
+from opensquilla.sandbox.types import (
+    DenialReason,
+    DenialResult,
+    SandboxResult,
+    SecurityLevel,
+    SuggestedNextStep,
+)
 from opensquilla.tools.builtin import shell
 from opensquilla.tools.types import CallerKind, ToolContext, ToolError, current_tool_context
+
+
+def _python_shell_command(script: str) -> str:
+    argv = [sys.executable, "-c", script]
+    if os.name == "nt":
+        return subprocess.list2cmdline(argv)
+    return " ".join(shlex.quote(part) for part in argv)
 
 
 class _FakeStdin:
@@ -59,6 +75,12 @@ def _ctx(
         session_key=session_key,
         agent_id=agent_id,
     )
+
+
+def _process_test_python() -> str:
+    if os.path.exists("/usr/bin/python3"):
+        return "/usr/bin/python3"
+    return sys.executable
 
 
 @pytest.fixture(autouse=True)
@@ -111,13 +133,14 @@ def test_background_process_result_surfaces_local_http_server_url() -> None:
 @pytest.mark.skipif(os.name != "posix", reason="process group behavior is POSIX-specific")
 @pytest.mark.asyncio
 async def test_exec_command_returns_when_shell_exits_even_if_descendant_holds_pipe() -> None:
+    python = _process_test_python()
     child_script = "import time; time.sleep(5)"
     parent_script = (
         "import subprocess, sys; "
         "subprocess.Popen([sys.executable, '-c', "
-        f"{child_script!r}], stdout=sys.stdout, stderr=sys.stderr)"
+            f"{child_script!r}], stdout=sys.stdout, stderr=sys.stderr)"
     )
-    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(parent_script)}"
+    command = f"{shlex.quote(python)} -c {shlex.quote(parent_script)}"
 
     started = time.monotonic()
     result = await shell.exec_command(command, timeout=1.0)
@@ -130,6 +153,7 @@ async def test_exec_command_returns_when_shell_exits_even_if_descendant_holds_pi
 @pytest.mark.skipif(os.name != "posix", reason="process group behavior is POSIX-specific")
 @pytest.mark.asyncio
 async def test_exec_command_cleans_descendant_after_shell_exits(tmp_path) -> None:
+    python = _process_test_python()
     marker = tmp_path / "descendant-ran"
     child_script = (
         "import pathlib, time; "
@@ -138,9 +162,9 @@ async def test_exec_command_cleans_descendant_after_shell_exits(tmp_path) -> Non
     parent_script = (
         "import subprocess, sys; "
         "subprocess.Popen([sys.executable, '-c', "
-        f"{child_script!r}])"
+            f"{child_script!r}])"
     )
-    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(parent_script)}"
+    command = f"{shlex.quote(python)} -c {shlex.quote(parent_script)}"
 
     result = await shell.exec_command(command, timeout=1.0)
     await asyncio.sleep(0.8)
@@ -152,7 +176,8 @@ async def test_exec_command_cleans_descendant_after_shell_exits(tmp_path) -> Non
 @pytest.mark.asyncio
 @pytest.mark.skipif(os.name != "posix", reason="POSIX shell quoting is required")
 async def test_exec_command_timeout_still_stops_foreground_process() -> None:
-    command = f"{shlex.quote(sys.executable)} -c {shlex.quote('import time; time.sleep(5)')}"
+    python = _process_test_python()
+    command = f"{shlex.quote(python)} -c {shlex.quote('import time; time.sleep(5)')}"
 
     started = time.monotonic()
     result = await shell.exec_command(command, timeout=0.1)
@@ -160,6 +185,92 @@ async def test_exec_command_timeout_still_stops_foreground_process() -> None:
 
     assert "[timeout after 0.1s]" in result
     assert elapsed < 1.0
+
+
+@pytest.mark.asyncio
+async def test_exec_command_writes_optional_stdin() -> None:
+    command = _python_shell_command(
+        "import sys; data = sys.stdin.read(); print('STDIN:' + data)"
+    )
+
+    result = await shell.exec_command(command, stdin="payload", timeout=1.0)
+
+    exit_line, stdout = result.split("\n", 1)
+    assert exit_line == "exit_code=0"
+    assert stdout.splitlines() == ["STDIN:payload"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="large pipe backpressure is POSIX-specific")
+async def test_exec_command_stdin_write_obeys_timeout() -> None:
+    command = _python_shell_command("import time; time.sleep(5)")
+
+    started = time.monotonic()
+    result = await shell.exec_command(command, stdin="x" * 1_000_000, timeout=0.2)
+    elapsed = time.monotonic() - started
+
+    assert "[timeout after 0.2s]" in result
+    assert elapsed < 3.0, "timeout path should return before the 5s child sleep"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="POSIX shell quoting is required")
+async def test_exec_command_sandbox_escalation_stdin_returns_when_shell_exits(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = SimpleNamespace(effective=SimpleNamespace(sandbox_enabled=True))
+    child_script = "import time; time.sleep(5)"
+    parent_script = (
+        "import subprocess, sys; "
+        "sys.stdin.read(); "
+        "subprocess.Popen([sys.executable, '-c', "
+        f"{child_script!r}], stdout=sys.stdout, stderr=sys.stderr)"
+    )
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(parent_script)}"
+
+    async def fake_gate_action(**kwargs: object):
+        request = SimpleNamespace(
+            cwd=tmp_path,
+            action_kind="shell.exec",
+            policy=SimpleNamespace(),
+            reason="test",
+        )
+        return object(), SimpleNamespace(), request
+
+    async def fake_run_under_backend(*args: object, **kwargs: object) -> SandboxResult:
+        return SandboxResult(
+            returncode=1,
+            stdout="",
+            stderr="",
+            wall_time_s=0.0,
+            backend_used="seatbelt",
+            backend_notes=("sandbox denied",),
+        )
+
+    async def fake_escalate_backend_denial(*args: object, **kwargs: object) -> DenialResult:
+        return DenialResult(
+            reason=DenialReason.SEATBELT_DENIED,
+            suggested_next_step=SuggestedNextStep.ASK_USER,
+            level=SecurityLevel.STANDARD,
+            action_fingerprint="fp",
+            message="sandbox denied",
+            retryable=False,
+        )
+
+    monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(shell, "gate_action", fake_gate_action)
+    monkeypatch.setattr(shell, "run_under_backend", fake_run_under_backend)
+    monkeypatch.setattr(shell, "escalate_backend_denial", fake_escalate_backend_denial)
+
+    started = time.monotonic()
+    result = await shell.exec_command(command, stdin="payload", timeout=0.5)
+    elapsed = time.monotonic() - started
+
+    payload = json.loads(result)
+    assert payload["status"] == "denied"
+    assert payload["reason"] == "seatbelt_denied"
+    assert elapsed < 0.5
 
 
 @pytest.mark.asyncio

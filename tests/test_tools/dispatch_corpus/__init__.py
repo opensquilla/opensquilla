@@ -13,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from opensquilla.sandbox.operation_runtime import SandboxToolDescriptor
 from opensquilla.tool_boundary import ToolCall
 from opensquilla.tools.registry import ToolRegistry
 from opensquilla.tools.types import (
@@ -185,6 +186,30 @@ def _denial_registry(name: str, status: str = "denied") -> ToolRegistry:
     return reg
 
 
+def _sandbox_guard_registry(name: str) -> ToolRegistry:
+    """Registry with an enforced sandbox descriptor for dispatch guard coverage."""
+    reg = ToolRegistry()
+
+    async def _handler(command: str) -> str:
+        return f"sandboxed:{command}"
+
+    reg.register(
+        ToolSpec(
+            name=name,
+            description=name,
+            parameters={"command": {"type": "string"}},
+            sandbox=SandboxToolDescriptor.process(
+                kind="corpus.sandbox_guard",
+                argv_factory=lambda args: ("corpus-tool", str(args["command"])),
+                enforce=True,
+                record_payload=True,
+            ),
+        ),
+        _handler,
+    )
+    return reg
+
+
 def _contextvar_reading_registry(name: str) -> ToolRegistry:
     """Registry with a tool that captures current_tool_context mid-execution."""
     reg = ToolRegistry()
@@ -248,6 +273,18 @@ def _owner_agent_ctx() -> ToolContext:
         interaction_mode=InteractionMode.INTERACTIVE,
         agent_id="main",
         session_key="agent:main:corpus",
+    )
+
+
+def _full_owner_agent_ctx() -> ToolContext:
+    return ToolContext(
+        is_owner=True,
+        caller_kind=CallerKind.AGENT,
+        interaction_mode=InteractionMode.INTERACTIVE,
+        agent_id="main",
+        session_key="agent:main:corpus",
+        workspace_dir=".",
+        run_mode="full",
     )
 
 
@@ -681,6 +718,27 @@ def _case_happy_path_no_artifacts() -> CorpusCase:
     )
 
 
+def _case_happy_path_with_sandbox_descriptor_guard() -> CorpusCase:
+    """
+    Enforced sandbox descriptor dispatch path.
+
+    Full run mode allows the operation guard immediately, so this case covers
+    dispatch's descriptor guard plumbing without depending on host sandbox
+    setup, policy caches, or network state.
+    """
+    return CorpusCase(
+        name="happy_path_with_sandbox_descriptor_guard",
+        tool_call=ToolCall(
+            tool_use_id="tc-sandbox-guard-1",
+            tool_name="sandboxed_tool",
+            arguments={"command": "echo ok"},
+        ),
+        ctx_factory=_full_owner_agent_ctx,
+        registry_factory=lambda: _sandbox_guard_registry("sandboxed_tool"),
+        expected_is_error=False,
+    )
+
+
 def _case_happy_path_with_artifacts_budget_bypassed() -> CorpusCase:
     """
     Artifact bypass of budget normalization — legacy lines 434–454.
@@ -1103,6 +1161,7 @@ ALL_CASES: list[CorpusCase] = [
     _case_permission_matrix_channel_denies(),
     _case_permission_matrix_owner_skipped(),
     _case_happy_path_no_artifacts(),
+    _case_happy_path_with_sandbox_descriptor_guard(),
     _case_happy_path_with_artifacts_budget_bypassed(),
     _case_argument_clamping_truncates(),
     _case_run_budget_exhausted_before_handler(),

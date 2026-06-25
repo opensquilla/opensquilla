@@ -216,6 +216,7 @@ def _make_input(
     persist_input=False,
     fresh_user_session=False,
     ingress_pipeline_steps=None,
+    input_provenance=None,
 ):
     return PromptAssemblerStageInput(
         runtime_message=runtime_message,
@@ -236,6 +237,7 @@ def _make_input(
         persist_input=persist_input,
         fresh_user_session=fresh_user_session,
         ingress_pipeline_steps=ingress_pipeline_steps,
+        input_provenance=input_provenance,
     )
 
 
@@ -314,12 +316,30 @@ async def test_case02_with_tool_ctx_threads_into_pipeline() -> None:
 
 
 @pytest.mark.asyncio
+async def test_input_provenance_threads_into_pipeline() -> None:
+    provenance = {"kind": "clarify_form", "source": "webui"}
+    executor = _RecordingPipelineExecutor(turn=_make_turn(), provider=_StubProvider())
+    stage = _make_stage(executor=executor)
+    inp = _make_input(input_provenance=provenance)
+
+    await stage.run(inp)
+
+    assert executor.requests[0].input_provenance == provenance
+
+
+@pytest.mark.asyncio
 async def test_case03_history_router_context_threading() -> None:
     router = _RecordingRouterContext(
         context={
             "prev_assistant_text": "prior reply",
             "prev_assistant_usage": {"output_tokens": 32},
             "history_user_texts": ["q1"],
+            "history_has_recent_image": True,
+            "history_image_turn_count": 2,
+            "vision_sticky_remaining": 1,
+            "turns_since_last_image": 1,
+            "last_image_turn_text": "Describe this screenshot.",
+            "vision_candidate_turns": 8,
         }
     )
     executor = _RecordingPipelineExecutor(turn=_make_turn(), provider=_StubProvider())
@@ -330,6 +350,12 @@ async def test_case03_history_router_context_threading() -> None:
     assert req.prev_assistant_text == "prior reply"
     assert req.prev_assistant_usage == {"output_tokens": 32}
     assert req.history_user_texts == ["q1"]
+    assert req.history_has_recent_image is True
+    assert req.history_image_turn_count == 2
+    assert req.vision_sticky_remaining == 1
+    assert req.turns_since_last_image == 1
+    assert req.last_image_turn_text == "Describe this screenshot."
+    assert req.vision_candidate_turns == 8
 
 
 @pytest.mark.asyncio

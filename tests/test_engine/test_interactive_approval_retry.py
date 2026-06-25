@@ -83,6 +83,39 @@ class _DeniedApprovalThenAnswerProvider:
         return []
 
 
+class _PendingApprovalShouldNotAnswerProvider:
+    provider_name = "fake"
+
+    def __init__(self) -> None:
+        self.calls: list[list[Message]] = []
+
+    def chat(
+        self,
+        messages: list[Message],
+        tools: list[Any] | None = None,
+        config: ChatConfig | None = None,
+    ) -> AsyncIterator[Any]:
+        self.calls.append(messages)
+        call_number = len(self.calls)
+        return self._stream(call_number)
+
+    async def _stream(self, call_number: int) -> AsyncIterator[Any]:
+        if call_number > 1:
+            yield ProviderTextDelta(text="fallback from training knowledge")
+            yield ProviderDone(stop_reason="stop", input_tokens=1, output_tokens=1)
+            return
+        yield ProviderToolUseStart(tool_use_id="tool-pending", tool_name="exec_command")
+        yield ProviderToolUseEnd(
+            tool_use_id="tool-pending",
+            tool_name="exec_command",
+            arguments={"command": "web_fetch https://example.com"},
+        )
+        yield ProviderDone(stop_reason="tool_use", input_tokens=1, output_tokens=1)
+
+    async def list_models(self) -> list[Any]:
+        return []
+
+
 class _DoneProvider:
     provider_name = "fake"
 
@@ -324,6 +357,72 @@ async def test_agent_waits_for_approval_resolution_before_retry_result_reaches_m
         )
     finally:
         reset_approval_queue()
+
+
+@pytest.mark.asyncio
+async def test_unresolved_approval_pauses_turn_without_model_fallback(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.application import approval_queue as approval_queue_mod
+
+    monkeypatch.setattr(
+        approval_queue_mod,
+        "_DEFAULT_APPROVAL_QUEUE_PATH",
+        tmp_path / "approval_queue.sqlite",
+    )
+    reset_approval_queue()
+
+    async def _handler(call: ToolCall) -> ToolResult:
+        approval_id = call.arguments.get("approval_id")
+        if approval_id is None:
+            approval_id = get_approval_queue().request(
+                "exec",
+                {
+                    "toolName": call.tool_name,
+                    "command": call.arguments["command"],
+                    "args": dict(call.arguments),
+                },
+            )
+            status = "approval_required"
+        else:
+            status = "approval_pending"
+        return ToolResult(
+            tool_use_id=call.tool_use_id,
+            tool_name=call.tool_name,
+            content=json.dumps(
+                {
+                    "status": status,
+                    "approval_id": approval_id,
+                    "command": call.arguments["command"],
+                    "warning": "network target requires approval",
+                }
+            ),
+        )
+
+    provider = _PendingApprovalShouldNotAnswerProvider()
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            max_iterations=2,
+            metadata={"approval_wait_timeout_seconds": 0.01},
+        ),
+        tool_definitions=[_exec_definition()],
+        tool_handler=_handler,
+    )
+
+    events = [event async for event in agent.run_turn("what is on this page?")]
+
+    assert len(provider.calls) == 1
+    assert not any(
+        getattr(event, "kind", "") == "text_delta"
+        and "fallback from training knowledge" in event.text
+        for event in events
+    )
+    assert any(
+        isinstance(event, ToolResultEvent) and "approval_pending" in event.result
+        for event in events
+    )
 
 
 @pytest.mark.asyncio

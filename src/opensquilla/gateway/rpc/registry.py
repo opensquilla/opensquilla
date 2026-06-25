@@ -75,6 +75,7 @@ class RpcContext:
     subscription_manager: Any = None  # SubscriptionManager for session-scoped events
     channel_manager: Any = None  # ChannelManager | None (injected at boot)
     usage_tracker: Any = None  # UsageTracker instance (injected at boot)
+    meta_run_writer: Any = None  # MetaRunWriter instance (injected at boot)
     skill_loader: Any = None  # SkillLoader instance (injected at boot)
     cron_scheduler: Any = None  # SchedulerEngine instance (injected at boot)
     turn_runner: TurnRunner | None = None  # TurnRunner instance (injected at boot)

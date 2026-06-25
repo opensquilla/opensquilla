@@ -63,9 +63,22 @@ through `with:` by convention; for edit workflows call the script.
 
 ## Auth
 
-Reads `OPENROUTER_API_KEY` from the process environment. The gateway
-already injects it from `.env` if configured. No Google Gemini key
-needed.
+API-key resolution order (first hit wins):
+1. `--api-key` CLI argument (rarely used; meta-skills don't pass it)
+2. `OPENROUTER_API_KEY` environment variable (gateway injects from `.env`)
+3. `OPENSQUILLA_LLM_API_KEY` environment variable, only when the
+   effective OpenSquilla LLM provider resolves to `openrouter`.
+4. `llm.api_key` or `llm.api_key_env` from the selected OpenSquilla TOML
+   config file. Config discovery matches `GatewayConfig.load`: explicit
+   `OPENSQUILLA_GATEWAY_CONFIG_PATH` first; otherwise
+   `./opensquilla.toml`, then `default_opensquilla_home()/config.toml`.
+   `OPENSQUILLA_STATE_DIR` changes `default_opensquilla_home()`, so a
+   state-dir profile does not fall through to `~/.opensquilla`.
+   Config-file credentials are consumed only when the selected config's
+   `llm.provider` is `openrouter` or omitted.
+
+No Google Gemini key needed — OpenRouter routes the request to the
+Gemini image model on the user's behalf.
 
 ## Output
 
@@ -81,7 +94,9 @@ any error; stderr carries the diagnostic.
 
 ## Common failures
 
-- `OPENROUTER_API_KEY not set` → check `.env` or `$env:OPENROUTER_API_KEY`.
+- `no OpenRouter API key found` → set `OPENROUTER_API_KEY`, pass
+  `--api-key`, or configure `[llm] provider = "openrouter"` with
+  `api_key` / `api_key_env` in the selected OpenSquilla config.
 - `OpenRouter returned no image` → the model rejected the prompt
   (content moderation or unsupported request). Rewrite prompt; check
   IP-safety rules in `ai-video-script`.

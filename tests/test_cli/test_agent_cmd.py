@@ -17,6 +17,7 @@ from opensquilla.cli.agent_cmd import (
 )
 from opensquilla.engine.types import ArtifactEvent, DoneEvent
 from opensquilla.gateway.config import AgentEntryConfig, GatewayConfig, PermissionsConfig
+from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.tools.types import CallerKind, InteractionMode
 
 
@@ -131,6 +132,39 @@ async def test_run_agent_once_uses_agent_registry_model_when_model_not_explicit(
     assert captured["runner_config_model"] == "agent/default"
     assert captured["run_model"] == "agent/default"
     assert captured["tool_context"].workspace_dir == str(agent_workspace)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_once_uses_configured_full_host_run_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeTurnRunner:
+        def __init__(self, **kwargs: Any) -> None:
+            return None
+
+        async def run(self, message: str, session_key: str, **kwargs: Any):
+            captured["tool_context"] = kwargs.get("tool_context")
+            yield DoneEvent(text="ok")
+
+    async def fake_build_services(*, config: GatewayConfig, **kwargs: Any) -> _FakeServices:
+        return _FakeServices(config)
+
+    monkeypatch.setattr("opensquilla.engine.runtime.TurnRunner", FakeTurnRunner)
+    monkeypatch.setattr("opensquilla.gateway.build_services", fake_build_services)
+
+    cfg = GatewayConfig(
+        workspace_dir=str(tmp_path),
+        sandbox=SandboxSettings(run_mode="full"),
+    )
+
+    result = await run_agent_once(message="hello", config=cfg)
+
+    assert result.text == "ok"
+    assert captured["tool_context"].run_mode == "full"
+    assert captured["tool_context"].elevated == "full"
 
 
 @pytest.mark.asyncio
@@ -523,7 +557,7 @@ async def test_run_agent_once_defaults_to_unattended_interaction_contract(
     ctx = captured["tool_context"]
     assert ctx.caller_kind is CallerKind.CLI
     assert ctx.interaction_mode is InteractionMode.UNATTENDED
-    assert ctx.elevated == "bypass"
+    assert ctx.elevated is None
     assert captured["bootstrap_context_mode"] == "unattended"
 
 

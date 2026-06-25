@@ -25,7 +25,56 @@ _INNER_PROXY_HOST = "127.0.0.1"
 
 ENV_PROXY_UDS = "OPENSQUILLA_SANDBOX_PROXY_UDS"
 ENV_PROXY_PORT = "OPENSQUILLA_SANDBOX_PROXY_PORT"
-PROXY_ENV_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+ENV_POLICY_B64 = "OPENSQUILLA_SANDBOX_POLICY_B64"
+ENV_EXEC_WRAPPER = "OPENSQUILLA_SANDBOX_EXEC_WRAPPER"
+PROXY_ENV_KEYS = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "YARN_HTTP_PROXY",
+    "YARN_HTTPS_PROXY",
+    "npm_config_http_proxy",
+    "npm_config_https_proxy",
+    "npm_config_proxy",
+    "NPM_CONFIG_HTTP_PROXY",
+    "NPM_CONFIG_HTTPS_PROXY",
+    "NPM_CONFIG_PROXY",
+    "BUNDLE_HTTP_PROXY",
+    "BUNDLE_HTTPS_PROXY",
+    "PIP_PROXY",
+    "DOCKER_HTTP_PROXY",
+    "DOCKER_HTTPS_PROXY",
+    "WS_PROXY",
+    "WSS_PROXY",
+    "ws_proxy",
+    "wss_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "FTP_PROXY",
+    "ftp_proxy",
+)
+NO_PROXY_ENV_KEYS = (
+    "NO_PROXY",
+    "no_proxy",
+    "npm_config_noproxy",
+    "NPM_CONFIG_NOPROXY",
+    "YARN_NO_PROXY",
+    "BUNDLE_NO_PROXY",
+)
+PROXY_CONTROL_ENV = (
+    ("CODEX_NETWORK_PROXY_ACTIVE", "1"),
+    ("CODEX_NETWORK_ALLOW_LOCAL_BINDING", "0"),
+    ("NODE_USE_ENV_PROXY", "1"),
+    ("ELECTRON_GET_USE_PROXY", "true"),
+    ("OPENSQUILLA_SANDBOX_NETWORK", "proxy_allowlist"),
+)
+DEFAULT_NO_PROXY_VALUE = (
+    "localhost,127.0.0.1,::1,"
+    "10.0.0.0/8,"
+    "172.16.0.0/12,"
+    "192.168.0.0/16"
+)
 
 
 class LinuxProxyBridgeHost:
@@ -38,9 +87,11 @@ class LinuxProxyBridgeHost:
         upstream_port: int,
         *,
         script_path: Path | None = None,
+        exec_wrapper_path: Path | None = None,
     ) -> None:
         self.uds_path = uds_path
         self.script_path = script_path or (uds_path.parent / "inner_bridge.py")
+        self.exec_wrapper_path = exec_wrapper_path or (uds_path.parent / "linux_exec_wrapper.py")
         self.upstream_host = upstream_host
         self.upstream_port = upstream_port
         self._server: asyncio.AbstractServer | None = None
@@ -58,8 +109,15 @@ class LinuxProxyBridgeHost:
             Path(__file__).read_text(encoding="utf-8"),
             encoding="utf-8",
         )
+        wrapper_source = Path(__file__).with_name("linux_exec_wrapper.py")
+        self.exec_wrapper_path.write_text(
+            wrapper_source.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
         with suppress(OSError):
             os.chmod(self.script_path, 0o600)
+        with suppress(OSError):
+            os.chmod(self.exec_wrapper_path, 0o600)
         server = await asyncio.start_unix_server(
             self._accept,
             path=str(self.uds_path),
@@ -103,6 +161,8 @@ class LinuxProxyBridgeHost:
             self.uds_path.unlink()
         with suppress(FileNotFoundError):
             self.script_path.unlink()
+        with suppress(FileNotFoundError):
+            self.exec_wrapper_path.unlink()
 
     def _accept(
         self,
@@ -194,9 +254,15 @@ def _child_env(port: int) -> dict[str, str]:
     env = dict(os.environ)
     env.pop(ENV_PROXY_UDS, None)
     env.pop(ENV_PROXY_PORT, None)
+    env.pop(ENV_POLICY_B64, None)
+    env.pop(ENV_EXEC_WRAPPER, None)
     proxy_url = f"http://{_INNER_PROXY_HOST}:{port}"
     for key in PROXY_ENV_KEYS:
         env[key] = proxy_url
+    for key in NO_PROXY_ENV_KEYS:
+        env[key] = DEFAULT_NO_PROXY_VALUE
+    for key, value in PROXY_CONTROL_ENV:
+        env[key] = value
     return env
 
 
@@ -236,8 +302,9 @@ async def _run_inner(argv: list[str]) -> int:
         port,
     )
     try:
+        command = _wrapped_child_argv(argv)
         proc = await asyncio.create_subprocess_exec(
-            *argv,
+            *command,
             env=_child_env(port),
         )
         return await proc.wait()
@@ -262,6 +329,21 @@ def main(argv: list[str] | None = None) -> int:
     return asyncio.run(_run_inner(args[1:]))
 
 
+def _wrapped_child_argv(argv: list[str]) -> list[str]:
+    policy_b64 = os.environ.get(ENV_POLICY_B64)
+    wrapper = os.environ.get(ENV_EXEC_WRAPPER)
+    if not policy_b64 or not wrapper:
+        return argv
+    return [
+        sys.executable,
+        wrapper,
+        "--policy-b64",
+        policy_b64,
+        "--",
+        *argv,
+    ]
+
+
 if __name__ == "__main__":  # pragma: no cover - exercised through -m
     raise SystemExit(main())
 
@@ -269,6 +351,8 @@ if __name__ == "__main__":  # pragma: no cover - exercised through -m
 __all__ = [
     "ENV_PROXY_PORT",
     "ENV_PROXY_UDS",
+    "ENV_POLICY_B64",
+    "ENV_EXEC_WRAPPER",
     "LinuxProxyBridgeHost",
     "PROXY_ENV_KEYS",
     "main",

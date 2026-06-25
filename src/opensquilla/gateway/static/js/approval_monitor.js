@@ -5,6 +5,7 @@ const ApprovalMonitor = (() => {
   const POLL_MAX_MS = 30000;
   let _timer = null;
   let _modal = null;
+  let _modalApprovalId = null;
   let _busy = false;
   let _pollBusy = false;
   let _pollDelayMs = POLL_MS;
@@ -77,6 +78,12 @@ const ApprovalMonitor = (() => {
       if (pending.length > 0) _resetPollBackoff();
       else _increasePollBackoff();
 
+      const modalStillPending = _modalApprovalId
+        && pending.some((item) => String(item.id || '') === _modalApprovalId);
+      if (_modal && !modalStillPending) {
+        _closeModal();
+      }
+
       if (pending.length > 0 && pending.length !== _lastToastCount) {
         _lastToastCount = pending.length;
         UI.toast('Approval required', 'warn', 2500);
@@ -138,6 +145,7 @@ const ApprovalMonitor = (() => {
 
   function _openModal(item, mode) {
     _closeModal();
+    _modalApprovalId = String(item.id || '');
     const overlay = document.createElement('div');
     overlay.className = 'modal-backdrop';
 
@@ -310,7 +318,11 @@ const ApprovalMonitor = (() => {
         headers: _authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(body),
       });
-      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      if (!resp.ok) {
+        _resetPollBackoff();
+        await _poll();
+        throw new Error('HTTP ' + resp.status);
+      }
       _closeModal();
       UI.toast(
         body.approved ? 'Approval granted' : 'Approval denied',
@@ -330,6 +342,7 @@ const ApprovalMonitor = (() => {
   function _closeModal() {
     if (_modal) _modal.remove();
     _modal = null;
+    _modalApprovalId = null;
   }
 
   function _approvalCommand(item) {

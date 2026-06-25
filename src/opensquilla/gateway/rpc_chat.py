@@ -380,6 +380,7 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
             incoming_source = {}
 
         elevated_hint = incoming_source.get("elevated")
+        run_mode_hint = incoming_source.get("runMode") or incoming_source.get("run_mode")
         attachments = params.get("attachments")
         extra: dict = {}
         for source_key, target_key in (
@@ -400,9 +401,7 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
                 session_key=session_key,
                 message=message,
                 attachments=attachments if isinstance(attachments, list) else [],
-                display_text=params.get("displayText")
-                if attachments and "displayText" in params
-                else None,
+                display_text=params.get("displayText") if "displayText" in params else None,
                 intent=cast(str, intent) if intent is not None else None,
                 extra=extra,
             ),
@@ -414,6 +413,7 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
                 source_kind="webui",
                 source_name="WebChat",
                 elevated=elevated_hint if isinstance(elevated_hint, str) else None,
+                run_mode=run_mode_hint if isinstance(run_mode_hint, str) else None,
             ),
         )
         result = await _handle_sessions_send(send_params, ctx)
@@ -558,8 +558,14 @@ async def _handle_chat_clarify_submit(params: dict | None, ctx: RpcContext) -> d
 
     session_key = _canonical_webchat_session_key(params.get("sessionKey"))
     text = _clarify_fields_to_text(fields)
-    if not text:
-        raise ValueError("params.fields contained only empty values")
+
+    run_id = params.get("run_id")
+    log.info(
+        "chat.clarify_submit.params",
+        session_key=session_key,
+        field_count=len(fields),
+        run_id=run_id if isinstance(run_id, str) and run_id else None,
+    )
 
     send_params: dict = {
         "message": text,
@@ -569,9 +575,8 @@ async def _handle_chat_clarify_submit(params: dict | None, ctx: RpcContext) -> d
         # intent (SessionIntent enum rejects unknown values). The
         # provenance tag is the observability hook for distinguishing
         # form submits from typed replies downstream.
-        "inputProvenance": "clarify_form",
+        "inputProvenance": {"kind": "clarify_form", "source": "webui"},
     }
-    run_id = params.get("run_id")
     if isinstance(run_id, str) and run_id:
         send_params["_source"] = {
             "caller_kind": "web",

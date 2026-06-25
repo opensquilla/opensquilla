@@ -155,6 +155,14 @@
     'is_error': False,
   })
 # ---
+# name: test_dispatch_corpus_snapshot[happy_path_with_sandbox_descriptor_guard]
+  dict({
+    'artifact_count': 0,
+    'content': 'sandboxed:echo ok',
+    'execution_status': None,
+    'is_error': False,
+  })
+# ---
 # name: test_dispatch_corpus_snapshot[happy_path_with_artifacts_budget_bypassed]
   dict({
     'artifact_count': 1,

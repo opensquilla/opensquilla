@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+outside-sandbox-smoke.txt
 /dist/
 /build/
 .venv/
@@ -24,6 +25,12 @@ data/
 .opensquilla/
 benchmarks/
 specs/
+# Public proposals tree: docs/proposals/ overrides global specs/ + plans/
+# ignores so design notes and implementation plans intended for review
+# travel with the repository.
+!docs/proposals/
+!docs/proposals/specs/
+!docs/proposals/plans/
 # Local agent/editor instructions and runtime state.
 AGENTS.md
 !docs/agents.md
@@ -35,6 +42,7 @@ GEMINI.md
 .claude/
 .omc/
 .omx/
+.worktrees/
 
 # One-off planning artifacts kept local, not published.
 /PLAN.md
@@ -46,11 +54,14 @@ GEMINI.md
 !/docs/superpowers/
 !/docs/superpowers/plans/
 !/docs/superpowers/specs/
+/docs/沙箱实现及对比-2026.06.11.md
 *.png
 # Brand assets are intentionally tracked: top-level assets/ for branding,
 # and the WebUI static asset path so the gateway page renders the mark.
 !/assets/*.png
 !/src/opensquilla/gateway/static/img/*.png
+!/opensquilla-webui/public/opensquilla-mark.png
+!/src/opensquilla/gateway/static/dist/opensquilla-mark.png
 site/
 /plugins/
 crontab-*
@@ -60,6 +71,10 @@ crontab-*
 /bench-mem
 .omx/
 tests/functional/reports/
+
+# Frontend build artifacts
+opensquilla-webui/node_modules/
+opensquilla-webui/dist/
 
 # Local-only release-hygiene tests that reference legacy artifact names
 # kept off the public tree.
@@ -80,3 +95,9 @@ tests/functional/reports/
 # helper stay out of the published tree.
 /_clawhub_skills/
 /scripts/_fetch_clawhub_skills.py
+
+# Playwright e2e output (reports, traces, screenshots) — regenerated per run.
+test-results/
+
+# Runtime config-write backups the gateway leaves when it rewrites config.toml.
+opensquilla.toml.backup.*

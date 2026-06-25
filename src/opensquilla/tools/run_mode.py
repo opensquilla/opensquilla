@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+from typing import cast
 
 from opensquilla.tools.types import current_tool_context
 
@@ -17,12 +18,19 @@ def current_run_mode() -> str | None:
         return None
     if ctx.run_mode in _VALID_RUN_MODES:
         return ctx.run_mode
+    run_context_mode = getattr(getattr(ctx, "sandbox_run_context", None), "run_mode", None)
+    run_context_mode_value = getattr(run_context_mode, "value", run_context_mode)
+    if run_context_mode_value in _VALID_RUN_MODES:
+        mode = cast(str, run_context_mode_value)
+        ctx.run_mode = mode
+        return mode
     if ctx.session_key:
         with contextlib.suppress(Exception):
             from opensquilla.gateway.approval_queue import get_approval_queue
 
-            mode = get_approval_queue().get_run_mode(ctx.session_key)
-            if mode in _VALID_RUN_MODES:
+            queued_mode = get_approval_queue().get_run_mode(ctx.session_key)
+            if queued_mode in _VALID_RUN_MODES:
+                mode = cast(str, queued_mode)
                 ctx.run_mode = mode
                 return mode
     if ctx.elevated == "full":

@@ -25,16 +25,19 @@ large_outputs/artifact_ref, retries, when conditions, persistence to
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import structlog
 
 from opensquilla.engine.types import AgentConfig, AgentEvent
 from opensquilla.provider.protocol import LLMProvider
+from opensquilla.skills.meta.clarify_autofill import autofill_required_clarify_fields
 from opensquilla.skills.meta.events import _StepDone, yield_skill_view_preface
 from opensquilla.skills.meta.executors.agent import (
     run_step_with_skill_stream,
@@ -56,7 +59,14 @@ from opensquilla.skills.meta.templating import (
     render_with_args,  # noqa: F401 — re-exported in __all__
     resolve_route,  # noqa: F401 — re-exported in __all__
 )
-from opensquilla.skills.meta.types import MetaMatch, MetaPlan, MetaResult, MetaStep
+from opensquilla.skills.meta.types import (
+    MetaMatch,
+    MetaPaused,
+    MetaPlan,
+    MetaPreflightRequired,
+    MetaResult,
+    MetaStep,
+)
 
 if TYPE_CHECKING:
     from opensquilla.persistence.meta_run_writer import MetaRunWriter
@@ -64,6 +74,38 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 slog = structlog.get_logger(__name__)
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+
+
+def _preflight_confirmation_run_id(inputs: dict[str, Any]) -> str:
+    marker_present = bool(
+        inputs.get("meta_preflight_confirmed")
+        or inputs.get("preflight_confirmed")
+        or inputs.get("_meta_preflight_confirmed")
+    )
+    if not marker_present:
+        return ""
+    return str(
+        inputs.get("meta_preflight_run_id")
+        or inputs.get("preflight_run_id")
+        or inputs.get("_meta_preflight_run_id")
+        or ""
+    ).strip()
+
+
+def _is_confirmable_preflight_run(
+    record: Any,
+    *,
+    plan_name: str,
+    session_key: str | None,
+) -> bool:
+    return bool(
+        record is not None
+        and record.meta_skill_name == plan_name
+        and record.session_key == session_key
+        and record.status == "cancelled"
+        and record.error == "preflight_required"
+    )
+
 
 # ---------------------------------------------------------------------------
 # Injected-dependency protocols
@@ -90,6 +132,299 @@ _SUBAGENT_METADATA_BLOCKLIST = {
     "meta_match_tool_choice",
     "meta_match_tool_surface_restricted",
 }
+
+
+def _contract_items(raw: Any) -> list[str]:
+    if isinstance(raw, str) and raw.strip():
+        return [raw.strip()]
+    if not isinstance(raw, list):
+        return []
+    items: list[str] = []
+    for item in raw:
+        if isinstance(item, dict):
+            name = item.get("name") or item.get("title") or item.get("path")
+            if name is not None and str(name).strip():
+                suffix = ""
+                if item.get("required") is True:
+                    suffix = " (required)"
+                items.append(f"{str(name).strip()}{suffix}")
+            continue
+        text = str(item).strip()
+        if text:
+            items.append(text)
+    return items
+
+
+def _format_contract_list(items: list[str], *, none_label: str = "无") -> str:
+    if not items:
+        return f"- {none_label}"
+    return "\n".join(f"- {item}" for item in items)
+
+
+def _required_section_presence(text: str, sections: list[str]) -> tuple[list[str], list[str]]:
+    haystack = text.casefold()
+    present: list[str] = []
+    missing: list[str] = []
+    for section in sections:
+        if section.casefold() in haystack:
+            present.append(section)
+        else:
+            missing.append(section)
+    return present, missing
+
+
+def _audit_output_contract(text: str, output_contract: dict[str, Any]) -> dict[str, Any]:
+    """Deterministically audit the parts of an output contract we can prove."""
+
+    sections = _contract_items(output_contract.get("required_sections"))
+    present, missing = _required_section_presence(text, sections)
+    forbidden_terms = (
+        _contract_items(output_contract.get("do_not"))
+        or _contract_items(output_contract.get("forbidden_terms"))
+        or _contract_items(output_contract.get("must_not_include"))
+    )
+    haystack = text.casefold()
+    forbidden_found = [
+        term for term in forbidden_terms if term.casefold() in haystack
+    ]
+    status = "pass"
+    if missing or forbidden_found:
+        status = "fail"
+    elif output_contract.get("unverified") or output_contract.get("assumptions"):
+        status = "warn"
+    return {
+        "status": status,
+        "present_required_sections": present,
+        "missing_required_sections": missing,
+        "forbidden_terms_found": forbidden_found,
+    }
+
+
+def _format_presence_line(label: str, items: list[str], *, none_label: str = "无") -> str:
+    if not items:
+        return f"- {label}: {none_label}"
+    return f"- {label}: {', '.join(items)}"
+
+
+def _contract_labels(language: str | None) -> dict[str, str]:
+    if str(language or "").lower() == "en":
+        return {
+            "title": "Declared Output Contract",
+            "required": "Required Sections",
+            "check": "Deterministic Check",
+            "status": "Status",
+            "present": "Present",
+            "missing": "Missing",
+            "assumptions": "Assumptions",
+            "unverified": "Unverified",
+            "artifacts": "Generated Artifacts",
+            "none": "none",
+        }
+    return {
+        "title": "声明的输出契约",
+        "required": "必需部分",
+        "check": "确定性检查",
+        "status": "状态",
+        "present": "已出现",
+        "missing": "缺失",
+        "assumptions": "假设",
+        "unverified": "未验证",
+        "artifacts": "生成的 artifact",
+        "none": "无",
+    }
+
+
+def _append_output_contract_block(
+    text: str,
+    output_contract: dict[str, Any],
+    *,
+    language: str | None = None,
+) -> str:
+    """Append the deterministic P0-3 contract summary block.
+
+    This is intentionally metadata-only: it states the declared contract
+    and a cheap required-section presence check without pretending to run
+    a full LLM audit. The future audit/self-repair loop can replace or
+    enrich this block while preserving the same headings.
+    """
+
+    if not output_contract:
+        return text
+    if output_contract.get("append_to_final_text") is False:
+        return text
+    sections = _contract_items(output_contract.get("required_sections"))
+    assumptions = _contract_items(output_contract.get("assumptions"))
+    unverified = _contract_items(output_contract.get("unverified"))
+    artifacts = _contract_items(output_contract.get("artifacts"))
+    audit = _audit_output_contract(text, output_contract)
+    present = list(audit["present_required_sections"])
+    missing = list(audit["missing_required_sections"])
+    labels = _contract_labels(language)
+    block = (
+        f"## {labels['title']}\n\n"
+        f"### {labels['required']}\n"
+        f"{_format_contract_list(sections, none_label=labels['none'])}\n\n"
+        f"### {labels['check']}\n"
+        f"- {labels['status']}: {audit['status']}\n"
+        f"{_format_presence_line(labels['present'], present, none_label=labels['none'])}\n"
+        f"{_format_presence_line(labels['missing'], missing, none_label=labels['none'])}\n\n"
+        f"### {labels['assumptions']}\n"
+        f"{_format_contract_list(assumptions, none_label=labels['none'])}\n\n"
+        f"### {labels['unverified']}\n"
+        f"{_format_contract_list(unverified, none_label=labels['none'])}\n\n"
+        f"### {labels['artifacts']}\n"
+        f"{_format_contract_list(artifacts, none_label=labels['none'])}"
+    )
+    if not text.strip():
+        return block
+    return f"{text.rstrip()}\n\n---\n\n{block}"
+
+
+def _last_non_empty_step_output(step_outputs: dict[str, str]) -> str:
+    for text in reversed(list(step_outputs.values())):
+        if text.strip():
+            return text
+    return ""
+
+
+def _empty_final_text_fallback(plan: MetaPlan, inputs: dict[str, Any]) -> str:
+    language = str(inputs.get("user_language") or "").lower()
+    instruction = str(inputs.get("language_instruction") or "").lower()
+    if language.startswith("en") or (not language and "english" in instruction):
+        return (
+            f"The meta-skill `{plan.name}` completed, but it did not produce "
+            "a user-visible final answer. Review the step results above and "
+            "rerun with more specific output requirements if you need a "
+            "polished deliverable."
+        )
+    return (
+        f"Meta skill `{plan.name}` 已完成，但这次流程没有生成可展示的最终回答。"
+        "请查看上方步骤结果和产物；如果需要，可以补充更明确的输出要求后重新运行。"
+    )
+
+
+def _verify_declared_artifacts(
+    output_contract: dict[str, Any],
+    *,
+    workspace_dir: str,
+) -> dict[str, Any]:
+    """Verify declared local artifacts without reading outside the workspace."""
+
+    raw_artifacts = output_contract.get("artifacts")
+    if not isinstance(raw_artifacts, list) or not raw_artifacts:
+        return {"status": "none", "artifacts": []}
+
+    workspace = Path(workspace_dir or ".").expanduser().resolve()
+    results: list[dict[str, Any]] = []
+    failed = False
+    for index, item in enumerate(raw_artifacts):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("title") or f"artifact-{index + 1}")
+        required = item.get("required") is True
+        raw_path = item.get("path")
+        result: dict[str, Any] = {
+            "name": name,
+            "required": required,
+        }
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            result["status"] = "no_path"
+            if required:
+                failed = True
+            results.append(result)
+            continue
+        path = Path(raw_path).expanduser()
+        if not path.is_absolute():
+            path = workspace / path
+        resolved = path.resolve()
+        result["path"] = str(resolved)
+        try:
+            resolved.relative_to(workspace)
+        except ValueError:
+            result["status"] = "outside_workspace"
+            failed = True
+            results.append(result)
+            continue
+        if not resolved.exists():
+            result["status"] = "missing"
+            if required:
+                failed = True
+            results.append(result)
+            continue
+        if not resolved.is_file():
+            result["status"] = "not_file"
+            failed = True
+            results.append(result)
+            continue
+        size = resolved.stat().st_size
+        result["size"] = size
+        if not size:
+            result["status"] = "empty"
+            failed = True
+            results.append(result)
+            continue
+        digest = hashlib.sha256()
+        with resolved.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                digest.update(chunk)
+        result["sha256"] = digest.hexdigest()
+        result["status"] = "ok"
+        results.append(result)
+
+    status = "fail" if failed else "ok"
+    return {"status": status, "artifacts": results}
+
+
+def _append_artifact_verification_notice(text: str, report: dict[str, Any]) -> str:
+    if report.get("status") != "fail":
+        return text
+    failures = [
+        item for item in report.get("artifacts", [])
+        if isinstance(item, dict) and item.get("status") != "ok"
+    ]
+    if not failures:
+        return text
+    lines = ["## Artifact verification failed"]
+    for item in failures:
+        lines.append(
+            f"- {item.get('name', 'artifact')}: {item.get('status', 'failed')}"
+        )
+    return f"{text.rstrip()}\n\n---\n\n" + "\n".join(lines)
+
+
+def _step_usage_from_tracker(
+    usage_tracker: Any | None,
+    *,
+    session_key: str | None,
+    usage_scope_prefix: str,
+    step_id: str,
+) -> dict[str, Any] | None:
+    if usage_tracker is None or not session_key:
+        return None
+    get_scope = getattr(usage_tracker, "get_scope", None)
+    if not callable(get_scope):
+        return None
+    scoped = get_scope(session_key, f"{usage_scope_prefix}:{step_id}")
+    if scoped is None:
+        return None
+    input_tokens = int(getattr(scoped, "input_tokens", 0) or 0)
+    output_tokens = int(getattr(scoped, "output_tokens", 0) or 0)
+    cache_read_tokens = int(getattr(scoped, "cache_read_tokens", 0) or 0)
+    cache_write_tokens = int(getattr(scoped, "cache_write_tokens", 0) or 0)
+    if not (input_tokens or output_tokens or cache_read_tokens or cache_write_tokens):
+        return None
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+        "cache_read_tokens": cache_read_tokens,
+        "cache_write_tokens": cache_write_tokens,
+        "cost_usd": round(float(getattr(scoped, "total_cost", 0.0) or 0.0), 6),
+        "billed_cost_usd": round(float(getattr(scoped, "billed_cost", 0.0) or 0.0), 6),
+        "estimated_cost_usd": round(float(getattr(scoped, "cost", 0.0) or 0.0), 6),
+        "cost_source": str(getattr(scoped, "cost_source", "") or ""),
+        "model": str(getattr(scoped, "model_id", "") or ""),
+    }
 
 
 def _metadata_for_meta_subagent(base_config: AgentConfig) -> dict[str, Any]:
@@ -179,6 +514,96 @@ class MetaOrchestrator:
         # .persistence.memory_persist_enabled for the wiring.
         self._memory_persist_enabled = memory_persist_enabled
 
+    def _step_persistence_hooks(
+        self,
+        *,
+        run_id: str | None,
+        plan: MetaPlan,
+        writer: MetaRunWriter | None,
+        usage_scope_prefix: str,
+    ) -> tuple[
+        Callable[[str, str, dict[str, Any]], Awaitable[None]] | None,
+        Callable[[str, str, str | None, str | None], Awaitable[None]] | None,
+        Callable[[str, str, str], Awaitable[None]] | None,
+    ]:
+        """Build scheduler hooks that persist step lifecycle and scoped usage."""
+        if run_id is None or writer is None:
+            return None, None, None
+
+        async def on_step_begin(
+            step_id: str,
+            effective_skill: str,
+            rendered_inputs: dict[str, Any],
+        ) -> None:
+            step = next((s for s in plan.steps if s.id == step_id), None)
+            if step is None:
+                return
+            writer.begin_step_sync(
+                run_id=run_id,
+                step=step,
+                effective_skill=effective_skill,
+                rendered_inputs=rendered_inputs,
+            )
+
+        async def on_step_finish(
+            step_id: str,
+            status: str,
+            output_text: str | None,
+            error: str | None,
+        ) -> None:
+            usage = _step_usage_from_tracker(
+                self._usage_tracker,
+                session_key=self._session_key,
+                usage_scope_prefix=usage_scope_prefix,
+                step_id=step_id,
+            )
+            writer.finish_step_sync(
+                run_id=run_id,
+                step_id=step_id,
+                status=cast(Literal["ok", "failed", "substituted"], status),
+                output_text=output_text,
+                error=error,
+                usage=usage,
+            )
+
+        async def on_step_failover(
+            failed_step_id: str,
+            substitute_step_id: str,
+            error: str,
+        ) -> None:
+            usage = _step_usage_from_tracker(
+                self._usage_tracker,
+                session_key=self._session_key,
+                usage_scope_prefix=usage_scope_prefix,
+                step_id=failed_step_id,
+            )
+            writer.on_step_failover_sync(
+                run_id=run_id,
+                failed_step_id=failed_step_id,
+                substitute_step_id=substitute_step_id,
+                error=error,
+                usage=usage,
+            )
+
+        return on_step_begin, on_step_finish, on_step_failover
+
+    def _finish_resumed_awaiting_step(
+        self,
+        *,
+        writer: MetaRunWriter | None,
+        run_id: str,
+        step_id: str,
+        output_text: str,
+    ) -> None:
+        if writer is None or not step_id:
+            return
+        writer.finish_step_sync(
+            run_id=run_id,
+            step_id=step_id,
+            status="ok",
+            output_text=output_text,
+        )
+
     async def run(self, match: MetaMatch) -> MetaResult:
         """Execute the plan, draining the streaming generator for the final result.
 
@@ -233,91 +658,85 @@ class MetaOrchestrator:
                 str(match.inputs.get("user_message") or ""),
             )
 
-        run_id: str | None = None
-        loop = asyncio.get_running_loop()
-
+        run_id: str | None = (match.run_id or "").strip() or None
         async def _to_thread(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-            return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
+            # Persistence writes are small sqlite calls guarded by
+            # MetaRunWriter's own lock. Keeping them synchronous avoids
+            # executor wake-up stalls on native-hook/App surfaces while
+            # preserving the async hook contract.
+            return fn(*args, **kwargs)
 
         if self._run_writer is not None:
-            try:
-                run_id = await _to_thread(
-                    self._run_writer.begin_run_sync,
-                    meta_skill_name=match.plan.name,
-                    meta_plan=match.plan,
-                    triggered_by=self._triggered_by,
-                    inputs=match.inputs,
+            if run_id is not None:
+                try:
+                    existing = await _to_thread(self._run_writer.get_run, run_id)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("orchestrator.lookup_supplied_run_failed: %s", exc)
+                    existing = None
+                if not _is_confirmable_preflight_run(
+                    existing,
+                    plan_name=match.plan.name,
                     session_key=self._session_key,
-                    turn_id=self._turn_id,
-                )
-            except Exception as exc:  # noqa: BLE001
-                log.warning("orchestrator.begin_run_failed: %s", exc)
+                ):
+                    run_id = None
+            if run_id is None:
+                confirmed_run_id = _preflight_confirmation_run_id(match.inputs)
+                if confirmed_run_id:
+                    try:
+                        existing = await _to_thread(
+                            self._run_writer.get_run,
+                            confirmed_run_id,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("orchestrator.lookup_preflight_run_failed: %s", exc)
+                        existing = None
+                    if _is_confirmable_preflight_run(
+                        existing,
+                        plan_name=match.plan.name,
+                        session_key=self._session_key,
+                    ):
+                        run_id = confirmed_run_id
+            if run_id is None:
+                try:
+                    run_id = await _to_thread(
+                        self._run_writer.begin_run_sync,
+                        meta_skill_name=match.plan.name,
+                        meta_plan=match.plan,
+                        triggered_by=self._triggered_by,
+                        inputs=match.inputs,
+                        session_key=self._session_key,
+                        turn_id=self._turn_id,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("orchestrator.begin_run_failed: %s", exc)
 
-        # Build the three writer hooks (no-op if writer absent or
-        # begin_run failed to assign a run_id).
-        async def on_step_begin(
-            step_id: str,
-            effective_skill: str,
-            rendered_inputs: dict[str, Any],
-        ) -> None:
-            if run_id is None or self._run_writer is None:
-                return
-            step = next((s for s in match.plan.steps if s.id == step_id), None)
-            if step is None:
-                return
-            await _to_thread(
-                self._run_writer.begin_step_sync,
+        on_step_begin, on_step_finish, on_step_failover = (
+            self._step_persistence_hooks(
                 run_id=run_id,
-                step=step,
-                effective_skill=effective_skill,
-                rendered_inputs=rendered_inputs,
+                plan=match.plan,
+                writer=self._run_writer,
+                usage_scope_prefix=run_id or f"meta:{match.plan.name}:{id(match)}",
             )
-
-        async def on_step_finish(
-            step_id: str,
-            status: str,
-            output_text: str | None,
-            error: str | None,
-        ) -> None:
-            if run_id is None or self._run_writer is None:
-                return
-            await _to_thread(
-                self._run_writer.finish_step_sync,
-                run_id=run_id,
-                step_id=step_id,
-                status=status,
-                output_text=output_text,
-                error=error,
-            )
-
-        async def on_step_failover(
-            failed_step_id: str,
-            substitute_step_id: str,
-            error: str,
-        ) -> None:
-            if run_id is None or self._run_writer is None:
-                return
-            await _to_thread(
-                self._run_writer.on_step_failover_sync,
-                run_id=run_id,
-                failed_step_id=failed_step_id,
-                substitute_step_id=substitute_step_id,
-                error=error,
-            )
+        )
 
         final_result: MetaResult | None = None
         cancelled = False
         previous_run_id = self._current_run_id
         self._current_run_id = run_id
         try:
+            scheduler_match = MetaMatch(
+                plan=match.plan,
+                inputs=match.inputs,
+                run_id=run_id or "",
+            )
             async for item in run_dag(
-                match,
+                scheduler_match,
                 dispatch_step_stream=self._dispatch_step_stream,
                 yield_skill_view_preface=self._yield_skill_view_preface,
                 max_parallelism=self._max_parallelism,
-                on_step_begin=on_step_begin if self._run_writer else None,
-                on_step_finish=on_step_finish if self._run_writer else None,
-                on_step_failover=on_step_failover if self._run_writer else None,
+                on_step_begin=on_step_begin,
+                on_step_finish=on_step_finish,
+                on_step_failover=on_step_failover,
                 usage_tracker=self._usage_tracker,
                 session_key=self._session_key,
                 usage_scope_prefix=run_id or f"meta:{match.plan.name}:{id(match)}",
@@ -342,6 +761,25 @@ class MetaOrchestrator:
                             match.inputs,
                             item.final_text,
                         )
+                        if match.plan.output_contract:
+                            item.metadata["output_contract_audit"] = _audit_output_contract(
+                                item.final_text,
+                                match.plan.output_contract,
+                            )
+                            item.metadata["artifact_verification"] = _verify_declared_artifacts(
+                                match.plan.output_contract,
+                                workspace_dir=self._workspace_dir
+                                or str(match.inputs.get("workspace_dir") or ""),
+                            )
+                            item.final_text = _append_artifact_verification_notice(
+                                item.final_text,
+                                item.metadata["artifact_verification"],
+                            )
+                        item.final_text = _append_output_contract_block(
+                            item.final_text,
+                            match.plan.output_contract,
+                            language=str(match.inputs.get("user_language") or ""),
+                        )
                     final_result = item
                 yield item
         except asyncio.CancelledError:
@@ -351,15 +789,29 @@ class MetaOrchestrator:
             self._current_run_id = previous_run_id
             if run_id is not None and self._run_writer is not None:
                 try:
-                    # A paused MetaResult means a user_input step
-                    # successfully claimed awaiting_user state — do NOT
-                    # overwrite that with status='failed' / 'cancelled'.
-                    # The next user message will resume via try_claim_resume.
+                    # A user_input pause successfully claimed awaiting_user
+                    # state — do NOT overwrite that with a terminal status.
+                    # Preflight pauses are client-side confirmation gates,
+                    # so finalise them as cancelled to avoid orphaned
+                    # running rows in run history.
                     if (
                         final_result is not None
                         and getattr(final_result, "paused", False)
+                        and isinstance(final_result.paused_payload, MetaPaused)
                     ):
                         pass
+                    elif (
+                        final_result is not None
+                        and getattr(final_result, "paused", False)
+                        and isinstance(final_result.paused_payload, MetaPreflightRequired)
+                    ):
+                        final_result.error = final_result.error or "preflight_required"
+                        await _to_thread(
+                            self._run_writer.finish_run_sync,
+                            run_id=run_id,
+                            status="cancelled",
+                            result=final_result,
+                        )
                     elif cancelled:
                         await _to_thread(
                             self._run_writer.finish_run_sync,
@@ -686,8 +1138,7 @@ class MetaOrchestrator:
                 error="MetaOrchestrator has no DAO; resume requires PR2",
             )
 
-        payload = await asyncio.to_thread(
-            self._dao.try_claim_resume,
+        payload = self._dao.try_claim_resume(
             run_id=run_id,
             session_id=session_id,
         )
@@ -736,21 +1187,48 @@ class MetaOrchestrator:
         outputs = json.loads(payload.step_outputs_json or "{}")
 
         schema_dict = json.loads(payload.awaiting_schema_json or "{}")
+        cfg = clarify_config_from_jsonable(schema_dict)
         filled_clean = _merge_clarify_defaults(schema_dict, filled_fields)
+        filled_clean, _completed = await autofill_required_clarify_fields(
+            schema=cfg,
+            filled_fields=filled_clean,
+            user_message=str(inputs.get("user_message") or ""),
+            clarify_reply=_format_clarify_reply_for_autofill(filled_fields),
+            prior_step_outputs=outputs,
+            llm_chat=self._llm_chat,
+        )
 
         inputs.setdefault("collected", {})
         inputs["collected"][payload.awaiting_step_id] = filled_clean
+        _inject_additional_notes_into_inputs(
+            inputs,
+            step_id=payload.awaiting_step_id,
+            filled_fields=filled_clean,
+        )
         if "language_instruction" not in inputs:
             inputs["language_instruction"] = language_instruction_for_user_message(
                 str(inputs.get("user_message") or ""),
             )
 
-        cfg = clarify_config_from_jsonable(schema_dict)
         outputs[payload.awaiting_step_id] = render_clarify_summary(
             schema=cfg, filled=filled_clean,
         )
+        self._finish_resumed_awaiting_step(
+            writer=self._dao,
+            run_id=run_id,
+            step_id=payload.awaiting_step_id,
+            output_text=outputs[payload.awaiting_step_id],
+        )
 
-        match = MetaMatch(plan=plan, inputs=inputs)
+        match = MetaMatch(plan=plan, inputs=inputs, run_id=run_id)
+        on_step_begin, on_step_finish, on_step_failover = (
+            self._step_persistence_hooks(
+                run_id=run_id,
+                plan=plan,
+                writer=self._dao,
+                usage_scope_prefix=run_id,
+            )
+        )
 
         final: MetaResult | None = None
         previous_run_id = self._current_run_id
@@ -761,6 +1239,13 @@ class MetaOrchestrator:
                 dispatch_step_stream=dispatch_step_stream,
                 yield_skill_view_preface=yield_skill_view_preface,
                 seed_outputs=outputs,
+                max_parallelism=self._max_parallelism,
+                on_step_begin=on_step_begin,
+                on_step_finish=on_step_finish,
+                on_step_failover=on_step_failover,
+                usage_tracker=self._usage_tracker,
+                session_key=self._session_key,
+                usage_scope_prefix=run_id,
             ):
                 if isinstance(ev, MetaResult):
                     final = ev
@@ -773,12 +1258,10 @@ class MetaOrchestrator:
         # try_claim_awaiting has already moved the row back to
         # 'awaiting_user' — calling finish_run_sync would corrupt state.
         if not final.paused:
-            from typing import Literal
             finish_status: Literal["ok", "failed", "cancelled"] = (
                 "ok" if final.ok else "failed"
             )
-            await asyncio.to_thread(
-                self._dao.finish_run_sync,
+            self._dao.finish_run_sync(
                 run_id=run_id,
                 result=final,
                 status=finish_status,
@@ -822,17 +1305,44 @@ class MetaOrchestrator:
         outputs = json.loads(payload.step_outputs_json or "{}")
 
         schema_dict = json.loads(payload.awaiting_schema_json or "{}")
+        cfg = clarify_config_from_jsonable(schema_dict)
         filled_clean = _merge_clarify_defaults(schema_dict, filled_fields)
+        filled_clean, _completed = await autofill_required_clarify_fields(
+            schema=cfg,
+            filled_fields=filled_clean,
+            user_message=str(inputs.get("user_message") or ""),
+            clarify_reply=_format_clarify_reply_for_autofill(filled_fields),
+            prior_step_outputs=outputs,
+            llm_chat=self._llm_chat,
+        )
 
         inputs.setdefault("collected", {})
         inputs["collected"][payload.awaiting_step_id] = filled_clean
+        _inject_additional_notes_into_inputs(
+            inputs,
+            step_id=payload.awaiting_step_id,
+            filled_fields=filled_clean,
+        )
 
-        cfg = clarify_config_from_jsonable(schema_dict)
         outputs[payload.awaiting_step_id] = render_clarify_summary(
             schema=cfg, filled=filled_clean,
         )
+        self._finish_resumed_awaiting_step(
+            writer=self._dao,
+            run_id=run_id,
+            step_id=payload.awaiting_step_id,
+            output_text=outputs[payload.awaiting_step_id],
+        )
 
-        match = MetaMatch(plan=plan, inputs=inputs)
+        match = MetaMatch(plan=plan, inputs=inputs, run_id=run_id)
+        on_step_begin, on_step_finish, on_step_failover = (
+            self._step_persistence_hooks(
+                run_id=run_id,
+                plan=plan,
+                writer=self._dao,
+                usage_scope_prefix=run_id,
+            )
+        )
 
         previous_run_id = self._current_run_id
         self._current_run_id = run_id
@@ -844,6 +1354,9 @@ class MetaOrchestrator:
                 yield_skill_view_preface=self._yield_skill_view_preface,
                 seed_outputs=outputs,
                 max_parallelism=self._max_parallelism,
+                on_step_begin=on_step_begin,
+                on_step_finish=on_step_finish,
+                on_step_failover=on_step_failover,
                 usage_tracker=self._usage_tracker,
                 session_key=self._session_key,
                 usage_scope_prefix=run_id,
@@ -860,6 +1373,25 @@ class MetaOrchestrator:
                             inputs,
                             ev.final_text,
                         )
+                        if plan.output_contract:
+                            ev.metadata["output_contract_audit"] = _audit_output_contract(
+                                ev.final_text,
+                                plan.output_contract,
+                            )
+                            ev.metadata["artifact_verification"] = _verify_declared_artifacts(
+                                plan.output_contract,
+                                workspace_dir=self._workspace_dir
+                                or str(inputs.get("workspace_dir") or ""),
+                            )
+                            ev.final_text = _append_artifact_verification_notice(
+                                ev.final_text,
+                                ev.metadata["artifact_verification"],
+                            )
+                        ev.final_text = _append_output_contract_block(
+                            ev.final_text,
+                            plan.output_contract,
+                            language=str(inputs.get("user_language") or ""),
+                        )
                     final = ev
                 yield ev
         finally:
@@ -869,12 +1401,10 @@ class MetaOrchestrator:
         # try_claim_awaiting has already moved the row back to
         # 'awaiting_user' — calling finish_run_sync would corrupt state.
         if final is not None and not final.paused:
-            from typing import Literal
             finish_status: Literal["ok", "failed", "cancelled"] = (
                 "ok" if final.ok else "failed"
             )
-            await asyncio.to_thread(
-                self._dao.finish_run_sync,
+            self._dao.finish_run_sync(
                 run_id=run_id,
                 result=final,
                 status=finish_status,
@@ -908,7 +1438,10 @@ class MetaOrchestrator:
             selected = step_outputs.get(sid, "")
             if selected.strip():
                 return selected
-            return current_final_text
+            if current_final_text.strip():
+                return current_final_text
+            fallback = _last_non_empty_step_output(step_outputs)
+            return fallback if fallback.strip() else _empty_final_text_fallback(plan, inputs)
         if mode != "auto":
             log.warning(
                 "orchestrator.unknown_final_text_mode mode=%s skill=%s",
@@ -1066,6 +1599,52 @@ def _merge_clarify_defaults(
         if k in allowed:
             merged[k] = v
     return merged
+
+
+def _format_clarify_reply_for_autofill(filled_fields: dict[str, Any]) -> str:
+    lines: list[str] = []
+    for key, value in (filled_fields or {}).items():
+        if value is None:
+            rendered = ""
+        elif isinstance(value, bool):
+            rendered = "true" if value else "false"
+        else:
+            rendered = str(value)
+        lines.append(f"{key}: {rendered}")
+    return "\n".join(lines)
+
+
+def _inject_additional_notes_into_inputs(
+    inputs: dict[str, Any],
+    *,
+    step_id: str,
+    filled_fields: dict[str, Any],
+) -> None:
+    """Expose generic clarify notes to every downstream meta step.
+
+    Most legacy meta-skill templates already read ``inputs.user_message``;
+    only some read the per-step ``inputs.collected`` payload directly.
+    The generic notes field is intentionally cross-cutting, so duplicate it
+    into the internal run message after resume while preserving the original
+    user request at the top.
+    """
+    raw_notes = filled_fields.get("additional_notes")
+    if raw_notes is None:
+        return
+    notes = str(raw_notes).strip()
+    if not notes:
+        return
+
+    original = str(inputs.get("user_message") or "").rstrip()
+    marker = "[Additional user notes]"
+    if marker in original and notes in original:
+        return
+    block = (
+        f"{marker}\n"
+        f"Clarify step: {step_id}\n"
+        f"{notes}"
+    )
+    inputs["user_message"] = f"{original}\n\n{block}" if original else block
 
 
 def make_agent_runner_from_parent(

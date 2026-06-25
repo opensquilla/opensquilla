@@ -34,11 +34,13 @@ composition:
       with:
         task: "Diagnose the captured logs and propose / apply a fix. Logs: {{ outputs.inspect }}"
     - id: memorize
-      skill: memory
+      kind: tool_call
+      tool: memory_save
+      tool_allowlist: [memory_save]
       depends_on: [heal]
-      with:
-        action: save
-        topic: "build-watchdog"
+      tool_args:
+        path: "memory/build-watchdog.md"
+        mode: append
         content: "{{ outputs.heal }}"
 ---
 

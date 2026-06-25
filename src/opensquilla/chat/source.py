@@ -14,6 +14,7 @@ def chat_source_metadata(
     source_kind: str,
     source_name: str,
     elevated: str | None = None,
+    run_mode: str | None = None,
 ) -> dict[str, Any]:
     source: dict[str, Any] = {
         "caller_kind": caller_kind,
@@ -25,4 +26,6 @@ def chat_source_metadata(
     }
     if elevated in ("on", "bypass", "full"):
         source["elevated"] = elevated
+    if run_mode in ("standard", "trusted", "full"):
+        source["runMode"] = run_mode
     return source

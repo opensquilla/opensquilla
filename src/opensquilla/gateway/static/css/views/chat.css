@@ -840,6 +840,27 @@
   color: var(--text-muted);
 }
 
+
+/* ─── LaTeX / KaTeX math rendering ──────────────────────────────────── */
+.msg .msg-body .math-block {
+  display: block;
+  text-align: center;
+  margin: 0.6em 0;
+  padding: 0.4em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.msg .msg-body .math-inline {
+  display: inline;
+  white-space: nowrap;
+}
+/* Fallback when KaTeX is not loaded */
+.msg .msg-body .math-raw {
+  background: transparent;
+  padding: 0.15em 0.3em;
+  font-size: 0.95em;
+  user-select: all;
+}
 /* In-bubble markdown headings — sized + weighted so the UA fallback can't
    blow them up inside 13px bubbles, and painted as text (orange stays signal,
    not routine body decoration). */

@@ -28,12 +28,59 @@ const Markdown = (() => {
     return { text: out, stash };
   }
 
+  // Render a single LaTeX expression to HTML using KaTeX.
+  // Returns null when KaTeX is unavailable or rendering fails.
+  function _renderLatex(raw) {
+    if (typeof katex === 'undefined') return null;
+
+    // Detect delimiter and strip it
+    let tex, displayMode;
+    if (raw.startsWith('$$') || raw.startsWith('\\[')) {
+      // Display math: $$ ... $$ or \[ ... \]
+      displayMode = true;
+      if (raw.startsWith('$$')) {
+        tex = raw.slice(2, -2);
+      } else {
+        tex = raw.slice(2, -2);
+      }
+    } else if (raw.startsWith('$') && !raw.startsWith('$$')) {
+      // Inline math: $ ... $
+      displayMode = false;
+      tex = raw.slice(1, -1);
+    } else if (raw.startsWith('\\(')) {
+      // Inline math: \( ... \)
+      displayMode = false;
+      tex = raw.slice(2, -2);
+    } else {
+      return null;
+    }
+
+    try {
+      const rendered = katex.renderToString(tex, {
+        displayMode: displayMode,
+        throwOnError: false,
+        strict: false,
+      });
+      return rendered;
+    } catch (e) {
+      return null;
+    }
+  }
+
   function _restoreMath(html, stash) {
     if (stash.length === 0) return html;
     return html.replace(_MATH_SENTINEL, (_, i) => {
       const raw = stash[Number(i)];
       if (raw === undefined) return '';
-      return `<code class="math-raw" title="LaTeX formula (not rendered)">${_escape(raw)}</code>`;
+
+      // Try KaTeX rendering first
+      const rendered = _renderLatex(raw);
+      if (rendered !== null) return rendered;
+
+      // Fallback: show raw code
+      const isDisplay = raw.startsWith('$$') || raw.startsWith('\\[');
+      const cls = isDisplay ? 'math-raw math-block' : 'math-raw';
+      return `<code class="${cls}" title="LaTeX formula (raw)">${_escape(raw)}</code>`;
     });
   }
 

@@ -25,6 +25,7 @@ from scripts.run_draco_ensemble import (
     build_parser,
     build_profile_provider,
     compact_chat_config,
+    collect_generation_with_retries,
     collect_run,
     generation_chat_config,
     generation_thinking_policy,
@@ -107,6 +108,44 @@ class _DiagnosticErrorProvider:
         return []
 
 
+class _EmptyThenSuccessProvider:
+    provider_name = "empty-then-success"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def chat(self, messages: list[Message], tools=None, config=None):  # noqa: ANN001, ARG002
+        self.calls += 1
+        if self.calls == 1:
+            yield DoneEvent(model="empty")
+            return
+        yield TextDeltaEvent(text="recovered")
+        yield DoneEvent(model="success")
+
+    async def list_models(self) -> list:
+        return []
+
+
+class _ErrorThenSuccessProvider:
+    provider_name = "error-then-success"
+
+    def __init__(self, *, failures_before_success: int = 1) -> None:
+        self.failures_before_success = failures_before_success
+        self.calls = 0
+
+    async def chat(self, messages: list[Message], tools=None, config=None):  # noqa: ANN001, ARG002
+        self.calls += 1
+        if self.calls <= self.failures_before_success:
+            yield TextDeltaEvent(text="partial")
+            yield ErrorEvent(message="boom", code="boom")
+            return
+        yield TextDeltaEvent(text="recovered")
+        yield DoneEvent(model="success")
+
+    async def list_models(self) -> list:
+        return []
+
+
 class _ToolCaptureProvider:
     provider_name = "tool-capture"
 
@@ -151,6 +190,8 @@ async def test_draco_runner_dry_run_writes_jsonl_and_summary(tmp_path: Path) -> 
         judge_concurrency=1,
         judge_max_attempts=3,
         judge_candidates=True,
+        generation_max_attempts=3,
+        generation_retry_backoff=0.0,
         command_argv=[
             ".venv/bin/python",
             "scripts/run_draco_ensemble.py",
@@ -190,6 +231,9 @@ async def test_draco_runner_dry_run_writes_jsonl_and_summary(tmp_path: Path) -> 
     assert g3["generation_policy"]["generation_thinking"] == "high"
     assert g3["generation_config"]["thinking"] is True
     assert g3["generation_config"]["temperature"] == 0.0
+    assert g3["generation_attempt_count"] == 1
+    assert g3["generation_max_attempts"] == 3
+    assert g3["generation_retry_backoff_s"] == 0.0
     assert g3["ensemble_trace"]["shuffle_candidates"] is False
     assert "huggingface.co" in g3["contamination_blocked_domains"]
     assert g3["tool_policy"]["contamination_controls"]["status"] == (
@@ -211,6 +255,8 @@ async def test_draco_runner_dry_run_writes_jsonl_and_summary(tmp_path: Path) -> 
     assert len(trace_rows) == len(rows)
     assert trace_rows[0]["run_trace"]["events"]
     assert trace_rows[0]["generation_policy"]["generation_thinking"] == "high"
+    assert trace_rows[0]["generation_attempt_count"] == 1
+    assert trace_rows[0]["generation_retry_backoff_s"] == 0.0
     assert "llm_request_count" in trace_rows[0]
     [command_path] = output_dir.glob("draco_run_*.command.txt")
     command_text = command_path.read_text(encoding="utf-8")
@@ -236,6 +282,8 @@ def test_draco_runner_default_groups_include_g1() -> None:
     assert args.judge_repeats == 3
     assert args.judge_concurrency == 1
     assert args.judge_max_attempts == 3
+    assert args.generation_max_attempts == 3
+    assert args.generation_retry_backoff == 2.0
     assert args.generation_thinking == "high"
     assert args.tool_mode == "provider_only"
     assert args.openrouter_web_search_engine == "exa"
@@ -370,8 +418,32 @@ def test_draco_runner_generation_thinking_policy_overrides_profile_members() -> 
 
     assert provider.record_candidates is True
     assert provider.shuffle_candidates is False
+    assert provider.proposer_timeout_seconds == 120.0
+    assert provider.aggregator_timeout_seconds == 300.0
     assert [member.thinking for member in provider.proposers] == ["off", "off", "off"]
     assert provider.aggregator.thinking == "off"
+
+
+def test_draco_runner_profile_timeouts_expand_with_requested_timeout() -> None:
+    cfg = GatewayConfig()
+    inherited = ProviderConfig(
+        provider="openrouter",
+        model="z-ai/glm-5.2",
+        api_key="sk-test",
+        base_url="https://openrouter.ai/api",
+    )
+
+    provider = build_profile_provider(
+        config=cfg,
+        inherited=inherited,
+        group="G3",
+        profile="g3_standard",
+        dry_run=False,
+        requested_timeout=900.0,
+    )
+
+    assert provider.proposer_timeout_seconds == pytest.approx(232.5)
+    assert provider.aggregator_timeout_seconds == pytest.approx(637.5)
 
 
 def test_draco_runner_generation_policy_overrides_profile_member_temperature() -> None:
@@ -448,8 +520,10 @@ def test_draco_runner_compact_generation_config_marks_profile_thinking() -> None
 def test_draco_runner_expands_outer_timeout_for_profile_budget() -> None:
     cfg = GatewayConfig()
 
+    assert group_timeout_seconds(requested_timeout=360.0, config=cfg, group="G3") == 450.0
     assert group_timeout_seconds(requested_timeout=360.0, config=cfg, group="G6") == 450.0
     assert group_timeout_seconds(requested_timeout=600.0, config=cfg, group="G6") == 600.0
+    assert group_timeout_seconds(requested_timeout=900.0, config=cfg, group="G3") == 900.0
     assert group_timeout_seconds(requested_timeout=360.0, config=cfg, group="B2") == 360.0
 
 
@@ -542,6 +616,58 @@ def test_draco_summary_compares_avg_quality_and_cost_pct_against_baselines() -> 
     assert "Avg LLM Req" in markdown
     assert "+12.50%" in markdown
     assert "-50.00%" in markdown
+
+
+def test_draco_summary_uses_generation_attempt_cost_and_tokens() -> None:
+    rows = [
+        {
+            "task_id": "task-1",
+            "group": "G3",
+            "latency_ms": 300,
+            "quality_total": 50.0,
+            "judge": {"pass_rate": 50.0, "judge_error_count": 0},
+            "usage": {
+                "billed_cost": 0.20,
+                "input_tokens": 20,
+                "output_tokens": 10,
+                "reasoning_tokens": 2,
+            },
+            "execution": {
+                "generation_attempts": [
+                    {
+                        "attempt": 1,
+                        "run": {
+                            "usage": {
+                                "billed_cost": 0.10,
+                                "input_tokens": 10,
+                                "output_tokens": 5,
+                                "reasoning_tokens": 1,
+                            }
+                        },
+                    },
+                    {
+                        "attempt": 2,
+                        "run": {
+                            "usage": {
+                                "billed_cost": 0.20,
+                                "input_tokens": 20,
+                                "output_tokens": 10,
+                                "reasoning_tokens": 2,
+                            }
+                        },
+                    },
+                ],
+            },
+            "error": "",
+        },
+    ]
+
+    group = summarize(rows)["groups"]["G3"]
+
+    assert group["avg_cost_usd"] == pytest.approx(0.30)
+    assert group["avg_visible_tokens"] == pytest.approx(45.0)
+    assert group["avg_reasoning_tokens"] == pytest.approx(3.0)
+    assert group["avg_total_tokens"] == pytest.approx(48.0)
 
 
 def test_draco_summary_counts_unscored_rows_as_zero_quality() -> None:
@@ -812,3 +938,64 @@ async def test_collect_run_preserves_error_diagnostic_done() -> None:
         "diagnostic_done",
         "error",
     ]
+
+
+@pytest.mark.asyncio
+async def test_collect_generation_with_retries_recovers_from_empty_output() -> None:
+    provider = _EmptyThenSuccessProvider()
+
+    result, attempts, selected_attempt = await collect_generation_with_retries(
+        provider,
+        "task",
+        timeout=1.0,
+        max_attempts=3,
+    )
+
+    assert provider.calls == 2
+    assert result.final_text == "recovered"
+    assert result.error == ""
+    assert selected_attempt == 2
+    assert [attempt["retry_reason"] for attempt in attempts] == [
+        "empty_generation_output",
+        "",
+    ]
+    assert attempts[0]["will_retry"] is True
+    assert attempts[0]["retry_backoff_s"] == 0.0
+    assert attempts[1]["will_retry"] is False
+
+
+@pytest.mark.asyncio
+async def test_collect_generation_with_retries_recovers_from_error() -> None:
+    provider = _ErrorThenSuccessProvider(failures_before_success=1)
+
+    result, attempts, selected_attempt = await collect_generation_with_retries(
+        provider,
+        "task",
+        timeout=1.0,
+        max_attempts=3,
+    )
+
+    assert provider.calls == 2
+    assert result.final_text == "recovered"
+    assert result.error == ""
+    assert selected_attempt == 2
+    assert [attempt["retry_reason"] for attempt in attempts] == ["boom", ""]
+
+
+@pytest.mark.asyncio
+async def test_collect_generation_with_retries_caps_attempts_at_three() -> None:
+    provider = _ErrorThenSuccessProvider(failures_before_success=5)
+
+    result, attempts, selected_attempt = await collect_generation_with_retries(
+        provider,
+        "task",
+        timeout=1.0,
+        max_attempts=9,
+    )
+
+    assert provider.calls == 3
+    assert len(attempts) == 3
+    assert selected_attempt == 1
+    assert result.final_text == "partial"
+    assert result.error == "boom"
+    assert all(attempt["retry_reason"] == "boom" for attempt in attempts)

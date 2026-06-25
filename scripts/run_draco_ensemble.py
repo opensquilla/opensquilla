@@ -90,7 +90,13 @@ DEFAULT_CONTAMINATION_BLOCKED_DOMAINS = (
     "research.perplexity.ai",
 )
 PROFILE_TIMEOUT_MARGIN_SECONDS = 30.0
+DEFAULT_PROFILE_PROPOSER_TIMEOUT_SECONDS = 120.0
+DEFAULT_PROFILE_AGGREGATOR_TIMEOUT_SECONDS = 300.0
 JUDGE_MAX_ATTEMPTS = 3
+GENERATION_MAX_ATTEMPTS = 3
+DEFAULT_GENERATION_RETRY_BACKOFF_SECONDS = 2.0
+GENERATION_EMPTY_OUTPUT_ERROR = "empty_generation_output"
+GENERATION_MISSING_DONE_ERROR = "generation_missing_done"
 
 
 @dataclass
@@ -533,6 +539,40 @@ def compact_chat_config(
     }
 
 
+def profile_timeout_seconds(
+    profile: Any,
+    *,
+    requested_timeout: float | None = None,
+) -> tuple[float, float]:
+    proposer_timeout = max(
+        DEFAULT_PROFILE_PROPOSER_TIMEOUT_SECONDS,
+        float(getattr(profile, "proposer_timeout_seconds", 0) or 0),
+    )
+    aggregator_timeout = max(
+        DEFAULT_PROFILE_AGGREGATOR_TIMEOUT_SECONDS,
+        float(getattr(profile, "aggregator_timeout_seconds", 0) or 0),
+    )
+    if requested_timeout is None or requested_timeout <= 0:
+        return proposer_timeout, aggregator_timeout
+    available = max(0.0, float(requested_timeout) - PROFILE_TIMEOUT_MARGIN_SECONDS)
+    base_budget = proposer_timeout + aggregator_timeout
+    if available <= base_budget:
+        return proposer_timeout, aggregator_timeout
+    extra = available - base_budget
+    return proposer_timeout + extra * 0.25, aggregator_timeout + extra * 0.75
+
+
+def profile_aggregator_timeout_seconds(
+    profile: Any,
+    *,
+    requested_timeout: float | None = None,
+) -> float:
+    return profile_timeout_seconds(
+        profile,
+        requested_timeout=requested_timeout,
+    )[1]
+
+
 def parse_maybe_json(value: Any) -> Any:
     if not isinstance(value, str):
         return value
@@ -711,6 +751,7 @@ def build_profile_provider(
     profile: str,
     dry_run: bool,
     generation_policy: dict[str, Any] | None = None,
+    requested_timeout: float | None = None,
     enable_proposer_tools: bool = False,
 ):
     if dry_run:
@@ -726,8 +767,17 @@ def build_profile_provider(
             profile_config,
             generation_policy,
         )
+    proposer_timeout_s, aggregator_timeout_s = profile_timeout_seconds(
+        profile_config,
+        requested_timeout=requested_timeout,
+    )
     config.llm_ensemble.profiles[profile] = profile_config.model_copy(
-        update={"record_candidates": True, "shuffle_candidates": False}
+        update={
+            "record_candidates": True,
+            "shuffle_candidates": False,
+            "proposer_timeout_seconds": proposer_timeout_s,
+            "aggregator_timeout_seconds": aggregator_timeout_s,
+        }
     )
     fallback = build_single_provider(
         inherited=inherited,
@@ -1004,6 +1054,155 @@ def run_result_summary(result: RunResult) -> dict[str, Any]:
         "usage": usage,
         "trace_events": result.trace_events,
     }
+
+
+def bounded_generation_attempts(value: int | None) -> int:
+    try:
+        attempts = GENERATION_MAX_ATTEMPTS if value is None else int(value)
+    except (TypeError, ValueError):
+        attempts = GENERATION_MAX_ATTEMPTS
+    return max(1, min(GENERATION_MAX_ATTEMPTS, attempts))
+
+
+def bounded_generation_retry_backoff(value: Any) -> float:
+    try:
+        backoff = float(value)
+    except (TypeError, ValueError):
+        backoff = DEFAULT_GENERATION_RETRY_BACKOFF_SECONDS
+    return max(0.0, backoff)
+
+
+def generation_retry_reason(result: RunResult) -> str:
+    if result.error:
+        return result.error
+    if result.done is None:
+        return GENERATION_MISSING_DONE_ERROR
+    if not result.final_text.strip():
+        return GENERATION_EMPTY_OUTPUT_ERROR
+    return ""
+
+
+def mark_empty_generation_output(result: RunResult) -> None:
+    if result.error or result.final_text.strip():
+        return
+    result.error = GENERATION_EMPTY_OUTPUT_ERROR
+    result.trace_events.append(
+        {
+            "seq": len(result.trace_events) + 1,
+            "elapsed_ms": result.latency_ms,
+            "kind": GENERATION_EMPTY_OUTPUT_ERROR,
+        }
+    )
+
+
+def selected_generation_attempt(
+    attempts: list[dict[str, Any]],
+    selected_result: RunResult,
+) -> int:
+    selected_sha = text_sha256(selected_result.final_text)
+    selected_error = selected_result.error
+    for attempt in attempts:
+        run = attempt.get("run")
+        if not isinstance(run, dict):
+            continue
+        if (
+            run.get("final_text_sha256") == selected_sha
+            and run.get("error") == selected_error
+        ):
+            return coerce_metric_int(attempt.get("attempt"))
+    return coerce_metric_int(attempts[-1].get("attempt")) if attempts else 0
+
+
+async def collect_generation_with_retries(
+    provider: Any,
+    prompt: str,
+    *,
+    timeout: float,
+    config: ChatConfig | None = None,
+    tools: list[ToolDefinition] | None = None,
+    max_attempts: int = GENERATION_MAX_ATTEMPTS,
+    retry_backoff_seconds: float = 0.0,
+) -> tuple[RunResult, list[dict[str, Any]], int]:
+    attempts: list[dict[str, Any]] = []
+    best_non_empty: RunResult | None = None
+    last_result: RunResult | None = None
+    attempt_limit = bounded_generation_attempts(max_attempts)
+    for attempt_index in range(1, attempt_limit + 1):
+        result = await collect_run(
+            provider,
+            prompt,
+            timeout=timeout,
+            config=config,
+            tools=tools,
+        )
+        last_result = result
+        reason = generation_retry_reason(result)
+        if result.final_text.strip() and best_non_empty is None:
+            best_non_empty = result
+        will_retry = bool(reason) and attempt_index < attempt_limit
+        retry_backoff_s = (
+            bounded_generation_retry_backoff(retry_backoff_seconds)
+            * (2 ** (attempt_index - 1))
+            if will_retry
+            else 0.0
+        )
+        attempts.append(
+            {
+                "attempt": attempt_index,
+                "retryable": bool(reason),
+                "retry_reason": reason,
+                "will_retry": will_retry,
+                "retry_backoff_s": retry_backoff_s,
+                "run": run_result_summary(result),
+            }
+        )
+        if not reason:
+            return result, attempts, attempt_index
+        if retry_backoff_s > 0:
+            await asyncio.sleep(retry_backoff_s)
+    selected = best_non_empty or last_result or RunResult(
+        final_text="",
+        done=None,
+        error=GENERATION_MISSING_DONE_ERROR,
+    )
+    mark_empty_generation_output(selected)
+    return selected, attempts, selected_generation_attempt(attempts, selected)
+
+
+def sum_generation_attempt_metric(attempts: list[dict[str, Any]], key: str) -> int:
+    total = 0
+    for attempt in attempts:
+        run = attempt.get("run")
+        if isinstance(run, dict):
+            total += coerce_metric_int(run.get(key))
+    return total
+
+
+def sum_generation_attempt_server_tools(attempts: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for attempt in attempts:
+        run = attempt.get("run")
+        if not isinstance(run, dict):
+            continue
+        server_tool_use = run.get("server_tool_use")
+        if isinstance(server_tool_use, dict):
+            add_metric_counts(counts, server_tool_use)
+    return counts
+
+
+def sum_generation_attempt_billed_cost(attempts: list[dict[str, Any]]) -> float:
+    total = 0.0
+    for attempt in attempts:
+        run = attempt.get("run")
+        if not isinstance(run, dict):
+            continue
+        usage = run.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        billed_cost = usage.get("billed_cost")
+        if isinstance(billed_cost, int | float):
+            total += float(billed_cost)
+    return total
 
 
 def bounded_judge_attempts(value: int | None) -> int:
@@ -1391,13 +1590,24 @@ async def run_one(
     timeout: float,
     tool_policy: dict[str, Any],
     generation_policy: dict[str, Any],
+    generation_max_attempts: int = GENERATION_MAX_ATTEMPTS,
+    generation_retry_backoff: float = DEFAULT_GENERATION_RETRY_BACKOFF_SECONDS,
     tools: list[ToolDefinition] | None = None,
 ) -> dict[str, Any]:
     spec = GROUP_SPECS[group]
     started = time.time()
     provider = None
     provider_error = ""
+    generation_attempt_limit = bounded_generation_attempts(generation_max_attempts)
+    generation_retry_backoff_s = bounded_generation_retry_backoff(
+        generation_retry_backoff
+    )
     generation_config = generation_chat_config(generation_policy)
+    effective_timeout = group_timeout_seconds(
+        requested_timeout=timeout,
+        config=config,
+        group=group,
+    )
     try:
         if spec["kind"] == "single":
             provider = build_single_provider(
@@ -1414,26 +1624,29 @@ async def run_one(
                 profile=spec["profile"],
                 dry_run=dry_run,
                 generation_policy=generation_policy,
+                requested_timeout=effective_timeout,
                 enable_proposer_tools=bool(tool_policy.get("tools_enabled")),
             )
     except Exception as exc:  # noqa: BLE001 - report config errors per row
         provider_error = f"{type(exc).__name__}: {exc}"
-    effective_timeout = group_timeout_seconds(
-        requested_timeout=timeout,
-        config=config,
-        group=group,
-    )
-    run = (
-        await collect_run(
-            provider,
-            str(task["prompt"]),
-            timeout=effective_timeout,
-            config=generation_config,
-            tools=tools,
+    if provider is not None:
+        run, generation_attempts, selected_generation_attempt_index = (
+            await collect_generation_with_retries(
+                provider,
+                str(task["prompt"]),
+                timeout=effective_timeout,
+                config=generation_config,
+                tools=tools,
+                max_attempts=generation_attempt_limit,
+                retry_backoff_seconds=generation_retry_backoff_s,
+            )
         )
-        if provider is not None
-        else RunResult(final_text="", done=None, error=provider_error)
-    )
+    else:
+        run = RunResult(final_text="", done=None, error=provider_error)
+        generation_attempts = []
+        selected_generation_attempt_index = 0
+    profile_proposer_timeout_s = getattr(provider, "proposer_timeout_seconds", None)
+    profile_aggregator_timeout_s = getattr(provider, "aggregator_timeout_seconds", None)
     judge = await judge_text(
         judge_provider=judge_provider,
         task=task,
@@ -1465,17 +1678,53 @@ async def run_one(
     final_text_sha = text_sha256(run.final_text)
     prompt_sha = text_sha256(str(task["prompt"]))
     usage_payload = done_payload(run.done)
-    server_tool_call_count = coerce_metric_int(
+    selected_server_tool_call_count = coerce_metric_int(
         usage_payload.get("server_tool_call_count")
     )
     server_tool_use = usage_payload.get("server_tool_use") or {}
-    total_tool_call_count = run.tool_call_count + server_tool_call_count
-    llm_request_count = llm_request_count_for_run(
+    selected_total_tool_call_count = run.tool_call_count + selected_server_tool_call_count
+    selected_llm_request_count = llm_request_count_for_run(
         spec=spec,
         done=run.done,
         provider_attempted=provider is not None,
     )
+    attempt_stream_tool_call_count = sum_generation_attempt_metric(
+        generation_attempts, "stream_tool_call_count"
+    )
+    attempt_server_tool_call_count = sum_generation_attempt_metric(
+        generation_attempts, "server_tool_call_count"
+    )
+    attempt_total_tool_call_count = sum_generation_attempt_metric(
+        generation_attempts, "total_tool_call_count"
+    )
+    attempt_llm_request_count = sum_generation_attempt_metric(
+        generation_attempts, "llm_request_count"
+    )
+    attempt_trajectory_steps = sum_generation_attempt_metric(
+        generation_attempts, "trajectory_steps"
+    )
+    attempt_latency_ms = sum_generation_attempt_metric(generation_attempts, "latency_ms")
+    attempt_server_tool_use = sum_generation_attempt_server_tools(generation_attempts)
+    generation_attempt_total_billed_cost = sum_generation_attempt_billed_cost(
+        generation_attempts
+    )
+    generation_retry_reasons = [
+        str(attempt.get("retry_reason") or "")
+        for attempt in generation_attempts
+        if attempt.get("retry_reason")
+    ]
+    latency_ms = attempt_latency_ms or run.latency_ms
+    stream_tool_call_count = attempt_stream_tool_call_count or run.tool_call_count
+    server_tool_call_count = (
+        attempt_server_tool_call_count or selected_server_tool_call_count
+    )
+    if attempt_server_tool_use:
+        server_tool_use = attempt_server_tool_use
+    total_tool_call_count = attempt_total_tool_call_count or selected_total_tool_call_count
+    llm_request_count = attempt_llm_request_count or selected_llm_request_count
     trajectory_steps = total_tool_call_count + llm_request_count
+    if attempt_trajectory_steps:
+        trajectory_steps = attempt_trajectory_steps
     return {
         "task_id": task["id"],
         "group": group,
@@ -1495,15 +1744,20 @@ async def run_one(
         "started_at": started,
         "completed_at": completed_at,
         "total_elapsed_ms": int((completed_at - started) * 1000),
-        "latency_ms": run.latency_ms,
+        "latency_ms": latency_ms,
         "ttft_ms": run.ttft_ms,
-        "tool_call_count": run.tool_call_count,
-        "stream_tool_call_count": run.tool_call_count,
+        "tool_call_count": stream_tool_call_count,
+        "stream_tool_call_count": stream_tool_call_count,
         "server_tool_call_count": server_tool_call_count,
         "server_tool_use": server_tool_use,
         "total_tool_call_count": total_tool_call_count,
         "trajectory_steps": trajectory_steps,
         "llm_request_count": llm_request_count,
+        "generation_attempt_count": len(generation_attempts),
+        "generation_max_attempts": generation_attempt_limit,
+        "generation_retry_backoff_s": generation_retry_backoff_s,
+        "generation_attempt_total_billed_cost": generation_attempt_total_billed_cost,
+        "generation_retry_reasons": generation_retry_reasons,
         "error": run.error,
         "final_text": run.final_text,
         "final_text_chars": len(run.final_text),
@@ -1513,16 +1767,26 @@ async def run_one(
             "run_error": run.error,
             "requested_timeout_s": timeout,
             "effective_timeout_s": effective_timeout,
-            "latency_ms": run.latency_ms,
+            "profile_proposer_timeout_s": profile_proposer_timeout_s,
+            "profile_aggregator_timeout_s": profile_aggregator_timeout_s,
+            "latency_ms": latency_ms,
+            "selected_generation_latency_ms": run.latency_ms,
             "ttft_ms": run.ttft_ms,
             "total_elapsed_ms": int((completed_at - started) * 1000),
-            "tool_call_count": run.tool_call_count,
-            "stream_tool_call_count": run.tool_call_count,
+            "tool_call_count": stream_tool_call_count,
+            "stream_tool_call_count": stream_tool_call_count,
             "server_tool_call_count": server_tool_call_count,
             "server_tool_use": server_tool_use,
             "total_tool_call_count": total_tool_call_count,
             "trajectory_steps": trajectory_steps,
             "llm_request_count": llm_request_count,
+            "generation_attempt_count": len(generation_attempts),
+            "generation_max_attempts": generation_attempt_limit,
+            "generation_retry_backoff_s": generation_retry_backoff_s,
+            "selected_generation_attempt": selected_generation_attempt_index,
+            "generation_retry_reasons": generation_retry_reasons,
+            "generation_attempt_total_billed_cost": generation_attempt_total_billed_cost,
+            "generation_attempts": generation_attempts,
         },
         "run_trace": {
             "event_count": len(run.trace_events),
@@ -1555,9 +1819,13 @@ def group_timeout_seconds(
     profile = config.llm_ensemble.profiles.get(spec["profile"])
     if profile is None:
         return requested_timeout
+    proposer_timeout_s, aggregator_timeout_s = profile_timeout_seconds(
+        profile,
+        requested_timeout=requested_timeout,
+    )
     profile_budget = (
-        float(profile.proposer_timeout_seconds)
-        + float(profile.aggregator_timeout_seconds)
+        proposer_timeout_s
+        + aggregator_timeout_s
         + PROFILE_TIMEOUT_MARGIN_SECONDS
     )
     return max(float(requested_timeout), profile_budget)
@@ -1602,6 +1870,13 @@ def trace_row(row: dict[str, Any]) -> dict[str, Any]:
         "total_tool_call_count": row.get("total_tool_call_count"),
         "trajectory_steps": row.get("trajectory_steps"),
         "llm_request_count": row.get("llm_request_count"),
+        "generation_attempt_count": row.get("generation_attempt_count"),
+        "generation_max_attempts": row.get("generation_max_attempts"),
+        "generation_retry_backoff_s": row.get("generation_retry_backoff_s"),
+        "generation_attempt_total_billed_cost": row.get(
+            "generation_attempt_total_billed_cost"
+        ),
+        "generation_retry_reasons": row.get("generation_retry_reasons") or [],
         "execution": row.get("execution") or {},
         "usage": row.get("usage") or {},
         "run_trace": row.get("run_trace") or {},
@@ -1634,6 +1909,55 @@ def row_metric_int(row: dict[str, Any], key: str, fallback_key: str | None = Non
     if value is None and fallback_key is not None:
         value = row.get(fallback_key)
     return coerce_metric_int(value)
+
+
+def row_generation_attempt_usage_total(row: dict[str, Any], key: str) -> float | None:
+    execution = row.get("execution") or {}
+    attempts = execution.get("generation_attempts")
+    if not isinstance(attempts, list) or not attempts:
+        return None
+    total = 0.0
+    observed_usage = False
+    for attempt in attempts:
+        if not isinstance(attempt, dict):
+            continue
+        run = attempt.get("run")
+        if not isinstance(run, dict):
+            continue
+        usage = run.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        value = usage.get(key)
+        if isinstance(value, int | float):
+            total += float(value)
+            observed_usage = True
+    return total if observed_usage else 0.0
+
+
+def row_usage_number(row: dict[str, Any], key: str) -> float:
+    attempt_total = row_generation_attempt_usage_total(row, key)
+    if attempt_total is not None:
+        return attempt_total
+    usage = row.get("usage") or {}
+    if isinstance(usage, dict):
+        value = usage.get(key)
+        if isinstance(value, int | float):
+            return float(value)
+    return 0.0
+
+
+def row_billed_cost(row: dict[str, Any]) -> float:
+    attempt_cost = row_generation_attempt_usage_total(row, "billed_cost")
+    if attempt_cost is not None:
+        return attempt_cost
+    value = row.get("generation_attempt_total_billed_cost")
+    if isinstance(value, int | float):
+        return float(value)
+    execution = row.get("execution") or {}
+    value = execution.get("generation_attempt_total_billed_cost")
+    if isinstance(value, int | float):
+        return float(value)
+    return row_usage_number(row, "billed_cost")
 
 
 def row_server_tool_call_count(row: dict[str, Any]) -> int:
@@ -1698,21 +2022,15 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
             for row in group_rows
             if isinstance((row.get("judge") or {}).get("pass_rate"), int | float)
         ]
-        costs = [
-            float((row.get("usage") or {}).get("billed_cost") or 0.0)
-            for row in group_rows
-        ]
-        completed_costs = [
-            float((row.get("usage") or {}).get("billed_cost") or 0.0)
-            for row in completed_rows
-        ]
+        costs = [row_billed_cost(row) for row in group_rows]
+        completed_costs = [row_billed_cost(row) for row in completed_rows]
         visible_tokens = [
-            int((row.get("usage") or {}).get("input_tokens") or 0)
-            + int((row.get("usage") or {}).get("output_tokens") or 0)
+            int(row_usage_number(row, "input_tokens"))
+            + int(row_usage_number(row, "output_tokens"))
             for row in group_rows
         ]
         reasoning_tokens = [
-            int((row.get("usage") or {}).get("reasoning_tokens") or 0)
+            int(row_usage_number(row, "reasoning_tokens"))
             for row in group_rows
         ]
         all_tokens = [
@@ -1925,6 +2243,8 @@ def manifest_args(args: argparse.Namespace) -> dict[str, Any]:
         "judge_concurrency",
         "judge_max_attempts",
         "judge_candidates",
+        "generation_max_attempts",
+        "generation_retry_backoff",
         "generation_thinking",
         "tool_mode",
         "contamination_blocked_domains",
@@ -2064,6 +2384,16 @@ async def amain(args: argparse.Namespace) -> int:
     args.generation_thinking = normalize_generation_thinking(
         getattr(args, "generation_thinking", DEFAULT_GENERATION_THINKING)
     )
+    args.generation_max_attempts = bounded_generation_attempts(
+        getattr(args, "generation_max_attempts", GENERATION_MAX_ATTEMPTS)
+    )
+    args.generation_retry_backoff = bounded_generation_retry_backoff(
+        getattr(
+            args,
+            "generation_retry_backoff",
+            DEFAULT_GENERATION_RETRY_BACKOFF_SECONDS,
+        )
+    )
     tool_policy = benchmark_tool_policy(args)
     benchmark_tools = benchmark_tools_for_policy(tool_policy)
     generation_policy = generation_thinking_policy(args)
@@ -2134,6 +2464,14 @@ async def amain(args: argparse.Namespace) -> int:
                 timeout=args.timeout,
                 tool_policy=tool_policy,
                 generation_policy=generation_policy,
+                generation_max_attempts=getattr(
+                    args, "generation_max_attempts", GENERATION_MAX_ATTEMPTS
+                ),
+                generation_retry_backoff=getattr(
+                    args,
+                    "generation_retry_backoff",
+                    DEFAULT_GENERATION_RETRY_BACKOFF_SECONDS,
+                ),
                 tools=benchmark_tools,
             )
 
@@ -2204,6 +2542,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--judge-concurrency", type=int, default=1)
     parser.add_argument("--judge-max-attempts", type=int, default=JUDGE_MAX_ATTEMPTS)
     parser.add_argument("--judge-candidates", action="store_true")
+    parser.add_argument(
+        "--generation-max-attempts",
+        type=int,
+        default=GENERATION_MAX_ATTEMPTS,
+        help="Maximum answer-generation attempts per row; capped at 3.",
+    )
+    parser.add_argument(
+        "--generation-retry-backoff",
+        type=float,
+        default=DEFAULT_GENERATION_RETRY_BACKOFF_SECONDS,
+        help="Initial seconds to wait before retrying answer generation; doubles each retry.",
+    )
     parser.add_argument(
         "--generation-thinking",
         choices=SUPPORTED_GENERATION_THINKING,

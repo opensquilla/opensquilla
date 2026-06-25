@@ -1,5 +1,7 @@
 import { computed, ref, type ComputedRef, type Ref } from 'vue'
 import type { useRpcStore } from '@/stores/rpc'
+import { useConfirm } from '@/composables/useConfirm'
+import { useToasts } from '@/composables/useToasts'
 import type { AutoEnabledSkill, Proposal, ProposalsSettings } from '@/types/skills'
 
 interface ProposalsListData {
@@ -55,6 +57,8 @@ export function useSkillProposals(
   rpc: ReturnType<typeof useRpcStore>,
   loadData: () => Promise<void>,
 ): SkillProposals {
+  const { confirm } = useConfirm()
+  const { pushToast } = useToasts()
   const proposals = ref<Proposal[]>([])
   const autoEnabledSkills = ref<AutoEnabledSkill[]>([])
   const proposalsSettings = ref<ProposalsSettings>({ ...DEFAULT_PROPOSAL_SETTINGS })
@@ -89,13 +93,13 @@ export function useSkillProposals(
     try {
       const out = await rpc.call<ProposalSettingsData>('exec.proposals.settings.set', { [key]: value })
       if (out && out.status === 'error') {
-        console.warn('Settings update failed:', out.reason || 'unknown')
+        pushToast('Settings update failed: ' + (out.reason || 'unknown'), { tone: 'danger' })
         return
       }
       proposalsSettings.value = out.settings || proposalsSettings.value
       await loadData()
     } catch (err) {
-      console.warn('Settings update failed:', (err as Error).message)
+      pushToast('Settings update failed: ' + (err as Error).message, { tone: 'danger' })
     }
   }
 
@@ -103,12 +107,12 @@ export function useSkillProposals(
     try {
       const out = await rpc.call<ProposalSettingsData>('exec.proposals.settings.set', { auto_enable_max_risk: value })
       if (out && out.status === 'error') {
-        console.warn('Settings update failed:', out.reason || 'unknown')
+        pushToast('Settings update failed: ' + (out.reason || 'unknown'), { tone: 'danger' })
         return
       }
       proposalsSettings.value = out.settings || proposalsSettings.value
     } catch (err) {
-      console.warn('Settings update failed:', (err as Error).message)
+      pushToast('Settings update failed: ' + (err as Error).message, { tone: 'danger' })
     }
   }
 
@@ -116,12 +120,12 @@ export function useSkillProposals(
     try {
       const data = await rpc.call<ProposalShowData>('exec.proposals.show', { proposal_id: proposalId })
       if (data.status !== 'ok') {
-        console.warn('Show failed:', data.reason || 'unknown')
+        pushToast('Show failed: ' + (data.reason || 'unknown'), { tone: 'danger' })
         return null
       }
       return { proposal_id: proposalId, ...data }
     } catch (err) {
-      console.warn('Show failed:', (err as Error).message)
+      pushToast('Show failed: ' + (err as Error).message, { tone: 'danger' })
       return null
     }
   }
@@ -130,44 +134,59 @@ export function useSkillProposals(
     try {
       let data = await rpc.call<ProposalActionData>('exec.proposals.accept', { proposal_id: proposalId })
       if (data.status === 'refused' && data.reason && data.reason.indexOf('gates') !== -1) {
-        if (!confirm(`Proposal ${proposalId} did not pass all gates.\n\n${data.reason}\n\nAccept anyway (force)?`)) return
+        const ok = await confirm({
+          title: 'Accept proposal anyway?',
+          body: `Proposal ${proposalId} did not pass all gates.\n\n${data.reason}\n\nAccept anyway (force)?`,
+          primaryLabel: 'Force accept',
+        })
+        if (!ok) return
         data = await rpc.call<ProposalActionData>('exec.proposals.accept', { proposal_id: proposalId, force: true })
       }
       if (data.status !== 'ok') {
-        console.warn('Accept failed:', data.reason || data.status)
+        pushToast('Accept failed: ' + (data.reason || data.status), { tone: 'danger' })
         return
       }
       await loadData()
     } catch (err) {
-      console.warn('Accept failed:', (err as Error).message)
+      pushToast('Accept failed: ' + (err as Error).message, { tone: 'danger' })
     }
   }
 
   async function rejectProposal(proposalId: string) {
-    if (!confirm(`Reject and delete proposal ${proposalId}? This cannot be undone.`)) return
+    const ok = await confirm({
+      title: 'Reject proposal',
+      body: `Reject and delete proposal ${proposalId}? This cannot be undone.`,
+      primaryLabel: 'Reject',
+    })
+    if (!ok) return
     try {
       const data = await rpc.call<ProposalActionData>('exec.proposals.reject', { proposal_id: proposalId })
       if (data.status !== 'ok') {
-        console.warn('Reject failed:', data.reason || data.status)
+        pushToast('Reject failed: ' + (data.reason || data.status), { tone: 'danger' })
         return
       }
       await loadData()
     } catch (err) {
-      console.warn('Reject failed:', (err as Error).message)
+      pushToast('Reject failed: ' + (err as Error).message, { tone: 'danger' })
     }
   }
 
   async function disableAutoEnabled(name: string) {
-    if (!confirm(`Disable auto-enabled skill ${name} and move it back to pending proposals?`)) return
+    const ok = await confirm({
+      title: 'Disable auto-enabled skill',
+      body: `Disable auto-enabled skill ${name} and move it back to pending proposals?`,
+      primaryLabel: 'Disable',
+    })
+    if (!ok) return
     try {
       const data = await rpc.call<ProposalActionData>('exec.proposals.auto_enabled.disable', { name })
       if (data.status !== 'ok') {
-        console.warn('Disable failed:', data.reason || data.status)
+        pushToast('Disable failed: ' + (data.reason || data.status), { tone: 'danger' })
         return
       }
       await loadData()
     } catch (err) {
-      console.warn('Disable failed:', (err as Error).message)
+      pushToast('Disable failed: ' + (err as Error).message, { tone: 'danger' })
     }
   }
 

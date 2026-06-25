@@ -1,5 +1,12 @@
 <template>
-  <section class="composer-settings" role="dialog" aria-label="Composer settings">
+  <section
+    ref="rootRef"
+    tabindex="-1"
+    class="composer-settings"
+    role="dialog"
+    aria-label="Composer settings"
+    @keydown.esc.stop="$emit('close')"
+  >
     <div class="composer-settings__head">
       <span>Composer settings</span>
       <button type="button" class="composer-settings__close" aria-label="Close composer settings" @click="$emit('close')">
@@ -29,47 +36,29 @@
     </div>
 
     <div class="composer-settings__section composer-settings__section--rows">
-      <button
-        type="button"
-        class="composer-settings__switch"
-        role="switch"
+      <ControlSwitch
+        label="Squilla Router"
+        :caption="routerEnabled ? 'Enabled' : 'Disabled'"
         aria-label="Squilla Router"
-        :aria-checked="routerEnabled ? 'true' : 'false'"
-        :disabled="routerSettingsBusy"
-        @click="$emit('setRouterEnabled', !routerEnabled)"
-      >
-        <span>
-          <strong>Squilla Router</strong>
-          <small>{{ routerEnabled ? 'Enabled' : 'Disabled' }}</small>
-        </span>
-        <span class="composer-settings__switch-track" aria-hidden="true">
-          <span class="composer-settings__switch-thumb" />
-        </span>
-      </button>
-
-      <button
-        type="button"
-        class="composer-settings__switch"
-        role="switch"
+        :checked="routerEnabled"
+        :busy="routerSettingsBusy"
+        @change="$emit('setRouterEnabled', $event)"
+      />
+      <ControlSwitch
+        label="Visual effects"
+        :caption="visualEffectsEnabled ? 'Router animation on' : 'Router animation off'"
         aria-label="Visual effects"
-        :aria-checked="visualEffectsEnabled ? 'true' : 'false'"
-        @click="$emit('setVisualEffectsEnabled', !visualEffectsEnabled)"
-      >
-        <span>
-          <strong>Visual effects</strong>
-          <small>{{ visualEffectsEnabled ? 'Router animation on' : 'Router animation off' }}</small>
-        </span>
-        <span class="composer-settings__switch-track" aria-hidden="true">
-          <span class="composer-settings__switch-thumb" />
-        </span>
-      </button>
+        :checked="visualEffectsEnabled"
+        @change="$emit('setVisualEffectsEnabled', $event)"
+      />
     </div>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import Icon from '@/components/Icon.vue'
+import ControlSwitch from '@/components/ControlSwitch.vue'
 
 const executionOptions = [
   { value: '', label: 'Off' },
@@ -96,6 +85,11 @@ defineEmits<{
 const normalizedElevatedMode = computed(() => {
   return executionOptions.some(option => option.value === props.elevatedMode) ? props.elevatedMode : ''
 })
+
+// Anchored popover (mounted only while open): move focus into the panel on open
+// so keyboard users land inside it and Escape — handled on the panel — closes it.
+const rootRef = ref<HTMLElement | null>(null)
+onMounted(() => rootRef.value?.focus())
 </script>
 
 <style scoped>
@@ -230,78 +224,6 @@ const normalizedElevatedMode = computed(() => {
   color: var(--warn);
   font-size: 0.75rem;
   line-height: 1.35;
-}
-
-.composer-settings__switch {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  width: 100%;
-  min-height: 42px;
-  padding: 0.5rem 0.625rem;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-elevated);
-  color: var(--text);
-  text-align: left;
-  cursor: pointer;
-}
-
-.composer-settings__switch:hover {
-  border-color: var(--border-focus);
-  background: var(--bg-surface);
-}
-
-.composer-settings__switch:disabled {
-  cursor: wait;
-  opacity: 0.62;
-}
-
-.composer-settings__switch strong,
-.composer-settings__switch small {
-  display: block;
-}
-
-.composer-settings__switch strong {
-  font-size: 0.8125rem;
-}
-
-.composer-settings__switch small {
-  margin-top: 1px;
-  color: var(--text-muted);
-  font-size: 0.6875rem;
-}
-
-.composer-settings__switch-track {
-  position: relative;
-  display: inline-flex;
-  width: 36px;
-  height: 20px;
-  border-radius: 999px;
-  background: var(--bg-hover);
-  flex-shrink: 0;
-  transition: background 0.16s ease;
-}
-
-.composer-settings__switch-thumb {
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 14px;
-  height: 14px;
-  border-radius: 999px;
-  background: var(--bg-surface);
-  box-shadow: 0 1px 3px var(--shadow-color);
-  transition: transform 0.16s ease;
-}
-
-.composer-settings__switch[aria-checked="true"] .composer-settings__switch-track {
-  background: var(--accent);
-}
-
-.composer-settings__switch[aria-checked="true"] .composer-settings__switch-thumb {
-  transform: translateX(16px);
 }
 
 @media (max-width: 520px) {

@@ -1,7 +1,9 @@
 <template>
+  <Transition name="preflight-swap" mode="out-in">
   <!-- Collapsed summary: controller drives running/cancelled phases -->
   <section
     v-if="isCollapsedPhase"
+    key="collapsed"
     class="meta-preflight meta-preflight--collapsed"
     :data-run-id="state.runId"
     :data-state="phase"
@@ -15,6 +17,7 @@
   <!-- Active checkpoint form -->
   <section
     v-else
+    key="form"
     class="meta-preflight"
     :data-run-id="state.runId"
     :data-state="phase"
@@ -149,6 +152,7 @@
       </button>
     </div>
   </section>
+  </Transition>
 </template>
 
 <script setup lang="ts">
@@ -555,10 +559,41 @@ textarea.meta-preflight-field-control {
   }
 }
 
+/* ── Preflight form↔summary crossfade ──────────────────────────────────
+   When the form collapses to the one-line "running" summary (or expands
+   back), the swap fades out the leaving element and fades in the entering
+   one. mode="out-in" ensures no overlapping height jump. */
+.preflight-swap-enter-from {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+.preflight-swap-enter-active {
+  transition:
+    opacity var(--dur-base) var(--ease-out),
+    transform var(--dur-base) var(--ease-out);
+}
+
+.preflight-swap-leave-active {
+  transition:
+    opacity var(--dur-fast) var(--ease-in),
+    transform var(--dur-fast) var(--ease-in);
+}
+
+.preflight-swap-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .meta-preflight-field-control,
   .meta-preflight-actions button {
     scroll-behavior: auto;
+    transition: none;
+  }
+
+  .preflight-swap-enter-active,
+  .preflight-swap-leave-active {
     transition: none;
   }
 }

@@ -18,6 +18,12 @@
     role="group"
     aria-label="The agent needs input"
   >
+    <!-- Concise live announcement: screen readers hear only this line, not the full card body -->
+    <div
+      class="clarify-card__announce"
+      aria-live="polite"
+      aria-atomic="true"
+    >Input needed from agent</div>
     <header class="clarify-card__head">
       <span class="clarify-card__eyebrow">Input needed</span>
       <p v-if="request.intro" class="clarify-card__intro">{{ request.intro }}</p>
@@ -147,6 +153,19 @@ function onSubmit() {
 </script>
 
 <style scoped>
+/* Visually-hidden but announced by screen readers */
+.clarify-card__announce {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .clarify-card {
   width: var(--chat-col, min(calc(100% - 48px), 980px));
   margin: var(--sp-2) auto;
@@ -161,6 +180,7 @@ function onSubmit() {
      automatic min-height, so without this the card collapses when the thread
      scrolls. */
   flex-shrink: 0;
+  animation: card-enter var(--dur-enter) var(--ease-out) both;
 }
 
 .clarify-card__head {
@@ -324,6 +344,17 @@ function onSubmit() {
   font-size: var(--fs-sm);
 }
 
+@keyframes card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(7px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @media (max-width: 768px) {
   .clarify-card__actions {
     flex-direction: column;
@@ -332,6 +363,12 @@ function onSubmit() {
 
   .clarify-card__actions .btn {
     justify-content: center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .clarify-card {
+    animation: none;
   }
 }
 </style>

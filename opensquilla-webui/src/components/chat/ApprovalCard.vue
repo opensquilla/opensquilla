@@ -3,11 +3,11 @@
   <div
     v-if="resolution"
     class="approval-outcome"
-    :class="resolution === 'denied' ? 'approval-outcome--denied' : 'approval-outcome--approved'"
+    :class="outcomeClass"
     data-testid="approval-outcome"
     role="status"
   >
-    <Icon :name="resolution === 'denied' ? 'x' : 'check'" :size="14" />
+    <Icon :name="outcomeIcon" :size="14" />
     <span class="approval-outcome__text">{{ outcomeText }}</span>
     <code v-if="summary" class="approval-outcome__summary" :title="summary">{{ summary }}</code>
   </div>
@@ -20,6 +20,12 @@
     role="group"
     :aria-label="`Approval required: ${approval.toolName}`"
   >
+    <!-- Concise live announcement: screen readers hear only this line, not the full card body -->
+    <div
+      class="approval-card__announce"
+      aria-live="assertive"
+      aria-atomic="true"
+    >Approval needed: {{ approval.toolName }}</div>
     <header class="approval-card__head">
       <span class="approval-card__eyebrow">Approval required</span>
       <span class="approval-card__tool">{{ approval.toolName }}</span>
@@ -42,6 +48,25 @@
     </div>
 
     <footer class="approval-card__footer">
+      <div
+        v-if="showCountdown"
+        class="approval-card__timer"
+        :class="{ 'approval-card__timer--warn': timeIsLow }"
+      >
+        <span
+          class="approval-card__timer-text"
+          :aria-live="timeIsLow ? 'assertive' : 'polite'"
+        >{{ countdownText }}</span>
+        <button
+          v-if="timeIsLow"
+          class="btn btn--ghost approval-card__extend"
+          type="button"
+          :disabled="busy"
+          @click="$emit('extend')"
+        >
+          Extend
+        </button>
+      </div>
       <input
         v-model="denyNote"
         class="approval-card__note"
@@ -49,7 +74,6 @@
         placeholder="Deny reason (optional) — sent to the agent"
         aria-label="Deny reason, optional, sent to the agent"
         :disabled="busy"
-        @keydown.enter.prevent="emitDeny"
       />
       <div class="approval-card__actions">
         <button class="btn btn--primary" type="button" :disabled="busy" @click="$emit('allow-once')">
@@ -79,9 +103,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import Icon from '@/components/Icon.vue'
 import type { ChatApprovalItem, ChatApprovalResolution } from '@/composables/chat/useChatApprovals'
+import { formatCountdown } from '@/composables/chat/useChatApprovals'
+
+// Below this remaining time the countdown switches to the warning token and
+// reveals the Extend affordance (WCAG 2.2.1: a countdown alone is not enough).
+const WARN_THRESHOLD_SECONDS = 60
 
 const props = defineProps<{
   approval: ChatApprovalItem
@@ -94,9 +123,47 @@ const emit = defineEmits<{
   'allow-once': []
   'allow-always': []
   deny: [note: string]
+  extend: []
 }>()
 
 const denyNote = ref('')
+
+// A 1s tick drives the countdown; only mounted while a pending card is shown.
+// Skip ticks while the tab is hidden so background-tab CPU is not wasted and
+// the visible countdown does not jump on tab restore.
+const now = ref(Date.now())
+let tick: ReturnType<typeof setInterval> | null = null
+
+function startTick() {
+  if (tick) return
+  tick = setInterval(() => {
+    if (!document.hidden) now.value = Date.now()
+  }, 1000)
+}
+
+function onVisibilityChange() {
+  if (!document.hidden) now.value = Date.now()
+}
+
+onMounted(() => {
+  startTick()
+  document.addEventListener('visibilitychange', onVisibilityChange)
+})
+onBeforeUnmount(() => {
+  if (tick) clearInterval(tick)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+})
+
+const remainingSeconds = computed(() => {
+  if (!props.approval.deadline) return null
+  return Math.max(0, Math.round(props.approval.deadline - now.value / 1000))
+})
+
+const showCountdown = computed(() => !props.resolution && remainingSeconds.value !== null)
+const timeIsLow = computed(() =>
+  remainingSeconds.value !== null && remainingSeconds.value <= WARN_THRESHOLD_SECONDS)
+const countdownText = computed(() =>
+  remainingSeconds.value === null ? '' : `Expires in ${formatCountdown(remainingSeconds.value)}`)
 
 const canAllowAlways = computed(() =>
   props.approval.namespace === 'exec' && !!props.approval.command)
@@ -111,9 +178,22 @@ const formattedArgs = computed(() => {
 })
 
 const outcomeText = computed(() => {
+  if (props.resolution === 'expired') return 'Expired — not run'
   if (props.resolution === 'denied') return 'Denied'
   if (props.resolution === 'approved_always') return 'Approved · always allowed'
   return 'Approved · run resumed'
+})
+
+const outcomeClass = computed(() => {
+  if (props.resolution === 'expired') return 'approval-outcome--expired'
+  if (props.resolution === 'denied') return 'approval-outcome--denied'
+  return 'approval-outcome--approved'
+})
+
+const outcomeIcon = computed(() => {
+  if (props.resolution === 'expired') return 'clock'
+  if (props.resolution === 'denied') return 'x'
+  return 'check'
 })
 
 const summary = computed(() => {
@@ -128,6 +208,19 @@ function emitDeny() {
 </script>
 
 <style scoped>
+/* Visually-hidden but announced by screen readers */
+.approval-card__announce {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .approval-card {
   width: var(--chat-col, min(calc(100% - 48px), 980px));
   margin: var(--sp-2) auto;
@@ -142,6 +235,7 @@ function emitDeny() {
      automatic min-height, so without this the card collapses when the thread
      scrolls. */
   flex-shrink: 0;
+  animation: card-enter var(--dur-enter) var(--ease-out) both;
 }
 
 .approval-card__head {
@@ -234,6 +328,37 @@ function emitDeny() {
   padding: var(--sp-3) var(--sp-4);
 }
 
+.approval-card__timer {
+  align-items: center;
+  color: var(--text-muted);
+  display: flex;
+  font-size: var(--fs-xs);
+  gap: var(--sp-2);
+  justify-content: space-between;
+}
+
+.approval-card__timer--warn {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.approval-card__timer-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.approval-card__extend {
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+  color: var(--warn);
+  flex-shrink: 0;
+}
+
+.approval-card__extend:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--warn) 10%, var(--bg-surface));
+}
+
 .approval-card__note {
   background: var(--bg);
   border: 1px solid var(--border);
@@ -290,6 +415,10 @@ function emitDeny() {
   color: var(--danger);
 }
 
+.approval-outcome--expired {
+  color: var(--text-muted);
+}
+
 .approval-outcome__text {
   flex-shrink: 0;
 }
@@ -304,6 +433,17 @@ function emitDeny() {
   white-space: nowrap;
 }
 
+@keyframes card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(7px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @media (max-width: 768px) {
   .approval-card__actions {
     flex-direction: column;
@@ -312,6 +452,12 @@ function emitDeny() {
 
   .approval-card__actions .btn {
     justify-content: center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .approval-card {
+    animation: none;
   }
 }
 </style>

@@ -1,7 +1,7 @@
 <template>
   <div v-if="artifacts.length" class="msg-artifacts">
     <!-- Image artifacts: one unified media card (thumbnail hero + caption bar). -->
-    <div v-if="visualArtifacts.length" class="msg-media-cards">
+    <TransitionGroup v-if="visualArtifacts.length" name="artifact-card" tag="div" class="msg-media-cards">
       <figure
         v-for="artifact in visualArtifacts"
         :key="`media-${artifactKey(artifact)}`"
@@ -95,10 +95,10 @@
           </button>
         </figcaption>
       </figure>
-    </div>
+    </TransitionGroup>
 
     <!-- Non-image artifacts: file cards with explicit Open/Download actions. -->
-    <div v-if="fileArtifacts.length" class="msg-artifact-files">
+    <TransitionGroup v-if="fileArtifacts.length" name="artifact-chip" tag="div" class="msg-artifact-files">
       <ArtifactChip
         v-for="artifact in fileArtifacts"
         :key="artifactKey(artifact)"
@@ -113,7 +113,7 @@
         @open="openFile($event)"
         @download="$emit('download', $event)"
       />
-    </div>
+    </TransitionGroup>
 
     <!-- In-app image lightbox: Open shows the full image here, not a new tab. -->
     <div
@@ -195,11 +195,13 @@ import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import Icon from '@/components/Icon.vue'
 import ArtifactChip from '@/components/chat/ArtifactChip.vue'
 import type { ArtifactPayload } from '@/types/rpc'
+import { useToasts } from '@/composables/useToasts'
 import {
   createArtifactPreview,
   type ArtifactPreviewController,
   type ArtifactPreviewState,
 } from '@/composables/chat/useArtifactPreview'
+import { openArtifactBlobUrl } from '@/utils/chat/artifactAccess'
 import {
   artifactActionLabel,
   artifactCategory,
@@ -222,6 +224,8 @@ const props = defineProps<{
 defineEmits<{
   download: [artifact: ArtifactPayload]
 }>()
+
+const { pushToast } = useToasts()
 
 const visualArtifacts = computed(() => props.artifacts.filter(artifact => artifactCategory(artifact) === 'visual'))
 const fileArtifacts = computed(() => props.artifacts.filter(artifact => artifactCategory(artifact) !== 'visual'))
@@ -304,13 +308,14 @@ function openPreview(artifact: ArtifactPayload) {
 }
 
 // Open a previewable non-image file (pdf/html/text) in a new tab.
-function openFile(artifact: ArtifactPayload) {
-  const url = artifactDownloadUrl(artifact, window.location.origin, {
+async function openFile(artifact: ArtifactPayload) {
+  const result = await openArtifactBlobUrl(artifact, {
+    baseOrigin: window.location.origin,
     sessionKey: props.sessionKey,
-    includeSessionKey: false,
+    authToken: props.authToken,
   })
-  if (!url) return
-  window.open(url, '_blank', 'noopener,noreferrer')
+  if (result.ok) return
+  pushToast(result.message, { tone: 'danger' })
 }
 
 // ── In-app image lightbox ──────────────────────────────────────────────────
@@ -433,9 +438,6 @@ onUnmounted(() => {
   controllers.clear()
 })
 </script>
-
-<!-- Shared lightbox surface (deliv-preview*) reused for the in-app image preview. -->
-<style scoped src="../../styles/chat-view.css"></style>
 
 <style scoped>
 .msg-artifacts {
@@ -653,6 +655,23 @@ onUnmounted(() => {
   to { background-position: -80% 0; }
 }
 
+/* ── Artifact enter transitions ────────────────────────────────────────
+   Cards and chips fade in + slide up on arrival mid-stream.
+   Leave is instant (no lingering ghost). The reserved aspect-ratio box
+   on .msg-media-card__img is layout-only and is not affected. */
+.artifact-card-enter-from,
+.artifact-chip-enter-from {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+.artifact-card-enter-active,
+.artifact-chip-enter-active {
+  transition:
+    opacity var(--dur-base) var(--ease-out),
+    transform var(--dur-base) var(--ease-out);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .msg-media-card__zoom,
   .msg-media-card__download,
@@ -664,6 +683,11 @@ onUnmounted(() => {
   .msg-media-card__skeleton {
     animation: none;
     background: var(--bg-hover);
+  }
+
+  .artifact-card-enter-active,
+  .artifact-chip-enter-active {
+    transition: none;
   }
 }
 </style>

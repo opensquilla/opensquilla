@@ -5,37 +5,39 @@
         <span class="cron-detail__eyebrow">Run history</span>
         <strong class="cron-detail__name">{{ job.name || job.id }}</strong>
       </div>
-      <button class="cron-iconbtn" aria-label="Close" @click="emit('close')">
+      <button type="button" class="cron-iconbtn" aria-label="Close" @click="emit('close')">
         <Icon name="x" :size="16" />
       </button>
     </div>
     <div class="cron-detail__runs">
       <p v-if="loading" class="cron-muted">Loading&hellip;</p>
       <p v-else-if="runs.length === 0" class="cron-muted">No run history yet.</p>
-      <table v-else class="cron-runs">
-        <thead>
-          <tr><th>Time</th><th>Status</th><th>Duration</th><th>Delivery</th><th>Reply</th><th /></tr>
-        </thead>
-        <tbody>
-          <tr v-for="run in runs" :key="run.started_at">
-            <td class="cron-mono">{{ run.started_at ? relTime(run.started_at) : '—' }}</td>
-            <td><span :class="`status status--${run.status === 'ok' ? 'ok' : 'err'}`">{{ run.status || 'unknown' }}</span></td>
-            <td class="cron-mono">{{ run.duration_ms != null ? run.duration_ms + 'ms' : '—' }}</td>
-            <td>{{ deliveryStatusText(run) }}</td>
-            <td class="cron-runs__reply">{{ run.summary ? run.summary.substring(0, 120) : '—' }}</td>
-            <td>
-              <button v-if="run.sessionKey" class="cron-link cron-run-chat-link" @click="emit('openChat', run.sessionKey)">
-                &rarr; Chat
-              </button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <DataTable
+        v-else
+        class="cron-runs-table"
+        :columns="runColumns"
+        :rows="runRows"
+        empty-text="No run history yet."
+      >
+        <template #status="{ row }">
+          <span :class="`status status--${row.status === 'ok' ? 'ok' : 'err'}`">{{ row.statusLabel }}</span>
+        </template>
+        <template #reply="{ row }">
+          <span class="cron-runs__reply">{{ row.reply }}</span>
+        </template>
+        <template #_chat="{ row }">
+          <button v-if="row.sessionKey" type="button" class="cron-link cron-run-chat-link" @click="emit('openChat', String(row.sessionKey))">
+            &rarr; Chat
+          </button>
+        </template>
+      </DataTable>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
+import DataTable from '@/components/DataTable.vue'
 import Icon from '@/components/Icon.vue'
 import { relTime } from '@/utils/cron/time'
 
@@ -54,7 +56,7 @@ interface CronRunHistoryRun {
   sessionKey?: string
 }
 
-defineProps<{
+const props = defineProps<{
   job: CronRunHistoryJob
   runs: CronRunHistoryRun[]
   loading: boolean
@@ -64,6 +66,27 @@ const emit = defineEmits<{
   close: []
   openChat: [sessionKey: string]
 }>()
+
+const runColumns = [
+  { key: 'time', label: 'Time' },
+  { key: 'status', label: 'Status' },
+  { key: 'duration', label: 'Duration' },
+  { key: 'delivery', label: 'Delivery' },
+  { key: 'reply', label: 'Reply' },
+  { key: '_chat', label: '' },
+]
+
+const runRows = computed(() =>
+  props.runs.map(run => ({
+    time: run.started_at ? relTime(run.started_at) : '—',
+    status: run.status || 'unknown',
+    statusLabel: run.status || 'unknown',
+    duration: run.duration_ms != null ? run.duration_ms + 'ms' : '—',
+    delivery: deliveryStatusText(run),
+    reply: run.summary ? run.summary.substring(0, 120) : '—',
+    sessionKey: run.sessionKey ?? null,
+  })),
+)
 
 function deliveryStatusText(run: CronRunHistoryRun): string {
   const status = run.deliveryStatus || run.delivery_status
@@ -140,26 +163,6 @@ function stringField(source: Record<string, unknown>, key: string): string {
   background: var(--bg-elevated);
   border-color: var(--border);
   color: var(--text);
-}
-
-.cron-runs {
-  border-collapse: collapse;
-  font-size: var(--fs-sm);
-  width: 100%;
-}
-
-.cron-runs th,
-.cron-runs td {
-  border-bottom: 1px solid var(--border);
-  padding: 8px 10px;
-  text-align: left;
-}
-
-.cron-runs th {
-  color: var(--text-dim);
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
 }
 
 .cron-runs__reply {

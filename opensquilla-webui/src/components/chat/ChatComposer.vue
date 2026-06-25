@@ -78,32 +78,36 @@
             </button>
           </div>
           <div class="chat-input-actions chat-input-actions--right">
-            <div v-if="isStreaming" class="chat-busy-mode" role="group" aria-label="Delivery mode while the agent is responding">
-              <button
-                class="chat-busy-mode__btn"
-                :class="{ 'is-active': busySendMode === 'queue' }"
-                :aria-pressed="busySendMode === 'queue' ? 'true' : 'false'"
-                title="Queue: the message waits and auto-sends when the current response finishes"
-                @click="emit('setBusySendMode', 'queue')"
-              >
-                Queue
-              </button>
-              <button
-                class="chat-busy-mode__btn"
-                :class="{ 'is-active': busySendMode === 'steer' }"
-                :aria-pressed="busySendMode === 'steer' ? 'true' : 'false'"
-                title="Steer: the message sends now and redirects the response in progress"
-                @click="emit('setBusySendMode', 'steer')"
-              >
-                Steer
-              </button>
-            </div>
+            <Transition name="composer-ctl">
+              <div v-if="isStreaming" class="chat-busy-mode" role="group" aria-label="Delivery mode while the agent is responding">
+                <button
+                  class="chat-busy-mode__btn"
+                  :class="{ 'is-active': busySendMode === 'queue' }"
+                  :aria-pressed="busySendMode === 'queue' ? 'true' : 'false'"
+                  title="Queue: the message waits and auto-sends when the current response finishes"
+                  @click="emit('setBusySendMode', 'queue')"
+                >
+                  Queue
+                </button>
+                <button
+                  class="chat-busy-mode__btn"
+                  :class="{ 'is-active': busySendMode === 'steer' }"
+                  :aria-pressed="busySendMode === 'steer' ? 'true' : 'false'"
+                  title="Steer: the message sends now and redirects the response in progress"
+                  @click="emit('setBusySendMode', 'steer')"
+                >
+                  Steer
+                </button>
+              </div>
+            </Transition>
             <button class="btn btn--icon btn--primary chat-send-btn" :class="{ 'is-ready': hasSendContent }" :title="sendButtonTitle" aria-label="Send" @click="emit('send')">
               <Icon name="arrowUp" :size="17" />
             </button>
-            <button v-if="isStreaming" class="btn btn--icon btn--danger chat-send-btn" title="Stop current response (Esc)" aria-label="Stop current response" @click="emit('stop')">
-              <Icon name="stop" :size="16" />
-            </button>
+            <Transition name="composer-ctl">
+              <button v-if="isStreaming" class="btn btn--icon btn--danger chat-send-btn" title="Stop current response (Esc)" aria-label="Stop current response" @click="emit('stop')">
+                <Icon name="stop" :size="16" />
+              </button>
+            </Transition>
           </div>
         </div>
       </div>
@@ -111,7 +115,7 @@
     <input
       ref="fileInputEl"
       type="file"
-      accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain,text/markdown,text/html,text/csv,application/json,.md,.markdown"
+      accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain,text/markdown,text/html,text/csv,application/json,.md,.markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation,.docx,.xlsx,.pptx,message/rfc822,application/vnd.ms-outlook,.eml,.mbox,.msg"
       multiple
       class="hidden"
       @change="emit('fileChange', $event)"
@@ -480,17 +484,27 @@ defineExpose<ChatComposerExpose>({
   border-color: var(--accent-hover);
 }
 
-.btn--danger {
-  background: var(--danger);
-  color: var(--bg);
-  border-color: var(--danger);
-}
-
-.btn--danger:hover {
-  opacity: 0.9;
-}
-
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+/* Streaming-only controls (Stop, Queue/Steer) ease in/out at turn boundaries
+   instead of popping into the action cluster. */
+.composer-ctl-enter-active,
+.composer-ctl-leave-active {
+  transition: opacity var(--dur-fast) var(--ease-out),
+              transform var(--dur-fast) var(--ease-out);
+}
+.composer-ctl-enter-from,
+.composer-ctl-leave-to {
+  opacity: 0;
+  transform: scale(0.9);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-ctl-enter-active,
+  .composer-ctl-leave-active {
+    transition: none;
+  }
 }
 </style>

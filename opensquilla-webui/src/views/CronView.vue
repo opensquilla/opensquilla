@@ -10,8 +10,8 @@
           <span class="cron-search-icon"><Icon name="search" :size="16" /></span>
           <input v-model="cronJobs.searchText.value" class="cron-search-input" type="search" placeholder="Search jobs&hellip;" autocomplete="off">
         </div>
-        <button class="btn btn--ghost" title="Refresh" @click="cronJobs.loadData">
-          <Icon name="refresh" :size="16" /><span>Refresh</span>
+        <button class="btn btn--ghost" title="Refresh" :disabled="refreshing" @click="refreshCron">
+          <Icon name="refresh" :size="16" /><span>{{ refreshing ? 'Refreshing…' : 'Refresh' }}</span>
         </button>
         <button class="btn btn--primary" @click="cronForm.openPanel(null)">
           <Icon name="plus" :size="16" /><span>New job</span>
@@ -79,7 +79,18 @@
       </div>
     </section>
 
+    <div v-if="cronJobs.loading.value && cronJobs.jobs.value.length === 0" class="state">
+      <LoadingSpinner />
+    </div>
+
+    <ErrorState
+      v-else-if="cronJobs.error.value"
+      :message="cronJobs.error.value"
+      :on-retry="cronJobs.loadData"
+    />
+
     <CronJobList
+      v-else
       :jobs="cronJobs.filteredSortedJobs.value"
       :total-jobs="cronJobs.jobs.value.length"
       :search-text="cronJobs.searchText.value"
@@ -144,6 +155,8 @@
 import { computed, nextTick, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import Icon from '@/components/Icon.vue'
+import ErrorState from '@/components/ErrorState.vue'
+import LoadingSpinner from '@/components/LoadingSpinner.vue'
 import CronDeleteDialog from '@/components/cron/CronDeleteDialog.vue'
 import CronJobList from '@/components/cron/CronJobList.vue'
 import CronJobPanel from '@/components/cron/CronJobPanel.vue'
@@ -151,10 +164,12 @@ import CronRunHistory from '@/components/cron/CronRunHistory.vue'
 import { useCronForm } from '@/composables/cron/useCronForm'
 import { useCronJobs } from '@/composables/cron/useCronJobs'
 import { useCronRuns } from '@/composables/cron/useCronRuns'
+import { useToasts } from '@/composables/useToasts'
 import type { CronJob } from '@/types/cron'
 import { humanCountdown } from '@/utils/cron/time'
 
 const router = useRouter()
+const { pushToast } = useToasts()
 const selectedId = ref<string | null>(null)
 const deleteModalOpen = ref(false)
 const deleteTarget = ref<CronJob | null>(null)
@@ -162,6 +177,19 @@ const deleteTarget = ref<CronJob | null>(null)
 const cronJobs = useCronJobs()
 const cronRuns = useCronRuns(selectedId)
 const cronForm = useCronForm({ afterSaved: cronJobs.loadData })
+
+// cronJobs.loadData is the silent useRequest refresh (no loading flag), so wrap
+// it in a local flag to give the manual refresh button a busy state.
+const refreshing = ref(false)
+async function refreshCron() {
+  if (refreshing.value) return
+  refreshing.value = true
+  try {
+    await cronJobs.loadData()
+  } finally {
+    refreshing.value = false
+  }
+}
 
 const selectedJob = computed(() => cronJobs.jobs.value.find(job => job.id === selectedId.value) || null)
 const runningJobIds = computed(() => cronJobs.runningJobIds.value)
@@ -210,7 +238,7 @@ async function confirmDelete() {
     await cronJobs.removeJob(id)
     if (selectedId.value === id) selectedId.value = null
   } catch (err) {
-    console.warn('Delete failed: ' + (err instanceof Error ? err.message : String(err)))
+    pushToast('Delete failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
   } finally {
     closeDeleteDialog()
   }

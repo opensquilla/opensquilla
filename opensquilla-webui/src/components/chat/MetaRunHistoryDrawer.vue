@@ -6,7 +6,6 @@
       role="dialog"
       aria-modal="true"
       aria-label="MetaSkill run history"
-      @keydown="onKeydown"
     >
       <header class="meta-runs-head">
         <h3 class="meta-runs-head__title">MetaSkill runs</h3>
@@ -66,8 +65,9 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import { ref, toRef, watch } from 'vue'
 import Icon from '@/components/Icon.vue'
+import { useDialogA11y } from '@/composables/useDialogA11y'
 
 interface MetaRunUsage {
   available?: boolean
@@ -121,6 +121,9 @@ const details = ref<Map<string, { kind: string; json: string }>>(new Map())
 
 const drawerRef = ref<HTMLElement | null>(null)
 const closeBtn = ref<HTMLButtonElement | null>(null)
+
+const openRef = toRef(props, 'open')
+useDialogA11y(drawerRef, openRef, () => emit('close'), { initialFocus: closeBtn })
 
 function runKey(run: MetaRunListItem): string {
   return run.run_id || run.meta_skill_name || JSON.stringify(run)
@@ -253,36 +256,11 @@ async function runAction(action: string, run: MetaRunListItem) {
   }
 }
 
-function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') {
-    e.preventDefault()
-    emit('close')
-    return
-  }
-  if (e.key !== 'Tab') return
-  // Focus trap inside the drawer.
-  const focusables = drawerRef.value?.querySelectorAll<HTMLElement>(
-    'button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-  )
-  if (!focusables || focusables.length === 0) return
-  const first = focusables[0]
-  const last = focusables[focusables.length - 1]
-  const active = document.activeElement
-  if (e.shiftKey && active === first) {
-    e.preventDefault()
-    last.focus()
-  } else if (!e.shiftKey && active === last) {
-    e.preventDefault()
-    first.focus()
-  }
-}
-
 watch(
   () => props.open,
   (open) => {
     if (!open) return
     void loadRuns()
-    nextTick(() => closeBtn.value?.focus())
   },
   { immediate: true },
 )

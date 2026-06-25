@@ -4,6 +4,11 @@ import {
   IMAGE_TIER,
   normalizeRouterTier,
 } from '@/utils/chat/routerTiers'
+import {
+  DEFAULT_ROUTER_VISUAL_MODE,
+  normalizeRouterVisualMode,
+  type RouterVisualMode,
+} from '@/utils/chat/routerVisualMode'
 
 export interface SetupTierValue {
   provider: string
@@ -15,6 +20,11 @@ export interface SetupTierValue {
 export interface SetupTierRow extends SetupTierValue {
   name: string
 }
+
+const ROUTER_VISUAL_MODE_OPTIONS: Array<{ value: RouterVisualMode; label: string }> = [
+  { value: 'real_candidates', label: 'Real routing candidates' },
+  { value: 'legacy_grid', label: 'Three-tier visual panel' },
+]
 
 export function buildRouterPayload(
   mode: string,
@@ -46,6 +56,7 @@ interface TierConfig {
 interface RouterConfig {
   enabled?: boolean
   default_tier?: string
+  visual_mode?: string
   tiers?: Record<string, TierConfig>
 }
 
@@ -59,14 +70,18 @@ interface RouterPanelContext {
 export function useSetupRouterForm() {
   const routerMode = ref('recommended')
   const routerDefaultTier = ref(DEFAULT_TEXT_TIER)
+  const routerVisualMode = ref<RouterVisualMode>(DEFAULT_ROUTER_VISUAL_MODE)
   const tierValues = ref<Record<string, SetupTierValue>>({})
   const mode = computed(() => routerMode.value)
   const defaultTier = computed(() => routerDefaultTier.value)
 
-  const serialized = computed(() => JSON.stringify({ m: routerMode.value, d: routerDefaultTier.value, t: tierValues.value }))
+  const routerSerialized = computed(() => JSON.stringify({ m: routerMode.value, d: routerDefaultTier.value, t: tierValues.value }))
   // Seed from the initial state so the pristine form is never dirty while config loads.
-  const baseline = ref(serialized.value)
-  const isDirty = computed(() => serialized.value !== baseline.value)
+  const routerBaseline = ref(routerSerialized.value)
+  const visualModeBaseline = ref(routerVisualMode.value)
+  const routingDirty = computed(() => routerSerialized.value !== routerBaseline.value)
+  const visualModeDirty = computed(() => routerVisualMode.value !== visualModeBaseline.value)
+  const isDirty = computed(() => routingDirty.value || visualModeDirty.value)
 
   function initFromConfig(
     router: RouterConfig,
@@ -74,6 +89,7 @@ export function useSetupRouterForm() {
   ) {
     routerMode.value = router.enabled === false ? 'disabled' : 'recommended'
     routerDefaultTier.value = normalizeRouterTier(router.default_tier || '') || DEFAULT_TEXT_TIER
+    routerVisualMode.value = normalizeRouterVisualMode(router.visual_mode)
 
     const tiers = Object.assign({}, profileTiers || {}, router.tiers || {})
     const next: Record<string, SetupTierValue> = {}
@@ -87,7 +103,8 @@ export function useSetupRouterForm() {
       }
     })
     tierValues.value = next
-    baseline.value = serialized.value
+    routerBaseline.value = routerSerialized.value
+    visualModeBaseline.value = routerVisualMode.value
   }
 
   function updateTierField(name: string, key: keyof SetupTierValue, value: string | boolean) {
@@ -120,8 +137,17 @@ export function useSetupRouterForm() {
     routerDefaultTier.value = normalizeRouterTier(value) || DEFAULT_TEXT_TIER
   }
 
+  function setRouterVisualMode(value: string) {
+    routerVisualMode.value = normalizeRouterVisualMode(value)
+  }
+
   function payload(): Record<string, unknown> {
     return buildRouterPayload(routerMode.value, routerDefaultTier.value, tierValues.value)
+  }
+
+  function visualModePatches(): Record<string, unknown> {
+    if (!visualModeDirty.value) return {}
+    return { 'squilla_router.visual_mode': routerVisualMode.value }
   }
 
   function createPanel(context: RouterPanelContext) {
@@ -129,6 +155,9 @@ export function useSetupRouterForm() {
       routerSummary: context.routerSummary.value,
       routerMode: routerMode.value,
       routerDefaultTier: routerDefaultTier.value,
+      routerVisualMode: routerVisualMode.value,
+      routerVisualModeDirty: visualModeDirty.value,
+      routerVisualModeOptions: ROUTER_VISUAL_MODE_OPTIONS,
       hasSavedProvider: context.hasSavedProvider.value,
       textTiers: context.textTiers,
       tierRows: tierRows(context.textTiers),
@@ -139,12 +168,16 @@ export function useSetupRouterForm() {
   return {
     mode,
     defaultTier,
+    routingDirty,
+    visualModeDirty,
     isDirty,
     initFromConfig,
     setRouterMode,
     setRouterDefaultTier,
+    setRouterVisualMode,
     updateTierField,
     payload,
+    visualModePatches,
     createPanel,
   }
 }

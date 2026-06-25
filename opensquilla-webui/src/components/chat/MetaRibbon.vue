@@ -38,7 +38,7 @@
       >
         <div class="meta-ribbon-fill" :style="{ width: `${progressPercentValue}%` }" />
       </div>
-      <ol :id="stepsId" class="meta-ribbon-chips" aria-live="polite">
+      <ol :id="stepsId" class="meta-ribbon-chips">
         <li
           v-for="(step, i) in run.steps"
           :key="step.id || i"
@@ -174,7 +174,8 @@ function onActionClick(action: string, stepId: string | null) {
   border-color: color-mix(in srgb, var(--accent) 44%, transparent);
   background: color-mix(in srgb, var(--accent) 10%, var(--bg-surface));
   color: var(--accent);
-  animation: meta-ribbon-dot-pulse 1.4s ease-in-out infinite;
+  /* Shared opacity-only rhythm — no size throb, same beat as the work-card dot. */
+  animation: live-pulse var(--dur-pulse) var(--ease-standard) infinite;
 }
 
 .meta-ribbon-icon.succeeded {
@@ -263,7 +264,7 @@ function onActionClick(action: string, stepId: string | null) {
   background: linear-gradient(90deg,
     var(--accent),
     color-mix(in srgb, var(--accent) 64%, var(--success, var(--ok)) 36%));
-  transition: width 220ms ease;
+  transition: width var(--dur-base) var(--ease-out);
 }
 
 .meta-ribbon-chips {
@@ -287,7 +288,7 @@ function onActionClick(action: string, stepId: string | null) {
   font-size: var(--fs-xs, 0.75rem);
   line-height: 1.45;
   white-space: nowrap;
-  transition: background 120ms, border-color 120ms, color 120ms;
+  transition: background var(--dur-fast), border-color var(--dur-fast), color var(--dur-fast);
 }
 
 .meta-ribbon-chips .chip.pending { opacity: 0.64; }
@@ -331,17 +332,7 @@ function onActionClick(action: string, stepId: string | null) {
   margin-left: 6px;
   border-radius: 999px;
   background: currentColor;
-  animation: meta-ribbon-pulse 1.2s infinite;
-}
-
-@keyframes meta-ribbon-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
-}
-
-@keyframes meta-ribbon-dot-pulse {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(0.72); }
+  animation: live-pulse var(--dur-pulse) var(--ease-standard) infinite;
 }
 
 .meta-ribbon[data-collapsed="true"] .meta-ribbon-chips,

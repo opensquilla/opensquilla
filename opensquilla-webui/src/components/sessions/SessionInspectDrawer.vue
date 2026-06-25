@@ -48,6 +48,7 @@
       <p v-if="snippetText" class="inspect-snippet">{{ snippetText }}</p>
 
       <div ref="bodyRef" class="inspect-body" aria-label="Transcript preview">
+        <RunTrace v-if="!transcriptError" class="inspect-summary" :summary="summary" />
         <ErrorState
           v-if="transcriptError"
           message="Could not load the transcript."
@@ -73,16 +74,29 @@
             <div class="inspect-msg__role">{{ row.roleLabel }}</div>
             <!-- eslint-disable-next-line vue/no-v-html — renderMarkdown output is DOMPurify-sanitized -->
             <div v-if="row.html" class="inspect-msg__text" v-html="row.html" />
-            <div v-if="row.tools.length" class="inspect-msg__tools">
-              <span
-                v-for="(tool, index) in row.tools"
-                :key="row.id + ':' + index"
-                class="inspect-tool-pill"
-                :class="{ 'inspect-tool-pill--error': tool.isError }"
-              >
-                <Icon name="gear" :size="11" />
-                <span>{{ tool.name }}</span>
-              </span>
+            <RunTrace
+              v-if="row.steps.length"
+              :steps="row.steps"
+              :is-tool-group-open="rt.isToolGroupOpen"
+              :is-tool-item-open="rt.isToolItemOpen"
+              @toggle-group="rt.toggleGroup"
+              @toggle-item="rt.toggleItem"
+              @show-result="(content, title) => onShowResult(row.id, content, title)"
+            />
+            <div v-if="resultView && resultView.rowId === row.id" class="inspect-msg__result">
+              <div class="inspect-msg__result-head">
+                <span class="inspect-msg__result-title">{{ resultView.title }}</span>
+                <button
+                  type="button"
+                  class="btn btn--icon btn--ghost"
+                  aria-label="Close result"
+                  title="Close result"
+                  @click="resultView = null"
+                >
+                  <Icon name="x" :size="14" />
+                </button>
+              </div>
+              <pre class="inspect-msg__result-pre">{{ resultView.content }}</pre>
             </div>
           </article>
         </template>
@@ -111,25 +125,24 @@ import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import Icon from '@/components/Icon.vue'
 import ErrorState from '@/components/ErrorState.vue'
 import LoadingSpinner from '@/components/LoadingSpinner.vue'
+import RunTrace from '@/components/run/RunTrace.vue'
 import { useSessionInspect } from '@/composables/sessions/useSessionInspect'
 import { useChatTextRendering } from '@/composables/chat/useChatTextRendering'
+import { useRunTrace } from '@/composables/run/useRunTrace'
 import { useToasts } from '@/composables/useToasts'
+import { useConfirm } from '@/composables/useConfirm'
 import { copyTextWithFallback } from '@/utils/browser'
+import { nodeStepsFromHistoryMessage } from '@/components/run/runTrace'
+import type { NodeStep, RunTraceStatus, RunTraceSummary } from '@/types/runTrace'
 import type { SessionItem } from '@/composables/useSessions'
-import type { ChatHistoryMessage } from '@/types/rpc'
 import { sessionRelTime, sessionStatusBadge, sessionSurfaceIcon } from './sessionDisplay'
-
-interface TranscriptToolPill {
-  name: string
-  isError: boolean
-}
 
 interface TranscriptRow {
   id: string
   tone: string
   roleLabel: string
   html: string
-  tools: TranscriptToolPill[]
+  steps: NodeStep[]
 }
 
 const props = defineProps<{
@@ -161,12 +174,15 @@ const {
 
 const { renderMarkdown, stripDirectiveTags, stripTimePrefix } = useChatTextRendering()
 const { pushToast } = useToasts()
+const { confirm } = useConfirm()
+const rt = useRunTrace()
 
 const drawerRef = ref<HTMLElement | null>(null)
 const bodyRef = ref<HTMLElement | null>(null)
 const closeBtn = ref<HTMLButtonElement | null>(null)
 const keyCopied = ref(false)
 const aborting = ref(false)
+const resultView = ref<{ rowId: string; title: string; content: string } | null>(null)
 
 let keyCopiedTimer: ReturnType<typeof setTimeout> | null = null
 let invokerEl: HTMLElement | null = null
@@ -202,44 +218,55 @@ function roleLabel(role: string): string {
   return role.charAt(0).toUpperCase() + role.slice(1)
 }
 
-// History rows carry paired tool_use/tool_result entries (plus text/thinking
-// segments) in tool_calls; merge each call into a single pill by its id.
-function toolPills(msg: ChatHistoryMessage): TranscriptToolPill[] {
-  if (!Array.isArray(msg.tool_calls)) return []
-  const pills = new Map<string, TranscriptToolPill>()
-  let anonymous = 0
-  for (const entry of msg.tool_calls) {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
-    const record = entry as Record<string, unknown>
-    const type = String(record.type || '')
-    if (type && type !== 'tool_use' && type !== 'tool_result') continue
-    const id = String(record.tool_use_id || record.toolId || record.id || '') || `anon-${anonymous++}`
-    const existing = pills.get(id)
-    const name = String(record.name || record.tool_name || existing?.name || 'tool')
-    const isError = record.is_error === true || record.isError === true || existing?.isError === true
-    pills.set(id, { name, isError })
-  }
-  return Array.from(pills.values())
-}
-
 const transcriptRows = computed((): TranscriptRow[] => {
   const rows: TranscriptRow[] = []
   messages.value.forEach((msg, index) => {
     const role = String(msg.role || 'assistant')
     const text = role === 'user' ? stripTimePrefix(msg.text || '') : msg.text || ''
     const html = text.trim() ? renderMarkdown(text) : ''
-    const tools = toolPills(msg)
-    if (!html && tools.length === 0) return
+    const steps = nodeStepsFromHistoryMessage(msg)
+    if (!html && steps.length === 0) return
     rows.push({
       id: String(msg.message_id || msg.id || `${index}:${msg.timestamp ?? msg.ts ?? ''}`),
       tone: roleTone(role),
       roleLabel: roleLabel(role),
       html,
-      tools,
+      steps,
     })
   })
   return rows
 })
+
+// The drawer has no global result modal; "view full" expands a local read-only
+// panel beneath the originating row instead.
+function onShowResult(rowId: string, content: string, title: string) {
+  resultView.value = { rowId, content, title }
+}
+
+// Whole-run rollup for the summary header. Token/elapsed totals are not carried
+// on the raw history pages, so those cells render the em-dash placeholder.
+function summaryStatus(item: SessionItem | null, needsInput: boolean): RunTraceStatus | undefined {
+  if (needsInput) return 'queued'
+  switch (item?.runStatus) {
+    case 'running': return 'running'
+    case 'queued': return 'queued'
+    case 'failed':
+    case 'timeout': return 'error'
+    case 'cancelled':
+    case 'interrupted': return 'cancelled'
+    case 'idle': return 'success'
+    default: return undefined
+  }
+}
+
+const summary = computed<RunTraceSummary>(() => ({
+  status: summaryStatus(props.item, props.needsInput === true),
+  executor: props.agentName,
+  elapsedMs: null,
+  tokens: null,
+  steps: transcriptRows.value.reduce((count, row) => count + row.steps.length, 0),
+  loading: loading.value,
+}))
 
 function scrollToBottom() {
   nextTick(() => {
@@ -276,7 +303,12 @@ async function copyKey() {
 async function onAbort() {
   const item = props.item
   if (!item || aborting.value) return
-  if (!confirm(`Abort the active run in "${item.title}"?`)) return
+  const ok = await confirm({
+    title: 'Abort run',
+    body: `Abort the active run in "${item.title}"?`,
+    primaryLabel: 'Abort',
+  })
+  if (!ok) return
   aborting.value = true
   try {
     const aborted = await abortSession(item.key)
@@ -329,6 +361,7 @@ watch(
       nextTick(() => closeBtn.value?.focus())
     } else if (wasOpen && !open) {
       document.removeEventListener('keydown', onDocumentKeydown)
+      resultView.value = null
       reset()
       if (invokerEl && document.contains(invokerEl)) invokerEl.focus()
       invokerEl = null
@@ -613,32 +646,44 @@ onUnmounted(() => {
   color: var(--accent);
 }
 
-.inspect-msg__tools {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-1);
-}
-
-.inspect-tool-pill {
-  align-items: center;
+.inspect-msg__result {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
-  border-radius: 999px;
-  color: var(--text-muted);
-  display: inline-flex;
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
   gap: var(--sp-1);
-  max-width: 100%;
+  padding: var(--sp-2);
+}
+
+.inspect-msg__result-head {
+  align-items: center;
+  display: flex;
+  gap: var(--sp-2);
+  justify-content: space-between;
+}
+
+.inspect-msg__result-title {
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-weight: 650;
+  letter-spacing: var(--track-tabular);
+  min-width: 0;
   overflow: hidden;
-  padding: 1px var(--sp-2);
   text-overflow: ellipsis;
+  text-transform: uppercase;
   white-space: nowrap;
 }
 
-.inspect-tool-pill--error {
-  border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
-  color: var(--danger);
+.inspect-msg__result-pre {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .inspect-actions {

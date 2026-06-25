@@ -19,8 +19,15 @@
   >
     <!-- Brand -->
     <div class="sidebar-brand">
-      <img class="sidebar-brand-mark" :src="brandMarkUrl" alt="" aria-hidden="true" />
-      <span class="sidebar-brand-text">OpenSquilla</span>
+      <router-link
+        to="/"
+        class="sidebar-brand-link"
+        aria-label="OpenSquilla home"
+        @click="handleNavClick"
+      >
+        <img class="sidebar-brand-mark" :src="brandMarkUrl" alt="" aria-hidden="true" />
+        <span class="sidebar-brand-text">OpenSquilla</span>
+      </router-link>
       <button
         class="sidebar-dock-toggle"
         :title="appStore.sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'"
@@ -31,77 +38,116 @@
       </button>
     </div>
 
-    <!-- Top action: new chat with explicit agent selection -->
+    <!-- New chat opens a draft instantly against the preferred agent; the agent
+         can still be switched from the draft landing. -->
     <div class="sidebar-actions">
       <button
         class="sidebar-new-session"
-        title="Start a new chat (Ctrl+K)"
-        @click="openNewChatPicker"
+        :title="newChatHint ? `Start a new chat (${newChatHint})` : 'Start a new chat'"
+        @click="startNewChatInstant"
       >
         <Icon name="plus" :size="16" />
-        <span>New chat</span>
-        <kbd class="sidebar-kbd" aria-hidden="true">Ctrl K</kbd>
+        <span class="sidebar-new-session__label">New chat</span>
+        <!-- Badge tracks the configured binding and hides when the shortcut is
+             disabled (Settings → Keyboard), so it never advertises a dead key. -->
+        <kbd v-if="newChatHint" class="sidebar-kbd" aria-hidden="true">{{ newChatHint }}</kbd>
+      </button>
+      <!-- Canonical search / go-to. Replaces the rail Search row that truncated;
+           the visible chord keeps the shortcut discoverable for mouse users. -->
+      <button
+        type="button"
+        class="sidebar-cmd-btn"
+        :title="`Search / Go to… (${commandPaletteHint})`"
+        :aria-label="`Search and go to (press ${commandPaletteHint})`"
+        aria-haspopup="dialog"
+        :aria-expanded="commandPaletteOpen"
+        @click="openCommandPalette"
+      >
+        <Icon name="search" :size="16" />
       </button>
     </div>
 
-    <!-- Fixed nav core: never scrolls; Recents below is the only scroll region -->
-    <div class="sidebar-section sidebar-core" aria-label="Control navigation">
+    <!-- Always-visible grouped nav index. Bounded and self-scrolling under a
+         short viewport so it never squeezes Recents, which owns the elastic
+         space below; every destination stays a labelled text row. -->
+    <div class="sidebar-section sidebar-core" role="navigation" aria-label="Control navigation">
+      <!-- Pinned level-1 rows (Sessions / Cron / Skills), single-sourced from the
+           Work band of the route taxonomy so promoting a route is a one-line meta
+           edit and the rail, the mobile drawer, and the palette never drift. -->
       <router-link
-        to="/sessions"
+        v-for="item in workNav"
+        :key="item.path"
+        :to="item.path"
         class="sidebar-fn-item"
-        :class="{ 'is-active': isNavActive('/sessions') }"
+        :class="{ 'is-active': isNavActive(item.path) }"
+        :aria-current="isNavActive(item.path) ? 'page' : undefined"
         @click="handleNavClick"
       >
-        <Icon name="sessions" :size="16" />
-        <span class="sidebar-fn-label">Sessions</span>
+        <Icon :name="item.icon" :size="16" />
+        <span class="sidebar-fn-label">{{ item.title }}</span>
       </router-link>
-      <button
-        v-if="appStore.approvalCount > 0"
-        type="button"
-        class="sidebar-fn-item"
-        title="Open the blocked session"
-        @click="onApprovalsRowClick"
-      >
-        <Icon name="approvals" :size="16" />
-        <span class="sidebar-fn-label">Approvals</span>
-        <span class="sidebar-count-badge">{{ appStore.approvalCount }}</span>
-      </button>
-      <button
-        type="button"
-        class="sidebar-fn-item sidebar-console-row"
-        data-icon="gauge"
-        :aria-expanded="consoleOpen"
-        aria-controls="sidebar-console-list"
-        @click="consoleOpen = !consoleOpen"
-      >
-        <Icon name="gauge" :size="16" />
-        <span class="sidebar-fn-label">Console</span>
-        <Icon class="sidebar-console-chevron" name="chevronRight" :size="14" />
-      </button>
-      <div v-if="consoleOpen" id="sidebar-console-list" class="sidebar-console-list">
-        <router-link
-          v-for="route in consoleRoutes"
-          :key="route.path"
-          :to="route.path"
-          class="sidebar-fn-item"
-          :class="{ 'is-active': isNavActive(route.path) }"
-          @click="handleNavClick"
-        >
-          <Icon :name="route.icon" :size="16" />
-          <span class="sidebar-fn-label">{{ route.title }}</span>
-        </router-link>
+      <!-- Manage / Monitor bands. Option B leans the DESKTOP rail to the
+           command-palette-led essentials, so these are hidden on desktop
+           (docked + hover) via CSS and reached through the palette / deep links.
+           They stay rendered for the <=768px drawer ("More") so every
+           destination is still a tap away on mobile; routes are unchanged. -->
+      <div class="sidebar-core__managed">
+        <template v-for="section in consoleSections" :key="section.group">
+          <p class="sidebar-nav-group-label" aria-hidden="true">{{ section.label }}</p>
+          <router-link
+            v-for="route in section.items"
+            :key="route.path"
+            :to="route.path"
+            class="sidebar-fn-item"
+            :class="{ 'is-active': isNavActive(route.path) }"
+            :aria-current="isNavActive(route.path) ? 'page' : undefined"
+            @click="handleNavClick"
+          >
+            <Icon :name="route.icon" :size="16" />
+            <span class="sidebar-fn-label">{{ route.title }}</span>
+          </router-link>
+        </template>
       </div>
+      <!-- "More": the secondary destinations (Approvals / Agents / Channels /
+           Overview / Usage / Logs). Desktop-only trigger; it carries the pending
+           approval count so the urgency signal stays visible at level-1 without
+           opening the popover. Hidden on mobile, where the bands render inline. -->
+      <button
+        ref="moreTriggerRef"
+        type="button"
+        class="sidebar-fn-item sidebar-more-btn"
+        :class="{ 'is-open': moreOpen }"
+        aria-haspopup="dialog"
+        :aria-expanded="moreOpen"
+        :aria-label="appStore.approvalCount > 0
+          ? `More — ${appStore.approvalCount} approvals pending`
+          : 'More'"
+        @click="toggleMore"
+      >
+        <Icon name="menu" :size="16" />
+        <span class="sidebar-fn-label">More</span>
+        <span
+          v-if="appStore.approvalCount > 0"
+          class="sidebar-count-badge"
+        >{{ appStore.approvalCount }}</span>
+        <Icon v-else name="chevronDown" :size="14" class="sidebar-more-chevron" />
+      </button>
     </div>
+
+    <SidebarSetupBanner />
 
     <!-- Recent conversations -->
     <SidebarConversations
-      :items="sidebarConversations"
+      :sections="sidebarSections"
       :error="sessionListError"
       :loading="isLoading"
       :current-key="currentSessionKey"
       :contract-debug-enabled="contractDebugEnabled"
       @select="switchToSession"
       @refresh="loadSessions"
+      @rename="onRenameSession"
+      @delete="onDeleteSession"
+      @new-chat="startNewChatInstant"
     />
 
     <!-- Fixed footer: settings + connection state -->
@@ -127,51 +173,61 @@
     @click="appStore.setSidebarOpen(false)"
   />
 
-  <div
-    v-if="newChatPickerOpen"
-    class="new-chat-backdrop"
-    role="presentation"
-    @mousedown="onNewChatBackdrop"
-  >
-    <section class="new-chat-dialog" role="dialog" aria-modal="true" aria-labelledby="new-chat-title">
-      <header class="new-chat-dialog__header">
-        <div>
-          <h2 id="new-chat-title">New chat</h2>
-          <p>Choose the agent this conversation belongs to.</p>
-        </div>
-        <button class="new-chat-dialog__close" title="Close" aria-label="Close" @click="closeNewChatPicker">×</button>
-      </header>
-      <div v-if="agentListError" class="new-chat-dialog__error">
-        Agent list is unavailable. The main agent is still available.
-      </div>
-      <div class="new-chat-agent-list">
-        <button
-          v-for="agent in selectableAgents"
-          :key="agent.id"
-          type="button"
-          class="new-chat-agent"
-          :class="{ 'is-selected': selectedNewChatAgentId === agent.id }"
-          @click="selectedNewChatAgentId = agent.id"
-        >
-          <span class="new-chat-agent__mark">
-            <Icon name="agents" :size="16" />
-          </span>
-          <span class="new-chat-agent__body">
-            <span class="new-chat-agent__name">{{ agent.name }}</span>
-            <span class="new-chat-agent__meta">{{ agent.id }}{{ agent.model ? ` · ${agent.model}` : '' }}</span>
-          </span>
-        </button>
-      </div>
-      <footer class="new-chat-dialog__footer">
-        <button class="btn btn--ghost" @click="goToAgents">Create agent...</button>
-        <span class="new-chat-dialog__spacer"></span>
-        <button class="btn btn--ghost" @click="closeNewChatPicker">Cancel</button>
-        <button class="btn btn--primary" :disabled="!selectedNewChatAgentId" @click="startNewChatForSelectedAgent">
-          Start chat
-        </button>
-      </footer>
-    </section>
-  </div>
+  <CommandPalette
+    v-model:open="commandPaletteOpen"
+    :hint="commandPaletteHint"
+    @new-chat="onPaletteNewChat"
+    @open-settings="onPaletteOpenSettings"
+    @toggle-theme="onPaletteToggleTheme"
+    @select-session="onPaletteSelectSession"
+  />
+
+  <!-- "More" popover: teleported to <body> so it escapes the rail's
+       overflow:hidden and dock/hover transform. Approvals keeps its bespoke
+       deep-link handler + count badge; the rest are plain destinations. -->
+  <Teleport to="body">
+    <div
+      v-if="moreOpen"
+      ref="morePopoverRef"
+      class="sidebar-more-popover"
+      :style="moreStyle"
+      role="dialog"
+      aria-label="More destinations"
+    >
+      <template v-for="section in consoleSections" :key="section.group">
+        <p class="sidebar-nav-group-label">{{ section.label }}</p>
+        <template v-for="route in section.items" :key="route.path">
+          <button
+            v-if="route.path === '/approvals'"
+            type="button"
+            class="sidebar-fn-item"
+            :class="{ 'is-active': isNavActive('/approvals') }"
+            :aria-current="isNavActive('/approvals') ? 'page' : undefined"
+            @click="onMoreApprovals"
+          >
+            <Icon name="approvals" :size="16" />
+            <span class="sidebar-fn-label">Approvals</span>
+            <span
+              v-if="appStore.approvalCount > 0"
+              class="sidebar-count-badge"
+              :aria-label="`${appStore.approvalCount} pending`"
+            >{{ appStore.approvalCount }}</span>
+          </button>
+          <router-link
+            v-else
+            :to="route.path"
+            class="sidebar-fn-item"
+            :class="{ 'is-active': isNavActive(route.path) }"
+            :aria-current="isNavActive(route.path) ? 'page' : undefined"
+            @click="onMoreNavigate"
+          >
+            <Icon :name="route.icon" :size="16" />
+            <span class="sidebar-fn-label">{{ route.title }}</span>
+          </router-link>
+        </template>
+      </template>
+    </div>
+  </Teleport>
 
   <!-- Main content -->
   <div
@@ -205,7 +261,16 @@
         >
           Approval required
         </button>
-        <span class="conn-pill" :class="rpcStore.state">{{ rpcStore.state }}</span>
+        <button
+          v-if="webConfigEnabled"
+          type="button"
+          class="conn-pill conn-pill--link"
+          :class="rpcStore.state"
+          :title="`Connection: ${rpcStore.state} — manage in Settings`"
+          aria-label="Manage gateway connection"
+          @click="openConnectionSettings"
+        >{{ rpcStore.state }}</button>
+        <span v-else class="conn-pill" :class="rpcStore.state">{{ rpcStore.state }}</span>
         <div class="theme-menu-wrap">
           <button
             ref="themeButtonRef"
@@ -238,7 +303,14 @@
     </header>
     <main class="content" :class="{ 'content--chat': isChatRoute }" id="content">
       <ErrorBoundary>
-        <router-view />
+        <router-view v-slot="{ Component, route }">
+          <Transition name="route-fade" mode="out-in">
+            <KeepAlive v-if="route.meta.keepAlive" :max="5">
+              <component :is="Component" :key="route.name" />
+            </KeepAlive>
+            <component v-else :is="Component" :key="route.name" />
+          </Transition>
+        </router-view>
       </ErrorBoundary>
     </main>
   </div>
@@ -288,48 +360,80 @@
     </button>
   </nav>
 
-  <SettingsModal />
-
   <ToastHost />
+
+  <ConfirmModal />
+
+  <!-- Single app-wide announcer for the pending-approval count. The nav badge
+       and topbar pill stay silent (no double-announce); this region carries the
+       only spoken update when the count changes. -->
+  <p class="app-approval-live" aria-live="polite" role="status">{{ approvalAnnouncement }}</p>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useAppStore, type ThemeMode } from './stores/app'
+import { getPlatform } from '@/platform'
+import { useDialogA11y } from '@/composables/useDialogA11y'
+import { useAppStore, type ThemeMode, type PendingApproval } from './stores/app'
 import { useRpcStore } from './stores/rpc'
-import { useSessions, type SessionItem } from './composables/useSessions'
+import {
+  arrangeSidebarSections,
+  useSessions,
+  type SessionItem,
+  type SidebarSection,
+  type SidebarSectionRow,
+} from './composables/useSessions'
 import Icon from './components/Icon.vue'
 import ErrorBoundary from './components/ErrorBoundary.vue'
 import ToastHost from './components/ToastHost.vue'
-import SettingsModal from './components/settings/SettingsModal.vue'
-import SidebarConversations, {
-  type SidebarConversationItem,
-  type SidebarFamilyId,
-} from './components/SidebarConversations.vue'
+import ConfirmModal from './components/ConfirmModal.vue'
+import SidebarConversations from './components/SidebarConversations.vue'
+import SidebarSetupBanner from './components/SidebarSetupBanner.vue'
+import CommandPalette from './components/CommandPalette.vue'
 import { useDocumentEvent } from './composables/useDocumentEvent'
-import type { AgentOption, AgentsListResponse } from './types/rpc'
+import { useAgentOptions } from './composables/useAgentOptions'
+import { useToasts } from './composables/useToasts'
 import { useNavigation } from './app/useNavigation'
 import { normalizeAgentId } from './utils/chat/sessionKeys'
+import type { RpcEventHandler } from '@/lib/rpc'
+import { isMacPlatform } from './utils/browser'
+import { useShortcutsStore } from './stores/shortcuts'
+import { bindingMatches, formatBinding } from './utils/keychord'
 
 const appStore = useAppStore()
 const rpcStore = useRpcStore()
+const shortcutsStore = useShortcutsStore()
 const $route = useRoute()
 const router = useRouter()
 const { allSessions, sessionListError, isLoading, loadSessions } = useSessions()
-const { consoleRoutes, bottomRoutes } = useNavigation()
+const { consoleSections, bottomRoutes, workNav } = useNavigation()
+const { pushToast } = useToasts()
+const webConfigEnabled = getPlatform().capabilities.hasWebConfig
 
-const agents = ref<AgentOption[]>([])
-const agentListError = ref(false)
+// Shared agents.list state + fetch (singleton): App.vue and ChatView's
+// in-draft switcher use the same list and one fetch.
+const { agents, loadAgents } = useAgentOptions()
 const mobileKeyboardOpen = ref(false)
-const newChatPickerOpen = ref(false)
-const selectedNewChatAgentId = ref('main')
+const commandPaletteOpen = ref(false)
 const localChatSessions = ref<Record<string, { effectiveAgentId: string; title: string; updatedAt: number }>>({})
+// Pending optimistic renames, keyed by session key; cleared after the next list
+// reload returns the backend's canonical title.
+const renameOverrides = ref<Record<string, string>>({})
 
 const brandMarkUrl = computed(() => {
   const base = document.getElementById('opensquilla-data')?.dataset.basePath || '/control'
   return `${base}/static/img/opensquilla-mark.png`
 })
+
+// Display chords track the configurable bindings so the rail hint, the New chat
+// badge, and the palette never drift from what the handler actually honours. A
+// disabled shortcut yields an empty hint (the New chat badge then hides).
+const isMac = isMacPlatform()
+const commandPaletteHint = computed(() =>
+  formatBinding(shortcutsStore.effectiveBinding('command-palette'), isMac))
+const newChatHint = computed(() =>
+  formatBinding(shortcutsStore.effectiveBinding('new-chat'), isMac))
 
 const themeIconName = computed(() => {
   if (appStore.theme === 'system') return 'monitor'
@@ -358,6 +462,63 @@ useDocumentEvent('click', (e) => {
   }
 })
 
+// "More" popover: the secondary destinations on desktop. Built on the shared
+// dialog-a11y composable (Tab-trap + Escape + focus restore to the trigger) and
+// teleported to <body>, so it is anchored to the trigger via a fixed-position
+// rect rather than nested inside the rail's overflow:hidden scroll container.
+const moreOpen = ref(false)
+const moreTriggerRef = ref<HTMLElement | null>(null)
+const morePopoverRef = ref<HTMLElement | null>(null)
+const moreStyle = ref<Record<string, string>>({})
+
+useDialogA11y(morePopoverRef, moreOpen, () => { moreOpen.value = false })
+
+function toggleMore() {
+  if (moreOpen.value) {
+    moreOpen.value = false
+    return
+  }
+  const trigger = moreTriggerRef.value
+  if (!trigger) return
+  const r = trigger.getBoundingClientRect()
+  // The trigger sits high in the rail (just below the pinned rows; Recents owns
+  // the space beneath it), so the popover opens downward, left-aligned, capped to
+  // the room below so a long list scrolls inside instead of overflowing.
+  moreStyle.value = {
+    position: 'fixed',
+    left: `${r.left}px`,
+    top: `${r.bottom + 4}px`,
+    minWidth: `${Math.max(r.width, 220)}px`,
+    maxHeight: `${Math.max(160, window.innerHeight - r.bottom - 12)}px`,
+  }
+  moreOpen.value = true
+}
+
+function onMoreNavigate() {
+  moreOpen.value = false
+  handleNavClick()
+}
+
+function onMoreApprovals() {
+  moreOpen.value = false
+  // Preserve the blocked-session deep-link + selection behavior of the row.
+  onApprovalsRowClick()
+}
+
+// Pointer dismissal scoped to the popover + its trigger (mirrors the theme menu);
+// useDialogA11y already owns Escape + focus restore, so no second key handler.
+useDocumentEvent('click', (e) => {
+  if (!moreOpen.value) return
+  const target = e.target
+  if (
+    target instanceof Element &&
+    (target.closest('.sidebar-more-popover') || target.closest('.sidebar-more-btn'))
+  ) {
+    return
+  }
+  moreOpen.value = false
+})
+
 // Current session key from ChatView via URL
 const currentSessionKey = computed(() => {
   return ($route.query.session as string) || ''
@@ -366,18 +527,19 @@ const currentSessionKey = computed(() => {
 // Chat layout applies to both the session view and the draft route.
 const isChatRoute = computed(() => $route.path === '/chat' || $route.path === '/chat/new')
 
+// The web Settings overlay (route-mounted dialog) is open on these routes. It
+// owns its own Escape/focus, so App-level keyboard shortcuts defer to it. On
+// desktop `/settings` is a full page (DesktopSettingsView), not an overlay, so
+// this stays false there.
+const settingsOverlayOpen = computed(() =>
+  webConfigEnabled && ($route.name === 'settings' || $route.name === 'settings-section'))
+
 const contractDebugEnabled = computed(() => appStore.features.contractDebug === true)
 
 function isNavActive(path: string): boolean {
   if (path === '/chat') return isChatRoute.value
   return $route.path === path
 }
-
-// Console fold: open while visiting any console page (active trail stays
-// visible), collapse automatically when navigating back to chat/sessions.
-const consoleOpen = ref(false)
-const isConsoleRoute = computed(() => consoleRoutes.value.some(route => route.path === $route.path))
-watch(isConsoleRoute, open => { consoleOpen.value = open }, { immediate: true })
 
 function agentDisplayName(agentId: string): string {
   const agent = agents.value.find(a => a.id === agentId)
@@ -400,81 +562,81 @@ function sidebarConversationTitle(item: SessionItem): string {
   return 'Untitled session'
 }
 
-function sourceFamilyForSession(item: SessionItem): SidebarFamilyId | null {
-  if (item.sessionKind === 'chat') {
-    if (['cli', 'tui', 'mcp', 'subagent'].includes(item.surface)) return null
-    return 'chats'
+// A draft / current-session row the backend list does not yet carry. The
+// sidebar arranger reads only a handful of fields off the SessionItem, so a
+// synthetic chat row carries just those plus a stub `raw` (no parent → root).
+function syntheticChatSession(
+  key: string,
+  effectiveAgentId: string,
+  title: string,
+  updatedAt: number,
+): SessionItem {
+  return {
+    key,
+    title,
+    subtitle: '',
+    groupLabel: normalizeAgentId(effectiveAgentId),
+    effectiveAgentId,
+    sessionKind: 'chat',
+    surface: 'webchat',
+    conversationKind: 'direct',
+    threadLabel: '',
+    channelContext: null,
+    status: 'idle',
+    visualStatus: 'idle',
+    runStatus: 'idle',
+    runLabel: 'Idle',
+    messageCount: null,
+    updatedAt,
+    interactive: true,
+    forkedFromParent: false,
+    contractGaps: [],
+    raw: { key },
   }
-  if (item.sessionKind === 'channel') return 'channels'
-  if (item.sessionKind === 'cron') return 'automations'
-  return null
 }
 
-const selectableAgents = computed(() => {
-  const map = new Map<string, AgentOption>()
-  map.set('main', { id: 'main', name: 'Main Agent' })
-  for (const agent of agents.value) {
-    const id = normalizeAgentId(agent.id)
-    if (id) map.set(id, { ...agent, id })
-  }
-  for (const item of allSessions.value) {
-    const agentId = normalizeAgentId(item.effectiveAgentId)
-    if (agentId && !map.has(agentId)) map.set(agentId, { id: agentId, name: agentDisplayName(agentId) })
-  }
-  return Array.from(map.values())
-})
-
-const sidebarConversations = computed((): SidebarConversationItem[] => {
-  const result: SidebarConversationItem[] = []
+// Sessions to arrange into the sidebar: the backend list plus the local draft
+// and the current chat session when the list does not carry them yet (both
+// injected as Chats so a brand-new conversation appears immediately).
+const sidebarSessionItems = computed((): SessionItem[] => {
+  const items: SessionItem[] = []
   const seen = new Set<string>()
   for (const item of allSessions.value) {
-    const key = item.key
-    if (!key || key === 'unknown') continue
-    const sourceFamily = sourceFamilyForSession(item)
-    if (!sourceFamily) continue
-    seen.add(key)
-    result.push({
-      key,
-      effectiveAgentId: item.effectiveAgentId,
-      agentName: agentDisplayName(normalizeAgentId(item.effectiveAgentId)),
-      title: sidebarConversationTitle(item),
-      sourceFamily,
-      runStatus: item.runStatus,
-      runLabel: item.runLabel,
-      updatedAt: item.updatedAt,
-      hasContractGaps: item.contractGaps.length > 0,
-    })
+    if (!item.key || item.key === 'unknown') continue
+    seen.add(item.key)
+    items.push(item)
   }
   for (const [key, local] of Object.entries(localChatSessions.value)) {
     if (seen.has(key)) continue
-    result.push({
-      key,
-      effectiveAgentId: local.effectiveAgentId,
-      agentName: agentDisplayName(normalizeAgentId(local.effectiveAgentId)),
-      sourceFamily: 'chats',
-      title: local.title || 'New chat',
-      runStatus: 'idle',
-      runLabel: 'Idle',
-      updatedAt: local.updatedAt,
-      hasContractGaps: false,
-    })
+    seen.add(key)
+    items.push(syntheticChatSession(key, local.effectiveAgentId, local.title || 'New chat', local.updatedAt))
   }
-  if (currentSessionKey.value && !seen.has(currentSessionKey.value) && !localChatSessions.value[currentSessionKey.value]) {
-    const currentAgentId = normalizeAgentId(currentSessionKey.value.split(':')[1] || 'main')
-    const currentUpdatedAt = Date.now()
-    result.push({
-      key: currentSessionKey.value,
-      effectiveAgentId: currentAgentId,
-      agentName: agentDisplayName(currentAgentId),
-      sourceFamily: 'chats',
-      title: 'Current session',
-      runStatus: 'idle',
-      runLabel: 'Idle',
-      updatedAt: currentUpdatedAt,
-      hasContractGaps: true,
-    })
+  const current = currentSessionKey.value
+  if (current && !seen.has(current)) {
+    const currentAgentId = normalizeAgentId(current.split(':')[1] || 'main')
+    items.push(syntheticChatSession(current, currentAgentId, 'Current session', Date.now()))
   }
-  return result.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 60)
+  return items
+})
+
+// Collapsible family sections (Chats / Channels / Automations). Row titles and
+// agent names are resolved here so the raw-session-id scrub and the display-name
+// lookup stay in App.vue; subagents indent under their parent via the helper.
+const sidebarSections = computed((): SidebarSection[] => {
+  const byKey = new Map(sidebarSessionItems.value.map(item => [item.key, item]))
+  return arrangeSidebarSections(sidebarSessionItems.value).map(section => ({
+    ...section,
+    rows: section.rows.map((row): SidebarSectionRow => {
+      const source = byKey.get(row.key)
+      const title = renameOverrides.value[row.key]
+        || (source ? sidebarConversationTitle(source) : row.title)
+      return {
+        ...row,
+        title,
+        agentName: agentDisplayName(normalizeAgentId(row.effectiveAgentId)),
+      }
+    }),
+  }))
 })
 
 let hoverLeaveTimer: ReturnType<typeof setTimeout> | null = null
@@ -517,56 +679,45 @@ function preferredAgentId(): string {
     const local = localChatSessions.value[currentSessionKey.value]
     if (local?.effectiveAgentId) return normalizeAgentId(local.effectiveAgentId)
   }
-  const latest = sidebarConversations.value.find(item => item.sourceFamily === 'chats' && item.effectiveAgentId !== 'unknown')?.effectiveAgentId
+  const chats = sidebarSections.value.find(section => section.family === 'chats')
+  const latest = chats?.rows.find(row => row.effectiveAgentId !== 'unknown')?.effectiveAgentId
   return latest || 'main'
 }
 
-async function loadAgents() {
-  agentListError.value = false
-  try {
-    await rpcStore.waitForConnection()
-    const data = await rpcStore.call<AgentsListResponse>('agents.list')
-    agents.value = (data?.agents || []).map(a => ({
-      id: normalizeAgentId(a.id || a.agentId || a.name || ''),
-      name: a.name || a.id || a.agentId || 'Agent',
-      model: a.model || '',
-    })).filter((a: AgentOption) => !!a.id)
-  } catch (err: unknown) {
-    console.warn('[App] agents.list error:', errorMessage(err))
-    agentListError.value = true
-    if (!agents.value.length) agents.value = [{ id: 'main', name: 'Main Agent' }]
-  }
+// Primary new-chat path: open a draft instantly against the preferred agent
+// (last-used, or main). The agent can still be switched from the draft landing.
+function startNewChatInstant() {
+  handleNavClick()
+  router.push({ path: '/chat/new', query: { agent: preferredAgentId() } })
 }
 
-async function openNewChatPicker() {
-  selectedNewChatAgentId.value = preferredAgentId()
-  newChatPickerOpen.value = true
-  if (!agents.value.length) {
-    await loadAgents()
-    if (!selectableAgents.value.some(a => a.id === selectedNewChatAgentId.value)) {
-      selectedNewChatAgentId.value = preferredAgentId()
-    }
-  }
+// Command palette: ⌘K / Ctrl+K and the rail "Search / Go to…" row both open it.
+// Its action commands route back through the existing handlers so behaviour stays
+// single-sourced (new chat opens a draft, Settings reuses the footer path).
+function openCommandPalette() {
+  handleNavClick()
+  commandPaletteOpen.value = true
 }
 
-function closeNewChatPicker() {
-  newChatPickerOpen.value = false
+function onPaletteNewChat() {
+  startNewChatInstant()
 }
 
-function onNewChatBackdrop(e: MouseEvent) {
-  if (e.target === e.currentTarget) closeNewChatPicker()
+function onPaletteOpenSettings() {
+  openSettings()
 }
 
-function startNewChatForSelectedAgent() {
-  // Draft state: no session exists until the first message is sent.
-  const agentId = normalizeAgentId(selectedNewChatAgentId.value || 'main')
-  closeNewChatPicker()
-  router.push({ path: '/chat/new', query: { agent: agentId } })
+function onPaletteToggleTheme() {
+  // Cycle the appearance MODE (light → dark → system) so the palette keeps
+  // parity with the topbar's 3-way picker instead of collapsing to binary and
+  // silently dropping the "system" follow option.
+  const order: ThemeMode[] = ['light', 'dark', 'system']
+  const next = order[(order.indexOf(appStore.theme) + 1) % order.length]
+  appStore.setTheme(next)
 }
 
-function goToAgents() {
-  closeNewChatPicker()
-  router.push('/agents')
+function onPaletteSelectSession(key: string) {
+  switchToSession(key)
 }
 
 function switchToSession(key: string) {
@@ -577,47 +728,105 @@ function switchToSession(key: string) {
   }
 }
 
-// Topbar approval pill: jump straight to the blocked session's chat so the
-// in-thread card can be answered; fall back to the Approvals page when the
-// pending request carries no session.
-async function openBlockedApprovalSession() {
+// Optimistic rename: show the new title immediately, then persist via
+// sessions.patch (display_name is the top-precedence title) and reload so the
+// backend's canonical title wins. The override clears once the reload lands.
+async function onRenameSession({ key, title }: { key: string; title: string }) {
+  const next = title.trim()
+  if (!key || !next) return
+  renameOverrides.value = { ...renameOverrides.value, [key]: next }
+  const local = localChatSessions.value[key]
+  if (local) localChatSessions.value[key] = { ...local, title: next }
   try {
-    const headers: Record<string, string> = {}
-    try {
-      const token = sessionStorage.getItem('opensquilla.wsToken') || ''
-      if (token) headers['Authorization'] = `Bearer ${token}`
-    } catch { /* ignore */ }
-    const res = await fetch('/api/approvals', { headers })
-    if (res.ok) {
-      const data = await res.json() as { pending?: Array<{ sessionKey?: string }> }
-      const key = (data.pending || [])
-        .map(item => String(item.sessionKey || '').trim())
-        .find(Boolean)
-      if (key) {
-        switchToSession(key)
-        return
-      }
-    }
-  } catch { /* fall through to the Approvals page */ }
+    await rpcStore.call('sessions.patch', { key, displayName: next })
+    pushToast('Session renamed', { tone: 'ok' })
+  } catch (err: unknown) {
+    console.warn('[App] sessions.patch error:', errorMessage(err))
+    pushToast('Failed to rename session', { tone: 'danger' })
+  } finally {
+    await loadSessions()
+    const { [key]: _dropped, ...rest } = renameOverrides.value
+    renameOverrides.value = rest
+  }
+}
+
+// Delete a session, then refresh the list. If the deleted session is the one
+// open in the chat view, drop into a fresh draft so the view does not linger on
+// a session that no longer exists.
+async function onDeleteSession(key: string) {
+  if (!key) return
+  const wasCurrent = key === currentSessionKey.value
+  let result: { deleted?: string[]; errors?: string[] } | undefined
+  try {
+    result = await rpcStore.call<{ deleted?: string[]; errors?: string[] }>('sessions.delete', { keys: [key] })
+  } catch (err: unknown) {
+    // A rejected call must not look like success: surface the error and bail
+    // before dropping the row, reloading, or navigating away from a session
+    // that still exists on the backend.
+    console.warn('[App] sessions.delete error:', errorMessage(err))
+    pushToast('Failed to delete session', { tone: 'danger' })
+    return
+  }
+  // The backend resolves even when a key fails to delete — it collects per-key
+  // errors into the response instead of throwing — so a non-throwing call is
+  // not proof of success. Only proceed when the key is actually reported
+  // deleted; otherwise surface the failure and bail.
+  if (!result?.deleted?.includes(key)) {
+    console.warn('[App] sessions.delete reported failure:', result?.errors)
+    pushToast('Failed to delete session', { tone: 'danger' })
+    return
+  }
+  pushToast('Session deleted', { tone: 'ok' })
+  if (localChatSessions.value[key]) {
+    const { [key]: _dropped, ...rest } = localChatSessions.value
+    localChatSessions.value = rest
+  }
+  await loadSessions()
+  if (wasCurrent) {
+    router.push({ path: '/chat/new', query: { agent: preferredAgentId() } })
+  }
+}
+
+// Topbar approval pill: jump straight to the blocked session's chat so the
+// in-thread card can be answered. The live `pendingApprovals` list (kept fresh
+// by the push subscription + reconnect seed) is the source of truth — no
+// re-fetch — and the oldest pending session (closest to timeout) is the
+// deterministic target. With no routable session, fall back to the Approvals
+// page.
+function openBlockedApprovalSession() {
+  const oldest = appStore.oldestPendingWithSession
+  if (oldest?.sessionKey) {
+    switchToSession(oldest.sessionKey)
+    return
+  }
   router.push('/approvals')
 }
 
-// Sidebar Approvals row (rendered only while requests are pending) shares the
-// topbar pill's deep-link behavior.
+// Sidebar Approvals row: a persistent destination. While requests are pending
+// it shares the topbar pill's deep-link to the blocked session; when idle it is
+// the proactive way into the Approvals page (queue + strategy), with no fetch.
 function onApprovalsRowClick() {
   handleNavClick()
-  openBlockedApprovalSession()
+  if (appStore.approvalCount > 0) {
+    openBlockedApprovalSession()
+  } else {
+    router.push('/approvals')
+  }
 }
 
-// Footer settings row: desktop keeps its settings route; web opens the
-// settings modal (mounted by the modal owner; this only flips the flag).
+// Footer settings row. Both platforms own a `/settings` route now (web mounts
+// the overlay dialog; desktop renders its own settings view), so a single push
+// covers both. The desktop route carries `nav: 'bottom'`, so prefer its
+// registered path when present to keep any future bottom-nav ordering authoritative.
 function openSettings() {
   handleNavClick()
-  if (bottomRoutes.value.length) {
-    router.push(bottomRoutes.value[0].path)
-    return
-  }
-  appStore.setSettingsOpen(true)
+  router.push(bottomRoutes.value[0]?.path ?? '/settings')
+}
+
+// Topbar connection pill (web): jump straight to the Connection section so the
+// gateway link can be inspected or re-pointed.
+function openConnectionSettings() {
+  router.push('/settings/connection')
 }
 
 function onHoverEnter() {
@@ -644,28 +853,58 @@ function scheduleSessionRefresh() {
   }, 150)
 }
 
-function isEditableTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false
-  if (target.isContentEditable) return true
-  return target instanceof HTMLInputElement
-    || target instanceof HTMLTextAreaElement
-    || target instanceof HTMLSelectElement
-}
-
 function handleKeydown(e: KeyboardEvent) {
-  if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k') {
-    if (isEditableTarget(e.target) || appStore.settingsOpen) return
+  // Chord bindings carry the primary modifier as Cmd on Apple platforms and Ctrl
+  // elsewhere — and require the other modifier to be absent — so we never match
+  // macOS' Ctrl+K (emacs kill-to-end-of-line inside text fields). preventDefault
+  // runs BEFORE any early return so the browser never sees the chord: on
+  // Chrome/Edge/Firefox (Win/Linux) Ctrl+K focuses the omnibox/search, and in
+  // Firefox-mac Cmd+K focuses the search bar. Swallowing it unconditionally also
+  // lets the shortcut fire from inside the composer textarea, where the cursor
+  // usually sits.
+  //
+  // Configurable chord shortcuts, consulted from the shortcuts store so the
+  // Keyboard settings section is the single source of truth. effectiveBinding
+  // returns null for a disabled shortcut, so bindingMatches skips it. New chat
+  // is checked first because the palette's no-shift binding would otherwise also
+  // match a Shift+K press under a looser guard. preventDefault still runs before
+  // the settingsOverlay guard so the browser never sees the chord.
+  const paletteBinding = shortcutsStore.effectiveBinding('command-palette')
+  const newChatBinding = shortcutsStore.effectiveBinding('new-chat')
+  if (bindingMatches(e, newChatBinding, isMac)) {
     e.preventDefault()
-    openNewChatPicker()
+    if (settingsOverlayOpen.value) return
+    startNewChatInstant()
     return
   }
+  if (bindingMatches(e, paletteBinding, isMac)) {
+    e.preventDefault()
+    if (settingsOverlayOpen.value) return
+    // Toggle so a second press closes it; the palette owns Escape/focus while open.
+    commandPaletteOpen.value = !commandPaletteOpen.value
+    return
+  }
+
+  // Skip App's fallbacks when a handler that runs BEFORE this one already
+  // consumed the key: the composer textarea (@keydown, target phase) and any
+  // earlier-registered document listener (e.g. ChatView). Overlays (drawers,
+  // modals) attach their document listeners on open — AFTER this one — so they
+  // run later and are NOT covered by this guard; their collision with the
+  // sidebar-Escape branch is ruled out by the mobile-only gate below instead.
+  if (e.defaultPrevented) return
+
   if (e.key === 'Escape' && themeMenuOpen.value) {
     themeMenuOpen.value = false
     themeButtonRef.value?.focus()
     return
   }
-  // The settings modal owns Escape while open (it closes itself).
-  if (e.key === 'Escape' && appStore.sidebarOpen && !appStore.settingsOpen) {
+  // Escape dismisses the sidebar only as the mobile slide-over. On desktop the
+  // sidebar is a persistent dock toggled by its own button, so it must never
+  // collapse as a side effect of an Escape meant for an overlay opened on top of
+  // it. Because those overlays run after this handler (see above), this
+  // mobile-only gate — not the defaultPrevented check — is what prevents that
+  // collision; keep it. The settings overlay owns Escape while open and is excluded.
+  if (e.key === 'Escape' && appStore.sidebarOpen && !settingsOverlayOpen.value && window.innerWidth <= 768) {
     appStore.setSidebarOpen(false)
   }
 }
@@ -673,6 +912,141 @@ function handleKeydown(e: KeyboardEvent) {
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
+
+// ---------------------------------------------------------------------------
+// App-wide approval awareness
+//
+// The Approvals page only updates the count while it is mounted; a tool that
+// blocks a background/queued turn must surface the badge from any view. The
+// gateway pushes `<namespace>.approval.requested|resolved` the moment a run
+// blocks or a decision lands, so we keep `pendingApprovals`/`approvalCount`
+// live here, seeded once on (re)connect to recover requests that predate the
+// socket (e.g. a reload while one is already pending).
+// ---------------------------------------------------------------------------
+
+interface ApprovalPushPayload {
+  approval_id?: string
+  approvalId?: string
+  session_key?: string
+  sessionKey?: string
+  tool_name?: string
+  toolName?: string
+  command?: string
+}
+
+interface ApprovalSnapshotItem {
+  id?: string
+  sessionKey?: string
+  toolName?: string
+  pluginId?: string
+  actionKind?: string
+  command?: string
+  argv?: string[]
+}
+
+const rpcApprovalUnsubs: Array<() => void> = []
+
+function approvalAuthHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {}
+  try {
+    const token = sessionStorage.getItem('opensquilla.wsToken') || ''
+    if (token) headers['Authorization'] = `Bearer ${token}`
+  } catch { /* ignore */ }
+  return headers
+}
+
+function snapshotItemToPending(item: ApprovalSnapshotItem): PendingApproval | null {
+  const approvalId = String(item.id || '').trim()
+  if (!approvalId) return null
+  let command = String(item.command || '')
+  if (!command && Array.isArray(item.argv) && item.argv.length > 0) {
+    command = item.argv.map(String).join(' ')
+  }
+  return {
+    approvalId,
+    sessionKey: String(item.sessionKey || ''),
+    tool: String(item.toolName || item.pluginId || item.actionKind || 'Unknown tool'),
+    command,
+  }
+}
+
+// Seed the live list from the snapshot so the count is correct after a reload
+// while a request is already pending; mirrors how ApprovalsView fetches it. The
+// snapshot is ordered oldest-first, which the deep-link relies on.
+async function seedPendingApprovals() {
+  try {
+    const res = await fetch('/api/approvals', { headers: approvalAuthHeaders() })
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const data = await res.json() as { pending?: ApprovalSnapshotItem[] }
+    const items = (data.pending || [])
+      .map(snapshotItemToPending)
+      .filter((item): item is PendingApproval => item !== null)
+    appStore.setPendingApprovals(items)
+  } catch (err) {
+    console.warn('[App] approvals seed failed:', errorMessage(err))
+  }
+}
+
+function onApprovalRequested(payload: ApprovalPushPayload) {
+  const approvalId = String(payload.approval_id || payload.approvalId || '').trim()
+  if (!approvalId) return
+  appStore.upsertPendingApproval({
+    approvalId,
+    sessionKey: String(payload.session_key || payload.sessionKey || ''),
+    tool: String(payload.tool_name || payload.toolName || 'Unknown tool'),
+    command: String(payload.command || ''),
+  })
+}
+
+function onApprovalResolved(payload: ApprovalPushPayload) {
+  const approvalId = String(payload.approval_id || payload.approvalId || '').trim()
+  if (approvalId) appStore.removePendingApproval(approvalId)
+}
+
+// Reconnect re-seeds the list (recovers approvals that arrived while the socket
+// was down); the push events keep it live thereafter.
+function onApprovalConnectionState(state: unknown) {
+  if (state === 'connected') void seedPendingApprovals()
+}
+
+function subscribeApprovals() {
+  rpcApprovalUnsubs.push(
+    rpcStore.on('exec.approval.requested', onApprovalRequested as RpcEventHandler),
+    rpcStore.on('exec.approval.resolved', onApprovalResolved as RpcEventHandler),
+    rpcStore.on('plugin.approval.requested', onApprovalRequested as RpcEventHandler),
+    rpcStore.on('plugin.approval.resolved', onApprovalResolved as RpcEventHandler),
+    rpcStore.on('_state', onApprovalConnectionState as RpcEventHandler),
+  )
+}
+
+function unsubscribeApprovals() {
+  rpcApprovalUnsubs.forEach(unsub => unsub())
+  rpcApprovalUnsubs.length = 0
+}
+
+// ---------------------------------------------------------------------------
+// Tab-title + screen-reader badge for the pending count
+// ---------------------------------------------------------------------------
+
+const BASE_TITLE = document.title
+
+const approvalAnnouncement = ref('')
+
+let titleDebounce: ReturnType<typeof setTimeout> | null = null
+
+function applyTitleBadge(count: number) {
+  document.title = count > 0 ? `(${count}) ${BASE_TITLE}` : BASE_TITLE
+}
+
+// Debounce so a burst of count changes does not thrash the tab title.
+watch(() => appStore.approvalCount, count => {
+  approvalAnnouncement.value = count > 0 ? `${count} approvals pending` : ''
+  if (titleDebounce) clearTimeout(titleDebounce)
+  titleDebounce = setTimeout(() => {
+    titleDebounce = null
+    applyTitleBadge(count)
+  }, 500)
+})
 
 useDocumentEvent('keydown', handleKeydown)
 
@@ -683,14 +1057,54 @@ onMounted(() => {
   loadAgents()
   loadSessions()
   rpcUnsubSessionsChanged = rpcStore.on('sessions.changed', scheduleSessionRefresh)
+  // Keep the approval badge/count live app-wide, not just on the Approvals page.
+  subscribeApprovals()
+  // Seed now in case the socket is already connected (the `_state` listener
+  // covers later reconnects); recovers a request pending before mount.
+  if (rpcStore.isConnected) void seedPendingApprovals()
 })
 
 onUnmounted(() => {
   if (hoverLeaveTimer) clearTimeout(hoverLeaveTimer)
   if (sessionRefreshTimer) clearTimeout(sessionRefreshTimer)
   if (rpcUnsubSessionsChanged) rpcUnsubSessionsChanged()
+  unsubscribeApprovals()
+  if (titleDebounce) {
+    clearTimeout(titleDebounce)
+    titleDebounce = null
+  }
+  document.title = BASE_TITLE
   window.removeEventListener('resize', syncMobileSidebar)
   window.visualViewport?.removeEventListener('resize', syncMobileKeyboard)
 })
 
 </script>
+
+<style scoped>
+/* Topbar connection pill as a button (web): inherits the base .conn-pill look
+   and state colors, adds button reset + an affordance that it is clickable. */
+.conn-pill--link {
+  cursor: pointer;
+  font-family: inherit;
+}
+.conn-pill--link:hover {
+  filter: brightness(1.08);
+}
+.conn-pill--link:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: 2px;
+}
+
+/* Off-screen but screen-reader-reachable announcer for the approval count. */
+.app-approval-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+</style>

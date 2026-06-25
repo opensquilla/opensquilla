@@ -1,6 +1,6 @@
 <template>
   <div v-if="open" class="tool-sheet-overlay" @click.self="$emit('close')">
-    <aside class="tool-sheet" role="dialog" aria-modal="true" :aria-label="title">
+    <aside ref="rootRef" class="tool-sheet" role="dialog" aria-modal="true" :aria-label="title">
       <div class="tool-sheet__header">
         <h3 class="tool-sheet__title">{{ title }}</h3>
         <div class="tool-sheet__actions">
@@ -26,8 +26,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
+import { computed, ref, toRef, watch } from 'vue'
 import Icon from '@/components/Icon.vue'
+import { useDialogA11y } from '@/composables/useDialogA11y'
 
 const props = defineProps<{
   open: boolean
@@ -41,6 +42,11 @@ const emit = defineEmits<{
 
 const rawMode = ref(false)
 const closeBtn = ref<HTMLButtonElement | null>(null)
+const rootRef = ref<HTMLElement | null>(null)
+
+// Trap Tab focus inside the sheet, close on Escape, and restore focus to the
+// invoker on close; initial focus lands on the close button.
+useDialogA11y(rootRef, toRef(props, 'open'), () => emit('close'), { initialFocus: closeBtn })
 
 // Guardrails: very large payloads fall back to plain text, long string leaves
 // are clipped, and the tree stops after a node budget.
@@ -99,25 +105,9 @@ const treeHtml = computed(() => {
   }
 })
 
-function onDocumentKeydown(event: KeyboardEvent) {
-  if (event.key === 'Escape' && props.open) {
-    event.preventDefault()
-    emit('close')
-  }
-}
-
+// Reset to the tree view each time the sheet opens.
 watch(() => props.open, open => {
-  if (open) {
-    rawMode.value = false
-    document.addEventListener('keydown', onDocumentKeydown)
-    nextTick(() => closeBtn.value?.focus())
-  } else {
-    document.removeEventListener('keydown', onDocumentKeydown)
-  }
-})
-
-onUnmounted(() => {
-  document.removeEventListener('keydown', onDocumentKeydown)
+  if (open) rawMode.value = false
 })
 </script>
 

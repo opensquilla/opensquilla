@@ -7,15 +7,37 @@ type FeatureWindow = Window & {
   OPENSQUILLA_FEATURES?: Record<string, boolean>
 }
 
+/** One pending approval, ordered oldest-first (closest to timeout). */
+export interface PendingApproval {
+  approvalId: string
+  sessionKey: string
+  tool: string
+  command: string
+}
+
 export const useAppStore = defineStore('app', () => {
   const theme = ref<ThemeMode>('system')
   const sidebarOpen = ref(true)
   const sidebarHovered = ref(false)
-  const approvalCount = ref(0)
-  const settingsOpen = ref(false)
-  // Section the settings dialog should land on: a section id, 'auto'
-  // (first not-ready section), or null for the default first section.
-  const settingsSection = ref<string | null>(null)
+  // App-wide pending approvals, kept live by the gateway push events and a
+  // reconnect seed fetch (App.vue). Ordered oldest-first. `approvalCount` is
+  // derived from this list once it becomes the source, but `setApprovalCount`
+  // still works for the Approvals page snapshot (back-compat).
+  const pendingApprovals = ref<PendingApproval[]>([])
+  const approvalCountRaw = ref(0)
+
+  // True once App.vue has wired the live approval source (push events + seed
+  // fetch). While live, `approvalCount` is derived from `pendingApprovals`;
+  // before then it falls back to whatever `setApprovalCount` last wrote so the
+  // Approvals page keeps working in isolation.
+  const approvalsLive = ref(false)
+
+  const approvalCount = computed(() =>
+    approvalsLive.value ? pendingApprovals.value.length : approvalCountRaw.value)
+
+  // The oldest pending approval with a routable session (closest to timeout).
+  const oldestPendingWithSession = computed<PendingApproval | null>(() =>
+    pendingApprovals.value.find(item => !!item.sessionKey) ?? null)
 
   const systemDark = ref<boolean>(
     window.matchMedia('(prefers-color-scheme: dark)').matches
@@ -98,12 +120,34 @@ export const useAppStore = defineStore('app', () => {
   }
 
   function setApprovalCount(count: number) {
-    approvalCount.value = count
+    approvalCountRaw.value = count
   }
 
-  function setSettingsOpen(open: boolean, section: string | null = null) {
-    settingsOpen.value = open
-    settingsSection.value = open ? section : null
+  // Replace the app-wide pending list and mark it the live source so
+  // `approvalCount` derives from it. Called on the reconnect seed fetch.
+  function setPendingApprovals(items: PendingApproval[]) {
+    approvalsLive.value = true
+    pendingApprovals.value = items
+  }
+
+  // `*.approval.requested` push: add or update by approvalId, preserving the
+  // oldest-first order (new ids append to the tail).
+  function upsertPendingApproval(item: PendingApproval) {
+    approvalsLive.value = true
+    const idx = pendingApprovals.value.findIndex(a => a.approvalId === item.approvalId)
+    if (idx === -1) {
+      pendingApprovals.value = [...pendingApprovals.value, item]
+    } else {
+      const next = pendingApprovals.value.slice()
+      next[idx] = item
+      pendingApprovals.value = next
+    }
+  }
+
+  // `*.approval.resolved` push: drop by approvalId.
+  function removePendingApproval(approvalId: string) {
+    approvalsLive.value = true
+    pendingApprovals.value = pendingApprovals.value.filter(a => a.approvalId !== approvalId)
   }
 
   const features = ref<Record<string, boolean>>({
@@ -123,8 +167,8 @@ export const useAppStore = defineStore('app', () => {
     sidebarOpen,
     sidebarHovered,
     approvalCount,
-    settingsOpen,
-    settingsSection,
+    pendingApprovals,
+    oldestPendingWithSession,
     features,
     initTheme,
     destroyTheme,
@@ -134,6 +178,8 @@ export const useAppStore = defineStore('app', () => {
     toggleSidebar,
     setSidebarHovered,
     setApprovalCount,
-    setSettingsOpen,
+    setPendingApprovals,
+    upsertPendingApproval,
+    removePendingApproval,
   }
 })

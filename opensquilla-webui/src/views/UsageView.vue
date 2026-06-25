@@ -24,8 +24,8 @@
         <button class="btn btn--ghost mobile-action-strip__button" title="Download CSV" @click="exportCsv">
           <Icon name="download" :size="16" /><span class="mobile-action-strip__label">Export</span>
         </button>
-        <button class="btn btn--ghost mobile-action-strip__button" title="Refresh" @click="loadData">
-          <Icon name="refresh" :size="16" /><span class="mobile-action-strip__label">Refresh</span>
+        <button class="btn btn--ghost mobile-action-strip__button" title="Refresh" :disabled="refreshing" @click="refresh">
+          <Icon name="refresh" :size="16" /><span class="mobile-action-strip__label">{{ refreshing ? 'Refreshing…' : 'Refresh' }}</span>
         </button>
       </div>
     </header>
@@ -55,7 +55,14 @@
       :fmt-cost="fmtCost"
     />
 
+    <div v-if="usageLoading && sortedRows.length === 0" class="state">
+      <LoadingSpinner />
+    </div>
+
+    <ErrorState v-else-if="usageError" :message="usageError" :on-retry="loadData" />
+
     <UsageSessionsTable
+      v-else
       :table-columns="tableColumns"
       :sortable-cols="sortableCols"
       :sort-col="sortCol"
@@ -84,11 +91,14 @@
 </template>
 
 <script setup lang="ts">
+import { ref } from 'vue'
 import UsageSummaryStats from '@/components/usage/UsageSummaryStats.vue'
 import UsageChart from '@/components/usage/UsageChart.vue'
 import UsageModelCards from '@/components/usage/UsageModelCards.vue'
 import UsageSessionsTable from '@/components/usage/UsageSessionsTable.vue'
 import Icon from '@/components/Icon.vue'
+import ErrorState from '@/components/ErrorState.vue'
+import LoadingSpinner from '@/components/LoadingSpinner.vue'
 import { useUsageData } from '@/composables/usage/useUsageData'
 
 const {
@@ -97,6 +107,8 @@ const {
   sortAsc,
   chartMode,
   range,
+  usageLoading,
+  usageError,
   expandedSessions,
   tableColumns,
   sortableCols,
@@ -135,6 +147,19 @@ const {
   rowBreakdownTotalCost,
   rowBreakdownAnyProrated,
 } = useUsageData()
+
+// Manual refresh shows a busy state; loadData (also the poll/mount handler) now
+// returns the refresh promise, so a local flag spans just the user-driven load.
+const refreshing = ref(false)
+async function refresh() {
+  if (refreshing.value) return
+  refreshing.value = true
+  try {
+    await loadData()
+  } finally {
+    refreshing.value = false
+  }
+}
 </script>
 
 <style>

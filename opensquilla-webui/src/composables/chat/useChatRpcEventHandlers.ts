@@ -1,4 +1,4 @@
-import { computed, ref, watch, type Ref } from 'vue'
+import { computed, onScopeDispose, ref, watch, type Ref } from 'vue'
 import type {
   ChatMessage,
   ChatPendingItem,
@@ -16,6 +16,8 @@ import type {
   ToolUsePayload,
 } from '@/types/rpc'
 import type { ChatRpcSubscriptionHandlers } from '@/composables/chat/useChatRpcSubscriptions'
+import type { FrameInput } from '@/types/turnlog'
+import type { FoldLiveTurnMode } from '@/composables/chat/useChatTurnLog'
 import {
   acceptStreamSeq as decideStreamSeq,
   activeTaskGroupRunState as buildActiveTaskGroupRunState,
@@ -45,6 +47,7 @@ export interface ChatRpcStreamApi {
   startStreaming: () => void
   endStreaming: (opts?: { reason?: string }) => void
   appendDelta: (text: string) => void
+  scheduleRender: () => void
   appendToolCall: (payload: ToolUsePayload) => void
   appendToolDelta: (payload: ToolDeltaPayload) => void
   appendToolResult: (payload: ToolResultPayload) => void
@@ -55,6 +58,10 @@ export interface ChatRpcStreamApi {
   setStreamActivity: (label: string) => void
   showThinkingIndicator: () => void
   hideThinkingIndicator: () => void
+  // live-turn shadow log: the thinking ref lives here, so this composable appends
+  // its own thinking frames into the stream-owned log after the legacy mutation.
+  appendFrame: (frame: FrameInput) => void
+  useReducer: Ref<FoldLiveTurnMode>
 }
 
 export interface UseChatRpcEventHandlersOptions {
@@ -132,10 +139,28 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
   const streamThinking = ref<{ text: string; startedAt: number } | null>(null)
   const turnReasoningLog: TurnReasoningRecord[] = []
 
+  // 1s ticker so the live "Thinking · Ns" label advances on a clock while
+  // reasoning is open, not only when a new reasoning delta happens to arrive.
+  const elapsedTick = ref(0)
+  let elapsedTimer: ReturnType<typeof setInterval> | null = null
+  watch(
+    () => stream.isStreaming.value && !!streamThinking.value,
+    (active) => {
+      if (active && !elapsedTimer) {
+        elapsedTimer = setInterval(() => { elapsedTick.value++ }, 1000)
+      } else if (!active && elapsedTimer) {
+        clearInterval(elapsedTimer)
+        elapsedTimer = null
+      }
+    },
+  )
+  onScopeDispose(() => { if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null } })
+
   const streamThinkingText = computed(() => streamThinking.value?.text || '')
-  // Recomputed per delta; while reasoning streams the label keeps pace, and
-  // the final "Thought for Ns" uses the measured wall clock at done.
+  // Recomputed per delta AND on the 1s tick so the label keeps pace between
+  // deltas; the final "Thought for Ns" uses the measured wall clock at done.
   const streamThinkingElapsedText = computed(() => {
+    elapsedTick.value
     const current = streamThinking.value
     if (!current) return ''
     const seconds = Math.max(0, Math.floor((Date.now() - current.startedAt) / 1000))
@@ -149,6 +174,14 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
     streamThinking.value = current
       ? { text: current.text + text, startedAt: current.startedAt }
       : { text, startedAt: Date.now() }
+    // The fold concats the same text into its thinkingText. Gating already
+    // passed upstream (handleRpcAny), so this frame mirrors an accepted delta.
+    if (stream.useReducer.value) stream.appendFrame({ kind: 'thinking', text, at: Date.now() })
+    // Reasoning growth must re-pin the thread to the bottom just like answer
+    // text and tool deltas. Schedule the same batched render/scroll flush so a
+    // long thinking phase keeps following the live turn instead of only
+    // snapping down once answer text starts streaming.
+    stream.scheduleRender()
   }
 
   function clearLiveThinking() {
@@ -526,16 +559,24 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
     }
   }
 
+  let connectionLostNoted = false
   function handleRpcConnectionState(state: string) {
     if (state === 'connected' && sessionKey.value) {
+      connectionLostNoted = false
       stream.hideThinkingIndicator()
       options.subscribeSession()
       options.loadCurrentSessionUsage()
       options.loadHistory()
     }
     if (state === 'disconnected' && stream.isStreaming.value) {
-      stream.clearStreamIdleTimer()
+      // Surface the drop instead of silently freezing the work-card, and keep the
+      // idle watchdog ARMED (do not clear it) so a run whose events never resume
+      // still times out honestly instead of spinning forever on a dead socket.
       stream.showThinkingIndicator()
+      if (!connectionLostNoted) {
+        connectionLostNoted = true
+        messages.value.push({ role: 'system', text: 'Connection lost — trying to reconnect…', ts: new Date().toISOString() })
+      }
     }
   }
 

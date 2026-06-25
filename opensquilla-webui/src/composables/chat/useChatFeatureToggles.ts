@@ -1,6 +1,11 @@
 import { ref } from 'vue'
 import type { ChatRouterTierConfig } from '@/types/chat'
 import { normalizeRouterTier, sortRouterTiers } from '@/utils/chat/routerTiers'
+import { encodeRouterShape, decodeRouterShape } from '@/utils/chat/routerShapeCache'
+import {
+  DEFAULT_ROUTER_VISUAL_MODE,
+  normalizeRouterVisualMode,
+} from '@/utils/chat/routerVisualMode'
 
 type RpcClient = {
   waitForConnection: () => Promise<void>
@@ -17,6 +22,7 @@ interface ChatFeatureConfig {
   squilla_router?: {
     enabled?: boolean
     rollout_phase?: string
+    visual_mode?: string
     tiers?: Record<string, {
       model?: string
       supports_image?: boolean
@@ -31,14 +37,20 @@ interface ChatFeatureConfig {
 }
 
 const ROUTER_FX_PREF_KEY = 'opensquilla.routerFx'
+const ROUTER_SHAPE_KEY = 'opensquilla.router.shape'
 
 export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
   const routerEnabled = ref(false)
   const routerVisualEffectsEnabled = ref(true)
+  const routerVisualMode = ref(DEFAULT_ROUTER_VISUAL_MODE)
   const routerSettingsBusy = ref(false)
   const routerSlots = ref<string[]>([])
   const routerModels = ref<Record<string, string>>({})
   const routerTierConfigs = ref<Record<string, ChatRouterTierConfig>>({})
+
+  // Seed the last-known router shape synchronously so the router-strip reserve
+  // twin can hold its slot on the first turn, before config.get resolves.
+  hydrateRouterShape()
 
   async function loadFeatureToggles() {
     try {
@@ -47,6 +59,7 @@ export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
       const router = cfg?.squilla_router || {}
 
       routerEnabled.value = Boolean(router.enabled && router.rollout_phase !== 'observe')
+      routerVisualMode.value = normalizeRouterVisualMode(router.visual_mode)
       loadRouterVisualEffectsPreference()
 
       const tiers = router.tiers
@@ -75,11 +88,40 @@ export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
       routerSlots.value = sortRouterTiers(tierKeys)
       routerModels.value = tierModels
       routerTierConfigs.value = tierConfigs
+      persistRouterShape()
       options.setGlobalElevatedMode(cfg?.permissions?.default_mode || '')
       await options.loadCurrentSessionUsage()
     } catch {
       // Feature toggles are optional for older gateways.
     }
+  }
+
+  // Hydrate the router shape from localStorage into the live refs. Synchronous
+  // and side-effect-free on failure so it is safe to call at composable init.
+  function hydrateRouterShape() {
+    try {
+      const cached = decodeRouterShape(localStorage.getItem(ROUTER_SHAPE_KEY))
+      if (!cached) return
+      routerEnabled.value = cached.enabled
+      routerSlots.value = cached.slots
+      routerModels.value = cached.models
+      routerTierConfigs.value = cached.configs
+    } catch {}
+  }
+
+  // Persist the just-loaded shape so the next page load can seed the reserve.
+  // Skip when there are no tier models — a degenerate shape would only seed a
+  // <=1-cell reserve, which the reserve gate rejects anyway.
+  function persistRouterShape() {
+    try {
+      if (Object.keys(routerModels.value).length === 0) return
+      localStorage.setItem(ROUTER_SHAPE_KEY, encodeRouterShape({
+        enabled: routerEnabled.value,
+        slots: routerSlots.value,
+        models: routerModels.value,
+        configs: routerTierConfigs.value,
+      }))
+    } catch {}
   }
 
   function loadRouterVisualEffectsPreference() {
@@ -157,6 +199,7 @@ export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
   return {
     routerEnabled,
     routerVisualEffectsEnabled,
+    routerVisualMode,
     routerSettingsBusy,
     routerSlots,
     routerModels,

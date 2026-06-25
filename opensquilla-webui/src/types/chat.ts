@@ -24,7 +24,7 @@ export interface ChatPendingItem {
 }
 
 export interface ChatRouterCell {
-  kind: 'real'
+  kind: 'real' | 'decoy'
   tier: string
   tiers: string[]
   displayName: string
@@ -192,6 +192,7 @@ export interface ChatMessage {
   output?: number
   output_tokens?: number
   restoredFromHistory?: boolean
+  statusHistory?: import('./parts').StatusPart[]
 }
 
 export interface ChatMessageMeta {
@@ -216,6 +217,9 @@ export interface ChatRenderedMessage {
   roleLabel: string
   text: string
   timeStr: string
+  /** Raw message timestamp (epoch ms or ISO string) so components can derive a
+   *  live relative + absolute label without re-running the renderedMessages map. */
+  ts?: string | number | null
   showHeader: boolean
   isStreaming?: boolean
   messageId?: string
@@ -236,6 +240,10 @@ export interface ChatRenderedMessage {
   routerObserve?: boolean
   routerStatic?: boolean
   routerSettled?: boolean
+  routerPanel?: string
   gridCells?: ChatRouterCell[]
   winnerIdx?: number
+  parts?: import('./parts').ChatPart[]
+  sources?: import('./parts').SourcePart[]
+  statusHistory?: import('./parts').StatusPart[]
 }

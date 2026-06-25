@@ -6,6 +6,7 @@ import type {
   RawToolCallPayload,
 } from '@/types/chat'
 import type { ChatHistoryMessage, ChatHistoryResponse } from '@/types/rpc'
+import { reconcileHistoryMessages } from '@/utils/chat/historyMerge'
 
 type RpcClient = {
   waitForConnection: () => Promise<void>
@@ -21,6 +22,22 @@ function recordArray<T extends Record<string, unknown>>(value: unknown): T[] {
 function usagePayload(value: unknown): ChatUsagePayload | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
   return value as ChatUsagePayload
+}
+
+const HISTORY_MERGE_KEY = 'opensquilla.chat.historyMerge'
+
+// Default OFF for one release: when set to '1' the non-prepend history sync
+// reconciles the new server window against the current rows by messageId,
+// re-applying live-only fields (measured reasoning seconds, router-settled,
+// interrupted) the server snapshot does not carry. Any other value, or no
+// key, keeps the legacy whole-array replace. Flipped to default-ON once the
+// live parity spec proves the merge holds (mirrors the foldLiveTurn rollout).
+function readHistoryMergeFlag(): boolean {
+  try {
+    return localStorage.getItem(HISTORY_MERGE_KEY) === '1'
+  } catch {
+    return false
+  }
 }
 
 export interface UseChatHistoryOptions {
@@ -47,6 +64,7 @@ export function useChatHistory(options: UseChatHistoryOptions) {
   let historyRequestSeq = 0
   let historySyncPending = false
   let loadingHistoryKey = ''
+  const historyMergeEnabled = readHistoryMergeFlag()
   const historyState = ref<ChatHistoryState>({
     hasMore: false,
     oldestCursor: null,
@@ -165,6 +183,12 @@ export function useChatHistory(options: UseChatHistoryOptions) {
           ...mapped.filter(msg => !existing.has(messageKey(msg))),
           ...options.messages.value,
         ]
+      } else if (historyMergeEnabled) {
+        // Same-session sync: reconcile by messageId so live-only fields survive
+        // the snapshot instead of being clobbered. isCurrentRequest() already
+        // guaranteed key === sessionKey.value here, so the prev rows belong to
+        // this session and the merge never crosses a session boundary.
+        options.messages.value = reconcileHistoryMessages(options.messages.value, mapped)
       } else {
         options.messages.value = mapped
       }

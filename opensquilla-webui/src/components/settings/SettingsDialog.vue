@@ -21,13 +21,10 @@
         </button>
       </header>
 
-      <!-- Forms render only once config + readiness are loaded so baselines
-           are final before any field can be edited. -->
-      <div v-if="!loaded" class="settings-loading">
-        <LoadingSpinner />
-      </div>
-
-      <template v-else>
+      <!-- The readiness banner needs config + status, so it waits for load. The
+           rail and Connection panel render immediately (below) so the gateway
+           can be (re)connected even before any config loads. -->
+      <template v-if="loaded">
       <div class="settings-banner" :class="hasSetupAction ? 'is-warn' : 'is-ok'">
         <div class="settings-banner__row">
           <Icon :name="hasSetupAction ? 'info' : 'check'" :size="16" aria-hidden="true" />
@@ -60,7 +57,7 @@
         <div v-show="disclosureOpen" id="settings-banner-disclosure" class="settings-banner__disclosure">
           <div class="setup-cli">
             <section v-if="fixCommands.length > 0" class="setup-cli__group" aria-label="Fix now">
-              <div class="setup-cli__group-head"><h4>Fix now</h4></div>
+              <div class="setup-cli__group-head"><h4 class="control-panel__eyebrow">Fix now</h4></div>
               <SetupCommandBlock
                 v-for="cmd in fixCommands"
                 :key="cmd.label"
@@ -71,7 +68,7 @@
               />
             </section>
             <section class="setup-cli__group" aria-label="CLI handoff">
-              <div class="setup-cli__group-head"><h4>CLI handoff</h4></div>
+              <div class="setup-cli__group-head"><h4 class="control-panel__eyebrow">CLI handoff</h4></div>
               <SetupCommandBlock
                 v-for="cmd in handoffCommands"
                 :key="cmd.label"
@@ -82,7 +79,7 @@
               />
             </section>
             <section class="setup-cli__group" aria-label="CLI recipes">
-              <div class="setup-cli__group-head"><h4>CLI recipes</h4></div>
+              <div class="setup-cli__group-head"><h4 class="control-panel__eyebrow">CLI recipes</h4></div>
               <SetupCommandBlock
                 v-for="cmd in recipeCommands"
                 :key="cmd.label"
@@ -100,6 +97,7 @@
           </div>
         </div>
       </div>
+      </template>
 
       <div class="settings-body">
         <nav class="settings-rail" role="tablist" aria-label="Settings sections" :aria-orientation="railOrientation">
@@ -113,13 +111,13 @@
             :class="{ 'is-active': section === s.id }"
             :aria-selected="section === s.id ? 'true' : 'false'"
             :aria-controls="'settings-section-' + s.id"
-            :aria-label="`${s.label}: ${sectionStatus(s.id).label}${sectionDirty(s.id) ? ', unsaved changes' : ''}`"
+            :aria-label="s.client ? s.label : `${s.label}: ${sectionStatus(s.id).label}${sectionDirty(s.id) ? ', unsaved changes' : ''}`"
             @click="selectSection(s.id)"
           >
             <Icon :name="s.icon" :size="16" aria-hidden="true" />
             <span class="settings-rail__label">{{ s.label }}</span>
             <span v-if="sectionDirty(s.id)" class="settings-rail__dirty" aria-hidden="true"></span>
-            <span class="settings-rail__dot" :class="sectionStatus(s.id).tone" aria-hidden="true"></span>
+            <span v-if="!s.client" class="settings-rail__dot" :class="sectionStatus(s.id).tone" aria-hidden="true"></span>
           </button>
         </nav>
 
@@ -129,56 +127,70 @@
           role="tabpanel"
           :aria-labelledby="'settings-rail-' + section"
         >
-          <SetupProviderPanel
-            v-if="section === 'provider'"
-            :panel="providerPanel"
-            @update-provider-selected="selectProvider"
-            @provider-change="onProviderChange"
-            @update-provider-field="updateProviderField"
-            @update-llm-timeout="updateLlmTimeout"
-            @copy="copyCommand"
-            @save="saveProvider"
-          />
-          <SetupRouterPanel
-            v-else-if="section === 'router'"
-            :panel="routerPanel"
-            @update-router-mode="setRouterMode"
-            @update-router-default-tier="setRouterDefaultTier"
-            @update-tier-field="updateTierField"
-            @save="saveRouter"
-          />
-          <SetupChannelsPanel
-            v-else-if="section === 'channels'"
-            :panel="channelsPanel"
-            @update-channel-type="selectChannelType"
-            @channel-type-change="onChannelTypeChange"
-            @update-channel-field="updateChannelField"
-            @save="saveChannel"
-          />
-          <SetupCapabilitiesPanel
-            v-else-if="section === 'capabilities'"
-            :panel="capabilitiesPanel"
-            @update-field="updateCapabilityField"
-            @search-provider-change="onSearchProviderChange"
-            @memory-provider-change="onMemoryProviderChange"
-            @image-provider-change="onImageProviderChange"
-            @save-search="saveSearch"
-            @save-memory="saveMemory"
-            @save-image="saveImage"
-            @save-audio="saveAudio"
-            @copy="copyCommand"
-          />
+          <!-- Connection renders regardless of load state: it is how you point
+               the UI at a reachable gateway when nothing has loaded yet. -->
+          <SetupConnectionPanel v-if="section === 'connection'" />
+
+          <!-- Config-backed sections wait for readiness so their baselines are
+               final before any field can be edited. -->
+          <div v-else-if="!loaded" class="settings-loading">
+            <LoadingSpinner />
+          </div>
+          <template v-else>
+            <SetupProviderPanel
+              v-if="section === 'provider'"
+              :panel="providerPanel"
+              @update-provider-selected="selectProvider"
+              @provider-change="onProviderChange"
+              @update-provider-field="updateProviderField"
+              @update-llm-timeout="updateLlmTimeout"
+              @copy="copyCommand"
+              @save="saveProvider"
+            />
+            <SetupRouterPanel
+              v-else-if="section === 'router'"
+              :panel="routerPanel"
+              @update-router-mode="setRouterMode"
+              @update-router-default-tier="setRouterDefaultTier"
+              @update-router-visual-mode="setRouterVisualMode"
+              @update-tier-field="updateTierField"
+              @save="saveRouter"
+            />
+            <SetupChannelsPanel
+              v-else-if="section === 'channels'"
+              :panel="channelsPanel"
+              @update-channel-type="selectChannelType"
+              @channel-type-change="onChannelTypeChange"
+              @update-channel-field="updateChannelField"
+              @save="saveChannel"
+            />
+            <SetupCapabilitiesPanel
+              v-else-if="section === 'capabilities'"
+              :panel="capabilitiesPanel"
+              @update-field="updateCapabilityField"
+              @search-provider-change="onSearchProviderChange"
+              @memory-provider-change="onMemoryProviderChange"
+              @image-provider-change="onImageProviderChange"
+              @save-search="saveSearch"
+              @save-memory="saveMemory"
+              @save-image="saveImage"
+              @save-audio="saveAudio"
+              @copy="copyCommand"
+            />
+            <SettingsAppearancePanel v-else-if="section === 'appearance'" />
+            <SettingsKeyboardPanel v-else-if="section === 'keyboard'" />
+            <SettingsAdvancedPanel v-else-if="section === 'advanced'" />
+          </template>
         </div>
       </div>
 
-      <div v-if="hasUnsavedChanges" class="settings-dirtybar" aria-live="polite">
+      <div v-if="loaded && hasUnsavedChanges" class="settings-dirtybar" aria-live="polite">
         <span class="settings-dirtybar__pulse" aria-hidden="true"></span>
         <span class="settings-dirtybar__text">Unsaved changes in {{ dirtySectionNames }}</span>
         <span class="settings-dirtybar__spacer"></span>
-        <button type="button" class="setup-btn" @click="discardChanges">Discard</button>
-        <button type="button" class="setup-btn setup-btn--primary" @click="saveDirtySections">Save</button>
+        <button type="button" class="btn" @click="discardChanges">Discard</button>
+        <button type="button" class="btn btn--primary" @click="saveDirtySections">Save</button>
       </div>
-      </template>
 
       <footer class="settings-foot">
         <span class="settings-foot__text">More options live in</span>
@@ -193,7 +205,7 @@
           <Icon name="copy" :size="13" />
         </button>
         <span class="settings-foot__sep" aria-hidden="true">&middot;</span>
-        <span class="settings-foot__text">Restart the gateway after manual edits</span>
+        <span class="settings-foot__text">Most changes apply live; some need a gateway restart</span>
       </footer>
     </section>
   </div>
@@ -201,18 +213,26 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useAppStore } from '@/stores/app'
+import { useRoute, useRouter } from 'vue-router'
 import Icon from '@/components/Icon.vue'
 import LoadingSpinner from '@/components/LoadingSpinner.vue'
 import SetupCommandBlock from '@/components/setup/SetupCommandBlock.vue'
+import SetupConnectionPanel from '@/components/settings/SetupConnectionPanel.vue'
 import SetupProviderPanel from '@/components/setup/SetupProviderPanel.vue'
 import SetupRouterPanel from '@/components/setup/SetupRouterPanel.vue'
 import SetupChannelsPanel from '@/components/setup/SetupChannelsPanel.vue'
 import SetupCapabilitiesPanel from '@/components/setup/SetupCapabilitiesPanel.vue'
+import SettingsAppearancePanel from '@/components/settings/SettingsAppearancePanel.vue'
+import SettingsKeyboardPanel from '@/components/settings/SettingsKeyboardPanel.vue'
+import SettingsAdvancedPanel from '@/components/settings/SettingsAdvancedPanel.vue'
 import { useSetupCatalog, SETTINGS_SECTIONS } from '@/composables/setup/useSetupCatalog'
+import { sectionFromRouteParam } from '@/composables/setup/useSettingsSection'
+import { useConfirm } from '@/composables/useConfirm'
 import '@/styles/settings-forms.css'
 
-const appStore = useAppStore()
+const route = useRoute()
+const router = useRouter()
+const { confirm, confirmState } = useConfirm()
 
 const {
   section,
@@ -239,6 +259,7 @@ const {
   selectProvider,
   setRouterMode,
   setRouterDefaultTier,
+  setRouterVisualMode,
   selectChannelType,
   updateProviderField,
   updateLlmTimeout,
@@ -265,24 +286,53 @@ const modalRef = ref<HTMLElement | null>(null)
 const closeBtn = ref<HTMLButtonElement | null>(null)
 const disclosureOpen = ref(false)
 const isMobile = ref(window.matchMedia('(max-width: 768px)').matches)
-// Set once the user picks a section so the deep-link landing (which waits on
-// readiness data) never stomps navigation made while config was loading.
+// Set once the user picks a section so the deep-link auto landing (which waits
+// on readiness data) never stomps navigation made while config was loading.
 let userNavigated = false
 
 const railOrientation = computed(() => (isMobile.value ? 'horizontal' : 'vertical'))
 const dirtySectionNames = computed(() => dirtySections.value.map(s => s.label).join(' · '))
 const displayConfigPath = computed(() => configPath.value || '~/.opensquilla/config.toml')
 
+// Where to return when the overlay closes. Captured on open from the route the
+// user came from; null for a cold deep link (the overlay route was the entry
+// point, e.g. someone pasted /settings/connection), which falls back to home.
+let returnTo: string | null = null
+// The control that had focus when the overlay opened, restored on close. For a
+// cold deep link there is no in-app invoker, so close moves focus to the
+// sidebar Settings button instead of leaving it on a detached node.
 let invokerEl: HTMLElement | null = null
 let mq: MediaQueryList | null = null
+let closing = false
+
+const routeParam = computed(() => route.params.section)
+// `/setup` → `/settings/auto` asks for the first not-ready section once
+// readiness is known; it is a routing sentinel, never a real rail section.
+const wantsAutoSection = computed(() => routeParam.value === 'auto')
 
 function sectionLabel(id: string): string {
   return SETTINGS_SECTIONS.find(s => s.id === id)?.label || id
 }
 
+// Reflect the active section in the URL with replace (not push) so the browser
+// Back button exits Settings in one step rather than walking section history.
 function selectSection(id: string) {
   userNavigated = true
   setSection(id)
+  if (route.params.section !== id) {
+    void router.replace({ path: `/settings/${id}` })
+  }
+}
+
+// Resolve the section the route is asking for. Connection works before config
+// loads; the auto sentinel waits for readiness; everything else maps the param
+// (or the default) straight through.
+function applyRouteSection() {
+  if (wantsAutoSection.value) {
+    if (loaded.value && !userNavigated) selectInitialSection('auto')
+    return
+  }
+  setSection(sectionFromRouteParam(routeParam.value))
 }
 
 function copyDisplayPath() {
@@ -293,19 +343,51 @@ function copyDisplayPath() {
   }
 }
 
+function sidebarSettingsButton(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('.sidebar-foot button[data-icon="settings"]')
+}
+
+// A usable focus-restore target: a real element still in the document that is
+// neither <body> (the cold-deep-link case, where activeElement was never a
+// meaningful invoker) nor inside the dialog itself (which is about to unmount).
+function usableInvoker(): HTMLElement | null {
+  if (!invokerEl || invokerEl === document.body) return null
+  if (!document.contains(invokerEl)) return null
+  if (modalRef.value?.contains(invokerEl)) return null
+  return invokerEl
+}
+
+// Leave the overlay: restore focus first (the route change unmounts us), then
+// navigate to the captured return location, or home for a cold deep link.
+function closeOverlay() {
+  closing = true
+  const target = usableInvoker() ?? sidebarSettingsButton()
+  target?.focus()
+  invokerEl = null
+  void router.push(returnTo ?? '/')
+}
+
 // Closes unless a section carries unsaved edits and the user keeps them.
-function requestClose(): boolean {
-  if (hasUnsavedChanges.value && !confirm('Discard unsaved changes?')) {
-    return false
+async function requestClose(): Promise<boolean> {
+  if (hasUnsavedChanges.value) {
+    const ok = await confirm({
+      title: 'Discard unsaved changes?',
+      body: 'You have unsaved edits. Closing now will lose them.',
+      primaryLabel: 'Discard',
+    })
+    if (!ok) return false
   }
-  appStore.setSettingsOpen(false)
+  closeOverlay()
   return true
 }
 
 function onDocumentKeydown(event: KeyboardEvent) {
+  // The confirm modal owns the keyboard while it is open; let it handle Escape
+  // so a single keypress cannot both dismiss the prompt and re-open it.
+  if (confirmState.value) return
   if (event.key === 'Escape') {
     event.preventDefault()
-    requestClose()
+    void requestClose()
     return
   }
   if (event.key !== 'Tab') return
@@ -331,14 +413,25 @@ function onViewportChange(event: MediaQueryListEvent) {
   isMobile.value = event.matches
 }
 
-// Deep links land on their requested section once readiness is known,
-// unless the user already navigated during the load.
+// Keep the active section in sync as the route param changes (deep link, Back,
+// or a same-overlay section switch). The auto sentinel resolves once readiness
+// loads; the loaded watcher below completes that case.
+watch(routeParam, () => applyRouteSection())
+
+// The auto deep link lands on its readiness-derived section once config is
+// known, unless the user already navigated during the load.
 watch(loaded, (isLoaded) => {
-  if (isLoaded && !userNavigated) selectInitialSection(appStore.settingsSection)
+  if (isLoaded && wantsAutoSection.value && !userNavigated) selectInitialSection('auto')
 })
 
 onMounted(() => {
+  // Capture the return location from where we entered the overlay. router.back()
+  // is avoided because it cannot be trusted for cold deep links; an explicit
+  // push to the stored path (or home) gives a single, predictable exit.
+  const from = router.options.history.state.back
+  returnTo = typeof from === 'string' && !from.startsWith('/settings') ? from : null
   invokerEl = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  applyRouteSection()
   document.addEventListener('keydown', onDocumentKeydown)
   mq = window.matchMedia('(max-width: 768px)')
   mq.addEventListener('change', onViewportChange)
@@ -349,7 +442,10 @@ onUnmounted(() => {
   document.removeEventListener('keydown', onDocumentKeydown)
   mq?.removeEventListener('change', onViewportChange)
   mq = null
-  if (invokerEl && document.contains(invokerEl)) invokerEl.focus()
+  // A route-driven unmount that did not go through closeOverlay (e.g. the user
+  // pressed browser Back) still owes focus restoration: the real invoker, or
+  // the sidebar Settings button for a cold deep link, never a detached node.
+  if (!closing) (usableInvoker() ?? sidebarSettingsButton())?.focus()
   invokerEl = null
 })
 </script>
@@ -557,6 +653,7 @@ onUnmounted(() => {
 
 .settings-rail__item.is-active {
   background: var(--bg-elevated);
+  box-shadow: inset 2px 0 0 var(--accent);
   color: var(--text);
   font-weight: 600;
 }

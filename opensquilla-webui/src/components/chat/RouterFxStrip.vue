@@ -6,6 +6,7 @@
     :data-observe="message.routerObserve ? 'true' : undefined"
     :data-static="message.routerStatic ? 'true' : undefined"
     :data-settled="message.routerSettled ? 'true' : undefined"
+    :data-panel="message.routerPanel || 'real-candidates'"
   >
     <div class="router-fx-header">
       <span class="glyph">&#8592;</span>
@@ -17,9 +18,7 @@
         v-for="(cell, cellIndex) in gridCells"
         :key="cell.tiers?.join(':') || `${cell.displayName}-${cellIndex}`"
         class="router-fx-cell"
-        :data-kind="cell.kind"
         :data-cell-idx="cellIndex"
-        :data-tiers="cell.tiers?.join(',')"
         :class="{ win: cellIndex === message.winnerIdx }"
       >
         <span class="nm" :title="cell.displayName" :aria-label="cell.displayName">
@@ -40,8 +39,9 @@ const props = defineProps<{
 }>()
 
 const gridCells = computed(() => props.message.gridCells || [])
-const gridColumnCount = computed(() => Math.min(4, Math.max(2, gridCells.value.length)))
-const mobileGridColumnCount = computed(() => gridCells.value.length > 2 ? 2 : Math.max(1, gridCells.value.length))
+const isLegacyGrid = computed(() => props.message.routerPanel === 'legacy-grid')
+const gridColumnCount = computed(() => isLegacyGrid.value ? 5 : Math.min(4, Math.max(2, gridCells.value.length)))
+const mobileGridColumnCount = computed(() => isLegacyGrid.value ? 3 : (gridCells.value.length > 2 ? 2 : Math.max(1, gridCells.value.length)))
 const gridStyle = computed<Record<string, string>>(() => {
   return {
     '--router-fx-cols': String(gridColumnCount.value),
@@ -104,16 +104,6 @@ const gridStyle = computed<Record<string, string>>(() => {
   color: var(--router-accent);
   font-size: 12px;
   letter-spacing: 0;
-  animation: router-fx-chev 900ms cubic-bezier(.4,0,.6,1) 2;
-}
-
-.router-fx-header .glyph:last-child {
-  animation-delay: 450ms;
-}
-
-@keyframes router-fx-chev {
-  0%, 100% { transform: translateX(0); }
-  50% { transform: translateX(3px); }
 }
 
 .router-fx-grid {
@@ -148,26 +138,12 @@ const gridStyle = computed<Record<string, string>>(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  transition: transform 220ms cubic-bezier(.34,1.65,.5,1), background 240ms ease, color 240ms ease, border-color 240ms ease, box-shadow 240ms ease;
+  transition: transform var(--dur-base) var(--ease-out), background var(--dur-base) var(--ease-out), color var(--dur-base) var(--ease-out), border-color var(--dur-base) var(--ease-out), box-shadow var(--dur-base) var(--ease-out);
 }
 
-@keyframes router-fx-mole-pop {
-  0% { transform: translateY(0) scale(1); background: var(--router-cell-bg); }
-  35% { transform: translateY(-2px) scale(1.14); background: color-mix(in srgb, var(--router-accent) 14%, var(--router-bg)); }
-  100% { transform: translateY(0) scale(1); background: var(--router-cell-bg); }
+.router-fx[data-panel="legacy-grid"] .router-fx-grid {
+  grid-auto-rows: 30px;
 }
-
-.router-fx-cell:nth-child(2),
-.router-fx-cell:nth-child(6),
-.router-fx-cell:nth-child(9),
-.router-fx-cell:nth-child(4) {
-  animation: router-fx-mole-pop 190ms cubic-bezier(.34,1.7,.5,1) both;
-}
-
-.router-fx-cell:nth-child(2) { animation-delay: 80ms; }
-.router-fx-cell:nth-child(6) { animation-delay: 280ms; }
-.router-fx-cell:nth-child(9) { animation-delay: 520ms; }
-.router-fx-cell:nth-child(4) { animation-delay: 760ms; }
 
 .router-fx-cell .nm {
   display: grid;
@@ -193,16 +169,16 @@ const gridStyle = computed<Record<string, string>>(() => {
 
 .router-fx-cell.win {
   font-style: normal;
-  animation: router-fx-winner-reveal 1.42s linear both;
+  animation: router-fx-winner-reveal var(--dur-enter) var(--ease-out) both;
 }
 
 .router-fx-cell.win .nm-base {
-  animation: router-fx-winner-name-swap-out 1.42s linear both;
+  animation: router-fx-winner-name-swap-out var(--dur-enter) var(--ease-out) both;
 }
 
 .router-fx-cell.win .nm-win {
   color: var(--router-accent);
-  animation: router-fx-winner-name-swap-in 1.42s linear both;
+  animation: router-fx-winner-name-swap-in var(--dur-enter) var(--ease-out) both;
 }
 
 .router-fx[data-source="fallback"] .router-fx-cell.win .nm-win {
@@ -219,7 +195,7 @@ const gridStyle = computed<Record<string, string>>(() => {
   border-radius: 50%;
   background: var(--router-accent);
   opacity: 1;
-  animation: router-fx-winner-dot-reveal 1.42s linear both;
+  animation: router-fx-winner-dot-reveal var(--dur-enter) var(--ease-out) both;
 }
 
 .router-fx[data-source="fallback"] .router-fx-cell.win {
@@ -257,12 +233,8 @@ const gridStyle = computed<Record<string, string>>(() => {
   border-color: var(--router-danger);
 }
 
-.router-fx[data-settled="true"] .router-fx-selector {
-  transition: left 360ms cubic-bezier(.4,.0,.2,1), top 360ms cubic-bezier(.4,.0,.2,1);
-}
-
 @keyframes router-fx-winner-reveal {
-  0%, 89% {
+  0% {
     background: var(--router-cell-bg);
     border-color: var(--router-hairline);
     transform: translateY(0);
@@ -277,7 +249,7 @@ const gridStyle = computed<Record<string, string>>(() => {
 }
 
 @keyframes router-fx-winner-reveal-fallback {
-  0%, 89% {
+  0% {
     background: var(--router-cell-bg);
     border-color: var(--router-hairline);
     transform: translateY(0);
@@ -292,112 +264,18 @@ const gridStyle = computed<Record<string, string>>(() => {
 }
 
 @keyframes router-fx-winner-name-swap-out {
-  0%, 89% { opacity: 1; }
+  0% { opacity: 1; }
   100% { opacity: 0; }
 }
 
 @keyframes router-fx-winner-name-swap-in {
-  0%, 89% { opacity: 0; }
+  0% { opacity: 0; }
   100% { opacity: 1; }
 }
 
 @keyframes router-fx-winner-dot-reveal {
-  0%, 89% { opacity: 0.72; }
+  0% { opacity: 0.72; }
   100% { opacity: 1; }
-}
-
-.router-fx-selector {
-  position: absolute;
-  z-index: 2;
-  top: 8px;
-  left: 8px;
-  width: calc((100% - 28px) / 4);
-  height: 30px;
-  border: 2px solid color-mix(in srgb, var(--router-accent) 80%, transparent);
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--router-accent) 6%, transparent);
-  pointer-events: none;
-  opacity: 0;
-  transform: rotate(0deg);
-}
-
-.router-fx-selector.visible {
-  opacity: 1;
-}
-
-.router-fx-selector.lock {
-  border-color: var(--router-accent);
-  background: color-mix(in srgb, var(--router-accent) 12%, transparent);
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--router-accent) 22%, transparent),
-    inset 0 0 0 1px color-mix(in srgb, var(--router-accent) 8%, transparent);
-}
-
-.router-fx[data-source="fallback"] .router-fx-selector.lock {
-  border-color: var(--router-danger);
-  background: color-mix(in srgb, var(--router-danger) 12%, transparent);
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--router-danger) 22%, transparent),
-    inset 0 0 0 1px color-mix(in srgb, var(--router-danger) 8%, transparent);
-}
-
-@keyframes router-fx-selector-chase {
-  0% { opacity: 1; left: 8px; top: 8px; transform: rotate(1.4deg); }
-  12% { left: calc(((100% - 28px) / 2) + 16px); top: 8px; transform: rotate(-1.4deg); }
-  25% { left: calc(((100% - 28px) / 4) + 12px); top: 42px; transform: rotate(1.4deg); }
-  42% { left: calc(((100% - 28px) * 3 / 4) + 20px); top: 42px; transform: rotate(-1.4deg); }
-  62% { left: 8px; top: 76px; transform: rotate(1.4deg); }
-  78% { left: calc(((100% - 28px) / 2) + 16px); top: 76px; transform: rotate(-1.4deg); }
-  100% { opacity: 1; left: var(--router-left); top: var(--router-top); transform: rotate(0deg); }
-}
-
-.router-fx-selector.lock-impact {
-  animation: router-fx-selector-chase 1.28s cubic-bezier(.18,1.25,.45,1) both, router-fx-impact 280ms cubic-bezier(.34,1.6,.5,1) 1.28s both;
-}
-
-@keyframes router-fx-impact {
-  0% { outline: 0 solid transparent; outline-offset: 0; }
-  35% { outline: 2px solid color-mix(in srgb, var(--router-accent) 70%, transparent); outline-offset: 4px; }
-  100% { outline: 0 solid transparent; outline-offset: 0; }
-}
-
-.router-fx-burst {
-  position: absolute;
-  z-index: 4;
-  left: var(--router-burst-left);
-  top: var(--router-burst-top);
-  width: 0;
-  height: 0;
-  pointer-events: none;
-}
-
-.router-fx-burst i {
-  position: absolute;
-  left: -2px;
-  top: -2px;
-  width: 4px;
-  height: 4px;
-  border-radius: 1px;
-  background: var(--router-accent);
-  opacity: 0;
-  animation: router-fx-burst 540ms cubic-bezier(.2,.7,.2,1) 1.38s forwards;
-}
-
-.router-fx-burst i:nth-child(1) { --bx: -22px; --by: -10px; }
-.router-fx-burst i:nth-child(2) { --bx: 22px; --by: -10px; }
-.router-fx-burst i:nth-child(3) { --bx: -22px; --by: 10px; }
-.router-fx-burst i:nth-child(4) { --bx: 22px; --by: 10px; }
-.router-fx-burst i:nth-child(5) { --bx: 0; --by: -18px; width: 3px; height: 3px; }
-.router-fx-burst i:nth-child(6) { --bx: 0; --by: 18px; width: 3px; height: 3px; }
-
-@keyframes router-fx-burst {
-  0% { opacity: 1; transform: translate(0, 0) scale(1); }
-  60% { opacity: 0.7; }
-  100% { opacity: 0; transform: translate(var(--bx, 16px), var(--by, 0)) scale(0.4); }
-}
-
-.router-fx[data-source="fallback"] .router-fx-burst i {
-  background: var(--router-danger);
 }
 
 .router-fx[data-observe="true"] {
@@ -415,19 +293,6 @@ const gridStyle = computed<Record<string, string>>(() => {
   font-size: 9px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-}
-
-.router-fx[data-observe="true"] .router-fx-selector.lock-impact,
-.router-fx[data-observe="true"] .router-fx-burst i,
-.router-fx[data-observe="true"] .router-fx-header .glyph {
-  animation: none;
-}
-
-.router-fx[data-observe="true"] .router-fx-selector {
-  left: var(--router-left);
-  top: var(--router-top);
-  transform: rotate(0deg);
-  opacity: 1;
 }
 
 .router-fx[data-observe="true"] .router-fx-cell.win {
@@ -453,17 +318,8 @@ const gridStyle = computed<Record<string, string>>(() => {
 
 .router-fx[data-static="true"] .router-fx-cell,
 .router-fx[data-static="true"] .router-fx-cell .nm-base,
-.router-fx[data-static="true"] .router-fx-cell .nm-win,
-.router-fx[data-static="true"] .router-fx-header .glyph,
-.router-fx[data-static="true"] .router-fx-selector {
+.router-fx[data-static="true"] .router-fx-cell .nm-win {
   animation: none;
-}
-
-.router-fx[data-static="true"] .router-fx-selector {
-  left: var(--router-left);
-  top: var(--router-top);
-  transform: rotate(0deg);
-  opacity: 1;
 }
 
 .router-fx[data-static="true"] .router-fx-cell.win {
@@ -496,19 +352,9 @@ const gridStyle = computed<Record<string, string>>(() => {
 @media (prefers-reduced-motion: reduce) {
   .router-fx-cell,
   .router-fx-cell .nm-base,
-  .router-fx-cell .nm-win,
-  .router-fx-selector,
-  .router-fx-burst i,
-  .router-fx-header .glyph {
+  .router-fx-cell .nm-win {
     animation: none !important;
     transition: none !important;
-  }
-
-  .router-fx-selector {
-    left: var(--router-left);
-    top: var(--router-top);
-    transform: rotate(0deg);
-    opacity: 1;
   }
 }
 

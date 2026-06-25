@@ -124,7 +124,7 @@ const directProviderAId = fromCodes(111, 112, 101, 110, 97, 105)
 const directProviderBId = fromCodes(97, 110, 116, 104, 114, 111, 112, 105, 99)
 
 const providerDefaults: Record<string, { model: string; baseUrl: string; label: string }> = {
-  openrouter: { model: 'deepseek/deepseek-v4-pro', baseUrl: 'https://openrouter.ai/api/v1', label: 'OpenRouter' },
+  openrouter: { model: 'anthropic/claude-sonnet-4.6', baseUrl: 'https://openrouter.ai/api/v1', label: 'OpenRouter' },
   [directProviderAId]: {
     model: fromCodes(103, 112, 116, 45, 52, 46, 49),
     baseUrl: fromCodes(104, 116, 116, 112, 115, 58, 47, 47, 97, 112, 105, 46, 111, 112, 101, 110, 97, 105, 46, 99, 111, 109, 47, 118, 49),
@@ -434,7 +434,7 @@ onMounted(loadSettings)
 }
 
 .desktop-settings__message--saved {
-  color: var(--success);
+  color: var(--ok);
 }
 
 .desktop-settings__save {

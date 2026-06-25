@@ -14,6 +14,11 @@ import type {
   ToolResultPayload,
   ToolUsePayload,
 } from '@/types/rpc'
+import type {
+  InterruptApprovalData,
+  InterruptClarifyData,
+  InterruptViewState,
+} from '@/types/parts'
 import {
   isEmptyToolPreview,
   isInternalToolName,
@@ -25,6 +30,8 @@ import {
   toolResultIsError,
   truncateToolPreview,
 } from '@/utils/chat/toolDisplay'
+import { segmentsToTimelineItems } from '@/utils/chat/segmentsToTimelineItems'
+import { useChatTurnLog } from '@/composables/chat/useChatTurnLog'
 
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 210000
 const THINKING_DELAY_MS = 400
@@ -52,11 +59,15 @@ export interface UseChatStreamOptions {
   aborted: Ref<boolean>
   autoScroll: Ref<boolean>
   applySessionRunState: (source: ChatRunStatusSource | null | undefined) => void
-  renderMarkdown: (text: string) => string
+  renderMarkdown: (text: string, opts?: { highlight?: boolean }) => string
   stripDirectiveTags: (text: string) => string
   stripGeneratedArtifactMarkers: (text: string) => string
   stripProtocolTextLeak: (text: string) => string
   scrollToBottom: () => void
+  /** Resolution view-state keyed by approval id; threaded into the fold so each
+   *  interrupt part is stamped with its resolution/busy/error. The approvals
+   *  composable owns the map; the stream only forwards it to the turn log. */
+  interruptState?: Ref<ReadonlyMap<string, InterruptViewState>>
 }
 
 export function useChatStream(options: UseChatStreamOptions) {
@@ -124,16 +135,33 @@ export function useChatStream(options: UseChatStreamOptions) {
   const streamStepLabel = computed(() => `Step ${streamRound.value}`)
 
   const streamTimelineItems = computed<ChatStreamTimelineItem[]>(() => {
-    const groupsById = new Map(toolCallGroups(streamToolCalls.value, 'stream').map(group => [group.groupId, group]))
-    return streamSegments.value.flatMap((seg, idx): ChatStreamTimelineItem[] => {
-      if (seg.type === 'text') {
-        if (!seg.raw && !seg.html) return []
-        return [{ type: 'text', key: `text-${idx}`, html: seg.html || '' }]
-      }
-      const group = seg.groupId ? groupsById.get(seg.groupId) : null
-      return group ? [{ type: 'tool-group', key: seg.groupId || `tool-${idx}`, group }] : []
-    })
+    return segmentsToTimelineItems(streamSegments.value, streamToolCalls.value, 'stream')
   })
+
+  // append-only turn log. In OFF mode (prod default) nothing below ever
+  // appends, so the live turn is byte-identical to legacy; in SHADOW (DEV) the
+  // mutators also append frames and the fold is parity-checked against the
+  // legacy refs. The fold never drives render in this PR (still 100% legacy).
+  const turnLog = useChatTurnLog({
+    renderMarkdown: options.renderMarkdown,
+    toolCallGroups,
+    interruptState: options.interruptState,
+  })
+  const { appendFrame, resetLog, useReducer, foldedTurn } = turnLog
+
+  // Bound shadow-parity check: assembles this composable's legacy live surface,
+  // injecting the live thinking text (owned by the event handlers) so the fold's
+  // thinkingText can be compared. Reactive over events + the legacy refs when
+  // run inside a watchEffect (ChatView). DEV/SHADOW-only; never throws.
+  function assertLiveParity(thinkingText: Ref<string>) {
+    turnLog.assertParity({
+      timelineItems: streamTimelineItems,
+      rawText: streamRaw,
+      toolCalls: streamToolCalls,
+      artifacts: streamArtifacts,
+      thinkingText,
+    })
+  }
 
   const thinkingVisible = ref(false)
   const thinkingText = ref('')
@@ -144,7 +172,18 @@ export function useChatStream(options: UseChatStreamOptions) {
   const streamIdleTimer = ref<ReturnType<typeof setTimeout> | null>(null)
   const streamIdleTimeoutMs = ref(DEFAULT_STREAM_IDLE_TIMEOUT_MS)
   const streamIdlePausedForApproval = ref(false)
-  let renderRafId: ReturnType<typeof setTimeout> | null = null
+  // Stream render coalescing. Tokens arrive far faster than the display can
+  // paint, so re-renders are batched onto the frame clock (requestAnimationFrame)
+  // rather than a fixed setTimeout: frame-aligned flushes avoid the mid-frame
+  // stutter and the visibly-stepped ~12.5fps the old 80ms timer produced.
+  // MIN_FLUSH_INTERVAL caps the heavy markdown re-parse so a fast stream cannot
+  // re-render every single frame; the hidden-tab fallback keeps output landing
+  // when rAF is paused in a background tab.
+  const MIN_FLUSH_INTERVAL_MS = 33
+  const HIDDEN_FLUSH_FALLBACK_MS = 250
+  let renderRaf: number | null = null
+  let renderFallbackTimer: ReturnType<typeof setTimeout> | null = null
+  let lastFlushAt = 0
   let renderDirty = false
 
   function resetStreamState() {
@@ -153,6 +192,11 @@ export function useChatStream(options: UseChatStreamOptions) {
     streamToolCalls.value = []
     streamArtifacts.value = []
     toolTimes.value = new Map()
+    // Clear the live-turn log alongside the legacy refs so the next turn's fold
+    // starts empty. Every reset path (start/end/router-replay/live-turn) funnels
+    // through here, so this single call covers them all. Steer never calls
+    // a reset, so an in-flight steered turn's log is preserved.
+    resetLog()
   }
 
   function noteStreamSignal() {
@@ -165,12 +209,22 @@ export function useChatStream(options: UseChatStreamOptions) {
   function setStreamActivity(label: string, key = label) {
     noteStreamSignal()
     const current = streamActivity.value
+    let isNewPhase = false
     if (current.key === key) {
       if (current.label !== label) {
         streamActivity.value = { label, key, startedAt: current.startedAt || Date.now() }
       }
     } else {
       streamActivity.value = { label, key, startedAt: Date.now() }
+      isNewPhase = true
+    }
+    // Record each accepted phase transition into the append-only log so the
+    // finished turn can show the activity timeline. Gated on the reducer like
+    // every other frame; OFF mode appends nothing and the history stays empty.
+    // Label-only refinements (same key) emit nothing — only a real phase change.
+    if (isNewPhase && useReducer.value) {
+      const committed = streamActivity.value
+      appendFrame({ kind: 'status', action: committed.key, label: committed.label, at: committed.startedAt })
     }
     streamActivityTick.value++
     if (!streamActivityTimer) {
@@ -221,6 +275,9 @@ export function useChatStream(options: UseChatStreamOptions) {
     hideThinkingIndicator()
     clearStreamActivity()
     clearStreamIdleTimer()
+    // Cancel any frame queued just before the turn ended so it cannot fire a
+    // stray scroll after reset (mirrors resetStreamForRouterReplay).
+    clearRenderTimer()
     streamIdlePausedForApproval.value = false
 
     if (streamBubble.value) {
@@ -246,6 +303,11 @@ export function useChatStream(options: UseChatStreamOptions) {
         artifacts: streamArtifacts.value.slice(),
         tool_calls: streamToolCalls.value.map(streamToolCallToHistoryCall),
         timeline: streamTimelineSnapshot(cleanedText),
+        // Detach the fold's activity history from the about-to-be-reset log. In
+        // OFF mode this is [], so the field is harmless. The empty/sentinel drop
+        // path above returns before this push, so a status-only ghost turn never
+        // persists an orphan history.
+        statusHistory: foldedTurn.value.statusHistory.slice(),
         interrupted: wasAborted || undefined,
       })
     }
@@ -288,31 +350,75 @@ export function useChatStream(options: UseChatStreamOptions) {
       lastSegment.dirty = true
     }
 
+    if (useReducer.value) appendFrame({ kind: 'text', text })
     scheduleRender()
   }
 
-  // Batch stream-driven DOM work (markdown re-render + autoscroll) into one
-  // ~80ms flush so heavy tool turns do not re-render per event.
+  // Coalesce stream-driven DOM work (markdown re-render + autoscroll) onto the
+  // frame clock so heavy tool turns do not re-render per event and the reveal
+  // stays smooth and vsync-aligned.
   function scheduleRender() {
     renderDirty = true
-    if (!renderRafId) {
-      renderRafId = setTimeout(flushRender, 80)
+    if (renderRaf !== null || renderFallbackTimer !== null) return
+    // rAF is throttled/paused in background tabs — fall back to a timer there so
+    // streamed output still lands while the tab is hidden.
+    if (typeof document !== 'undefined' && document.hidden) {
+      renderFallbackTimer = setTimeout(runFlush, HIDDEN_FLUSH_FALLBACK_MS)
+      return
+    }
+    if (typeof requestAnimationFrame === 'function') {
+      renderRaf = requestAnimationFrame(onRenderFrame)
+    } else {
+      renderFallbackTimer = setTimeout(runFlush, MIN_FLUSH_INTERVAL_MS)
     }
   }
 
+  function onRenderFrame() {
+    renderRaf = null
+    // Coalesce bursts to the frame clock but cap the heavy re-parse: if the last
+    // flush was very recent, wait for the next frame instead of re-rendering the
+    // whole growing segment again this frame.
+    if (Date.now() - lastFlushAt < MIN_FLUSH_INTERVAL_MS) {
+      renderRaf = requestAnimationFrame(onRenderFrame)
+      return
+    }
+    runFlush()
+  }
+
+  function runFlush() {
+    renderRaf = null
+    renderFallbackTimer = null
+    lastFlushAt = Date.now()
+    flushRender()
+  }
+
   function flushRender() {
-    renderRafId = null
     if (!renderDirty) return
 
     for (const seg of streamSegments.value) {
       if (seg.type === 'text' && seg.dirty) {
-        seg.html = options.renderMarkdown(seg.raw || '')
+        // Live reveal renders without syntax highlighting (the heaviest per-flush
+        // cost); the committed message re-renders with full highlight on end.
+        // A half-streamed ``` fence is closed for the render only (raw untouched)
+        // so a code block renders stably as a <pre> while it grows, instead of
+        // flickering paragraph↔block on every flush — the worst mid-stream jump.
+        seg.html = options.renderMarkdown(stabilizeStreamingMarkdown(seg.raw || ''), { highlight: false })
         seg.dirty = false
       }
     }
 
     renderDirty = false
     if (options.autoScroll.value) options.scrollToBottom()
+  }
+
+  // Render-only stabilization of incomplete markdown during streaming: an
+  // unterminated fenced code block (odd number of ``` fences) is temporarily
+  // closed so it renders as a single <pre> across flushes rather than collapsing
+  // back to a paragraph until the closing fence arrives. Operates on a copy; the
+  // committed message still re-renders the true raw text on turn end.
+  function stabilizeStreamingMarkdown(raw: string): string {
+    const fenceCount = (raw.match(/^[ \t]*```/gm) || []).length
+    return fenceCount % 2 === 1 ? `${raw}\n\`\`\`` : raw
   }
 
   function showThinkingIndicator() {
@@ -383,6 +489,12 @@ export function useChatStream(options: UseChatStreamOptions) {
         existing.inputPreview = truncateToolPreview(input, 200)
         existing.displayName = toolDisplayName(existing.name, input)
       }
+      // A running ensure on an existing call mirrors to the fold so an input
+      // refinement (re-narration) stays in sync; result-only ensures emit no
+      // tool-start (the tool-result frame finalizes the call there).
+      if (useReducer.value && optionsArg.running) {
+        appendFrame({ kind: 'tool-start', toolId, name: existing.name, input: existing.inputRaw || '', at: Date.now() })
+      }
       return existing
     }
 
@@ -417,6 +529,12 @@ export function useChatStream(options: UseChatStreamOptions) {
       isOpen: false,
     }
     streamToolCalls.value.push(call)
+    // Running creates emit a tool-start (fold stamps the clock here, matching the
+    // toolTimes seed above). Result-only creates emit nothing: the tool-result
+    // frame creates the call in the fold without a clock.
+    if (useReducer.value && optionsArg.running) {
+      appendFrame({ kind: 'tool-start', toolId, name, input, at: Date.now() })
+    }
     return call
   }
 
@@ -445,6 +563,10 @@ export function useChatStream(options: UseChatStreamOptions) {
       tc.displayName = toolDisplayName(tc.name, nextInput)
     }
     if (tc.isRunning) narrateToolCall(tc)
+    // The fold concats the same fragment onto the same call's inputRaw. When
+    // this delta created the call, ensureStreamToolCall already emitted the
+    // seeding tool-start above, so the call exists in the fold before this.
+    if (useReducer.value) appendFrame({ kind: 'tool-delta', toolId, fragment: fragmentText })
     scheduleRender()
   }
 
@@ -473,6 +595,13 @@ export function useChatStream(options: UseChatStreamOptions) {
 
       const timing = toolTimes.value.get(tc.toolId)
       if (timing && !timing.endedAt) timing.endedAt = Date.now()
+
+      // Mirror the finalized call. A result-only call (no prior tool-start) is
+      // created by the fold here without a clock; the result frame carries the
+      // same payload input legacy used so a result-only fold call seeds it.
+      if (useReducer.value) {
+        appendFrame({ kind: 'tool-result', toolId: tc.toolId, name: tc.name, result: content, isError: tc.isError, input, at: Date.now() })
+      }
 
       const stillRunning = streamToolCalls.value.find(t => t.isRunning)
       if (stillRunning) {
@@ -539,13 +668,48 @@ export function useChatStream(options: UseChatStreamOptions) {
     if (!payload) return
     noteStreamSignal()
     streamArtifacts.value.push(payload)
+    if (useReducer.value) appendFrame({ kind: 'artifact', artifact: payload })
     scheduleRender()
+  }
+
+  // Append an interrupt (approval/clarify) frame into the turn log so the fold
+  // materializes it as an inline interrupt part. Mirrors appendArtifact: a plain
+  // frame append gated on the reducer, then a batched render. The approvals
+  // composable owns the payload and the resolution side-map; the stream only
+  // records the frame on the live turn's log.
+  function appendInterruptFrame(input: {
+    interruptKind: 'approval' | 'clarify'
+    approvalId: string
+    data: InterruptApprovalData | InterruptClarifyData
+    at: number
+  }) {
+    noteStreamSignal()
+    if (useReducer.value) appendFrame({ kind: 'interrupt', ...input })
+    scheduleRender()
+  }
+
+  // Open a render bubble for an interrupt that arrived with no live turn
+  // streaming (a queued/background turn, or a reload that recovered a pending
+  // approval). This is deliberately lighter than startStreaming(): it does NOT
+  // reset the log or the activity refs, so an interrupt frame appended right
+  // after it survives. The turn stays open because an unresolved approval pauses
+  // the idle timer, so the fold-driven work-card keeps rendering the part.
+  function ensureInterruptBubble() {
+    if (streamBubble.value) return
+    streamBubble.value = true
+    streamShowHeader.value = options.lastHeaderRole.value !== 'assistant'
+    isStreaming.value = true
   }
 
   function reconcileFinalText(finalText: string) {
     if (finalText && finalText !== streamRaw.value) {
       streamRaw.value = finalText
     }
+    // Mirror the reconcile to the fold even when legacy was a no-op: the fold
+    // re-applies the same "override only when present and non-equal" rule
+    // against its own accumulated text, and overrides rawText without
+    // re-segmenting.
+    if (useReducer.value && finalText) appendFrame({ kind: 'final-text', text: finalText })
   }
 
   function isToolGroupOpen(groupId: string): boolean {
@@ -570,9 +734,13 @@ export function useChatStream(options: UseChatStreamOptions) {
 
   function clearRenderTimer() {
     renderDirty = false
-    if (renderRafId) {
-      clearTimeout(renderRafId)
-      renderRafId = null
+    if (renderRaf !== null) {
+      if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(renderRaf)
+      renderRaf = null
+    }
+    if (renderFallbackTimer !== null) {
+      clearTimeout(renderFallbackTimer)
+      renderFallbackTimer = null
     }
   }
 
@@ -602,10 +770,13 @@ export function useChatStream(options: UseChatStreamOptions) {
     resetStreamForRouterReplay,
     resetLiveTurnState,
     appendDelta,
+    scheduleRender,
     appendToolCall,
     appendToolDelta,
     appendToolResult,
     appendArtifact,
+    appendInterruptFrame,
+    ensureInterruptBubble,
     reconcileFinalText,
     resetStreamIdleTimer,
     clearStreamIdleTimer,
@@ -617,5 +788,12 @@ export function useChatStream(options: UseChatStreamOptions) {
     isToolItemOpen,
     toggleToolItem,
     cleanup,
+    // live-turn shadow log surface: appendFrame/useReducer let the event handlers
+    // (which own the thinking ref) append their frame; assertLiveParity is run
+    // from a DEV watchEffect; foldedTurn is the fold output (not rendered yet).
+    appendFrame,
+    useReducer,
+    foldedTurn,
+    assertLiveParity,
   }
 }

@@ -51,46 +51,43 @@
         </div>
       </template>
       <template v-else>
-        <table class="sk-registry__table">
-          <thead>
-            <tr><th>Name</th><th>Description</th><th>Source</th><th>Trust</th><th /></tr>
-          </thead>
-          <tbody>
-            <tr v-for="r in results" :key="r.identifier || r.name">
-              <td class="sk-registry__name">{{ r.name }}</td>
-              <td class="sk-registry__desc">{{ (r.description || '').slice(0, 80) }}</td>
-              <td class="sk-mono sk-dim">{{ r.source || '' }}</td>
-              <td>
-                <span class="sk-chip" :class="r.trust_level === 'trusted' ? 'sk-chip--ok' : 'sk-chip--warn'">{{ r.trust_level || 'community' }}</span>
-              </td>
-              <td>
-                <button
-                  v-if="r.installed"
-                  class="btn btn--sm"
-                  disabled
-                >Installed</button>
-                <button
-                  v-else
-                  class="btn btn--primary btn--sm"
-                  :disabled="installingId === (r.identifier || r.name)"
-                  @click="emit('install', r.identifier || r.name, r.source || 'clawhub')"
-                >
-                  {{ installingId === (r.identifier || r.name) ? 'Installing...' : 'Install' }}
-                </button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <DataTable class="sk-registry-table" :columns="resultColumns" :rows="resultRows">
+          <template #name="{ row }">
+            <span class="sk-registry__name">{{ row.name }}</span>
+          </template>
+          <template #description="{ row }">
+            <span class="sk-registry__desc">{{ row.description }}</span>
+          </template>
+          <template #source="{ row }">
+            <span class="sk-mono sk-dim">{{ row.source }}</span>
+          </template>
+          <template #trust="{ row }">
+            <span class="sk-chip" :class="row.trusted ? 'sk-chip--ok' : 'sk-chip--warn'">{{ row.trustLabel }}</span>
+          </template>
+          <template #_install="{ row }">
+            <button v-if="row.installed" class="btn btn--sm" disabled>Installed</button>
+            <button
+              v-else
+              class="btn btn--primary btn--sm"
+              :disabled="installingId === row.installId"
+              @click="emit('install', String(row.installId), String(row.installSource))"
+            >
+              {{ installingId === row.installId ? 'Installing...' : 'Install' }}
+            </button>
+          </template>
+        </DataTable>
       </template>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
+import DataTable from '@/components/DataTable.vue'
 import Icon from '@/components/Icon.vue'
 import type { RegistryResult } from '@/types/skills'
 
-defineProps<{
+const props = defineProps<{
   registryQuery: string
   githubUrl: string
   results: RegistryResult[]
@@ -105,4 +102,25 @@ const emit = defineEmits<{
   installGithub: []
   install: [identifier: string, source: string]
 }>()
+
+const resultColumns = [
+  { key: 'name', label: 'Name' },
+  { key: 'description', label: 'Description' },
+  { key: 'source', label: 'Source' },
+  { key: 'trust', label: 'Trust' },
+  { key: '_install', label: '' },
+]
+
+const resultRows = computed(() =>
+  props.results.map(r => ({
+    name: r.name,
+    description: (r.description || '').slice(0, 80),
+    source: r.source || '',
+    trusted: r.trust_level === 'trusted',
+    trustLabel: r.trust_level || 'community',
+    installed: !!r.installed,
+    installId: r.identifier || r.name,
+    installSource: r.source || 'clawhub',
+  })),
+)
 </script>

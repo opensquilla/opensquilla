@@ -54,45 +54,43 @@ function onChannelTypeSelect(event: Event) {
 </script>
 
 <template>
-  <section class="setup-panel">
-    <header class="setup-panel__head">
-      <h3>Channels</h3>
-      <p>{{ panel.channelRuntimeRows.length }} configured</p>
-    </header>
-    <div class="setup-channel-grid">
-      <div class="setup-form">
-        <label>
-          <span>Channel type</span>
-          <select :value="panel.channelType" name="setup_channel_type" @change="onChannelTypeSelect">
+  <div class="setup-channels">
+    <section class="control-section">
+      <div class="control-section__head">
+        <h3 class="control-section__title">Channels</h3>
+        <p class="control-section__desc">{{ panel.channelRuntimeRows.length }} configured</p>
+      </div>
+      <label class="control-row">
+        <div class="control-row__label-block"><span class="control-row__label">Channel type</span></div>
+        <div class="control-row__control">
+          <select class="control-input" :value="panel.channelType" name="setup_channel_type" @change="onChannelTypeSelect">
             <option v-for="c in panel.catalogChannels" :key="c.type" :value="c.type">{{ c.label }}</option>
           </select>
-        </label>
-        <SetupNeedList :items="panel.channelSpec?.whatYouNeed" label="Channel needs" />
-        <div class="setup-channel-fields">
-          <SetupField
-            v-for="row in panel.channelFields"
-            :key="row.field.name"
-            :field="row.field"
-            :value="row.value"
-            scope="channel"
-            @update="(name, val) => emit('updateChannelField', name, val)"
-          />
         </div>
-        <div class="setup-actions">
-          <button class="setup-btn setup-btn--primary" @click="emit('save')">Save Channel</button>
+      </label>
+      <SetupNeedList :items="panel.channelSpec?.whatYouNeed" label="Channel needs" />
+      <SetupField
+        v-for="row in panel.channelFields"
+        :key="row.field.name"
+        :field="row.field"
+        :value="row.value"
+        scope="channel"
+        @update="(name, val) => emit('updateChannelField', name, val)"
+      />
+      <div class="control-section__actions">
+        <button class="btn btn--primary" @click="emit('save')">Save Channel</button>
+      </div>
+    </section>
+    <section class="control-section setup-runtime">
+      <h3 class="control-section__title">Runtime status</h3>
+      <template v-if="panel.channelRuntimeRows.length > 0">
+        <div v-for="row in panel.channelRuntimeRows" :key="row.name" class="setup-runtime__row" :class="row.connected === true ? 'is-ok' : 'is-warn'">
+          <span>{{ row.name }}</span>
+          <span>{{ row.type || '' }}</span>
+          <strong>{{ row.connected === true ? 'Connected' : (row.status === 'stopped' ? 'Action needed' : row.status || 'connecting') }}</strong>
         </div>
-      </div>
-      <div class="setup-runtime">
-        <h4>Runtime status</h4>
-        <template v-if="panel.channelRuntimeRows.length > 0">
-          <div v-for="row in panel.channelRuntimeRows" :key="row.name" class="setup-runtime__row" :class="row.connected === true ? 'is-ok' : 'is-warn'">
-            <span>{{ row.name }}</span>
-            <span>{{ row.type || '' }}</span>
-            <strong>{{ row.connected === true ? 'Connected' : (row.status === 'stopped' ? 'Action needed' : row.status || 'connecting') }}</strong>
-          </div>
-        </template>
-        <p v-else class="setup-muted">No channels configured.</p>
-      </div>
-    </div>
-  </section>
+      </template>
+      <p v-else class="setup-muted">No channels configured.</p>
+    </section>
+  </div>
 </template>

@@ -56,6 +56,11 @@ const { toasts, dismissToast } = useToasts()
   animation: toast-in 150ms ease;
 }
 
+.toast--ok {
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--border-strong));
+  background: color-mix(in srgb, var(--ok) 10%, var(--bg-elevated));
+}
+
 .toast--danger {
   border-color: color-mix(in srgb, var(--danger) 45%, var(--border-strong));
   background: color-mix(in srgb, var(--danger) 10%, var(--bg-elevated));

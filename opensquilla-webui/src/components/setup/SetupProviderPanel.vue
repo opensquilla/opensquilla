@@ -53,73 +53,76 @@ function onProviderSelect(event: Event) {
 </script>
 
 <template>
-  <section class="setup-panel">
-    <header class="setup-panel__head">
-      <h3>Provider</h3>
-      <p>{{ panel.providerSummary }}</p>
-    </header>
-    <div class="setup-form">
-      <label>
-        <span>Provider</span>
-        <select :value="panel.providerSelected" name="setup_provider" @change="onProviderSelect">
+  <section class="control-section">
+    <div class="control-section__head">
+      <h3 class="control-section__title">Provider</h3>
+      <p class="control-section__desc">{{ panel.providerSummary }}</p>
+    </div>
+    <SetupNeedList :items="panel.providerNeeds" label="Provider needs" />
+    <label class="control-row">
+      <div class="control-row__label-block"><span class="control-row__label">Provider</span></div>
+      <div class="control-row__control">
+        <select class="control-input" :value="panel.providerSelected" name="setup_provider" @change="onProviderSelect">
           <option value="" disabled :selected="!panel.providerSelected">Choose a provider</option>
           <option v-for="p in panel.runtimeProviders" :key="p.providerId" :value="p.providerId">{{ p.label }}</option>
         </select>
-      </label>
-      <div class="setup-provider-meta">
-        <span>SquillaRouter tiers</span>
-        <strong class="setup-provider-meta__badge" :class="panel.routerSupportTone">{{ panel.routerSupportText }}</strong>
       </div>
-      <SetupNeedList :items="panel.providerNeeds" label="Provider needs" />
-      <div class="setup-provider-fields">
-        <SetupField
-          v-for="field in panel.providerCoreFields"
-          :key="field.name"
-          :field="field"
-          :value="panel.providerFieldValue(field)"
-          scope="provider"
-          @update="(name, val) => emit('updateProviderField', name, val)"
-        />
+    </label>
+    <div class="control-row">
+      <div class="control-row__label-block"><span class="control-row__label">SquillaRouter tiers</span></div>
+      <div class="control-row__control">
+        <strong class="control-pill" :class="panel.routerSupportTone">{{ panel.routerSupportText }}</strong>
       </div>
-      <details :open="panel.providerAdvancedOpen">
-        <summary>Advanced provider options</summary>
-        <div class="setup-mini__advanced-body" aria-label="Provider connection">
-          <SetupField
-            v-for="field in panel.providerAdvancedFields"
-            :key="field.name"
-            :field="field"
-            :value="panel.providerFieldValue(field)"
-            scope="provider"
-            @update="(name, val) => emit('updateProviderField', name, val)"
-          />
-          <label>
-            <span>Request timeout (seconds)</span>
-            <small class="setup-help">How long to wait for a single model response before timing out &mdash; raise this for slow local models (Ollama, vLLM, LM Studio).</small>
-            <input
-              :value="panel.llmTimeoutSeconds"
-              name="setup_provider_request_timeout"
-              type="number"
-              min="1"
-              step="1"
-              inputmode="numeric"
-              @input="emit('updateLlmTimeout', Number(($event.target as HTMLInputElement).value))"
-            >
-          </label>
+    </div>
+    <SetupField
+      v-for="field in panel.providerCoreFields"
+      :key="field.name"
+      :field="field"
+      :value="panel.providerFieldValue(field)"
+      scope="provider"
+      @update="(name, val) => emit('updateProviderField', name, val)"
+    />
+    <details :open="panel.providerAdvancedOpen">
+      <summary class="control-row control-row--divider">Advanced provider options</summary>
+      <SetupField
+        v-for="field in panel.providerAdvancedFields"
+        :key="field.name"
+        :field="field"
+        :value="panel.providerFieldValue(field)"
+        scope="provider"
+        @update="(name, val) => emit('updateProviderField', name, val)"
+      />
+      <label class="control-row">
+        <div class="control-row__label-block">
+          <span class="control-row__label">Request timeout (seconds)</span>
+          <span class="control-row__desc">How long to wait for a single model response before timing out &mdash; raise this for slow local models (Ollama, vLLM, LM Studio).</span>
         </div>
-      </details>
-      <div v-if="panel.providerEnvMissing" class="setup-warning">
-        <div>{{ panel.providerEnvKey }} is not visible to this gateway process. Set it before starting or restarting the gateway, or paste an API key instead.</div>
-        <SetupCommandBlock
-          v-if="panel.providerEnvCommand"
-          class="setup-warning__command"
-          :command="panel.providerEnvCommand"
-          copy-label="Copy set provider key command"
-          @copy="emit('copy', $event)"
-        />
-      </div>
-      <div class="setup-actions">
-        <button class="setup-btn setup-btn--primary" :disabled="!panel.providerSelected" @click="emit('save')">Save Provider</button>
-      </div>
+        <div class="control-row__control">
+          <input
+            class="control-input control-input--narrow"
+            :value="panel.llmTimeoutSeconds"
+            name="setup_provider_request_timeout"
+            type="number"
+            min="1"
+            step="1"
+            inputmode="numeric"
+            @input="emit('updateLlmTimeout', Number(($event.target as HTMLInputElement).value))"
+          >
+        </div>
+      </label>
+    </details>
+    <div v-if="panel.providerEnvMissing" class="setup-warning">
+      <div>{{ panel.providerEnvKey }} is not visible to this gateway process. Set it before starting or restarting the gateway, or paste an API key instead.</div>
+      <SetupCommandBlock
+        v-if="panel.providerEnvCommand"
+        class="setup-warning__command"
+        :command="panel.providerEnvCommand"
+        copy-label="Copy set provider key command"
+        @copy="emit('copy', $event)"
+      />
+    </div>
+    <div class="control-section__actions">
+      <button class="btn btn--primary" :disabled="!panel.providerSelected" @click="emit('save')">Save Provider</button>
     </div>
   </section>
 </template>

@@ -1,7 +1,7 @@
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onUnmounted, onActivated, onDeactivated } from 'vue'
 import { useRouter } from 'vue-router'
-import { useRpcStore } from '@/stores/rpc'
 import { useDocumentEvent } from '@/composables/useDocumentEvent'
+import { useRequest } from '@/composables/useRequest'
 import { useUsagePreferences } from '@/composables/usage/useUsagePreferences'
 import { useUsageTotals } from '@/composables/usage/useUsageTotals'
 import { useUsageChartRows } from '@/composables/usage/useUsageChartRows'
@@ -36,7 +36,6 @@ export function useUsageData() {
 // ---------------------------------------------------------------------------
 
 const router = useRouter()
-const rpc = useRpcStore()
 
 // ---------------------------------------------------------------------------
 // State
@@ -48,12 +47,19 @@ const {
   setCurrency,
   setRange,
 } = useUsagePreferences()
-const sessions = ref<SessionRow[]>([])
 const sortCol = ref('updated_at')
 const sortAsc = ref(false)
 const chartMode = ref<'tokens' | 'cost'>('tokens')
-const lastStatus = ref<UsageStatusData | null>(null)
 const expandedSessions = ref<Set<string>>(new Set())
+
+const { data: usageStatusData, loading: usageLoading, error: usageError, refresh: refreshUsage } = useRequest<UsageStatusData>(
+  'usage.status',
+  undefined,
+  { errorLabel: 'Failed to load usage', immediate: false },
+)
+
+const sessions = computed<SessionRow[]>(() => usageStatusData.value?.sessions || [])
+const lastStatus = computed<UsageStatusData | null>(() => usageStatusData.value ?? null)
 
 let autoRefreshId: ReturnType<typeof setInterval> | null = null
 
@@ -131,13 +137,28 @@ const { sortedRows, sessionsMeta } = useUsageSessionRows({
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-onMounted(() => {
+// The initial fetch and the 60s refresh timer both live on activate/deactivate,
+// so a kept-alive but hidden Usage view stops polling. onActivated fires on
+// first mount too, so it owns the one-time fetch as well — no separate
+// onMounted fetch, which would double-fetch usage.status on first paint.
+onActivated(() => {
+  if (!autoRefreshId) autoRefreshId = setInterval(loadData, 60000)
+  // A returning view refreshes immediately so cached numbers don't linger.
   loadData()
-  autoRefreshId = setInterval(loadData, 60000)
+})
+
+onDeactivated(() => {
+  if (autoRefreshId) {
+    clearInterval(autoRefreshId)
+    autoRefreshId = null
+  }
 })
 
 onUnmounted(() => {
-  if (autoRefreshId) clearInterval(autoRefreshId)
+  if (autoRefreshId) {
+    clearInterval(autoRefreshId)
+    autoRefreshId = null
+  }
 })
 
 useDocumentEvent('visibilitychange', onVisibilityChange)
@@ -174,20 +195,9 @@ function toggleModelExpand(row: { raw: SessionRow; sessionKey: string }) {
   }
 }
 
-async function loadData() {
+function loadData() {
   if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
-  try {
-    await rpc.waitForConnection()
-  } catch {
-    return
-  }
-
-  rpc.call<UsageStatusData>('usage.status').then(status => {
-    lastStatus.value = status
-    sessions.value = status.sessions || []
-  }).catch(err => {
-    console.warn('Failed to load usage:', err.message)
-  })
+  return refreshUsage()
 }
 
 function exportCsv() {
@@ -442,6 +452,8 @@ function download(filename: string, mime: string, content: string) {
     chartMode,
     range,
     lastStatus,
+    usageLoading,
+    usageError,
     expandedSessions,
     tableColumns,
     sortableCols,

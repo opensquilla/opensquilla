@@ -2,10 +2,44 @@ import { computed, ref, watch, type Ref } from 'vue'
 import type { ChatRunStatus } from '@/types/chat'
 import type { ToolResultPayload } from '@/types/rpc'
 import type { RpcEventHandler } from '@/lib/rpc'
+import type {
+  InterruptApprovalData,
+  InterruptClarifyData,
+  InterruptResolution,
+  InterruptViewState,
+} from '@/types/parts'
 import { isCurrentSessionPayload } from '@/utils/chat/streamEvents'
 
-const APPROVAL_POLL_INTERVAL_MS = 2000
 const MAX_RESOLVED_OUTCOMES = 4
+
+// The chat approval poll is gone: approvals stream in as interrupt frames, and
+// the snapshot fetch is a one-shot hydration on subscribe / session-switch /
+// reconnect (recovers approvals that predate the socket and backfills
+// args/warning). Setting `opensquilla.chat.approvalPoll` to '1' restores the old
+// 2s interval as a recovery fallback (resolve-from-another-client self-healing).
+const APPROVAL_POLL_INTERVAL_MS = 2000
+
+// Seconds an Extend click pushes the approval deadline out by (mirrors the
+// backend default re-arm window).
+const APPROVAL_EXTEND_SECONDS = 300
+
+/** Format a whole-second remaining count as a compact `m:ss` / `s` countdown.
+ *  Negative inputs clamp to 0. Pure so the card's countdown can be unit-tested. */
+export function formatCountdown(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds))
+  if (total < 60) return `${total}s`
+  const mins = Math.floor(total / 60)
+  const secs = total % 60
+  return `${mins}:${String(secs).padStart(2, '0')}`
+}
+
+function approvalPollEnabled(): boolean {
+  try {
+    return localStorage.getItem('opensquilla.chat.approvalPoll') === '1'
+  } catch {
+    return false
+  }
+}
 
 export interface ChatApprovalItem {
   id: string
@@ -16,9 +50,10 @@ export interface ChatApprovalItem {
   warning: string
   agent: string
   sessionKey: string
+  deadline: number          // epoch seconds the request expires; 0 when unknown
 }
 
-export type ChatApprovalResolution = 'approved' | 'approved_always' | 'denied'
+export type ChatApprovalResolution = 'approved' | 'approved_always' | 'denied' | 'expired'
 
 export interface ChatApprovalEntry {
   approval: ChatApprovalItem
@@ -57,6 +92,7 @@ interface ApprovalsSnapshotItem {
   warning?: string
   agent?: string
   sessionKey?: string
+  deadline?: number
 }
 
 interface ApprovalsSnapshotResponse {
@@ -64,15 +100,57 @@ interface ApprovalsSnapshotResponse {
   mode?: string
 }
 
+/**
+ * The `*.approval.requested|resolved` push payload (build_approval_event_payload).
+ * A subset of the snapshot: it carries identity + command but omits `args`,
+ * `warning`, `argv`, and `actionKind`, which the hydration fetch backfills.
+ */
+interface ApprovalPushPayload {
+  approval_id?: string
+  approvalId?: string
+  namespace?: string
+  session_key?: string
+  sessionKey?: string
+  tool_name?: string
+  toolName?: string
+  command?: string
+  agent?: string
+  approved?: boolean
+  resolution?: string
+  deadline?: number
+}
+
 type ApprovalsRpcClient = {
   call: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
   on: (event: string, handler: RpcEventHandler) => () => void
+}
+
+/**
+ * The slice of the live-turn stream the approvals composable drives: it appends
+ * interrupt frames into the turn log and opens a render bubble for approvals that
+ * arrive with no live turn streaming.
+ */
+export interface ApprovalsStreamSurface {
+  isStreaming: Ref<boolean>
+  appendInterruptFrame: (input: {
+    interruptKind: 'approval' | 'clarify'
+    approvalId: string
+    data: InterruptApprovalData | InterruptClarifyData
+    at: number
+  }) => void
+  ensureInterruptBubble: () => void
 }
 
 export interface UseChatApprovalsOptions {
   rpc: ApprovalsRpcClient
   sessionKey: Ref<string>
   runStatus: Ref<ChatRunStatus>
+  /** The live-turn stream surface that hosts interrupt frames. */
+  stream: ApprovalsStreamSurface
+  /** The resolution side-map the fold reads to stamp each interrupt part. Shared
+   *  with the stream (which threads it into the turn log); this composable is its
+   *  sole writer. */
+  interruptState: Ref<ReadonlyMap<string, InterruptViewState>>
   /** Deliver a deny note back to the agent through the normal send/queue path. */
   onDenyFeedback?: (note: string) => void
   /** Mirror the gateway-wide pending count (topbar pill / nav badge). */
@@ -105,7 +183,53 @@ function snapshotItemToApproval(item: ApprovalsSnapshotItem): ChatApprovalItem |
     warning: String(item.warning || ''),
     agent: String(item.agent || ''),
     sessionKey: String(item.sessionKey || ''),
+    deadline: Number(item.deadline) || 0,
   }
+}
+
+/** ChatApprovalItem → InterruptApprovalData (rename id→approvalId; identical
+ *  otherwise). Lets the hydration fetch reuse snapshotItemToApproval and still
+ *  emit the frame payload shape with args/warning populated. */
+function approvalItemToInterruptData(item: ChatApprovalItem): InterruptApprovalData {
+  return {
+    approvalId: item.id,
+    namespace: item.namespace,
+    toolName: item.toolName,
+    command: item.command,
+    args: item.args,
+    warning: item.warning,
+    agent: item.agent,
+    sessionKey: item.sessionKey,
+    deadline: item.deadline,
+  }
+}
+
+/** Build InterruptApprovalData from the lean `*.approval.requested` push payload.
+ *  `args`/`warning` are absent on the wire (see build_approval_event_payload) and
+ *  are backfilled by the hydration fetch; command + tool name still render. */
+function pushPayloadToInterruptData(payload: ApprovalPushPayload): InterruptApprovalData | null {
+  const approvalId = String(payload.approval_id || payload.approvalId || '').trim()
+  if (!approvalId) return null
+  return {
+    approvalId,
+    namespace: String(payload.namespace || 'exec'),
+    toolName: String(payload.tool_name || payload.toolName || 'Unknown tool'),
+    command: String(payload.command || ''),
+    args: null,
+    warning: '',
+    agent: String(payload.agent || ''),
+    sessionKey: String(payload.session_key || payload.sessionKey || ''),
+    deadline: Number(payload.deadline) || 0,
+  }
+}
+
+/** Map a resolved `*.approval.resolved` push to an inline resolution state.
+ *  `resolution: 'expired'` distinguishes a lapsed-deadline request from an
+ *  explicit human deny so the card reads "Expired — not run" apart from
+ *  "Denied"; older payloads without the field fall back to approved/denied. */
+export function resolutionFromPayload(payload: ApprovalPushPayload): InterruptResolution {
+  if (payload.resolution === 'expired') return 'expired'
+  return payload.approved === false ? 'denied' : 'approved'
 }
 
 function parseClarifyRequest(payload: ToolResultPayload): ChatClarifyRequest | null {
@@ -159,7 +283,7 @@ function parseClarifyRequest(payload: ToolResultPayload): ChatClarifyRequest | n
  * the `chat.clarify_submit` RPC.
  */
 export function useChatApprovals(options: UseChatApprovalsOptions) {
-  const { rpc, sessionKey, runStatus } = options
+  const { rpc, sessionKey, stream, interruptState } = options
 
   const approvalEntries = ref<ChatApprovalEntry[]>([])
   const approvalBusyIds = ref<Set<string>>(new Set())
@@ -167,6 +291,36 @@ export function useChatApprovals(options: UseChatApprovalsOptions) {
   const clarifySubmitted = ref(false)
   const clarifyBusy = ref(false)
   const clarifyError = ref('')
+
+  // Resolution view-state for inline interrupt parts is the shared `interruptState`
+  // ref (keyed by approval id, or the clarify composite key). The fold reads it to
+  // stamp each part's resolution/busy/error, mirroring how toolTimes is a side-map.
+  // Frames stay append-only; optimistic resolution and resolve-from-elsewhere both
+  // flow through here.
+  function setInterruptState(id: string, patch: Partial<InterruptViewState>) {
+    const next = new Map(interruptState.value)
+    const prev = next.get(id) ?? { resolution: null, busy: false, error: '' }
+    next.set(id, { ...prev, ...patch })
+    interruptState.value = next
+  }
+
+  // The resolve endpoint wants the approval's namespace, which the part itself no
+  // longer carries by the time the user clicks. Remember it per approval id when
+  // the frame is appended so resolveInterrupt can recover it without the entries
+  // list (which the hydration-only path no longer populates).
+  const interruptNamespaces = new Map<string, string>()
+
+  // Last-seen approval data per id, so extendInterrupt can re-append a frame
+  // carrying the bumped deadline (the fold merges it onto the existing part) and
+  // the countdown re-arms live without a snapshot round-trip.
+  const interruptApprovals = new Map<string, InterruptApprovalData>()
+
+  // The clarify frame is keyed by a runId|step composite (a clarify has no
+  // approval id); arg-less clarifies fall back to a stable per-session key.
+  function clarifyFrameKey(request: ChatClarifyRequest): string {
+    const composite = `${request.runId}|${request.step}`
+    return composite === '|' ? `clarify:${sessionKey.value}` : composite
+  }
 
   let pollTimer: ReturnType<typeof setInterval> | null = null
   let fetchInFlight = false
@@ -199,6 +353,17 @@ export function useChatApprovals(options: UseChatApprovalsOptions) {
       next = next.filter(entry => !dropIds.has(entry.approval.id))
     }
     approvalEntries.value = next
+
+    // Surface every pending item as an interrupt frame too: this is the hydration
+    // path that recovers approvals which predate the socket (reload / queued turn)
+    // and backfills args/warning the lean push payload omits. The fold dedups by
+    // approvalId, so re-appending a known id merges the richer snapshot fields
+    // (args/warning) onto the existing part rather than duplicating it.
+    for (const item of sessionItems) {
+      const state = interruptState.value.get(item.id)
+      if (state?.resolution) continue
+      appendApprovalInterrupt(approvalItemToInterruptData(item))
+    }
   }
 
   async function fetchSnapshot() {
@@ -227,26 +392,22 @@ export function useChatApprovals(options: UseChatApprovalsOptions) {
     }
   }
 
-  function stopPolling() {
+  function stopFallbackPoll() {
     if (pollTimer) {
       clearInterval(pollTimer)
       pollTimer = null
     }
   }
 
-  function startPolling() {
-    if (pollTimer) return
+  // Hydrate once now; arm the 2s recovery interval only when the opt-in
+  // `opensquilla.chat.approvalPoll` flag is set. Default behaviour is hydrate-
+  // only — the stream carries new approvals, so no interval runs.
+  function hydrateApprovals() {
     void fetchSnapshot()
-    pollTimer = setInterval(() => { void fetchSnapshot() }, APPROVAL_POLL_INTERVAL_MS)
+    if (approvalPollEnabled() && !pollTimer) {
+      pollTimer = setInterval(() => { void fetchSnapshot() }, APPROVAL_POLL_INTERVAL_MS)
+    }
   }
-
-  watch(
-    () => runStatus.value.status === 'approval_pending' || hasUnresolvedApproval.value,
-    shouldPoll => {
-      if (shouldPoll) startPolling()
-      else stopPolling()
-    },
-  )
 
   async function resolveApproval(entry: ChatApprovalEntry, decision: ChatApprovalDecision, note = '') {
     const id = entry.approval.id
@@ -280,6 +441,117 @@ export function useChatApprovals(options: UseChatApprovalsOptions) {
     }
   }
 
+  /**
+   * Resolve an inline interrupt part. Reuses the same resolve POST body and the
+   * same idempotency guard as resolveApproval (busy or already-resolved is a
+   * no-op), driving the optimistic, append-only `interruptState` side-map instead
+   * of a card entry. A deny note rides the normal send/queue path via
+   * onDenyFeedback, exactly as the legacy card does.
+   */
+  async function resolveInterrupt(id: string, decision: ChatApprovalDecision, note = '') {
+    const current = interruptState.value.get(id)
+    if (approvalBusyIds.value.has(id) || current?.resolution) return
+    approvalBusyIds.value = new Set([...approvalBusyIds.value, id])
+    setInterruptState(id, { busy: true, error: '' })
+    const approved = decision !== 'deny'
+    const allowAlways = decision === 'allow-always'
+    const body = {
+      id,
+      namespace: namespaceForInterrupt(id),
+      approved,
+      allowAlways,
+      rememberIntent: allowAlways,
+    }
+    try {
+      const res = await fetch('/api/approvals/resolve', {
+        method: 'POST',
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) throw new Error('HTTP ' + res.status)
+      const resolution: InterruptResolution =
+        decision === 'deny' ? 'denied' : allowAlways ? 'approved_always' : 'approved'
+      setInterruptState(id, { resolution, busy: false })
+      if (decision === 'deny' && note.trim()) options.onDenyFeedback?.(note.trim())
+    } catch (err) {
+      setInterruptState(id, {
+        busy: false,
+        error: 'Could not resolve — ' + (err instanceof Error ? err.message : String(err)),
+      })
+    } finally {
+      const ids = new Set(approvalBusyIds.value)
+      ids.delete(id)
+      approvalBusyIds.value = ids
+    }
+  }
+
+  /**
+   * Push an inline approval's deadline out (WCAG 2.2.1 extend mechanism). Calls
+   * the `<namespace>.approval.extend` RPC and re-appends the frame with the
+   * bumped deadline so the countdown re-arms live (the fold merges by id). A
+   * busy or already-resolved request is a no-op.
+   */
+  async function extendInterrupt(id: string, seconds = APPROVAL_EXTEND_SECONDS) {
+    const current = interruptState.value.get(id)
+    if (approvalBusyIds.value.has(id) || current?.resolution) return
+    approvalBusyIds.value = new Set([...approvalBusyIds.value, id])
+    setInterruptState(id, { busy: true, error: '' })
+    try {
+      const result = await rpc.call<{ deadline?: number }>(
+        `${namespaceForInterrupt(id)}.approval.extend`,
+        { id, seconds },
+      )
+      const deadline = Number(result?.deadline) || 0
+      const known = interruptApprovals.get(id)
+      if (deadline > 0 && known) {
+        appendApprovalInterrupt({ ...known, deadline })
+      }
+      setInterruptState(id, { busy: false })
+    } catch (err) {
+      setInterruptState(id, {
+        busy: false,
+        error: 'Could not extend — ' + (err instanceof Error ? err.message : String(err)),
+      })
+    } finally {
+      const ids = new Set(approvalBusyIds.value)
+      ids.delete(id)
+      approvalBusyIds.value = ids
+    }
+  }
+
+  // The resolve endpoint wants the approval's namespace; recover it from the
+  // frame payload remembered at append time, else default to 'exec'.
+  function namespaceForInterrupt(id: string): string {
+    return interruptNamespaces.get(id) || 'exec'
+  }
+
+  // Append an approval interrupt frame onto the live turn, opening a render
+  // bubble first when no turn is streaming (queued/background/reload). Remembers
+  // the namespace for resolve, seeds an empty interruptState entry, and dedups in
+  // the fold by approvalId — so a re-broadcast or hydration backfill merges richer
+  // args/warning rather than duplicating the part.
+  function appendApprovalInterrupt(data: InterruptApprovalData) {
+    interruptNamespaces.set(data.approvalId, data.namespace)
+    // A lean push (or backfill) may omit the deadline (0); keep the latest
+    // known non-zero deadline so a countdown never regresses to "unknown".
+    const prior = interruptApprovals.get(data.approvalId)
+    const merged: InterruptApprovalData = {
+      ...data,
+      deadline: data.deadline || prior?.deadline || 0,
+    }
+    interruptApprovals.set(merged.approvalId, merged)
+    if (!interruptState.value.has(merged.approvalId)) {
+      setInterruptState(merged.approvalId, {})
+    }
+    if (!stream.isStreaming.value) stream.ensureInterruptBubble()
+    stream.appendInterruptFrame({
+      interruptKind: 'approval',
+      approvalId: merged.approvalId,
+      data: merged,
+      at: Date.now(),
+    })
+  }
+
   function handleToolResult(payload: ToolResultPayload) {
     if (!payload || typeof payload !== 'object') return
     if (!isCurrentSessionPayload(payload, sessionKey.value)) return
@@ -288,40 +560,96 @@ export function useChatApprovals(options: UseChatApprovalsOptions) {
     pendingClarify.value = request
     clarifySubmitted.value = false
     clarifyError.value = ''
+    // Mirror the clarify into the turn log so it folds into an inline interrupt
+    // part. The clarify keeps no approval id, so the runId|step composite keys it.
+    const clarifyData: InterruptClarifyData = {
+      intro: request.intro,
+      fields: request.fields,
+      runId: request.runId,
+      step: request.step,
+    }
+    const key = clarifyFrameKey(request)
+    if (!interruptState.value.has(key)) setInterruptState(key, {})
+    if (!stream.isStreaming.value) stream.ensureInterruptBubble()
+    stream.appendInterruptFrame({
+      interruptKind: 'clarify',
+      approvalId: key,
+      data: clarifyData,
+      at: Date.now(),
+    })
   }
 
   /**
-   * Gateway approval lifecycle push: refresh the snapshot immediately so
-   * the in-thread card (and the gateway-wide pending count) updates
-   * without waiting for the next poll tick.
+   * `*.approval.requested` push: build an interrupt frame straight from the push
+   * payload (no snapshot round-trip) so the inline part appears immediately. The
+   * lean push omits args/warning; those are backfilled by the one-shot hydration
+   * on subscribe (and by the opt-in recovery interval), and rendered from the
+   * source once the backend enriches the payload — command + tool name render
+   * from the push alone meanwhile.
    */
-  function handleApprovalPush() {
-    void fetchSnapshot()
+  function handleApprovalRequested(payload: ApprovalPushPayload) {
+    const data = pushPayloadToInterruptData(payload)
+    if (data && (!sessionKey.value || data.sessionKey === sessionKey.value)) {
+      appendApprovalInterrupt(data)
+    }
+  }
+
+  /**
+   * `*.approval.resolved` push: stamp `interruptState` from `payload.approved` so
+   * a decision landing elsewhere (the Approvals page, another client) collapses
+   * the inline part here too. No snapshot fetch — the push carries the outcome.
+   */
+  function handleApprovalResolved(payload: ApprovalPushPayload) {
+    const id = String(payload.approval_id || payload.approvalId || '').trim()
+    if (id && !interruptState.value.get(id)?.resolution) {
+      setInterruptState(id, {
+        resolution: resolutionFromPayload(payload),
+        busy: false,
+      })
+    }
+  }
+
+  // Reconnect recovers approvals that arrived while the socket was down: a fresh
+  // hydration re-surfaces still-pending items as frames (deduped by the fold).
+  function handleConnectionState(state: unknown) {
+    if (state === 'connected') hydrateApprovals()
   }
 
   /** Register stream listeners; returns the unsubscribe function. */
   function subscribe(): () => void {
     const unsubs = [
       rpc.on('session.event.tool_result', handleToolResult as RpcEventHandler),
-      rpc.on('exec.approval.requested', handleApprovalPush as RpcEventHandler),
-      rpc.on('exec.approval.resolved', handleApprovalPush as RpcEventHandler),
-      rpc.on('plugin.approval.requested', handleApprovalPush as RpcEventHandler),
-      rpc.on('plugin.approval.resolved', handleApprovalPush as RpcEventHandler),
+      rpc.on('exec.approval.requested', handleApprovalRequested as RpcEventHandler),
+      rpc.on('exec.approval.resolved', handleApprovalResolved as RpcEventHandler),
+      rpc.on('plugin.approval.requested', handleApprovalRequested as RpcEventHandler),
+      rpc.on('plugin.approval.resolved', handleApprovalResolved as RpcEventHandler),
+      rpc.on('_state', handleConnectionState as RpcEventHandler),
     ]
-    return () => { unsubs.forEach(unsub => unsub()) }
+    // One-shot hydration on subscribe recovers any approval already pending
+    // before the listeners attached.
+    hydrateApprovals()
+    return () => {
+      unsubs.forEach(unsub => unsub())
+      stopFallbackPoll()
+    }
   }
 
   async function submitClarify(fields: Record<string, string | boolean>) {
     if (clarifyBusy.value || clarifySubmitted.value || !pendingClarify.value) return
+    const key = clarifyFrameKey(pendingClarify.value)
     clarifyBusy.value = true
     clarifyError.value = ''
+    setInterruptState(key, { busy: true, error: '' })
     const params: Record<string, unknown> = { sessionKey: sessionKey.value, fields }
     if (pendingClarify.value.runId) params.run_id = pendingClarify.value.runId
     try {
       await rpc.call('chat.clarify_submit', params)
       clarifySubmitted.value = true
+      setInterruptState(key, { resolution: 'replied', busy: false })
     } catch (err) {
-      clarifyError.value = 'Send failed — ' + (err instanceof Error ? err.message : String(err))
+      const message = 'Send failed — ' + (err instanceof Error ? err.message : String(err))
+      clarifyError.value = message
+      setInterruptState(key, { busy: false, error: message })
     } finally {
       clarifyBusy.value = false
     }
@@ -333,18 +661,22 @@ export function useChatApprovals(options: UseChatApprovalsOptions) {
     clarifyError.value = ''
   }
 
-  // Session switches reset all in-thread card state; a fresh snapshot check
-  // recovers approvals that were already pending (e.g. reload mid-approval).
+  // Session switches reset all in-thread card state; a one-shot hydration
+  // recovers approvals that were already pending (e.g. reload mid-approval) and
+  // re-arms the opt-in recovery interval for the new session.
   watch(sessionKey, key => {
-    stopPolling()
+    stopFallbackPoll()
     approvalEntries.value = []
     approvalBusyIds.value = new Set()
+    interruptState.value = new Map()
+    interruptNamespaces.clear()
+    interruptApprovals.clear()
     dismissClarify()
-    if (key) void fetchSnapshot()
+    if (key) hydrateApprovals()
   }, { immediate: true })
 
   function cleanup() {
-    stopPolling()
+    stopFallbackPoll()
   }
 
   return {
@@ -356,6 +688,8 @@ export function useChatApprovals(options: UseChatApprovalsOptions) {
     clarifyBusy,
     clarifyError,
     resolveApproval,
+    resolveInterrupt,
+    extendInterrupt,
     submitClarify,
     dismissClarify,
     subscribe,

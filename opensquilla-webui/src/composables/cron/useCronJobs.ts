@@ -1,17 +1,35 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRpcStore } from '@/stores/rpc'
+import { useRequest } from '@/composables/useRequest'
+import { useToasts } from '@/composables/useToasts'
 import type { CronJob } from '@/types/cron'
 import { humanCountdown, humanTime } from '@/utils/cron/time'
 
+interface CronListResponse {
+  jobs?: CronJob[]
+}
+
 export function useCronJobs() {
   const rpc = useRpcStore()
-  const jobs = ref<CronJob[]>([])
+  const { pushToast } = useToasts()
   const searchText = ref('')
   const viewMode = ref<'cards' | 'table'>('cards')
   const runningJobIds = ref<Set<string>>(new Set())
   const sortCol = ref('next_run')
   const sortAsc = ref(true)
   const now = ref(Date.now())
+
+  const { data: cronData, loading, error, refresh } = useRequest<CronListResponse | CronJob[]>(
+    'cron.list',
+    undefined,
+    { errorLabel: 'Failed to load cron jobs' },
+  )
+
+  const jobs = computed<CronJob[]>(() => {
+    const d = cronData.value
+    if (!d) return []
+    return Array.isArray(d) ? d : (d.jobs || [])
+  })
 
   let tickInterval: ReturnType<typeof setInterval> | null = null
   let reloadTimer: ReturnType<typeof setTimeout> | null = null
@@ -74,20 +92,12 @@ export function useCronJobs() {
     })
   })
 
-  async function loadData() {
-    try {
-      await rpc.waitForConnection()
-      const data = await rpc.call<{ jobs?: CronJob[] } | CronJob[]>('cron.list')
-      jobs.value = Array.isArray(data) ? data : (data.jobs || [])
-    } catch (err) {
-      console.warn('Failed to load cron jobs: ' + (err instanceof Error ? err.message : String(err)))
-    }
-  }
+  const loadData = refresh
 
   function scheduleReload() {
-    loadData()
+    void refresh()
     if (reloadTimer) clearTimeout(reloadTimer)
-    reloadTimer = setTimeout(loadData, 750)
+    reloadTimer = setTimeout(() => { void refresh() }, 750)
   }
 
   function onSort(col: string) {
@@ -102,10 +112,10 @@ export function useCronJobs() {
   async function toggleJob(job: CronJob) {
     try {
       await rpc.call('cron.update', { id: job.id, enabled: !job.enabled })
-      console.warn(`Job ${job.enabled ? 'paused' : 'resumed'}`)
-      loadData()
+      pushToast(`Job ${job.enabled ? 'paused' : 'resumed'}`, { tone: 'ok' })
+      void refresh()
     } catch (err) {
-      console.warn('Update failed: ' + (err instanceof Error ? err.message : String(err)))
+      pushToast('Update failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
     }
   }
 
@@ -117,11 +127,10 @@ export function useCronJobs() {
     runningJobIds.value = new Set(runningJobIds.value).add(id)
     try {
       const res = await rpc.call<{ reply?: string; error?: string }>('cron.run', { id })
-      if (res?.reply) console.warn(`Run complete: ${res.reply.substring(0, 120)}`)
-      else if (res?.error) console.warn(`Run failed: ${res.error}`)
-      else console.warn('Job triggered')
+      if (res?.error) pushToast(`Run failed: ${res.error}`, { tone: 'danger' })
+      else pushToast(res?.reply ? `Run complete: ${res.reply.substring(0, 120)}` : 'Job triggered', { tone: 'ok' })
     } catch (err) {
-      console.warn('Run failed: ' + (err instanceof Error ? err.message : String(err)))
+      pushToast('Run failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
     } finally {
       const next = new Set(runningJobIds.value)
       next.delete(id)
@@ -131,12 +140,11 @@ export function useCronJobs() {
 
   async function removeJob(id: string) {
     await rpc.call('cron.remove', { id })
-    console.warn('Job deleted')
-    loadData()
+    pushToast('Job deleted', { tone: 'ok' })
+    void refresh()
   }
 
   onMounted(() => {
-    loadData()
     tickInterval = setInterval(() => { now.value = Date.now() }, 1000)
     rpc.waitForConnection()
       .then(() => rpc.call('cron.subscribe', {}))
@@ -153,6 +161,8 @@ export function useCronJobs() {
 
   return {
     jobs,
+    loading,
+    error,
     searchText,
     viewMode,
     runningJobIds,

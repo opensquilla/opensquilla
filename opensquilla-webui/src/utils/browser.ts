@@ -36,6 +36,15 @@ export function downloadText(filename: string, mime: string, content: string): v
   downloadBlob(new Blob([content], { type: mime }), filename)
 }
 
+// True on Apple platforms (macOS, iPadOS, iOS). Keyboard shortcuts use this to
+// bind their primary chord to the Cmd key and leave Ctrl to macOS' system-wide
+// emacs-style text-editing bindings (e.g. Ctrl+K = kill-to-end-of-line) rather
+// than stealing it. userAgent is matched instead of the deprecated
+// navigator.platform; "Macintosh" satisfies the /Mac/ test.
+export function isMacPlatform(): boolean {
+  return typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent)
+}
+
 // Whether this browser can put an image on the clipboard. The async Clipboard
 // API plus the ClipboardItem constructor are both required and only exist in a
 // secure context (localhost counts); older Firefox/Safari lack ClipboardItem.

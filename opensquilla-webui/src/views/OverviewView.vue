@@ -7,9 +7,9 @@
         <p class="ov-stage__subtitle control-stage__subtitle">Live status, recent sessions, and the event stream.</p>
       </div>
       <div class="ov-stage__actions control-stage__actions">
-        <button class="btn btn--ghost" title="Refresh" @click="refresh">
+        <button class="btn btn--ghost" title="Refresh" :disabled="refreshing" @click="refresh">
           <Icon name="refresh" :size="16" />
-          <span>Refresh</span>
+          <span>{{ refreshing ? 'Refreshing…' : 'Refresh' }}</span>
         </button>
         <button class="btn btn--primary" title="Open chat" @click="router.push('/chat')">
           <Icon name="chat" :size="16" />
@@ -208,6 +208,9 @@
           <template v-if="loadingSessions">
             <div class="skeleton-row" />
           </template>
+          <template v-else-if="sessionsError">
+            <ErrorState :message="sessionsError" :on-retry="refreshSessions" />
+          </template>
           <template v-else-if="recentSessions.length === 0">
             <div class="ov-recent__empty">
               <div class="ov-recent__empty-icon">
@@ -250,32 +253,8 @@
           <span class="conn-pill" :class="connPillClass">{{ connPillState }}</span>
         </div>
         <div class="ov-form">
-          <label class="ov-field">
-            <span class="ov-field__label">WebSocket URL</span>
-            <input
-              v-model="wsUrl"
-              class="ov-field__input ov-field__input--mono"
-              type="text"
-              placeholder="ws://..."
-              autocomplete="off"
-            />
-          </label>
-          <label class="ov-field">
-            <span class="ov-field__label">
-              Token <span class="ov-field__optional">optional</span>
-            </span>
-            <input
-              v-model="wsToken"
-              class="ov-field__input"
-              type="password"
-              placeholder="&mdash;"
-              autocomplete="off"
-            />
-          </label>
-          <div class="ov-form__actions">
-            <button class="btn btn--primary btn--sm" @click="connect">Connect</button>
-            <button class="btn btn--ghost btn--sm" @click="disconnect">Disconnect</button>
-          </div>
+          <p class="ov-conn-hint">The gateway WebSocket URL and token now live in Settings.</p>
+          <router-link class="btn btn--ghost btn--sm" to="/settings/connection">Manage connection in Settings &rarr;</router-link>
         </div>
       </section>
 
@@ -310,11 +289,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
+import { useRequest } from '@/composables/useRequest'
 import { copyTextWithFallback } from '@/utils/browser'
 import Icon from '@/components/Icon.vue'
+import ErrorState from '@/components/ErrorState.vue'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -400,24 +381,73 @@ const rpc = useRpcStore()
 
 const HIDDEN_EVIDENCE_KEYS = new Set(['restart_required', 'restartRequired'])
 
-const tokensDisplay = ref<string>('—')
-const sessionsCount = ref<string>('—')
-const provider = ref<string>('—')
+// Per-panel useRequest instances
+const { data: statusData, refresh: refreshStatus } = useRequest<StatusData>(
+  'status',
+  undefined,
+  { errorLabel: 'Failed to load status', immediate: false },
+)
+const { data: usageData, refresh: refreshUsage } = useRequest<UsageData>(
+  'usage.status',
+  undefined,
+  { errorLabel: 'Failed to load usage', toastOnError: false, immediate: false },
+)
+const { data: sessionsData, loading: loadingSessions, error: sessionsError, refresh: refreshSessions } = useRequest<SessionsListData>(
+  'sessions.list',
+  { limit: 5 },
+  { errorLabel: 'Failed to load sessions', immediate: false },
+)
+
+// Derived display values from status panel
+const uptime = computed<string>(() => {
+  const ms = statusData.value?.uptime_ms
+  if (ms == null) return '—'
+  const s = Math.floor(ms / 1000)
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  return `${h}h ${m}m ${s % 60}s`
+})
+const versionLine = computed<string>(() => statusData.value?.version ? `v${statusData.value.version}` : '—')
+const provider = computed<string>(() => statusData.value?.provider ?? '—')
+
+// Derived display values from usage panel
+const sessionsCount = computed<string>(() =>
+  usageData.value?.totalSessions != null ? String(usageData.value.totalSessions) : '—'
+)
+const tokensDisplay = computed<string>(() =>
+  usageData.value?.totalTokens != null ? usageData.value.totalTokens.toLocaleString() : '—'
+)
+const costLine = computed<string>(() => {
+  const cost = usageData.value?.totalCostUsd
+  if (cost == null) return '—'
+  const cnyRate = 7.25
+  const usd = '$' + Number(cost).toFixed(4)
+  const cny = '¥' + (Number(cost) * cnyRate).toFixed(4)
+  const cur = localStorage.getItem('opensquilla-currency') || 'USD'
+  return cur === 'CNY' ? `${cny} · ${usd}` : `${usd} · ${cny}`
+})
+
+// Derived recent sessions
+const recentSessions = computed<Session[]>(() => {
+  const list = sessionsData.value?.sessions || []
+  return list
+    .slice()
+    .sort((a, b) => {
+      const ta = a.updated_at ? new Date(a.updated_at).getTime() : 0
+      const tb = b.updated_at ? new Date(b.updated_at).getTime() : 0
+      return tb - ta
+    })
+    .slice(0, 6)
+})
+
+// Health panel keeps its own imperative state (special error rendering)
 const healthLoading = ref(true)
 const healthReport = ref<HealthReport | null>(null)
 const healthError = ref<Error | null>(null)
-const uptime = ref<string>('—')
-const versionLine = ref<string>('—')
-const costLine = ref<string>('—')
-const recentSessions = ref<Session[]>([])
-const loadingSessions = ref(true)
+
 const eventLog = ref<LogEvent[]>([])
 
-const wsUrl = ref('')
-const wsToken = ref('')
-
 let autoRefreshId: ReturnType<typeof setInterval> | null = null
-let pillTickId: ReturnType<typeof setInterval> | null = null
 let unsubEvents: (() => void) | null = null
 
 // ---------------------------------------------------------------------------
@@ -518,43 +548,66 @@ const groupedFindings = computed<FindingGroup[]>(() => {
 // ---------------------------------------------------------------------------
 
 onMounted(() => {
-  // Load connection settings into form
-  const settings = loadConnectionSettings()
-  wsUrl.value = settings.url
-  wsToken.value = settings.token
-
-  // Subscribe to wildcard events
-  unsubEvents = rpc.on('*', (eventName: string, payload: unknown) => {
-    pushEvent(eventName, payload)
-  })
-
   // Initial data load (readiness loads once; deep doctor checks are heavier
-  // than the 30s status polls, so they only rerun on manual Refresh)
-  loadData()
+  // than the 30s status polls, so they only rerun on manual Refresh).
+  // useRequest handles initial load for status/usage/sessions on mount.
   loadHealth()
+})
 
-  // Auto-refresh every 30s
-  autoRefreshId = setInterval(loadData, 30000)
+// Timers and the event subscription live on activate/deactivate so a kept-alive
+// but hidden Overview stops its 30s/2s polling and event accrual. onActivated
+// fires on first mount too, so the timers are owned entirely here.
+onActivated(() => {
+  startTimers()
+  // A returning view refreshes immediately so cached numbers don't linger.
+  loadData()
+})
 
-  // Connection pill tick every 2s
-  pillTickId = setInterval(() => {
-    // Reactive via computed, no-op needed
-  }, 2000)
+onDeactivated(() => {
+  stopTimers()
 })
 
 onUnmounted(() => {
-  if (autoRefreshId) clearInterval(autoRefreshId)
-  if (pillTickId) clearInterval(pillTickId)
-  if (unsubEvents) unsubEvents()
+  stopTimers()
 })
+
+function startTimers() {
+  if (!unsubEvents) {
+    unsubEvents = rpc.on('*', (eventName: string, payload: unknown) => {
+      pushEvent(eventName, payload)
+    })
+  }
+  // Auto-refresh every 30s (silent background refresh)
+  if (!autoRefreshId) autoRefreshId = setInterval(loadData, 30000)
+}
+
+function stopTimers() {
+  if (autoRefreshId) {
+    clearInterval(autoRefreshId)
+    autoRefreshId = null
+  }
+  if (unsubEvents) {
+    unsubEvents()
+    unsubEvents = null
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Actions
 // ---------------------------------------------------------------------------
 
-function refresh() {
-  loadData()
-  loadHealth()
+const refreshing = ref(false)
+
+// Manual refresh shows a busy state on the button; the 30s background poll
+// (loadData) intentionally stays silent, so the control reacts only to clicks.
+async function refresh() {
+  if (refreshing.value) return
+  refreshing.value = true
+  try {
+    await Promise.all([refreshStatus(), refreshUsage(), refreshSessions(), loadHealth()])
+  } finally {
+    refreshing.value = false
+  }
 }
 
 function scrollToHealth() {
@@ -587,18 +640,6 @@ async function copyCommand(command: string) {
   }
 }
 
-function connect() {
-  const url = wsUrl.value.trim()
-  const token = wsToken.value.trim()
-  saveConnectionSettings(url, token)
-  rpc.disconnect()
-  rpc.connect(url, token || undefined)
-}
-
-function disconnect() {
-  rpc.disconnect()
-}
-
 function openSession(key: string) {
   router.push({ path: '/chat', query: { session: key } })
 }
@@ -607,65 +648,10 @@ function openSession(key: string) {
 // Data loading
 // ---------------------------------------------------------------------------
 
-async function loadData() {
-  try {
-    await rpc.waitForConnection()
-  } catch {
-    return
-  }
-
-  // Status
-  rpc.call<StatusData>('status').then(data => {
-    const ms = data.uptime_ms
-    if (ms != null) {
-      const s = Math.floor(ms / 1000)
-      const h = Math.floor(s / 3600)
-      const m = Math.floor((s % 3600) / 60)
-      uptime.value = `${h}h ${m}m ${s % 60}s`
-    } else {
-      uptime.value = '—'
-    }
-    versionLine.value = data.version ? `v${data.version}` : '—'
-    provider.value = data.provider ?? '—'
-  }).catch(err => {
-    console.warn('Failed to load status:', err.message)
-  })
-
-  // Usage status
-  rpc.call<UsageData>('usage.status').then(data => {
-    sessionsCount.value = data.totalSessions != null ? String(data.totalSessions) : '—'
-    tokensDisplay.value = data.totalTokens != null ? data.totalTokens.toLocaleString() : '—'
-
-    if (data.totalCostUsd != null) {
-      const cnyRate = 7.25
-      const usd = '$' + Number(data.totalCostUsd).toFixed(4)
-      const cny = '¥' + (Number(data.totalCostUsd) * cnyRate).toFixed(4)
-      const cur = localStorage.getItem('opensquilla-currency') || 'USD'
-      costLine.value = cur === 'CNY' ? `${cny} · ${usd}` : `${usd} · ${cny}`
-    } else {
-      costLine.value = '—'
-    }
-  }).catch(() => {
-    // Silently ignore
-  })
-
-  // Sessions list
-  loadingSessions.value = true
-  rpc.call<SessionsListData>('sessions.list', { limit: 5 }).then(data => {
-    const sessions = (data.sessions || [])
-      .slice()
-      .sort((a, b) => {
-        const ta = a.updated_at ? new Date(a.updated_at).getTime() : 0
-        const tb = b.updated_at ? new Date(b.updated_at).getTime() : 0
-        return tb - ta
-      })
-      .slice(0, 6)
-    recentSessions.value = sessions
-  }).catch(() => {
-    recentSessions.value = []
-  }).finally(() => {
-    loadingSessions.value = false
-  })
+function loadData() {
+  void refreshStatus()
+  void refreshUsage()
+  void refreshSessions()
 }
 
 // ---------------------------------------------------------------------------
@@ -957,31 +943,12 @@ function formatMessageCount(n: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Connection settings helpers (mirroring rpc store internals)
+// Gateway URL helper (the connection editor moved to Settings → Connection)
 // ---------------------------------------------------------------------------
-
-const WS_URL_KEY = 'opensquilla.wsUrl'
-const WS_TOKEN_KEY = 'opensquilla.wsToken'
 
 function gatewayContextUrl(): string {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${proto}//${location.host}/ws`
-}
-
-function loadConnectionSettings(): { url: string; token: string } {
-  let url = gatewayContextUrl()
-  let token = ''
-  try { url = localStorage.getItem(WS_URL_KEY) || url } catch {}
-  try { token = sessionStorage.getItem(WS_TOKEN_KEY) || '' } catch {}
-  return { url, token }
-}
-
-function saveConnectionSettings(url: string, token: string): void {
-  try { localStorage.setItem(WS_URL_KEY, url || gatewayContextUrl()) } catch {}
-  try {
-    if (token) sessionStorage.setItem(WS_TOKEN_KEY, token)
-    else sessionStorage.removeItem(WS_TOKEN_KEY)
-  } catch {}
 }
 </script>
 
@@ -1179,6 +1146,11 @@ function saveConnectionSettings(url: string, token: string): void {
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
+}
+.ov-conn-hint {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
 }
 .ov-field {
   display: flex;
@@ -1812,7 +1784,7 @@ function saveConnectionSettings(url: string, token: string): void {
 }
 
 .health-step__copy:hover {
-  background: var(--bg-panel);
+  background: var(--bg-hover);
   border-color: var(--accent);
   color: var(--text);
 }

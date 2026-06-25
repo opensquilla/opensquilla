@@ -15,6 +15,13 @@ const HIGHLIGHT_MAX_CHARS = 30_000
 // classes (incl. sub-scope suffixes like `function_`) and the code chrome.
 const CODE_CLASS_RE = /^(?:hljs|hljs-[\w-]+|language-[\w#+.-]+|code-lang|function_|class_|inherited__)$/
 
+// Syntax highlighting is the heaviest part of the render and re-runs over the
+// whole code block on every flush during streaming. While a turn is streaming
+// we render code as plain (escaped) monospace and defer highlighting to the
+// committed message — a one-time recolor at the end, no reflow. renderMarkdown
+// toggles this around each parse; it is synchronous so the flag never leaks.
+let codeHighlightEnabled = true
+
 function escapeHtml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
@@ -28,7 +35,7 @@ marked.use({
     code({ text, lang }: Tokens.Code): string {
       const language = (lang || '').trim().split(/\s+/)[0].toLowerCase()
       const canHighlight =
-        language.length > 0 && text.length <= HIGHLIGHT_MAX_CHARS && Boolean(hljs.getLanguage(language))
+        codeHighlightEnabled && language.length > 0 && text.length <= HIGHLIGHT_MAX_CHARS && Boolean(hljs.getLanguage(language))
       let body = ''
       if (canHighlight) {
         try {
@@ -134,14 +141,27 @@ export function useChatTextRendering() {
     return typeof text === 'string' ? text.replace(TIME_PREFIX_RE, '') : text
   }
 
-  function renderMarkdown(text: string): string {
+  function renderMarkdown(text: string, opts?: { highlight?: boolean }): string {
     text = stripProtocolTextLeak(stripDirectiveTags(stripGeneratedArtifactMarkers(text)))
     if (!text) return ''
 
-    const cached = markdownCache.get(text)
+    // Cache key is namespaced by highlight mode so a plain streaming render is
+    // never served where a highlighted one is expected (and vice versa).
+    const highlight = opts?.highlight !== false
+    const cacheKey = (highlight ? 'H\n' : 'P\n') + text
+    const cached = markdownCache.get(cacheKey)
     if (cached !== undefined) return cached
 
-    const rawHtml = marked.parse(text, { async: false, breaks: true }) as string
+    // Toggle the shared code-highlight flag only across the synchronous parse;
+    // try/finally guarantees it is restored even if marked.parse throws, so a
+    // later highlighted render can never inherit a stale "plain" flag.
+    let rawHtml: string
+    codeHighlightEnabled = highlight
+    try {
+      rawHtml = marked.parse(text, { async: false, breaks: true }) as string
+    } finally {
+      codeHighlightEnabled = true
+    }
     const html = DOMPurify.sanitize(rawHtml, {
       ALLOWED_TAGS: [
         'p', 'br', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
@@ -162,7 +182,7 @@ export function useChatTextRendering() {
       const firstKey = markdownCache.keys().next().value
       if (firstKey !== undefined) markdownCache.delete(firstKey)
     }
-    markdownCache.set(text, html)
+    markdownCache.set(cacheKey, html)
     return html
   }
 

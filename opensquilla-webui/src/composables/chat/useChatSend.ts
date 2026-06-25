@@ -1,4 +1,5 @@
 import type { Ref } from 'vue'
+import { useToasts } from '@/composables/useToasts'
 import type { Attachment, ChatMessage } from '@/types/chat'
 import type {
   ChatSendParams,
@@ -37,13 +38,15 @@ export interface UseChatSendOptions {
 }
 
 export function useChatSend(options: UseChatSendOptions) {
+  const { pushToast } = useToasts()
+
   async function onSend() {
     let text = options.inputText.value.trim()
     let hasPayload = text || options.pendingAttachments.value.length > 0
     let isLiteralSlash = false
 
     if (options.hasPendingAttachmentWork()) {
-      console.warn('Wait for file attachment processing to finish')
+      pushToast('Wait for file attachment processing to finish', { tone: 'info' })
       return
     }
 
@@ -56,7 +59,7 @@ export function useChatSend(options: UseChatSendOptions) {
     const compactInFlight = options.isCompactInFlightForCurrentSession()
     if (options.stream.isStreaming.value || compactInFlight) {
       if (!isLiteralSlash && text.startsWith('/')) {
-        console.warn(`Wait for ${compactInFlight ? 'context compaction' : 'the current response'} before running ${text.split(/\s+/, 1)[0]}.`)
+        pushToast(`Wait for ${compactInFlight ? 'context compaction' : 'the current response'} before running ${text.split(/\s+/, 1)[0]}.`, { tone: 'info' })
         return
       }
       if (!hasPayload) return
@@ -66,7 +69,11 @@ export function useChatSend(options: UseChatSendOptions) {
         await dispatchSend(text, { queueMode: 'steer' })
         return
       }
-      options.enqueuePendingInput(text)
+      // Surface a full queue instead of silently dropping the send: the draft is
+      // preserved (enqueue returns false before clearing the composer).
+      if (!options.enqueuePendingInput(text)) {
+        pushToast('Queue is full — wait for the current response to finish.', { tone: 'info' })
+      }
       return
     }
 
@@ -133,7 +140,16 @@ export function useChatSend(options: UseChatSendOptions) {
   function onStop() {
     if (!options.stream.isStreaming.value) return
     options.aborted.value = true
-    options.rpc.call('chat.abort', { sessionKey: options.sessionKey.value }).catch(() => {})
+    // Be honest if the abort can't reach the gateway (e.g. the socket dropped):
+    // we still tear the local stream down for responsiveness, but the user must
+    // know the server-side run may keep going rather than trust a false "stopped".
+    options.rpc.call('chat.abort', { sessionKey: options.sessionKey.value }).catch(() => {
+      options.messages.value.push({
+        role: 'system',
+        text: 'Stop could not reach the server — the run may still be finishing.',
+        ts: new Date().toISOString(),
+      })
+    })
     options.stream.endStreaming({ reason: 'aborted' })
     options.popAllPendingIntoComposer()
   }

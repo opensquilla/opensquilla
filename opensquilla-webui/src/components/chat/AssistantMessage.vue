@@ -20,13 +20,7 @@
       <Icon v-if="shareSelected" name="check" :size="13" />
     </button>
     <div class="msg-ai-main">
-      <details v-if="message.reasoning" class="thinking-fold">
-        <summary class="thinking-fold__summary">
-          <Icon class="thinking-fold__chevron" name="chevronRight" :size="12" />
-          <span>{{ reasoningSummary }}</span>
-        </summary>
-        <div class="thinking-fold__body">{{ message.reasoning.text }}</div>
-      </details>
+      <ReasoningPart v-if="reasoningPart" :part="reasoningPart" />
       <ToolCallTimeline
         v-if="message.timelineItems?.length"
         :items="message.timelineItems"
@@ -40,7 +34,7 @@
         @show-result="(content, title) => $emit('showToolResult', content, title)"
       />
       <template v-else>
-        <div v-if="message.text" class="msg-ai-text" v-html="renderMarkdown(message.text)" />
+        <TextPart v-if="standaloneTextPart" :part="standaloneTextPart" :sources="message.sources ?? []" @citation="onCitation" />
       </template>
 
       <ToolCallTimeline
@@ -56,6 +50,25 @@
         @show-result="(content, title) => $emit('showToolResult', content, title)"
       />
 
+      <!-- Inline interrupts: approval / clarify requests that blocked the run,
+           rendered after the body and before the ending deliverables. -->
+      <InterruptPart
+        v-for="part in interruptParts"
+        :key="part.key"
+        :part="part"
+        @resolve="(id, decision, note) => $emit('resolveInterrupt', id, decision, note)"
+        @extend="id => $emit('extendInterrupt', id)"
+        @clarify-submit="fields => $emit('clarifySubmit', fields)"
+        @clarify-dismiss="$emit('clarifyDismiss')"
+      />
+
+      <!-- What the agent did this turn: an expandable activity timeline of the
+           accepted phase transitions, shown before the ending deliverables. -->
+      <StatusHistoryPart
+        v-if="statusHistory.length"
+        :entries="statusHistory"
+      />
+
       <div
         class="msg-ai-ending"
         :class="{ 'msg-ai-ending--done': showDoneBlock }"
@@ -69,7 +82,7 @@
           @download="$emit('downloadArtifact', $event)"
         />
 
-        <SourcesRow v-if="message.toolCalls?.length" :calls="message.toolCalls" />
+        <SourcesRow v-if="message.toolCalls?.length" ref="sourcesRowRef" :calls="message.toolCalls" :sources="message.sources ?? []" />
 
         <div class="msg-ai-footer">
           <div v-if="message.meta" class="msg-ai-meta">
@@ -145,6 +158,11 @@
             >
               <Icon name="fork" :size="12" />
             </button>
+            <time v-if="timeIso" class="msg-time" :datetime="timeIso" :title="timeFull">
+              <span class="msg-time__abs">{{ timeAbs }}</span>
+              <span class="msg-time__dot" aria-hidden="true">·</span>
+              <span class="msg-time__rel">{{ timeRel }}</span>
+            </time>
           </div>
         </div>
       </div>
@@ -158,7 +176,12 @@ import Icon from '@/components/Icon.vue'
 import ChatArtifactList from '@/components/chat/ChatArtifactList.vue'
 import SourcesRow from '@/components/chat/SourcesRow.vue'
 import ToolCallTimeline from '@/components/chat/ToolCallTimeline.vue'
+import InterruptPart from '@/components/chat/parts/InterruptPart.vue'
+import ReasoningPart from '@/components/chat/parts/ReasoningPart.vue'
+import StatusHistoryPart from '@/components/chat/parts/StatusHistoryPart.vue'
+import TextPart from '@/components/chat/parts/TextPart.vue'
 import { useCopyFeedback } from '@/composables/chat/useCopyFeedback'
+import { useRelativeNow } from '@/composables/useRelativeNow'
 import type {
   ChatRenderedMessage,
   ChatStreamTimelineItem,
@@ -166,7 +189,9 @@ import type {
   ChatToolCallGroup,
   ChatToolCallRenderItem,
 } from '@/types/chat'
+import type { ChatPart } from '@/types/parts'
 import type { ArtifactPayload } from '@/types/rpc'
+import { absoluteTime, fullTime, isoTime, relativeTime } from '@/utils/messageTime'
 
 const props = defineProps<{
   message: ChatRenderedMessage
@@ -198,7 +223,57 @@ const emit = defineEmits<{
   toggleToolItem: [renderKey: string]
   showToolResult: [content: string, title: string]
   fork: []
+  resolveInterrupt: [id: string, decision: 'allow-once' | 'allow-always' | 'deny', note?: string]
+  extendInterrupt: [id: string]
+  clarifySubmit: [fields: Record<string, string>]
+  clarifyDismiss: []
 }>()
+
+// Absolute label is static; only the relative label subscribes to the shared
+// clock, so a tick re-evaluates one cheap computed per visible bubble.
+const now = useRelativeNow()
+const timeIso = computed(() => isoTime(props.message.ts))
+const timeAbs = computed(() => absoluteTime(props.message.ts))
+const timeRel = computed(() => relativeTime(props.message.ts, now.value))
+const timeFull = computed(() => fullTime(props.message.ts))
+
+// reasoning + standalone text now come pre-folded on message.parts (see toParts).
+// The text part already carries pre-rendered, sanitized html, so this component
+// no longer re-runs renderMarkdown for the body.
+const reasoningPart = computed(
+  () =>
+    props.message.parts?.find(
+      (part): part is Extract<ChatPart, { type: 'reasoning' }> => part.type === 'reasoning',
+    ) ?? null,
+)
+// Standalone text only exists in the no-timeline body: toParts emits a single
+// text part (key `${ownerKey}:text`) and never alongside a timeline.
+const standaloneTextPart = computed(() =>
+  props.message.timelineItems?.length
+    ? null
+    : props.message.parts?.find(
+        (part): part is Extract<ChatPart, { type: 'text' }> => part.type === 'text',
+      ) ?? null,
+)
+// Inline interrupt parts (approval / clarify) fold into the body order after
+// text/tools and before the ending; render them through the shared adapter.
+const interruptParts = computed(
+  () =>
+    props.message.parts?.filter(
+      (part): part is Extract<ChatPart, { type: 'interrupt' }> => part.type === 'interrupt',
+    ) ?? [],
+)
+// The persisted activity timeline for this finished turn. Empty (fold hidden)
+// for OFF-mode turns and reloaded threads, which carry no snapshot.
+const statusHistory = computed(() => props.message.statusHistory ?? [])
+
+// A citation pill in the body asks the paired SourcesRow to reveal + highlight
+// the source it points at. No-op when no SourcesRow is mounted (which only
+// happens when there are no sources, so the body has no pills either).
+const sourcesRowRef = ref<InstanceType<typeof SourcesRow> | null>(null)
+function onCitation(sourceId: number) {
+  sourcesRowRef.value?.focusSource(sourceId)
+}
 
 const { copyState, copyIconName, copyTitle, copyLiveText, onCopyClick } = useCopyFeedback(
   () => props.copyMessage(props.message),
@@ -209,13 +284,6 @@ const metaTriggerRef = ref<HTMLButtonElement | null>(null)
 const metaPinned = ref(false)
 const metaHovered = ref(false)
 const metaDetailsOpen = computed(() => metaPinned.value || metaHovered.value)
-
-const reasoningSummary = computed(() => {
-  const seconds = props.message.reasoning?.seconds || 0
-  if (seconds < 1) return 'Thought process'
-  if (seconds < 60) return `Thought for ${seconds}s`
-  return `Thought for ${Math.floor(seconds / 60)}m ${seconds % 60}s`
-})
 
 // A completed turn that produced artifacts ends with the deliverable block:
 // artifact chips, then sources, then the receipt, grouped as one ending.
@@ -266,7 +334,11 @@ onBeforeUnmount(() => {
 
 const legacyTimelineItems = computed<ChatStreamTimelineItem[]>(() => {
   const calls = props.message.toolCalls || []
-  const baseKey = props.message.messageId || props.message.id || String(props.index)
+  // message.id is always set ("${role}-${sourceIndex}") and equals the
+  // composable's ownerKey when messageId is absent, so tool renderKeys match the
+  // keys toParts folds. The final term only types the fallback and reconstructs
+  // the same owner the composable used; it is unreachable while id is set.
+  const baseKey = props.message.messageId || props.message.id || `${props.message.role}-${props.message.sourceIndex}`
   return props.toolCallGroups(calls, baseKey).map(group => ({
     type: 'tool-group',
     key: group.groupId,
@@ -363,97 +435,6 @@ function onMessageClick(event: MouseEvent) {
   padding-top: 0.0625rem;
 }
 
-.thinking-fold {
-  margin: 0 0 0.5rem;
-  font-size: 0.8125rem;
-  color: var(--text-dim);
-}
-
-.thinking-fold__summary {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-  padding: 0.125rem 0.25rem;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  list-style: none;
-  color: var(--text-dim);
-  line-height: 1.5;
-}
-
-.thinking-fold__summary::-webkit-details-marker {
-  display: none;
-}
-
-.thinking-fold__summary:hover {
-  color: var(--text-muted);
-}
-
-.thinking-fold__summary:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
-}
-
-.thinking-fold__chevron {
-  flex-shrink: 0;
-  transition: transform 0.12s ease;
-}
-
-.thinking-fold[open] > .thinking-fold__summary .thinking-fold__chevron {
-  transform: rotate(90deg);
-}
-
-.thinking-fold__body {
-  margin: 0.25rem 0 0.375rem;
-  padding: 0.375rem 0.75rem;
-  border-left: 2px solid var(--border);
-  color: var(--text-muted);
-  line-height: 1.55;
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 16rem;
-  overflow-y: auto;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .thinking-fold__chevron {
-    transition: none;
-  }
-}
-
-.msg-ai-text {
-  font-size: 0.875rem;
-  line-height: 1.6;
-  color: var(--text);
-  word-break: break-word;
-  margin-bottom: 0.5rem;
-}
-
-.msg-ai-text :deep(p) { margin: 0.375rem 0; }
-.msg-ai-text :deep(p:first-child) { margin-top: 0; }
-.msg-ai-text :deep(ul), .msg-ai-text :deep(ol) { margin: 0.375rem 0; padding-left: 1.25rem; }
-.msg-ai-text :deep(li) { margin: 0.125rem 0; }
-.msg-ai-text :deep(code) {
-  background: var(--bg-hover);
-  padding: 0.0625rem 0.25rem;
-  border-radius: 3px;
-  font-family: var(--font-mono);
-  font-size: 0.8125rem;
-  color: var(--text-muted);
-}
-.msg-ai-text :deep(pre) {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.625rem;
-  overflow-x: auto;
-  margin: 0.375rem 0;
-}
-.msg-ai-text :deep(pre code) {
-  background: transparent;
-  padding: 0;
-}
-
 .msg-ai-footer {
   display: flex;
   align-items: center;
@@ -506,6 +487,22 @@ function onMessageClick(event: MouseEvent) {
     min-width: 2.75rem;
     min-height: 2.75rem;
   }
+}
+
+.msg-time {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.25rem;
+  margin-left: 0.25rem;
+  align-self: center;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.msg-time__rel {
+  color: color-mix(in srgb, var(--text-dim) 80%, transparent);
 }
 
 .msg-action {

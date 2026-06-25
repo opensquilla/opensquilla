@@ -10,7 +10,7 @@
       @keydown.enter.exact.prevent="submit"
     ></textarea>
     <div class="hub-task__bar">
-      <span v-show="text.trim()" class="hub-task__hint">Enter to open in chat · Shift+Enter for a new line</span>
+      <span v-show="text.trim()" class="hub-task__hint">Enter to start · Shift+Enter for a new line</span>
       <button
         type="submit"
         class="btn btn--primary hub-task__send"

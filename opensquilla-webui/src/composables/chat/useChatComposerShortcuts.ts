@@ -41,6 +41,18 @@ export function useChatComposerShortcuts(options: UseChatComposerShortcutsOption
   function onTextareaKeydown(e: KeyboardEvent) {
     if (options.composing.value || e.isComposing || e.keyCode === 229) return
 
+    // Caret position gates the Alt+Arrow queue chords below: claim them only at
+    // the text boundaries so macOS' native Option+ArrowUp/Down ("move by
+    // paragraph") still works mid-draft. The natural flow is unaffected — the
+    // caret sits at the end after typing (push) and at the start of an empty or
+    // short draft (pop) — and on Win/Linux, where Alt+Arrow has no native
+    // binding, those boundaries are reached in the same common cases.
+    const field = e.target instanceof HTMLTextAreaElement ? e.target : null
+    const caretAtStart = !!field && field.selectionStart === 0 && field.selectionEnd === 0
+    const caretAtEnd = !!field
+      && field.selectionStart === field.value.length
+      && field.selectionEnd === field.value.length
+
     if (options.slashOpen.value) {
       if (e.key === 'ArrowDown') {
         e.preventDefault()
@@ -73,13 +85,13 @@ export function useChatComposerShortcuts(options: UseChatComposerShortcutsOption
       return
     }
 
-    if (e.key === 'ArrowUp' && e.altKey && options.pendingQueue.value.length > 0) {
+    if (e.key === 'ArrowUp' && e.altKey && caretAtStart && options.pendingQueue.value.length > 0) {
       e.preventDefault()
       options.popPendingTail()
       return
     }
 
-    if (e.key === 'ArrowDown' && e.altKey && options.inputText.value && options.canQueueMore.value) {
+    if (e.key === 'ArrowDown' && e.altKey && caretAtEnd && options.inputText.value && options.canQueueMore.value) {
       e.preventDefault()
       options.enqueuePendingInput(options.inputText.value)
       return

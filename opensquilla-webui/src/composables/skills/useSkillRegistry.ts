@@ -1,5 +1,6 @@
 import { ref, type Ref } from 'vue'
 import type { useRpcStore } from '@/stores/rpc'
+import { useToasts } from '@/composables/useToasts'
 import type { RegistryResult } from '@/types/skills'
 
 interface RegistrySearchData {
@@ -34,6 +35,7 @@ export function useSkillRegistry(
   rpc: ReturnType<typeof useRpcStore>,
   loadData: () => Promise<void>,
 ): SkillRegistry {
+  const { pushToast } = useToasts()
   const registryQuery = ref('')
   const githubUrl = ref('')
   const registryResults = ref<RegistryResult[]>([])
@@ -50,7 +52,7 @@ export function useSkillRegistry(
       const data = await rpc.call<RegistrySearchData>('skills.search', { query: registryQuery.value.trim(), limit: 20 })
       registryResults.value = data.results || []
     } catch (err) {
-      console.warn('Search failed:', (err as Error).message)
+      pushToast('Search failed: ' + (err as Error).message, { tone: 'danger' })
     } finally {
       registryLoading.value = false
     }
@@ -69,10 +71,10 @@ export function useSkillRegistry(
       if (res.success) {
         await loadData()
       } else {
-        console.warn(res.message || 'Install failed')
+        pushToast(res.message || 'Install failed', { tone: 'danger' })
       }
     } catch (err) {
-      console.warn((err as Error).message)
+      pushToast((err as Error).message, { tone: 'danger' })
     } finally {
       installingId.value = null
     }
@@ -84,16 +86,16 @@ export function useSkillRegistry(
     try {
       const res = await rpc.call<InstallResult>('skills.deps.install', { name, install_id: installId })
       if (res.success) {
-        console.warn(res.message || 'Installed')
+        pushToast(res.message || 'Installed', { tone: 'ok' })
         const still = res.missing_still || {}
         const stillMissing = (still.bins || []).length + (still.env || []).length
         await loadData()
         return stillMissing === 0
       }
-      console.warn(res.message || 'Install failed')
+      pushToast(res.message || 'Install failed', { tone: 'danger' })
       return false
     } catch (err) {
-      console.warn((err as Error).message)
+      pushToast((err as Error).message, { tone: 'danger' })
       return false
     } finally {
       installingDepsId.value = null
@@ -108,10 +110,10 @@ export function useSkillRegistry(
         await loadData()
         return true
       }
-      console.warn(res.message || 'Uninstall failed')
+      pushToast(res.message || 'Uninstall failed', { tone: 'danger' })
       return false
     } catch (err) {
-      console.warn((err as Error).message)
+      pushToast((err as Error).message, { tone: 'danger' })
       return false
     } finally {
       uninstallingName.value = null

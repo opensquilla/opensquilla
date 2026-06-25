@@ -1,5 +1,5 @@
 <template>
-  <div v-if="sources.length" class="sources-row">
+  <div v-if="sources.length" ref="rootRef" class="sources-row">
     <button
       type="button"
       class="sources-row__toggle"
@@ -16,13 +16,20 @@
       <Icon class="sources-row__chevron" name="chevronRight" :size="14" />
     </button>
     <ul v-if="open" class="sources-row__list">
-      <li v-for="source in sources" :key="source.url" class="sources-row__item">
+      <li
+        v-for="source in sources"
+        :key="source.url"
+        class="sources-row__item"
+        :class="{ 'sources-row__item--pulse': source.sourceId === highlightId }"
+        :data-source-id="source.sourceId"
+      >
         <a
           class="sources-row__link"
           :href="source.url"
           target="_blank"
           rel="noreferrer noopener"
         >
+          <span class="sources-row__index" aria-hidden="true">[{{ source.sourceId }}]</span>
           <span class="sources-row__chip">
             <span class="sources-row__favicon">{{ initialFor(source) }}</span>
           </span>
@@ -35,9 +42,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
 import Icon from '@/components/Icon.vue'
 import type { ChatToolCall } from '@/types/chat'
+import type { SourcePart } from '@/types/parts'
 import { toolOperationKey } from '@/utils/chat/toolDisplay'
 
 const MAX_SOURCES = 12
@@ -51,9 +59,38 @@ interface SourceLink {
 
 const props = defineProps<{
   calls: ChatToolCall[]
+  // Optional numbered source list (sourceId = position) folded by toSources.
+  // When present it is the authority for the row's numbering; absent, the row
+  // derives the same list from `calls` and numbers it by position.
+  sources?: SourcePart[]
 }>()
 
 const open = ref(false)
+const rootRef = ref<HTMLElement | null>(null)
+const highlightId = ref<number | null>(null)
+let pulseTimer = 0
+
+// Open the row, bring source `n` into view, and pulse it. Driven by a citation
+// pill in the message body (AssistantMessage wires this through onCitation).
+async function focusSource(sourceId: number) {
+  open.value = true
+  await nextTick()
+  const el = rootRef.value?.querySelector(`[data-source-id="${sourceId}"]`)
+  if (!el) return
+  const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+  el.scrollIntoView({ block: 'nearest', behavior: reduce ? 'auto' : 'smooth' })
+  highlightId.value = sourceId
+  window.clearTimeout(pulseTimer)
+  pulseTimer = window.setTimeout(() => {
+    highlightId.value = null
+  }, 1200)
+}
+
+onBeforeUnmount(() => {
+  window.clearTimeout(pulseTimer)
+})
+
+defineExpose({ focusSource })
 
 function parseJsonRecord(text: string): Record<string, unknown> | null {
   const raw = String(text || '').trim()
@@ -136,7 +173,7 @@ function operationHasSearchResults(operation: string): boolean {
   return operation === 'web.search'
 }
 
-const sources = computed<SourceLink[]>(() => {
+const derivedSources = computed<SourcePart[]>(() => {
   const out: SourceLink[] = []
   const seen = new Map<string, SourceLink>()
   for (const call of props.calls || []) {
@@ -169,12 +206,23 @@ const sources = computed<SourceLink[]>(() => {
       addSource(out, seen, input?.url, '')
     }
   }
-  return out.slice(0, MAX_SOURCES)
+  return out.slice(0, MAX_SOURCES).map((source, index) => ({
+    sourceId: index + 1,
+    url: source.url,
+    title: source.title,
+    domain: source.domain,
+  }))
 })
+
+// Prefer the numbered list folded upstream; fall back to the calls-derived list
+// so the row stays usable standalone. Both number identically by position.
+const sources = computed<SourcePart[]>(() =>
+  props.sources?.length ? props.sources : derivedSources.value,
+)
 
 const chipSources = computed(() => sources.value.slice(0, MAX_CHIPS))
 
-function initialFor(source: SourceLink): string {
+function initialFor(source: SourcePart): string {
   const base = source.domain.replace(/^www\./, '')
   return (base[0] || '?').toUpperCase()
 }
@@ -283,6 +331,20 @@ function initialFor(source: SourceLink): string {
   border-top: 1px solid var(--hairline);
 }
 
+.sources-row__item--pulse {
+  border-radius: var(--radius-sm);
+  animation: sourcePulse 1.2s ease;
+}
+
+@keyframes sourcePulse {
+  0% {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
 .sources-row__link {
   display: flex;
   align-items: center;
@@ -303,6 +365,16 @@ function initialFor(source: SourceLink): string {
 .sources-row__link:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.sources-row__index {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.625rem;
+  color: var(--text-dim);
+  min-width: 1.25rem;
+  text-align: right;
 }
 
 .sources-row__title {
@@ -338,6 +410,11 @@ function initialFor(source: SourceLink): string {
 @media (prefers-reduced-motion: reduce) {
   .sources-row__chevron {
     transition: none;
+  }
+
+  .sources-row__item--pulse {
+    animation: none;
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
   }
 }
 </style>

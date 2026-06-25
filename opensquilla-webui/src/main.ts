@@ -6,7 +6,9 @@ import { useAppStore } from './stores/app'
 import { useRpcStore } from './stores/rpc'
 import './assets/base.css'
 import './styles/control-visual-system.css'
+import './styles/route-fx.css'
 import './styles/chat-markdown.css'
+import './styles/chat-shared.css'
 
 const app = createApp(App)
 app.use(createPinia())

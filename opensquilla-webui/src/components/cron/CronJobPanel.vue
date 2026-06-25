@@ -3,7 +3,14 @@
     <Transition name="panel">
       <div v-if="open" class="cron-panel-overlay">
         <div class="cron-panel__scrim" :class="{ 'is-open': open }" @click="emit('close')" />
-        <div class="cron-panel" :class="{ 'is-open': open }">
+        <div
+          ref="drawerRef"
+          class="cron-panel"
+          :class="{ 'is-open': open }"
+          role="dialog"
+          aria-modal="true"
+          :aria-label="editingJob ? 'Edit schedule' : 'Create a job'"
+        >
           <div class="cron-panel__head">
             <div>
               <span class="cron-panel__eyebrow">{{ editingJob ? 'Edit schedule' : 'New schedule' }}</span>
@@ -219,11 +226,13 @@
 </template>
 
 <script setup lang="ts">
+import { ref, toRef } from 'vue'
 import Icon from '@/components/Icon.vue'
 import type { CronJob, CronJobFormModel } from '@/types/cron'
 import { humanCountdown, humanTime } from '@/utils/cron/time'
+import { useDialogA11y } from '@/composables/useDialogA11y'
 
-defineProps<{
+const props = defineProps<{
   open: boolean
   editingJob: CronJob | null
   cronExplainHuman: string
@@ -248,4 +257,8 @@ const emit = defineEmits<{
   payloadKindChange: []
   sessionTargetChange: []
 }>()
+
+const drawerRef = ref<HTMLElement | null>(null)
+const openRef = toRef(props, 'open')
+useDialogA11y(drawerRef, openRef, () => emit('close'))
 </script>

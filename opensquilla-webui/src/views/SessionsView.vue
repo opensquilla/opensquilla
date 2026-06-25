@@ -8,9 +8,9 @@
         </p>
       </div>
       <div class="control-stage__actions">
-        <button class="btn btn--ghost" title="Refresh" @click="loadAll">
+        <button class="btn btn--ghost" title="Refresh" :disabled="refreshing" @click="refresh">
           <Icon name="refresh" :size="16" />
-          <span>Refresh</span>
+          <span>{{ refreshing ? 'Refreshing…' : 'Refresh' }}</span>
         </button>
       </div>
     </header>
@@ -110,6 +110,7 @@ import { useRpcStore } from '@/stores/rpc'
 import Icon from '@/components/Icon.vue'
 import ErrorState from '@/components/ErrorState.vue'
 import LoadingSpinner from '@/components/LoadingSpinner.vue'
+import { useConfirm } from '@/composables/useConfirm'
 import SessionsTaskInput from '@/components/sessions/SessionsTaskInput.vue'
 import SessionsAttentionStrip from '@/components/sessions/SessionsAttentionStrip.vue'
 import SessionsLedger from '@/components/sessions/SessionsLedger.vue'
@@ -155,6 +156,7 @@ const FALLBACK_POLL_MS = 30000
 
 const router = useRouter()
 const rpc = useRpcStore()
+const { confirm } = useConfirm()
 const { allSessions, isLoading, sessionListError, loadSessions } = useSessions()
 
 const filter = ref<FilterId>('all')
@@ -273,6 +275,20 @@ function loadAll() {
   void refreshCost()
 }
 
+const refreshing = ref(false)
+
+// Manual refresh shows a busy state; the fallback poll keeps calling loadAll so
+// the button reacts only to user clicks, not background refreshes.
+async function refresh() {
+  if (refreshing.value) return
+  refreshing.value = true
+  try {
+    await Promise.all([loadSessions(), loadAgents(), refreshApprovals(), refreshCost()])
+  } finally {
+    refreshing.value = false
+  }
+}
+
 function scheduleSessionRefresh() {
   if (refreshTimer) clearTimeout(refreshTimer)
   refreshTimer = setTimeout(() => {
@@ -293,7 +309,9 @@ function startTask(text: string) {
   router.push({
     path: '/chat/new',
     query: { agent: 'main' },
-    state: { prefill: text },
+    // autosend asks the draft to fire the prefill in one step, so "Start task"
+    // actually starts the task instead of dropping the operator at the composer.
+    state: { prefill: text, autosend: true },
   }).catch(() => {})
 }
 
@@ -333,7 +351,12 @@ function clearFilters() {
 }
 
 async function removeSession(item: SessionItem) {
-  if (!confirm(`Delete session "${item.title}"? This cannot be undone.\n\nThe transcript will not be flushed to disk; use /reset first if you want a backup.`)) {
+  const ok = await confirm({
+    title: 'Delete session',
+    body: `Delete session "${item.title}"? This cannot be undone.\n\nThe transcript will not be flushed to disk; use /reset first if you want a backup.`,
+    primaryLabel: 'Delete',
+  })
+  if (!ok) {
     return
   }
   try {

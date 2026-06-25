@@ -29,23 +29,12 @@
 }
 
 .control-stage__title {
+  font-family: var(--font-display);
   font-size: clamp(1.625rem, 1.2rem + 1vw, 2.25rem);
   font-weight: 700;
   letter-spacing: 0;
   line-height: 1.05;
   margin: 0;
-  position: relative;
-}
-
-.control-stage__title::after {
-  background: linear-gradient(90deg, var(--accent), transparent);
-  border-radius: 2px;
-  bottom: -8px;
-  content: "";
-  height: 2px;
-  left: 0;
-  position: absolute;
-  width: 36px;
 }
 
 .control-stage__subtitle {
@@ -163,7 +152,7 @@
   color: var(--text-dim);
   display: block;
   font-size: 12px;
-  font-weight: 750;
+  font-weight: var(--fw-quiet);
   letter-spacing: 0.08em;
   line-height: 1.25;
   margin-bottom: 6px;
@@ -258,8 +247,8 @@
   color: var(--text-dim);
   display: block;
   font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
+  font-weight: var(--fw-eyebrow);
+  letter-spacing: var(--eyebrow-track);
   margin-bottom: 2px;
   text-transform: uppercase;
 }
@@ -269,6 +258,378 @@
   font-weight: 600;
   letter-spacing: 0;
   margin: 0;
+}
+
+/* Status pill — a compact rounded label. Neutral by default; tone modifiers
+   tint fill, border, and text from the semantic status tokens. Replaces the
+   per-view `.x-pill` + `color-mix(in srgb, var(--ok) …)` recipe duplicated
+   across the console surfaces. Compose: `class="control-pill control-pill--warn"`. */
+.control-pill {
+  align-items: center;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 600;
+  gap: 6px;
+  line-height: 1.2;
+  padding: 3px 10px;
+  white-space: nowrap;
+}
+
+.control-pill--ok {
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  border-color: color-mix(in srgb, var(--ok) 40%, var(--border));
+  color: var(--ok);
+}
+
+.control-pill--warn {
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  border-color: color-mix(in srgb, var(--warn) 40%, var(--border));
+  color: var(--warn);
+}
+
+.control-pill--danger {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
+  color: var(--danger);
+}
+
+.control-pill--info {
+  background: color-mix(in srgb, var(--info) 12%, transparent);
+  border-color: color-mix(in srgb, var(--info) 40%, var(--border));
+  color: var(--info);
+}
+
+.control-pill--accent {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  color: var(--accent);
+}
+
+.control-pill--queued {
+  background: color-mix(in srgb, var(--queued) 12%, transparent);
+  border-color: color-mix(in srgb, var(--queued) 40%, var(--border));
+  color: var(--queued);
+}
+
+/* ── Channel readout ─────────────────────────────────────────────────────
+   The Stomatopod signature, distilled to a reusable row: a spectral status
+   dot + a mono identifier + a thin token-colored trace bar + a mono value.
+   It encodes run-state through the calibrated spectrum (the "compound eye"),
+   never through decoration. Drive the channel color by setting --readout-ch
+   on the row (e.g. style="--readout-ch: var(--ok)") — the dot, the trace fill,
+   and the status text all read it, so one variable recolors the whole row to
+   one of the six channels. Defaults to the muted text channel. */
+.control-readout {
+  --readout-ch: var(--text-muted);
+  align-items: center;
+  display: flex;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.control-readout__dot {
+  background: var(--readout-ch);
+  border-radius: 50%;
+  flex-shrink: 0;
+  height: 8px;
+  width: 8px;
+}
+
+/* running: the live strike pulse (orange channel breathes). Available both as
+   a container modifier and as a per-dot modifier for surfaces that reuse only
+   the dot + trace parts of the readout (e.g. the Sessions ledger rows). */
+.control-readout--running .control-readout__dot,
+.control-readout__dot--pulse {
+  animation: live-pulse var(--dur-pulse) var(--ease-standard) infinite;
+}
+
+.control-readout__label {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.control-readout__trace {
+  background: color-mix(in srgb, var(--readout-ch) 16%, transparent);
+  border-radius: 3px;
+  flex: 1;
+  height: 4px;
+  min-width: 24px;
+  overflow: hidden;
+}
+
+.control-readout__trace-fill {
+  background: var(--readout-ch);
+  border-radius: 3px;
+  display: block;
+  height: 100%;
+}
+
+.control-readout__status {
+  color: var(--readout-ch);
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.control-readout__value {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .control-readout--running .control-readout__dot,
+  .control-readout__dot--pulse {
+    animation: none;
+  }
+}
+
+/* Empty / zero-data state — a centered, low-emphasis placeholder. Replaces the
+   ad-hoc bare empty blocks scattered across views. */
+.control-empty {
+  align-items: center;
+  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  justify-content: center;
+  padding: var(--sp-8) var(--sp-5);
+  text-align: center;
+}
+
+.control-empty__icon {
+  color: var(--text-dim);
+  margin-bottom: var(--sp-1);
+  opacity: 0.85;
+}
+
+.control-empty__title {
+  color: var(--text);
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+.control-empty__hint {
+  font-size: var(--fs-sm);
+  max-width: 44ch;
+}
+
+/* ---------------------------------------------------------------------------
+   Row-based settings — the single shared field idiom for the Settings dialog
+   and any settings-shaped surface. A setting is a label-left / control-right
+   row with a hairline below; long free-text uses the --stack modifier. This
+   replaces the duplicated label-above-control idioms in SetupField / setup
+   panels with one primitive.
+   --------------------------------------------------------------------------- */
+.control-row {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: var(--sp-4);
+  justify-content: space-between;
+  padding: var(--sp-3) 0;
+}
+
+.control-row:last-child {
+  border-bottom: none;
+}
+
+.control-row__label-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.control-row__label {
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+
+.control-row__desc {
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
+.control-row__control {
+  align-items: center;
+  display: flex;
+  flex-shrink: 0;
+  gap: var(--sp-2);
+  justify-content: flex-end;
+}
+
+/* Long free-text (Base URL, ONNX dir): label on top, control full-width. */
+.control-row--stack {
+  align-items: stretch;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.control-row--stack .control-row__control {
+  justify-content: stretch;
+  width: 100%;
+}
+
+/* Inline separator (an Advanced disclosure summary or sub-group heading). */
+.control-row--divider {
+  border-bottom: none;
+  color: var(--text-muted);
+  font-weight: 600;
+  gap: var(--sp-2);
+  justify-content: flex-start;
+  padding-top: var(--sp-4);
+}
+
+/* When used as a <details> summary, restore a clear disclosure affordance:
+   a leading chevron (the flex display suppresses the native marker), a pointer
+   cursor, and the canonical accent focus ring. */
+summary.control-row--divider {
+  cursor: pointer;
+  list-style: none;
+}
+
+summary.control-row--divider::-webkit-details-marker {
+  display: none;
+}
+
+summary.control-row--divider::before {
+  color: var(--text-dim);
+  content: "\25B8";
+  font-size: 0.8em;
+  transition: transform var(--transition);
+}
+
+details[open] > summary.control-row--divider::before {
+  transform: rotate(90deg);
+}
+
+summary.control-row--divider:focus-visible {
+  border-radius: var(--radius-sm);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  outline: none;
+}
+
+/* Shared input/select baseline — content-sized, right-aligned, accent focus. */
+.control-input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-sm);
+  max-width: 280px;
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.control-input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.control-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.control-row--stack .control-input {
+  max-width: none;
+  width: 100%;
+}
+
+/* Compact control for short numeric/enum values (e.g. max results). */
+.control-input--narrow {
+  max-width: 96px;
+  text-align: left;
+}
+
+/* Single-column section heading — replaces the per-panel `.setup-panel__head`
+   card. Title + one-line description + optional right-aligned status pill. */
+.control-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.control-section + .control-section {
+  margin-top: var(--sp-6);
+}
+
+.control-section__head {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
+}
+
+.control-section__eyebrow {
+  color: var(--text-dim);
+  display: block;
+  font-size: 10px;
+  font-weight: var(--fw-eyebrow);
+  letter-spacing: var(--eyebrow-track);
+  text-transform: uppercase;
+  width: 100%;
+}
+
+.control-section__title {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  letter-spacing: 0;
+  margin: 0;
+}
+
+.control-section__status {
+  margin-left: auto;
+}
+
+.control-section__desc {
+  color: var(--text-muted);
+  flex-basis: 100%;
+  font-size: var(--fs-sm);
+  margin: 0;
+  max-width: 70ch;
+}
+
+.control-section__actions {
+  display: flex;
+  gap: var(--sp-2);
+  justify-content: flex-end;
+  margin-top: var(--sp-4);
+}
+
+/* Grouped left-nav block (Settings rail) — quiet uppercase eyebrow over a row
+   list, with an accent left-rail on the active item (accent = signal). */
+.control-nav-group {
+  margin-bottom: var(--sp-3);
+}
+
+.control-nav-group__label {
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: var(--fw-eyebrow);
+  letter-spacing: var(--eyebrow-track);
+  padding: 0 var(--sp-2);
+  margin: var(--sp-2) 0 var(--sp-1);
+  text-transform: uppercase;
 }
 
 .control-fade-item {
@@ -304,5 +665,296 @@
   .control-stat-grid--fixed,
   .control-card-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+/* ── Sidebar: collapsible family sections ──────────────────────────── */
+
+.sidebar-group {
+  display: flex;
+  flex-direction: column;
+}
+.sidebar-group + .sidebar-group {
+  margin-top: 4px;
+}
+
+.sidebar-group__header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  width: 100%;
+  padding: 5px 10px;
+  margin: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--sidebar-text-soft);
+  font-family: var(--font-sans);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+.sidebar-group__header:hover {
+  background: var(--sidebar-item-hover);
+  color: var(--sidebar-text-strong);
+}
+
+.sidebar-group__chevron {
+  color: var(--sidebar-text-soft);
+  transition: transform 120ms;
+}
+.sidebar-group__header[aria-expanded='true'] .sidebar-group__chevron {
+  transform: rotate(90deg);
+}
+
+.sidebar-group__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-group__count {
+  margin-left: auto;
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--sidebar-control-bg);
+  color: var(--sidebar-text-soft);
+  font-size: 0.625rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.sidebar-group__body {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Subagent indent: a left rail mirrors the console list's nested look. The
+   row pads in by depth, and the rail spans the row's full height. */
+.sidebar-history-row {
+  padding-left: calc(var(--row-depth, 0) * 14px);
+  position: relative;
+}
+.sidebar-history-rail {
+  position: absolute;
+  left: calc((var(--row-depth, 0) - 1) * 14px + 7px);
+  top: 2px;
+  bottom: 2px;
+  width: 1px;
+  background: var(--sidebar-border);
+  pointer-events: none;
+}
+
+/* ── Sidebar: inline rename input ──────────────────────────────────── */
+
+.sidebar-history-rename {
+  flex: 1;
+  min-width: 0;
+  min-height: 38px;
+  padding: 8px 10px;
+  margin: 0;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  background: var(--sidebar-control-bg);
+  color: var(--sidebar-text-strong);
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+.sidebar-history-rename:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* ── Sidebar: per-row ⋯ actions menu ───────────────────────────────── */
+
+.sidebar-row-menu-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.sidebar-row-menu-btn {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--sidebar-text-soft);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms, background 120ms, color 120ms;
+}
+/* Reveal the menu trigger on row hover/focus, or while its menu is open. */
+.sidebar-history-row:hover .sidebar-row-menu-btn,
+.sidebar-history-row:focus-within .sidebar-row-menu-btn,
+.sidebar-row-menu-btn[aria-expanded='true'] {
+  opacity: 1;
+}
+.sidebar-row-menu-btn:hover {
+  background: var(--sidebar-item-hover);
+  color: var(--sidebar-text-strong);
+}
+
+.sidebar-row-menu {
+  /* Teleported to <body> with fixed coords set inline per trigger: the Recents
+     list clips overflow on both axes and the sidebar's transform would trap a
+     plain position:fixed, so the menu must escape the scroll container. */
+  position: fixed;
+  z-index: 210;
+  min-width: 150px;
+  padding: var(--sp-1);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+}
+
+.sidebar-row-menu__item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  text-align: left;
+}
+.sidebar-row-menu__item:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.sidebar-row-menu__item--danger {
+  color: var(--danger);
+}
+.sidebar-row-menu__item--danger:hover {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
+
+/* ── Sidebar: first-run onboarding empty-state ─────────────────────── */
+
+.sidebar-onboarding {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-4) var(--sp-3);
+  text-align: center;
+}
+
+.sidebar-onboarding__lead {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--sidebar-text-soft);
+}
+
+.sidebar-onboarding__cta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 6px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 36%, var(--sidebar-border));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--sidebar-text-strong);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms, border-color 120ms;
+}
+.sidebar-onboarding__cta:hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.sidebar-onboarding__links {
+  display: flex;
+  gap: var(--sp-3);
+}
+
+.sidebar-onboarding__link {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--sidebar-text-soft);
+  text-decoration: none;
+  transition: color 120ms;
+}
+.sidebar-onboarding__link:hover {
+  color: var(--sidebar-text-strong);
+}
+
+/* Canonical toggle switch.
+   A native <input type="checkbox"> styled as a switch: it keeps real form
+   semantics (name, :checked), native keyboard support (Space), and stays a
+   first-class actionable element for tests, while reading as the same control
+   as the chat composer's role=switch toggle. Apply `class="control-switch"`
+   to any boolean checkbox in the control UI instead of leaving it raw. */
+.control-switch {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  flex-shrink: 0;
+  width: 36px;
+  height: 20px;
+  margin: 0;
+  border: none;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  cursor: pointer;
+  transition: background 0.16s ease;
+}
+
+.control-switch::before {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--bg-surface);
+  box-shadow: 0 1px 3px var(--shadow-color);
+  transition: transform 0.16s ease;
+}
+
+.control-switch:checked {
+  background: var(--accent);
+}
+
+.control-switch:checked::before {
+  transform: translateX(16px);
+}
+
+.control-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.control-switch:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .control-switch,
+  .control-switch::before {
+    transition: none;
   }
 }

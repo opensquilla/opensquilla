@@ -14,7 +14,7 @@
         >
           open settings &rarr;
         </button>
-        <button class="btn btn--ghost" title="Refresh" @click="loadData">
+        <button class="btn btn--ghost" @click="loadData">
           <Icon name="refresh" :size="16" />
           <span>Refresh</span>
         </button>
@@ -69,7 +69,13 @@
         </h3>
       </div>
 
-      <div v-if="agents.length === 0" class="state">
+      <div v-if="loading && agents.length === 0" class="state">
+        <LoadingSpinner />
+      </div>
+
+      <ErrorState v-else-if="error" :message="error" :on-retry="loadData" />
+
+      <div v-else-if="agents.length === 0" class="state">
         <div class="state-icon">
           <Icon name="agents" :size="48" />
         </div>
@@ -81,18 +87,17 @@
         <article
           v-for="(a, i) in agents"
           :key="a.id || a.name || i"
-          class="ag-card control-card control-card--interactive"
+          class="ag-card control-card"
           :class="{ 'is-builtin control-card--accent': isAgentBuiltin(a) }"
           :style="{ '--i': i }"
-          tabindex="0"
-          role="button"
-          :aria-label="`View agent ${a.id || a.name || ''}`"
-          @click="onCardClick"
-          @keydown="onCardKeydown"
         >
           <header class="ag-card__head">
             <div class="ag-card__id-block">
-              <span class="ag-card__id">{{ a.id || a.name || '—' }}</span>
+              <button
+                type="button"
+                class="ag-card__id ag-card__id-btn"
+                @click="openDrawer('view', a.id || a.name || '')"
+              >{{ a.id || a.name || '—' }}</button>
               <span :class="['chip', isAgentBuiltin(a) ? 'chip-ok' : 'chip-info']">{{ a.type || (a.isBuiltin ? 'builtin' : 'custom') }}</span>
             </div>
             <div class="ag-card__actions">
@@ -274,23 +279,25 @@
 <script setup lang="ts">
 import { ref, computed, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { useAppStore } from '@/stores/app'
 import { useRpcStore } from '@/stores/rpc'
 import Icon from '@/components/Icon.vue'
+import ErrorState from '@/components/ErrorState.vue'
+import LoadingSpinner from '@/components/LoadingSpinner.vue'
 import { useAgentsData } from '@/composables/agents/useAgentsData'
 import { isAgentBuiltin, useAgentDrawer } from '@/composables/agents/useAgentDrawer'
 import { useDialogA11y } from '@/composables/useDialogA11y'
 import type { Agent } from '@/types/agents'
+import { useToasts } from '@/composables/useToasts'
 
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
 
-const appStore = useAppStore()
 const rpc = useRpcStore()
+const { pushToast } = useToasts()
 const router = useRouter()
 
-const { agents, loadData } = useAgentsData()
+const { agents, loadData, loading, error } = useAgentsData()
 const newId = ref('')
 const newName = ref('')
 
@@ -358,31 +365,9 @@ function agentSkills(a: Agent): string[] {
   return Array.isArray(a.skills) ? a.skills : []
 }
 
-function onCardClick(event: MouseEvent) {
-  const target = event.target as HTMLElement
-  if (target.closest('button')) return
-  const card = target.closest('.ag-card') as HTMLElement | null
-  if (!card) return
-  const id = card.querySelector('.ag-card__id')?.textContent || ''
-  if (id) openDrawer('view', id)
-}
-
-function onCardKeydown(event: KeyboardEvent) {
-  const target = event.target as HTMLElement
-  if ((event.key === 'Enter' || event.key === ' ') && target.classList.contains('ag-card')) {
-    event.preventDefault()
-    const id = target.querySelector('.ag-card__id')?.textContent || ''
-    if (id) openDrawer('view', id)
-  }
-}
-
-// Desktop keeps its settings route; web opens the settings modal in place.
+// Both platforms own a `/settings` route (web overlay / desktop settings view).
 function openSettingsSurface() {
-  if (router.hasRoute('settings')) {
-    router.push('/settings')
-    return
-  }
-  appStore.setSettingsOpen(true)
+  router.push('/settings')
 }
 
 function openChat(id?: string) {
@@ -404,14 +389,14 @@ async function onInlineAdd() {
   if (name) payload.name = name
   try {
     await rpc.call('agents.create', payload)
-    console.warn('Agent created: ' + id)
+    pushToast('Agent created: ' + id, { tone: 'ok' })
     newId.value = ''
     newName.value = ''
     await loadData()
   } catch (err: unknown) {
     const code = rpcErrorCode(err)
-    if (code === 'agent.exists') console.warn(`Agent "${id}" already exists`)
-    else console.warn('Failed to create agent: ' + errorMessage(err))
+    if (code === 'agent.exists') pushToast(`Agent "${id}" already exists`, { tone: 'danger' })
+    else pushToast('Failed to create agent: ' + errorMessage(err), { tone: 'danger' })
   }
 }
 
@@ -427,7 +412,7 @@ function customizeFromBuiltin(builtinId?: string) {
     }
     document.querySelector('.ag-create')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
   })
-  console.warn('Tweak the ID, then click Add to create your copy')
+  pushToast('Tweak the ID, then click Add to create your copy')
 }
 
 async function onSave() {
@@ -436,12 +421,12 @@ async function onSave() {
   try {
     const payload = buildSavePayload()
     if (Object.keys(payload).length <= 1) {
-      console.warn('Nothing to save')
+      pushToast('Nothing to save')
       saving.value = false
       return
     }
     await rpc.call('agents.update', payload)
-    console.warn('Agent updated: ' + drawerAgentId.value)
+    pushToast('Agent updated: ' + drawerAgentId.value, { tone: 'ok' })
     await loadData()
     const updated = agents.value.find(a => a.id === drawerAgentId.value)
     if (updated) {
@@ -453,7 +438,7 @@ async function onSave() {
     let friendly = 'Failed to save: ' + msg
     if (code === 'agent.not_found') friendly = `Agent "${drawerAgentId.value}" no longer exists.`
     if (code === 'agent.builtin_immutable') friendly = `"${drawerAgentId.value}" is a built-in agent and cannot be modified.`
-    console.warn(friendly)
+    pushToast(friendly, { tone: 'danger' })
   } finally {
     saving.value = false
   }
@@ -474,10 +459,10 @@ async function deleteAgent(id?: string) {
   if (!ok) return
   try {
     await rpc.call('agents.delete', { id })
-    console.warn('Agent deleted: ' + id)
+    pushToast('Agent deleted: ' + id, { tone: 'ok' })
     await loadData()
   } catch (err: unknown) {
-    console.warn('Failed to delete agent: ' + errorMessage(err))
+    pushToast('Failed to delete agent: ' + errorMessage(err), { tone: 'danger' })
   }
 }
 
@@ -668,6 +653,22 @@ function rpcErrorCode(err: unknown): string {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.ag-card__id-btn {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.ag-card__id-btn:focus-visible {
+  border-radius: var(--radius-sm);
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 .ag-card__actions {

@@ -62,7 +62,13 @@
         </h3>
       </div>
 
-      <div v-if="channels.length === 0" class="ch-empty">
+      <div v-if="loading && channels.length === 0" class="ch-empty">
+        <LoadingSpinner />
+      </div>
+
+      <ErrorState v-else-if="error" :message="error" :on-retry="loadData" />
+
+      <div v-else-if="channels.length === 0" class="ch-empty">
         <div class="ch-empty__art" aria-hidden="true">
           <svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
             <defs>
@@ -142,11 +148,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { useAppStore } from '@/stores/app'
 import { useRpcStore } from '@/stores/rpc'
 import Icon from '@/components/Icon.vue'
+import ErrorState from '@/components/ErrorState.vue'
+import LoadingSpinner from '@/components/LoadingSpinner.vue'
+import { useRequest } from '@/composables/useRequest'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -186,10 +194,25 @@ const STATUS_ORDER: Record<string, number> = {
 // State
 // ---------------------------------------------------------------------------
 
-const appStore = useAppStore()
 const rpc = useRpcStore()
 const router = useRouter()
-const channels = ref<Channel[]>([])
+
+const { data: channelsData, loading, error, refresh } = useRequest<ChannelsStatusResponse>(
+  'channels.status',
+  undefined,
+  { errorLabel: 'Failed to load channels' },
+)
+
+const channels = computed<Channel[]>(() => {
+  const raw = (channelsData.value?.channels || []).filter(c => c && c.configured !== false)
+  return [...raw].sort((a, b) => {
+    const oa = STATUS_ORDER[a.status || ''] ?? 1
+    const ob = STATUS_ORDER[b.status || ''] ?? 1
+    return oa - ob
+  })
+})
+
+const loadData = refresh
 
 let pollInterval: ReturnType<typeof setInterval> | null = null
 let unsubStatus: (() => void) | null = null
@@ -235,9 +258,8 @@ const inactiveHint = computed(() => {
 // ---------------------------------------------------------------------------
 
 onMounted(() => {
-  loadData()
-  unsubStatus = rpc.on('channel.status', () => loadData())
-  pollInterval = setInterval(loadData, 30000)
+  unsubStatus = rpc.on('channel.status', () => { void refresh() })
+  pollInterval = setInterval(() => { void refresh() }, 30000)
 })
 
 onUnmounted(() => {
@@ -251,33 +273,9 @@ onUnmounted(() => {
   }
 })
 
-// ---------------------------------------------------------------------------
-// Actions
-// ---------------------------------------------------------------------------
-
-async function loadData() {
-  try {
-    await rpc.waitForConnection()
-    const data = await rpc.call<ChannelsStatusResponse>('channels.status')
-    const raw = (data.channels || []).filter(c => c && c.configured !== false)
-
-    channels.value = [...raw].sort((a, b) => {
-      const oa = STATUS_ORDER[a.status || ''] ?? 1
-      const ob = STATUS_ORDER[b.status || ''] ?? 1
-      return oa - ob
-    })
-  } catch (err) {
-    console.warn('Failed to load channels: ' + (err instanceof Error ? err.message : String(err)))
-  }
-}
-
-// Desktop keeps its settings route; web opens the settings modal in place.
+// Both platforms own a `/settings` route (web overlay / desktop settings view).
 function openSettingsSurface(): void {
-  if (router.hasRoute('settings')) {
-    void router.push('/settings')
-    return
-  }
-  appStore.setSettingsOpen(true)
+  void router.push('/settings')
 }
 
 // ---------------------------------------------------------------------------

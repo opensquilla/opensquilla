@@ -51,7 +51,7 @@
           <Icon name="share" :size="14" />
           <span class="chat-share-btn__label">Share</span>
         </button>
-        <span class="chip" :class="runStatusChipClass" :title="runStatusTitle">{{ runStatusLabel }}</span>
+        <span class="chat-chip" :class="runStatusChipClass" :title="runStatusTitle">{{ runStatusLabel }}</span>
       </div>
     </div>
 
@@ -96,14 +96,64 @@
         @drop.prevent="onThreadDrop"
         :class="{ 'drag-over': threadDragOver }"
       >
-        <div v-if="isNewChatLanding" class="chat-landing-brand" aria-label="OpenSquilla new chat">
-          <EmptyStateChips
-            :key="landingAgentId"
-            :agent-id="landingAgentId"
-            :suppressed="landingPrefilled"
-            @pick="applyLandingSuggestion"
-          />
-        </div>
+        <template v-if="isNewChatLanding">
+          <div ref="agentSwitcherRef" class="chat-landing-agent">
+            <button
+              type="button"
+              class="chat-landing-agent__btn"
+              aria-haspopup="menu"
+              :aria-expanded="agentSwitcherOpen"
+              :title="`Agent: ${landingAgentName}`"
+              @click.stop="toggleAgentSwitcher"
+            >
+              <Icon name="agents" :size="14" />
+              <span class="chat-landing-agent__name">{{ landingAgentName }}</span>
+              <Icon class="chat-landing-agent__chevron" name="chevronDown" :size="13" />
+            </button>
+            <div
+              v-if="agentSwitcherOpen"
+              class="chat-landing-agent__menu"
+              role="menu"
+              aria-label="Choose agent"
+              @keydown="onAgentSwitcherKeydown"
+            >
+              <button
+                v-for="agent in selectableAgents"
+                :key="agent.id"
+                type="button"
+                class="chat-landing-agent__item"
+                role="menuitemradio"
+                :aria-checked="agent.id === landingAgentId"
+                @click.stop="pickDraftAgent(agent.id)"
+              >
+                <span class="chat-landing-agent__item-name">{{ agent.name }}</span>
+                <Icon
+                  v-if="agent.id === landingAgentId"
+                  class="chat-landing-agent__check"
+                  name="check"
+                  :size="14"
+                />
+              </button>
+              <button
+                type="button"
+                class="chat-landing-agent__item chat-landing-agent__item--create"
+                role="menuitem"
+                @click.stop="createAgentFromSwitcher"
+              >
+                <Icon name="plus" :size="14" />
+                <span>Create agent…</span>
+              </button>
+            </div>
+          </div>
+          <div class="chat-landing-brand" aria-label="OpenSquilla new chat">
+            <EmptyStateChips
+              :key="landingAgentId"
+              :agent-id="landingAgentId"
+              :suppressed="landingPrefilled"
+              @pick="applyLandingSuggestion"
+            />
+          </div>
+        </template>
         <div v-else-if="messages.length === 0 && !isStreaming" class="chat-empty">No messages yet.</div>
         <ChatHistoryScopeRow
           v-if="!isNewChatLanding"
@@ -138,6 +188,10 @@
           @toggle-tool-group="toggleToolGroup"
           @toggle-tool-item="toggleToolItem"
           @show-tool-result="showToolResultModal"
+          @resolve-interrupt="resolveInterrupt"
+          @extend-interrupt="extendInterrupt"
+          @clarify-submit="submitClarify"
+          @clarify-dismiss="dismissClarify"
         >
           <template #router-strip="{ message: msg }">
             <RouterFxStrip :message="msg" />
@@ -174,7 +228,7 @@
 
         <!-- Streaming AI message: the live run is promoted into a centered
              work card so it owns the focus while the agent works. -->
-        <div v-if="isStreaming && streamBubble" class="msg-ai" data-history-role="assistant" aria-live="polite">
+        <div v-if="isStreaming && streamBubble && answerRevealOpen" class="msg-ai" data-history-role="assistant" aria-live="polite">
           <div class="msg-ai-main">
             <section
               class="work-card"
@@ -190,19 +244,19 @@
               </header>
 
               <!-- Live model reasoning: collapsed by default, expandable mid-turn -->
-              <details v-if="streamThinkingText" class="thinking-fold">
+              <details v-if="liveThinkingText" class="thinking-fold">
                 <summary class="thinking-fold__summary">
                   <Icon class="thinking-fold__chevron" name="chevronRight" :size="12" />
                   <span>Thinking · {{ streamThinkingElapsedText }}</span>
                 </summary>
-                <div class="thinking-fold__body">{{ streamThinkingText }}</div>
+                <div class="thinking-fold__body">{{ liveThinkingText }}</div>
               </details>
 
               <ToolCallTimeline
-                v-if="streamTimelineItems.length"
+                v-if="liveTimelineItems.length"
                 class="work-card__timeline"
                 variant="checklist"
-                :items="streamTimelineItems"
+                :items="liveTimelineItems"
                 :is-tool-group-open="isToolGroupOpen"
                 :is-tool-item-open="isToolItemOpen"
                 :tool-group-status-text="toolGroupStatusText"
@@ -213,10 +267,28 @@
                 @toggle-item="toggleToolItem"
                 @show-result="showToolResultModal"
               />
+
+              <!-- Live typing caret: a blinking "still generating" affordance at
+                   the tail of the streamed output. Only once real output exists
+                   (never a lone bar under the header), and hidden when stale. -->
+              <span v-if="!streamActivityStale && streamHasVisibleOutput" class="stream-caret" aria-hidden="true" />
             </section>
 
+            <!-- Live inline interrupts (fold-driven): approval / clarify cards
+                 that block the in-flight turn, rendered after the work-card body
+                 and before the deliverables. -->
+            <InterruptPart
+              v-for="part in liveInterruptParts"
+              :key="part.key"
+              :part="part"
+              @resolve="resolveInterrupt"
+              @extend="extendInterrupt"
+              @clarify-submit="submitClarify"
+              @clarify-dismiss="dismissClarify"
+            />
+
             <ChatArtifactList
-              :artifacts="streamArtifacts"
+              :artifacts="liveArtifacts"
               :session-key="sessionKey"
               :auth-token="readAuthToken()"
               @download="downloadArtifact"
@@ -226,7 +298,7 @@
         </div>
 
         <!-- Thinking indicator -->
-        <div v-if="thinkingVisible" class="msg-ai thinking" role="status" aria-live="polite">
+        <div v-if="thinkingVisible && answerRevealOpen" class="msg-ai thinking" role="status" aria-live="polite">
           <div class="msg-ai-main">
             <div class="thinking-status">
               <span class="stream-activity-dot" aria-hidden="true" />
@@ -235,29 +307,37 @@
           </div>
         </div>
 
-        <!-- In-thread approval cards: blocked runs ask for a decision here -->
-        <ApprovalCard
-          v-for="entry in approvalEntries"
-          :key="entry.approval.id"
-          :approval="entry.approval"
-          :resolution="entry.resolution"
-          :busy="approvalBusyIds.has(entry.approval.id)"
-          :error="entry.error"
-          @allow-once="resolveApproval(entry, 'allow-once')"
-          @allow-always="resolveApproval(entry, 'allow-always')"
-          @deny="note => resolveApproval(entry, 'deny', note)"
-        />
+        <!-- Legacy standalone approval / clarify block. The interrupt parts now
+             carry these through the fold (InterruptPart over the same cards), so
+             this side-list only renders on the foldLiveTurn=0 rollback branch —
+             the one-flag kill switch — to avoid a double-render. Kept for one
+             release as the rollback lever, mirroring the foldLiveTurn discipline. -->
+        <template v-if="foldLiveTurnMode === false">
+          <!-- In-thread approval cards: blocked runs ask for a decision here -->
+          <ApprovalCard
+            v-for="entry in approvalEntries"
+            :key="entry.approval.id"
+            :approval="entry.approval"
+            :resolution="entry.resolution"
+            :busy="approvalBusyIds.has(entry.approval.id)"
+            :error="entry.error"
+            @allow-once="resolveApproval(entry, 'allow-once')"
+            @allow-always="resolveApproval(entry, 'allow-always')"
+            @deny="note => resolveApproval(entry, 'deny', note)"
+            @extend="extendInterrupt(entry.approval.id)"
+          />
 
-        <!-- In-thread clarify card: pending agent questions render as a form -->
-        <ClarifyCard
-          v-if="pendingClarify"
-          :request="pendingClarify"
-          :submitted="clarifySubmitted"
-          :busy="clarifyBusy"
-          :error="clarifyError"
-          @submit="submitClarify"
-          @dismiss="dismissClarify"
-        />
+          <!-- In-thread clarify card: pending agent questions render as a form -->
+          <ClarifyCard
+            v-if="pendingClarify"
+            :request="pendingClarify"
+            :submitted="clarifySubmitted"
+            :busy="clarifyBusy"
+            :error="clarifyError"
+            @submit="submitClarify"
+            @dismiss="dismissClarify"
+          />
+        </template>
       </div>
     </div>
 
@@ -293,6 +373,26 @@
       </div>
     </div>
 
+    <!-- Composer dock: positioning context so the slash menu anchors directly
+         above the composer in any layout. The new-chat landing centers the
+         composer instead of pinning it to the bottom, so the menu must not
+         anchor to the chat container's bottom edge. -->
+    <div class="chat-composer-dock">
+    <!-- Jump-to-latest: floats above the composer once the reader has scrolled up
+         off the live edge, so a long streaming answer is never lost below the fold. -->
+    <Transition name="jump-latest">
+      <button
+        v-if="showJumpToLatest"
+        type="button"
+        class="chat-jump-latest"
+        aria-label="Jump to latest"
+        title="Jump to latest"
+        @click="jumpToLatest"
+      >
+        <Icon name="chevronRight" :size="14" class="chat-jump-latest__icon" />
+        <span>Latest</span>
+      </button>
+    </Transition>
     <!-- Slash command menu -->
     <div v-if="slashOpen" class="chat-slash">
       <div
@@ -338,6 +438,7 @@
       @send="onSend"
       @stop="onStop"
     />
+    </div>
 
     <ToolResultModal
       :open="toolResultModal.open"
@@ -379,7 +480,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch, watchEffect } from 'vue'
 import { useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
 import { useAppStore } from '@/stores/app'
@@ -391,6 +492,7 @@ import ChatHistoryScopeRow from '@/components/chat/ChatHistoryScopeRow.vue'
 import ChatMessageList from '@/components/chat/ChatMessageList.vue'
 import ClarifyCard from '@/components/chat/ClarifyCard.vue'
 import EmptyStateChips from '@/components/chat/EmptyStateChips.vue'
+import InterruptPart from '@/components/chat/parts/InterruptPart.vue'
 import MetaPreflightCard from '@/components/chat/MetaPreflightCard.vue'
 import MetaRibbon from '@/components/chat/MetaRibbon.vue'
 import MetaRunHistoryDrawer from '@/components/chat/MetaRunHistoryDrawer.vue'
@@ -419,10 +521,12 @@ import {
   useChatRenderedMessages,
 } from '@/composables/chat/useChatRenderedMessages'
 import { useChatRouterDecisionRuntime } from '@/composables/chat/useChatRouterDecisionRuntime'
+import { useChatAnswerReveal } from '@/composables/chat/useChatAnswerReveal'
 import { useChatRpcEventHandlers } from '@/composables/chat/useChatRpcEventHandlers'
 import { useChatRpcSubscriptions } from '@/composables/chat/useChatRpcSubscriptions'
 import { useChatSend } from '@/composables/chat/useChatSend'
 import { useMetaRuns } from '@/composables/chat/useMetaRuns'
+import { useAgentOptions } from '@/composables/useAgentOptions'
 import { useChatSessionRoute } from '@/composables/chat/useChatSessionRoute'
 import { useChatSessionRuntime } from '@/composables/chat/useChatSessionRuntime'
 import { useChatSessionSubscription } from '@/composables/chat/useChatSessionSubscription'
@@ -443,6 +547,7 @@ import type {
 import type {
   ArtifactPayload,
 } from '@/types/rpc'
+import type { InterruptViewState } from '@/types/parts'
 import { artifactDownloadUrl } from '@/utils/chat/artifacts'
 import { copyTextWithFallback, copyImageToClipboard, downloadBlob, shareCopyImageSupported } from '@/utils/browser'
 import { useCopyFeedback } from '@/composables/chat/useCopyFeedback'
@@ -453,7 +558,7 @@ import {
   toolStatusText,
 } from '@/utils/chat/toolDisplay'
 import { isShareableChatMessage } from '@/utils/chat/messageIdentity'
-import { agentIdFromSessionKey } from '@/utils/chat/sessionKeys'
+import { agentIdFromSessionKey, normalizeAgentId } from '@/utils/chat/sessionKeys'
 
 /* ── Types ─────────────────────────────────────────────────────────── */
 
@@ -492,6 +597,10 @@ const landingAgentId = computed(() => agentIdFromSessionKey(sessionKey.value))
 // True when the current draft opened with prefilled composer text (Sessions
 // Hub task input); the landing suggestion chips stay out of the way then.
 const landingPrefilled = ref(false)
+// Holds the prefill text when the Sessions Hub hand-off requested a one-step
+// send ("Start task"). Flushed in onMounted once the draft subscription is live
+// so the first turn streams into this view. Empty string = nothing pending.
+const pendingAutoSend = ref('')
 
 /* ── DOM refs ──────────────────────────────────────────────────────── */
 
@@ -559,6 +668,12 @@ const {
   stripTimePrefix,
 } = chatTextRendering
 
+// Resolution side-map for inline interrupt parts, owned here so it can be shared
+// between the stream (which threads it into the turn-log fold) and the approvals
+// composable (its sole writer). Constructed before the stream because the stream
+// reads it at build time; the approvals composable, built later, drives it.
+const interruptState = ref<ReadonlyMap<string, InterruptViewState>>(new Map())
+
 const chatStream = useChatStream({
   messages,
   lastHeaderRole,
@@ -570,6 +685,7 @@ const chatStream = useChatStream({
   stripGeneratedArtifactMarkers,
   stripProtocolTextLeak,
   scrollToBottom,
+  interruptState,
 })
 const {
   isStreaming,
@@ -595,6 +711,11 @@ const {
   isToolItemOpen,
   toggleToolItem,
   cleanup: cleanupStream,
+  assertLiveParity,
+  useReducer: foldLiveTurnMode,
+  foldedTurn,
+  appendInterruptFrame,
+  ensureInterruptBubble,
 } = chatStream
 
 const chatRouterDecisionRuntime = useChatRouterDecisionRuntime({
@@ -704,6 +825,7 @@ const {
   routerModels,
   routerEnabled,
   routerVisualEffectsEnabled,
+  routerVisualMode,
   routerSettingsBusy,
   routerTierConfigs,
   loadFeatureToggles,
@@ -711,6 +833,16 @@ const {
   setRouterVisualEffectsEnabled,
   bindFeatureRefresh,
 } = chatFeatureToggles
+
+// Gate the live answer's reveal to a [MIN,MAX] window so the model-router panel
+// decides (and animates) first, then the answer follows. Self-cleans via the
+// composable's onScopeDispose.
+const { answerRevealOpen, revealNow } = useChatAnswerReveal({
+  isStreaming,
+  routerEnabled,
+  routerVisualEffectsEnabled,
+  routerDecided: () => pendingDecision.value,
+})
 
 const chatSessionRoute = useChatSessionRoute(sessionKey)
 const {
@@ -724,6 +856,86 @@ const {
   resolveInitialSession,
 } = chatSessionRoute
 
+// In-draft agent switcher (new-chat landing): lets the user swap the draft's
+// agent before the first message. Shares one agents.list path with the sidebar.
+const { selectableAgents, loadAgents: loadAgentOptions } = useAgentOptions()
+const agentSwitcherOpen = ref(false)
+const agentSwitcherRef = ref<HTMLElement | null>(null)
+
+const landingAgentName = computed(() => {
+  const id = landingAgentId.value
+  const match = selectableAgents.value.find(agent => agent.id === id)
+  return match?.name || (id === 'main' ? 'Main Agent' : id)
+})
+
+function toggleAgentSwitcher() {
+  agentSwitcherOpen.value = !agentSwitcherOpen.value
+  if (agentSwitcherOpen.value && selectableAgents.value.length <= 1) {
+    void loadAgentOptions()
+  }
+  if (agentSwitcherOpen.value) {
+    // Land focus on the checked agent if present, else the first item, so the
+    // menu is keyboard-operable the moment it opens.
+    nextTick(() => {
+      const menu = agentSwitcherRef.value?.querySelector('.chat-landing-agent__menu')
+      const items = menu?.querySelectorAll<HTMLElement>('.chat-landing-agent__item')
+      if (!items?.length) return
+      const checked = menu?.querySelector<HTMLElement>('[aria-checked="true"]')
+      ;(checked ?? items[0]).focus()
+    })
+  }
+}
+
+function closeAgentSwitcher() {
+  agentSwitcherOpen.value = false
+}
+
+// Arrow keys rove between the agent items (including "Create agent…"), wrapping
+// at the ends; Escape closes and restores focus to the switcher trigger.
+function onAgentSwitcherKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    closeAgentSwitcher()
+    nextTick(() => agentSwitcherRef.value?.querySelector<HTMLElement>('.chat-landing-agent__btn')?.focus())
+    return
+  }
+  // Tab must dismiss the open menu (WAI-ARIA menu pattern) and let focus move on
+  // naturally — the outside-click handler does not fire on a keyboard Tab.
+  if (e.key === 'Tab') {
+    closeAgentSwitcher()
+    return
+  }
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+  const menu = agentSwitcherRef.value?.querySelector('.chat-landing-agent__menu')
+  const items = Array.from(menu?.querySelectorAll<HTMLElement>('.chat-landing-agent__item') ?? [])
+  if (!items.length) return
+  e.preventDefault()
+  const current = items.indexOf(document.activeElement as HTMLElement)
+  const delta = e.key === 'ArrowDown' ? 1 : -1
+  const next = (current + delta + items.length) % items.length
+  items[next]?.focus()
+}
+
+// Selecting an agent re-enters the draft for it. The draft carries no messages
+// yet, so swapping with replace semantics is safe and leaves no history entry.
+function pickDraftAgent(agentId: string) {
+  closeAgentSwitcher()
+  const id = normalizeAgentId(agentId)
+  if (id === landingAgentId.value) return
+  goToDraft({ agentId: id, replace: true })
+}
+
+function createAgentFromSwitcher() {
+  closeAgentSwitcher()
+  router.push('/agents')
+}
+
+useDocumentEvent('click', (e) => {
+  if (!agentSwitcherOpen.value) return
+  const host = agentSwitcherRef.value
+  if (host && e.target instanceof Node && !host.contains(e.target)) closeAgentSwitcher()
+})
+
 const chatRenderedMessages = useChatRenderedMessages({
   messages,
   sessionKey,
@@ -731,6 +943,7 @@ const chatRenderedMessages = useChatRenderedMessages({
   routerModels,
   routerTierConfigs,
   routerVisualEffectsEnabled,
+  routerVisualMode,
   renderMarkdown,
   stripGeneratedArtifactMarkers,
   stripTimePrefix,
@@ -765,7 +978,8 @@ const routerStripReserve = computed<ChatRenderedMessage | null>(() => {
     isRouterStrip: true,
     routerState: 'pending',
     routerSource: 'none',
-    routerStatic: true,
+    routerStatic: false,
+    routerPanel: routerVisualMode.value === 'legacy_grid' ? 'legacy-grid' : 'real-candidates',
     gridCells: cells,
     winnerIdx: -1,
   }
@@ -964,6 +1178,8 @@ const chatApprovals = useChatApprovals({
   rpc,
   sessionKey,
   runStatus,
+  stream: { isStreaming, appendInterruptFrame, ensureInterruptBubble },
+  interruptState,
   onDenyFeedback: queueDenyFeedback,
   onSnapshotCount: count => appStore.setApprovalCount(count),
 })
@@ -975,6 +1191,8 @@ const {
   clarifyBusy,
   clarifyError,
   resolveApproval,
+  resolveInterrupt,
+  extendInterrupt,
   submitClarify,
   dismissClarify,
 } = chatApprovals
@@ -1011,6 +1229,41 @@ const {
   streamThinkingElapsedText,
   attachTurnReasoning,
 } = rpcEventHandlers
+
+// live-turn shadow parity: in DEV/SHADOW, re-check the fold against the legacy
+// live surface whenever a frame lands (the fold and legacy refs are tracked by
+// assertLiveParity). Injects the thinking text owned by the event handlers.
+// No-op in prod/OFF; render stays legacy unless the fold is authoritative (ON).
+watchEffect(() => assertLiveParity(streamThinkingText))
+
+// flag-selected live render source. Only when the fold is
+// authoritative (useReducer === true, opt-in via opensquilla.chat.foldLiveTurn=1)
+// does the work-card body render from the fold; OFF and SHADOW return the
+// IDENTICAL legacy refs, so with the flag off the render is byte-identical.
+// The work-card head (phase/elapsed/step) stays on the legacy activity refs.
+const liveTimelineItems = computed(() =>
+  foldLiveTurnMode.value === true ? foldedTurn.value.timelineItems : streamTimelineItems.value,
+)
+const liveArtifacts = computed(() =>
+  foldLiveTurnMode.value === true ? foldedTurn.value.artifacts : streamArtifacts.value,
+)
+const liveThinkingText = computed(() =>
+  foldLiveTurnMode.value === true ? foldedTurn.value.thinkingText : streamThinkingText.value,
+)
+// Inline interrupt parts for the live turn come from the fold whenever it is
+// active (ON or SHADOW — frames are appended in both). Only the foldLiveTurn=0
+// OFF rollback renders the legacy standalone ApprovalCard/ClarifyCard block, so
+// the two never both show. Unlike the work-card body (which has a legacy ref to
+// fall back to in SHADOW), interrupts have no legacy live ref, so SHADOW must
+// also render them from the fold.
+const liveInterruptParts = computed(() =>
+  foldLiveTurnMode.value === false
+    ? []
+    : foldedTurn.value.parts.filter(
+        (part): part is Extract<typeof part, { type: 'interrupt' }> => part.type === 'interrupt',
+      ),
+)
+
 const chatRpcSubscriptions = useChatRpcSubscriptions(rpc, rpcEventHandlers.handlers)
 
 // MetaSkill run UI: preflight checkpoint + run-progress ribbon, driven by the
@@ -1058,7 +1311,9 @@ function scrollToStepCard(toolUseId: string) {
   if (!root) return
   const card = root.querySelector(`[data-tool-use-id="${cssEscapeAttr(toolUseId)}"]`)
   if (card && typeof (card as HTMLElement).scrollIntoView === 'function') {
-    ;(card as HTMLElement).scrollIntoView({ block: 'center', behavior: 'smooth' })
+    const reduceMotion = typeof window !== 'undefined'
+      && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    ;(card as HTMLElement).scrollIntoView({ block: 'center', behavior: reduceMotion ? 'auto' : 'smooth' })
   }
 }
 
@@ -1082,8 +1337,8 @@ let composerResizeObserver: ResizeObserver | null = null
 const runStatusLabel = computed(() => runStatus.value.label)
 const runStatusChipClass = computed(() => {
   const cls: Record<string, string> = {
-    queued: 'chip-warn', running: 'chip-ok', approval_pending: 'chip-warn', interrupted: 'chip-warn',
-    failed: 'chip-danger', timeout: 'chip-warn',
+    queued: 'chat-chip-warn', running: 'chat-chip-ok', approval_pending: 'chat-chip-warn', interrupted: 'chat-chip-warn',
+    failed: 'chat-chip-danger', timeout: 'chat-chip-warn',
   }
   return cls[runStatus.value.status] || ''
 })
@@ -1495,6 +1750,15 @@ function onThreadScroll() {
   autoScroll.value = gap < 60
 }
 
+// Show the jump-to-latest affordance whenever the reader has scrolled up off the
+// live edge (autoScroll releases at gap >= 60) and there is content to return to.
+// Re-pinning autoScroll lets the stream resume following the bottom.
+const showJumpToLatest = computed(() => !autoScroll.value && messages.value.length > 0)
+function jumpToLatest() {
+  autoScroll.value = true
+  scrollToBottom()
+}
+
 /* ── Tool calls ────────────────────────────────────────────────────── */
 
 function showToolResultModal(content: string, title = 'Tool Result') {
@@ -1544,6 +1808,14 @@ function onDocumentKeydown(e: KeyboardEvent) {
   if (e.key !== 'Escape') return
   if (e.defaultPrevented) return
 
+  // The landing agent switcher closes first and hands focus back to its trigger.
+  if (agentSwitcherOpen.value) {
+    e.preventDefault()
+    closeAgentSwitcher()
+    nextTick(() => agentSwitcherRef.value?.querySelector<HTMLElement>('.chat-landing-agent__btn')?.focus())
+    return
+  }
+
   // The share preview modal owns Escape while it is open: it closes only the
   // preview (share mode stays active) via its own handler, so bail here and let
   // it run rather than tearing down the whole share mode underneath it.
@@ -1578,8 +1850,11 @@ function consumeDraftPrefill() {
   if (!prefill) return
   inputText.value = prefill
   landingPrefilled.value = true
+  // A Sessions Hub "Start task" hand-off also asks the draft to send the
+  // prefill in one step; the actual flush waits for the subscription in onMounted.
+  if (state?.autosend === true) pendingAutoSend.value = prefill
   try {
-    window.history.replaceState({ ...window.history.state, prefill: undefined }, '')
+    window.history.replaceState({ ...window.history.state, prefill: undefined, autosend: undefined }, '')
   } catch { /* ignore */ }
 }
 
@@ -1613,6 +1888,9 @@ onMounted(async () => {
   // Load elevated mode
   loadElevatedMode()
 
+  // Resolve agent display names for the in-draft switcher.
+  void loadAgentOptions()
+
   // Load feature toggles
   await loadFeatureToggles()
   unsubs.push(bindFeatureRefresh(scheduleHistorySync))
@@ -1634,13 +1912,23 @@ onMounted(async () => {
 
   // Load the requested chat state. Drafts subscribe so the first send can
   // stream, but have no history to load.
-  subscribeSession()
+  const sessionSubscription = subscribeSession()
   if (!initialSession.draft) loadHistory()
   loadSlashCommands()
 
   // Focus textarea on desktop
   if (isDesktopViewport.value) {
     composerRef.value?.focusTextarea()
+  }
+
+  // Sessions Hub "Start task" hand-off: send the prefilled draft in one step.
+  // Wait for the subscription first so the first turn streams into this view
+  // rather than being missed before sessions.messages.subscribe registers.
+  if (pendingAutoSend.value) {
+    const text = pendingAutoSend.value
+    pendingAutoSend.value = ''
+    await sessionSubscription
+    sendComposerText(text)
   }
 })
 
@@ -1699,6 +1987,22 @@ watch(sessionKey, () => {
 
 watch(shareableMessageCount, (count) => {
   if (count === 0 && shareMode.value) endShareMode()
+})
+
+// Router-led turns hold the live answer/work-card reveal back for [MIN,MAX] ms,
+// then mount a block of content at once. Re-pin the thread on that reveal so it
+// lands at the bottom instead of below the fold.
+watch(answerRevealOpen, (open) => {
+  if (open && autoScroll.value) scrollToBottom()
+})
+
+// An approval/clarify interrupt is a user-blocking control, not answer content,
+// so it must not sit behind the router-lead reveal window. With the fold
+// authoritative (default), the gated work-card is the only interrupt surface,
+// so reveal immediately when a live interrupt part appears — otherwise the card
+// can stay invisible for up to the MAX backstop when no router decision lands.
+watch(() => liveInterruptParts.value.length, (n, prev) => {
+  if (n > (prev ?? 0)) revealNow()
 })
 </script>
 

@@ -5,6 +5,7 @@ import { useSetupProviderForm } from '@/composables/setup/useSetupProviderForm'
 import { useSetupRouterForm } from '@/composables/setup/useSetupRouterForm'
 import { useSettingsPromotedForm, DEFAULT_LLM_TIMEOUT_SECONDS } from '@/composables/setup/useSettingsPromotedForm'
 import { useSettingsSection } from '@/composables/setup/useSettingsSection'
+import { SETTINGS_SECTIONS, type SettingsSectionId } from '@/composables/setup/settingsSections'
 import { useRpcStore } from '@/stores/rpc'
 import { useToasts } from '@/composables/useToasts'
 import { copyTextWithFallback } from '@/utils/browser'
@@ -14,14 +15,8 @@ import { TEXT_TIERS, routerTierLabel } from '@/utils/chat/routerTiers'
 // Constants
 // ---------------------------------------------------------------------------
 
-export const SETTINGS_SECTIONS = [
-  { id: 'provider', label: 'Provider', icon: 'agents' },
-  { id: 'router', label: 'Router', icon: 'cron' },
-  { id: 'channels', label: 'Channels', icon: 'channels' },
-  { id: 'capabilities', label: 'Capabilities', icon: 'skills' },
-] as const
-
-export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]['id']
+export { SETTINGS_SECTIONS } from '@/composables/setup/settingsSections'
+export type { SettingsSectionId } from '@/composables/setup/settingsSections'
 
 const READINESS_LABELS: Record<string, string> = {
   ok: 'Ready',
@@ -143,6 +138,7 @@ interface ConfigData {
   squilla_router?: {
     enabled?: boolean
     default_tier?: string
+    visual_mode?: string
     tiers?: Record<string, TierConfig>
   }
   search_provider?: string
@@ -570,6 +566,11 @@ function firstActionSection(): SettingsSectionId {
 }
 
 function sectionStatus(sectionId: string): { label: string; tone: string } {
+  if (sectionId === 'connection') {
+    if (rpc.isConnected) return { label: 'Connected', tone: 'is-ok' }
+    if (rpc.isConnecting) return { label: 'Connecting', tone: 'is-muted' }
+    return { label: 'Disconnected', tone: 'is-warn' }
+  }
   if (sectionId === 'provider') {
     if (providerEnvMissing.value) return { label: 'Needs action', tone: 'is-warn' }
     return detailStepStatus((status.value.sectionDetails || {}).llm || (status.value.sectionDetails || {}).provider)
@@ -724,6 +725,10 @@ function setRouterDefaultTier(value: string) {
   routerForm.setRouterDefaultTier(value)
 }
 
+function setRouterVisualMode(value: string) {
+  routerForm.setRouterVisualMode(value)
+}
+
 function updateTierField(
   name: string,
   key: 'provider' | 'model' | 'thinkingLevel' | 'supportsImage',
@@ -870,8 +875,8 @@ function capabilityBadgeLabel(name: string): string {
 function capabilitySaveButtonClass(name: string): string {
   const detail = (status.value.sectionDetails || {})[name] || {}
   return detail.blocking || detail.actionRequired
-    ? 'setup-btn setup-btn--primary'
-    : 'setup-btn'
+    ? 'btn btn--primary'
+    : 'btn'
 }
 
 // ---------------------------------------------------------------------------
@@ -881,6 +886,12 @@ function capabilitySaveButtonClass(name: string): string {
 async function patchConfig(patches: Record<string, unknown>): Promise<boolean> {
   if (!Object.keys(patches).length) return false
   const res = await rpc.call<{ restartRequired?: boolean }>('config.patch', { patches })
+  return res?.restartRequired === true
+}
+
+async function safePatchConfig(patches: Record<string, unknown>): Promise<boolean> {
+  if (!Object.keys(patches).length) return false
+  const res = await rpc.call<{ restartRequired?: boolean }>('config.patch.safe', { patches })
   return res?.restartRequired === true
 }
 
@@ -904,13 +915,16 @@ async function saveProvider() {
 }
 
 async function saveRouter() {
-  if (!hasSavedProvider.value) {
+  if (!hasSavedProvider.value && routerForm.routingDirty.value) {
     pushToast('Choose a provider before saving router tiers.', { tone: 'danger' })
     return
   }
   try {
-    await rpc.call('onboarding.router.configure', routerForm.payload())
-    pushToast('Router saved.')
+    if (routerForm.routingDirty.value) {
+      await rpc.call('onboarding.router.configure', routerForm.payload())
+    }
+    const restart = await safePatchConfig(routerForm.visualModePatches())
+    pushToast(restart ? 'Router saved. Restart required.' : 'Router saved.')
     await loadData()
   } catch (err) {
     pushToast('Save failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
@@ -1073,6 +1087,7 @@ async function copyConfigPath() {
     selectProvider,
     setRouterMode,
     setRouterDefaultTier,
+    setRouterVisualMode,
     selectChannelType,
     updateProviderField,
     updateLlmTimeout,

@@ -1,6 +1,7 @@
 import { computed, nextTick, onUnmounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
+import { useToasts } from '@/composables/useToasts'
 import type { CronJob, CronJobFormModel, CronPanelTemplate } from '@/types/cron'
 import { buildDeliveryFromValues, normalizeDeliveryFields } from '@/utils/cron/delivery'
 import { explainCron, nextRuns, parseCron } from '@/utils/cron/schedule'
@@ -13,6 +14,7 @@ interface UseCronFormOptions {
 export function useCronForm(options: UseCronFormOptions) {
   const rpc = useRpcStore()
   const route = useRoute()
+  const { pushToast } = useToasts()
   const panelOpen = ref(false)
   const editingJob = ref<CronJob | null>(null)
   const cronExplainHuman = ref('Enter a 5-field cron expression to preview')
@@ -164,7 +166,7 @@ export function useCronForm(options: UseCronFormOptions) {
   async function saveJob() {
     const name = form.name.trim()
     if (!name) {
-      console.warn('Name is required')
+      pushToast('Name is required', { tone: 'danger' })
       return
     }
     const payloadKind = form.payloadKind
@@ -187,14 +189,14 @@ export function useCronForm(options: UseCronFormOptions) {
     } else if (form.type === 'every') {
       const everySeconds = Number(form.every)
       if (!Number.isInteger(everySeconds) || everySeconds < 1) {
-        console.warn('Interval must be an integer number of seconds')
+        pushToast('Interval must be an integer number of seconds', { tone: 'danger' })
         return
       }
       payload.schedule = { kind: 'every', every_seconds: everySeconds }
     } else if (form.type === 'at') {
       const at = form.at.trim()
       if (!at) {
-        console.warn('ISO time is required')
+        pushToast('ISO time is required', { tone: 'danger' })
         return
       }
       payload.schedule = { kind: 'at', at }
@@ -224,7 +226,7 @@ export function useCronForm(options: UseCronFormOptions) {
       fdWebhookToken: form.fdWebhookToken,
     })
     if (deliveryResult.error) {
-      console.warn(deliveryResult.error)
+      pushToast(deliveryResult.error, { tone: 'danger' })
       return
     }
     if (deliveryResult.delivery !== null) payload.delivery = deliveryResult.delivery
@@ -233,7 +235,7 @@ export function useCronForm(options: UseCronFormOptions) {
     if (sessionTarget === 'current') {
       const boundSessionKey = targetSessionKey || activeChatSessionKey() || jobSessionKey(editingJob.value)
       if (!boundSessionKey) {
-        console.warn('Current session key is required')
+        pushToast('Current session key is required', { tone: 'danger' })
         return
       }
       payload.sessionKey = boundSessionKey
@@ -243,7 +245,7 @@ export function useCronForm(options: UseCronFormOptions) {
     if (payloadKind === 'reminder' && activeChatSessionKey()) payload.originSessionKey = activeChatSessionKey()
     if (sessionTarget === 'session') {
       if (!targetSessionKey) {
-        console.warn('Named session key is required')
+        pushToast('Named session key is required', { tone: 'danger' })
         return
       }
       payload.targetSessionKey = targetSessionKey
@@ -252,11 +254,11 @@ export function useCronForm(options: UseCronFormOptions) {
     if (editingJob.value) payload.id = editingJob.value.id
     try {
       await rpc.call(editingJob.value ? 'cron.update' : 'cron.create', payload)
-      console.warn(editingJob.value ? 'Schedule updated' : 'Schedule created')
+      pushToast(editingJob.value ? 'Schedule updated' : 'Schedule created', { tone: 'ok' })
       closePanel()
       options.afterSaved()
     } catch (err) {
-      console.warn('Save failed: ' + (err instanceof Error ? err.message : String(err)))
+      pushToast('Save failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
     }
   }
 

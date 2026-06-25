@@ -40,7 +40,7 @@ const copyTitle = computed(() => props.copyLabel || (props.label ? `Copy ${props
 }
 
 .setup-command-block code {
-  background: var(--bg-muted);
+  background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text);

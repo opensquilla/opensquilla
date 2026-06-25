@@ -1,12 +1,12 @@
 <template>
-  <div class="ap-stage">
-    <header class="ap-stage__header">
-      <div class="ap-stage__title-block">
-        <span class="ap-stage__eyebrow">Control &middot; Approvals</span>
-        <h2 class="ap-stage__title">Approvals</h2>
-        <p class="ap-stage__subtitle">Tool execution gate — keep risky actions paused until you say go.</p>
+  <div class="ap-stage control-stage">
+    <header class="control-stage__header">
+      <div class="control-stage__title-block">
+        <span class="control-panel__eyebrow">Control &middot; Approvals</span>
+        <h2 class="control-stage__title">Approvals</h2>
+        <p class="control-stage__subtitle">Tool execution gate — keep risky actions paused until you say go.</p>
       </div>
-      <div class="ap-stage__actions">
+      <div class="control-stage__actions">
         <button class="btn btn--ghost" title="Refresh" @click="loadData">
           <Icon name="refresh" :size="16" />
           <span>Refresh</span>
@@ -27,6 +27,13 @@
       </div>
     </section>
 
+    <div v-if="loading && !loaded" class="state">
+      <LoadingSpinner />
+    </div>
+
+    <ErrorState v-else-if="error && !loaded" :message="error" :on-retry="loadData" />
+
+    <template v-else>
     <section class="ap-strategy">
       <div class="ap-strategy__head">
         <span class="ap-panel__eyebrow">Strategy</span>
@@ -92,6 +99,7 @@
           <div class="ap-card__actions">
             <button
               class="btn btn--primary"
+              :disabled="resolvingId === item.id"
               @click="resolveApproval(item, 'approve')"
             >
               <Icon name="check" :size="16" />
@@ -100,6 +108,7 @@
             <button
               v-if="canAlways(item)"
               class="btn btn--ghost"
+              :disabled="resolvingId === item.id"
               @click="resolveApproval(item, 'always')"
             >
               Always allow this type
@@ -107,12 +116,14 @@
             <button
               class="btn btn--warn"
               title="Bypass approval prompts while keeping sensitive-path checks"
+              :disabled="resolvingId === item.id"
               @click="resolveApproval(item, 'bypass')"
             >
               Bypass approvals
             </button>
             <button
               class="btn btn--danger"
+              :disabled="resolvingId === item.id"
               @click="resolveApproval(item, 'deny')"
             >
               <Icon name="x" :size="16" />
@@ -122,6 +133,7 @@
         </article>
       </div>
     </section>
+    </template>
   </div>
 </template>
 
@@ -129,6 +141,9 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useAppStore } from '@/stores/app'
 import Icon from '@/components/Icon.vue'
+import ErrorState from '@/components/ErrorState.vue'
+import LoadingSpinner from '@/components/LoadingSpinner.vue'
+import { useToasts } from '@/composables/useToasts'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -179,9 +194,16 @@ const modeOptions: ModeOption[] = [
 // ---------------------------------------------------------------------------
 
 const appStore = useAppStore()
+const { pushToast } = useToasts()
 
 const pending = ref<ApprovalItem[]>([])
-const mode = ref('auto-approve')
+const mode = ref('prompt')
+const loading = ref(false)
+const error = ref<string | null>(null)
+const loaded = ref(false)
+// Id of the approval currently being resolved; gates its decision buttons so a
+// double-click (or a second decision) cannot fire a duplicate resolve mid-flight.
+const resolvingId = ref<string | null>(null)
 
 let pollInterval: ReturnType<typeof setInterval> | null = null
 
@@ -190,8 +212,8 @@ let pollInterval: ReturnType<typeof setInterval> | null = null
 // ---------------------------------------------------------------------------
 
 const activeMode = computed(() => modeOptions.find(m => m.value === mode.value) || modeOptions[0])
-const activeModeLabel = computed(() => activeMode.value.label)
-const activeModeDesc = computed(() => activeMode.value.desc)
+const activeModeLabel = computed(() => loaded.value ? activeMode.value.label : '—')
+const activeModeDesc = computed(() => loaded.value ? activeMode.value.desc : '')
 
 // ---------------------------------------------------------------------------
 // Lifecycle
@@ -199,7 +221,11 @@ const activeModeDesc = computed(() => activeMode.value.desc)
 
 onMounted(() => {
   loadData()
-  pollInterval = setInterval(loadData, 5000)
+  // Skip background polling while the tab is hidden to avoid wasted RPC churn.
+  pollInterval = setInterval(() => {
+    if (document.hidden) return
+    loadData()
+  }, 5000)
 })
 
 onUnmounted(() => {
@@ -222,16 +248,34 @@ function authHeaders(extra?: Record<string, string>): Record<string, string> {
   return headers
 }
 
+// Tracks whether the current outage already raised a toast, so the 5s poll
+// surfaces one danger toast per outage instead of one every tick.
+let approvalErrorToasted = false
+
 async function loadData() {
+  if (!loaded.value) loading.value = true
+  error.value = null
   try {
     const res = await fetch('/api/approvals', { headers: authHeaders() })
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const data = await res.json() as ApprovalsResponse
     pending.value = data.pending || []
-    mode.value = data.mode || 'auto-approve'
+    mode.value = data.mode || 'prompt'
     appStore.setApprovalCount(pending.value.length)
+    loaded.value = true
+    approvalErrorToasted = false
   } catch (err) {
-    console.warn('Failed to load approvals: ' + (err instanceof Error ? err.message : String(err)))
+    const msg = err instanceof Error ? err.message : String(err)
+    error.value = 'Failed to load approvals: ' + msg
+    // The 5s poll must not spam a danger toast every tick during an outage
+    // (that evicts every other toast). Surface it once per outage; the inline
+    // error strip carries the persistent state.
+    if (!approvalErrorToasted) {
+      pushToast(error.value, { tone: 'danger' })
+      approvalErrorToasted = true
+    }
+  } finally {
+    loading.value = false
   }
 }
 
@@ -263,6 +307,8 @@ function canAlways(item: ApprovalItem): boolean {
 
 async function resolveApproval(item: ApprovalItem, decision: string) {
   const id = item.id || ''
+  if (resolvingId.value === id) return
+  resolvingId.value = id
   const namespace = item.namespace || 'exec'
   const approved = decision === 'approve' || decision === 'always' || decision === 'bypass'
   const allowAlways = decision === 'always'
@@ -282,10 +328,12 @@ async function resolveApproval(item: ApprovalItem, decision: string) {
     const msg = elevatedMode
       ? 'Approval bypass enabled'
       : (approved ? 'Approved' : 'Denied')
-    console.warn(msg + ': ' + id)
+    pushToast(msg + ': ' + id, { tone: 'ok' })
     await loadData()
   } catch (err) {
-    console.warn('Failed: ' + (err instanceof Error ? err.message : String(err)))
+    pushToast('Failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
+  } finally {
+    if (resolvingId.value === id) resolvingId.value = null
   }
 }
 
@@ -298,10 +346,10 @@ async function onModeChange() {
       body: JSON.stringify({ mode: newMode }),
     })
     if (!res.ok) throw new Error('HTTP ' + res.status)
-    console.warn('Approval strategy: ' + newMode)
+    pushToast('Approval strategy: ' + newMode, { tone: 'ok' })
     await loadData()
   } catch (err) {
-    console.warn('Failed to save strategy: ' + (err instanceof Error ? err.message : String(err)))
+    pushToast('Failed to save strategy: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
   }
 }
 
@@ -323,63 +371,7 @@ function setBrowserElevated(m: string) {
 </script>
 
 <style scoped>
-.ap-stage {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-5);
-  max-width: none;
-  position: relative;
-}
-
-.ap-stage__header {
-  align-items: flex-end;
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-4);
-  justify-content: space-between;
-  padding-top: var(--sp-3);
-}
-
-.ap-stage__title-block {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.ap-stage__title {
-  font-size: clamp(1.625rem, 1.2rem + 1vw, 2.25rem);
-  font-weight: 700;
-  letter-spacing: 0;
-  line-height: 1.05;
-  margin: 0;
-  position: relative;
-}
-
-.ap-stage__title::after {
-  background: linear-gradient(90deg, var(--accent), transparent);
-  border-radius: 2px;
-  bottom: -8px;
-  content: "";
-  height: 2px;
-  left: 0;
-  position: absolute;
-  width: 36px;
-}
-
-.ap-stage__subtitle {
-  color: var(--text-muted);
-  font-size: var(--fs-sm);
-  margin: var(--sp-3) 0 0;
-}
-
-.ap-stage__eyebrow {
-  color: var(--text-dim);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
+/* Header uses the shared .control-stage primitive (see control-visual-system.css). */
 
 .stat-row {
   display: grid;
@@ -721,12 +713,11 @@ function setBrowserElevated(m: string) {
 }
 
 @media (max-width: 760px) {
-  .ap-stage__header {
-    align-items: stretch;
+  .ap-stage .control-stage__header {
     flex-direction: column;
   }
 
-  .ap-stage__header .btn {
+  .ap-stage .control-stage__header .btn {
     align-self: flex-start;
     width: auto;
   }

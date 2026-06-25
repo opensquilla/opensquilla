@@ -11,9 +11,16 @@
       <button
         type="button"
         class="hub-row__main"
+        :class="{ 'hub-row__main--running': channel(entry.item).running }"
+        :style="{ '--readout-ch': channel(entry.item).token }"
         :aria-label="rowAccessibleName('Inspect', entry)"
         @click="emit('open', entry.item)"
       >
+        <span
+          class="control-readout__dot hub-row__channel"
+          :class="{ 'control-readout__dot--pulse': channel(entry.item).running }"
+          aria-hidden="true"
+        ></span>
         <span class="hub-row__icon" aria-hidden="true">
           <Icon :name="surfaceIcon(entry.item)" :size="15" />
         </span>
@@ -23,6 +30,16 @@
         </span>
         <span v-if="entry.item.forkedFromParent" class="hub-row__fork-badge">Fork</span>
         <span class="hub-row__agent">{{ agentName(entry.item) }}</span>
+        <span
+          v-if="statusBadge(entry.item)"
+          class="control-readout__trace hub-row__trace"
+          aria-hidden="true"
+        >
+          <span
+            class="control-readout__trace-fill"
+            :style="{ width: channel(entry.item).trace }"
+          ></span>
+        </span>
         <span
           v-if="statusBadge(entry.item)"
           class="hub-row__status"
@@ -91,6 +108,24 @@ function statusBadge(item: SessionItem): { label: string; cls: string } | null {
     cancelled: { label: 'Cancelled', cls: 'hub-row__status--off' },
   }
   return map[item.runStatus] || null
+}
+
+// The Stomatopod channel readout, applied to existing row data (no new wiring):
+// map each row's run-state onto one calibrated spectrum channel — the leading
+// dot + the trace bar both read --readout-ch. running reuses the strike pulse.
+function channel(item: SessionItem): { token: string; trace: string; running: boolean } {
+  if (props.needsInputKeys.has(item.key)) {
+    return { token: 'var(--warn)', trace: '60%', running: false }
+  }
+  const map: Record<string, { token: string; trace: string; running: boolean }> = {
+    running: { token: 'var(--accent)', trace: '72%', running: true },
+    queued: { token: 'var(--queued)', trace: '18%', running: false },
+    interrupted: { token: 'var(--queued)', trace: '40%', running: false },
+    failed: { token: 'var(--danger)', trace: '100%', running: false },
+    timeout: { token: 'var(--danger)', trace: '100%', running: false },
+    cancelled: { token: 'var(--text-dim)', trace: '100%', running: false },
+  }
+  return map[item.runStatus] || { token: 'var(--ok)', trace: '100%', running: false }
 }
 
 function rowTitle(entry: SessionLedgerEntry): string {
@@ -176,6 +211,24 @@ function rowAccessibleName(verb: string, entry: SessionLedgerEntry): string {
   outline: none;
 }
 
+/* Leading spectral channel dot — the Stomatopod readout applied to the row.
+   Its color comes from --readout-ch, set inline per row from the run-state. */
+.hub-row__main {
+  --readout-ch: var(--text-muted);
+}
+
+.hub-row__channel {
+  flex-shrink: 0;
+}
+
+/* Thin token-colored trace bar before the status label — the readout's
+   oscilloscope trace, encoding progress/severity in the row's channel color. */
+.hub-row__trace {
+  flex: 0 0 auto;
+  width: 48px;
+  min-width: 48px;
+}
+
 .hub-row__icon {
   align-items: center;
   color: var(--text-dim);
@@ -250,10 +303,11 @@ function rowAccessibleName(verb: string, entry: SessionLedgerEntry): string {
   white-space: nowrap;
 }
 
+/* running reuses the strike channel (orange) per the spectrum. */
 .hub-row__status--running {
-  background: color-mix(in srgb, var(--ok) 12%, transparent);
-  border-color: color-mix(in srgb, var(--ok) 40%, var(--border));
-  color: var(--ok);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  color: var(--accent);
   animation: pulse 1.5s ease-in-out infinite;
 }
 
@@ -270,9 +324,9 @@ function rowAccessibleName(verb: string, entry: SessionLedgerEntry): string {
 }
 
 .hub-row__status--queued {
-  background: color-mix(in srgb, var(--warn) 10%, transparent);
-  border-color: color-mix(in srgb, var(--warn) 35%, var(--border));
-  color: var(--warn);
+  background: color-mix(in srgb, var(--queued) 12%, transparent);
+  border-color: color-mix(in srgb, var(--queued) 38%, var(--border));
+  color: var(--queued);
 }
 
 .hub-row__status--failed {
@@ -345,6 +399,12 @@ function rowAccessibleName(verb: string, entry: SessionLedgerEntry): string {
 /* Phone widths: the badge + meta + delete columns crush the title to a couple
    of characters; drop the secondary time line and slim the badge so the row's
    identity stays readable. */
+@media (max-width: 760px) {
+  .hub-row__trace {
+    display: none;
+  }
+}
+
 @media (max-width: 480px) {
   .hub-row__time {
     display: none;

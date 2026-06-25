@@ -53,14 +53,22 @@
       <button type="button" class="msg-action" title="Edit" @click="$emit('edit', message)">
         <Icon name="edit" :size="12" />
       </button>
+      <time v-if="timeIso" class="msg-time" :datetime="timeIso" :title="timeFull">
+        <span class="msg-time__abs">{{ timeAbs }}</span>
+        <span class="msg-time__dot" aria-hidden="true">·</span>
+        <span class="msg-time__rel">{{ timeRel }}</span>
+      </time>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import Icon from '@/components/Icon.vue'
 import { useCopyFeedback } from '@/composables/chat/useCopyFeedback'
+import { useRelativeNow } from '@/composables/useRelativeNow'
 import type { ChatRenderedMessage } from '@/types/chat'
+import { absoluteTime, fullTime, isoTime, relativeTime } from '@/utils/messageTime'
 
 const props = defineProps<{
   message: ChatRenderedMessage
@@ -79,6 +87,14 @@ const emit = defineEmits<{
 const { copyState, copyIconName, copyTitle, copyLiveText, onCopyClick } = useCopyFeedback(
   () => props.copyMessage(props.message),
 )
+
+// Absolute label is static; only the relative label subscribes to the shared
+// clock, so a tick re-evaluates one cheap computed per visible bubble.
+const now = useRelativeNow()
+const timeIso = computed(() => isoTime(props.message.ts))
+const timeAbs = computed(() => absoluteTime(props.message.ts))
+const timeRel = computed(() => relativeTime(props.message.ts, now.value))
+const timeFull = computed(() => fullTime(props.message.ts))
 
 function onMessageClick(event: MouseEvent) {
   if (!props.shareMode) return
@@ -186,6 +202,29 @@ function onMessageClick(event: MouseEvent) {
 
 .msg-user:hover .msg-user-actions {
   opacity: 1;
+}
+
+/* Touch screens have no hover to reveal the row — keep it visible there. */
+@media (hover: none) {
+  .msg-user-actions {
+    opacity: 1;
+  }
+}
+
+.msg-time {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.25rem;
+  margin-left: 0.25rem;
+  align-self: center;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.msg-time__rel {
+  color: color-mix(in srgb, var(--text-dim) 80%, transparent);
 }
 
 .msg-action {

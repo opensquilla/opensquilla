@@ -1,5 +1,4 @@
 import type { Ref } from 'vue'
-import { toCanvas } from 'html-to-image'
 import { downloadBlob } from '@/utils/browser'
 
 export type ShareExportTheme = 'light' | 'dark'
@@ -194,11 +193,45 @@ export function buildShareDom(sourceElements: HTMLElement[], theme: ShareExportT
   const stack = document.createElement('div')
   stack.className = 'chat-share-export-stack'
   sourceElements.forEach((element) => {
-    stack.appendChild(cleanupShareClone(element.cloneNode(true) as HTMLElement))
+    const clone = cleanupShareClone(element.cloneNode(true) as HTMLElement)
+    inlineBlobBackedImages(element, clone)
+    stack.appendChild(clone)
   })
   stage.appendChild(stack)
 
   return stage
+}
+
+// Image artifacts render from blob: object URLs. html-to-image inlines images
+// by fetch()-ing the src, but the gateway CSP allows blob: under img-src yet
+// not connect-src, so that fetch is blocked and the picture drops out of the
+// export. Bypass the fetch entirely: paint the live, already-decoded <img>
+// (matched by its artifact key) onto a canvas and hand the clone a data: URL,
+// which the rasteriser embeds directly without a network request.
+function inlineBlobBackedImages(original: HTMLElement, clone: HTMLElement): void {
+  clone.querySelectorAll<HTMLImageElement>('img').forEach((cloneImg) => {
+    if (!cloneImg.src.startsWith('blob:')) return
+    const key = cloneImg.dataset.artifactKey
+    const source = key
+      ? original.querySelector<HTMLImageElement>(`img[data-artifact-key="${CSS.escape(key)}"]`)
+      : null
+    // Only a fully-decoded same-origin image can be painted; otherwise leave the
+    // blob src and let the capture's onImageErrorHandler degrade it gracefully.
+    if (!source || !source.complete || !source.naturalWidth) return
+    try {
+      const canvas = document.createElement('canvas')
+      canvas.width = source.naturalWidth
+      canvas.height = source.naturalHeight
+      const context = canvas.getContext('2d')
+      if (!context) return
+      context.drawImage(source, 0, 0)
+      cloneImg.src = canvas.toDataURL('image/png')
+      cloneImg.removeAttribute('srcset')
+    } catch {
+      // A tainted canvas (cross-origin artifact without CORS) throws here; keep
+      // the blob src so the export still composes without the offending image.
+    }
+  })
 }
 
 function shareTemplateMetrics() {
@@ -408,12 +441,24 @@ function shareExportCss(): string {
 async function captureStageWithDom(stage: HTMLElement): Promise<HTMLCanvasElement> {
   const rect = stage.getBoundingClientRect()
   const height = assertShareStageHeight(stage, rect)
+  // Load the rasteriser on demand so it stays out of the chat critical path.
+  const { toCanvas } = await import('html-to-image')
   const canvas = await toCanvas(stage, {
     backgroundColor: shareThemeTokens(stage).card,
-    cacheBust: true,
+    // Cache-busting must stay OFF: chat image artifacts render from blob:
+    // object URLs, and html-to-image's cache-bust glues a "?<ts>" query onto
+    // every image src. A blob: URL with a query string is not a registered
+    // object URL, so the fetch fails, the cloned <img> src is cleared, and the
+    // resulting error event rejects the whole capture. These same-origin blob
+    // and static resources never need cache-busting anyway.
+    cacheBust: false,
     pixelRatio: captureScale(),
     width: Math.ceil(rect.width),
     height,
+    // Defence in depth: a single image that still can't be embedded (e.g. its
+    // blob URL was revoked mid-export) must not abort the PNG. Swallow the
+    // error so that one image comes through blank instead of failing the share.
+    onImageErrorHandler: () => {},
     style: {
       transform: 'none',
       margin: '0',

@@ -1,18 +1,34 @@
 import { ref } from 'vue'
+import { useToasts } from '@/composables/useToasts'
 import type { Attachment } from '@/types/chat'
 
 const INLINE_THRESHOLD_BYTES = 2_000_000
 const ATTACHMENT_TEXT_HARD_CAP_BYTES = INLINE_THRESHOLD_BYTES
 const ATTACHMENT_IMAGE_HARD_CAP_BYTES = 5 * 1024 * 1024
 const ATTACHMENT_PDF_HARD_CAP_BYTES = 30 * 1024 * 1024
+const ATTACHMENT_OFFICE_HARD_CAP_BYTES = 30 * 1024 * 1024
+// Email is held to the text cap (bounded text is extracted; large emails are
+// large only due to attachments we never read), so it inlines and never stages.
+const ATTACHMENT_EMAIL_HARD_CAP_BYTES = ATTACHMENT_TEXT_HARD_CAP_BYTES
+
+const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+const PPTX_MIME = 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+const EML_MIME = 'message/rfc822'
+const MBOX_MIME = 'application/mbox'
+const MSG_MIME = 'application/vnd.ms-outlook'
 
 const ATTACHMENT_IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
 const ATTACHMENT_TEXT_MIMES = ['text/plain', 'text/markdown', 'text/html', 'text/csv', 'application/json']
-const ATTACHMENT_ALLOWED_MIMES = [...ATTACHMENT_IMAGE_MIMES, 'application/pdf', ...ATTACHMENT_TEXT_MIMES]
+const ATTACHMENT_OFFICE_MIMES = [DOCX_MIME, XLSX_MIME, PPTX_MIME]
+const ATTACHMENT_EMAIL_MIMES = [EML_MIME, MBOX_MIME, MSG_MIME]
+const ATTACHMENT_ALLOWED_MIMES = [...ATTACHMENT_IMAGE_MIMES, 'application/pdf', ...ATTACHMENT_TEXT_MIMES, ...ATTACHMENT_OFFICE_MIMES, ...ATTACHMENT_EMAIL_MIMES]
 const ATTACHMENT_EXTENSION_MIMES: Record<string, string> = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
   webp: 'image/webp', pdf: 'application/pdf', txt: 'text/plain', md: 'text/markdown',
   markdown: 'text/markdown', html: 'text/html', htm: 'text/html', csv: 'text/csv', json: 'application/json',
+  docx: DOCX_MIME, xlsx: XLSX_MIME, pptx: PPTX_MIME,
+  eml: EML_MIME, mbox: MBOX_MIME, msg: MSG_MIME,
 }
 
 function isAllowedAttachmentMime(mime: string): boolean {
@@ -24,12 +40,19 @@ function isImageAttachmentMime(mime: string): boolean {
 }
 
 function canStageAttachmentMime(mime: string): boolean {
-  return mime === 'application/pdf' || isImageAttachmentMime(mime)
+  // Email is capped at the text limit, so it inlines and is never staged.
+  return (
+    mime === 'application/pdf' ||
+    isImageAttachmentMime(mime) ||
+    ATTACHMENT_OFFICE_MIMES.includes(mime)
+  )
 }
 
 function attachmentHardCapBytes(mime: string): number {
   if (mime === 'application/pdf') return ATTACHMENT_PDF_HARD_CAP_BYTES
   if (isImageAttachmentMime(mime)) return ATTACHMENT_IMAGE_HARD_CAP_BYTES
+  if (ATTACHMENT_OFFICE_MIMES.includes(mime)) return ATTACHMENT_OFFICE_HARD_CAP_BYTES
+  if (ATTACHMENT_EMAIL_MIMES.includes(mime)) return ATTACHMENT_EMAIL_HARD_CAP_BYTES
   if (['text/plain', 'text/markdown', 'text/html', 'text/csv', 'application/json'].includes(mime)) return ATTACHMENT_TEXT_HARD_CAP_BYTES
   return ATTACHMENT_IMAGE_HARD_CAP_BYTES
 }
@@ -42,7 +65,24 @@ function resolveAttachmentMime(file: File): string {
   return extensionMime || file.type || 'application/octet-stream'
 }
 
+// Unknown-but-textual uploads degrade to text/plain so the gateway's UTF-8
+// fallback is reachable from the WebUI (the gateway re-validates). Bounded to
+// the text cap range; binary (NUL byte / invalid UTF-8) stays rejected.
+const TEXT_FALLBACK_MAX_SNIFF_BYTES = 4_000_000
+async function fileLooksLikeUtf8Text(file: File): Promise<boolean> {
+  if (file.size === 0 || file.size > TEXT_FALLBACK_MAX_SNIFF_BYTES) return false
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    if (bytes.includes(0)) return false
+    new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    return true
+  } catch {
+    return false
+  }
+}
+
 export function useChatAttachments() {
+  const { pushToast } = useToasts()
   const pendingAttachments = ref<Attachment[]>([])
   const nextAttachmentId = ref(1)
 
@@ -54,15 +94,19 @@ export function useChatAttachments() {
     }
   }
 
-  function addAttachment(file: File) {
-    const mime = resolveAttachmentMime(file)
+  async function addAttachment(file: File) {
+    let mime = resolveAttachmentMime(file)
     if (!isAllowedAttachmentMime(mime)) {
-      console.warn(`Unsupported file: ${file.name} (${mime})`)
-      return
+      if (await fileLooksLikeUtf8Text(file)) {
+        mime = 'text/plain'
+      } else {
+        pushToast(`Unsupported file: ${file.name} (${mime})`, { tone: 'danger' })
+        return
+      }
     }
     const hardCap = attachmentHardCapBytes(mime)
     if (file.size > hardCap) {
-      console.warn(`File too large: ${file.name}`)
+      pushToast(`File too large: ${file.name}`, { tone: 'danger' })
       return
     }
 
@@ -81,21 +125,21 @@ export function useChatAttachments() {
       }
       reader.onerror = () => {
         removeAttachmentByLocalId(localId)
-        console.warn(`Could not read file: ${file.name}`)
+        pushToast(`Could not read file: ${file.name}`, { tone: 'danger' })
       }
       reader.readAsDataURL(file)
       return
     }
 
     if (!canStageAttachmentMime(mime)) {
-      console.warn(`File too large: ${file.name}`)
+      pushToast(`File too large: ${file.name}`, { tone: 'danger' })
       return
     }
 
     pendingAttachments.value.push({ kind: 'uploading', local_id: localId, name: file.name, mime, size: file.size })
     uploadAttachmentStaged(file, mime, localId).catch((err) => {
       removeAttachmentByLocalId(localId)
-      console.warn(`Upload failed for ${file.name}:`, err?.message || err)
+      pushToast(`Upload failed for ${file.name}: ` + (err?.message || err), { tone: 'danger' })
     })
   }
 

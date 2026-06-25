@@ -35,18 +35,26 @@
 
     <div class="sk-tabs" role="tablist" aria-label="Skill source">
       <button
+        id="sk-tab-installed"
         class="sk-tab"
         :class="{ 'is-active': activeTab === 'installed' }"
+        type="button"
         role="tab"
+        :aria-selected="activeTab === 'installed'"
+        aria-controls="sk-panel-installed"
         @click="activeTab = 'installed'"
       >
         <Icon name="skills" :size="16" />
         <span>Installed</span>
       </button>
       <button
+        id="sk-tab-registry"
         class="sk-tab"
         :class="{ 'is-active': activeTab === 'registry' }"
+        type="button"
         role="tab"
+        :aria-selected="activeTab === 'registry'"
+        aria-controls="sk-panel-registry"
         @click="activeTab = 'registry'"
       >
         <Icon name="download" :size="16" />
@@ -54,7 +62,7 @@
       </button>
     </div>
 
-    <div v-show="activeTab === 'installed'" class="sk-panel">
+    <div v-show="activeTab === 'installed'" class="sk-panel" role="tabpanel" id="sk-panel-installed" aria-labelledby="sk-tab-installed">
       <div class="sk-installed">
         <details
           v-if="proposalsSettings.available"
@@ -148,7 +156,7 @@
       </div>
     </div>
 
-    <div v-show="activeTab === 'registry'" class="sk-panel">
+    <div v-show="activeTab === 'registry'" class="sk-panel" role="tabpanel" id="sk-panel-registry" aria-labelledby="sk-tab-registry">
       <SkillsRegistryPanel
         v-model:registry-query="registryQuery"
         v-model:github-url="githubUrl"
@@ -312,6 +320,15 @@ async function uninstallSkillAndClose(name: string) {
   outline: none;
   min-width: 200px;
   transition: border-color var(--transition), box-shadow var(--transition);
+}
+/* base.css resets text inputs via input:not([type="radio"]):not([type="checkbox"])
+   — specificity (0,2,1), which outranks the .sk-search-input class and drops the
+   leading-icon clearance (and elevated fill), letting the search/download icon
+   overlap the placeholder. Re-assert just those two properties at matching reach;
+   the :not() mirror clears the base reset without touching the --lg width rule. */
+.sk-search-input:not([type="radio"]):not([type="checkbox"]) {
+  padding: 8px 12px 8px 34px;
+  background: var(--bg-elevated);
 }
 .sk-search-input:focus {
   border-color: var(--accent);
@@ -650,26 +667,6 @@ async function uninstallSkillAndClose(name: string) {
   border-radius: 50%;
   animation: sk-spin 0.8s linear infinite;
 }
-.sk-registry__table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--fs-sm);
-}
-.sk-registry__table th {
-  text-align: left;
-  padding: 8px 10px;
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-  border-bottom: 1px solid var(--border);
-}
-.sk-registry__table td {
-  padding: 10px;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
-  vertical-align: middle;
-}
 .sk-registry__name {
   font-weight: 600;
 }
@@ -960,13 +957,6 @@ async function uninstallSkillAndClose(name: string) {
   .sk-proposal-row {
     flex-direction: column;
     align-items: flex-start;
-  }
-  .sk-registry__table {
-    font-size: var(--fs-xs);
-  }
-  .sk-registry__table th,
-  .sk-registry__table td {
-    padding: 6px;
   }
 }
 </style>

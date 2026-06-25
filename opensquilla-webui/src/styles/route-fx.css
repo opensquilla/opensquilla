@@ -1,0 +1,20 @@
+/* Route-change cross-fade. Opacity only, no color literals, so both themes and
+   the color guard are unaffected. The global reduced-motion block in base.css
+   already zeroes transition durations; the local guard below states the intent
+   and stands on its own if that block ever moves. */
+.route-fade-enter-active,
+.route-fade-leave-active {
+  transition: opacity 120ms ease;
+}
+
+.route-fade-enter-from,
+.route-fade-leave-to {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .route-fade-enter-active,
+  .route-fade-leave-active {
+    transition: none;
+  }
+}

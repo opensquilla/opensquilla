@@ -364,6 +364,109 @@ export function arrangeSessionLedger(items: SessionItem[]): SessionLedgerEntry[]
   return entries
 }
 
+/** Family buckets rendered as collapsible sidebar sections, in display order. */
+export type SidebarSectionFamily = 'chats' | 'channels' | 'automations'
+
+/** A single rendered sidebar row, flattened with its indent depth. */
+export interface SidebarSectionRow {
+  key: string
+  title: string
+  effectiveAgentId: string
+  /** Resolved display name when known; empty when the caller must resolve it. */
+  agentName: string
+  sessionKind: string
+  /** Indent level mirroring `arrangeSessionLedger` (0 = root, subagents > 0). */
+  depth: number
+  runStatus: string
+  runLabel: string
+  updatedAt: number
+  hasContractGaps: boolean
+}
+
+/** One collapsible family section with its recency-ordered rows. */
+export interface SidebarSection {
+  family: SidebarSectionFamily
+  label: string
+  rows: SidebarSectionRow[]
+}
+
+/**
+ * Decide which sidebar family a session belongs to, mirroring App.vue's
+ * `sourceFamilyForSession`. Unlike the old flat list, subagent rows are no
+ * longer dropped: a 'task'/'subagent' session is folded into the Chats family
+ * (nested under its parent by `arrangeSessionLedger`), so this returns 'chats'
+ * for it. Returns null for sessions that have no sidebar home (e.g. cli/tui/mcp
+ * chat surfaces, or unknown kinds).
+ */
+function sidebarFamilyForSession(item: SessionItem): SidebarSectionFamily | null {
+  if (item.sessionKind === 'chat') {
+    if (['cli', 'tui', 'mcp', 'subagent'].includes(item.surface)) return null
+    return 'chats'
+  }
+  if (item.sessionKind === 'task' || item.surface === 'subagent') return 'chats'
+  if (item.sessionKind === 'channel') return 'channels'
+  if (item.sessionKind === 'cron') return 'automations'
+  return null
+}
+
+const SIDEBAR_SECTION_LABELS: Record<SidebarSectionFamily, string> = {
+  chats: 'Chats',
+  channels: 'Channels',
+  automations: 'Automations',
+}
+
+const SIDEBAR_SECTION_ORDER: SidebarSectionFamily[] = ['chats', 'channels', 'automations']
+
+/**
+ * Arrange sessions into the ordered sidebar families (Chats, Channels,
+ * Automations). Each family is recency-sorted; the Chats family additionally
+ * runs through `arrangeSessionLedger`, so subagent rows indent under their
+ * parent chat (and orphan subagents indent at depth 1 via the contract's
+ * spawn-depth fallback). The helper is pure: it returns all three families
+ * (callers drop empty ones at render time).
+ */
+export function arrangeSidebarSections(items: SessionItem[]): SidebarSection[] {
+  const buckets: Record<SidebarSectionFamily, SessionItem[]> = {
+    chats: [],
+    channels: [],
+    automations: [],
+  }
+  for (const item of items) {
+    if (!item.key || item.key === 'unknown') continue
+    const family = sidebarFamilyForSession(item)
+    if (!family) continue
+    buckets[family].push(item)
+  }
+
+  const byRecency = (a: SessionItem, b: SessionItem) => (b.updatedAt || 0) - (a.updatedAt || 0)
+  const toRow = (item: SessionItem, depth: number): SidebarSectionRow => ({
+    key: item.key,
+    title: item.title,
+    effectiveAgentId: item.effectiveAgentId,
+    agentName: '',
+    sessionKind: item.sessionKind,
+    depth,
+    runStatus: item.runStatus,
+    runLabel: item.runLabel,
+    updatedAt: item.updatedAt || 0,
+    hasContractGaps: item.contractGaps.length > 0,
+  })
+
+  return SIDEBAR_SECTION_ORDER.map(family => {
+    const bucket = buckets[family]
+    let rows: SidebarSectionRow[]
+    if (family === 'chats') {
+      // Recency-sort first so the ledger's root ordering follows recency, then
+      // flatten parent → child so subagents indent directly beneath their chat.
+      const ledger = arrangeSessionLedger([...bucket].sort(byRecency))
+      rows = ledger.map(entry => toRow(entry.item, entry.depth))
+    } else {
+      rows = [...bucket].sort(byRecency).map(item => toRow(item, 0))
+    }
+    return { family, label: SIDEBAR_SECTION_LABELS[family], rows }
+  })
+}
+
 export function sessionMatches(item: SessionItem, query: string): boolean {
   const q = query.trim().toLowerCase()
   if (!q) return true

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, ipcMain, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, Menu, ipcMain, nativeTheme, safeStorage, shell } from 'electron'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createWriteStream, mkdirSync } from 'node:fs'
 import { access, constants, readFile, rm, stat, writeFile } from 'node:fs/promises'
@@ -1902,6 +1902,8 @@ async function runOnboarding(): Promise<DesktopConnection> {
       icon: appIconPath(),
       resizable: true,
       show: false,
+      // Match the onboarding page's base so the first frame is not white.
+      backgroundColor: '#f5f2eb',
       webPreferences: {
         preload: join(__dirname, 'preload.cjs'),
         contextIsolation: true,
@@ -2154,6 +2156,10 @@ async function createMainWindow(): Promise<BrowserWindow> {
     title: 'OpenSquilla',
     icon: appIconPath(),
     show: false,
+    // Paint the window in the app's base color from the first frame so launch
+    // never flashes white before the splash/app paints. The app theme defaults
+    // to 'system', so match the OS; these are the base.css --bg tokens.
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#08080A' : '#F7F6F3',
     webPreferences: {
       preload: join(__dirname, 'preload.cjs'),
       contextIsolation: true,

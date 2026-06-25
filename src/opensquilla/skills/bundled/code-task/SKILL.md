@@ -138,7 +138,14 @@ back. Therefore:
 - `regression`: existing-suite result and `new_failures`.
 - `assumptions`: **surface these to the user** — a wrong assumption means a
   wrong fix.
-- `usage`: cost / tokens.
+- `usage`: cost / tokens (aggregated across internal retry attempts).
+- `attempts` / `max_attempts` / `retry_exhausted`: code-task RETRIES internally
+  when its own verification fails -- it re-runs the agent on the SAME prepared
+  repo (no re-clone, no re-explore) with the concrete failure fed back, up to
+  `max_attempts`. A returned result is FINAL across those internal attempts.
+- `relaunch_recommended` is always `false` and `final_failure_reason` explains a
+  failure: do NOT re-launch the same task yourself on a `failed` result -- the
+  internal retries are already exhausted. Surface the failure to the user.
 
 ## What to tell the user
 
@@ -146,8 +153,9 @@ back. Therefore:
    minutes; you'll report when done.
 2. After: report `state`, what changed (diffstat), the acceptance red→green
    evidence, any `assumptions`, the cost, and where the branch/diff lives.
-3. On `failed` / `environment_blocked`: quote `error` and point at the
-   `agent_stdout.log` under the artifact dir.
+3. On `failed` / `environment_blocked`: quote `error` / `final_failure_reason`
+   and point at the `agent_stdout.log`. Do NOT relaunch the same task yourself --
+   code-task already retried internally (see `retry_exhausted`).
 
 ## Constraints
 

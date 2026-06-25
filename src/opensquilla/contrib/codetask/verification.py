@@ -74,6 +74,16 @@ def load_manifest(scratch_dir: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def _tail(text: str, *, max_lines: int = 40, max_chars: int = 4000) -> str:
+    """Bounded tail of command output, for the report and retry evidence."""
+    if not text:
+        return ""
+    tail = "\n".join(text.splitlines()[-max_lines:])
+    if len(tail) > max_chars:
+        tail = tail[-max_chars:]
+    return tail
+
+
 def verify(
     *,
     repo: Path,
@@ -136,8 +146,10 @@ def verify(
 
     # GREEN: run each acceptance command at the current (post-change) tree.
     for check in checks:
-        rc, _ = _run_shell(check.command, cwd=repo, timeout=acceptance_timeout, repo=repo)
+        rc, out = _run_shell(check.command, cwd=repo, timeout=acceptance_timeout, repo=repo)
         check.after = "pass" if rc == 0 else "fail"
+        check.green_exit_code = rc
+        check.green_output_tail = _tail(out)
 
     # RED: re-run each acceptance command at base, with the agent's test files
     # overlaid, in a throwaway worktree. ``before`` is left None whenever we
@@ -160,8 +172,10 @@ def verify(
                 # the agent's command cannot teleport the red check back into
                 # the already-fixed task repo.
                 wt_command = _localize_command(check.command, repo, wt)
-                rc, _ = _run_shell(wt_command, cwd=wt, timeout=acceptance_timeout, repo=repo)
+                rc, out = _run_shell(wt_command, cwd=wt, timeout=acceptance_timeout, repo=repo)
                 check.before = "fail" if rc != 0 else "pass"
+                check.red_exit_code = rc
+                check.red_output_tail = _tail(out)
     except _WorktreeError as exc:
         logger.warning("base worktree unavailable, red phase skipped: %s", exc)
         red_unprovable = "worktree_failed"

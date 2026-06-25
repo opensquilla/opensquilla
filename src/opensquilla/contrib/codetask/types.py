@@ -48,6 +48,11 @@ class AcceptanceCheck:
     # Runner-observed results.
     before: str | None = None  # pass | fail | error (red phase, if captured)
     after: str | None = None  # pass | fail | error (runner re-run)
+    # Captured runner evidence (bounded), for the verify->fix retry loop + report.
+    green_exit_code: int | None = None  # exit code of the post-change (green) run
+    green_output_tail: str = ""  # bounded tail of the green run's output
+    red_exit_code: int | None = None  # exit code of the base-worktree (red) run
+    red_output_tail: str = ""  # bounded tail of the red run's output
 
 
 @dataclass
@@ -125,3 +130,9 @@ class TaskResult:
     duration_seconds: float | None = None
     usage: dict = field(default_factory=dict)
     error: str | None = None
+    # Verify->fix retry loop metadata.
+    attempts: int = 0
+    max_attempts: int = 1
+    retry_exhausted: bool = False
+    relaunch_recommended: bool = False
+    final_failure_reason: str | None = None

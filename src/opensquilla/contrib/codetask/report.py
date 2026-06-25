@@ -84,9 +84,10 @@ def render(result: TaskResult) -> str:
             lines.append("")
             lines.append("  cost     " + " · ".join(bits))
 
-    if result.error:
+    _note = getattr(result, "final_failure_reason", None) or result.error
+    if _note:
         lines.append("")
-        lines.append(f"  note     {result.error}")
+        lines.append(f"  note     {_note}")
 
     if result.patch_path:
         lines.append("")

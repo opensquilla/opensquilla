@@ -413,3 +413,13 @@ def test_uv_run_from_worktree_reuses_repo_venv(tmp_path):
     assert rc == 0, out
     assert f"PREFIX={proj}/.venv" in out, out  # reused the repo venv, not wt/.venv
     assert not (wt / ".venv").exists(), "uv built a separate worktree venv"
+
+
+def test_tail_bounds_output():
+    assert verification._tail("") == ""
+    assert verification._tail("a\nb\nc") == "a\nb\nc"
+    many = "\n".join(str(i) for i in range(100))
+    out = verification._tail(many, max_lines=10)
+    assert out.splitlines() == [str(i) for i in range(90, 100)]
+    big = "x" * 9000
+    assert len(verification._tail(big, max_chars=4000)) == 4000

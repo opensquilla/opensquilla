@@ -657,8 +657,10 @@ async function writeDesktopConfig(credential: DesktopConnection): Promise<void> 
     `search_provider = ${tomlString(credential.searchProvider)}`,
     ...(credential.searchApiKeyEnv ? [`search_api_key_env = ${tomlString(credential.searchApiKeyEnv)}`] : []),
     // search_max_results is intentionally omitted so the gateway's own default
-    // governs; the desktop shell has no control for it and must not clobber a
-    // value configured through the control UI.
+    // governs instead of pinning it to a hardcoded value. Note this writer
+    // regenerates the whole config file, so it still does not preserve a value
+    // set through the control UI — that broader limitation of the desktop config
+    // writer is tracked separately.
     '',
     '[llm]',
     `provider = ${tomlString(credential.provider)}`,

@@ -102,3 +102,48 @@ async def test_web_discover_clamps_active_value_to_ceiling(
     finally:
         web_module.configure_search("duckduckgo")
     assert fake.received == MAX_SEARCH_RESULTS
+
+
+@pytest.mark.asyncio
+async def test_web_discover_clamps_explicit_out_of_range_args(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _RecordingProvider()
+    monkeypatch.setattr(registry_module, "get_provider", lambda *a, **k: fake)
+    web_module.configure_search("duckduckgo", max_results=10)
+    try:
+        await web_module.run_web_discover_payload("python release", max_results=-5)
+        assert fake.received == 1
+        await web_module.run_web_discover_payload("python release", max_results=999)
+        assert fake.received == MAX_SEARCH_RESULTS
+    finally:
+        web_module.configure_search("duckduckgo")
+
+
+def test_migration_coerces_legacy_out_of_range() -> None:
+    # A pre-bound config could persist values outside [1, MAX_SEARCH_RESULTS];
+    # migration must coerce them so strict GatewayConfig validation does not crash
+    # the load.
+    from opensquilla.gateway.config_migration import migrate_config_payload
+
+    assert (
+        migrate_config_payload({"search_max_results": 50}).payload["search_max_results"]
+        == MAX_SEARCH_RESULTS
+    )
+    assert (
+        migrate_config_payload({"search_max_results": 0}).payload["search_max_results"]
+        == 1
+    )
+    assert (
+        migrate_config_payload({"search_max_results": "30"}).payload[
+            "search_max_results"
+        ]
+        == MAX_SEARCH_RESULTS
+    )
+    # in-range values pass through untouched
+    assert (
+        migrate_config_payload(
+            {"search_max_results": DEFAULT_SEARCH_MAX_RESULTS}
+        ).payload["search_max_results"]
+        == DEFAULT_SEARCH_MAX_RESULTS
+    )

@@ -359,7 +359,7 @@ def test_interactive_onboard_prompts_router_defaults_before_persist(tmp_path, mo
     assert 'api_key = ""' in data
     assert 'api_key_env = "OPENROUTER_API_KEY"' in data
     assert 'default_tier = "c2"' in data
-    assert 'model = "openai/gpt-5.5"' in data
+    assert 'model = "z-ai/glm-5.2"' in data
 
 
 def test_interactive_onboard_migration_defaults_to_all_sources_and_keeps_imported_provider(
@@ -504,7 +504,7 @@ def test_interactive_onboard_migration_defaults_to_all_sources_and_keeps_importe
     data = tomllib.loads(target.read_text())
     assert data["llm"]["provider"] == "openrouter"
     assert data["llm"]["api_key_env"] == "OPENROUTER_API_KEY"
-    assert data["llm"]["model"] == "anthropic/claude-sonnet-4.6"
+    assert data["llm"]["model"] == "deepseek/deepseek-v4-pro"
     assert data["squilla_router"]["enabled"] is True
     assert data["squilla_router"]["tier_profile"] == "openrouter"
     assert "api_key" not in data["llm"]
@@ -612,7 +612,7 @@ def test_interactive_onboard_imported_provider_prefers_inline_key_over_env(
     assert data["llm"]["provider"] == "openrouter"
     assert data["llm"]["api_key"] == "sk-imported"
     assert data["llm"].get("api_key_env", "") == ""
-    assert data["llm"]["model"] == "anthropic/claude-sonnet-4.6"
+    assert data["llm"]["model"] == "deepseek/deepseek-v4-pro"
 
 
 def test_interactive_onboard_imported_provider_finalize_error_continues_setup(
@@ -734,7 +734,7 @@ def test_interactive_onboard_imported_provider_finalize_error_continues_setup(
     data = tomllib.loads(target.read_text())
     assert data["llm"]["provider"] == "openrouter"
     assert data["llm"]["api_key_env"] == "OPENROUTER_API_KEY"
-    assert data["llm"]["model"] == "anthropic/claude-sonnet-4.6"
+    assert data["llm"]["model"] == "deepseek/deepseek-v4-pro"
 
 
 def test_onboard_migration_selection_summary_lists_checked_sources(tmp_path, monkeypatch):
@@ -1035,7 +1035,7 @@ def test_interactive_onboard_migration_prompts_for_missing_imported_provider_key
     data = tomllib.loads(target.read_text())
     assert data["llm"]["provider"] == "openrouter"
     assert data["llm"]["api_key"] == "sk-new"
-    assert data["llm"]["model"] == "anthropic/claude-sonnet-4.6"
+    assert data["llm"]["model"] == "deepseek/deepseek-v4-pro"
 
 
 def test_interactive_onboard_can_enable_image_generation(tmp_path, monkeypatch):
@@ -1381,7 +1381,7 @@ def test_router_tier_overrides_edit_only_selected_tiers():
                 assert kwargs.get("default") == "openrouter"
                 return _Answer("openrouter")
             if message == "c2 model":
-                assert kwargs.get("default") == "openai/gpt-5.5"
+                assert kwargs.get("default") == "z-ai/glm-5.2"
                 return _Answer("custom/reasoner")
             raise AssertionError(f"unexpected text prompt: {message}")
 

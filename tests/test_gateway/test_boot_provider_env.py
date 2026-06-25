@@ -66,17 +66,12 @@ def test_openrouter_runtime_uses_default_provider_routing() -> None:
 
     runtime = resolve_llm_runtime_config(cfg)
 
-    assert runtime.provider_routing == {
-        "anthropic/claude-opus-4.8": "anthropic",
-        "anthropic/claude-sonnet-4.6": "anthropic",
-        "google/gemini-3.5-flash": "google",
-        "moonshotai/kimi-k2.6": "moonshotai",
-        "openai/gpt-5.4-mini": "openai",
-        "openai/gpt-5.5": "openai",
-        "qwen/qwen3-coder-plus": "qwen",
-        "x-ai/grok-4.3": "x-ai",
-        "z-ai/glm-4.6": "z-ai",
-    }
+    assert runtime.provider_routing["deepseek/deepseek-v4-flash"] == "deepseek"
+    assert runtime.provider_routing["z-ai/glm-5.1"] == "z-ai"
+    assert runtime.provider_routing["z-ai/glm-5.2"] == "z-ai"
+    assert runtime.provider_routing["anthropic/claude-opus-4.8"] == "anthropic"
+    assert runtime.provider_routing["moonshotai/kimi-k2.6"] == "moonshotai"
+    assert runtime.provider_routing["openai/gpt-5.5"] == "openai"
 
 
 def test_openrouter_runtime_provider_routing_overrides_default() -> None:
@@ -84,7 +79,7 @@ def test_openrouter_runtime_provider_routing_overrides_default() -> None:
         llm={
             "provider": "openrouter",
             "provider_routing": {
-                "openai/gpt-5.5": "openai/special",
+                "z-ai/glm-5.2": "z-ai/special",
                 "custom/model": "custom-provider",
             },
         }
@@ -92,9 +87,8 @@ def test_openrouter_runtime_provider_routing_overrides_default() -> None:
 
     runtime = resolve_llm_runtime_config(cfg)
 
-    assert runtime.provider_routing["openai/gpt-5.4-mini"] == "openai"
-    assert runtime.provider_routing["openai/gpt-5.5"] == "openai/special"
-    assert runtime.provider_routing["anthropic/claude-sonnet-4.6"] == "anthropic"
+    assert runtime.provider_routing["deepseek/deepseek-v4-flash"] == "deepseek"
+    assert runtime.provider_routing["z-ai/glm-5.2"] == "z-ai/special"
     assert runtime.provider_routing["anthropic/claude-opus-4.8"] == "anthropic"
     assert runtime.provider_routing["moonshotai/kimi-k2.6"] == "moonshotai"
     assert runtime.provider_routing["custom/model"] == "custom-provider"

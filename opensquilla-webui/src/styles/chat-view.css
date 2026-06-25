@@ -1115,6 +1115,11 @@
   .chat-header .chat-share-btn {
     min-width: 2.75rem;
     min-height: 2.75rem;
+    /* Once the label is gone the button is a bare circle, and its default
+       surface fill matches the header bar exactly, so it reads as a faint
+       broken ring rather than a control. Lift it onto the elevated surface
+       so the icon-only circle stays a visible, solid button. */
+    background: var(--bg-elevated);
   }
 
   .chat-share-banner {

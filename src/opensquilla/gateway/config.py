@@ -235,7 +235,7 @@ class LlmProviderConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="OPENSQUILLA_LLM_")
 
     provider: str = "openrouter"
-    model: str = "anthropic/claude-sonnet-4.6"
+    model: str = "deepseek/deepseek-v4-pro"
     api_key: str = ""
     api_key_env: str = ""
     base_url: str = "https://openrouter.ai/api/v1"
@@ -563,9 +563,9 @@ def _default_tiers() -> dict:
     return {
         "c0": {
             "provider": "openrouter",
-            "model": "openai/gpt-5.4-mini",
+            "model": "deepseek/deepseek-v4-flash",
             "description": (
-                "fast GPT-5.4 Mini route for trivial chat, short rewrites, "
+                "fast DeepSeek V4 Flash route for trivial chat, short rewrites, "
                 "extraction, and low-risk simple Q&A"
             ),
             "supports_image": False,
@@ -573,7 +573,7 @@ def _default_tiers() -> dict:
         },
         "c1": {
             "provider": "openrouter",
-            "model": "anthropic/claude-sonnet-4.6",
+            "model": "deepseek/deepseek-v4-pro",
             "description": (
                 "default balanced text model for normal agent work, coding assistance, "
                 "debugging, and moderate analysis"
@@ -583,9 +583,9 @@ def _default_tiers() -> dict:
         },
         "c2": {
             "provider": "openrouter",
-            "model": "openai/gpt-5.5",
+            "model": "z-ai/glm-5.2",
             "description": (
-                "stronger GPT-5.5 route for multi-step coding, structured reasoning, "
+                "stronger GLM 5.2 route for multi-step coding, structured reasoning, "
                 "larger context synthesis, and harder analysis"
             ),
             "supports_image": False,

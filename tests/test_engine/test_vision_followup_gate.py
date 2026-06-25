@@ -214,9 +214,9 @@ async def test_runtime_gate_chat_uses_configured_lightweight_tier_model() -> Non
 
     chat, model = runner._make_vision_followup_gate_chat(selector)
 
-    assert model == "openai/gpt-5.4-mini"
+    assert model == "deepseek/deepseek-v4-flash"
     assert callable(chat)
-    assert selector.clones[0].model == "openai/gpt-5.4-mini"
+    assert selector.clones[0].model == "deepseek/deepseek-v4-flash"
     events = [
         event
         async for event in chat(

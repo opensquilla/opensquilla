@@ -147,8 +147,8 @@ def test_title_slot_not_empty_when_already_titled():
 def _router(default_tier="c1"):
     return SimpleNamespace(
         tiers={
-            "c0": {"model": "openai/gpt-5.4-mini"},
-            "c1": {"model": "anthropic/claude-sonnet-4.6"},
+            "c0": {"model": "deepseek/deepseek-v4-flash"},
+            "c1": {"model": "deepseek/deepseek-v4-pro"},
         },
         default_tier=default_tier,
     )
@@ -158,14 +158,14 @@ def test_resolve_target_defaults_to_default_tier_model():
     cfg = SimpleNamespace(tier=None, model=None, timeout_seconds=30.0)
     target = resolve_naming_target(cfg, _router("c1"), _FakeProvider(), None)
     assert isinstance(target, NamingTarget)
-    assert target.model == "anthropic/claude-sonnet-4.6"
+    assert target.model == "deepseek/deepseek-v4-pro"
     assert target.api_key == "KEY"
 
 
 def test_resolve_target_tier_override():
     cfg = SimpleNamespace(tier="c0", model=None, timeout_seconds=30.0)
     target = resolve_naming_target(cfg, _router("c1"), _FakeProvider(), None)
-    assert target.model == "openai/gpt-5.4-mini"
+    assert target.model == "deepseek/deepseek-v4-flash"
 
 
 def test_resolve_target_explicit_model_wins():
@@ -177,7 +177,7 @@ def test_resolve_target_explicit_model_wins():
 def test_resolve_target_follows_configured_default_tier():
     cfg = SimpleNamespace(tier=None, model=None, timeout_seconds=30.0)
     target = resolve_naming_target(cfg, _router("c0"), _FakeProvider(), None)
-    assert target.model == "openai/gpt-5.4-mini"
+    assert target.model == "deepseek/deepseek-v4-flash"
 
 
 def test_resolve_target_falls_back_to_provider_model():
@@ -195,9 +195,9 @@ def test_resolve_target_none_without_api_key():
 
 
 def test_tier_model_normalizes_alias():
-    router = SimpleNamespace(tiers={"c1": {"model": "anthropic/claude-sonnet-4.6"}})
+    router = SimpleNamespace(tiers={"c1": {"model": "deepseek/deepseek-v4-pro"}})
     # t1 is a legacy alias for c1 (router_tiers.normalize_text_tier).
-    assert _tier_model(router, "t1") == "anthropic/claude-sonnet-4.6"
+    assert _tier_model(router, "t1") == "deepseek/deepseek-v4-pro"
 
 
 # ── call_naming_llm (mocked httpx) ──────────────────────────────────────────
@@ -241,7 +241,7 @@ async def test_call_naming_llm_payload_and_sanitization(monkeypatch):
 
     title = await call_naming_llm(
         "Help me reset my password please",
-        model="anthropic/claude-sonnet-4.6",
+        model="deepseek/deepseek-v4-pro",
         api_key="test-key",
         base_url="https://openrouter.ai/api/v1",
         timeout=10.0,
@@ -252,7 +252,7 @@ async def test_call_naming_llm_payload_and_sanitization(monkeypatch):
     assert title == "Reset my password"
     # Cheap, deterministic title-shaped request.
     assert captured["url"] == "https://openrouter.ai/api/v1/chat/completions"
-    assert captured["json"]["model"] == "anthropic/claude-sonnet-4.6"
+    assert captured["json"]["model"] == "deepseek/deepseek-v4-pro"
     assert captured["json"]["max_tokens"] == 24
     assert captured["json"]["temperature"] == 0
     assert captured["json"]["stream"] is False

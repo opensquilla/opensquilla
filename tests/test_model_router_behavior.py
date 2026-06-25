@@ -164,11 +164,11 @@ async def test_full_rollout_applies_routed_model_thinking_and_p0_prompt(
 
     routed = await apply_squilla_router(ctx)
 
-    assert routed.model == "anthropic/claude-sonnet-4.6"
+    assert routed.model == "deepseek/deepseek-v4-pro"
     assert routed.metadata["routed_tier"] == "c1"
-    assert routed.metadata["routed_model"] == "anthropic/claude-sonnet-4.6"
+    assert routed.metadata["routed_model"] == "deepseek/deepseek-v4-pro"
     assert routed.metadata["routing_applied"] is True
-    assert routed.metadata["applied_model"] == "anthropic/claude-sonnet-4.6"
+    assert routed.metadata["applied_model"] == "deepseek/deepseek-v4-pro"
     assert routed.metadata["baseline_model"] == baseline_model
     assert routed.metadata["routing_confidence"] == 0.91
     assert routed.metadata["routing_source"] == "v4_phase3"
@@ -206,9 +206,9 @@ async def test_router_records_lower_text_tier_fallback_chain(
         "c0",
     ]
     assert [item["model"] for item in routed.metadata["router_fallback_chain"]] == [
-        "openai/gpt-5.5",
-        "anthropic/claude-sonnet-4.6",
-        "openai/gpt-5.4-mini",
+        "z-ai/glm-5.2",
+        "deepseek/deepseek-v4-pro",
+        "deepseek/deepseek-v4-flash",
     ]
 
 
@@ -246,7 +246,7 @@ async def test_router_reports_provider_state_loss_without_changing_route(
 
     routed = await apply_squilla_router(ctx)
 
-    assert routed.model == "anthropic/claude-sonnet-4.6"
+    assert routed.model == "deepseek/deepseek-v4-pro"
     diagnostic = routed.metadata["provider_state_continuity"]
     assert diagnostic["decision"] == "use_portable_fallback"
     assert diagnostic["provider_state_loss_risk"] is True
@@ -368,7 +368,7 @@ async def test_confidence_gate_promotes_low_confidence_t0_to_default_t1_and_reco
     extra = routed.metadata["routing_extra"]
 
     assert routed.metadata["routed_tier"] == "c1"
-    assert routed.model == "anthropic/claude-sonnet-4.6"
+    assert routed.model == "deepseek/deepseek-v4-pro"
     assert extra["confidence_gate_applied"] is True
     assert extra["base_tier"] == "c0"
     assert extra["final_tier"] == "c1"
@@ -397,7 +397,7 @@ async def test_confidence_gate_falls_back_low_confidence_non_default_text_tier(
     extra = routed.metadata["routing_extra"]
 
     assert routed.metadata["routed_tier"] == "c1"
-    assert routed.model == "anthropic/claude-sonnet-4.6"
+    assert routed.model == "deepseek/deepseek-v4-pro"
     assert extra["confidence_gate_applied"] is True
     assert extra["pre_confidence_tier"] == "c2"
     assert extra["final_tier"] == "c1"
@@ -503,7 +503,7 @@ async def test_anti_downgrade_keeps_recent_higher_tier_despite_confidence_gate(
     extra = routed2.metadata["routing_extra"]
 
     assert routed2.metadata["routed_tier"] == "c2"
-    assert routed2.model == "openai/gpt-5.5"
+    assert routed2.model == "z-ai/glm-5.2"
     assert extra["confidence_gate_applied"] is True
     assert extra["pre_confidence_tier"] == "c0"
     assert extra["final_tier"] == "c2"
@@ -526,7 +526,7 @@ async def test_anti_downgrade_keeps_recent_higher_tier_despite_confidence_gate(
     extra3 = routed3.metadata["routing_extra"]
 
     assert routed3.metadata["routed_tier"] == "c2"
-    assert routed3.model == "openai/gpt-5.5"
+    assert routed3.model == "z-ai/glm-5.2"
     assert extra3["confidence_gate_applied"] is False
     assert extra3["anti_downgrade_applied"] is True
     assert extra3["previous_tier"] == "c2"
@@ -580,7 +580,7 @@ async def test_anti_downgrade_uses_previous_turn_not_window_highest(
     extra3 = routed3.metadata["routing_extra"]
 
     assert routed3.metadata["routed_tier"] == "c2"
-    assert routed3.model == "openai/gpt-5.5"
+    assert routed3.model == "z-ai/glm-5.2"
     assert extra3["anti_downgrade_applied"] is True
     assert extra3["previous_tier"] == "c2"
 
@@ -647,7 +647,7 @@ async def test_complaint_upgrade_promotes_tier_thinking_and_blocks_compressed_pr
     extra = routed.metadata["routing_extra"]
 
     assert routed.metadata["routed_tier"] == "c2"
-    assert routed.model == "openai/gpt-5.5"
+    assert routed.model == "z-ai/glm-5.2"
     assert extra["complaint_detected"] is True
     assert extra["complaint_upgrade_applied"] is True
     assert routed.metadata["thinking_mode"] == "T2"
@@ -1069,7 +1069,7 @@ async def test_observe_rollout_records_decisions_without_applying_model_or_promp
 
     assert routed.model == baseline_model
     assert routed.metadata["routed_tier"] == "c2"
-    assert routed.metadata["routed_model"] == "openai/gpt-5.5"
+    assert routed.metadata["routed_model"] == "z-ai/glm-5.2"
     assert routed.metadata["routing_applied"] is False
     assert routed.metadata["thinking_mode"] == "T2"
     assert routed.metadata["thinking_level"] == "medium"
@@ -1155,7 +1155,7 @@ async def test_runtime_router_short_chinese_prompt_injects_localized_p0_hint() -
 
     assert routed.metadata["routing_source"] == "v4_phase3"
     assert routed.metadata["routed_tier"] == "c0"
-    assert routed.model == "openai/gpt-5.4-mini"
+    assert routed.model == "deepseek/deepseek-v4-flash"
     assert routed.metadata["thinking_mode"] == "T0"
     assert routed.metadata.get("thinking_requested") is None
     assert routed.metadata["prompt_policy"] == "P0"

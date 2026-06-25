@@ -9,9 +9,9 @@ from pathlib import Path
 from opensquilla.tools.registry import ToolProfile
 
 EXPECTED_ROUTER_MODELS = {
-    "c0": "openai/gpt-5.4-mini",
-    "c1": "anthropic/claude-sonnet-4.6",
-    "c2": "openai/gpt-5.5",
+    "c0": "deepseek/deepseek-v4-flash",
+    "c1": "deepseek/deepseek-v4-pro",
+    "c2": "z-ai/glm-5.2",
     "c3": "anthropic/claude-opus-4.8",
 }
 

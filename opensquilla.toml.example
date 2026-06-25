@@ -65,7 +65,7 @@ frontend = "vue"
 
 [llm]
 provider = "openrouter"
-model = "anthropic/claude-sonnet-4.6"
+model = "deepseek/deepseek-v4-pro"
 # api_key = ""          # OpenRouter API key; env OPENROUTER_API_KEY also works
 base_url = "https://openrouter.ai/api/v1"
 # proxy = ""            # e.g. http://127.0.0.1:7890
@@ -107,6 +107,7 @@ base_url = "https://openrouter.ai/api/v1"
 [llm.provider_routing]
 "anthropic/claude-opus-4.8" = "anthropic"
 "anthropic/claude-sonnet-4.6" = "anthropic"
+"deepseek/deepseek-v4-flash" = "deepseek"
 "google/gemini-3.5-flash" = "google"
 "moonshotai/kimi-k2.6" = "moonshotai"
 "openai/gpt-5.4-mini" = "openai"
@@ -114,6 +115,8 @@ base_url = "https://openrouter.ai/api/v1"
 "qwen/qwen3-coder-plus" = "qwen"
 "x-ai/grok-4.3" = "x-ai"
 "z-ai/glm-4.6" = "z-ai"
+"z-ai/glm-5.1" = "z-ai"
+"z-ai/glm-5.2" = "z-ai"
 
 [memory]
 # "workspace" stores MEMORY.md and memory/*.md under workspace_dir.
@@ -210,22 +213,22 @@ upgrade_to_c3_compaction_enabled = true
 
 [squilla_router.tiers.c0]
 provider = "openrouter"
-model = "openai/gpt-5.4-mini"
-description = "Fast GPT-5.4 Mini route for trivial chat, short rewrites, extraction, and low-risk simple Q&A"
+model = "deepseek/deepseek-v4-flash"
+description = "Fast DeepSeek V4 Flash route for trivial chat, short rewrites, extraction, and low-risk simple Q&A"
 supports_image = false
 thinking_level = "high"
 
 [squilla_router.tiers.c1]
 provider = "openrouter"
-model = "anthropic/claude-sonnet-4.6"
-description = "Default balanced text route for normal agent work, coding assistance, debugging, and moderate analysis"
+model = "deepseek/deepseek-v4-pro"
+description = "Default balanced text model for normal agent work, coding assistance, debugging, and moderate analysis"
 supports_image = false
 thinking_level = "high"
 
 [squilla_router.tiers.c2]
 provider = "openrouter"
-model = "openai/gpt-5.5"
-description = "Stronger GPT-5.5 route for multi-step coding, structured reasoning, larger context synthesis, and harder analysis"
+model = "z-ai/glm-5.2"
+description = "Stronger GLM 5.2 route for multi-step coding, structured reasoning, larger context synthesis, and harder analysis"
 supports_image = false
 thinking_level = "high"
 

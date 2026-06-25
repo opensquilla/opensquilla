@@ -47,11 +47,11 @@ def test_squilla_router_defaults_match_runtime_router_config() -> None:
     assert cfg.require_router_runtime is True
     assert cfg.vision_followup_gate_tier == "c0"
 
-    assert cfg.tiers["c0"]["model"] == "openai/gpt-5.4-mini"
+    assert cfg.tiers["c0"]["model"] == "deepseek/deepseek-v4-flash"
     assert cfg.tiers["c0"]["thinking_level"] == "high"
-    assert cfg.tiers["c1"]["model"] == "anthropic/claude-sonnet-4.6"
+    assert cfg.tiers["c1"]["model"] == "deepseek/deepseek-v4-pro"
     assert cfg.tiers["c1"]["thinking_level"] == "high"
-    assert cfg.tiers["c2"]["model"] == "openai/gpt-5.5"
+    assert cfg.tiers["c2"]["model"] == "z-ai/glm-5.2"
     assert cfg.tiers["c2"]["thinking_level"] == "high"
     assert cfg.tiers["c3"]["model"] == "anthropic/claude-opus-4.8"
     assert cfg.tiers["c3"]["thinking_level"] == "high"
@@ -305,7 +305,7 @@ def test_example_toml_enables_runtime_router_defaults() -> None:
     squilla_router = data["squilla_router"]
 
     assert data["llm"]["provider"] == "openrouter"
-    assert data["llm"]["model"] == "anthropic/claude-sonnet-4.6"
+    assert data["llm"]["model"] == "deepseek/deepseek-v4-pro"
     assert squilla_router["enabled"] is True
     assert squilla_router["auto_thinking"] is True
     assert squilla_router["rollout_phase"] == "full"
@@ -322,11 +322,11 @@ def test_example_toml_enables_runtime_router_defaults() -> None:
     assert squilla_router["require_router_runtime"] is True
 
     tiers = squilla_router["tiers"]
-    assert tiers["c0"]["model"] == "openai/gpt-5.4-mini"
+    assert tiers["c0"]["model"] == "deepseek/deepseek-v4-flash"
     assert tiers["c0"]["thinking_level"] == "high"
-    assert tiers["c1"]["model"] == "anthropic/claude-sonnet-4.6"
+    assert tiers["c1"]["model"] == "deepseek/deepseek-v4-pro"
     assert tiers["c1"]["thinking_level"] == "high"
-    assert tiers["c2"]["model"] == "openai/gpt-5.5"
+    assert tiers["c2"]["model"] == "z-ai/glm-5.2"
     assert tiers["c2"]["thinking_level"] == "high"
     assert tiers["c3"]["model"] == "anthropic/claude-opus-4.8"
     assert tiers["c3"]["thinking_level"] == "high"
@@ -349,11 +349,11 @@ def test_runtime_router_config_does_not_ship_unused_cost_fields() -> None:
     text = runtime_config.read_text(encoding="utf-8")
     data = yaml.safe_load(text)
 
-    assert data["tier_registry"]["S"] == ["openai/gpt-5.4-mini"]
-    assert data["tier_registry"]["M"] == ["anthropic/claude-sonnet-4.6"]
-    assert data["tier_registry"]["L"] == ["openai/gpt-5.5"]
+    assert data["tier_registry"]["S"] == ["deepseek/deepseek-v4-flash"]
+    assert data["tier_registry"]["M"] == ["deepseek/deepseek-v4-pro"]
+    assert data["tier_registry"]["L"] == ["z-ai/glm-5.2"]
     assert data["tier_registry"]["XL"] == ["anthropic/claude-opus-4.8"]
-    assert data["tier_explanations"]["L"]["model"] == "openai/gpt-5.5"
+    assert data["tier_explanations"]["L"]["model"] == "z-ai/glm-5.2"
     assert data["tier_explanations"]["XL"]["model"] == "anthropic/claude-opus-4.8"
     assert "cost_ratios:" not in text
     assert "cost_matrix:" not in text

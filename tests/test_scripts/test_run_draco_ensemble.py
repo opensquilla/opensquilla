@@ -19,6 +19,7 @@ from opensquilla.provider.types import (
 )
 from scripts.run_draco_ensemble import (
     GROUP_SPECS,
+    RunResult,
     amain,
     benchmark_tool_policy,
     benchmark_tools_for_policy,
@@ -35,6 +36,7 @@ from scripts.run_draco_ensemble import (
     parse_domain_list,
     quality_total,
     render_markdown,
+    run_one,
     score_criterion_judgments,
     summarize,
 )
@@ -74,6 +76,16 @@ class _FlakyCriterionJudgeProvider:
 
     async def list_models(self) -> list:
         return []
+
+
+class _CountingJudgeProvider(_CriterionJudgeProvider):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def chat(self, messages: list[Message], tools=None, config=None):  # noqa: ANN001
+        self.calls += 1
+        async for event in super().chat(messages, tools=tools, config=config):
+            yield event
 
 
 class _SlowProvider:
@@ -590,7 +602,6 @@ def test_draco_summary_compares_avg_quality_and_cost_pct_against_baselines() -> 
     summary = summarize(rows)
     g2 = summary["groups"]["G2"]
 
-    assert g2["scored_rows"] == 1
     assert g2["avg_quality_scored"] == pytest.approx(45.0)
     assert g2["avg_quality_pct_delta_vs_b0"] == pytest.approx(12.5)
     assert g2["avg_cost_pct_delta_vs_b0"] == pytest.approx(-50.0)
@@ -611,6 +622,7 @@ def test_draco_summary_compares_avg_quality_and_cost_pct_against_baselines() -> 
     assert "Win vs" not in markdown
     assert "AvgQ % vs B0" in markdown
     assert "AvgQ Scored" in markdown
+    assert "| Group | Rows | Done | Scored |" not in markdown
     assert "Avg Reason" in markdown
     assert "Avg Tools" in markdown
     assert "Avg LLM Req" in markdown
@@ -715,13 +727,41 @@ def test_draco_summary_counts_unscored_rows_as_zero_quality() -> None:
 
     assert g2["rows"] == 2
     assert g2["completed"] == 2
-    assert g2["scored_rows"] == 1
-    assert g2["score_coverage_pct"] == 50.0
     assert g2["avg_quality"] == 25.0
-    assert g2["avg_quality_scored"] == 50.0
+    assert g2["avg_quality_scored"] == 25.0
     assert g2["avg_quality_pct_delta_vs_b0"] == pytest.approx(-37.5)
     assert g2["avg_cost_usd"] == pytest.approx(0.03)
     assert g2["avg_cost_completed_usd"] == pytest.approx(0.03)
+
+
+def test_draco_summary_avg_quality_scored_uses_only_done_rows() -> None:
+    rows = [
+        {
+            "task_id": "task-1",
+            "group": "G3",
+            "latency_ms": 100,
+            "quality_total": 80.0,
+            "judge": {"pass_rate": 80.0, "judge_error_count": 0},
+            "usage": {"billed_cost": 0.10, "input_tokens": 10, "output_tokens": 5},
+            "error": "",
+        },
+        {
+            "task_id": "task-2",
+            "group": "G3",
+            "latency_ms": 200,
+            "quality_total": 10.0,
+            "judge": {"pass_rate": 10.0, "judge_error_count": 0},
+            "usage": {"billed_cost": 0.05, "input_tokens": 4, "output_tokens": 1},
+            "error": "TimeoutError: run timed out after 900s",
+        },
+    ]
+
+    group = summarize(rows)["groups"]["G3"]
+
+    assert group["rows"] == 2
+    assert group["completed"] == 1
+    assert group["avg_quality"] == pytest.approx(40.0)
+    assert group["avg_quality_scored"] == pytest.approx(80.0)
 
 
 def test_draco_summary_leaves_quality_blank_when_no_judge_ran() -> None:
@@ -906,6 +946,51 @@ def test_quality_total_normalizes_legacy_dimension_scores() -> None:
         )
         == 70.0
     )
+
+
+@pytest.mark.asyncio
+async def test_run_one_skips_judge_when_generation_is_not_done(monkeypatch) -> None:  # noqa: ANN001
+    async def _failed_generation(*args, **kwargs):  # noqa: ANN002, ANN003
+        return (
+            RunResult(final_text="partial answer", done=None, error="boom"),
+            [],
+            0,
+        )
+
+    monkeypatch.setattr(
+        "scripts.run_draco_ensemble.collect_generation_with_retries",
+        _failed_generation,
+    )
+    judge_provider = _CountingJudgeProvider()
+
+    row = await run_one(
+        task={"id": "task-1", "prompt": "Research this."},
+        group="B0",
+        config=GatewayConfig(),
+        inherited=ProviderConfig(
+            provider="openrouter",
+            model="anthropic/claude-opus-4.8",
+            api_key="sk-test",
+            base_url="https://openrouter.ai/api",
+        ),
+        dry_run=False,
+        judge_provider=judge_provider,
+        judge_candidates=True,
+        judge_repeats=1,
+        judge_concurrency=1,
+        judge_max_attempts=3,
+        timeout=10.0,
+        tool_policy={"tool_mode": "provider_only", "tools_enabled": False},
+        generation_policy=generation_thinking_policy(Namespace(generation_thinking="high")),
+        generation_max_attempts=1,
+        generation_retry_backoff=0.0,
+    )
+
+    assert judge_provider.calls == 0
+    assert row["judge"] is None
+    assert row["candidate_judges"] == []
+    assert row["quality_total"] is None
+    assert row["execution"]["judge_skipped_reason"] == "run_not_done"
 
 
 @pytest.mark.asyncio

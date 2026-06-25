@@ -1647,17 +1647,22 @@ async def run_one(
         selected_generation_attempt_index = 0
     profile_proposer_timeout_s = getattr(provider, "proposer_timeout_seconds", None)
     profile_aggregator_timeout_s = getattr(provider, "aggregator_timeout_seconds", None)
-    judge = await judge_text(
-        judge_provider=judge_provider,
-        task=task,
-        answer=run.final_text,
-        dry_run=dry_run and judge_provider is not None,
-        judge_repeats=judge_repeats,
-        judge_concurrency=judge_concurrency,
-        judge_max_attempts=judge_max_attempts,
+    should_judge = not run.error
+    judge = (
+        await judge_text(
+            judge_provider=judge_provider,
+            task=task,
+            answer=run.final_text,
+            dry_run=dry_run and judge_provider is not None,
+            judge_repeats=judge_repeats,
+            judge_concurrency=judge_concurrency,
+            judge_max_attempts=judge_max_attempts,
+        )
+        if should_judge
+        else None
     )
     candidate_judges: list[dict[str, Any] | None] = []
-    if judge_candidates:
+    if judge_candidates and should_judge:
         for candidate in candidate_texts(run.done):
             candidate_judges.append(
                 await judge_text(
@@ -1765,6 +1770,7 @@ async def run_one(
         "execution": {
             "provider_error": provider_error,
             "run_error": run.error,
+            "judge_skipped_reason": "run_not_done" if not should_judge else "",
             "requested_timeout_s": timeout,
             "effective_timeout_s": effective_timeout,
             "profile_proposer_timeout_s": profile_proposer_timeout_s,
@@ -2001,6 +2007,13 @@ def row_trajectory_steps(row: dict[str, Any]) -> int:
     return row_metric_int(row, "trajectory_steps")
 
 
+def completed_quality_value(row: dict[str, Any]) -> float:
+    if row.get("error"):
+        return 0.0
+    value = row.get("quality_total")
+    return float(value) if isinstance(value, int | float) else 0.0
+
+
 def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     summary: dict[str, Any] = {"groups": {}}
     judging_enabled = any(isinstance(row.get("judge"), dict) for row in rows)
@@ -2009,17 +2022,22 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         completed_rows = [row for row in group_rows if not row.get("error")]
         latencies = [int(row["latency_ms"] or 0) for row in group_rows]
         scored_totals = [
-            float(row["quality_total"])
-            for row in group_rows
+            completed_quality_value(row)
+            for row in completed_rows
             if row["quality_total"] is not None
         ]
-        quality_values = [
-            float(row["quality_total"]) if row["quality_total"] is not None else 0.0
-            for row in group_rows
+        quality_values = (
+            [completed_quality_value(row) for row in group_rows]
+            if judging_enabled
+            else []
+        )
+        completed_quality_values = [
+            completed_quality_value(row)
+            for row in completed_rows
         ] if judging_enabled else []
         pass_rates = [
             float((row.get("judge") or {}).get("pass_rate"))
-            for row in group_rows
+            for row in completed_rows
             if isinstance((row.get("judge") or {}).get("pass_rate"), int | float)
         ]
         costs = [row_billed_cost(row) for row in group_rows]
@@ -2063,12 +2081,14 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
             ),
             "avg_quality": statistics.mean(quality_values) if quality_values else None,
             "avg_quality_scored": (
-                statistics.mean(scored_totals) if scored_totals else None
+                statistics.mean(completed_quality_values)
+                if completed_quality_values
+                else None
             ),
             "avg_pass_rate": statistics.mean(pass_rates) if pass_rates else None,
             "judge_errors": sum(
                 int((row.get("judge") or {}).get("judge_error_count") or 0)
-                for row in group_rows
+                for row in completed_rows
             ),
             "avg_cost_usd": statistics.mean(costs) if costs else 0.0,
             "avg_cost_completed_usd": (
@@ -2169,19 +2189,19 @@ def render_markdown(
         "Contamination blocked domains: "
         f"`{', '.join(blocked_domains) if blocked_domains else '(none)'}`.",
         "",
-        "| Group | Rows | Done | Scored | Avg Quality | AvgQ Scored | Avg Pass | "
+        "| Group | Rows | Done | Avg Quality | AvgQ Scored | Avg Pass | "
         "Judge Err | Avg $ | Avg $ Done | Avg Visible | Avg Reason | Avg Tokens | "
         "Avg Tools | Tool % | Avg Steps | Avg LLM Req | p50 ms | p95 ms | "
         "AvgQ % vs B0 | Avg$ % vs B0 | "
         "AvgQ % vs B1 | Avg$ % vs B1 |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | "
-        "---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | "
-        "---: | ---: | ---: |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | "
+        "---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | "
+        "---: | ---: | ---: | ---: |",
     ]
     for group, item in sorted(summary["groups"].items()):
         lines.append(
-            "| {group} | {rows} | {done} | {scored} | {quality} | "
-            "{quality_scored} | {pass_rate} | {judge_errors} | {cost:.6f} | "
+            "| {group} | {rows} | {done} | {quality} | {quality_scored} | "
+            "{pass_rate} | {judge_errors} | {cost:.6f} | "
             "{cost_done} | {visible_tokens:.1f} | {reasoning_tokens:.1f} | "
             "{tokens:.1f} | {tool_calls:.1f} | {tool_rate:.1f}% | "
             "{steps:.1f} | {llm_requests:.1f} | {p50:.0f} | {p95:.0f} | "
@@ -2189,7 +2209,6 @@ def render_markdown(
                 group=group,
                 rows=item["rows"],
                 done=item["completed"],
-                scored=item["scored_rows"],
                 quality=(
                     f"{item['avg_quality']:.2f}" if item["avg_quality"] is not None else ""
                 ),

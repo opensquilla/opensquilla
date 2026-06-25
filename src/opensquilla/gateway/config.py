@@ -1714,7 +1714,7 @@ class GatewayConfig(BaseSettings):
     search_api_key: str = ""
     search_api_key_env: str = ""
     search_max_results: int = Field(
-        DEFAULT_SEARCH_MAX_RESULTS, ge=1, le=MAX_SEARCH_RESULTS
+        default=DEFAULT_SEARCH_MAX_RESULTS, ge=1, le=MAX_SEARCH_RESULTS
     )
     search_proxy: str = ""
     search_use_env_proxy: bool = False

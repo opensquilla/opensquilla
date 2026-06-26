@@ -17,6 +17,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from opensquilla.contrib.codetask.config import (
     BUILD_ARTIFACT_EXCLUDES,
@@ -257,7 +258,7 @@ def _diff_or_raise(args: list[str], repo: Path) -> str:
         raise WorkspaceError(
             f"git {' '.join(args)} failed: {(r.stderr or '').strip()[-300:]}"
         )
-    return r.stdout
+    return cast(str, r.stdout)
 
 
 def collect_change(repo: Path, base_commit: str) -> tuple[int, str, str]:

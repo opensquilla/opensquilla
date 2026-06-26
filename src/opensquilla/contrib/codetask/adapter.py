@@ -18,6 +18,7 @@ import subprocess
 import time
 import tomllib
 from pathlib import Path
+from typing import Any
 
 import tomli_w
 
@@ -148,7 +149,7 @@ class LocalAdapter:
             **os.environ,
             "OPENSQUILLA_GATEWAY_CONFIG_PATH": str(per_run_config),
         }
-        popen_kwargs = dict(
+        popen_kwargs: dict[str, Any] = dict(
             cwd=str(repo),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -160,7 +161,7 @@ class LocalAdapter:
         if os.name == "posix":
             popen_kwargs["start_new_session"] = True
         else:
-            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         try:
             proc = subprocess.Popen(cmd, **popen_kwargs)
         except FileNotFoundError as exc:

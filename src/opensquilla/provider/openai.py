@@ -574,21 +574,25 @@ def _build_openai_messages(
     parts: list[dict[str, Any]] = []
     tool_calls: list[dict[str, Any]] = []
     tool_results: list[dict[str, Any]] = []
+    thinking_signature: str | None = None
 
     for block in msg.content:
         if block.type == "text":
             parts.append({"type": "text", "text": block.text})
+        elif block.type == "thinking":
+            sig = getattr(block, "signature", None)
+            if isinstance(sig, str) and sig:
+                thinking_signature = sig
         elif block.type == "tool_use":
-            tool_calls.append(
-                {
-                    "id": block.id,
-                    "type": "function",
-                    "function": {
-                        "name": block.name,
-                        "arguments": json.dumps(block.input),
-                    },
-                }
-            )
+            tc_dict: dict[str, Any] = {
+                "id": block.id,
+                "type": "function",
+                "function": {
+                    "name": block.name,
+                    "arguments": json.dumps(block.input),
+                },
+            }
+            tool_calls.append(tc_dict)
         elif block.type == "image":
             if block.source_type == "url":
                 parts.append({"type": "image_url", "image_url": {"url": block.data}})
@@ -614,6 +618,13 @@ def _build_openai_messages(
 
     # Assistant message with tool_calls (preserve text alongside calls)
     if tool_calls:
+        # Gemini requires thought_signature on the first tool_call in each
+        # step of the current turn. Attach it if a ContentBlockThinking with
+        # a signature preceded the tool_use blocks.
+        if thinking_signature and tool_calls:
+            tool_calls[0]["extra_content"] = {
+                "google": {"thought_signature": thinking_signature},
+            }
         result: dict[str, Any] = {"role": msg.role, "tool_calls": tool_calls}
         text_content = " ".join(p["text"] for p in parts if p.get("type") == "text")
         if text_content:
@@ -821,9 +832,7 @@ class OpenAIProvider:
                 payload["reasoning_effort"] = effort
             elif reasoning_format == "deepseek":
                 payload["thinking"] = {"type": "enabled"}
-                payload["reasoning_effort"] = _resolve_deepseek_reasoning_effort(
-                    cfg.thinking_level
-                )
+                payload["reasoning_effort"] = _resolve_deepseek_reasoning_effort(cfg.thinking_level)
             elif reasoning_format == "gemini":
                 payload["reasoning_effort"] = effort
             elif reasoning_format == "zai":
@@ -848,10 +857,15 @@ class OpenAIProvider:
             payload["thinking"] = {"type": "disabled"}
         elif caps and caps.supports_reasoning and caps.reasoning_format == "dashscope":
             payload["enable_thinking"] = False
-        elif caps and caps.supports_reasoning and caps.reasoning_format in {
-            "moonshot",
-            "volcengine",
-        }:
+        elif (
+            caps
+            and caps.supports_reasoning
+            and caps.reasoning_format
+            in {
+                "moonshot",
+                "volcengine",
+            }
+        ):
             payload["thinking"] = {"type": "disabled"}
         elif (
             self._provider_kind == "openrouter"
@@ -913,6 +927,11 @@ class OpenAIProvider:
 
         # tool_call accumulator: index -> {id, name, json_parts}
         pending_calls: dict[int, dict[str, Any]] = {}
+        # Gemini thought_signature streamed on a non-FC text delta. Kept
+        # separate from pending_calls (whose keys MUST stay int — see
+        # _resolve_tool_call_index's max(keys)+1) so a str key can never
+        # poison the next-index computation with a TypeError.
+        streamed_thought_signature: str | None = None
         reasoning = ReasoningAccumulator()
         assistant_text_parts: list[str] = []
         input_tokens = 0
@@ -984,11 +1003,13 @@ class OpenAIProvider:
                         # to keep memory low.
                         _body_text = (
                             body.decode("utf-8", errors="replace")
-                            if isinstance(body, bytes) else str(body)
+                            if isinstance(body, bytes)
+                            else str(body)
                         )
                         try:
                             _payload_head = json.dumps(
-                                payload, ensure_ascii=False,
+                                payload,
+                                ensure_ascii=False,
                             )[:4000]
                         except Exception:  # noqa: BLE001
                             _payload_head = repr(payload)[:4000]
@@ -1065,6 +1086,14 @@ class OpenAIProvider:
                             if reasoning_event is not None:
                                 yield reasoning_event
 
+                            # Gemini thought_signature on non-FC deltas
+                            # (streamed thinking path): Gemini sends it on
+                            # the top-level delta instead of attaching it to
+                            # a tool_call. Keep it out of pending_calls.
+                            ts_delta = delta.get("thought_signature")
+                            if isinstance(ts_delta, str) and ts_delta:
+                                streamed_thought_signature = ts_delta
+
                             # Tool calls (may stream over multiple chunks)
                             for tc in delta.get("tool_calls", []):
                                 idx = _resolve_tool_call_index(
@@ -1077,6 +1106,7 @@ class OpenAIProvider:
                                         "id": tc.get("id", f"call_{uuid4().hex[:12]}"),
                                         "name": tc.get("function", {}).get("name", ""),
                                         "parts": [],
+                                        "thought_signature": None,
                                     }
                                     emitted_stream_event = True
                                     yield ToolUseStartEvent(
@@ -1090,6 +1120,16 @@ class OpenAIProvider:
                                     fname = tc.get("function", {}).get("name", "")
                                     if fname:
                                         pending_calls[idx]["name"] = fname
+
+                                # Gemini thought_signature (OpenAI compat format):
+                                # tool_calls[].extra_content.google.thought_signature
+                                sig = (
+                                    (tc.get("extra_content") or {})
+                                    .get("google", {})
+                                    .get("thought_signature")
+                                )
+                                if isinstance(sig, str) and sig:
+                                    pending_calls[idx]["thought_signature"] = sig
 
                                 fragment = tc.get("function", {}).get("arguments", "")
                                 if fragment:
@@ -1138,11 +1178,25 @@ class OpenAIProvider:
                         full_text = "".join(assistant_text_parts)
                         reasoning_text = _extract_think_tags(full_text) or None
 
+                    # Gemini thought_signature: extract from the first tool call
+                    # that carries one (Gemini attaches it to the first FC only).
+                    gemini_thought_sig: str | None = None
+                    for _call in pending_calls.values():
+                        sig = _call.get("thought_signature")
+                        if isinstance(sig, str) and sig:
+                            gemini_thought_sig = sig
+                            break
+                    # Fallback: when Gemini streams the signature on a non-FC
+                    # text delta (no tool_call carries it), use the streamed one.
+                    if gemini_thought_sig is None:
+                        gemini_thought_sig = streamed_thought_signature
+
                     yield DoneEvent(
                         stop_reason=stop_reason,
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,
                         reasoning_content=reasoning_text or None,
+                        thinking_signature=gemini_thought_sig,
                         reasoning_tokens=reasoning_tokens,
                         cached_tokens=cached_tokens,
                         cache_write_tokens=cache_write_tokens,
@@ -1247,6 +1301,7 @@ class OpenAIProvider:
         assistant_text_parts: list[str] = []
         reasoning = ReasoningAccumulator()
         emitted_structured_tool = False
+        non_stream_thought_sig: str | None = None
 
         for choice in data.get("choices", []):
             if choice.get("finish_reason"):
@@ -1293,6 +1348,11 @@ class OpenAIProvider:
                     tool_name=tool_name,
                     arguments=arguments,
                 )
+                # Collect Gemini thought_signature from first FC that has one.
+                if non_stream_thought_sig is None:
+                    sig = (tc.get("extra_content") or {}).get("google", {}).get("thought_signature")
+                    if isinstance(sig, str) and sig:
+                        non_stream_thought_sig = sig
 
         if not emitted_structured_tool and tools and assistant_text_parts:
             for event in _synthesize_text_tool_events("".join(assistant_text_parts), tools):
@@ -1311,6 +1371,7 @@ class OpenAIProvider:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             reasoning_content=reasoning_text or None,
+            thinking_signature=non_stream_thought_sig,
             reasoning_tokens=reasoning_tokens,
             cached_tokens=cached_tokens,
             cache_write_tokens=cache_write_tokens,

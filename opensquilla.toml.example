@@ -63,13 +63,6 @@ frontend = "vue"
 # search_fallback_policy = "off"  # "off" or "network" retry via DuckDuckGo
 # search_diagnostics = false      # true = include provider-attempt diagnostics
 
-# Tool safety settings.
-# Some local proxy/fake-IP DNS setups resolve public domains through RFC 2544
-# test-network addresses (198.18.0.0/15). Leave this empty unless you trust
-# that fake-IP resolver; other private/internal ranges remain hard-blocked.
-# [tools]
-# trusted_fake_ip_cidrs = ["198.18.0.0/15"]
-
 [llm]
 provider = "openrouter"
 model = "deepseek/deepseek-v4-pro"

@@ -248,27 +248,6 @@ opensquilla agent \
 
 Read: [`tools-and-sandbox.md`](tools-and-sandbox.md)
 
-## Outbound URL Filtering And Fake-IP DNS
-
-URL-fetching tools validate resolved addresses through the shared SSRF guard in
-`opensquilla.tools.ssrf`. Private, loopback, link-local, and reserved ranges are
-blocked by default.
-
-Some trusted proxy or fake-IP DNS setups resolve public hostnames such as
-`github.com` to addresses in the RFC 2544 benchmark range `198.18.0.0/15`.
-OpenSquilla keeps blocking those addresses unless the operator explicitly opts
-in:
-
-```toml
-[tools]
-trusted_fake_ip_cidrs = ["198.18.0.0/15"]
-```
-
-Only subnets of `198.18.0.0/15` are accepted in this setting. Loopback, RFC
-1918 private ranges, link-local addresses, and other internal ranges remain
-hard-blocked even if configured. If a public hostname resolves to one of those
-hard-blocked ranges, fix the DNS or proxy setup instead of bypassing the guard.
-
 ## Gateway Binding
 
 Foreground:

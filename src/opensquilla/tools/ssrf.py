@@ -117,33 +117,4 @@ def _is_trusted_fake_ip(addr: IPAddress, trusted_networks: tuple[IPNetwork, ...]
 
 
 def _blocked_message(hostname: str, addr: IPAddress, reason: str) -> str:
-    hint = _dns_hijack_hint(hostname, addr)
-    return f"Blocked: {hostname} resolves to {addr} ({reason}{hint})"
-
-
-def _dns_hijack_hint(hostname: str, addr: IPAddress) -> str:
-    if _hostname_is_ip_literal(hostname):
-        return ""
-    if not (addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved):
-        return ""
-
-    hint = (
-        "; if this is a public domain, your DNS/proxy may be returning an "
-        "ISP-level fake/private IP"
-    )
-    if addr.version == 4 and addr in RFC2544_FAKE_IP_NETWORK:
-        hint += (
-            f"; configure [tools].trusted_fake_ip_cidrs = [\"{RFC2544_FAKE_IP_NETWORK}\"] "
-            "only for trusted fake-IP DNS"
-        )
-    else:
-        hint += "; check DNS/proxy settings because this range cannot be bypassed"
-    return hint
-
-
-def _hostname_is_ip_literal(hostname: str) -> bool:
-    try:
-        ipaddress.ip_address(hostname.strip("[]"))
-    except ValueError:
-        return False
-    return True
+    return f"Blocked: {hostname} resolves to {addr} ({reason})"

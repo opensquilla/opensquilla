@@ -35,19 +35,6 @@ def test_rfc2544_fake_ip_is_blocked_by_default(monkeypatch):
 
     assert "198.18.0.2" in str(excinfo.value)
     assert "198.18.0.0/15" in str(excinfo.value)
-    assert "ISP-level fake/private IP" in str(excinfo.value)
-
-
-def test_private_dns_hijack_message_names_public_domain_scenario(monkeypatch):
-    monkeypatch.setattr(ssrf.socket, "getaddrinfo", _fake_getaddrinfo("10.0.0.8"))
-
-    with pytest.raises(SSRFBlockedError) as excinfo:
-        ssrf.validate_http_url_for_fetch("https://github.com/OpenSquilla/opensquilla")
-
-    message = str(excinfo.value)
-    assert "github.com" in message
-    assert "ISP-level fake/private IP" in message
-    assert "check DNS/proxy settings" in message
 
 
 def test_rfc2544_fake_ip_can_be_explicitly_trusted(monkeypatch):

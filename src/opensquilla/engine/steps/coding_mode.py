@@ -120,7 +120,7 @@ _CODING_MODE_DIRECTIVE_TEMPLATE = (
     "filesystem path or a git URL) — fix a bug, add/implement a feature, edit a "
     "file, resolve a GitHub issue — run\n"
     "    __CODE_TASK_CMD__ solve --repo <url-or-path> "
-    '(--issue N | --task "<text>" | --task-file <path>) --shallow --yes\n'
+    "(--issue N | --task-file <path>) --shallow --yes\n"
     "Use that command EXACTLY as written above — it is resolved to run in THIS "
     "environment regardless of PATH. Do NOT replace it with a bare "
     "`opensquilla`, do NOT `pip install` OpenSquilla, and if that command fails "
@@ -133,7 +133,7 @@ _CODING_MODE_DIRECTIVE_TEMPLATE = (
     "NO repo (e.g. 'write a python function that maps A-Z to pitches', 'write a "
     "script that parses a log'): this STILL goes through code-task — do NOT "
     "answer by typing the code in your reply — run\n"
-    "    __CODE_TASK_CMD__ solve --task \"<text>\" --verification-mode "
+    "    __CODE_TASK_CMD__ solve --task-file <path> --verification-mode "
     "scratch --yes\n"
     "(no --repo); code-task scaffolds a throwaway project, writes the code plus a "
     "test, and verifies it green. ONLY answer inline (no code-task) for trivial "
@@ -181,7 +181,61 @@ _CODING_MODE_DIRECTIVE_TEMPLATE = (
     "in-session edits skip code-task's isolation and the "
     "runner-verified red→green proof, so they are not equivalent and are not "
     "allowed while coding mode is on. Read-only requests (showing structure, "
-    "explaining code) and ordinary conversation are answered normally."
+    "explaining code) and ordinary conversation are answered normally.\n"
+    "TASK-FILE STAGING — task text ALWAYS goes through --task-file. "
+    "Inline `--task \"<text>\"` is FORBIDDEN in coding mode, regardless of "
+    "length, language, or complexity (no escape hatch). cmd.exe on "
+    "Windows truncates a command string at the first literal newline "
+    "inside a quoted argument and silently drops everything after it — "
+    "including --yes — so an inline multi-line --task hangs code-task at "
+    "[y/N] until the parent timeout fires. Embedded \" in the text "
+    "breaks argv on POSIX too. The escape hatch is to send the task "
+    "content through a PIPE, which neither shell touches:\n"
+    "    1. exec_command(\n"
+    "         command=\"__PYTHON_CMD__ -c \\\"import os, sys, shlex, "
+    "tempfile; fd, p = tempfile.mkstemp(prefix='codetask-task-', "
+    "suffix='.txt'); f = os.fdopen(fd, 'wb'); f.write("
+    "sys.stdin.buffer.read()); f.close(); sys.stdout.write("
+    "'\\\\\\\"' + p + '\\\\\\\"' if os.name == 'nt' else "
+    "shlex.quote(p))\\\"\",\n"
+    "         stdin=\"<task text, any length, any chars, any newlines>\",\n"
+    "       )\n"
+    "    # tempfile.mkstemp creates an atomic, 0600 unique file — no "
+    "race, no clobber, no symlink trap. os.fdopen+write handles partial "
+    "writes from a large stdin payload correctly (os.write may "
+    "short-write on long buffers). The script emits a SHELL-SAFE QUOTED "
+    "TOKEN on its own stdout line — `\"<path>\"` on Windows (safe for "
+    "spaces / & / non-ASCII in ordinary %TEMP% paths; cmd.exe DOES "
+    "still expand %VAR% inside double quotes, but %TEMP% itself is "
+    "normally free of '%' so this is robust in practice -- argv "
+    "support in background_process is the long-term airtight fix) or "
+    "shlex.quote(path) on POSIX (defends against $, backticks, and "
+    "backslash quirks in $TMPDIR). exec_command's return is formatted "
+    "as `exit_code=0\\n<stdout>`; confirm exit_code=0, then take the "
+    "final stdout line — the already-shell-quoted path — and paste it "
+    "verbatim as the --task-file argument.\n"
+    "    2a. (Case 1, real repo) background_process(\n"
+    "          command=\"__CODE_TASK_CMD__ solve --repo <url-or-path> "
+    "--task-file <quoted-path-from-step-1> --shallow --yes\",\n"
+    "          timeout=5400,\n"
+    "        )\n"
+    "    2b. (Case 2, scratch) background_process(\n"
+    "          command=\"__CODE_TASK_CMD__ solve --task-file <quoted-"
+    "path-from-step-1> --verification-mode scratch --yes\",\n"
+    "          timeout=5400,\n"
+    "        )\n"
+    "Why this works: stdin rides through a real OS pipe — neither cmd.exe "
+    "nor bash touches its contents. The already-shell-quoted path the "
+    "script prints is one safe argv token, so --task-file survives and "
+    "--yes is honored. No trivial-case exception: even a one-line task "
+    "uses the staging recipe so a future longer task in the same session "
+    "cannot regress.\n"
+    "Cleanup: the staged task file persists under %TEMP% / $TMPDIR (task "
+    "prose can contain private issue text). After "
+    "process(action='wait', ...) returns the task result, drop the "
+    "file with a separate exec_command (`del <quoted-path>` on Windows, "
+    "`rm <quoted-path>` on POSIX). If you forget, the OS sweeps temp on "
+    "reboot."
 )
 
 _CODING_MODE_UNAVAILABLE_DIRECTIVE = (
@@ -204,11 +258,21 @@ _CODING_MODE_UNAVAILABLE_DIRECTIVE = (
 
 def _build_coding_mode_directive() -> str:
     """The coding-mode directive with a resolved, runnable code-task command,
-    or a fail-loud directive when code-task cannot be run in this environment."""
+    or a fail-loud directive when code-task cannot be run in this environment.
+
+    Two placeholders are substituted:
+    - ``__CODE_TASK_CMD__`` — the resolved code-task invocation prefix.
+    - ``__PYTHON_CMD__`` — the resolved Python interpreter the gateway is
+      running on. Used by the directive's task-file staging recipe so the
+      agent does not invoke a bare ``python`` whose PATH resolution may
+      surface a different interpreter than the one we just verified.
+    """
     cmd = resolve_code_task_command()
     if cmd is None:
         return _CODING_MODE_UNAVAILABLE_DIRECTIVE
-    return _CODING_MODE_DIRECTIVE_TEMPLATE.replace("__CODE_TASK_CMD__", cmd)
+    return _CODING_MODE_DIRECTIVE_TEMPLATE.replace(
+        "__CODE_TASK_CMD__", cmd
+    ).replace("__PYTHON_CMD__", _quote(sys.executable))
 
 
 def _coding_mode_on(ctx: TurnContext) -> bool:

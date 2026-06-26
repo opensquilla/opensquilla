@@ -128,6 +128,81 @@ class TestDirectiveInjection:
         assert "600s" in suffix
 
     @pytest.mark.asyncio
+    async def test_directive_mandates_task_file_staging(self):
+        """Field report: a multi-line task passed inline as `--task "<text>"`
+        gets truncated at the first \\n by cmd.exe on Windows, silently
+        eating --yes and hanging code-task for 90 minutes at typer.confirm.
+        The directive must teach the agent to stage task text via stdin
+        into a temp file, then pass --task-file <path>."""
+        ctx = await enforce_coding_mode(self._ctx(True))
+        _, suffix = ctx.system_prompt
+
+        # The command-line examples use --task-file, NOT inline --task.
+        assert "--task-file <path>" in suffix
+        # The scratch-mode template no longer emits the inline --task form.
+        scratch_block = suffix.split("scratch --yes", 1)[0]
+        assert '--task "<text>" --verification-mode' not in scratch_block
+
+        # The "why + how" section is present and unambiguous.
+        assert "TASK-FILE STAGING" in suffix
+        # No exception language — inline --task is FORBIDDEN regardless of
+        # length/complexity. This guards against re-introducing the "single-
+        # line ASCII is fine" escape hatch a model could rationalize into.
+        assert "FORBIDDEN" in suffix
+        assert "is an optimization" not in suffix
+        assert "newline" in suffix.lower()
+        assert "cmd.exe" in suffix.lower()
+
+        # The two-step recipe references both tools by name and the
+        # exec_command(stdin=...) escape hatch that bypasses cmd.exe.
+        assert "exec_command" in suffix
+        assert "stdin=" in suffix
+        assert "background_process" in suffix
+        assert "sys.stdin.buffer.read()" in suffix
+        # Atomic-and-secure file creation (mkstemp), not a guessed path.
+        assert "tempfile.mkstemp" in suffix
+        # os.fdopen+write handles partial writes from large stdin; raw
+        # os.write can short-write at multi-100KB payloads on some OS.
+        assert "os.fdopen" in suffix
+        # Cross-platform shell-quoting: " on Windows, shlex.quote on POSIX.
+        # Defends against $/`/backslash on POSIX and against the path
+        # itself containing characters that need shell escaping.
+        assert "shlex.quote" in suffix
+        # Both real-repo (case 1) and scratch (case 2) recipes are shown,
+        # otherwise weaker models copy the scratch command for repo edits.
+        assert "Case 1, real repo" in suffix
+        assert "Case 2, scratch" in suffix
+        # Explicit framing of exec_command's exit_code=0 prefix so the
+        # agent doesn't try to parse the wrong stdout line.
+        assert "exit_code=0" in suffix
+        # Cleanup instructions: temp prose can contain private issue text;
+        # the directive must tell the agent to drop the file after wait.
+        cleanup_block = suffix.lower()
+        assert "cleanup" in cleanup_block
+        assert "del " in suffix and "rm " in suffix  # Windows + POSIX
+
+    @pytest.mark.asyncio
+    async def test_directive_uses_resolved_python_not_bare_name(
+        self, monkeypatch
+    ):
+        """The staging recipe must invoke the SAME interpreter the gateway
+        is running on — not a bare ``python`` that could resolve to a
+        different (or broken) interpreter via PATH. Mirrors how
+        __CODE_TASK_CMD__ is already a fully-qualified path."""
+        from opensquilla.engine.steps import coding_mode as _cm
+        monkeypatch.setattr(
+            _cm, "sys", SimpleNamespace(executable="/fake/venv/bin/python")
+        )
+
+        ctx = await enforce_coding_mode(self._ctx(True))
+        _, suffix = ctx.system_prompt
+        assert "/fake/venv/bin/python -c" in suffix
+        # No bare `python -c` invocation anywhere — always the resolved path.
+        # (Allow the literal word "python" in prose; check it never appears
+        # as a standalone command token.)
+        assert " python -c" not in suffix and "\npython -c" not in suffix
+
+    @pytest.mark.asyncio
     async def test_off_injects_nothing(self):
         ctx = await enforce_coding_mode(self._ctx(False))
         # system_prompt unchanged (still a plain str), no pin.

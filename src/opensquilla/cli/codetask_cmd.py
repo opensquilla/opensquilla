@@ -11,8 +11,22 @@ This module is lazy: heavy imports happen inside the command body so
 from __future__ import annotations
 
 import json
+import sys
 
 import typer
+
+
+def _stdin_is_tty() -> bool:
+    """True iff stdin is a real interactive terminal.
+
+    Defensive against unit-test stand-ins (``StringIO``, ``BytesIO``, etc.)
+    that lack an ``isatty`` attribute entirely — those should count as
+    non-tty, not crash the gate. Used by the trusted-host confirm to
+    fail-fast on non-interactive surfaces (background_process, cron,
+    CI, daemons) where ``typer.confirm`` would otherwise block on
+    ``input()`` until the parent timeout fires.
+    """
+    return bool(getattr(sys.stdin, "isatty", lambda: False)())
 
 codetask_app = typer.Typer(
     help="Solve a real-repository coding task (GitHub issue or feature request).",
@@ -106,14 +120,22 @@ def solve(
         )
         raise typer.Exit(2)
 
-    # Trusted-host gate. --json is non-interactive, so it must carry an
-    # explicit --yes rather than silently skipping the gate (codex review #5).
+    # Trusted-host gate. A non-interactive surface — --json, or any caller
+    # whose stdin is not a TTY (background_process, cron, CI, ssh non-tty,
+    # daemon) — must carry an explicit --yes. Otherwise typer.confirm()
+    # would block on input() until the parent timeout fires (observed: a
+    # background_process launch with --task containing embedded newlines
+    # eats --yes via cmd.exe quoting, then waits the full 5400s timeout
+    # at "[y/N]"). Fail-fast with a clear exit 2 instead.
     if not yes:
-        if json_output:
+        if json_output or not _stdin_is_tty():
+            reason = (
+                "(stdout is JSON)" if json_output else "(stdin is not a terminal)"
+            )
             typer.secho(
-                "Refusing to run non-interactively without --yes. code-task runs an "
-                "agent on the host (not a sandbox); pass --yes to confirm the repo is "
-                "trusted.",
+                f"Refusing to run without --yes on a non-interactive surface "
+                f"{reason}. code-task runs an agent on the host (not a sandbox); "
+                "pass --yes to confirm the repo is trusted.",
                 err=True,
                 fg=typer.colors.RED,
             )

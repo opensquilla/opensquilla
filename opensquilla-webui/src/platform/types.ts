@@ -18,7 +18,17 @@ export interface DesktopSettings {
   searchApiKeyEnv: string
   searchApiKeyConfigured: boolean
   searchProviders?: SearchProviderOption[]
+  providers?: ProviderOption[]
   gateway: GatewayStatus
+}
+
+export interface ProviderOption {
+  providerId: string
+  label: string
+  model?: string
+  baseUrl?: string
+  requiresApiKey?: boolean
+  note?: string
 }
 
 export interface SearchProviderOption {

@@ -45,7 +45,7 @@
           </div>
         </header>
         <div class="desktop-settings__fields">
-          <ProviderSelector v-model="form.provider" @update:model-value="applyProviderDefaults" />
+          <ProviderSelector v-model="form.provider" :providers="providerOptions" @update:model-value="applyProviderDefaults" />
           <ApiKeyField
             v-model="form.apiKey"
             :placeholder="apiKeyConfigured ? 'Saved key will be kept' : 'sk-...'"
@@ -112,7 +112,7 @@ import GatewayStatusBlock from '@/components/settings/GatewayStatusBlock.vue'
 import ProviderSelector from '@/components/settings/ProviderSelector.vue'
 import SearchProviderSelector from '@/components/settings/SearchProviderSelector.vue'
 import { usePlatform, type GatewayStatus } from '@/platform'
-import type { SearchProviderOption } from '@/platform/types'
+import type { ProviderOption, SearchProviderOption } from '@/platform/types'
 
 type ProviderId = string
 
@@ -192,6 +192,14 @@ const apiKeyConfigured = ref(false)
 const searchApiKeyConfigured = ref(false)
 const gateway = shallowRef<GatewayStatus | null>(null)
 const searchProviders = ref<SearchProviderOption[]>(fallbackSearchProviders)
+const providerCatalog = ref<ProviderOption[]>(
+  Object.entries(providerDefaults).map(([providerId, entry]) => ({
+    providerId,
+    label: entry.label,
+    model: entry.model,
+    baseUrl: entry.baseUrl,
+  })),
+)
 const form = reactive({
   provider: 'openrouter' as ProviderId,
   apiKey: '',
@@ -205,7 +213,18 @@ const gatewayStatus = computed(() => gateway.value?.status || 'unknown')
 const gatewayUrl = computed(() => gateway.value?.url || 'No active gateway')
 const gatewayLogLabel = computed(() => gateway.value?.logPath ? 'Available' : 'Unavailable')
 const gatewayLogHint = computed(() => gateway.value?.logPath || 'No local log path')
-const routerProviderLabel = computed(() => providerDefaults[form.provider]?.label || form.provider)
+const routerProviderLabel = computed(() =>
+  providerCatalog.value.find(provider => provider.providerId === form.provider)?.label
+  || providerDefaults[form.provider]?.label
+  || form.provider,
+)
+const providerOptions = computed<ProviderOption[]>(() => {
+  const options = providerCatalog.value.slice()
+  if (form.provider && !options.some(provider => provider.providerId === form.provider)) {
+    options.push({ providerId: form.provider, label: form.provider })
+  }
+  return options
+})
 const searchSpec = computed(() => (
   searchProviders.value.find(provider => provider.providerId === form.searchProvider)
   || searchProviders.value.find(provider => provider.providerId === 'duckduckgo')
@@ -225,8 +244,8 @@ const searchHint = computed(() => {
 })
 
 function providerId(value: string): ProviderId {
-  if (value === directProviderAId || value === directProviderBId) return value
-  return 'openrouter'
+  const normalized = String(value || '').trim()
+  return normalized || 'openrouter'
 }
 
 function searchProviderId(value: string): string {
@@ -234,9 +253,12 @@ function searchProviderId(value: string): string {
 }
 
 function applyProviderDefaults(): void {
-  const defaults = providerDefaults[providerId(form.provider)] || providerDefaults.openrouter
-  form.model = defaults.model
-  form.baseUrl = defaults.baseUrl
+  const fromCatalog = providerCatalog.value.find(provider => provider.providerId === form.provider)
+  const model = fromCatalog?.model ?? providerDefaults[form.provider]?.model
+  const baseUrl = fromCatalog?.baseUrl ?? providerDefaults[form.provider]?.baseUrl
+  if (model === undefined && baseUrl === undefined) return
+  if (model !== undefined) form.model = model
+  if (baseUrl !== undefined) form.baseUrl = baseUrl
 }
 
 async function loadSettings(): Promise<void> {
@@ -251,6 +273,9 @@ async function loadSettings(): Promise<void> {
     const settings = await desktopSettings.getDesktopSettings()
     if (Array.isArray(settings.searchProviders) && settings.searchProviders.length) {
       searchProviders.value = settings.searchProviders
+    }
+    if (Array.isArray(settings.providers) && settings.providers.length) {
+      providerCatalog.value = settings.providers
     }
     form.provider = providerId(settings.provider)
     form.model = settings.model

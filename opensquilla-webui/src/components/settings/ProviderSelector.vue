@@ -2,7 +2,7 @@
   <label class="settings-field">
     <span>{{ label }}</span>
     <select v-model="model">
-      <option v-for="provider in providerOptions" :key="provider.value" :value="provider.value">
+      <option v-for="provider in providers" :key="provider.providerId" :value="provider.providerId">
         {{ provider.label }}
       </option>
     </select>
@@ -10,17 +10,10 @@
 </template>
 
 <script setup lang="ts">
-function fromCodes(...codes: number[]): string {
-  return String.fromCharCode(...codes)
-}
-
-const providerOptions = [
-  { value: 'openrouter', label: 'OpenRouter' },
-  { value: fromCodes(111, 112, 101, 110, 97, 105), label: 'Direct provider A' },
-  { value: fromCodes(97, 110, 116, 104, 114, 111, 112, 105, 99), label: 'Direct provider B' },
-]
+import type { ProviderOption } from '@/platform/types'
 
 withDefaults(defineProps<{
+  providers: ProviderOption[]
   label?: string
 }>(), {
   label: 'Router backend',

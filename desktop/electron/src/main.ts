@@ -92,6 +92,7 @@ interface DesktopSettingsSnapshot {
   searchApiKeyEnv: string
   searchApiKeyConfigured: boolean
   searchProviders: SearchProviderCatalogEntry[]
+  providers?: { providerId: string; label: string; model: string; baseUrl: string }[]
   gateway: GatewayState
 }
 
@@ -207,6 +208,17 @@ const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     routerSupported: true,
     deployment: 'cloud',
     note: 'OpenAI-only tier profile.',
+  },
+  {
+    id: 'openai_responses',
+    label: 'OpenAI (Responses API)',
+    model: 'gpt-5.4-mini',
+    baseUrl: 'https://api.openai.com/v1',
+    apiKeyEnv: 'OPENAI_API_KEY',
+    requiresApiKey: true,
+    routerSupported: false,
+    deployment: 'cloud',
+    note: 'OpenAI Responses-API shape (chat + responses).',
   },
   {
     id: 'anthropic',
@@ -426,8 +438,10 @@ function providerDefaults(provider: string): { model: string; baseUrl: string; a
 }
 
 function normalizeProvider(raw: unknown): string {
-  const value = String(raw || '').trim().toLowerCase()
-  return PROVIDER_BY_ID.has(value) ? value : 'openrouter'
+  // Preserve any configured provider id; the desktop UI and gateway both accept
+  // ids beyond the local catalog, and collapsing them to openrouter silently
+  // loses the user's choice on load/save.
+  return String(raw || '').trim().toLowerCase() || 'openrouter'
 }
 
 function normalizeTextTier(raw: unknown): TextRouterTier {
@@ -706,6 +720,12 @@ function settingsSnapshot(connection: DesktopConnection | null): DesktopSettings
     searchApiKeyEnv: connection?.searchApiKeyEnv || searchDefaults.envKey,
     searchApiKeyConfigured: Boolean(connection?.encryptedSearchApiKey),
     searchProviders: SEARCH_PROVIDER_CATALOG,
+    providers: PROVIDER_CATALOG.map((entry) => ({
+      providerId: entry.id,
+      label: entry.label,
+      model: entry.model,
+      baseUrl: entry.baseUrl,
+    })),
     gateway: { ...gatewayState },
   }
 }

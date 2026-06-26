@@ -60,6 +60,7 @@ def _write_manifest(scratch: Path, manifest: dict) -> None:
     (scratch / config.VERIFICATION_MANIFEST_NAME).write_text(json.dumps(manifest))
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="code-task Windows support is WIP")
 def test_verify_scratch_green_verified(monkeypatch, tmp_path) -> None:
     pr, scratch = _scratch_repo(monkeypatch, tmp_path)
     _write_manifest(

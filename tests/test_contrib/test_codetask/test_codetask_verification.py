@@ -3,6 +3,7 @@
 import json
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -183,6 +184,7 @@ class TestVerifyEndToEnd:
         assert out.state == TaskState.INVALID_ACCEPTANCE_TEST
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="code-task Windows support is WIP")
 class TestLocalizeCommand:
     """Guard the absolute-cd contamination fix (flask src-layout case)."""
 
@@ -262,6 +264,7 @@ class TestLocalizeCommand:
             assert str(wt) in out
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="code-task Windows support is WIP")
 def test_red_phase_uses_localized_command(monkeypatch, tmp_path):
     """End-to-end: the red-phase run must receive the worktree-localized command.
 

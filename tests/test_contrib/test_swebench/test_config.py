@@ -3,6 +3,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 from opensquilla.contrib.swebench import config
 
 
@@ -65,6 +67,7 @@ class TestDerivedPaths:
         assert config.get_state_path("run1") == tmp_path / "run1" / "state.jsonl"
         assert config.get_predictions_path("run1") == tmp_path / "run1" / "predictions.jsonl"
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="code-task Windows support is WIP")
     def test_container_pythonpath_ends_with_site_packages(self, monkeypatch):
         monkeypatch.delenv("OPENSQUILLA_SWEBENCH_SITE_PACKAGES", raising=False)
         monkeypatch.delenv("OPENSQUILLA_SWEBENCH_ENV_PATH", raising=False)

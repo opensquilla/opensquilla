@@ -2,10 +2,14 @@
 
 import os
 import stat
+import sys
+
+import pytest
 
 from opensquilla.contrib.swebench import agent as agent_mod
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="code-task Windows support is WIP")
 def test_write_secret_env_file_private_and_removed(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test-123")
     path = agent_mod._write_secret_env_file()

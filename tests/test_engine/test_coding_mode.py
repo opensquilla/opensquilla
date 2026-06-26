@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shlex
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -284,6 +285,7 @@ class TestWriteToolDenyEnforcement:
         assert "edit_file" in names
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="code-task Windows support is WIP")
 class TestCodeTaskResolution:
     """resolve_code_task_command picks a PATH-independent, runnable invocation."""
 

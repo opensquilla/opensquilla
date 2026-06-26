@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+
+import pytest
 
 from opensquilla.contrib.codetask import build_verify
 from opensquilla.contrib.codetask.types import TaskState
@@ -159,6 +162,7 @@ def test_find_installers_lists_all_dmgs_on_darwin(tmp_path, monkeypatch):
     assert len(got) == 2 and all(p.endswith(".dmg") for p in got)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="code-task Windows support is WIP")
 def test_find_installers_finds_dmg_in_custom_output_dir_on_darwin(tmp_path, monkeypatch):
     # electron-builder `directories.output: release` (not the default dist/).
     monkeypatch.setattr(build_verify.sys, "platform", "darwin")

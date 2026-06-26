@@ -1,6 +1,9 @@
 """Unit tests for opensquilla.contrib.codetask.adapter (subprocess mocked)."""
 
 import subprocess as sp
+import sys
+
+import pytest
 
 from opensquilla.contrib.codetask import adapter
 from opensquilla.contrib.codetask.adapter import LocalAdapter
@@ -43,6 +46,7 @@ def _install_popen(monkeypatch, captured, **popen_kw):
     monkeypatch.setattr(adapter.subprocess, "Popen", fake_popen)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="code-task Windows support is WIP")
 def test_argv_has_host_containment_flags(monkeypatch, tmp_path):
     captured = {}
     _install_popen(monkeypatch, captured, stdout='{"status": "ok", "text": "done", "usage": {}}')

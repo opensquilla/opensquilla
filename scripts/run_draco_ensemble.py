@@ -65,6 +65,10 @@ GROUP_SPECS: dict[str, dict[str, str]] = {
     "B1": {"kind": "single", "model": "openai/gpt-5.5"},
     "B2": {"kind": "single", "model": "z-ai/glm-5.2"},
     "B3": {"kind": "profile", "profile": "b3_glm_self_fusion"},
+    "B4": {"kind": "single", "model": "deepseek/deepseek-v4-pro"},
+    "B5": {"kind": "single", "model": "moonshotai/kimi-k2.7-code"},
+    "B6": {"kind": "single", "model": "qwen/qwen3.7-plus"},
+    "B7": {"kind": "single", "model": "google/gemini-3-flash-preview"},
     "G1": {"kind": "profile", "profile": "g1_code"},
     "G2": {"kind": "profile", "profile": "g2_general"},
     "G3": {"kind": "profile", "profile": "g3_standard"},
@@ -3516,7 +3520,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input", type=Path, required=True, help="DRACO JSONL input.")
     parser.add_argument("--config", type=Path, default=None, help="OpenSquilla TOML config.")
     parser.add_argument("--output-dir", type=Path, default=Path("reports/draco"))
-    parser.add_argument("--groups", default="B0,B1,B2,B3,G1,G2,G3,G4,G5,G6,G7,G8")
+    parser.add_argument(
+        "--groups",
+        default="B0,B1,B2,B3,B4,B5,B6,B7,G1,G2,G3,G4,G5,G6,G7,G8",
+    )
     parser.add_argument("--max-tasks", type=int, default=0)
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=180.0)

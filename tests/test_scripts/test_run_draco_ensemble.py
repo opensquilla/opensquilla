@@ -388,6 +388,23 @@ def test_draco_runner_default_groups_include_g1() -> None:
     assert "arxiv.org" not in parse_domain_list(args.contamination_blocked_domains)
 
 
+def test_draco_runner_single_model_baselines_cover_extra_frontiers() -> None:
+    args = build_parser().parse_args(["--input", "draco.jsonl"])
+    default_groups = args.groups.split(",")
+
+    expected = {
+        "B2": "z-ai/glm-5.2",
+        "B4": "deepseek/deepseek-v4-pro",
+        "B5": "moonshotai/kimi-k2.7-code",
+        "B6": "qwen/qwen3.7-plus",
+        "B7": "google/gemini-3-flash-preview",
+    }
+
+    for group, model in expected.items():
+        assert group in default_groups
+        assert GROUP_SPECS[group] == {"kind": "single", "model": model}
+
+
 def test_draco_runner_contamination_domains_normalize_and_dedupe() -> None:
     domains = parse_domain_list(
         "https://HuggingFace.co/datasets/x,https://hf.co/datasets/perplexity-ai/draco,"

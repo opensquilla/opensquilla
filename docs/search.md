@@ -14,6 +14,7 @@ opensquilla search status
 
 Runtime-supported providers in this build include:
 
+- Bocha
 - Brave Search
 - DuckDuckGo
 - Tavily
@@ -34,6 +35,13 @@ Equivalent search subcommand:
 
 ```sh
 opensquilla search configure duckduckgo
+```
+
+Bocha:
+
+```sh
+export BOCHA_SEARCH_API_KEY="..."
+opensquilla configure search --search-provider bocha --api-key-env BOCHA_SEARCH_API_KEY
 ```
 
 Brave Search:
@@ -57,7 +65,7 @@ export EXA_API_KEY="..."
 opensquilla configure search --search-provider exa --api-key-env EXA_API_KEY
 ```
 
-In configuration files, `search_provider` can be `"duckduckgo", "brave", "tavily", or "exa"`.
+In configuration files, `search_provider` can be `"duckduckgo", "bocha", "brave", "tavily", or "exa"`.
 It identifies the provider tied to `search_api_key` and
 `search_api_key_env`; automatic searches without `--provider` still rank all
 available providers by mode, recency needs, and provider capabilities. Use
@@ -70,12 +78,13 @@ Configuration matrix:
 
 - **no-key**: choose DuckDuckGo, or leave search unconfigured and the runtime
   uses DuckDuckGo for general web search.
-- **partial-key**: configure one keyed provider, such as Tavily or Exa; the
+- **partial-key**: configure one keyed provider, such as Bocha, Tavily, or Exa; the
   runtime uses that provider when it is available and can still use DuckDuckGo
   for no-key fallback paths.
-- **all-key**: expose `BRAVE_SEARCH_API_KEY`, `TAVILY_API_KEY`, and
-  `EXA_API_KEY`; runtime selection ranks providers by mode, recency needs, and
-  provider capabilities unless the request names an explicit provider.
+- **all-key**: expose `BOCHA_SEARCH_API_KEY`, `BRAVE_SEARCH_API_KEY`,
+  `TAVILY_API_KEY`, and `EXA_API_KEY`; runtime selection ranks providers by
+  mode, recency needs, and provider capabilities unless the request names an
+  explicit provider.
 
 Provider-specific fields such as max results, proxy, environment-proxy usage,
 fallback policy, and diagnostics can be set through the search configuration

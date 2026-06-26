@@ -11,9 +11,9 @@ from opensquilla.search.types import SearchOptions, SearchProvider, SearchProvid
 
 CredentialSource = Literal["configured", "configured_env", "spec_env", "none"]
 
-_GENERAL_TIE_BREAKER = ("tavily", "brave", "exa", "duckduckgo")
-_TECHNICAL_TIE_BREAKER = ("exa", "brave", "tavily", "duckduckgo")
-_FRESHNESS_TIE_BREAKER = ("tavily", "brave", "exa")
+_GENERAL_TIE_BREAKER = ("bocha", "tavily", "brave", "exa", "duckduckgo")
+_TECHNICAL_TIE_BREAKER = ("exa", "bocha", "brave", "tavily", "duckduckgo")
+_FRESHNESS_TIE_BREAKER = ("bocha", "tavily", "brave", "exa")
 
 
 @dataclass(frozen=True)
@@ -122,11 +122,24 @@ class ResolvedSearchRuntime:
     def provider_order(self, options: SearchOptions) -> tuple[str, ...]:
         if options.provider:
             return self._explicit_provider_order(options.provider, recency=options.recency)
+        requires_domain_filter = bool(options.include_domains or options.exclude_domains)
         if options.recency is not None or options.mode == "news":
-            return self._freshness_provider_order()
+            return self._freshness_provider_order(
+                requires_domain_filter=requires_domain_filter
+            )
         if options.mode == "technical":
-            return self._ranked_available(_TECHNICAL_TIE_BREAKER)
-        return self._ranked_available(_GENERAL_TIE_BREAKER)
+            return self._ranked_available(
+                _TECHNICAL_TIE_BREAKER,
+                required_capabilities=_required_auto_capabilities(
+                    requires_domain_filter=requires_domain_filter
+                ),
+            )
+        return self._ranked_available(
+            _GENERAL_TIE_BREAKER,
+            required_capabilities=_required_auto_capabilities(
+                requires_domain_filter=requires_domain_filter
+            ),
+        )
 
     def should_fallback(
         self,
@@ -150,15 +163,27 @@ class ResolvedSearchRuntime:
             return (provider_id, "duckduckgo")
         return (provider_id,)
 
-    def _freshness_provider_order(self) -> tuple[str, ...]:
+    def _freshness_provider_order(
+        self,
+        *,
+        requires_domain_filter: bool = False,
+    ) -> tuple[str, ...]:
         ranked = list(
             self._ranked_available(
                 _FRESHNESS_TIE_BREAKER,
-                required_capability="freshness",
+                required_capabilities=_required_auto_capabilities(
+                    requires_domain_filter=requires_domain_filter,
+                    requires_freshness=True,
+                ),
             )
         )
         duckduckgo = self.providers.get("duckduckgo")
-        if duckduckgo is not None and duckduckgo.available and "duckduckgo" not in ranked:
+        if (
+            duckduckgo is not None
+            and duckduckgo.available
+            and "duckduckgo" not in ranked
+            and (not ranked or not requires_domain_filter)
+        ):
             ranked.append("duckduckgo")
         return tuple(ranked)
 
@@ -166,7 +191,7 @@ class ResolvedSearchRuntime:
         self,
         tie_breaker: tuple[str, ...],
         *,
-        required_capability: str = "",
+        required_capabilities: tuple[str, ...] = (),
         include_unavailable_if_empty: bool = False,
     ) -> tuple[str, ...]:
         ranked: list[str] = []
@@ -174,7 +199,7 @@ class ResolvedSearchRuntime:
             provider = self.providers.get(provider_id)
             if provider is None:
                 continue
-            if required_capability and required_capability not in provider.capabilities:
+            if not _has_required_capabilities(provider.capabilities, required_capabilities):
                 continue
             if provider.available:
                 ranked.append(provider_id)
@@ -186,8 +211,11 @@ class ResolvedSearchRuntime:
                 for provider_id in tie_breaker
                 if provider_id in self.providers
                 and (
-                    not required_capability
-                    or required_capability in self.providers[provider_id].capabilities
+                    not required_capabilities
+                    or _has_required_capabilities(
+                        self.providers[provider_id].capabilities,
+                        required_capabilities,
+                    )
                 )
             )
         duckduckgo = self.providers.get("duckduckgo")
@@ -265,6 +293,7 @@ def get_resolved_search_runtime() -> ResolvedSearchRuntime:
 
 def _ensure_builtin_search_providers() -> None:
     for module_name in (
+        "opensquilla.search.providers.bocha",
         "opensquilla.search.providers.tavily",
         "opensquilla.search.providers.brave",
         "opensquilla.search.providers.exa",
@@ -289,6 +318,26 @@ def _resolve_api_key(
         if spec_env_value:
             return spec_env_value, "spec_env"
     return "", "none"
+
+
+def _required_auto_capabilities(
+    *,
+    requires_domain_filter: bool = False,
+    requires_freshness: bool = False,
+) -> tuple[str, ...]:
+    capabilities: list[str] = []
+    if requires_freshness:
+        capabilities.append("freshness")
+    if requires_domain_filter:
+        capabilities.append("domain_filter")
+    return tuple(capabilities)
+
+
+def _has_required_capabilities(
+    provider_capabilities: frozenset[str],
+    required_capabilities: tuple[str, ...],
+) -> bool:
+    return all(capability in provider_capabilities for capability in required_capabilities)
 
 
 def _is_missing_key_error(error: SearchProviderError) -> bool:

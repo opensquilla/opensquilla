@@ -144,6 +144,14 @@ const fallbackSearchProviders: SearchProviderOption[] = [
     note: 'No key required. Good default for getting started.',
   },
   {
+    providerId: 'bocha',
+    label: 'Bocha',
+    envKey: 'BOCHA_SEARCH_API_KEY',
+    requiresApiKey: true,
+    note: 'Web search with inline summaries and freshness support.',
+    keyPlaceholder: 'BOCHA_SEARCH_API_KEY',
+  },
+  {
     providerId: 'brave',
     label: 'Brave Search',
     envKey: 'BRAVE_SEARCH_API_KEY',

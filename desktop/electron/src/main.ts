@@ -321,6 +321,14 @@ const SEARCH_PROVIDER_CATALOG: SearchProviderCatalogEntry[] = [
     keyPlaceholder: 'not required',
   },
   {
+    providerId: 'bocha',
+    label: 'Bocha',
+    envKey: 'BOCHA_SEARCH_API_KEY',
+    requiresApiKey: true,
+    note: 'Web search with inline summaries and freshness support.',
+    keyPlaceholder: 'BOCHA_SEARCH_API_KEY',
+  },
+  {
     providerId: 'brave',
     label: 'Brave Search',
     envKey: 'BRAVE_SEARCH_API_KEY',

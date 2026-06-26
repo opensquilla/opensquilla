@@ -20,6 +20,8 @@ def test_search_docs_describe_runtime_provider_matrix() -> None:
     )
 
     for expected in [
+        "Bocha",
+        "BOCHA_SEARCH_API_KEY",
         "Tavily",
         "TAVILY_API_KEY",
         "Exa",
@@ -34,8 +36,8 @@ def test_search_docs_describe_runtime_provider_matrix() -> None:
     ]:
         assert expected in docs
 
-    assert '"duckduckgo", "brave", "tavily", or "exa"' in docs
-    assert "web search (DuckDuckGo, Brave, Tavily, or Exa)" in docs
+    assert '"duckduckgo", "bocha", "brave", "tavily", or "exa"' in docs
+    assert "web search (DuckDuckGo, Bocha, Brave, Tavily, or Exa)" in docs
 
 
 def test_desktop_search_surfaces_use_shared_runtime_provider_catalog() -> None:
@@ -46,8 +48,10 @@ def test_desktop_search_surfaces_use_shared_runtime_provider_catalog() -> None:
 
     for expected in [
         "SEARCH_PROVIDER_CATALOG",
+        "BOCHA_SEARCH_API_KEY",
         "TAVILY_API_KEY",
         "EXA_API_KEY",
+        "Bocha",
         "Tavily",
         "Exa",
     ]:

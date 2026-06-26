@@ -213,6 +213,7 @@ def _query_with_recency_hint(query: str, recency: str) -> str:
 
 def _ensure_builtin_search_providers() -> None:
     for module_name in (
+        "opensquilla.search.providers.bocha",
         "opensquilla.search.providers.tavily",
         "opensquilla.search.providers.brave",
         "opensquilla.search.providers.exa",

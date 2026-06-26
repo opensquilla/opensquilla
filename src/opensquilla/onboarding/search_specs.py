@@ -41,6 +41,7 @@ class SearchProviderSetupSpec:
 
 
 _SEARCH_PROVIDER_LABELS: dict[str, str] = {
+    "bocha": "Bocha",
     "brave": "Brave Search",
     "duckduckgo": "DuckDuckGo",
     "tavily": "Tavily",

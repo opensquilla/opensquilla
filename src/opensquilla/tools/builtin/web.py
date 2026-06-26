@@ -62,7 +62,7 @@ _FETCH_DIR_NAME = ".fetch"
 _VALID_SEARCH_MODES: frozenset[str] = frozenset({"auto", "news", "technical", "broad"})
 _VALID_SEARCH_RECENCIES: frozenset[str] = frozenset({"day", "week", "month", "year"})
 _VALID_SEARCH_PROVIDERS: frozenset[str] = frozenset(
-    {"auto", "tavily", "brave", "duckduckgo", "exa"}
+    {"auto", "bocha", "tavily", "brave", "duckduckgo", "exa"}
 )
 
 
@@ -411,6 +411,7 @@ def _search_provider_kwargs(provider_name: str) -> dict[str, object]:
 
 
 def _ensure_builtin_search_providers() -> None:
+    import opensquilla.search.providers.bocha  # noqa: F401
     import opensquilla.search.providers.brave  # noqa: F401
     import opensquilla.search.providers.duckduckgo  # noqa: F401
     import opensquilla.search.providers.exa  # noqa: F401
@@ -492,14 +493,14 @@ async def run_web_discover_payload(
 
     _ensure_builtin_search_providers()
     explicit_provider = provider_name is not None
-    provider_name = provider_name or _active_provider
+    display_provider = provider_name or _active_provider
     runtime = get_resolved_search_runtime()
     marker = _sensitive_body_marker(query)
     if marker is not None:
         return _search_failure_payload(
             {
                 "query": "[redacted]",
-                "provider": provider_name,
+                "provider": display_provider,
                 "results": [],
                 "error_class": "SensitiveInput",
                 "error": _sensitive_body_block("web_discover", marker),
@@ -512,66 +513,89 @@ async def run_web_discover_payload(
     # an out-of-range configured/active value cannot ask an uncapped provider
     # (e.g. duckduckgo) for an unbounded number of results.
     limit = min(max(max_results or _active_max_results, 1), MAX_SEARCH_RESULTS)
+    provider_names = _web_discover_provider_order(
+        runtime,
+        query=query,
+        max_results=limit,
+        provider_name=provider_name,
+    )
     attempts: list[dict[str, str]] | None = [] if _active_search_diagnostics else None
-    try:
-        provider = get_provider(
-            provider_name,
-            **_search_provider_kwargs(provider_name),
-        )
-        results = await provider.search(query, max_results=limit)
-        if attempts is not None:
-            attempts.append({"provider": provider_name, "status": "success"})
-        return _search_success_payload(_search_payload(query, provider_name, results))
-    except Exception as exc:
-        classified = _classify_search_error(provider_name, exc)
-        if attempts is not None:
-            attempts.append(
-                {
-                    "provider": provider_name,
-                    "status": "error",
-                    "error_kind": classified.kind if classified else "unknown",
-                }
+    terminal_provider = provider_names[0] if provider_names else display_provider
+    terminal_exc: Exception | None = None
+    fallback_from = ""
+
+    for candidate_provider in provider_names:
+        try:
+            provider = get_provider(
+                candidate_provider,
+                **_search_provider_kwargs(candidate_provider),
+            )
+            results = await provider.search(query, max_results=limit)
+            if attempts is not None:
+                attempts.append({"provider": candidate_provider, "status": "success"})
+            return _search_success_payload(
+                _search_payload(
+                    query,
+                    candidate_provider,
+                    fallback_from=fallback_from,
+                    attempts=attempts,
+                    results=results,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - converted to structured payload below
+            terminal_provider = candidate_provider
+            terminal_exc = exc
+            classified = _classify_search_error(candidate_provider, exc)
+            if attempts is not None:
+                attempts.append(
+                    {
+                        "provider": candidate_provider,
+                        "status": "error",
+                        "error_kind": classified.kind if classified else "unknown",
+                    }
+                )
+
+            should_fallback = (
+                classified is not None
+                and runtime.should_fallback(classified, explicit_provider=explicit_provider)
+            )
+            if should_fallback:
+                fallback_from = fallback_from or candidate_provider
+                continue
+            return _search_failure_payload(
+                _search_error_payload(query, candidate_provider, exc, attempts=attempts),
+                retryable=bool(classified and classified.retryable),
             )
 
-        should_fallback = (
-            classified is not None
-            and runtime.should_fallback(classified, explicit_provider=explicit_provider)
-        )
-        if should_fallback:
-            try:
-                fallback_provider = get_provider(
-                    "duckduckgo",
-                    **_search_provider_kwargs("duckduckgo"),
-                )
-                results = await fallback_provider.search(query, max_results=limit)
-                if attempts is not None:
-                    attempts.append({"provider": "duckduckgo", "status": "success"})
-                return _search_success_payload(
-                    _search_payload(
-                        query,
-                        "duckduckgo",
-                        fallback_from=provider_name,
-                        attempts=attempts,
-                        results=results,
-                    )
-                )
-            except Exception as fallback_exc:
-                if attempts is not None:
-                    fallback_classified = _classify_search_error("duckduckgo", fallback_exc)
-                    attempts.append(
-                        {
-                            "provider": "duckduckgo",
-                            "status": "error",
-                            "error_kind": (
-                                fallback_classified.kind if fallback_classified else "unknown"
-                            ),
-                        }
-                    )
+    if terminal_exc is None:
+        terminal_exc = ValueError("No search provider available for web_discover.")
+    classified = _classify_search_error(terminal_provider, terminal_exc)
+    return _search_failure_payload(
+        _search_error_payload(query, terminal_provider, terminal_exc, attempts=attempts),
+        retryable=bool(classified and classified.retryable),
+    )
 
-        return _search_failure_payload(
-            _search_error_payload(query, provider_name, exc, attempts=attempts),
-            retryable=bool(classified and classified.retryable),
+
+def _web_discover_provider_order(
+    runtime: Any,
+    *,
+    query: str,
+    max_results: int,
+    provider_name: str | None,
+) -> tuple[str, ...]:
+    order = runtime.provider_order(
+        SearchOptions(
+            query=query,
+            max_results=max_results,
+            fetch_top_k=0,
+            provider=provider_name,
         )
+    )
+    if provider_name is None and _active_provider not in _VALID_SEARCH_PROVIDERS:
+        if runtime.fallback_policy == "network" and _active_provider != "duckduckgo":
+            return (_active_provider, "duckduckgo")
+        return (_active_provider,)
+    return order or (provider_name or _active_provider,)
 
 
 async def run_web_search_payload(
@@ -818,7 +842,7 @@ def _search_error_payload(
         "provider": {
             "type": "string",
             "description": "Optional provider override.",
-            "enum": ["auto", "tavily", "brave", "duckduckgo", "exa"],
+            "enum": ["auto", "bocha", "tavily", "brave", "duckduckgo", "exa"],
         },
     },
     required=["query"],

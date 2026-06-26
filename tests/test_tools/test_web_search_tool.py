@@ -6,7 +6,13 @@ import json
 import pytest
 
 import opensquilla.tools.builtin.web as web_module
-from opensquilla.search.types import SearchOptions
+from opensquilla.search.types import (
+    DEFAULT_SEARCH_MAX_RESULTS,
+    SearchOptions,
+    SearchProviderError,
+    SearchProviderSpec,
+    SearchResult,
+)
 
 
 @pytest.mark.asyncio
@@ -125,6 +131,39 @@ async def test_web_search_tool_uses_configured_source_backed_defaults(
 
 
 @pytest.mark.asyncio
+async def test_web_search_tool_accepts_bocha_provider_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_options: list[SearchOptions] = []
+
+    async def fake_run_canonical_web_search(
+        options: SearchOptions,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        seen_options.append(options)
+        return {"ok": True, "query": options.query, "results": []}
+
+    monkeypatch.setattr(
+        web_module,
+        "run_canonical_web_search",
+        fake_run_canonical_web_search,
+    )
+
+    bare_web_search = inspect.unwrap(web_module.web_search)
+    payload = json.loads(await bare_web_search("python release", provider="bocha"))
+
+    assert payload["ok"] is True
+    assert seen_options == [
+        SearchOptions(
+            query="python release",
+            mode="auto",
+            max_results=DEFAULT_SEARCH_MAX_RESULTS,
+            provider="bocha",
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_web_search_tool_rejects_sensitive_query_without_calling_core(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -158,7 +197,7 @@ async def test_web_search_tool_rejects_sensitive_query_without_calling_core(
         ({"query": 123}, "query must be a non-empty string."),
         (
             {"query": "python release", "provider": "serpapi"},
-            "Invalid provider. Expected one of: auto, brave, duckduckgo, exa, tavily.",
+            "Invalid provider. Expected one of: auto, bocha, brave, duckduckgo, exa, tavily.",
         ),
         (
             {"query": "python release", "mode": "invalid"},
@@ -255,3 +294,115 @@ async def test_web_discover_keeps_lightweight_result_shape(
             }
         ],
     }
+
+
+@pytest.mark.asyncio
+async def test_web_discover_uses_ranked_runtime_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import opensquilla.search.registry as registry
+
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class FakeProvider:
+        async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+            return [
+                SearchResult(
+                    title=f"{query} result",
+                    url="https://example.com",
+                    snippet=str(max_results),
+                )
+            ]
+
+    def fake_get_provider(name: str, **kwargs: object) -> FakeProvider:
+        calls.append((name, kwargs))
+        return FakeProvider()
+
+    monkeypatch.setenv("BOCHA_SEARCH_API_KEY", "bocha-key")
+    monkeypatch.setattr(registry, "get_provider", fake_get_provider)
+
+    try:
+        web_module.configure_search("duckduckgo", max_results=4)
+        payload = await web_module.run_web_discover_payload("python release", max_results=2)
+    finally:
+        web_module.reset_search_runtime()
+
+    assert payload["ok"] is True
+    assert payload["provider"] == "bocha"
+    assert payload["results"][0]["snippet"] == "2"
+    assert calls == [
+        (
+            "bocha",
+            {
+                "proxy": "",
+                "use_env_proxy": False,
+                "diagnostics": False,
+                "api_key": "bocha-key",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_web_discover_preserves_network_fallback_for_custom_active_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import opensquilla.search.registry as registry
+    from opensquilla.search.registry import register_provider
+
+    custom_provider = "test_custom_discover_fail"
+    calls: list[str] = []
+
+    class FailingProvider:
+        name = custom_provider
+
+        async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+            raise SearchProviderError(
+                provider=custom_provider,
+                kind="network",
+                message="network down",
+                retryable=True,
+            )
+
+    class DuckProvider:
+        async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+            return [
+                SearchResult(
+                    title="Duck fallback",
+                    url="https://example.com",
+                    snippet=query,
+                )
+            ]
+
+    def fake_get_provider(name: str, **kwargs: object) -> FailingProvider | DuckProvider:
+        calls.append(name)
+        if name == custom_provider:
+            return FailingProvider()
+        assert name == "duckduckgo"
+        return DuckProvider()
+
+    register_provider(
+        custom_provider,
+        FailingProvider,
+        SearchProviderSpec(provider_id=custom_provider),
+    )
+    monkeypatch.setattr(registry, "get_provider", fake_get_provider)
+
+    try:
+        web_module.configure_search(
+            custom_provider,
+            fallback_policy="network",
+            diagnostics=True,
+        )
+        payload = await web_module.run_web_discover_payload("python release")
+    finally:
+        web_module.reset_search_runtime()
+
+    assert payload["ok"] is True
+    assert payload["provider"] == "duckduckgo"
+    assert payload["fallbackFrom"] == custom_provider
+    assert payload["attempts"] == [
+        {"provider": custom_provider, "status": "error", "error_kind": "network"},
+        {"provider": "duckduckgo", "status": "success"},
+    ]
+    assert calls == [custom_provider, "duckduckgo"]

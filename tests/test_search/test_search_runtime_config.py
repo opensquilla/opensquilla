@@ -8,7 +8,13 @@ from opensquilla.search.types import SearchOptions
 
 
 def _clear_search_env(monkeypatch) -> None:
-    for key in ("BRAVE_SEARCH_API_KEY", "TAVILY_API_KEY", "EXA_API_KEY", "CUSTOM_EXA_KEY"):
+    for key in (
+        "BOCHA_SEARCH_API_KEY",
+        "BRAVE_SEARCH_API_KEY",
+        "TAVILY_API_KEY",
+        "EXA_API_KEY",
+        "CUSTOM_EXA_KEY",
+    ):
         monkeypatch.delenv(key, raising=False)
 
 
@@ -70,8 +76,21 @@ def test_resolver_partial_key_orders_configured_provider_then_duckduckgo(monkeyp
     assert runtime.provider_order(SearchOptions(query="q")) == ("brave", "duckduckgo")
 
 
+def test_resolver_bocha_default_env_orders_bocha_then_duckduckgo(monkeypatch) -> None:
+    _clear_search_env(monkeypatch)
+    monkeypatch.setenv("BOCHA_SEARCH_API_KEY", "bocha-key")
+
+    runtime = resolve_search_runtime(SearchRuntimeConfig(provider="duckduckgo"))
+
+    assert runtime.provider_order(SearchOptions(query="q")) == ("bocha", "duckduckgo")
+    bocha = runtime.provider_config("bocha")
+    assert bocha.available is True
+    assert bocha.credential_source == "spec_env"
+
+
 def test_resolver_all_key_mode_tie_breakers(monkeypatch) -> None:
     _clear_search_env(monkeypatch)
+    monkeypatch.setenv("BOCHA_SEARCH_API_KEY", "bocha-key")
     monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "brave-key")
     monkeypatch.setenv("TAVILY_API_KEY", "tavily-key")
     monkeypatch.setenv("EXA_API_KEY", "exa-key")
@@ -79,6 +98,7 @@ def test_resolver_all_key_mode_tie_breakers(monkeypatch) -> None:
     runtime = resolve_search_runtime(SearchRuntimeConfig(provider="duckduckgo"))
 
     assert runtime.provider_order(SearchOptions(query="q")) == (
+        "bocha",
         "tavily",
         "brave",
         "exa",
@@ -86,22 +106,97 @@ def test_resolver_all_key_mode_tie_breakers(monkeypatch) -> None:
     )
     assert runtime.provider_order(SearchOptions(query="q", mode="technical")) == (
         "exa",
+        "bocha",
         "brave",
         "tavily",
         "duckduckgo",
     )
     assert runtime.provider_order(SearchOptions(query="q", recency="week")) == (
+        "bocha",
         "tavily",
         "brave",
         "exa",
         "duckduckgo",
     )
     assert runtime.provider_order(SearchOptions(query="q", mode="news")) == (
+        "bocha",
         "tavily",
         "brave",
         "exa",
         "duckduckgo",
     )
+
+
+def test_resolver_domain_constrained_auto_prefers_domain_filter_providers(
+    monkeypatch,
+) -> None:
+    _clear_search_env(monkeypatch)
+    monkeypatch.setenv("BOCHA_SEARCH_API_KEY", "bocha-key")
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "brave-key")
+    monkeypatch.setenv("TAVILY_API_KEY", "tavily-key")
+    monkeypatch.setenv("EXA_API_KEY", "exa-key")
+
+    runtime = resolve_search_runtime(SearchRuntimeConfig(provider="duckduckgo"))
+
+    assert runtime.provider_order(
+        SearchOptions(query="q", include_domains=("python.org",))
+    ) == ("tavily", "exa")
+    assert runtime.provider_order(
+        SearchOptions(query="q", exclude_domains=("spam.example",))
+    ) == ("tavily", "exa")
+
+
+def test_resolver_domain_constrained_technical_prefers_exa_then_tavily(
+    monkeypatch,
+) -> None:
+    _clear_search_env(monkeypatch)
+    monkeypatch.setenv("BOCHA_SEARCH_API_KEY", "bocha-key")
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "brave-key")
+    monkeypatch.setenv("TAVILY_API_KEY", "tavily-key")
+    monkeypatch.setenv("EXA_API_KEY", "exa-key")
+
+    runtime = resolve_search_runtime(SearchRuntimeConfig(provider="duckduckgo"))
+
+    assert runtime.provider_order(
+        SearchOptions(
+            query="q",
+            mode="technical",
+            include_domains=("python.org",),
+        )
+    ) == ("exa", "tavily")
+
+
+def test_resolver_domain_constrained_freshness_skips_bocha_without_domain_filter(
+    monkeypatch,
+) -> None:
+    _clear_search_env(monkeypatch)
+    monkeypatch.setenv("BOCHA_SEARCH_API_KEY", "bocha-key")
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "brave-key")
+    monkeypatch.setenv("TAVILY_API_KEY", "tavily-key")
+    monkeypatch.setenv("EXA_API_KEY", "exa-key")
+
+    runtime = resolve_search_runtime(SearchRuntimeConfig(provider="duckduckgo"))
+
+    assert runtime.provider_order(
+        SearchOptions(
+            query="q",
+            include_domains=("python.org",),
+            recency="week",
+        )
+    ) == ("tavily", "exa")
+
+
+def test_resolver_domain_constrained_bocha_only_uses_duckduckgo_local_filter(
+    monkeypatch,
+) -> None:
+    _clear_search_env(monkeypatch)
+    monkeypatch.setenv("BOCHA_SEARCH_API_KEY", "bocha-key")
+
+    runtime = resolve_search_runtime(SearchRuntimeConfig(provider="duckduckgo"))
+
+    assert runtime.provider_order(
+        SearchOptions(query="q", include_domains=("python.org",))
+    ) == ("duckduckgo",)
 
 
 def test_resolver_provider_kwargs_include_proxy_and_diagnostics(monkeypatch) -> None:
@@ -130,6 +225,7 @@ def test_runtime_build_provider_registers_builtin_providers_in_fresh_process(
     import opensquilla.search.registry as registry
 
     for module_name in (
+        "opensquilla.search.providers.bocha",
         "opensquilla.search.providers.tavily",
         "opensquilla.search.providers.brave",
         "opensquilla.search.providers.exa",
@@ -139,9 +235,10 @@ def test_runtime_build_provider_registers_builtin_providers_in_fresh_process(
     monkeypatch.setattr(registry, "_providers", {})
 
     runtime = resolve_search_runtime(
-        SearchRuntimeConfig(provider="tavily", api_key="tavily-key")
+        SearchRuntimeConfig(provider="bocha", api_key="bocha-key")
     )
 
-    provider = runtime.build_provider("tavily")
+    provider = runtime.build_provider("bocha")
 
-    assert provider.name == "tavily"
+    assert provider.__class__.__name__ == "BochaSearchProvider"
+    assert provider.name == "bocha"

@@ -120,10 +120,13 @@ export BRAVE_SEARCH_API_KEY="..."
 opensquilla configure search --search-provider brave --api-key-env BRAVE_SEARCH_API_KEY
 ```
 
-Use Tavily or Exa when your workflow needs freshness, domain filtering, semantic
-search, or content-oriented retrieval:
+Use Bocha, Tavily, or Exa when your workflow needs freshness or richer source
+content:
 
 ```sh
+export BOCHA_SEARCH_API_KEY="..."
+opensquilla configure search --search-provider bocha --api-key-env BOCHA_SEARCH_API_KEY
+
 export TAVILY_API_KEY="..."
 opensquilla configure search --search-provider tavily --api-key-env TAVILY_API_KEY
 

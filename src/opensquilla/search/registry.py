@@ -6,6 +6,12 @@ from opensquilla.search.types import SearchProvider, SearchProviderSpec
 
 _providers: dict[str, type[SearchProvider]] = {}
 _provider_specs: dict[str, SearchProviderSpec] = {
+    "bocha": SearchProviderSpec(
+        provider_id="bocha",
+        requires_api_key=True,
+        env_key="BOCHA_SEARCH_API_KEY",
+        capabilities=frozenset({"web", "freshness", "content"}),
+    ),
     "brave": SearchProviderSpec(
         provider_id="brave",
         requires_api_key=True,

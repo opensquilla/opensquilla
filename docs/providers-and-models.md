@@ -72,6 +72,20 @@ The provider registry may contain additional compatible providers for advanced
 or self-hosted setups. Use `opensquilla providers list` on your install for the
 current catalog.
 
+### OpenAI: `openai` vs `openai_responses`
+
+OpenAI is exposed as two provider ids that share the same `OPENAI_API_KEY` and
+base URL (`https://api.openai.com/v1`):
+
+- `openai` — the chat/completions request shape. Use this for standard
+  chat-style turns and broad tool compatibility.
+- `openai_responses` — the native Responses-API shape (capabilities `chat` and
+  `responses`). Use this when you want Responses-API behavior rather than the
+  chat/completions surface.
+
+Both read the same key and base URL, so switching between them needs only a
+`provider` change.
+
 ## Model Inspection
 
 List models:

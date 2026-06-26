@@ -75,12 +75,14 @@ _PROVIDER_LABELS: dict[str, str] = {
     "byteplus_coding_plan": "BytePlus Coding Plan",
     "openai_codex": "OpenAI Codex (OAuth)",
     "github_copilot": "GitHub Copilot (OAuth)",
+    "openai_responses": "OpenAI (Responses API)",
 }
 
 _ONBOARDING_VERIFIED_PROVIDER_IDS = frozenset(
     {
         "openrouter",
         "openai",
+        "openai_responses",
         "anthropic",
         "ollama",
         "deepseek",

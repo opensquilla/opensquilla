@@ -58,7 +58,7 @@ from opensquilla.onboarding.provider_specs import (  # noqa: E402
 )
 
 EXPECTED_SUPPORTED = {
-    "openrouter", "openai", "anthropic", "ollama", "deepseek",
+    "openrouter", "openai", "openai_responses", "anthropic", "ollama", "deepseek",
     "gemini", "dashscope", "moonshot", "zhipu", "qianfan",
     "volcengine",
 }
@@ -123,7 +123,7 @@ def test_api_key_providers_expose_env_key_field_in_setup_spec():
 
 
 def test_non_router_providers_explain_required_model_in_setup_spec():
-    for provider_id in ("anthropic", "ollama", "qianfan"):
+    for provider_id in ("anthropic", "ollama", "qianfan", "openai_responses"):
         spec = get_provider_setup_spec(provider_id)
         model_field = next(f for f in spec.fields if f.name == "model")
 

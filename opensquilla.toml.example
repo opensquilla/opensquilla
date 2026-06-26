@@ -83,6 +83,7 @@ base_url = "https://openrouter.ai/api/v1"
 # provider      env var                 default base_url
 # openrouter    OPENROUTER_API_KEY       https://openrouter.ai/api/v1
 # openai        OPENAI_API_KEY           https://api.openai.com/v1
+# openai_responses OPENAI_API_KEY        https://api.openai.com/v1  (native Responses-API shape; chat+responses)
 # anthropic     ANTHROPIC_API_KEY        https://api.anthropic.com
 # ollama        none                     http://localhost:11434
 # deepseek      DEEPSEEK_API_KEY         https://api.deepseek.com
@@ -100,7 +101,8 @@ base_url = "https://openrouter.ai/api/v1"
 # ovms          none                     http://localhost:8000/v3
 # qianfan       QIANFAN_API_KEY          https://qianfan.baidubce.com/v2
 # aihubmix      AIHUBMIX_API_KEY         https://aihubmix.com/v1
-# minimax       MINIMAX_API_KEY          https://api.minimax.io/v1
+# minimax       MINIMAX_API_KEY          https://api.minimaxi.com/anthropic  (Anthropic-shape backend)
+# minimax_openai MINIMAX_API_KEY          https://api.minimaxi.com/v1         (OpenAI-compatible variant)
 # azure         provider-specific        unsupported_for_A
 #
 # Example direct DeepSeek config:
@@ -201,7 +203,7 @@ strategy = "v4_phase3"
 # Optional provider tier profile. Leave unset to preserve the built-in
 # OpenRouter defaults below. If set, it must match [llm].provider; the router
 # does not switch providers at runtime.
-# tier_profile = "dashscope"  # openrouter | dashscope | deepseek | gemini | volcengine
+# tier_profile = "dashscope"  # openrouter | dashscope | deepseek | gemini | volcengine | openai | zhipu | moonshot
 # Bundled router prerequisites:
 #   1. install with `uv sync --extra model-router` or `uv sync --extra recommended`
 #   2. hydrate model assets via:

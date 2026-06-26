@@ -92,6 +92,7 @@ def test_interactive_provider_choice_offers_only_verified_supported_providers():
     assert offered == {
         "openrouter",
         "openai",
+        "openai_responses",
         "anthropic",
         "ollama",
         "deepseek",

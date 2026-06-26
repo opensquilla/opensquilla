@@ -32,6 +32,7 @@ from opensquilla.onboarding.redaction import (
     redact_search_payload,
 )
 from opensquilla.onboarding.search_specs import get_search_provider_setup_spec
+from opensquilla.provider.registry import get_provider_spec as get_registry_provider_spec
 from opensquilla.router_tiers import (
     DEFAULT_TEXT_TIER,
     TEXT_TIERS,
@@ -212,6 +213,14 @@ def upsert_llm_provider(
 ) -> MutationResult:
     spec = get_provider_setup_spec(provider_id)
     if not spec.runtime_supported:
+        # get_provider_setup_spec already resolved provider_id against the registry,
+        # so this lookup cannot raise. A registry-runnable provider that is merely
+        # absent from the verified onboarding set gets a distinct, accurate message.
+        if get_registry_provider_spec(provider_id).runtime_supported:
+            raise ValueError(
+                f"provider {provider_id!r} is not a verified onboarding provider yet "
+                "and is not runtime-supported for onboarding; pick a verified provider"
+            )
         raise ValueError(
             f"provider {provider_id!r} is not runtime-supported and cannot be configured"
         )

@@ -323,10 +323,9 @@ class DingTalkChannel:
             "Content-Type": "application/json",
             "Accept": "application/json",
             "User-Agent": (
-                "DingTalkStream/1.0 SDK/%s Python/%s "
+                f"DingTalkStream/1.0 SDK/{version} Python/{platform.python_version()} "
                 "(+https://github.com/open-dingtalk/dingtalk-stream-sdk-python)"
-            )
-            % (version, platform.python_version()),
+            ),
         }
         body = json.dumps(
             {

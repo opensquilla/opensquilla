@@ -35,6 +35,55 @@ async def test_exec_approval_rpc_delegates_payload_to_application_boundary(
         queue.close()
 
 
+@pytest.mark.asyncio
+async def test_exec_approval_extend_rpc_pushes_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queue = ApprovalQueue(db_path=":memory:", default_timeout=10.0)
+    monkeypatch.setattr(rpc_approvals, "get_approval_queue", lambda: queue)
+    try:
+        approval_id = queue.request(
+            "exec",
+            {"toolName": "exec_command", "command": "rm x", "sessionKey": "agent:main:demo"},
+        )
+        before = queue.get(approval_id).deadline
+
+        result = await get_dispatcher().dispatch(
+            "r1",
+            "exec.approval.extend",
+            {"id": approval_id, "seconds": 120},
+            RpcContext(conn_id="test"),
+        )
+
+        assert result.error is None, result.error
+        assert result.payload["pending"] is True
+        assert result.payload["deadline"] == before + 120
+        assert queue.get(approval_id).deadline == before + 120
+    finally:
+        queue.close()
+
+
+@pytest.mark.asyncio
+async def test_exec_approval_extend_rpc_rejects_non_positive_seconds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queue = ApprovalQueue(db_path=":memory:", default_timeout=10.0)
+    monkeypatch.setattr(rpc_approvals, "get_approval_queue", lambda: queue)
+    try:
+        approval_id = queue.request("exec", {"toolName": "exec_command", "command": "rm x"})
+
+        result = await get_dispatcher().dispatch(
+            "r1",
+            "exec.approval.extend",
+            {"id": approval_id, "seconds": 0},
+            RpcContext(conn_id="test"),
+        )
+
+        assert result.error is not None
+    finally:
+        queue.close()
+
+
 def test_gateway_rpc_approvals_keeps_payload_logic_out_of_gateway_boundary() -> None:
     source = Path(rpc_approvals.__file__).read_text(encoding="utf-8")
     tree = ast.parse(source)

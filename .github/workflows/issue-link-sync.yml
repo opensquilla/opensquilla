@@ -2,8 +2,8 @@ name: Issue Link Sync
 
 "on":
   pull_request_target:
-    types: [closed]
-    branches: [dev]
+    types: [opened, reopened, edited, closed]
+    branches: [main, dev]
 
 permissions:
   contents: read

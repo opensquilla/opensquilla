@@ -7,6 +7,7 @@ const ConfigView = (() => {
   let _intervals = [];
 
   let _configData = {};   // raw object from config.get
+  let _formData = {};     // one-level flattened object for form mode
   let _yamlText = '';     // current YAML text in textarea
   let _yamlDraft = '';
   let _yamlDirty = false;
@@ -52,6 +53,8 @@ const ConfigView = (() => {
       'Turn the ML-powered tier router on or off. When off, every request uses the default model regardless of complexity.',
     'squilla_router.rollout_phase':
       'Rollout stage for new router model versions. Higher phases enable more aggressive routing decisions.',
+    'squilla_router.visual_mode':
+      'Controls how the chat router panel is drawn. Real candidates shows only callable models; legacy grid uses a denser visual panel without changing routing.',
     'squilla_router.require_router_runtime':
       'When true, the gateway fails fast on startup if the router cannot initialize (missing ONNX runtime, model files, etc.). Set false to fall back silently.',
     'memory.embedding':
@@ -82,9 +85,20 @@ const ConfigView = (() => {
       'Gateway auth scheme. "token" requires a static bearer token; "none" is open (loopback only); other modes per deployment.',
   };
 
+  const _SELECT_OPTIONS = {
+    'squilla_router.visual_mode': [
+      { value: 'real_candidates', label: 'Real candidates' },
+      { value: 'legacy_grid', label: 'Legacy grid' },
+    ],
+  };
+
   function _helpFor(key) {
     if (key in _HELP) return _HELP[key];
     return 'No description yet — see the docs.';
+  }
+
+  function _selectOptionsForKey(key) {
+    return _SELECT_OPTIONS[key] || null;
   }
 
   // ---- render / destroy ------------------------------------------------
@@ -229,6 +243,7 @@ const ConfigView = (() => {
     _intervals.forEach(id => clearInterval(id));
     _intervals = [];
     _configData = {};
+    _formData = {};
     _yamlText = '';
     _yamlDraft = '';
     _yamlDirty = false;
@@ -253,6 +268,7 @@ const ConfigView = (() => {
     rpc.call('config.get').then(data => {
       if (!_el || _rpc !== rpc) return;
       _configData = data || {};
+      _formData = _flattenConfigForForm(_configData);
       _yamlText = _objToYaml(_configData);
       if (!_yamlDirty) _yamlDraft = _yamlText;
       _invalidJson = {};
@@ -375,7 +391,7 @@ const ConfigView = (() => {
   }
 
   function _entriesForTab(tab) {
-    return Object.entries(_configData).filter(([k, v]) => {
+    return Object.entries(_formData).filter(([k, v]) => {
       const lk = k.toLowerCase();
       const matchesTab = tab.prefixes.some(p => lk.startsWith(p + '.') || lk === p || lk.startsWith(p + '_'));
       const matchesSearch = !_searchText || lk.includes(_searchText) || _searchBlob(v).includes(_searchText);
@@ -431,9 +447,19 @@ const ConfigView = (() => {
     const ek = _esc(k);
     const curVal = isDirty ? _dirty[k].new : v;
     const inputId = `cfg-input-${_safeId(k)}`;
+    const selectOptions = _selectOptionsForKey(k);
 
     let inputHtml;
-    if (typeof v === 'boolean') {
+    if (selectOptions) {
+      const selected = String(curVal ?? '');
+      inputHtml = `<select id="${inputId}" class="input cfg-input-select" data-cfg-key="${ek}" data-cfg-type="string">
+        ${selectOptions.map((option) => {
+          const value = String(option.value);
+          const label = String(option.label);
+          return `<option value="${_esc(value)}"${value === selected ? ' selected' : ''}>${_esc(label)}</option>`;
+        }).join('')}
+      </select>`;
+    } else if (typeof v === 'boolean') {
       inputHtml = `<label class="cfg-switch">
         <input id="${inputId}" type="checkbox" data-cfg-key="${ek}" data-cfg-type="boolean"${curVal ? ' checked' : ''} aria-label="${ek}">
         <span class="cfg-switch-track" aria-hidden="true"><span class="cfg-switch-thumb"></span></span>
@@ -503,7 +529,7 @@ const ConfigView = (() => {
     } else {
       newVal = target.value;
     }
-    const oldVal = _configData[key];
+    const oldVal = _formData[key];
     if (newVal === oldVal || JSON.stringify(newVal) === JSON.stringify(oldVal)) {
       delete _dirty[key];
       if (type === 'json') delete _jsonDrafts[key];
@@ -763,6 +789,25 @@ const ConfigView = (() => {
       catch { return ''; }
     }
     return String(value).toLowerCase();
+  }
+
+  function _flattenConfigForForm(data) {
+    const out = {};
+    Object.entries(data || {}).forEach(([key, value]) => {
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        const nested = Object.entries(value);
+        if (nested.length === 0) {
+          out[key] = value;
+          return;
+        }
+        nested.forEach(([childKey, childValue]) => {
+          out[`${key}.${childKey}`] = childValue;
+        });
+        return;
+      }
+      out[key] = value;
+    });
+    return out;
   }
 
   /** Minimal object-to-YAML serialiser (no dependencies). */

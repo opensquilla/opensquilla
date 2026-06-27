@@ -9,7 +9,6 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import venv
 import zipfile
 from pathlib import Path
 
@@ -45,7 +44,13 @@ def test_wheel_contains_v010_migration(tmp_path: Path) -> None:
 def test_installed_wheel_resolves_migrations(tmp_path: Path) -> None:
     """After pip-installing into a fresh venv, _resolve_migrations_dir() finds V010."""
     venv_dir = tmp_path / "venv"
-    venv.create(venv_dir, with_pip=True)
+    subprocess.run(
+        ["uv", "venv", "--seed", str(venv_dir)],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        timeout=120,
+    )
     pip = venv_dir / ("Scripts" if os.name == "nt" else "bin") / "pip"
     py = venv_dir / ("Scripts" if os.name == "nt" else "bin") / "python"
 
@@ -97,6 +102,10 @@ def test_installed_wheel_resolves_migrations(tmp_path: Path) -> None:
 @pytest.mark.skipif(
     os.environ.get("OPENSQUILLA_SKIP_DOCKER_SMOKE") == "1",
     reason="docker smoke disabled via env",
+)
+@pytest.mark.skipif(
+    os.environ.get("OPENSQUILLA_RUN_DOCKER_SMOKE") != "1",
+    reason="docker smoke is opt-in; it pulls external images",
 )
 def test_docker_image_resolves_migrations() -> None:
     """`docker build` + `docker run` resolves _migrations including V010.

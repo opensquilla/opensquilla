@@ -18,16 +18,21 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import Any
+from typing import Any, Literal
 
 import structlog
 
 from opensquilla.engine.types import (
     AgentEvent,
+    MetaPreflightEvent,
+    MetaRunAnnouncedEvent,
+    MetaRunCompletedEvent,
+    MetaStepStateEvent,
     ToolResultEvent,
     ToolUseStartEvent,
 )
 from opensquilla.engine.usage import usage_scope
+from opensquilla.meta_preflight_protocol import strip_preflight_confirmation_protocol_text
 from opensquilla.skills.meta.events import _FailoverTriggered, _StepDone
 from opensquilla.skills.meta.parser import topological_order
 from opensquilla.skills.meta.templating import (
@@ -35,10 +40,15 @@ from opensquilla.skills.meta.templating import (
     render_with_args,
     resolve_route,
 )
-from opensquilla.skills.meta.types import MetaMatch, MetaPaused, MetaResult, MetaStep
+from opensquilla.skills.meta.types import (
+    MetaMatch,
+    MetaPaused,
+    MetaPreflightRequired,
+    MetaResult,
+    MetaStep,
+)
 
 log = structlog.get_logger(__name__)
-
 
 # Surface-side hint copy that ships in every clarify_skip_summary so a
 # renderer always has a sensible default label. Surfaces are free to
@@ -47,11 +57,269 @@ _CLARIFY_SKIP_DEFAULT_LABEL = (
     "We inferred the answers below from earlier context. "
     "Confirm to continue, or reply 'change <field>' to redo."
 )
+_CLARIFY_SKIP_LABEL_BY_LANGUAGE = {
+    "zh": "已从前文推断出下面信息。确认即可继续；如需修改，请回复“修改 <字段>”。",
+    "en": _CLARIFY_SKIP_DEFAULT_LABEL,
+}
+_CLARIFY_SKIP_HINT_BY_LANGUAGE = {
+    "zh": "回复“修改 <字段>”重新填写",
+    "en": "reply 'change <field>' to redo",
+}
 
 # How many characters of each upstream context excerpt to ship to the
 # surface. Bounded so a 4 KB step output doesn't bloat every tool
 # result. Surfaces can still request more via a follow-up if needed.
 _CLARIFY_SKIP_EXCERPT_CHARS = 600
+_RESCUE_OUTPUT_EXCERPT_CHARS = 600
+
+
+def _field_has_value(inputs: dict[str, Any], name: str) -> bool:
+    value = inputs.get(name)
+    if value is not None and str(value).strip():
+        return True
+    collected = inputs.get("collected")
+    if not isinstance(collected, dict):
+        return False
+    for item in collected.values():
+        if isinstance(item, dict):
+            nested = item.get(name)
+            if nested is not None and str(nested).strip():
+                return True
+    return False
+
+
+def _preflight_missing_fields(
+    request_template: dict[str, Any],
+    inputs: dict[str, Any],
+) -> list[str]:
+    fields = request_template.get("fields", [])
+    if not isinstance(fields, list):
+        return []
+    missing: list[str] = []
+    for field in fields:
+        if not isinstance(field, dict) or field.get("required") is not True:
+            continue
+        name = field.get("name")
+        if isinstance(name, str) and name and not _field_has_value(inputs, name):
+            missing.append(name)
+    return missing
+
+
+def _language_suffix(language: object) -> str:
+    return "zh" if str(language).lower().startswith("zh") else "en"
+
+
+def _localized_scalar(mapping: dict[str, Any], key: str, language: str) -> Any:
+    suffix = _language_suffix(language)
+    for candidate in (f"{key}_{suffix}", f"{key}_{suffix.upper()}"):
+        value = mapping.get(candidate)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, list):
+            return value
+    value = mapping.get(key)
+    if isinstance(value, dict):
+        localized = value.get(suffix) or value.get(suffix.upper()) or value.get("default")
+        if isinstance(localized, str) and localized.strip():
+            return localized.strip()
+        if isinstance(localized, list):
+            return localized
+    return value
+
+
+def _localized_request_template(
+    request_template: dict[str, Any],
+    language: str,
+) -> dict[str, Any]:
+    localized = dict(request_template)
+    for key in ("outcome", "deliverable", "title", "intro"):
+        value = _localized_scalar(request_template, key, language)
+        if isinstance(value, str) and value.strip():
+            localized[key] = value
+
+    assumptions = _preflight_assumptions(request_template, language)
+    if assumptions:
+        localized["assumptions"] = assumptions
+
+    fields = request_template.get("fields", [])
+    if isinstance(fields, list):
+        localized_fields: list[Any] = []
+        for field in fields:
+            if not isinstance(field, dict):
+                localized_fields.append(field)
+                continue
+            item = dict(field)
+            for key in ("label", "title", "prompt", "description", "help", "hint", "default"):
+                value = _localized_scalar(field, key, language)
+                if isinstance(value, str) and value.strip():
+                    item[key] = value
+            localized_fields.append(item)
+        localized["fields"] = localized_fields
+    return localized
+
+
+def _localized_step_label(step: MetaStep, language: str) -> str:
+    if not str(language).strip():
+        return step.label
+    suffix = _language_suffix(language)
+    localized = step.label_by_language.get(suffix)
+    if localized:
+        return localized
+    return step.label
+
+
+def _preflight_assumptions(
+    request_template: dict[str, Any],
+    language: str = "",
+) -> list[str]:
+    raw = _localized_scalar(request_template, "assumptions", language)
+    if isinstance(raw, str) and raw.strip():
+        return [raw.strip()]
+    if isinstance(raw, list):
+        return [str(item).strip() for item in raw if str(item).strip()]
+    return []
+
+
+def _preflight_is_confirmed(inputs: dict[str, Any], expected_run_id: str) -> bool:
+    marker_present = bool(
+        inputs.get("meta_preflight_confirmed")
+        or inputs.get("preflight_confirmed")
+        or inputs.get("_meta_preflight_confirmed")
+    )
+    if not marker_present:
+        return False
+    confirmed_run_id = str(
+        inputs.get("meta_preflight_run_id")
+        or inputs.get("preflight_run_id")
+        or inputs.get("_meta_preflight_run_id")
+        or ""
+    ).strip()
+    return bool(confirmed_run_id and confirmed_run_id == expected_run_id)
+
+
+def _preflight_requires_confirmation(request_template: dict[str, Any]) -> bool:
+    mode = str(request_template.get("mode") or "").strip().lower()
+    if (
+        request_template.get("preflight_required") is False
+        or request_template.get("requires_confirmation") is False
+        or mode in {"preview", "soft", "advisory", "informational"}
+    ):
+        return False
+    return bool(
+        request_template.get("preflight_required") is True
+        or request_template.get("requires_confirmation") is True
+        or mode in {"confirm", "confirmation", "required"}
+    )
+
+
+def _failure_hint(error: str) -> dict[str, str]:
+    text = error.lower()
+    missing_dependency_markers = (
+        "not found",
+        "no such file",
+        "missing dependency",
+        "command not found",
+        "executable",
+        "wkhtmltopdf",
+        "ffmpeg",
+        "playwright",
+    )
+    auth_markers = (
+        "unauthorized",
+        "forbidden",
+        "permission denied",
+        "401",
+        "403",
+        "api key",
+        "token",
+        "credential",
+    )
+    if any(marker in text for marker in missing_dependency_markers):
+        return {
+            "category": "missing_dependency",
+            "message": "A required local tool or runtime dependency appears to be missing.",
+        }
+    if any(marker in text for marker in auth_markers):
+        return {
+            "category": "auth_or_permission",
+            "message": "The step appears blocked by authentication or permissions.",
+        }
+    if "timeout" in text or "timed out" in text:
+        return {
+            "category": "timeout",
+            "message": "The step timed out; retrying with narrower scope may help.",
+        }
+    return {
+        "category": "runtime_error",
+        "message": "The step failed at runtime; partial outputs may still be useful.",
+    }
+
+
+def _failure_rescue_payload(
+    *,
+    plan_name: str,
+    step: MetaStep,
+    error: str,
+    outputs: dict[str, str],
+    has_substitute: bool,
+) -> dict[str, Any]:
+    hint = _failure_hint(error)
+    actions = [
+        {
+            "id": "retry-run",
+            "label": "Retry this run",
+            "description": "Run the same meta-skill again with the original request.",
+        },
+        {
+            "id": "retry-step",
+            "label": "Retry failed step",
+            "description": "Retry only the failed step with successful prior outputs as context.",
+        },
+        {
+            "id": "retry-with-partial-context",
+            "label": "Retry with partial context",
+            "description": "Reuse successful prior step outputs as context for the retry.",
+        },
+        {
+            "id": "switch-meta-skill",
+            "label": "Switch meta-skill",
+            "description": "Use a different meta-skill if this was the wrong workflow.",
+        },
+    ]
+    if hint["category"] == "missing_dependency":
+        actions.append({
+            "id": "install-dependency",
+            "label": "Install missing dependency",
+            "description": "Install the missing local tool or runtime dependency, then retry.",
+        })
+    if step.kind == "skill_exec" or "artifact" in step.id.lower():
+        actions.append({
+            "id": "continue-text-only",
+            "label": "Continue without artifact",
+            "description": "Keep successful text outputs and skip generated-file delivery.",
+        })
+    prior_outputs: list[dict[str, Any]] = []
+    for step_id, text in sorted(outputs.items()):
+        excerpt = str(text or "")
+        truncated = len(excerpt) > _RESCUE_OUTPUT_EXCERPT_CHARS
+        if truncated:
+            excerpt = excerpt[:_RESCUE_OUTPUT_EXCERPT_CHARS] + "...[truncated]"
+        prior_outputs.append({
+            "step_id": step_id,
+            "excerpt": excerpt,
+            "truncated": truncated,
+        })
+    return {
+        "meta_skill_name": plan_name,
+        "failed_step_id": step.id,
+        "failed_step_label": step.label or step.id,
+        "failed_step_kind": step.kind,
+        "partial_output_step_ids": sorted(outputs.keys()),
+        "prior_outputs": prior_outputs,
+        "has_substitute": has_substitute,
+        "hint": hint,
+        "actions": actions,
+    }
 
 
 def _build_clarify_skip_summary(
@@ -90,14 +358,16 @@ def _build_clarify_skip_summary(
     if cfg is None:
         return None
 
+    language = _language_suffix(inputs.get("user_language", ""))
     field_payload: list[dict[str, Any]] = []
     for field in cfg.fields:
         entry: dict[str, Any] = {
             "name": field.name,
             "required": bool(field.required),
         }
-        if getattr(field, "prompt", None):
-            entry["prompt"] = field.prompt
+        prompt = field.prompt_by_language.get(language) or field.prompt
+        if prompt:
+            entry["prompt"] = prompt
         field_payload.append(entry)
 
     inferred_from: list[dict[str, str]] = []
@@ -113,18 +383,41 @@ def _build_clarify_skip_summary(
     trigger_message = ""
     raw_message = inputs.get("user_message")
     if isinstance(raw_message, str) and raw_message.strip():
-        trigger_message = raw_message.strip()
+        visible_message = strip_preflight_confirmation_protocol_text(raw_message) or raw_message
+        trigger_message = visible_message.strip()
         if len(trigger_message) > _CLARIFY_SKIP_EXCERPT_CHARS:
             trigger_message = trigger_message[:_CLARIFY_SKIP_EXCERPT_CHARS] + "...[truncated]"
 
     return {
-        "label": _CLARIFY_SKIP_DEFAULT_LABEL,
+        "label": _CLARIFY_SKIP_LABEL_BY_LANGUAGE[language],
         "step_id": step.id,
         "fields": field_payload,
         "inferred_from": inferred_from,
         "trigger_message": trigger_message,
-        "hint_action": "reply 'change' to redo",
+        "hint_action": _CLARIFY_SKIP_HINT_BY_LANGUAGE[language],
     }
+
+
+def _default_status_text(step: MetaStep, effective_skill: str) -> str:
+    """Default ``status_text`` per step kind (design §3.3).
+
+    The WebUI ribbon shows this string under the currently running chip.
+    Returned per-kind so the scheduler does not duplicate prompt-shaped
+    copy at each emission site.
+    """
+    if step.kind == "llm_chat":
+        return "起草中…"
+    if step.kind == "llm_classify":
+        return "分类中…"
+    if step.kind == "agent":
+        return f"调用 {effective_skill} 中…"
+    if step.kind == "skill_exec":
+        return f"执行 {effective_skill} 中…"
+    if step.kind == "tool_call":
+        return f"调用 {step.tool}…"
+    if step.kind == "user_input":
+        return "等待你回复表单"
+    return "运行中…"
 
 
 async def run_dag(
@@ -197,6 +490,92 @@ async def run_dag(
     if not ordered:
         yield MetaResult(ok=True, final_text="", step_outputs={})
         return
+
+    # Announce the static composition so the WebUI can seed its step
+    # ribbon before any per-step tool-call event arrives. The orchestrator
+    # passes its persisted run_id when available; direct/unit callers may
+    # still rely on the local fallback for non-persistent runs.
+    _run_id = getattr(match, "run_id", "") or f"{match.plan.name}:{id(match)}"
+    template_language = str(match.inputs.get("user_language") or "").strip()
+    if match.plan.request_template:
+        request_template = _localized_request_template(
+            match.plan.request_template,
+            template_language,
+        )
+        missing_fields = _preflight_missing_fields(
+            match.plan.request_template,
+            match.inputs,
+        )
+        assumptions = _preflight_assumptions(
+            match.plan.request_template,
+            template_language,
+        )
+        requires_confirmation = _preflight_requires_confirmation(
+            match.plan.request_template,
+        )
+        can_skip = not (requires_confirmation and missing_fields)
+        yield MetaPreflightEvent(
+            run_id=_run_id,
+            meta_skill_name=match.plan.name,
+            request_template=request_template,
+            interpreted_request=str(match.inputs.get("user_message") or "").strip(),
+            missing_fields=missing_fields,
+            assumptions=assumptions,
+            can_skip=can_skip,
+            requires_confirmation=requires_confirmation,
+        )
+        preflight_confirmed = _preflight_is_confirmed(match.inputs, _run_id)
+        if requires_confirmation and (missing_fields or not preflight_confirmed):
+            yield MetaResult(
+                ok=False,
+                paused=True,
+                paused_payload=MetaPreflightRequired(
+                    run_id=_run_id,
+                    meta_skill_name=match.plan.name,
+                    request_template=request_template,
+                    interpreted_request=str(match.inputs.get("user_message") or "").strip(),
+                    missing_fields=missing_fields,
+                    assumptions=assumptions,
+                    can_skip=can_skip,
+                    requires_confirmation=requires_confirmation,
+                ),
+            )
+            return
+    yield MetaRunAnnouncedEvent(
+        run_id=_run_id,
+        meta_skill_name=match.plan.name,
+        language=template_language,
+        steps=[
+            {
+                "id": s.id,
+                "label": _localized_step_label(s, template_language),
+                "kind": s.kind,
+                "depends_on": list(s.depends_on),
+            }
+            for s in match.plan.steps
+        ],
+        total=len(match.plan.steps),
+        parent_run_id=None,
+    )
+
+    # Terminal-state tracking for the final MetaRunCompletedEvent.
+    _succeeded_step_ids: set[str] = set()
+    _failed_step_ids: set[str] = set()
+    _recovered_failed_step_ids: set[str] = set()
+    _skipped_step_ids: set[str] = set()
+
+    def _yield_completion(
+        outcome: Literal["ok", "failed", "cancelled"],
+    ) -> MetaRunCompletedEvent:
+        unresolved_failed = _failed_step_ids - _recovered_failed_step_ids
+        return MetaRunCompletedEvent(
+            run_id=_run_id,
+            outcome=outcome,
+            completed_steps=sorted(_succeeded_step_ids),
+            failed_steps=sorted(unresolved_failed),
+            recovered_steps=sorted(_recovered_failed_step_ids),
+            skipped_steps=sorted(_skipped_step_ids),
+        )
 
     steps_by_id: dict[str, MetaStep] = {s.id: s for s in ordered}
     pending_deps: dict[str, set[str]] = {
@@ -336,6 +715,14 @@ async def run_dag(
                         ),
                     ),
                 )
+                await event_queue.put((
+                    step.id,
+                    MetaStepStateEvent(
+                        run_id=_run_id,
+                        step_id=step.id,
+                        state="skipped",
+                    ),
+                ))
                 await event_queue.put((step.id, _StepDone(text="", status="skipped")))
                 return
 
@@ -353,6 +740,15 @@ async def run_dag(
             )
             step_use_id = f"meta_step_{step.id}"
             step_tool_name = f"meta-step:{step.id}"
+            await event_queue.put((
+                step.id,
+                MetaStepStateEvent(
+                    run_id=_run_id,
+                    step_id=step.id,
+                    state="running",
+                    status_text=_default_status_text(step, effective_skill),
+                ),
+            ))
             await event_queue.put(
                 (
                     step.id,
@@ -434,6 +830,14 @@ async def run_dag(
                     ),
                 ),
             )
+            await event_queue.put((
+                step.id,
+                MetaStepStateEvent(
+                    run_id=_run_id,
+                    step_id=step.id,
+                    state="succeeded",
+                ),
+            ))
             await event_queue.put((step.id, _StepDone(text=final_text)))
         except MetaPaused as paused:
             # Pause is not failure. Stash on the queue so the main loop
@@ -459,6 +863,13 @@ async def run_dag(
             )
             step_use_id = f"meta_step_{step.id}"
             step_tool_name = f"meta-step:{step.id}"
+            rescue = _failure_rescue_payload(
+                plan_name=match.plan.name,
+                step=step,
+                error=str(exc),
+                outputs=outputs,
+                has_substitute=has_substitute,
+            )
             await event_queue.put(
                 (
                     step.id,
@@ -470,10 +881,22 @@ async def run_dag(
                         arguments={
                             "step": step.id,
                             "failover": has_substitute,
+                            "rescue": rescue,
                         },
                     ),
                 ),
             )
+            _failed_step_ids.add(step.id)
+            await event_queue.put((
+                step.id,
+                MetaStepStateEvent(
+                    run_id=_run_id,
+                    step_id=step.id,
+                    state="failed",
+                    error=str(exc),
+                    rescue=rescue,
+                ),
+            ))
             if has_substitute:
                 # Soft failure — defer to the substitute. The main loop
                 # will dispatch ``step.on_failure`` and alias its output
@@ -504,6 +927,7 @@ async def run_dag(
 
     _spawn_ready()
     if not running:
+        yield _yield_completion("failed")
         yield MetaResult(
             ok=False,
             error="no runnable steps (all blocked by dependencies)",
@@ -536,6 +960,10 @@ async def run_dag(
                 task = running.pop(step_id, None)
                 if task is not None and not task.done():
                     await task
+                if item.status == "skipped":
+                    _skipped_step_ids.add(step_id)
+                else:
+                    _succeeded_step_ids.add(step_id)
                 if on_step_finish is not None:
                     try:
                         await on_step_finish(step_id, item.status, item.text, None)
@@ -554,6 +982,7 @@ async def run_dag(
                 aliased_failed = failover_aliases.get(step_id)
                 if aliased_failed is not None:
                     outputs[aliased_failed] = item.text
+                    _recovered_failed_step_ids.add(aliased_failed)
                 for deps in pending_deps.values():
                     deps.discard(step_id)
                     if aliased_failed is not None:
@@ -597,6 +1026,15 @@ async def run_dag(
                     and item.substitute_step_id not in running
                 ):
                     unstarted.add(item.substitute_step_id)
+                await event_queue.put((
+                    item.substitute_step_id,
+                    MetaStepStateEvent(
+                        run_id=_run_id,
+                        step_id=item.substitute_step_id,
+                        state="substituted",
+                        substitute_for=item.failed_step_id,
+                    ),
+                ))
                 _spawn_ready()
                 continue
             if isinstance(item, MetaPaused):
@@ -617,6 +1055,7 @@ async def run_dag(
                 clarify_protocol = schema_to_protocol(
                     item.schema,
                     intro_override=item.intro,
+                    language=item.language,
                     confirmed_fields=item.confirmed_fields,
                     prefill_audit=item.prefill_audit,
                 )
@@ -639,6 +1078,7 @@ async def run_dag(
                         task.cancel()
                 if running:
                     await asyncio.gather(*running.values(), return_exceptions=True)
+                yield _yield_completion("cancelled")
                 yield MetaResult(
                     ok=False,
                     paused=True,
@@ -728,6 +1168,7 @@ async def run_dag(
             )
 
     if failure is not None:
+        yield _yield_completion("failed")
         yield MetaResult(
             ok=False,
             step_outputs=outputs,
@@ -736,6 +1177,7 @@ async def run_dag(
         )
         return
 
+    yield _yield_completion("failed" if (_failed_step_ids - _recovered_failed_step_ids) else "ok")
     yield MetaResult(
         ok=True,
         final_text=outputs.get(last_step_id, ""),

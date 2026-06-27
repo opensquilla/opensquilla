@@ -37,6 +37,7 @@ def create_gateway_app(
     subscription_manager: Any = None,
     channel_manager: Any = None,
     usage_tracker: Any = None,
+    meta_run_writer: Any = None,
     skill_loader: Any = None,
     cron_scheduler: Any = None,
     turn_runner: Any = None,
@@ -101,7 +102,17 @@ def create_gateway_app(
 
     async def api_sessions(request: Request) -> JSONResponse:
         ctx = _make_ctx(request)
-        result = await dispatcher.dispatch("_http", "sessions.list", None, ctx)
+        params: dict[str, object] = {}
+        raw_limit = request.query_params.get("limit")
+        if raw_limit:
+            try:
+                params["limit"] = int(raw_limit)
+            except ValueError:
+                return JSONResponse({"error": "limit must be an integer"}, status_code=400)
+        view = request.query_params.get("view")
+        if view:
+            params["view"] = view
+        result = await dispatcher.dispatch("_http", "sessions.list", params or None, ctx)
         if result.ok:
             return JSONResponse(result.payload or {"sessions": []})
         msg = result.error.message if result.error else "error"
@@ -202,6 +213,7 @@ def create_gateway_app(
             subscription_manager=subscription_manager,
             channel_manager=channel_manager,
             usage_tracker=usage_tracker,
+            meta_run_writer=meta_run_writer,
             skill_loader=skill_loader,
             cron_scheduler=cron_scheduler,
             turn_runner=turn_runner,
@@ -255,6 +267,7 @@ def create_gateway_app(
                 "id": p["id"],
                 "namespace": p["namespace"],
                 "created_at": p.get("created_at"),
+                "deadline": p.get("deadline"),
             }
             params = p.get("params", {})
             argv = params.get("argv")
@@ -442,6 +455,7 @@ def create_gateway_app(
             subscription_manager=subscription_manager,
             channel_manager=channel_manager,
             usage_tracker=usage_tracker,
+            meta_run_writer=meta_run_writer,
             skill_loader=skill_loader,
             cron_scheduler=cron_scheduler,
             turn_runner=turn_runner,

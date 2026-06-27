@@ -32,6 +32,21 @@ _OLD_STEP_KIND_VALUES = (
     "'tool_call'",
     "'skill_exec'",
 )
+_STEP_COLUMNS = (
+    "run_id",
+    "step_id",
+    "step_kind",
+    "declared_skill",
+    "effective_skill",
+    "status",
+    "started_at_ms",
+    "ended_at_ms",
+    "rendered_inputs_json",
+    "output_text",
+    "error",
+    "substitute_step_id",
+    "truncated_fields",
+)
 
 
 def _create_steps_table_sql(
@@ -70,13 +85,23 @@ def _table_exists(conn, table: str) -> bool:
     return cur.fetchone() is not None
 
 
+def _user_input_step_count(conn) -> int:
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT COUNT(*) FROM meta_skill_run_steps WHERE step_kind='user_input'"
+    )
+    return int(cur.fetchone()[0] or 0)
+
+
 def _recreate_steps_table(conn, step_kind_values: tuple[str, ...]) -> None:
     cur = conn.cursor()
     cur.execute("PRAGMA foreign_keys = OFF")
     try:
         cur.execute(_create_steps_table_sql(step_kind_values, "meta_skill_run_steps__new"))
+        columns = ", ".join(_STEP_COLUMNS)
         cur.execute(
-            "INSERT INTO meta_skill_run_steps__new SELECT * FROM meta_skill_run_steps"
+            f"INSERT INTO meta_skill_run_steps__new ({columns}) "
+            f"SELECT {columns} FROM meta_skill_run_steps"
         )
         cur.execute("DROP TABLE meta_skill_run_steps")
         cur.execute(
@@ -105,6 +130,13 @@ def apply_step(conn) -> None:
 def rollback_step(conn) -> None:
     if not _table_exists(conn, "meta_skill_run_steps"):
         return
+    user_input_count = _user_input_step_count(conn)
+    if user_input_count:
+        raise RuntimeError(
+            "V014 rollback blocked: meta_skill_run_steps contains "
+            f"{user_input_count} user_input row(s). Remove or archive those rows "
+            "before rolling back to the pre-user-input CHECK constraint."
+        )
     _recreate_steps_table(conn, _OLD_STEP_KIND_VALUES)
 
 

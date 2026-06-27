@@ -1,18 +1,21 @@
 """TUI-owned default bridge for shared turn streaming.
 
-This module keeps the legacy TUI turn-stream facade while terminal presentation
+This module keeps the legacy TUI turn-stream facade while frontend presentation
 defaults live in ``turn_stream_defaults``.
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from opensquilla.cli.chat import turn_stream as _turn_stream
 from opensquilla.cli.chat.turn import TurnResult, UsageSummary
 from opensquilla.cli.tui.backend.contracts import TuiOutputHandle
 from opensquilla.engine.commands import Surface
+
+if TYPE_CHECKING:
+    from opensquilla.engine.agent_injection import PendingInputProvider
 
 TurnStreamDependencies = _turn_stream.TurnStreamDependencies
 
@@ -236,6 +239,7 @@ async def stream_response_turnrunner(
     *,
     tui_output: TuiOutputHandle | None = None,
     deps: TurnStreamDependencies | None = None,
+    pending_input_provider: PendingInputProvider | None = None,
 ) -> TurnResult:
     return await _turn_stream.stream_response_turnrunner(
         turn_runner,
@@ -247,6 +251,7 @@ async def stream_response_turnrunner(
         timeout=timeout,
         tui_output=tui_output,
         deps=deps,
+        pending_input_provider=pending_input_provider,
     )
 
 
@@ -261,6 +266,7 @@ async def handle_image_command_turnrunner(
     *,
     tui_output: TuiOutputHandle | None = None,
     deps: TurnStreamDependencies | None = None,
+    pending_input_provider: PendingInputProvider | None = None,
 ) -> TurnResult:
     return await _turn_stream.handle_image_command_turnrunner(
         turn_runner,
@@ -272,4 +278,5 @@ async def handle_image_command_turnrunner(
         timeout=timeout,
         tui_output=tui_output,
         deps=deps,
+        pending_input_provider=pending_input_provider,
     )

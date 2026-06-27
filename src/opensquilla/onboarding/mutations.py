@@ -37,6 +37,7 @@ from opensquilla.router_tiers import (
     TEXT_TIERS,
     normalize_text_tier,
 )
+from opensquilla.search.types import DEFAULT_SEARCH_MAX_RESULTS, MAX_SEARCH_RESULTS
 from opensquilla.secrets import clean_header_secret
 
 SearchFallbackPolicy = Literal["off", "network"]
@@ -356,7 +357,7 @@ def upsert_search_provider(
     provider_id: str,
     api_key: str = "",
     api_key_env: str = "",
-    max_results: int | str = 5,
+    max_results: int | str = DEFAULT_SEARCH_MAX_RESULTS,
     proxy: str = "",
     use_env_proxy: bool = False,
     fallback_policy: str = "off",
@@ -367,7 +368,12 @@ def upsert_search_provider(
         raise ValueError(
             f"search provider {provider_id!r} is not runtime-supported and cannot be configured"
         )
-    effective_max_results = _positive_int(max_results, label="max_results")
+    # Cap the write side to the same ceiling the config field enforces so an
+    # over-range request is clamped here with a clear path rather than failing
+    # late with a raw validation error at persist time.
+    effective_max_results = min(
+        _positive_int(max_results, label="max_results"), MAX_SEARCH_RESULTS
+    )
     if fallback_policy not in {"off", "network"}:
         raise ValueError("fallback_policy must be 'off' or 'network'")
     fallback_policy_value = cast(SearchFallbackPolicy, fallback_policy)

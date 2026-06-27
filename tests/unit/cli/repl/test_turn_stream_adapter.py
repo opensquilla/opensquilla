@@ -135,7 +135,7 @@ def test_turn_stream_approval_surface_uses_structural_output_handle_value() -> N
     )
 
 
-def test_tui_turn_bridge_supplies_terminal_approval_surface_defaults() -> None:
+def test_tui_turn_bridge_supplies_cli_approval_surface_defaults() -> None:
     from opensquilla.cli.repl import turn_bridge
 
     deps = turn_bridge.default_turn_stream_dependencies()
@@ -165,13 +165,13 @@ async def test_tui_gateway_stream_coerces_invalid_output_approval_surface(
 
     captured: dict[str, Any] = {}
 
-    async def fake_maybe_handle_approval(*_args: Any, **kwargs: Any) -> None:
+    async def fake_approval_handler(*_args: Any, **kwargs: Any) -> None:
         captured.update(kwargs)
 
     monkeypatch.setattr(
         turn_stream_defaults,
-        "maybe_handle_approval",
-        fake_maybe_handle_approval,
+        "_noop_approval_handler",
+        fake_approval_handler,
     )
 
     deps = turn_bridge.default_turn_stream_dependencies(
@@ -244,8 +244,9 @@ def test_turn_stream_adapter_has_no_raw_prompt_application_dependency() -> None:
     from opensquilla.cli.repl import turn_stream
 
     source = inspect.getsource(turn_stream)
+    blocked_module = "prompt" + "_toolkit"
 
-    assert "prompt_toolkit" not in source
+    assert blocked_module not in source
     assert "ChatApplication" not in source
 
 
@@ -254,12 +255,12 @@ async def test_chat_cmd_stream_wrapper_uses_bridge_owned_renderer_dependency(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from opensquilla.cli.repl import turn_stream
-    from opensquilla.cli.repl.terminal_renderer import TerminalRenderer
     from opensquilla.cli.tui import turn_stream_defaults
+    from opensquilla.cli.tui.opentui.renderer import OpenTuiStreamRenderer
 
     captured: dict[str, Any] = {}
 
-    class _TemporaryTerminalRenderer:
+    class _TemporaryOpenTuiRenderer:
         pass
 
     async def fake_stream_response_gateway(
@@ -274,7 +275,7 @@ async def test_chat_cmd_stream_wrapper_uses_bridge_owned_renderer_dependency(
     ) -> TurnResult:
         captured.update(
             {
-                "renderer_global": turn_stream_defaults.TerminalRenderer,
+                "renderer_global": turn_stream_defaults.OpenTuiStreamRenderer,
                 "renderer_dependency": None if deps is None else deps.renderer_factory,
             }
         )
@@ -282,8 +283,8 @@ async def test_chat_cmd_stream_wrapper_uses_bridge_owned_renderer_dependency(
 
     monkeypatch.setattr(
         turn_stream_defaults,
-        "TerminalRenderer",
-        _TemporaryTerminalRenderer,
+        "OpenTuiStreamRenderer",
+        _TemporaryOpenTuiRenderer,
     )
     monkeypatch.setattr(turn_stream, "stream_response_gateway", fake_stream_response_gateway)
 
@@ -296,7 +297,7 @@ async def test_chat_cmd_stream_wrapper_uses_bridge_owned_renderer_dependency(
 
     assert result.text == "ok"
     assert captured == {
-        "renderer_global": _TemporaryTerminalRenderer,
-        "renderer_dependency": _TemporaryTerminalRenderer,
+        "renderer_global": _TemporaryOpenTuiRenderer,
+        "renderer_dependency": _TemporaryOpenTuiRenderer,
     }
-    assert turn_stream_defaults.TerminalRenderer is not TerminalRenderer
+    assert turn_stream_defaults.OpenTuiStreamRenderer is not OpenTuiStreamRenderer

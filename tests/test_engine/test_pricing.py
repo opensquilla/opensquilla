@@ -114,15 +114,28 @@ def test_pricing_cache_returns_non_discount_deepseek_v4_pro_price() -> None:
     assert price.output_per_token == pytest.approx(3.48 / 1_000_000)
 
 
-def test_glm_5_1_static_price_matches_openrouter_native_provider(
+@pytest.mark.parametrize("model", ["z-ai/glm-5.1", "z-ai/glm-5.2"])
+def test_glm_5_static_price_matches_openrouter_native_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    model: str,
+) -> None:
+    monkeypatch.setenv("OPENSQUILLA_OPENROUTER_LIVE_PRICING", "0")
+
+    price = lookup_price(model)
+
+    assert price.input_per_m == pytest.approx(1.40)
+    assert price.output_per_m == pytest.approx(4.40)
+
+
+def test_claude_opus_4_8_static_price_matches_openrouter_model_catalog(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OPENSQUILLA_OPENROUTER_LIVE_PRICING", "0")
 
-    price = lookup_price("z-ai/glm-5.1")
+    price = lookup_price("anthropic/claude-opus-4.8")
 
-    assert price.input_per_m == pytest.approx(1.40)
-    assert price.output_per_m == pytest.approx(4.40)
+    assert price.input_per_m == pytest.approx(5.0)
+    assert price.output_per_m == pytest.approx(25.0)
 
 
 @pytest.mark.parametrize(

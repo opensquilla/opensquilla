@@ -127,14 +127,14 @@ class SubagentRegistry:
                     "completed_at": h.completed_at,
                 }
             )
-        path.write_text(json.dumps(entries, indent=2))
+        path.write_text(json.dumps(entries, indent=2), encoding="utf-8")
 
     def load_state(self, path: Path) -> dict[str, SubagentHandle]:
         """Restore registry from JSON. All loaded handles are marked 'orphaned'."""
         if not path.exists():
             return {}
 
-        entries = json.loads(path.read_text())
+        entries = json.loads(path.read_text(encoding="utf-8"))
         loaded: dict[str, SubagentHandle] = {}
 
         for entry in entries:

@@ -14,8 +14,11 @@ opensquilla search status
 
 Runtime-supported providers in this build include:
 
+- Bocha
 - Brave Search
 - DuckDuckGo
+- Tavily
+- Exa
 
 The catalog may include metadata for providers that are not runtime-supported
 in the current build. Check JSON output when integrating.
@@ -34,6 +37,13 @@ Equivalent search subcommand:
 opensquilla search configure duckduckgo
 ```
 
+Bocha:
+
+```sh
+export BOCHA_SEARCH_API_KEY="..."
+opensquilla configure search --search-provider bocha --api-key-env BOCHA_SEARCH_API_KEY
+```
+
 Brave Search:
 
 ```sh
@@ -41,9 +51,48 @@ export BRAVE_SEARCH_API_KEY="..."
 opensquilla configure search --search-provider brave --api-key-env BRAVE_SEARCH_API_KEY
 ```
 
+Tavily:
+
+```sh
+export TAVILY_API_KEY="..."
+opensquilla configure search --search-provider tavily --api-key-env TAVILY_API_KEY
+```
+
+Exa:
+
+```sh
+export EXA_API_KEY="..."
+opensquilla configure search --search-provider exa --api-key-env EXA_API_KEY
+```
+
+In configuration files, `search_provider` can be `"duckduckgo", "bocha", "brave", "tavily", or "exa"`.
+It identifies the provider tied to `search_api_key` and
+`search_api_key_env`; automatic searches without `--provider` still rank all
+available providers by mode, recency needs, and provider capabilities. Use
+`search_api_key_env` for an environment-variable reference, or paste a one-time
+key through onboarding. `search_fallback_policy = "network"` retries through
+DuckDuckGo only after network/timeout errors, while `search_diagnostics = true`
+includes provider-attempt details in tool results.
+
+Configuration matrix:
+
+- **no-key**: choose DuckDuckGo, or leave search unconfigured and the runtime
+  uses DuckDuckGo for general web search.
+- **partial-key**: configure one keyed provider, such as Bocha, Tavily, or Exa; the
+  runtime uses that provider when it is available and can still use DuckDuckGo
+  for no-key fallback paths.
+- **all-key**: expose `BOCHA_SEARCH_API_KEY`, `BRAVE_SEARCH_API_KEY`,
+  `TAVILY_API_KEY`, and `EXA_API_KEY`; runtime selection ranks providers by
+  mode, recency needs, and provider capabilities unless the request names an
+  explicit provider.
+
 Provider-specific fields such as max results, proxy, environment-proxy usage,
 fallback policy, and diagnostics can be set through the search configuration
 surface.
+
+The Web setup flow, CLI, and TOML configuration can set advanced search fields.
+Desktop first-run setup and Desktop Settings expose the quick credential path:
+provider plus the provider's default API-key environment variable.
 
 ## Test Search
 
@@ -73,6 +122,24 @@ Find the latest release notes for this project and summarize only breaking chang
 
 The agent can use search and fetch tools when the tool policy and configured
 provider allow it.
+
+### Search Tool Roles
+
+- `web_search`: preferred for source-backed answers. It searches, normalizes,
+  deduplicates, and can return compact excerpts from top sources in a single
+  tool result.
+- `web_discover`: lightweight link discovery. It returns titles, URLs, and
+  snippets.
+- `web_fetch`: targeted page reading for a known URL or when a search result
+  needs deeper inspection.
+
+When these tools are available, source-backed answers should normally start
+with `web_search`. Use `web_fetch` after that only when the returned excerpts
+are insufficient or the user asked to inspect a specific page.
+
+The Web UI renders `web_search` as source-backed web search. `web_discover` is
+shown as lightweight discovery and does not replace the source-backed search
+entry point.
 
 For deeper multi-source work, ask for a research report or use an installed
 research skill.

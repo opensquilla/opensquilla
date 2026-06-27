@@ -29,6 +29,7 @@ def test_direct_profile_static_fallbacks_cover_context_windows() -> None:
         "glm-4.7-flashx": 200_000,
         "glm-5": 200_000,
         "glm-5.1": 200_000,
+        "z-ai/glm-5.2": 1_048_576,
         "moonshot-v1-8k": 8_192,
         "moonshot-v1-128k": 131_072,
         "kimi-k2.5": 262_144,

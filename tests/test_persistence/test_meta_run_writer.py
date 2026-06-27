@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from yoyo import get_backend, read_migrations
 
 from opensquilla.persistence.meta_run_writer import (
     MetaRunWriter,
@@ -18,9 +19,10 @@ from opensquilla.persistence.meta_run_writer import (
     _serialize_plan,
     _truncate,
     open_meta_run_writer,
+    summarize_run_record,
 )
 from opensquilla.persistence.migrator import apply_pending
-from opensquilla.skills.meta.types import MetaPlan, MetaStep
+from opensquilla.skills.meta.types import MetaPlan, MetaResult, MetaStep
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[1].parent / "migrations"
 
@@ -115,6 +117,168 @@ def test_step_lifecycle(writer: MetaRunWriter) -> None:
     assert steps[0].status == "ok"
     assert steps[0].output_text == "alpha-output"
     assert steps[0].effective_skill == "alpha"
+
+
+def test_finish_step_works_after_usage_column_rollback(tmp_path: Path) -> None:
+    db = str(tmp_path / "v014_schema.db")
+    apply_pending(db, MIGRATIONS_DIR)
+    backend = get_backend(f"sqlite:///{db}")
+    migrations = read_migrations(str(MIGRATIONS_DIR))
+    by_id = {migration.id: migration for migration in migrations}
+    backend.rollback_migrations([by_id["V015__meta_skill_step_usage"]])
+
+    w = open_meta_run_writer(db)
+    try:
+        plan = _make_plan()
+        run_id = w.begin_run_sync(
+            meta_skill_name=plan.name,
+            meta_plan=plan,
+            triggered_by="hard_takeover",
+            inputs={"q": "x"},
+            session_key=None,
+            turn_id=None,
+        )
+        w.begin_step_sync(
+            run_id=run_id,
+            step=plan.steps[0],
+            effective_skill="alpha",
+            rendered_inputs={"q": "x"},
+        )
+        w.finish_step_sync(
+            run_id=run_id,
+            step_id="s1",
+            status="ok",
+            output_text="alpha-output",
+            usage={"input_tokens": 5, "output_tokens": 2},
+        )
+
+        [step] = w.get_steps(run_id)
+        assert step.status == "ok"
+        assert step.output_text == "alpha-output"
+        record = w.get_run(run_id)
+        assert record is not None
+        assert summarize_run_record(record)["usage"]["available"] is False
+    finally:
+        w.close()
+
+
+def test_run_summary_reports_step_counts_duration_and_unavailable_cost(
+    writer: MetaRunWriter,
+) -> None:
+    plan = _make_plan()
+    run_id = writer.begin_run_sync(
+        meta_skill_name=plan.name,
+        meta_plan=plan,
+        triggered_by="soft_meta_invoke",
+        inputs={"user_message": "summarize"},
+        session_key="sess-1",
+        turn_id="turn-1",
+    )
+    writer.begin_step_sync(
+        run_id=run_id,
+        step=plan.steps[0],
+        effective_skill="alpha",
+        rendered_inputs={"q": "x"},
+    )
+    writer.finish_step_sync(
+        run_id=run_id,
+        step_id="s1",
+        status="ok",
+        output_text="alpha-output",
+    )
+    writer.finish_run_sync(
+        run_id=run_id,
+        status="ok",
+        result=MetaResult(ok=True, final_text="done"),
+    )
+
+    record = writer.get_run(run_id)
+    assert record is not None
+    summary = summarize_run_record(record)
+
+    assert summary["run_id"] == run_id
+    assert summary["step_count"] == 1
+    assert summary["completed_step_count"] == 1
+    assert summary["failed_step_count"] == 0
+    assert summary["duration_ms"] is not None
+    assert summary["final_text_chars"] == 4
+    assert summary["step_output_chars"] == len("alpha-output")
+    assert summary["usage"]["available"] is False
+    assert summary["usage"]["cost_source"] == "unavailable"
+    assert summary["steps"][0]["output_chars"] == len("alpha-output")
+
+
+def test_run_summary_aggregates_persisted_step_usage(writer: MetaRunWriter) -> None:
+    plan = _make_plan()
+    run_id = writer.begin_run_sync(
+        meta_skill_name=plan.name,
+        meta_plan=plan,
+        triggered_by="soft_meta_invoke",
+        inputs={"user_message": "summarize"},
+        session_key="sess-1",
+        turn_id="turn-1",
+    )
+    writer.begin_step_sync(
+        run_id=run_id,
+        step=plan.steps[0],
+        effective_skill="alpha",
+        rendered_inputs={"q": "x"},
+    )
+    writer.finish_step_sync(
+        run_id=run_id,
+        step_id="s1",
+        status="ok",
+        output_text="alpha-output",
+        usage={
+            "input_tokens": 12,
+            "output_tokens": 3,
+            "total_tokens": 15,
+            "cost_usd": 0.0042,
+            "estimated_cost_usd": 0.0042,
+            "billed_cost_usd": 0.0,
+            "cost_source": "opensquilla_estimate",
+            "model": "model-alpha",
+        },
+    )
+    writer.begin_step_sync(
+        run_id=run_id,
+        step=plan.steps[1],
+        effective_skill="beta",
+        rendered_inputs={"q": "y"},
+    )
+    writer.finish_step_sync(
+        run_id=run_id,
+        step_id="s2",
+        status="ok",
+        output_text="beta-output",
+        usage={
+            "input_tokens": 20,
+            "output_tokens": 5,
+            "total_tokens": 25,
+            "cost_usd": 0.01,
+            "billed_cost_usd": 0.01,
+            "cost_source": "provider_billed",
+            "model": "model-beta",
+        },
+    )
+    writer.finish_run_sync(
+        run_id=run_id,
+        status="ok",
+        result=MetaResult(ok=True, final_text="done"),
+    )
+
+    record = writer.get_run(run_id)
+    assert record is not None
+    summary = summarize_run_record(record)
+
+    assert summary["usage"]["available"] is True
+    assert summary["usage"]["input_tokens"] == 32
+    assert summary["usage"]["output_tokens"] == 8
+    assert summary["usage"]["total_tokens"] == 40
+    assert summary["usage"]["cost_usd"] == pytest.approx(0.0142)
+    assert summary["usage"]["cost_source"] == "mixed"
+    assert summary["steps"][0]["usage"]["model"] == "model-alpha"
+    assert summary["steps"][1]["usage"]["cost_source"] == "provider_billed"
 
 
 def test_llm_chat_step_lifecycle(writer: MetaRunWriter) -> None:

@@ -31,11 +31,13 @@ composition:
       with:
         task: "Append a new 'Insights' sheet to the workbook with the following analysis: {{ outputs.analyze }}"
     - id: memorize
-      skill: memory
+      kind: tool_call
+      tool: memory_save
+      tool_allowlist: [memory_save]
       depends_on: [analyze]
-      with:
-        action: save
-        topic: "spreadsheet-kpi"
+      tool_args:
+        path: "memory/spreadsheet-kpi.md"
+        mode: append
         content: "{{ outputs.analyze }}"
 ---
 

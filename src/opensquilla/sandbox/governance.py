@@ -264,6 +264,22 @@ class ApprovalGate:
             )
             return ALLOW
 
+        # Intent-level short-circuit: honor a remembered "always allow" the same
+        # way the shell tool does, so a sandboxed tool does not re-prompt for a
+        # destructive intent the user already approved for the session. The
+        # cache keys on (kind, target) extracted from the command text, so a
+        # non-command request (e.g. a plugin grant) simply never matches.
+        if _intent_cached_allow(request):
+            _log_decision(
+                request,
+                policy,
+                fingerprint,
+                decision="allow",
+                approval_required=True,
+                session_id=session_id,
+            )
+            return ALLOW
+
         params = {
             "action_kind": request.action_kind,
             "argv": list(request.argv),
@@ -489,6 +505,28 @@ async def on_successful_exec(
 
 
 # ─── Internal helpers ─────────────────────────────────────────────────────
+
+
+def _intent_cached_allow(request: SandboxRequest) -> bool:
+    """Return True when every destructive intent in ``request`` is remembered.
+
+    The intent cache stores ``(kind, target)`` keys parsed from a command
+    string. The gate only holds an ``argv`` tuple, so we join it back into a
+    single string (the command is the trailing element for exec-style argv)
+    and let the cache's own extraction decide whether anything matches. A
+    miss — including the common case where the request carries no command
+    text — falls through to the normal approval flow. Failure is treated as a
+    miss so a cache error never silently approves an action.
+    """
+    if not request.argv:
+        return False
+    command = " ".join(str(part) for part in request.argv)
+    try:
+        from opensquilla.application.intent_cache import get_intent_cache
+
+        return get_intent_cache().check(command)
+    except Exception:  # pragma: no cover — cache path is best-effort, fail closed
+        return False
 
 
 def _log_decision(

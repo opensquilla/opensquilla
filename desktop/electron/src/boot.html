@@ -1,0 +1,348 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Starting OpenSquilla</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f8f7f3;
+      --surface: #fffefa;
+      --ink: #1d1f1d;
+      --muted: #686e66;
+      --dim: #8b9088;
+      --line: rgba(34, 31, 27, 0.12);
+      --accent: #c5480b;
+      --danger: #a23a22;
+    }
+
+    /* The app theme defaults to "system", so match the OS here — a dark-OS user
+       gets a dark splash that hands off to the dark app with no luminance flash.
+       These mirror the app's base.css dark tokens. */
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #08080a;
+        --surface: #101013;
+        --ink: #e8e8ea;
+        --muted: #9a9aa0;
+        --dim: #6b6b72;
+        --line: rgba(255, 255, 255, 0.12);
+      }
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .shell {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 40px;
+    }
+
+    .boot {
+      width: min(520px, calc(100vw - 48px));
+      display: grid;
+      gap: 34px;
+      padding: 4px;
+    }
+
+    .brand {
+      display: grid;
+      gap: 12px;
+    }
+
+    .mark-row {
+      align-items: center;
+      display: flex;
+      gap: 11px;
+    }
+
+    .mark {
+      width: 22px;
+      height: 22px;
+      border: 2px solid var(--ink);
+      position: relative;
+    }
+
+    .mark::after {
+      content: "";
+      position: absolute;
+      bottom: -2px;
+      right: -7px;
+      width: 9px;
+      height: 2px;
+      background: var(--accent);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 28px;
+      font-weight: 760;
+      letter-spacing: 0;
+      line-height: 1;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.5;
+      margin: 0;
+      max-width: 42ch;
+    }
+
+    .status {
+      display: grid;
+      gap: 13px;
+      padding-top: 2px;
+    }
+
+    .status-line {
+      height: 2px;
+      overflow: hidden;
+      background: rgba(29, 31, 29, 0.1);
+    }
+
+    .status-line::before {
+      animation: progress 1.6s ease-in-out infinite;
+      background: var(--accent);
+      content: "";
+      display: block;
+      height: 100%;
+      width: 38%;
+    }
+
+    .status-copy {
+      align-items: baseline;
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+    }
+
+    .phase {
+      color: var(--ink);
+      font-size: 14px;
+      font-weight: 680;
+      min-width: 0;
+    }
+
+    .timer {
+      color: var(--dim);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .steps {
+      display: grid;
+      gap: 8px;
+      grid-template-columns: repeat(3, 1fr);
+    }
+
+    .step {
+      border-top: 1px solid var(--line);
+      color: var(--dim);
+      font-size: 11px;
+      font-weight: 720;
+      letter-spacing: 0.06em;
+      padding-top: 10px;
+      text-transform: uppercase;
+      transition: color 160ms ease, border-color 160ms ease;
+    }
+
+    .step.active {
+      border-color: var(--accent);
+      color: var(--ink);
+    }
+
+    .step.done {
+      border-color: rgba(29, 31, 29, 0.32);
+      color: var(--muted);
+    }
+
+    .error {
+      display: none;
+      gap: 13px;
+      padding: 16px;
+      border: 1px solid rgba(162, 58, 34, 0.28);
+      background: #fff8f5;
+      color: var(--danger);
+    }
+
+    .error.visible { display: grid; }
+
+    .error strong {
+      font-size: 13px;
+    }
+
+    .error p {
+      color: #75584f;
+      font-size: 13px;
+      line-height: 1.45;
+      margin: 0;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    button {
+      min-height: 34px;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--ink);
+      cursor: pointer;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 720;
+      padding: 0 12px;
+    }
+
+    button.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+    }
+
+    @keyframes progress {
+      0% { transform: translateX(-110%); opacity: 0.35; }
+      24% { opacity: 1; }
+      100% { transform: translateX(270%); opacity: 0.45; }
+    }
+
+    @media (max-width: 560px) {
+      .shell { padding: 28px; }
+      .status-copy {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .steps {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <main class="boot" aria-label="OpenSquilla startup">
+      <section class="brand">
+        <div class="mark-row">
+          <span class="mark" aria-hidden="true"></span>
+          <h1>OpenSquilla</h1>
+        </div>
+        <p class="subtitle">Starting the desktop control surface.</p>
+      </section>
+
+      <section class="status" aria-live="polite">
+        <div class="status-line" aria-hidden="true"></div>
+        <div class="status-copy">
+          <span class="phase" id="phase">Preparing desktop profile</span>
+          <span class="timer" id="timer">00.0s</span>
+        </div>
+        <div class="steps" aria-hidden="true">
+          <span class="step active" data-step="profile">Profile</span>
+          <span class="step" data-step="gateway">Gateway</span>
+          <span class="step" data-step="control">Control</span>
+        </div>
+      </section>
+
+      <section class="error" id="errorPanel" aria-live="polite">
+        <strong>Startup needs attention</strong>
+        <p id="errorMessage">The gateway did not finish starting.</p>
+        <div class="actions">
+          <button id="revealLog" type="button">Reveal log</button>
+          <button id="quit" type="button">Quit</button>
+          <button id="retry" class="primary" type="button">Retry</button>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script>
+    const started = performance.now();
+    const phase = document.getElementById('phase');
+    const timer = document.getElementById('timer');
+    const errorPanel = document.getElementById('errorPanel');
+    const errorMessage = document.getElementById('errorMessage');
+    const steps = {
+      profile: document.querySelector('[data-step="profile"]'),
+      gateway: document.querySelector('[data-step="gateway"]'),
+      control: document.querySelector('[data-step="control"]'),
+    };
+
+    const stepMap = {
+      'Preparing desktop profile': 'profile',
+      'Starting local runtime': 'gateway',
+      'Checking gateway health': 'gateway',
+      'Loading Control UI': 'control',
+      Ready: 'control',
+    };
+
+    function setStepState(activeKey, ready) {
+      let passedActive = false;
+      for (const [key, step] of Object.entries(steps)) {
+        step.classList.remove('active', 'done');
+        if (key === activeKey) {
+          step.classList.add(ready ? 'done' : 'active');
+          passedActive = true;
+        } else if (!passedActive) {
+          step.classList.add('done');
+        }
+      }
+    }
+
+    function applyStatus(payload) {
+      const label = payload && payload.label ? String(payload.label) : 'Preparing desktop profile';
+      phase.textContent = label;
+      errorPanel.classList.remove('visible');
+      setStepState(stepMap[label] || 'profile', label === 'Ready');
+    }
+
+    function applyError(payload) {
+      const message = payload && payload.message ? String(payload.message) : 'The gateway did not finish starting.';
+      phase.textContent = 'Startup paused';
+      errorMessage.textContent = message;
+      errorPanel.classList.add('visible');
+    }
+
+    setInterval(() => {
+      timer.textContent = `${((performance.now() - started) / 1000).toFixed(1).padStart(4, '0')}s`;
+    }, 100);
+
+    const api = window.opensquillaDesktop;
+    if (api) {
+      api.onBootStatus(applyStatus);
+      api.onBootError(applyError);
+      api.getBootState().then((state) => {
+        if (state && state.error) applyError(state.error);
+        else applyStatus(state && state.status ? state.status : null);
+      }).catch(() => applyStatus(null));
+      document.getElementById('retry').addEventListener('click', () => api.retryStartup());
+      document.getElementById('revealLog').addEventListener('click', () => api.revealGatewayLog());
+      document.getElementById('quit').addEventListener('click', () => api.quitApp());
+    }
+  </script>
+</body>
+</html>

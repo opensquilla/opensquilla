@@ -7,6 +7,24 @@ import re
 from typing import Any
 
 from opensquilla.artifacts import artifact_payload, strip_artifact_markers_from_text
+from opensquilla.meta_preflight_protocol import (
+    display_text_from_preflight_confirmation,
+    strip_preflight_confirmation_protocol_text,
+)
+
+
+def _sanitize_display_protocol_payload(value: Any) -> Any:
+    if isinstance(value, str):
+        clean = strip_preflight_confirmation_protocol_text(value)
+        return clean if clean is not None else value
+    if isinstance(value, list):
+        return [_sanitize_display_protocol_payload(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _sanitize_display_protocol_payload(item)
+            for key, item in value.items()
+        }
+    return value
 
 
 def transcript_entries_to_chat_messages(
@@ -46,6 +64,10 @@ def transcript_entries_to_chat_messages(
             content = "\n".join(t.replace("\\n", "\n") for t in texts) if texts else ""
             if not content.strip():
                 continue
+        if getattr(entry, "role", "unknown") == "user":
+            display_text = display_text_from_preflight_confirmation(content)
+            if display_text is not None:
+                content = display_text
         msg: dict[str, Any] = {
             "id": getattr(entry, "message_id", None),
             "message_id": getattr(entry, "message_id", None),
@@ -59,6 +81,9 @@ def transcript_entries_to_chat_messages(
         transcript_id = getattr(entry, "id", None)
         if transcript_id is not None:
             msg["transcript_id"] = transcript_id
+        reasoning = getattr(entry, "reasoning_content", None)
+        if isinstance(reasoning, str) and reasoning.strip():
+            msg["reasoning_content"] = reasoning
         if attachments:
             msg["attachments"] = attachments
         if artifacts:
@@ -79,6 +104,6 @@ def transcript_entries_to_chat_messages(
                 msg["cost_usd"] = float(usage.get("cost_usd") or 0.0)
         tool_calls = getattr(entry, "tool_calls", None)
         if tool_calls:
-            msg["tool_calls"] = tool_calls
+            msg["tool_calls"] = _sanitize_display_protocol_payload(tool_calls)
         messages.append(msg)
     return messages

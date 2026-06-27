@@ -294,9 +294,24 @@ def test_chat_empty_attachment_turn_has_separate_display_text() -> None:
     send_body = source[send_start:send_end]
 
     assert "const providerText = text || 'Describe these attachments';" in send_body
-    assert "const userText = text;" in send_body
+    assert (
+        "const userText = displayTextOverride !== null ? displayTextOverride : text;"
+        in send_body
+    )
     assert "params.displayText = userText" in send_body
     assert "text || '(attachment)'" not in send_body
+
+
+def test_chat_meta_preflight_confirmation_uses_hidden_send_payload() -> None:
+    source = _read_chat_js()
+    handler_start = source.index("const _onMetaPreflightAction = async (ev) => {")
+    handler_end = source.index("document.addEventListener('meta-preflight-action'", handler_start)
+    handler_body = source[handler_start:handler_end]
+
+    assert "_sendHiddenMetaPreflightConfirmation(confirmed, detail);" in handler_body
+    assert "_textarea.value = confirmed.message" not in handler_body
+    assert "_onSend();" not in handler_body
+    assert "confirmed.message || `${detail.interpretedRequest" not in handler_body
 
 
 def test_chat_artifact_layout_groups_visuals_and_files_without_stretching() -> None:
@@ -532,8 +547,10 @@ def test_chat_interrupt_mark_is_rendered_and_styled() -> None:
     assert "var(--text-muted)" in css.split(".msg-interrupt-mark", 1)[1].split("}", 1)[0]
 
 
-def test_health_assets_are_loaded_by_index_template() -> None:
+def test_control_index_loads_vue_entrypoint() -> None:
     index = Path("src/opensquilla/gateway/templates/index.html").read_text(encoding="utf-8")
 
-    assert "views/health.css" in index
-    assert "views/health.js" in index
+    assert 'id="app"' in index
+    assert 'id="opensquilla-data"' in index
+    assert "vite_css_urls" in index
+    assert "vite_js_url" in index

@@ -9,10 +9,16 @@ import pytest
 import opensquilla.engine.agent as agent_mod
 import opensquilla.engine.tokenjuice_adapter as tokenjuice_adapter_mod
 from opensquilla.engine import Agent, AgentConfig, ToolCall, ToolResult
-from opensquilla.engine.types import ToolResultEvent
+from opensquilla.engine.types import ToolResultEvent, ToolUseDeltaEvent
 from opensquilla.plugins.tokenjuice import reduce_tool_result as backend_reduce_tool_result
+from opensquilla.provider import (
+    ContentBlockThinking,
+    TextDeltaEvent,
+    ToolDefinition,
+    ToolInputSchema,
+)
 from opensquilla.provider import DoneEvent as ProviderDoneEvent
-from opensquilla.provider import TextDeltaEvent, ToolDefinition, ToolInputSchema
+from opensquilla.provider import ToolUseDeltaEvent as ProviderToolUseDeltaEvent
 from opensquilla.provider import ToolUseEndEvent as ProviderToolUseEndEvent
 from opensquilla.provider import ToolUseStartEvent as ProviderToolUseStartEvent
 
@@ -51,6 +57,14 @@ class _ToolCallingProvider:
     async def _stream(self, call_number: int):
         if call_number == 1:
             yield ProviderToolUseStartEvent(tool_use_id="tool-1", tool_name="exec_command")
+            yield ProviderToolUseDeltaEvent(
+                tool_use_id="tool-1",
+                json_fragment='{"command": "pytest -q"',
+            )
+            yield ProviderToolUseDeltaEvent(
+                tool_use_id="tool-1",
+                json_fragment=', "workdir": "/repo"}',
+            )
             yield ProviderToolUseEndEvent(
                 tool_use_id="tool-1",
                 tool_name="exec_command",
@@ -63,6 +77,30 @@ class _ToolCallingProvider:
 
     async def list_models(self) -> list[Any]:
         return []
+
+
+class _SignatureOnlyToolCallingProvider(_ToolCallingProvider):
+    async def _stream(self, call_number: int):
+        if call_number == 1:
+            yield ProviderToolUseStartEvent(tool_use_id="tool-1", tool_name="exec_command")
+            yield ProviderToolUseDeltaEvent(
+                tool_use_id="tool-1",
+                json_fragment='{"command": "pytest -q"}',
+            )
+            yield ProviderToolUseEndEvent(
+                tool_use_id="tool-1",
+                tool_name="exec_command",
+                arguments={"command": "pytest -q"},
+            )
+            yield ProviderDoneEvent(
+                stop_reason="tool_use",
+                input_tokens=1,
+                output_tokens=1,
+                thinking_signature="gemini-signature-only",
+            )
+            return
+        yield TextDeltaEvent(text="done")
+        yield ProviderDoneEvent(stop_reason="stop", input_tokens=1, output_tokens=1)
 
 
 def _tool_def(name: str) -> ToolDefinition:
@@ -373,9 +411,46 @@ async def test_run_turn_feeds_tokenjuice_reduced_tool_result_to_next_provider_ca
     assert "rootdir:" not in second_call_tool_result
     assert agent.config.metadata["tool_projection_backend"] == "tokenjuice"
     projected_event = next(event for event in events if isinstance(event, ToolResultEvent))
+    delta_fragments = [
+        event.json_fragment for event in events if isinstance(event, ToolUseDeltaEvent)
+    ]
+    assert delta_fragments == ['{"command": "pytest -q"', ', "workdir": "/repo"}']
     assert projected_event.result == second_call_tool_result
     assert projected_event.result != output
     assert "rootdir:" not in projected_event.result
+
+
+@pytest.mark.asyncio
+async def test_agent_preserves_signature_only_thinking_block_for_next_provider_call() -> None:
+    async def handler(tool_call: ToolCall) -> ToolResult:
+        return ToolResult(
+            tool_use_id=tool_call.tool_use_id,
+            tool_name=tool_call.tool_name,
+            content="ok",
+        )
+
+    provider = _SignatureOnlyToolCallingProvider()
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(context_window_tokens=1_000_000, max_iterations=2),
+        tool_definitions=[_tool_def("exec_command")],
+        tool_handler=handler,
+    )
+
+    _events = [event async for event in agent.run_turn("run tests")]
+
+    assert len(provider.calls) == 2
+    assistant_messages = [message for message in provider.calls[1] if message.role == "assistant"]
+    assert assistant_messages
+    thinking_blocks = [
+        block
+        for message in assistant_messages
+        for block in message.content
+        if isinstance(block, ContentBlockThinking)
+    ]
+    assert thinking_blocks
+    assert thinking_blocks[0].thinking == ""
+    assert thinking_blocks[0].signature == "gemini-signature-only"
 
 
 @pytest.mark.asyncio

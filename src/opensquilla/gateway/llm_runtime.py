@@ -7,10 +7,18 @@ from dataclasses import dataclass
 from typing import Any
 
 OPENROUTER_DEFAULT_PROVIDER_ROUTING = {
+    "anthropic/claude-opus-4.8": "anthropic",
+    "anthropic/claude-sonnet-4.6": "anthropic",
     "deepseek/deepseek-v4-flash": "deepseek",
-    "z-ai/glm-5.1": "z-ai",
-    "anthropic/claude-opus-4.7": "anthropic",
+    "google/gemini-3.5-flash": "google",
     "moonshotai/kimi-k2.6": "moonshotai",
+    "openai/gpt-5.4-mini": "openai",
+    "openai/gpt-5.5": "openai",
+    "qwen/qwen3-coder-plus": "qwen",
+    "x-ai/grok-4.3": "x-ai",
+    "z-ai/glm-4.6": "z-ai",
+    "z-ai/glm-5.1": "z-ai",
+    "z-ai/glm-5.2": "z-ai",
 }
 
 

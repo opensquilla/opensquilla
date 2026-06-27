@@ -11,7 +11,7 @@ from opensquilla.engine.types import DoneEvent
 TEXT_TIERS = {
     "c0": {"model": "deepseek/deepseek-v4-flash"},
     "c2": {"model": "deepseek/deepseek-v4-pro"},
-    "c3": {"model": "anthropic/claude-opus-4.7"},
+    "c3": {"model": "anthropic/claude-opus-4.8"},
     "image_model": {"model": "moonshotai/kimi-k2.6", "image_only": True},
 }
 
@@ -37,7 +37,7 @@ def test_comprehensive_savings_uses_input_output_and_reasoning_prices() -> None:
         "deepseek/deepseek-v4-flash",
     )
 
-    assert result.baseline_model == "anthropic/claude-opus-4.7"
+    assert result.baseline_model == "anthropic/claude-opus-4.8"
     assert result.baseline_cost_usd == pytest.approx(0.0175)
     assert result.actual_cost_usd == pytest.approx(0.00028)
     assert result.usd == pytest.approx(0.01722)

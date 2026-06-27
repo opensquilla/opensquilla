@@ -1,4 +1,4 @@
-"""Web built-in tools: http_request, web_search."""
+"""Web built-in tools: http_request, web_search, web_discover."""
 
 from __future__ import annotations
 
@@ -8,14 +8,24 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qsl, urlparse
 
 import httpx
 
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.sandbox.integration import sandboxed
-from opensquilla.search.types import SearchProviderError, SearchResult
+from opensquilla.search.canonical import run_canonical_web_search
+from opensquilla.search.normalize import canonicalize_url, extract_domain
+from opensquilla.search.types import (
+    DEFAULT_SEARCH_MAX_RESULTS,
+    MAX_SEARCH_RESULTS,
+    Recency,
+    SearchMode,
+    SearchOptions,
+    SearchProviderError,
+    SearchResult,
+)
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
 from opensquilla.tools.types import ToolError, UnsupportedURLSchemeError, current_tool_context
@@ -49,6 +59,11 @@ _SENSITIVE_HTTP_METHODS = {"POST", "PUT", "PATCH"}
 _TEXT_BODY_LIMIT = 10_000
 _BINARY_BODY_LIMIT = 1_000_000
 _FETCH_DIR_NAME = ".fetch"
+_VALID_SEARCH_MODES: frozenset[str] = frozenset({"auto", "news", "technical", "broad"})
+_VALID_SEARCH_RECENCIES: frozenset[str] = frozenset({"day", "week", "month", "year"})
+_VALID_SEARCH_PROVIDERS: frozenset[str] = frozenset(
+    {"auto", "bocha", "tavily", "brave", "duckduckgo", "exa"}
+)
 
 
 def _sensitive_body_marker(body: str | None) -> str | None:
@@ -293,7 +308,7 @@ async def http_request(
 
 # Active search provider name — set during boot
 _active_provider: str = "duckduckgo"
-_active_max_results: int = 5
+_active_max_results: int = DEFAULT_SEARCH_MAX_RESULTS
 _active_search_proxy: str = ""
 _active_search_api_key: str = ""
 _active_search_use_env_proxy: bool = False
@@ -303,14 +318,17 @@ _active_search_diagnostics: bool = False
 
 def configure_search(
     provider_name: str,
-    max_results: int = 5,
+    max_results: int = DEFAULT_SEARCH_MAX_RESULTS,
     *,
     api_key: str = "",
+    api_key_env: str = "",
     proxy: str = "",
     use_env_proxy: bool = False,
     fallback_policy: str = "off",
     diagnostics: bool = False,
 ) -> None:
+    from opensquilla.search.runtime_config import configure_search_runtime
+
     global _active_provider, _active_max_results, _active_search_proxy
     global _active_search_api_key, _active_search_use_env_proxy, _active_search_fallback_policy
     global _active_search_diagnostics
@@ -323,6 +341,16 @@ def configure_search(
         fallback_policy if fallback_policy in {"off", "network"} else "off"
     )
     _active_search_diagnostics = bool(diagnostics)
+    configure_search_runtime(
+        provider=provider_name,
+        max_results=max_results,
+        api_key=api_key,
+        api_key_env=api_key_env,
+        proxy=proxy,
+        use_env_proxy=use_env_proxy,
+        fallback_policy=fallback_policy,
+        diagnostics=diagnostics,
+    )
 
 
 def reset_search_runtime() -> None:
@@ -335,16 +363,13 @@ def get_active_provider() -> str:
 
 
 def is_search_api_key_configured(provider_name: str | None = None) -> bool:
-    provider = provider_name or _active_provider
-    if provider == _active_provider and _active_search_api_key:
-        return True
     try:
-        from opensquilla.search.registry import get_provider_spec
+        from opensquilla.search.runtime_config import get_resolved_search_runtime
 
-        spec = get_provider_spec(provider)
+        provider = provider_name or _active_provider
+        return get_resolved_search_runtime().provider_config(provider).credential_configured
     except Exception:
         return False
-    return bool(spec.env_key and os.environ.get(spec.env_key))
 
 
 def get_search_proxy() -> str:
@@ -380,20 +405,17 @@ def _format_search_error(provider_name: str, exc: Exception) -> tuple[str, str]:
 
 
 def _search_provider_kwargs(provider_name: str) -> dict[str, object]:
-    kwargs: dict[str, object] = {
-        "proxy": _active_search_proxy,
-        "use_env_proxy": _active_search_use_env_proxy,
-    }
-    if provider_name == "brave" and _active_search_api_key:
-        kwargs["api_key"] = _active_search_api_key
-    if _active_search_diagnostics or provider_name == "duckduckgo":
-        kwargs["diagnostics"] = _active_search_diagnostics
-    return kwargs
+    from opensquilla.search.runtime_config import get_resolved_search_runtime
+
+    return get_resolved_search_runtime().provider_kwargs(provider_name)
 
 
 def _ensure_builtin_search_providers() -> None:
+    import opensquilla.search.providers.bocha  # noqa: F401
     import opensquilla.search.providers.brave  # noqa: F401
     import opensquilla.search.providers.duckduckgo  # noqa: F401
+    import opensquilla.search.providers.exa  # noqa: F401
+    import opensquilla.search.providers.tavily  # noqa: F401
 
 
 def _search_success_payload(payload: dict) -> dict:
@@ -422,16 +444,19 @@ def _search_failure_payload(payload: dict, *, retryable: bool = False) -> dict:
 
 def search_runtime_status(provider_name: str | None = None) -> dict:
     from opensquilla.search.registry import get_provider, get_provider_spec
+    from opensquilla.search.runtime_config import get_resolved_search_runtime
 
     _ensure_builtin_search_providers()
+    runtime = get_resolved_search_runtime()
     provider = provider_name or _active_provider
     spec = get_provider_spec(provider)
-    api_key_configured = is_search_api_key_configured(provider)
+    provider_runtime = runtime.provider_config(provider)
+    api_key_configured = provider_runtime.credential_configured
     configured = (not spec.requires_api_key) or api_key_configured
     error: str | None = None
     buildable = False
     try:
-        get_provider(provider, **_search_provider_kwargs(provider))
+        get_provider(provider, **provider_runtime.provider_kwargs())
         buildable = True
     except Exception as exc:  # noqa: BLE001 - diagnostic surface
         error = str(exc)
@@ -449,25 +474,151 @@ def search_runtime_status(provider_name: str | None = None) -> dict:
         "diagnostics": bool(_active_search_diagnostics),
         "buildable": buildable,
         "error": error,
+        "effectiveCredentialSource": provider_runtime.credential_source,
+        "available": provider_runtime.available,
+        "skippedReason": provider_runtime.skipped_reason,
+        "capabilities": sorted(provider_runtime.capabilities),
+        "candidateProviders": list(runtime.provider_order(SearchOptions(query="status"))),
     }
 
 
-async def run_web_search_payload(
+async def run_web_discover_payload(
     query: str,
     max_results: int | None = None,
     *,
     provider_name: str | None = None,
 ) -> dict:
     from opensquilla.search.registry import get_provider
+    from opensquilla.search.runtime_config import get_resolved_search_runtime
 
     _ensure_builtin_search_providers()
-    provider_name = provider_name or _active_provider
+    explicit_provider = provider_name is not None
+    display_provider = provider_name or _active_provider
+    runtime = get_resolved_search_runtime()
     marker = _sensitive_body_marker(query)
     if marker is not None:
         return _search_failure_payload(
             {
                 "query": "[redacted]",
-                "provider": provider_name,
+                "provider": display_provider,
+                "results": [],
+                "error_class": "SensitiveInput",
+                "error": _sensitive_body_block("web_discover", marker),
+                "error_kind": "invalid_request",
+            },
+            retryable=False,
+        )
+
+    # Defence in depth: clamp to the shared ceiling before hitting the provider so
+    # an out-of-range configured/active value cannot ask an uncapped provider
+    # (e.g. duckduckgo) for an unbounded number of results.
+    limit = min(max(max_results or _active_max_results, 1), MAX_SEARCH_RESULTS)
+    provider_names = _web_discover_provider_order(
+        runtime,
+        query=query,
+        max_results=limit,
+        provider_name=provider_name,
+    )
+    attempts: list[dict[str, str]] | None = [] if _active_search_diagnostics else None
+    terminal_provider = provider_names[0] if provider_names else display_provider
+    terminal_exc: Exception | None = None
+    fallback_from = ""
+
+    for candidate_provider in provider_names:
+        try:
+            provider = get_provider(
+                candidate_provider,
+                **_search_provider_kwargs(candidate_provider),
+            )
+            results = await provider.search(query, max_results=limit)
+            if attempts is not None:
+                attempts.append({"provider": candidate_provider, "status": "success"})
+            return _search_success_payload(
+                _search_payload(
+                    query,
+                    candidate_provider,
+                    fallback_from=fallback_from,
+                    attempts=attempts,
+                    results=results,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - converted to structured payload below
+            terminal_provider = candidate_provider
+            terminal_exc = exc
+            classified = _classify_search_error(candidate_provider, exc)
+            if attempts is not None:
+                attempts.append(
+                    {
+                        "provider": candidate_provider,
+                        "status": "error",
+                        "error_kind": classified.kind if classified else "unknown",
+                    }
+                )
+
+            should_fallback = (
+                classified is not None
+                and runtime.should_fallback(classified, explicit_provider=explicit_provider)
+            )
+            if should_fallback:
+                fallback_from = fallback_from or candidate_provider
+                continue
+            return _search_failure_payload(
+                _search_error_payload(query, candidate_provider, exc, attempts=attempts),
+                retryable=bool(classified and classified.retryable),
+            )
+
+    if terminal_exc is None:
+        terminal_exc = ValueError("No search provider available for web_discover.")
+    classified = _classify_search_error(terminal_provider, terminal_exc)
+    return _search_failure_payload(
+        _search_error_payload(query, terminal_provider, terminal_exc, attempts=attempts),
+        retryable=bool(classified and classified.retryable),
+    )
+
+
+def _web_discover_provider_order(
+    runtime: Any,
+    *,
+    query: str,
+    max_results: int,
+    provider_name: str | None,
+) -> tuple[str, ...]:
+    order = runtime.provider_order(
+        SearchOptions(
+            query=query,
+            max_results=max_results,
+            fetch_top_k=0,
+            provider=provider_name,
+        )
+    )
+    if provider_name is None and _active_provider not in _VALID_SEARCH_PROVIDERS:
+        if runtime.fallback_policy == "network" and _active_provider != "duckduckgo":
+            return (_active_provider, "duckduckgo")
+        return (_active_provider,)
+    return order or (provider_name or _active_provider,)
+
+
+async def run_web_search_payload(
+    query: str,
+    max_results: int | None = None,
+    *,
+    mode: str = "auto",
+    fetch_top_k: int | None = None,
+    max_chars_per_source: int | None = None,
+    include_domains: list[str] | tuple[str, ...] | None = None,
+    exclude_domains: list[str] | tuple[str, ...] | None = None,
+    recency: str | None = None,
+    provider: str | None = None,
+) -> dict[str, object]:
+    if not isinstance(query, str) or not query.strip():
+        return _invalid_search_request_payload("query must be a non-empty string.")
+    marker = _sensitive_body_marker(query)
+    if marker is not None:
+        return _search_failure_payload(
+            {
+                "query": "[redacted]",
+                "provider": provider or _active_provider,
+                "sources": [],
                 "results": [],
                 "error_class": "SensitiveInput",
                 "error": _sensitive_body_block("web_search", marker),
@@ -475,70 +626,91 @@ async def run_web_search_payload(
             },
             retryable=False,
         )
-
-    limit = max_results or _active_max_results
-    attempts: list[dict[str, str]] | None = [] if _active_search_diagnostics else None
-    try:
-        provider = get_provider(
-            provider_name,
-            **_search_provider_kwargs(provider_name),
+    if mode not in _VALID_SEARCH_MODES:
+        expected = ", ".join(sorted(_VALID_SEARCH_MODES))
+        return _invalid_search_request_payload(f"Invalid mode. Expected one of: {expected}.")
+    if recency is not None and recency not in _VALID_SEARCH_RECENCIES:
+        expected = ", ".join(sorted(_VALID_SEARCH_RECENCIES))
+        return _invalid_search_request_payload(
+            f"Invalid recency. Expected one of: {expected}."
         )
-        results = await provider.search(query, max_results=limit)
-        if attempts is not None:
-            attempts.append({"provider": provider_name, "status": "success"})
-        return _search_success_payload(_search_payload(query, provider_name, results))
-    except Exception as exc:
-        classified = _classify_search_error(provider_name, exc)
-        if attempts is not None:
-            attempts.append(
-                {
-                    "provider": provider_name,
-                    "status": "error",
-                    "error_kind": classified.kind if classified else "unknown",
-                }
-            )
-
-        should_fallback = (
-            _active_search_fallback_policy == "network"
-            and provider_name != "duckduckgo"
-            and classified is not None
-            and classified.kind in {"timeout", "network"}
+    if provider is not None and provider not in _VALID_SEARCH_PROVIDERS:
+        expected = ", ".join(sorted(_VALID_SEARCH_PROVIDERS))
+        return _invalid_search_request_payload(
+            f"Invalid provider. Expected one of: {expected}."
         )
-        if should_fallback:
-            try:
-                fallback_provider = get_provider(
-                    "duckduckgo",
-                    **_search_provider_kwargs("duckduckgo"),
-                )
-                results = await fallback_provider.search(query, max_results=limit)
-                if attempts is not None:
-                    attempts.append({"provider": "duckduckgo", "status": "success"})
-                return _search_success_payload(
-                    _search_payload(
-                        query,
-                        "duckduckgo",
-                        fallback_from=provider_name,
-                        attempts=attempts,
-                        results=results,
-                    )
-                )
-            except Exception as fallback_exc:
-                if attempts is not None:
-                    fallback_classified = _classify_search_error("duckduckgo", fallback_exc)
-                    attempts.append(
-                        {
-                            "provider": "duckduckgo",
-                            "status": "error",
-                            "error_kind": (
-                                fallback_classified.kind if fallback_classified else "unknown"
-                            ),
-                        }
-                    )
 
-        return _search_failure_payload(
-            _search_error_payload(query, provider_name, exc, attempts=attempts),
-            retryable=bool(classified and classified.retryable),
-        )
+    resolved_max_results, error = _optional_search_int(max_results, "max_results")
+    if error is not None:
+        return _invalid_search_request_payload(error)
+    resolved_fetch_top_k, error = _optional_search_int(fetch_top_k, "fetch_top_k")
+    if error is not None:
+        return _invalid_search_request_payload(error)
+    resolved_max_chars, error = _optional_search_int(
+        max_chars_per_source,
+        "max_chars_per_source",
+    )
+    if error is not None:
+        return _invalid_search_request_payload(error)
+    resolved_include_domains, error = _search_domain_list(
+        include_domains,
+        "include_domains",
+    )
+    if error is not None:
+        return _invalid_search_request_payload(error)
+    resolved_exclude_domains, error = _search_domain_list(
+        exclude_domains,
+        "exclude_domains",
+    )
+    if error is not None:
+        return _invalid_search_request_payload(error)
+
+    options = SearchOptions(
+        query=query,
+        mode=cast(SearchMode, mode),
+        max_results=(
+            _active_max_results if resolved_max_results is None else resolved_max_results
+        ),
+        fetch_top_k=3 if resolved_fetch_top_k is None else resolved_fetch_top_k,
+        max_chars_per_source=1500 if resolved_max_chars is None else resolved_max_chars,
+        include_domains=resolved_include_domains,
+        exclude_domains=resolved_exclude_domains,
+        recency=cast(Recency | None, recency),
+        provider=None if provider in (None, "auto") else provider,
+    )
+    return await run_canonical_web_search(options, fetcher=_web_search_fetcher)
+
+
+def _invalid_search_request_payload(message: str) -> dict[str, object]:
+    return {
+        "ok": False,
+        "error_kind": "invalid_request",
+        "error": message,
+    }
+
+
+def _optional_search_int(value: object, name: str) -> tuple[int | None, str | None]:
+    if value is None:
+        return None, None
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None, f"{name} must be an integer."
+    return value, None
+
+
+def _search_domain_list(value: object, name: str) -> tuple[tuple[str, ...], str | None]:
+    if value is None:
+        return (), None
+    if not isinstance(value, (list, tuple)) or not all(
+        isinstance(item, str) for item in value
+    ):
+        return (), f"{name} must be a list or tuple of strings."
+    return tuple(value), None
+
+
+async def _web_search_fetcher(url: str, max_chars: int) -> dict[str, object]:
+    from opensquilla.tools.builtin.web_fetch import run_web_fetch_payload
+
+    return await run_web_fetch_payload(url, max_chars=max_chars)
 
 
 def _classify_search_error(provider_name: str, exc: Exception) -> SearchProviderError | None:
@@ -572,12 +744,35 @@ def _search_payload(
     payload = {
         "query": query,
         "provider": provider_name,
-        "results": [{"title": r.title, "url": r.url, "snippet": r.snippet} for r in results],
+        "results": [_search_result_payload(provider_name, r) for r in results],
     }
     if fallback_from:
         payload["fallback_from"] = fallback_from
     if attempts is not None:
         payload["attempts"] = attempts
+    return payload
+
+
+def _search_result_payload(provider_name: str, result: SearchResult) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "title": result.title,
+        "url": result.url,
+        "snippet": result.snippet,
+    }
+    provider = result.provider or result.source or provider_name
+    if provider:
+        payload["provider"] = provider
+    if result.published_at:
+        payload["published_at"] = result.published_at
+    if result.score is not None:
+        payload["score"] = result.score
+    if result.url:
+        domain = extract_domain(result.url)
+        canonical_url = canonicalize_url(result.url)
+        if domain:
+            payload["domain"] = domain
+        if canonical_url:
+            payload["canonical_url"] = canonical_url
     return payload
 
 
@@ -606,7 +801,90 @@ def _search_error_payload(
 
 @tool(
     name="web_search",
-    description="Search the web and return results with titles, URLs, and snippets.",
+    description=(
+        "Source-backed web search for current information. Searches, deduplicates, "
+        "and can fetch compact citation-ready excerpts from top sources."
+    ),
+    params={
+        "query": {"type": "string", "description": "Search query."},
+        "mode": {
+            "type": "string",
+            "description": "Search mode.",
+            "enum": ["auto", "news", "technical", "broad"],
+        },
+        "max_results": {
+            "type": "integer",
+            "description": "Maximum number of deduplicated results to return.",
+        },
+        "fetch_top_k": {
+            "type": "integer",
+            "description": "Number of top results to fetch for compact excerpts.",
+        },
+        "max_chars_per_source": {
+            "type": "integer",
+            "description": "Maximum excerpt characters per source.",
+        },
+        "include_domains": {
+            "type": "array",
+            "description": "Optional domains to include.",
+            "items": {"type": "string"},
+        },
+        "exclude_domains": {
+            "type": "array",
+            "description": "Optional domains to exclude.",
+            "items": {"type": "string"},
+        },
+        "recency": {
+            "type": "string",
+            "description": "Optional recency filter.",
+            "enum": ["day", "week", "month", "year"],
+        },
+        "provider": {
+            "type": "string",
+            "description": "Optional provider override.",
+            "enum": ["auto", "bocha", "tavily", "brave", "duckduckgo", "exa"],
+        },
+    },
+    required=["query"],
+    result_budget_class="external",
+)
+@sandboxed(
+    kind="web.search",
+    argv_factory=lambda a: (
+        "web_search",
+        str(a.get("query", "")),
+        str(a.get("fetch_top_k", "")),
+    ),
+    record_payload=False,
+)
+async def web_search(
+    query: str,
+    mode: str = "auto",
+    max_results: int | None = None,
+    fetch_top_k: int | None = None,
+    max_chars_per_source: int | None = None,
+    include_domains: list[str] | tuple[str, ...] | None = None,
+    exclude_domains: list[str] | tuple[str, ...] | None = None,
+    recency: str | None = None,
+    provider: str | None = None,
+) -> str:
+    payload = await run_web_search_payload(
+        query,
+        mode=mode,
+        max_results=max_results,
+        fetch_top_k=fetch_top_k,
+        max_chars_per_source=max_chars_per_source,
+        include_domains=include_domains,
+        exclude_domains=exclude_domains,
+        recency=recency,
+        provider=provider,
+    )
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+@tool(
+    name="web_discover",
+    description="Lightweight web link discovery that returns titles, URLs, and snippets.",
     params={
         "query": {"type": "string", "description": "Search query."},
         "max_results": {
@@ -618,12 +896,16 @@ def _search_error_payload(
     result_budget_class="external",
 )
 @sandboxed(
-    kind="web.fetch",
-    argv_factory=lambda a: ("web_search", str(a.get("query", "")), str(a.get("max_results", ""))),
+    kind="web.discover",
+    argv_factory=lambda a: (
+        "web_discover",
+        str(a.get("query", "")),
+        str(a.get("max_results", "")),
+    ),
     record_payload=False,
 )
-async def web_search(query: str, max_results: int | None = None) -> str:
-    payload = await run_web_search_payload(query, max_results)
+async def web_discover(query: str, max_results: int | None = None) -> str:
+    payload = await run_web_discover_payload(query, max_results)
     tool_payload = dict(payload)
     tool_payload.pop("ok", None)
     tool_payload.pop("fallbackFrom", None)

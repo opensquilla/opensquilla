@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import secrets
 from dataclasses import dataclass
@@ -19,6 +20,10 @@ DEFAULT_TOOL_RESULT_RETENTION_SECONDS = 7 * 24 * 60 * 60
 TOOL_RESULT_STORE_SESSION_BUCKET = "s"
 TOOL_RESULT_CONTENT_NAME = "content.txt"
 TOOL_RESULT_META_NAME = "meta.json"
+# Hex chars of the content sha256 used to derive a deterministic (content-addressed)
+# handle. 32 hex chars = 128 bits, which both satisfies the ``tr-<32 hex>`` handle
+# format and makes truncated-digest collisions between distinct payloads negligible.
+_CONTENT_HANDLE_HEX = 32
 
 _SAFE_TOKEN_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -44,8 +49,6 @@ class ToolResultRecord:
 
 @dataclass(frozen=True)
 class _StoredMeta:
-    handle: str
-    session_id: str
     created_at: datetime
     size_bytes: int
     record_dir: Path
@@ -82,18 +85,66 @@ class ToolResultStore:
                 f"tool result snapshot exceeds per-result budget ({size_bytes} > {max_bytes})"
             )
 
+        sha = hashlib.sha256(payload).hexdigest()
+        primary_handle = f"tr-{sha[:_CONTENT_HANDLE_HEX]}"
+
+        # Enforce retention first — a cheap, dedup-bounded stat scan — so a deduped
+        # write never bypasses cleanup and, crucially, never reuses a record that
+        # retention is about to evict. (If reuse ran before expiry, a small/zero
+        # retention_seconds would hand back a handle to an immediately-reaped record.)
+        # An expired record is removed here, so the lookup below falls through to a
+        # fresh write rather than returning a dangling handle.
         self._remove_expired(retention_seconds)
+
+        # Content-addressed snapshots: identical content that survived retention is
+        # reused instead of rewritten — refreshing its access time so a frequently
+        # re-projected record stays hot — and only genuinely new content pays the
+        # budget prune and the write below, so the store stops re-growing on repeats.
+        reused = self._existing_record(
+            primary_handle,
+            sha=sha,
+            content=content,
+            tool_use_id=tool_use_id,
+            tool_name=tool_name,
+            session_id=session_id,
+            session_key=session_key,
+            agent_id=agent_id,
+            size_bytes=size_bytes,
+        )
+        if reused is not None:
+            self._touch(primary_handle, session_id=session_id)
+            return reused
+
         if disk_budget_bytes is not None:
             self._prune_to_fit(size_bytes, disk_budget_bytes)
 
-        sha = hashlib.sha256(payload).hexdigest()
         created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-        for _attempt in range(5):
-            handle = f"tr-{secrets.token_hex(16)}"
+        # The deterministic handle is tried first; a random handle is only needed for
+        # the negligible chance of a truncated-digest collision with *different*
+        # content already occupying that directory.
+        candidate_handles = (
+            primary_handle,
+            *(f"tr-{secrets.token_hex(16)}" for _ in range(4)),
+        )
+        for handle in candidate_handles:
             record_dir = self._record_dir(handle, session_id=session_id)
-            try:
-                record_dir.mkdir(parents=True, exist_ok=False)
-            except FileExistsError:
+            if (record_dir / TOOL_RESULT_CONTENT_NAME).exists():
+                # A concurrent writer may have just stored the same content here; reuse
+                # it. Otherwise it is a genuine collision and we try a random handle.
+                reused = self._existing_record(
+                    handle,
+                    sha=sha,
+                    content=content,
+                    tool_use_id=tool_use_id,
+                    tool_name=tool_name,
+                    session_id=session_id,
+                    session_key=session_key,
+                    agent_id=agent_id,
+                    size_bytes=size_bytes,
+                )
+                if reused is not None:
+                    self._touch(handle, session_id=session_id)
+                    return reused
                 continue
             record = ToolResultRecord(
                 handle=handle,
@@ -109,7 +160,6 @@ class ToolResultStore:
                 content=content,
             )
             try:
-                _atomic_write_bytes(record_dir / TOOL_RESULT_CONTENT_NAME, payload)
                 _atomic_write_bytes(
                     record_dir / TOOL_RESULT_META_NAME,
                     json.dumps(
@@ -129,6 +179,11 @@ class ToolResultStore:
                         sort_keys=True,
                     ).encode("utf-8"),
                 )
+                # content.txt is written last so its presence marks a complete record
+                # for _existing_record (dedup) and _iter_record_stats (cleanup). (A
+                # concurrent cleanup may still delete the meta first; both readers treat
+                # a missing meta as "not a usable record", so that race is harmless.)
+                _atomic_write_bytes(record_dir / TOOL_RESULT_CONTENT_NAME, payload)
             except BaseException:
                 _remove_record_dir(record_dir)
                 raise
@@ -166,6 +221,62 @@ class ToolResultStore:
             content=content,
         )
 
+    def _existing_record(
+        self,
+        handle: str,
+        *,
+        sha: str,
+        content: str,
+        tool_use_id: str,
+        tool_name: str,
+        session_id: str,
+        session_key: str,
+        agent_id: str,
+        size_bytes: int,
+    ) -> ToolResultRecord | None:
+        """Return the already-stored record for ``handle`` iff it holds this exact
+        content (full sha256 match). Makes repeated writes idempotent and detects the
+        negligible truncated-digest collision. Costs one existence check plus one small
+        meta read; never scans the store."""
+        record_dir = self._record_dir(handle, session_id=session_id)
+        if not (record_dir / TOOL_RESULT_CONTENT_NAME).exists():
+            return None
+        meta = self._read_meta(record_dir)
+        if meta is None or meta.get("sha256") != sha:
+            return None
+        return ToolResultRecord(
+            handle=handle,
+            tool_use_id=tool_use_id,
+            tool_name=tool_name,
+            session_id=session_id,
+            session_key=session_key,
+            agent_id=agent_id,
+            sha256=sha,
+            chars=len(content),
+            size_bytes=size_bytes,
+            created_at=str(meta.get("created_at") or ""),
+            content=content,
+        )
+
+    @staticmethod
+    def _read_meta(record_dir: Path) -> dict[str, Any] | None:
+        try:
+            meta = json.loads((record_dir / TOOL_RESULT_META_NAME).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return meta if isinstance(meta, dict) else None
+
+    def _touch(self, handle: str, *, session_id: str) -> None:
+        """Refresh a record's last-access time so a frequently reused snapshot is not
+        evicted by retention while it is still being projected."""
+        content_path = (
+            self._record_dir(handle, session_id=session_id) / TOOL_RESULT_CONTENT_NAME
+        )
+        try:
+            os.utime(content_path, None)
+        except OSError:
+            pass
+
     def _record_dir(self, handle: str, *, session_id: str) -> Path:
         normalized = _validate_handle(handle)
         return (
@@ -176,48 +287,45 @@ class ToolResultStore:
             / normalized
         )
 
-    def _iter_records(self) -> list[_StoredMeta]:
+    def _iter_record_stats(self) -> list[_StoredMeta]:
+        """Enumerate stored records for cleanup using only filesystem stat — size from
+        the content file and age from its mtime — instead of parsing every meta.json.
+        Cleanup runs only when genuinely new content is stored, and even then this keeps
+        the scan to cheap stat calls rather than O(records) JSON reads."""
         root = self.root / TOOL_RESULT_STORE_SESSION_BUCKET
         if not root.exists():
             return []
         records: list[_StoredMeta] = []
-        for meta_path in root.rglob(TOOL_RESULT_META_NAME):
+        for content_path in root.rglob(TOOL_RESULT_CONTENT_NAME):
+            record_dir = content_path.parent
             try:
-                meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                handle = _validate_handle(str(meta.get("handle") or ""))
-                session_id = _validate_non_empty("session_id", meta.get("session_id"))
-                created_at = _parse_created_at(str(meta.get("created_at") or ""))
-                size_bytes = int(meta.get("size_bytes") or 0)
-            except (OSError, ValueError, json.JSONDecodeError):
+                # Only ever consider (and later delete) well-formed tr-<32hex> record
+                # dirs, so cleanup can never touch a stray or foreign file that happens
+                # to live under the shared media root.
+                _validate_handle(record_dir.name)
+                stat = content_path.stat()
+            except (OSError, ValueError):
                 continue
             records.append(
                 _StoredMeta(
-                    handle=handle,
-                    session_id=session_id,
-                    created_at=created_at,
-                    size_bytes=max(0, size_bytes),
-                    record_dir=meta_path.parent,
+                    created_at=datetime.fromtimestamp(stat.st_mtime, tz=UTC),
+                    size_bytes=max(0, stat.st_size),
+                    record_dir=record_dir,
                 )
             )
         return records
-
-    def _disk_usage_bytes(self) -> int:
-        total = 0
-        for record in self._iter_records():
-            total += record.size_bytes
-        return total
 
     def _remove_expired(self, retention_seconds: int | None) -> None:
         if retention_seconds is None:
             return
         cutoff = datetime.now(UTC) - timedelta(seconds=max(0, int(retention_seconds)))
-        for record in self._iter_records():
+        for record in self._iter_record_stats():
             if record.created_at < cutoff:
                 _remove_record_dir(record.record_dir)
 
     def _prune_to_fit(self, incoming_bytes: int, disk_budget_bytes: int) -> None:
         budget = max(0, int(disk_budget_bytes))
-        records = sorted(self._iter_records(), key=lambda item: item.created_at)
+        records = sorted(self._iter_record_stats(), key=lambda item: item.created_at)
         current = sum(record.size_bytes for record in records)
         if current + incoming_bytes <= budget:
             return
@@ -231,13 +339,6 @@ class ToolResultStore:
                 "tool result snapshot exceeds disk budget "
                 f"({incoming_bytes} > {budget})"
             )
-
-
-def _parse_created_at(value: str) -> datetime:
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
 
 
 def _validate_handle(value: str) -> str:

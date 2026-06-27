@@ -24,7 +24,7 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from opensquilla.skills.meta.types import MetaPlan, MetaResult, MetaStep
@@ -74,6 +74,7 @@ class StepRecord:
     error: str | None
     substitute_step_id: str | None
     truncated_fields: tuple[str, ...]
+    usage_json: str = "{}"
 
 
 @dataclass(frozen=True)
@@ -133,6 +134,183 @@ class ResumePayload:
     awaiting_step_id: str
     awaiting_schema_json: str
     awaiting_filled_json: str
+
+
+def summarize_step_record(step: StepRecord) -> dict[str, Any]:
+    """Return a stable read-side summary for one persisted step."""
+    duration_ms = (
+        max(0, step.ended_at_ms - step.started_at_ms)
+        if step.ended_at_ms is not None
+        else None
+    )
+    output_chars = len(step.output_text or "")
+    return {
+        "step_id": step.step_id,
+        "kind": step.step_kind,
+        "declared_skill": step.declared_skill,
+        "effective_skill": step.effective_skill,
+        "status": step.status,
+        "started_at_ms": step.started_at_ms,
+        "ended_at_ms": step.ended_at_ms,
+        "duration_ms": duration_ms,
+        "output_chars": output_chars,
+        "error_present": bool(step.error),
+        "substitute_step_id": step.substitute_step_id,
+        "truncated_fields": list(step.truncated_fields),
+        "usage": _usage_summary_from_json(step.usage_json),
+    }
+
+
+def summarize_run_record(record: RunRecord) -> dict[str, Any]:
+    """Return a stable P1 run detail summary for history UIs and CLI JSON.
+
+    Historical meta-run tables do not persist usage rows yet. The summary
+    therefore reports deterministic execution facts and explicitly marks
+    usage/cost unavailable instead of manufacturing zeros that look billed.
+    """
+    duration_ms = (
+        max(0, record.ended_at_ms - record.started_at_ms)
+        if record.ended_at_ms is not None
+        else None
+    )
+    step_summaries = [summarize_step_record(step) for step in record.steps]
+    return {
+        "run_id": record.run_id,
+        "meta_skill_name": record.meta_skill_name,
+        "status": record.status,
+        "started_at_ms": record.started_at_ms,
+        "ended_at_ms": record.ended_at_ms,
+        "duration_ms": duration_ms,
+        "step_count": len(record.steps),
+        "completed_step_count": sum(
+            1 for step in record.steps if step.status in {"ok", "substituted"}
+        ),
+        "failed_step_count": sum(1 for step in record.steps if step.status == "failed"),
+        "running_step_count": sum(1 for step in record.steps if step.status == "running"),
+        "final_text_chars": len(record.final_text or ""),
+        "step_output_chars": sum(len(step.output_text or "") for step in record.steps),
+        "failed_step_id": record.failed_step_id,
+        "error_present": bool(record.error),
+        "truncated_fields": list(record.truncated_fields),
+        "usage": _aggregate_usage_summary(
+            [step["usage"] for step in step_summaries],
+        ),
+        "steps": step_summaries,
+    }
+
+
+def _unavailable_usage_summary() -> dict[str, Any]:
+    return {
+        "available": False,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "cost_usd": 0.0,
+        "cost_source": "unavailable",
+        "reason": "meta run persistence does not store historical usage yet",
+    }
+
+
+def _number_from_usage(raw: Mapping[str, Any], *keys: str) -> float:
+    for key in keys:
+        value = raw.get(key)
+        if value is None:
+            continue
+        try:
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
+def _int_from_usage(raw: Mapping[str, Any], *keys: str) -> int:
+    return int(_number_from_usage(raw, *keys))
+
+
+def _usage_summary_from_mapping(raw: Mapping[str, Any]) -> dict[str, Any]:
+    input_tokens = _int_from_usage(raw, "input_tokens")
+    output_tokens = _int_from_usage(raw, "output_tokens")
+    cache_read_tokens = _int_from_usage(raw, "cache_read_tokens", "cache_read_input_tokens")
+    cache_write_tokens = _int_from_usage(
+        raw,
+        "cache_write_tokens",
+        "cache_creation_input_tokens",
+    )
+    total_tokens = _int_from_usage(raw, "total_tokens")
+    if not total_tokens:
+        total_tokens = input_tokens + output_tokens
+    if not (input_tokens or output_tokens or cache_read_tokens or cache_write_tokens):
+        return _unavailable_usage_summary()
+    cost_usd = _number_from_usage(raw, "cost_usd", "total_cost_usd")
+    billed_cost_usd = _number_from_usage(raw, "billed_cost_usd", "billed_cost")
+    estimated_cost_usd = _number_from_usage(raw, "estimated_cost_usd", "cost")
+    cost_source = str(raw.get("cost_source") or "").strip()
+    if not cost_source:
+        cost_source = "provider_billed" if billed_cost_usd else "opensquilla_estimate"
+    return {
+        "available": True,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "cache_read_tokens": cache_read_tokens,
+        "cache_write_tokens": cache_write_tokens,
+        "cost_usd": round(cost_usd, 6),
+        "billed_cost_usd": round(billed_cost_usd, 6),
+        "estimated_cost_usd": round(estimated_cost_usd, 6),
+        "cost_source": cost_source,
+        "model": str(raw.get("model") or raw.get("model_id") or "").strip(),
+        "is_provider_billed": cost_source == "provider_billed",
+    }
+
+
+def _usage_summary_from_json(raw: str | None) -> dict[str, Any]:
+    if not raw:
+        return _unavailable_usage_summary()
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return _unavailable_usage_summary()
+    if not isinstance(payload, Mapping):
+        return _unavailable_usage_summary()
+    return _usage_summary_from_mapping(payload)
+
+
+def _aggregate_usage_summary(usages: list[dict[str, Any]]) -> dict[str, Any]:
+    available = [usage for usage in usages if usage.get("available") is True]
+    if not available:
+        return _unavailable_usage_summary()
+    cost_sources = {
+        str(usage.get("cost_source") or "").strip()
+        for usage in available
+        if str(usage.get("cost_source") or "").strip()
+    }
+    cost_source = next(iter(cost_sources)) if len(cost_sources) == 1 else "mixed"
+    return {
+        "available": True,
+        "input_tokens": sum(int(usage.get("input_tokens") or 0) for usage in available),
+        "output_tokens": sum(int(usage.get("output_tokens") or 0) for usage in available),
+        "total_tokens": sum(int(usage.get("total_tokens") or 0) for usage in available),
+        "cache_read_tokens": sum(
+            int(usage.get("cache_read_tokens") or 0) for usage in available
+        ),
+        "cache_write_tokens": sum(
+            int(usage.get("cache_write_tokens") or 0) for usage in available
+        ),
+        "cost_usd": round(
+            sum(float(usage.get("cost_usd") or 0.0) for usage in available),
+            6,
+        ),
+        "billed_cost_usd": round(
+            sum(float(usage.get("billed_cost_usd") or 0.0) for usage in available),
+            6,
+        ),
+        "estimated_cost_usd": round(
+            sum(float(usage.get("estimated_cost_usd") or 0.0) for usage in available),
+            6,
+        ),
+        "cost_source": cost_source,
+        "step_count": len(available),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +426,23 @@ def _serialize_plan(plan: MetaPlan) -> tuple[str, str]:
     return snapshot_json, digest
 
 
+def _serialize_usage_json(usage: Mapping[str, Any] | None) -> str:
+    if not usage:
+        return "{}"
+    summary = _usage_summary_from_mapping(usage)
+    if summary.get("available") is not True:
+        return "{}"
+    return json.dumps(summary, sort_keys=True, ensure_ascii=False)
+
+
+def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    except Exception:  # noqa: BLE001
+        return False
+    return any(row[1] == column for row in rows)
+
+
 # ---------------------------------------------------------------------------
 # Writer
 # ---------------------------------------------------------------------------
@@ -277,6 +472,11 @@ class MetaRunWriter:
         self._clock = clock
         self._id_gen = id_gen
         self._pid_fn = pid_fn
+        self._has_step_usage_column = _has_column(
+            connection,
+            "meta_skill_run_steps",
+            "usage_json",
+        )
 
     def close(self) -> None:
         with self._lock:
@@ -359,26 +559,42 @@ class MetaRunWriter:
         output_text: str | None,
         error: str | None = None,
         substitute_step_id: str | None = None,
+        usage: Mapping[str, Any] | None = None,
     ) -> None:
         truncated: list[str] = []
         out, was_t = _truncate(output_text, "output_text", max_bytes=self._max_field_bytes)
         if was_t:
             truncated.append("output_text")
+        usage_json = _serialize_usage_json(usage)
         try:
             with self._lock:
-                self._conn.execute(
-                    """
-                    UPDATE meta_skill_run_steps
-                       SET status=?, ended_at_ms=?, output_text=?, error=?,
-                           substitute_step_id=?, truncated_fields=?
-                     WHERE run_id=? AND step_id=?
-                    """,
-                    (
-                        status, self._clock(), out, error,
-                        substitute_step_id, ",".join(truncated),
-                        run_id, step_id,
-                    ),
-                )
+                if self._has_step_usage_column:
+                    self._conn.execute(
+                        """
+                        UPDATE meta_skill_run_steps
+                           SET status=?, ended_at_ms=?, output_text=?, error=?,
+                               substitute_step_id=?, truncated_fields=?, usage_json=?
+                         WHERE run_id=? AND step_id=?
+                        """,
+                        (
+                            status, self._clock(), out, error,
+                            substitute_step_id, ",".join(truncated), usage_json,
+                            run_id, step_id,
+                        ),
+                    )
+                else:
+                    self._conn.execute(
+                        """
+                        UPDATE meta_skill_run_steps
+                           SET status=?, ended_at_ms=?, output_text=?, error=?,
+                               substitute_step_id=?, truncated_fields=?
+                         WHERE run_id=? AND step_id=?
+                        """,
+                        (
+                            status, self._clock(), out, error,
+                            substitute_step_id, ",".join(truncated), run_id, step_id,
+                        ),
+                    )
                 self._conn.commit()
         except Exception as exc:  # noqa: BLE001
             log.warning("meta_run_writer.finish_step_failed: %s", exc)
@@ -390,6 +606,7 @@ class MetaRunWriter:
         failed_step_id: str,
         substitute_step_id: str,
         error: str,
+        usage: Mapping[str, Any] | None = None,
     ) -> None:
         """C3: mark original step as substituted with substitute pointer."""
         self.finish_step_sync(
@@ -399,6 +616,7 @@ class MetaRunWriter:
             output_text=None,
             error=error,
             substitute_step_id=substitute_step_id,
+            usage=usage,
         )
 
     def finish_run_sync(
@@ -468,6 +686,40 @@ class MetaRunWriter:
             return []
         return [self._row_to_step(r) for r in rows]
 
+    def get_steps_for_runs(self, run_ids: list[str]) -> dict[str, tuple[StepRecord, ...]]:
+        """Bulk read steps for a set of runs, grouped by run_id."""
+        ids = [run_id for run_id in run_ids if run_id]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        try:
+            with self._lock:
+                rows = self._conn.execute(
+                    "SELECT * FROM meta_skill_run_steps "
+                    f"WHERE run_id IN ({placeholders}) "
+                    "ORDER BY run_id ASC, started_at_ms ASC, step_id ASC",
+                    ids,
+                ).fetchall()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("meta_run_writer.get_steps_for_runs_failed: %s", exc)
+            return {}
+        grouped: dict[str, list[StepRecord]] = {}
+        for row in rows:
+            step = self._row_to_step(row)
+            grouped.setdefault(step.run_id, []).append(step)
+        return {run_id: tuple(steps) for run_id, steps in grouped.items()}
+
+    def hydrate_runs(self, rows: list[RunRecord]) -> list[RunRecord]:
+        """Attach steps to shallow list_runs rows using one bulk step query."""
+        missing = [row.run_id for row in rows if not row.steps]
+        if not missing:
+            return rows
+        by_run = self.get_steps_for_runs(missing)
+        return [
+            row if row.steps else replace(row, steps=by_run.get(row.run_id, ()))
+            for row in rows
+        ]
+
     def list_runs(
         self,
         *,
@@ -510,10 +762,15 @@ class MetaRunWriter:
         *,
         name: str | None = None,
         since_ms: int | None = None,
+        session_key: str | None = None,
         limit: int = 50,
     ) -> list[RunRecord]:
         return self.list_runs(
-            name=name, status="failed", since_ms=since_ms, limit=limit,
+            name=name,
+            status="failed",
+            session_key=session_key,
+            since_ms=since_ms,
+            limit=limit,
         )
 
     def peek_awaiting(self, *, session_id: str) -> AwaitingPeek | None:
@@ -830,6 +1087,9 @@ class MetaRunWriter:
 
     @staticmethod
     def _row_to_step(row: sqlite3.Row) -> StepRecord:
+        usage_json = "{}"
+        if "usage_json" in row.keys():
+            usage_json = row["usage_json"] or "{}"
         return StepRecord(
             run_id=row["run_id"],
             step_id=row["step_id"],
@@ -846,6 +1106,7 @@ class MetaRunWriter:
             truncated_fields=tuple(
                 f for f in (row["truncated_fields"] or "").split(",") if f
             ),
+            usage_json=usage_json,
         )
 
 

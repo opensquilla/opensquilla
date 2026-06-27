@@ -82,7 +82,7 @@ def test_openrouter_anthropic_auto_cache_adds_top_level_cache_control(monkeypatc
     _patch_openai_transport(monkeypatch, captured)
     provider = OpenAIProvider(
         api_key="test",
-        model="anthropic/claude-opus-4.7",
+        model="anthropic/claude-opus-4.8",
         base_url="https://openrouter.ai/api/v1",
     )
     cfg = ChatConfig(
@@ -188,7 +188,7 @@ def test_openrouter_anthropic_cache_off_does_not_add_cache_control(monkeypatch) 
     _patch_openai_transport(monkeypatch, captured)
     provider = OpenAIProvider(
         api_key="test",
-        model="anthropic/claude-opus-4.7",
+        model="anthropic/claude-opus-4.8",
         base_url="https://openrouter.ai/api/v1",
     )
     cfg = ChatConfig(

@@ -7,10 +7,17 @@ import os
 import httpx
 
 from opensquilla.search.registry import register_provider
-from opensquilla.search.types import SearchErrorKind, SearchProviderError, SearchResult
+from opensquilla.search.types import Recency, SearchErrorKind, SearchProviderError, SearchResult
 from opensquilla.secrets import clean_header_secret
 
 _API_URL = "https://api.search.brave.com/res/v1/web/search"
+_RECENCY_FRESHNESS = {
+    "day": "pd",
+    "week": "pw",
+    "month": "pm",
+    "year": "py",
+}
+type _QueryParamValue = str | int | float | bool | None
 
 
 class BraveSearchProvider:
@@ -24,6 +31,7 @@ class BraveSearchProvider:
         proxy: str = "",
         use_env_proxy: bool = False,
         diagnostics: bool = False,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._api_key = clean_header_secret(
             api_key or os.environ.get("BRAVE_SEARCH_API_KEY", ""),
@@ -32,8 +40,15 @@ class BraveSearchProvider:
         self._proxy = proxy or None
         self._trust_env = bool(use_env_proxy) and not self._proxy
         self._diagnostics = bool(diagnostics)
+        self._transport = transport
 
-    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+    async def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        *,
+        recency: Recency | None = None,
+    ) -> list[SearchResult]:
         if not self._api_key:
             raise SearchProviderError(
                 provider=self.name,
@@ -43,14 +58,19 @@ class BraveSearchProvider:
             )
 
         try:
+            params: dict[str, _QueryParamValue] = {"q": query, "count": min(max_results, 20)}
+            if recency:
+                params["freshness"] = _RECENCY_FRESHNESS[recency]
+
             async with httpx.AsyncClient(
                 timeout=15.0,
                 proxy=self._proxy,
                 trust_env=self._trust_env,
+                transport=self._transport,
             ) as client:
                 response = await client.get(
                     _API_URL,
-                    params={"q": query, "count": min(max_results, 20)},
+                    params=params,
                     headers={
                         "Accept": "application/json",
                         "X-Subscription-Token": self._api_key,
@@ -96,6 +116,11 @@ class BraveSearchProvider:
                     title=item.get("title", ""),
                     url=item.get("url", ""),
                     snippet=item.get("description", ""),
+                    source="brave",
+                    provider="brave",
+                    published_at=(
+                        item.get("age") or item.get("page_age") or item.get("published_at")
+                    ),
                 )
             )
 

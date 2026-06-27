@@ -333,6 +333,8 @@ const ChatView = (() => {
   //   - in-memory only; localStorage + cross-tab sync are follow-ups
   const _MAX_PENDING = 5;
   let _pendingQueue = []; // [{text, attachments, intent}]
+  let _sendTextOverride = null;
+  let _sendDisplayTextOverride = null;
   let _pendingDrainAfterTerminalTimer = null;
   let _compactInFlight = false;
   let _compactInFlightKey = '';
@@ -506,6 +508,7 @@ const ChatView = (() => {
     write_file: '\u270F\uFE0F',   // ✏️
     edit_file: '\u270F\uFE0F',    // ✏️
     web_search: '\uD83D\uDD0D',   // 🔍
+    web_discover: '\uD83D\uDD0E', // 🔎
     search: '\uD83D\uDD0D',       // 🔍
     http_request: '\uD83C\uDF10', // 🌐
     web_fetch: '\uD83C\uDF10',    // 🌐
@@ -1259,6 +1262,15 @@ const ChatView = (() => {
                       </label>
                     </div>
                   </div>
+                  <div class="chat-toolbar-row">
+                    <span class="chat-toolbar-row-label">Coding mode</span>
+                    <div class="toggle-switch-wrap" id="pill-codetask-group" title="Lock this session into coding mode: code changes go through code-task. Off makes code-task unavailable.">
+                      <label class="toggle-switch" aria-label="Coding mode">
+                        <input type="checkbox" id="toggle-codetask" />
+                        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                      </label>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1268,13 +1280,14 @@ const ChatView = (() => {
                         aria-label="Message to send"></textarea>
             </div>
             <button class="btn btn--icon btn--ghost" id="chat-btn-mic" title="Record voice input" aria-label="Record voice input">${icons.microphone ? icons.microphone() : icons.chat()}</button>
+            <button class="btn btn--icon btn--ghost" id="chat-btn-meta-history" title="MetaSkill run history" aria-label="MetaSkill run history">${icons.logs ? icons.logs() : icons.chat()}</button>
             <button class="btn btn--icon btn--ghost" id="chat-btn-new" title="New chat session in the current agent" aria-label="New chat session in the current agent">${icons.plus()}</button>
             <button class="btn btn--icon btn--ghost" id="chat-btn-export" title="Export as Markdown" aria-label="Export as Markdown">${icons.download()}</button>
             <button class="btn btn--icon btn--primary" id="chat-btn-send" title="Send (queues while streaming)" aria-label="Send message">${icons.send()}</button>
             <button class="btn btn--icon btn--danger hidden" id="chat-btn-stop" title="Stop current response (Esc)" aria-label="Stop current response">${icons.stop()}</button>
           </div>
         </div>
-        <input type="file" id="chat-file-input" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain,text/markdown,text/html,text/csv,application/json,.md,.markdown" multiple class="hidden" />
+        <input type="file" id="chat-file-input" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain,text/markdown,text/html,text/csv,application/json,application/mbox,message/rfc822,application/vnd.ms-outlook,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation,.md,.markdown,.docx,.xlsx,.pptx,.eml,.mbox,.msg" multiple class="hidden" />
       </div>`;
 
     // Cache DOM refs
@@ -1396,6 +1409,23 @@ const ChatView = (() => {
       });
     }
 
+    // Coding-mode toggle — operator-level (persists to config). ON locks the
+    // session into coding mode (code changes go through code-task); OFF makes
+    // code-task unavailable across every skill API.
+    const codetaskToggle = _el.querySelector('#toggle-codetask');
+    if (codetaskToggle) {
+      codetaskToggle.addEventListener('change', async () => {
+        const enabled = codetaskToggle.checked;
+        try {
+          await _rpc.call('config.patch.safe', { patches: { 'skills.coding_mode': enabled } });
+          UI.toast('Coding mode: ' + (enabled ? 'ON' : 'OFF'), 'info');
+        } catch (e) {
+          codetaskToggle.checked = !enabled;  // revert on failure
+          UI.toast('Failed: ' + e.message, 'err');
+        }
+      });
+    }
+
     // Router-fx visualisation toggle — purely client-side (no config write):
     // it only controls whether THIS browser draws the animated grid.
     const routerFxToggle = _el.querySelector('#toggle-router-fx');
@@ -1460,9 +1490,15 @@ const ChatView = (() => {
       // per browser, so it survives view re-render / navigation. Inherits the
       // visibility/focus refresh that re-runs this function for free.
       _routerFxLoadPref();
+      _routerFxApplyConfigVisualMode(cfg?.squilla_router?.visual_mode);
       const routerFxToggle = _el?.querySelector('#toggle-router-fx');
       if (routerFxToggle) routerFxToggle.checked = _routerFx.enabled;
       if (window.SavingsFX) window.SavingsFX.setEnabled(_routerFx.enabled);
+      // Coding mode: ON reflects skills.coding_mode.
+      const codetaskToggle = _el?.querySelector('#toggle-codetask');
+      if (codetaskToggle) {
+        codetaskToggle.checked = !!(cfg?.skills?.coding_mode);
+      }
       _globalElevatedMode = _normalizeElevatedMode(cfg?.permissions?.default_mode);
       _toolbarState.bypass = _isApprovalBypassMode(_effectiveElevatedMode());
       _updateElevatedPill();
@@ -2754,6 +2790,42 @@ const ChatView = (() => {
           .catch((err) => UI.toast('Usage failed: ' + err.message, 'err'));
         break;
       }
+      case 'meta.menu': {
+        const skillName = args.trim();
+        if (!skillName) {
+          // No arg → list available meta-skills.
+          _rpc.call('meta.list')
+            .then((result) => {
+              const skills = Array.isArray(result?.skills) ? result.skills : [];
+              if (result?.disabled || skills.length === 0) {
+                _addMessage('system', 'No meta-skills available.');
+                return;
+              }
+              const lines = skills.map((s) => {
+                const name = s?.name || '';
+                const desc = s?.description ? ` — ${s.description}` : '';
+                return `- ${name}${desc}`;
+              });
+              _addMessage('system', 'Available meta-skills:\n' + lines.join('\n'));
+            })
+            .catch((err) => UI.toast('meta.list failed: ' + err.message, 'err'));
+          break;
+        }
+        // With <name> → stamp the run, then send a normal turn so the
+        // pipeline seed auto-launches the skill on the next turn.
+        _rpc.call('meta.run', { name: skillName, sessionKey: _sessionKey })
+          .then((result) => {
+            if (result && result.ok) {
+              _sendTextOverride = `/meta ${skillName}`;
+              _onSend();
+              return;
+            }
+            const error = (result && result.error) || 'meta.run failed';
+            _addMessage('error', `meta.run failed: ${error}`);
+          })
+          .catch((err) => UI.toast('meta.run failed: ' + err.message, 'err'));
+        break;
+      }
     }
   }
 
@@ -3316,10 +3388,49 @@ const ChatView = (() => {
   // the whole animation (scan + ~360ms settle transition) stays under ~1s.
   const _ROUTER_FX_SCAN_MS = 600;
   const _ROUTER_FX_START_DELAY_MS = 280;
-  const _routerFx = { enabled: true, variant: 'default' };
+  const _ROUTER_FX_GRID_COLS = 5;
+  const _ROUTER_FX_GRID_ROWS = 3;
+  const _ROUTER_FX_GRID_CELLS = _ROUTER_FX_GRID_COLS * _ROUTER_FX_GRID_ROWS;
+  const _ROUTER_FX_REAL_ANCHOR_CELLS = [1, 6, 8, 13, 11, 3, 5, 9, 12, 14, 0, 4, 7, 10, 2];
+  const _ROUTER_FX_DECOY_POOL = [
+    'gpt-5.5',
+    'claude-opus-4.8',
+    'gemini-3.5-flash',
+    'qwen3-coder-plus',
+    'grok-4.3',
+    'gpt-5.4-mini',
+    'claude-sonnet-4.6',
+    'gemini-3.1-pro',
+    'deepseek-v3.2',
+    'kimi-k2.6',
+    'command-a-plus',
+    'grok-build-0.1',
+    'glm-4.6',
+    'mistral-medium-3.5',
+    'claude-haiku-4.5',
+  ];
+  const _routerFx = { enabled: true, visualMode: 'real_candidates', variant: 'default' };
+  function _routerFxNormalizeVisualMode(mode) {
+    const normalized = typeof mode === 'string'
+      ? mode.trim().toLowerCase().replace(/-/g, '_')
+      : '';
+    if (normalized === 'legacy_grid' || normalized === 'model_space' || normalized === 'modelspace') {
+      return 'legacy_grid';
+    }
+    return 'real_candidates';
+  }
+  function _routerFxPanelDataset(mode) {
+    return _routerFxNormalizeVisualMode(mode) === 'legacy_grid'
+      ? 'legacy-grid'
+      : 'real-candidates';
+  }
+  function _routerFxApplyConfigVisualMode(mode) {
+    _routerFx.visualMode = _routerFxNormalizeVisualMode(mode);
+  }
   function _routerFxLoadPref() {
     // Defaults stand (enabled ON, default variant) unless a stored pref
     // overrides them. localStorage may throw (private mode / quota) — swallow.
+    _routerFx.visualMode = 'real_candidates';
     _routerFx.variant = 'default';
     try {
       const raw = localStorage.getItem(_ROUTER_FX_PREF_KEY);
@@ -3550,6 +3661,36 @@ const ChatView = (() => {
   function _routerFxResolveLayoutSeed(sessionKey, hintTimestamp) {
     return _routerFxResolveSeed(sessionKey, 0, 'layout', hintTimestamp);
   }
+  function _routerFxSeedHash(seedKey) {
+    const text = seedKey == null ? '' : String(seedKey);
+    let hash = 2166136261;
+    for (let i = 0; i < text.length; i++) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return hash >>> 0;
+  }
+  function _routerFxSeededRandom(seedKey) {
+    let state = _routerFxSeedHash(seedKey) || 0x9e3779b9;
+    return () => {
+      state += 0x6d2b79f5;
+      let t = state;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function _routerFxShuffle(items, seedKey) {
+    const out = items.slice();
+    const random = seedKey ? _routerFxSeededRandom(seedKey) : Math.random;
+    for (let i = out.length - 1; i > 0; i--) {
+      const j = Math.floor(random() * (i + 1));
+      const tmp = out[i];
+      out[i] = out[j];
+      out[j] = tmp;
+    }
+    return out;
+  }
   function _routerFxIdentity(model, tier) {
     const modelPart = typeof model === 'string' ? model.trim().toLowerCase() : '';
     const tierPart = _routerFxNormalizeTier(tier);
@@ -3614,9 +3755,9 @@ const ChatView = (() => {
     return _routerFxVisualEntries(requestKind, decision);
   }
 
-  // Assemble the grid from real candidates only. No filler/decoy wall: every
-  // visible model name is a candidate that could actually be called this turn.
-  function _routerFxBuildGridCells(realEntries, seedKey) {
+  // Assemble the default panel from real candidates only. No filler/decoy
+  // wall: every visible model name is callable for this turn.
+  function _routerFxBuildCandidateGridCells(realEntries, seedKey) {
     const orderedRealEntries = realEntries.slice().sort((a, b) => (
       (a.displayName || a.key || '').localeCompare(b.displayName || b.key || '')
     ));
@@ -3625,6 +3766,63 @@ const ChatView = (() => {
       entry,
       displayName: entry.displayName,
     }));
+  }
+
+  // Legacy grid is a visual wall only: real candidates keep their in-memory
+  // entries for winner lookup, while decoys are labels with no tier metadata.
+  function _routerFxBuildLegacyGridCells(realEntries, seedKey) {
+    const cells = Array.from({ length: _ROUTER_FX_GRID_CELLS }, () => null);
+    const realNames = new Set();
+    const orderedRealEntries = realEntries.slice().sort((a, b) => (
+      (a.label || a.displayName || a.key || '').localeCompare(b.label || b.displayName || b.key || '')
+    ));
+    orderedRealEntries.forEach((entry, i) => {
+      const anchor = _ROUTER_FX_REAL_ANCHOR_CELLS[i];
+      const idx = typeof anchor === 'number' ? anchor : cells.findIndex((cell) => cell == null);
+      if (idx < 0 || idx >= cells.length) return;
+      cells[idx] = {
+        kind: 'real',
+        entry,
+        displayName: entry.displayName,
+        label: entry.label || entry.displayName,
+        title: entry.title || entry.label || entry.displayName,
+      };
+      if (entry.displayName) realNames.add(entry.displayName);
+      if (entry.label) realNames.add(entry.label);
+    });
+
+    const decoys = [];
+    for (let i = 0; i < _ROUTER_FX_DECOY_POOL.length && decoys.length < _ROUTER_FX_GRID_CELLS; i++) {
+      const name = _ROUTER_FX_DECOY_POOL[i];
+      if (realNames.has(name)) continue;
+      decoys.push({
+        kind: 'decoy',
+        displayName: name,
+        label: name,
+        title: name,
+      });
+    }
+    while (decoys.length < _ROUTER_FX_GRID_CELLS) {
+      decoys.push({
+        kind: 'decoy',
+        displayName: '-',
+        label: '-',
+        title: '-',
+      });
+    }
+    const orderedDecoys = _routerFxShuffle(decoys, seedKey ? seedKey + ':decoy' : undefined);
+    let decoyIdx = 0;
+    for (let i = 0; i < cells.length; i++) {
+      if (cells[i] == null) cells[i] = orderedDecoys[decoyIdx++];
+    }
+    return cells;
+  }
+
+  function _routerFxBuildGridCells(realEntries, seedKey, visualMode) {
+    if (_routerFxNormalizeVisualMode(visualMode) === 'legacy_grid') {
+      return _routerFxBuildLegacyGridCells(realEntries, seedKey);
+    }
+    return _routerFxBuildCandidateGridCells(realEntries, seedKey);
   }
 
   function _buildRouterFxElement(decision, opts) {
@@ -3665,17 +3863,24 @@ const ChatView = (() => {
     // layout on every rebuild, so the field never reshuffles after lock.
     const seedKey = opts && opts.seedKey ? String(opts.seedKey) : '';
     if (seedKey) wrap.dataset.seed = seedKey;
+    const visualMode = _routerFxNormalizeVisualMode(
+      opts.visualMode != null ? opts.visualMode : _routerFx.visualMode,
+    );
+    wrap.dataset.panel = _routerFxPanelDataset(visualMode);
 
     const requestKind = _routerFxRequestKindFromDecision(decision, opts.requestKind);
     const realEntries = _routerFxRealEntries(decision, requestKind);
     if (realEntries.length <= 1) return null;
-    const gridCells = _routerFxBuildGridCells(realEntries, seedKey || undefined);
+    const gridCells = _routerFxBuildGridCells(realEntries, seedKey || undefined, visualMode);
 
     const grid = document.createElement('div');
     grid.className = 'router-fx-grid';
-    const cols = Math.min(4, Math.max(2, gridCells.length));
-    const mobileCols = gridCells.length > 2 ? 2 : gridCells.length;
+    const isLegacyGrid = visualMode === 'legacy_grid';
+    const cols = isLegacyGrid ? _ROUTER_FX_GRID_COLS : Math.min(4, Math.max(2, gridCells.length));
+    const rows = isLegacyGrid ? _ROUTER_FX_GRID_ROWS : 1;
+    const mobileCols = isLegacyGrid ? 3 : (gridCells.length > 2 ? 2 : gridCells.length);
     grid.style.setProperty('--router-fx-cols', String(cols));
+    grid.style.setProperty('--router-fx-rows', String(rows));
     grid.style.setProperty('--router-fx-mobile-cols', String(Math.max(1, mobileCols)));
     gridCells.forEach((cellInfo, i) => {
       const cell = document.createElement('div');
@@ -4700,6 +4905,261 @@ const ChatView = (() => {
       _appendToolResult(payload);
     }));
 
+    // MetaSkill run progress ribbon — design §8.
+    // 3 handlers + 1 action delegate. Ribbon lives in window.MetaRibbon
+    // (loaded as a classic script before chat.js, see index.html).
+    const _metaPreflightEl = new Map();  // run_id → DOM section element
+    const _metaRibbonState = new Map();   // run_id → ribbon state
+    const _metaRibbonEl = new Map();      // run_id → DOM section element
+
+    function _openMetaRunHistory() {
+      if (!window.MetaRunHistory || typeof window.MetaRunHistory.openRunHistory !== 'function') {
+        UI.toast('Meta run history is not available', 'warn', 2000);
+        return;
+      }
+      window.MetaRunHistory.openRunHistory({
+        rpc: _rpc,
+        sessionKey: _sessionKey,
+      });
+    }
+
+    const metaHistoryBtn = _el.querySelector('#chat-btn-meta-history');
+    if (metaHistoryBtn) {
+      metaHistoryBtn.addEventListener('click', _openMetaRunHistory);
+      _unsubs.push(() => metaHistoryBtn.removeEventListener('click', _openMetaRunHistory));
+    }
+
+    document.addEventListener('meta-run-history-open', _openMetaRunHistory);
+    _unsubs.push(() => document.removeEventListener(
+      'meta-run-history-open',
+      _openMetaRunHistory,
+    ));
+
+    function _insertMetaRibbonElement(el) {
+      const runId = el && el.dataset ? el.dataset.runId : '';
+      const preflight = runId ? _metaPreflightEl.get(runId) : null;
+      if (
+        preflight
+        && preflight.parentNode
+        && preflight.parentNode === (_thread || preflight.parentNode)
+      ) {
+        preflight.parentNode.insertBefore(el, preflight.nextSibling);
+        return;
+      }
+      const host = _thread || document.body;
+      if (_thread && _streamBubble && _streamBubble.parentNode === _thread) {
+        _thread.insertBefore(el, _streamBubble);
+        return;
+      }
+      const liveUserAnchor = _currentSessionLiveUserAnchor(_sessionKey || '');
+      if (_thread && liveUserAnchor && liveUserAnchor.parentNode === _thread) {
+        _thread.insertBefore(el, liveUserAnchor.nextSibling);
+        return;
+      }
+      host.insertBefore(el, host.firstChild || null);
+    }
+
+    function _insertMetaPreflightElement(el) {
+      _insertMetaRibbonElement(el);
+    }
+
+    function _findRibbonUserMessage(ribbonEl) {
+      let node = ribbonEl ? ribbonEl.previousElementSibling : null;
+      while (node) {
+        if (node.matches && (
+          node.matches('.msg.user')
+          || node.getAttribute('data-history-role') === 'user'
+        )) return node;
+        node = node.previousElementSibling;
+      }
+      return null;
+    }
+
+    function _latestUserMessageText() {
+      for (let i = _messages.length - 1; i >= 0; i--) {
+        if (_messages[i] && _messages[i].role === 'user') {
+          return _messages[i].text || '';
+        }
+      }
+      const userBubbles = _thread
+        ? Array.from(_thread.querySelectorAll(':scope > .msg.user, :scope > .msg[data-history-role="user"]'))
+        : [];
+      const last = userBubbles[userBubbles.length - 1];
+      return last ? _extractBubbleText(last) : '';
+    }
+
+    function _retryMetaRibbonRun(ribbonEl) {
+      if (_isStreaming) {
+        UI.toast('Wait for the current response to finish', 'warn', 2000);
+        return;
+      }
+      const userBubble = _findRibbonUserMessage(ribbonEl);
+      const text = userBubble ? _extractBubbleText(userBubble) : _latestUserMessageText();
+      if (!text) {
+        UI.toast('No previous message to retry', 'info', 2000);
+        return;
+      }
+      if (!_textarea) return;
+      _textarea.value = text;
+      _autoResizeTextarea();
+      _onSend();
+    }
+
+    async function _replayMetaRibbonRun(ribbonEl, mode) {
+      if (_isStreaming) {
+        UI.toast('Wait for the current response to finish', 'warn', 2000);
+        return;
+      }
+      const runId = ribbonEl && ribbonEl.dataset ? ribbonEl.dataset.runId : '';
+      if (!runId || !_textarea) {
+        UI.toast('No MetaSkill run selected to replay', 'info', 2000);
+        return;
+      }
+      try {
+        const payload = await _rpc.call('meta.runs.replay', {
+          runId,
+          mode: mode || 'failed-step',
+        });
+        const replay = payload && payload.replay ? payload.replay : payload;
+        _textarea.value = replay && replay.message ? replay.message : '';
+        _autoResizeTextarea();
+        if (_textarea.value) _onSend();
+      } catch (err) {
+        UI.toast(err && err.message ? err.message : 'MetaSkill replay failed', 'warn', 3000);
+      }
+    }
+
+    async function _confirmMetaPreflight(detail) {
+      const confirmed = await _rpc.call('meta.runs.confirm_preflight', {
+        runId: detail.runId || '',
+        interpretedRequest: detail.interpretedRequest || '',
+        fields: detail.confirmedFields || {},
+      });
+      return confirmed || {};
+    }
+
+    _unsubs.push(_rpc.on('session.event.meta_preflight', (payload) => {
+      if (_dropForeignSessionPayload('event.meta_preflight', payload)) return;
+      if (!window.MetaPreflight) return;
+      const state = window.MetaPreflight.createPreflight(payload);
+      if (!state.runId) return;
+      const el = document.createElement('section');
+      el.dataset.runId = state.runId;
+      _insertMetaPreflightElement(el);
+      _metaPreflightEl.set(state.runId, el);
+      window.MetaPreflight.renderPreflight(el, state);
+    }));
+
+    _unsubs.push(_rpc.on('session.event.meta_run_announced', (payload) => {
+      if (_dropForeignSessionPayload('event.meta_run_announced', payload)) return;
+      if (!window.MetaRibbon) return;
+      const state = window.MetaRibbon.createRibbon(payload);
+      if (!state.runId) return;
+      _metaRibbonState.set(state.runId, state);
+      const el = document.createElement('section');
+      el.dataset.runId = state.runId;
+      _insertMetaRibbonElement(el);
+      _metaRibbonEl.set(state.runId, el);
+      window.MetaRibbon.renderRibbon(el, state);
+    }));
+
+    _unsubs.push(_rpc.on('session.event.meta_step_state', (payload) => {
+      if (_dropForeignSessionPayload('event.meta_step_state', payload)) return;
+      if (!window.MetaRibbon) return;
+      const state = _metaRibbonState.get(payload.run_id);
+      const el = _metaRibbonEl.get(payload.run_id);
+      if (!state || !el) return;
+      window.MetaRibbon.updateStep(state, payload);
+      window.MetaRibbon.renderRibbon(el, state);
+    }));
+
+    _unsubs.push(_rpc.on('session.event.meta_run_completed', (payload) => {
+      if (_dropForeignSessionPayload('event.meta_run_completed', payload)) return;
+      if (!window.MetaRibbon) return;
+      const state = _metaRibbonState.get(payload.run_id);
+      const el = _metaRibbonEl.get(payload.run_id);
+      if (!state || !el) return;
+      window.MetaRibbon.completeRun(state, payload);
+      window.MetaRibbon.renderRibbon(el, state);
+    }));
+
+    // Action chip delegate (retry / switch-skill / show-detail). Listens on
+    // document so dynamically-rendered ribbons all flow through one handler.
+    const _onMetaRibbonAction = (ev) => {
+      const { action, stepId } = (ev && ev.detail) || {};
+      if (action === 'retry-run') {
+        _retryMetaRibbonRun(ev && ev.target ? ev.target.closest('.meta-ribbon') : null);
+      } else if (action === 'retry-step' || action === 'retry-with-partial-context') {
+        const mode = action === 'retry-step' ? 'failed-step' : 'partial-context';
+        _replayMetaRibbonRun(
+          ev && ev.target ? ev.target.closest('.meta-ribbon') : null,
+          mode,
+        );
+      } else if (action === 'switch-skill' || action === 'switch-meta-skill') {
+        if (_textarea) {
+          _textarea.placeholder = '想换哪个 meta-skill？例如：Use meta-skill `meta-kid-project-planner`';
+          _textarea.focus();
+        }
+      } else if (action === 'install-dependency') {
+        UI.toast('Install the missing dependency, then retry this MetaSkill run.', 'info', 3000);
+      } else if (action === 'continue-text-only') {
+        UI.toast('Continue with text outputs only, then retry if an artifact is still needed.', 'info', 3000);
+      } else if (action === 'show-detail' && stepId) {
+        const card = document.querySelector(`[data-tool-use-id="meta_step_${stepId}"]`);
+        if (card) {
+          card.setAttribute('data-expanded', 'true');
+          if (typeof card.scrollIntoView === 'function') {
+            card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          }
+        }
+      }
+    };
+    document.addEventListener('meta-ribbon-action', _onMetaRibbonAction);
+    _unsubs.push(() => document.removeEventListener('meta-ribbon-action', _onMetaRibbonAction));
+
+    const _onMetaPreflightAction = async (ev) => {
+      const detail = (ev && ev.detail) || {};
+      const card = ev && ev.target ? ev.target.closest('.meta-preflight') : null;
+      if (detail.action === 'dismiss') {
+        if (card && window.MetaPreflight && window.MetaPreflight.renderCollapsed) {
+          window.MetaPreflight.renderCollapsed(card, detail, 'cancelled');
+        } else if (card) {
+          card.remove();
+        }
+        if (detail.runId) _metaPreflightEl.delete(detail.runId);
+        return;
+      }
+      if ((detail.action === 'continue' || detail.action === 'defaults') && _textarea) {
+        try {
+          if (card && window.MetaPreflight && window.MetaPreflight.setSubmitting) {
+            window.MetaPreflight.setSubmitting(card, true);
+          }
+          const confirmed = await _confirmMetaPreflight(detail);
+          if (card && window.MetaPreflight && window.MetaPreflight.renderCollapsed) {
+            window.MetaPreflight.renderCollapsed(card, detail, 'running');
+          } else if (card) {
+            card.remove();
+          }
+          if (detail.runId) _metaPreflightEl.delete(detail.runId);
+          _sendHiddenMetaPreflightConfirmation(confirmed, detail);
+        } catch (err) {
+          if (card && window.MetaPreflight && window.MetaPreflight.setSubmitting) {
+            window.MetaPreflight.setSubmitting(card, false);
+          }
+          if (card && window.MetaPreflight && window.MetaPreflight.setError) {
+            window.MetaPreflight.setError(card, err);
+          }
+          UI.toast(err && err.message ? err.message : 'MetaSkill confirmation failed', 'warn', 3000);
+        }
+        return;
+      }
+    };
+    document.addEventListener('meta-preflight-action', _onMetaPreflightAction);
+    _unsubs.push(() => document.removeEventListener(
+      'meta-preflight-action',
+      _onMetaPreflightAction,
+    ));
+
     _unsubs.push(_rpc.on('session.event.artifact', (payload) => {
       if (_dropForeignSessionPayload('event.artifact', payload)) return;
       if (_isStaleEpoch(payload)) {
@@ -5643,6 +6103,7 @@ const ChatView = (() => {
                 if (identityChanged) savedUsage.__savings_ui_suppressed = true;
               }
               if (window.SavingsFX) window.SavingsFX.noteTurn(savedUsage);
+              const routerPanel = _routerFxPanelDataset(_routerFx.visualMode);
               // Place a pre-settled router slider directly beneath the
               // user message that triggered this turn — never above
               // it, never with anything wedged in between.
@@ -5666,7 +6127,8 @@ const ChatView = (() => {
               if (userMsg && userMsg.parentNode === _thread) {
                 const ownStrips = Array.from(_thread.querySelectorAll('.router-fx')).filter(
                   (el) => el.dataset.sessionKey === (_sessionKey || '')
-                    && el.dataset.turnIndex === String(_histUserIdx),
+                    && el.dataset.turnIndex === String(_histUserIdx)
+                    && _routerFxPanelDataset(el.dataset.panel) === routerPanel,
                 );
                 const keep = ownStrips.find((el) => el.dataset.routerIdentity === routerIdentity)
                   || null;
@@ -5687,7 +6149,8 @@ const ChatView = (() => {
               const existingStrip = (placed && placed.classList
                   && placed.classList.contains('router-fx')) ? placed : null;
               const alreadyInPlace = existingStrip
-                && existingStrip.dataset.routerIdentity === routerIdentity;
+                && existingStrip.dataset.routerIdentity === routerIdentity
+                && _routerFxPanelDataset(existingStrip.dataset.panel) === routerPanel;
               if (!alreadyInPlace) {
                 if (existingStrip) _routerFxRemoveStrip(existingStrip);
                 const hint = msg.timestamp || msg.ts || msg.message_id || '';
@@ -6069,12 +6532,45 @@ const ChatView = (() => {
 
   /* ── Send Message ───────────────────────────────────────────────────── */
 
+  function _metaPreflightFallbackMessage(detail) {
+    const interpreted = (detail && detail.interpretedRequest) || '';
+    const runId = (detail && detail.runId) || '';
+    const lines = [
+      interpreted,
+      '',
+      '<!-- opensquilla:meta_preflight_confirmed=1 -->',
+    ];
+    if (runId) lines.push(`<!-- opensquilla:meta_preflight_run_id=${runId} -->`);
+    return lines.join('\n');
+  }
+
+  function _metaPreflightDisplayText(detail) {
+    const interpreted = detail && typeof detail.interpretedRequest === 'string'
+      ? detail.interpretedRequest.trim()
+      : '';
+    return interpreted || '已确认，开始运行。';
+  }
+
+  function _sendHiddenMetaPreflightConfirmation(confirmed, detail) {
+    _sendTextOverride = confirmed && confirmed.message
+      ? confirmed.message
+      : _metaPreflightFallbackMessage(detail);
+    _sendDisplayTextOverride = _metaPreflightDisplayText(detail);
+    _onSend();
+  }
+
   async function _onSend() {
-    let text = _textarea.value.trim();
-    let hasPayload = text || _pendingAttachments.length > 0;
+    const textOverride = _sendTextOverride;
+    const displayTextOverride = _sendDisplayTextOverride;
+    _sendTextOverride = null;
+    _sendDisplayTextOverride = null;
+    let text = (textOverride !== null ? textOverride : _textarea.value).trim();
+    let attachmentsForSend = textOverride !== null ? [] : _pendingAttachments;
+    const sessionIntentForSend = textOverride !== null ? null : _pendingSessionIntent;
+    let hasPayload = text || attachmentsForSend.length > 0;
     let isLiteralSlash = false;
 
-    if (_hasPendingAttachmentWork()) {
+    if (textOverride === null && _hasPendingAttachmentWork()) {
       UI.toast('Wait for file attachment processing to finish', 'warn', 2500);
       return;
     }
@@ -6082,18 +6578,18 @@ const ChatView = (() => {
     if (text.startsWith('//')) {
       isLiteralSlash = true;
       text = text.slice(1);
-      hasPayload = text || _pendingAttachments.length > 0;
+      hasPayload = text || attachmentsForSend.length > 0;
     }
     const isSlashCommand = !isLiteralSlash && text.startsWith('/')
       && !!(await _lookupSlashCommand(text));
     const normalized = await _normalizeOutgoingComposerPayload(
       text,
-      _pendingAttachments,
+      attachmentsForSend,
       { allowSlashCommand: isSlashCommand },
     );
     if (!normalized) return;
     text = normalized.text;
-    _pendingAttachments = normalized.attachments;
+    attachmentsForSend = normalized.attachments;
 
     // While a turn is streaming, Send enqueues. Use ESC or the
     // Stop button to actually halt the current response. Manual compaction uses
@@ -6116,7 +6612,10 @@ const ChatView = (() => {
         _isCompactInFlightForCurrentSession()
           ? 'context compaction'
           : 'the current response',
-        _pendingAttachments,
+        attachmentsForSend,
+        displayTextOverride,
+        sessionIntentForSend,
+        textOverride !== null,
       );
       return;
     }
@@ -6136,7 +6635,7 @@ const ChatView = (() => {
 
     // Record message for export
     const now = new Date().toISOString();
-    const userText = text;
+    const userText = displayTextOverride !== null ? displayTextOverride : text;
     const providerText = text || 'Describe these attachments';
     _messages.push({ role: 'user', text: userText, ts: now });
 
@@ -6145,11 +6644,11 @@ const ChatView = (() => {
     _stampHistoryElement(userDiv, '', 'user', userText);
     const userBody = userDiv.querySelector('.msg-body');
     let userHtml = _esc(userText);
-    if (_pendingAttachments.length > 0) {
+    if (attachmentsForSend.length > 0) {
       userBody.classList.add('msg-body--has-attachments');
       userHtml = userText ? `<div class="msg-attachment-text">${_esc(userText)}</div>` : '';
       userHtml += '<div class="msg-attachments">';
-      _pendingAttachments.forEach((a) => { userHtml += _renderMessageAttachmentHtml(a); });
+      attachmentsForSend.forEach((a) => { userHtml += _renderMessageAttachmentHtml(a); });
       userHtml += '</div>';
     }
     userBody.innerHTML = userHtml;
@@ -6161,28 +6660,32 @@ const ChatView = (() => {
     const params = { message: providerText, sessionKey: _sessionKey };
     const elevatedMode = _normalizeElevatedMode(_elevatedMode);
     if (elevatedMode) params._source = { elevated: elevatedMode };
-    if (_pendingSessionIntent) {
-      params.intent = _pendingSessionIntent;
-      _pendingSessionIntent = null;
+    if (sessionIntentForSend) {
+      params.intent = sessionIntentForSend;
+      if (textOverride === null) _pendingSessionIntent = null;
     }
-    if (_pendingAttachments.length > 0) {
+    if (userText !== providerText || attachmentsForSend.length > 0) {
       params.displayText = userText;
-      params.attachments = _pendingAttachments.map((a) => {
+    }
+    if (attachmentsForSend.length > 0) {
+      params.attachments = attachmentsForSend.map((a) => {
         if (a.kind === 'staged') {
           return { type: a.mime, file_uuid: a.file_uuid, mime: a.mime, name: a.name };
         }
         return { type: a.mime || 'image/png', data: a.data, mime: a.mime, name: a.name };
       });
     }
-    const normalizationProvenance = _inputNormalizationProvenanceFromAttachments(_pendingAttachments);
+    const normalizationProvenance = _inputNormalizationProvenanceFromAttachments(attachmentsForSend);
     if (normalizationProvenance) params.inputProvenance = normalizationProvenance;
     const routerFxRequestKind = _routerFxRequestKindFromAttachments(params.attachments || []);
 
     // Clear input and attachments
-    _textarea.value = '';
-    _autoResizeTextarea();
-    _pendingAttachments = [];
-    _renderAttachmentPreview();
+    if (textOverride === null) {
+      _textarea.value = '';
+      _autoResizeTextarea();
+      _pendingAttachments = [];
+      _renderAttachmentPreview();
+    }
 
     // Start streaming UI. Delay the routing scan briefly so request-time
     // compaction can claim the turn without a competing one-frame router flash.
@@ -7554,6 +8057,55 @@ const ChatView = (() => {
     ].join('\n');
     const schemaLang = /[\u4e00-\u9fff]/.test(schemaCopy) ? 'zh' : 'en';
     const clarifyText = (zh, en) => schemaLang === 'zh' ? zh : en;
+    const zhChoiceLabels = {
+      "en": "英文",
+      "zh": "中文",
+      "ja": "日文",
+      "other": "其他",
+      "mixed": "中英混合",
+      "YES": "是",
+      "NO": "否",
+      "LAST_WEEK": "过去一周",
+      "LAST_MONTH": "过去一个月",
+      "LAST_QUARTER": "过去一个季度",
+      "ENTRY": "初级",
+      "MID": "中级",
+      "SENIOR": "高级",
+      "STAFF": "专家级",
+      "PRE_K": "学龄前（3-5 岁）",
+      "EARLY_GRADE": "小学低年级（6-9 岁）",
+      "TWEEN": "小学高年级/初中前（10-12 岁）",
+      "TEEN": "青少年（13-17 岁）",
+      "SHOESTRING": "低预算",
+      "MODEST": "适中预算",
+      "COMFORTABLE": "宽裕预算",
+      "SOLO": "孩子独立完成",
+      "LIGHT": "家长偶尔帮忙",
+      "HANDS_ON": "家长全程陪同",
+      "budget": "低预算",
+      "mid": "中等",
+      "premium": "高预算",
+      "academic": "学术读者",
+      "technical": "技术读者",
+      "business": "商业读者",
+      "general": "普通读者",
+      "FULL_MANUSCRIPT": "完整论文",
+      "COMPACT_SKELETON": "快速草稿",
+      "REPAIR_EXISTING": "修复已有稿件",
+      "COMPILE_ONLY": "仅编译",
+      "readable_pdf": "可读取 PDF",
+      "inline_excerpts_only": "仅使用粘贴摘录",
+      "reference_only": "只有引用/文件名",
+    };
+    const localizedChoiceLabel = (choice, language) => {
+      const raw = String(choice || '');
+      if (language === 'zh') return zhChoiceLabels[raw] || raw;
+      if (/^[A-Z0-9_-]+$/.test(raw)) {
+        const humanized = raw.replace(/[_-]+/g, ' ').toLowerCase();
+        return humanized.charAt(0).toUpperCase() + humanized.slice(1);
+      }
+      return raw;
+    };
 
     const card = document.createElement('div');
     card.className = 'clarify-form chat-tools-collapse';
@@ -7787,18 +8339,30 @@ const ChatView = (() => {
       let input;
       if (field.type === 'enum' && Array.isArray(field.choices)) {
         input = document.createElement('select');
+        const optionByValue = new Map();
+        if (Array.isArray(field.options)) {
+          field.options.forEach((option) => {
+            if (!option || typeof option !== 'object') return;
+            const value = option.value != null ? String(option.value) : '';
+            if (!value) return;
+            optionByValue.set(value, option.label != null ? String(option.label) : value);
+          });
+        }
         if (!field.required) {
           const blank = document.createElement('option');
           blank.value = '';
+          const defaultLabel = optionByValue.get(String(field.default)) || field.default;
           blank.textContent = field.default
-            ? clarifyText('(默认: ' + field.default + ')', '(default: ' + field.default + ')')
+            ? clarifyText('(默认: ' + defaultLabel + ')', '(default: ' + defaultLabel + ')')
             : clarifyText('(可选)', '(optional)');
           input.appendChild(blank);
         }
         field.choices.forEach((choice) => {
+          const choiceValue = String(choice);
           const opt = document.createElement('option');
-          opt.value = choice;
-          opt.textContent = choice;
+          opt.value = choiceValue;
+          opt.textContent = optionByValue.get(choiceValue)
+            || localizedChoiceLabel(choiceValue, schemaLang);
           if (field.default === choice) opt.selected = true;
           input.appendChild(opt);
         });
@@ -8280,6 +8844,13 @@ const ChatView = (() => {
 
   function _renderArtifacts(artifacts) {
     if (!Array.isArray(artifacts) || artifacts.length === 0) return '';
+    if (window.ArtifactCard && typeof window.ArtifactCard.renderArtifacts === 'function') {
+      return window.ArtifactCard.renderArtifacts(artifacts, {
+        origin: window.location.origin,
+        sessionKey: _sessionKey,
+        token: (App.getAuthToken && App.getAuthToken()) || '',
+      });
+    }
     let html = '<div class="msg-artifacts">';
     let openGroup = '';
     const token = (App.getAuthToken && App.getAuthToken()) || '';
@@ -9178,7 +9749,7 @@ const ChatView = (() => {
     }
     html += `</div><div class="chat-pending-chips">`;
     _pendingQueue.forEach((p, i) => {
-      const raw = p.text || (p.attachments && p.attachments.length ? '(attachment only)' : '');
+      const raw = p.displayText || p.text || (p.attachments && p.attachments.length ? '(attachment only)' : '');
       const preview = _esc(raw.slice(0, 30)) + (raw.length > 30 ? '…' : '');
       const attChip = p.attachments && p.attachments.length > 0
         ? ` <span class="chat-pending-attch">📎${p.attachments.length}</span>` : '';
@@ -9198,6 +9769,9 @@ const ChatView = (() => {
     toastMessage = null,
     waitReason = 'the current response',
     attachmentsOverride = null,
+    displayTextOverride = null,
+    intentOverride = undefined,
+    preserveComposer = false,
   ) {
     if (_pendingQueue.length >= _MAX_PENDING) {
       UI.toast(
@@ -9210,15 +9784,19 @@ const ChatView = (() => {
     const queuedAttachments = attachmentsOverride || _pendingAttachments;
     _pendingQueue.push({
       text,
+      displayText: displayTextOverride,
       attachments: queuedAttachments.map((a) => ({ ...a })),
-      intent: _pendingSessionIntent,
+      intent: intentOverride === undefined ? _pendingSessionIntent : intentOverride,
+      hiddenControl: preserveComposer === true,
     });
-    _textarea.value = '';
-    _pendingAttachments = [];
-    _pendingSessionIntent = null;
-    _renderAttachmentPreview();
+    if (!preserveComposer) {
+      _textarea.value = '';
+      _pendingAttachments = [];
+      if (intentOverride === undefined) _pendingSessionIntent = null;
+      _renderAttachmentPreview();
+      _autoResizeTextarea();
+    }
     _renderPendingQueue();
-    _autoResizeTextarea();
     UI.toast(toastMessage || `Queued (${_pendingQueue.length}/${_MAX_PENDING})`, 'info', 1500);
     return true;
   }
@@ -9233,11 +9811,18 @@ const ChatView = (() => {
       const draftText = _textarea.value;
       const draftAttachments = _pendingAttachments.map(att => ({ ...att }));
       const draftIntent = _pendingSessionIntent;
-      _textarea.value = head.text || '';
-      _pendingAttachments = head.attachments || [];
-      _pendingSessionIntent = head.intent || null;
-      _renderAttachmentPreview();
-      _onSend();
+      if (head.hiddenControl) {
+        _sendTextOverride = head.text || '';
+        _sendDisplayTextOverride = typeof head.displayText === 'string' ? head.displayText : null;
+        _onSend();
+      } else {
+        _textarea.value = head.text || '';
+        _sendDisplayTextOverride = typeof head.displayText === 'string' ? head.displayText : null;
+        _pendingAttachments = head.attachments || [];
+        _pendingSessionIntent = head.intent || null;
+        _renderAttachmentPreview();
+        _onSend();
+      }
       if (draftText.trim() || draftAttachments.length || draftIntent) {
         _textarea.value = draftText;
         _pendingAttachments = draftAttachments;
@@ -9251,7 +9836,9 @@ const ChatView = (() => {
   function _popPendingTail() {
     if (_pendingQueue.length === 0) return false;
     const tail = _pendingQueue.pop();
-    _textarea.value = tail.text || '';
+    _textarea.value = tail.hiddenControl
+      ? (tail.displayText || '')
+      : (tail.text || '');
     _pendingAttachments = tail.attachments || [];
     _pendingSessionIntent = tail.intent || null;
     _renderAttachmentPreview();
@@ -9288,7 +9875,10 @@ const ChatView = (() => {
     _clearPendingDrainAfterTerminalTimer();
     if (!_textarea || _pendingQueue.length === 0) return false;
     const queuedTexts = _pendingQueue
-      .map((p) => (typeof p.text === 'string' ? p.text : ''))
+      .map((p) => {
+        if (typeof p.displayText === 'string') return p.displayText;
+        return typeof p.text === 'string' ? p.text : '';
+      })
       .filter(Boolean);
     const queuedAttachments = _pendingQueue.flatMap((p) => p.attachments || []);
     const headIntent = _pendingQueue[0] && _pendingQueue[0].intent;

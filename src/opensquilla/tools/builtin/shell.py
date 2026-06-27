@@ -20,7 +20,11 @@ from typing import Any, cast
 
 import structlog
 
-from opensquilla.gateway.approval_queue import get_approval_queue
+from opensquilla.gateway.approval_queue import (
+    RESOLUTION_EXPIRED,
+    classify_command,
+    get_approval_queue,
+)
 from opensquilla.sandbox.backend.bubblewrap import BubblewrapBackend, build_bwrap_argv
 from opensquilla.sandbox.backend.noop import NoopBackend
 from opensquilla.sandbox.backend.seatbelt import (
@@ -56,7 +60,15 @@ _MAX_EXEC_TIMEOUT = 600.0
 _APPROVAL_RETRY_WAIT_SECONDS = 180.0
 _EXEC_TOOL_TIMEOUT_PADDING = _APPROVAL_RETRY_WAIT_SECONDS + 5.0
 _DEFAULT_BACKGROUND_TIMEOUT = 1800.0
-_MAX_BACKGROUND_TIMEOUT = 3600.0
+_MAX_BACKGROUND_TIMEOUT = 5400.0
+_DEFAULT_PROCESS_WAIT_TIMEOUT = 600.0
+# Coding mode runs code-task (build/install for many minutes) via
+# background_process and awaits it; default a single wait to 1 hour so it
+# spans a full code-task run instead of timing out and making the agent
+# relaunch it.
+_CODING_PROCESS_WAIT_TIMEOUT = 5400.0
+_MAX_PROCESS_WAIT_TIMEOUT = _MAX_BACKGROUND_TIMEOUT
+_PROCESS_WAIT_TIMEOUT_PADDING = 5.0
 _BACKGROUND_TERMINATE_TIMEOUT = 1.0
 _BACKGROUND_KILL_TIMEOUT = 1.0
 _EXEC_TERMINATE_TIMEOUT = 0.25
@@ -85,7 +97,7 @@ _SHELL_NULL_REDIRECT_RE = re.compile(
     r"(?:(?<=^)|(?<=[\s;|&]))\d*[<>]{1,2}\s*/dev/null(?=$|[\s;|&])"
 )
 PROCESS_ACTIONS: frozenset[str] = frozenset(
-    {"eof", "kill", "list", "log", "poll", "remove", "submit", "write"}
+    {"eof", "kill", "list", "log", "poll", "remove", "submit", "wait", "write"}
 )
 
 # Background process session store
@@ -418,6 +430,25 @@ def _resolve_background_timeout(timeout: float | int | None) -> float:
     except (TypeError, ValueError):
         return _DEFAULT_BACKGROUND_TIMEOUT
     return max(0.01, min(value, _MAX_BACKGROUND_TIMEOUT))
+
+
+def _process_wait_default() -> float:
+    """Default process(wait) timeout: 1 hour while coding mode is on, else 10 min."""
+    ctx = current_tool_context.get()
+    if ctx is not None and getattr(ctx, "coding_mode", False):
+        return _CODING_PROCESS_WAIT_TIMEOUT
+    return _DEFAULT_PROCESS_WAIT_TIMEOUT
+
+
+def _resolve_process_wait_timeout(timeout: float | int | None) -> float:
+    default = _process_wait_default()
+    if timeout is None:
+        return default
+    try:
+        value = float(timeout)
+    except (TypeError, ValueError):
+        return default
+    return max(0.01, min(value, _MAX_PROCESS_WAIT_TIMEOUT))
 
 
 def _effective_workdir(workdir: str | None) -> str | None:
@@ -863,7 +894,7 @@ async def exec_command(
         "workdir": {"type": "string", "description": "Working directory (default: cwd)."},
         "timeout": {
             "type": "number",
-            "description": "Timeout in seconds (default 1800, max 3600).",
+            "description": "Timeout in seconds (default 1800, max 5400).",
         },
         "approval_id": {
             "type": "string",
@@ -1103,11 +1134,15 @@ def get_bg_session(session_id: str) -> _BgSession | None:
 
 @tool(
     name="process",
-    description="Manage background_process sessions created by OpenSquilla.",
+    description=(
+        "Manage background_process sessions created by OpenSquilla. To await a "
+        "long-running background command, call action='wait' (blocks until it "
+        "exits or the timeout elapses) instead of polling in a loop."
+    ),
     params={
         "action": {
             "type": "string",
-            "description": "Action: list, poll, log, kill, remove, write, submit, eof.",
+            "description": "Action: list, poll, wait, log, kill, remove, write, submit, eof.",
         },
         "session_id": {
             "type": "string",
@@ -1129,8 +1164,19 @@ def get_bg_session(session_id: str) -> _BgSession | None:
             "type": "integer",
             "description": "For log, maximum characters to return.",
         },
+        "timeout": {
+            "type": "number",
+            "description": (
+                "For wait: max seconds to block for the process to exit (default "
+                "600, max 5400). On timeout, returns with the process still "
+                "running so you can wait again."
+            ),
+        },
     },
     required=["action"],
+    execution_timeout_seconds=_DEFAULT_PROCESS_WAIT_TIMEOUT + _PROCESS_WAIT_TIMEOUT_PADDING,
+    execution_timeout_argument="timeout",
+    execution_timeout_padding=_PROCESS_WAIT_TIMEOUT_PADDING,
 )
 async def process(
     action: str,
@@ -1139,6 +1185,7 @@ async def process(
     data: str | None = None,
     offset: int | None = None,
     limit: int | None = None,
+    timeout: float | None = None,
 ) -> str:
     if action == "list":
         sessions = [_bg_session_payload(session) for session in _iter_visible_bg_sessions()]
@@ -1150,6 +1197,37 @@ async def process(
     if action == "poll":
         return json.dumps(
             {"status": "ok", "action": action, "session": _bg_session_payload(session)}
+        )
+
+    if action == "wait":
+        wait_timeout = _resolve_process_wait_timeout(timeout)
+        exited = session.done or session.process.returncode is not None
+        if not exited:
+            exited = await _wait_bg_process(session, wait_timeout)
+        # The process can exit right at the timeout boundary, where
+        # _wait_bg_process reports False; re-read live state so we still drain +
+        # finalize instead of returning a stale "running" payload (codex review).
+        exited = exited or session.done or session.process.returncode is not None
+        if exited:
+            # Drain the collector so returncode/ended_at/output reflect the
+            # final state before reporting (codex review: no stale "running").
+            if session.collector_task is not None and not session.collector_task.done():
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(
+                        asyncio.shield(session.collector_task),
+                        timeout=_BACKGROUND_KILL_TIMEOUT,
+                    )
+            if not session.done:
+                _finalize_bg_session(session)
+        # Do NOT set session.timed_out when the wait action itself times out —
+        # that field means the process exceeded its own lifetime (codex review).
+        return json.dumps(
+            {
+                "status": "ok",
+                "action": action,
+                "exited": bool(session.done or session.process.returncode is not None),
+                "session": _bg_session_payload(session),
+            }
         )
 
     if action == "log":
@@ -1260,7 +1338,7 @@ async def process(
             }
         )
 
-    raise ToolError("Invalid action: list|poll|log|kill|remove|write|submit|eof")
+    raise ToolError("Invalid action: list|poll|wait|log|kill|remove|write|submit|eof")
 
 
 def _sandbox_request_for(
@@ -1340,6 +1418,27 @@ def _wait_for_inline_browser_approval(background: bool) -> bool:
     return ctx is not None and ctx.caller_kind is CallerKind.WEB
 
 
+def _channel_approver_origin() -> str | None:
+    """Return the originating channel ``sender_id`` when one can be reached.
+
+    A channel-originated turn runs UNATTENDED, but if the originating user is
+    reachable on the channel (the run carries a channel caller, a delivery
+    target on the session, and the ``sender_id`` of whoever started the turn)
+    that user can be asked to approve out of band — exactly like the Web UI
+    poll path. Returns the ``sender_id`` to record as the approval owner, or
+    ``None`` when no approver channel is reachable (cron, subagent, or a
+    channel run that lost its sender).
+    """
+    ctx = current_tool_context.get()
+    if ctx is None or ctx.caller_kind is not CallerKind.CHANNEL:
+        return None
+    sender_id = (ctx.sender_id or "").strip()
+    channel_kind = (ctx.channel_kind or "").strip()
+    if not sender_id or not channel_kind:
+        return None
+    return sender_id
+
+
 def _apply_approval_elevated_mode(entry: object) -> None:
     params = getattr(entry, "params", None)
     if not isinstance(params, dict):
@@ -1350,6 +1449,40 @@ def _apply_approval_elevated_mode(entry: object) -> None:
     ctx = current_tool_context.get()
     if ctx is not None and ctx.is_owner:
         ctx.elevated = mode
+
+
+def _unapproved_envelope(
+    entry: object,
+    approval_id: str,
+    command: str,
+    warning: str,
+) -> dict[str, object]:
+    """Build the tool result for an approval that did not approve.
+
+    An expiry (deadline lapsed with no response) reads distinctly from a human
+    deny so the agent does not infer a deliberate refusal: it is told the action
+    simply was not run and may be re-requested. A real deny keeps its existing
+    message untouched.
+    """
+    if getattr(entry, "resolution", "") == RESOLUTION_EXPIRED:
+        return {
+            "status": "approval_denied",
+            "approval_id": approval_id,
+            "command": command,
+            "warning": warning,
+            "expired": True,
+            "message": (
+                "This action expired without a response and was not run; "
+                "ask again if it's still needed."
+            ),
+        }
+    return {
+        "status": "approval_denied",
+        "approval_id": approval_id,
+        "command": command,
+        "warning": warning,
+        "message": "Approval was denied.",
+    }
 
 
 async def _check_exec_approval(
@@ -1363,6 +1496,7 @@ async def _check_exec_approval(
     queue = get_approval_queue()
     settings = queue.get_settings()
     ctx = current_tool_context.get()
+    channel_owner_sender_id = _channel_approver_origin()
     params = {
         "toolName": tool_name,
         "command": command,
@@ -1371,6 +1505,12 @@ async def _check_exec_approval(
         "agent": ctx.agent_id if ctx is not None else "",
         "mode": "background" if background else "foreground",
     }
+    if channel_owner_sender_id is not None:
+        # Record who started the channel turn so only that user can resolve
+        # this approval from the channel (owner-only, default-deny on mismatch),
+        # and mark the origin channel so the notify bridge can route the prompt.
+        params["senderId"] = channel_owner_sender_id
+        params["channelKind"] = (ctx.channel_kind or "").strip() if ctx is not None else ""
 
     elevated_mode = _context_elevated_mode()
     elevated_full = elevated_mode == "full"
@@ -1422,6 +1562,27 @@ async def _check_exec_approval(
         )
         return deny_block
 
+    # Operator-configured allow/deny patterns. A deny match is a hard block on
+    # par with the guards above (deny precedence), so it runs before any
+    # elevated bypass. The allow side is evaluated later, where it can only
+    # short-circuit the prompt — never the hard guards.
+    pattern_class = classify_command(
+        command, settings.allow_patterns, settings.deny_patterns
+    )
+    if pattern_class == "deny":
+        log.warning(
+            "shell_approval_denied_pattern",
+            command=_audit_command(command),
+            tool=tool_name,
+        )
+        return {
+            "status": "approval_denied",
+            "approval_id": "",
+            "command": command,
+            "warning": warning,
+            "message": "This command was denied by the active approval policy.",
+        }
+
     # /elevated full — trusted operator has taken explicit responsibility.
     # Approvals are skipped entirely.
     if elevated_full:
@@ -1467,12 +1628,39 @@ async def _check_exec_approval(
         _elevate_current_call.set(True)
         return None
 
-    if ctx is not None and ctx.interaction_mode is InteractionMode.UNATTENDED:
+    if (
+        ctx is not None
+        and ctx.interaction_mode is InteractionMode.UNATTENDED
+        and channel_owner_sender_id is None
+    ):
+        # Unattended runs without a reachable approver (cron, subagent, or a
+        # channel run that lost its sender) cannot prompt anyone — fail fast
+        # before enqueuing so no orphaned approval is left pending. A channel
+        # run WITH a reachable owner falls through to enqueue + wait below; the
+        # interaction mode stays UNATTENDED so the UNATTENDED-gated tool-surface
+        # denials in policy_runtime are untouched.
         raise UnsupportedSurfaceError(
             f"Tool '{tool_name}' requires human approval, but this run is unattended. "
             "Use an interactive surface for approval-gated operations, or choose an "
             "operation that does not require approval."
         )
+
+    # Allow-pattern short-circuit: an operator-configured allow match skips the
+    # prompt, like auto-approve. It is gated on ``not sandbox_off_requires_approval``
+    # so it can never override the forced-approval-when-sandbox-off hard guard,
+    # and it only runs after the deny/sensitive/lockdown hard blocks above.
+    if (
+        approval_id is None
+        and not sandbox_off_requires_approval
+        and pattern_class == "allow"
+    ):
+        log.info(
+            "shell_approval_allowed_pattern",
+            command=_audit_command(command),
+            tool=tool_name,
+        )
+        _elevate_current_call.set(True)
+        return None
 
     # Intent-level short-circuit: if the user already approved the same
     # destructive intent recently (e.g. rm /x, and now os.remove("/x")),
@@ -1491,14 +1679,20 @@ async def _check_exec_approval(
 
     if approval_id is None:
         approval_id = queue.request(namespace="exec", params=params)
-        if _wait_for_inline_browser_approval(background):
+        # Both the Web UI poll path and a reachable channel approver let the
+        # tool call block on the queue and continue the instant the user
+        # resolves it. A channel approval only ever grants this one gated call
+        # (never session-wide elevation), so the per-call host grant is set but
+        # the session elevated-mode application is skipped for channel origins.
+        if _wait_for_inline_browser_approval(background) or channel_owner_sender_id is not None:
             try:
                 await queue.wait(approval_id, timeout=_APPROVAL_RETRY_WAIT_SECONDS)
             except TimeoutError:
                 pass
             entry = queue.get(approval_id)
             if entry.approved:
-                _apply_approval_elevated_mode(entry)
+                if channel_owner_sender_id is None:
+                    _apply_approval_elevated_mode(entry)
                 try:
                     queue.consume(approval_id)
                 except ValueError as exc:
@@ -1511,13 +1705,7 @@ async def _check_exec_approval(
                 )
                 _elevate_current_call.set(True)
                 return None
-            return {
-                "status": "approval_denied",
-                "approval_id": approval_id,
-                "command": command,
-                "warning": warning,
-                "message": "Approval was denied or timed out.",
-            }
+            return _unapproved_envelope(entry, approval_id, command, warning)
         status = "approval_required"
         message = (
             "Resolve this approval via exec.approval.resolve and retry with the returned "
@@ -1567,13 +1755,7 @@ async def _check_exec_approval(
                 ),
             }
     if not entry.approved:
-        return {
-            "status": "approval_denied",
-            "approval_id": approval_id,
-            "command": command,
-            "warning": warning,
-            "message": "Approval was denied.",
-        }
+        return _unapproved_envelope(entry, approval_id, command, warning)
     try:
         _apply_approval_elevated_mode(entry)
         queue.consume(approval_id)

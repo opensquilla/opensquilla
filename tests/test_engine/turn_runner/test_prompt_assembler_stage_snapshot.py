@@ -196,7 +196,15 @@ def _patch_run_pipeline(runner, turn_factory, provider, raises=None):
         tool_defs, base_prompt, attachments, *,
         semantic_message=None, ingress_pipeline_steps=None,
         prev_assistant_text=None, prev_assistant_usage=None,
-        history_user_texts=None, flags_text_override=None, tool_context=None,
+        history_user_texts=None,
+        history_has_recent_image=False,
+        history_image_turn_count=0,
+        vision_sticky_remaining=0,
+        turns_since_last_image=None,
+        last_image_turn_text=None,
+        vision_candidate_turns=0,
+        flags_text_override=None,
+        tool_context=None,
         normalization_metadata=None,
     ):  # noqa: ARG001
         if raises is not None:

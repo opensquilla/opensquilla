@@ -437,7 +437,16 @@ def test_web_group_can_surface_owner_only_http_request_for_owner_only() -> None:
     owner_names = {tool.name for tool in registry.to_tool_definitions(owner_ctx)}
     non_owner_names = {tool.name for tool in registry.to_tool_definitions(non_owner_ctx)}
 
-    assert {"web_search", "web_fetch", "http_request"} <= owner_names
+    assert {
+        "web_search",
+        "web_discover",
+        "web_fetch",
+        "http_request",
+    } <= owner_names
+    assert "research_search" not in owner_names
+    assert "research_search" not in non_owner_names
+    assert "web_search" in non_owner_names
+    assert "web_discover" in non_owner_names
     assert "http_request" not in non_owner_names
 
 

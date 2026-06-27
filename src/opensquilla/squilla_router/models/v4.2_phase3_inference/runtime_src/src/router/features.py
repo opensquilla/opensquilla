@@ -453,7 +453,7 @@ class FeatureExtractor:
             "feature_dim": dim,
             "channel_order": ch,
         }
-        (p / "meta.json").write_text(json.dumps(meta, indent=2))
+        (p / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
     @classmethod
     def load(cls, path: str) -> FeatureExtractor:
@@ -469,7 +469,7 @@ class FeatureExtractor:
         # Restore v2 flags from meta.json if present
         meta_path = p / "meta.json"
         if meta_path.exists():
-            meta = json.loads(meta_path.read_text())
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
             ext.use_context = meta.get("use_context", False)
             ext.use_hist = meta.get("use_hist", False)
         ext._fitted = True

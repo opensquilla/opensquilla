@@ -24,6 +24,14 @@ metadata:
           ],
       },
   }
+entrypoint:
+  command: python {baseDir}/scripts/export_markdown_docx.py
+  args:
+    - --out
+    - "{{ with.output_path }}"
+  stdin: "{{ with.markdown }}"
+  parse: text
+  timeout: 60
 ---
 
 # docx

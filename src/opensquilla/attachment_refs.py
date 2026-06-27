@@ -70,6 +70,25 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
         raise
 
 
+def _link_or_copy(src: Path, dst: Path) -> None:
+    """Materialize ``dst`` from ``src`` cheaply: hardlink when the filesystem allows
+    it, otherwise fall back to an atomic byte copy.
+
+    Material files are content-addressed and never mutated in place (writers always
+    replace via a fresh temp file), so a hardlink is safe — the destination keeps its
+    own directory entry to the same bytes and survives deletion of the source. The
+    copy fallback covers cross-device links, filesystems/platforms without hardlink
+    support, and any other ``OSError`` from ``os.link``.
+    """
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(src, dst)
+        return
+    except OSError:
+        pass
+    _atomic_write_bytes(dst, src.read_bytes())
+
+
 def write_transcript_material(
     *,
     media_root: Path,
@@ -95,6 +114,45 @@ def write_transcript_material(
     path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write_bytes(path, payload)
     return sha, path, True
+
+
+def copy_transcript_material(
+    *,
+    media_root: Path,
+    source_session_id: str,
+    target_session_id: str,
+) -> int:
+    """Duplicate a session's transcript attachment material into a forked child.
+
+    When a session is forked the child transcript references the same attachments by
+    content hash, but the material store is keyed by session id, so the child would
+    otherwise have nothing on disk to serve over the download route or to replay. This
+    copies every material file from the source session's store into the target's. It is
+    idempotent (existing target files are left untouched) and best-effort (individual
+    copy failures are skipped). Returns the count of files materialized.
+    """
+    source_dir = transcript_material_dir(media_root, source_session_id)
+    if not source_dir.is_dir():
+        return 0
+    target_dir = transcript_material_dir(media_root, target_session_id)
+    copied = 0
+    for source_path in sorted(source_dir.iterdir()):
+        if not source_path.is_file():
+            continue
+        name = source_path.name
+        # Material files are named by their 64-char sha256 digest; skip atomic-write
+        # temp files and anything else that is not a content hash.
+        if len(name) != 64 or any(ch not in "0123456789abcdef" for ch in name):
+            continue
+        target_path = target_dir / name
+        if target_path.exists():
+            continue
+        try:
+            _link_or_copy(source_path, target_path)
+        except OSError:
+            continue
+        copied += 1
+    return copied
 
 
 def make_attachment_ref(

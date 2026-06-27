@@ -46,13 +46,13 @@ TIERS = {
     },
     "c2": {
         "provider": "openrouter",
-        "model": "z-ai/glm-5.1",
+        "model": "z-ai/glm-5.2",
         "description": "structured multi-step work",
         "thinking_level": "high",
     },
     "c3": {
         "provider": "openrouter",
-        "model": "anthropic/claude-opus-4.7",
+        "model": "anthropic/claude-opus-4.8",
         "description": "deep reasoning and hard recovery turns",
         "thinking_level": "high",
     },
@@ -480,7 +480,7 @@ DIALOGUE_ROUTER_CASES = [
                 "message": "不对，刚才漏掉了 scheduler event 和 admission webhook，重新排查。",
                 "expected_route_class": "R1",
                 "expect_complaint_upgrade": True,
-                "expected_final_tier": "c2",
+                "expected_final_tier": "c3",
             },
         ],
     },
@@ -604,7 +604,7 @@ def _tier_rank(tier: str | None) -> int:
 
 
 def _reset_router_state(*, reset_strategy: bool = False) -> None:
-    router_mod._routing_histories.clear()
+    router_mod._history_store.clear()
     if reset_strategy:
         router_mod._strategy = None
         router_mod._strategy_key = None
@@ -698,20 +698,23 @@ async def _continuous_dialogue_scenario() -> dict[str, Any]:
 async def _forced_recent_history_scenario() -> dict[str, Any]:
     _reset_router_state()
     session = "smoke-forced-recent-history"
-    router_mod._routing_histories[session] = [
-        {
-            "turn_index": 0,
-            "_ts": time.monotonic(),
-            "text": "上一轮是一个长上下文的架构设计问题。",
-            "route_class": "R3",
-            "final_route_class": "R3",
-            "base_tier": "c3",
-            "final_tier": "c3",
-            "difficulty": 2.0,
-            "margin": 0.8,
-            "top1_label": "R3",
-        }
-    ]
+    router_mod._history_store.set(
+        session,
+        [
+            {
+                "turn_index": 0,
+                "_ts": time.monotonic(),
+                "text": "上一轮是一个长上下文的架构设计问题。",
+                "route_class": "R3",
+                "final_route_class": "R3",
+                "base_tier": "c3",
+                "final_tier": "c3",
+                "difficulty": 2.0,
+                "margin": 0.8,
+                "top1_label": "R3",
+            }
+        ],
+    )
     ctx = await _route_turn("谢谢。", session)
     extra = ctx.metadata.get("routing_extra") or {}
     ok = (
@@ -955,12 +958,12 @@ def _live_tier_model_map(live_model: str) -> dict[str, str]:
         "c2": _tier_model_env(
             "OPENSQUILLA_LIVE_LLM_C2_MODEL",
             "OPENSQUILLA_LIVE_LLM_T2_MODEL",
-            "z-ai/glm-5.1",
+            "z-ai/glm-5.2",
         ),
         "c3": _tier_model_env(
             "OPENSQUILLA_LIVE_LLM_C3_MODEL",
             "OPENSQUILLA_LIVE_LLM_T3_MODEL",
-            "anthropic/claude-opus-4.7",
+            "anthropic/claude-opus-4.8",
         ),
     }
     if live_model:

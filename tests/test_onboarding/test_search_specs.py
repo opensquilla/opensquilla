@@ -11,22 +11,37 @@ from opensquilla.onboarding.search_specs import (
 
 def test_search_catalog_includes_known_providers():
     ids = {s.provider_id for s in list_search_provider_setup_specs()}
-    assert {"brave", "duckduckgo", "tavily", "exa", "perplexity"} <= ids
+    assert {"bocha", "brave", "duckduckgo", "tavily", "exa", "perplexity"} <= ids
 
 
-def test_search_catalog_marks_unsupported_providers_disabled():
+def test_search_catalog_marks_runtime_providers_supported():
     specs = {s.provider_id: s for s in list_search_provider_setup_specs()}
+    assert specs["bocha"].runtime_supported is True
     assert specs["brave"].runtime_supported is True
     assert specs["duckduckgo"].runtime_supported is True
-    assert specs["tavily"].runtime_supported is False
-    assert specs["exa"].runtime_supported is False
+    assert specs["tavily"].runtime_supported is True
+    assert specs["exa"].runtime_supported is True
     assert specs["perplexity"].runtime_supported is False
+
+
+def test_bocha_search_spec_requires_api_key():
+    spec = get_search_provider_setup_spec("bocha")
+    assert spec.requires_api_key is True
+    assert spec.env_key == "BOCHA_SEARCH_API_KEY"
+    assert "content" in spec.capabilities
+    assert "freshness" in spec.capabilities
 
 
 def test_brave_search_spec_requires_api_key():
     spec = get_search_provider_setup_spec("brave")
     assert spec.requires_api_key is True
     assert spec.env_key == "BRAVE_SEARCH_API_KEY"
+
+
+def test_tavily_search_spec_requires_api_key():
+    spec = get_search_provider_setup_spec("tavily")
+    assert spec.requires_api_key is True
+    assert spec.env_key == "TAVILY_API_KEY"
 
 
 def test_duckduckgo_search_spec_does_not_require_api_key():

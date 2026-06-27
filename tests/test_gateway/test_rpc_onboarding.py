@@ -70,7 +70,7 @@ async def test_onboarding_catalog_returns_providers_and_channels(tmp_path, monke
     types = {c["type"] for c in payload["channels"]}
     assert {"slack", "telegram", "matrix", "discord"} <= types
     search_provider_ids = {p["providerId"] for p in payload["searchProviders"]}
-    assert {"brave", "duckduckgo"} <= search_provider_ids
+    assert {"bocha", "brave", "duckduckgo"} <= search_provider_ids
     image_provider_ids = {p["providerId"] for p in payload["imageGenerationProviders"]}
     assert {"openai", "openrouter"} <= image_provider_ids
     audio_provider_ids = {p["providerId"] for p in payload["audioProviders"]}
@@ -205,7 +205,7 @@ async def test_router_configure_persists_image_model_as_image_capable(
             "tiers": {
                 "image_model": {
                     "provider": "openrouter",
-                    "model": "anthropic/claude-opus-4.7",
+                    "model": "anthropic/claude-opus-4.8",
                     "supportsImage": False,
                 },
             },
@@ -216,7 +216,7 @@ async def test_router_configure_persists_image_model_as_image_capable(
     assert res.error is None, res.error
     persisted = tomllib.loads((tmp_path / "c.toml").read_text())
     image_tier = persisted["squilla_router"]["tiers"]["image_model"]
-    assert image_tier["model"] == "anthropic/claude-opus-4.7"
+    assert image_tier["model"] == "anthropic/claude-opus-4.8"
     assert image_tier["supports_image"] is True
     assert image_tier["image_only"] is True
     assert ctx.config.squilla_router.tiers["image_model"]["supports_image"] is True

@@ -296,6 +296,11 @@
   width: 140px;
 }
 
+.cfg-input-select {
+  min-height: 40px;
+  min-width: min(100%, 220px);
+}
+
 .cfg-input-json {
   width: 100%;
   min-height: 88px;

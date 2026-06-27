@@ -5,6 +5,83 @@ kind: meta
 meta_priority: 90
 always: false
 final_text_mode: "step:final_response"
+request_template:
+  outcome: "Proposed meta-skill spec or saved proposal with trigger, DAG, tests, and validation notes."
+  outcome_zh: "生成 meta-skill 提案或保存方案，包含触发词、DAG、测试和验证记录。"
+  outcome_en: "Proposed meta-skill spec or saved proposal with trigger, DAG, tests, and validation notes."
+  fields:
+    - name: meta_skill_goal
+      label_zh: "Meta-skill 目标"
+      label_en: "Meta-skill goal"
+      required: true
+    - name: existing_skills_to_orchestrate
+      label_zh: "要编排的现有技能"
+      label_en: "Existing skills to orchestrate"
+      required: false
+    - name: save_or_preview
+      label_zh: "保存或预览"
+      label_en: "Save or preview"
+      required: false
+      default: "preview unless the user asks to persist"
+      default_zh: "默认预览；仅在用户要求持久化时保存"
+      default_en: "preview unless the user asks to persist"
+    - name: constraints
+      label_zh: "限制条件"
+      label_en: "Constraints"
+      required: false
+    - name: audience
+      label_zh: "受众"
+      label_en: "Audience"
+      required: false
+      default: "meta-skill author"
+      default_zh: "meta-skill 作者"
+      default_en: "meta-skill author"
+    - name: language
+      label_zh: "输出语言"
+      label_en: "Output language"
+      required: false
+      default: "match the user's language"
+      default_zh: "跟随用户语言"
+      default_en: "match the user's language"
+  assumptions:
+    - "Create a meta-skill only when orchestration is explicitly requested."
+    - "Check trigger collisions and lint before presenting a proposal."
+  assumptions_zh:
+    - "仅在用户明确要求编排时创建 meta-skill。"
+    - "展示提案前检查触发词冲突并运行 lint。"
+  assumptions_en:
+    - "Create a meta-skill only when orchestration is explicitly requested."
+    - "Check trigger collisions and lint before presenting a proposal."
+output_contract:
+  append_to_final_text: false
+  required_sections:
+    - "Intent summary"
+    - "Proposed DAG"
+    - "Trigger and collision notes"
+    - "Validation results"
+    - "Save or next-step status"
+  assumptions:
+    - "Preview mode is used unless persistence is explicit."
+  unverified:
+    - "Live runtime smoke results when execution gates are unavailable."
+  artifacts:
+    - name: "meta_skill_proposal"
+      required: false
+eval_prompts:
+  - name: "meta-skill-creator-baseline"
+    prompt: "Draft a meta-skill that orchestrates search, synthesis, validation, and proposal persistence."
+    rubric:
+      - "Intent summary"
+      - "Proposed DAG"
+      - "Trigger and collision notes"
+      - "Validation results"
+      - "Save or next-step status"
+preference_keys:
+  - preferred_language
+  - meta_authoring_style
+policy_tags:
+  - trigger-collision-check
+  - lint-before-enable
 triggers:
   - "新增 meta 技能"
   - "组合现有 skill 成 meta-skill"
@@ -21,6 +98,8 @@ provenance:
 composition:
   steps:
     - id: clarify_intent
+      label: "意图澄清"
+      label_en: "Intent clarification"
       kind: llm_chat
       with:
         system: |
@@ -57,6 +136,8 @@ composition:
           CLARIFY_REASON: <one concise reason, or none>
 
     - id: creator_clarify
+      label: "创建澄清"
+      label_en: "Creation clarification"
       kind: user_input
       depends_on: [clarify_intent]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower) and 'needs_clarification: yes' in (outputs.clarify_intent | lower)"
@@ -64,30 +145,42 @@ composition:
         mode: form
         intro: |
           新 meta-skill 的边界还不够明确。请补齐目标和输出形态，避免生成过宽的触发词。
+        intro_zh: "新 meta-skill 的边界还不够明确。请补齐目标和输出形态，避免生成过宽的触发词。"
+        intro_en: "The new meta-skill boundary is not clear enough. Fill in the goal and output shape so the trigger stays precise."
         nl_extract: true
         fields:
           - name: workflow_goal
             type: string
             required: true
             prompt: "工作流目标 / Workflow goal"
+            prompt_zh: "工作流目标"
+            prompt_en: "Workflow goal"
             max_chars: 300
           - name: output_shape
             type: string
             required: true
             prompt: "最终输出形态 / Output shape"
+            prompt_zh: "最终输出形态"
+            prompt_en: "Output shape"
             max_chars: 200
           - name: trigger_boundary
             type: string
             prompt: "触发边界或不要覆盖的场景 / Trigger boundary"
+            prompt_zh: "触发边界或不要覆盖的场景"
+            prompt_en: "Trigger boundary or cases to avoid"
             max_chars: 300
           - name: human_preference_branch
             type: bool
             default: false
             prompt: "是否需要运行中让用户选择偏好 / Need human preference branch?"
+            prompt_zh: "是否需要运行中让用户选择偏好"
+            prompt_en: "Need a human preference branch during the run?"
         cancel_keywords: ["算了", "取消", "cancel", "stop", "abort"]
         timeout_hours: 24
 
     - id: normal_skill_exit
+      label: "普通技能退出"
+      label_en: "Regular skill exit"
       kind: tool_call
       depends_on: [clarify_intent]
       when: "'route: normal-skill' in (outputs.clarify_intent | lower)"
@@ -99,6 +192,8 @@ composition:
           before proposal assembly or persistence.
 
     - id: creator_mode
+      label: "创建模式"
+      label_en: "Creation mode"
       kind: llm_classify
       depends_on: [clarify_intent, creator_clarify]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower)"
@@ -134,6 +229,8 @@ composition:
             decision.
 
     - id: harvest
+      label: "需求采集"
+      label_en: "Requirement capture"
       kind: skill_exec
       skill: history-explorer
       depends_on: [clarify_intent, creator_clarify]
@@ -148,12 +245,16 @@ composition:
         include: [co_occurrences, meta_usage, router_fixtures]
 
     - id: harvest_empty
+      label: "空采集兜底"
+      label_en: "Empty-capture fallback"
       kind: tool_call
       tool: emit_text
       tool_args:
         text: "no history available; downstream should rely on user intent only"
 
     - id: pick_pattern
+      label: "模式选择"
+      label_en: "Mode selection"
       kind: llm_classify
       depends_on: [creator_mode, harvest]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower)"
@@ -168,6 +269,8 @@ composition:
           {{ outputs.clarify_intent | truncate(1000) }}
 
     - id: fill_slots
+      label: "填充槽位"
+      label_en: "Fill slots"
       kind: tool_call
       depends_on: [pick_pattern]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower)"
@@ -183,6 +286,8 @@ composition:
           {{ outputs.clarify_intent | truncate(1000) }}
 
     - id: assemble
+      label: "组装"
+      label_en: "Assembly"
       kind: tool_call
       depends_on: [fill_slots]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower)"
@@ -192,6 +297,8 @@ composition:
         slots_json: "{{ outputs.fill_slots }}"
 
     - id: collision_check
+      label: "冲突检查"
+      label_en: "Conflict check"
       kind: llm_chat
       depends_on: [assemble]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower)"
@@ -210,6 +317,8 @@ composition:
           {{ outputs.assemble | truncate(8000) }}
 
     - id: lint
+      label: "Lint 检查"
+      label_en: "Lint check"
       kind: tool_call
       depends_on: [collision_check]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower)"
@@ -219,6 +328,8 @@ composition:
         gates: "G1,G2"
 
     - id: risk_classify
+      label: "风险分类"
+      label_en: "Risk classification"
       kind: llm_chat
       depends_on: [lint]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower)"
@@ -244,6 +355,8 @@ composition:
           {{ outputs.lint | truncate(2000) }}
 
     - id: single_model_baseline
+      label: "单模基线"
+      label_en: "Single-mode baseline"
       kind: llm_chat
       depends_on: [creator_mode]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower) and outputs.creator_mode == 'FULL_GATED'"
@@ -287,6 +400,8 @@ composition:
           later when the new meta-skill is invoked.
 
     - id: acceptance_compare
+      label: "验收对比"
+      label_en: "Acceptance comparison"
       kind: llm_chat
       depends_on: [assemble, single_model_baseline]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower) and outputs.creator_mode == 'FULL_GATED'"
@@ -337,6 +452,8 @@ composition:
           workflow and are evaluated from the creator's gate outputs.
 
     - id: smoke
+      label: "冒烟测试"
+      label_en: "Smoke test"
       kind: tool_call
       depends_on: [risk_classify]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower) and outputs.creator_mode != 'PREVIEW_ONLY'"
@@ -347,6 +464,8 @@ composition:
         classifier_model: openrouter/auto
 
     - id: runtime_e2e
+      label: "运行时 E2E"
+      label_en: "Runtime E2E"
       kind: tool_call
       depends_on: [assemble, smoke]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower) and outputs.creator_mode == 'FULL_GATED'"
@@ -360,6 +479,8 @@ composition:
         eval_prompts: ""
 
     - id: preview
+      label: "预览"
+      label_en: "Preview"
       kind: llm_chat
       depends_on: [smoke, acceptance_compare, runtime_e2e]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower)"
@@ -400,6 +521,8 @@ composition:
           {{ outputs.runtime_e2e | truncate(2000) }}
 
     - id: persist
+      label: "保存"
+      label_en: "Save"
       kind: tool_call
       depends_on: [preview]
       when: "'route: meta-skill' in (outputs.clarify_intent | lower) and outputs.creator_mode != 'PREVIEW_ONLY'"
@@ -415,6 +538,8 @@ composition:
         risk_result: "{{ outputs.risk_classify }}"
 
     - id: final_response
+      label: "最终回复"
+      label_en: "Final response"
       kind: tool_call
       depends_on: [preview, normal_skill_exit]
       tool: emit_text

@@ -58,7 +58,16 @@ opensquilla chat
 opensquilla chat --model gpt-5.4-mini
 opensquilla chat --session <session-key>
 opensquilla chat --standalone --workspace /path/to/project
+OPENSQUILLA_TUI_BACKEND=opentui opensquilla chat
 ```
+
+Terminal chat uses the stable Python-native terminal backend by default.
+OpenTUI is a preview backend selected explicitly with
+`OPENSQUILLA_TUI_BACKEND=opentui` when evaluating that backend. Normal terminal
+chat does not require Bun or OpenTUI node modules. Legacy backend values are
+rejected before launch. Read
+[`features/tui-frontend.md`](features/tui-frontend.md) for the streaming plane,
+plugin slots, Router HUD, and replay benchmark workflow.
 
 One-shot automation:
 

@@ -8,7 +8,9 @@ import os
 import sqlite3
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import cast
 
@@ -25,6 +27,59 @@ class ApprovalSettings:
     deny_patterns: list[str] = field(default_factory=list)
 
 
+def _command_matches(command: str, pattern: str) -> bool:
+    """Match a command string against a single allow/deny pattern.
+
+    A pattern matches when it is a shell-style glob hit
+    (``fnmatchcase("uv build", "uv *")``) or a plain substring of the
+    command. The substring fallback keeps unsophisticated entries like
+    ``rm -rf`` working even when the user omits ``*`` wildcards. Matching is
+    case-sensitive to match shell semantics; empty patterns never match.
+    """
+    pattern = pattern.strip()
+    if not pattern:
+        return False
+    return fnmatchcase(command, pattern) or pattern in command
+
+
+def classify_command(
+    command: str,
+    allow_patterns: list[str],
+    deny_patterns: list[str],
+) -> str | None:
+    """Classify a command against allow/deny patterns (deny takes precedence).
+
+    Returns ``"deny"`` when any deny pattern matches, ``"allow"`` when no deny
+    pattern matches but an allow pattern does, or ``None`` when neither side
+    matches (the caller should fall through to its normal decision path).
+
+    Deny precedence is intentional and conservative: a command that matches
+    both an allow and a deny pattern is denied. This helper is pure so the
+    matching rules can be unit-tested in isolation; it has no view of the
+    hard safety guards, so callers must apply allow-results only as a
+    prompt-skip, never as an override of a hard block.
+    """
+    if not command:
+        return None
+    for pattern in deny_patterns:
+        if _command_matches(command, pattern):
+            return "deny"
+    for pattern in allow_patterns:
+        if _command_matches(command, pattern):
+            return "allow"
+    return None
+
+
+# Terminal resolution reasons. ``approved``/``denied`` are explicit human
+# decisions; ``expired`` is a deadline lapse with no response. The legacy
+# ``approved`` boolean stays the back-compat source of truth (expired and
+# denied both read ``approved=False``); ``resolution`` is the additive field
+# that lets callers tell an expiry apart from a deliberate refusal.
+RESOLUTION_APPROVED = "approved"
+RESOLUTION_DENIED = "denied"
+RESOLUTION_EXPIRED = "expired"
+
+
 @dataclass
 class PendingApproval:
     approval_id: str
@@ -34,10 +89,19 @@ class PendingApproval:
     resolved: bool = False
     approved: bool = False
     consumed: bool = False
+    # Wall-clock deadline after which an unresolved request expires. ``wait()``
+    # re-reads this every poll, so ``extend()`` re-arms a pending request live.
+    deadline: float = 0.0
+    # One of RESOLUTION_* once resolved, else "".
+    resolution: str = ""
     _event: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 _DEFAULT_APPROVAL_QUEUE_PATH = state_dir("approval_queue.sqlite")
+
+# Listener signature: (event, info) where event is "requested" or "resolved"
+# and info mirrors ``ApprovalQueue.status()`` for the affected approval.
+ApprovalEventListener = Callable[[str, dict], None]
 
 
 class ApprovalQueue:
@@ -54,6 +118,7 @@ class ApprovalQueue:
         self._global_settings = ApprovalSettings()
         self._node_settings: dict[str, ApprovalSettings] = {}
         self._session_elevated_modes: dict[str, str] = {}
+        self._event_listeners: list[ApprovalEventListener] = []
 
         self._db_path = Path(db_path or os.fspath(_DEFAULT_APPROVAL_QUEUE_PATH))
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -84,6 +149,34 @@ class ApprovalQueue:
             ON approval_queue(namespace, resolved);
             """
         )
+        # Migration-on-open for the columns added after the table shipped.
+        # Existing rows backfill to a 0 deadline (treated as "no row-level
+        # deadline" by wait()) and an inferred resolution from the legacy
+        # ``approved`` flag, so persisted approvals survive an upgrade.
+        existing = {
+            str(row["name"])
+            for row in self._conn.execute("PRAGMA table_info(approval_queue)")
+        }
+        if "deadline" not in existing:
+            self._conn.execute(
+                "ALTER TABLE approval_queue ADD COLUMN deadline REAL NOT NULL DEFAULT 0"
+            )
+        if "resolution" not in existing:
+            self._conn.execute(
+                "ALTER TABLE approval_queue ADD COLUMN resolution TEXT NOT NULL DEFAULT ''"
+            )
+            # Backfill resolved-but-unlabelled rows so an upgraded queue still
+            # answers "was this approved or denied" for history reads.
+            self._conn.execute(
+                "UPDATE approval_queue SET resolution = ? "
+                "WHERE resolved = 1 AND resolution = '' AND approved = 1",
+                (RESOLUTION_APPROVED,),
+            )
+            self._conn.execute(
+                "UPDATE approval_queue SET resolution = ? "
+                "WHERE resolved = 1 AND resolution = '' AND approved = 0",
+                (RESOLUTION_DENIED,),
+            )
         self._conn.commit()
 
     def _serialize_params(self, params: dict | None) -> str:
@@ -109,13 +202,16 @@ class ApprovalQueue:
             resolved=bool(row["resolved"]),
             approved=bool(row["approved"]),
             consumed=bool(row["consumed"]),
+            deadline=float(row["deadline"] or 0.0),
+            resolution=str(row["resolution"] or ""),
             _event=existing._event if existing is not None else asyncio.Event(),
         )
 
     def _load_pending(self) -> None:
         self._pending = {}
         for row in self._conn.execute(
-            "SELECT approval_id, namespace, params, created_at, resolved, approved, consumed "
+            "SELECT approval_id, namespace, params, created_at, resolved, approved, "
+            "consumed, deadline, resolution "
             "FROM approval_queue WHERE resolved = 0"
         ):
             entry = self._row_to_entry(row)
@@ -125,24 +221,64 @@ class ApprovalQueue:
         return cast(
             sqlite3.Row | None,
             self._conn.execute(
-                "SELECT approval_id, namespace, params, created_at, resolved, approved, consumed "
+                "SELECT approval_id, namespace, params, created_at, resolved, approved, "
+                "consumed, deadline, resolution "
                 "FROM approval_queue WHERE approval_id = ?",
                 (approval_id,),
             ).fetchone(),
         )
+
+    def add_event_listener(self, listener: ApprovalEventListener) -> Callable[[], None]:
+        """Register a lifecycle listener; returns a remove callable.
+
+        Listeners fire synchronously on ``requested`` (an approval was
+        created — the moment a run blocks) and ``resolved`` (a decision
+        landed, including deny-on-timeout). Listener errors are swallowed:
+        notification is best-effort and must never break queue state.
+        """
+        self._event_listeners.append(listener)
+
+        def _remove() -> None:
+            try:
+                self._event_listeners.remove(listener)
+            except ValueError:
+                pass
+
+        return _remove
+
+    def _notify_event(self, event: str, entry: PendingApproval) -> None:
+        if not self._event_listeners:
+            return
+        info = {
+            "id": entry.approval_id,
+            "namespace": entry.namespace,
+            "params": dict(entry.params),
+            "created_at": entry.created_at,
+            "deadline": entry.deadline,
+            "resolved": entry.resolved,
+            "approved": entry.approved,
+            "resolution": entry.resolution,
+        }
+        for listener in list(self._event_listeners):
+            try:
+                listener(event, info)
+            except Exception:  # pragma: no cover — listeners are best-effort
+                continue
 
     def request(self, namespace: str = "exec", params: dict | None = None) -> str:
         payload = self._serialize_params(params or {})
         while True:
             approval_id = uuid.uuid4().hex[:12]
             now = time.time()
+            deadline = now + self._timeout
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
                 self._conn.execute(
                     "INSERT INTO approval_queue "
-                    "(approval_id, namespace, params, created_at, resolved, approved, consumed) "
-                    "VALUES (?, ?, ?, ?, 0, 0, 0)",
-                    (approval_id, namespace, payload, now),
+                    "(approval_id, namespace, params, created_at, resolved, approved, "
+                    "consumed, deadline, resolution) "
+                    "VALUES (?, ?, ?, ?, 0, 0, 0, ?, '')",
+                    (approval_id, namespace, payload, now, deadline),
                 )
                 self._conn.commit()
             except sqlite3.IntegrityError:
@@ -155,8 +291,10 @@ class ApprovalQueue:
             namespace=namespace,
             params=params or {},
             created_at=now,
+            deadline=deadline,
         )
         self._pending[approval_id] = entry
+        self._notify_event("requested", entry)
         return approval_id
 
     def get(self, approval_id: str) -> PendingApproval:
@@ -171,12 +309,26 @@ class ApprovalQueue:
         entry = self.get(approval_id)
         if entry.resolved:
             return entry.approved
-        t = timeout if timeout is not None else self._timeout
-        deadline = time.monotonic() + t
+        # An explicit timeout re-arms the row's wall-clock deadline for this
+        # wait; otherwise the request keeps the deadline stamped at request()
+        # time. Either way the loop drives off the *row* deadline, re-read every
+        # poll, so an extend() that pushes the deadline takes effect live.
+        if timeout is not None:
+            self._rearm_deadline(approval_id, time.time() + timeout)
         while True:
-            remaining = deadline - time.monotonic()
+            entry = self.get(approval_id)
+            if entry.resolved:
+                return entry.approved
+            remaining = entry.deadline - time.time()
             if remaining <= 0:
-                break
+                # Deadline lapsed: try to expire. The expiry path re-checks the
+                # deadline under the write lock and returns None if an extend()
+                # pushed it into the future in the gap — then we re-wait on the
+                # new deadline instead of expiring a just-extended request.
+                outcome = self._expire_if_unresolved(approval_id)
+                if outcome is not None:
+                    return outcome
+                continue
             try:
                 await asyncio.wait_for(
                     entry._event.wait(),
@@ -187,9 +339,66 @@ class ApprovalQueue:
             entry = self.get(approval_id)
             if entry.resolved:
                 return entry.approved
-        return self._deny_on_timeout_if_unresolved(approval_id)
 
-    def _deny_on_timeout_if_unresolved(self, approval_id: str) -> bool:
+    def _rearm_deadline(self, approval_id: str, deadline: float) -> None:
+        """Set a pending request's wall-clock deadline (no-op once resolved)."""
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            self._conn.execute(
+                "UPDATE approval_queue SET deadline = ? "
+                "WHERE approval_id = ? AND resolved = 0",
+                (deadline, approval_id),
+            )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        cached = self._pending.get(approval_id)
+        if cached is not None and not cached.resolved:
+            cached.deadline = deadline
+
+    def extend(self, approval_id: str, seconds: float) -> float:
+        """Push a pending request's deadline out by ``seconds`` and return it.
+
+        Reads the current row deadline and adds ``seconds`` (re-arming relative
+        to the live deadline, so repeated extends stack). A resolved request is
+        left untouched and its existing deadline is returned. ``wait()`` re-reads
+        the row each poll, so an extend lands live on an in-flight wait.
+        """
+        if seconds <= 0:
+            raise ValueError("seconds must be positive")
+        self._conn.execute("BEGIN IMMEDIATE")
+        row = self._get_row(approval_id)
+        if row is None:
+            self._conn.rollback()
+            raise KeyError(f"Approval not found: {approval_id}")
+        entry = self._row_to_entry(row)
+        if entry.resolved:
+            self._conn.rollback()
+            self._pending[approval_id] = entry
+            return entry.deadline
+        new_deadline = float(entry.deadline or time.time()) + float(seconds)
+        self._conn.execute(
+            "UPDATE approval_queue SET deadline = ? "
+            "WHERE approval_id = ? AND resolved = 0",
+            (new_deadline, approval_id),
+        )
+        self._conn.commit()
+        entry = self.get(approval_id)
+        return entry.deadline
+
+    def _expire_if_unresolved(self, approval_id: str) -> bool | None:
+        """Mark a lapsed-deadline request expired (distinct from an explicit deny).
+
+        Returns the terminal ``approved`` flag once the request is resolved
+        (expired → False; or whatever an explicit decision set). Returns
+        ``None`` when the deadline was pushed into the future by an extend()
+        that landed in the gap between the wait loop observing the lapse and
+        this write lock — the request is no longer expired and the caller must
+        re-wait on the new deadline. The deadline re-check and the expire write
+        share one ``BEGIN IMMEDIATE`` transaction, so they are atomic against
+        ``_rearm_deadline``'s own immediate transaction.
+        """
         self._conn.execute("BEGIN IMMEDIATE")
         row = self._get_row(approval_id)
         if row is None:
@@ -201,16 +410,23 @@ class ApprovalQueue:
             self._pending[approval_id] = entry
             entry._event.set()
             return entry.approved
+        if entry.deadline > time.time():
+            # Extended past now after the wait loop saw it lapse — not expired.
+            # Refresh the cache and tell the caller to re-wait (None).
+            self._conn.rollback()
+            self._pending[approval_id] = entry
+            return None
         self._conn.execute(
             "UPDATE approval_queue "
-            "SET resolved = 1, approved = 0 "
+            "SET resolved = 1, approved = 0, resolution = ? "
             "WHERE approval_id = ? AND resolved = 0",
-            (approval_id,),
+            (RESOLUTION_EXPIRED, approval_id),
         )
         self._conn.commit()
         entry = self.get(approval_id)
         entry._event.set()
         self._pending[approval_id] = entry
+        self._notify_event("resolved", entry)
         return entry.approved
 
     def resolve(
@@ -238,9 +454,13 @@ class ApprovalQueue:
 
         cursor = self._conn.execute(
             "UPDATE approval_queue "
-            "SET resolved = 1, approved = ? "
+            "SET resolved = 1, approved = ?, resolution = ? "
             "WHERE approval_id = ? AND resolved = 0",
-            (1 if approved else 0, approval_id),
+            (
+                1 if approved else 0,
+                RESOLUTION_APPROVED if approved else RESOLUTION_DENIED,
+                approval_id,
+            ),
         )
         if cursor.rowcount != 1:
             self._conn.rollback()
@@ -258,6 +478,7 @@ class ApprovalQueue:
         entry.resolved = True
         entry._event.set()
         self._pending[approval_id] = entry
+        self._notify_event("resolved", entry)
 
         if approved and elevated_mode in VALID_ELEVATED_MODES:
             entry.params["elevatedMode"] = elevated_mode
@@ -321,22 +542,24 @@ class ApprovalQueue:
             "namespace": entry.namespace,
             "params": entry.params,
             "created_at": entry.created_at,
+            "deadline": entry.deadline,
             "resolved": entry.resolved,
             "approved": entry.approved,
+            "resolution": entry.resolution,
             "consumed": entry.consumed,
         }
 
     def list_pending(self, namespace: str | None = None) -> list[dict]:
         if namespace:
             rows = self._conn.execute(
-                "SELECT approval_id, namespace, params, created_at "
+                "SELECT approval_id, namespace, params, created_at, deadline "
                 "FROM approval_queue "
                 "WHERE resolved = 0 AND namespace = ?",
                 (namespace,),
             )
         else:
             rows = self._conn.execute(
-                "SELECT approval_id, namespace, params, created_at "
+                "SELECT approval_id, namespace, params, created_at, deadline "
                 "FROM approval_queue "
                 "WHERE resolved = 0",
             )
@@ -346,6 +569,7 @@ class ApprovalQueue:
                 "namespace": str(row["namespace"]),
                 "params": self._deserialize_params(row["params"]),
                 "created_at": float(row["created_at"]),
+                "deadline": float(row["deadline"] or 0.0),
             }
             for row in rows
         ]
@@ -379,7 +603,8 @@ class ApprovalQueue:
             return 0
         count = 0
         for row in self._conn.execute(
-            "SELECT approval_id, namespace, params, created_at, resolved, approved, consumed "
+            "SELECT approval_id, namespace, params, created_at, resolved, approved, "
+            "consumed, deadline, resolution "
             "FROM approval_queue "
             "WHERE resolved = 0 AND namespace = 'exec'",
         ).fetchall():

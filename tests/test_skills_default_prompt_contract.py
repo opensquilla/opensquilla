@@ -25,6 +25,7 @@ DEFAULTS = {
     "AwesomeWebpageMetaSkill",
     "ai-video-script",
     "audio-cog",
+    "code-task",
     "cron",
     "deep-research",
     "docx",
@@ -37,15 +38,10 @@ DEFAULTS = {
     "http-fetch",
     "latex-compile",
     "memory",
-    "meta-competitive-intel",
-    "meta-daily-operator-brief",
-    "meta-document-to-decision",
-    "meta-job-search-pipeline",
     "meta-kid-project-planner",
     "meta-paper-write",
     "meta-short-drama",
     "meta-skill-creator",
-    "meta-web-research-to-report",
     "multi-search-engine",
     "nano-banana-pro",
     "nano-pdf",
@@ -66,6 +62,7 @@ DEFAULTS = {
     "srt-from-script",
     "sub-agent",
     "subtitle-burner",
+    "swe-bench",
     "summarize",
     "text-file-read",
     "title-card-image",
@@ -77,6 +74,8 @@ DEFAULTS = {
     "xlsx",
 } | AUDIO_DEFAULTS
 PROMPT_DEFAULTS_WITHOUT_AUDIO_TOOLS = DEFAULTS - AUDIO_DEFAULTS
+# Gated out of the default prompt unless coding mode is ON (default OFF).
+CODING_MODE_GATED = {"code-task"}
 INTERNAL_HELPERS = {
     "awesome-webpage-image-download",
     "awesome-webpage-research",
@@ -172,6 +171,7 @@ async def test_default_prompt_only_injects_retained_bundled_skills(
                 "curl": True,
                 "ffmpeg": True,
                 "ffprobe": True,
+                "gh": True,
                 "xelatex": True,
                 "nano-pdf": True,
                 "python": True,
@@ -190,16 +190,58 @@ async def test_default_prompt_only_injects_retained_bundled_skills(
     )
     loader = SkillLoader(bundled_dir=BUNDLED, snapshot_path=tmp_path / "snapshot.json")
 
-    ctx = await filter_skills(_ctx(loader))
+    ctx = _ctx(loader)
+    # Meta-skills are injected only when meta auto-trigger is opted in
+    # (manual-only is the default), so enable it here to assert the full
+    # default catalog, including the kind="meta" entries.
+    ctx.config.meta_skill = SimpleNamespace(enabled=True, auto_trigger=True)
+    ctx = await filter_skills(ctx)
 
     prompt = ctx.system_prompt[1]
-    for name in PROMPT_DEFAULTS_WITHOUT_AUDIO_TOOLS:
+    for name in PROMPT_DEFAULTS_WITHOUT_AUDIO_TOOLS - CODING_MODE_GATED:
         assert f"<name>{name}</name>" in prompt
     for name in AUDIO_DEFAULTS:
         assert f"<name>{name}</name>" not in prompt
     for name in INTERNAL_HELPERS:
         assert f"<name>{name}</name>" not in prompt
+    # Coding-mode skills stay out of the default (coding mode OFF) prompt.
+    for name in CODING_MODE_GATED:
+        assert f"<name>{name}</name>" not in prompt
     assert "<name>healthcheck</name>" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_coding_mode_on_surfaces_code_task(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # code-task requires the ``git`` bin + ``OPENROUTER_API_KEY``; fake them so
+    # the test asserts the coding-mode gate, not the host environment.
+    monkeypatch.setattr(
+        skills_filter_step,
+        "_elig_ctx",
+        EligibilityContext(
+            os_name="linux",
+            has_bin_cache={"git": True},
+            env_cache={"OPENROUTER_API_KEY": "set"},
+        ),
+    )
+    loader = SkillLoader(bundled_dir=BUNDLED, snapshot_path=tmp_path / "snapshot.json")
+    ctx = _ctx(
+        loader,
+        message="please change the code",
+        skills_config=SimpleNamespace(
+            filter_enabled=False,
+            max_skills_prompt_chars=100_000,
+            injection_mode="system",
+            coding_mode=True,
+        ),
+    )
+
+    ctx = await filter_skills(ctx)
+
+    prompt = ctx.system_prompt[1]
+    assert "<name>code-task</name>" in prompt
 
 
 @pytest.mark.asyncio
@@ -208,7 +250,11 @@ async def test_default_prompt_prefers_matching_meta_skills_over_direct_answers(
 ) -> None:
     loader = SkillLoader(bundled_dir=BUNDLED, snapshot_path=tmp_path / "snapshot.json")
 
-    ctx = await filter_skills(_ctx(loader))
+    ctx = _ctx(loader)
+    # The meta-orchestration guidance is part of the prompt only when meta
+    # auto-trigger is enabled; the manual-only default omits it.
+    ctx.config.meta_skill = SimpleNamespace(enabled=True, auto_trigger=True)
+    ctx = await filter_skills(ctx)
 
     prompt = ctx.system_prompt[1]
     assert "When a kind=\"meta\" entry clearly matches" in prompt

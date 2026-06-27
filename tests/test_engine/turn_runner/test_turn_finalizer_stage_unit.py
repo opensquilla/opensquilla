@@ -286,6 +286,32 @@ async def test_simple_text_with_done_event_fires_rollup() -> None:
 
 
 @pytest.mark.asyncio
+async def test_turn_usage_persists_vision_followup_metadata() -> None:
+    stage, recs = _make_stage()
+    done = DoneEvent(text="ok", input_tokens=5, output_tokens=3)
+    done.image_route_reason = "gate_history"
+    done.vision_followup_gate_decision = "needs_image"
+    done.vision_followup_gate_confidence = 0.92
+    done.vision_followup_gate_reason = "references previous image with private detail"
+    done.vision_followup_gate_source = "llm"
+    done.vision_followup_gate_model = "deepseek/deepseek-v4-flash"
+    done.vision_followup_needs_image = True
+    inp = _make_input(final_text_parts=["ok"], done_event=done)
+
+    await stage.run(inp)
+
+    usage = recs["transcript_append"].calls[0]["turn_usage"]
+    assert usage["image_route_reason"] == "gate_history"
+    assert usage["vision_followup_gate_decision"] == "needs_image"
+    assert usage["vision_followup_gate_confidence"] == 0.92
+    assert usage["vision_followup_gate_reason"] == "llm_needs_image"
+    assert "private detail" not in usage["vision_followup_gate_reason"]
+    assert usage["vision_followup_gate_source"] == "llm"
+    assert usage["vision_followup_gate_model"] == "deepseek/deepseek-v4-flash"
+    assert usage["vision_followup_needs_image"] is True
+
+
+@pytest.mark.asyncio
 async def test_disclosed_subagent_outcome_persists_once_and_captures_same_text() -> None:
     disclosure = "Subagents: 1/2 succeeded; failures: child failed."
     final_text = f"Parent synthesis.\n\n{disclosure}"

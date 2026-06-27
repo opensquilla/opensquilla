@@ -359,7 +359,7 @@ def test_interactive_onboard_prompts_router_defaults_before_persist(tmp_path, mo
     assert 'api_key = ""' in data
     assert 'api_key_env = "OPENROUTER_API_KEY"' in data
     assert 'default_tier = "c2"' in data
-    assert 'model = "z-ai/glm-5.1"' in data
+    assert 'model = "z-ai/glm-5.2"' in data
 
 
 def test_interactive_onboard_migration_defaults_to_all_sources_and_keeps_imported_provider(
@@ -1381,7 +1381,7 @@ def test_router_tier_overrides_edit_only_selected_tiers():
                 assert kwargs.get("default") == "openrouter"
                 return _Answer("openrouter")
             if message == "c2 model":
-                assert kwargs.get("default") == "z-ai/glm-5.1"
+                assert kwargs.get("default") == "z-ai/glm-5.2"
                 return _Answer("custom/reasoner")
             raise AssertionError(f"unexpected text prompt: {message}")
 

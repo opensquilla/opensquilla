@@ -16,6 +16,33 @@ def test_attachment_policy_is_shared_with_gateway_ingest() -> None:
     )
 
 
+def test_office_documents_are_stageable_above_the_inline_threshold() -> None:
+    # Office docs commonly exceed the 2MB inline threshold; they must be
+    # stageable so primary clients route them through the upload endpoint
+    # instead of rejecting them as "too large".
+    for mime in (attachments.DOCX_MIME, attachments.XLSX_MIME, attachments.PPTX_MIME):
+        assert attachments.can_stage_attachment_mime(mime) is True
+        assert (
+            attachments.attachment_size_limit_for_mime(mime, staged=True)
+            == attachments.OFFICE_ATTACHMENT_BYTES
+        )
+        assert attachments.OFFICE_ATTACHMENT_BYTES > attachments.INLINE_ATTACHMENT_BYTES
+
+
+def test_email_is_capped_at_the_text_limit_and_not_stageable() -> None:
+    # Email is plain text whose headers are forgeable, and only bounded body
+    # text is extracted, so it must NOT get a larger cap or a staged path that
+    # arbitrary content could claim to bypass the 2MB text limit.
+    assert attachments.EMAIL_ATTACHMENT_BYTES == attachments.TEXT_ATTACHMENT_BYTES
+    for mime in (attachments.EML_MIME, attachments.MBOX_MIME, attachments.MSG_MIME):
+        assert mime in attachments.ALLOWED_MEDIA_TYPES
+        assert attachments.can_stage_attachment_mime(mime) is False
+        assert (
+            attachments.attachment_size_limit_for_mime(mime, staged=True)
+            == attachments.TEXT_ATTACHMENT_BYTES
+        )
+
+
 def test_channel_attachment_io_does_not_import_gateway_policy() -> None:
     imports = _imports_from(Path("src/opensquilla/channels/_attachment_io.py"))
 

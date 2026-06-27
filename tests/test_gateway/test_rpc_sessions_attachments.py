@@ -34,7 +34,8 @@ def _attach(media_type: str, payload: bytes, **extra: Any) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Allow-list locked at exactly the 10 supported MIMEs.
+# Allow-list locked at exactly the supported MIMEs (images, PDF, text-family,
+# and modern OOXML office documents).
 # ---------------------------------------------------------------------------
 
 def test_allowed_media_types_set_contents() -> None:
@@ -49,6 +50,12 @@ def test_allowed_media_types_set_contents() -> None:
         "text/html",
         "text/csv",
         "application/json",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "message/rfc822",
+        "application/mbox",
+        "application/vnd.ms-outlook",
     }
 
 
@@ -95,10 +102,13 @@ def test_html_inline_accepted() -> None:
 # Rejection paths.
 # ---------------------------------------------------------------------------
 
-def test_unknown_mime_rejected() -> None:
+def test_unknown_binary_mime_rejected() -> None:
+    # Unknown binary uploads stay fail-closed (NUL bytes defeat the UTF-8 text
+    # fallback). Unknown *textual* uploads are accepted as text/plain — see
+    # test_unknown_textual_upload_accepted_via_utf8_fallback in the ingest suite.
     with pytest.raises(ValueError, match="not allowed"):
         _validate_attachments(
-            [_attach("application/x-shellscript", b"#!/bin/sh\necho hi\n", name="x.sh")]
+            [_attach("application/x-binary", b"\x00\x01\x02\x03 binary blob", name="x.bin")]
         )
 
 

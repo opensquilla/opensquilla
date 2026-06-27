@@ -33,6 +33,7 @@ from opensquilla.router_tiers import (
     normalize_tier_mapping,
 )
 from opensquilla.sandbox.config import SandboxSettings
+from opensquilla.search.types import DEFAULT_SEARCH_MAX_RESULTS, MAX_SEARCH_RESULTS
 from opensquilla.session.compaction_lifecycle import (
     DEFAULT_FLUSH_TRIGGERS,
     FlushTrigger,
@@ -100,12 +101,20 @@ class ControlUiConfig(BaseSettings):
 
     enabled: bool = True
     base_path: str = "/control"
+    frontend: Literal["vue", "legacy"] = "vue"
     allowed_origins: list[str] = Field(default_factory=list)
 
     @field_validator("base_path")
     @classmethod
     def _strip_trailing_slash(cls, v: str) -> str:
         return v.rstrip("/")
+
+    @field_validator("frontend", mode="before")
+    @classmethod
+    def _normalize_frontend(cls, v: object) -> object:
+        if isinstance(v, str):
+            return v.strip().lower()
+        return v
 
 
 class SkillsConfig(BaseSettings):
@@ -115,6 +124,14 @@ class SkillsConfig(BaseSettings):
     managed_dir: str | None = None
     allow_bundled: bool = True
     extra_dirs: list[str] = Field(default_factory=list)
+    # Names of skills the operator has turned off (e.g. via the control-UI
+    # plugin toggle). A disabled skill is gated out of the agent's view.
+    disabled: list[str] = Field(default_factory=list)
+    # Coding mode (control-UI toggle). When ON, the agent operates in a
+    # locked coding mode: the code-task plugin is available and a directive
+    # steers every turn through it. When OFF, code-task is unreachable through
+    # every skill API. Default OFF — coding mode is opt-in.
+    coding_mode: bool = False
     max_skills_prompt_chars: int = 8000
     filter_enabled: bool = False
     filter_top_k: int = 5
@@ -575,9 +592,9 @@ def _default_tiers() -> dict:
         },
         "c2": {
             "provider": "openrouter",
-            "model": "z-ai/glm-5.1",
+            "model": "z-ai/glm-5.2",
             "description": (
-                "stronger text model for multi-step coding, structured reasoning, "
+                "stronger GLM 5.2 route for multi-step coding, structured reasoning, "
                 "larger context synthesis, and harder analysis"
             ),
             "supports_image": False,
@@ -585,7 +602,7 @@ def _default_tiers() -> dict:
         },
         "c3": {
             "provider": "openrouter",
-            "model": "anthropic/claude-opus-4.7",
+            "model": "anthropic/claude-opus-4.8",
             "description": (
                 "Highest-quality text reasoning model for difficult planning, "
                 "deep review, complex debugging, and high-stakes synthesis"
@@ -922,9 +939,11 @@ class SquillaRouterConfig(BaseSettings):
     rollout_phase: str = "full"  # "observe" | "prompt_only" | "full"
     strategy: str = "v4_phase3"
     tier_profile: str | None = None
+    visual_mode: str = "real_candidates"
     tiers: dict = Field(default_factory=_default_tiers)
     default_tier: str = DEFAULT_TEXT_TIER
     confidence_threshold: float = 0.5
+    confidence_high_tier_margin: float = Field(default=0.05, ge=0.0)
     v4_bundle_dir: str | None = None  # V4 Phase 3 bundle root; defaults to bundled assets
     v4_use_aux_head: bool | None = True  # override router.runtime.yaml aux head when set
     routing_timeout_seconds: float = Field(default=5.0, gt=0.0)
@@ -936,6 +955,27 @@ class SquillaRouterConfig(BaseSettings):
     require_router_runtime: bool = True
     estimated_output_savings_pct: float = 0.03
     upgrade_to_c3_compaction_enabled: bool = True
+    vision_history_lookback_turns: int = Field(default=8, ge=0)
+    vision_history_candidate_turns: int = Field(default=8, ge=0)
+    vision_sticky_followup_turns: int = Field(default=3, ge=0)
+    vision_followup_gate_enabled: bool = True
+    vision_followup_gate_tier: str = "c0"
+    vision_followup_gate_model: str | None = None
+    vision_followup_gate_timeout_seconds: float = Field(default=10.0, ge=0.1)
+    vision_followup_gate_max_output_tokens: int = Field(default=512, ge=16)
+    vision_followup_gate_fallback_recent_turns: int = Field(default=2, ge=0)
+    vision_followup_gate_unknown_policy: str = "image_if_recent"
+
+    @field_validator("visual_mode", mode="before")
+    @classmethod
+    def _normalize_visual_mode(cls, value: Any) -> str:
+        raw = "real_candidates" if value is None else str(value).strip().lower()
+        normalized = raw.replace("-", "_")
+        if normalized in {"", "real_candidates", "candidates"}:
+            return "real_candidates"
+        if normalized in {"legacy_grid", "model_space", "modelspace"}:
+            return "legacy_grid"
+        raise ValueError("visual_mode must be one of: real_candidates, legacy_grid")
 
     @model_validator(mode="before")
     @classmethod
@@ -994,6 +1034,28 @@ class CompactionLlmConfig(BaseSettings):
     enabled: bool = True
     compaction_profile: Literal["conversation", "coding", "research", "support"] = "conversation"
     protected_recent_messages: int = Field(default=0, ge=0)
+
+
+class SessionNamingConfig(BaseSettings):
+    """LLM-generated session titles (auto-naming).
+
+    After the first user message, a one-shot LLM call summarizes it into a short
+    title written to SessionNode.derived_title. Model selection mirrors compaction
+    but defaults to the router's default text tier rather than the session model:
+    ``model`` (explicit) > ``tier`` model > squilla_router.default_tier model.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="OPENSQUILLA_NAMING_")
+
+    enabled: bool = True
+    # Surfaces eligible for auto-naming. webchat/cli are chat; channel covers
+    # inbound channel conversations. cron/subagent intentionally excluded.
+    surfaces: list[str] = Field(default_factory=lambda: ["webchat", "cli", "channel"])
+    tier: str | None = None  # None = use squilla_router.default_tier
+    model: str | None = None  # None = use the resolved tier's model
+    timeout_seconds: float = 30.0
+    max_chars: int = Field(default=48, ge=8)
+    language: str = "auto"  # follow the conversation language
 
 
 class MCPServerEntry(BaseSettings):
@@ -1461,6 +1523,12 @@ class MetaSkillConfig(BaseSettings):
         extra="forbid",
     )
     enabled: bool = True
+    auto_trigger: bool = False
+    """When False (default), meta-skills are manual-only: no prompt guidance, no
+    keyword/semantic auto-trigger, ``meta_invoke`` is not exposed for automatic
+    invocation, and meta-skills are hidden from ``<available_skills>``. They run
+    only via the explicit ``/meta`` command. Set True to restore automatic
+    activation."""
     persistence: MetaSkillPersistenceConfig = Field(
         default_factory=MetaSkillPersistenceConfig,
     )
@@ -1538,6 +1606,7 @@ class GatewayConfig(BaseSettings):
     squilla_router: SquillaRouterConfig = Field(default_factory=SquillaRouterConfig)
     agent_token_saving: AgentTokenSavingConfig = Field(default_factory=AgentTokenSavingConfig)
     compaction: CompactionLlmConfig = Field(default_factory=CompactionLlmConfig)
+    naming: SessionNamingConfig = Field(default_factory=SessionNamingConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
     image_generation: ImageGenerationConfig = Field(default_factory=ImageGenerationConfig)
@@ -1652,7 +1721,9 @@ class GatewayConfig(BaseSettings):
     search_provider: str = "duckduckgo"
     search_api_key: str = ""
     search_api_key_env: str = ""
-    search_max_results: int = 5
+    search_max_results: int = Field(
+        default=DEFAULT_SEARCH_MAX_RESULTS, ge=1, le=MAX_SEARCH_RESULTS
+    )
     search_proxy: str = ""
     search_use_env_proxy: bool = False
     search_fallback_policy: Literal["off", "network"] = "off"

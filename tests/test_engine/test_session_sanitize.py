@@ -24,10 +24,19 @@ from opensquilla.provider import (
     Message,
     ModelCapabilities,
 )
-from opensquilla.provider import DoneEvent as ProviderDone
-from opensquilla.provider import TextDeltaEvent as ProviderText
-from opensquilla.provider import ToolUseEndEvent as ProviderToolUseEnd
-from opensquilla.provider import ToolUseStartEvent as ProviderToolUseStart
+from opensquilla.provider import (
+    DoneEvent as ProviderDone,
+)
+from opensquilla.provider import (
+    TextDeltaEvent as ProviderText,
+)
+from opensquilla.provider import (
+    ToolUseEndEvent as ProviderToolUseEnd,
+)
+from opensquilla.provider import (
+    ToolUseStartEvent as ProviderToolUseStart,
+)
+from opensquilla.provider.types import ContentBlockImage
 
 
 def test_agent_config_disables_tool_argument_projection_by_default() -> None:
@@ -2146,6 +2155,37 @@ async def test_agent_preserves_reasoning_content_for_deepseek_tool_replay() -> N
         and any(getattr(block, "type", None) == "tool_use" for block in message.content)
     )
     assert assistant_replay.reasoning_content == "I should call echo before finalizing."
+
+
+@pytest.mark.asyncio
+async def test_agent_preserves_allowed_historical_image_blocks_for_vision_models() -> None:
+    provider = CapturingProvider()
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            max_iterations=1,
+            model_id="vision-model",
+            model_capabilities=ModelCapabilities(supports_vision=True),
+            preserve_historical_images=True,
+        ),
+    )
+    agent.set_history(
+        [
+            Message(
+                role="user",
+                content=[
+                    ContentBlockText(text="describe this"),
+                    ContentBlockImage(media_type="image/png", data="aW1hZ2U="),
+                ],
+            )
+        ]
+    )
+
+    events = [event async for event in agent.run_turn("continue")]
+
+    assert any(event.kind == "done" for event in events)
+    sent_blocks = provider.calls[0]["messages"][0].content
+    assert any(isinstance(block, ContentBlockImage) for block in sent_blocks)
 
 
 @pytest.mark.asyncio

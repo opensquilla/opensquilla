@@ -7,7 +7,7 @@ from typing import Any
 import httpx
 
 from opensquilla.engine.types import ThinkingLevel
-from opensquilla.provider.openai import OpenAIProvider
+from opensquilla.provider.openai import OpenAIProvider, _stream_timeout
 from opensquilla.provider.types import (
     ChatConfig,
     ContentBlockToolResult,
@@ -132,6 +132,26 @@ def _collect(provider: OpenAIProvider, cfg: ChatConfig) -> DoneEvent:
         return done
 
     return asyncio.run(_run())
+
+
+def test_openrouter_stream_write_timeout_defaults_to_request_timeout(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.delenv("OPENSQUILLA_LLM_STREAM_WRITE_TIMEOUT_SECONDS", raising=False)
+
+    timeout = _stream_timeout(120.0)
+
+    assert timeout.write == 120.0
+
+
+def test_openrouter_stream_write_timeout_allows_env_override(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setenv("OPENSQUILLA_LLM_STREAM_WRITE_TIMEOUT_SECONDS", "75")
+
+    timeout = _stream_timeout(120.0)
+
+    assert timeout.write == 75.0
 
 
 def test_openrouter_stream_timeout_emits_heartbeat_before_non_stream_fallback(

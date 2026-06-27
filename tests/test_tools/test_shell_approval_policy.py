@@ -552,3 +552,93 @@ async def test_bypass_does_not_override_safe_bin_hard_denies() -> None:
 
     with pytest.raises(ToolError, match="command blocked by policy"):
         await shell.exec_command("Clear-Disk")
+
+
+@pytest.mark.asyncio
+async def test_deny_pattern_auto_denies_without_prompt() -> None:
+    queue = get_approval_queue()
+    queue.set_settings("prompt", deny_patterns=["rm *"])
+
+    result = await shell._check_exec_approval(
+        "exec_command",
+        "rm target.txt",
+        None,
+        "command requires approval",
+        None,
+        True,
+    )
+
+    assert result is not None
+    assert result["status"] == "approval_denied"
+    assert shell._elevate_current_call.get() is False
+    assert len(queue.list_pending("exec")) == 0
+
+
+@pytest.mark.asyncio
+async def test_allow_pattern_auto_approves_without_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Allow patterns can only skip the prompt when sandbox-off does not force
+    # approval, so model a sandbox-on run here.
+    monkeypatch.setattr(shell, "_sandbox_effectively_off", lambda: False)
+    queue = get_approval_queue()
+    queue.set_settings("prompt", allow_patterns=["rm *"])
+
+    result = await shell._check_exec_approval(
+        "exec_command",
+        "rm target.txt",
+        None,
+        "command requires approval",
+        None,
+        True,
+    )
+
+    assert result is None
+    assert shell._elevate_current_call.get() is True
+    assert len(queue.list_pending("exec")) == 0
+
+
+@pytest.mark.asyncio
+async def test_allow_pattern_cannot_override_sensitive_path_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(shell, "_sandbox_effectively_off", lambda: False)
+    queue = get_approval_queue()
+    queue.set_settings("prompt", allow_patterns=["rm *"])
+
+    result = await shell._check_exec_approval(
+        "exec_command",
+        "rm ~/.ssh/id_rsa",
+        None,
+        "command requires approval",
+        None,
+        True,
+    )
+
+    assert result is not None
+    assert result["status"] == "blocked"
+    assert result["reason"] == "sensitive_path"
+    assert shell._elevate_current_call.get() is False
+    assert len(queue.list_pending("exec")) == 0
+
+
+@pytest.mark.asyncio
+async def test_allow_pattern_cannot_override_sandbox_off_forced_approval() -> None:
+    # Fixture leaves _sandbox_effectively_off() True, so the forced-approval
+    # hard guard must win over a matching allow pattern.
+    queue = get_approval_queue()
+    queue.set_settings("prompt", allow_patterns=["rm *"])
+
+    result = await shell._check_exec_approval(
+        "exec_command",
+        "rm target.txt",
+        None,
+        "command requires approval",
+        None,
+        True,
+    )
+
+    assert result is not None
+    assert result["status"] == "approval_required"
+    assert shell._elevate_current_call.get() is False
+    assert len(queue.list_pending("exec")) == 1

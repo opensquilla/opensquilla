@@ -704,7 +704,7 @@ const SetupView = (() => {
                 ${searchProviders.map(p => `<option value="${_esc(p.providerId)}"${p.providerId === searchSelected ? ' selected' : ''}>${_esc(p.label)}</option>`).join('')}
               </select>
             </label>
-            <label><span>Max results</span><input id="setup-search-max-results" name="setup_search_max_results" type="number" min="1" step="1" inputmode="numeric" data-search-field="max_results" value="${_esc(String(_config.search_max_results || 5))}"></label>
+            <label><span>Default results per search</span><input id="setup-search-max-results" name="setup_search_max_results" type="number" min="1" max="20" step="1" inputmode="numeric" data-search-field="max_results" value="${_esc(String(_config.search_max_results || 10))}"></label>
             <div class="setup-mini__advanced-body" data-search-key-fields${searchKeyHidden}>
               <label class="${searchKeyClass}"><span>API key</span><input id="setup-search-api-key" name="setup_search_api_key" type="password" data-search-field="api_key" data-secret="true" placeholder="${_esc(searchKeyPlaceholder)}"${searchKeyDisabled}></label>
               <label class="${searchKeyClass}"><span>API key env</span><input id="setup-search-api-key-env" name="setup_search_api_key_env" data-search-field="api_key_env" value="${_esc(searchEnv)}" placeholder="${_esc(searchEnvPlaceholder)}"${searchKeyDisabled}></label>

@@ -142,6 +142,10 @@ class SessionNode(SQLModel, table=True):
     # Labels
     label: str | None = Field(default=None, max_length=512)
     display_name: str | None = None
+    # LLM-generated session title. Sits below display_name (manual rename) and
+    # above subject in the title precedence (see session_view._title), so an
+    # auto-generated title never overrides a name the user set by hand.
+    derived_title: str | None = None
     channel: str | None = None
     group_id: str | None = None
     subject: str | None = None

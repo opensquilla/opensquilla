@@ -400,9 +400,7 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
                 session_key=session_key,
                 message=message,
                 attachments=attachments if isinstance(attachments, list) else [],
-                display_text=params.get("displayText")
-                if attachments and "displayText" in params
-                else None,
+                display_text=params.get("displayText") if "displayText" in params else None,
                 intent=cast(str, intent) if intent is not None else None,
                 extra=extra,
             ),
@@ -558,8 +556,6 @@ async def _handle_chat_clarify_submit(params: dict | None, ctx: RpcContext) -> d
 
     session_key = _canonical_webchat_session_key(params.get("sessionKey"))
     text = _clarify_fields_to_text(fields)
-    if not text:
-        raise ValueError("params.fields contained only empty values")
 
     run_id = params.get("run_id")
     log.info(
@@ -577,7 +573,7 @@ async def _handle_chat_clarify_submit(params: dict | None, ctx: RpcContext) -> d
         # intent (SessionIntent enum rejects unknown values). The
         # provenance tag is the observability hook for distinguishing
         # form submits from typed replies downstream.
-        "inputProvenance": "clarify_form",
+        "inputProvenance": {"kind": "clarify_form", "source": "webui"},
     }
     if isinstance(run_id, str) and run_id:
         send_params["_source"] = {

@@ -17,6 +17,7 @@ from typing import Any
 import tomli_w
 
 from opensquilla.paths import default_opensquilla_home
+from opensquilla.search.types import MAX_SEARCH_RESULTS
 
 DEPRECATED_MEMORY_FIELDS: frozenset[str] = frozenset(
     {
@@ -291,6 +292,24 @@ def migrate_config_payload(data: dict[str, Any]) -> ConfigMigrationResult:
                 builder.warnings.append(
                     "agent_token_saving.tool_result_compression_* was removed; "
                     "tokenjuice projection is now the built-in tool-result path"
+                )
+
+    # search_max_results gained an upper bound (<= MAX_SEARCH_RESULTS); coerce any
+    # legacy out-of-range value here so an older config loads instead of failing
+    # strict validation at the GatewayConfig boundary.
+    search_max_results = builder.payload.get("search_max_results")
+    if search_max_results is not None and not isinstance(search_max_results, bool):
+        try:
+            requested = int(search_max_results)
+        except (TypeError, ValueError):
+            requested = None
+        if requested is not None:
+            coerced = min(max(requested, 1), MAX_SEARCH_RESULTS)
+            if coerced != search_max_results:
+                builder.payload["search_max_results"] = coerced
+                builder.changes.append(
+                    f"search_max_results: {search_max_results} -> {coerced} "
+                    f"(clamped to [1, {MAX_SEARCH_RESULTS}])"
                 )
 
     return builder.result()

@@ -89,6 +89,36 @@ class FakeStorage:
     async def delete_transcript(self, session_id: str) -> None:
         self._transcripts.pop(session_id, None)
 
+    async def get_transcript(
+        self, session_id: str, limit: int | None = None, offset: int = 0
+    ) -> list[Any]:
+        rows = list(self._transcripts.get(session_id, []))
+        if offset:
+            rows = rows[offset:]
+        if limit is not None:
+            rows = rows[:limit]
+        return rows
+
+    async def count_transcript_entries(self, session_id: str) -> int:
+        return len(self._transcripts.get(session_id, []))
+
+    async def list_user_transcript_content_batch(
+        self,
+        session_ids: list[str],
+        *,
+        limit_per_session: int = 3,
+    ) -> dict[str, list[str]]:
+        result: dict[str, list[str]] = {}
+        for session_id in session_ids:
+            values = [
+                str(getattr(row, "content", "") or "")
+                for row in self._transcripts.get(session_id, [])
+                if str(getattr(row, "role", "") or "").lower() == "user"
+                and getattr(row, "content", None)
+            ]
+            result[session_id] = values[:limit_per_session]
+        return result
+
     async def list_agent_tasks(
         self,
         session_key: str | None = None,
@@ -658,6 +688,383 @@ class TestSessionsCreate:
 
 
 class TestSessionsList:
+    @staticmethod
+    def _assert_contract_base(row: dict[str, object]) -> None:
+        for key in (
+            "key",
+            "agent_id",
+            "agentId",
+            "status",
+            "updated_at",
+            "updatedAt",
+            "message_count",
+            "entry_count",
+            "effectiveAgentId",
+            "sessionKind",
+            "surface",
+            "conversationKind",
+            "title",
+            "groupLabel",
+            "messageCount",
+            "runStatus",
+            "interactive",
+        ):
+            assert key in row
+
+    @pytest.mark.asyncio
+    async def test_list_contract_webchat_row(self, dispatcher):
+        session = FakeSession(session_key="agent:main:webchat:default")
+        ctx = make_ctx(session_manager=FakeSessionManager([session]))
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        self._assert_contract_base(row)
+        assert row["effectiveAgentId"] == "main"
+        assert row["sessionKind"] == "chat"
+        assert row["surface"] == "webchat"
+        assert row["conversationKind"] == "direct"
+        assert row["groupLabel"] == "Web chat"
+        assert row["messageCount"] == row["message_count"]
+        assert row["runStatus"] == "idle"
+        assert row["interactive"] is True
+
+    @pytest.mark.asyncio
+    async def test_list_webchat_title_uses_first_user_message(self, dispatcher):
+        session = FakeSession(
+            session_key="agent:main:webchat:semantic-title",
+            display_name="WebChat",
+        )
+        manager = FakeSessionManager([session])
+        manager._storage._transcripts[session.session_id] = [
+            SimpleNamespace(role="system", content="runtime note"),
+            SimpleNamespace(
+                role="user",
+                content="[2026-06-04T19:25+08:00 Thu Asia/Shanghai]\nLLM位置编码方式",
+            ),
+        ]
+        ctx = make_ctx(session_manager=manager)
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        assert row["display_name"] == "WebChat"
+        assert row["title"] == "LLM位置编码方式"
+
+    @pytest.mark.asyncio
+    async def test_list_webchat_title_extracts_json_text(self, dispatcher):
+        session = FakeSession(session_key="agent:main:webchat:json-title")
+        manager = FakeSessionManager([session])
+        manager._storage._transcripts[session.session_id] = [
+            SimpleNamespace(
+                role="user",
+                content=json.dumps({"text": "Agent PM面试清单"}, ensure_ascii=False),
+            ),
+        ]
+        ctx = make_ctx(session_manager=manager)
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        assert res.payload["sessions"][0]["title"] == "Agent PM面试清单"
+
+    @pytest.mark.asyncio
+    async def test_list_contract_cli_current_tui_compatible_row(self, dispatcher):
+        session = FakeSession(session_key="agent:main:cli:a1b2c3d4")
+        ctx = make_ctx(session_manager=FakeSessionManager([session]))
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        self._assert_contract_base(row)
+        assert row["sessionKind"] == "chat"
+        assert row["surface"] == "cli"
+        assert row["conversationKind"] == "main"
+        assert row["groupLabel"] == "CLI"
+        assert row["interactive"] is False
+
+    @pytest.mark.asyncio
+    async def test_list_contract_main_agent_chat_row(self, dispatcher):
+        session = FakeSession(session_key="agent:ops:main", agent_id="ops")
+        ctx = make_ctx(session_manager=FakeSessionManager([session]))
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        self._assert_contract_base(row)
+        assert row["effectiveAgentId"] == "ops"
+        assert row["sessionKind"] == "chat"
+        assert row["surface"] == "unknown"
+        assert row["conversationKind"] == "main"
+        assert row["groupLabel"] == "Chats"
+        assert row["interactive"] is False
+
+    @pytest.mark.asyncio
+    async def test_list_contract_direct_agent_chat_row(self, dispatcher):
+        session = FakeSession(session_key="agent:main:direct:user-1")
+        ctx = make_ctx(session_manager=FakeSessionManager([session]))
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        self._assert_contract_base(row)
+        assert row["sessionKind"] == "chat"
+        assert row["surface"] == "unknown"
+        assert row["conversationKind"] == "direct"
+        assert row["groupLabel"] == "Chats"
+        assert row["interactive"] is False
+
+    @pytest.mark.asyncio
+    async def test_list_contract_slack_channel_thread_row(self, dispatcher):
+        thread_id = "1717000000.000100"
+        session = FakeSession(
+            session_key=f"agent:main:slack:group:C123:thread:{thread_id}",
+            last_channel="slack",
+            last_to="C123",
+            last_thread_id=thread_id,
+        )
+        ctx = make_ctx(session_manager=FakeSessionManager([session]))
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        self._assert_contract_base(row)
+        assert row["sessionKind"] == "channel"
+        assert row["surface"] == "slack"
+        assert row["conversationKind"] == "group"
+        assert row["thread"] == {"id": thread_id, "kind": "thread"}
+        assert row["channel"] is None
+        assert row["channelContext"] == {
+            "name": "slack",
+            "id": "C123",
+            "threadId": thread_id,
+        }
+        assert row["groupLabel"] == "Slack"
+        assert row["interactive"] is False
+
+    @pytest.mark.asyncio
+    async def test_list_contract_preserves_legacy_channel_field(self, dispatcher):
+        session = FakeSession(
+            session_key="agent:main:slack:group:C123",
+            channel="slack",
+            last_to="C123",
+        )
+        ctx = make_ctx(session_manager=FakeSessionManager([session]))
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        self._assert_contract_base(row)
+        assert row["channel"] == "slack"
+        assert row["channelContext"] == {"name": "slack", "id": "C123"}
+
+    @pytest.mark.asyncio
+    async def test_list_contract_telegram_topic_row(self, dispatcher):
+        session = FakeSession(
+            session_key="agent:main:telegram:group:chat-1:topic:topic-9",
+            last_channel="telegram",
+            last_to="chat-1",
+            last_thread_id="topic-9",
+        )
+        ctx = make_ctx(session_manager=FakeSessionManager([session]))
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        self._assert_contract_base(row)
+        assert row["sessionKind"] == "channel"
+        assert row["surface"] == "telegram"
+        assert row["conversationKind"] == "group"
+        assert row["thread"] == {"id": "topic-9", "kind": "topic"}
+        assert row["groupLabel"] == "Telegram"
+
+    @pytest.mark.asyncio
+    async def test_list_contract_subagent_task_row(self, dispatcher):
+        parent_key = "agent:main:webchat:default"
+        session = FakeSession(
+            session_key="agent:main:subagent:760b927a",
+            parent_session_key=parent_key,
+            spawned_by="task-123",
+            origin={"kind": "subagent", "spawnDepth": 1},
+        )
+        manager = FakeSessionManager([session])
+        manager._storage._agent_tasks[session.session_key] = [
+            SimpleNamespace(
+                task_id="task-123",
+                status="running",
+                queue_mode="followup",
+                run_kind="subagent",
+                source_kind="subagent",
+                created_at=100,
+                started_at=110,
+                finished_at=None,
+                terminal_reason=None,
+            )
+        ]
+        ctx = make_ctx(session_manager=manager, task_runtime=None)
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        self._assert_contract_base(row)
+        assert row["sessionKind"] == "task"
+        assert row["surface"] == "subagent"
+        assert row["conversationKind"] == "unknown"
+        assert row["runStatus"] == "running"
+        assert row["interactive"] is False
+        assert row["parent"] == {
+            "key": parent_key,
+            "taskId": "task-123",
+            "spawnDepth": 1,
+        }
+
+    @pytest.mark.asyncio
+    async def test_list_contract_run_status_matches_legacy_interrupted_state(
+        self, dispatcher
+    ):
+        session = FakeSession(session_key="agent:main:webchat:interrupted")
+        manager = FakeSessionManager([session])
+        manager._storage._agent_tasks[session.session_key] = [
+            SimpleNamespace(
+                task_id="task-abandoned",
+                status="abandoned",
+                queue_mode="followup",
+                run_kind="web_turn",
+                source_kind="webui",
+                created_at=100,
+                started_at=110,
+                finished_at=120,
+                terminal_reason="process_restart",
+            )
+        ]
+        ctx = make_ctx(session_manager=manager, task_runtime=None)
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        self._assert_contract_base(row)
+        assert row["run_status"] == "interrupted"
+        assert row["runStatus"] == "interrupted"
+
+    @pytest.mark.asyncio
+    async def test_list_contract_cron_isolated_row(self, dispatcher):
+        session = FakeSession(
+            session_key="cron:daily-summary:run:abc123",
+            display_name="Daily summary",
+            origin={
+                "kind": "cron",
+                "jobId": "daily-summary",
+                "sessionTarget": "isolated",
+            },
+        )
+        ctx = make_ctx(session_manager=FakeSessionManager([session]))
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        self._assert_contract_base(row)
+        assert row["sessionKind"] == "cron"
+        assert row["surface"] == "cron"
+        assert row["groupLabel"] == "Cron"
+        assert row["interactive"] is False
+        assert row["cron"] == {
+            "jobId": "daily-summary",
+            "sessionTarget": "isolated",
+        }
+
+    @pytest.mark.asyncio
+    async def test_list_contract_cron_delivery_keeps_feishu_channel_identity(
+        self, dispatcher
+    ):
+        session_key = "agent:main:feishu:group:oc_123"
+        session = FakeSession(
+            session_key=session_key,
+            last_channel="feishu",
+            last_to="oc_123",
+            origin={
+                "kind": "channel",
+                "cron": {
+                    "jobId": "launch-check",
+                    "sessionTarget": "session",
+                    "targetSessionKey": session_key,
+                },
+            },
+        )
+        ctx = make_ctx(session_manager=FakeSessionManager([session]))
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        self._assert_contract_base(row)
+        assert row["sessionKind"] == "channel"
+        assert row["surface"] == "feishu"
+        assert row["conversationKind"] == "group"
+        assert row["channel"] is None
+        assert row["channelContext"] == {"name": "feishu", "id": "oc_123"}
+        assert row["cron"] == {
+            "jobId": "launch-check",
+            "sessionTarget": "session",
+            "targetSessionKey": session_key,
+        }
+
+    @pytest.mark.asyncio
+    async def test_list_contract_legacy_agent_mismatch_uses_effective_agent(
+        self, dispatcher
+    ):
+        session = FakeSession(
+            session_key="agent:kid-project:webchat:test",
+            agent_id="main",
+        )
+        ctx = make_ctx(session_manager=FakeSessionManager([session]))
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        self._assert_contract_base(row)
+        assert row["agentId"] == "main"
+        assert row["effectiveAgentId"] == "kid-project"
+        assert row["sessionKind"] == "chat"
+        assert row["surface"] == "webchat"
+        assert row["conversationKind"] == "direct"
+        assert row["interactive"] is True
+
+    @pytest.mark.asyncio
+    async def test_list_contract_unknown_fallback_row(self, dispatcher):
+        session = FakeSession(
+            session_key="legacy-weird-session",
+            session_id="legacy-weird-session-id",
+            status="running",
+            display_name=None,
+            origin=None,
+        )
+        ctx = make_ctx(session_manager=FakeSessionManager([session]))
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        self._assert_contract_base(row)
+        assert row["sessionKind"] == "unknown"
+        assert row["surface"] == "unknown"
+        assert row["conversationKind"] == "unknown"
+        assert row["title"] == "legacy-weird-session"
+        assert row["groupLabel"] == "Other"
+        assert row["runStatus"] == "idle"
+        assert row["interactive"] is False
+
     @pytest.mark.asyncio
     async def test_list_includes_source_and_delivery_metadata(self, dispatcher):
         session = FakeSession(
@@ -943,6 +1350,108 @@ class TestSessionsSend:
         assert runtime.enqueue_calls[0]["fresh_user_session"] is False
 
     @pytest.mark.asyncio
+    async def test_send_strips_hidden_preflight_payload_before_task_runtime(
+        self, dispatcher, session
+    ):
+        class RecordingTaskRuntime:
+            def __init__(self) -> None:
+                self.enqueue_calls: list[dict[str, Any]] = []
+
+            async def enqueue(self, envelope, message: str, **kwargs: Any):
+                self.enqueue_calls.append(
+                    {"envelope": envelope, "message": message, **kwargs}
+                )
+                return SimpleNamespace(
+                    task_id="task-1",
+                    session_key=envelope.session_key,
+                    status="queued",
+                )
+
+        runtime = RecordingTaskRuntime()
+        manager = FakeSessionManager([session])
+        ctx = make_ctx(session_manager=manager, task_runtime=runtime)
+        hidden_message = (
+            "Original visible request\n\n"
+            "Confirmed request fields:\n"
+            "- audience: decision owner\n\n"
+            "<!-- opensquilla:meta_preflight_confirmed=1 -->\n"
+            "<!-- opensquilla:meta_preflight_run_id=01KTCQUEUE -->"
+        )
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.send",
+            {
+                "key": session.session_key,
+                "message": hidden_message,
+                "_source": {"caller_kind": "web", "channel_kind": "webchat"},
+            },
+            ctx,
+        )
+
+        assert res.ok is True
+        assert runtime.enqueue_calls[0]["message"] == "Original visible request"
+        assert runtime.enqueue_calls[0]["semantic_message"] == hidden_message
+
+    @pytest.mark.asyncio
+    async def test_send_schedules_auto_title_on_task_runtime_first_message(
+        self, dispatcher, monkeypatch
+    ):
+        class RecordingTaskRuntime:
+            def __init__(self) -> None:
+                self.enqueue_calls: list[dict[str, Any]] = []
+
+            async def enqueue(self, envelope, message: str, **kwargs: Any):
+                self.enqueue_calls.append(
+                    {"envelope": envelope, "message": message, **kwargs}
+                )
+                return SimpleNamespace(
+                    task_id="task-title-1",
+                    session_key=envelope.session_key,
+                    status="queued",
+                )
+
+        session = FakeSession(
+            session_key="agent:main:webchat:title-runtime",
+            session_id="title-runtime",
+            display_name=None,
+            derived_title=None,
+        )
+        runtime = RecordingTaskRuntime()
+        manager = FakeSessionManager([session])
+        ctx = make_ctx(session_manager=manager, task_runtime=runtime)
+        called = asyncio.Event()
+        calls: list[tuple[Any, str, str]] = []
+
+        async def fake_generate_session_title(
+            title_ctx: Any, key: str, first_message: str
+        ) -> None:
+            calls.append((title_ctx, key, first_message))
+            called.set()
+
+        monkeypatch.setattr(
+            rpc_sessions,
+            "generate_session_title",
+            fake_generate_session_title,
+        )
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.send",
+            {
+                "key": session.session_key,
+                "message": "北京天气怎么样",
+                "_source": {"caller_kind": "web", "channel_kind": "webchat"},
+            },
+            ctx,
+        )
+
+        assert res.ok is True
+        assert res.payload["task_id"] == "task-title-1"
+        await asyncio.wait_for(called.wait(), timeout=1.0)
+        assert calls == [(ctx, session.session_key, "北京天气怎么样")]
+
+    @pytest.mark.asyncio
     async def test_send_marks_direct_runner_empty_transcript_as_fresh_user_session(
         self, dispatcher
     ):
@@ -1172,6 +1681,137 @@ class TestSessionsSend:
         assert cli_persisted["text"] == "Describe these attachments"
         assert "display_text" not in cli_persisted
         assert cli_runner.run_calls[0]["message"] == "Describe these attachments"
+
+    @pytest.mark.asyncio
+    async def test_send_persists_web_display_text_without_attachments(
+        self,
+        dispatcher,
+    ):
+        session = FakeSession(
+            session_key="agent:main:webchat:hidden-confirmation",
+            session_id="hidden-confirmation",
+        )
+        manager = FakeSessionManager([session])
+        runner = _RecordingTurnRunner()
+        ctx = make_ctx(session_manager=manager, turn_runner=runner)
+        hidden_message = (
+            "Confirmed request fields:\n"
+            "- audience: decision owner\n\n"
+            "<!-- opensquilla:meta_preflight_confirmed=1 -->"
+        )
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.send",
+            {
+                "key": session.session_key,
+                "message": hidden_message,
+                "displayText": "请帮我判断这份供应商续费材料",
+                "_source": {"caller_kind": "web", "channel_kind": "webchat"},
+            },
+            ctx,
+        )
+        task = get_agent_task_registry().get(session.session_key)
+        if task is not None:
+            await task
+
+        assert res.ok is True
+        persisted = json.loads(manager.created_messages[0][2])
+        assert persisted["text"] == hidden_message
+        assert persisted["display_text"] == "请帮我判断这份供应商续费材料"
+        assert persisted["attachments"] == []
+        assert runner.run_calls[0]["message"] == ""
+        assert runner.run_calls[0]["semantic_message"] == hidden_message
+
+    @pytest.mark.asyncio
+    async def test_send_sanitizes_legacy_web_preflight_confirmation_display_text(
+        self,
+        dispatcher,
+    ):
+        session = FakeSession(
+            session_key="agent:main:webchat:legacy-hidden-confirmation",
+            session_id="legacy-hidden-confirmation",
+        )
+        manager = FakeSessionManager([session])
+        runner = _RecordingTurnRunner()
+        ctx = make_ctx(session_manager=manager, turn_runner=runner)
+        original = (
+            "请帮我判断这份供应商续费材料：这个合同要不要签、拒绝还是谈判，并给我一份决策表。\n\n"
+            "合同摘录：\n"
+            "- 服务期：2026-07-01 到 2027-06-30\n"
+            "- 价格：每月 $4,800，较上一年上涨 38%"
+        )
+        hidden_message = (
+            "请帮我判断这份供应商续费材料：这个合同要不要签、拒绝还是谈判，并给我一份决策表。\n\n"
+            f"{original}\n\n"
+            "Confirmed request fields:\n"
+            "- audience: decision owner\n"
+            "- decision_question: 签不签合同\n\n"
+            "<!-- opensquilla:meta_preflight_confirmed=1 -->\n"
+            "<!-- opensquilla:meta_preflight_run_id=01KTC2NFJ4ZXB20PSNTJEKYPS7 -->\n"
+            "<!-- opensquilla:meta_preflight_fields=abc -->"
+        )
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.send",
+            {
+                "key": session.session_key,
+                "message": hidden_message,
+                "_source": {"caller_kind": "web", "channel_kind": "webchat"},
+            },
+            ctx,
+        )
+        task = get_agent_task_registry().get(session.session_key)
+        if task is not None:
+            await task
+
+        assert res.ok is True
+        persisted = json.loads(manager.created_messages[0][2])
+        assert persisted["text"] == hidden_message
+        assert persisted["display_text"] == original
+        assert "Confirmed request fields" not in persisted["display_text"]
+        assert "opensquilla:meta_preflight_confirmed" not in persisted["display_text"]
+        assert runner.run_calls[0]["message"] == original
+        assert runner.run_calls[0]["semantic_message"] == hidden_message
+
+    @pytest.mark.asyncio
+    async def test_send_hides_marker_only_web_preflight_confirmation_display_text(
+        self,
+        dispatcher,
+    ):
+        session = FakeSession(
+            session_key="agent:main:webchat:marker-only-hidden-confirmation",
+            session_id="marker-only-hidden-confirmation",
+        )
+        manager = FakeSessionManager([session])
+        runner = _RecordingTurnRunner()
+        ctx = make_ctx(session_manager=manager, turn_runner=runner)
+        hidden_message = (
+            "<!-- opensquilla:meta_preflight_confirmed=1 -->\n"
+            "<!-- opensquilla:meta_preflight_run_id=01KTCMARKERONLY -->"
+        )
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.send",
+            {
+                "key": session.session_key,
+                "message": hidden_message,
+                "_source": {"caller_kind": "web", "channel_kind": "webchat"},
+            },
+            ctx,
+        )
+        task = get_agent_task_registry().get(session.session_key)
+        if task is not None:
+            await task
+
+        assert res.ok is True
+        persisted = json.loads(manager.created_messages[0][2])
+        assert persisted["text"] == hidden_message
+        assert persisted["display_text"] == ""
+        assert runner.run_calls[0]["message"] == ""
+        assert runner.run_calls[0]["semantic_message"] == hidden_message
 
     @pytest.mark.asyncio
     async def test_web_large_paste_is_normalized_before_turn_runner(
@@ -1440,6 +2080,47 @@ class TestSessionsSend:
         persisted = json.loads(chat_manager.created_messages[0][2])
         assert persisted["text"] == placeholder
         assert persisted["display_text"] == ""
+
+    @pytest.mark.asyncio
+    async def test_chat_send_forwards_display_text_without_attachments(
+        self,
+        dispatcher,
+    ):
+        assert rpc_chat._handle_chat_send is not None
+        chat_session = FakeSession(
+            session_key="agent:main:webchat:chat-hidden-confirmation",
+            session_id="chat-hidden-confirmation",
+        )
+        chat_manager = FakeSessionManager([chat_session])
+        chat_runner = _RecordingTurnRunner()
+        chat_ctx = make_ctx(session_manager=chat_manager, turn_runner=chat_runner)
+        hidden_message = (
+            "Confirmed request fields:\n"
+            "- audience: decision owner\n\n"
+            "<!-- opensquilla:meta_preflight_confirmed=1 -->"
+        )
+
+        res = await dispatcher.dispatch(
+            "r-chat-hidden-confirmation",
+            "chat.send",
+            {
+                "sessionKey": chat_session.session_key,
+                "message": hidden_message,
+                "displayText": "请帮我判断这份供应商续费材料",
+            },
+            chat_ctx,
+        )
+        chat_task = get_agent_task_registry().get(chat_session.session_key)
+        if chat_task is not None:
+            await chat_task
+
+        assert res.ok is True
+        persisted = json.loads(chat_manager.created_messages[0][2])
+        assert persisted["text"] == hidden_message
+        assert persisted["display_text"] == "请帮我判断这份供应商续费材料"
+        assert persisted["attachments"] == []
+        assert chat_runner.run_calls[0]["message"] == ""
+        assert chat_runner.run_calls[0]["semantic_message"] == hidden_message
 
     @pytest.mark.asyncio
     async def test_chat_send_client_normalized_paste_preserves_provenance(
@@ -1759,8 +2440,9 @@ class TestSessionsSend:
     async def test_send_rejects_invalid_attachment_media_type(
         self, dispatcher, ctx_with_sessions, session
     ):
-        # text/plain is in the allow-list. Use a MIME that is genuinely
-        # outside the allow-list to keep this regression honest.
+        # An out-of-allow-list MIME with BINARY content stays fail-closed. (A
+        # textual payload would now degrade to text/plain via the UTF-8 fallback,
+        # so use NUL-bearing binary bytes to keep this rejection regression honest.)
         res = await dispatcher.dispatch(
             "r1",
             "sessions.send",
@@ -1768,7 +2450,7 @@ class TestSessionsSend:
                 "key": session.session_key,
                 "message": "hi",
                 "attachments": [
-                    {"type": "application/x-shellscript", "data": "QQ=="}
+                    {"type": "application/x-shellscript", "data": "AAECAw=="}
                 ],
             },
             ctx_with_sessions,
@@ -3391,3 +4073,422 @@ class TestSessionsResolve:
         res = await dispatcher.dispatch("r1", "sessions.create", {"agentId": "test"}, ctx)
         assert res.ok is False
         assert res.error.code == "UNAUTHORIZED"
+
+
+class _SearchStorage(FakeStorage):
+    """FakeStorage plus the FTS hook that sessions.search wraps."""
+
+    def __init__(self, sessions=None, transcript_rows=None):
+        super().__init__(sessions)
+        self._search_rows = transcript_rows or []
+        self.search_calls: list[tuple[str, str | None, int]] = []
+
+    async def search_transcript(self, query, session_id=None, limit=20):
+        self.search_calls.append((query, session_id, limit))
+        return list(self._search_rows)[:limit]
+
+
+class _SearchManager(FakeSessionManager):
+    def __init__(self, sessions=None, transcript_rows=None):
+        super().__init__(sessions)
+        self._storage = _SearchStorage(sessions, transcript_rows)
+
+
+class TestSessionsSearch:
+    @staticmethod
+    def _sessions():
+        return [
+            FakeSession(
+                session_key="agent:main:s1",
+                session_id="s1",
+                display_name="Deploy planning",
+                updated_at=2000,
+            ),
+            FakeSession(
+                session_key="agent:main:s2",
+                session_id="s2",
+                display_name="Grocery list",
+                updated_at=3000,
+            ),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_empty_query_returns_empty(self, dispatcher):
+        ctx = make_ctx(session_manager=_SearchManager(self._sessions()))
+        res = await dispatcher.dispatch("r1", "sessions.search", {"query": "   "}, ctx)
+        assert res.ok is True
+        assert res.payload["sessions"] == []
+        assert res.payload["messages"] == []
+
+    @pytest.mark.asyncio
+    async def test_no_manager_returns_empty(self, dispatcher, ctx_no_manager):
+        res = await dispatcher.dispatch(
+            "r1", "sessions.search", {"query": "deploy"}, ctx_no_manager
+        )
+        assert res.ok is True
+        assert res.payload["sessions"] == []
+        assert res.payload["messages"] == []
+
+    @pytest.mark.asyncio
+    async def test_title_hit_matches_one_session(self, dispatcher):
+        ctx = make_ctx(session_manager=_SearchManager(self._sessions()))
+        res = await dispatcher.dispatch("r1", "sessions.search", {"query": "deploy"}, ctx)
+        assert res.ok is True
+        keys = [row["key"] for row in res.payload["sessions"]]
+        assert keys == ["agent:main:s1"]
+        assert res.payload["sessions"][0]["title"] == "Deploy planning"
+        # No transcript rows configured → no content hits.
+        assert res.payload["messages"] == []
+
+    @pytest.mark.asyncio
+    async def test_content_hit_is_enriched_with_session_title(self, dispatcher):
+        rows = [
+            {
+                "id": 10,
+                "session_key": "agent:main:s2",
+                "role": "user",
+                "snippet": "buy >>>milk<<< today",
+                "created_at": 1234,
+            }
+        ]
+        manager = _SearchManager(self._sessions(), transcript_rows=rows)
+        ctx = make_ctx(session_manager=manager)
+        res = await dispatcher.dispatch("r1", "sessions.search", {"query": "milk", "limit": 5}, ctx)
+        assert res.ok is True
+        messages = res.payload["messages"]
+        assert len(messages) == 1
+        hit = messages[0]
+        assert hit["key"] == "agent:main:s2"
+        assert hit["title"] == "Grocery list"  # joined from the session metadata
+        assert hit["snippet"] == "buy >>>milk<<< today"
+        assert hit["role"] == "user"
+        # The FTS hook received the raw query and the clamped limit.
+        assert manager._storage.search_calls == [("milk", None, 5)]
+
+    @pytest.mark.asyncio
+    async def test_read_scope_is_sufficient(self, dispatcher):
+        ctx = make_ctx(
+            scopes=["operator.read"],
+            session_manager=_SearchManager(self._sessions()),
+        )
+        res = await dispatcher.dispatch("r1", "sessions.search", {"query": "deploy"}, ctx)
+        assert res.ok is True
+
+    @pytest.mark.asyncio
+    async def test_real_storage_fts_end_to_end(self, dispatcher):
+        """Drive the handler against a real SQLite FTS store (not the fake).
+
+        Exercises the real list_sessions + transcript FTS + title derivation that
+        the other tests stub, so a schema/SQL drift in search_transcript is caught
+        here rather than only in a live gateway.
+        """
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        from opensquilla.session.models import SessionNode, TranscriptEntry
+        from opensquilla.session.storage import SessionStorage
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionStorage(str(Path(tmpdir) / "s.db"))
+            await store.connect()
+            try:
+                async def seed(sid: str, name: str, text: str) -> None:
+                    await store.upsert_session(
+                        SessionNode(
+                            session_key=f"agent:main:{sid}",
+                            session_id=sid,
+                            agent_id="main",
+                            status="idle",
+                            created_at=1,
+                            updated_at=1,
+                            display_name=name,
+                        )
+                    )
+                    await store.append_transcript_entry(
+                        TranscriptEntry(
+                            session_id=sid,
+                            session_key=f"agent:main:{sid}",
+                            message_id=f"{sid}-m0",
+                            role="user",
+                            content=text,
+                            created_at=1,
+                        )
+                    )
+
+                await seed("d1", "Deploy planning", "we should deploy the gateway")
+                await seed("g1", "Grocery list", "remember to buy milk today")
+
+                ctx = make_ctx(session_manager=SimpleNamespace(_storage=store))
+
+                # Content hit via the real FTS index.
+                res = await dispatcher.dispatch("r1", "sessions.search", {"query": "milk"}, ctx)
+                assert res.ok is True
+                messages = res.payload["messages"]
+                assert [m["key"] for m in messages] == ["agent:main:g1"]
+                assert "milk" in messages[0]["snippet"].lower()
+                assert messages[0]["title"] == "Grocery list"
+
+                # Title hit (display_name) for a different term.
+                res2 = await dispatcher.dispatch("r1", "sessions.search", {"query": "deploy"}, ctx)
+                assert res2.ok is True
+                assert "agent:main:d1" in [s["key"] for s in res2.payload["sessions"]]
+            finally:
+                await store.close()
+
+    @pytest.mark.asyncio
+    async def test_cjk_content_search_real_storage(self, dispatcher):
+        """Chinese (non-ASCII) message content is searchable via the LIKE path,
+        which the FTS sanitizer would otherwise strip to nothing."""
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        from opensquilla.session.models import SessionNode, TranscriptEntry
+        from opensquilla.session.storage import SessionStorage
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionStorage(str(Path(tmpdir) / "s.db"))
+            await store.connect()
+            try:
+                await store.upsert_session(
+                    SessionNode(
+                        session_key="agent:main:c1",
+                        session_id="c1",
+                        agent_id="main",
+                        status="idle",
+                        created_at=1,
+                        updated_at=1,
+                        display_name="部署讨论",
+                    )
+                )
+                await store.append_transcript_entry(
+                    TranscriptEntry(
+                        session_id="c1",
+                        session_key="agent:main:c1",
+                        message_id="c1-m0",
+                        role="user",
+                        content="我们需要尽快完成部署计划并通知团队",
+                        created_at=1,
+                    )
+                )
+                # Baseline: the FTS index alone cannot find the Chinese term.
+                assert await store.search_transcript("部署") == []
+
+                ctx = make_ctx(session_manager=SimpleNamespace(_storage=store))
+                # A content-only Chinese phrase (absent from any title) must come
+                # back as a message hit with a highlighted snippet.
+                res = await dispatcher.dispatch("r1", "sessions.search", {"query": "通知团队"}, ctx)
+                assert res.ok is True
+                assert [m["key"] for m in res.payload["messages"]] == ["agent:main:c1"]
+                snippet = res.payload["messages"][0]["snippet"]
+                assert ">>>" in snippet and "通知团队" in snippet
+            finally:
+                await store.close()
+
+    @pytest.mark.asyncio
+    async def test_title_search_scans_beyond_200_sessions(self, dispatcher):
+        """Title search is global — an old conversation past any recent window
+        is still findable by name (no silent 200-session cap)."""
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        from opensquilla.session.models import SessionNode
+        from opensquilla.session.storage import SessionStorage
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionStorage(str(Path(tmpdir) / "s.db"))
+            await store.connect()
+            try:
+                # Target is the OLDEST row; 220 newer noise rows bury it well past
+                # any recent-200 page.
+                await store.upsert_session(
+                    SessionNode(
+                        session_key="agent:main:old",
+                        session_id="old",
+                        agent_id="main",
+                        status="idle",
+                        created_at=1,
+                        updated_at=1,
+                        display_name="Zephyr migration notes",
+                    )
+                )
+                for i in range(220):
+                    await store.upsert_session(
+                        SessionNode(
+                            session_key=f"agent:main:n{i}",
+                            session_id=f"n{i}",
+                            agent_id="main",
+                            status="idle",
+                            created_at=1000 + i,
+                            updated_at=1000 + i,
+                            display_name=f"noise {i}",
+                        )
+                    )
+                ctx = make_ctx(session_manager=SimpleNamespace(_storage=store))
+                res = await dispatcher.dispatch("r1", "sessions.search", {"query": "zephyr"}, ctx)
+                assert res.ok is True
+                assert [s["key"] for s in res.payload["sessions"]] == ["agent:main:old"]
+            finally:
+                await store.close()
+
+    @pytest.mark.asyncio
+    async def test_message_hits_deduped_and_exclude_title_hits(self, dispatcher):
+        """Many matches in one session collapse to a single message row, and a
+        session already shown as a title hit is not repeated under messages."""
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        from opensquilla.session.models import SessionNode, TranscriptEntry
+        from opensquilla.session.storage import SessionStorage
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionStorage(str(Path(tmpdir) / "s.db"))
+            await store.connect()
+            try:
+                # Session A: three messages all matching -> one message row.
+                await store.upsert_session(
+                    SessionNode(
+                        session_key="agent:main:a",
+                        session_id="a",
+                        agent_id="main",
+                        status="idle",
+                        created_at=1,
+                        updated_at=2,
+                        display_name="Daily standup",
+                    )
+                )
+                for i in range(3):
+                    await store.append_transcript_entry(
+                        TranscriptEntry(
+                            session_id="a",
+                            session_key="agent:main:a",
+                            message_id=f"a-m{i}",
+                            role="user",
+                            content=f"the report number {i}",
+                            created_at=10 + i,
+                        )
+                    )
+                # Session B: title AND content match -> appears as a title hit
+                # only, never duplicated under messages.
+                await store.upsert_session(
+                    SessionNode(
+                        session_key="agent:main:b",
+                        session_id="b",
+                        agent_id="main",
+                        status="idle",
+                        created_at=1,
+                        updated_at=3,
+                        display_name="Quarterly report",
+                    )
+                )
+                await store.append_transcript_entry(
+                    TranscriptEntry(
+                        session_id="b",
+                        session_key="agent:main:b",
+                        message_id="b-m0",
+                        role="user",
+                        content="the report is attached",
+                        created_at=20,
+                    )
+                )
+                ctx = make_ctx(session_manager=SimpleNamespace(_storage=store))
+                res = await dispatcher.dispatch("r1", "sessions.search", {"query": "report"}, ctx)
+                assert res.ok is True
+                msg_keys = [m["key"] for m in res.payload["messages"]]
+                sess_keys = [s["key"] for s in res.payload["sessions"]]
+                assert "agent:main:b" in sess_keys
+                assert msg_keys.count("agent:main:a") == 1
+                assert "agent:main:b" not in msg_keys
+            finally:
+                await store.close()
+
+    @pytest.mark.asyncio
+    async def test_mixed_ascii_cjk_query_ands_terms(self, dispatcher):
+        """A mixed query ("deploy 部署") must match a transcript containing both
+        terms even when they are not adjacent, and must NOT match when a term is
+        absent — i.e. terms are AND-ed, not matched as one contiguous substring."""
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        from opensquilla.session.models import SessionNode, TranscriptEntry
+        from opensquilla.session.storage import SessionStorage
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionStorage(str(Path(tmpdir) / "s.db"))
+            await store.connect()
+            try:
+                await store.upsert_session(
+                    SessionNode(
+                        session_key="agent:main:m1",
+                        session_id="m1",
+                        agent_id="main",
+                        status="idle",
+                        created_at=1,
+                        updated_at=1,
+                        display_name="Ops chat",
+                    )
+                )
+                await store.append_transcript_entry(
+                    TranscriptEntry(
+                        session_id="m1",
+                        session_key="agent:main:m1",
+                        message_id="m1-m0",
+                        role="user",
+                        # "deploy" and "部署" present but NOT adjacent.
+                        content="please deploy the service, the 部署 will finish soon",
+                        created_at=1,
+                    )
+                )
+                ctx = make_ctx(session_manager=SimpleNamespace(_storage=store))
+
+                hit = await dispatcher.dispatch(
+                    "r1", "sessions.search", {"query": "deploy 部署"}, ctx
+                )
+                assert hit.ok is True
+                assert [m["key"] for m in hit.payload["messages"]] == ["agent:main:m1"]
+
+                # A term that is absent ("缓存") must exclude the row.
+                miss = await dispatcher.dispatch(
+                    "r1", "sessions.search", {"query": "deploy 缓存"}, ctx
+                )
+                assert miss.ok is True
+                assert miss.payload["messages"] == []
+            finally:
+                await store.close()
+
+    @pytest.mark.asyncio
+    async def test_non_ascii_title_search_is_case_insensitive(self, dispatcher):
+        """Cased non-Latin scripts (e.g. Cyrillic) fold case in title search —
+        a lowercase query finds an upper-cased title."""
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        from opensquilla.session.models import SessionNode
+        from opensquilla.session.storage import SessionStorage
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionStorage(str(Path(tmpdir) / "s.db"))
+            await store.connect()
+            try:
+                await store.upsert_session(
+                    SessionNode(
+                        session_key="agent:main:ru",
+                        session_id="ru",
+                        agent_id="main",
+                        status="idle",
+                        created_at=1,
+                        updated_at=1,
+                        display_name="ПРИВЕТ Команда",
+                    )
+                )
+                ctx = make_ctx(session_manager=SimpleNamespace(_storage=store))
+                res = await dispatcher.dispatch("r1", "sessions.search", {"query": "привет"}, ctx)
+                assert res.ok is True
+                assert [s["key"] for s in res.payload["sessions"]] == ["agent:main:ru"]
+            finally:
+                await store.close()

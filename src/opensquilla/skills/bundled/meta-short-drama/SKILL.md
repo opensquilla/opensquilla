@@ -5,6 +5,81 @@ kind: meta
 meta_priority: 75
 always: false
 final_text_mode: "step:deliver"
+request_template:
+  outcome: "Short-drama script and generation plan with review pause before media generation."
+  outcome_zh: "短剧剧本和生成计划，并在媒体生成前暂停让用户审阅。"
+  outcome_en: "Short-drama script and generation plan with review pause before media generation."
+  fields:
+    - name: story_topic
+      label_zh: "故事主题"
+      label_en: "Story topic"
+      required: true
+    - name: render_style
+      label_zh: "渲染风格"
+      label_en: "Render style"
+      required: false
+    - name: character_identity
+      label_zh: "角色设定"
+      label_en: "Character identity"
+      required: false
+    - name: shot_count
+      label_zh: "镜头数量"
+      label_en: "Shot count"
+      required: false
+      default: 5
+    - name: audience
+      label_zh: "受众"
+      label_en: "Audience"
+      required: false
+      default: "short-video viewer"
+      default_zh: "短视频观众"
+      default_en: "short-video viewer"
+    - name: language
+      label_zh: "输出语言"
+      label_en: "Output language"
+      required: false
+      default: "match the user's language"
+      default_zh: "跟随用户语言"
+      default_en: "match the user's language"
+  assumptions:
+    - "Pause for one free-form review before generating media."
+    - "Keep shot count between 1 and 10 and use conservative defaults when unspecified."
+  assumptions_zh:
+    - "生成媒体前会暂停一次，允许用户自由审阅和修改。"
+    - "镜头数量保持在 1 到 10 之间，未说明时使用保守默认值。"
+  assumptions_en:
+    - "Pause for one free-form review before generating media."
+    - "Keep shot count between 1 and 10 and use conservative defaults when unspecified."
+output_contract:
+  append_to_final_text: false
+  required_sections:
+    - "Story/script summary"
+    - "Review or adjustment status"
+    - "Generated media status"
+    - "Saved deliverable locations"
+  assumptions:
+    - "Visual identity and shot count use conservative defaults when absent."
+  unverified:
+    - "Third-party media generation quality until generated assets are inspected."
+  artifacts:
+    - name: "short_drama_video"
+      required: false
+    - name: "script_file"
+      required: false
+eval_prompts:
+  - name: "short-drama-baseline"
+    prompt: "Create a five-shot short-drama plan from a topic, including review status and deliverable locations."
+    rubric:
+      - "Story/script summary"
+      - "Review or adjustment status"
+      - "Generated media status"
+      - "Saved deliverable locations"
+preference_keys:
+  - preferred_language
+  - short_drama_render_style
+policy_tags:
+  - generated-media-review
+  - user-approval-before-media
 triggers:
   - "生成短剧"
   - "生成一个短剧"
@@ -45,6 +120,8 @@ composition:
     #    seeing the actual script in step 3.
     # =========================================================================
     - id: intake_extract
+      label: "需求提取"
+      label_en: "Requirement extraction"
       kind: llm_chat
       with:
         system: "Extract or invent a short-drama intake contract. Match the user's language for RENDER_STYLE / IDENTITY_ANCHOR. Be conservative — pick safe defaults rather than asking the user."
@@ -120,6 +197,8 @@ composition:
     # 2. Draft the script with whatever values we have. Free (LLM only).
     # =========================================================================
     - id: script_draft
+      label: "剧本初稿"
+      label_en: "Draft script"
       kind: agent
       skill: ai-video-script
       depends_on: [intake_extract]
@@ -161,6 +240,8 @@ composition:
     #     reply doesn't mention them.
     # =========================================================================
     - id: script_save_draft
+      label: "保存初稿"
+      label_en: "Save draft"
       kind: tool_call
       tool: write_file
       tool_allowlist: [write_file]
@@ -174,6 +255,8 @@ composition:
     #    rewrite anything, or cancel.
     # =========================================================================
     - id: review_gate
+      label: "审查门禁"
+      label_en: "Review gate"
       kind: user_input
       depends_on: [script_save_draft, script_draft, intake_extract]
       clarify:
@@ -206,6 +289,34 @@ composition:
 
           === 脚本草稿 ===
           {{ outputs.script_draft | truncate(3500) }}
+        intro_zh: |
+          脚本就绪。下面是脚本预览，以及我对风格、角色和分镜数做的假设。
+
+          标 AUTO_FILLED: yes 的项是我替你填的，你可以改。脚本草稿已存到本次运行目录的 script.txt；如果你直接改文件，下一步会重新读盘并带入修改。
+
+          你怎么回都行：满意就说“继续”；想换风格、角色、分镜数或某个镜头，直接说你的修改；不想做了就说“取消”。
+
+          预估成本只会在你选择继续后发生，主要随镜头数和总时长变化。
+
+          === 我做的假设 ===
+          {{ outputs.intake_extract | truncate(800) }}
+
+          === 脚本草稿 ===
+          {{ outputs.script_draft | truncate(3500) }}
+        intro_en: |
+          The script is ready. Below is the script preview plus the assumptions I made about style, character identity, and shot count.
+
+          Items marked AUTO_FILLED: yes were filled conservatively and can be changed. The draft script was saved to script.txt in this run directory; if you edit that file directly, the next step will reread it and include your manual edits.
+
+          Reply naturally: say "continue" if it looks good, describe any style, character, shot-count, or shot-level changes, or say "cancel" to stop.
+
+          Estimated media cost only happens if you continue, and mainly scales with shot count and total duration.
+
+          === Assumptions I made ===
+          {{ outputs.intake_extract | truncate(800) }}
+
+          === Script draft ===
+          {{ outputs.script_draft | truncate(3500) }}
         nl_extract: true
         fields:
           - name: review
@@ -221,6 +332,10 @@ composition:
               catch-all: approvals, rejections, edits, off-topic remarks
               all belong here. If the user's reply is empty or pure
               whitespace, emit "(empty)" so the field always has a value.
+            prompt_zh: |
+              用户对脚本草稿的整段回复。原样放进这个字段，不要总结、不要重写、不要解释。任何同意、拒绝、修改意见、吐槽或闲聊都属于这里。
+            prompt_en: |
+              The user's verbatim reply about the script draft. Copy the entire reply into this single field; do not summarize, paraphrase, translate, or split it. Approvals, rejections, edits, off-topic remarks, and empty replies all belong here.
             max_chars: 4000
         cancel_keywords: ["cancel", "取消", "算了", "停止", "stop", "abort"]
         timeout_hours: 24
@@ -229,6 +344,8 @@ composition:
     # 4. Parse the free-form review.
     # =========================================================================
     - id: review_normalize
+      label: "审查归一"
+      label_en: "Review normalization"
       kind: llm_chat
       depends_on: [review_gate]
       with:
@@ -268,6 +385,8 @@ composition:
     #     of the original draft.
     # =========================================================================
     - id: script_reread
+      label: "剧本复读"
+      label_en: "Script reread"
       kind: skill_exec
       skill: text-file-read
       depends_on: [review_gate, script_save_draft]
@@ -278,6 +397,8 @@ composition:
     # 5. Re-draft script when the user supplied adjustments. Free.
     # =========================================================================
     - id: script_revised
+      label: "剧本修订"
+      label_en: "Script revision"
       kind: agent
       skill: ai-video-script
       depends_on: [review_normalize, script_reread]
@@ -311,6 +432,8 @@ composition:
     # 6. Pick the final script everyone downstream reads.
     # =========================================================================
     - id: final_script
+      label: "最终剧本"
+      label_en: "Final script"
       kind: llm_chat
       depends_on: [review_normalize, script_reread, script_revised]
       with:
@@ -333,6 +456,8 @@ composition:
     #    by hand).
     # =========================================================================
     - id: script_save
+      label: "保存剧本"
+      label_en: "Save script"
       kind: tool_call
       tool: write_file
       tool_allowlist: [write_file]
@@ -345,6 +470,8 @@ composition:
     # 8. Title / subtitle / ending text extracts (cheap llm_chat).
     # =========================================================================
     - id: title_extract
+      label: "标题提取"
+      label_en: "Title extraction"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -357,6 +484,8 @@ composition:
           {{ outputs.final_script | truncate(8000) }}
 
     - id: subtitle_extract
+      label: "字幕提取"
+      label_en: "Subtitle extraction"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -372,6 +501,8 @@ composition:
           {{ outputs.final_script | truncate(2000) }}
 
     - id: ending_text_extract
+      label: "结尾文案"
+      label_en: "Closing copy"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -394,6 +525,8 @@ composition:
     #       slot 2 (N_shot.png)     → how the scene is laid out
     # =========================================================================
     - id: reference_prompt_extract
+      label: "参考提示"
+      label_en: "Reference prompt"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -440,6 +573,8 @@ composition:
           {{ outputs.final_script | truncate(8000) }}
 
     - id: reference_image
+      label: "参考图"
+      label_en: "Reference image"
       kind: skill_exec
       skill: nano-banana-pro
       depends_on: [reference_prompt_extract, review_normalize]
@@ -462,6 +597,8 @@ composition:
     # 9. Cover card image + 2s video (gated on proceed).
     # =========================================================================
     - id: cover_image
+      label: "封面图"
+      label_en: "Cover image"
       kind: skill_exec
       skill: title-card-image
       depends_on: [title_extract, subtitle_extract, review_normalize]
@@ -478,6 +615,8 @@ composition:
         height: 1280
 
     - id: cover_video
+      label: "封面视频"
+      label_en: "Cover video"
       kind: skill_exec
       skill: video-still-animator
       depends_on: [cover_image, review_normalize]
@@ -493,6 +632,8 @@ composition:
 
     # ---- SHOT_1 extracts (run even if shot doesn't exist; returns sentinel) ----
     - id: shot1_img_prompt
+      label: "镜头1图提示"
+      label_en: "Shot 1 image prompt"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -508,6 +649,8 @@ composition:
           {{ outputs.final_script | truncate(8000) }}
 
     - id: shot1_vid_prompt
+      label: "镜头1视频提示"
+      label_en: "Shot 1 video prompt"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -522,6 +665,8 @@ composition:
           {{ outputs.final_script | truncate(8000) }}
 
     - id: shot1_duration
+      label: "镜头1时长"
+      label_en: "Shot 1 duration"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -537,6 +682,8 @@ composition:
 
     # ---- SHOT_2 extracts (run even if shot doesn't exist; returns sentinel) ----
     - id: shot2_img_prompt
+      label: "镜头2图提示"
+      label_en: "Shot 2 image prompt"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -552,6 +699,8 @@ composition:
           {{ outputs.final_script | truncate(8000) }}
 
     - id: shot2_vid_prompt
+      label: "镜头2视频提示"
+      label_en: "Shot 2 video prompt"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -566,6 +715,8 @@ composition:
           {{ outputs.final_script | truncate(8000) }}
 
     - id: shot2_duration
+      label: "镜头2时长"
+      label_en: "Shot 2 duration"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -581,6 +732,8 @@ composition:
 
     # ---- SHOT_3 extracts (run even if shot doesn't exist; returns sentinel) ----
     - id: shot3_img_prompt
+      label: "镜头3图提示"
+      label_en: "Shot 3 image prompt"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -596,6 +749,8 @@ composition:
           {{ outputs.final_script | truncate(8000) }}
 
     - id: shot3_vid_prompt
+      label: "镜头3视频提示"
+      label_en: "Shot 3 video prompt"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -610,6 +765,8 @@ composition:
           {{ outputs.final_script | truncate(8000) }}
 
     - id: shot3_duration
+      label: "镜头3时长"
+      label_en: "Shot 3 duration"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -625,6 +782,8 @@ composition:
 
     # ---- SHOT_4 extracts (run even if shot doesn't exist; returns sentinel) ----
     - id: shot4_img_prompt
+      label: "镜头4图提示"
+      label_en: "Shot 4 image prompt"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -640,6 +799,8 @@ composition:
           {{ outputs.final_script | truncate(8000) }}
 
     - id: shot4_vid_prompt
+      label: "镜头4视频提示"
+      label_en: "Shot 4 video prompt"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -654,6 +815,8 @@ composition:
           {{ outputs.final_script | truncate(8000) }}
 
     - id: shot4_duration
+      label: "镜头4时长"
+      label_en: "Shot 4 duration"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -669,6 +832,8 @@ composition:
 
     # ---- SHOT_5 extracts (run even if shot doesn't exist; returns sentinel) ----
     - id: shot5_img_prompt
+      label: "镜头5图提示"
+      label_en: "Shot 5 image prompt"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -684,6 +849,8 @@ composition:
           {{ outputs.final_script | truncate(8000) }}
 
     - id: shot5_vid_prompt
+      label: "镜头5视频提示"
+      label_en: "Shot 5 video prompt"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -698,6 +865,8 @@ composition:
           {{ outputs.final_script | truncate(8000) }}
 
     - id: shot5_duration
+      label: "镜头5时长"
+      label_en: "Shot 5 duration"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -713,6 +882,8 @@ composition:
 
     # ---- SHOT_6 extracts (run even if shot doesn't exist; returns sentinel) ----
     - id: shot6_img_prompt
+      label: "镜头6图提示"
+      label_en: "Shot 6 image prompt"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -728,6 +899,8 @@ composition:
           {{ outputs.final_script | truncate(8000) }}
 
     - id: shot6_vid_prompt
+      label: "镜头6视频提示"
+      label_en: "Shot 6 video prompt"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -742,6 +915,8 @@ composition:
           {{ outputs.final_script | truncate(8000) }}
 
     - id: shot6_duration
+      label: "镜头6时长"
+      label_en: "Shot 6 duration"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -757,6 +932,8 @@ composition:
 
     # ---- SHOT_7 extracts (run even if shot doesn't exist; returns sentinel) ----
     - id: shot7_img_prompt
+      label: "镜头7图提示"
+      label_en: "Shot 7 image prompt"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -772,6 +949,8 @@ composition:
           {{ outputs.final_script | truncate(8000) }}
 
     - id: shot7_vid_prompt
+      label: "镜头7视频提示"
+      label_en: "Shot 7 video prompt"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -786,6 +965,8 @@ composition:
           {{ outputs.final_script | truncate(8000) }}
 
     - id: shot7_duration
+      label: "镜头7时长"
+      label_en: "Shot 7 duration"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -801,6 +982,8 @@ composition:
 
     # ---- SHOT_8 extracts (run even if shot doesn't exist; returns sentinel) ----
     - id: shot8_img_prompt
+      label: "镜头8图提示"
+      label_en: "Shot 8 image prompt"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -816,6 +999,8 @@ composition:
           {{ outputs.final_script | truncate(8000) }}
 
     - id: shot8_vid_prompt
+      label: "镜头8视频提示"
+      label_en: "Shot 8 video prompt"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -830,6 +1015,8 @@ composition:
           {{ outputs.final_script | truncate(8000) }}
 
     - id: shot8_duration
+      label: "镜头8时长"
+      label_en: "Shot 8 duration"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -845,6 +1032,8 @@ composition:
 
     # ---- SHOT_9 extracts (run even if shot doesn't exist; returns sentinel) ----
     - id: shot9_img_prompt
+      label: "镜头9图提示"
+      label_en: "Shot 9 image prompt"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -860,6 +1049,8 @@ composition:
           {{ outputs.final_script | truncate(8000) }}
 
     - id: shot9_vid_prompt
+      label: "镜头9视频提示"
+      label_en: "Shot 9 video prompt"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -874,6 +1065,8 @@ composition:
           {{ outputs.final_script | truncate(8000) }}
 
     - id: shot9_duration
+      label: "镜头9时长"
+      label_en: "Shot 9 duration"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -889,6 +1082,8 @@ composition:
 
     # ---- SHOT_10 extracts (run even if shot doesn't exist; returns sentinel) ----
     - id: shot10_img_prompt
+      label: "镜头10图提示"
+      label_en: "Shot 10 image prompt"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -904,6 +1099,8 @@ composition:
           {{ outputs.final_script | truncate(8000) }}
 
     - id: shot10_vid_prompt
+      label: "镜头10视频提示"
+      label_en: "Shot 10 video prompt"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -918,6 +1115,8 @@ composition:
           {{ outputs.final_script | truncate(8000) }}
 
     - id: shot10_duration
+      label: "镜头10时长"
+      label_en: "Shot 10 duration"
       kind: llm_chat
       depends_on: [final_script]
       with:
@@ -933,6 +1132,8 @@ composition:
 
     # ---- SHOT_1 image / video / fallback ----
     - id: shot1_image
+      label: "镜头1图像"
+      label_en: "Shot 1 image"
       kind: skill_exec
       skill: nano-banana-pro
       depends_on: [shot1_img_prompt, review_normalize]
@@ -947,6 +1148,8 @@ composition:
         placeholder_on_fail: "yes"
 
     - id: shot1_video
+      label: "镜头1视频"
+      label_en: "Shot 1 video"
       kind: skill_exec
       skill: seedance-2-prompt
       depends_on: [shot1_vid_prompt, shot1_duration, reference_image, shot1_image, review_normalize]
@@ -977,6 +1180,8 @@ composition:
         max_retries: 2
 
     - id: shot1_video_fallback
+      label: "镜头1视频兜底"
+      label_en: "Shot 1 video fallback"
       kind: skill_exec
       skill: video-still-animator
       with:
@@ -989,6 +1194,8 @@ composition:
 
     # ---- SHOT_2 image / video / fallback ----
     - id: shot2_image
+      label: "镜头2图像"
+      label_en: "Shot 2 image"
       kind: skill_exec
       skill: nano-banana-pro
       depends_on: [shot2_img_prompt, review_normalize]
@@ -1003,6 +1210,8 @@ composition:
         placeholder_on_fail: "yes"
 
     - id: shot2_video
+      label: "镜头2视频"
+      label_en: "Shot 2 video"
       kind: skill_exec
       skill: seedance-2-prompt
       depends_on: [shot2_vid_prompt, shot2_duration, reference_image, shot2_image, review_normalize]
@@ -1033,6 +1242,8 @@ composition:
         max_retries: 2
 
     - id: shot2_video_fallback
+      label: "镜头2视频兜底"
+      label_en: "Shot 2 video fallback"
       kind: skill_exec
       skill: video-still-animator
       with:
@@ -1045,6 +1256,8 @@ composition:
 
     # ---- SHOT_3 image / video / fallback ----
     - id: shot3_image
+      label: "镜头3图像"
+      label_en: "Shot 3 image"
       kind: skill_exec
       skill: nano-banana-pro
       depends_on: [shot3_img_prompt, review_normalize]
@@ -1059,6 +1272,8 @@ composition:
         placeholder_on_fail: "yes"
 
     - id: shot3_video
+      label: "镜头3视频"
+      label_en: "Shot 3 video"
       kind: skill_exec
       skill: seedance-2-prompt
       depends_on: [shot3_vid_prompt, shot3_duration, reference_image, shot3_image, review_normalize]
@@ -1089,6 +1304,8 @@ composition:
         max_retries: 2
 
     - id: shot3_video_fallback
+      label: "镜头3视频兜底"
+      label_en: "Shot 3 video fallback"
       kind: skill_exec
       skill: video-still-animator
       with:
@@ -1101,6 +1318,8 @@ composition:
 
     # ---- SHOT_4 image / video / fallback ----
     - id: shot4_image
+      label: "镜头4图像"
+      label_en: "Shot 4 image"
       kind: skill_exec
       skill: nano-banana-pro
       depends_on: [shot4_img_prompt, review_normalize]
@@ -1115,6 +1334,8 @@ composition:
         placeholder_on_fail: "yes"
 
     - id: shot4_video
+      label: "镜头4视频"
+      label_en: "Shot 4 video"
       kind: skill_exec
       skill: seedance-2-prompt
       depends_on: [shot4_vid_prompt, shot4_duration, reference_image, shot4_image, review_normalize]
@@ -1145,6 +1366,8 @@ composition:
         max_retries: 2
 
     - id: shot4_video_fallback
+      label: "镜头4视频兜底"
+      label_en: "Shot 4 video fallback"
       kind: skill_exec
       skill: video-still-animator
       with:
@@ -1157,6 +1380,8 @@ composition:
 
     # ---- SHOT_5 image / video / fallback ----
     - id: shot5_image
+      label: "镜头5图像"
+      label_en: "Shot 5 image"
       kind: skill_exec
       skill: nano-banana-pro
       depends_on: [shot5_img_prompt, review_normalize]
@@ -1171,6 +1396,8 @@ composition:
         placeholder_on_fail: "yes"
 
     - id: shot5_video
+      label: "镜头5视频"
+      label_en: "Shot 5 video"
       kind: skill_exec
       skill: seedance-2-prompt
       depends_on: [shot5_vid_prompt, shot5_duration, reference_image, shot5_image, review_normalize]
@@ -1201,6 +1428,8 @@ composition:
         max_retries: 2
 
     - id: shot5_video_fallback
+      label: "镜头5视频兜底"
+      label_en: "Shot 5 video fallback"
       kind: skill_exec
       skill: video-still-animator
       with:
@@ -1213,6 +1442,8 @@ composition:
 
     # ---- SHOT_6 image / video / fallback ----
     - id: shot6_image
+      label: "镜头6图像"
+      label_en: "Shot 6 image"
       kind: skill_exec
       skill: nano-banana-pro
       depends_on: [shot6_img_prompt, review_normalize]
@@ -1227,6 +1458,8 @@ composition:
         placeholder_on_fail: "yes"
 
     - id: shot6_video
+      label: "镜头6视频"
+      label_en: "Shot 6 video"
       kind: skill_exec
       skill: seedance-2-prompt
       depends_on: [shot6_vid_prompt, shot6_duration, reference_image, shot6_image, review_normalize]
@@ -1257,6 +1490,8 @@ composition:
         max_retries: 2
 
     - id: shot6_video_fallback
+      label: "镜头6视频兜底"
+      label_en: "Shot 6 video fallback"
       kind: skill_exec
       skill: video-still-animator
       with:
@@ -1269,6 +1504,8 @@ composition:
 
     # ---- SHOT_7 image / video / fallback ----
     - id: shot7_image
+      label: "镜头7图像"
+      label_en: "Shot 7 image"
       kind: skill_exec
       skill: nano-banana-pro
       depends_on: [shot7_img_prompt, review_normalize]
@@ -1283,6 +1520,8 @@ composition:
         placeholder_on_fail: "yes"
 
     - id: shot7_video
+      label: "镜头7视频"
+      label_en: "Shot 7 video"
       kind: skill_exec
       skill: seedance-2-prompt
       depends_on: [shot7_vid_prompt, shot7_duration, reference_image, shot7_image, review_normalize]
@@ -1313,6 +1552,8 @@ composition:
         max_retries: 2
 
     - id: shot7_video_fallback
+      label: "镜头7视频兜底"
+      label_en: "Shot 7 video fallback"
       kind: skill_exec
       skill: video-still-animator
       with:
@@ -1325,6 +1566,8 @@ composition:
 
     # ---- SHOT_8 image / video / fallback ----
     - id: shot8_image
+      label: "镜头8图像"
+      label_en: "Shot 8 image"
       kind: skill_exec
       skill: nano-banana-pro
       depends_on: [shot8_img_prompt, review_normalize]
@@ -1339,6 +1582,8 @@ composition:
         placeholder_on_fail: "yes"
 
     - id: shot8_video
+      label: "镜头8视频"
+      label_en: "Shot 8 video"
       kind: skill_exec
       skill: seedance-2-prompt
       depends_on: [shot8_vid_prompt, shot8_duration, reference_image, shot8_image, review_normalize]
@@ -1369,6 +1614,8 @@ composition:
         max_retries: 2
 
     - id: shot8_video_fallback
+      label: "镜头8视频兜底"
+      label_en: "Shot 8 video fallback"
       kind: skill_exec
       skill: video-still-animator
       with:
@@ -1381,6 +1628,8 @@ composition:
 
     # ---- SHOT_9 image / video / fallback ----
     - id: shot9_image
+      label: "镜头9图像"
+      label_en: "Shot 9 image"
       kind: skill_exec
       skill: nano-banana-pro
       depends_on: [shot9_img_prompt, review_normalize]
@@ -1395,6 +1644,8 @@ composition:
         placeholder_on_fail: "yes"
 
     - id: shot9_video
+      label: "镜头9视频"
+      label_en: "Shot 9 video"
       kind: skill_exec
       skill: seedance-2-prompt
       depends_on: [shot9_vid_prompt, shot9_duration, reference_image, shot9_image, review_normalize]
@@ -1425,6 +1676,8 @@ composition:
         max_retries: 2
 
     - id: shot9_video_fallback
+      label: "镜头9视频兜底"
+      label_en: "Shot 9 video fallback"
       kind: skill_exec
       skill: video-still-animator
       with:
@@ -1437,6 +1690,8 @@ composition:
 
     # ---- SHOT_10 image / video / fallback ----
     - id: shot10_image
+      label: "镜头10图像"
+      label_en: "Shot 10 image"
       kind: skill_exec
       skill: nano-banana-pro
       depends_on: [shot10_img_prompt, review_normalize]
@@ -1451,6 +1706,8 @@ composition:
         placeholder_on_fail: "yes"
 
     - id: shot10_video
+      label: "镜头10视频"
+      label_en: "Shot 10 video"
       kind: skill_exec
       skill: seedance-2-prompt
       depends_on: [shot10_vid_prompt, shot10_duration, reference_image, shot10_image, review_normalize]
@@ -1481,6 +1738,8 @@ composition:
         max_retries: 2
 
     - id: shot10_video_fallback
+      label: "镜头10视频兜底"
+      label_en: "Shot 10 video fallback"
       kind: skill_exec
       skill: video-still-animator
       with:
@@ -1495,6 +1754,8 @@ composition:
     # Ending card image + 1.5s video.
     # =========================================================================
     - id: ending_image
+      label: "结尾图"
+      label_en: "Closing image"
       kind: skill_exec
       skill: title-card-image
       depends_on: [ending_text_extract, review_normalize]
@@ -1510,6 +1771,8 @@ composition:
         height: 1280
 
     - id: ending_video
+      label: "结尾视频"
+      label_en: "Closing video"
       kind: skill_exec
       skill: video-still-animator
       depends_on: [ending_image, review_normalize]
@@ -1528,6 +1791,8 @@ composition:
     # numeric prefix; 0_cover < 1..10_shot < 99_ending.
     # =========================================================================
     - id: merge
+      label: "视频合并"
+      label_en: "Video merge"
       kind: skill_exec
       skill: video-merger
       depends_on:
@@ -1555,6 +1820,8 @@ composition:
         preset: "medium"
 
     - id: subtitles_srt
+      label: "字幕 SRT"
+      label_en: "Subtitle SRT"
       kind: skill_exec
       skill: srt-from-script
       depends_on: [final_script, review_normalize]
@@ -1566,6 +1833,8 @@ composition:
         leading_offset_ms: 2000
 
     - id: subtitled_final
+      label: "字幕成片"
+      label_en: "Subtitled video"
       kind: skill_exec
       skill: subtitle-burner
       depends_on: [merge, subtitles_srt, review_normalize]
@@ -1578,6 +1847,8 @@ composition:
         margin_v: 80
 
     - id: deliver
+      label: "交付"
+      label_en: "Delivery"
       kind: llm_chat
       depends_on: [final_script, review_normalize, script_save]
       with:

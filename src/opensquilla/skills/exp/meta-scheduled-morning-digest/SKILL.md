@@ -31,11 +31,13 @@ composition:
         style: bulleted
         max_words: 500
     - id: memorize
-      skill: memory
+      kind: tool_call
+      tool: memory_save
+      tool_allowlist: [memory_save]
       depends_on: [digest]
-      with:
-        action: save
-        topic: "morning-digest"
+      tool_args:
+        path: "memory/morning-digest.md"
+        mode: append
         content: "{{ outputs.digest }}"
 ---
 

@@ -24,6 +24,7 @@ from opensquilla.router_tiers import (
     DEFAULT_TEXT_TIER,
     HIGHEST_TEXT_TIER,
     ROUTE_CLASS_TO_TIER,
+    TEXT_TIERS,
     TIER_TO_ROUTE_CLASS,
     normalize_text_tier,
 )
@@ -66,6 +67,34 @@ _ROUTER_RUNTIME_FALLBACK_MESSAGE = (
     "https://aka.ms/vs/17/release/vc_redist.x64.exe. After installing, reopen "
     "PowerShell and restart OpenSquilla."
 )
+
+
+def _router_text_fallback_chain(
+    selected_tier: object,
+    tiers: dict,
+) -> list[dict[str, str]]:
+    selected = normalize_text_tier(selected_tier)
+    if selected is None:
+        return []
+    try:
+        selected_index = TEXT_TIERS.index(selected)
+    except ValueError:
+        return []
+
+    chain: list[dict[str, str]] = []
+    for tier_name in reversed(TEXT_TIERS[:selected_index]):
+        tier_cfg = tiers.get(tier_name)
+        if not isinstance(tier_cfg, dict) or tier_cfg.get("image_only", False):
+            continue
+        model = str(tier_cfg.get("model") or "").strip()
+        if not model:
+            continue
+        provider = str(tier_cfg.get("provider") or "").strip()
+        entry = {"tier": tier_name, "model": model}
+        if provider:
+            entry["provider"] = provider
+        chain.append(entry)
+    return chain
 
 
 class RoutingHistoryStore:
@@ -582,6 +611,7 @@ def _confidence_protected_tier(
     tiers: dict | None = None,
 ) -> tuple[str, bool, float, str | None]:
     threshold = float(getattr(router_cfg, "confidence_threshold", 0.5))
+    high_tier_margin = float(getattr(router_cfg, "confidence_high_tier_margin", 0.05))
     default_tier = getattr(router_cfg, "default_tier", None)
     if default_tier is None:
         return tier, False, threshold, None
@@ -589,12 +619,10 @@ def _confidence_protected_tier(
     selected_cfg = tiers.get(tier, {}) if isinstance(tiers, dict) else {}
     if bool(_tier_config_value(selected_cfg, "image_only", False)):
         return tier, False, threshold, default_tier
-    if (
-        confidence < threshold
-        and tier in valid_tiers
-        and default_tier in valid_tiers
-        and tier != default_tier
-    ):
+    tier_rank = _tier_index(tier, valid_tiers)
+    default_rank = _tier_index(default_tier, valid_tiers)
+    cutoff = threshold - high_tier_margin if tier_rank > default_rank else threshold
+    if confidence < cutoff and tier_rank >= 0 and default_rank >= 0 and tier != default_tier:
         return default_tier, True, threshold, default_tier
     return tier, False, threshold, default_tier
 
@@ -805,6 +833,10 @@ def _finalize_decision(
         )
         if complaint_terms:
             upgrade_start_tier = final_tier
+            if pre_confidence_tier in valid_tiers and _tier_index(
+                pre_confidence_tier, valid_tiers
+            ) > _tier_index(upgrade_start_tier, valid_tiers):
+                upgrade_start_tier = pre_confidence_tier
             if previous_tier in valid_tiers and _tier_index(
                 previous_tier, valid_tiers
             ) > _tier_index(upgrade_start_tier, valid_tiers):
@@ -924,13 +956,15 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
 
     rollout_phase: str = getattr(router_cfg, "rollout_phase", "observe")
 
-    # Image-aware routing: skip ML, pick directly from supports_image tiers
-    # only for the current turn's uploaded attachments. Historical images are
-    # reduced to text-only markers by TurnRunner._load_history and must not
-    # keep later follow-ups on a vision route.
-    if _attachments_include_image(ctx.attachments):
-        import random
-
+    # Image-aware routing: skip ML and pick directly from supports_image tiers
+    # for current uploads. Historical images require the upstream semantic
+    # follow-up gate; recent-image/sticky metadata alone is observability and
+    # replay context, not enough to force vision.
+    current_turn_has_image = _attachments_include_image(ctx.attachments)
+    history_gate_needs_image = (
+        ctx.metadata.get("router_vision_followup_needs_image") is True
+    )
+    if current_turn_has_image or history_gate_needs_image:
         image_tiers = {k: v for k, v in tiers.items() if v.get("supports_image", False)}
         if not image_tiers:
             log.warning(
@@ -941,7 +975,7 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
                 "No image-capable SquillaRouter tier is configured for this image request. "
                 "Configure squilla_router.tiers.image_model with supports_image=true."
             )
-        tier_name = random.choice(list(image_tiers.keys()))
+        tier_name = next(iter(image_tiers))
         decision = RoutingDecision(
             tier=tier_name,
             model=image_tiers[tier_name].get("model", ctx.model),
@@ -962,7 +996,15 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
         ctx.metadata["applied_model"] = ctx.model
         ctx.metadata["routing_confidence"] = decision.confidence
         ctx.metadata["routing_source"] = decision.source
-        ctx.metadata["route_max_history_turns"] = 1
+        image_route_reason = "current_turn" if current_turn_has_image else "gate_history"
+        ctx.metadata["image_route_reason"] = image_route_reason
+        history_turns = 1
+        if image_route_reason == "gate_history":
+            history_turns = max(
+                1,
+                int(getattr(router_cfg, "vision_history_lookback_turns", 8) or 1),
+            )
+        ctx.metadata["route_max_history_turns"] = history_turns
         ctx.metadata.update(_compute_savings(decision.model, tiers))
         _record_thinking_metadata(ctx, router_cfg, image_tiers[tier_name])
         log.debug("squilla_router.image_routed", tier=decision.tier, model=decision.model)
@@ -990,6 +1032,10 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
             ctx.metadata["applied_model"] = ctx.model
             ctx.metadata["routing_confidence"] = decision.confidence
             ctx.metadata["routing_source"] = decision.source
+            ctx.metadata["router_fallback_chain"] = _router_text_fallback_chain(
+                decision.tier,
+                tiers,
+            )
             ctx.metadata["router_control_hold_applied"] = True
             ctx.metadata["router_control_action"] = "set_hold"
             ctx.metadata["router_control_target_tier"] = hold.tier
@@ -1150,6 +1196,10 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
     ctx.metadata["applied_model"] = ctx.model
     ctx.metadata["routing_confidence"] = decision.confidence
     ctx.metadata["routing_source"] = decision.source
+    ctx.metadata["router_fallback_chain"] = _router_text_fallback_chain(
+        decision.tier,
+        tiers,
+    )
     ctx.metadata.update(_compute_savings(decision.model, tiers))
 
     context_states = ctx.metadata.get("session_context_states") or ctx.metadata.get(

@@ -360,7 +360,7 @@ def _validate_patch_approval(
     approval_id: str,
     plan: _PatchApprovalPlan,
 ) -> dict[str, object] | None:
-    from opensquilla.gateway.approval_queue import get_approval_queue
+    from opensquilla.gateway.approval_queue import RESOLUTION_EXPIRED, get_approval_queue
 
     queue = get_approval_queue()
     try:
@@ -383,6 +383,16 @@ def _validate_patch_approval(
             "Approval is still pending. Ask the user to approve.",
         )
     if not entry.approved:
+        # An expiry (deadline lapse with no response) reads distinctly from a
+        # human deny so the agent does not infer a deliberate refusal.
+        if entry.resolution == RESOLUTION_EXPIRED:
+            return _approval_payload(
+                "approval_denied",
+                approval_id,
+                plan,
+                "This action expired without a response and was not run; "
+                "ask again if it's still needed.",
+            )
         return _approval_payload(
             "approval_denied",
             approval_id,

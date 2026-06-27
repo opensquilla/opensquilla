@@ -5,6 +5,31 @@ kind: meta
 meta_priority: 65
 always: false
 final_text_mode: "step:delivery_guide"
+request_template:
+  outcome: "A packaged local multimedia webpage project with assets, validation notes, and usage guidance."
+  outcome_zh: "打包好的本地多媒体网页项目，包含素材、验证说明和使用指南。"
+  outcome_en: "A packaged local multimedia webpage project with assets, validation notes, and usage guidance."
+  fields:
+    - name: topic
+      label: "Topic"
+      label_zh: "网页主题"
+      label_en: "Topic"
+    - name: target_audience
+      label: "Target audience"
+      label_zh: "目标受众"
+      label_en: "Target audience"
+    - name: output_language
+      label: "Output language"
+      label_zh: "输出语言"
+      label_en: "Output language"
+    - name: visual_style
+      label: "Visual style"
+      label_zh: "视觉风格"
+      label_en: "Visual style"
+    - name: media_preferences
+      label: "Media preferences"
+      label_zh: "媒体偏好"
+      label_en: "Media preferences"
 triggers:
   - "create awesome webpage"
   - "build multimedia webpage project"
@@ -170,6 +195,13 @@ composition:
         intro: |
           先逐项确认网页媒体配置，再继续研究、搜索素材和生成项目。
           默认需要图片；后续会先搜索，搜不到合适素材才生成。
+        intro_zh: |
+          先逐项确认网页媒体配置，再继续研究、搜索素材和生成项目。
+          默认需要图片；后续会先搜索，搜不到合适素材才生成。
+        intro_en: |
+          I will confirm the webpage media settings before research, asset search,
+          and project generation. Images are included by default; I will search
+          first and generate only when suitable assets are unavailable.
         nl_extract: true
         fields:
           - name: include_images
@@ -177,6 +209,8 @@ composition:
             choices: ["YES", "NO"]
             default: "YES"
             prompt: "是否需要图片？"
+            prompt_zh: "是否需要图片？"
+            prompt_en: "Do you want images?"
         cancel_keywords: ["取消", "算了", "cancel", "stop", "abort"]
         timeout_hours: 24
 
@@ -188,6 +222,13 @@ composition:
         intro: |
           已记录图片选择。现在确认音频。
           默认需要音频；音频不走素材搜索，会直接按 OpenRouter 配置生成或给出可替换位置。
+        intro_zh: |
+          已记录图片选择。现在确认音频。
+          默认需要音频；音频不走素材搜索，会直接按 OpenRouter 配置生成或给出可替换位置。
+        intro_en: |
+          I recorded the image choice. Now I need to confirm audio.
+          Audio is included by default; it is generated from the OpenRouter
+          configuration or represented as a replaceable slot.
         nl_extract: true
         fields:
           - name: include_audio
@@ -195,6 +236,8 @@ composition:
             choices: ["YES", "NO"]
             default: "YES"
             prompt: "是否需要音频？"
+            prompt_zh: "是否需要音频？"
+            prompt_en: "Do you want audio?"
         cancel_keywords: ["取消", "算了", "cancel", "stop", "abort"]
         timeout_hours: 24
 
@@ -206,6 +249,13 @@ composition:
         intro: |
           已记录音频选择。现在确认视频。
           默认需要视频；视频不走素材搜索，会直接按 OpenRouter 配置生成或给出可替换位置。
+        intro_zh: |
+          已记录音频选择。现在确认视频。
+          默认需要视频；视频不走素材搜索，会直接按 OpenRouter 配置生成或给出可替换位置。
+        intro_en: |
+          I recorded the audio choice. Now I need to confirm video.
+          Video is included by default; it is generated from the OpenRouter
+          configuration or represented as a replaceable slot.
         nl_extract: true
         fields:
           - name: include_video
@@ -213,6 +263,8 @@ composition:
             choices: ["YES", "NO"]
             default: "YES"
             prompt: "是否需要视频？"
+            prompt_zh: "是否需要视频？"
+            prompt_en: "Do you want video?"
         cancel_keywords: ["取消", "算了", "cancel", "stop", "abort"]
         timeout_hours: 24
 
@@ -223,11 +275,18 @@ composition:
         mode: chat
         intro: |
           已记录视频选择。最后确认网页整体风格，然后开始研究、规划和素材获取。
+        intro_zh: |
+          已记录视频选择。最后确认网页整体风格，然后开始研究、规划和素材获取。
+        intro_en: |
+          I recorded the video choice. Last, confirm the overall visual style;
+          then I will start research, planning, and asset collection.
         nl_extract: true
         fields:
           - name: visual_style
             type: string
             prompt: "网页整体风格是什么？例如：科技感、纪录片风、极简、儿童科普、商业发布会风。"
+            prompt_zh: "网页整体风格是什么？例如：科技感、纪录片风、极简、儿童科普、商业发布会风。"
+            prompt_en: "What overall style should the webpage use? For example: futuristic, documentary, minimal, kids science, or product launch."
             max_chars: 500
         cancel_keywords: ["取消", "算了", "cancel", "stop", "abort"]
         timeout_hours: 24

@@ -64,6 +64,7 @@ from opensquilla.router_tiers import (
     TEXT_TIERS,
     normalize_text_tier,
 )
+from opensquilla.search.types import DEFAULT_SEARCH_MAX_RESULTS
 from opensquilla.ui import (
     ACCENT,
     ACCENT_DIM,
@@ -224,7 +225,7 @@ def run_noninteractive_search_configure(
         provider_id=provider_id,
         api_key=values.get("api_key", ""),
         api_key_env=values.get("api_key_env", ""),
-        max_results=int(values.get("max_results", 5)),
+        max_results=int(values.get("max_results", DEFAULT_SEARCH_MAX_RESULTS)),
         proxy=values.get("proxy", ""),
         use_env_proxy=bool(values.get("use_env_proxy", False)),
         fallback_policy=values.get("fallback_policy", "off"),
@@ -494,8 +495,11 @@ def _ask_search_fields(questionary, spec) -> dict[str, Any]:
         answers["api_key"] = ""
         answers["api_key_env"] = ""
     max_results = _ask_or_cancel(
-        questionary.text("Max search results", default="5"), section="search"
-    ) or "5"
+        questionary.text(
+            "Max search results", default=str(DEFAULT_SEARCH_MAX_RESULTS)
+        ),
+        section="search",
+    ) or str(DEFAULT_SEARCH_MAX_RESULTS)
     answers["max_results"] = int(max_results)
     answers["proxy"] = _ask_or_cancel(
         questionary.text("Search HTTP proxy", default=""), section="search"

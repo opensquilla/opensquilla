@@ -62,9 +62,18 @@ def register_artifact_routes(
                 status_code=404,
             )
 
+        want_thumbnail = request.query_params.get("variant") == "thumb"
+
         store = ArtifactStore(_media_root_from_config(config))
         try:
             ref, path = store.resolve_for_download(str(artifact_id), session_id=session_id)
+            if want_thumbnail:
+                thumbnail = store.resolve_thumbnail_for_download(
+                    str(artifact_id), session_id=session_id
+                )
+                if thumbnail is not None:
+                    _, thumb_path = thumbnail
+                    return FileResponse(thumb_path, media_type="image/webp")
         except ArtifactIntegrityError as exc:
             return JSONResponse({"error": str(exc), "code": "INTEGRITY_ERROR"}, status_code=409)
         except (ArtifactNotFoundError, ValueError):

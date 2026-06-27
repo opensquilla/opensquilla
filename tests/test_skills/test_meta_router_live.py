@@ -7,11 +7,13 @@ skill + per-language accuracy.
 Maintainer-only; never on the default PR path. Gated by:
 
 * ``@pytest.mark.llm_router_acc`` marker (declared in pyproject).
+* ``OPENSQUILLA_RUN_LLM_ROUTER_ACC=1`` explicit opt-in.
 * ``OPENROUTER_API_KEY`` env var (loaded from ``~/.env`` if present).
 
 Usage::
 
-    uv run pytest tests/test_skills/test_meta_router_live.py -v -s \\
+    OPENSQUILLA_RUN_LLM_ROUTER_ACC=1 \\
+      uv run pytest tests/test_skills/test_meta_router_live.py -v -s \\
       -m llm_router_acc
 
 The harness is **measurement, not gate** — it asserts only that the
@@ -56,6 +58,11 @@ _MODELS = [
 
 # Floor: a model that classifies worse than this is broken, not weak.
 _MIN_TOTAL_ACCURACY = 0.50
+
+pytestmark = pytest.mark.skipif(
+    os.environ.get("OPENSQUILLA_RUN_LLM_ROUTER_ACC") != "1",
+    reason="set OPENSQUILLA_RUN_LLM_ROUTER_ACC=1 to run live router accuracy",
+)
 
 
 def _load_home_env_into_environ() -> None:

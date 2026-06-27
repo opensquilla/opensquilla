@@ -182,7 +182,7 @@ def _make_turn(
         session_key="agent:main:webchat:default",
         config=None,
         provider=None,
-        model="anthropic/claude-opus-4.7",
+        model="anthropic/claude-opus-4.8",
         tool_defs=[],
         system_prompt="you are helpful",
         metadata={

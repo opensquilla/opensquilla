@@ -57,7 +57,8 @@ opensquilla configure provider --provider openrouter --api-key-env OPENROUTER_AP
 opensquilla configure router --router recommended
 opensquilla configure router --router openrouter-mix
 opensquilla configure router --router disabled
-opensquilla configure search --search-provider brave --api-key-env BRAVE_SEARCH_API_KEY
+opensquilla configure search --search-provider duckduckgo
+opensquilla configure search --search-provider tavily --api-key-env TAVILY_API_KEY
 opensquilla configure channels
 opensquilla configure image-generation
 opensquilla configure memory-embedding
@@ -151,11 +152,21 @@ Configure search:
 
 ```sh
 opensquilla configure search --search-provider duckduckgo
+opensquilla configure search --search-provider bocha --api-key-env BOCHA_SEARCH_API_KEY
 opensquilla configure search --search-provider brave --api-key-env BRAVE_SEARCH_API_KEY
+opensquilla configure search --search-provider tavily --api-key-env TAVILY_API_KEY
+opensquilla configure search --search-provider exa --api-key-env EXA_API_KEY
 ```
 
-Runtime-supported search providers in this build include Brave Search and
-DuckDuckGo. Additional provider metadata may be present for future or
+Runtime-supported search providers in this build include DuckDuckGo, Bocha,
+Brave Search, Tavily, and Exa. DuckDuckGo is the no-key path. A partial-key
+setup can configure only one keyed provider; an all-key setup can expose
+`BOCHA_SEARCH_API_KEY`, `BRAVE_SEARCH_API_KEY`, `TAVILY_API_KEY`, and
+`EXA_API_KEY` so runtime provider selection can choose by mode and capability
+unless a request names an explicit provider. `search_provider` is the credential
+anchor for `search_api_key` and `search_api_key_env`; it is not a hard routing
+promise for automatic searches.
+Additional provider metadata may be present for future or
 not-yet-runtime-supported integrations.
 
 Read: [`search.md`](search.md)
@@ -236,6 +247,27 @@ opensquilla agent \
 ```
 
 Read: [`tools-and-sandbox.md`](tools-and-sandbox.md)
+
+## Outbound URL Filtering And Fake-IP DNS
+
+URL-fetching tools validate resolved addresses through the shared SSRF guard in
+`opensquilla.tools.ssrf`. Private, loopback, link-local, and reserved ranges are
+blocked by default.
+
+Some trusted proxy or fake-IP DNS setups resolve public hostnames such as
+`github.com` to addresses in the RFC 2544 benchmark range `198.18.0.0/15`.
+OpenSquilla keeps blocking those addresses unless the operator explicitly opts
+in:
+
+```toml
+[tools]
+trusted_fake_ip_cidrs = ["198.18.0.0/15"]
+```
+
+Only subnets of `198.18.0.0/15` are accepted in this setting. Loopback, RFC
+1918 private ranges, link-local addresses, and other internal ranges remain
+hard-blocked even if configured. If a public hostname resolves to one of those
+hard-blocked ranges, fix the DNS or proxy setup instead of bypassing the guard.
 
 ## Gateway Binding
 

@@ -14,6 +14,7 @@ from opensquilla.skills.eligibility import (
     EligibilityContext,
     EligibilityReport,
     diagnose_eligibility,
+    is_skill_available_live,
 )
 from opensquilla.skills.hub.defaults import (
     build_default_skill_installer,
@@ -229,6 +230,10 @@ def _skill_to_dict(
                                 seen.add(rsub)
                                 sub_skills.append(rsub)
 
+    # Coding-mode-gated sub-skills (code-task when OFF) are not surfaced in a
+    # meta-skill's composition rollup either (codex review — every skill API).
+    sub_skills = [name for name in sub_skills if is_skill_available_live(name)]
+
     d: dict[str, Any] = {
         "name": spec.name,
         "description": spec.description,
@@ -285,7 +290,10 @@ async def _handle_skills_status(params: dict | None, ctx: RpcContext) -> list[di
         return []
 
     ctx_eligible = EligibilityContext.auto()
-    skills = loader.load_all()
+    # Operator gate: skills governed by the coding-mode toggle (code-task) are
+    # hidden from the skill manager when the toggle is OFF — unreachable through
+    # every skill API, not just the agent prompt (codex review).
+    skills = [s for s in loader.load_all() if is_skill_available_live(s.name)]
     skill_index = {skill.name: skill for skill in skills}
     return [
         _skill_to_dict(
@@ -310,7 +318,12 @@ async def _handle_skills_list(params: dict | None, ctx: RpcContext) -> dict[str,
     ctx_eligible = EligibilityContext.auto()
     all_skills = loader.load_all()
     skill_index = {skill.name: skill for skill in all_skills}
-    skills = [skill for skill in all_skills if skill.user_invocable]
+    # Operator gate: coding-mode-gated skills (code-task when OFF) stay out.
+    skills = [
+        skill
+        for skill in all_skills
+        if skill.user_invocable and is_skill_available_live(skill.name)
+    ]
     return {
         "skills": [
             _skill_to_dict(
@@ -361,7 +374,9 @@ async def _handle_skills_get(params: dict | None, ctx: RpcContext) -> dict[str, 
     skills = loader.load_all()
     skill_index = {item.name: item for item in skills}
     skill = skill_index.get(params["name"])
-    if skill is None:
+    if skill is None or not is_skill_available_live(params["name"]):
+        # Gated coding-mode skills are reported as not-found so their content is
+        # never returned while the toggle is OFF (codex review).
         raise KeyError(f"Skill not found: {params['name']}")
 
     ctx_eligible = EligibilityContext.auto()
@@ -549,7 +564,9 @@ async def _handle_skills_deps_install(params: dict | None, ctx: RpcContext) -> d
     if loader is None:
         raise KeyError("No skill loader available")
     skill = loader.get_by_name(name)
-    if skill is None:
+    if skill is None or not is_skill_available_live(name):
+        # Coding-mode-gated skills are reported as not-found so they cannot be
+        # resolved or have deps installed while the toggle is OFF (codex review).
         raise KeyError(f"Skill not found: {name}")
 
     specs = skill.metadata.install if skill.metadata else []

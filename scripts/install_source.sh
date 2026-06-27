@@ -182,13 +182,26 @@ installer=""
 install_args=()
 if command -v uv >/dev/null 2>&1; then
     installer="uv"
-    install_args=(uv tool install --force --reinstall-package opensquilla "${install_target}")
-elif command -v python3 >/dev/null 2>&1; then
+    install_args=(uv tool install --python 3.12 --force --reinstall-package opensquilla "${install_target}")
+elif command -v python3 >/dev/null 2>&1 \
+    && python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)'; then
     installer="pip"
     install_args=(python3 -m pip install --user "${install_target}")
 else
-    echo "install_source.sh: neither 'uv' nor 'python3' is available on PATH." >&2
-    echo "install_source.sh: install uv (https://docs.astral.sh/uv/) or Python 3.12+ and retry." >&2
+    # No uv, and the ambient python3 is missing or older than 3.12. Do NOT
+    # silently pip-install onto an unsupported interpreter: that leaves a
+    # broken `opensquilla` on PATH and makes coding mode fall back to manual
+    # edits. Fail loud and point at uv, which provisions its own 3.12.
+    if command -v python3 >/dev/null 2>&1; then
+        _ambient_py="$(python3 -V 2>&1)"
+    else
+        _ambient_py="none"
+    fi
+    echo "install_source.sh: cannot install - uv not found and python3 (${_ambient_py}) is older than 3.12." >&2
+    echo "install_source.sh: OpenSquilla requires Python >= 3.12 (pyproject 'requires-python')." >&2
+    echo "install_source.sh: easiest fix - install uv; it brings its own 3.12, no system Python needed:" >&2
+    echo "install_source.sh:   curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
+    echo "install_source.sh: then re-run: bash scripts/install_source.sh" >&2
     exit 1
 fi
 install_cmd="${install_args[*]}"
@@ -221,6 +234,34 @@ WARNING: you have selected network-exposed default - ensure you
 WARNING
 }
 
+verify_install() {
+    # Catch a broken/partial install now, not mid-task. A non-runnable
+    # code-task is exactly what makes coding mode silently degrade.
+    # Prefer the JUST-installed binary over any stale `opensquilla` earlier
+    # on PATH (uv tool / pip --user land outside the default PATH).
+    local bin=""
+    if [[ "${installer}" == "uv" ]]; then
+        local uv_bin
+        uv_bin="$(uv tool dir --bin 2>/dev/null || true)"
+        [[ -n "${uv_bin}" && -x "${uv_bin}/opensquilla" ]] && bin="${uv_bin}/opensquilla"
+    fi
+    if [[ -z "${bin}" && -x "${HOME}/.local/bin/opensquilla" ]]; then
+        bin="${HOME}/.local/bin/opensquilla"
+    fi
+    if [[ -z "${bin}" ]] && command -v opensquilla >/dev/null 2>&1; then
+        bin="opensquilla"
+    fi
+    # Coding mode requires `opensquilla code-task`, so verify THAT, not just --version.
+    if [[ -n "${bin}" ]] && "${bin}" code-task --help >/dev/null 2>&1; then
+        echo "install_source.sh: verified - 'opensquilla code-task' is runnable"
+    else
+        echo "install_source.sh: WARNING - 'opensquilla code-task' is not runnable yet." >&2
+        echo "install_source.sh: run 'uv tool update-shell' (or open a new shell), then: opensquilla code-task --help" >&2
+    fi
+    command -v git  >/dev/null 2>&1 || echo "install_source.sh: WARNING - 'git' not found; code-task cannot clone repositories without it." >&2
+    command -v node >/dev/null 2>&1 || echo "install_source.sh: note - 'node' not found (only needed for code-task build-mode apps)." >&2
+}
+
 if [[ "${dry_run}" = "1" ]]; then
     echo "install_source.sh: dry-run — would run: ${install_cmd}"
     echo "install_source.sh: dry-run — prefix: ${prefix}"
@@ -239,6 +280,8 @@ check_squilla_router_assets
 echo "install_source.sh: installing via ${installer} into prefix ${prefix}"
 echo "install_source.sh: running: ${install_cmd}"
 "${install_args[@]}"
+
+verify_install
 
 print_banner
 if [[ "${OPENSQUILLA_LISTEN:-}" = "0.0.0.0" ]]; then

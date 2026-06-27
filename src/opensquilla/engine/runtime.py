@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import concurrent.futures
 import contextlib
 import contextvars
 import copy
@@ -25,12 +26,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Final, Literal, SupportsInt, TypeGuard, cast
+from urllib.parse import urlsplit
 
 import structlog
 
 from opensquilla.artifacts import artifact_marker
 from opensquilla.attachment_refs import (
     is_attachment_ref,
+    make_attachment_ref,
     read_attachment_ref_bytes,
     transcript_material_path,
 )
@@ -39,15 +42,37 @@ from opensquilla.contracts.attachments import (
     ALLOWED_MEDIA_TYPES as _ALLOWED_ENGINE_MEDIA_TYPES,
 )
 from opensquilla.contracts.attachments import (
+    DOCX_MIME as _DOCX_MIME,
+)
+from opensquilla.contracts.attachments import (
+    EMAIL_ATTACHMENT_MIMES as _EMAIL_ATTACHMENT_MIMES,
+)
+from opensquilla.contracts.attachments import (
     MAX_ATTACHMENTS as _MAX_ATTACHMENT_COUNT,
+)
+from opensquilla.contracts.attachments import (
+    MBOX_MIME as _MBOX_MIME,
+)
+from opensquilla.contracts.attachments import (
+    MSG_MIME as _MSG_MIME,
+)
+from opensquilla.contracts.attachments import (
+    OFFICE_ATTACHMENT_MIMES as _OFFICE_ATTACHMENT_MIMES,
+)
+from opensquilla.contracts.attachments import (
+    PPTX_MIME as _PPTX_MIME,
 )
 from opensquilla.contracts.attachments import (
     TEXT_ATTACHMENT_MIMES as _ENGINE_TEXT_FAMILY_MIMES,
 )
 from opensquilla.contracts.attachments import (
+    XLSX_MIME as _XLSX_MIME,
+)
+from opensquilla.contracts.attachments import (
     attachment_size_limit_for_mime as _attachment_size_limit_for_mime,
 )
 from opensquilla.engine.agent import Agent, ToolHandler
+from opensquilla.engine.agent_injection import PendingInputProvider
 from opensquilla.engine.cache_break_monitor import notify_compaction
 from opensquilla.engine.hooks import (
     CompactionHook,
@@ -131,6 +156,7 @@ from opensquilla.observability.decision_log import (
     PipelineStepRecord,
     SavingsTelemetry,
     build_intent_summary,
+    build_vision_followup_gate_reason_code,
     compute_hashes,
     write_decision_entry,
 )
@@ -292,6 +318,7 @@ _SAFE_TOOL_NAMES: frozenset[str] = frozenset(
         "skill_search_community",
         "skill_view",
         "tts",
+        "web_discover",
         "web_fetch",
         "web_search",
     }
@@ -627,6 +654,7 @@ def _prepend_request_context_prompt(
 
 _MAX_TOOL_RESULT_CHARS = 2000
 _MAX_TOOL_RESULT_METADATA_VALUE_CHARS = 256
+_MAX_PERSISTED_TOOL_SOURCES = 12
 _MAX_PERSISTED_TOOL_ARGUMENT_FIELD_CHARS = 4096
 _PERSISTED_TOOL_ARGUMENT_PREVIEW_CHARS = 512
 _PERSISTED_TOOL_ARGUMENT_PROJECTION_PREFIX = "[historical_tool_argument_omitted]\n"
@@ -636,12 +664,23 @@ _TOOL_ARGUMENT_PAYLOAD_FIELDS: Final[dict[str, frozenset[str]]] = {
 }
 _TOOL_RESULT_METADATA_KEYS: Final[frozenset[str]] = frozenset(
     {
+        "budget_clamped",
+        "cache_status",
+        "domain_limited_count",
+        "duplicate_count",
         "provider",
         "query",
         "fallback_from",
+        "fetch_failed_count",
+        "fetched_count",
         "error",
         "error_class",
         "error_kind",
+        "mode",
+        "recency_degraded",
+        "recency_supported",
+        "returned_chars",
+        "selected_provider",
     }
 )
 _SENTINELS: Final[frozenset[str]] = frozenset({"NO_REPLY", "HEARTBEAT_OK"})
@@ -709,15 +748,41 @@ def _bounded_tool_result_metadata(
     for key in _TOOL_RESULT_METADATA_KEYS:
         if key not in parsed:
             continue
-        value = parsed[key]
-        if isinstance(value, str):
-            metadata[key] = _truncate_json_string(
-                value,
-                _MAX_TOOL_RESULT_METADATA_VALUE_CHARS,
-            )
-        elif isinstance(value, int | float | bool) or value is None:
-            metadata[key] = value
+        _add_bounded_tool_result_metadata(metadata, key, parsed[key])
+
+    diagnostics = parsed.get("diagnostics")
+    if isinstance(diagnostics, Mapping):
+        for key in _TOOL_RESULT_METADATA_KEYS:
+            if key not in diagnostics or key in metadata:
+                continue
+            _add_bounded_tool_result_metadata(metadata, key, diagnostics[key])
+
+        diagnostic_attempts = diagnostics.get("provider_attempts")
+        if (
+            "provider_attempt_count" not in metadata
+            and isinstance(diagnostic_attempts, list | tuple)
+        ):
+            metadata["provider_attempt_count"] = len(diagnostic_attempts)
+
+    attempts = parsed.get("provider_attempts")
+    if isinstance(attempts, list | tuple):
+        metadata["provider_attempt_count"] = len(attempts)
+
     return metadata
+
+
+def _add_bounded_tool_result_metadata(
+    metadata: dict[str, str | int | float | bool | None],
+    key: str,
+    value: Any,
+) -> None:
+    if isinstance(value, str):
+        metadata[key] = _truncate_json_string(
+            value,
+            _MAX_TOOL_RESULT_METADATA_VALUE_CHARS,
+        )
+    elif isinstance(value, int | float | bool) or value is None:
+        metadata[key] = value
 
 
 def _json_tool_result_preview(parsed: Any, original_chars: int, max_chars: int) -> str:
@@ -758,6 +823,90 @@ def _json_tool_result_preview(parsed: Any, original_chars: int, max_chars: int) 
     if len(rendered) <= max_chars:
         return rendered
     return json.dumps({"result_truncated": True}, ensure_ascii=False)
+
+
+def _persisted_web_search_sources(parsed: Any) -> list[dict[str, Any]]:
+    if not isinstance(parsed, Mapping):
+        return []
+    candidates = parsed.get("sources")
+    if not isinstance(candidates, list | tuple):
+        candidates = parsed.get("results")
+    if not isinstance(candidates, list | tuple):
+        return []
+
+    sources: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        source = _persisted_web_search_source(candidate)
+        if source is None:
+            continue
+        key = str(source.get("url") or "").split("#", 1)[0]
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        sources.append(source)
+        if len(sources) >= _MAX_PERSISTED_TOOL_SOURCES:
+            break
+    return sources
+
+
+def _persisted_web_search_source(candidate: Any) -> dict[str, Any] | None:
+    if not isinstance(candidate, Mapping):
+        return None
+    url = _persisted_source_url(candidate.get("url") or candidate.get("final_url"))
+    if url is None:
+        return None
+
+    source: dict[str, Any] = {"url": url}
+    canonical_url = _persisted_source_url(candidate.get("canonical_url"))
+    if canonical_url is not None:
+        source["canonical_url"] = canonical_url
+    title = _persisted_source_text(candidate.get("title"), max_chars=256)
+    if title:
+        source["title"] = title
+    domain = _persisted_source_text(candidate.get("domain"), max_chars=128)
+    if not domain:
+        domain = _domain_from_source_url(url)
+    if domain:
+        source["domain"] = domain
+    provider = _persisted_source_text(candidate.get("provider"), max_chars=64)
+    if provider:
+        source["provider"] = provider
+    rank = candidate.get("rank")
+    if isinstance(rank, int):
+        source["rank"] = rank
+    fetched = candidate.get("fetched")
+    if isinstance(fetched, bool):
+        source["fetched"] = fetched
+    return source
+
+
+def _persisted_source_url(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    url = value.strip()
+    if not url or url.endswith("…"):
+        return None
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return None
+    if parts.scheme not in {"http", "https"} or not parts.netloc:
+        return None
+    return url
+
+
+def _persisted_source_text(value: Any, *, max_chars: int) -> str:
+    if not isinstance(value, str):
+        return ""
+    return _truncate_json_string(value.strip(), max_chars)
+
+
+def _domain_from_source_url(url: str) -> str:
+    try:
+        return urlsplit(url).hostname or ""
+    except ValueError:
+        return ""
 
 
 def _tool_argument_text(value: Any) -> str:
@@ -846,6 +995,17 @@ def _persisted_tool_result_segment(
     }
     if event.execution_status is not None:
         segment["execution_status"] = normalize_execution_status(event.execution_status)
+
+    parsed_result: Any = None
+    parsed_result_available = False
+    if event.tool_name == "web_search" or len(result) > max_chars:
+        with contextlib.suppress(json.JSONDecodeError, TypeError):
+            parsed_result = json.loads(result)
+            parsed_result_available = True
+    if event.tool_name == "web_search" and parsed_result_available:
+        sources = _persisted_web_search_sources(parsed_result)
+        if sources:
+            segment["sources"] = sources
     if len(result) <= max_chars:
         return segment
 
@@ -853,14 +1013,16 @@ def _persisted_tool_result_segment(
     segment["result_original_chars"] = len(result)
     if "execution_status" in segment:
         segment["execution_status"] = mark_execution_status_truncated(segment["execution_status"])
-    try:
-        parsed = json.loads(result)
-    except (json.JSONDecodeError, TypeError):
+    if not parsed_result_available:
         segment["result"] = result[:max_chars]
         return segment
 
+    parsed = parsed_result
     if isinstance(parsed, dict):
         segment.update(_bounded_tool_result_metadata(parsed))
+        sources = _persisted_web_search_sources(parsed)
+        if sources:
+            segment["sources"] = sources
     segment["result"] = _json_tool_result_preview(parsed, len(result), max_chars)
     return segment
 
@@ -1302,6 +1464,321 @@ def _extract_pdf_attachment_text(raw_bytes: bytes, filename: str) -> str:
     return _truncate_attachment_text(extracted)
 
 
+# Office documents are zip containers. Guard against decompression bombs by
+# rejecting archives whose declared uncompressed payload is implausibly large
+# before handing the bytes to a parser.
+_OFFICE_DECOMPRESSED_LIMIT = 200 * 1024 * 1024
+_XLSX_MAX_ROWS_PER_SHEET = 1000
+_XLSX_MAX_COLS = 64
+
+
+def _office_zip_guard(raw_bytes: bytes, filename: str) -> None:
+    # Measure the *actual* inflated size by streaming each member, not the
+    # central-directory ``file_size`` (which the uploader controls and can lie
+    # about). Reads in bounded chunks and aborts as soon as the running total
+    # crosses the limit, so a decompression bomb never inflates past the cap.
+    import io
+    import zipfile
+
+    chunk_size = 1024 * 1024
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw_bytes)) as archive:
+            total = 0
+            for info in archive.infolist():
+                with archive.open(info) as member:
+                    while True:
+                        block = member.read(chunk_size)
+                        if not block:
+                            break
+                        total += len(block)
+                        if total > _OFFICE_DECOMPRESSED_LIMIT:
+                            raise ValueError(
+                                f"office attachment {filename!r} decompresses beyond "
+                                f"the {_OFFICE_DECOMPRESSED_LIMIT} byte safety limit"
+                            )
+    except ValueError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - zipfile raises several error types
+        raise ValueError(
+            f"office attachment {filename!r} is not a readable OOXML container: {exc}"
+        ) from exc
+
+
+def _extract_docx_text(raw_bytes: bytes) -> str:
+    import io
+
+    from docx import Document
+
+    document = Document(io.BytesIO(raw_bytes))
+    parts: list[str] = []
+    for paragraph in document.paragraphs:
+        text = paragraph.text.strip()
+        if text:
+            parts.append(text)
+    for table in document.tables:
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells]
+            if any(cells):
+                parts.append(" | ".join(cells))
+    return "\n".join(parts).strip()
+
+
+def _extract_xlsx_text(raw_bytes: bytes) -> str:
+    import io
+
+    from openpyxl import load_workbook  # type: ignore[import-untyped]
+
+    workbook = load_workbook(io.BytesIO(raw_bytes), read_only=True, data_only=True)
+    try:
+        sheet_blocks: list[str] = []
+        for sheet in workbook.worksheets:
+            rows: list[str] = []
+            for row_index, row in enumerate(sheet.iter_rows(values_only=True)):
+                if row_index >= _XLSX_MAX_ROWS_PER_SHEET:
+                    rows.append(f"[sheet truncated at {_XLSX_MAX_ROWS_PER_SHEET} rows]")
+                    break
+                cells = [
+                    "" if value is None else str(value)
+                    for value in row[:_XLSX_MAX_COLS]
+                ]
+                if any(cells):
+                    rows.append(",".join(cells))
+            if rows:
+                sheet_blocks.append(f"=== Sheet: {sheet.title} ===\n" + "\n".join(rows))
+        return "\n\n".join(sheet_blocks).strip()
+    finally:
+        workbook.close()
+
+
+def _extract_pptx_text(raw_bytes: bytes) -> str:
+    import io
+
+    from pptx import Presentation
+
+    presentation = Presentation(io.BytesIO(raw_bytes))
+    slide_blocks: list[str] = []
+    for index, slide in enumerate(presentation.slides, start=1):
+        lines: list[str] = []
+        for shape in slide.shapes:
+            if not getattr(shape, "has_text_frame", False):
+                continue
+            for paragraph in shape.text_frame.paragraphs:
+                text = "".join(run.text for run in paragraph.runs).strip()
+                if text:
+                    lines.append(text)
+        notes = ""
+        if slide.has_notes_slide:
+            notes_frame = slide.notes_slide.notes_text_frame
+            if notes_frame is not None:
+                notes = notes_frame.text.strip()
+        block = f"--- Slide {index} ---"
+        if lines:
+            block += "\n" + "\n".join(lines)
+        if notes:
+            block += f"\n[Notes]\n{notes}"
+        slide_blocks.append(block)
+    return "\n\n".join(slide_blocks).strip()
+
+
+_OFFICE_EXTRACTORS: dict[str, Callable[[bytes], str]] = {
+    _DOCX_MIME: _extract_docx_text,
+    _XLSX_MIME: _extract_xlsx_text,
+    _PPTX_MIME: _extract_pptx_text,
+}
+
+
+def _extract_office_attachment_text(
+    raw_bytes: bytes, filename: str, media_type: str
+) -> str:
+    """Extract text from an OOXML office attachment before it reaches any provider.
+
+    docx/xlsx/pptx are zip containers that no provider adapter can encode, so they
+    are converted to bounded plain-text context, mirroring the PDF path.
+    """
+
+    extractor = _OFFICE_EXTRACTORS.get(media_type)
+    if extractor is None:  # pragma: no cover - guarded by the allow-list
+        raise ValueError(f"unsupported office media type {media_type!r}")
+    _office_zip_guard(raw_bytes, filename)
+    try:
+        extracted = extractor(raw_bytes).strip()
+    except ValueError:
+        raise
+    except ImportError as exc:  # pragma: no cover - dependency is declared
+        raise ValueError(
+            f"office text extraction requires a missing dependency: {exc}"
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 - parsers raise many error types
+        raise ValueError(
+            f"office attachment {filename!r} could not be read: {exc}"
+        ) from exc
+    if not extracted:
+        raise ValueError(f"office attachment {filename!r} has no extractable text")
+    return _truncate_attachment_text(extracted)
+
+
+_EMAIL_MAX_MESSAGES = 50
+
+
+def _strip_html_to_text(html: str) -> str:
+    """Conservative HTML -> text for email bodies.
+
+    Drops script/style/head blocks entirely (no execution, no leakage), turns
+    block tags into newlines, strips remaining tags, and unescapes entities.
+    """
+
+    import html as _html_mod
+    import re
+
+    cleaned = re.sub(r"(?is)<(script|style|head)\b.*?</\1>", " ", html)
+    cleaned = re.sub(r"(?i)<\s*(br|/p|/div|/tr|/li|/h[1-6])\s*>", "\n", cleaned)
+    cleaned = re.sub(r"(?s)<[^>]+>", " ", cleaned)
+    cleaned = _html_mod.unescape(cleaned)
+    lines = [line.strip() for line in cleaned.splitlines()]
+    return "\n".join(line for line in lines if line)
+
+
+def _render_one_email(message: Any) -> str:
+    headers: list[str] = []
+    for label in ("From", "To", "Cc", "Subject", "Date"):
+        value = message.get(label)
+        if value:
+            headers.append(f"{label}: {value}")
+
+    body_text = ""
+    try:
+        body_part = message.get_body(preferencelist=("plain", "html"))
+    except Exception:  # noqa: BLE001 - defensive against malformed parts
+        body_part = None
+    if body_part is not None:
+        try:
+            content = body_part.get_content()
+        except Exception:  # noqa: BLE001
+            content = ""
+        if not isinstance(content, str):
+            content = ""
+        if body_part.get_content_type() == "text/html":
+            body_text = _strip_html_to_text(content)
+        else:
+            body_text = content
+
+    attachment_lines: list[str] = []
+    try:
+        for part in message.iter_attachments():
+            name = part.get_filename() or "(unnamed)"
+            attachment_lines.append(f"  - {name} ({part.get_content_type()})")
+    except Exception:  # noqa: BLE001
+        pass
+
+    rendered = "\n".join(headers)
+    if body_text.strip():
+        rendered += "\n\n" + body_text.strip()
+    if attachment_lines:
+        rendered += "\n\n[attachments]\n" + "\n".join(attachment_lines)
+    return rendered.strip()
+
+
+def _extract_email_text(raw_bytes: bytes, media_type: str) -> str:
+    import email
+    import re
+    from email import policy
+
+    # Trust the resolved media type: the gateway sniffer/guard already settle
+    # eml-vs-mbox, so a .eml whose body happens to start with "From " is not
+    # mis-routed through the mbox splitter.
+    is_mbox = media_type == _MBOX_MIME
+    if is_mbox:
+        chunks = re.split(rb"(?m)^From .*\n", raw_bytes)
+        messages = [chunk for chunk in chunks if chunk.strip()][:_EMAIL_MAX_MESSAGES]
+        rendered: list[str] = []
+        for index, chunk in enumerate(messages, start=1):
+            message = email.message_from_bytes(chunk, policy=policy.default)
+            rendered.append(f"--- Message {index} ---\n{_render_one_email(message)}")
+        return "\n\n".join(rendered).strip()
+
+    message = email.message_from_bytes(raw_bytes, policy=policy.default)
+    return _render_one_email(message)
+
+
+def _extract_msg_text(raw_bytes: bytes) -> str:
+    import io
+
+    try:
+        import extract_msg
+    except ImportError as exc:
+        raise ValueError(
+            "Outlook .msg extraction requires the optional 'extract-msg' package "
+            "(install opensquilla[msg])"
+        ) from exc
+
+    message = extract_msg.openMsg(io.BytesIO(raw_bytes))
+    try:
+        headers: list[str] = []
+        for label, value in (
+            ("From", getattr(message, "sender", None)),
+            ("To", getattr(message, "to", None)),
+            ("Cc", getattr(message, "cc", None)),
+            ("Subject", getattr(message, "subject", None)),
+            ("Date", getattr(message, "date", None)),
+        ):
+            if value:
+                headers.append(f"{label}: {value}")
+
+        body = getattr(message, "body", None) or ""
+        if not body:
+            html_body = getattr(message, "htmlBody", None)
+            if isinstance(html_body, bytes):
+                html_body = html_body.decode("utf-8", "replace")
+            if isinstance(html_body, str) and html_body:
+                body = _strip_html_to_text(html_body)
+
+        attachment_lines: list[str] = []
+        for part in getattr(message, "attachments", None) or []:
+            name = (
+                getattr(part, "longFilename", None)
+                or getattr(part, "shortFilename", None)
+                or "(unnamed)"
+            )
+            attachment_lines.append(f"  - {name}")
+    finally:
+        try:
+            message.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    rendered = "\n".join(headers)
+    if isinstance(body, str) and body.strip():
+        rendered += "\n\n" + body.strip()
+    if attachment_lines:
+        rendered += "\n\n[attachments]\n" + "\n".join(attachment_lines)
+    return rendered.strip()
+
+
+def _extract_email_attachment_text(
+    raw_bytes: bytes, filename: str, media_type: str
+) -> str:
+    """Extract text from an email attachment.
+
+    .eml/.mbox use the stdlib email/mailbox parsers (zero dependency); .msg uses
+    the optional extract-msg package and degrades gracefully if it is absent.
+    """
+
+    try:
+        if media_type == _MSG_MIME:
+            extracted = _extract_msg_text(raw_bytes).strip()
+        else:
+            extracted = _extract_email_text(raw_bytes, media_type).strip()
+    except ValueError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - email parsers raise many error types
+        raise ValueError(
+            f"email attachment {filename!r} could not be read: {exc}"
+        ) from exc
+    if not extracted:
+        raise ValueError(f"email attachment {filename!r} has no extractable text")
+    return _truncate_attachment_text(extracted)
+
+
 # Strong past-tense / perfect-aspect phrases that signal the model is claiming
 # to have produced an image. Only checked when ``image_generate`` is available
 # and was not invoked. Future-tense ("I'll draw…", "给你画…") is intentionally
@@ -1723,6 +2200,16 @@ class TurnRunner:
         kind = input_provenance.get("kind")
         return str(kind) if kind is not None and str(kind) else None
 
+    @staticmethod
+    def _normalize_input_provenance(
+        input_provenance: dict[str, Any] | str | None,
+    ) -> dict[str, Any] | None:
+        if isinstance(input_provenance, dict):
+            return dict(input_provenance)
+        if input_provenance:
+            return {"kind": str(input_provenance)}
+        return None
+
     @classmethod
     def _turn_memory_capture_allowed(
         cls,
@@ -1815,7 +2302,7 @@ class TurnRunner:
         length_capped_continuations: int | None = None,
         input_mode: str = "user",
         persist_input: bool = False,
-        input_provenance: dict[str, Any] | None = None,
+        input_provenance: dict[str, Any] | str | None = None,
         history_has_persisted_user: bool = True,
         fresh_user_session: bool | None = None,
         session_intent: str | None = None,
@@ -1826,6 +2313,8 @@ class TurnRunner:
         no_memory_capture: bool = False,
         ingress_pipeline_steps: list[PipelineStepRecord] | None = None,
         router_control_replay_depth: int = 0,
+        *,
+        pending_input_provider: PendingInputProvider | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Run one agent turn with full orchestration.
 
@@ -1840,6 +2329,7 @@ class TurnRunner:
         """
         session_key = canonicalize_session_key(session_key)
         agent_id = normalize_agent_id(agent_id)
+        normalized_input_provenance = self._normalize_input_provenance(input_provenance)
         lock = self.get_session_lock(session_key)
         effective_tool_context = replace(
             tool_context,
@@ -1877,11 +2367,12 @@ class TurnRunner:
                     length_capped_continuations=length_capped_continuations,
                     input_mode=input_mode,
                     persist_input=persist_input,
-                    input_provenance=input_provenance,
+                    input_provenance=normalized_input_provenance,
                     history_has_persisted_user=history_has_persisted_user,
                     fresh_user_session=fresh_user_session,
                     session_intent=session_intent,
                     semantic_message=semantic_message,
+                    pending_input_provider=pending_input_provider,
                     run_kind=run_kind,
                     heartbeat_ack_max_chars=heartbeat_ack_max_chars,
                     bootstrap_context_mode=bootstrap_context_mode,
@@ -1917,11 +2408,12 @@ class TurnRunner:
                         length_capped_continuations=length_capped_continuations,
                         input_mode=input_mode,
                         persist_input=persist_input,
-                        input_provenance=input_provenance,
+                        input_provenance=normalized_input_provenance,
                         history_has_persisted_user=history_has_persisted_user,
                         fresh_user_session=fresh_user_session,
                         session_intent=session_intent,
                         semantic_message=semantic_message,
+                        pending_input_provider=pending_input_provider,
                         run_kind=run_kind,
                         heartbeat_ack_max_chars=heartbeat_ack_max_chars,
                         bootstrap_context_mode=bootstrap_context_mode,
@@ -1962,6 +2454,8 @@ class TurnRunner:
         no_memory_capture: bool = False,
         ingress_pipeline_steps: list[PipelineStepRecord] | None = None,
         router_control_replay_depth: int = 0,
+        *,
+        pending_input_provider: PendingInputProvider | None = None,
     ) -> AsyncIterator[AgentEvent]:
         # Observability: bracket turn setup + stream loop with monotonic clock
         # so latency_ms reflects the full turn.
@@ -2087,6 +2581,7 @@ class TurnRunner:
                     ),
                     ingress_pipeline_steps=ingress_pipeline_steps,
                     normalization_metadata=normalization_metadata,
+                    input_provenance=input_provenance,
                 )
             )
             pa_out = pa_outcome.require_output()
@@ -2275,6 +2770,7 @@ class TurnRunner:
                 session_manager_present=self._session_manager is not None,
                 state=stream_state,
                 tool_context=tool_context,
+                pending_input_provider=pending_input_provider,
             )
             router_control_replay_event: RouterControlReplayEvent | None = None
             async for event in self._stream_consumer_stage.run(stream_inp):
@@ -2305,6 +2801,7 @@ class TurnRunner:
                     fresh_user_session=False,
                     session_intent=session_intent,
                     semantic_message=semantic_message,
+                    pending_input_provider=pending_input_provider,
                     run_kind=run_kind,
                     heartbeat_ack_max_chars=heartbeat_ack_max_chars,
                     bootstrap_context_mode=bootstrap_context_mode,
@@ -2892,6 +3389,24 @@ class TurnRunner:
         session_key: str,
         explicit: float | None = None,
     ) -> float:
+        """Per-iteration timeout, with a coding-mode floor.
+
+        A coding-mode turn delegates to code-task and then blocks in a single
+        long ``process(action="wait")`` (code-task can run ~90 min). The
+        per-iteration watchdog must not clamp that wait, so floor the timeout
+        at 5400s while coding mode is on.
+        """
+        value = self._resolve_agent_iteration_timeout_base(session_key, explicit)
+        skills_cfg = getattr(self._config, "skills", None)
+        if bool(getattr(skills_cfg, "coding_mode", False)) and value < 5400.0:
+            return 5400.0
+        return value
+
+    def _resolve_agent_iteration_timeout_base(
+        self,
+        session_key: str,
+        explicit: float | None = None,
+    ) -> float:
         """Resolve per-iteration timeout for this turn.
 
         Precedence: explicit arg > session config > env > gateway config > default.
@@ -3176,7 +3691,10 @@ class TurnRunner:
         """Build tool definitions and handler from registry, filtered by ToolContext."""
         if self._tool_registry is None:
             return [], None
-        from opensquilla.skills.meta.enabled import is_meta_skill_enabled
+        from opensquilla.skills.meta.enabled import (
+            is_meta_auto_trigger_enabled,
+            is_meta_skill_enabled,
+        )
         from opensquilla.tools.dispatch import build_tool_handler
         from opensquilla.tools.policy import apply_tool_policy_from_config
         from opensquilla.tools.registry import filter_by_profile, resolve_profile
@@ -3188,13 +3706,14 @@ class TurnRunner:
             except Exception:
                 loaded_skills = []
         meta_skill_enabled = is_meta_skill_enabled(self._config)
+        meta_auto_trigger = is_meta_auto_trigger_enabled(self._config)
         has_invokable_meta_skill = any(
             getattr(skill, "kind", "skill") == "meta"
             and not getattr(skill, "disable_model_invocation", False)
             for skill in loaded_skills
         )
         if ctx is not None:
-            if meta_skill_enabled and has_invokable_meta_skill:
+            if meta_skill_enabled and meta_auto_trigger and has_invokable_meta_skill:
                 if ctx.surfaced_tools is None:
                     ctx.surfaced_tools = set()
                 ctx.surfaced_tools.add("meta_invoke")
@@ -3219,6 +3738,17 @@ class TurnRunner:
                     hard_denied=None,
                 )
             ctx = self._apply_runtime_capability_denies(ctx)
+            # Coding mode (operator toggle ON): deny in-session write tools
+            # so all code changes are forced through the code-task plugin
+            # rather than the agent hand-editing files. Enforced at tool
+            # build + dispatch (ctx.denied_tools is honored by dispatch).
+            from opensquilla.tools.policy_config import coding_mode_denied_tools
+
+            _skills_cfg = getattr(self._config, "skills", None)
+            ctx.denied_tools.update(
+                coding_mode_denied_tools(bool(getattr(_skills_cfg, "coding_mode", False)))
+            )
+            ctx.coding_mode = bool(getattr(_skills_cfg, "coding_mode", False))
             log.debug(
                 "tool_policy.policy_pre",
                 allowed_tool_count=len(self._tool_registry.to_tool_definitions(ctx)),
@@ -3247,7 +3777,7 @@ class TurnRunner:
             for skill in loaded_skills
             if not getattr(skill, "disable_model_invocation", False)
             and (
-                meta_skill_enabled
+                (meta_skill_enabled and meta_auto_trigger)
                 or getattr(skill, "kind", "skill") != "meta"
             )
         }
@@ -3710,6 +4240,56 @@ class TurnRunner:
             session_key=session_key,
         )
 
+    def _resolve_vision_followup_gate_model(self) -> str | None:
+        router_cfg = getattr(self._config, "squilla_router", None)
+        if router_cfg is None:
+            return None
+        configured_model = str(
+            getattr(router_cfg, "vision_followup_gate_model", "") or ""
+        ).strip()
+        if configured_model:
+            return configured_model
+        tier_name = str(getattr(router_cfg, "vision_followup_gate_tier", "c0") or "").strip()
+        if not tier_name:
+            return None
+        tiers = getattr(router_cfg, "tiers", {})
+        if not isinstance(tiers, Mapping):
+            return None
+        tier = tiers.get(tier_name)
+        if not isinstance(tier, Mapping):
+            return None
+        model = tier.get("model")
+        if not isinstance(model, str):
+            return None
+        model = model.strip()
+        return model or None
+
+    def _make_vision_followup_gate_chat(
+        self,
+        cloned_selector: Any,
+    ) -> tuple[Any | None, str | None]:
+        gate_model = self._resolve_vision_followup_gate_model()
+        if not gate_model or cloned_selector is None:
+            return None, gate_model
+        if not hasattr(cloned_selector, "clone"):
+            return None, gate_model
+        try:
+            gate_selector = cloned_selector.clone()
+            gate_selector.override_model(gate_model)
+            gate_provider = gate_selector.resolve()
+        except Exception:
+            return None, gate_model
+
+        async def _chat(
+            messages: list[Any],
+            tools: Any = None,
+            config: Any = None,
+        ) -> AsyncIterator[Any]:
+            async for event in gate_provider.chat(messages, tools=tools, config=config):
+                yield event
+
+        return _chat, gate_model
+
     def _load_daily_notes(self, workspace_dir: Any) -> dict[str, str]:
         from opensquilla.identity.workspace import load_daily_notes
 
@@ -3734,9 +4314,16 @@ class TurnRunner:
         prev_assistant_text: str | None = None,
         prev_assistant_usage: dict[str, Any] | None = None,
         history_user_texts: list[str] | None = None,
+        history_has_recent_image: bool = False,
+        history_image_turn_count: int = 0,
+        vision_sticky_remaining: int = 0,
+        turns_since_last_image: int | None = None,
+        last_image_turn_text: str | None = None,
+        vision_candidate_turns: int = 0,
         flags_text_override: str | None = None,
         tool_context: ToolContext | None = None,
         normalization_metadata: dict[str, Any] | None = None,
+        input_provenance: dict[str, Any] | None = None,
     ) -> tuple[Any, Any]:
         """Run the pre-turn pipeline and re-resolve provider if model changed.
 
@@ -3751,9 +4338,12 @@ class TurnRunner:
         from opensquilla.engine.steps import (
             apply_prompt_cache,
             apply_squilla_router,
+            apply_vision_followup_gate,
+            enforce_coding_mode,
             filter_skills,
             inject_platform_hint,
             inject_subagent_grounding,
+            meta_command_launch,
             meta_resolution,
             observe_reasoning_hint,
             resolve_model,
@@ -3784,20 +4374,30 @@ class TurnRunner:
             )
 
         async def _bounded_apply_squilla_router(turn: TurnContext) -> TurnContext:
-            async def _run_router_step() -> TurnContext:
-                return await apply_squilla_router(_copy_router_turn(turn))
+            def _run_router_step_sync() -> TurnContext:
+                return asyncio.run(apply_squilla_router(_copy_router_turn(turn)))
 
+            loop = asyncio.get_running_loop()
+            executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="opensquilla-router-timeout",
+            )
+            future = loop.run_in_executor(executor, _run_router_step_sync)
             try:
                 routed = await asyncio.wait_for(
-                    asyncio.to_thread(lambda: asyncio.run(_run_router_step())),
+                    future,
                     timeout=router_timeout,
                 )
                 return commit_deferred_router_history(routed)
             except TimeoutError as exc:
+                future.cancel()
                 raise TimeoutError(f"squilla router timed out after {router_timeout:g}s") from exc
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
 
         _bounded_apply_squilla_router.__name__ = "apply_squilla_router"
 
+        gate_chat, gate_model = self._make_vision_followup_gate_chat(cloned_selector)
         initial_metadata: dict[str, Any] = {
             "skill_loader": self._skill_loader,
             "meta_run_writer": getattr(self, "_meta_run_writer", None),
@@ -3829,11 +4429,24 @@ class TurnRunner:
                 )
             ),
         }
+        if gate_chat is not None:
+            initial_metadata["router_vision_followup_gate_chat"] = gate_chat
+        if gate_model:
+            initial_metadata["router_vision_followup_gate_model"] = gate_model
         if normalization_metadata is not None:
             initial_metadata["input_normalization"] = dict(normalization_metadata)
             material_tokens = normalization_metadata.get("material_estimated_tokens")
             if type(material_tokens) is int and material_tokens > 0:
                 initial_metadata["material_estimated_tokens"] = material_tokens
+        if input_provenance:
+            if isinstance(input_provenance, dict):
+                normalized_provenance = dict(input_provenance)
+            else:
+                normalized_provenance = {"kind": str(input_provenance)}
+            initial_metadata["input_provenance"] = normalized_provenance
+            provenance_kind = self._input_provenance_kind(normalized_provenance)
+            if provenance_kind:
+                initial_metadata["input_provenance_kind"] = provenance_kind
         if ingress_pipeline_steps:
             initial_metadata["pipeline_steps"] = list(ingress_pipeline_steps)
         if prev_assistant_text:
@@ -3842,6 +4455,26 @@ class TurnRunner:
             initial_metadata["router_prev_assistant_usage"] = dict(prev_assistant_usage)
         if history_user_texts:
             initial_metadata["router_history_user_texts"] = list(history_user_texts)
+        if history_has_recent_image:
+            initial_metadata["router_history_has_recent_image"] = True
+            initial_metadata["router_history_image_turn_count"] = max(
+                int(history_image_turn_count),
+                1,
+            )
+        if vision_sticky_remaining > 0:
+            initial_metadata["router_vision_sticky_remaining"] = int(
+                vision_sticky_remaining
+            )
+        if turns_since_last_image is not None:
+            initial_metadata["router_turns_since_last_image"] = int(
+                turns_since_last_image
+            )
+        if last_image_turn_text:
+            initial_metadata["router_last_image_turn_text"] = last_image_turn_text
+        if vision_candidate_turns > 0:
+            initial_metadata["router_vision_candidate_turns"] = int(
+                vision_candidate_turns
+            )
         if flags_text_override:
             initial_metadata["router_flags_text_override"] = flags_text_override
         if tool_context is not None:
@@ -3864,9 +4497,12 @@ class TurnRunner:
             turn,
             [
                 resolve_model,
+                apply_vision_followup_gate,
                 _bounded_apply_squilla_router,
                 observe_reasoning_hint,
                 meta_resolution,
+                enforce_coding_mode,
+                meta_command_launch,
                 filter_skills,
                 inject_subagent_grounding,
                 inject_platform_hint,
@@ -3876,7 +4512,23 @@ class TurnRunner:
 
         # Apply routed model back to cloned selector (local, not shared)
         if turn.model and cloned_selector is not None:
-            cloned_selector.override_model(turn.model)
+            router_fallback_chain = (
+                turn.metadata.get("router_fallback_chain")
+                if turn.metadata.get("routing_applied") is True
+                else None
+            )
+            override_with_fallback_chain = getattr(
+                cloned_selector,
+                "override_model_with_fallback_chain",
+                None,
+            )
+            if callable(override_with_fallback_chain) and isinstance(
+                router_fallback_chain,
+                list,
+            ):
+                override_with_fallback_chain(turn.model, router_fallback_chain)
+            else:
+                cloned_selector.override_model(turn.model)
             provider = cloned_selector.resolve()
 
         return turn, provider
@@ -3902,6 +4554,7 @@ class TurnRunner:
             return {}
         entries = list(transcript or [])
         user_texts: list[str] = []
+        user_contents: list[str] = []
         for index, entry in enumerate(entries):
             if getattr(entry, "role", None) != "user":
                 continue
@@ -3910,6 +4563,7 @@ class TurnRunner:
             content = getattr(entry, "content", None)
             if not isinstance(content, str) or not content.strip():
                 continue
+            user_contents.append(content)
             unpacked = self._maybe_unpack_attachments(content)
             text = unpacked.strip() if isinstance(unpacked, str) else content.strip()
             if len(text) > _ROUTER_HISTORY_USER_MAX_CHARS:
@@ -3919,6 +4573,57 @@ class TurnRunner:
         context: dict[str, Any] = {}
         if user_texts:
             context["history_user_texts"] = user_texts[-_ROUTER_HISTORY_USER_MAX_TURNS:]
+        router_cfg = getattr(self._config, "squilla_router", None)
+        lookback = int(
+            getattr(
+                router_cfg,
+                "vision_history_lookback_turns",
+                8,
+            )
+            or 0
+        )
+        candidate_turns = int(
+            getattr(
+                router_cfg,
+                "vision_history_candidate_turns",
+                lookback,
+            )
+            or 0
+        )
+        if lookback > 0 or candidate_turns > 0:
+            recent_limit = max(lookback, candidate_turns)
+            recent_user_contents = user_contents[-recent_limit:]
+            image_positions = [
+                index
+                for index, content in enumerate(recent_user_contents)
+                if self._attachment_envelope_has_image(content)
+            ]
+            image_turn_count = len(image_positions)
+            if image_turn_count:
+                context["history_has_recent_image"] = True
+                context["history_image_turn_count"] = image_turn_count
+                turns_since_last_image = (
+                    len(recent_user_contents) - image_positions[-1] - 1
+                )
+                context["turns_since_last_image"] = turns_since_last_image
+                context["vision_candidate_turns"] = candidate_turns
+                absolute_image_index = (
+                    len(user_contents) - len(recent_user_contents) + image_positions[-1]
+                )
+                if 0 <= absolute_image_index < len(user_texts):
+                    context["last_image_turn_text"] = user_texts[absolute_image_index]
+                sticky_turns = int(
+                    getattr(
+                        router_cfg,
+                        "vision_sticky_followup_turns",
+                        2,
+                    )
+                    or 0
+                )
+                if sticky_turns > 0 and turns_since_last_image < sticky_turns:
+                    context["vision_sticky_remaining"] = (
+                        sticky_turns - turns_since_last_image
+                    )
 
         for entry in reversed(entries):
             if getattr(entry, "role", None) != "assistant":
@@ -4296,6 +5001,53 @@ class TurnRunner:
                 ),
                 session_flush_fallback_reason=(
                     prompt_report.session_flush_fallback_reason if prompt_report else None
+                ),
+                image_route_reason=(
+                    turn_obj.metadata.get("image_route_reason")
+                    if turn_obj is not None
+                    else None
+                ),
+                vision_followup_gate_decision=(
+                    turn_obj.metadata.get("router_vision_followup_gate_decision")
+                    if turn_obj is not None
+                    else None
+                ),
+                vision_followup_gate_confidence=(
+                    turn_obj.metadata.get("router_vision_followup_gate_confidence")
+                    if turn_obj is not None
+                    else None
+                ),
+                vision_followup_gate_reason=(
+                    build_vision_followup_gate_reason_code(
+                        decision=turn_obj.metadata.get(
+                            "router_vision_followup_gate_decision"
+                        ),
+                        source=turn_obj.metadata.get("router_vision_followup_gate_source"),
+                        reason=turn_obj.metadata.get("router_vision_followup_gate_reason"),
+                        fallback=turn_obj.metadata.get("router_vision_followup_fallback"),
+                    )
+                    if turn_obj is not None
+                    else None
+                ),
+                vision_followup_gate_source=(
+                    turn_obj.metadata.get("router_vision_followup_gate_source")
+                    if turn_obj is not None
+                    else None
+                ),
+                vision_followup_gate_model=(
+                    turn_obj.metadata.get("router_vision_followup_gate_model")
+                    if turn_obj is not None
+                    else None
+                ),
+                vision_followup_needs_image=(
+                    turn_obj.metadata.get("router_vision_followup_needs_image")
+                    if turn_obj is not None
+                    else None
+                ),
+                vision_followup_fallback=(
+                    turn_obj.metadata.get("router_vision_followup_fallback")
+                    if turn_obj is not None
+                    else None
                 ),
             )
             write_decision_entry(entry)
@@ -5400,8 +6152,43 @@ class TurnRunner:
         if emergency_override is not None:
             transcript = list(emergency_override.kept_entries)
             summary_markers.append(emergency_override.summary)
+        model_caps = getattr(getattr(agent, "config", None), "model_capabilities", None)
+        preserve_image_history = bool(
+            getattr(getattr(agent, "config", None), "preserve_historical_images", False)
+            and getattr(model_caps, "supports_vision", False)
+        )
+        lookback = int(
+            getattr(
+                getattr(self._config, "squilla_router", None),
+                "vision_history_lookback_turns",
+                3,
+            )
+            or 0
+        )
+        image_replay_entry_indexes: set[int] = set()
+        image_replay_session_id: str | None = None
+        if preserve_image_history and lookback > 0:
+            current_user_entry_index = (
+                len(transcript) - 1
+                if trim_last_user
+                and transcript
+                and getattr(transcript[-1], "role", None) == "user"
+                else None
+            )
+            user_entry_indexes = [
+                index
+                for index, entry in enumerate(transcript)
+                if getattr(entry, "role", None) == "user"
+                and index != current_user_entry_index
+                and isinstance(getattr(entry, "content", None), str)
+                and bool(str(getattr(entry, "content", "")).strip())
+            ]
+            image_replay_entry_indexes = set(user_entry_indexes[-lookback:])
+            image_replay_session_id = await self._resolve_session_id_for_log(session_key)
+            if image_replay_session_id is None:
+                image_replay_session_id = session_key
         last_entry_was_user = False
-        for entry in transcript:
+        for entry_index, entry in enumerate(transcript):
             if (
                 entry.role == "system"
                 and entry.content
@@ -5416,7 +6203,12 @@ class TurnRunner:
             # may carry artifact metadata. Both become text-only safe markers
             # for model-context replay.
             if raw_content and entry.role == "user":
-                content: Any = self._maybe_unpack_attachments(raw_content)
+                content: Any = self._maybe_unpack_attachments(
+                    raw_content,
+                    preserve_image_attachments=entry_index in image_replay_entry_indexes,
+                    media_root=self._attachment_media_root(),
+                    session_id=image_replay_session_id,
+                )
             elif raw_content and entry.role == "assistant":
                 content = self._maybe_unpack_assistant_artifacts(raw_content)
             else:
@@ -5534,17 +6326,49 @@ class TurnRunner:
         return _format_compaction_summary_context(context_items)
 
     @staticmethod
-    def _maybe_unpack_attachments(content: str) -> Any:
+    def _attachment_envelope_has_image(content: str) -> bool:
+        if not content or not content.lstrip().startswith("{"):
+            return False
+        try:
+            parsed = json.loads(content)
+        except (json.JSONDecodeError, ValueError):
+            return False
+        if not isinstance(parsed, dict):
+            return False
+        atts = parsed.get("attachments") or []
+        if not isinstance(atts, list):
+            return False
+        for att in atts:
+            if not isinstance(att, dict):
+                continue
+            media_type = att.get("type") or att.get("mime") or att.get("media_type")
+            if not (isinstance(media_type, str) and media_type.startswith("image/")):
+                continue
+            if media_type not in _ALLOWED_ENGINE_MEDIA_TYPES:
+                continue
+            if isinstance(att.get("data"), str) and att.get("data"):
+                return True
+            if isinstance(att.get("sha256_ref"), str) and att.get("sha256_ref"):
+                return True
+        return False
+
+    @staticmethod
+    def _maybe_unpack_attachments(
+        content: str,
+        *,
+        preserve_image_attachments: bool = False,
+        media_root: Path | None = None,
+        session_id: str | None = None,
+    ) -> Any:
         """Reduce persisted attachment envelopes to text-only history.
 
         User messages with attachments are persisted as a JSON envelope
         ``{"text": "...", "attachments": [{"type": "image/png", "data": "<b64>"}...]}``
         in ``transcript_entries.content`` (see rpc_sessions._persist_user_message).
-        Historical images must not be sent again on later turns: OpenRouter can
-        route a text follow-up to a text model, and replaying an old image block
-        then fails with "No endpoints found that support image input". Keep the
-        original text and a compact non-image marker so the model knows an
-        attachment existed without receiving its bytes.
+        Historical images are text markers by default so text routes do not
+        replay old image blocks to providers that cannot consume them. When the
+        caller has already selected a vision model, a bounded recent window can
+        be hydrated back into image blocks.
 
         Returns the original string for non-envelope content so non-attachment
         history (assistant text, tool results) is unaffected. On any parse error,
@@ -5567,6 +6391,12 @@ class TurnRunner:
             return text
 
         omitted: list[str] = []
+        replay_blocks: list[Any] = []
+        preserved_image = False
+        if preserve_image_attachments and text:
+            from opensquilla.provider.types import ContentBlockText
+
+            replay_blocks.append(ContentBlockText(text=text))
         for att in atts:
             if not isinstance(att, dict):
                 continue
@@ -5574,8 +6404,8 @@ class TurnRunner:
             if not (isinstance(media_type, str) and media_type in _ALLOWED_ENGINE_MEDIA_TYPES):
                 continue
             # Persisted attachment envelope: ``sha256_ref`` indicates the bytes live on
-            # disk under media/transcripts/<session>/<sha>; for replay we
-            # emit a marker (the engine never re-sends the bytes anyway).
+            # disk under media/transcripts/<session>/<sha>. Text routes keep
+            # a marker; vision routes may replay a bounded recent image window.
             data = att.get("data")
             sha_ref = att.get("sha256_ref")
             missing_reason = att.get("missing_reason")
@@ -5588,7 +6418,51 @@ class TurnRunner:
             name = att.get("name")
             fallback = "image" if media_type.startswith("image/") else "attachment"
             label = name if isinstance(name, str) and name.strip() else fallback
+            if preserve_image_attachments and media_type.startswith("image/"):
+                from opensquilla.provider.types import ContentBlockImage
+
+                if isinstance(data, str) and data:
+                    try:
+                        base64.b64decode(data, validate=True)
+                    except (binascii.Error, ValueError):
+                        omitted.append(f"[attachment unavailable: {label} ({media_type})]")
+                    else:
+                        replay_blocks.append(
+                            ContentBlockImage(media_type=media_type, data=data)
+                        )
+                        preserved_image = True
+                    continue
+                if isinstance(sha_ref, str) and sha_ref and media_root and session_id:
+                    raw_size = att.get("size")
+                    size = raw_size if isinstance(raw_size, int) else -1
+                    ref = make_attachment_ref(
+                        sha256=sha_ref,
+                        name=label,
+                        mime=media_type,
+                        size=size,
+                        session_id=session_id,
+                        source="transcript",
+                    )
+                    try:
+                        raw_bytes = read_attachment_ref_bytes(ref, media_root=media_root)
+                    except (FileNotFoundError, ValueError) as exc:
+                        omitted.append(f"[attachment unavailable: {label}: {exc}]")
+                    else:
+                        replay_blocks.append(
+                            ContentBlockImage(
+                                media_type=media_type,
+                                data=base64.b64encode(raw_bytes).decode("ascii"),
+                            )
+                        )
+                        preserved_image = True
+                    continue
             omitted.append(f"[historical attachment omitted: {label} ({media_type})]")
+        if preserved_image:
+            if omitted:
+                from opensquilla.provider.types import ContentBlockText
+
+                replay_blocks.extend(ContentBlockText(text=marker) for marker in omitted)
+            return replay_blocks
         if not omitted:
             return text
         return "\n".join([text, *omitted]).strip()
@@ -5734,6 +6608,34 @@ class TurnRunner:
                             "[attachment unavailable: declared text content is not valid UTF-8]"
                         )
                 wrapped = _render_file_context_block(filename, media_type, decoded_text)
+                attachment_blocks.append(ContentBlockText(text=wrapped))
+            elif media_type in _OFFICE_ATTACHMENT_MIMES:
+                try:
+                    extracted_office_text = _extract_office_attachment_text(
+                        raw_bytes, filename, media_type
+                    )
+                except ValueError as exc:
+                    extracted_office_text = (
+                        "[attachment unavailable: document text could not be "
+                        f"extracted: {exc}]"
+                    )
+                wrapped = _render_file_context_block(
+                    filename, media_type, extracted_office_text
+                )
+                attachment_blocks.append(ContentBlockText(text=wrapped))
+            elif media_type in _EMAIL_ATTACHMENT_MIMES:
+                try:
+                    extracted_email_text = _extract_email_attachment_text(
+                        raw_bytes, filename, media_type
+                    )
+                except ValueError as exc:
+                    extracted_email_text = (
+                        "[attachment unavailable: email could not be "
+                        f"extracted: {exc}]"
+                    )
+                wrapped = _render_file_context_block(
+                    filename, media_type, extracted_email_text
+                )
                 attachment_blocks.append(ContentBlockText(text=wrapped))
             else:  # pragma: no cover - guarded by allow-list above
                 raise ValueError(f"attachments[{index}] media type {media_type!r} is not handled")

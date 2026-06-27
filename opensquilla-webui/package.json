@@ -1,0 +1,39 @@
+{
+  "name": "opensquilla-webui",
+  "private": true,
+  "version": "0.2.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run typecheck && vite build",
+    "preview": "vite preview",
+    "check:architecture": "node scripts/check-architecture.mjs && node scripts/check-chat-security.mjs && node scripts/check-webui-colors.mjs",
+    "typecheck": "npm run check:architecture && vue-tsc --noEmit",
+    "test:unit": "vitest run",
+    "test:unit:watch": "vitest",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:debug": "playwright test --debug"
+  },
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "dependencies": {
+    "@types/dompurify": "^3.0.5",
+    "dompurify": "^3.4.11",
+    "highlight.js": "^11.11.1",
+    "html-to-image": "^1.11.13",
+    "marked": "^18.0.4",
+    "pinia": "^2.1.7",
+    "vue": "^3.4.21",
+    "vue-router": "^4.3.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@vitejs/plugin-vue": "^6.0.7",
+    "typescript": "^5.4.5",
+    "vite": "^8.0.16",
+    "vitest": "^4.1.9",
+    "vue-tsc": "^2.0.11"
+  }
+}

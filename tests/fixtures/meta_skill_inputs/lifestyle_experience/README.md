@@ -16,28 +16,6 @@ Gateway used during preparation:
 
 ## Scenarios
 
-### Document Vendor Decision
-
-Files:
-
-- `document_vendor_decision/vendor_quote_a.xlsx`
-- `document_vendor_decision/contract_excerpt.docx`
-- `document_vendor_decision/sales_email.md`
-- `document_vendor_decision/decision_question.md`
-
-Prompt:
-
-```text
-帮我看一下这些供应商续费材料，我明天要决定要不要签：
-
-/tmp/opensquilla-meta-skill-pr/tests/fixtures/meta_skill_inputs/lifestyle_experience/document_vendor_decision/vendor_quote_a.xlsx
-/tmp/opensquilla-meta-skill-pr/tests/fixtures/meta_skill_inputs/lifestyle_experience/document_vendor_decision/contract_excerpt.docx
-/tmp/opensquilla-meta-skill-pr/tests/fixtures/meta_skill_inputs/lifestyle_experience/document_vendor_decision/sales_email.md
-/tmp/opensquilla-meta-skill-pr/tests/fixtures/meta_skill_inputs/lifestyle_experience/document_vendor_decision/decision_question.md
-
-请给我一个能直接转发给老板的决策简报：建议签、不签还是先谈；证据表；高中低风险；要问供应商的问题；接下来 24 小时怎么做。
-```
-
 ### PDF Intelligence
 
 File:

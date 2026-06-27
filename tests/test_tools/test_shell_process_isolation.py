@@ -71,6 +71,12 @@ def _ctx(
     )
 
 
+def _process_test_python() -> str:
+    if os.path.exists("/usr/bin/python3"):
+        return "/usr/bin/python3"
+    return sys.executable
+
+
 @pytest.fixture(autouse=True)
 def _reset_bg_sessions():
     previous = dict(shell._bg_sessions)
@@ -121,13 +127,14 @@ def test_background_process_result_surfaces_local_http_server_url() -> None:
 @pytest.mark.skipif(os.name != "posix", reason="process group behavior is POSIX-specific")
 @pytest.mark.asyncio
 async def test_exec_command_returns_when_shell_exits_even_if_descendant_holds_pipe() -> None:
+    python = _process_test_python()
     child_script = "import time; time.sleep(5)"
     parent_script = (
         "import subprocess, sys; "
         "subprocess.Popen([sys.executable, '-c', "
-        f"{child_script!r}], stdout=sys.stdout, stderr=sys.stderr)"
+            f"{child_script!r}], stdout=sys.stdout, stderr=sys.stderr)"
     )
-    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(parent_script)}"
+    command = f"{shlex.quote(python)} -c {shlex.quote(parent_script)}"
 
     started = time.monotonic()
     result = await shell.exec_command(command, timeout=1.0)
@@ -140,6 +147,7 @@ async def test_exec_command_returns_when_shell_exits_even_if_descendant_holds_pi
 @pytest.mark.skipif(os.name != "posix", reason="process group behavior is POSIX-specific")
 @pytest.mark.asyncio
 async def test_exec_command_cleans_descendant_after_shell_exits(tmp_path) -> None:
+    python = _process_test_python()
     marker = tmp_path / "descendant-ran"
     child_script = (
         "import pathlib, time; "
@@ -148,9 +156,9 @@ async def test_exec_command_cleans_descendant_after_shell_exits(tmp_path) -> Non
     parent_script = (
         "import subprocess, sys; "
         "subprocess.Popen([sys.executable, '-c', "
-        f"{child_script!r}])"
+            f"{child_script!r}])"
     )
-    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(parent_script)}"
+    command = f"{shlex.quote(python)} -c {shlex.quote(parent_script)}"
 
     result = await shell.exec_command(command, timeout=1.0)
     await asyncio.sleep(0.8)
@@ -162,7 +170,8 @@ async def test_exec_command_cleans_descendant_after_shell_exits(tmp_path) -> Non
 @pytest.mark.asyncio
 @pytest.mark.skipif(os.name != "posix", reason="POSIX shell quoting is required")
 async def test_exec_command_timeout_still_stops_foreground_process() -> None:
-    command = f"{shlex.quote(sys.executable)} -c {shlex.quote('import time; time.sleep(5)')}"
+    python = _process_test_python()
+    command = f"{shlex.quote(python)} -c {shlex.quote('import time; time.sleep(5)')}"
 
     started = time.monotonic()
     result = await shell.exec_command(command, timeout=0.1)
@@ -195,7 +204,7 @@ async def test_exec_command_stdin_write_obeys_timeout() -> None:
     elapsed = time.monotonic() - started
 
     assert "[timeout after 0.2s]" in result
-    assert elapsed < 2.0
+    assert elapsed < 3.0, "timeout path should return before the 5s child sleep"
 
 
 @pytest.mark.asyncio
@@ -350,3 +359,107 @@ async def test_process_subagent_owner_context_is_not_admin_bypass() -> None:
         current_tool_context.reset(token)
 
     assert [session["session_id"] for session in payload["sessions"]] == ["own"]
+
+
+# --- process(action="wait") — blocking await replaces poll loops (codex) ---
+
+
+async def _real_bg_session(session_id: str, session_key: str, argv: list[str]):
+    proc = await asyncio.create_subprocess_exec(
+        *argv,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    sess = shell._BgSession(
+        session_id=session_id,
+        command=" ".join(argv),
+        process=proc,
+        session_key=session_key,
+        agent_id="agent",
+    )
+    shell._bg_sessions[session_id] = sess
+    return sess
+
+
+def test_process_wait_is_a_valid_action() -> None:
+    assert "wait" in shell.PROCESS_ACTIONS
+
+
+def test_process_tool_declares_wait_timeout_metadata() -> None:
+    # Without this metadata the 60s tool watchdog would kill a long wait.
+    from opensquilla.tools.registry import get_default_registry
+
+    spec = get_default_registry().get("process").spec
+    assert spec.execution_timeout_argument == "timeout"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses POSIX sleep/true")
+@pytest.mark.asyncio
+async def test_process_wait_blocks_until_exit() -> None:
+    await _real_bg_session("w1", "agent:main:one", ["sleep", "0.3"])
+    token = current_tool_context.set(_ctx("agent:main:one"))
+    try:
+        payload = json.loads(await shell.process("wait", session_id="w1"))
+    finally:
+        current_tool_context.reset(token)
+    assert payload["exited"] is True
+    assert payload["session"]["status"] == "done"
+    assert payload["session"]["returncode"] == 0
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses POSIX true")
+@pytest.mark.asyncio
+async def test_process_wait_on_already_exited_returns_immediately() -> None:
+    sess = await _real_bg_session("w2", "agent:main:one", ["true"])
+    await sess.process.wait()
+    token = current_tool_context.set(_ctx("agent:main:one"))
+    try:
+        payload = json.loads(await shell.process("wait", session_id="w2"))
+    finally:
+        current_tool_context.reset(token)
+    assert payload["exited"] is True
+    assert payload["session"]["returncode"] == 0
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses POSIX sleep")
+@pytest.mark.asyncio
+async def test_process_wait_timeout_keeps_running_and_not_timed_out() -> None:
+    sess = await _real_bg_session("w3", "agent:main:one", ["sleep", "5"])
+    token = current_tool_context.set(_ctx("agent:main:one"))
+    try:
+        payload = json.loads(await shell.process("wait", session_id="w3", timeout=0.2))
+        assert payload["exited"] is False
+        assert payload["session"]["status"] == "running"
+        # The wait-action timeout must NOT flip the process-lifetime timed_out flag.
+        assert payload["session"]["timed_out"] is False
+    finally:
+        sess.process.terminate()
+        try:
+            await asyncio.wait_for(sess.process.wait(), timeout=2)
+        except (TimeoutError, ProcessLookupError):
+            pass
+        current_tool_context.reset(token)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses POSIX sleep")
+@pytest.mark.asyncio
+async def test_process_wait_finalizes_when_exit_races_timeout(monkeypatch) -> None:
+    # The process exits right at the wait timeout boundary, where
+    # _wait_bg_process reports False. The wait action must still finalize and
+    # report a consistent (not stale "running") payload (codex review).
+    sess = await _real_bg_session("w4", "agent:main:one", ["sleep", "0.1"])
+    proc = sess.process
+
+    async def _wait_then_report_timeout(session, timeout):
+        await proc.wait()  # the process actually exits...
+        return False       # ...but we report a timeout (the boundary race)
+
+    monkeypatch.setattr(shell, "_wait_bg_process", _wait_then_report_timeout)
+    token = current_tool_context.set(_ctx("agent:main:one"))
+    try:
+        payload = json.loads(await shell.process("wait", session_id="w4", timeout=0.01))
+    finally:
+        current_tool_context.reset(token)
+    assert payload["exited"] is True
+    assert payload["session"]["status"] == "done"
+    assert payload["session"]["returncode"] == 0

@@ -2,15 +2,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.policy import build_policy
 from opensquilla.sandbox.types import NetworkMode, SecurityLevel
 
 
-def test_standard_network_http_keeps_host_network(tmp_path: Path) -> None:
+@pytest.mark.parametrize("action_kind", ["network.http", "web.discover", "web.search"])
+def test_standard_network_actions_keep_host_network(
+    tmp_path: Path,
+    action_kind: str,
+) -> None:
     policy = build_policy(
         SecurityLevel.STANDARD,
-        "network.http",
+        action_kind,
         tmp_path,
         SandboxSettings(),
         trusted=True,

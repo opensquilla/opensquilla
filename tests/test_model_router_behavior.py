@@ -133,6 +133,18 @@ def context_aware_fake_strategy(
     return strategy
 
 
+def test_vision_followup_gate_default_timeout_allows_real_provider_latency() -> None:
+    config = GatewayConfig()
+
+    assert config.squilla_router.vision_followup_gate_timeout_seconds >= 10.0
+
+
+def test_vision_followup_gate_default_output_budget_handles_reasoning_models() -> None:
+    config = GatewayConfig()
+
+    assert config.squilla_router.vision_followup_gate_max_output_tokens >= 512
+
+
 @pytest.mark.asyncio
 async def test_full_rollout_applies_routed_model_thinking_and_p0_prompt(
     monkeypatch: pytest.MonkeyPatch,
@@ -168,6 +180,36 @@ async def test_full_rollout_applies_routed_model_thinking_and_p0_prompt(
     assert routed.metadata["thinking_level"] == "low"
     assert routed.metadata["prompt_policy"] == "P0"
     assert "[RESPONSE_POLICY: Answer directly" in routed.message
+
+
+@pytest.mark.asyncio
+async def test_router_records_lower_text_tier_fallback_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_strategy(
+        monkeypatch,
+        "c3",
+        0.91,
+        {
+            "route_class": "R3",
+            "thinking_mode": "T1",
+            "prompt_policy": "P0",
+        },
+    )
+
+    routed = await apply_squilla_router(make_context("Solve a difficult architecture problem."))
+
+    assert routed.metadata["routed_tier"] == "c3"
+    assert [item["tier"] for item in routed.metadata["router_fallback_chain"]] == [
+        "c2",
+        "c1",
+        "c0",
+    ]
+    assert [item["model"] for item in routed.metadata["router_fallback_chain"]] == [
+        "z-ai/glm-5.2",
+        "deepseek/deepseek-v4-pro",
+        "deepseek/deepseek-v4-flash",
+    ]
 
 
 @pytest.mark.asyncio
@@ -274,7 +316,7 @@ async def test_p2_prompt_hint_is_recorded_but_not_injected(
 
     routed = await apply_squilla_router(ctx)
 
-    assert routed.model == "anthropic/claude-opus-4.7"
+    assert routed.model == "anthropic/claude-opus-4.8"
     assert routed.metadata["routed_tier"] == "c3"
     assert routed.metadata["thinking_level"] == "high"
     assert routed.metadata["prompt_policy"] == "P2"
@@ -362,6 +404,31 @@ async def test_confidence_gate_falls_back_low_confidence_non_default_text_tier(
 
 
 @pytest.mark.asyncio
+async def test_confidence_gate_keeps_near_threshold_high_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_strategy(
+        monkeypatch,
+        "c3",
+        0.49,
+        {
+            "route_class": "R3",
+            "thinking_mode": "T3",
+            "prompt_policy": "P2",
+        },
+    )
+    ctx = make_context("Classifier is near threshold but chose a high-risk tier.")
+
+    routed = await apply_squilla_router(ctx)
+    extra = routed.metadata["routing_extra"]
+
+    assert routed.metadata["routed_tier"] == "c3"
+    assert extra["confidence_gate_applied"] is False
+    assert extra["pre_confidence_tier"] == "c3"
+    assert extra["final_tier"] == "c3"
+
+
+@pytest.mark.asyncio
 async def test_large_material_estimate_floors_low_router_tier(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -436,7 +503,7 @@ async def test_anti_downgrade_keeps_recent_higher_tier_despite_confidence_gate(
     extra = routed2.metadata["routing_extra"]
 
     assert routed2.metadata["routed_tier"] == "c2"
-    assert routed2.model == "z-ai/glm-5.1"
+    assert routed2.model == "z-ai/glm-5.2"
     assert extra["confidence_gate_applied"] is True
     assert extra["pre_confidence_tier"] == "c0"
     assert extra["final_tier"] == "c2"
@@ -459,7 +526,7 @@ async def test_anti_downgrade_keeps_recent_higher_tier_despite_confidence_gate(
     extra3 = routed3.metadata["routing_extra"]
 
     assert routed3.metadata["routed_tier"] == "c2"
-    assert routed3.model == "z-ai/glm-5.1"
+    assert routed3.model == "z-ai/glm-5.2"
     assert extra3["confidence_gate_applied"] is False
     assert extra3["anti_downgrade_applied"] is True
     assert extra3["previous_tier"] == "c2"
@@ -513,7 +580,7 @@ async def test_anti_downgrade_uses_previous_turn_not_window_highest(
     extra3 = routed3.metadata["routing_extra"]
 
     assert routed3.metadata["routed_tier"] == "c2"
-    assert routed3.model == "z-ai/glm-5.1"
+    assert routed3.model == "z-ai/glm-5.2"
     assert extra3["anti_downgrade_applied"] is True
     assert extra3["previous_tier"] == "c2"
 
@@ -554,7 +621,7 @@ async def test_anti_downgrade_keeps_previous_high_tier_without_margin_gate(
     extra = routed2.metadata["routing_extra"]
 
     assert routed2.metadata["routed_tier"] == "c3"
-    assert routed2.model == "anthropic/claude-opus-4.7"
+    assert routed2.model == "anthropic/claude-opus-4.8"
     assert extra["anti_downgrade_applied"] is True
     assert extra["previous_tier"] == "c3"
     assert extra["kv_cache_window_seconds"] == 600
@@ -580,7 +647,7 @@ async def test_complaint_upgrade_promotes_tier_thinking_and_blocks_compressed_pr
     extra = routed.metadata["routing_extra"]
 
     assert routed.metadata["routed_tier"] == "c2"
-    assert routed.model == "z-ai/glm-5.1"
+    assert routed.model == "z-ai/glm-5.2"
     assert extra["complaint_detected"] is True
     assert extra["complaint_upgrade_applied"] is True
     assert routed.metadata["thinking_mode"] == "T2"
@@ -623,11 +690,51 @@ async def test_complaint_upgrade_starts_from_previous_experienced_tier(
     extra = routed2.metadata["routing_extra"]
 
     assert routed2.metadata["routed_tier"] == "c3"
-    assert routed2.model == "anthropic/claude-opus-4.7"
+    assert routed2.model == "anthropic/claude-opus-4.8"
     assert extra["previous_tier"] == "c2"
     assert extra["complaint_detected"] is True
     assert extra["complaint_upgrade_applied"] is True
     assert extra["anti_downgrade_applied"] is False
+
+
+@pytest.mark.asyncio
+async def test_complaint_upgrade_uses_pre_confidence_high_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_key = "test-complaint-upgrade-pre-confidence-tier"
+    fake_strategy(
+        monkeypatch,
+        "c1",
+        0.9,
+        {
+            "route_class": "R1",
+            "thinking_mode": "T1",
+            "prompt_policy": "P1",
+        },
+    )
+    await apply_squilla_router(
+        make_context("Compare PostgreSQL and MySQL.", session_key=session_key)
+    )
+
+    fake_strategy(
+        monkeypatch,
+        "c2",
+        0.01,
+        {
+            "route_class": "R2",
+            "thinking_mode": "T2",
+            "prompt_policy": "P1",
+        },
+    )
+    routed = await apply_squilla_router(
+        make_context("不对，太泛了，重新写。", session_key=session_key)
+    )
+    extra = routed.metadata["routing_extra"]
+
+    assert extra["confidence_gate_applied"] is True
+    assert extra["pre_confidence_tier"] == "c2"
+    assert routed.metadata["routed_tier"] == "c3"
+    assert extra["complaint_upgrade_applied"] is True
 
 
 @pytest.mark.asyncio
@@ -782,6 +889,115 @@ async def test_image_input_routes_directly_to_vision_model_without_prompt_inject
 
 
 @pytest.mark.asyncio
+async def test_image_route_uses_first_configured_image_tier_without_random_choice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        squilla_router_step,
+        "_get_strategy",
+        lambda _config: pytest.fail("image routing should not invoke text strategy"),
+    )
+    monkeypatch.setattr(
+        "random.choice",
+        lambda _items: pytest.fail("image route should be deterministic"),
+    )
+    ctx = make_context(
+        "Describe this screenshot.",
+        attachments=[{"type": "image/png", "data": "abc"}],
+    )
+    ctx.config.squilla_router.tiers = {
+        "vision_primary": {
+            "model": "vision/primary",
+            "supports_image": True,
+            "thinking_level": "low",
+        },
+        "vision_backup": {
+            "model": "vision/backup",
+            "supports_image": True,
+            "thinking_level": "high",
+        },
+        "c1": {"model": "text/model"},
+    }
+
+    routed = await apply_squilla_router(ctx)
+
+    assert routed.metadata["routed_tier"] == "vision_primary"
+    assert routed.metadata["routed_model"] == "vision/primary"
+    assert routed.model == "vision/primary"
+
+
+@pytest.mark.asyncio
+async def test_gate_needs_image_routes_followup_to_vision_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        squilla_router_step,
+        "_get_strategy",
+        lambda _config: pytest.fail("gate image routing should not invoke text strategy"),
+    )
+    ctx = make_context("Continue from that image.")
+    ctx.metadata["router_history_has_recent_image"] = True
+    ctx.metadata["router_history_image_turn_count"] = 2
+    ctx.metadata["router_turns_since_last_image"] = 1
+    ctx.metadata["router_vision_followup_gate_decision"] = "needs_image"
+    ctx.metadata["router_vision_followup_needs_image"] = True
+
+    routed = await apply_squilla_router(ctx)
+
+    assert routed.model == "moonshotai/kimi-k2.6"
+    assert routed.metadata["routed_tier"] == "image_model"
+    assert routed.metadata["routing_source"] == "image_route"
+    assert routed.metadata["image_route_reason"] == "gate_history"
+    assert routed.metadata["route_max_history_turns"] == 8
+
+
+@pytest.mark.asyncio
+async def test_sticky_without_gate_no_longer_routes_to_vision_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    strategy = fake_strategy(
+        monkeypatch,
+        "c2",
+        0.77,
+        {"route_class": "R2", "thinking_mode": "T1", "prompt_policy": "P1"},
+    )
+    ctx = make_context("Write a Python script.")
+    ctx.metadata["router_history_has_recent_image"] = True
+    ctx.metadata["router_history_image_turn_count"] = 1
+    ctx.metadata["router_vision_sticky_remaining"] = 3
+    ctx.metadata["router_vision_followup_gate_decision"] = "text_only"
+    ctx.metadata["router_vision_followup_needs_image"] = False
+
+    routed = await apply_squilla_router(ctx)
+
+    assert strategy.calls == 1
+    assert routed.metadata["routing_source"] != "image_route"
+    assert routed.metadata.get("image_route_reason") is None
+
+
+@pytest.mark.asyncio
+async def test_recent_historical_image_without_sticky_uses_text_router(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    strategy = fake_strategy(
+        monkeypatch,
+        "c0",
+        0.88,
+        {"route_class": "R0", "thinking_mode": "T1", "prompt_policy": "P0"},
+    )
+    ctx = make_context("Help me write a Python script.")
+    ctx.metadata["router_history_has_recent_image"] = True
+    ctx.metadata["router_history_image_turn_count"] = 1
+
+    routed = await apply_squilla_router(ctx)
+
+    assert strategy.calls == 1
+    assert routed.metadata["routing_source"] == "v4_phase3"
+    assert routed.metadata["routed_tier"] == "c0"
+    assert "image_route_reason" not in routed.metadata
+
+
+@pytest.mark.asyncio
 async def test_image_attachment_without_image_tier_fails_locally(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -853,7 +1069,7 @@ async def test_observe_rollout_records_decisions_without_applying_model_or_promp
 
     assert routed.model == baseline_model
     assert routed.metadata["routed_tier"] == "c2"
-    assert routed.metadata["routed_model"] == "z-ai/glm-5.1"
+    assert routed.metadata["routed_model"] == "z-ai/glm-5.2"
     assert routed.metadata["routing_applied"] is False
     assert routed.metadata["thinking_mode"] == "T2"
     assert routed.metadata["thinking_level"] == "medium"
@@ -955,7 +1171,7 @@ async def test_runtime_router_complex_request_applies_deep_thinking_without_p2_p
 
     assert routed.metadata["routing_source"] == "v4_phase3"
     assert routed.metadata["routed_tier"] == "c3"
-    assert routed.model == "anthropic/claude-opus-4.7"
+    assert routed.model == "anthropic/claude-opus-4.8"
     assert routed.metadata["thinking_mode"] == "T3"
     assert routed.metadata["thinking_requested"] is True
     assert routed.metadata["thinking_level"] == "high"

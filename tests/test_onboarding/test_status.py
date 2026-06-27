@@ -49,6 +49,25 @@ def test_provider_with_env_key_is_configured(monkeypatch):
     assert s.needs_onboarding is False
 
 
+def test_provider_with_default_env_var_is_configured(monkeypatch):
+    # Config omits api_key and api_key_env; the provider's default env var
+    # resolves, so onboarding reports the provider configured (source "env").
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-from-env")
+    cfg = GatewayConfig()
+    cfg.llm = LlmProviderConfig(
+        provider="openrouter",
+        model="m",
+        api_key="",
+        base_url="https://openrouter.ai/api/v1",
+    )
+
+    s = get_onboarding_status(cfg)
+
+    assert s.llm_configured is True
+    assert s.llm_source == "env"
+    assert s.needs_onboarding is False
+
+
 def test_runtime_secret_marker_keeps_env_source_after_resolution(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-from-env")
     from opensquilla.gateway.llm_runtime import resolve_llm_runtime_config

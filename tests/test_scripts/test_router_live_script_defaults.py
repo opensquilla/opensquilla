@@ -11,8 +11,8 @@ from opensquilla.tools.registry import ToolProfile
 EXPECTED_ROUTER_MODELS = {
     "c0": "deepseek/deepseek-v4-flash",
     "c1": "deepseek/deepseek-v4-pro",
-    "c2": "z-ai/glm-5.1",
-    "c3": "anthropic/claude-opus-4.7",
+    "c2": "z-ai/glm-5.2",
+    "c3": "anthropic/claude-opus-4.8",
 }
 
 

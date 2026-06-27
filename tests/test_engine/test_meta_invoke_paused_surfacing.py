@@ -161,3 +161,117 @@ async def test_paused_meta_result_yields_text_and_non_error_result(tmp_path) -> 
     assert "目的地" in rendered
     assert "出行前需要确认几件事" in rendered
     assert "请回复以下字段" in rendered
+
+
+@pytest.mark.asyncio
+async def test_completed_meta_result_with_empty_final_text_yields_visible_fallback(
+    tmp_path,
+) -> None:
+    loader = _make_skill(tmp_path, name="meta-empty-complete-stub")
+    registry = get_default_registry()
+    config = AgentConfig(
+        model_id="stub",
+        max_iterations=1,
+        system_prompt="",
+        metadata={"skill_loader": loader, "bootstrap_workspace_dir": str(tmp_path)},
+    )
+    agent = Agent(
+        provider=_NullProvider(),  # type: ignore[arg-type]
+        config=config,
+        tool_definitions=[],
+        tool_handler=None,
+        tool_registry=registry,
+    )
+
+    class _StubOrch:
+        async def iter_events(self, _match):
+            yield MetaResult(ok=True, final_text="")
+
+    import opensquilla.skills.meta.orchestrator as orch_mod
+
+    original = orch_mod.MetaOrchestrator
+    orch_mod.MetaOrchestrator = lambda *a, **k: _StubOrch()  # type: ignore[assignment]
+    try:
+        tc = ToolCall(
+            tool_use_id="u-empty",
+            tool_name="meta_invoke",
+            arguments={"name": "meta-empty-complete-stub"},
+        )
+        tool_ctx = ToolContext(workspace_dir=str(tmp_path), is_owner=True)
+
+        text_chunks: list[str] = []
+        final: ToolResult | None = None
+        async for ev in agent._run_one_streaming(tc, tool_ctx):
+            if isinstance(ev, ToolResult):
+                final = ev
+            elif isinstance(ev, TextDeltaEvent):
+                text_chunks.append(ev.text)
+    finally:
+        orch_mod.MetaOrchestrator = original  # type: ignore[assignment]
+
+    rendered = "".join(text_chunks)
+    assert "meta-empty-complete-stub" in rendered
+    assert "没有生成可展示的最终回答" in rendered
+    assert final is not None
+    assert final.is_error is False
+    assert final.terminates_turn is True
+    assert final.content == "meta-skill 'meta-empty-complete-stub' completed."
+
+
+@pytest.mark.asyncio
+async def test_completed_meta_empty_final_text_fallback_follows_english_input(
+    tmp_path,
+) -> None:
+    loader = _make_skill(tmp_path, name="meta-empty-complete-en-stub")
+    registry = get_default_registry()
+    config = AgentConfig(
+        model_id="stub",
+        max_iterations=1,
+        system_prompt="",
+        metadata={
+            "skill_loader": loader,
+            "bootstrap_workspace_dir": str(tmp_path),
+            "user_message": "Please create a research brief in English.",
+        },
+    )
+    agent = Agent(
+        provider=_NullProvider(),  # type: ignore[arg-type]
+        config=config,
+        tool_definitions=[],
+        tool_handler=None,
+        tool_registry=registry,
+    )
+
+    class _StubOrch:
+        async def iter_events(self, _match):
+            yield MetaResult(ok=True, final_text="")
+
+    import opensquilla.skills.meta.orchestrator as orch_mod
+
+    original = orch_mod.MetaOrchestrator
+    orch_mod.MetaOrchestrator = lambda *a, **k: _StubOrch()  # type: ignore[assignment]
+    try:
+        tc = ToolCall(
+            tool_use_id="u-empty-en",
+            tool_name="meta_invoke",
+            arguments={"name": "meta-empty-complete-en-stub"},
+        )
+        tool_ctx = ToolContext(workspace_dir=str(tmp_path), is_owner=True)
+
+        text_chunks: list[str] = []
+        final: ToolResult | None = None
+        async for ev in agent._run_one_streaming(tc, tool_ctx):
+            if isinstance(ev, ToolResult):
+                final = ev
+            elif isinstance(ev, TextDeltaEvent):
+                text_chunks.append(ev.text)
+    finally:
+        orch_mod.MetaOrchestrator = original  # type: ignore[assignment]
+
+    rendered = "".join(text_chunks)
+    assert "meta-empty-complete-en-stub" in rendered
+    assert "did not produce a user-visible final answer" in rendered
+    assert "没有生成可展示的最终回答" not in rendered
+    assert final is not None
+    assert final.is_error is False
+    assert final.terminates_turn is True

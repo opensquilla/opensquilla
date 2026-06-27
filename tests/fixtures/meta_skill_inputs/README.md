@@ -17,10 +17,6 @@ programmatically exercising the bundled high-value meta-skills.
 - `migration_assistant/cjs-to-esm-package/` - tiny CommonJS package fixture for
   a CommonJS to native ESM migration checklist.
 - `migration_assistant/request.txt` - migration prompt referencing that fixture.
-- `web_research_to_report/decision_memo_request.txt` - source-backed decision
-  memo request with enough context to proceed.
-- `web_research_to_report/broad_request.txt` - intentionally broad report
-  request that should trigger `report_clarify`.
 - `code_review_dirty_repo/` - tiny repository baseline plus `patch.diff` for
   `meta-codereview-current-diff`.
 - `kid_project/complete_safe_request.txt` - complete safe request for

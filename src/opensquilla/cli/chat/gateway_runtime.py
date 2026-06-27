@@ -39,6 +39,8 @@ class GatewayRuntimeNotice:
 
 
 class GatewayClientLike(Protocol):
+    async def call(self, method: str, params: dict | None = None) -> Any: ...
+
     async def create_session(
         self,
         agent_id: str = "main",
@@ -140,9 +142,10 @@ async def run_gateway_chat(
 ) -> None:
     """Run gateway chat without owning a concrete terminal application."""
     from opensquilla.cli.gateway_client import GatewayClient, GatewayRPCError
+    from opensquilla.cli.gateway_rpc import default_gateway_token, default_gateway_url
 
     client = GatewayClient()
-    await client.connect()
+    await client.connect(default_gateway_url(), token=default_gateway_token())
 
     elevated_state: dict[str, str | None] = {"mode": None}
 

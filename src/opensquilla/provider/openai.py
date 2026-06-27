@@ -29,6 +29,7 @@ from .request_proof import (
     ProviderRequestBudgetExceededError,
     prove_provider_payload_from_env,
 )
+from .stream_assembly import ReasoningAccumulator
 from .types import (
     ChatConfig,
     DoneEvent,
@@ -182,6 +183,7 @@ def _should_disable_openrouter_reasoning_by_default(model: str) -> bool:
         "z-ai/glm-4.5-air",
         "z-ai/glm-5",
         "z-ai/glm-5.1",
+        "z-ai/glm-5.2",
     }
 
 
@@ -388,7 +390,10 @@ def _stream_timeout(timeout: float) -> httpx.Timeout:
     if connect <= 0:
         connect = 12.0
     connect = min(connect, max(timeout, 1.0))
-    return httpx.Timeout(timeout, connect=connect, write=10.0, pool=10.0)
+    write = _coerce_float(os.environ.get("OPENSQUILLA_LLM_STREAM_WRITE_TIMEOUT_SECONDS"))
+    if write <= 0:
+        write = max(60.0, timeout)
+    return httpx.Timeout(timeout, connect=connect, write=write, pool=10.0)
 
 
 def _synthesize_text_tool_events(
@@ -569,21 +574,25 @@ def _build_openai_messages(
     parts: list[dict[str, Any]] = []
     tool_calls: list[dict[str, Any]] = []
     tool_results: list[dict[str, Any]] = []
+    thinking_signature: str | None = None
 
     for block in msg.content:
         if block.type == "text":
             parts.append({"type": "text", "text": block.text})
+        elif block.type == "thinking":
+            sig = getattr(block, "signature", None)
+            if isinstance(sig, str) and sig:
+                thinking_signature = sig
         elif block.type == "tool_use":
-            tool_calls.append(
-                {
-                    "id": block.id,
-                    "type": "function",
-                    "function": {
-                        "name": block.name,
-                        "arguments": json.dumps(block.input),
-                    },
-                }
-            )
+            tc_dict: dict[str, Any] = {
+                "id": block.id,
+                "type": "function",
+                "function": {
+                    "name": block.name,
+                    "arguments": json.dumps(block.input),
+                },
+            }
+            tool_calls.append(tc_dict)
         elif block.type == "image":
             if block.source_type == "url":
                 parts.append({"type": "image_url", "image_url": {"url": block.data}})
@@ -609,6 +618,13 @@ def _build_openai_messages(
 
     # Assistant message with tool_calls (preserve text alongside calls)
     if tool_calls:
+        # Gemini requires thought_signature on the first tool_call in each
+        # step of the current turn. Attach it if a ContentBlockThinking with
+        # a signature preceded the tool_use blocks.
+        if thinking_signature and tool_calls:
+            tool_calls[0]["extra_content"] = {
+                "google": {"thought_signature": thinking_signature},
+            }
         result: dict[str, Any] = {"role": msg.role, "tool_calls": tool_calls}
         text_content = " ".join(p["text"] for p in parts if p.get("type") == "text")
         if text_content:
@@ -816,9 +832,7 @@ class OpenAIProvider:
                 payload["reasoning_effort"] = effort
             elif reasoning_format == "deepseek":
                 payload["thinking"] = {"type": "enabled"}
-                payload["reasoning_effort"] = _resolve_deepseek_reasoning_effort(
-                    cfg.thinking_level
-                )
+                payload["reasoning_effort"] = _resolve_deepseek_reasoning_effort(cfg.thinking_level)
             elif reasoning_format == "gemini":
                 payload["reasoning_effort"] = effort
             elif reasoning_format == "zai":
@@ -843,10 +857,15 @@ class OpenAIProvider:
             payload["thinking"] = {"type": "disabled"}
         elif caps and caps.supports_reasoning and caps.reasoning_format == "dashscope":
             payload["enable_thinking"] = False
-        elif caps and caps.supports_reasoning and caps.reasoning_format in {
-            "moonshot",
-            "volcengine",
-        }:
+        elif (
+            caps
+            and caps.supports_reasoning
+            and caps.reasoning_format
+            in {
+                "moonshot",
+                "volcengine",
+            }
+        ):
             payload["thinking"] = {"type": "disabled"}
         elif (
             self._provider_kind == "openrouter"
@@ -908,7 +927,12 @@ class OpenAIProvider:
 
         # tool_call accumulator: index -> {id, name, json_parts}
         pending_calls: dict[int, dict[str, Any]] = {}
-        reasoning_parts: list[str] = []
+        # Gemini thought_signature streamed on a non-FC text delta. Kept
+        # separate from pending_calls (whose keys MUST stay int — see
+        # _resolve_tool_call_index's max(keys)+1) so a str key can never
+        # poison the next-index computation with a TypeError.
+        streamed_thought_signature: str | None = None
+        reasoning = ReasoningAccumulator()
         assistant_text_parts: list[str] = []
         input_tokens = 0
         output_tokens = 0
@@ -979,11 +1003,13 @@ class OpenAIProvider:
                         # to keep memory low.
                         _body_text = (
                             body.decode("utf-8", errors="replace")
-                            if isinstance(body, bytes) else str(body)
+                            if isinstance(body, bytes)
+                            else str(body)
                         )
                         try:
                             _payload_head = json.dumps(
-                                payload, ensure_ascii=False,
+                                payload,
+                                ensure_ascii=False,
                             )[:4000]
                         except Exception:  # noqa: BLE001
                             _payload_head = repr(payload)[:4000]
@@ -1046,17 +1072,27 @@ class OpenAIProvider:
                                 yield TextDeltaEvent(text=text)
                                 assistant_text_parts.append(text)
 
-                            # Reasoning content (always parsed, not gated on thinking)
+                            # Reasoning content (always parsed, not gated on thinking).
+                            # Streamed in real time as ReasoningDeltaEvent; the
+                            # accumulator also retains the joined text for DoneEvent.
                             reasoning_details = delta.get("reasoning_details")
                             if reasoning_details:
                                 for detail in reasoning_details:
                                     if isinstance(detail, dict):
-                                        text_val = detail.get("text", "")
-                                        if text_val:
-                                            reasoning_parts.append(text_val)
-                            reasoning_str = delta.get("reasoning_content")
-                            if reasoning_str:
-                                reasoning_parts.append(reasoning_str)
+                                        reasoning_event = reasoning.emit(detail.get("text", ""))
+                                        if reasoning_event is not None:
+                                            yield reasoning_event
+                            reasoning_event = reasoning.emit(delta.get("reasoning_content"))
+                            if reasoning_event is not None:
+                                yield reasoning_event
+
+                            # Gemini thought_signature on non-FC deltas
+                            # (streamed thinking path): Gemini sends it on
+                            # the top-level delta instead of attaching it to
+                            # a tool_call. Keep it out of pending_calls.
+                            ts_delta = delta.get("thought_signature")
+                            if isinstance(ts_delta, str) and ts_delta:
+                                streamed_thought_signature = ts_delta
 
                             # Tool calls (may stream over multiple chunks)
                             for tc in delta.get("tool_calls", []):
@@ -1070,6 +1106,7 @@ class OpenAIProvider:
                                         "id": tc.get("id", f"call_{uuid4().hex[:12]}"),
                                         "name": tc.get("function", {}).get("name", ""),
                                         "parts": [],
+                                        "thought_signature": None,
                                     }
                                     emitted_stream_event = True
                                     yield ToolUseStartEvent(
@@ -1083,6 +1120,16 @@ class OpenAIProvider:
                                     fname = tc.get("function", {}).get("name", "")
                                     if fname:
                                         pending_calls[idx]["name"] = fname
+
+                                # Gemini thought_signature (OpenAI compat format):
+                                # tool_calls[].extra_content.google.thought_signature
+                                sig = (
+                                    (tc.get("extra_content") or {})
+                                    .get("google", {})
+                                    .get("thought_signature")
+                                )
+                                if isinstance(sig, str) and sig:
+                                    pending_calls[idx]["thought_signature"] = sig
 
                                 fragment = tc.get("function", {}).get("arguments", "")
                                 if fragment:
@@ -1118,20 +1165,38 @@ class OpenAIProvider:
                             emitted_stream_event = True
                             yield event
 
-                    # Assemble reasoning from structured fields
-                    reasoning_text = "".join(reasoning_parts)
+                    # Assemble reasoning from the structured fields already
+                    # streamed in real time via ReasoningDeltaEvent.
+                    reasoning_text = reasoning.finalize()
 
-                    # Fallback: <think> tag extraction from accumulated text
+                    # Fallback: <think> tag extraction from accumulated text.
+                    # This format embeds reasoning inside the answer text, so it
+                    # can only be recovered after the full text arrives — it is
+                    # inherently non-streamable and stays a turn-end assembly.
                     caps = cfg.model_capabilities
                     if not reasoning_text and caps and caps.reasoning_format == "think_tags":
                         full_text = "".join(assistant_text_parts)
-                        reasoning_text = _extract_think_tags(full_text)
+                        reasoning_text = _extract_think_tags(full_text) or None
+
+                    # Gemini thought_signature: extract from the first tool call
+                    # that carries one (Gemini attaches it to the first FC only).
+                    gemini_thought_sig: str | None = None
+                    for _call in pending_calls.values():
+                        sig = _call.get("thought_signature")
+                        if isinstance(sig, str) and sig:
+                            gemini_thought_sig = sig
+                            break
+                    # Fallback: when Gemini streams the signature on a non-FC
+                    # text delta (no tool_call carries it), use the streamed one.
+                    if gemini_thought_sig is None:
+                        gemini_thought_sig = streamed_thought_signature
 
                     yield DoneEvent(
                         stop_reason=stop_reason,
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,
                         reasoning_content=reasoning_text or None,
+                        thinking_signature=gemini_thought_sig,
                         reasoning_tokens=reasoning_tokens,
                         cached_tokens=cached_tokens,
                         cache_write_tokens=cache_write_tokens,
@@ -1146,7 +1211,8 @@ class OpenAIProvider:
                     "openrouter.stream_timeout_fallback_started",
                     model=self._model,
                     timeout_seconds=cfg.timeout,
-                    error=str(exc),
+                    timeout_phase=type(exc).__name__,
+                    error=str(exc) or repr(exc),
                 )
                 yield ProviderHeartbeatEvent(
                     phase="llm_fallback",
@@ -1233,8 +1299,9 @@ class OpenAIProvider:
         billed_cost, cost_source = _provider_billed_cost(self._provider_kind, raw_billed_cost)
         stop_reason = "stop"
         assistant_text_parts: list[str] = []
-        reasoning_parts: list[str] = []
+        reasoning = ReasoningAccumulator()
         emitted_structured_tool = False
+        non_stream_thought_sig: str | None = None
 
         for choice in data.get("choices", []):
             if choice.get("finish_reason"):
@@ -1250,13 +1317,15 @@ class OpenAIProvider:
             if reasoning_details:
                 for detail in reasoning_details:
                     if isinstance(detail, dict):
-                        text_val = detail.get("text", "")
-                        if text_val:
-                            reasoning_parts.append(text_val)
+                        reasoning_event = reasoning.emit(detail.get("text", ""))
+                        if reasoning_event is not None:
+                            yield reasoning_event
             for key in ("reasoning_content", "reasoning"):
                 reasoning_str = message.get(key)
-                if isinstance(reasoning_str, str) and reasoning_str:
-                    reasoning_parts.append(reasoning_str)
+                if isinstance(reasoning_str, str):
+                    reasoning_event = reasoning.emit(reasoning_str)
+                    if reasoning_event is not None:
+                        yield reasoning_event
 
             for tc in message.get("tool_calls") or []:
                 function = tc.get("function") or {}
@@ -1279,24 +1348,30 @@ class OpenAIProvider:
                     tool_name=tool_name,
                     arguments=arguments,
                 )
+                # Collect Gemini thought_signature from first FC that has one.
+                if non_stream_thought_sig is None:
+                    sig = (tc.get("extra_content") or {}).get("google", {}).get("thought_signature")
+                    if isinstance(sig, str) and sig:
+                        non_stream_thought_sig = sig
 
         if not emitted_structured_tool and tools and assistant_text_parts:
             for event in _synthesize_text_tool_events("".join(assistant_text_parts), tools):
                 yield event
 
-        reasoning_text = "".join(reasoning_parts)
+        reasoning_text = reasoning.finalize()
         if (
             not reasoning_text
             and cfg.model_capabilities
             and cfg.model_capabilities.reasoning_format == "think_tags"
         ):
-            reasoning_text = _extract_think_tags("".join(assistant_text_parts))
+            reasoning_text = _extract_think_tags("".join(assistant_text_parts)) or None
 
         yield DoneEvent(
             stop_reason=stop_reason,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             reasoning_content=reasoning_text or None,
+            thinking_signature=non_stream_thought_sig,
             reasoning_tokens=reasoning_tokens,
             cached_tokens=cached_tokens,
             cache_write_tokens=cache_write_tokens,

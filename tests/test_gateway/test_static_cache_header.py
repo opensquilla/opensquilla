@@ -11,10 +11,12 @@ from __future__ import annotations
 import os
 
 import pytest
+from pydantic import ValidationError
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
-from opensquilla.gateway.config import GatewayConfig
+from opensquilla.gateway import control_ui
+from opensquilla.gateway.config import ControlUiConfig, GatewayConfig
 from opensquilla.gateway.control_ui import create_control_ui_routes
 
 
@@ -48,6 +50,140 @@ def test_control_ui_bootstrap_includes_config_path(tmp_path) -> None:
     assert response.status_code == 200
     assert 'data-config-path="' in response.text
     assert str(config.config_path) in response.text
+
+
+def test_control_ui_vite_asset_urls_use_configured_base_path(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "index.html").write_text(
+        '<script type="module" crossorigin src="./assets/index.js"></script>'
+        '<link rel="stylesheet" crossorigin href="./assets/index.css">',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(control_ui, "_DIST_DIR", tmp_path)
+
+    js_url, css_urls = control_ui._read_vite_assets("/ops")
+
+    assert js_url == "/ops/static/dist/assets/index.js"
+    assert css_urls == ["/ops/static/dist/assets/index.css"]
+
+
+def test_read_vite_assets_extracts_every_stylesheet(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Vite can emit more than one entry stylesheet (e.g. a shared Icon chunk
+    # before the main bundle); all must be returned in document order, else the
+    # page renders unstyled.
+    (tmp_path / "index.html").write_text(
+        '<script type="module" crossorigin src="./assets/index.js"></script>'
+        '<link rel="stylesheet" crossorigin href="./assets/Icon-abc.css">'
+        '<link rel="stylesheet" crossorigin href="./assets/index-def.css">',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(control_ui, "_DIST_DIR", tmp_path)
+
+    js_url, css_urls = control_ui._read_vite_assets("/ops")
+
+    assert js_url == "/ops/static/dist/assets/index.js"
+    assert css_urls == [
+        "/ops/static/dist/assets/Icon-abc.css",
+        "/ops/static/dist/assets/index-def.css",
+    ]
+
+
+def test_control_ui_rebases_hard_coded_vite_base_path(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "index.html").write_text(
+        '<script type="module" src="/control/static/dist/assets/index.js"></script>'
+        '<link rel="stylesheet" href="/control/static/dist/assets/index.css">',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(control_ui, "_DIST_DIR", tmp_path)
+
+    js_url, css_urls = control_ui._read_vite_assets("/custom")
+
+    assert js_url == "/custom/static/dist/assets/index.js"
+    assert css_urls == ["/custom/static/dist/assets/index.css"]
+
+
+def test_control_ui_defaults_to_vue_bootstrap(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "index.html").write_text(
+        '<script type="module" crossorigin src="./assets/index.js"></script>'
+        '<link rel="stylesheet" crossorigin href="./assets/index.css">',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(control_ui, "_DIST_DIR", tmp_path)
+    config = GatewayConfig()
+    config.control_ui.enabled = True
+    app = Starlette(routes=create_control_ui_routes(config))
+    client = TestClient(app)
+
+    response = client.get("/control/")
+
+    assert response.status_code == 200
+    assert '/control/static/dist/assets/index.js' in response.text
+    assert '/control/static/js/app.js' not in response.text
+
+
+def test_control_ui_legacy_frontend_uses_static_bootstrap() -> None:
+    config = GatewayConfig()
+    config.control_ui.enabled = True
+    config.control_ui.frontend = "legacy"
+    app = Starlette(routes=create_control_ui_routes(config))
+    client = TestClient(app)
+
+    response = client.get("/control/")
+
+    assert response.status_code == 200
+    assert '/control/static/js/app.js' in response.text
+    assert '/control/static/dist/assets/' not in response.text
+
+
+def test_control_ui_frontend_reads_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENSQUILLA_CONTROL_UI_FRONTEND", "legacy")
+
+    config = GatewayConfig()
+
+    assert config.control_ui.frontend == "legacy"
+
+
+def test_control_ui_frontend_reads_toml_config(tmp_path) -> None:
+    config_path = tmp_path / "opensquilla.toml"
+    config_path.write_text(
+        '[control_ui]\nfrontend = "legacy"\n',
+        encoding="utf-8",
+    )
+
+    config = GatewayConfig.load_from_toml(config_path)
+
+    assert config.control_ui.frontend == "legacy"
+
+
+def test_control_ui_frontend_rejects_invalid_value() -> None:
+    with pytest.raises(ValidationError):
+        ControlUiConfig(frontend="retro")
+
+
+def test_control_ui_legacy_frontend_uses_configured_base_path() -> None:
+    config = GatewayConfig()
+    config.control_ui.enabled = True
+    config.control_ui.base_path = "/ops"
+    config.control_ui.frontend = "legacy"
+    app = Starlette(routes=create_control_ui_routes(config))
+    client = TestClient(app)
+
+    response = client.get("/ops/")
+
+    assert response.status_code == 200
+    assert '/ops/static/js/app.js' in response.text
+    assert '/control/static/js/app.js' not in response.text
 
 
 def test_control_ui_bootstrap_ws_url_uses_client_reachable_wildcard_host() -> None:

@@ -11,6 +11,7 @@ from typing import Any, cast
 
 import structlog
 
+from opensquilla.artifacts import enrich_artifact_event_dict
 from opensquilla.engine.cache_break_monitor import notify_compaction
 from opensquilla.engine.start_turn import start_turn_via_runtime
 from opensquilla.gateway import attachment_ingest as _attachment_ingest
@@ -29,6 +30,7 @@ from opensquilla.gateway.session_services import (
     set_session_epoch,
 )
 from opensquilla.gateway.session_streams import get_session_streams
+from opensquilla.gateway.session_view import build_session_view_item, derive_transcript_title
 from opensquilla.paths import media_root_from_config
 from opensquilla.session.compaction import (
     build_compaction_config_from_provider,
@@ -52,6 +54,12 @@ from opensquilla.session.compaction_lifecycle import (
     pre_compaction_flush_requires_safe_receipt,
 )
 from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id, parse_agent_id
+from opensquilla.session.models import SessionStatus
+from opensquilla.session.naming import (
+    generate_session_title,
+    is_naming_eligible,
+    title_slot_is_empty,
+)
 from opensquilla.session.terminal_reply import build_terminal_reply, sanitize_agent_error
 
 _d = get_dispatcher()
@@ -656,6 +664,52 @@ async def _list_task_rows_by_session(
     return {key: await _list_task_rows(ctx, storage, key) for key in keys}
 
 
+async def _list_transcript_titles(storage: Any, sessions: list[Any]) -> dict[str, str]:
+    session_ids = [str(getattr(session, "session_id", "") or "") for session in sessions]
+    session_ids = [session_id for session_id in session_ids if session_id]
+    if not session_ids:
+        return {}
+
+    title_inputs: dict[str, list[str]] = {session_id: [] for session_id in session_ids}
+    storage_batch = getattr(storage, "list_user_transcript_content_batch", None)
+    if callable(storage_batch):
+        try:
+            grouped = await storage_batch(session_ids, limit_per_session=3)
+            title_inputs.update({
+                str(session_id): [str(value) for value in values if value]
+                for session_id, values in grouped.items()
+            })
+        except Exception:
+            log.warning("sessions.transcript_title_batch_failed", exc_info=True)
+
+    if not any(title_inputs.values()):
+        storage_get_transcript = getattr(storage, "get_transcript", None)
+        if callable(storage_get_transcript):
+            for session_id in session_ids:
+                try:
+                    entries = await storage_get_transcript(session_id, limit=8)
+                except Exception:
+                    log.warning(
+                        "sessions.transcript_title_read_failed",
+                        session_id=session_id,
+                    )
+                    continue
+                title_inputs[session_id] = [
+                    str(getattr(entry, "content", "") or "")
+                    for entry in entries
+                    if str(getattr(entry, "role", "") or "").lower() == "user"
+                ][:3]
+
+    titles: dict[str, str] = {}
+    for session_id, values in title_inputs.items():
+        for value in values:
+            title = derive_transcript_title(value)
+            if title:
+                titles[session_id] = title
+                break
+    return titles
+
+
 def _create_session_key(agent_id: str, kind: object = None) -> str:
     short_id = uuid.uuid4().hex[:8]
     normalized_kind = str(kind or "").strip().lower().replace("_", "-")
@@ -747,6 +801,7 @@ async def _handle_sessions_list(params: dict | None, ctx: RpcContext) -> dict:
         storage,
         [s.session_key for s in sessions],
     )
+    transcript_titles = await _list_transcript_titles(storage, sessions)
 
     # Batch transcript counts in one round-trip to avoid N+1 against
     # count_transcript_entries. Storage layers that don't implement the batch
@@ -801,6 +856,10 @@ async def _handle_sessions_list(params: dict | None, ctx: RpcContext) -> dict:
             "parentSessionKey": getattr(s, "parent_session_key", None),
             "spawned_by": getattr(s, "spawned_by", None),
             "spawnedBy": getattr(s, "spawned_by", None),
+            "spawn_depth": getattr(s, "spawn_depth", 0),
+            "spawnDepth": getattr(s, "spawn_depth", 0),
+            "forked_from_parent": bool(getattr(s, "forked_from_parent", False)),
+            "forkedFromParent": bool(getattr(s, "forked_from_parent", False)),
             "origin": getattr(s, "origin", None),
             "message_count": entry_count,
             "entry_count": entry_count,
@@ -808,10 +867,173 @@ async def _handle_sessions_list(params: dict | None, ctx: RpcContext) -> dict:
         }
         row.update(_derive_source_metadata(s))
         task_rows = task_rows_by_session.get(canonicalize_session_key(s.session_key), [])
-        row.update(_task_state_summary(task_rows))
+        task_summary = _task_state_summary(task_rows)
+        view_fields = build_session_view_item(
+            s,
+            entry_count=entry_count,
+            task_rows=task_rows,
+            now_ms=now_ms,
+            transcript_title=transcript_titles.get(s.session_id, ""),
+        )
+        row.update(task_summary)
+        row.update(view_fields)
         result.append(row)
 
     return {"sessions": result, "count": len(result), "ts": now_ms}
+
+
+async def _titles_for_keys(storage: Any, keys: list[str], now_ms: int) -> dict[str, str]:
+    """Resolve canonical session_key -> sidebar title for a small set of keys.
+
+    Labels transcript (content) hits without rebuilding the whole session list.
+    Bounded by the search limit, so this is a handful of point lookups.
+    """
+    unique = list(dict.fromkeys(canonicalize_session_key(k) for k in keys if k))
+    sessions: list[Any] = []
+    for key in unique:
+        try:
+            node = await storage.get_session(key)
+        except Exception:
+            node = None
+        if node is not None:
+            sessions.append(node)
+    if not sessions:
+        return {}
+    transcript_titles = await _list_transcript_titles(storage, sessions)
+    out: dict[str, str] = {}
+    for node in sessions:
+        view = build_session_view_item(
+            node,
+            entry_count=0,
+            task_rows=[],
+            now_ms=now_ms,
+            transcript_title=transcript_titles.get(getattr(node, "session_id", ""), ""),
+        )
+        out[canonicalize_session_key(node.session_key)] = str(view.get("title") or "")
+    return out
+
+
+@_d.method("sessions.search", scope="operator.read")
+async def _handle_sessions_search(params: dict | None, ctx: RpcContext) -> dict:
+    """Search sessions by title and by transcript content.
+
+    ``sessions`` holds title matches across ALL sessions (not just a recent
+    page); ``messages`` holds content matches. Content search uses the ranked
+    FTS index for ASCII queries and a substring (LIKE) scan for queries the FTS
+    tokenizer can't segment (CJK and other non-ASCII scripts), so Chinese
+    conversations are searchable too. Covers every surface (webchat, channels,
+    cron) because the transcript store is shared. Titles are derived the same
+    way ``sessions.list`` derives them so results read like the sidebar.
+    """
+    now_ms = int(time.time() * 1000)
+    query = ""
+    limit = 20
+    if isinstance(params, dict):
+        query = str(params.get("query") or "").strip()
+        try:
+            limit = int(params.get("limit", 20))
+        except (TypeError, ValueError):
+            limit = 20
+    limit = max(1, min(limit, 50))
+
+    empty = {"sessions": [], "messages": [], "query": query, "ts": now_ms}
+    if not query or ctx.session_manager is None:
+        return empty
+    storage = get_session_storage(ctx.session_manager)
+    if storage is None:
+        return empty
+
+    # ── Title hits ───────────────────────────────────────────────────────────
+    # Prefer the dedicated global query (matches every session, builds view rows
+    # only for the matches). Fall back to a bounded recent scan for storage
+    # doubles that don't implement it.
+    title_search = getattr(storage, "search_sessions_by_title", None)
+    if callable(title_search):
+        title_sessions = await title_search(query, limit)
+    else:
+        needle = query.lower()
+        recent = await storage.list_sessions(limit=200)
+        title_sessions = [
+            s
+            for s in recent
+            if needle
+            in " ".join(
+                p
+                for p in (
+                    str(getattr(s, "display_name", "") or ""),
+                    str(getattr(s, "derived_title", "") or ""),
+                    str(getattr(s, "subject", "") or ""),
+                )
+                if p
+            ).lower()
+        ][:limit]
+
+    transcript_titles = await _list_transcript_titles(storage, title_sessions)
+    session_hits: list[dict[str, Any]] = []
+    title_keys: set[str] = set()
+    for s in title_sessions:
+        view = build_session_view_item(
+            s,
+            entry_count=0,
+            task_rows=[],
+            now_ms=now_ms,
+            transcript_title=transcript_titles.get(getattr(s, "session_id", ""), ""),
+        )
+        title_keys.add(canonicalize_session_key(s.session_key))
+        session_hits.append(
+            {
+                "key": s.session_key,
+                "title": str(view.get("title") or ""),
+                "effectiveAgentId": view.get("effectiveAgentId"),
+                "surface": view.get("surface"),
+                "updatedAt": view.get("updatedAt"),
+            }
+        )
+
+    # ── Content hits ─────────────────────────────────────────────────────────
+    # ASCII queries use the ranked, indexed FTS path. Non-ASCII queries (CJK and
+    # other scripts the FTS tokenizer can't segment) use a substring LIKE scan —
+    # the only option for them. ASCII deliberately has NO LIKE fallback so a
+    # common keystroke can never trigger an unbounded full-table content scan.
+    has_like = hasattr(storage, "search_transcript_like")
+    non_ascii = any(ord(ch) > 127 for ch in query)
+    rows: list[dict[str, Any]] = []
+    try:
+        if non_ascii:
+            if has_like:
+                rows = await storage.search_transcript_like(query, limit=limit)
+        else:
+            rows = await storage.search_transcript(query, limit=limit)
+    except Exception:
+        log.warning("sessions.search.transcript_failed", exc_info=True)
+        rows = []
+
+    # One row per session, never repeating a session already shown as a title
+    # hit, enriched with the session title via a small bounded lookup.
+    pending: list[tuple[str, str, dict[str, Any]]] = []
+    content_keys: set[str] = set()
+    for row in rows:
+        raw_key = str(row.get("session_key") or "")
+        canon = canonicalize_session_key(raw_key)
+        if not canon or canon in title_keys or canon in content_keys:
+            continue
+        content_keys.add(canon)
+        pending.append((raw_key, canon, row))
+
+    title_map = await _titles_for_keys(storage, [canon for _, canon, _ in pending], now_ms)
+    message_hits: list[dict[str, Any]] = []
+    for raw_key, canon, row in pending:
+        message_hits.append(
+            {
+                "key": raw_key,
+                "title": title_map.get(canon, ""),
+                "role": row.get("role"),
+                "snippet": row.get("snippet") or "",
+                "createdAt": row.get("created_at"),
+            }
+        )
+
+    return {"sessions": session_hits, "messages": message_hits, "query": query, "ts": now_ms}
 
 
 @_d.method("sessions.create", scope="operator.write")
@@ -862,6 +1084,97 @@ async def _handle_sessions_create(params: dict | None, ctx: RpcContext) -> dict:
         result["seededMessage"] = True
 
     return result
+
+
+@_d.method("sessions.fork", scope="operator.write")
+async def _handle_sessions_fork(params: dict | None, ctx: RpcContext) -> dict:
+    """Fork a session into a new webchat-routable child with a copied transcript."""
+    key = _require_key(params)
+    assert isinstance(params, dict)
+    title = params.get("title")
+    if title is not None and not isinstance(title, str):
+        raise ValueError("params.title must be a string")
+
+    if ctx.session_manager is None:
+        raise KeyError("No session manager available")
+    storage = get_session_storage(ctx.session_manager)
+    if storage is None:
+        raise KeyError("No session storage available")
+
+    parent = await storage.get_session(key)
+    if parent is None:
+        raise KeyError(f"Session not found: {key}")
+
+    agent_id = _effective_agent_id_for_session(parent, key)
+    child_key = _create_session_key(agent_id, "webchat")
+    child = await ctx.session_manager.branch(
+        key,
+        child_key,
+        fork_transcript=True,
+        status=SessionStatus.DONE,
+    )
+
+    display_name = title or getattr(parent, "display_name", None)
+    if display_name:
+        await ctx.session_manager.update(child.session_key, display_name=display_name)
+
+    await _emit_to_subscribers(
+        ctx,
+        child.session_key,
+        "sessions.changed",
+        build_sessions_changed_payload(child.session_key, "forked", run_status="idle"),
+    )
+
+    return {"key": child.session_key, "parentKey": key}
+
+
+async def _should_auto_title(
+    ctx: RpcContext,
+    storage: Any,
+    session: Any,
+    key: str,
+    session_id: str,
+) -> bool:
+    """Whether to spawn LLM auto-naming for this send (first user message only).
+
+    Cheap checks first; the transcript-count query only runs for sessions that
+    are eligible and still lack a title, so titled/established sessions cost
+    nothing. Best-effort: any failure disables naming for this turn.
+    """
+    try:
+        naming_cfg = getattr(getattr(ctx, "config", None), "naming", None)
+        if naming_cfg is None or not getattr(naming_cfg, "enabled", False):
+            return False
+        if not title_slot_is_empty(session):
+            return False
+        from opensquilla.gateway.session_view import _session_kind, _surface
+
+        origin = getattr(session, "origin", None)
+        origin_map = origin if isinstance(origin, dict) else {}
+        surface = _surface(session, key, origin_map)
+        session_kind = _session_kind(session, key, surface, origin_map)
+        if not is_naming_eligible(naming_cfg, surface, session_kind):
+            return False
+        # First user message: the session had no transcript entries before this
+        # send (the current message is persisted by the TurnRunner afterwards).
+        return bool(await storage.count_transcript_entries(session_id) == 0)
+    except Exception:  # noqa: BLE001 - naming is best-effort
+        return False
+
+
+def _schedule_auto_title(
+    ctx: RpcContext,
+    key: str,
+    first_message: str,
+    *,
+    enabled: bool,
+) -> None:
+    if not enabled:
+        return
+    asyncio.create_task(
+        generate_session_title(ctx, key, first_message),
+        name=f"session-title:{key}",
+    )
 
 
 @_d.method("sessions.send", scope="operator.write")
@@ -920,6 +1233,9 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
         if isinstance(canonical_session_id, str) and canonical_session_id
         else key.split(":")[-1] or key
     )
+    # Capture the auto-naming decision before the turn task runs, so the
+    # first-message check reflects pre-turn transcript state.
+    _generate_title = await _should_auto_title(ctx, storage, session, key, session_id)
     disk_budget = getattr(attachments_cfg, "transcript_disk_budget_bytes", None)
     ingested_attachments = await _attachment_ingest.ingest_attachments(
         message_text,
@@ -971,6 +1287,21 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
     display_text = params.get("displayText") if source_hint.get("caller_kind") == "web" else None
     if display_text is not None and not isinstance(display_text, str):
         display_text = None
+    if display_text is None and source_hint.get("caller_kind") == "web":
+        from opensquilla.meta_preflight_protocol import (
+            display_text_from_preflight_confirmation,
+        )
+
+        display_text = display_text_from_preflight_confirmation(message_text)
+    provider_message_text = message_text
+    if source_hint.get("caller_kind") == "web":
+        from opensquilla.meta_preflight_protocol import (
+            strip_preflight_confirmation_protocol_text,
+        )
+
+        stripped_message = strip_preflight_confirmation_protocol_text(message_text)
+        if stripped_message is not None:
+            provider_message_text = stripped_message.strip()
 
     from opensquilla.gateway.routing import (
         build_cli_route_envelope,
@@ -1031,13 +1362,13 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
         get_transcript = getattr(ctx.session_manager, "get_transcript", None)
         if callable(get_transcript):
             fresh_user_session = not bool(await get_transcript(key))
-        if raw_attachments:
+        if raw_attachments or display_text is not None:
             from opensquilla.gateway.transcripts import (
                 build_transcript_attachment_envelope,
             )
 
             # Stamp up-front so both the stored envelope and the LLM path agree.
-            if hasattr(ctx.session_manager, "stamp_user_text"):
+            if raw_attachments and hasattr(ctx.session_manager, "stamp_user_text"):
                 _stamped = ctx.session_manager.stamp_user_text(message_text)
                 if isinstance(_stamped, str):
                     message_text = _stamped
@@ -1101,10 +1432,10 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
         )
         runtime_mode = "interrupt" if requested_mode == "steer" else requested_mode
         try:
-            handle = await start_turn_via_runtime(
-                task_runtime,
-                route_envelope,
-                message_text,
+                handle = await start_turn_via_runtime(
+                    task_runtime,
+                    route_envelope,
+                    provider_message_text,
                 attachments=raw_attachments,
                 mode=runtime_mode,
                 run_kind=run_kind,
@@ -1171,6 +1502,12 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                     await _store.evict(_u)
                 except Exception:  # noqa: BLE001 — eviction is best-effort
                     log.warning("uploads.evict_failed_post_turn uuid=%s", _u[:8])
+        _schedule_auto_title(
+            ctx,
+            key,
+            semantic_message_text or message_text,
+            enabled=_generate_title,
+        )
         return {"status": "accepted", "key": key, "task_id": handle.task_id}
 
     # 2. Run agent turn in background via TurnRunner
@@ -1238,7 +1575,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                 default_elevated=configured_default_elevated(ctx.config),
             )
             raw_stream = ctx.turn_runner.run(
-                message_text,
+                provider_message_text,
                 key,
                 tool_context=tool_ctx,
                 agent_id=agent_id,
@@ -1265,6 +1602,8 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
             ):
                 event_dict = asdict(event)
                 event_kind = event_dict.pop("kind", event.__class__.__name__)
+                if event_kind == "artifact":
+                    event_dict = enrich_artifact_event_dict(event_dict)
                 if event_kind in ("done", "error"):
                     await _emit_terminal_once(f"session.event.{event_kind}", event_dict)
                 else:
@@ -1349,6 +1688,12 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                 await _store.evict(_u)
             except Exception:  # noqa: BLE001 — eviction is best-effort
                 log.warning("uploads.evict_failed_post_turn uuid=%s", _u[:8])
+    _schedule_auto_title(
+        ctx,
+        key,
+        semantic_message_text or message_text,
+        enabled=_generate_title,
+    )
     return {"status": "accepted", "key": key}
 
 

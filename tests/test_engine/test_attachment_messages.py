@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -117,6 +118,67 @@ def test_image_ref_hydrates_for_current_provider_call(tmp_path: Path) -> None:
     image_blocks = [b for b in out[0].content if isinstance(b, ContentBlockImage)]
     assert len(image_blocks) == 1
     assert image_blocks[0].data == _b64(b"\x89PNG\r\n\x1a\n")
+
+
+def test_historical_inline_image_envelope_can_replay_for_vision() -> None:
+    content = json.dumps(
+        {
+            "text": "continue from this",
+            "attachments": [
+                {
+                    "type": "image/png",
+                    "data": _b64(b"\x89PNG\r\n\x1a\n"),
+                    "name": "p.png",
+                }
+            ],
+        }
+    )
+
+    out = TurnRunner._maybe_unpack_attachments(
+        content,
+        preserve_image_attachments=True,
+    )
+
+    assert isinstance(out, list)
+    assert isinstance(out[0], ContentBlockText)
+    assert out[0].text == "continue from this"
+    image_blocks = [b for b in out if isinstance(b, ContentBlockImage)]
+    assert len(image_blocks) == 1
+    assert image_blocks[0].media_type == "image/png"
+    assert image_blocks[0].data == _b64(b"\x89PNG\r\n\x1a\n")
+
+
+def test_historical_image_ref_envelope_can_replay_for_vision(tmp_path: Path) -> None:
+    payload = b"\x89PNG\r\n\x1a\n"
+    sha = hashlib.sha256(payload).hexdigest()
+    material_dir = tmp_path / "transcripts" / "s1"
+    material_dir.mkdir(parents=True)
+    (material_dir / sha).write_bytes(payload)
+    content = json.dumps(
+        {
+            "text": "continue from stored image",
+            "attachments": [
+                {
+                    "sha256_ref": sha,
+                    "mime": "image/png",
+                    "name": "stored.png",
+                    "size": len(payload),
+                }
+            ],
+        }
+    )
+
+    out = TurnRunner._maybe_unpack_attachments(
+        content,
+        preserve_image_attachments=True,
+        media_root=tmp_path,
+        session_id="s1",
+    )
+
+    assert isinstance(out, list)
+    image_blocks = [b for b in out if isinstance(b, ContentBlockImage)]
+    assert len(image_blocks) == 1
+    assert image_blocks[0].data == _b64(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -361,3 +423,226 @@ def test_text_wrapper_escapes_content_with_close_tag() -> None:
     assert wrapped.text.count("</file>") == 1
     # The user's "second line" still survives in escaped form.
     assert "second line" in wrapped.text
+
+
+# ---------------------------------------------------------------------------
+# OOXML office attachments -> locally extracted text wrapped as ContentBlockText.
+# ---------------------------------------------------------------------------
+
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+
+
+def _sample_docx_bytes(paragraph: str = "Quarterly report summary") -> bytes:
+    import io
+
+    from docx import Document
+
+    document = Document()
+    document.add_paragraph(paragraph)
+    table = document.add_table(rows=1, cols=2)
+    table.rows[0].cells[0].text = "Region"
+    table.rows[0].cells[1].text = "Revenue"
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+def _sample_xlsx_bytes() -> bytes:
+    import io
+
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Numbers"
+    sheet.append(["Name", "Score"])
+    sheet.append(["Alice", 95])
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+def _sample_pptx_bytes(title: str = "Welcome slide") -> bytes:
+    import io
+
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    textbox = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(4), Inches(1))
+    textbox.text_frame.text = title
+    buffer = io.BytesIO()
+    presentation.save(buffer)
+    return buffer.getvalue()
+
+
+def _office_envelope(out: list, mime: str) -> str:
+    block = next(
+        b
+        for b in out[0].content
+        if isinstance(b, ContentBlockText) and f'mime="{mime}"' in b.text
+    )
+    return block.text
+
+
+def test_docx_emits_extracted_text_block() -> None:
+    out = _build(
+        "summarize",
+        [{"type": DOCX_MIME, "data": _b64(_sample_docx_bytes()), "name": "report.docx"}],
+    )
+    text = _office_envelope(out, DOCX_MIME)
+    assert "Quarterly report summary" in text
+    assert "Region | Revenue" in text  # table rows rendered as cell | cell
+    assert 'name="report.docx"' in text
+
+
+def test_xlsx_emits_extracted_sheet_block() -> None:
+    out = _build(
+        "read sheet",
+        [{"type": XLSX_MIME, "data": _b64(_sample_xlsx_bytes()), "name": "data.xlsx"}],
+    )
+    text = _office_envelope(out, XLSX_MIME)
+    assert "=== Sheet: Numbers ===" in text
+    assert "Name,Score" in text
+    assert "Alice,95" in text
+
+
+def test_pptx_emits_extracted_slide_block() -> None:
+    out = _build(
+        "read deck",
+        [{"type": PPTX_MIME, "data": _b64(_sample_pptx_bytes()), "name": "deck.pptx"}],
+    )
+    text = _office_envelope(out, PPTX_MIME)
+    assert "--- Slide 1 ---" in text
+    assert "Welcome slide" in text
+
+
+def test_office_zip_guard_measures_real_inflated_bytes(monkeypatch) -> None:
+    # A highly compressible archive (tiny on disk, large when inflated) must be
+    # rejected by actual inflated size, not the forgeable central-directory
+    # file_size, and the check aborts once the running total crosses the limit.
+    import io as _io
+    import zipfile as _zipfile
+
+    from opensquilla.engine import runtime
+
+    buffer = _io.BytesIO()
+    with _zipfile.ZipFile(buffer, "w", _zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("word/document.xml", b"A" * 200_000)
+    raw = buffer.getvalue()
+    assert len(raw) < 2_000  # compresses to well under the inflated size
+
+    monkeypatch.setattr(runtime, "_OFFICE_DECOMPRESSED_LIMIT", 10_000)
+    with pytest.raises(ValueError, match="decompress"):
+        runtime._office_zip_guard(raw, "bomb.docx")
+
+    monkeypatch.setattr(runtime, "_OFFICE_DECOMPRESSED_LIMIT", 10_000_000)
+    runtime._office_zip_guard(raw, "ok.docx")  # within limit -> no raise
+
+
+def test_corrupt_office_degrades_gracefully() -> None:
+    out = _build(
+        "summarize",
+        [{"type": DOCX_MIME, "data": _b64(b"definitely not a zip"), "name": "broken.docx"}],
+    )
+    text = _office_envelope(out, DOCX_MIME)
+    assert "attachment unavailable" in text
+    # The turn is not aborted: a wrapped block is still produced.
+    assert 'name="broken.docx"' in text
+
+
+# ---------------------------------------------------------------------------
+# Email attachments -> locally extracted text wrapped as ContentBlockText.
+# ---------------------------------------------------------------------------
+
+EML_MIME = "message/rfc822"
+MBOX_MIME = "application/mbox"
+MSG_MIME = "application/vnd.ms-outlook"
+
+
+def _sample_eml_bytes(subject: str = "Status update", body: str = "All systems green.") -> bytes:
+    from email.message import EmailMessage
+
+    message = EmailMessage()
+    message["From"] = "alice@example.com"
+    message["To"] = "bob@example.com"
+    message["Subject"] = subject
+    message["Date"] = "Mon, 01 Jan 2026 00:00:00 +0000"
+    message.set_content(body)
+    return message.as_bytes()
+
+
+def _sample_html_eml_bytes() -> bytes:
+    from email.message import EmailMessage
+
+    message = EmailMessage()
+    message["From"] = "alice@example.com"
+    message["Subject"] = "HTML only"
+    message.set_content(
+        "<html><body><script>alert('xss')</script><p>Visible body</p></body></html>",
+        subtype="html",
+    )
+    return message.as_bytes()
+
+
+def _sample_mbox_bytes() -> bytes:
+    return (
+        b"From alice@example.com Mon Jan  1 00:00:00 2026\n"
+        + _sample_eml_bytes("First subject", "First message body")
+        + b"\nFrom carol@example.com Tue Jan  2 00:00:00 2026\n"
+        + _sample_eml_bytes("Second subject", "Second message body")
+        + b"\n"
+    )
+
+
+def test_eml_emits_extracted_text_block() -> None:
+    out = _build(
+        "summarize",
+        [{"type": EML_MIME, "data": _b64(_sample_eml_bytes()), "name": "note.eml"}],
+    )
+    text = _office_envelope(out, EML_MIME)
+    assert "Subject: Status update" in text
+    assert "From: alice@example.com" in text
+    assert "All systems green." in text
+
+
+def test_eml_html_body_is_stripped_of_scripts() -> None:
+    out = _build(
+        "summarize",
+        [{"type": EML_MIME, "data": _b64(_sample_html_eml_bytes()), "name": "h.eml"}],
+    )
+    text = _office_envelope(out, EML_MIME)
+    assert "Visible body" in text
+    assert "alert(" not in text  # script content must be dropped
+
+
+def test_mbox_emits_multiple_messages() -> None:
+    out = _build(
+        "summarize",
+        [{"type": MBOX_MIME, "data": _b64(_sample_mbox_bytes()), "name": "inbox.mbox"}],
+    )
+    text = _office_envelope(out, MBOX_MIME)
+    assert "--- Message 1 ---" in text
+    assert "--- Message 2 ---" in text
+    assert "First message body" in text
+    assert "Second message body" in text
+
+
+def test_msg_degrades_gracefully_without_extract_msg() -> None:
+    try:
+        import extract_msg  # noqa: F401
+
+        pytest.skip("extract-msg installed; degradation path not exercised")
+    except ImportError:
+        pass
+    ole_bytes = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"rest of an OLE file"
+    out = _build(
+        "summarize",
+        [{"type": MSG_MIME, "data": _b64(ole_bytes), "name": "m.msg"}],
+    )
+    text = _office_envelope(out, MSG_MIME)
+    assert "attachment unavailable" in text
+    assert "extract-msg" in text

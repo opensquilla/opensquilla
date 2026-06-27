@@ -46,13 +46,29 @@
 # debug = false
 # diagnostics_enabled = false
 
+[control_ui]
+# Vue is the product UI. Use "legacy" only as a maintainer rollback fallback
+# for the frozen vanilla-JS frontend; changing this requires a gateway restart.
+# Env override: OPENSQUILLA_CONTROL_UI_FRONTEND=vue|legacy
+frontend = "vue"
+
 # Web search settings
-# Use Brave when a key is configured, otherwise keep DuckDuckGo.
-# search_provider = "duckduckgo"  # "duckduckgo" or "brave"
-# search_api_key = ""             # Brave Search API key; env BRAVE_SEARCH_API_KEY also works
+# Use DuckDuckGo for the no-key path, or configure Bocha, Brave, Tavily, or Exa.
+# search_provider = "duckduckgo"  # "duckduckgo", "bocha", "brave", "tavily", or "exa"
+# search_api_key = ""             # one-time pasted key; prefer search_api_key_env
+# search_api_key_env = ""         # BOCHA_SEARCH_API_KEY, BRAVE_SEARCH_API_KEY, TAVILY_API_KEY, or EXA_API_KEY
 # search_max_results = 5
 # search_proxy = ""               # e.g. "http://127.0.0.1:7890"
 # search_use_env_proxy = false    # true = allow HTTP_PROXY/HTTPS_PROXY if search_proxy is empty
+# search_fallback_policy = "off"  # "off" or "network" retry via DuckDuckGo
+# search_diagnostics = false      # true = include provider-attempt diagnostics
+
+# Tool safety settings.
+# Some local proxy/fake-IP DNS setups resolve public domains through RFC 2544
+# test-network addresses (198.18.0.0/15). Leave this empty unless you trust
+# that fake-IP resolver; other private/internal ranges remain hard-blocked.
+# [tools]
+# trusted_fake_ip_cidrs = ["198.18.0.0/15"]
 
 [llm]
 provider = "openrouter"
@@ -96,10 +112,18 @@ base_url = "https://openrouter.ai/api/v1"
 # Pin each model to its native upstream provider on OpenRouter.
 # Sends provider.only=[slug] + allow_fallbacks=true per request.
 [llm.provider_routing]
+"anthropic/claude-opus-4.8" = "anthropic"
+"anthropic/claude-sonnet-4.6" = "anthropic"
 "deepseek/deepseek-v4-flash" = "deepseek"
-"z-ai/glm-5.1" = "z-ai"
-"anthropic/claude-opus-4.7" = "anthropic"
+"google/gemini-3.5-flash" = "google"
 "moonshotai/kimi-k2.6" = "moonshotai"
+"openai/gpt-5.4-mini" = "openai"
+"openai/gpt-5.5" = "openai"
+"qwen/qwen3-coder-plus" = "qwen"
+"x-ai/grok-4.3" = "x-ai"
+"z-ai/glm-4.6" = "z-ai"
+"z-ai/glm-5.1" = "z-ai"
+"z-ai/glm-5.2" = "z-ai"
 
 [memory]
 # "workspace" stores MEMORY.md and memory/*.md under workspace_dir.
@@ -204,20 +228,20 @@ thinking_level = "high"
 [squilla_router.tiers.c1]
 provider = "openrouter"
 model = "deepseek/deepseek-v4-pro"
-description = "Default balanced text route for normal agent work, coding assistance, debugging, and moderate analysis"
+description = "Default balanced text model for normal agent work, coding assistance, debugging, and moderate analysis"
 supports_image = false
 thinking_level = "high"
 
 [squilla_router.tiers.c2]
 provider = "openrouter"
-model = "z-ai/glm-5.1"
-description = "Stronger text route for multi-step coding, structured reasoning, larger context synthesis, and harder analysis"
+model = "z-ai/glm-5.2"
+description = "Stronger GLM 5.2 route for multi-step coding, structured reasoning, larger context synthesis, and harder analysis"
 supports_image = false
 thinking_level = "high"
 
 [squilla_router.tiers.c3]
 provider = "openrouter"
-model = "anthropic/claude-opus-4.7"
+model = "anthropic/claude-opus-4.8"
 description = "Highest-quality text reasoning route for difficult planning, deep review, complex debugging, and high-stakes synthesis"
 supports_image = false
 thinking_level = "high"
@@ -304,11 +328,18 @@ default_mode = "bypass"                 # off | on | bypass | full
 # ─────────────────────────────────────────────────────────────────────────────
 
 [meta_skill]
-# Global runtime gate for model-visible meta-skill behavior. When false,
-# meta-skills stay installed for inventory/history tooling, but are not injected
-# into prompts, `meta_invoke` is not surfaced, and explicit `meta_invoke` calls
-# are rejected. Default: true.
+# Master gate. When false the meta-skill subsystem is fully off: meta-skills are
+# not injected into prompts, meta_invoke is not surfaced, and the /meta command
+# refuses (both list and run). Default: true.
 # enabled = true
+
+# Automatic activation. When false (the default), meta-skills are MANUAL-ONLY:
+# no system-prompt guidance, no keyword/semantic auto-trigger, meta_invoke is not
+# offered for automatic invocation, and meta-skills are hidden from automatic
+# skill listings.
+# They run only via the explicit `/meta <name>` command. Set true to restore the
+# previous automatic behavior. Default: false.
+# auto_trigger = false
 
 [meta_skill.persistence]
 # Whether to write meta-skill execution traces to SQLite (G4 traceable audit).

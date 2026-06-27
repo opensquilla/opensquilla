@@ -88,6 +88,7 @@ METHOD_SCOPES: dict[str, str] = {
     "config.schema.lookup": READ_SCOPE,
     "sessions.get": READ_SCOPE,
     "sessions.list": READ_SCOPE,
+    "sessions.search": READ_SCOPE,
     "sessions.preview": READ_SCOPE,
     "sessions.resolve": READ_SCOPE,
     "sessions.subscribe": READ_SCOPE,
@@ -130,6 +131,10 @@ METHOD_SCOPES: dict[str, str] = {
     "cron.unsubscribe": READ_SCOPE,  # OpenSquilla-only; classified read.
     "usage.status": READ_SCOPE,
     "usage.cost": READ_SCOPE,
+    "meta.list": READ_SCOPE,  # OpenSquilla-only; invokable meta-skill catalog.
+    "meta.runs.list": READ_SCOPE,
+    "meta.runs.failures": READ_SCOPE,
+    "meta.runs.cost": READ_SCOPE,
     # OpenSquilla-only — onboarding catalog and status are operator-readable.
     "onboarding.status": READ_SCOPE,
     "onboarding.catalog": READ_SCOPE,
@@ -144,6 +149,7 @@ METHOD_SCOPES: dict[str, str] = {
     "chat.clarify_submit": WRITE_SCOPE,
     "search.query": WRITE_SCOPE,
     "sessions.create": WRITE_SCOPE,
+    "sessions.fork": WRITE_SCOPE,
     "sessions.send": WRITE_SCOPE,
     "sessions.abort": WRITE_SCOPE,
     "sessions.reset": WRITE_SCOPE,
@@ -152,6 +158,8 @@ METHOD_SCOPES: dict[str, str] = {
     "sessions.truncate": WRITE_SCOPE,
     # OpenSquilla-only; explicit override of `config.` admin prefix.
     "config.patch.safe": WRITE_SCOPE,
+    # OpenSquilla-only; manual ``/meta`` command launch stamp.
+    "meta.run": WRITE_SCOPE,
     # ----- approvals -----
     # Policy getters/setters explicitly override the ``exec.approvals.`` prefix
     # so that approval workers (which hold operator.approvals) can read/set the
@@ -163,9 +171,11 @@ METHOD_SCOPES: dict[str, str] = {
     "exec.approval.snapshot": APPROVALS_SCOPE,
     "exec.approval.forget": APPROVALS_SCOPE,
     "exec.approval.resolve": APPROVALS_SCOPE,
+    "exec.approval.extend": APPROVALS_SCOPE,
     "plugin.approval.request": APPROVALS_SCOPE,
     "plugin.approval.waitDecision": APPROVALS_SCOPE,
     "plugin.approval.resolve": APPROVALS_SCOPE,
+    "plugin.approval.extend": APPROVALS_SCOPE,
     # ----- proposals (auto-propose UI: list/show) -----
     # ``exec.proposals.*`` prefix sits OUTSIDE the ``exec.approvals.``
     # admin prefix so that proposal browsing can remain operator-visible.
@@ -188,6 +198,13 @@ METHOD_SCOPES: dict[str, str] = {
     "skills.update": ADMIN_SCOPE,
     "skills.uninstall": ADMIN_SCOPE,
     "skills.deps.install": ADMIN_SCOPE,
+    "meta.runs.show": ADMIN_SCOPE,
+    "meta.runs.draft": ADMIN_SCOPE,
+    "meta.runs.confirm_preflight": ADMIN_SCOPE,
+    "meta.runs.diff": ADMIN_SCOPE,
+    "meta.runs.replay": ADMIN_SCOPE,
+    "meta.runs.validate": ADMIN_SCOPE,
+    "meta.runs.eval_baseline": ADMIN_SCOPE,
     # Proposal mutation changes the managed skill layer or unattended
     # synthesis state, so require authenticated admin rather than remote
     # no-auth operator.proposals.

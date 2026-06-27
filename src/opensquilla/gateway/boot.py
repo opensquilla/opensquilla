@@ -33,6 +33,7 @@ import uvicorn
 from starlette.applications import Starlette
 
 from opensquilla.agents.scope import resolve_agent_model, resolve_agent_workspace_dir
+from opensquilla.artifacts import enrich_artifact_event_dict
 from opensquilla.asyncio_utils import create_background_task
 from opensquilla.engine.usage import UsageTracker as _UsageTracker
 from opensquilla.gateway.app import create_gateway_app
@@ -62,6 +63,7 @@ class _FlushReceiptSessionStorage(Protocol):
 
     async def upsert_memory_durable_receipt(self, receipt: Any) -> Any: ...
 
+
 _AUTO_PROPOSE_TOOL_ALLOWLIST = frozenset(
     {
         "emit_text",
@@ -89,6 +91,24 @@ _LOG_LEVELS = {
 }
 
 
+def _desktop_fast_start_enabled() -> bool:
+    """Return true when desktop startup may defer noncritical warmups."""
+
+    override = os.environ.get("OPENSQUILLA_DESKTOP_FAST_START")
+    if override is not None:
+        return override.strip().lower() in _ENABLED_VALUES
+    return os.environ.get("OPENSQUILLA_DESKTOP", "").strip().lower() in _ENABLED_VALUES
+
+
+def _desktop_router_preload_enabled() -> bool:
+    """Keep desktop first paint fast unless router preload is explicitly requested."""
+
+    override = os.environ.get("OPENSQUILLA_DESKTOP_PRELOAD_ROUTER")
+    if override is not None:
+        return override.strip().lower() in _ENABLED_VALUES
+    return not _desktop_fast_start_enabled()
+
+
 def _make_auto_propose_tool_invoker(
     registry: ToolRegistry,
     *,
@@ -98,6 +118,7 @@ def _make_auto_propose_tool_invoker(
 
     from opensquilla.skills.meta.orchestrator import make_tool_invoker_from_handler
     from opensquilla.tools.dispatch import build_tool_handler
+
     ctx = _make_auto_propose_tool_context(allowed_tools=allowed_tools)
     return make_tool_invoker_from_handler(
         tool_handler=build_tool_handler(registry, ctx),
@@ -477,7 +498,10 @@ class ServiceContainer:
     task_runtime: Any = None
     heartbeat_loop: Any = None
     heartbeat_watcher: Any = None
+    deferred_warmups: list[Callable[[], Any]] = field(default_factory=list)
     _compaction_listener_remove: Callable[[], None] | None = None
+    _approval_listener_remove: Callable[[], None] | None = None
+    _approval_channel_notifier_remove: Callable[[], None] | None = None
 
     # Backward-compat alias — returns the "main" store (or None).
     @property
@@ -499,6 +523,22 @@ class ServiceContainer:
             except Exception:
                 pass
             self._compaction_listener_remove = None
+
+        remove_approval_listener = getattr(self, "_approval_listener_remove", None)
+        if callable(remove_approval_listener):
+            try:
+                remove_approval_listener()
+            except Exception:
+                pass
+            self._approval_listener_remove = None
+
+        remove_approval_notifier = getattr(self, "_approval_channel_notifier_remove", None)
+        if callable(remove_approval_notifier):
+            try:
+                remove_approval_notifier()
+            except Exception:
+                pass
+            self._approval_channel_notifier_remove = None
 
         # ── 1. Stop scheduled producers (no further writes after this) ──
         if self.heartbeat_watcher is not None:
@@ -755,6 +795,7 @@ async def dispatch_task_runtime_turn(
     (including the ``semantic_message`` regression surface).
     """
     from opensquilla.gateway.routing import tool_context_from_envelope
+
     workspace_dir = resolve_agent_workspace_dir(run.agent_id, config)
     workspace_strict = getattr(config, "workspace_strict", None)
     if not isinstance(workspace_strict, bool):
@@ -1006,6 +1047,8 @@ async def _emit_task_runtime_stream_events(
                 if not key.startswith("_")
             }
         event_kind = event_dict.pop("kind", getattr(event, "kind", event.__class__.__name__))
+        if event_kind == "artifact":
+            event_dict = enrich_artifact_event_dict(event_dict)
         if event_kind == "error":
             raw_message = event_dict.get("message")
             error_message = (
@@ -1017,11 +1060,7 @@ async def _emit_task_runtime_stream_events(
             is_timeout = "timeout" in code_text or "stream idle" in error_message.lower()
             is_output_truncated = code_text == "provider_output_truncated"
             terminal_reason = (
-                "timeout"
-                if is_timeout
-                else "output_truncated"
-                if is_output_truncated
-                else "error"
+                "timeout" if is_timeout else "output_truncated" if is_output_truncated else "error"
             )
             terminal_payload = {
                 "status": "timeout" if is_timeout else "failed",
@@ -1145,9 +1184,7 @@ class GatewayServer:
         # returning; only then do we stop channel delivery.
         if self._services is not None and self._services.task_runtime is not None:
             try:
-                await self._services.task_runtime.shutdown(
-                    graceful=True, graceful_timeout=30.0
-                )
+                await self._services.task_runtime.shutdown(graceful=True, graceful_timeout=30.0)
             except Exception:
                 pass
 
@@ -1415,9 +1452,10 @@ def emit_skill_filter_banner(skills_cfg: Any) -> None:
 
     onnx_ok = False
     try:
-        if importlib.util.find_spec("onnxruntime") is not None and importlib.util.find_spec(
-            "tokenizers"
-        ) is not None:
+        if (
+            importlib.util.find_spec("onnxruntime") is not None
+            and importlib.util.find_spec("tokenizers") is not None
+        ):
             from opensquilla.memory.embedding import LocalEmbeddingProvider
 
             model_name = getattr(
@@ -1444,10 +1482,7 @@ def _squilla_router_bundle_dir(router_cfg: Any) -> Path:
     if configured:
         return Path(configured).expanduser()
     return (
-        Path(__file__).resolve().parents[1]
-        / "squilla_router"
-        / "models"
-        / "v4.2_phase3_inference"
+        Path(__file__).resolve().parents[1] / "squilla_router" / "models" / "v4.2_phase3_inference"
     )
 
 
@@ -1538,6 +1573,7 @@ async def build_services(
         config = GatewayConfig.load(os.environ.get("OPENSQUILLA_GATEWAY_CONFIG_PATH"))
         if config.config_path:
             log.info("build_services.config_loaded", path=config.config_path)
+    deferred_warmups: list[Callable[[], Any]] = []
     _warn_workspace_state_mismatch(config)
 
     validate_squilla_router_runtime(config)
@@ -1600,6 +1636,7 @@ async def build_services(
 
     # ── Session manager ─────────────────────────────────────────────
     if session_manager is None:
+        from opensquilla.paths import media_root_from_config
         from opensquilla.session.manager import SessionManager
         from opensquilla.session.storage import SessionStorage
 
@@ -1610,6 +1647,7 @@ async def build_services(
             storage,
             agent_registry=agent_registry,
             checkpoint_workspace_dir=config.workspace_dir,
+            media_root=media_root_from_config(config),
         )
 
     # Wire session manager into tool layer (like set_scheduler, set_gateway_config)
@@ -1667,7 +1705,10 @@ async def build_services(
     from opensquilla.provider.model_catalog import ModelCatalog
 
     model_catalog = ModelCatalog()
-    if api_key and config.llm.provider == "openrouter":
+
+    async def _warm_model_catalog_and_pricing() -> None:
+        if not (api_key and config.llm.provider == "openrouter"):
+            return
         try:
             await asyncio.wait_for(
                 model_catalog.fetch_openrouter(api_key, resolved_base, proxy),
@@ -1695,6 +1736,12 @@ async def build_services(
             log.info("build_services.pricing_cache_ready", count=len(pricing_models))
         except Exception as e:
             log.warning("build_services.pricing_cache_failed", error=str(e))
+
+    if _desktop_fast_start_enabled():
+        deferred_warmups.append(_warm_model_catalog_and_pricing)
+        log.info("build_services.model_catalog_pricing_deferred")
+    else:
+        await _warm_model_catalog_and_pricing()
 
     # ── Tool registry ───────────────────────────────────────────────
     if tool_registry is None:
@@ -1810,10 +1857,15 @@ async def build_services(
             bundled_dir=str(layer_dirs.bundled_dir),
         )
 
-        # Register skill_list and skill_view tools
+        # Register skill_list and skill_view tools. Pass a live getter for the
+        # skills config so coding-mode / disabled gating is honored at call
+        # time (config is updated in place by config.patch).
         from opensquilla.tools.builtin.skill_tools import create_skill_tools
 
-        create_skill_tools(skill_loader)
+        create_skill_tools(
+            skill_loader,
+            skills_cfg_getter=lambda: getattr(config, "skills", None),
+        )
         log.info("build_services.skill_tools_registered")
     except Exception as e:
         log.warning("build_services.skill_loader_failed", error=str(e))
@@ -1853,35 +1905,35 @@ async def build_services(
     if usage_tracker is None:
         usage_tracker = _UsageTracker()
 
-    # ── Search provider (brave > duckduckgo fallback) ───────────────
-    try:
-        import opensquilla.search.providers.brave  # noqa: F401 — registers provider
-        import opensquilla.search.providers.duckduckgo  # noqa: F401 — registers provider
-        from opensquilla.search.registry import get_provider_spec
-        from opensquilla.tools.builtin.web import configure_search
+    # ── Search provider runtime ────────────────────────────────────
+    async def _configure_search_provider() -> None:
+        try:
+            import opensquilla.search.providers.brave  # noqa: F401 — registers provider
+            import opensquilla.search.providers.duckduckgo  # noqa: F401 — registers provider
+            import opensquilla.search.providers.exa  # noqa: F401 — registers provider
+            import opensquilla.search.providers.tavily  # noqa: F401 — registers provider
+            from opensquilla.tools.builtin.web import configure_search
 
-        provider = config.search_provider
-        search_api_key = config.search_api_key
-        if not search_api_key:
-            env_key = config.search_api_key_env or get_provider_spec(provider).env_key
-            search_api_key = os.environ.get(env_key, "") if env_key else ""
-        # Auto-select: use brave if key is available and provider is default
-        if provider == "duckduckgo":
-            if search_api_key or os.environ.get("BRAVE_SEARCH_API_KEY"):
-                provider = "brave"
+            provider = config.search_provider
+            configure_search(
+                provider_name=provider,
+                max_results=config.search_max_results,
+                api_key=config.search_api_key,
+                api_key_env=config.search_api_key_env,
+                proxy=config.search_proxy,
+                use_env_proxy=config.search_use_env_proxy,
+                fallback_policy=config.search_fallback_policy,
+                diagnostics=config.search_diagnostics,
+            )
+            log.info("build_services.search_provider_initialized", provider=provider)
+        except Exception as e:
+            log.warning("build_services.search_provider_failed", error=str(e))
 
-        configure_search(
-            provider_name=provider,
-            max_results=config.search_max_results,
-            api_key=search_api_key,
-            proxy=config.search_proxy,
-            use_env_proxy=config.search_use_env_proxy,
-            fallback_policy=config.search_fallback_policy,
-            diagnostics=config.search_diagnostics,
-        )
-        log.info("build_services.search_provider_initialized", provider=provider)
-    except Exception as e:
-        log.warning("build_services.search_provider_failed", error=str(e))
+    if _desktop_fast_start_enabled():
+        deferred_warmups.append(_configure_search_provider)
+        log.info("build_services.search_provider_deferred", provider=config.search_provider)
+    else:
+        await _configure_search_provider()
 
     # ── MCP discovery (boot order 22) ───────────────────────────────
     if config.mcp.enabled and config.mcp.servers:
@@ -1949,8 +2001,7 @@ async def build_services(
                 agent_id: Path(root)
                 for agent_id, manager in memory_managers.items()
                 for root in [
-                    getattr(manager, "workspace_dir", None)
-                    or getattr(manager, "memory_dir", None)
+                    getattr(manager, "workspace_dir", None) or getattr(manager, "memory_dir", None)
                 ]
                 if root is not None
             }
@@ -1960,9 +2011,7 @@ async def build_services(
                 memory_roots=memory_roots,
                 agent_ids=tuple(_configured_agent_ids(config, extra_agent_ids)),
                 interval_seconds=float(getattr(config.memory, "repair_interval_seconds", 60.0)),
-                max_items_per_tick=int(
-                    getattr(config.memory, "repair_max_items_per_tick", 5)
-                ),
+                max_items_per_tick=int(getattr(config.memory, "repair_max_items_per_tick", 5)),
             )
             log.info("build_services.memory_repair_service_ready")
         except Exception as e:
@@ -1979,11 +2028,7 @@ async def build_services(
             and getattr(persistence_cfg, "enabled", False)
         ):
             meta_storage = get_session_storage(session_manager)
-            db_path = (
-                getattr(meta_storage, "_db_path", None)
-                if meta_storage is not None
-                else None
-            )
+            db_path = getattr(meta_storage, "_db_path", None) if meta_storage is not None else None
             if db_path and db_path != ":memory:":
                 from opensquilla.persistence.meta_run_writer import open_meta_run_writer
 
@@ -1991,10 +2036,7 @@ async def build_services(
                 if meta_storage is not None and hasattr(meta_storage, "_meta_run_writer"):
                     meta_storage._meta_run_writer = meta_run_writer
                 meta_run_writer.mark_orphans_failed(
-                    age_ms=int(
-                        getattr(persistence_cfg, "orphan_cleanup_age_seconds", 3600)
-                    )
-                    * 1000,
+                    age_ms=int(getattr(persistence_cfg, "orphan_cleanup_age_seconds", 3600)) * 1000,
                 )
     except Exception as e:  # noqa: BLE001 - meta traces must not block boot.
         log.warning("build_services.meta_run_writer_failed", error=str(e))
@@ -2019,6 +2061,7 @@ async def build_services(
         flush_service=flush_service,
         memory_repair_service=memory_repair_service,
         meta_run_writer=meta_run_writer,
+        deferred_warmups=deferred_warmups,
     )
     # Attach deferred callback ref so start_gateway_server can wire TurnRunner
     svc._turn_runner_ref = _turn_runner_ref  # type: ignore[attr-defined]
@@ -2074,6 +2117,25 @@ def build_turn_runner_from_services(
         compaction_hooks=getattr(svc, "compaction_hooks", None),
         meta_run_writer=getattr(svc, "meta_run_writer", None),
     )
+
+
+async def _run_deferred_warmups(svc: ServiceContainer) -> None:
+    warmups = list(getattr(svc, "deferred_warmups", []) or [])
+    if not warmups:
+        return
+    log.info("gateway.deferred_warmups_started", count=len(warmups))
+    for warmup in warmups:
+        try:
+            result = warmup()
+            if inspect.isawaitable(result):
+                await result
+        except Exception as exc:  # noqa: BLE001 - warmups must not kill the gateway.
+            log.warning(
+                "gateway.deferred_warmup_failed",
+                warmup=getattr(warmup, "__name__", type(warmup).__name__),
+                error=str(exc),
+            )
+    log.info("gateway.deferred_warmups_ready", count=len(warmups))
 
 
 async def start_gateway_server(
@@ -2240,8 +2302,22 @@ async def start_gateway_server(
         except RuntimeError:
             emit_coro.close()
 
-    svc._compaction_listener_remove = add_compaction_listener(
-        _emit_runtime_compaction_event
+    svc._compaction_listener_remove = add_compaction_listener(_emit_runtime_compaction_event)
+
+    from opensquilla.application.approval_queue import get_approval_queue
+    from opensquilla.gateway.approval_events import register_approval_event_bridge
+    from opensquilla.gateway.approval_notify import register_approval_channel_notifier
+
+    svc._approval_listener_remove = register_approval_event_bridge(
+        get_approval_queue(),
+        runtime_event_bridge,
+        schedule=create_background_task,
+    )
+    svc._approval_channel_notifier_remove = register_approval_channel_notifier(
+        get_approval_queue(),
+        session_manager=svc.session_manager,
+        channel_manager_ref=lambda: _cm_holder[0],
+        schedule=create_background_task,
     )
 
     background_completion_manager = BackgroundCompletionManager(
@@ -2470,9 +2546,7 @@ async def start_gateway_server(
         auto_cfg = config.meta_skill.auto_propose
         auto_home = _gateway_home(config)
         auto_proposals_dir = auto_home / "proposals"
-        auto_log_dir = Path(
-            os.environ.get("OPENSQUILLA_LOG_DIR", str(auto_home / "logs"))
-        )
+        auto_log_dir = Path(os.environ.get("OPENSQUILLA_LOG_DIR", str(auto_home / "logs")))
         auto_agent_ids = _configured_agent_ids(config)
 
         def _build_auto_propose_orchestrator(
@@ -2534,16 +2608,20 @@ async def start_gateway_server(
                 "routing_applied": bool(t3_model),
             }
             if t3_model:
-                auto_metadata.update({
-                    "routed_tier": HIGHEST_TEXT_TIER,
-                    "routed_model": t3_model,
-                    "applied_model": t3_model,
-                })
+                auto_metadata.update(
+                    {
+                        "routed_tier": HIGHEST_TEXT_TIER,
+                        "routed_model": t3_model,
+                        "applied_model": t3_model,
+                    }
+                )
             if t3_thinking_level:
-                auto_metadata.update({
-                    "thinking_requested": True,
-                    "thinking_level": t3_thinking_level,
-                })
+                auto_metadata.update(
+                    {
+                        "thinking_requested": True,
+                        "thinking_level": t3_thinking_level,
+                    }
+                )
 
             base_config = AgentConfig(
                 model_id=auto_model_id,
@@ -2708,12 +2786,14 @@ async def start_gateway_server(
         log.info("gateway.cron_handler_registered", handler_key="system_event")
         log.info("gateway.cron_handler_registered", handler_key="memory_dream")
         log.info("gateway.cron_handler_registered", handler_key="auto_propose")
-        register_runtime(AutoProposeRuntime(
-            config=auto_cfg,
-            home=auto_home,
-            register_crons=_register_auto_propose_runtime_crons,
-            pause_crons=_pause_auto_propose_runtime_crons,
-        ))
+        register_runtime(
+            AutoProposeRuntime(
+                config=auto_cfg,
+                home=auto_home,
+                register_crons=_register_auto_propose_runtime_crons,
+                pause_crons=_pause_auto_propose_runtime_crons,
+            )
+        )
         await _register_dream_crons(
             scheduler=svc.cron_scheduler,
             memory_config=config.memory,
@@ -2775,6 +2855,7 @@ async def start_gateway_server(
         subscription_manager=subscription_manager,
         channel_manager=channel_manager,
         usage_tracker=svc.usage_tracker,
+        meta_run_writer=getattr(svc, "meta_run_writer", None),
         skill_loader=svc.skill_loader,
         cron_scheduler=svc.cron_scheduler,
         turn_runner=turn_runner,
@@ -2829,6 +2910,8 @@ async def start_gateway_server(
                 ),
             )
         log.info("gateway.started", host=config.host, port=config.port)
+        if _desktop_fast_start_enabled():
+            create_background_task(_run_deferred_warmups(svc))
 
     # Start channels (after app is ready to receive webhooks)
     if channel_manager is not None:
@@ -2848,8 +2931,10 @@ async def start_gateway_server(
                     exception=details.get("exception"),
                 )
 
-    if run:
+    if run and _desktop_router_preload_enabled():
         create_background_task(preload_squilla_router_runtime(config))
+    elif run:
+        log.info("gateway.squilla_router_preload_skipped", reason="desktop_fast_start")
 
     app.state.gateway_ready = True
     return server_handle

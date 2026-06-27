@@ -37,6 +37,7 @@ def test_squilla_router_defaults_match_runtime_router_config() -> None:
     assert cfg.strategy == "v4_phase3"
     assert cfg.default_tier == "c1"
     assert cfg.confidence_threshold == 0.5
+    assert cfg.confidence_high_tier_margin == 0.05
     assert cfg.v4_use_aux_head is True
     assert cfg.kv_cache_anti_downgrade_enabled is True
     assert cfg.kv_cache_anti_downgrade_window_seconds == 600
@@ -44,14 +45,15 @@ def test_squilla_router_defaults_match_runtime_router_config() -> None:
     assert cfg.complaint_upgrade_steps == 1
     assert cfg.complaint_upgrade_max_chars == 160
     assert cfg.require_router_runtime is True
+    assert cfg.vision_followup_gate_tier == "c0"
 
     assert cfg.tiers["c0"]["model"] == "deepseek/deepseek-v4-flash"
     assert cfg.tiers["c0"]["thinking_level"] == "high"
     assert cfg.tiers["c1"]["model"] == "deepseek/deepseek-v4-pro"
     assert cfg.tiers["c1"]["thinking_level"] == "high"
-    assert cfg.tiers["c2"]["model"] == "z-ai/glm-5.1"
+    assert cfg.tiers["c2"]["model"] == "z-ai/glm-5.2"
     assert cfg.tiers["c2"]["thinking_level"] == "high"
-    assert cfg.tiers["c3"]["model"] == "anthropic/claude-opus-4.7"
+    assert cfg.tiers["c3"]["model"] == "anthropic/claude-opus-4.8"
     assert cfg.tiers["c3"]["thinking_level"] == "high"
     assert cfg.tiers["image_model"]["model"] == "moonshotai/kimi-k2.6"
     assert cfg.tiers["image_model"]["supports_image"] is True
@@ -324,9 +326,9 @@ def test_example_toml_enables_runtime_router_defaults() -> None:
     assert tiers["c0"]["thinking_level"] == "high"
     assert tiers["c1"]["model"] == "deepseek/deepseek-v4-pro"
     assert tiers["c1"]["thinking_level"] == "high"
-    assert tiers["c2"]["model"] == "z-ai/glm-5.1"
+    assert tiers["c2"]["model"] == "z-ai/glm-5.2"
     assert tiers["c2"]["thinking_level"] == "high"
-    assert tiers["c3"]["model"] == "anthropic/claude-opus-4.7"
+    assert tiers["c3"]["model"] == "anthropic/claude-opus-4.8"
     assert tiers["c3"]["thinking_level"] == "high"
     assert tiers["image_model"]["model"] == "moonshotai/kimi-k2.6"
     assert tiers["image_model"]["supports_image"] is True
@@ -349,10 +351,10 @@ def test_runtime_router_config_does_not_ship_unused_cost_fields() -> None:
 
     assert data["tier_registry"]["S"] == ["deepseek/deepseek-v4-flash"]
     assert data["tier_registry"]["M"] == ["deepseek/deepseek-v4-pro"]
-    assert data["tier_registry"]["L"] == ["z-ai/glm-5.1"]
-    assert data["tier_registry"]["XL"] == ["anthropic/claude-opus-4.7"]
-    assert data["tier_explanations"]["L"]["model"] == "z-ai/glm-5.1"
-    assert data["tier_explanations"]["XL"]["model"] == "anthropic/claude-opus-4.7"
+    assert data["tier_registry"]["L"] == ["z-ai/glm-5.2"]
+    assert data["tier_registry"]["XL"] == ["anthropic/claude-opus-4.8"]
+    assert data["tier_explanations"]["L"]["model"] == "z-ai/glm-5.2"
+    assert data["tier_explanations"]["XL"]["model"] == "anthropic/claude-opus-4.8"
     assert "cost_ratios:" not in text
     assert "cost_matrix:" not in text
     assert "under_routing_multiplier" not in text

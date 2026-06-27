@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import dataclass
 
 import pytest
+import structlog.testing
 
 from opensquilla.gateway.routing import RouteEnvelope, SourceKind
 from opensquilla.gateway.task_runtime import TaskRuntime
@@ -47,24 +48,29 @@ def _envelope(session_key: str = "agent:s:main") -> RouteEnvelope:
 
 
 @pytest.mark.asyncio
-async def test_subagent_reserved_slots_clamp_when_reserved_exceeds_max(capsys) -> None:
+async def test_subagent_reserved_slots_clamp_when_reserved_exceeds_max() -> None:
     """When config asks reserved >= max, clamp to max-1 (avoiding deadlock)."""
     storage = _StubStorage.fresh()
 
     async def handler(_):
         return None
 
-    rt = TaskRuntime(
-        storage=storage,
-        turn_handler=handler,
-        max_concurrency=1,
-        subagent_reserved_slots=2,
-    )
+    with structlog.testing.capture_logs() as logs:
+        rt = TaskRuntime(
+            storage=storage,
+            turn_handler=handler,
+            max_concurrency=1,
+            subagent_reserved_slots=2,
+        )
 
     assert rt._subagent_reserved_slots == 0
-    # structlog emits the clamp warning to stdout in default test config.
-    captured = capsys.readouterr()
-    assert "subagent_reserved_slots_clamped" in (captured.out + captured.err)
+    assert {
+        "event": "task_runtime.subagent_reserved_slots_clamped",
+        "requested": 2,
+        "max_concurrency": 1,
+        "clamped_to": 0,
+        "log_level": "warning",
+    } in logs
 
 
 @pytest.mark.asyncio

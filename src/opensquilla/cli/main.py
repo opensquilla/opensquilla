@@ -17,6 +17,7 @@ warn_if_proxy_ignored()
 from opensquilla.cli.agent_cmd import run_agent_command  # noqa: E402
 from opensquilla.cli.agents_cmd import agents_app  # noqa: E402
 from opensquilla.cli.channels_cmd import channels_app  # noqa: E402
+from opensquilla.cli.codetask_cmd import codetask_app  # noqa: E402
 from opensquilla.cli.config_cmd import app as config_app  # noqa: E402
 from opensquilla.cli.cost_cmd import app as cost_app  # noqa: E402
 from opensquilla.cli.cron_cmd import cron_app  # noqa: E402
@@ -35,6 +36,7 @@ from opensquilla.cli.sandbox_cmd import sandbox_app  # noqa: E402
 from opensquilla.cli.search_cmd import search_app  # noqa: E402
 from opensquilla.cli.sessions_cmd import app as sessions_app  # noqa: E402
 from opensquilla.cli.skills_cmd import skills_app  # noqa: E402
+from opensquilla.cli.swebench_cmd import swebench_app  # noqa: E402
 
 app = typer.Typer(
     name="opensquilla",
@@ -60,6 +62,8 @@ app.add_typer(sandbox_app, name="sandbox")
 app.add_typer(search_app, name="search")
 app.add_typer(sessions_app, name="sessions")
 app.add_typer(skills_app, name="skills")
+app.add_typer(swebench_app, name="swebench")
+app.add_typer(codetask_app, name="code-task")
 
 app.command("init")(init_command)
 app.command("doctor")(doctor_command)

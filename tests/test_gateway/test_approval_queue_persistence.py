@@ -58,6 +58,48 @@ def test_approval_queue_ignores_corrupt_json_payload(tmp_path) -> None:
     reloaded.close()
 
 
+def test_approval_queue_migrates_legacy_table_and_backfills_resolution(tmp_path) -> None:
+    db_path = tmp_path / "approval_queue.sqlite"
+    # Build a pre-migration table (no deadline / resolution columns) holding one
+    # approved and one denied resolved row, plus an unresolved row.
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        CREATE TABLE approval_queue (
+            approval_id   TEXT PRIMARY KEY,
+            namespace     TEXT NOT NULL,
+            params        TEXT NOT NULL,
+            created_at    REAL NOT NULL,
+            resolved      INTEGER NOT NULL DEFAULT 0,
+            approved      INTEGER NOT NULL DEFAULT 0,
+            consumed      INTEGER NOT NULL DEFAULT 0
+        );
+        """
+    )
+    conn.executemany(
+        "INSERT INTO approval_queue "
+        "(approval_id, namespace, params, created_at, resolved, approved, consumed) "
+        "VALUES (?, 'exec', '{}', 0.0, ?, ?, 0)",
+        [
+            ("legacy-approved", 1, 1),
+            ("legacy-denied", 1, 0),
+            ("legacy-pending", 0, 0),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    queue = ApprovalQueue(db_path=str(db_path))
+    try:
+        assert queue.get("legacy-approved").resolution == "approved"
+        assert queue.get("legacy-denied").resolution == "denied"
+        pending = queue.get("legacy-pending")
+        assert pending.resolution == ""
+        assert pending.deadline == 0.0
+    finally:
+        queue.close()
+
+
 @pytest.mark.asyncio
 async def test_approval_queue_wait_observes_resolution_from_second_queue_same_sqlite(
     tmp_path,
@@ -94,7 +136,7 @@ async def test_approval_queue_wait_same_process_event_fast_path(tmp_path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_approval_queue_wait_preserves_timeout_denies(tmp_path) -> None:
+async def test_approval_queue_wait_records_timeout_as_expired_not_denied(tmp_path) -> None:
     db_path = tmp_path / "approval_queue.sqlite"
     queue = ApprovalQueue(db_path=str(db_path), default_timeout=1.0, poll_interval=0.01)
     approval_id = queue.request("exec", {"toolName": "exec_command", "command": "rm x"})
@@ -103,6 +145,97 @@ async def test_approval_queue_wait_preserves_timeout_denies(tmp_path) -> None:
         entry = queue.get(approval_id)
         assert entry.resolved is True
         assert entry.approved is False
+        # A lapsed deadline is recorded as expired, distinct from a human deny.
+        assert entry.resolution == "expired"
+    finally:
+        queue.close()
+
+
+@pytest.mark.asyncio
+async def test_approval_queue_explicit_deny_records_denied(tmp_path) -> None:
+    db_path = tmp_path / "approval_queue.sqlite"
+    queue = ApprovalQueue(db_path=str(db_path), default_timeout=1.0, poll_interval=0.01)
+    approval_id = queue.request("exec", {"toolName": "exec_command", "command": "rm x"})
+    try:
+        queue.resolve(approval_id, False)
+        entry = queue.get(approval_id)
+        assert entry.resolved is True
+        assert entry.approved is False
+        assert entry.resolution == "denied"
+    finally:
+        queue.close()
+
+
+@pytest.mark.asyncio
+async def test_approval_queue_expired_event_payload_carries_reason(tmp_path) -> None:
+    db_path = tmp_path / "approval_queue.sqlite"
+    queue = ApprovalQueue(db_path=str(db_path), default_timeout=1.0, poll_interval=0.01)
+    events: list[tuple[str, dict]] = []
+    queue.add_event_listener(lambda event, info: events.append((event, info)))
+    approval_id = queue.request("exec", {"toolName": "exec_command", "command": "rm x"})
+    try:
+        assert await queue.wait(approval_id, timeout=0.02) is False
+        resolved = [info for event, info in events if event == "resolved"]
+        assert len(resolved) == 1
+        assert resolved[0]["resolution"] == "expired"
+        assert resolved[0]["approved"] is False
+    finally:
+        queue.close()
+
+
+@pytest.mark.asyncio
+async def test_approval_queue_extend_pushes_deadline_so_late_decision_wins(tmp_path) -> None:
+    db_path = tmp_path / "approval_queue.sqlite"
+    queue = ApprovalQueue(db_path=str(db_path), default_timeout=10.0, poll_interval=0.01)
+    approval_id = queue.request("exec", {"toolName": "exec_command", "command": "rm x"})
+    try:
+        # A short wait that would expire at ~0.05s; an extend at ~0.02s pushes
+        # the deadline far enough out that an approve at ~0.08s lands first.
+        waiter = asyncio.create_task(queue.wait(approval_id, timeout=0.05))
+        await asyncio.sleep(0.02)
+        queue.extend(approval_id, 5.0)
+        await asyncio.sleep(0.06)
+        queue.resolve(approval_id, True)
+
+        assert await asyncio.wait_for(waiter, timeout=1.0) is True
+        entry = queue.get(approval_id)
+        assert entry.resolution == "approved"
+    finally:
+        queue.close()
+
+
+@pytest.mark.asyncio
+async def test_approval_queue_extend_is_noop_once_resolved(tmp_path) -> None:
+    db_path = tmp_path / "approval_queue.sqlite"
+    queue = ApprovalQueue(db_path=str(db_path), default_timeout=1.0, poll_interval=0.01)
+    approval_id = queue.request("exec", {"toolName": "exec_command", "command": "rm x"})
+    try:
+        queue.resolve(approval_id, True)
+        before = queue.get(approval_id).deadline
+        assert queue.extend(approval_id, 100.0) == before
+        assert queue.get(approval_id).resolution == "approved"
+    finally:
+        queue.close()
+
+
+def test_expire_declines_when_extend_pushed_deadline_past_now(tmp_path) -> None:
+    """An extend that lands in the gap after the wait loop saw the deadline
+    lapse but before the expire write must NOT expire the request."""
+    import time
+
+    db_path = tmp_path / "approval_queue.sqlite"
+    queue = ApprovalQueue(db_path=str(db_path), default_timeout=10.0, poll_interval=0.01)
+    approval_id = queue.request("exec", {"toolName": "exec_command", "command": "rm x"})
+    try:
+        # Simulate the wait loop having observed a lapsed deadline...
+        queue._rearm_deadline(approval_id, time.time() - 1.0)
+        # ...then an extend lands before the expire write lock.
+        queue.extend(approval_id, 60.0)
+        # The expiry path must re-check the deadline and decline to expire.
+        assert queue._expire_if_unresolved(approval_id) is None
+        entry = queue.get(approval_id)
+        assert entry.resolved is False
+        assert entry.resolution == ""
     finally:
         queue.close()
 

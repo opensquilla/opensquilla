@@ -118,11 +118,13 @@ For longer tasks, use `background_process`:
 background_process(workdir="~/project", command="codex exec --full-auto 'Build a snake game'")
 # Returns session_id for tracking
 
-# Monitor progress
-process(action="log", session_id="XXX")
+# Wait for it to finish — blocks until the process exits (or the timeout
+# elapses, in which case just call wait again). Prefer this over polling in a
+# loop: a looped process(action="poll") burns a full turn + tokens each time.
+process(action="wait", session_id="XXX")
 
-# Check if done
-process(action="poll", session_id="XXX")
+# Peek at output without blocking (optional, for progress)
+process(action="log", session_id="XXX")
 
 # Send input (if agent asks a question)
 process(action="write", session_id="XXX", data="y")

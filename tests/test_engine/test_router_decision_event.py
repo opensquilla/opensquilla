@@ -43,7 +43,7 @@ def test_full_router_metadata_populates_all_event_fields() -> None:
     metadata = {
         "routed_tier": "c2",
         "routed_model": "claude-sonnet-4.6",
-        "baseline_model": "claude-opus-4.7",
+        "baseline_model": "claude-opus-4.8",
         "routing_source": "router",
         "routing_confidence": 0.71,
         "savings_pct": 64.0,
@@ -59,7 +59,7 @@ def test_full_router_metadata_populates_all_event_fields() -> None:
     assert event.tier == "c2"
     assert event.tier_index == 2
     assert event.model == "claude-sonnet-4.6"
-    assert event.baseline_model == "claude-opus-4.7"
+    assert event.baseline_model == "claude-opus-4.8"
     assert event.source == "router"
     assert event.confidence == 0.71
     assert event.probs == [0.12, 0.71, 0.14, 0.03]
@@ -111,7 +111,7 @@ def test_malformed_probs_do_not_crash() -> None:
         _ctx(
             {
                 "routed_tier": "c3",
-                "routed_model": "claude-opus-4.7",
+                "routed_model": "claude-opus-4.8",
                 "routing_extra": {"probs": ["bad", None, 0.5, "x"]},
             }
         )
@@ -140,7 +140,7 @@ def test_tier_index_maps_naturally_so_c0_and_c1_dont_collide() -> None:
         _ctx({"routed_tier": "c1", "routed_model": "claude-sonnet-4.6"})
     )
     t3_event = build_router_decision_event(
-        _ctx({"routed_tier": "c3", "routed_model": "claude-opus-4.7"})
+        _ctx({"routed_tier": "c3", "routed_model": "claude-opus-4.8"})
     )
     assert t0_event is not None and t0_event.tier_index == 0
     assert t1_event is not None and t1_event.tier_index == 1

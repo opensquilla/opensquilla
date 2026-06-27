@@ -292,6 +292,7 @@ def _ensemble_profile(
     *,
     candidate_scorer: dict[str, Any] | None = None,
     candidate_prefilter_top_k: int = 0,
+    output_strategy: str = "fusion",
     preserve_member_temperature: bool = False,
     moa_layers: int = 1,
     proposer_timeout_seconds: float | None = None,
@@ -305,6 +306,8 @@ def _ensemble_profile(
         payload["candidate_scorer"] = candidate_scorer
     if candidate_prefilter_top_k > 0:
         payload["candidate_prefilter_top_k"] = candidate_prefilter_top_k
+    if output_strategy != "fusion":
+        payload["output_strategy"] = output_strategy
     if preserve_member_temperature:
         payload["preserve_member_temperature"] = preserve_member_temperature
     if moa_layers > 1:
@@ -454,6 +457,11 @@ def _default_llm_ensemble_profiles() -> dict[str, dict[str, Any]]:
             _ensemble_ref("z-ai/glm-5.2", thinking="high"),
             moa_layers=2,
         ),
+        "g18_select_best_candidate": _ensemble_profile(
+            list(g8_proposers),
+            _ensemble_ref("z-ai/glm-5.2", thinking="high"),
+            output_strategy="select_best_candidate",
+        ),
     }
 
 
@@ -482,6 +490,7 @@ class EnsembleProfile(BaseModel):
     aggregator: EnsembleModelRef = Field(default_factory=EnsembleModelRef)
     candidate_scorer: EnsembleModelRef | None = None
     candidate_prefilter_top_k: int = Field(default=0, ge=0)
+    output_strategy: Literal["fusion", "select_best_candidate"] = "fusion"
     preserve_member_temperature: bool = False
     moa_layers: int = Field(default=1, ge=1)
     candidate_max_chars: int = Field(default=24_000, ge=0)

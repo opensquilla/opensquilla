@@ -766,6 +766,56 @@ def test_draco_runner_agent_trace_preserves_moa_layer_metrics() -> None:
     assert trace["moa_intermediate_layers"] == 1
 
 
+def test_draco_runner_agent_trace_preserves_select_best_strategy_metrics() -> None:
+    trace = aggregate_agent_ensemble_trace(
+        [
+            {
+                "kind": "llm_response",
+                "payload": {
+                    "iteration": 1,
+                    "ensemble_trace": {
+                        "profile": "g18_select_best_candidate",
+                        "llm_request_count": 5,
+                        "output_strategy": "select_best_candidate",
+                        "selected_candidate_count": 1,
+                        "selected_candidate_indexes": [2],
+                    },
+                },
+            }
+        ]
+    )
+
+    assert trace["profile"] == "g18_select_best_candidate"
+    assert trace["llm_request_count"] == 5
+    assert trace["output_strategy"] == "select_best_candidate"
+    assert trace["selected_candidate_count"] == 1
+    assert trace["selected_candidate_indexes"] == [2]
+
+
+def test_draco_runner_agent_trace_does_not_promote_prefilter_selection_metrics() -> None:
+    trace = aggregate_agent_ensemble_trace(
+        [
+            {
+                "kind": "llm_response",
+                "payload": {
+                    "iteration": 1,
+                    "ensemble_trace": {
+                        "profile": "g15_g8_top3_prefilter",
+                        "llm_request_count": 6,
+                        "selected_candidate_count": 3,
+                        "selected_candidate_indexes": [2, 0, 1],
+                    },
+                },
+            }
+        ]
+    )
+
+    assert trace["profile"] == "g15_g8_top3_prefilter"
+    assert "selected_candidate_count" not in trace
+    assert "selected_candidate_indexes" not in trace
+    assert trace["calls"][0]["selected_candidate_indexes"] == [2, 0, 1]
+
+
 def test_draco_runner_profile_groups_exist_in_default_config() -> None:
     cfg = GatewayConfig()
     missing = [
@@ -1027,6 +1077,43 @@ def test_draco_runner_g17_configures_two_layer_moa() -> None:
     )
 
     assert provider.moa_layers == 2
+    assert [member.provider_config.model for member in provider.proposers] == [
+        "deepseek/deepseek-v4-pro",
+        "z-ai/glm-5.2",
+        "google/gemini-3-flash-preview",
+        "qwen/qwen3.7-plus",
+    ]
+    assert [member.k for member in provider.proposers] == [1, 1, 1, 1]
+    assert [member.temperature for member in provider.proposers] == [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    ]
+    assert provider.aggregator.provider_config.model == "z-ai/glm-5.2"
+    assert provider.aggregator.temperature == 0.0
+
+
+def test_draco_runner_g18_configures_select_best_candidate_strategy() -> None:
+    cfg = GatewayConfig()
+    inherited = ProviderConfig(
+        provider="openrouter",
+        model="z-ai/glm-5.2",
+        api_key="sk-test",
+        base_url="https://openrouter.ai/api",
+    )
+
+    provider = build_profile_provider(
+        config=cfg,
+        inherited=inherited,
+        group="G18",
+        profile="g18_select_best_candidate",
+        dry_run=False,
+        generation_policy=generation_thinking_policy(Namespace(generation_thinking="high")),
+    )
+
+    assert provider.output_strategy == "select_best_candidate"
+    assert provider.moa_layers == 1
     assert [member.provider_config.model for member in provider.proposers] == [
         "deepseek/deepseek-v4-pro",
         "z-ai/glm-5.2",

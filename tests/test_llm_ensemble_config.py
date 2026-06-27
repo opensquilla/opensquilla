@@ -101,6 +101,16 @@ def test_llm_ensemble_config_defaults_disabled_with_profiles() -> None:
     ]
     assert g17.aggregator.model == "z-ai/glm-5.2"
     assert g17.moa_layers == 2
+    g18 = cfg.llm_ensemble.profiles["g18_select_best_candidate"]
+    assert [ref.model for ref in g18.proposers] == [
+        "deepseek/deepseek-v4-pro",
+        "z-ai/glm-5.2",
+        "google/gemini-3-flash-preview",
+        "qwen/qwen3.7-plus",
+    ]
+    assert g18.aggregator.model == "z-ai/glm-5.2"
+    assert g18.output_strategy == "select_best_candidate"
+    assert g18.moa_layers == 1
     assert cfg.llm_ensemble.profiles["g3_standard"].record_candidates is False
 
 
@@ -120,6 +130,7 @@ def test_build_ensemble_provider_from_gateway_config() -> None:
                     "aggregator": {"model": "agg"},
                     "candidate_scorer": {"model": "judge"},
                     "candidate_prefilter_top_k": 1,
+                    "output_strategy": "select_best_candidate",
                     "moa_layers": 2,
                     "candidate_max_chars": 123,
                 }
@@ -147,5 +158,6 @@ def test_build_ensemble_provider_from_gateway_config() -> None:
     assert provider.candidate_scorer is not None
     assert provider.candidate_scorer.provider_config.model == "judge"
     assert provider.candidate_prefilter_top_k == 1
+    assert provider.output_strategy == "select_best_candidate"
     assert provider.moa_layers == 2
     assert provider.candidate_max_chars == 123

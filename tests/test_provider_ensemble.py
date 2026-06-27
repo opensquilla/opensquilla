@@ -288,6 +288,132 @@ async def test_ensemble_two_layer_moa_refines_first_aggregation(
 
 
 @pytest.mark.asyncio
+async def test_ensemble_select_best_candidate_outputs_chosen_draft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def _events(model: str, text: str, in_tokens: int, out_tokens: int):
+        return lambda _messages, _tools: [
+            TextDeltaEvent(text=text),
+            DoneEvent(input_tokens=in_tokens, output_tokens=out_tokens, model=model),
+        ]
+
+    factories = {
+        "p1": _events("p1", "weaker draft", 10, 2),
+        "p2": _events("p2", "stronger draft", 11, 3),
+        "agg": _events(
+            "agg",
+            '{"selected_candidate_index":1,"rationale":"best"}',
+            20,
+            4,
+        ),
+    }
+
+    def fake_build_provider(cfg: ProviderConfig) -> _FakeProvider:
+        return _FakeProvider(cfg, calls, factories)
+
+    monkeypatch.setattr("opensquilla.provider.selector._build_provider", fake_build_provider)
+    provider = EnsembleProvider(
+        profile_name="test",
+        proposers=[_member("p1"), _member("p2")],
+        aggregator=_member("agg"),
+        record_candidates=True,
+        shuffle_candidates=False,
+        output_strategy="select_best_candidate",
+    )
+    tool = ToolDefinition(
+        name="search",
+        description="Search",
+        input_schema=ToolInputSchema(),
+    )
+
+    events = [
+        event
+        async for event in provider.chat(
+            [Message(role="user", content="solve")],
+            tools=[tool],
+        )
+    ]
+
+    assert [event.kind for event in events] == [
+        "provider_heartbeat",
+        "provider_heartbeat",
+        "text_delta",
+        "done",
+    ]
+    assert events[2].text == "stronger draft"
+    done = events[-1]
+    assert isinstance(done, DoneEvent)
+    assert done.stop_reason == "selected_candidate"
+    assert done.model == "p2"
+    assert done.input_tokens == 41
+    assert done.output_tokens == 9
+    assert [row["role"] for row in done.model_usage_breakdown] == [
+        "proposer",
+        "proposer",
+        "candidate_selector",
+    ]
+    assert done.model_usage_breakdown[-1]["label"] == "candidate_selector"
+    assert done.ensemble_trace["output_strategy"] == "select_best_candidate"
+    assert done.ensemble_trace["final_request_role"] == "candidate_selector"
+    assert done.ensemble_trace["llm_request_count"] == 3
+    assert done.ensemble_trace["selected_candidate_indexes"] == [1]
+    assert done.ensemble_trace["candidate_selection"]["applied"] is True
+    selector_call = next(call for call in calls if call["model"] == "agg")
+    assert selector_call["tools"] is None
+    assert "Select the single best candidate" in selector_call["messages"][-1].content
+
+
+@pytest.mark.asyncio
+async def test_ensemble_select_best_candidate_falls_back_on_unparseable_selector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def _events(model: str, text: str, in_tokens: int, out_tokens: int):
+        return lambda _messages, _tools: [
+            TextDeltaEvent(text=text),
+            DoneEvent(input_tokens=in_tokens, output_tokens=out_tokens, model=model),
+        ]
+
+    factories = {
+        "p1": _events("p1", "first draft", 10, 2),
+        "p2": _events("p2", "second draft", 11, 3),
+        "agg": _events("agg", "not json", 20, 4),
+    }
+
+    def fake_build_provider(cfg: ProviderConfig) -> _FakeProvider:
+        return _FakeProvider(cfg, calls, factories)
+
+    monkeypatch.setattr("opensquilla.provider.selector._build_provider", fake_build_provider)
+    provider = EnsembleProvider(
+        profile_name="test",
+        proposers=[_member("p1"), _member("p2")],
+        aggregator=_member("agg"),
+        record_candidates=True,
+        shuffle_candidates=False,
+        output_strategy="select_best_candidate",
+    )
+
+    events = [
+        event
+        async for event in provider.chat([Message(role="user", content="solve")])
+    ]
+
+    assert events[-2].text == "first draft"
+    done = events[-1]
+    assert isinstance(done, DoneEvent)
+    assert done.stop_reason == "selected_candidate"
+    assert done.model == "p1"
+    assert done.ensemble_trace["selected_candidate_indexes"] == [0]
+    selection = done.ensemble_trace["candidate_selection"]
+    assert selection["applied"] is False
+    assert selection["selected_candidate_index"] == 0
+    assert "parseable index" in selection["fallback_reason"]
+
+
+@pytest.mark.asyncio
 async def test_ensemble_prefilters_candidates_with_scorer_before_aggregation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -306,7 +432,11 @@ async def test_ensemble_prefilters_candidates_with_scorer_before_aggregation(
         "p4": _events("p4", "draft from p4", 13, 5),
         "judge": _events(
             "judge",
-            '{"ranked_candidate_indexes":[2,0,1],"scores":[{"index":2,"score":9.0}]}',
+            (
+                '{"selected_candidate_index":3,'
+                '"ranked_candidate_indexes":[2,0,1],'
+                '"scores":[{"index":2,"score":9.0}]}'
+            ),
             20,
             4,
         ),

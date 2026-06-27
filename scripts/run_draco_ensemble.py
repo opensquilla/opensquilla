@@ -86,6 +86,7 @@ GROUP_SPECS: dict[str, dict[str, str]] = {
     "G15": {"kind": "profile", "profile": "g15_g8_top3_prefilter"},
     "G16": {"kind": "profile", "profile": "g16_sampled_cheap_proposers"},
     "G17": {"kind": "profile", "profile": "g17_two_layer_moa"},
+    "G18": {"kind": "profile", "profile": "g18_select_best_candidate"},
 }
 
 TOOL_MODE_PROVIDER_ONLY = "provider_only"
@@ -1562,9 +1563,14 @@ def aggregate_agent_ensemble_trace(records: list[dict[str, Any]]) -> dict[str, A
         "moa_layers",
         "moa_refine_count",
         "moa_intermediate_layers",
+        "output_strategy",
     ):
         if key in first_trace:
             payload[key] = first_trace[key]
+    if first_trace.get("output_strategy") == "select_best_candidate":
+        for key in ("selected_candidate_count", "selected_candidate_indexes"):
+            if key in first_trace:
+                payload[key] = first_trace[key]
     return payload
 
 

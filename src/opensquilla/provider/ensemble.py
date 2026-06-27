@@ -163,6 +163,14 @@ class _PrefilterResult:
     request_count: int = 0
 
 
+@dataclass
+class _SelectionResult:
+    selected: _CandidateResult
+    usage_rows: list[dict[str, Any]] = field(default_factory=list)
+    trace: dict[str, Any] = field(default_factory=dict)
+    request_count: int = 0
+
+
 def _normalize_thinking(value: str | None) -> tuple[bool | None, Any | None]:
     if value is None:
         return None, None
@@ -281,6 +289,8 @@ def _candidate_index(value: Any, allowed: set[int]) -> int | None:
 def _ranked_candidate_indexes(
     text: str,
     candidates: Sequence[_CandidateResult],
+    *,
+    include_single: bool = False,
 ) -> list[int]:
     allowed = {candidate.index for candidate in candidates}
     payload = _extract_json_payload(text)
@@ -292,6 +302,16 @@ def _ranked_candidate_indexes(
             ranked.append(index)
 
     if isinstance(payload, dict):
+        if include_single:
+            for key in (
+                "selected_candidate_index",
+                "candidate_index",
+                "best_candidate_index",
+                "index",
+                "choice",
+            ):
+                if key in payload:
+                    append(payload.get(key))
         for key in (
             "ranked_candidate_indexes",
             "selected_candidate_indexes",
@@ -375,6 +395,7 @@ class EnsembleProvider:
         proposer_tools: bool = False,
         candidate_scorer: EnsembleMemberConfig | None = None,
         candidate_prefilter_top_k: int = 0,
+        output_strategy: Literal["fusion", "select_best_candidate"] = "fusion",
         moa_layers: int = 1,
     ) -> None:
         self.profile_name = profile_name
@@ -391,6 +412,10 @@ class EnsembleProvider:
         self.proposer_tools = bool(proposer_tools)
         self.candidate_scorer = candidate_scorer
         self.candidate_prefilter_top_k = max(0, int(candidate_prefilter_top_k or 0))
+        strategy = str(output_strategy or "fusion").strip()
+        self.output_strategy = (
+            strategy if strategy in {"fusion", "select_best_candidate"} else "fusion"
+        )
         self.moa_layers = max(1, int(moa_layers or 1))
 
     def provider_metadata(self) -> ProviderMetadata:
@@ -462,7 +487,6 @@ class EnsembleProvider:
             return
 
         prefilter = await self._prefilter_candidates(successful, messages, config=config)
-        aggregator_messages = self._build_aggregator_messages(messages, prefilter.candidates)
         aggregator_cfg = _member_chat_config(config, self.aggregator)
         if self.aggregator_timeout_seconds > 0:
             aggregator_cfg = aggregator_cfg.model_copy(
@@ -471,6 +495,38 @@ class EnsembleProvider:
         provider = _build_provider(self.aggregator.provider_config)
         proposer_rows = _candidate_usage_rows(candidates, profile=self.profile_name)
         prefilter_rows = prefilter.usage_rows
+        if self.output_strategy == "select_best_candidate":
+            yield ProviderHeartbeatEvent(
+                phase="ensemble_selector",
+                message="Selecting the best candidate draft",
+            )
+            selection = await self._select_candidate(
+                prefilter.candidates,
+                messages,
+                provider=provider,
+                config=aggregator_cfg,
+            )
+            trace = self._trace_payload(
+                candidates,
+                successful_count=len(successful),
+                fallback_used=False,
+                fallback_reason="",
+                final_request_role="candidate_selector",
+                selected_candidates=[selection.selected],
+                prefilter_trace=prefilter.trace or None,
+                prefilter_request_count=prefilter.request_count,
+                final_request_count=selection.request_count,
+                output_strategy=self.output_strategy,
+                selection_trace=selection.trace,
+            )
+            async for event in self._stream_selected_candidate(
+                selection,
+                prior_rows=[*proposer_rows, *prefilter_rows],
+                trace=trace,
+            ):
+                yield event
+            return
+        aggregator_messages = self._build_aggregator_messages(messages, prefilter.candidates)
         trace = self._trace_payload(
             candidates,
             successful_count=len(successful),
@@ -494,6 +550,152 @@ class EnsembleProvider:
             trace=trace,
         ):
             yield event
+
+    async def _select_candidate(
+        self,
+        candidates: Sequence[_CandidateResult],
+        messages: list[Message],
+        *,
+        provider: LLMProvider,
+        config: ChatConfig,
+    ) -> _SelectionResult:
+        ordered = sorted(candidates, key=lambda candidate: candidate.index)
+        fallback = ordered[0]
+        text_parts: list[str] = []
+        usage_rows: list[dict[str, Any]] = []
+        error = ""
+        error_code = ""
+        got_done = False
+        try:
+            stream = provider.chat(
+                self._build_selector_messages(messages, candidates),
+                tools=None,
+                config=config,
+            )
+            if self.aggregator_timeout_seconds > 0:
+                async with asyncio.timeout(self.aggregator_timeout_seconds):
+                    async for event in stream:
+                        got_done = self._collect_selector_event(
+                            event,
+                            text_parts,
+                            usage_rows,
+                            got_done=got_done,
+                        )
+                        if isinstance(event, ErrorEvent):
+                            error = event.message
+                            error_code = event.code or "candidate_selector_error"
+                            break
+            else:
+                async for event in stream:
+                    got_done = self._collect_selector_event(
+                        event,
+                        text_parts,
+                        usage_rows,
+                        got_done=got_done,
+                    )
+                    if isinstance(event, ErrorEvent):
+                        error = event.message
+                        error_code = event.code or "candidate_selector_error"
+                        break
+        except TimeoutError:
+            error = f"candidate selector timed out after {self.aggregator_timeout_seconds:g}s"
+            error_code = "candidate_selector_timeout"
+        except Exception as exc:  # noqa: BLE001 - selector failure falls back deterministically
+            error = str(exc)
+            error_code = type(exc).__name__
+
+        ranked = _ranked_candidate_indexes(
+            "".join(text_parts),
+            candidates,
+            include_single=True,
+        )
+        by_index = {candidate.index: candidate for candidate in candidates}
+        selected = by_index.get(ranked[0], fallback) if ranked else fallback
+        applied = bool(ranked) and selected.index in ranked
+        trace: dict[str, Any] = {
+            "enabled": True,
+            "applied": applied,
+            "selector_model": self.aggregator.provider_config.model,
+            "ranked_candidate_indexes": ranked,
+            "selected_candidate_index": selected.index,
+        }
+        if not applied:
+            if error:
+                trace["fallback_reason"] = error
+            elif not got_done:
+                trace["fallback_reason"] = "candidate selector stream ended before DoneEvent"
+            else:
+                trace["fallback_reason"] = "candidate selector did not return a parseable index"
+        if error:
+            trace["error"] = error
+            trace["error_code"] = error_code
+        return _SelectionResult(
+            selected=selected,
+            usage_rows=usage_rows,
+            trace=trace,
+            request_count=1,
+        )
+
+    def _collect_selector_event(
+        self,
+        event: StreamEvent,
+        text_parts: list[str],
+        usage_rows: list[dict[str, Any]],
+        *,
+        got_done: bool,
+    ) -> bool:
+        if isinstance(event, TextDeltaEvent):
+            text_parts.append(event.text)
+        elif isinstance(event, DoneEvent):
+            got_done = True
+            usage_rows.append(
+                _done_usage_row(
+                    event,
+                    role="candidate_selector",
+                    profile=self.profile_name,
+                    label="candidate_selector",
+                    provider=self.aggregator.provider_config.provider,
+                    model=self.aggregator.provider_config.model,
+                )
+            )
+        elif isinstance(event, ErrorEvent) and event.diagnostic_done is not None:
+            usage_rows.append(
+                _done_usage_row(
+                    event.diagnostic_done,
+                    role="candidate_selector",
+                    profile=self.profile_name,
+                    label="candidate_selector",
+                    provider=self.aggregator.provider_config.provider,
+                    model=self.aggregator.provider_config.model,
+                )
+            )
+        return got_done
+
+    async def _stream_selected_candidate(
+        self,
+        selection: _SelectionResult,
+        *,
+        prior_rows: list[dict[str, Any]],
+        trace: dict[str, Any],
+    ) -> AsyncIterator[StreamEvent]:
+        selected = selection.selected
+        text = selected.text
+        if text:
+            yield TextDeltaEvent(text=text)
+        rows = [*prior_rows, *selection.usage_rows]
+        yield DoneEvent(
+            stop_reason="selected_candidate",
+            input_tokens=_summed_int(rows, "input_tokens"),
+            output_tokens=_summed_int(rows, "output_tokens"),
+            reasoning_tokens=_summed_int(rows, "reasoning_tokens"),
+            cached_tokens=_summed_int(rows, "cached_tokens"),
+            cache_write_tokens=_summed_int(rows, "cache_write_tokens"),
+            billed_cost=_summed_float(rows, "billed_cost"),
+            model=selected.model,
+            cost_source=_rollup_cost_source(rows),
+            model_usage_breakdown=rows,
+            ensemble_trace=trace,
+        )
 
     async def _stream_aggregator_layers(
         self,
@@ -1098,6 +1300,27 @@ class EnsembleProvider:
             lines.append(f"</CANDIDATE {candidate.index}>")
         return [*messages, Message(role="user", content="\n".join(lines))]
 
+    def _build_selector_messages(
+        self,
+        messages: list[Message],
+        candidates: Sequence[_CandidateResult],
+    ) -> list[Message]:
+        ordered = sorted(candidates, key=lambda candidate: candidate.index)
+        lines = [
+            "Select the single best candidate draft for the final answer.",
+            "Use the original conversation as context, but do not synthesize, merge, "
+            "or rewrite the drafts.",
+            "Return JSON only with the zero-based candidate index.",
+            'Schema: {"selected_candidate_index":0,"rationale":"brief reason"}',
+            "",
+            "Candidate drafts:",
+        ]
+        for candidate in ordered:
+            lines.append(f'\n<CANDIDATE index="{candidate.index}">')
+            lines.append(candidate.text.strip() or "[empty]")
+            lines.append(f"</CANDIDATE {candidate.index}>")
+        return [*messages, Message(role="user", content="\n".join(lines))]
+
     def _build_aggregator_messages(
         self,
         messages: list[Message],
@@ -1159,6 +1382,8 @@ class EnsembleProvider:
         prefilter_request_count: int = 0,
         final_request_count: int | None = None,
         moa_layers: int = 1,
+        output_strategy: str = "fusion",
+        selection_trace: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         selected = list(selected_candidates or [])
         final_requests = (
@@ -1189,9 +1414,18 @@ class EnsembleProvider:
             row["moa_layers"] = moa_layers
             row["moa_refine_count"] = moa_layers - 1
             row["moa_intermediate_layers"] = moa_layers - 1
-        if self.candidate_prefilter_top_k > 0 or prefilter_trace is not None:
+        if output_strategy != "fusion":
+            row["output_strategy"] = output_strategy
+        if (
+            self.candidate_prefilter_top_k > 0
+            or prefilter_trace is not None
+            or output_strategy != "fusion"
+        ):
             row["selected_candidate_count"] = len(selected)
             row["selected_candidate_indexes"] = [candidate.index for candidate in selected]
+        if selection_trace is not None:
+            row["candidate_selection"] = selection_trace
+        if self.candidate_prefilter_top_k > 0 or prefilter_trace is not None:
             row["candidate_prefilter"] = prefilter_trace or {
                 "enabled": self.candidate_prefilter_top_k > 0,
                 "applied": False,
@@ -1346,5 +1580,6 @@ def build_ensemble_provider_from_config(
         proposer_tools=bool(getattr(ensemble_cfg, "proposer_tools", False)),
         candidate_scorer=candidate_scorer,
         candidate_prefilter_top_k=int(getattr(profile, "candidate_prefilter_top_k", 0) or 0),
+        output_strategy=getattr(profile, "output_strategy", "fusion"),
         moa_layers=int(getattr(profile, "moa_layers", 1) or 1),
     )

@@ -88,19 +88,25 @@ OPENSQUILLA_TELEMETRY_ENDPOINT=https://example.com/v1/install
 OpenSquilla runs on Windows, macOS, and Linux. Pick the path that
 matches your use case.
 
-Windows portable and Quick terminal install give you a prebuilt
-**release** — no Git required. The other two — Install from source
-and Develop from source — build **from a Git checkout** (`git clone` +
-Git LFS).
+Desktop installers, Windows portable, and Quick terminal install give you a
+prebuilt **release** — no Git required. The other two — Install from source and
+Develop from source — build **from a Git checkout** (`git clone` + Git LFS).
 
 Release install commands use published GitHub release assets. The
 Windows portable zip also has a `/releases/latest/download/` alias for
 the current release. Python wheel installs use versioned wheel filenames
 because installers validate the version embedded in the wheel filename.
 
+For 0.4.0 desktop use, prefer the signed desktop installers from the GitHub
+Release: `OpenSquilla-0.4.0-mac-arm64.dmg` on macOS and
+`OpenSquilla-0.4.0-win-x64.exe` on Windows. The Windows portable zip remains
+available as a legacy compatibility package for scripts and portable-folder
+workflows.
+
 | Path | Audience | When to use |
 | --- | --- | --- |
-| [Windows portable](#windows-portable-no-python) | Windows users | No Python toolchain; one-zip launch |
+| [Desktop installers](#desktop-installers) **(recommended desktop)** | macOS and Windows users | Signed packaged desktop app |
+| [Windows portable](#windows-portable-no-python) | Windows users | Legacy compatibility; no Python toolchain; one-zip launch |
 | [Quick terminal install](#quick-terminal-install) **(recommended)** | End users on any OS | Release wheel from a terminal |
 | [Install from source](#install-from-source) | Users tracking `main` | Run from a checkout, not edit it |
 | [Develop from source](#develop-from-source) | Contributors | Edit, test, or debug the source |
@@ -131,10 +137,21 @@ Install links: [Git](https://git-scm.com/downloads) ·
 [Git LFS](https://git-lfs.com/) ·
 [uv](https://docs.astral.sh/uv/getting-started/installation/).
 
+### Desktop installers
+
+The 0.4.0 desktop installers package the Vue control console and gateway
+runtime in an Electron shell.
+
+- macOS Apple Silicon: <https://github.com/opensquilla/opensquilla/releases/download/v0.4.0/OpenSquilla-0.4.0-mac-arm64.dmg>
+- Windows x64: <https://github.com/opensquilla/opensquilla/releases/download/v0.4.0/OpenSquilla-0.4.0-win-x64.exe>
+
+Quit any running OpenSquilla desktop app before upgrading. Existing
+`~/.opensquilla/config.toml` and session data are reused.
+
 ### Windows portable (no Python)
 
-The fastest path on Windows — the zip ships a bundled CPython runtime,
-so no separate Python install is required.
+The legacy compatibility path on Windows — the zip ships a bundled CPython
+runtime, so no separate Python install is required.
 
 1. Download the current portable zip:
    <https://github.com/opensquilla/opensquilla/releases/latest/download/OpenSquilla-windows-x64-portable.zip>

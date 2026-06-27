@@ -20,6 +20,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   conversation-first sidebar, Settings modal, Sessions ledger, artifact
   previews, share export, deliverables drawer, turn trace, mobile tabs, and
   clearer Skills, Usage, Cron, Logs, and Approvals surfaces.
+- Signed desktop release assets are now available for the Vue/Electron desktop
+  shell: a notarized macOS Apple Silicon DMG/ZIP and a Windows x64 NSIS
+  installer.
 - Coding mode and the `code-task` workflow provide a guarded path for code
   changes: code work runs through an isolated run directory, uses trusted-host
   confirmation, and verifies before persisting changes back to the source.
@@ -47,6 +50,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   backend from the opt-in OpenTUI preview backend.
 - Search configuration now treats `search_provider` as the credential anchor for
   a configured key rather than a hard routing promise for automatic searches.
+- The old Windows portable zip remains published as a legacy compatibility
+  build, while new Windows desktop users should prefer the Electron installer.
 
 ### Fixed
 

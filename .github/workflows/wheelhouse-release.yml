@@ -1,4 +1,4 @@
-name: Windows Release Assets
+name: Release Assets
 
 on:
   push:
@@ -23,7 +23,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-release-assets-${{ github.event_name == 'push' && github.ref_name || github.event.inputs.tag || github.run_id }}
+  group: release-assets-${{ github.event_name == 'push' && github.ref_name || github.event.inputs.tag || github.run_id }}
   cancel-in-progress: false
 
 env:
@@ -240,20 +240,225 @@ jobs:
             dist/*.whl
             dist/SHA256SUMS
 
+  build-desktop-macos:
+    name: Build macOS Electron installer
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+          persist-credentials: false
+          ref: ${{ env.RELEASE_TAG != '' && env.RELEASE_TAG || github.ref }}
+
+      - name: Hydrate router assets
+        run: git lfs pull --include="src/opensquilla/squilla_router/models/**"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.12.0"
+          cache: npm
+          cache-dependency-path: |
+            opensquilla-webui/package-lock.json
+            desktop/electron/package-lock.json
+
+      - name: Install Web UI dependencies
+        working-directory: opensquilla-webui
+        run: npm ci
+
+      - name: Install Electron dependencies
+        working-directory: desktop/electron
+        run: npm ci
+
+      - name: Build signed macOS installer
+        working-directory: desktop/electron
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          npm run build:web
+          npm run build:gateway
+          npm run build
+          npx electron-builder --mac --publish never
+
+      - name: Verify Electron package
+        working-directory: desktop/electron
+        run: npm run verify:package
+
+      - name: List macOS artifacts
+        run: find dist/desktop-electron -maxdepth 2 -type f -print
+
+      - name: Upload macOS Electron artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: opensquilla-electron-macos
+          path: |
+            dist/desktop-electron/*.dmg
+            dist/desktop-electron/*.zip
+            dist/desktop-electron/*.blockmap
+            dist/desktop-electron/latest-mac.yml
+
+  build-desktop-windows:
+    name: Build Windows Electron installer
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+          persist-credentials: false
+          ref: ${{ env.RELEASE_TAG != '' && env.RELEASE_TAG || github.ref }}
+
+      - name: Hydrate router assets
+        shell: bash
+        run: git lfs pull --include="src/opensquilla/squilla_router/models/**"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.12.0"
+          cache: npm
+          cache-dependency-path: |
+            opensquilla-webui/package-lock.json
+            desktop/electron/package-lock.json
+
+      - name: Install Web UI dependencies
+        working-directory: opensquilla-webui
+        run: npm ci
+
+      - name: Install Electron dependencies
+        working-directory: desktop/electron
+        run: npm ci
+
+      - name: Build Windows installer
+        working-directory: desktop/electron
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: |
+          npm run build:web
+          npm run build:gateway
+          npm run build
+          npx electron-builder --win --publish never
+
+      - name: Verify Electron package
+        working-directory: desktop/electron
+        run: npm run verify:package
+
+      - name: List Windows artifacts
+        shell: bash
+        run: find dist/desktop-electron -maxdepth 2 -type f -print
+
+      - name: Upload Windows Electron artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: opensquilla-electron-windows
+          path: |
+            dist/desktop-electron/*.exe
+            dist/desktop-electron/*.blockmap
+            dist/desktop-electron/latest.yml
+
   publish-release:
     name: Publish release assets
-    needs: build-release-assets
+    needs:
+      - build-release-assets
+      - build-desktop-macos
+      - build-desktop-windows
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: write
     steps:
+      - name: Checkout release notes
+        if: ${{ github.event_name == 'push' || github.event.inputs.tag != '' }}
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ env.RELEASE_TAG }}
+
       - name: Download release assets
         uses: actions/download-artifact@v4
         with:
           pattern: opensquilla-release-assets-windows-x64-${{ env.RELEASE_PROFILE }}
           path: dist
           merge-multiple: true
+
+      - name: Download macOS Electron assets
+        uses: actions/download-artifact@v4
+        with:
+          name: opensquilla-electron-macos
+          path: dist
+
+      - name: Download Windows Electron assets
+        uses: actions/download-artifact@v4
+        with:
+          name: opensquilla-electron-windows
+          path: dist
+
+      - name: Regenerate release checksums
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib
+          import os
+          import re
+          from pathlib import Path
+
+          dist = Path("dist")
+          tag = os.environ["RELEASE_TAG"]
+          if tag:
+              version = tag.removeprefix("v")
+          else:
+              wheels = sorted(dist.glob("opensquilla-*-py3-none-any.whl"))
+              assert len(wheels) == 1, f"expected one wheel when RELEASE_TAG is empty, got {len(wheels)}"
+              version = wheels[0].name.removeprefix("opensquilla-").removesuffix("-py3-none-any.whl")
+          is_prerelease = bool(re.search(r"(?:a|b|rc)[0-9]+$", version))
+          asset_names = [
+              f"OpenSquilla-{version}-mac-arm64.dmg",
+              f"OpenSquilla-{version}-mac-arm64.zip",
+              f"OpenSquilla-{version}-mac-arm64.dmg.blockmap",
+              f"OpenSquilla-{version}-mac-arm64.zip.blockmap",
+              "latest-mac.yml",
+              f"OpenSquilla-{version}-win-x64.exe",
+              f"OpenSquilla-{version}-win-x64.exe.blockmap",
+              "latest.yml",
+              f"opensquilla-{version}-py3-none-any.whl",
+              f"OpenSquilla-{version}-windows-x64-py312-recommended-portable.zip",
+          ]
+          if not is_prerelease:
+              asset_names.append("OpenSquilla-windows-x64-portable.zip")
+          lines = []
+          for name in asset_names:
+              path = dist / name
+              assert path.is_file(), f"missing release asset for checksum: {name}"
+              lines.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {name}")
+          (dist / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
 
       - name: Verify release asset set
         shell: bash
@@ -265,24 +470,33 @@ jobs:
           from pathlib import Path
 
           dist = Path("dist")
-          version = os.environ["RELEASE_TAG"].removeprefix("v")
+          tag = os.environ["RELEASE_TAG"]
+          if tag:
+              version = tag.removeprefix("v")
+          else:
+              wheels = sorted(dist.glob("opensquilla-*-py3-none-any.whl"))
+              assert len(wheels) == 1, f"expected one wheel when RELEASE_TAG is empty, got {len(wheels)}"
+              version = wheels[0].name.removeprefix("opensquilla-").removesuffix("-py3-none-any.whl")
           is_prerelease = bool(re.search(r"(?:a|b|rc)[0-9]+$", version))
-          versioned_zips = sorted(
-              path for path in dist.glob("OpenSquilla-*.zip")
-              if path.name != "OpenSquilla-windows-x64-portable.zip"
-          )
-          versioned_wheels = sorted(
-              path for path in dist.glob("opensquilla-*.whl")
-          )
-          stable_zip = dist / "OpenSquilla-windows-x64-portable.zip"
           sha256s = dist / "SHA256SUMS"
-          assert len(versioned_zips) == 1, f"expected one versioned portable zip, got {len(versioned_zips)}"
-          assert len(versioned_wheels) == 1, f"expected one versioned wheel, got {len(versioned_wheels)}"
-          assert sha256s.is_file(), "missing SHA256SUMS"
-          assets = [versioned_zips[0], versioned_wheels[0]]
+          asset_names = [
+              f"OpenSquilla-{version}-mac-arm64.dmg",
+              f"OpenSquilla-{version}-mac-arm64.zip",
+              f"OpenSquilla-{version}-mac-arm64.dmg.blockmap",
+              f"OpenSquilla-{version}-mac-arm64.zip.blockmap",
+              "latest-mac.yml",
+              f"OpenSquilla-{version}-win-x64.exe",
+              f"OpenSquilla-{version}-win-x64.exe.blockmap",
+              "latest.yml",
+              f"opensquilla-{version}-py3-none-any.whl",
+              f"OpenSquilla-{version}-windows-x64-py312-recommended-portable.zip",
+          ]
           if not is_prerelease:
-              assert stable_zip.is_file(), "missing stable portable zip"
-              assets = [versioned_zips[0], stable_zip, versioned_wheels[0]]
+              asset_names.append("OpenSquilla-windows-x64-portable.zip")
+          assets = [dist / name for name in asset_names]
+          assert sha256s.is_file(), "missing SHA256SUMS"
+          for path in assets:
+              assert path.is_file(), f"missing release asset: {path.name}"
           expected = [
               f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}"
               for path in assets
@@ -294,10 +508,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: opensquilla-release-assets-${{ env.RELEASE_PROFILE }}
-          path: |
-            dist/*.zip
-            dist/*.whl
-            dist/SHA256SUMS
+          path: dist/*
 
       - name: Upload to GitHub Release
         if: ${{ github.event_name == 'push' || github.event.inputs.tag != '' }}
@@ -316,6 +527,7 @@ jobs:
           PY
           )"
           TITLE="OpenSquilla ${TAG#v}"
+          NOTES_FILE="docs/releases/${TAG#v}.md"
           create_args=("${TAG}" --draft --verify-tag)
           if [[ "${IS_PRERELEASE}" == "true" ]]; then
             TITLE="$(python - <<'PY'
@@ -333,8 +545,14 @@ jobs:
             create_args+=(--prerelease)
           fi
           create_args+=(--title "${TITLE}")
+          if [[ -f "${NOTES_FILE}" ]]; then
+            create_args+=(--notes-file "${NOTES_FILE}")
+          fi
           gh release view "${TAG}" >/dev/null 2>&1 || \
             gh release create "${create_args[@]}"
+          if [[ -f "${NOTES_FILE}" ]]; then
+            gh release edit "${TAG}" --title "${TITLE}" --notes-file "${NOTES_FILE}"
+          fi
           python - <<'PY'
           import json
           import os
@@ -350,6 +568,8 @@ jobs:
               name = asset["name"]
               managed = (
                   name == "SHA256SUMS"
+                  or name == "latest-mac.yml"
+                  or name == "latest.yml"
                   or name.startswith("OpenSquilla-")
                   or name.startswith("opensquilla-")
                   or name.endswith(".sha256")
@@ -360,7 +580,7 @@ jobs:
                       check=True,
                   )
           PY
-          gh release upload "${TAG}" dist/*.zip dist/*.whl dist/SHA256SUMS --clobber
+          gh release upload "${TAG}" dist/* --clobber
 
       - name: Verify GitHub Release assets
         if: ${{ github.event_name == 'push' || github.event.inputs.tag != '' }}
@@ -378,8 +598,21 @@ jobs:
           import sys
 
           tag = os.environ["TAG"]
-          is_prerelease = bool(re.search(r"(?:a|b|rc)[0-9]+$", tag))
-          expected = {"SHA256SUMS"}
+          version = tag.removeprefix("v")
+          is_prerelease = bool(re.search(r"(?:a|b|rc)[0-9]+$", version))
+          expected = {
+              f"OpenSquilla-{version}-mac-arm64.dmg",
+              f"OpenSquilla-{version}-mac-arm64.zip",
+              f"OpenSquilla-{version}-mac-arm64.dmg.blockmap",
+              f"OpenSquilla-{version}-mac-arm64.zip.blockmap",
+              "latest-mac.yml",
+              f"OpenSquilla-{version}-win-x64.exe",
+              f"OpenSquilla-{version}-win-x64.exe.blockmap",
+              "latest.yml",
+              f"opensquilla-{version}-py3-none-any.whl",
+              f"OpenSquilla-{version}-windows-x64-py312-recommended-portable.zip",
+              "SHA256SUMS",
+          }
           if not is_prerelease:
               expected.add("OpenSquilla-windows-x64-portable.zip")
           raw = subprocess.check_output(
@@ -389,30 +622,12 @@ jobs:
           data = json.loads(raw)
           names = {asset["name"] for asset in data.get("assets", [])}
           missing = sorted(expected - names)
-          versioned_zip = [
-              name for name in names
-              if name.startswith("OpenSquilla-")
-              and name.endswith("-windows-x64-py312-recommended-portable.zip")
-          ]
-          versioned_wheel = [
-              name for name in names
-              if name.startswith("opensquilla-")
-              and name.endswith("-py3-none-any.whl")
-          ]
-          allowed = expected | set(versioned_zip) | set(versioned_wheel)
-          unexpected = sorted(names - allowed)
-          if (
-              missing
-              or len(versioned_zip) != 1
-              or len(versioned_wheel) != 1
-              or unexpected
-          ):
+          unexpected = sorted(names - expected)
+          if missing or unexpected:
               print(
                   "Unexpected GitHub Release assets:",
                   {
                       "missing": missing,
-                      "versioned_zip_count": len(versioned_zip),
-                      "versioned_wheel_count": len(versioned_wheel),
                       "unexpected": unexpected,
                       "names": sorted(names),
                   },

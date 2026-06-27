@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tomllib
 from pathlib import Path
 
@@ -22,6 +23,53 @@ def test_lockfile_version_matches_current_release() -> None:
     package = next(item for item in lock["package"] if item["name"] == "opensquilla")
 
     assert package["version"] == CURRENT_VERSION
+
+
+def test_desktop_electron_release_config_matches_current_release() -> None:
+    package = json.loads(Path("desktop/electron/package.json").read_text(encoding="utf-8"))
+    build = package["build"]
+
+    assert package["version"] == CURRENT_VERSION
+    assert package["repository"] == {
+        "type": "git",
+        "url": "https://github.com/opensquilla/opensquilla.git",
+    }
+    assert build["artifactName"] == "OpenSquilla-${version}-${os}-${arch}.${ext}"
+    assert build["mac"]["target"] == ["dmg", "zip"]
+    assert build["mac"].get("identity", "auto") is not None
+    assert build["win"]["target"] == ["nsis"]
+    assert build["nsis"]["oneClick"] is False
+    assert build["nsis"]["allowToChangeInstallationDirectory"] is True
+
+
+def test_release_workflow_builds_desktop_installers() -> None:
+    workflow = Path(".github/workflows/wheelhouse-release.yml").read_text(encoding="utf-8")
+
+    assert "name: Release Assets" in workflow
+    assert "build-desktop-macos:" in workflow
+    assert "build-desktop-windows:" in workflow
+    assert "npx electron-builder --mac --publish never" in workflow
+    assert "npx electron-builder --win --publish never" in workflow
+    assert "OpenSquilla-{version}-mac-arm64.dmg" in workflow
+    assert "OpenSquilla-{version}-win-x64.exe" in workflow
+    assert "latest-mac.yml" in workflow
+    assert "latest.yml" in workflow
+    assert "NOTES_FILE=\"docs/releases/${TAG#v}.md\"" in workflow
+    assert "--notes-file \"${NOTES_FILE}\"" in workflow
+    assert "gh release upload \"${TAG}\" dist/* --clobber" in workflow
+
+
+def test_release_workflow_keeps_macos_signing_identity_auto_selected() -> None:
+    workflow = Path(".github/workflows/wheelhouse-release.yml").read_text(encoding="utf-8")
+    mac_step = workflow.split("- name: Build signed macOS installer", 1)[1].split(
+        "- name: Verify Electron package", 1
+    )[0]
+
+    assert "CSC_LINK: ${{ secrets.MAC_CSC_LINK }}" in mac_step
+    assert "CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}" in mac_step
+    assert "APPLE_ID: ${{ secrets.APPLE_ID }}" in mac_step
+    assert "CSC_NAME" not in mac_step
+    assert "GH_TOKEN" not in mac_step
 
 
 def _dep_names(specs: list[str]) -> set[str]:
@@ -86,6 +134,9 @@ def test_releases_md_exists_and_references_current_and_preview_tags() -> None:
     text = releases.read_text(encoding="utf-8")
     assert CURRENT_TAG in text, f"RELEASES.md must reference the tag '{CURRENT_TAG}'"
     assert PREVIEW_TAG in text, f"RELEASES.md must reference the tag '{PREVIEW_TAG}'"
+    assert f"OpenSquilla-{CURRENT_VERSION}-mac-arm64.dmg" in text
+    assert f"OpenSquilla-{CURRENT_VERSION}-win-x64.exe" in text
+    assert "legacy Windows portable" in text
 
 
 def test_changelog_has_current_release_section_and_unreleased() -> None:
@@ -101,6 +152,9 @@ def test_changelog_has_current_release_section_and_unreleased() -> None:
 def test_readme_release_install_uses_latest_assets_and_pinned_alternative() -> None:
     readme = Path("README.md").read_text(encoding="utf-8")
 
+    assert f"OpenSquilla-{CURRENT_VERSION}-mac-arm64.dmg" in readme
+    assert f"OpenSquilla-{CURRENT_VERSION}-win-x64.exe" in readme
+    assert "legacy compatibility package" in readme
     assert (
         "releases/latest/download/OpenSquilla-windows-x64-portable.zip"
         in readme
@@ -134,3 +188,16 @@ def test_release_workflow_marks_preview_tags_as_prereleases() -> None:
     assert "if not is_prerelease:" in workflow
     assert "expected.add(\"OpenSquilla-windows-x64-portable.zip\")" in workflow
     assert "opensquilla-latest-py3-none-any.whl" not in workflow
+
+
+def test_040_release_notes_prioritize_desktop_and_legacy_portable() -> None:
+    notes = Path("docs/releases/0.4.0.md").read_text(encoding="utf-8")
+
+    assert "## Downloads" in notes
+    assert f"OpenSquilla-{CURRENT_VERSION}-mac-arm64.dmg" in notes
+    assert f"OpenSquilla-{CURRENT_VERSION}-win-x64.exe" in notes
+    assert "Legacy Windows portable" in notes
+    assert "legacy compatibility" in notes
+    assert "## Acknowledgements" in notes
+    assert "@ab2ence" in notes
+    assert "@nice-code-la" in notes

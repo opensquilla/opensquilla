@@ -817,10 +817,13 @@ def test_release_workflow_publishes_windows_portable_zip_and_wheel() -> None:
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
     assert "concurrency:" in workflow
-    assert "windows-release-assets-${{" in workflow
+    assert "release-assets-${{" in workflow
     assert "cancel-in-progress: false" in workflow
     assert "timeout-minutes: 90" in workflow
+    assert "timeout-minutes: 120" in workflow
     assert "timeout-minutes: 20" in workflow
+    assert "build-desktop-macos:" in workflow
+    assert "build-desktop-windows:" in workflow
     assert "Validate workflow inputs" in workflow
     assert "python_runtime_release must be a YYYYMMDD" in workflow
     assert "python_runtime_version must be a CPython 3.12 patch version" in workflow
@@ -840,8 +843,10 @@ def test_release_workflow_publishes_windows_portable_zip_and_wheel() -> None:
     assert "is_prerelease = bool(re.search" in workflow
     assert "if not is_prerelease:" in workflow
     assert "OpenSquilla-windows-x64-portable.zip" in workflow
+    assert "OpenSquilla-{version}-mac-arm64.dmg" in workflow
+    assert "OpenSquilla-{version}-win-x64.exe" in workflow
     assert "opensquilla-latest-py3-none-any.whl" not in workflow
-    assert "dist/*.zip dist/*.whl dist/SHA256SUMS" in workflow
+    assert "gh release upload \"${TAG}\" dist/* --clobber" in workflow
     assert "dist/*.zip dist/*.zip.sha256 dist/SHA256SUMS" not in workflow
     assert "Git LFS pointer leaked into wheel" in workflow
     assert "Verify GitHub Release assets" in workflow

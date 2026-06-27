@@ -756,8 +756,6 @@ interface ArtifactOpenRequest {
 
 const MIME_EXTENSIONS: Record<string, string> = {
   'application/pdf': '.pdf',
-  'text/html': '.html',
-  'application/xhtml+xml': '.xhtml',
   'text/plain': '.txt',
   'text/markdown': '.md',
   'text/csv': '.csv',
@@ -783,12 +781,24 @@ function safeArtifactFileName(raw: unknown): string {
   return cleaned || 'artifact'
 }
 
+function artifactMimeKey(mime: unknown): string {
+  return String(mime ?? '').split(';', 1)[0].trim().toLowerCase()
+}
+
+function isActiveDocumentArtifactRequest(name: string, mime: unknown): boolean {
+  const key = artifactMimeKey(mime)
+  const normalizedName = name.trim().toLowerCase()
+  return key === 'text/html' || key === 'application/xhtml+xml' ||
+    normalizedName.endsWith('.html') ||
+    normalizedName.endsWith('.htm') ||
+    normalizedName.endsWith('.xhtml')
+}
+
 // When the name carries no extension, fall back to one implied by the MIME type
 // so shell.openPath can still associate a default application.
 function artifactExtension(name: string, mime: unknown): string {
   if (/\.[A-Za-z0-9]{1,8}$/.test(name)) return ''
-  const key = String(mime ?? '').split(';', 1)[0].trim().toLowerCase()
-  return MIME_EXTENSIONS[key] || ''
+  return MIME_EXTENSIONS[artifactMimeKey(mime)] || ''
 }
 
 // Best-effort prune so opened artifacts do not accumulate unboundedly in temp.
@@ -815,6 +825,12 @@ async function openArtifactWithDefaultApp(payload: ArtifactOpenRequest): Promise
     mkdirSync(dir, { recursive: true, mode: 0o700 })
     void pruneArtifactCache(dir)
     const name = safeArtifactFileName(payload?.name)
+    if (isActiveDocumentArtifactRequest(name, payload?.mime)) {
+      return {
+        ok: false,
+        message: 'Active document artifacts cannot be opened directly. Use Download instead.',
+      }
+    }
     // A random prefix guarantees a unique, non-colliding, non-dotfile path even
     // for two opens in the same millisecond.
     const filePath = join(dir, `${randomUUID()}-${name}${artifactExtension(name, payload?.mime)}`)

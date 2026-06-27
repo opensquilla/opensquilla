@@ -5,6 +5,7 @@ import {
   artifactAccessUrl,
   artifactOpenFailureMessage,
   fetchArtifactBlob,
+  isActiveDocumentArtifact,
   openArtifactBlobUrl,
 } from './artifactAccess'
 
@@ -370,6 +371,26 @@ describe('openArtifactBlobUrl', () => {
     expect(result.ok).toBe(true)
     expect(opened.location.href).toBe(`blob:${name}`)
     expect(opened.close).not.toHaveBeenCalled()
+  })
+})
+
+describe('isActiveDocumentArtifact', () => {
+  it.each([
+    ['page.html', 'text/plain', 'text/plain'],
+    ['report.txt', 'text/html; charset=utf-8', 'text/plain'],
+    ['report.txt', 'text/plain', 'application/xhtml+xml'],
+  ])('flags active document artifacts for native open guards: %s', (name, responseMime, artifactMime) => {
+    expect(isActiveDocumentArtifact(
+      artifact({ name, mime: artifactMime }),
+      new Blob(['<html></html>'], { type: responseMime }),
+    )).toBe(true)
+  })
+
+  it('allows passive document artifacts for native open guards', () => {
+    expect(isActiveDocumentArtifact(
+      artifact({ name: 'notes.md', mime: 'text/markdown' }),
+      new Blob(['hello'], { type: 'text/markdown' }),
+    )).toBe(false)
   })
 })
 

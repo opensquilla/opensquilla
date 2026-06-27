@@ -201,7 +201,12 @@ import {
   type ArtifactPreviewController,
   type ArtifactPreviewState,
 } from '@/composables/chat/useArtifactPreview'
-import { fetchArtifactBlob, openArtifactBlobUrl } from '@/utils/chat/artifactAccess'
+import {
+  artifactOpenFailureMessage,
+  fetchArtifactBlob,
+  isActiveDocumentArtifact,
+  openArtifactBlobUrl,
+} from '@/utils/chat/artifactAccess'
 import { usePlatform } from '@/platform'
 import {
   artifactActionLabel,
@@ -324,6 +329,10 @@ async function openFile(artifact: ArtifactPayload) {
     })
     if (!fetched.ok) {
       pushToast(fetched.message, { tone: 'danger' })
+      return
+    }
+    if (isActiveDocumentArtifact(artifact, fetched.blob)) {
+      pushToast(artifactOpenFailureMessage(0, artifactFileTitle(artifact)), { tone: 'danger' })
       return
     }
     const data = await fetched.blob.arrayBuffer()

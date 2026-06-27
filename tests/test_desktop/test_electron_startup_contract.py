@@ -111,3 +111,18 @@ def test_package_verifier_hard_fails_stale_runtime_and_boot_contract() -> None:
         "process.exit(1)",
     ]:
         assert expected in verifier
+
+
+def test_desktop_native_artifact_open_blocks_active_documents() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    mime_extensions = _section(main_ts, "const MIME_EXTENSIONS", "}\n\n")
+    native_open = _section(
+        main_ts,
+        "async function openArtifactWithDefaultApp",
+        "function createApplicationMenu",
+    )
+
+    assert "'text/html'" not in mime_extensions
+    assert "'application/xhtml+xml'" not in mime_extensions
+    assert "function isActiveDocumentArtifactRequest" in main_ts
+    assert "isActiveDocumentArtifactRequest(name, payload?.mime)" in native_open

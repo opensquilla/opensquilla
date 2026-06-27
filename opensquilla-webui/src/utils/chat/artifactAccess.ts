@@ -80,7 +80,7 @@ function hasActiveDocumentExtension(artifact: ArtifactPayload): boolean {
   return name.endsWith('.html') || name.endsWith('.htm') || name.endsWith('.xhtml')
 }
 
-function isActiveDocumentArtifact(artifact: ArtifactPayload, blob: Blob): boolean {
+export function isActiveDocumentArtifact(artifact: ArtifactPayload, blob: Blob): boolean {
   const responseMime = normalizedMime(blob.type)
   const artifactMime = normalizedMime(artifact.mime)
   return responseMime === 'text/html' || responseMime === 'application/xhtml+xml' ||

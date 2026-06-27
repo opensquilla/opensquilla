@@ -115,9 +115,17 @@ def solve(
                 fg=typer.colors.RED,
             )
             raise typer.Exit(2)
+    elif verification_mode == "build" and not repo:
+        if issue is not None:
+            typer.secho(
+                "--verification-mode build from scratch uses --task/--task-file, not --issue.",
+                err=True,
+                fg=typer.colors.RED,
+            )
+            raise typer.Exit(2)
     elif not repo:
         typer.secho(
-            "Pass --repo unless using --verification-mode scratch.",
+            "Pass --repo unless using --verification-mode scratch or a from-scratch build.",
             err=True,
             fg=typer.colors.RED,
         )

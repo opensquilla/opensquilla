@@ -83,6 +83,18 @@ def runs_root() -> Path:
     return default_opensquilla_home() / "code-task"
 
 
+def build_workspace_dir() -> Path:
+    """Durable home for from-scratch app builds (verification_mode=build, no repo).
+
+    The verified app persists here so a follow-up edit can ``--repo <path>`` it.
+    Overridable with ``OPENSQUILLA_CODETASK_WORKSPACE_DIR``.
+    """
+    override = os.environ.get("OPENSQUILLA_CODETASK_WORKSPACE_DIR")
+    if override:
+        return Path(override).expanduser()
+    return default_opensquilla_home() / "workspace"
+
+
 def run_dir(run_id: str) -> Path:
     """Per-run dir: <runs_root>/<run_id>/."""
     return runs_root() / run_id

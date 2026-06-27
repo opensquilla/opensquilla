@@ -24,6 +24,7 @@ from opensquilla.contrib.codetask.config import (
     GIT_USER_EMAIL,
     GIT_USER_NAME,
     TASK_BRANCH_PREFIX,
+    build_workspace_dir,
     repo_dir,
     run_dir,
 )
@@ -94,6 +95,22 @@ def prepare_scratch_repo(run_id: str, *, slug: str = "task") -> PreparedRepo:
         base_commit=base_commit,
         branch=branch,
     )
+
+
+def ensure_build_workspace(slug: str) -> Path:
+    """A DURABLE empty git repo for a from-scratch app build, under the code-task
+    workspace dir. The build flow clones it into the run dir and persists the
+    verified app back here, so a follow-up edit can ``--repo <path>`` at it."""
+    dest = build_workspace_dir() / slug
+    dest.mkdir(parents=True, exist_ok=True)
+    if not (dest / ".git").exists():
+        if _git(["init", "-q"], dest).returncode != 0:
+            raise WorkspaceError("git init failed for build workspace")
+        _git(["config", "user.email", GIT_USER_EMAIL], dest)
+        _git(["config", "user.name", GIT_USER_NAME], dest)
+        _write_repo_excludes(dest)
+        _git(["commit", "-q", "--allow-empty", "-m", "app workspace base"], dest)
+    return dest
 
 
 def prepare_repo(

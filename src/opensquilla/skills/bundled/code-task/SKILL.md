@@ -76,8 +76,10 @@ opensquilla code-task solve --repo <url-or-path> ( --issue N | --task "<text>" |
 - **A short request in the message** → `--task "<their request>"`.
 - **A long spec, or pasted from Jira/GitLab/内网** → save it to a file and
   use `--task-file <path>`.
-- Always pass `--repo`, except for `--verification-mode scratch`. If the user
-  is already in a local checkout, use that path; otherwise the GitHub/remote URL.
+- Pass `--repo` for changes to an EXISTING repo. Omit it for
+  `--verification-mode scratch` (from-scratch code) and for a from-scratch
+  `--verification-mode build` (a brand-new app) — both scaffold their own repo.
+  If the user is already in a local checkout, use that path; otherwise the URL.
 - Pass `--yes` to skip the interactive trusted-host confirmation (you are
   acting on the user's behalf), but only after the safety check below.
 

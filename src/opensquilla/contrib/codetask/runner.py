@@ -192,8 +192,16 @@ def solve(
             )
         if issue is not None:
             raise InputError("verification_mode='scratch' supports task or task_file, not issue.")
+    elif verification_mode == "build" and not repo:
+        # From-scratch app build: no repo needed; we scaffold a workspace repo.
+        if issue is not None:
+            raise InputError(
+                "verification_mode='build' from scratch uses task or task_file, not issue."
+            )
     elif not repo:
-        raise InputError("Pass repo unless using verification_mode='scratch'.")
+        raise InputError(
+            "Pass repo unless using verification_mode='scratch' or a from-scratch 'build'."
+        )
 
     spec: TaskSpec
     run_id = run_id or _default_run_id("task")
@@ -203,6 +211,15 @@ def solve(
         spec = resolve_task(task_text=task, task_file=task_file)
         run_id_final = run_id or _default_run_id(spec.slug)
         prepared = workspace.prepare_scratch_repo(run_id_final, slug=spec.slug)
+    elif verification_mode == "build" and not repo:
+        # From-scratch app build: scaffold into a DURABLE workspace repo so the
+        # verified app persists somewhere a follow-up edit can --repo at.
+        spec = resolve_task(task_text=task, task_file=task_file)
+        run_id_final = run_id or _default_run_id(spec.slug)
+        repo = str(workspace.ensure_build_workspace(spec.slug))
+        prepared = workspace.prepare_repo(
+            run_id_final, repo, base_ref=base_ref, shallow=shallow, slug=spec.slug
+        )
     elif issue is not None:
         prepared = workspace.prepare_repo(
             run_id, repo, base_ref=base_ref, shallow=shallow, slug="task"

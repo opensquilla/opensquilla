@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-import requests
+import requests  # type: ignore[import-untyped]
 import structlog
 from pydantic import BaseModel
 

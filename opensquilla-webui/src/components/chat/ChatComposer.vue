@@ -57,10 +57,13 @@
                 :router-enabled="routerEnabled"
                 :router-settings-busy="routerSettingsBusy"
                 :visual-effects-enabled="routerVisualEffectsEnabled"
+                :coding-mode-enabled="codingModeEnabled"
+                :coding-mode-settings-busy="codingModeSettingsBusy"
                 @close="settingsOpen = false"
                 @set-elevated-mode="emit('setElevatedMode', $event)"
                 @set-router-enabled="emit('setRouterEnabled', $event)"
                 @set-visual-effects-enabled="emit('setVisualEffectsEnabled', $event)"
+                @set-coding-mode-enabled="emit('setCodingModeEnabled', $event)"
               />
             </div>
             <button
@@ -150,6 +153,8 @@ defineProps<{
   routerEnabled: boolean
   routerVisualEffectsEnabled: boolean
   routerSettingsBusy: boolean
+  codingModeEnabled: boolean
+  codingModeSettingsBusy: boolean
   voiceBusy: boolean
   voiceRecording: boolean
 }>()
@@ -165,6 +170,7 @@ const emit = defineEmits<{
   setElevatedMode: [mode: string]
   setRouterEnabled: [enabled: boolean]
   setVisualEffectsEnabled: [enabled: boolean]
+  setCodingModeEnabled: [enabled: boolean]
   voiceInput: []
   exportMarkdown: []
   stop: []

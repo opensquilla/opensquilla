@@ -51,6 +51,14 @@
         :checked="visualEffectsEnabled"
         @change="$emit('setVisualEffectsEnabled', $event)"
       />
+      <ControlSwitch
+        label="Coding mode"
+        :caption="codingModeEnabled ? 'Enabled' : 'Disabled'"
+        aria-label="Coding mode"
+        :checked="codingModeEnabled"
+        :busy="codingModeSettingsBusy"
+        @change="$emit('setCodingModeEnabled', $event)"
+      />
     </div>
   </section>
 </template>
@@ -73,6 +81,8 @@ const props = defineProps<{
   routerEnabled: boolean
   routerSettingsBusy: boolean
   visualEffectsEnabled: boolean
+  codingModeEnabled: boolean
+  codingModeSettingsBusy: boolean
 }>()
 
 defineEmits<{
@@ -80,6 +90,7 @@ defineEmits<{
   setElevatedMode: [mode: string]
   setRouterEnabled: [enabled: boolean]
   setVisualEffectsEnabled: [enabled: boolean]
+  setCodingModeEnabled: [enabled: boolean]
 }>()
 
 const normalizedElevatedMode = computed(() => {

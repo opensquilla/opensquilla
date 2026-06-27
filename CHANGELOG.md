@@ -8,22 +8,64 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## [0.4.0] - 2026-06-27
+
+### Added
+
+- The refreshed Control UI is now the default browser console, with a
+  conversation-first sidebar, Settings modal, Sessions ledger, artifact
+  previews, share export, deliverables drawer, turn trace, mobile tabs, and
+  clearer Skills, Usage, Cron, Logs, and Approvals surfaces.
+- Coding mode and the `code-task` workflow provide a guarded path for code
+  changes: code work runs through an isolated run directory, uses trusted-host
+  confirmation, and verifies before persisting changes back to the source.
+- `opensquilla swebench` adds an optional SWE-bench evaluation surface for
+  users who install `opensquilla[swebench]` and have Docker available.
 - OpenTUI preview backend documentation now covers explicit opt-in usage,
   dependency setup, replay benchmarks, and real-terminal harness evidence.
+- Web search now supports DuckDuckGo, Bocha, Brave, Tavily, and Exa through the
+  runtime provider catalog, with source-backed `web_search` and lightweight
+  `web_discover` roles documented for agent workflows.
+- `openai_responses` exposes OpenAI's native Responses API shape alongside
+  `openai`, sharing `OPENAI_API_KEY` and the default OpenAI base URL while
+  making Responses-specific behavior selectable by provider id.
 
 ### Changed
 
+- MetaSkills are now **manual-only by default**. They no longer auto-trigger from
+  message keywords or appear in the runtime prompt; run them explicitly with the
+  new `/meta` command (`/meta` lists available MetaSkills, `/meta <name>` runs
+  one). To restore the previous automatic behavior, set
+  `meta_skill.auto_trigger = true`. Full list+run is available in web chat and
+  the CLI gateway TUI; channel and standalone CLI surfaces support `/meta`
+  listing only.
 - Terminal chat documentation now distinguishes the stable Python-native default
   backend from the opt-in OpenTUI preview backend.
-- Meta-skills are now **manual-only by default**. They no longer auto-trigger from
-  message keywords or appear in the runtime prompt; run them explicitly with the
-  new `/meta` command (`/meta` lists available meta-skills, `/meta <name>` runs
-  one). To restore the previous automatic behavior, set
-  `meta_skill.auto_trigger = true`. Full list+run is available in web chat and the
-  CLI gateway TUI; the channel and standalone CLI surfaces support `/meta` listing
-  only.
+- Search configuration now treats `search_provider` as the credential anchor for
+  a configured key rather than a hard routing promise for automatic searches.
 
 ### Fixed
+
+- Provider stream parsing accepts no-space SSE data lines, and Gemini thought
+  signatures are preserved across tool turns so provider continuity metadata can
+  be replayed safely.
+- The SSRF guard now gives operators actionable fake-IP DNS guidance while
+  keeping private, loopback, link-local, and internal ranges blocked by default.
+- Runtime, gateway, and Web UI fixes improve session recovery, attachment and
+  artifact handling, approval event delivery, share-image export, router
+  visibility, and cross-platform test stability.
+
+### Acknowledgements
+
+- Thanks to the 0.4.0 contributors recorded in
+  [`CONTRIBUTORS.md`](CONTRIBUTORS.md), including PR work from @ab2ence,
+  @myz-ah, @nice-code-la, @openvictory, @weiconghe, @changquanyou, @nkgotcode,
+  @C1-BA-B1-F3, @BlueOcean223, @szdtzpj, @lose4578, and cwan0785
+  (GitHub @Anonymous-4427).
 
 ## [0.3.1] - 2026-06-03
 

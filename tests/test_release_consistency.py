@@ -35,6 +35,16 @@ def test_desktop_electron_release_config_matches_current_release() -> None:
     assert build["win"]["target"] == ["nsis"]
 
 
+def test_electron_installer_workflow_lets_builder_select_macos_signing_identity() -> None:
+    workflow = Path(".github/workflows/electron-desktop-installer-test.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "CSC_LINK: ${{ secrets.MAC_CSC_LINK }}" in workflow
+    assert "CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}" in workflow
+    assert "CSC_NAME" not in workflow
+
+
 def _dep_names(specs: list[str]) -> set[str]:
     names: set[str] = set()
     for spec in specs:

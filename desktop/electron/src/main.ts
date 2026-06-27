@@ -124,7 +124,7 @@ let mainWindow: BrowserWindow | null = null
 let onboardingWindow: BrowserWindow | null = null
 let gatewayProcess: ChildProcessWithoutNullStreams | null = null
 let isQuitting = false
-let startupInProgress = false
+let gatewayStartPromise: Promise<GatewayState> | null = null
 let resolveOnboarding: ((credential: DesktopConnection) => void) | null = null
 let rejectOnboarding: ((error: Error) => void) | null = null
 let bootStatus: BootStatus = {
@@ -790,6 +790,14 @@ function createApplicationMenu(): void {
     },
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
+
+function focusMainWindow(): boolean {
+  if (!mainWindow || mainWindow.isDestroyed()) return false
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+  return true
 }
 
 function installEditingContextMenu(window: BrowserWindow): void {
@@ -2081,7 +2089,42 @@ async function waitForControlUi(url: string): Promise<void> {
   throw new Error(`Control UI did not become reachable at ${url}/control/`)
 }
 
+function hasGatewayProcessExited(process: ChildProcessWithoutNullStreams | null): boolean {
+  return Boolean(process && (process.exitCode !== null || process.signalCode !== null))
+}
+
+async function reuseHealthyGatewayState(): Promise<GatewayState | null> {
+  if (!gatewayState.url) return null
+  if (gatewayState.status !== 'ready' && !gatewayProcess) return null
+
+  if (await healthCheck(gatewayState.url)) {
+    gatewayState.status = 'ready'
+    gatewayState.error = undefined
+    sendBootStatus('Loading Control UI')
+    return gatewayState
+  }
+
+  if (gatewayProcess && gatewayState.owned && hasGatewayProcessExited(gatewayProcess)) {
+    gatewayProcess = null
+    gatewayState.status = 'stopped'
+  }
+  return null
+}
+
 async function startGateway(): Promise<GatewayState> {
+  const reusableGateway = await reuseHealthyGatewayState()
+  if (reusableGateway) return reusableGateway
+
+  if (gatewayProcess && gatewayState.owned) {
+    if (hasGatewayProcessExited(gatewayProcess)) {
+      gatewayProcess = null
+    } else {
+      stopGateway()
+    }
+    gatewayState.status = 'stopped'
+    gatewayState.error = undefined
+  }
+
   const overrideUrl = process.env.OPENSQUILLA_DESKTOP_GATEWAY_URL
   const explicitPort = process.env.OPENSQUILLA_DESKTOP_GATEWAY_PORT
   if (overrideUrl) {
@@ -2128,7 +2171,7 @@ async function startGateway(): Promise<GatewayState> {
   gatewayState.status = 'starting'
   gatewayState.logPath = logPath
 
-  gatewayProcess = spawn(
+  const child = spawn(
     runtime.command,
     [...runtime.args, '--port', String(port), '--bind', '127.0.0.1', '--config', desktopConfigPath()],
     {
@@ -2138,20 +2181,30 @@ async function startGateway(): Promise<GatewayState> {
         [connection.apiKeyEnv]: apiKey,
         ...(connection.searchApiKeyEnv && searchApiKey ? { [connection.searchApiKeyEnv]: searchApiKey } : {}),
         OPENSQUILLA_DESKTOP: '1',
+        OPENSQUILLA_INSTALL_METHOD: 'desktop',
         OPENSQUILLA_GATEWAY_CONFIG_PATH: desktopConfigPath(),
         OPENSQUILLA_STATE_DIR: desktopStateDir(),
         PYTHONUNBUFFERED: '1',
       },
     }
   )
+  gatewayProcess = child
 
-  gatewayProcess.stdout.pipe(logStream, { end: false })
-  gatewayProcess.stderr.pipe(logStream, { end: false })
-  gatewayProcess.once('exit', (code, signal) => {
-    gatewayState.status = isQuitting ? 'stopped' : 'error'
-    gatewayState.error = `gateway exited code=${code ?? 'null'} signal=${signal ?? 'null'}`
-    logStream.write(`\n[desktop] ${gatewayState.error}\n`)
-    if (!isQuitting && gatewayState.status === 'error') sendBootError(gatewayState.error)
+  child.stdout.pipe(logStream, { end: false })
+  child.stderr.pipe(logStream, { end: false })
+  child.once('exit', (code, signal) => {
+    const message = `gateway exited code=${code ?? 'null'} signal=${signal ?? 'null'}`
+    const isCurrentGateway = gatewayProcess === child
+    if (isCurrentGateway) gatewayProcess = null
+    logStream.write(`\n[desktop] ${message}\n`)
+    if (!isCurrentGateway) return
+    if (isQuitting) {
+      gatewayState.status = 'stopped'
+      return
+    }
+    gatewayState.status = 'error'
+    gatewayState.error = message
+    sendBootError(gatewayState.error)
   })
 
   sendBootStatus('Checking gateway health')
@@ -2180,7 +2233,7 @@ async function loadControlUi(window: BrowserWindow, gatewayUrl: string): Promise
 async function createMainWindow(): Promise<BrowserWindow> {
   if (mainWindow && !mainWindow.isDestroyed()) return mainWindow
 
-  mainWindow = new BrowserWindow({
+  const window = new BrowserWindow({
     width: 1360,
     height: 900,
     minWidth: 960,
@@ -2199,38 +2252,68 @@ async function createMainWindow(): Promise<BrowserWindow> {
       sandbox: true,
     },
   })
-  installEditingContextMenu(mainWindow)
+  mainWindow = window
+  installEditingContextMenu(window)
 
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  window.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url)
     return { action: 'deny' }
   })
 
-  mainWindow.once('ready-to-show', () => {
-    mainWindow?.show()
+  window.once('ready-to-show', () => {
+    if (!window.isDestroyed()) window.show()
   })
 
-  await mainWindow.loadFile(bootPagePath())
-  return mainWindow
+  window.once('closed', () => {
+    if (mainWindow === window) mainWindow = null
+  })
+
+  await window.loadFile(bootPagePath())
+  return window
 }
 
-async function bootDesktopApp(): Promise<void> {
-  if (startupInProgress) return
-  startupInProgress = true
-  sendBootStatus('Preparing desktop profile')
+function currentMainWindow(): BrowserWindow | null {
+  return mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
+}
+
+function ensureGatewayStarted(): Promise<GatewayState> {
+  if (!gatewayStartPromise) {
+    sendBootStatus('Preparing desktop profile')
+    gatewayStartPromise = startGateway().finally(() => {
+      gatewayStartPromise = null
+    })
+  }
+  return gatewayStartPromise
+}
+
+async function loadControlUiIntoCurrentWindow(gatewayUrl: string): Promise<void> {
+  const window = currentMainWindow()
+  if (!window) return
+
+  sendBootStatus('Loading Control UI')
   try {
-    const gateway = await startGateway()
-    const window = await createMainWindow()
-    sendBootStatus('Loading Control UI')
-    await loadControlUi(window, gateway.url)
-    sendBootStatus('Ready')
+    await loadControlUi(window, gatewayUrl)
   } catch (error) {
-    gatewayState.status = 'error'
-    gatewayState.error = error instanceof Error ? error.message : String(error)
-    await createMainWindow().catch(() => null)
-    sendBootError(error)
-  } finally {
-    startupInProgress = false
+    if (window.isDestroyed()) return
+    throw error
+  }
+  sendBootStatus('Ready')
+}
+
+async function openOrResumeDesktopApp(): Promise<void> {
+  await createMainWindow()
+  focusMainWindow()
+
+  try {
+    const reusableGateway = await reuseHealthyGatewayState()
+    const gateway = reusableGateway ?? await ensureGatewayStarted()
+    await loadControlUiIntoCurrentWindow(gateway.url)
+  } catch (error) {
+    if (gatewayState.status !== 'ready') {
+      gatewayState.status = 'error'
+      gatewayState.error = error instanceof Error ? error.message : String(error)
+    }
+    if (currentMainWindow()) sendBootError(error)
   }
 }
 
@@ -2262,12 +2345,20 @@ ipcMain.handle('desktop:boot:state', () => ({
   gateway: { ...gatewayState },
 }))
 ipcMain.handle('desktop:boot:retry', async () => {
-  if (startupInProgress) return { ok: false, reason: 'startup_in_progress' }
-  if (gatewayProcess && gatewayState.owned) stopGateway()
-  gatewayState.status = 'stopped'
-  gatewayState.error = undefined
-  await mainWindow?.loadFile(bootPagePath())
-  void bootDesktopApp()
+  const ready = gatewayState.status === 'ready' && gatewayState.url
+    ? await healthCheck(gatewayState.url)
+    : false
+
+  if (!gatewayStartPromise && !ready && gatewayProcess && gatewayState.owned) {
+    stopGateway()
+  }
+  if (!ready) {
+    gatewayState.status = 'stopped'
+    gatewayState.error = undefined
+    await currentMainWindow()?.loadFile(bootPagePath()).catch(() => null)
+  }
+
+  void openOrResumeDesktopApp()
   return { ok: true }
 })
 ipcMain.handle('desktop:boot:quit', () => {
@@ -2321,13 +2412,21 @@ app.on('window-all-closed', () => {
 })
 
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    void bootDesktopApp()
-  }
+  void openOrResumeDesktopApp()
 })
 
-void app.whenReady().then(async () => {
-  app.name = 'OpenSquilla'
-  createApplicationMenu()
-  void bootDesktopApp()
-})
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+
+if (!gotSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    void openOrResumeDesktopApp()
+  })
+
+  void app.whenReady().then(async () => {
+    app.name = 'OpenSquilla'
+    createApplicationMenu()
+    void openOrResumeDesktopApp()
+  })
+}

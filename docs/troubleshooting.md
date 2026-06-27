@@ -54,6 +54,30 @@ http://127.0.0.1:18791/control/
 
 For a focused gateway guide, see [`gateway.md`](gateway.md).
 
+## Desktop Gateway Startup Reports a Migration Lock
+
+During first run, the desktop app starts a local gateway and applies pending
+SQLite migrations before opening the Control UI. If startup is interrupted, the
+gateway may report a yoyo migration lock for `sessions.db`.
+
+Recent versions recover automatically when the lock row points only to dead or
+invalid process ids. The gateway keeps the migration failure loud and does not
+clear the lock when any recorded pid is still alive.
+
+Check the desktop gateway log for these events:
+
+```text
+migrator.lock_timeout
+migrator.stale_lock_cleared
+migrator.lock_held_by_live_process
+migrator.stale_lock_retry_failed
+```
+
+If the log says the lock is held by a live process, wait for that gateway to
+finish starting or stop the process cleanly. Do not remove `yoyo_lock` rows or
+run yoyo break-lock unless you have verified the recorded process is no longer
+running.
+
 ## Port Already In Use
 
 Use another port:

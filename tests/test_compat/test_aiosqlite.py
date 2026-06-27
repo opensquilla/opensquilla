@@ -27,6 +27,13 @@ async def test_sqlite3_fallback_execute_supports_await_and_async_context(
 
         assert row is not None
         assert row[0] == "alpha"
+
+        await conn.create_function("py_upper", 1, lambda value: value.upper())
+        async with conn.execute("SELECT py_upper(name) FROM items") as cur:
+            transformed = await cur.fetchone()
+
+        assert transformed is not None
+        assert transformed[0] == "ALPHA"
     finally:
         await conn.close()
         monkeypatch.delenv("OPENSQUILLA_FORCE_SQLITE3_BACKEND", raising=False)

@@ -11,7 +11,7 @@ import asyncio
 import importlib
 import os
 import sqlite3
-from collections.abc import AsyncIterator, Awaitable, Generator, Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Iterable
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Protocol, cast
 
@@ -99,6 +99,15 @@ class Connection(AbstractAsyncContextManager["Connection"], Protocol):
     async def enable_load_extension(self, enabled: bool) -> None: ...
 
     async def load_extension(self, path: str) -> None: ...
+
+    async def create_function(
+        self,
+        name: str,
+        num_params: int,
+        func: Callable[..., Any],
+        *,
+        deterministic: bool = False,
+    ) -> None: ...
 
 
 _native_available = _native_aiosqlite is not None
@@ -252,6 +261,23 @@ class _AsyncConnection:
     async def load_extension(self, path: str) -> None:
         async with self._locked:
             await asyncio.to_thread(self._conn.load_extension, path)
+
+    async def create_function(
+        self,
+        name: str,
+        num_params: int,
+        func: Callable[..., Any],
+        *,
+        deterministic: bool = False,
+    ) -> None:
+        async with self._locked:
+            await asyncio.to_thread(
+                self._conn.create_function,
+                name,
+                num_params,
+                func,
+                deterministic=deterministic,
+            )
 
     async def __aenter__(self) -> _AsyncConnection:
         return self

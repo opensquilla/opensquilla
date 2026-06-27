@@ -60,6 +60,75 @@ def test_task_runtime_hard_deadline_honors_explicit_config() -> None:
     assert _task_runtime_turn_hard_deadline_s(config) == 12.5
 
 
+def test_gateway_server_close_releases_pid_lock_when_shutdown_step_fails() -> None:
+    from opensquilla.gateway import boot
+
+    released: list[str] = []
+
+    class FakePidLock:
+        def release(self) -> None:
+            released.append("released")
+
+    class FailingChannelManager:
+        async def stop_all(self) -> None:
+            raise RuntimeError("channel stop failed")
+
+    server = boot.GatewayServer(
+        app=SimpleNamespace(),
+        config=GatewayConfig(),
+        _channel_manager=FailingChannelManager(),
+        _pid_lock=FakePidLock(),
+    )
+
+    async def run_case() -> None:
+        with pytest.raises(RuntimeError, match="channel stop failed"):
+            await server.close()
+
+        assert released == ["released"]
+        assert server._pid_lock is None
+
+    asyncio.run(run_case())
+
+
+def test_start_gateway_server_releases_pid_lock_when_build_services_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.gateway import boot
+
+    events: list[str] = []
+
+    async def fail_build_services(**_kwargs: Any) -> Any:
+        events.append("build_services")
+        raise RuntimeError("service construction failed")
+
+    monkeypatch.setattr(boot, "build_services", fail_build_services)
+    monkeypatch.setattr(boot, "_setup_file_logging", lambda config: None)
+    monkeypatch.setattr(boot, "emit_skill_filter_banner", lambda config: None)
+    monkeypatch.setattr(
+        "opensquilla.gateway.pidlock.GatewayPidLock.acquire",
+        lambda self: events.append("acquire"),
+    )
+    monkeypatch.setattr(
+        "opensquilla.gateway.pidlock.GatewayPidLock.release",
+        lambda self: events.append("release"),
+    )
+    config = GatewayConfig(
+        state_dir=str(tmp_path / "state"),
+        workspace_dir=str(tmp_path / "workspace"),
+        control_ui={"enabled": False},
+        channels={"channels": []},
+    )
+
+    async def run_case() -> None:
+        with pytest.raises(RuntimeError, match="service construction failed"):
+            await boot.start_gateway_server(config=config, run=False)
+
+        assert events == ["acquire", "build_services", "release"]
+
+    asyncio.run(run_case())
+
+
 def test_build_task_runtime_run_kwargs_forwards_fresh_user_session() -> None:
     run = SimpleNamespace(
         agent_id="main",

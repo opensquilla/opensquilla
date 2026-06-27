@@ -16,24 +16,63 @@ const Markdown = (() => {
   const _MATH_SCAN = /(```[\s\S]*?```|`[^`\n]+?`|\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([^)\n]+?\\\)|\$(?![\s\d])(?:\\\$|[^$\n])+?(?<![\s])\$)/g;
   const _MATH_SENTINEL = /M(\d+)/g;
 
+  // Build a stash entry with the raw text, its math type, and the content
+  // with delimiters stripped.
+  function _makeMathEntry(m) {
+    if (m.startsWith('$$') && m.endsWith('$$')) {
+      return { type: 'display', content: m.slice(2, -2).trim() };
+    }
+    if (m.startsWith('\\[') && m.endsWith('\\]')) {
+      return { type: 'display', content: m.slice(2, -2).trim() };
+    }
+    if (m.startsWith('\\(') && m.endsWith('\\)')) {
+      return { type: 'inline', content: m.slice(2, -2).trim() };
+    }
+    if (m.startsWith('$') && m.endsWith('$')) {
+      return { type: 'inline', content: m.slice(1, -1).trim() };
+    }
+    return null; // not a recognized math expression
+  }
+
   function _stashMath(text) {
     const stash = [];
     const out = text.replace(_MATH_SCAN, (m) => {
       // Code fences/inline code: keep verbatim, do not stash.
       if (m.startsWith('```') || (m.startsWith('`') && !m.startsWith('$'))) return m;
       const idx = stash.length;
-      stash.push(m);
+      stash.push(_makeMathEntry(m));
       return `M${idx}`;
     });
     return { text: out, stash };
   }
 
+  function _renderMathWithKatex(raw, type) {
+    if (typeof katex === 'undefined' || !katex.renderToString) {
+      // KaTeX not loaded: fall back to raw code display
+      return `<code class="math-raw" title="LaTeX formula">${_escape(raw)}</code>`;
+    }
+    try {
+      const html = katex.renderToString(raw, {
+        displayMode: type === 'display',
+        throwOnError: false,
+        output: 'html',
+        trust: true,
+      });
+      if (type === 'display') {
+        return html;
+      }
+      return html;
+    } catch (_e) {
+      return `<code class="math-raw" title="LaTeX formula (parse error)">${_escape(raw)}</code>`;
+    }
+  }
+
   function _restoreMath(html, stash) {
     if (stash.length === 0) return html;
     return html.replace(_MATH_SENTINEL, (_, i) => {
-      const raw = stash[Number(i)];
-      if (raw === undefined) return '';
-      return `<code class="math-raw" title="LaTeX formula (not rendered)">${_escape(raw)}</code>`;
+      const entry = stash[Number(i)];
+      if (!entry || !entry.type) return '';
+      return _renderMathWithKatex(entry.content, entry.type);
     });
   }
 

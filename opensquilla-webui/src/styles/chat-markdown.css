@@ -78,6 +78,22 @@
 .msg-ai-text > :first-child,
 .inspect-msg__text > :first-child { margin-top: 0; }
 
+/* KaTeX rendered math — match message text color and keep wide formulas usable. */
+.msg-ai-text .katex,
+.inspect-msg__text .katex {
+  color: var(--text);
+  font-size: 1.1em;
+}
+.msg-ai-text .katex-display,
+.inspect-msg__text .katex-display {
+  margin: 0.6em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+.msg-ai-text .katex .katex-html,
+.inspect-msg__text .katex .katex-html { max-width: 100%; }
+
 /* Blockquote — mirrors the inspect-drawer treatment for the chat surfaces. */
 .msg-ai-text blockquote,
 .inspect-msg__text blockquote {

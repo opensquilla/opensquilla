@@ -47,7 +47,12 @@ def test_all_checks_pass_is_verified(tmp_path, monkeypatch):
     out = build_verify.verify_build(repo)
     assert out.state is TaskState.VERIFIED
     assert out.build.all_passed is True
-    assert [c.name for c in out.build.checks] == ["npm_ci", "build", "package"]
+    assert [c.name for c in out.build.checks] == [
+        "npm_ci",
+        "build",
+        "package",
+        "runtime_deps",
+    ]
     assert all(c.ok and c.ran for c in out.build.checks)
     assert out.build.installer_path.endswith("app-1.0.0.AppImage")
 

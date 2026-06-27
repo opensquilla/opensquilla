@@ -3,7 +3,14 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .formatters import count_pattern, dedupe_adjacent, head_tail, strip_ansi, trim_empty_edges
+from .formatters import (
+    count_pattern,
+    dedupe_adjacent,
+    head_tail,
+    indexed_fallback,
+    strip_ansi,
+    trim_empty_edges,
+)
 from .types import Rule
 
 
@@ -50,7 +57,13 @@ def _summarize_window(rule: Rule, *, exit_code: int) -> tuple[int, int]:
     return int(rule.summarize.get("head") or 8), int(rule.summarize.get("tail") or 8)
 
 
-def reduce_with_rule(rule: Rule, raw_text: str, *, exit_code: int) -> tuple[str, dict[str, int]]:
+def reduce_with_rule(
+    rule: Rule,
+    raw_text: str,
+    *,
+    exit_code: int,
+    command: str | None = None,
+) -> tuple[str, dict[str, int]]:
     text = strip_ansi(raw_text) if rule.transforms.get("stripAnsi") else raw_text
     output_match = _apply_output_matches(rule, text)
     if output_match is not None:
@@ -90,5 +103,19 @@ def reduce_with_rule(rule: Rule, raw_text: str, *, exit_code: int) -> tuple[str,
         facts[name] = count_pattern(fact_source, pattern, str(counter.get("flags") or ""))
 
     head, tail = _summarize_window(rule, exit_code=exit_code)
-    compacted = head_tail(lines, head, tail)
-    return "\n".join(compacted).strip(), facts
+    if rule.id == "generic/fallback":
+        compacted = indexed_fallback(
+            lines,
+            is_error=exit_code != 0,
+            head=head,
+            tail=tail,
+            signal_context=20 if exit_code != 0 else 15,
+            middle_samples=2 if exit_code != 0 else 3,
+            middle_sample_size=30,
+            max_signal_windows=12 if exit_code != 0 else 8,
+            command=command,
+        )
+        return compacted, facts
+
+    compacted_lines = head_tail(lines, head, tail)
+    return "\n".join(compacted_lines).strip(), facts

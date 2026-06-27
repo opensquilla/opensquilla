@@ -1745,7 +1745,7 @@ async def _emit_to_subscribers(
             try:
                 await conn.send_event(event_name, send_payload)
             except Exception:
-                log.warning("emit.send_failed", conn_id=conn_id, event=event_name)
+                log.warning("emit.send_failed", conn_id=conn_id, ws_event=event_name)
 
 
 @_d.method("sessions.abort", scope="operator.write")

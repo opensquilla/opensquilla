@@ -359,6 +359,49 @@ def _capture_compaction_emits(
     return emitted
 
 
+def test_emit_to_subscribers_logs_send_failure_without_structlog_event_collision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    warning_logs: list[tuple[str, dict[str, Any]]] = []
+
+    class FakeLog:
+        def warning(self, event: str, **kwargs: Any) -> None:
+            warning_logs.append((event, kwargs))
+
+    key = "agent:main:emit-failure"
+    conn_id = "emit-failure-conn"
+    conn = _FailingReplayConn(conn_id)
+    registry = get_registry()
+    subscription_manager = SubscriptionManager()
+    subscription_manager.subscribe_messages(conn_id, key)
+    ctx = make_ctx(
+        session_manager=FakeSessionManager([FakeSession(session_key=key)]),
+        subscription_manager=subscription_manager,
+    )
+
+    monkeypatch.setattr(rpc_sessions, "log", FakeLog())
+    async def run_case() -> None:
+        registry.register(conn)
+        try:
+            await rpc_sessions._emit_to_subscribers(
+                ctx,
+                key,
+                "session.event.done",
+                {"reason": "stop"},
+            )
+        finally:
+            registry.unregister(conn_id)
+
+    asyncio.run(run_case())
+
+    assert warning_logs == [
+        (
+            "emit.send_failed",
+            {"conn_id": conn_id, "ws_event": "session.event.done"},
+        )
+    ]
+
+
 def _checkpoint_receipt(
     session: FakeSession,
     *,
@@ -452,6 +495,19 @@ class _ReplayConn:
         meta: dict | None = None,
     ) -> None:
         self.events.append((event, payload or {}, meta))
+
+
+class _FailingReplayConn:
+    def __init__(self, conn_id: str) -> None:
+        self.conn_id = conn_id
+
+    async def send_event(
+        self,
+        event: str,
+        payload: dict | None = None,
+        meta: dict | None = None,
+    ) -> None:
+        raise RuntimeError("send failed")
 
 
 class _RecordingTurnRunner:

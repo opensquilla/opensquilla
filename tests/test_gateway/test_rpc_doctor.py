@@ -658,6 +658,79 @@ async def test_doctor_status_treats_dead_channel_as_surface_degradation(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_doctor_status_reports_dingtalk_auth_invalid_without_stopped_duplicate(
+    monkeypatch,
+) -> None:
+    import opensquilla.gateway.rpc_doctor as rpc_doctor
+
+    async def provider_status(params: dict[str, Any], ctx: RpcContext) -> dict[str, Any]:
+        return {
+            "activeProvider": "openrouter",
+            "providers": [
+                {
+                    "providerId": "openrouter",
+                    "active": True,
+                    "configured": True,
+                    "buildable": True,
+                }
+            ],
+        }
+
+    async def channels_status(params: dict[str, Any], ctx: RpcContext) -> dict[str, Any]:
+        return {
+            "channels": [
+                {
+                    "name": "dingtalk",
+                    "type": "dingtalk",
+                    "enabled": True,
+                    "status": "stopped",
+                    "diagnostics": {
+                        "last_error": {
+                            "error_class": "auth_invalid",
+                            "provider_code": "authFailed",
+                            "message": "凭证无效：检查 DingTalk AppKey/AppSecret",
+                            "retryable": False,
+                        }
+                    },
+                }
+            ]
+        }
+
+    _patch_ready_support_surfaces(monkeypatch, rpc_doctor)
+    monkeypatch.setattr(rpc_doctor, "_handle_providers_status", provider_status)
+    monkeypatch.setattr(rpc_doctor, "_handle_channels_status", channels_status)
+
+    cfg = GatewayConfig()
+    cfg.config_path = "/tmp/custom-opensquilla.toml"
+
+    response = await get_dispatcher().dispatch(
+        "req-1",
+        "doctor.status",
+        {},
+        RpcContext(conn_id="test", config=cfg),
+    )
+
+    assert response.ok is True
+    ids = [finding["id"] for finding in response.payload["findings"]]
+    assert "channel.dingtalk.auth_invalid" in ids
+    assert "channel.dingtalk.stopped" not in ids
+    channel_finding = next(
+        finding
+        for finding in response.payload["findings"]
+        if finding["id"] == "channel.dingtalk.auth_invalid"
+    )
+    assert channel_finding["severity"] == "error"
+    assert channel_finding["readinessImpact"] == "degrades"
+    assert "AppKey/AppSecret" in channel_finding["detail"]
+    commands = [step["command"] for step in channel_finding["fixSteps"] if "command" in step]
+    assert (
+        "opensquilla channels status dingtalk --json "
+        "--config /tmp/custom-opensquilla.toml"
+    ) in commands
+    assert "opensquilla gateway restart --config /tmp/custom-opensquilla.toml" in commands
+
+
+@pytest.mark.asyncio
 async def test_doctor_status_treats_no_channels_as_optional_setup(monkeypatch) -> None:
     import opensquilla.gateway.rpc_doctor as rpc_doctor
 

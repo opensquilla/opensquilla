@@ -5,6 +5,29 @@ human-readable ledger together for contributor attribution. This file records
 release-surface community work that can be harder to see when a release is
 squash-merged or replayed onto `main`.
 
+## OpenSquilla 0.4.0
+
+The 0.4.0 release is prepared from current `dev` after `v0.3.1`. This section
+records non-Open-Squilla contributor work with pull-request evidence in that
+range. Some work was replayed or carried through Open-Squilla integration pull
+requests; those rows name the original contributor and cite both the original
+pull request and the integration pull request when useful.
+
+| Contributor | 0.4.0 contribution | Evidence |
+| --- | --- | --- |
+| [@ab2ence](https://github.com/ab2ence) | Control UI migration and stabilization work, share-image export, Web Chat slash-input handling, bundled AwesomeWebpage MetaSkill work, and the Coding mode toggle carried into `dev`. | [#264](https://github.com/opensquilla/opensquilla/pull/264), [#274](https://github.com/opensquilla/opensquilla/pull/274), [#177](https://github.com/opensquilla/opensquilla/pull/177), [#173](https://github.com/opensquilla/opensquilla/pull/173), [#313](https://github.com/opensquilla/opensquilla/pull/313) |
+| [@myz-ah](https://github.com/myz-ah) | Added the `code-task` workflow for isolated, runner-verified code changes behind Coding mode. | [#311](https://github.com/opensquilla/opensquilla/pull/311) |
+| [@nice-code-la](https://github.com/nice-code-la) | Skills readiness in the Web UI, MetaSkill progress and clarification UX, manual-only `/meta` behavior, scoped MetaSkill run-history reads, router fallback/default refresh work, and image follow-up routing gates. | [#184](https://github.com/opensquilla/opensquilla/pull/184), [#222](https://github.com/opensquilla/opensquilla/pull/222), [#243](https://github.com/opensquilla/opensquilla/pull/243), [#253](https://github.com/opensquilla/opensquilla/pull/253), [#261](https://github.com/opensquilla/opensquilla/pull/261) carried through [#297](https://github.com/opensquilla/opensquilla/pull/297), [#272](https://github.com/opensquilla/opensquilla/pull/272), [#279](https://github.com/opensquilla/opensquilla/pull/279) carried through [#297](https://github.com/opensquilla/opensquilla/pull/297) |
+| [@openvictory](https://github.com/openvictory) | MetaSkill run-history and rescue-action Control UI work carried through the session-contract Control UI integration. | [#264](https://github.com/opensquilla/opensquilla/pull/264) |
+| [@weiconghe](https://github.com/weiconghe) | Preserved and replayed Gemini `thought_signature` metadata across provider tool-call turns. | [#312](https://github.com/opensquilla/opensquilla/pull/312) |
+| [@changquanyou](https://github.com/changquanyou) | Accepted no-space SSE `data:` lines and improved managed-layer MetaSkill inspection. | [#214](https://github.com/opensquilla/opensquilla/pull/214) |
+| [@nkgotcode](https://github.com/nkgotcode) | Fixed DOCX `skill_exec` export behavior. | [#262](https://github.com/opensquilla/opensquilla/pull/262) |
+| [@C1-BA-B1-F3](https://github.com/C1-BA-B1-F3) | Made SSRF fake-IP DNS blocks actionable for operators. | [#298](https://github.com/opensquilla/opensquilla/pull/298) carried through [#309](https://github.com/opensquilla/opensquilla/pull/309) and [#310](https://github.com/opensquilla/opensquilla/pull/310) |
+| [@BlueOcean223](https://github.com/BlueOcean223) | Reset TUI EOF state on cached reentry. | [#203](https://github.com/opensquilla/opensquilla/pull/203) |
+| [@szdtzpj](https://github.com/szdtzpj) | Fixed environment test precedence and the TUI abort hook. | [#176](https://github.com/opensquilla/opensquilla/pull/176) |
+| [@lose4578](https://github.com/lose4578) | Submitted the OpenTUI scrollback-native frontend work carried into the 0.4.0 preview backend. | [#182](https://github.com/opensquilla/opensquilla/pull/182) carried through [#277](https://github.com/opensquilla/opensquilla/pull/277) |
+| cwan0785 (commit author name; GitHub account: [@Anonymous-4427](https://github.com/Anonymous-4427)) | Authored OpenTUI preview backend implementation commits carried into the 0.4.0 preview backend. | [#182](https://github.com/opensquilla/opensquilla/pull/182) carried through [#277](https://github.com/opensquilla/opensquilla/pull/277) |
+
 ## OpenSquilla 0.3.1
 
 The 0.3.1 release is prepared as a release-surface replay from `dev` onto the

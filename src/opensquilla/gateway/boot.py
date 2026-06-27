@@ -1176,65 +1176,80 @@ class GatewayServer:
     _channel_manager: Any = field(default=None, repr=False)
     _services: ServiceContainer | None = field(default=None, repr=False)
     _background_completion_manager: Any = field(default=None, repr=False)
+    _pid_lock: Any = field(default=None, repr=False)
+
+    def _release_pid_lock(self) -> None:
+        pid_lock = self._pid_lock
+        if pid_lock is None:
+            return
+        try:
+            pid_lock.release()
+        finally:
+            self._pid_lock = None
 
     async def close(self, reason: str = "shutdown") -> None:
         """Gracefully shut down: stop channels, broadcast shutdown, close WS, stop server."""
-        # Drain in-flight turns FIRST so replies are not lost.
-        # task_runtime.shutdown() waits for all running turns to complete before
-        # returning; only then do we stop channel delivery.
-        if self._services is not None and self._services.task_runtime is not None:
-            try:
-                await self._services.task_runtime.shutdown(graceful=True, graceful_timeout=30.0)
-            except Exception:
-                pass
-
-        if self._background_completion_manager is not None:
-            try:
-                await self._background_completion_manager.close(timeout=30.0)
-            except Exception:
-                log.debug("gateway.background_completion_close_failed", exc_info=True)
-            try:
-                from opensquilla.gateway.subagent_announce import set_background_completion_manager
-
-                set_background_completion_manager(None)
-            except Exception:
-                pass
-            self._background_completion_manager = None
-
-        # Stop channels after task_runtime is drained (no in-flight turns remain)
-        if self._channel_manager is not None:
-            await self._channel_manager.stop_all()
-            log.info("gateway.channels_stopped")
-
-        registry = get_registry()
-        await registry.broadcast("shutdown", {"reason": reason})
-
-        # Close all active WS connections
-        for conn in registry.all():
-            await conn.close()
-
-        # Close MCP clients
         try:
-            from opensquilla.mcp.discovery import close_active_clients
+            # Drain in-flight turns FIRST so replies are not lost.
+            # task_runtime.shutdown() waits for all running turns to complete before
+            # returning; only then do we stop channel delivery.
+            if self._services is not None and self._services.task_runtime is not None:
+                try:
+                    await self._services.task_runtime.shutdown(graceful=True, graceful_timeout=30.0)
+                except Exception:
+                    pass
 
-            await close_active_clients()
-            log.info("gateway.mcp_clients_closed")
-        except ImportError:
-            pass
+            if self._background_completion_manager is not None:
+                try:
+                    await self._background_completion_manager.close(timeout=30.0)
+                except Exception:
+                    log.debug("gateway.background_completion_close_failed", exc_info=True)
+                try:
+                    from opensquilla.gateway.subagent_announce import (
+                        set_background_completion_manager,
+                    )
 
-        if self._server is not None:
-            self._server.should_exit = True
+                    set_background_completion_manager(None)
+                except Exception:
+                    pass
+                self._background_completion_manager = None
 
-        if self._task is not None:
+            # Stop channels after task_runtime is drained (no in-flight turns remain)
+            if self._channel_manager is not None:
+                await self._channel_manager.stop_all()
+                log.info("gateway.channels_stopped")
+
+            registry = get_registry()
+            await registry.broadcast("shutdown", {"reason": reason})
+
+            # Close all active WS connections
+            for conn in registry.all():
+                await conn.close()
+
+            # Close MCP clients
             try:
-                await asyncio.wait_for(self._task, timeout=5.0)
-            except TimeoutError:
-                self._task.cancel()
+                from opensquilla.mcp.discovery import close_active_clients
 
-        if self._services is not None:
-            await self._services.close()
+                await close_active_clients()
+                log.info("gateway.mcp_clients_closed")
+            except ImportError:
+                pass
 
-        log.info("gateway.stopped", reason=reason)
+            if self._server is not None:
+                self._server.should_exit = True
+
+            if self._task is not None:
+                try:
+                    await asyncio.wait_for(self._task, timeout=5.0)
+                except TimeoutError:
+                    self._task.cancel()
+
+            if self._services is not None:
+                await self._services.close()
+
+            log.info("gateway.stopped", reason=reason)
+        finally:
+            self._release_pid_lock()
 
 
 def build_flush_service(
@@ -2212,15 +2227,36 @@ async def start_gateway_server(
     _pid_lock = GatewayPidLock(_state_path(config, ""))
     _pid_lock.acquire()
 
+    # Anonymous install telemetry is best-effort: it must never block gateway
+    # startup. The built-in endpoint is intentionally empty until configured.
+    try:
+        from opensquilla.observability.install_telemetry import collect_install_telemetry
+
+        result = collect_install_telemetry(config=config)
+        log.debug(
+            "gateway.install_telemetry",
+            skipped_reason=result.skipped_reason,
+            event=result.event,
+            sent=result.sent,
+            uploaded=result.uploaded,
+            endpoint_configured=result.endpoint_configured,
+        )
+    except Exception:
+        log.debug("gateway.install_telemetry_skipped", exc_info=True)
+
     # ── Reusable service initialization via build_services ───────────
-    svc = await build_services(
-        config=config,
-        session_manager=session_manager,
-        provider_selector=provider_selector,
-        tool_registry=tool_registry,
-        usage_tracker=usage_tracker,
-        session_db_path=str(_state_path(config, "sessions.db")),
-    )
+    try:
+        svc = await build_services(
+            config=config,
+            session_manager=session_manager,
+            provider_selector=provider_selector,
+            tool_registry=tool_registry,
+            usage_tracker=usage_tracker,
+            session_db_path=str(_state_path(config, "sessions.db")),
+        )
+    except BaseException:
+        _pid_lock.release()
+        raise
 
     # Record boot time for uptime calculation (gateway-specific)
     global _boot_time_ms
@@ -2873,6 +2909,7 @@ async def start_gateway_server(
     app.state.gateway_ready = False
 
     server_handle = GatewayServer(app=app, config=config)
+    server_handle._pid_lock = _pid_lock
     server_handle._channel_manager = channel_manager
     server_handle._services = svc
     server_handle._background_completion_manager = background_completion_manager

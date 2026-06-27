@@ -33,11 +33,53 @@ OpenRouter, OpenAI, Anthropic, Ollama, DeepSeek, Gemini, Qwen/DashScope,
 and 20+ other LLM providers with no change to your code or config
 schema.
 
-OpenSquilla 0.3.1 is the current release.
+OpenSquilla 0.4.0 is the current release.
 
 For task-oriented product documentation, start with the
 [OpenSquilla Product Guide](README.product.md) or the
 [documentation index](docs/README.md).
+
+---
+
+## Anonymous Installation Telemetry
+
+OpenSquilla includes anonymous installation telemetry to estimate install
+counts, version distribution, and runtime compatibility. The telemetry path
+is enabled by default and sends to the official OpenSquilla telemetry collector.
+
+The gateway sends a best-effort install event on first startup and one version
+event the first time each OpenSquilla version runs. This covers source, pip,
+Docker, and desktop installs when they start the gateway. Uploads use a short
+timeout and never block startup.
+
+The telemetry payload contains only:
+
+- random `install_id`
+- OpenSquilla version
+- event type (`install` or `version_seen`)
+- install method (`pip`, `source`, `docker`, `desktop`, or `unknown`)
+- operating system, OS version, CPU architecture, and Python major/minor
+  version
+- first-seen and sent timestamps
+
+The telemetry payload does not include usernames, email addresses, hostnames,
+local paths, API keys, provider configuration, chat history, session data,
+memory, agent content, file names, or file contents. HTTP servers can
+technically observe source IP addresses at the transport/logging layer; IP
+addresses are not part of the telemetry payload and should not be used as an
+install-count field by the collector.
+
+Disable telemetry with:
+
+```sh
+OPENSQUILLA_TELEMETRY_DISABLED=true
+```
+
+Point telemetry at a collector you control with:
+
+```sh
+OPENSQUILLA_TELEMETRY_ENDPOINT=https://example.com/v1/install
+```
 
 ---
 
@@ -160,7 +202,7 @@ $env:Path = "$env:USERPROFILE\.local\bin;" + $env:Path
 **2. Install OpenSquilla** — the same command on every platform.
 
 ```sh
-uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.3.1/opensquilla-0.3.1-py3-none-any.whl"
+uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.4.0/opensquilla-0.4.0-py3-none-any.whl"
 ```
 
 This installs the OpenSquilla wheel from the release URL, then lets
@@ -181,7 +223,7 @@ opensquilla gateway run
 > a new terminal, or re-run the PATH line from step 1.
 
 For a fully pinned install, use the versioned wheel URL:
-`https://github.com/opensquilla/opensquilla/releases/download/v0.3.1/opensquilla-0.3.1-py3-none-any.whl`.
+`https://github.com/opensquilla/opensquilla/releases/download/v0.4.0/opensquilla-0.4.0-py3-none-any.whl`.
 
 ### Install from source
 
@@ -481,27 +523,36 @@ settings live in `opensquilla.toml.example`.
 
 ---
 
-## What's New in 0.3.1
+## What's New in 0.4.0
 
-OpenSquilla 0.3.1 is a maintenance release for the 0.3 line. It updates the
-stable install metadata and brings selected channel, chat, provider, and
-workflow fixes from the integration branch onto the stable release line:
+OpenSquilla 0.4.0 updates the daily control surfaces, workflow launch model,
+coding workflow, search providers, terminal preview path, and runtime hardening:
 
-- **Channel setup and replies** — Slack Socket Mode, app mentions, signing
-  secrets, and threaded replies preserve the channel context needed for setup
-  and replies.
-- **Media and voice workflow handoffs** — short-drama/video helper workflows
-  remain bundled, generated media flows have clearer review pauses, and
-  voice/audio handoffs are usable end to end.
-- **Chat formatting** — user message bubbles preserve multiline text and read
-  like authored messages instead of compressed UI labels.
-- **Provider request hardening** — malformed tool-call history is kept away
-  from providers before it becomes invalid request state.
-- **Install and release checks** — installer URLs, release metadata, version
-  consistency tests, and CI impact gates are updated for 0.3.1.
+- **Refreshed Control UI** — the local console is easier to scan and operate,
+  with conversation navigation, a Settings modal, Sessions ledger, artifact
+  previews, share export, deliverables, turn trace, mobile tabs, and clearer
+  Skills, Usage, Cron, Logs, and Approvals areas.
+- **Manual MetaSkills with `/meta`** — MetaSkills no longer auto-trigger by
+  default. Use `/meta` to list workflows and `/meta <name>` to run one. Set
+  `meta_skill.auto_trigger = true` only when you intentionally want the older
+  automatic behavior.
+- **Coding mode and code-task** — coding mode can route code changes through
+  `opensquilla code-task`, which works in an isolated run directory, requires a
+  trusted-host confirmation, and verifies before persisting changes back to
+  source.
+- **Broader web search** — DuckDuckGo, Bocha, Brave, Tavily, and Exa are
+  runtime-supported search providers, with source-backed `web_search` and
+  lightweight `web_discover` roles.
+- **OpenTUI preview backend** — the stable Python-native terminal backend stays
+  the default, while OpenTUI is available as an explicit preview path with
+  Router HUD and replay benchmark documentation.
+- **Provider and safety hardening** — `openai_responses` exposes OpenAI's native
+  Responses API shape alongside `openai`; provider stream parsing, Gemini
+  thought-signature replay, SSRF fake-IP DNS guidance, session recovery,
+  artifact handling, and approval event delivery are tightened across surfaces.
 
 Full notes: [`CHANGELOG.md`](CHANGELOG.md) ·
-[`docs/releases/0.3.1.md`](docs/releases/0.3.1.md).
+[`docs/releases/0.4.0.md`](docs/releases/0.4.0.md).
 
 ## What's New in 0.2.1
 
@@ -559,7 +610,7 @@ Full notes: [`CHANGELOG.md`](CHANGELOG.md) ·
 
 | Capability | What it does |
 | --- | --- |
-| **Token-efficient routing** | `SquillaRouter` — a local LightGBM + ONNX classifier in the `recommended` extra — scores each turn on length, language, code, keywords, and semantic embeddings, then routes it across four tiers (T0–T3) to the cheapest capable model. Classification runs on-device; your prompt never leaves the machine to make that decision. |
+| **Token-efficient routing** | `SquillaRouter` — a local LightGBM + ONNX classifier in the `recommended` extra — scores each turn on length, language, code, keywords, and semantic embeddings, then routes it across four tiers (C0–C3; legacy T0–T3 names are aliases) to the cheapest capable model. Classification runs on-device; your prompt never leaves the machine to make that decision. |
 | **Adaptive reasoning and prompts** | OpenSquilla requests extended reasoning only for turns the router scores as complex, and the system prompt scales with task complexity — lightweight for trivial turns, full instructions for complex ones. |
 | **20+ LLM providers** | The provider registry targets 20+ LLM backends — OpenRouter, OpenAI, Anthropic, Ollama, DeepSeek, Gemini, DashScope/Qwen, Moonshot, Mistral, Groq, Zhipu, SiliconFlow, vLLM, LM Studio, and more, with primary-plus-fallback selection; first-run onboarding exposes the verified subset. |
 | **On-demand skills and MCP** | 15 bundled skills (coding, GitHub, cron, pptx/docx/xlsx/pdf, summarization, tmux, weather, and more) load only when the task needs them. OpenSquilla is an MCP client, and can also run as an MCP server — `opensquilla mcp-server run` needs the `mcp` extra (install `opensquilla[recommended,mcp]`). Skills can be authored, installed, and published from the CLI. |

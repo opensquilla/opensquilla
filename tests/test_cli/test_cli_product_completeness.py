@@ -847,6 +847,37 @@ def test_channels_status_and_logout_use_existing_rpcs(monkeypatch):
     assert ("channels.logout", {"name": "slack"}) in fake.calls
 
 
+def test_channels_status_table_shows_channel_diagnostic(monkeypatch):
+    fake = _install_fake_gateway(monkeypatch)
+    fake.rpc_payloads = {
+        "channels.status": {
+            "channels": [
+                {
+                    "name": "dingtalk",
+                    "type": "dingtalk",
+                    "status": "stopped",
+                    "connected": False,
+                    "enabled": True,
+                    "configured": True,
+                    "diagnostics": {
+                        "last_error": {
+                            "error_class": "auth_invalid",
+                            "message": "凭证无效：检查 DingTalk AppKey/AppSecret",
+                        }
+                    },
+                }
+            ]
+        }
+    }
+
+    result = runner.invoke(app, ["channels", "status", "dingtalk"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "凭证无效：检查 DingTalk AppKey/AppSecret" in result.stdout
+    assert "auth_invalid" not in result.stdout
+    assert ("channels.status", {}) in fake.calls
+
+
 def test_runtime_diagnostics_commands_can_target_configured_gateway(
     tmp_path: Path, monkeypatch
 ):

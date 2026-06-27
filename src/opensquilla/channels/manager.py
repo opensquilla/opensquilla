@@ -21,6 +21,19 @@ from opensquilla.session.keys import DmScope, build_direct_key, build_group_key,
 log = structlog.get_logger(__name__)
 
 
+def _structured_diagnostic(exc: BaseException) -> dict[str, Any] | None:
+    raw = getattr(exc, "diagnostic", None)
+    if not isinstance(raw, dict):
+        return None
+    diagnostic: dict[str, Any] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str):
+            continue
+        if isinstance(value, str | int | float | bool) or value is None:
+            diagnostic[key] = value
+    return diagnostic or None
+
+
 @dataclass
 class ChannelManager:
     """Manages lifecycle of ManagedChannel instances.
@@ -54,7 +67,7 @@ class ChannelManager:
     # does not look healthy.
     _dispatch_states: dict[str, str] = field(default_factory=dict)
     _restart_counts: dict[str, int] = field(default_factory=dict)
-    _start_errors: dict[str, dict[str, str]] = field(default_factory=dict)
+    _start_errors: dict[str, dict[str, Any]] = field(default_factory=dict)
     # Inner-loop retry policy (overridable for tests).
     _max_retries: int = 5
     _retry_backoff_initial: float = 1.0
@@ -197,18 +210,22 @@ class ChannelManager:
         statuses: dict[str, bool] = {}
         for name, result in zip(self._channels, results):
             if isinstance(result, BaseException):
-                self._start_errors[name] = {
+                details: dict[str, Any] = {
                     "error_type": type(result).__name__,
                     "error": str(result),
                     "exception": repr(result),
                 }
+                diagnostic = _structured_diagnostic(result)
+                if diagnostic:
+                    details["diagnostic"] = diagnostic
+                self._start_errors[name] = details
                 statuses[name] = False
             else:
                 self._start_errors.pop(name, None)
                 statuses[name] = True
         return statuses
 
-    def start_errors(self) -> dict[str, dict[str, str]]:
+    def start_errors(self) -> dict[str, dict[str, Any]]:
         """Return sanitized per-channel startup errors for operator diagnostics."""
         return {name: dict(details) for name, details in self._start_errors.items()}
 

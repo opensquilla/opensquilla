@@ -58,13 +58,63 @@ def _platform_manifest_payload(adapter: Any | None) -> dict[str, Any] | None:
     return manifest.to_dict() if manifest is not None else None
 
 
-def _diagnostics_payload() -> dict[str, Any]:
-    return {"network_probe": "not_run"}
+def _manager_start_errors(manager: Any | None) -> dict[str, Any]:
+    if manager is None:
+        return {}
+    start_errors = getattr(manager, "start_errors", None)
+    if not callable(start_errors):
+        return {}
+    try:
+        errors = start_errors()
+    except Exception:
+        return {}
+    return errors if isinstance(errors, dict) else {}
+
+
+def _diagnostic_from_start_error(start_error: Any) -> dict[str, Any] | None:
+    if not isinstance(start_error, dict):
+        return None
+    diagnostic = start_error.get("diagnostic")
+    if isinstance(diagnostic, dict):
+        out = dict(diagnostic)
+        out.setdefault("source", "start_error")
+        return out
+    error_type = str(start_error.get("error_type") or "StartupError")
+    return {
+        "error_class": "startup_failed",
+        "message": f"Channel failed during startup: {error_type}",
+        "retryable": False,
+        "source": "start_error",
+    }
+
+
+def _diagnostic_from_health_extra(extra: dict[str, Any]) -> dict[str, Any] | None:
+    diagnostic = extra.get("last_error")
+    if not isinstance(diagnostic, dict):
+        return None
+    out = dict(diagnostic)
+    out.setdefault("source", "adapter")
+    return out
+
+
+def _diagnostics_payload(
+    *,
+    extra: dict[str, Any] | None = None,
+    start_error: Any = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"network_probe": "not_run"}
+    last_error = _diagnostic_from_start_error(start_error)
+    if last_error is None and extra is not None:
+        last_error = _diagnostic_from_health_extra(extra)
+    if last_error is not None:
+        payload["last_error"] = last_error
+    return payload
 
 
 @_d.method("channels.status", scope="operator.read")
 async def _handle_channels_status(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
     health_map = await ctx.channel_manager.health() if ctx.channel_manager else {}
+    start_errors = _manager_start_errors(ctx.channel_manager)
     manager_types = (
         getattr(ctx.channel_manager, "_channel_types", {}) if ctx.channel_manager else {}
     )
@@ -100,7 +150,10 @@ async def _handle_channels_status(params: dict | None, ctx: RpcContext) -> dict[
                 "capabilities": capabilities,
                 "capability_profile": capability_profile,
                 "platform_manifest": platform_manifest,
-                "diagnostics": _diagnostics_payload(),
+                "diagnostics": _diagnostics_payload(
+                    extra=extra,
+                    start_error=start_errors.get(name),
+                ),
             }
         )
         seen.add(name)
@@ -131,7 +184,10 @@ async def _handle_channels_status(params: dict | None, ctx: RpcContext) -> dict[
                 "capabilities": capabilities,
                 "capability_profile": capability_profile,
                 "platform_manifest": platform_manifest,
-                "diagnostics": _diagnostics_payload(),
+                "diagnostics": _diagnostics_payload(
+                    extra=extra,
+                    start_error=start_errors.get(name),
+                ),
             }
         )
 

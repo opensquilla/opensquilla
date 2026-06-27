@@ -13,12 +13,16 @@ Streaming edits use :class:`dingtalk_stream.MarkdownCardInstance` —
 from __future__ import annotations
 
 import asyncio
+import json
+import platform
+import socket
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+import requests  # type: ignore[import-untyped]
 import structlog
 from pydantic import BaseModel
 
@@ -60,6 +64,21 @@ FATAL_ERROR_CLASSES: tuple[str, ...] = (
     "target_missing",
     "contract_violation",
 )
+
+_DINGTALK_AUTH_INVALID_MESSAGE = "凭证无效：检查 DingTalk AppKey/AppSecret"
+
+
+class DingTalkAuthError(RuntimeError):
+    """Raised when DingTalk rejects the configured Stream Mode credentials."""
+
+    def __init__(self, *, provider_code: str = "authFailed") -> None:
+        self.diagnostic = {
+            "error_class": "auth_invalid",
+            "provider_code": provider_code or "authFailed",
+            "message": _DINGTALK_AUTH_INVALID_MESSAGE,
+            "retryable": False,
+        }
+        super().__init__("DingTalk credentials were rejected")
 
 
 class DingTalkChannelConfig(BaseModel):
@@ -232,6 +251,135 @@ class DingTalkChannel:
         return bool(msg.metadata.get("bot_mentioned"))
 
     # ------------------------------------------------------------------
+    # Startup diagnostics
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _sdk_version() -> str:
+        try:
+            from dingtalk_stream.version import VERSION_STRING  # type: ignore[import-untyped]
+
+            return str(VERSION_STRING)
+        except Exception:
+            return "unknown"
+
+    @staticmethod
+    def _host_ip() -> str:
+        sock: socket.socket | None = None
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.connect(("8.8.8.8", 80))
+            return str(sock.getsockname()[0])
+        except OSError:
+            return ""
+        finally:
+            if sock is not None:
+                sock.close()
+
+    @staticmethod
+    def _response_json(response: Any) -> dict[str, Any]:
+        try:
+            payload = response.json()
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _safe_error_text(self, exc: BaseException) -> str:
+        text = str(exc)
+        if self.config.client_secret:
+            text = text.replace(self.config.client_secret, "[redacted]")
+        return text
+
+    @staticmethod
+    def _provider_code(payload: dict[str, Any], *, status_code: int | None) -> str:
+        code = str(payload.get("code") or payload.get("errcode") or "")
+        if code:
+            return code
+        return "authFailed" if status_code == 401 else ""
+
+    @classmethod
+    def _is_auth_failure(
+        cls,
+        *,
+        status_code: int | None,
+        payload: dict[str, Any],
+        response_text: str,
+    ) -> bool:
+        code = cls._provider_code(payload, status_code=status_code).lower()
+        message = str(payload.get("message") or payload.get("errmsg") or "")
+        haystack = f"{response_text}\n{message}".lower()
+        return (
+            status_code == 401
+            or code == "authfailed"
+            or "authfailed" in haystack
+            or "鉴权失败" in response_text
+            or "鉴权失败" in message
+        )
+
+    async def _preflight_open_connection(self, *, endpoint: str, callback_topic: str) -> None:
+        """Probe DingTalk auth once so deterministic credential failures are actionable."""
+        version = self._sdk_version()
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": (
+                f"DingTalkStream/1.0 SDK/{version} Python/{platform.python_version()} "
+                "(+https://github.com/open-dingtalk/dingtalk-stream-sdk-python)"
+            ),
+        }
+        body = json.dumps(
+            {
+                "clientId": self.config.client_id,
+                "clientSecret": self.config.client_secret,
+                "subscriptions": [{"type": "CALLBACK", "topic": callback_topic}],
+                "ua": f"dingtalk-sdk-python/v{version}-union",
+                "localIp": self._host_ip(),
+            }
+        ).encode("utf-8")
+
+        def _post() -> Any:
+            return requests.post(endpoint, headers=headers, data=body, timeout=10.0)
+
+        try:
+            response = await asyncio.to_thread(_post)
+        except requests.RequestException as exc:
+            log.warning(
+                "dingtalk.preflight_transient_failed",
+                name=self.config.name,
+                error_type=type(exc).__name__,
+                error=self._safe_error_text(exc),
+            )
+            return
+
+        status_code_raw = getattr(response, "status_code", None)
+        try:
+            status_code = int(status_code_raw) if status_code_raw is not None else None
+        except (TypeError, ValueError):
+            status_code = None
+        payload = self._response_json(response)
+        response_text = str(getattr(response, "text", "") or "")
+        if self._is_auth_failure(
+            status_code=status_code,
+            payload=payload,
+            response_text=response_text,
+        ):
+            provider_code = self._provider_code(payload, status_code=status_code)
+            raise DingTalkAuthError(provider_code=provider_code)
+
+        raise_for_status = getattr(response, "raise_for_status", None)
+        if callable(raise_for_status):
+            try:
+                raise_for_status()
+            except requests.RequestException as exc:
+                log.warning(
+                    "dingtalk.preflight_transient_failed",
+                    name=self.config.name,
+                    status_code=status_code,
+                    error_type=type(exc).__name__,
+                    error=self._safe_error_text(exc),
+                )
+
+    # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
@@ -246,6 +394,16 @@ class DingTalkChannel:
             ChatbotMessage,
             Credential,
             DingTalkStreamClient,
+        )
+
+        endpoint = getattr(
+            DingTalkStreamClient,
+            "OPEN_CONNECTION_API",
+            "https://api.dingtalk.com/v1.0/gateway/connections/open",
+        )
+        await self._preflight_open_connection(
+            endpoint=str(endpoint),
+            callback_topic=str(ChatbotMessage.TOPIC),
         )
 
         credential = Credential(self.config.client_id, self.config.client_secret)

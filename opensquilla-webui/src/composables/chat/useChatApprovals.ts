@@ -634,22 +634,29 @@ export function useChatApprovals(options: UseChatApprovalsOptions) {
     }
   }
 
-  async function submitClarify(fields: Record<string, string | boolean>) {
-    if (clarifyBusy.value || clarifySubmitted.value || !pendingClarify.value) return
-    const key = clarifyFrameKey(pendingClarify.value)
+  async function submitClarify(
+    fields: Record<string, string | boolean>,
+    requestOverride?: ChatClarifyRequest,
+  ) {
+    const request = requestOverride || pendingClarify.value
+    if (clarifyBusy.value || !request) return
+    const key = clarifyFrameKey(request)
+    if (interruptState.value.get(key)?.resolution === 'replied') return
+    if (!requestOverride && clarifySubmitted.value) return
     clarifyBusy.value = true
+    clarifySubmitted.value = true
     clarifyError.value = ''
-    setInterruptState(key, { busy: true, error: '' })
+    setInterruptState(key, { resolution: 'replied', busy: true, error: '' })
     const params: Record<string, unknown> = { sessionKey: sessionKey.value, fields }
-    if (pendingClarify.value.runId) params.run_id = pendingClarify.value.runId
+    if (request.runId) params.run_id = request.runId
     try {
       await rpc.call('chat.clarify_submit', params)
-      clarifySubmitted.value = true
       setInterruptState(key, { resolution: 'replied', busy: false })
     } catch (err) {
       const message = 'Send failed — ' + (err instanceof Error ? err.message : String(err))
+      clarifySubmitted.value = false
       clarifyError.value = message
-      setInterruptState(key, { busy: false, error: message })
+      setInterruptState(key, { resolution: null, busy: false, error: message })
     } finally {
       clarifyBusy.value = false
     }

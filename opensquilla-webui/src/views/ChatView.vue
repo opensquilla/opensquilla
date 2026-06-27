@@ -283,7 +283,7 @@
               :part="part"
               @resolve="resolveInterrupt"
               @extend="extendInterrupt"
-              @clarify-submit="submitClarify"
+              @clarify-submit="(fields, request) => submitClarify(fields, request)"
               @clarify-dismiss="dismissClarify"
             />
 
@@ -944,6 +944,7 @@ useDocumentEvent('click', (e) => {
 
 const chatRenderedMessages = useChatRenderedMessages({
   messages,
+  interruptState,
   sessionKey,
   routerSlots,
   routerModels,

@@ -3,6 +3,7 @@ import { ref } from 'vue'
 
 import { useChatRenderedMessages } from './useChatRenderedMessages'
 import type { ChatMessage, ChatRouterTierConfig } from '@/types/chat'
+import type { ChatPart, InterruptViewState } from '@/types/parts'
 
 function renderedMessagesForRouterVisualMode(visualMode: 'real_candidates' | 'legacy_grid') {
   const configs: Record<string, ChatRouterTierConfig> = {
@@ -18,6 +19,26 @@ function renderedMessagesForRouterVisualMode(visualMode: 'real_candidates' | 'le
     routerTierConfigs: ref(configs),
     routerVisualEffectsEnabled: ref(true),
     routerVisualMode: ref(visualMode),
+    renderMarkdown: text => text,
+    stripGeneratedArtifactMarkers: text => text,
+    stripTimePrefix: text => text,
+    isSubagentCompletionMessage: () => false,
+  })
+}
+
+function renderedMessagesFor(
+  messages: ChatMessage[],
+  interruptState = ref<ReadonlyMap<string, InterruptViewState>>(new Map()),
+) {
+  return useChatRenderedMessages({
+    messages: ref<ChatMessage[]>(messages),
+    interruptState,
+    sessionKey: ref('agent:main:webchat:test'),
+    routerSlots: ref([]),
+    routerModels: ref({}),
+    routerTierConfigs: ref({}),
+    routerVisualEffectsEnabled: ref(false),
+    routerVisualMode: ref('real_candidates'),
     renderMarkdown: text => text,
     stripGeneratedArtifactMarkers: text => text,
     stripTimePrefix: text => text,
@@ -74,5 +95,121 @@ describe('useChatRenderedMessages router visual mode', () => {
     expect(winnerIdx).toBeGreaterThanOrEqual(0)
     expect(cells[winnerIdx].kind).toBe('real')
     expect(cells[winnerIdx].tiers).toContain('balanced')
+  })
+})
+
+describe('useChatRenderedMessages clarify history recovery', () => {
+  it('restores a clarify interrupt from persisted meta-step tool input', () => {
+    const api = renderedMessagesFor([
+      {
+        role: 'assistant',
+        text: 'Please reply with these fields.',
+        ts: 0,
+        messageId: 'm-clarify',
+        tool_calls: [
+          {
+            type: 'tool_use',
+            tool_use_id: 'meta_step_project_clarify',
+            name: 'meta-step:project_clarify',
+            input: {
+              kind: 'user_input',
+              paused: true,
+              step: 'project_clarify',
+              run_id: 'run-1',
+              clarify_schema: {
+                mode: 'form',
+                intro: 'A few details.',
+                fields: [
+                  {
+                    name: 'topic',
+                    type: 'string',
+                    required: true,
+                    prompt: 'Project topic',
+                  },
+                  {
+                    name: 'age_band',
+                    type: 'enum',
+                    required: true,
+                    prompt: 'Child age band',
+                    choices: ['PRE_K', 'EARLY_GRADE'],
+                  },
+                ],
+              },
+            },
+          },
+          {
+            type: 'tool_result',
+            tool_use_id: 'meta_step_project_clarify',
+            name: 'meta-step:project_clarify',
+            result: "paused: awaiting user input (step 'project_clarify')",
+          },
+        ],
+      },
+    ])
+
+    const [message] = api.renderedMessages.value
+    const clarify = message.parts?.find((part): part is ChatPart & {
+      type: 'interrupt'
+      interruptKind: 'clarify'
+    } => part.type === 'interrupt' && part.interruptKind === 'clarify')
+
+    expect(clarify).toBeTruthy()
+    expect(clarify?.key).toBe('m-clarify:interrupt:run-1|project_clarify')
+    expect(clarify?.clarify?.intro).toBe('A few details.')
+    expect(clarify?.clarify?.fields.map(field => field.name)).toEqual([
+      'topic',
+      'age_band',
+    ])
+    expect(clarify?.clarify?.fields[1].choices).toEqual(['PRE_K', 'EARLY_GRADE'])
+  })
+
+  it('applies clarify submit state to recovered historical interrupt cards', () => {
+    const interruptState = ref<ReadonlyMap<string, InterruptViewState>>(new Map([
+      ['run-1|project_clarify', {
+        resolution: 'replied',
+        busy: true,
+        error: '',
+      }],
+    ]))
+    const api = renderedMessagesFor([
+      {
+        role: 'assistant',
+        text: 'Please reply with these fields.',
+        ts: 0,
+        messageId: 'm-clarify',
+        tool_calls: [
+          {
+            type: 'tool_use',
+            tool_use_id: 'meta_step_project_clarify',
+            name: 'meta-step:project_clarify',
+            input: {
+              kind: 'user_input',
+              paused: true,
+              step: 'project_clarify',
+              run_id: 'run-1',
+              clarify_schema: {
+                mode: 'form',
+                fields: [
+                  {
+                    name: 'topic',
+                    type: 'string',
+                    required: true,
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    ], interruptState)
+
+    const [message] = api.renderedMessages.value
+    const clarify = message.parts?.find((part): part is ChatPart & {
+      type: 'interrupt'
+      interruptKind: 'clarify'
+    } => part.type === 'interrupt' && part.interruptKind === 'clarify')
+
+    expect(clarify?.resolution).toBe('replied')
+    expect(clarify?.busy).toBe(true)
   })
 })

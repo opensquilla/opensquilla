@@ -30,7 +30,8 @@ import {
   sortRouterTiers,
 } from '@/utils/chat/routerTiers'
 import type { RouterVisualMode } from '@/utils/chat/routerVisualMode'
-import { toParts, toolState } from '@/utils/chat/toParts'
+import type { InterruptViewState } from '@/types/parts'
+import { toParts, toolState, type ToPartsInterrupt } from '@/utils/chat/toParts'
 import { toSources } from '@/utils/chat/toSources'
 import { relativeTime } from '@/utils/messageTime'
 
@@ -50,6 +51,7 @@ export interface NormalizedRouterDecision extends Record<string, unknown> {
 
 export interface UseChatRenderedMessagesOptions {
   messages: Ref<ChatMessage[]>
+  interruptState?: Ref<ReadonlyMap<string, InterruptViewState>>
   sessionKey: Ref<string>
   routerSlots: Ref<string[]>
   routerModels: Ref<Record<string, string>>
@@ -83,6 +85,73 @@ const ROUTER_LEGACY_DECOY_MODELS = [
   'mistral-medium-3.5',
   'claude-haiku-4.5',
 ]
+
+function clarifyRequestFromArgs(args: unknown): ToPartsInterrupt | null {
+  if (!args || typeof args !== 'object') return null
+  const raw = args as Record<string, unknown>
+  if (raw.kind !== 'user_input' || raw.paused !== true) return null
+  const schema = raw.clarify_schema
+  if (!schema || typeof schema !== 'object') return null
+  const schemaObj = schema as Record<string, unknown>
+  const fieldsRaw = Array.isArray(schemaObj.fields) ? schemaObj.fields : []
+  const fields = fieldsRaw.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object') return []
+    const field = entry as Record<string, unknown>
+    const name = String(field.name || '').trim()
+    if (!name) return []
+    return [{
+      name,
+      prompt: String(field.prompt || ''),
+      type: String(field.type || 'string').toLowerCase(),
+      required: field.required === true,
+      defaultValue: field.default == null ? '' : String(field.default),
+      choices: Array.isArray(field.choices) ? field.choices.map(String) : [],
+    }]
+  })
+  if (!fields.length) return null
+  const runId = typeof raw.run_id === 'string' ? raw.run_id : ''
+  const step = typeof raw.step === 'string' ? raw.step : ''
+  const approvalId = `${runId}|${step}` === '|' ? 'clarify:history' : `${runId}|${step}`
+  return {
+    kind: 'clarify',
+    approvalId,
+    data: {
+      intro: String(schemaObj.intro || ''),
+      fields,
+      runId,
+      step,
+    },
+  }
+}
+
+function historicalClarifyInterrupts(segments: RawToolCallPayload[] | undefined): ToPartsInterrupt[] {
+  if (!Array.isArray(segments) || !segments.length) return []
+  const inputByToolId = new Map<string, unknown>()
+  const out: ToPartsInterrupt[] = []
+  const seen = new Set<string>()
+
+  for (const segment of segments) {
+    const type = String(segment?.type || '')
+    const toolId = String(segment?.tool_use_id || segment?.toolId || segment?.id || '')
+    if (type === 'tool_use' && toolId) {
+      inputByToolId.set(toolId, segment.input)
+      const direct = clarifyRequestFromArgs(segment.input)
+      if (direct && !seen.has(direct.approvalId)) {
+        seen.add(direct.approvalId)
+        out.push(direct)
+      }
+      continue
+    }
+    if (type !== 'tool_result') continue
+    const direct = clarifyRequestFromArgs(segment.arguments)
+    const fromMatchingInput = direct || clarifyRequestFromArgs(inputByToolId.get(toolId))
+    if (fromMatchingInput && !seen.has(fromMatchingInput.approvalId)) {
+      seen.add(fromMatchingInput.approvalId)
+      out.push(fromMatchingInput)
+    }
+  }
+  return out
+}
 
 export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions) {
   const renderedMessages = computed((): ChatRenderedMessage[] => {
@@ -157,7 +226,14 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
       // assistant turns fold a parts body; other roles render through the
       // ChatMessageList role branch and stay parts:[].
       rendered.parts = rendered.displayRole === 'assistant'
-        ? toParts(rendered, options.renderMarkdown, toolCallGroups, ownerKey)
+        ? toParts(
+            rendered,
+            options.renderMarkdown,
+            toolCallGroups,
+            ownerKey,
+            historicalClarifyInterrupts(msg.tool_calls),
+            options.interruptState?.value,
+          )
         : []
       rendered.sources = rendered.displayRole === 'assistant' ? toSources(rendered) : []
       // statusHistory is a stored snapshot (not re-derivable from tool_calls), so

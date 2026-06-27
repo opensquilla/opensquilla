@@ -1,13 +1,25 @@
 <template>
-  <!-- Collapsed outcome row after the reply is sent -->
+  <!-- Prominent outcome banner after the reply is sent -->
   <div
     v-if="submitted"
     class="clarify-outcome"
+    :class="{ 'is-busy': busy }"
     data-testid="clarify-outcome"
     role="status"
+    aria-live="polite"
+    aria-atomic="true"
   >
-    <Icon name="check" :size="14" />
-    <span>Reply sent · run resumed</span>
+    <span class="clarify-outcome__icon" aria-hidden="true">
+      <Icon :name="busy ? 'clock' : 'check'" :size="18" />
+    </span>
+    <span class="clarify-outcome__copy">
+      <span class="clarify-outcome__title">
+        {{ busy ? 'Reply received · continuing run…' : 'Reply sent · run resumed' }}
+      </span>
+      <span class="clarify-outcome__detail">
+        {{ busy ? 'Your reply is being processed now.' : 'The agent has accepted this reply and moved on.' }}
+      </span>
+    </span>
   </div>
 
   <!-- Pending clarify card -->
@@ -93,22 +105,31 @@
         <button
           class="btn btn--primary"
           type="button"
-          :disabled="busy || !canSubmit"
+          :disabled="busy"
           @click="onSubmit"
         >
-          Send reply
+          {{ busy ? 'Sending reply…' : 'Send reply' }}
         </button>
         <button class="btn btn--ghost" type="button" :disabled="busy" @click="$emit('dismiss')">
           Dismiss
         </button>
       </div>
+      <p
+        v-if="busy"
+        class="clarify-card__status"
+        data-testid="clarify-submit-status"
+        role="status"
+        aria-live="polite"
+      >
+        Sending reply · continuing run…
+      </p>
       <p v-if="error" class="clarify-card__error" role="alert">{{ error }}</p>
     </footer>
   </article>
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, watch } from 'vue'
+import { reactive, watch } from 'vue'
 import Icon from '@/components/Icon.vue'
 import type { ChatClarifyRequest } from '@/composables/chat/useChatApprovals'
 
@@ -133,21 +154,17 @@ watch(() => props.request, request => {
   }
 }, { immediate: true })
 
-const canSubmit = computed(() =>
-  props.request.fields.every(field => !field.required || (values[field.name] || '').trim() !== ''))
-
 function fieldId(name: string): string {
   return `clarify-field-${name}`
 }
 
 function onSubmit() {
-  if (!canSubmit.value || props.busy) return
+  if (props.busy) return
   const fields: Record<string, string> = {}
   for (const field of props.request.fields) {
     const value = (values[field.name] || '').trim()
     if (value) fields[field.name] = value
   }
-  if (Object.keys(fields).length === 0) return
   emit('submit', fields)
 }
 </script>
@@ -334,14 +351,67 @@ function onSubmit() {
   margin: 0;
 }
 
+.clarify-card__status {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  margin: 0;
+}
+
 .clarify-outcome {
   width: var(--chat-col, min(calc(100% - 48px), 980px));
-  margin: var(--sp-1) auto;
+  margin: var(--sp-2) auto;
   display: flex;
-  align-items: center;
-  gap: var(--sp-2);
+  align-items: flex-start;
+  gap: var(--sp-3);
+  background: color-mix(in srgb, var(--ok) 9%, var(--bg-surface));
+  border: 1px solid color-mix(in srgb, var(--ok) 42%, var(--border));
+  border-radius: var(--radius-lg);
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--ok) 10%, transparent);
   color: var(--ok);
+  padding: var(--sp-3) var(--sp-4);
+  animation: card-enter var(--dur-enter) var(--ease-out) both;
+}
+
+.clarify-outcome.is-busy {
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg-surface));
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+
+.clarify-outcome__icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  background: color-mix(in srgb, currentColor 13%, transparent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.clarify-outcome.is-busy .clarify-outcome__icon {
+  animation: submit-pulse 1.2s ease-in-out infinite;
+}
+
+.clarify-outcome__copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.clarify-outcome__title {
+  color: var(--text);
   font-size: var(--fs-sm);
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.clarify-outcome__detail {
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
 }
 
 @keyframes card-enter {
@@ -352,6 +422,15 @@ function onSubmit() {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes submit-pulse {
+  0%, 100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.08);
   }
 }
 

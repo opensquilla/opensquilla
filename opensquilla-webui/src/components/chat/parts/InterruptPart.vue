@@ -16,7 +16,7 @@
     :submitted="part.resolution === 'replied'"
     :busy="part.busy"
     :error="part.error"
-    @submit="fields => emit('clarify-submit', fields)"
+    @submit="fields => emit('clarify-submit', fields, part.clarify!)"
     @dismiss="emit('clarify-dismiss')"
   />
 </template>
@@ -33,7 +33,7 @@ const props = defineProps<{ part: Extract<ChatPart, { type: 'interrupt' }> }>()
 const emit = defineEmits<{
   resolve: [id: string, decision: 'allow-once' | 'allow-always' | 'deny', note?: string]
   extend: [id: string]
-  'clarify-submit': [fields: Record<string, string>]
+  'clarify-submit': [fields: Record<string, string>, request: NonNullable<Extract<ChatPart, { type: 'interrupt' }>['clarify']>]
   'clarify-dismiss': []
 }>()
 

@@ -58,7 +58,7 @@
         :part="part"
         @resolve="(id, decision, note) => $emit('resolveInterrupt', id, decision, note)"
         @extend="id => $emit('extendInterrupt', id)"
-        @clarify-submit="fields => $emit('clarifySubmit', fields)"
+        @clarify-submit="(fields, request) => $emit('clarifySubmit', fields, request)"
         @clarify-dismiss="$emit('clarifyDismiss')"
       />
 
@@ -225,7 +225,7 @@ const emit = defineEmits<{
   fork: []
   resolveInterrupt: [id: string, decision: 'allow-once' | 'allow-always' | 'deny', note?: string]
   extendInterrupt: [id: string]
-  clarifySubmit: [fields: Record<string, string>]
+  clarifySubmit: [fields: Record<string, string>, request?: NonNullable<Extract<import('@/types/parts').ChatPart, { type: 'interrupt' }>['clarify']>]
   clarifyDismiss: []
 }>()
 

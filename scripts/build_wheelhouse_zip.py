@@ -113,10 +113,14 @@ def repo_root_from_script() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def build_subprocess_env(work_dir: Path) -> dict[str, str]:
+def build_subprocess_env(work_dir: Path, *, repo_root: Path | None = None) -> dict[str, str]:
     env = os.environ.copy()
-    uv_cache = work_dir / "uv-cache"
-    pip_cache = work_dir / "pip-cache"
+    cache_root = work_dir
+    if repo_root is not None:
+        resolved_repo_root = repo_root.resolve()
+        cache_root = resolved_repo_root.parent / f".{resolved_repo_root.name}-wheelhouse-cache"
+    uv_cache = cache_root / "uv-cache"
+    pip_cache = cache_root / "pip-cache"
     uv_cache.mkdir(parents=True, exist_ok=True)
     pip_cache.mkdir(parents=True, exist_ok=True)
     env["UV_CACHE_DIR"] = str(uv_cache)
@@ -1705,7 +1709,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     work_dir = (repo_root / args.work_dir).resolve()
-    env = build_subprocess_env(work_dir)
+    env = build_subprocess_env(work_dir, repo_root=repo_root)
     wheel_dir = work_dir / "wheels"
     tag = args.platform_tag or platform_tag()
     if not args.skip_wheelhouse:

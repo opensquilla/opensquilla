@@ -59,6 +59,22 @@ def test_build_wheel_retries_once_after_transient_uv_failure(monkeypatch, tmp_pa
     assert len(calls) == 2
 
 
+def test_build_subprocess_env_keeps_uv_cache_outside_repo_root(tmp_path: Path) -> None:
+    module = load_script()
+    repo_root = tmp_path / "repo"
+    work_dir = repo_root / "build" / "wheelhouse-zip"
+    repo_root.mkdir()
+
+    env = module.build_subprocess_env(work_dir, repo_root=repo_root)
+
+    uv_cache = Path(env["UV_CACHE_DIR"]).resolve()
+    pip_cache = Path(env["PIP_CACHE_DIR"]).resolve()
+    assert not uv_cache.is_relative_to(repo_root.resolve())
+    assert not pip_cache.is_relative_to(repo_root.resolve())
+    assert uv_cache.name == "uv-cache"
+    assert pip_cache.name == "pip-cache"
+
+
 def test_release_name_records_platform_python_profile() -> None:
     module = load_script()
 

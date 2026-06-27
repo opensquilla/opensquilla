@@ -2,7 +2,7 @@
 
 | Version | Tag | Date | Notes |
 |---|---|---|---|
-| 0.3.1 | v0.3.1 | 2026-06-03 | Slack hardening, media workflow handoffs, chat formatting, and install metadata |
+| 0.4.0 | v0.4.0 | 2026-06-27 | Control UI refresh, manual MetaSkills, coding mode, search expansion, and runtime hardening |
 | 0.3.0 | v0.3.0 | 2026-05-31 | MetaSkills, Health Doctor, tool compression, and docs release |
 | 0.2.1 | v0.2.1 | 2026-05-21 | 0.2 maintenance release |
 | 0.2.0 | v0.2.0 | 2026-05-20 | 0.2 release |
@@ -34,21 +34,21 @@ use tag-pinned URLs such as:
 - `https://github.com/opensquilla/opensquilla/releases/download/v0.2.0rc1/OpenSquilla-0.2.0rc1-windows-x64-py312-recommended-portable.zip`
 - `https://github.com/opensquilla/opensquilla/releases/download/v0.2.0rc1/opensquilla-0.2.0rc1-py3-none-any.whl`
 
-0.3.1 install commands use versioned wheel URLs because Python installers
+0.4.0 install commands use versioned wheel URLs because Python installers
 validate wheel filenames. The Windows portable zip may use the
 `/releases/latest/download/` alias after the non-pre-release GitHub Release
 exists. Fully pinned URLs remain available:
 
-- `https://github.com/opensquilla/opensquilla/releases/download/v0.3.1/OpenSquilla-0.3.1-windows-x64-py312-recommended-portable.zip`
-- `https://github.com/opensquilla/opensquilla/releases/download/v0.3.1/opensquilla-0.3.1-py3-none-any.whl`
+- `https://github.com/opensquilla/opensquilla/releases/download/v0.4.0/OpenSquilla-0.4.0-windows-x64-py312-recommended-portable.zip`
+- `https://github.com/opensquilla/opensquilla/releases/download/v0.4.0/opensquilla-0.4.0-py3-none-any.whl`
 
 ## Release SOP
 
 1. Verify `git status` is clean.
 2. Update `CHANGELOG.md`: move entries from `[Unreleased]` to the release section; reopen empty `[Unreleased]`.
 3. Bump `pyproject.toml` and `uv.lock` to the release version.
-4. `git tag -a v0.3.1 -m "OpenSquilla 0.3.1"`
-5. `git push origin v0.3.1` (this triggers `.github/workflows/wheelhouse-release.yml`)
+4. `git tag -a v0.4.0 -m "OpenSquilla 0.4.0"`
+5. `git push origin v0.4.0` (this triggers `.github/workflows/wheelhouse-release.yml`)
 6. Wait for the Windows release workflow → review the draft GitHub Release.
    For non-preview releases, confirm it contains versioned assets, latest
    aliases, `SHA256SUMS`, plus GitHub's generated source archives before
@@ -57,8 +57,8 @@ exists. Fully pinned URLs remain available:
 8. Publish the GitHub Release, then run the post-publish tag URL checks:
 
    ```sh
-   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.3.1/OpenSquilla-0.3.1-windows-x64-py312-recommended-portable.zip
-   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.3.1/opensquilla-0.3.1-py3-none-any.whl
+   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.4.0/OpenSquilla-0.4.0-windows-x64-py312-recommended-portable.zip
+   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.4.0/opensquilla-0.4.0-py3-none-any.whl
    ```
 
 9. Run the post-publish latest URL check:

@@ -403,7 +403,12 @@ text: "{{ outputs.search }}"
 
 ## Activation Guidance
 
-Write triggers as short phrases users naturally type:
+MetaSkills are manual-only by default in normal product use. Users launch them
+with `/meta <name>`, so trigger and soft-activation checks are needed only when
+you are intentionally supporting `meta_skill.auto_trigger = true`.
+
+When maintaining auto-trigger compatibility, write triggers as short phrases
+users naturally type:
 
 - Prefer: `summarize recent history`
 - Prefer: `review current diff`
@@ -412,11 +417,12 @@ Write triggers as short phrases users naturally type:
 Use two to five triggers unless a production workflow has a tested reason to use
 more. Avoid triggers that collide with explanation questions such as "how does
 this meta-skill work?" A user asking about a MetaSkill should not accidentally
-run it.
+run it when auto-trigger compatibility is enabled.
 
-Set `description` to explain when the model should choose the workflow. Do not
-hide critical constraints in the body only; the model primarily sees the
-frontmatter and injected skill summary.
+Set `description` to explain when the model should choose the workflow in
+auto-trigger mode. Do not hide critical constraints in the body only; the model
+primarily sees the frontmatter and injected skill summary when auto-trigger is
+enabled.
 
 ## Validation Checklist
 
@@ -430,8 +436,10 @@ Before sharing or enabling a MetaSkill:
 5. Confirm all user input and step outputs are filtered.
 6. Confirm `metadata.opensquilla.risk` and `metadata.opensquilla.capabilities`
    reflect the workflow's true side effects.
-7. Run deterministic trigger checks with `scripts/meta_trigger_accuracy.py`.
-8. Run model-decision soft activation checks with
+7. If supporting `meta_skill.auto_trigger = true`, run deterministic trigger
+   checks with `scripts/meta_trigger_accuracy.py`.
+8. If supporting `meta_skill.auto_trigger = true`, run model-decision soft
+   activation checks with
    `scripts/live_meta_soft_activation_e2e.py --env-file /path/to/.env`.
 9. For generated skills, inspect the Web UI proposal detail and its auto-enable
    audit before accepting or enabling.
@@ -443,8 +451,12 @@ If the MetaSkill does not appear to run:
 - Check that the `SKILL.md` is under a loaded skill directory.
 - Refresh or restart the gateway if the skill was added outside the proposal
   accept flow.
+- Confirm you ran it with `/meta <name>` on a surface that supports MetaSkill
+  runs.
 - Confirm `disable-model-invocation` is not set for a MetaSkill you expect the
   model to invoke.
+- If you expect natural-language auto-triggering, confirm
+  `meta_skill.auto_trigger = true`.
 - Confirm the skill has `kind: meta` and a non-empty `composition.steps` list.
 - Confirm the user wording matches the triggers or description.
 

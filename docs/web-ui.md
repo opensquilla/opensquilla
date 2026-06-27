@@ -5,6 +5,10 @@ approvals, channels, logs, agents, usage, and operational status. It is the
 best surface when you want browser-based chat, visible tool activity, durable
 approvals, and a quick view of runtime health.
 
+The default Control UI in 0.4.0 is the Vue product UI served by the gateway.
+The legacy frontend is kept only as a maintainer rollback fallback, not as the
+normal user path.
+
 ## Start the Web UI
 
 Run the gateway in the foreground:
@@ -35,15 +39,16 @@ For gateway lifecycle, host/port, and exposure details, see
 
 | Area | Use it for |
 | --- | --- |
-| Chat | Run and resume chat sessions, inspect tool activity, publish artifacts, and use manual compact controls. |
+| Chat | Run and resume chat sessions, inspect tool activity, launch `/meta` workflows, publish artifacts, and use manual compact controls. |
+| Conversations | Switch active sessions from the sidebar and keep long-running work visible. |
 | Overview / Health | See readiness, provider state, memory state, sandbox posture, and recovery hints. |
+| Settings | Configure providers, router, search, channels, permissions, and other setup sections from a modal flow. |
 | Channels | Inspect configured channel adapter status and jump to guided setup for configuration changes. |
-| Skills | Browse available skills and meta-skill surfaces. |
-| Sessions | Inspect durable conversations and operational state. |
+| Skills | Browse skill readiness and MetaSkill availability. |
+| Sessions | Inspect the durable sessions ledger and operational state. |
 | Agents | Manage durable agent entries. |
 | Usage | Inspect token and estimated-cost rollups. |
 | Cron | View and manage scheduled runs. |
-| Config | Edit setup sections from the browser. |
 | Logs | Inspect runtime logs and diagnostics. |
 | Approvals | Respond to sensitive tool-call approval requests. |
 
@@ -53,15 +58,28 @@ The chat UI supports:
 
 - streaming assistant output;
 - tool-call cards;
-- artifact cards;
+- turn activity and RunTrace views for provider, router, tool, and usage events;
+- inline approval requests for sensitive actions;
+- artifact cards with thumbnails when previews are available;
+- a deliverables drawer for generated outputs;
+- share and export actions for handoff;
+- a conversation sidebar for switching sessions;
+- `/meta` listing and run launch on gateway-backed chat sessions;
 - pending message queue behavior while compaction or runtime work is in flight;
 - manual `/compact`;
 - per-turn usage and savings metadata when available;
-- copyable session keys.
+- copyable session keys;
+- mobile tabs that keep chat, sessions, and operational views reachable on
+  narrow screens.
 
 Use the session selector to switch between existing sessions. Copy the session
 key when reporting a bug or asking another OpenSquilla surface to inspect the
 same session.
+
+Coding mode can be enabled from chat when you want code modifications routed
+through `opensquilla code-task`. With Coding mode on, code changes use the
+guarded host workflow described in [`cli.md`](cli.md#coding-mode-and-code-task)
+instead of ordinary in-session editing.
 
 ## Manual Compaction
 
@@ -85,6 +103,10 @@ cards for:
 - reports and briefings;
 - exported data files;
 - PDFs, slide decks, images, and other generated outputs.
+
+Artifact cards may include thumbnails or preview metadata, and the deliverables
+drawer keeps published outputs discoverable after the originating turn has
+scrolled away.
 
 For channel delivery limits and artifact recovery, see
 [`artifacts-and-media.md`](artifacts-and-media.md).

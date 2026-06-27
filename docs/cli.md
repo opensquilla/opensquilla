@@ -21,6 +21,7 @@ opensquilla <command> --help
 | `opensquilla gateway` | Run and manage the gateway server. |
 | `opensquilla chat` | Start interactive terminal chat. |
 | `opensquilla agent` | Run a single automation-friendly agent turn. |
+| `opensquilla code-task` | Run a guarded coding task through Coding mode's host workflow. |
 | `opensquilla sessions` | List, inspect, resume, abort, delete, or export sessions. |
 | `opensquilla skills` | List, search, view, install, update, publish, and inspect skills. |
 | `opensquilla memory` | Inspect and maintain memory. |
@@ -36,6 +37,7 @@ opensquilla <command> --help
 | `opensquilla models` | Inspect available models. |
 | `opensquilla agents` | Manage durable agents. |
 | `opensquilla mcp-server` | Run the OpenSquilla MCP server bridge. |
+| `opensquilla swebench` | Run optional SWE-bench solve/eval workflows. |
 | `opensquilla dist` | Emit a reproducible workspace-state inventory. |
 | `opensquilla reset` | Reset a session and flush memory synchronously. |
 
@@ -69,6 +71,11 @@ rejected before launch. Read
 [`features/tui-frontend.md`](features/tui-frontend.md) for the streaming plane,
 plugin slots, Router HUD, and replay benchmark workflow.
 
+Web chat and the CLI gateway TUI support `/meta` for manual MetaSkill launch:
+`/meta` lists available workflows and `/meta <name>` runs one. Channel surfaces
+and standalone CLI chat can list MetaSkills with `/meta`, but they do not launch
+MetaSkill runs directly.
+
 One-shot automation:
 
 ```sh
@@ -95,6 +102,45 @@ Useful automation flags:
 | `--transcript-path` | Write a JSONL transcript for automation. |
 | `--usage-path` | Write usage JSON. |
 | `--session-db-path` | Persist session replay across invocations. |
+
+## Coding Mode and Code-Task
+
+Coding mode routes code modification work through the `code-task` workflow. It
+is designed for trusted repositories: `code-task` runs an OpenSquilla agent on
+the host, may install dependencies, and is not an OS sandbox.
+
+```sh
+opensquilla code-task solve --repo /path/to/repo --task-file task.md --yes
+opensquilla code-task solve --repo https://github.com/org/project.git --issue 123
+opensquilla code-task solve --verification-mode scratch --task "Create a small CLI parser" --yes
+opensquilla code-task solve --repo /path/to/app --task-file task.md --verification-mode build --yes
+```
+
+Use exactly one task source: `--issue`, `--task`, or `--task-file`.
+Non-interactive callers must pass `--yes` to acknowledge the trusted-host
+boundary. Work happens in an isolated run directory under the OpenSquilla state
+tree; the source repo is updated only after the workflow collects and verifies a
+productive change.
+
+`--verification-mode red-green` is the default for existing repositories.
+`--verification-mode build` is for app or artifact delivery checks.
+`--verification-mode scratch` creates an empty throwaway repo and must not be
+combined with `--repo`.
+
+## SWE-Bench
+
+`opensquilla swebench` is an optional evaluation surface, not part of the normal
+install path. It requires Docker plus the `swebench` extra.
+
+```sh
+uv tool install --python 3.12 "opensquilla[recommended,swebench] @ https://github.com/opensquilla/opensquilla/releases/download/v0.4.0/opensquilla-0.4.0-py3-none-any.whl"
+opensquilla swebench pull django__django-16429 --dataset verified
+opensquilla swebench solve django__django-16429 --dataset verified --json
+opensquilla swebench eval predictions.jsonl --dataset verified
+```
+
+Use `opensquilla code-task` for trusted real-repository coding tasks when you do
+not need the Docker-based SWE-bench harness.
 
 ## Configuration Commands
 
@@ -166,6 +212,11 @@ opensquilla skills meta runs replay <run-id> --dry-run
 
 Use `skills inspect` when you want to see the compiled step plan for a
 meta-skill before invoking it.
+
+MetaSkills are manual-only by default. In web chat and the CLI gateway TUI,
+run `/meta` to list workflows and `/meta <name>` to launch one. Natural-language
+auto-triggering is disabled unless `meta_skill.auto_trigger = true` is set in
+configuration for compatibility with older behavior.
 
 Read:
 

@@ -72,6 +72,14 @@ def _diagnostic_incomplete(
     ]
 
 
+def _channel_last_error(row: dict[str, Any]) -> dict[str, Any] | None:
+    diagnostics = row.get("diagnostics")
+    if not isinstance(diagnostics, dict):
+        return None
+    last_error = diagnostics.get("last_error")
+    return last_error if isinstance(last_error, dict) else None
+
+
 def evaluate_provider(payload: dict[str, Any]) -> list[HealthFinding]:
     raw_rows = payload.get("providers")
     if not isinstance(raw_rows, list):
@@ -1077,7 +1085,49 @@ def evaluate_channels(payload: dict[str, Any]) -> list[HealthFinding]:
         name = str(row.get("name") or "unnamed")
         name_arg = _command_arg(name)
         status = str(row.get("status") or "unknown")
-        if row.get("enabled") is False:
+        last_error = _channel_last_error(row)
+        if isinstance(last_error, dict) and last_error.get("error_class") == "auth_invalid":
+            message = str(last_error.get("message") or "Channel credentials are invalid.")
+            provider_code = str(last_error.get("provider_code") or "")
+            channel_type = str(row.get("type") or "channel")
+            findings.append(
+                HealthFinding(
+                    id=f"channel.{name}.auth_invalid",
+                    severity="error",
+                    readiness_impact="degrades",
+                    surface="channels",
+                    title=f"Channel {name} credentials are invalid",
+                    detail=(
+                        f"{message}. {channel_type} rejected the configured credentials. "
+                        "For DingTalk Stream Mode, check that client_id is the AppKey "
+                        "and client_secret is the matching AppSecret from the same "
+                        "DingTalk app or robot."
+                    ),
+                    evidence={
+                        "name": name,
+                        "status": status,
+                        "type": row.get("type"),
+                        "errorClass": "auth_invalid",
+                        "providerCode": provider_code,
+                    },
+                    fix_steps=[
+                        FixStep(
+                            label="Inspect channels",
+                            command=f"opensquilla channels status {name_arg} --json",
+                        ),
+                        FixStep(
+                            label="Check DingTalk credentials",
+                            detail=(
+                                "Update the channel config with the AppKey/AppSecret "
+                                "from the same DingTalk app or robot."
+                            ),
+                        ),
+                        FixStep(label="Restart gateway", command="opensquilla gateway restart"),
+                    ],
+                    restart_required=True,
+                )
+            )
+        elif row.get("enabled") is False:
             findings.append(
                 HealthFinding(
                     id=f"channel.{name}.disabled",

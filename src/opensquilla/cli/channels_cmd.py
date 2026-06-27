@@ -91,6 +91,20 @@ def _render_channels_table(entries: list[dict[str, Any]], *, title: str) -> None
     console.print(table)
 
 
+def _status_diagnostic_text(row: dict[str, Any]) -> str:
+    diagnostics = row.get("diagnostics")
+    if not isinstance(diagnostics, dict):
+        return ""
+    last_error = diagnostics.get("last_error")
+    if not isinstance(last_error, dict):
+        return ""
+    message = last_error.get("message")
+    if message:
+        return str(message)
+    error_class = last_error.get("error_class")
+    return str(error_class) if error_class else ""
+
+
 def _render_status_table(payload: dict[str, Any], *, name: str | None = None) -> None:
     rows = _filter_status_rows(payload, name)
     table = Table(title="Channel status", show_header=True, header_style=ACCENT_HEADER)
@@ -101,6 +115,7 @@ def _render_status_table(payload: dict[str, Any], *, name: str | None = None) ->
     table.add_column("Enabled")
     table.add_column("Configured")
     table.add_column("Restart attempts", justify="right")
+    table.add_column("Diagnostic")
     for row in rows:
         table.add_row(
             str(row.get("name") or ""),
@@ -110,6 +125,7 @@ def _render_status_table(payload: dict[str, Any], *, name: str | None = None) ->
             str(row.get("enabled") or False),
             str(row.get("configured") or False),
             str(row.get("restart_attempts") or 0),
+            _status_diagnostic_text(row),
         )
     Console(width=180, force_terminal=False).print(table)
 

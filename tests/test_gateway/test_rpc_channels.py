@@ -126,3 +126,59 @@ async def test_channels_status_reports_adapter_capabilities_without_network_prob
         "status"
     ] == ChannelPlatformCapabilityStatus.UNSUPPORTED
     assert row["diagnostics"] == {"network_probe": "not_run"}
+
+
+@pytest.mark.asyncio
+async def test_channels_status_merges_start_error_diagnostics_for_configured_channel():
+    ctx = _read_ctx()
+    res = upsert_channel(
+        GatewayConfig(),
+        entry_payload={
+            "type": "dingtalk",
+            "name": "dingtalk",
+            "client_id": "app-key",
+            "client_secret": "app-secret",
+        },
+    )
+    ctx.config = res.config
+
+    class FakeManager:
+        _channel_types = {"dingtalk": "dingtalk"}
+
+        async def health(self):
+            return {}
+
+        def get(self, name: str):
+            assert name == "dingtalk"
+            return None
+
+        def start_errors(self):
+            return {
+                "dingtalk": {
+                    "error_type": "DingTalkAuthError",
+                    "error": "DingTalk credentials were rejected",
+                    "diagnostic": {
+                        "error_class": "auth_invalid",
+                        "provider_code": "authFailed",
+                        "message": "凭证无效：检查 DingTalk AppKey/AppSecret",
+                        "retryable": False,
+                    },
+                }
+            }
+
+    ctx.channel_manager = FakeManager()
+
+    rpc_res = await get_dispatcher().dispatch("r1", "channels.status", {}, ctx)
+
+    assert rpc_res.error is None, rpc_res.error
+    row = rpc_res.payload["channels"][0]
+    assert row["name"] == "dingtalk"
+    assert row["status"] == "stopped"
+    assert row["connected"] is False
+    assert row["diagnostics"]["last_error"] == {
+        "error_class": "auth_invalid",
+        "provider_code": "authFailed",
+        "message": "凭证无效：检查 DingTalk AppKey/AppSecret",
+        "retryable": False,
+        "source": "start_error",
+    }

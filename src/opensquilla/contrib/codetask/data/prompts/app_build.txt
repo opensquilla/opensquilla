@@ -73,6 +73,13 @@ For these to pass you MUST:
   host OS with the target pinned (`--mac dmg` / `--win nsis` / `--linux
   AppImage`), so you do NOT need to configure target lists — just keep a valid
   electron-builder config (appId, product name, icons) so those targets build.
+- Keep every module imported by the MAIN or PRELOAD process in `dependencies`,
+  NEVER `devDependencies`. electron-vite externalizes them (required at runtime,
+  not bundled) and electron-builder prunes `devDependencies` when packaging, so a
+  runtime module left in `devDependencies` builds and packages cleanly but makes
+  the INSTALLED app crash on launch with `Cannot find module`. The scaffold puts
+  `@electron-toolkit/utils` and `@electron-toolkit/preload` in `dependencies` —
+  keep them there if you rewrite package.json.
 - Do NOT commit node_modules, out, or dist.
 
 COMMIT

@@ -18,7 +18,9 @@ only produces its own platform's installer.
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -125,6 +127,81 @@ def _tail(text: str, n: int = _TAIL_LINES) -> str:
     return "\n".join((text or "").splitlines()[-n:])
 
 
+_NODE_BUILTINS = frozenset({
+    "assert", "async_hooks", "buffer", "child_process", "cluster", "console",
+    "constants", "crypto", "dgram", "diagnostics_channel", "dns", "domain",
+    "events", "fs", "http", "http2", "https", "inspector", "module", "net",
+    "os", "path", "perf_hooks", "process", "punycode", "querystring", "readline",
+    "repl", "stream", "string_decoder", "timers", "tls", "trace_events", "tty",
+    "url", "util", "v8", "vm", "wasi", "worker_threads", "zlib",
+})
+
+_REQUIRE_RE = re.compile(
+    r"""(?:require\(\s*|from\s+|import\(\s*)['"]([^'"]+)['"]"""
+)
+
+
+def _check_runtime_deps(repo: Path) -> BuildCheck:
+    """Static check: every bare module the built MAIN process require()s must be
+    in package.json ``dependencies``.
+
+    electron-vite externalizes main/preload dependencies (required at runtime, not
+    bundled) and electron-builder prunes ``devDependencies`` when packaging, so a
+    runtime module left in ``devDependencies`` builds and packages cleanly yet
+    makes the installed app crash on launch with ``Cannot find module``. This
+    catches that whole class without launching the GUI.
+    """
+    chk = BuildCheck(
+        name="runtime_deps",
+        command="(static) main-process require()s must be in dependencies",
+    )
+    chk.ran = True
+    main_dir = repo / "out" / "main"
+    pkg = repo / "package.json"
+    if not main_dir.is_dir() or not pkg.is_file():
+        chk.ok = True
+        chk.raw_tail = "skipped (no out/main or package.json)"
+        return chk
+    try:
+        deps = set(json.loads(pkg.read_text(encoding="utf-8")).get("dependencies", {}))
+    except (OSError, ValueError) as exc:
+        chk.ok = False
+        chk.raw_tail = f"cannot parse package.json: {exc}"
+        return chk
+    allowed = _NODE_BUILTINS | {"electron"}
+    missing: set[str] = set()
+    for js in main_dir.rglob("*.js"):
+        try:
+            text = js.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for spec in _REQUIRE_RE.findall(text):
+            if spec.startswith((".", "/")):
+                continue
+            if spec.startswith("node:"):
+                spec = spec[len("node:"):]
+            base = (
+                "/".join(spec.split("/")[:2])
+                if spec.startswith("@")
+                else spec.split("/")[0]
+            )
+            if base in allowed or base in deps:
+                continue
+            missing.add(base)
+    if missing:
+        chk.ok = False
+        chk.raw_tail = (
+            "main process require()s these at runtime but they are NOT in "
+            'package.json "dependencies": ' + ", ".join(sorted(missing)) + ". "
+            "electron-builder prunes devDependencies when packaging, so the "
+            "installed app throws `Cannot find module`. Move them to dependencies."
+        )
+    else:
+        chk.ok = True
+        chk.raw_tail = "all main-process runtime require()s are in dependencies"
+    return chk
+
+
 def verify_build(
     repo: Path,
     *,
@@ -180,7 +257,17 @@ def verify_build(
         if not chk.ok:
             break  # later checks are meaningless once one fails
 
-    all_passed = len(checks) == len(checklist) and all(c.ok for c in checks)
+    subprocess_passed = len(checks) == len(checklist) and all(c.ok for c in checks)
+    # A clean build + package does NOT prove the app runs: electron-builder
+    # prunes devDependencies, so a runtime module left there packages fine but
+    # makes the INSTALLED app crash on launch with `Cannot find module`.
+    # Statically verify every module the built main require()s is in dependencies.
+    if subprocess_passed:
+        dep_chk = _check_runtime_deps(repo)
+        checks.append(dep_chk)
+        all_passed = dep_chk.ok
+    else:
+        all_passed = False
     build = BuildResult(checks=checks, all_passed=all_passed)
 
     if all_passed:
@@ -209,7 +296,7 @@ def verify_build(
         else TaskState.FAILED
     )
     detail = (
-        f"build check failed: {failed.name}"
+        f"build check failed: {failed.name}\n{failed.raw_tail}".rstrip()
         if failed is not None
         else "build verification did not complete"
     )

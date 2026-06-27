@@ -18,6 +18,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 import tomllib
 import urllib.parse
@@ -115,8 +116,11 @@ def repo_root_from_script() -> Path:
 
 def build_subprocess_env(work_dir: Path) -> dict[str, str]:
     env = os.environ.copy()
-    uv_cache = work_dir / "uv-cache"
-    pip_cache = work_dir / "pip-cache"
+    cache_root = Path(os.environ.get("RUNNER_TEMP") or tempfile.gettempdir())
+    cache_key = hashlib.sha256(str(work_dir.resolve()).encode("utf-8")).hexdigest()[:12]
+    cache_dir = cache_root / "opensquilla-wheelhouse-cache" / cache_key
+    uv_cache = cache_dir / "uv-cache"
+    pip_cache = cache_dir / "pip-cache"
     uv_cache.mkdir(parents=True, exist_ok=True)
     pip_cache.mkdir(parents=True, exist_ok=True)
     env["UV_CACHE_DIR"] = str(uv_cache)

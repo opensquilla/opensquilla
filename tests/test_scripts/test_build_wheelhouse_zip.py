@@ -38,6 +38,26 @@ def load_script():
     return module
 
 
+def test_build_subprocess_env_keeps_uv_cache_outside_work_dir(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = load_script()
+    runner_temp = tmp_path / "runner-temp"
+    repo_work_dir = tmp_path / "repo" / "build" / "wheelhouse-zip"
+    monkeypatch.setenv("RUNNER_TEMP", str(runner_temp))
+
+    env = module.build_subprocess_env(repo_work_dir)
+
+    uv_cache = Path(env["UV_CACHE_DIR"])
+    pip_cache = Path(env["PIP_CACHE_DIR"])
+    assert uv_cache.is_relative_to(runner_temp)
+    assert pip_cache.is_relative_to(runner_temp)
+    assert not uv_cache.is_relative_to(repo_work_dir)
+    assert not pip_cache.is_relative_to(repo_work_dir)
+    assert uv_cache.is_dir()
+    assert pip_cache.is_dir()
+
+
 def test_build_wheel_retries_once_after_transient_uv_failure(monkeypatch, tmp_path: Path) -> None:
     module = load_script()
     wheel_path = tmp_path / "wheels" / "opensquilla-0.1.0-py3-none-any.whl"

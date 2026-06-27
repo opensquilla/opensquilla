@@ -24,6 +24,7 @@ from scripts.run_draco_ensemble import (
     GROUP_SPECS,
     RunResult,
     amain,
+    aggregate_agent_ensemble_trace,
     benchmark_tool_policy,
     benchmark_tools_for_policy,
     configure_benchmark_sandbox_runtime,
@@ -739,6 +740,32 @@ def test_draco_runner_candidate_texts_can_scope_to_final_agent_call() -> None:
     ]
 
 
+def test_draco_runner_agent_trace_preserves_moa_layer_metrics() -> None:
+    trace = aggregate_agent_ensemble_trace(
+        [
+            {
+                "kind": "llm_response",
+                "payload": {
+                    "iteration": 1,
+                    "ensemble_trace": {
+                        "profile": "g17_two_layer_moa",
+                        "llm_request_count": 6,
+                        "moa_layers": 2,
+                        "moa_refine_count": 1,
+                        "moa_intermediate_layers": 1,
+                    },
+                },
+            }
+        ]
+    )
+
+    assert trace["profile"] == "g17_two_layer_moa"
+    assert trace["llm_request_count"] == 6
+    assert trace["moa_layers"] == 2
+    assert trace["moa_refine_count"] == 1
+    assert trace["moa_intermediate_layers"] == 1
+
+
 def test_draco_runner_profile_groups_exist_in_default_config() -> None:
     cfg = GatewayConfig()
     missing = [
@@ -852,6 +879,33 @@ def test_draco_runner_profile_timeouts_expand_with_requested_timeout() -> None:
     assert provider.aggregator_timeout_seconds == pytest.approx(637.5)
 
 
+def test_draco_runner_g17_timeouts_split_aggregator_budget_by_moa_layer() -> None:
+    cfg = GatewayConfig()
+    inherited = ProviderConfig(
+        provider="openrouter",
+        model="z-ai/glm-5.2",
+        api_key="sk-test",
+        base_url="https://openrouter.ai/api",
+    )
+
+    provider = build_profile_provider(
+        config=cfg,
+        inherited=inherited,
+        group="G17",
+        profile="g17_two_layer_moa",
+        dry_run=False,
+        requested_timeout=900.0,
+    )
+
+    assert provider.moa_layers == 2
+    assert provider.proposer_timeout_seconds == pytest.approx(157.5)
+    assert provider.aggregator_timeout_seconds == pytest.approx(356.25)
+    assert (
+        provider.proposer_timeout_seconds
+        + provider.aggregator_timeout_seconds * provider.moa_layers
+    ) == pytest.approx(870.0)
+
+
 def test_draco_runner_generation_policy_overrides_profile_member_temperature() -> None:
     cfg = GatewayConfig()
     inherited = ProviderConfig(
@@ -949,6 +1003,42 @@ def test_draco_runner_g16_preserves_profile_sampling_temperature() -> None:
         "high",
         "high",
         "high",
+    ]
+    assert provider.aggregator.provider_config.model == "z-ai/glm-5.2"
+    assert provider.aggregator.temperature == 0.0
+
+
+def test_draco_runner_g17_configures_two_layer_moa() -> None:
+    cfg = GatewayConfig()
+    inherited = ProviderConfig(
+        provider="openrouter",
+        model="z-ai/glm-5.2",
+        api_key="sk-test",
+        base_url="https://openrouter.ai/api",
+    )
+
+    provider = build_profile_provider(
+        config=cfg,
+        inherited=inherited,
+        group="G17",
+        profile="g17_two_layer_moa",
+        dry_run=False,
+        generation_policy=generation_thinking_policy(Namespace(generation_thinking="high")),
+    )
+
+    assert provider.moa_layers == 2
+    assert [member.provider_config.model for member in provider.proposers] == [
+        "deepseek/deepseek-v4-pro",
+        "z-ai/glm-5.2",
+        "google/gemini-3-flash-preview",
+        "qwen/qwen3.7-plus",
+    ]
+    assert [member.k for member in provider.proposers] == [1, 1, 1, 1]
+    assert [member.temperature for member in provider.proposers] == [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
     ]
     assert provider.aggregator.provider_config.model == "z-ai/glm-5.2"
     assert provider.aggregator.temperature == 0.0

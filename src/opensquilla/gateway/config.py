@@ -293,6 +293,7 @@ def _ensemble_profile(
     candidate_scorer: dict[str, Any] | None = None,
     candidate_prefilter_top_k: int = 0,
     preserve_member_temperature: bool = False,
+    moa_layers: int = 1,
     proposer_timeout_seconds: float | None = None,
     aggregator_timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
@@ -306,6 +307,8 @@ def _ensemble_profile(
         payload["candidate_prefilter_top_k"] = candidate_prefilter_top_k
     if preserve_member_temperature:
         payload["preserve_member_temperature"] = preserve_member_temperature
+    if moa_layers > 1:
+        payload["moa_layers"] = moa_layers
     if proposer_timeout_seconds is not None:
         payload["proposer_timeout_seconds"] = proposer_timeout_seconds
     if aggregator_timeout_seconds is not None:
@@ -446,6 +449,11 @@ def _default_llm_ensemble_profiles() -> dict[str, dict[str, Any]]:
             _ensemble_ref("z-ai/glm-5.2", thinking="high", temperature=0.0),
             preserve_member_temperature=True,
         ),
+        "g17_two_layer_moa": _ensemble_profile(
+            list(g8_proposers),
+            _ensemble_ref("z-ai/glm-5.2", thinking="high"),
+            moa_layers=2,
+        ),
     }
 
 
@@ -475,6 +483,7 @@ class EnsembleProfile(BaseModel):
     candidate_scorer: EnsembleModelRef | None = None
     candidate_prefilter_top_k: int = Field(default=0, ge=0)
     preserve_member_temperature: bool = False
+    moa_layers: int = Field(default=1, ge=1)
     candidate_max_chars: int = Field(default=24_000, ge=0)
     proposer_timeout_seconds: float = Field(default=120.0, gt=0.0)
     aggregator_timeout_seconds: float = Field(default=120.0, gt=0.0)

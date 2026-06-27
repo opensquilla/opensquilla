@@ -202,6 +202,92 @@ async def test_ensemble_expands_proposer_k_into_multiple_samples(
 
 
 @pytest.mark.asyncio
+async def test_ensemble_two_layer_moa_refines_first_aggregation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    agg_calls = 0
+
+    def _events(model: str, text: str, in_tokens: int, out_tokens: int):
+        return lambda _messages, _tools: [
+            TextDeltaEvent(text=text),
+            DoneEvent(input_tokens=in_tokens, output_tokens=out_tokens, model=model),
+        ]
+
+    def _agg_events(messages: list[Message], _tools: Any) -> list[Any]:
+        nonlocal agg_calls
+        agg_calls += 1
+        if agg_calls == 1:
+            return [
+                TextDeltaEvent(text="first fused"),
+                DoneEvent(input_tokens=20, output_tokens=5, model="agg"),
+            ]
+        assert "Previous fused answer" in str(messages[-1].content)
+        assert "first fused" in str(messages[-1].content)
+        return [
+            TextDeltaEvent(text="final refined"),
+            DoneEvent(input_tokens=30, output_tokens=6, model="agg"),
+        ]
+
+    factories = {
+        "p1": _events("p1", "draft from p1", 10, 2),
+        "p2": _events("p2", "draft from p2", 11, 3),
+        "agg": _agg_events,
+    }
+
+    def fake_build_provider(cfg: ProviderConfig) -> _FakeProvider:
+        return _FakeProvider(cfg, calls, factories)
+
+    monkeypatch.setattr("opensquilla.provider.selector._build_provider", fake_build_provider)
+    provider = EnsembleProvider(
+        profile_name="test",
+        proposers=[_member("p1"), _member("p2")],
+        aggregator=_member("agg"),
+        record_candidates=True,
+        shuffle_candidates=False,
+        moa_layers=2,
+    )
+    tool = ToolDefinition(
+        name="search",
+        description="Search",
+        input_schema=ToolInputSchema(),
+    )
+
+    events = [
+        event
+        async for event in provider.chat(
+            [Message(role="user", content="solve")],
+            tools=[tool],
+        )
+    ]
+
+    assert [event.kind for event in events] == [
+        "provider_heartbeat",
+        "provider_heartbeat",
+        "text_delta",
+        "done",
+    ]
+    assert events[2].text == "final refined"
+    done = events[-1]
+    assert isinstance(done, DoneEvent)
+    assert done.input_tokens == 71
+    assert done.output_tokens == 16
+    assert [row["role"] for row in done.model_usage_breakdown] == [
+        "proposer",
+        "proposer",
+        "aggregator_layer_1",
+        "aggregator",
+    ]
+    assert done.ensemble_trace["moa_layers"] == 2
+    assert done.ensemble_trace["moa_refine_count"] == 1
+    assert done.ensemble_trace["llm_request_count"] == 4
+    aggregator_calls = [call for call in calls if call["model"] == "agg"]
+    assert len(aggregator_calls) == 2
+    assert aggregator_calls[0]["tools"] is None
+    assert aggregator_calls[1]["tools"] == [tool]
+
+
+@pytest.mark.asyncio
 async def test_ensemble_prefilters_candidates_with_scorer_before_aggregation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

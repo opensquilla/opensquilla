@@ -85,6 +85,7 @@ GROUP_SPECS: dict[str, dict[str, str]] = {
     "G14": {"kind": "profile", "profile": "g14_k2_replace_qwen"},
     "G15": {"kind": "profile", "profile": "g15_g8_top3_prefilter"},
     "G16": {"kind": "profile", "profile": "g16_sampled_cheap_proposers"},
+    "G17": {"kind": "profile", "profile": "g17_two_layer_moa"},
 }
 
 TOOL_MODE_PROVIDER_ONLY = "provider_only"
@@ -1018,6 +1019,7 @@ def profile_timeout_seconds(
     *,
     requested_timeout: float | None = None,
 ) -> tuple[float, float]:
+    moa_layers = max(1, int(getattr(profile, "moa_layers", 1) or 1))
     proposer_timeout = max(
         DEFAULT_PROFILE_PROPOSER_TIMEOUT_SECONDS,
         float(getattr(profile, "proposer_timeout_seconds", 0) or 0),
@@ -1029,11 +1031,14 @@ def profile_timeout_seconds(
     if requested_timeout is None or requested_timeout <= 0:
         return proposer_timeout, aggregator_timeout
     available = max(0.0, float(requested_timeout) - PROFILE_TIMEOUT_MARGIN_SECONDS)
-    base_budget = proposer_timeout + aggregator_timeout
+    base_budget = proposer_timeout + aggregator_timeout * moa_layers
     if available <= base_budget:
         return proposer_timeout, aggregator_timeout
     extra = available - base_budget
-    return proposer_timeout + extra * 0.25, aggregator_timeout + extra * 0.75
+    return (
+        proposer_timeout + extra * 0.25,
+        aggregator_timeout + (extra * 0.75 / moa_layers),
+    )
 
 
 def profile_aggregator_timeout_seconds(
@@ -1554,6 +1559,9 @@ def aggregate_agent_ensemble_trace(records: list[dict[str, Any]]) -> dict[str, A
         "total_candidates",
         "fallback_used",
         "final_request_role",
+        "moa_layers",
+        "moa_refine_count",
+        "moa_intermediate_layers",
     ):
         if key in first_trace:
             payload[key] = first_trace[key]

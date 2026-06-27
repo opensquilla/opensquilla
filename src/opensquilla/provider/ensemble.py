@@ -131,12 +131,14 @@ class _AggregatorAccumulator:
         *,
         profile: str,
         member: EnsembleMemberConfig,
+        role: str = "aggregator",
+        label: str = "",
     ) -> dict[str, Any]:
         cfg = member.provider_config
         row = {
-            "role": "aggregator",
+            "role": role,
             "profile": profile,
-            "label": member.label or "aggregator",
+            "label": label or member.label or role,
             "provider": cfg.provider,
             "model": self.model or cfg.model,
             "sample_index": 0,
@@ -373,6 +375,7 @@ class EnsembleProvider:
         proposer_tools: bool = False,
         candidate_scorer: EnsembleMemberConfig | None = None,
         candidate_prefilter_top_k: int = 0,
+        moa_layers: int = 1,
     ) -> None:
         self.profile_name = profile_name
         self.proposers = list(proposers)
@@ -388,6 +391,7 @@ class EnsembleProvider:
         self.proposer_tools = bool(proposer_tools)
         self.candidate_scorer = candidate_scorer
         self.candidate_prefilter_top_k = max(0, int(candidate_prefilter_top_k or 0))
+        self.moa_layers = max(1, int(moa_layers or 1))
 
     def provider_metadata(self) -> ProviderMetadata:
         return ProviderMetadata(
@@ -476,8 +480,113 @@ class EnsembleProvider:
             selected_candidates=prefilter.candidates,
             prefilter_trace=prefilter.trace or None,
             prefilter_request_count=prefilter.request_count,
+            final_request_count=self.moa_layers,
+            moa_layers=self.moa_layers,
         )
+        async for event in self._stream_aggregator_layers(
+            provider=provider,
+            base_messages=messages,
+            first_layer_messages=aggregator_messages,
+            tools=tools,
+            config=aggregator_cfg,
+            proposer_rows=proposer_rows,
+            prefilter_rows=prefilter_rows,
+            trace=trace,
+        ):
+            yield event
 
+    async def _stream_aggregator_layers(
+        self,
+        *,
+        provider: LLMProvider,
+        base_messages: list[Message],
+        first_layer_messages: list[Message],
+        tools: list[ToolDefinition] | None,
+        config: ChatConfig,
+        proposer_rows: list[dict[str, Any]],
+        prefilter_rows: list[dict[str, Any]],
+        trace: dict[str, Any],
+    ) -> AsyncIterator[StreamEvent]:
+        rows_before_aggregator = [*proposer_rows, *prefilter_rows]
+        if self.moa_layers <= 1:
+            async for event in self._stream_final_aggregator(
+                provider=provider,
+                messages=first_layer_messages,
+                tools=tools,
+                config=config,
+                prior_rows=rows_before_aggregator,
+                trace=trace,
+                label="aggregator",
+            ):
+                yield event
+            return
+
+        previous_text = ""
+        layer_rows: list[dict[str, Any]] = []
+        for layer_index in range(1, self.moa_layers):
+            yield ProviderHeartbeatEvent(
+                phase="ensemble_moa",
+                message=f"Running MoA layer {layer_index}/{self.moa_layers}",
+            )
+            layer_messages = (
+                first_layer_messages
+                if layer_index == 1
+                else self._build_moa_refine_messages(
+                    base_messages,
+                    previous_text,
+                    layer_index=layer_index,
+                )
+            )
+            text, usage_row, error_message, error_code = await self._collect_moa_text_layer(
+                provider=provider,
+                messages=layer_messages,
+                config=config,
+                layer_index=layer_index,
+            )
+            if usage_row is not None:
+                layer_rows.append(usage_row)
+            if error_message:
+                diagnostic_rows = [*rows_before_aggregator, *layer_rows]
+                yield ErrorEvent(
+                    message=error_message,
+                    code=error_code,
+                    diagnostic_done=self._aggregator_diagnostic_done(
+                        message=error_message,
+                        code=error_code,
+                        rows=diagnostic_rows,
+                        trace=trace,
+                    ),
+                )
+                return
+            previous_text = text
+
+        final_messages = self._build_moa_refine_messages(
+            base_messages,
+            previous_text,
+            layer_index=self.moa_layers,
+        )
+        async for event in self._stream_final_aggregator(
+            provider=provider,
+            messages=final_messages,
+            tools=tools,
+            config=config,
+            prior_rows=[*rows_before_aggregator, *layer_rows],
+            trace=trace,
+            label=f"aggregator_layer_{self.moa_layers}",
+        ):
+            yield event
+
+    async def _stream_final_aggregator(
+        self,
+        *,
+        provider: LLMProvider,
+        messages: list[Message],
+        tools: list[ToolDefinition] | None,
+        config: ChatConfig,
+        prior_rows: list[dict[str, Any]],
+        trace: dict[str, Any],
+        label: str,
+    ) -> AsyncIterator[StreamEvent]:
         def _ensemble_done(event: DoneEvent) -> DoneEvent:
             acc = _AggregatorAccumulator(
                 input_tokens=event.input_tokens,
@@ -491,9 +600,13 @@ class EnsembleProvider:
                 model=event.model or self.aggregator.provider_config.model,
             )
             rows = [
-                *proposer_rows,
-                *prefilter_rows,
-                acc.usage_row(profile=self.profile_name, member=self.aggregator),
+                *prior_rows,
+                acc.usage_row(
+                    profile=self.profile_name,
+                    member=self.aggregator,
+                    role="aggregator",
+                    label=label,
+                ),
             ]
             return replace(
                 event,
@@ -509,32 +622,9 @@ class EnsembleProvider:
                 ensemble_trace=trace,
             )
 
-        def _diagnostic_done(message: str, code: str) -> DoneEvent:
-            failure_trace = {
-                **trace,
-                "aggregator_error": {
-                    "code": code,
-                    "message": message,
-                },
-            }
-            rows = [*proposer_rows, *prefilter_rows]
-            return DoneEvent(
-                stop_reason=code,
-                input_tokens=_summed_int(rows, "input_tokens"),
-                output_tokens=_summed_int(rows, "output_tokens"),
-                reasoning_tokens=_summed_int(rows, "reasoning_tokens"),
-                cached_tokens=_summed_int(rows, "cached_tokens"),
-                cache_write_tokens=_summed_int(rows, "cache_write_tokens"),
-                billed_cost=_summed_float(rows, "billed_cost"),
-                model=self.aggregator.provider_config.model,
-                cost_source=_rollup_cost_source(rows),
-                model_usage_breakdown=rows,
-                ensemble_trace=failure_trace,
-            )
-
         yielded_done = False
         try:
-            stream = provider.chat(aggregator_messages, tools=tools, config=aggregator_cfg)
+            stream = provider.chat(messages, tools=tools, config=config)
             if self.aggregator_timeout_seconds > 0:
                 async with asyncio.timeout(self.aggregator_timeout_seconds):
                     async for event in stream:
@@ -558,7 +648,12 @@ class EnsembleProvider:
             yield ErrorEvent(
                 message=message,
                 code="ensemble_aggregator_timeout",
-                diagnostic_done=_diagnostic_done(message, "ensemble_aggregator_timeout"),
+                diagnostic_done=self._aggregator_diagnostic_done(
+                    message=message,
+                    code="ensemble_aggregator_timeout",
+                    rows=prior_rows,
+                    trace=trace,
+                ),
             )
             return
         except Exception as exc:  # noqa: BLE001 - provider boundary returns ErrorEvent
@@ -566,7 +661,12 @@ class EnsembleProvider:
             yield ErrorEvent(
                 message=message,
                 code="ensemble_aggregator_error",
-                diagnostic_done=_diagnostic_done(message, "ensemble_aggregator_error"),
+                diagnostic_done=self._aggregator_diagnostic_done(
+                    message=message,
+                    code="ensemble_aggregator_error",
+                    rows=prior_rows,
+                    trace=trace,
+                ),
             )
             return
         if not yielded_done:
@@ -574,8 +674,159 @@ class EnsembleProvider:
             yield ErrorEvent(
                 message=message,
                 code="ensemble_aggregator_incomplete",
-                diagnostic_done=_diagnostic_done(message, "ensemble_aggregator_incomplete"),
+                diagnostic_done=self._aggregator_diagnostic_done(
+                    message=message,
+                    code="ensemble_aggregator_incomplete",
+                    rows=prior_rows,
+                    trace=trace,
+                ),
             )
+
+    async def _collect_moa_text_layer(
+        self,
+        *,
+        provider: LLMProvider,
+        messages: list[Message],
+        config: ChatConfig,
+        layer_index: int,
+    ) -> tuple[str, dict[str, Any] | None, str, str]:
+        text_parts: list[str] = []
+        usage_row: dict[str, Any] | None = None
+        got_done = False
+        try:
+            stream = provider.chat(messages, tools=None, config=config)
+            if self.aggregator_timeout_seconds > 0:
+                async with asyncio.timeout(self.aggregator_timeout_seconds):
+                    async for event in stream:
+                        if isinstance(event, ErrorEvent):
+                            usage_row = self._moa_layer_error_usage_row(
+                                event,
+                                layer_index=layer_index,
+                            )
+                            return "", usage_row, event.message, (
+                                event.code or "ensemble_moa_layer_error"
+                            )
+                        usage_row, got_done = self._collect_moa_layer_event(
+                            event,
+                            text_parts,
+                            layer_index=layer_index,
+                            usage_row=usage_row,
+                            got_done=got_done,
+                        )
+            else:
+                async for event in stream:
+                    if isinstance(event, ErrorEvent):
+                        usage_row = self._moa_layer_error_usage_row(
+                            event,
+                            layer_index=layer_index,
+                        )
+                        return "", usage_row, event.message, (
+                            event.code or "ensemble_moa_layer_error"
+                        )
+                    usage_row, got_done = self._collect_moa_layer_event(
+                        event,
+                        text_parts,
+                        layer_index=layer_index,
+                        usage_row=usage_row,
+                        got_done=got_done,
+                    )
+        except TimeoutError:
+            message = (
+                "ensemble MoA layer "
+                f"{layer_index} timed out after {self.aggregator_timeout_seconds:g}s"
+            )
+            return "", usage_row, message, "ensemble_moa_layer_timeout"
+        except Exception as exc:  # noqa: BLE001 - provider boundary returns ErrorEvent
+            return "", usage_row, f"ensemble MoA layer {layer_index} failed: {exc}", (
+                "ensemble_moa_layer_error"
+            )
+        text = "".join(text_parts).strip()
+        if not got_done:
+            return text, usage_row, (
+                f"ensemble MoA layer {layer_index} stream ended before DoneEvent"
+            ), "ensemble_moa_layer_incomplete"
+        if not text:
+            return text, usage_row, (
+                f"ensemble MoA layer {layer_index} produced no text"
+            ), "ensemble_moa_layer_empty"
+        return text, usage_row, "", ""
+
+    def _collect_moa_layer_event(
+        self,
+        event: StreamEvent,
+        text_parts: list[str],
+        *,
+        layer_index: int,
+        usage_row: dict[str, Any] | None,
+        got_done: bool,
+    ) -> tuple[dict[str, Any] | None, bool]:
+        if isinstance(event, TextDeltaEvent):
+            text_parts.append(event.text)
+        elif isinstance(event, ToolUseStartEvent):
+            text_parts.append(f"\n[tool_use:{event.tool_name}]")
+        elif isinstance(event, ToolUseDeltaEvent):
+            if event.json_fragment:
+                text_parts.append(event.json_fragment)
+        elif isinstance(event, ToolUseEndEvent):
+            if event.arguments:
+                text_parts.append(f"\n[tool_args:{event.arguments}]")
+        elif isinstance(event, DoneEvent):
+            got_done = True
+            usage_row = _done_usage_row(
+                event,
+                role=f"aggregator_layer_{layer_index}",
+                profile=self.profile_name,
+                label=f"aggregator_layer_{layer_index}",
+                provider=self.aggregator.provider_config.provider,
+                model=self.aggregator.provider_config.model,
+            )
+        return usage_row, got_done
+
+    def _moa_layer_error_usage_row(
+        self,
+        event: ErrorEvent,
+        *,
+        layer_index: int,
+    ) -> dict[str, Any] | None:
+        if event.diagnostic_done is None:
+            return None
+        return _done_usage_row(
+            event.diagnostic_done,
+            role=f"aggregator_layer_{layer_index}",
+            profile=self.profile_name,
+            label=f"aggregator_layer_{layer_index}",
+            provider=self.aggregator.provider_config.provider,
+            model=self.aggregator.provider_config.model,
+        )
+
+    def _aggregator_diagnostic_done(
+        self,
+        *,
+        message: str,
+        code: str,
+        rows: list[dict[str, Any]],
+        trace: dict[str, Any],
+    ) -> DoneEvent:
+        failure_trace = {
+            **trace,
+            "aggregator_error": {
+                "code": code,
+                "message": message,
+            },
+        }
+        return DoneEvent(
+            stop_reason=code,
+            input_tokens=_summed_int(rows, "input_tokens"),
+            output_tokens=_summed_int(rows, "output_tokens"),
+            reasoning_tokens=_summed_int(rows, "reasoning_tokens"),
+            cached_tokens=_summed_int(rows, "cached_tokens"),
+            cache_write_tokens=_summed_int(rows, "cache_write_tokens"),
+            billed_cost=_summed_float(rows, "billed_cost"),
+            model=self.aggregator.provider_config.model,
+            cost_source=_rollup_cost_source(rows),
+            model_usage_breakdown=rows,
+            ensemble_trace=failure_trace,
+        )
 
     async def _run_proposers(
         self,
@@ -873,6 +1124,28 @@ class EnsembleProvider:
             lines.append(f"</CANDIDATE {display_index}>")
         return [*messages, Message(role="user", content="\n".join(lines))]
 
+    def _build_moa_refine_messages(
+        self,
+        messages: list[Message],
+        previous_answer: str,
+        *,
+        layer_index: int,
+    ) -> list[Message]:
+        lines = [
+            f"You are layer {layer_index} in a multi-layer MoA refinement.",
+            "Use the original conversation as context and improve the previous "
+            "fused answer for correctness, completeness, and clarity.",
+            "Do not mention the ensemble, layers, candidates, or model names unless "
+            "the user explicitly asks.",
+            "If tools are available and more evidence/action is needed, call exactly "
+            "the appropriate tool(s).",
+            "Otherwise, answer the user directly with the strongest final result.",
+            "",
+            "Previous fused answer:",
+            previous_answer.strip() or "[empty]",
+        ]
+        return [*messages, Message(role="user", content="\n".join(lines))]
+
     def _trace_payload(
         self,
         candidates: Sequence[_CandidateResult],
@@ -884,8 +1157,15 @@ class EnsembleProvider:
         selected_candidates: Sequence[_CandidateResult] | None = None,
         prefilter_trace: dict[str, Any] | None = None,
         prefilter_request_count: int = 0,
+        final_request_count: int | None = None,
+        moa_layers: int = 1,
     ) -> dict[str, Any]:
         selected = list(selected_candidates or [])
+        final_requests = (
+            int(final_request_count)
+            if final_request_count is not None
+            else (1 if final_request_role else 0)
+        )
         row = {
             "mode": "b5_fusion",
             "profile": self.profile_name,
@@ -898,13 +1178,17 @@ class EnsembleProvider:
             "llm_request_count": (
                 len(candidates)
                 + int(prefilter_request_count or 0)
-                + (1 if final_request_role else 0)
+                + final_requests
             ),
             "candidates": [
                 candidate.trace_row(include_text=self.record_candidates)
                 for candidate in candidates
             ],
         }
+        if moa_layers > 1:
+            row["moa_layers"] = moa_layers
+            row["moa_refine_count"] = moa_layers - 1
+            row["moa_intermediate_layers"] = moa_layers - 1
         if self.candidate_prefilter_top_k > 0 or prefilter_trace is not None:
             row["selected_candidate_count"] = len(selected)
             row["selected_candidate_indexes"] = [candidate.index for candidate in selected]
@@ -1062,4 +1346,5 @@ def build_ensemble_provider_from_config(
         proposer_tools=bool(getattr(ensemble_cfg, "proposer_tools", False)),
         candidate_scorer=candidate_scorer,
         candidate_prefilter_top_k=int(getattr(profile, "candidate_prefilter_top_k", 0) or 0),
+        moa_layers=int(getattr(profile, "moa_layers", 1) or 1),
     )

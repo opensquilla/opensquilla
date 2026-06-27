@@ -181,9 +181,10 @@ aggregator = { provider = "openrouter", model = "openai/gpt-5.5", thinking = "hi
 # g8_four_proposers, g9_qwen_aggregator, g10_gemini_aggregator,
 # g11_deepseek_aggregator, g12_k2_replace_gemini,
 # g13_five_proposers, g14_k2_replace_qwen, g15_g8_top3_prefilter,
-# and g16_sampled_cheap_proposers. G15 uses a candidate_scorer plus
+# g16_sampled_cheap_proposers, and g17_two_layer_moa. G15 uses a candidate_scorer plus
 # candidate_prefilter_top_k = 3 before the final aggregator. G16 keeps
-# explicit proposer temperatures to test k=2 sampling for Gemini/Qwen.
+# explicit proposer temperatures to test k=2 sampling for Gemini/Qwen. G17 uses
+# moa_layers = 2 to refine the first fused answer with a second aggregator pass.
 
 [memory]
 # "workspace" stores MEMORY.md and memory/*.md under workspace_dir.

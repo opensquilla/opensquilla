@@ -39,7 +39,8 @@ Read: [`features/tool-compression.md`](features/tool-compression.md)
 ### Meta-Skills
 
 Repeatable multi-step workflows can be represented as skills, inspected,
-proposed, replayed, and reused.
+proposed, replayed, and reused. By default, users launch them manually with
+`/meta` and `/meta <name>`.
 
 Read: [`features/meta-skills.md`](features/meta-skills.md) and
 [`features/meta-skill-user-guide.md`](features/meta-skill-user-guide.md)

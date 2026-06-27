@@ -1,7 +1,8 @@
 # OpenSquilla MetaSkill User Guide
 
 MetaSkill lets OpenSquilla move from figuring out complex work from scratch on
-every turn to reusable, triggerable, auditable, and improvable task protocols.
+every turn to reusable, explicitly launchable, auditable, and improvable task
+protocols.
 
 A normal conversation solves one request. A MetaSkill preserves a way of doing
 high-value work.
@@ -55,9 +56,36 @@ MetaSkill provides four main advantages:
 
 - protocolized capability captured in a `SKILL.md` file with `kind: meta` and
   `composition.steps`;
-- triggerable by user intent in natural language;
+- explicit launch through `/meta`, with optional automatic triggering only when
+  `meta_skill.auto_trigger = true`;
 - auditable and replayable step inputs, outputs, status, and results;
 - improvable over time as repeated collaboration patterns become proposals.
+
+## Default Launch Model
+
+MetaSkills are manual-only by default. Use `/meta` to list available workflows
+and `/meta <name>` to run one. This keeps workflow launches deliberate,
+reviewable, and easier to explain.
+
+Web chat and the CLI gateway TUI support both list and run:
+
+```text
+/meta
+/meta meta-kid-project-planner
+```
+
+Channel and standalone CLI surfaces support `/meta` listing only.
+
+To restore the older automatic behavior, set:
+
+```toml
+[meta_skill]
+auto_trigger = true
+```
+
+With `auto_trigger = true`, OpenSquilla may consider MetaSkills during ordinary
+natural-language turns. Leave it off when you want workflows to run only after
+an explicit `/meta <name>` command.
 
 ## User Mental Model
 
@@ -75,7 +103,7 @@ A strong MetaSkill request contains four things:
 Example:
 
 ```text
-Use meta-skill `meta-kid-project-planner`.
+/meta meta-kid-project-planner
 
 I need a safe weekend project plan, not a generic list of ideas.
 Use only materials that are easy to buy locally.
@@ -121,23 +149,24 @@ Common setup surfaces:
 
 ## Two Ways to Use MetaSkill
 
-### Natural Delegation
+### Default: Explicit Command
 
-Describe the outcome directly:
+Start the workflow with `/meta <name>` and then describe the outcome:
 
 ```text
+/meta meta-kid-project-planner
+
 Plan a safe 20-minute balcony plant science project for a 7-year-old. Include
 materials, steps, safety notes, and a simple presentation outline.
 ```
 
-OpenSquilla selects the appropriate MetaSkill based on current intent. This is
-best for ordinary usage when the user does not want to remember names. If the
-request is broad or close to another task category, explicit delegation is more
-stable.
+This is the normal 0.4.0 path. It is best for important, expensive, or easily
+confused tasks because the workflow launch is explicit.
 
-### Explicit Delegation
+### Compatibility: Automatic Triggering
 
-Name the capability:
+If `meta_skill.auto_trigger = true` is set, OpenSquilla can consider MetaSkills
+from natural-language intent:
 
 ```text
 Use meta-skill `meta-kid-project-planner`.
@@ -146,14 +175,15 @@ Plan a safe 20-minute balcony plant science project for a 7-year-old. Include
 materials, steps, safety notes, and a simple presentation outline.
 ```
 
-This is best for important, expensive, or easily confused tasks.
+This mode is for users who intentionally want the older auto-trigger behavior.
+It is not the default.
 
 ## Low-Cost, High-Quality Request Template
 
 Recommended template:
 
 ```text
-Use meta-skill `<name>`.
+/meta <name>
 
 Outcome:
 Context:
@@ -166,7 +196,7 @@ Do not:
 Example:
 
 ```text
-Use meta-skill `meta-kid-project-planner`.
+/meta meta-kid-project-planner
 
 Outcome: plan a child-safe weekend science project.
 Context: 7-year-old, balcony plants, 20 minutes of activity, ordinary household
@@ -205,7 +235,7 @@ Good fit:
 High-quality request:
 
 ```text
-Use meta-skill `meta-kid-project-planner`.
+/meta meta-kid-project-planner
 
 Help my child prepare a second-grade science fair project about plant growth. We
 have beans, paper cups, cotton, water, and a sunny windowsill.
@@ -242,7 +272,7 @@ before asking for a compiled PDF.
 High-quality request:
 
 ```text
-Use meta-skill `meta-paper-write`.
+/meta meta-paper-write
 
 Draft a compact research paper skeleton on retrieval-augmented generation for
 customer-support knowledge bases.
@@ -284,7 +314,7 @@ Poor fit:
 High-quality request:
 
 ```text
-Use meta-skill `meta-skill-creator`.
+/meta meta-skill-creator
 
 Create a new meta-skill for product launch briefs. It should search current
 sources, collect product context, draft a launch memo, generate a DOCX handoff,

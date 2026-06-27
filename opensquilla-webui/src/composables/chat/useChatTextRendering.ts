@@ -1,6 +1,7 @@
 import { marked, type Tokens } from 'marked'
 import DOMPurify from 'dompurify'
 import hljs from 'highlight.js/lib/common'
+import katex from 'katex'
 
 const DIRECTIVE_TAG_RE = /\[\[\s*(?:reply_to_current|reply_to\s*:\s*[^\]\n]+)\s*\]\]\s*/g
 const GENERATED_ARTIFACT_MARKER_RE = /(?:^|\s*)\[generated artifact omitted:\s*[^\]\n]+?\]\s*/gi
@@ -8,12 +9,20 @@ const PROTOCOL_TEXT_MARKER_RE = /<\s*(?:minimax:tool_call|tool_calls?|tvoe_calls
 const TIME_PREFIX_RE = /^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}[+\-]\d{2}:\d{2} (?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) [A-Za-z0-9_+\-/]+\]\n/
 
 const MARKDOWN_CACHE_MAX = 500
+const MATH_SCAN_RE = /(```[\s\S]*?```|`[^`\n]+?`|\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([^)\n]+?\\\)|\$(?![\s\d])(?:\\\$|[^$\n])+?(?<![\s])\$)/g
+const MATH_SENTINEL_RE = /\uE000M(\d+)\uE001/g
 // Highlighting is synchronous inside the streaming render path; past this
 // size a block renders as plain mono text so it cannot stall a flush.
 const HIGHLIGHT_MAX_CHARS = 30_000
 // The only class names allowed through sanitization: highlighter token
 // classes (incl. sub-scope suffixes like `function_`) and the code chrome.
 const CODE_CLASS_RE = /^(?:hljs|hljs-[\w-]+|language-[\w#+.-]+|code-lang|function_|class_|inherited__)$/
+const KATEX_CLASS_RE = /^[A-Za-z][\w-]*$/
+
+type MathEntry = {
+  type: 'inline' | 'display'
+  content: string
+}
 
 // Syntax highlighting is the heaviest part of the render and re-runs over the
 // whole code block on every flush during streaming. While a turn is streaming
@@ -21,6 +30,7 @@ const CODE_CLASS_RE = /^(?:hljs|hljs-[\w-]+|language-[\w#+.-]+|code-lang|functio
 // committed message — a one-time recolor at the end, no reflow. renderMarkdown
 // toggles this around each parse; it is synchronous so the flag never leaks.
 let codeHighlightEnabled = true
+let katexSanitizeEnabled = false
 
 function escapeHtml(text: string): string {
   return text
@@ -84,6 +94,9 @@ DOMPurify.addHook('uponSanitizeAttribute', (node, data) => {
     return
   }
 
+  if (katexSanitizeEnabled && tag === 'span' && data.attrName === 'style') return
+  if (katexSanitizeEnabled && tag === 'span' && data.attrName === 'aria-hidden') return
+
   if (data.attrName !== 'class') return
   if (tag !== 'code' && tag !== 'span') {
     data.keepAttr = false
@@ -91,7 +104,7 @@ DOMPurify.addHook('uponSanitizeAttribute', (node, data) => {
   }
   const safe = String(data.attrValue || '')
     .split(/\s+/)
-    .filter(cls => CODE_CLASS_RE.test(cls))
+    .filter(cls => CODE_CLASS_RE.test(cls) || (katexSanitizeEnabled && KATEX_CLASS_RE.test(cls)))
   if (safe.length === 0) {
     data.keepAttr = false
     return
@@ -115,6 +128,81 @@ DOMPurify.addHook('afterSanitizeAttributes', node => {
     node.setAttribute('disabled', '')
   }
 })
+
+function makeMathEntry(raw: string): MathEntry | null {
+  if (raw.startsWith('$$') && raw.endsWith('$$')) {
+    return { type: 'display', content: raw.slice(2, -2).trim() }
+  }
+  if (raw.startsWith('\\[') && raw.endsWith('\\]')) {
+    return { type: 'display', content: raw.slice(2, -2).trim() }
+  }
+  if (raw.startsWith('\\(') && raw.endsWith('\\)')) {
+    return { type: 'inline', content: raw.slice(2, -2).trim() }
+  }
+  if (raw.startsWith('$') && raw.endsWith('$')) {
+    return { type: 'inline', content: raw.slice(1, -1).trim() }
+  }
+  return null
+}
+
+function stashMath(text: string): { text: string, stash: MathEntry[] } {
+  const stash: MathEntry[] = []
+  const stashedText = text.replace(MATH_SCAN_RE, raw => {
+    if (raw.startsWith('```') || raw.startsWith('`')) return raw
+    const entry = makeMathEntry(raw)
+    if (!entry) return raw
+    const idx = stash.length
+    stash.push(entry)
+    return `\uE000M${idx}\uE001`
+  })
+  return { text: stashedText, stash }
+}
+
+function renderMath(entry: MathEntry): string {
+  try {
+    return katex.renderToString(entry.content, {
+      displayMode: entry.type === 'display',
+      throwOnError: false,
+      output: 'html',
+    })
+  } catch {
+    return `<code class="math-raw" title="LaTeX formula (parse error)">${escapeHtml(entry.content)}</code>`
+  }
+}
+
+function restoreMath(html: string, stash: MathEntry[]): string {
+  if (stash.length === 0) return html
+  return html.replace(MATH_SENTINEL_RE, (_, i) => {
+    const entry = stash[Number(i)]
+    return entry ? renderMath(entry) : ''
+  })
+}
+
+function sanitizeMarkdownHtml(rawHtml: string, allowKatex = false): string {
+  katexSanitizeEnabled = allowKatex
+  try {
+    return DOMPurify.sanitize(rawHtml, {
+      ALLOWED_TAGS: [
+        'p', 'br', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+        'ul', 'ol', 'li', 'blockquote', 'pre', 'code',
+        'strong', 'em', 'del', 'a', 'table', 'thead',
+        'tbody', 'tr', 'th', 'td', 'div', 'span', 'sup', 'input',
+      ],
+      // `align` carries GFM table column alignment; `type`/`checked`/`disabled`
+      // are the (disabled) task-list checkbox attributes. No script vectors.
+      ALLOWED_ATTR: [
+        'href', 'title', 'alt', 'target', 'rel', 'class', 'align', 'type',
+        'checked', 'disabled', ...(allowKatex ? ['style', 'aria-hidden'] : []),
+      ],
+      // `align`/`type` carry inert presentational values, not URIs; mark them
+      // safe so the value gate keeps them (the hook above constrains the values).
+      ADD_URI_SAFE_ATTR: ['align', 'type'],
+      ALLOWED_URI_REGEXP: /^(?:https?|mailto|#):/i,
+    })
+  } finally {
+    katexSanitizeEnabled = false
+  }
+}
 
 export function useChatTextRendering() {
   const markdownCache = new Map<string, string>()
@@ -156,27 +244,17 @@ export function useChatTextRendering() {
     // try/finally guarantees it is restored even if marked.parse throws, so a
     // later highlighted render can never inherit a stale "plain" flag.
     let rawHtml: string
+    const { text: stashedText, stash } = stashMath(text)
     codeHighlightEnabled = highlight
     try {
-      rawHtml = marked.parse(text, { async: false, breaks: true }) as string
+      rawHtml = marked.parse(stashedText, { async: false, breaks: true }) as string
     } finally {
       codeHighlightEnabled = true
     }
-    const html = DOMPurify.sanitize(rawHtml, {
-      ALLOWED_TAGS: [
-        'p', 'br', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-        'ul', 'ol', 'li', 'blockquote', 'pre', 'code',
-        'strong', 'em', 'del', 'a', 'table', 'thead',
-        'tbody', 'tr', 'th', 'td', 'div', 'span', 'sup', 'input',
-      ],
-      // `align` carries GFM table column alignment; `type`/`checked`/`disabled`
-      // are the (disabled) task-list checkbox attributes. No script vectors.
-      ALLOWED_ATTR: ['href', 'title', 'alt', 'target', 'rel', 'class', 'align', 'type', 'checked', 'disabled'],
-      // `align`/`type` carry inert presentational values, not URIs; mark them
-      // safe so the value gate keeps them (the hook above constrains the values).
-      ADD_URI_SAFE_ATTR: ['align', 'type'],
-      ALLOWED_URI_REGEXP: /^(?:https?|mailto|#):/i,
-    })
+    const sanitizedHtml = sanitizeMarkdownHtml(rawHtml)
+    const html = stash.length > 0
+      ? sanitizeMarkdownHtml(restoreMath(sanitizedHtml, stash), true)
+      : sanitizedHtml
 
     if (markdownCache.size >= MARKDOWN_CACHE_MAX) {
       const firstKey = markdownCache.keys().next().value

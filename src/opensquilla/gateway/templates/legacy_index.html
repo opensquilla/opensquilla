@@ -23,6 +23,8 @@
         }
       })();
     </script>
+    <!-- KaTeX: math/LaTeX rendering -->
+    <link rel="stylesheet" href="{{ base_path }}/static/vendor/katex.min.css?v={{ version }}">
     <!-- CSS: base -> components -> view-specific -> mobile (last for override) -->
     <link rel="stylesheet" href="{{ base_path }}/static/css/fonts.css?v={{ version }}">
     <link rel="stylesheet" href="{{ base_path }}/static/css/base.css?v={{ version }}">
@@ -64,6 +66,7 @@
 
     <!-- Vendor libs (loaded before app code) -->
     <script src="{{ base_path }}/static/vendor/marked.min.js"></script>
+    <script src="{{ base_path }}/static/vendor/katex.min.js"></script>
     <script src="{{ base_path }}/static/vendor/purify.min.js"></script>
     <script src="{{ base_path }}/static/vendor/prism-core.min.js"></script>
     <script src="{{ base_path }}/static/vendor/prism-autoloader.min.js"></script>

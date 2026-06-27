@@ -644,6 +644,16 @@
   cursor: help;
 }
 
+/* KaTeX rendered math — match message text colour in both themes */
+.msg .katex { color: var(--text); font-size: 1.1em; }
+.msg .katex-display {
+  margin: 0.6em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+.msg .katex .katex-html { max-width: 100%; }
+
 /* Card grid */
 .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: var(--sp-4); }
 

@@ -2236,7 +2236,7 @@ async def start_gateway_server(
         log.debug(
             "gateway.install_telemetry",
             skipped_reason=result.skipped_reason,
-            event=result.event,
+            telemetry_event=result.event,
             sent=result.sent,
             uploaded=result.uploaded,
             endpoint_configured=result.endpoint_configured,

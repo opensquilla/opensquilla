@@ -188,6 +188,7 @@ function onMessageClick(event: MouseEvent) {
   font-size: 0.875rem;
   line-height: 1.5;
   max-width: 82%;
+  white-space: pre-wrap;
   word-break: break-word;
 }
 

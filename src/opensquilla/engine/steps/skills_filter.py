@@ -54,16 +54,47 @@ def _get_retriever(skills_cfg: Any) -> HybridRetriever:
         return _retriever
 
 
+def _eligibility_ctx(skills_cfg: Any) -> EligibilityContext:
+    """Build the eligibility context, honoring config-disabled skills.
+
+    ``skills.disabled`` lets an operator turn a skill off (e.g. from the
+    control-UI toggle). Coding mode additionally gates the coding-mode skills
+    (code-task) when it is OFF, via the shared ``effective_disabled`` helper.
+    An empty result (the default: no disabled skills + coding mode off only
+    gates code-task) is handled below.
+    """
+    from opensquilla.skills.eligibility import effective_disabled
+
+    disabled = getattr(skills_cfg, "disabled", None) or []
+    coding_mode = bool(getattr(skills_cfg, "coding_mode", False))
+    effective = effective_disabled(disabled, coding_mode)
+    if effective == _elig_ctx.disabled_set:
+        return _elig_ctx
+    # Derive from the warmed base context so the bin/env detection caches (and
+    # any test monkeypatch of ``_elig_ctx``) are preserved — only the gated set
+    # changes. Building a bare ``.auto()`` here would re-probe the environment
+    # and wrongly gate env/bin-dependent skills.
+    return EligibilityContext(
+        os_name=_elig_ctx.os_name,
+        has_bin_cache=_elig_ctx.has_bin_cache,
+        env_cache=_elig_ctx.env_cache,
+        enabled_set=_elig_ctx.enabled_set,
+        disabled_set=set(effective),
+    )
+
+
 def _deterministic_gate(
     skills: list[SkillSpec],
     available_tools: set[str],
+    elig_ctx: EligibilityContext | None = None,
 ) -> list[SkillSpec]:
     """Pure-Python gate: eligibility, requires_tools, fallback, visibility."""
+    ctx_elig = elig_ctx or _elig_ctx
     gated: list[SkillSpec] = []
     for s in skills:
         if s.disable_model_invocation:
             continue
-        if not check_eligibility(s, _elig_ctx):
+        if not check_eligibility(s, ctx_elig):
             continue
         if s.requires_tools and not all(t in available_tools for t in s.requires_tools):
             continue
@@ -100,15 +131,23 @@ async def filter_skills(ctx: TurnContext) -> TurnContext:
     if not all_skills:
         return ctx
 
-    from opensquilla.skills.meta.enabled import is_meta_skill_enabled
+    from opensquilla.skills.meta.enabled import (
+        is_meta_auto_trigger_enabled,
+        is_meta_skill_enabled,
+    )
 
     meta_skill_enabled = is_meta_skill_enabled(ctx.config)
+    meta_auto_trigger = is_meta_auto_trigger_enabled(ctx.config)
     ctx.metadata["meta_skill_enabled"] = meta_skill_enabled
 
     # ── deterministic gate (no LLM, pure Python) ──
     available_tools = {t.name for t in ctx.tool_defs} if ctx.tool_defs else set()
-    gated = _deterministic_gate(all_skills, available_tools)
-    if not meta_skill_enabled:
+    skills_cfg_for_gate = getattr(ctx.config, "skills", None) if ctx.config else None
+    gated = _deterministic_gate(all_skills, available_tools, _eligibility_ctx(skills_cfg_for_gate))
+    # Hide meta-skills from the model whenever auto-trigger is off (manual-only
+    # mode) or the subsystem is fully disabled. They remain in the loader so the
+    # /meta command can still enumerate and run them.
+    if not (meta_skill_enabled and meta_auto_trigger):
         gated = [
             s for s in gated if getattr(s, "kind", "skill") != "meta"
         ]
@@ -137,9 +176,16 @@ async def filter_skills(ctx: TurnContext) -> TurnContext:
                 promoted = [s for s in filterable if getattr(s, "name", None) == hinted_name]
                 if promoted:
                     pinned = pinned + promoted
-                    filterable = [
-                        s for s in filterable if getattr(s, "name", None) != hinted_name
-                    ]
+                    filterable = [s for s in filterable if getattr(s, "name", None) != hinted_name]
+
+    # ── pin explicitly requested skills (e.g. code-task under coding mode) ──
+    for pin_name in ctx.metadata.get("pinned_skills", []) or []:
+        if any(getattr(s, "name", None) == pin_name for s in pinned):
+            continue
+        promoted = [s for s in filterable if getattr(s, "name", None) == pin_name]
+        if promoted:
+            pinned = pinned + promoted
+            filterable = [s for s in filterable if getattr(s, "name", None) != pin_name]
 
     skills_cfg = getattr(ctx.config, "skills", None) if ctx.config else None
     filter_enabled = getattr(skills_cfg, "filter_enabled", False) if skills_cfg else False
@@ -169,9 +215,7 @@ async def filter_skills(ctx: TurnContext) -> TurnContext:
                 promoted = [s for s in filterable if getattr(s, "name", None) == hinted_name]
                 if promoted:
                     pinned = pinned + promoted
-                    filterable = [
-                        s for s in filterable if getattr(s, "name", None) != hinted_name
-                    ]
+                    filterable = [s for s in filterable if getattr(s, "name", None) != hinted_name]
 
     if filter_enabled:
         top_k = getattr(skills_cfg, "filter_top_k", 5)

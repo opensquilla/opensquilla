@@ -1,0 +1,1257 @@
+.chat {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-sm);
+  /* The one conversation column. Every turn-content box — user bubbles,
+     assistant messages, the live work card, the composer — aligns to this
+     same column so streaming and settled content share a left edge. Widens
+     a step on very large viewports so the thread is not a sliver. */
+  --chat-col: min(calc(100% - 48px), clamp(980px, 62vw, 1280px));
+  /* The input column: the composer panel and everything anchored to it
+     (slash menu, queue chips) is deliberately narrower than the thread. */
+  --composer-col: 820px;
+}
+
+.chat--new-landing {
+  justify-content: flex-start;
+  gap: 1.125rem;
+  padding: clamp(5.25rem, 17vh, 9.5rem) 0 2rem;
+}
+
+.chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 48px;
+  padding: 0 20px;
+  border-bottom: 0;
+  background: var(--bg-surface);
+  flex-shrink: 0;
+}
+
+.chat-header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.chat-header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+  /* The fixed topbar's right cluster (connection pill, theme) floats over
+     this band at every width and intercepts pointer events; reserve its full
+     width so the header action buttons stay clickable and never sit under the
+     pill — sized for the pill's widest state (DISCONNECTED) plus the theme
+     button and inset, matching the narrow-screen reservation below. */
+  margin-right: 204px;
+}
+
+.chat-share-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  flex-shrink: 0;
+  min-height: 2.5rem;
+  padding: 0.375rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 4%, var(--bg-surface));
+}
+
+.chat-share-banner:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.chat-share-banner__hint {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+.chat-share-banner__count {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.75rem;
+  padding: 0 0.625rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.chat-share-banner .chat-share-btn--save {
+  margin-left: auto;
+}
+
+.chat-share-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  min-height: 1.75rem;
+  padding: 0 0.625rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  cursor: pointer;
+  box-shadow: var(--shadow-xs);
+  transition:
+    transform 0.14s ease,
+    border-color 0.14s ease,
+    background 0.14s ease,
+    color 0.14s ease,
+    box-shadow 0.14s ease;
+}
+
+.chat-share-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  color: var(--accent);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+/* Disabled must stay legible, not vanish: keep the icon/label readable and
+   explain the state via cursor + title instead of fading the control away. */
+.chat-share-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+  color: var(--text-dim);
+}
+
+.chat-share-btn--save:disabled {
+  color: var(--accent-foreground);
+}
+
+.chat-share-btn:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.chat-deliverables-btn {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+  color: var(--accent);
+}
+
+.chat-deliverables-btn:hover:not(:disabled) {
+  color: var(--accent);
+}
+
+.chat-share-btn--save {
+  border-color: color-mix(in srgb, var(--accent) 22%, transparent);
+  background: linear-gradient(180deg, var(--accent), var(--accent-deep));
+  color: var(--accent-foreground);
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.chat-share-btn--save:hover:not(:disabled) {
+  color: var(--accent-foreground);
+  border-color: color-mix(in srgb, var(--accent) 36%, transparent);
+  background: linear-gradient(180deg, var(--accent-hover), var(--accent-deep));
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.chat-label {
+  font-size: 0.9375rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--text);
+  flex-shrink: 0;
+  max-width: min(42vw, 360px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-session-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  font-size: 0.8125rem;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  max-width: 280px;
+  min-width: 0;
+}
+
+.chat-session-chip-key {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-session-chip-caret {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.chat-session-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.25rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.chat-session-copy-btn.chat-session-copy-btn--ok,
+.chat-session-copy-btn.chat-session-copy-btn--ok:hover {
+  color: var(--ok);
+}
+
+.chat-copy-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.chat-session-copy-btn:hover {
+  color: var(--text);
+}
+
+.chat-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.125rem 0.5rem;
+  border-radius: 9999px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  background: var(--bg-hover);
+  color: var(--text-muted);
+}
+
+.chat-header-right .chat-chip {
+  display: none;
+}
+
+.chat-chip-warn {
+  background: color-mix(in srgb, var(--warn) 16%, var(--bg-surface));
+  color: var(--warn);
+}
+
+.chat-chip-ok {
+  background: color-mix(in srgb, var(--ok) 14%, var(--bg-surface));
+  color: var(--ok);
+}
+
+.chat-chip-danger {
+  background: color-mix(in srgb, var(--danger) 14%, var(--bg-surface));
+  color: var(--danger);
+}
+
+.chat-ctx-warn {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--danger);
+}
+
+.chat-body {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+}
+
+.chat--new-landing .chat-body {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+.chat-thread {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.25rem 0 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  background: var(--bg-surface);
+  /* Reserve the gutter even when content fits, so the column width (and the
+     content's left edge) does not shift when the conversation grows a
+     scrollbar mid-stream. */
+  scrollbar-gutter: stable;
+}
+
+/* The thread scrollbar now sits at the true screen edge — give it a hit area
+   worth flinging a cursor at (the global default is a 6px sliver). */
+.chat-thread::-webkit-scrollbar {
+  width: 10px;
+}
+
+.chat-thread::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 5px;
+}
+
+.chat-thread::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+}
+
+.chat--new-landing .chat-thread {
+  flex: 0 0 auto;
+  overflow: visible;
+  padding: 0;
+  gap: 0;
+}
+
+.chat-landing-brand {
+  width: min(calc(100% - 48px), 720px);
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.chat-landing-lockup {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 252px;
+  object-fit: contain;
+  filter: drop-shadow(0 18px 34px var(--shadow-color));
+}
+
+.chat-empty {
+  text-align: center;
+  color: var(--text-dim);
+  padding: 3rem 1rem;
+  font-size: 0.875rem;
+}
+
+/* Messages */
+
+/* Router-strip twin rendered while a turn awaits its routing decision. It
+   occupies the strip's layout slot from the first paint of the turn (so the
+   resolved strip mounts in place without shifting the answer below it) and is
+   shown in a dimmed "deciding" state: the candidate grid scans via the strip's
+   own animation (the twin is no longer static) instead of leaving an empty gap.
+   The real strip replaces this twin in place once the winner is known. Dimmed
+   to read as not-yet-final; the strip carries its own reduced-motion handling. */
+.router-fx-reserve {
+  opacity: 0.55;
+}
+
+/* AI message */
+.msg-ai {
+  display: flex;
+  gap: 0.625rem;
+  width: var(--chat-col);
+  margin: 0 auto;
+  padding: 0.5rem 0;
+  align-items: flex-start;
+  max-width: calc(100% - 48px);
+}
+
+.msg-ai-main {
+  flex: 1;
+  min-width: 0;
+  max-width: none;
+  padding-top: 0.0625rem;
+}
+
+/* Run-state work card: the live turn is promoted from a thin ribbon into a
+   centered, substantial card that owns the focus while the agent works.
+   `.stream-activity` co-classes the head purely as a run-state marker hook;
+   its layout lives in the work-card rules below. */
+.stream-activity {
+  display: block;
+}
+
+.work-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  /* Fill the message column it lives in: the streaming card and the settled
+     answer keep the exact same left edge, so completion never shifts content
+     sideways. The card look comes from the frame, not a narrower width. */
+  width: 100%;
+  margin: 0.25rem 0 0.75rem;
+  padding: 0.875rem 1rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  animation: workCardEnter var(--dur-base) var(--ease-out) both;
+}
+
+.work-card__head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 1.625rem;
+}
+
+.work-card__dot {
+  width: 0.4375rem;
+  height: 0.4375rem;
+  border-radius: 999px;
+  background: var(--accent);
+  /* One calm, opacity-only ambient pulse shared across the running view — no
+     scale throb, no per-frame box-shadow repaint. */
+  animation: live-pulse var(--dur-pulse) var(--ease-standard) infinite;
+  flex-shrink: 0;
+}
+
+.work-card__phase {
+  font-size: 0.875rem;
+  line-height: 1.5;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.work-card__elapsed {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.6875rem;
+  line-height: 1.3;
+  padding: 0.0625rem 0.375rem;
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--bg-hover);
+}
+
+.work-card__step {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-size: 0.6875rem;
+  line-height: 1.3;
+  padding: 0.0625rem 0.5rem;
+  border-radius: 999px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  white-space: nowrap;
+}
+
+.work-card__timeline {
+  margin-top: 0.125rem;
+}
+
+/* The thinking indicator reuses the run-state dot. */
+.stream-activity-dot {
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 999px;
+  background: var(--ok);
+  animation: live-pulse var(--dur-pulse) var(--ease-standard) infinite;
+  flex-shrink: 0;
+}
+
+/* Honest staleness note: shown when no gateway signal for a while. */
+.work-card--stale .work-card__dot {
+  background: var(--warn);
+  animation: none;
+  box-shadow: none;
+}
+
+.work-card--stale .work-card__phase {
+  color: var(--warn);
+}
+
+/* The live phase label is calm, legible text — the pulsing dot is the single
+   "working" signal, so the label no longer carries a looping text shimmer
+   (which read as a loading skeleton and added a second, desynced rhythm). */
+.activity-shimmer {
+  color: var(--text-muted);
+}
+
+/* Live model reasoning disclosure (collapsed by default) */
+.thinking-fold {
+  margin: 0 0 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--text-dim);
+}
+
+.thinking-fold__summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.125rem 0.25rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  list-style: none;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.thinking-fold__summary::-webkit-details-marker {
+  display: none;
+}
+
+.thinking-fold__summary:hover {
+  color: var(--text-muted);
+}
+
+.thinking-fold__summary:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.thinking-fold__chevron {
+  flex-shrink: 0;
+  transition: transform 0.12s ease;
+}
+
+.thinking-fold[open] > .thinking-fold__summary .thinking-fold__chevron {
+  transform: rotate(90deg);
+}
+
+.thinking-fold__body {
+  margin: 0.25rem 0 0.375rem;
+  padding: 0.375rem 0.75rem;
+  border-left: 2px solid var(--border);
+  color: var(--text-muted);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 16rem;
+  overflow-y: auto;
+}
+
+/* ── Jump-to-latest pill (floats above the composer when scrolled up) ─── */
+.chat-jump-latest {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 12px;
+  z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: var(--shadow-md);
+  transition: background var(--dur-fast) var(--ease-standard),
+              border-color var(--dur-fast) var(--ease-standard);
+}
+.chat-jump-latest:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+.chat-jump-latest:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.chat-jump-latest__icon { transform: rotate(90deg); }
+
+.jump-latest-enter-active,
+.jump-latest-leave-active {
+  transition: opacity var(--dur-base) var(--ease-out),
+              transform var(--dur-base) var(--ease-out);
+}
+.jump-latest-enter-from,
+.jump-latest-leave-to {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+/* ── Streaming caret: blinking tail bar while output is still generating ─ */
+.stream-caret {
+  display: inline-block;
+  width: 0.5rem;
+  height: 1.05em;
+  margin-left: 1px;
+  vertical-align: text-bottom;
+  background: var(--accent);
+  border-radius: 1px;
+  animation: stream-caret-blink 1s steps(2, start) infinite;
+}
+@keyframes stream-caret-blink {
+  0%, 50% { opacity: 1; }
+  50.01%, 100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thinking-fold__chevron {
+    transition: none;
+  }
+
+  .work-card {
+    animation: none;
+  }
+
+  .work-card__dot {
+    animation: none;
+  }
+
+  .stream-caret {
+    animation: none;
+  }
+
+  .jump-latest-enter-active,
+  .jump-latest-leave-active {
+    transition: none;
+  }
+}
+
+/* Thinking indicator */
+.thinking-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0;
+}
+
+.thinking-elapsed {
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+@keyframes workCardEnter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Compaction maintenance card — blue (--info) marks maintenance, never the
+   task accent. */
+.chat-compact-status {
+  --compact-tone: var(--info);
+  flex-shrink: 0;
+  width: min(560px, calc(100% - var(--sp-8)));
+  margin: var(--sp-2) auto;
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.chat-compact-status--ok { --compact-tone: var(--ok); }
+.chat-compact-status--warn { --compact-tone: var(--warn); }
+.chat-compact-status--err { --compact-tone: var(--danger); }
+
+.chat-compact-status__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.chat-compact-status__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--compact-tone);
+  flex-shrink: 0;
+}
+
+.chat-compact-status__dot--pulsing {
+  animation: compactDotPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes compactDotPulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--compact-tone) 45%, transparent); }
+  55% { box-shadow: 0 0 0 5px transparent; }
+}
+
+.chat-compact-status__title {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--text);
+}
+
+.chat-compact-status--ok .chat-compact-status__title,
+.chat-compact-status--warn .chat-compact-status__title,
+.chat-compact-status--err .chat-compact-status__title {
+  color: var(--compact-tone);
+}
+
+.chat-compact-status__elapsed {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-compact-status__detail {
+  margin: var(--sp-1) 0 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.chat-compact-status__gauge {
+  height: 8px;
+  margin-top: var(--sp-2);
+  border-radius: 999px;
+  background: var(--bg-hover);
+  overflow: hidden;
+}
+
+.chat-compact-status__gauge-fill {
+  display: block;
+  height: 100%;
+  /* Indeterminate default: a partial fill so the breathing bar cannot be
+     misread as "context 100% full"; real occupancy overrides via style. */
+  width: 60%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--info) 55%, transparent), var(--info));
+  transition: width var(--transition), background var(--transition), opacity var(--transition);
+}
+
+/* Breathing = "working", an opacity oscillation — never a fake progress sweep. */
+.chat-compact-status__gauge-fill--breathing {
+  animation: compactGaugeBreathe 2.2s ease-in-out infinite;
+}
+
+@keyframes compactGaugeBreathe {
+  0%, 100% { opacity: 0.65; }
+  50% { opacity: 1; }
+}
+
+.chat-compact-status__gauge-fill--done {
+  background: var(--ok);
+  opacity: 1;
+}
+
+.chat-compact-status__legend {
+  display: flex;
+  justify-content: space-between;
+  margin-top: var(--sp-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-compact-status__dot--pulsing,
+  .chat-compact-status__gauge-fill--breathing {
+    animation: none;
+  }
+
+  .chat-compact-status__gauge-fill {
+    transition: none;
+  }
+}
+
+/* Composer dock: a positioning context wrapping the composer (and the slash
+   menu) so the menu anchors to the composer itself rather than the chat
+   container, keeping it attached directly above the input in every layout. */
+.chat-composer-dock {
+  position: relative;
+  flex-shrink: 0;
+}
+
+/* Slash menu */
+.chat-slash {
+  position: absolute;
+  /* Anchored to the top of the composer dock so it floats directly above the
+     composer in every layout, instead of the chat container's bottom edge —
+     which detaches it on the centered new-chat landing. */
+  bottom: calc(100% + 0.5rem);
+  /* Match the input panel it floats above — the composer column, not the
+     full panel width. */
+  left: 0;
+  right: 0;
+  width: min(calc(100% - 2rem), var(--composer-col));
+  margin-inline: auto;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  box-shadow: var(--shadow-md);
+  z-index: 10;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.chat-slash-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  cursor: pointer;
+  font-size: 0.875rem;
+}
+
+.chat-slash-item:hover,
+.chat-slash-item--active {
+  background: var(--bg-hover);
+}
+
+.chat-slash-cmd {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.chat-slash-desc {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+/* Composer (component root; inner composer styles live in ChatComposer.vue) */
+.chat-composer {
+  /* Same conversation column as the messages above (+3rem = its own side
+     padding), so the input panel's edges line up with the thread content. */
+  width: min(100%, calc(var(--chat-col) + 3rem));
+  margin: 0 auto;
+  padding: 0.75rem 1.5rem 1.875rem;
+  border-top: 0;
+  background: var(--bg-surface);
+  flex-shrink: 0;
+}
+
+.chat--new-landing .chat-composer {
+  width: min(calc(100% - 48px), 820px);
+  margin: 0 auto;
+  padding: 0;
+  background: transparent;
+}
+
+/* Pills */
+.chat-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.625rem;
+  border-radius: 0.375rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid transparent;
+  background: var(--bg-hover);
+  color: var(--text-muted);
+}
+
+.chat-pill--danger {
+  background: color-mix(in srgb, var(--danger) 14%, var(--bg-surface));
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 30%, var(--border));
+}
+
+.chat-pill.is-active {
+  background: color-mix(in srgb, var(--ok) 16%, var(--bg-surface));
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 35%, var(--border));
+}
+
+.chat-pill--disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Session popover */
+.chat-session-popover {
+  position: fixed;
+  z-index: 30;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  box-shadow: var(--shadow-lg);
+  max-height: 400px;
+  overflow-y: auto;
+  min-width: 320px;
+}
+
+.chat-session-popover-search {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.875rem;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+}
+
+.chat-session-popover-list {
+  padding: 0.25rem 0;
+}
+
+.chat-session-popover-group {
+  padding: 0.25rem 0;
+}
+
+.chat-session-popover-group-label {
+  padding: 0.25rem 0.75rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+}
+
+.chat-session-popover-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.375rem 0.75rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  text-align: left;
+}
+
+.chat-session-popover-item:hover {
+  background: var(--bg-hover);
+}
+
+.chat-session-popover-item.is-current {
+  background: var(--bg-hover);
+}
+
+.chat-session-popover-item-key {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+.chat-session-popover-item-run {
+  font-size: 0.6875rem;
+  padding: 0.0625rem 0.375rem;
+  border-radius: 0.25rem;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.chat-session-popover-item-run--running {
+  background: color-mix(in srgb, var(--ok) 14%, var(--bg-surface));
+  color: var(--ok);
+}
+
+.chat-session-popover-item-run--queued {
+  background: color-mix(in srgb, var(--warn) 16%, var(--bg-surface));
+  color: var(--warn);
+}
+
+.chat-session-popover-item-run--failed {
+  background: color-mix(in srgb, var(--danger) 14%, var(--bg-surface));
+  color: var(--danger);
+}
+
+.chat-session-popover-item-tag {
+  font-size: 0.6875rem;
+  padding: 0.0625rem 0.375rem;
+  border-radius: 0.25rem;
+  background: var(--accent);
+  color: var(--accent-foreground);
+  flex-shrink: 0;
+}
+
+.chat-session-popover-empty {
+  padding: 1rem;
+  text-align: center;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+/* Code blocks — markdown fences render as <pre><span.code-lang><code.hljs> */
+:deep(pre:has(> .code-lang)) {
+  position: relative;
+}
+
+:deep(pre > .code-lang) {
+  position: absolute;
+  top: 0.25rem;
+  right: 0.375rem;
+  padding: 0 0.25rem;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  background: var(--bg-elevated);
+  border-radius: 0.25rem;
+  user-select: none;
+  pointer-events: none;
+}
+
+:deep(pre code.hljs) {
+  display: block;
+  overflow-x: auto;
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+
+/* Highlight token mapping — values from the --syntax-* family in base.css */
+:deep(.hljs-comment), :deep(.hljs-quote) {
+  color: var(--syntax-comment);
+  font-style: italic;
+}
+
+:deep(.hljs-meta), :deep(.hljs-doctag) {
+  color: var(--syntax-comment);
+}
+
+:deep(.hljs-keyword), :deep(.hljs-selector-tag), :deep(.hljs-built_in), :deep(.hljs-template-tag) {
+  color: var(--syntax-keyword);
+}
+
+:deep(.hljs-string), :deep(.hljs-regexp), :deep(.hljs-addition) {
+  color: var(--syntax-string);
+}
+
+:deep(.hljs-number), :deep(.hljs-literal), :deep(.hljs-symbol), :deep(.hljs-bullet) {
+  color: var(--syntax-literal);
+}
+
+:deep(.hljs-title), :deep(.hljs-section), :deep(.hljs-name) {
+  color: var(--syntax-title);
+}
+
+:deep(.hljs-attr), :deep(.hljs-attribute), :deep(.hljs-variable), :deep(.hljs-template-variable),
+:deep(.hljs-type), :deep(.hljs-property), :deep(.hljs-selector-id), :deep(.hljs-selector-class),
+:deep(.hljs-selector-attr), :deep(.hljs-selector-pseudo) {
+  color: var(--syntax-attr);
+}
+
+:deep(.hljs-deletion) {
+  color: var(--danger);
+}
+
+:deep(.hljs-emphasis) {
+  font-style: italic;
+}
+
+:deep(.hljs-strong) {
+  font-weight: 600;
+}
+
+:deep(code) {
+  background: var(--bg-hover);
+  padding: 0.125rem 0.25rem;
+  border-radius: 0.25rem;
+  font-size: 0.8125rem;
+  font-family: var(--font-mono);
+}
+
+/* Cron tag */
+.cron-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.0625rem 0.375rem;
+  background: color-mix(in srgb, var(--warn) 16%, var(--bg-surface));
+  color: var(--warn);
+  border-radius: 0.25rem;
+  font-size: 0.6875rem;
+  font-weight: 500;
+}
+
+/* Drag over */
+.drag-over {
+  background: color-mix(in srgb, var(--info) 5%, transparent);
+}
+
+/* Hidden */
+.hidden {
+  display: none !important;
+}
+
+/* Mobile */
+@media (max-width: 768px) {
+  .chat--new-landing {
+    padding: clamp(3.25rem, 13vh, 5.5rem) 0.75rem 1.25rem;
+    gap: 0.875rem;
+  }
+
+  .chat-landing-brand,
+  .chat--new-landing .chat-composer {
+    width: 100%;
+  }
+
+  .chat-landing-lockup {
+    max-height: 152px;
+  }
+
+  .chat-header {
+    /* Keep the header actions clear of the floating topbar cluster (conn pill
+       + theme menu) that overlays this band's right edge on narrow screens.
+       The cluster is right-anchored and intrudes ~194px at its widest — 62px
+       of fixed chrome right of the pill plus the pill in its longest state
+       (DISCONNECTED, ~132px) — so reserve that plus a small margin. */
+    padding: 0.5rem 204px 0.5rem 0.75rem;
+  }
+
+  .chat-header-right {
+    margin-right: 0;
+  }
+
+  /* Collapse header share/deliverables buttons to icon-only. Target the
+     explicit label class, NOT every span: Icon.vue's root element is a
+     <span class="icon">, so a bare `span` selector would hide the icon too
+     and leave an empty button shell. */
+  .chat-header .chat-share-btn__label {
+    display: none;
+  }
+
+  .chat-header .chat-share-btn {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+    /* Once the label is gone the button is a bare circle, and its default
+       surface fill matches the header bar exactly, so it reads as a faint
+       broken ring rather than a control. Lift it onto the elevated surface
+       so the icon-only circle stays a visible, solid button. */
+    background: var(--bg-elevated);
+  }
+
+  .chat-share-banner {
+    padding: 0.375rem 0.75rem;
+  }
+
+  .chat-share-banner .chat-share-btn {
+    min-height: 2.75rem;
+  }
+
+  .chat-session-chip {
+    max-width: 180px;
+  }
+
+  .chat-thread {
+    padding: 0.75rem;
+  }
+
+  .chat-composer {
+    padding: 0.5rem 0.75rem;
+  }
+
+}
+
+/* At phone widths the session title truncates to a couple of characters and
+   only crowds the header against the floating topbar cluster — drop it so the
+   action buttons keep room. The full topbar reservation stays in force: the
+   floating cluster does not shrink at phone widths. */
+@media (max-width: 480px) {
+  .chat-label {
+    display: none;
+  }
+}
+
+/* ── New-chat landing: in-draft agent switcher ─────────────────────── */
+
+/* Sits above the brand lockup on the landing; lets the user swap the draft's
+   agent before the first message. The brand block is pointer-events:none, so
+   the switcher carries its own interactive layer. */
+.chat-landing-agent {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  width: min(calc(100% - 48px), 720px);
+  margin: 0 auto;
+}
+
+.chat-landing-agent__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms, border-color 120ms;
+}
+.chat-landing-agent__btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+.chat-landing-agent__name {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-landing-agent__chevron {
+  color: var(--text-dim);
+}
+
+.chat-landing-agent__menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  min-width: 200px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: var(--sp-1);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+}
+
+.chat-landing-agent__item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  text-align: left;
+}
+.chat-landing-agent__item:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.chat-landing-agent__item[aria-checked='true'] {
+  color: var(--text);
+}
+
+.chat-landing-agent__item-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-landing-agent__check {
+  margin-left: auto;
+  color: var(--accent);
+}
+
+.chat-landing-agent__item--create {
+  margin-top: var(--sp-1);
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  color: var(--text);
+}

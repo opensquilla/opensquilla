@@ -76,11 +76,15 @@ async def test_wait_and_resolve_rpc_payloads_preserve_status_shape() -> None:
         waited = await approval_wait_decision_rpc_payload(queue, approval_id)
 
         assert resolved == waited
+        # ``deadline`` is a wall-clock stamp; assert it is present and pin the
+        # rest of the stable wire shape, including the new ``resolution`` field.
+        assert isinstance(waited.pop("deadline"), float)
         assert waited == {
             "id": approval_id,
             "mode": "prompt",
             "approved": True,
             "resolved": True,
+            "resolution": "approved",
             "consumed": False,
             "pending": False,
         }

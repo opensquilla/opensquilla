@@ -130,7 +130,8 @@ Use the CLI for routine changes:
 opensquilla onboard --if-needed
 opensquilla configure provider --provider openrouter --api-key-env OPENROUTER_API_KEY
 opensquilla configure router --router recommended
-opensquilla configure search --search-provider brave --api-key-env BRAVE_SEARCH_API_KEY
+opensquilla configure search --search-provider duckduckgo
+opensquilla configure search --search-provider tavily --api-key-env TAVILY_API_KEY
 opensquilla configure channels
 opensquilla config get llm.provider
 opensquilla config set gateway.port 18791

@@ -142,7 +142,7 @@ def _build_envelope_result(
     )
 
 
-async def _emit_webresearch_tool_run_diagnostics(
+async def _emit_web_retrieval_tool_run_diagnostics(
     *,
     tool_call: ToolCall,
     effective_ctx: ToolContext | None,
@@ -165,7 +165,7 @@ async def _emit_webresearch_tool_run_diagnostics(
     if raw_result is not None:
         result_chars = len(raw_result if isinstance(raw_result, str) else str(raw_result))
     log.debug(
-        "dispatch.webresearch_tool_run_diagnostics",
+        "dispatch.web_retrieval_tool_run_diagnostics",
         tool=tool_call.tool_name,
         tool_use_id=tool_call.tool_use_id,
         agent_id=effective_ctx.agent_id if effective_ctx else None,
@@ -629,7 +629,7 @@ def build_tool_handler(
                                 error=str(hook_exc),
                             )
                 if not isinstance(exception, asyncio.CancelledError):
-                    await _emit_webresearch_tool_run_diagnostics(
+                    await _emit_web_retrieval_tool_run_diagnostics(
                         tool_call=tool_call,
                         effective_ctx=effective_ctx,
                         reservation=reservation,

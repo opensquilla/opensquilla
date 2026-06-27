@@ -1,0 +1,1 @@
+.loading-spinner[data-v-71bfc79a]{border:2px solid var(--border-strong);border-top-color:var(--accent);border-radius:50%;width:24px;height:24px;animation:.8s linear infinite spin-71bfc79a;display:inline-block}@keyframes spin-71bfc79a{to{transform:rotate(360deg)}}@media (prefers-reduced-motion:reduce){.loading-spinner[data-v-71bfc79a]{animation-duration:1.6s}}

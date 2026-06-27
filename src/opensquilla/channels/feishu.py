@@ -922,6 +922,9 @@ class FeishuChannel:
                 reaction_type=reaction,
             )
         elif envelope.event_type == "card.action.trigger":
+            if msg := self._parse_approval_card_action(envelope.raw):
+                self.enqueue(msg)
+                return
             if msg := self._parse_clarify_card_action(envelope.raw):
                 self.enqueue(msg)
                 return
@@ -936,6 +939,57 @@ class FeishuChannel:
     def _verify_signature(self, timestamp: str, nonce: str, body: str, signature: str) -> bool:
         """Verify Feishu event callback signature."""
         return _verify_feishu_signature(self.config.encrypt_key, timestamp, nonce, body, signature)
+
+    def _parse_approval_card_action(self, raw: dict[str, Any]) -> IncomingMessage | None:
+        """Parse an Approve/Deny interactive-card action into an inbound message.
+
+        Keys on ``value.opensquilla_action == "approval_resolve"`` beside the
+        clarify-card contract. The action ``value`` (short code + decision) is
+        carried verbatim under ``metadata["approval_action"]`` so the dispatch
+        intercept resolves it via the shared ``parse_approval_action`` helper.
+        """
+        event = raw.get("event", {})
+        if not isinstance(event, dict):
+            return None
+        action = event.get("action", {})
+        if not isinstance(action, dict):
+            return None
+        value = action.get("value", {})
+        if not isinstance(value, dict):
+            return None
+        if value.get("opensquilla_action") != "approval_resolve":
+            return None
+        code = value.get("code")
+        if not isinstance(code, str) or not code.strip():
+            return None
+        decision = str(value.get("decision") or "").lower()
+        if decision not in {"approve", "deny"}:
+            return None
+
+        operator = event.get("operator", {})
+        sender_id = ""
+        if isinstance(operator, dict):
+            sender_id = str(operator.get("open_id") or "")
+        sender_id = sender_id or str(event.get("open_id") or "unknown")
+        channel_id = str(
+            value.get("channel_id")
+            or event.get("open_chat_id")
+            or event.get("chat_id")
+            or "unknown"
+        )
+        return IncomingMessage(
+            sender_id=sender_id,
+            channel_id=channel_id,
+            content=f"/{decision} {code.strip()}",
+            metadata={
+                "conversation_kind": "interaction",
+                "event_id": raw.get("header", {}).get("event_id"),
+                "message_type": "interactive",
+                "native_chat_id": channel_id,
+                "input_provenance": "approval_card",
+                "approval_action": dict(value),
+            },
+        )
 
     def _parse_clarify_card_action(self, raw: dict[str, Any]) -> IncomingMessage | None:
         event = raw.get("event", {})

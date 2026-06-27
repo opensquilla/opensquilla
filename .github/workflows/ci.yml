@@ -71,6 +71,43 @@ jobs:
       - name: Run actionlint
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color=false
 
+  frontend-check:
+    name: Frontend build and typecheck
+    needs: classify-changes
+    if: needs.classify-changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.19.0'
+          cache: 'npm'
+          cache-dependency-path: opensquilla-webui/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: opensquilla-webui
+        run: npm ci
+
+      - name: Type check
+        working-directory: opensquilla-webui
+        run: npx vue-tsc --noEmit
+
+      - name: Build frontend
+        working-directory: opensquilla-webui
+        run: npm run build
+
+      - name: Verify dist exists
+        run: |
+          if [ ! -f "src/opensquilla/gateway/static/dist/index.html" ]; then
+            echo "ERROR: Frontend dist not found"
+            exit 1
+          fi
+          echo "Frontend dist verified"
+
   ubuntu-quality:
     name: Lint, test, and build (ubuntu-latest, 3.12)
     needs: classify-changes
@@ -104,6 +141,15 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install OpenTUI host dependencies
+        shell: bash
+        run: bun install --frozen-lockfile --cwd=src/opensquilla/cli/tui/opentui/package
 
       - name: Install dependencies
         shell: bash
@@ -176,6 +222,15 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install OpenTUI host dependencies
+        shell: bash
+        run: bun install --frozen-lockfile --cwd=src/opensquilla/cli/tui/opentui/package
+
       - name: Install dependencies
         shell: bash
         run: uv sync --extra dev --extra recommended --extra mcp --frozen
@@ -232,6 +287,7 @@ jobs:
     needs:
       - classify-changes
       - workflow-lint
+      - frontend-check
       - ubuntu-quality
       - windows-compat
       - release-packaging
@@ -246,6 +302,7 @@ jobs:
 
           classify_result="${{ needs.classify-changes.result }}"
           workflow_lint_result="${{ needs.workflow-lint.result }}"
+          frontend_result="${{ needs.frontend-check.result }}"
           ubuntu_result="${{ needs.ubuntu-quality.result }}"
           windows_result="${{ needs.windows-compat.result }}"
           release_result="${{ needs.release-packaging.result }}"
@@ -258,6 +315,7 @@ jobs:
 
           printf 'classify-changes: %s\n' "${classify_result}"
           printf 'workflow-lint: %s\n' "${workflow_lint_result}"
+          printf 'frontend-check: %s\n' "${frontend_result}"
           printf 'ubuntu-quality: %s\n' "${ubuntu_result}"
           printf 'windows-compat: %s\n' "${windows_result}"
           printf 'release-packaging: %s\n' "${release_result}"
@@ -271,6 +329,11 @@ jobs:
 
           if [[ "${workflow_lint_result}" != "success" ]]; then
             echo "Workflow lint must succeed."
+            exit 1
+          fi
+
+          if [[ "${docs_only}" != "true" && "${frontend_result}" != "success" ]]; then
+            echo "Frontend build and typecheck must succeed for non-documentation changes."
             exit 1
           fi
 

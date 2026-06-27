@@ -321,12 +321,21 @@ def seed_live_price_cache_for_tests(model_id: str, price: PriceEntry) -> None:
 # Built-in pricing table: model_prefix → (input_per_M, output_per_M)
 _PRICING_TABLE: list[tuple[str, PriceEntry]] = [
     # Offline fallback for Squilla Router tier models.
+    ("anthropic/claude-opus-4.8", PriceEntry(5.0, 25.0)),
+    ("anthropic/claude-sonnet-4.6", PriceEntry(3.0, 15.0)),
+    ("google/gemini-3.5-flash", PriceEntry(1.5, 9.0)),
+    ("openai/gpt-5.4-mini", PriceEntry(0.75, 4.5)),
+    ("openai/gpt-5.5", PriceEntry(5.0, 30.0)),
+    ("qwen/qwen3-coder-plus", PriceEntry(0.65, 3.25)),
+    ("x-ai/grok-4.3", PriceEntry(1.25, 2.5)),
+    ("z-ai/glm-4.6", PriceEntry(0.43, 1.74)),
     ("stepfun/step-3.5-flash", PriceEntry(0.10, 0.30)),
     ("z-ai/glm-4.5-air", PriceEntry(0.13, 0.85)),
     ("minimax/minimax-m2.5", PriceEntry(0.118, 0.99)),
     ("deepseek/deepseek-v4-flash", PriceEntry(0.14, 0.28)),
     ("deepseek/deepseek-v4-pro", PriceEntry(1.74, 3.48)),
     ("deepseek/deepseek-v3.2", PriceEntry(0.26, 0.38)),
+    ("z-ai/glm-5.2", PriceEntry(1.40, 4.40)),
     ("z-ai/glm-5.1", PriceEntry(1.40, 4.40)),
     ("z-ai/glm-5", PriceEntry(0.72, 2.30)),
     ("moonshotai/kimi-k2.6", PriceEntry(0.95, 4.0)),
@@ -386,7 +395,7 @@ _PRICING_TABLE: list[tuple[str, PriceEntry]] = [
     ("o1-mini", PriceEntry(3.0, 12.0)),
     ("o1", PriceEntry(15.0, 60.0)),
     # Anthropic Claude.
-    ("anthropic/claude-opus-4.7", PriceEntry(5.0, 25.0)),
+    ("anthropic/claude-opus-4.8", PriceEntry(5.0, 25.0)),
     ("anthropic/claude-opus-4.5", PriceEntry(5.0, 25.0)),
     ("anthropic/claude-opus-4", PriceEntry(15.0, 75.0)),
     ("anthropic/claude-sonnet-4", PriceEntry(3.0, 15.0)),

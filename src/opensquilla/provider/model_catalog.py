@@ -22,6 +22,15 @@ DEFAULT_CONTEXT_WINDOW = 200_000
 # Used when OpenRouter API is unreachable at boot.
 # Format: model_id → (max_output_tokens, context_window)
 _STATIC_FALLBACK: dict[str, tuple[int, int]] = {
+    "anthropic/claude-opus-4.8": (128_000, 1_000_000),
+    "anthropic/claude-sonnet-4.6": (128_000, 1_000_000),
+    "google/gemini-3.5-flash": (65_536, 1_048_576),
+    "moonshotai/kimi-k2.6": (262_144, 262_144),
+    "openai/gpt-5.4-mini": (128_000, 400_000),
+    "openai/gpt-5.5": (128_000, 1_050_000),
+    "qwen/qwen3-coder-plus": (65_536, 1_000_000),
+    "x-ai/grok-4.3": (DEFAULT_MAX_TOKENS, 1_000_000),
+    "z-ai/glm-4.6": (131_072, 202_752),
     "gpt-5.4-nano": (128_000, 400_000),
     "gpt-5.4-mini": (128_000, 400_000),
     "gpt-5.5": (128_000, 1_000_000),
@@ -39,12 +48,12 @@ _STATIC_FALLBACK: dict[str, tuple[int, int]] = {
     "glm-5.1": (128_000, 200_000),
     "z-ai/glm-5": (80_000, 80_000),
     "z-ai/glm-5.1": (202_752, 202_752),
+    "z-ai/glm-5.2": (262_144, 1_048_576),
     "moonshot-v1-8k": (8192, 8192),
     "moonshot-v1-32k": (32_768, 32_768),
     "moonshot-v1-128k": (131_072, 131_072),
     "kimi-k2.5": (32_768, 262_144),
     "kimi-k2.6": (32_768, 262_144),
-    "moonshotai/kimi-k2.6": (DEFAULT_MAX_TOKENS, 262_142),
     "moonshotai/kimi-k2.5": (65_535, 262_144),
 }
 

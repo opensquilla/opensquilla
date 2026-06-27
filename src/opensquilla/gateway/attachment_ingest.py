@@ -13,6 +13,8 @@ import structlog
 from opensquilla.attachment_refs import make_attachment_ref, write_transcript_material
 from opensquilla.contracts.attachments import (
     ALLOWED_MEDIA_TYPES,
+    DOCX_MIME,
+    EML_MIME,
     IMAGE_ATTACHMENT_BYTES,
     IMAGE_ATTACHMENT_MIMES,
     INLINE_ATTACHMENT_BYTES,
@@ -20,10 +22,17 @@ from opensquilla.contracts.attachments import (
     MAX_ATTACHMENTS,
     MAX_STAGED_PDF_BYTES,
     MAX_TOTAL_ATTACHMENT_BYTES,
+    MBOX_MIME,
+    MSG_MIME,
+    OFFICE_ATTACHMENT_MIMES,
+    OLE_MAGIC,
     PDF_MAGIC,
+    PPTX_MIME,
     SNIFF_PEEK_BYTES,
     TEXT_ATTACHMENT_BYTES,
     TEXT_ATTACHMENT_MIMES,
+    XLSX_MIME,
+    ZIP_MAGIC,
     attachment_size_limit_for_mime,
     can_stage_attachment_mime,
     normalize_attachment_mime,
@@ -126,6 +135,71 @@ def normalize_attachments(raw_attachments: Any) -> list[dict[str, Any]]:
     return normalized
 
 
+def _sniff_ooxml_mime(raw: bytes) -> str | None:
+    """Identify a specific OOXML subtype from a zip container's part names.
+
+    Reads only the central directory (``namelist``); no member is decompressed,
+    so this is not a zip-bomb vector. Returns ``None`` for non-OOXML zips.
+    """
+
+    import io
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            names = set(archive.namelist())
+    except (zipfile.BadZipFile, OSError, ValueError):
+        return None
+    if "word/document.xml" in names:
+        return DOCX_MIME
+    if "xl/workbook.xml" in names:
+        return XLSX_MIME
+    if "ppt/presentation.xml" in names:
+        return PPTX_MIME
+    return None
+
+
+def _looks_like_rfc5322_headers(text: str) -> bool:
+    """True when ``text`` opens with an RFC 5322 header block carrying a strong
+    email signal (Message-ID/Received/MIME-Version, or both From and Date)."""
+
+    header_names: set[str] = set()
+    for line in text.splitlines():
+        if not line:
+            break  # blank line terminates the header block
+        if line[0] in " \t":
+            continue  # folded continuation of the previous header
+        name, sep, _ = line.partition(":")
+        if not sep or not name or any(ch <= " " for ch in name):
+            return False  # first non-header line and no email evidence yet
+        header_names.add(name.strip().lower())
+        if header_names & {"message-id", "received", "mime-version"} or {
+            "from",
+            "date",
+        } <= header_names:
+            return True
+    return False
+
+
+def _sniff_email_mime(text: str) -> str | None:
+    """Detect a text-based email (.eml / .mbox) from the decoded head.
+
+    Requires a strong RFC 5322 signal so ordinary prose is not misread as an
+    email. An mbox must carry a real ``From `` envelope line *followed by* a
+    header block — a bare ``From `` prefix (e.g. "From the start…") is not
+    enough, so prose cannot inherit the larger email size cap.
+    """
+
+    if text.startswith("From "):
+        newline = text.find("\n")
+        if newline != -1 and _looks_like_rfc5322_headers(text[newline + 1 :]):
+            return MBOX_MIME
+        return None
+    if _looks_like_rfc5322_headers(text):
+        return EML_MIME
+    return None
+
+
 def sniff_mime_from_bytes(raw: bytes) -> str | None:
     """Detect MIME from authoritative magic bytes or complete JSON payloads."""
 
@@ -140,11 +214,23 @@ def sniff_mime_from_bytes(raw: bytes) -> str | None:
         return "image/gif"
     if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
         return "image/webp"
+    if head.startswith(ZIP_MAGIC):
+        ooxml = _sniff_ooxml_mime(raw)
+        if ooxml is not None:
+            return ooxml
+    if head.startswith(OLE_MAGIC):
+        # OLE2 compound file — treated as an Outlook .msg here; the extractor
+        # degrades gracefully if it turns out to be another OLE format.
+        return MSG_MIME
 
     try:
         text = head.decode("utf-8")
     except UnicodeDecodeError:
         return None
+
+    email_mime = _sniff_email_mime(text)
+    if email_mime is not None:
+        return email_mime
 
     stripped = text.lstrip()
     if stripped.startswith("{") or stripped.startswith("["):
@@ -156,7 +242,18 @@ def sniff_mime_from_bytes(raw: bytes) -> str | None:
         except (UnicodeDecodeError, ValueError):
             pass
 
-    return None
+    # Last resort: a fully clean-UTF-8, NUL-free payload is treated as plain
+    # text so unknown-but-textual uploads degrade to readable context instead of
+    # a hard rejection. The ENTIRE payload is validated (not just the peek
+    # window) so a text head with a binary tail is not misclassified. This is a
+    # weak signal — callers never let it override a more specific claimed type.
+    if b"\x00" in raw:
+        return None
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return "text/plain"
 
 
 def _display_attachment_name(raw: Any, fallback: str) -> str:
@@ -310,25 +407,31 @@ def validate_attachments(
         sniffed = sniff_mime_from_bytes(raw_bytes)
 
         if claimed is None:
-            raw_claim = (
-                attachment.get("type")
-                or attachment.get("mime")
-                or attachment.get("media_type")
-                or attachment.get("mime_type")
-            )
-            _raise_or_mark(
-                failure_mode=failure_mode,
-                failures=failures,
-                failure=_failure(
-                    index,
-                    attachment,
-                    "unsupported_mime",
-                    "media type "
-                    f"{raw_claim!r} is not allowed; must be one of "
-                    f"{sorted(ALLOWED_MEDIA_TYPES)}",
-                ),
-            )
-            continue
+            # Unknown / unsupported claimed type: accept only if the bytes are
+            # cleanly decodable text (UTF-8 fallback); everything binary stays
+            # fail-closed.
+            if sniffed == "text/plain":
+                claimed = "text/plain"
+            else:
+                raw_claim = (
+                    attachment.get("type")
+                    or attachment.get("mime")
+                    or attachment.get("media_type")
+                    or attachment.get("mime_type")
+                )
+                _raise_or_mark(
+                    failure_mode=failure_mode,
+                    failures=failures,
+                    failure=_failure(
+                        index,
+                        attachment,
+                        "unsupported_mime",
+                        "media type "
+                        f"{raw_claim!r} is not allowed; must be one of "
+                        f"{sorted(ALLOWED_MEDIA_TYPES)}",
+                    ),
+                )
+                continue
 
         if claimed == "application/pdf" and sniffed != "application/pdf":
             _raise_or_mark(
@@ -343,14 +446,66 @@ def validate_attachments(
             )
             continue
 
-        if sniffed is not None and sniffed != claimed:
-            (logger or log).warning(
-                "attachment.mime_mismatch",
-                claimed=claimed,
-                sniffed=sniffed,
-                attachment_index=index,
+        if claimed in OFFICE_ATTACHMENT_MIMES and sniffed != claimed:
+            _raise_or_mark(
+                failure_mode=failure_mode,
+                failures=failures,
+                failure=_failure(
+                    index,
+                    attachment,
+                    "mime_mismatch",
+                    f"claims {claimed} but the bytes are not a matching OOXML "
+                    "document (415 equivalent)",
+                ),
             )
-            resolved = sniffed if sniffed in ALLOWED_MEDIA_TYPES else claimed
+            continue
+
+        if claimed == MSG_MIME and sniffed != MSG_MIME:
+            _raise_or_mark(
+                failure_mode=failure_mode,
+                failures=failures,
+                failure=_failure(
+                    index,
+                    attachment,
+                    "mime_mismatch",
+                    "claims an Outlook .msg but is not an OLE compound file "
+                    "(415 equivalent)",
+                ),
+            )
+            continue
+
+        # Text-based email (.eml/.mbox) carries the larger email size ceiling, so
+        # the bytes must actually look like an email. Otherwise arbitrary text
+        # could claim message/rfc822 to bypass the smaller text-attachment cap.
+        if claimed in {EML_MIME, MBOX_MIME} and sniffed not in {EML_MIME, MBOX_MIME}:
+            _raise_or_mark(
+                failure_mode=failure_mode,
+                failures=failures,
+                failure=_failure(
+                    index,
+                    attachment,
+                    "mime_mismatch",
+                    "claims an email message but lacks RFC 5322 / mbox structure "
+                    "(415 equivalent)",
+                ),
+            )
+            continue
+
+        if sniffed is not None and sniffed != claimed:
+            # The UTF-8 text fallback is a weak signal: never let it downgrade a
+            # claimed text-family type (e.g. .csv) we already accept. Larger-cap
+            # types (email) are confirmed by the guards above, so by this point a
+            # text/plain sniff can only co-occur with a same-cap text claim.
+            if sniffed == "text/plain":
+                resolved = claimed
+            else:
+                (logger or log).warning(
+                    "attachment.mime_mismatch",
+                    claimed=claimed,
+                    sniffed=sniffed,
+                    attachment_index=index,
+                )
+                resolved = sniffed if sniffed in ALLOWED_MEDIA_TYPES else claimed
         else:
             resolved = claimed
 

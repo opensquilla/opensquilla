@@ -182,10 +182,29 @@ def test_file_command_unreachable_bridge_falls_back_to_inline_for_small_file(
     assert "data" in attachments[0]
 
 
-def test_file_command_rejects_unsupported_mime(tmp_path: Path) -> None:
-    path = _write(tmp_path, "x.sh", b"#!/bin/sh\necho hi\n")
+def test_file_command_rejects_unsupported_binary_mime(tmp_path: Path) -> None:
+    # Unknown extension + binary content (NUL byte) stays fail-closed.
+    path = _write(tmp_path, "x.bin", b"\x00\x01\x02\x03 binary blob")
     with pytest.raises(ValueError, match=r"(unsupported|not allowed|format)"):
         _file_prompt_and_attachments(f"/file {path}", upload_callable=None)
+
+
+def test_file_command_accepts_unknown_utf8_text_as_plain(tmp_path: Path) -> None:
+    # Unknown extension whose bytes are clean UTF-8 text is accepted as
+    # text/plain, so the gateway's unknown-text fallback is reachable from the
+    # CLI rather than rejected at the client.
+    body = b"#!/bin/sh\necho hi\n"
+    path = _write(tmp_path, "script.sh", body)
+
+    prompt, attachments = _file_prompt_and_attachments(
+        f"/file {path} run this", upload_callable=None
+    )
+    assert prompt == "run this"
+    assert len(attachments) == 1
+    att = attachments[0]
+    assert att["type"] == "text/plain"
+    assert att["name"] == "script.sh"
+    assert base64.b64decode(att["data"]) == body
 
 
 def test_file_command_rejects_large_text_family_before_upload(tmp_path: Path) -> None:

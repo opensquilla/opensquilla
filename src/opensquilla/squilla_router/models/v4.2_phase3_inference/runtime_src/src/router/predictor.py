@@ -167,7 +167,7 @@ def _detect_model_version(model_dir: Path) -> tuple[str, dict]:
     """Read version.json from model directory; default to v1 if absent."""
     vjson = model_dir / "version.json"
     if vjson.exists():
-        meta = json.loads(vjson.read_text())
+        meta = json.loads(vjson.read_text(encoding="utf-8"))
         return meta.get("version", "v1"), meta
     return "v1", {}
 
@@ -265,7 +265,7 @@ class SquillaRouter:
         version_path = Path(model_dir) / "version.json"
         if version_path.exists():
             try:
-                ver = json.loads(version_path.read_text()).get("version")
+                ver = json.loads(version_path.read_text(encoding="utf-8")).get("version")
             except (json.JSONDecodeError, OSError):
                 ver = None
             if ver == "v4":
@@ -278,7 +278,7 @@ class SquillaRouter:
 
     def __init__(self, model_dir: str = "models/",
                  config_path: str = "configs/router.yaml"):
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8") as f:
             self._config = yaml.safe_load(f)
         self._model_dir = Path(model_dir)
         self._version, self._meta = _detect_model_version(self._model_dir)
@@ -341,7 +341,7 @@ class CascadeRouter:
 
     def __init__(self, model_dir: str = "models/",
                  config_path: str = "configs/router.yaml"):
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8") as f:
             self._config = yaml.safe_load(f)
         model_path = Path(model_dir)
         self._version, self._meta = _detect_model_version(model_path)

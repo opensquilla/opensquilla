@@ -1,7 +1,7 @@
 """Standalone slash-command adapter for the chat REPL backend.
 
 This module owns TurnRunner-backed slash command dispatch. It stays independent
-from prompt-toolkit and raw chat application objects: callers pass typed session
+from raw frontend and chat application objects: callers pass typed session
 state, service handles, and optional stream callbacks.
 """
 
@@ -11,7 +11,7 @@ import inspect
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from uuid import uuid4
 
 import opensquilla.cli.tui.adapters.input_bridge as _input_bridge
@@ -29,14 +29,19 @@ from opensquilla.session.compaction_lifecycle import (
     flush_receipt_is_successful_flush,
 )
 
+if TYPE_CHECKING:
+    from opensquilla.engine.agent_injection import PendingInputProvider
+
 STANDALONE_SLASH_HANDLER_WORDS = frozenset(
     {
         "/clear",
         "/compact",
+        "/cmp",
         "/cost",
         "/exit",
         "/help",
         "/image",
+        "/meta",
         "/model",
         "/new",
         "/path",
@@ -61,6 +66,7 @@ class StandaloneStreamResponse(Protocol):
         services: object = None,
         timeout: float | None = None,
         tui_output: TuiOutputHandle | None = None,
+        pending_input_provider: PendingInputProvider | None = None,
     ) -> TurnResult: ...
 
 
@@ -76,6 +82,7 @@ class StandaloneImageCommandHandler(Protocol):
         services: object = None,
         timeout: float | None = None,
         tui_output: TuiOutputHandle | None = None,
+        pending_input_provider: PendingInputProvider | None = None,
     ) -> TurnResult: ...
 
 
@@ -180,8 +187,19 @@ async def stream_response_turnrunner(
     services: object = None,
     timeout: float | None = None,
     tui_output: TuiOutputHandle | None = None,
+    pending_input_provider: PendingInputProvider | None = None,
 ) -> TurnResult:
-    del turn_runner, session_key, tool_context, message, model, services, timeout, tui_output
+    del (
+        turn_runner,
+        session_key,
+        tool_context,
+        message,
+        model,
+        services,
+        timeout,
+        tui_output,
+        pending_input_provider,
+    )
     raise RuntimeError("standalone streaming dependency was not configured")
 
 
@@ -195,8 +213,19 @@ async def handle_image_command_turnrunner(
     services: object = None,
     timeout: float | None = None,
     tui_output: TuiOutputHandle | None = None,
+    pending_input_provider: PendingInputProvider | None = None,
 ) -> TurnResult:
-    del turn_runner, session_key, tool_context, command, model, services, timeout, tui_output
+    del (
+        turn_runner,
+        session_key,
+        tool_context,
+        command,
+        model,
+        services,
+        timeout,
+        tui_output,
+        pending_input_provider,
+    )
     raise RuntimeError("standalone image dependency was not configured")
 
 
@@ -503,6 +532,10 @@ async def handle_standalone_slash_command(
         console.print("[yellow]/models requires gateway mode.[/yellow]")
         return True
 
+    if _slash_parts(cmd, "/meta"):
+        console.print("[yellow]/meta requires gateway mode.[/yellow]")
+        return True
+
     if parts := _slash_parts(cmd, "/model"):
         if len(parts) == 1:
             console.print(f"[dim]model={state.model or 'default'}[/dim]")
@@ -533,7 +566,7 @@ async def handle_standalone_slash_command(
         console.print(f"[{ACCENT}]cleared[/] [dim]{state.session_key}[/dim]")
         return True
 
-    if cmd == "/compact":
+    if cmd in {"/compact", "/cmp"}:
         await _compact_standalone_context(context)
         return True
 

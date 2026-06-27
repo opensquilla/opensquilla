@@ -19,7 +19,8 @@ class _DynamicStream:
         return getattr(sys, self._name)
 
     def write(self, data: str) -> int:
-        return int(self._stream.write(data))
+        written = self._stream.write(data)
+        return len(data) if written is None else int(written)
 
     def flush(self) -> None:
         self._stream.flush()

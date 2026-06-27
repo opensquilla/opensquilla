@@ -3,7 +3,7 @@
 This catalog is intentionally narrower than ``compare_meta_skill_openclaw``:
 it covers retained practical work/life meta-skills and frames each case so the
 OpenSquilla meta-skill orchestration path can be judged against OpenClaw's
-t3 Opus 4.7 baseline.
+t3 Opus 4.8 baseline.
 """
 
 from __future__ import annotations
@@ -142,7 +142,7 @@ LIFESTYLE_COMPARISON_CASES: list[ComparisonCase] = [
         expected_advantage=(
             "OpenSquilla + Squilla Router should activate kid-project-planner, combine "
             "age fit, materials, weather-aware constraints, safety review, and parent "
-            "learning objectives, then beat OpenClaw + t3 Opus 4.7 on an executable "
+            "learning objectives, then beat OpenClaw + t3 Opus 4.8 on an executable "
             "child-and-guardian project plan."
         ),
         optimization_if_not_better=(

@@ -29,10 +29,12 @@ class DuckDuckGoProvider:
         proxy: str = "",
         use_env_proxy: bool = False,
         diagnostics: bool = False,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._proxy = proxy or None
         self._trust_env = bool(use_env_proxy) and not self._proxy
         self._diagnostics = bool(diagnostics)
+        self._transport = transport
 
     async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
         try:
@@ -40,6 +42,7 @@ class DuckDuckGoProvider:
                 timeout=15.0,
                 proxy=self._proxy,
                 trust_env=self._trust_env,
+                transport=self._transport,
             ) as client:
                 response = await client.post(
                     _DDHTML_URL,
@@ -48,17 +51,26 @@ class DuckDuckGoProvider:
                 )
                 response.raise_for_status()
         except httpx.HTTPError as exc:
-            if self._diagnostics:
-                kind: SearchErrorKind = (
-                    "timeout" if isinstance(exc, httpx.TimeoutException) else "network"
-                )
-                raise SearchProviderError(
-                    provider=self.name,
-                    kind=kind,
-                    message=str(exc) or "DuckDuckGo search network request failed.",
-                    retryable=True,
-                ) from exc
-            return []
+            if isinstance(exc, httpx.TimeoutException):
+                kind: SearchErrorKind = "timeout"
+                retryable = True
+            elif isinstance(exc, httpx.HTTPStatusError):
+                kind = "http"
+                retryable = 500 <= exc.response.status_code < 600
+            else:
+                kind = "network"
+                retryable = True
+            raise SearchProviderError(
+                provider=self.name,
+                kind=kind,
+                message=str(exc) or "DuckDuckGo search request failed.",
+                retryable=retryable,
+                status_code=(
+                    exc.response.status_code
+                    if isinstance(exc, httpx.HTTPStatusError)
+                    else None
+                ),
+            ) from exc
 
         soup = BeautifulSoup(response.text, "html.parser")
         results: list[SearchResult] = []
@@ -83,7 +95,15 @@ class DuckDuckGoProvider:
             snippet_elem = elem.select_one(".result__snippet")
             snippet = snippet_elem.get_text(strip=True) if snippet_elem else ""
 
-            results.append(SearchResult(title=title, url=href, snippet=snippet))
+            results.append(
+                SearchResult(
+                    title=title,
+                    url=href,
+                    snippet=snippet,
+                    source="duckduckgo",
+                    provider="duckduckgo",
+                )
+            )
             if len(results) >= max_results:
                 break
 

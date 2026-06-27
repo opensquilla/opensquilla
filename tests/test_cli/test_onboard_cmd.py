@@ -359,7 +359,10 @@ def test_onboard_if_needed_does_not_treat_env_as_config_without_config_file(
     assert not target.exists()
 
 
-def test_onboard_if_needed_requires_config_to_reference_env_key(tmp_path, monkeypatch):
+def test_onboard_if_needed_accepts_default_env_key(tmp_path, monkeypatch):
+    # A config file that names the provider but omits api_key_env is ready when
+    # the provider's default env var (OPENROUTER_API_KEY) resolves: onboarding
+    # status mirrors the runtime, which reads that variable directly.
     target = tmp_path / "c.toml"
     target.write_text(
         '[llm]\n'
@@ -372,9 +375,9 @@ def test_onboard_if_needed_requires_config_to_reference_env_key(tmp_path, monkey
 
     result = runner.invoke(app, ["onboard", "--if-needed"])
 
-    assert result.exit_code == 2
-    assert "requires a TTY" in result.stdout
-    assert "already complete" not in result.stdout.lower()
+    assert result.exit_code == 0
+    assert "core setup is ready" in result.stdout.lower()
+    assert "requires a TTY" not in result.stdout
 
 
 def test_onboard_if_needed_does_not_accept_settings_env_without_config_reference(
@@ -1080,10 +1083,13 @@ def test_onboard_catalog_focused_image_and_metadata_search_examples_are_specific
     ) in image.stdout
 
     assert search.exit_code == 0, search.stdout
-    assert "- exa: Exa | metadata only" in search.stdout
-    assert "Try: opensquilla onboard configure search --search-provider exa" not in (
-        search.stdout
-    )
+    assert "- exa: Exa | ready | key EXA_API_KEY | cloud" in search.stdout
+    assert (
+        "Try: opensquilla onboard configure search --search-provider exa "
+        "--api-key-env EXA_API_KEY "
+        f"--config {_config_arg(target)}"
+    ) in search.stdout
+    assert "- perplexity: Perplexity | metadata only" in search.stdout
     assert "Try: not configurable in this build" in search.stdout
     assert not target.exists()
 

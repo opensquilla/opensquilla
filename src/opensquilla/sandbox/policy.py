@@ -58,7 +58,9 @@ class LevelHints:
     high_impact: bool = False
 
 
-_NETWORK_TAGS: frozenset[str] = frozenset({"network.fetch", "network.http", "web.fetch"})
+_NETWORK_TAGS: frozenset[str] = frozenset(
+    {"network.fetch", "network.http", "web.discover", "web.fetch", "web.search"}
+)
 _FS_READ_TAGS: frozenset[str] = frozenset({"fs.read", "fs.list", "fs.grep"})
 _FS_WRITE_TAGS: frozenset[str] = frozenset({"fs.write", "fs.edit", "patch.apply"})
 _CODE_TAGS: frozenset[str] = frozenset({"code.exec", "shell.exec", "shell.background"})
@@ -151,7 +153,7 @@ def _resolve_network(level: SecurityLevel, action_kind: str) -> NetworkMode:
     if level == SecurityLevel.DISABLED:
         return NetworkMode.HOST
     if action_kind in _NETWORK_TAGS and level == SecurityLevel.STANDARD:
-        # STANDARD + explicit network tag: operators running `web.fetch` at
+        # STANDARD + explicit network tag: operators running web tools at
         # L1 expect egress; isolation still applies to FS/process state.
         return NetworkMode.HOST
     return NetworkMode.NONE

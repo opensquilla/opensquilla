@@ -11,7 +11,7 @@ from opensquilla.result_budget import (
     ToolResultBudgetPolicy,
     ToolRunBudgetExceededError,
     ToolRunBudgetPolicy,
-    build_webresearch_tool_run_budget_policy,
+    build_web_retrieval_tool_run_budget_policy,
 )
 from opensquilla.tools import dispatch as dispatch_module
 from opensquilla.tools.dispatch import build_tool_handler
@@ -69,8 +69,8 @@ def _strict_preview_chars(content: str) -> int:
     return len(preview)
 
 
-def test_webresearch_budget_profile_builder_preserves_unlimited_call_defaults() -> None:
-    policy = build_webresearch_tool_run_budget_policy()
+def test_web_retrieval_budget_profile_builder_preserves_unlimited_call_defaults() -> None:
+    policy = build_web_retrieval_tool_run_budget_policy()
 
     assert policy.max_web_search_calls_per_turn is None
     assert policy.max_web_fetch_calls_per_turn is None
@@ -636,9 +636,16 @@ async def test_dispatch_clamps_web_search_results_before_handler() -> None:
     registry = ToolRegistry()
     seen: dict[str, object] = {}
 
-    async def web_search(query: str, max_results: int | None = None) -> str:
+    async def web_search(
+        query: str,
+        max_results: int | None = None,
+        fetch_top_k: int | None = None,
+        max_chars_per_source: int | None = None,
+    ) -> str:
         seen["query"] = query
         seen["max_results"] = max_results
+        seen["fetch_top_k"] = fetch_top_k
+        seen["max_chars_per_source"] = max_chars_per_source
         return json.dumps({"results": []})
 
     registry.register(
@@ -666,8 +673,76 @@ async def test_dispatch_clamps_web_search_results_before_handler() -> None:
     )
 
     assert json.loads(result.content) == {"results": []}
-    assert seen == {"query": "test", "max_results": 10}
+    assert seen == {
+        "query": "test",
+        "max_results": 10,
+        "fetch_top_k": 3,
+        "max_chars_per_source": 1500,
+    }
 
+
+@pytest.mark.asyncio
+async def test_dispatch_clamps_canonical_web_search_fetch_arguments_before_handler() -> None:
+    registry = ToolRegistry()
+    seen: dict[str, object] = {}
+
+    async def web_search(
+        query: str,
+        max_results: int | None = None,
+        fetch_top_k: int | None = None,
+        max_chars_per_source: int | None = None,
+    ) -> str:
+        seen["query"] = query
+        seen["max_results"] = max_results
+        seen["fetch_top_k"] = fetch_top_k
+        seen["max_chars_per_source"] = max_chars_per_source
+        return json.dumps({"results": []})
+
+    registry.register(
+        ToolSpec(
+            name="web_search",
+            description="source-backed search",
+            parameters={
+                "query": {"type": "string"},
+                "max_results": {"type": "integer"},
+                "fetch_top_k": {"type": "integer"},
+                "max_chars_per_source": {"type": "integer"},
+            },
+            result_budget_class="external",
+        ),
+        web_search,
+    )
+    handler = build_tool_handler(
+        registry,
+        ToolContext(
+            tool_run_budget_policy=ToolRunBudgetPolicy(
+                max_web_search_results=8,
+                max_web_search_fetch_top_k=2,
+                max_web_search_chars_per_source=900,
+            )
+        ),
+    )
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-web-search-canonical-clamp",
+            tool_name="web_search",
+            arguments={
+                "query": "test",
+                "max_results": 1000,
+                "fetch_top_k": 1000,
+                "max_chars_per_source": 1000,
+            },
+        )
+    )
+
+    assert json.loads(result.content) == {"results": []}
+    assert seen == {
+        "query": "test",
+        "max_results": 8,
+        "fetch_top_k": 2,
+        "max_chars_per_source": 900,
+    }
 
 @pytest.mark.asyncio
 async def test_dispatch_run_budget_blocks_exhausted_external_call_before_handler() -> None:
@@ -727,6 +802,68 @@ async def test_dispatch_run_budget_blocks_exhausted_external_call_before_handler
     assert payload["retry_allowed"] is False
     assert "larger budget" not in payload["user_message"]
     assert "runtime resource guard" in payload["user_message"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_run_budget_blocks_repeated_web_search_before_handler() -> None:
+    registry = ToolRegistry()
+    calls = 0
+
+    async def web_search(
+        query: str,
+        max_results: int | None = None,
+        fetch_top_k: int | None = None,
+        max_chars_per_source: int | None = None,
+    ) -> str:
+        nonlocal calls
+        del max_results, fetch_top_k, max_chars_per_source
+        calls += 1
+        return json.dumps({"query": query, "results": []})
+
+    registry.register(
+        ToolSpec(
+            name="web_search",
+            description="source-backed search",
+            parameters={"query": {"type": "string"}},
+            result_budget_class="external",
+        ),
+        web_search,
+    )
+    handler = build_tool_handler(
+        registry,
+        ToolContext(
+            tool_run_budget_key="dispatch-test-web-search-repeat",
+            tool_run_budget_policy=ToolRunBudgetPolicy(
+                max_repeated_retrievals_per_turn=1,
+            ),
+        ),
+    )
+
+    first = await handler(
+        ToolCall(
+            tool_use_id="tc-web-search-repeat-1",
+            tool_name="web_search",
+            arguments={"query": "Python Release"},
+        )
+    )
+    second = await handler(
+        ToolCall(
+            tool_use_id="tc-web-search-repeat-2",
+            tool_name="web_search",
+            arguments={"query": " python release "},
+        )
+    )
+
+    assert json.loads(first.content) == {"query": "Python Release", "results": []}
+    assert calls == 1
+    assert second.is_error is False
+    assert second.execution_status is not None
+    assert second.execution_status["status"] == "unknown"
+    assert second.execution_status["reason"] == "tool_run_budget_exhausted"
+    payload = json.loads(second.content)
+    assert payload["status"] == "control"
+    assert payload["reason"] == "tool_run_budget_exhausted"
+    assert payload["retry_allowed"] is False
 
 
 @pytest.mark.asyncio
@@ -964,12 +1101,18 @@ async def test_dispatch_run_budget_allows_oversized_result_then_controls_retry()
 
 
 @pytest.mark.asyncio
-async def test_dispatch_logs_webresearch_run_diagnostics_without_default_call_caps(
+async def test_dispatch_logs_web_retrieval_run_diagnostics_without_default_call_caps(
     monkeypatch,
 ) -> None:
     registry = ToolRegistry()
 
-    async def web_search(query: str, max_results: int | None = None) -> str:
+    async def web_search(
+        query: str,
+        max_results: int | None = None,
+        fetch_top_k: int | None = None,
+        max_chars_per_source: int | None = None,
+    ) -> str:
+        del max_results, fetch_top_k, max_chars_per_source
         return json.dumps({"query": query, "results": ["one", "two"]})
 
     registry.register(
@@ -1006,21 +1149,32 @@ async def test_dispatch_logs_webresearch_run_diagnostics_without_default_call_ca
     event = next(
         payload
         for name, payload in log_events
-        if name == "dispatch.webresearch_tool_run_diagnostics"
+        if name == "dispatch.web_retrieval_tool_run_diagnostics"
     )
     assert event["tool"] == "web_search"
     assert event["tool_use_id"] == "tc-search-diagnostics"
     assert event["web_search_calls_used"] == 1
     assert event["web_fetch_calls_used"] == 0
-    assert event["external_text_chars_used"] >= len(result.content)
-    assert event["tool_wall_time_ms"] >= 0
+    external_text_chars_used = event["external_text_chars_used"]
+    tool_wall_time_ms = event["tool_wall_time_ms"]
+    assert isinstance(external_text_chars_used, int)
+    assert isinstance(tool_wall_time_ms, int | float)
+    assert external_text_chars_used >= len(result.content)
+    assert tool_wall_time_ms >= 0
+
 
 
 @pytest.mark.asyncio
 async def test_dispatch_run_budget_charges_web_search_external_text() -> None:
     registry = ToolRegistry()
 
-    async def web_search(query: str, max_results: int | None = None) -> str:
+    async def web_search(
+        query: str,
+        max_results: int | None = None,
+        fetch_top_k: int | None = None,
+        max_chars_per_source: int | None = None,
+    ) -> str:
+        del max_results, fetch_top_k, max_chars_per_source
         return json.dumps({"query": query, "results": ["x" * 250]})
 
     registry.register(

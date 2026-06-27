@@ -234,3 +234,25 @@ def test_config_field_labels_wrap_long_keys_on_phone_widths() -> None:
     assert "overflow-wrap: anywhere" in label_rule
     assert "text-overflow: clip" in label_rule
     assert "white-space: normal" in label_rule
+
+
+def test_config_router_visual_mode_renders_as_settings_select() -> None:
+    source = CONFIG_JS.read_text(encoding="utf-8")
+    css = CONFIG_CSS.read_text(encoding="utf-8")
+
+    assert "const _SELECT_OPTIONS = {" in source
+    assert "'squilla_router.visual_mode': [" in source
+    assert "value: 'real_candidates', label: 'Real candidates'" in source
+    assert "value: 'legacy_grid', label: 'Legacy grid'" in source
+    assert "let _formData = {};     // one-level flattened object for form mode" in source
+    assert "_formData = _flattenConfigForForm(_configData);" in source
+    assert "return Object.entries(_formData).filter(([k, v]) => {" in source
+    assert "function _selectOptionsForKey(key) {" in source
+    assert "const selectOptions = _selectOptionsForKey(k);" in source
+    assert '<select id="${inputId}" class="input cfg-input-select"' in source
+    assert 'data-cfg-key="${ek}" data-cfg-type="string"' in source
+    assert "Controls how the chat router panel is drawn." in source
+    assert ".cfg-input-select {" in css
+    assert "min-height: 40px" in css[
+        css.index(".cfg-input-select {") : css.index("}", css.index(".cfg-input-select {"))
+    ]

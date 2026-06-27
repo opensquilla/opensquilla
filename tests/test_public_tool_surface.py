@@ -11,7 +11,13 @@ from opensquilla.tools.registry import get_default_registry
 from opensquilla.tools.types import CallerKind, ToolContext
 
 REMOVED_TOOL_NAMES = {"generate_image", "spawn_subagent", "send_message"}
-CANONICAL_TOOL_NAMES = {"image_generate", "sessions_spawn", "sessions_send"}
+CANONICAL_TOOL_NAMES = {
+    "image_generate",
+    "sessions_spawn",
+    "sessions_send",
+    "web_search",
+    "web_discover",
+}
 OWNER_ONLY_TOOL_NAMES = {"http_request", "git_commit"}
 
 
@@ -65,6 +71,10 @@ def test_default_registry_public_surface_uses_canonical_tool_names() -> None:
     assert REMOVED_TOOL_NAMES.isdisjoint(owner_names)
     assert REMOVED_TOOL_NAMES.isdisjoint(channel_names)
     assert CANONICAL_TOOL_NAMES <= owner_names
+    assert "research_search" not in owner_names
+    assert "research_search" not in channel_names
+    assert "web_search" in channel_names
+    assert "web_discover" in channel_names
     assert OWNER_ONLY_TOOL_NAMES <= owner_names
     assert OWNER_ONLY_TOOL_NAMES.isdisjoint(channel_names)
 

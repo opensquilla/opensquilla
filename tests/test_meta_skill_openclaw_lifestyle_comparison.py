@@ -293,7 +293,7 @@ def test_lifestyle_rubrics_reward_meta_specific_artifacts() -> None:
         assert len(case.rubric) >= 5
         assert case.failure_modes
         assert "Squilla Router" in case.expected_advantage
-        assert "Opus 4.7" in case.expected_advantage
+        assert "Opus 4.8" in case.expected_advantage
         assert "If OpenSquilla does not beat OpenClaw" in case.optimization_if_not_better
 
 

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from opensquilla.search.registry import list_provider_specs
-from opensquilla.search.types import SearchProviderSpec
+from opensquilla.search.types import DEFAULT_SEARCH_MAX_RESULTS, SearchProviderSpec
 
 FieldType = Literal["text", "password", "select", "bool", "int"]
 
@@ -41,6 +41,7 @@ class SearchProviderSetupSpec:
 
 
 _SEARCH_PROVIDER_LABELS: dict[str, str] = {
+    "bocha": "Bocha",
     "brave": "Brave Search",
     "duckduckgo": "DuckDuckGo",
     "tavily": "Tavily",
@@ -64,7 +65,7 @@ def _fields_for(spec: SearchProviderSpec) -> tuple[SearchProviderSetupField, ...
             label="Max results",
             field_type="int",
             required=False,
-            default=5,
+            default=DEFAULT_SEARCH_MAX_RESULTS,
         ),
         SearchProviderSetupField(
             name="proxy",

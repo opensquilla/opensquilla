@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import inspect
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -68,7 +69,7 @@ def test_build_tools_surfaces_meta_invoke_when_meta_skill_present(
 ) -> None:
     registry = get_default_registry()
     loader = _make_loader_with_meta(tmp_path)
-    runner = TurnRunner(provider_selector=None, config=None)
+    runner = TurnRunner(provider_selector=None, config=_meta_cfg(auto_trigger=True))
     runner._tool_registry = registry
     runner._skill_loader = loader
 
@@ -153,7 +154,7 @@ def test_build_tools_preserves_existing_surfaced_tools(tmp_path: Path) -> None:
     per-request tool surface), _build_tools must add to it, not overwrite."""
     registry = get_default_registry()
     loader = _make_loader_with_meta(tmp_path)
-    runner = TurnRunner(provider_selector=None, config=None)
+    runner = TurnRunner(provider_selector=None, config=_meta_cfg(auto_trigger=True))
     runner._tool_registry = registry
     runner._skill_loader = loader
 
@@ -195,7 +196,7 @@ async def test_runtime_pipeline_runs_meta_resolution_before_skill_filter(
     monkeypatch.setattr("opensquilla.engine.steps.apply_squilla_router", noop_router)
 
     loader = _make_loader_with_meta(tmp_path)
-    runner = TurnRunner(provider_selector=None, config=None)
+    runner = TurnRunner(provider_selector=None, config=_meta_cfg(auto_trigger=True))
     runner._skill_loader = loader
 
     turn, _provider = await runner._run_pipeline(
@@ -245,8 +246,6 @@ async def test_runtime_pipeline_pins_meta_skill_when_skill_filter_enabled(
     pinned, and deterministic trigger matches force meta_invoke as the first
     tool call while leaving the broader tool surface intact for later turns.
     """
-    from types import SimpleNamespace
-
     async def noop_router(ctx: TurnContext) -> TurnContext:
         return ctx
 
@@ -262,7 +261,10 @@ async def test_runtime_pipeline_pins_meta_skill_when_skill_filter_enabled(
     )
     runner = TurnRunner(
         provider_selector=None,
-        config=SimpleNamespace(skills=skills_cfg),
+        config=SimpleNamespace(
+            skills=skills_cfg,
+            meta_skill=SimpleNamespace(enabled=True, auto_trigger=True),
+        ),
     )
     runner._skill_loader = loader
 
@@ -295,3 +297,89 @@ async def test_runtime_pipeline_pins_meta_skill_when_skill_filter_enabled(
         "function": {"name": "meta_invoke"},
     }
     assert "meta-tiny" in str(turn.system_prompt)
+
+
+def _meta_cfg(auto_trigger: bool) -> SimpleNamespace:
+    return SimpleNamespace(meta_skill=SimpleNamespace(enabled=True, auto_trigger=auto_trigger))
+
+
+@pytest.mark.asyncio
+async def test_pipeline_hides_meta_skill_from_prompt_when_auto_trigger_off(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def noop_router(ctx: TurnContext) -> TurnContext:
+        return ctx
+
+    noop_router.__name__ = "apply_squilla_router"
+    monkeypatch.setattr("opensquilla.engine.steps.apply_squilla_router", noop_router)
+
+    loader = _make_loader_with_meta(tmp_path)
+    runner = TurnRunner(provider_selector=None, config=_meta_cfg(auto_trigger=False))
+    runner._skill_loader = loader
+
+    turn, _provider = await runner._run_pipeline(
+        "what is the capital of France?",  # non-triggering: isolates skills_filter
+        "agent:main:test-meta-hidden",
+        None,
+        None,
+        [
+            ToolDefinition(name="web_search", description="search", input_schema=ToolInputSchema()),
+        ],
+        "base prompt",
+        [],
+    )
+
+    assert "meta-tiny" not in str(turn.system_prompt)
+    assert "meta-tiny" not in (turn.metadata.get("filtered_skill_ids") or [])
+
+
+@pytest.mark.asyncio
+async def test_pipeline_shows_meta_skill_when_auto_trigger_on(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def noop_router(ctx: TurnContext) -> TurnContext:
+        return ctx
+
+    noop_router.__name__ = "apply_squilla_router"
+    monkeypatch.setattr("opensquilla.engine.steps.apply_squilla_router", noop_router)
+
+    loader = _make_loader_with_meta(tmp_path)
+    runner = TurnRunner(provider_selector=None, config=_meta_cfg(auto_trigger=True))
+    runner._skill_loader = loader
+
+    turn, _provider = await runner._run_pipeline(
+        "what is the capital of France?",  # non-triggering: isolates skills_filter
+        "agent:main:test-meta-shown",
+        None,
+        None,
+        [
+            ToolDefinition(
+                name="meta_invoke",
+                description="invoke",
+                input_schema=ToolInputSchema(),
+            ),
+            ToolDefinition(name="web_search", description="search", input_schema=ToolInputSchema()),
+        ],
+        "base prompt",
+        [],
+    )
+
+    assert "meta-tiny" in str(turn.system_prompt)
+
+
+def test_build_tools_hides_meta_invoke_when_auto_trigger_off(tmp_path: Path) -> None:
+    """Default manual-only: meta-skill present but auto_trigger off => no meta_invoke."""
+    registry = get_default_registry()
+    loader = _make_loader_with_meta(tmp_path)
+    runner = TurnRunner(provider_selector=None, config=_meta_cfg(auto_trigger=False))
+    runner._tool_registry = registry
+    runner._skill_loader = loader
+
+    ctx = ToolContext(is_owner=True, workspace_dir=str(tmp_path))
+    tool_defs, _handler = runner._build_tools(ctx)
+    names = {getattr(td, "name", "") for td in tool_defs}
+
+    assert "meta_invoke" not in names
+    assert ctx.surfaced_tools is None or "meta_invoke" not in ctx.surfaced_tools

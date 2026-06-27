@@ -16,7 +16,7 @@ from opensquilla.search.registry import register_provider
 from opensquilla.search.types import SearchProviderError, SearchProviderSpec, SearchResult
 from opensquilla.session.models import MemoryDurableReceipt
 from opensquilla.session.storage import SessionStorage
-from opensquilla.tools.builtin.web import configure_search, run_web_search_payload
+from opensquilla.tools.builtin.web import configure_search, run_web_discover_payload
 
 
 @dataclass
@@ -1309,7 +1309,7 @@ async def test_search_query_provider_failure_is_ok_false_payload():
 @pytest.mark.asyncio
 async def test_search_sensitive_query_is_not_echoed_by_tool_or_rpc():
     secret_query = "API_KEY=super-secret-value"
-    helper_payload = await run_web_search_payload(secret_query)
+    helper_payload = await run_web_discover_payload(secret_query)
     rpc_res = await get_dispatcher().dispatch(
         "r1",
         "search.query",

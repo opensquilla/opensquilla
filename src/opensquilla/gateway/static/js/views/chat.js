@@ -508,6 +508,7 @@ const ChatView = (() => {
     write_file: '\u270F\uFE0F',   // ✏️
     edit_file: '\u270F\uFE0F',    // ✏️
     web_search: '\uD83D\uDD0D',   // 🔍
+    web_discover: '\uD83D\uDD0E', // 🔎
     search: '\uD83D\uDD0D',       // 🔍
     http_request: '\uD83C\uDF10', // 🌐
     web_fetch: '\uD83C\uDF10',    // 🌐
@@ -1261,6 +1262,15 @@ const ChatView = (() => {
                       </label>
                     </div>
                   </div>
+                  <div class="chat-toolbar-row">
+                    <span class="chat-toolbar-row-label">Coding mode</span>
+                    <div class="toggle-switch-wrap" id="pill-codetask-group" title="Lock this session into coding mode: code changes go through code-task. Off makes code-task unavailable.">
+                      <label class="toggle-switch" aria-label="Coding mode">
+                        <input type="checkbox" id="toggle-codetask" />
+                        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                      </label>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1277,7 +1287,7 @@ const ChatView = (() => {
             <button class="btn btn--icon btn--danger hidden" id="chat-btn-stop" title="Stop current response (Esc)" aria-label="Stop current response">${icons.stop()}</button>
           </div>
         </div>
-        <input type="file" id="chat-file-input" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain,text/markdown,text/html,text/csv,application/json,.md,.markdown" multiple class="hidden" />
+        <input type="file" id="chat-file-input" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain,text/markdown,text/html,text/csv,application/json,application/mbox,message/rfc822,application/vnd.ms-outlook,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation,.md,.markdown,.docx,.xlsx,.pptx,.eml,.mbox,.msg" multiple class="hidden" />
       </div>`;
 
     // Cache DOM refs
@@ -1399,6 +1409,23 @@ const ChatView = (() => {
       });
     }
 
+    // Coding-mode toggle — operator-level (persists to config). ON locks the
+    // session into coding mode (code changes go through code-task); OFF makes
+    // code-task unavailable across every skill API.
+    const codetaskToggle = _el.querySelector('#toggle-codetask');
+    if (codetaskToggle) {
+      codetaskToggle.addEventListener('change', async () => {
+        const enabled = codetaskToggle.checked;
+        try {
+          await _rpc.call('config.patch.safe', { patches: { 'skills.coding_mode': enabled } });
+          UI.toast('Coding mode: ' + (enabled ? 'ON' : 'OFF'), 'info');
+        } catch (e) {
+          codetaskToggle.checked = !enabled;  // revert on failure
+          UI.toast('Failed: ' + e.message, 'err');
+        }
+      });
+    }
+
     // Router-fx visualisation toggle — purely client-side (no config write):
     // it only controls whether THIS browser draws the animated grid.
     const routerFxToggle = _el.querySelector('#toggle-router-fx');
@@ -1463,9 +1490,15 @@ const ChatView = (() => {
       // per browser, so it survives view re-render / navigation. Inherits the
       // visibility/focus refresh that re-runs this function for free.
       _routerFxLoadPref();
+      _routerFxApplyConfigVisualMode(cfg?.squilla_router?.visual_mode);
       const routerFxToggle = _el?.querySelector('#toggle-router-fx');
       if (routerFxToggle) routerFxToggle.checked = _routerFx.enabled;
       if (window.SavingsFX) window.SavingsFX.setEnabled(_routerFx.enabled);
+      // Coding mode: ON reflects skills.coding_mode.
+      const codetaskToggle = _el?.querySelector('#toggle-codetask');
+      if (codetaskToggle) {
+        codetaskToggle.checked = !!(cfg?.skills?.coding_mode);
+      }
       _globalElevatedMode = _normalizeElevatedMode(cfg?.permissions?.default_mode);
       _toolbarState.bypass = _isApprovalBypassMode(_effectiveElevatedMode());
       _updateElevatedPill();
@@ -2757,6 +2790,42 @@ const ChatView = (() => {
           .catch((err) => UI.toast('Usage failed: ' + err.message, 'err'));
         break;
       }
+      case 'meta.menu': {
+        const skillName = args.trim();
+        if (!skillName) {
+          // No arg → list available meta-skills.
+          _rpc.call('meta.list')
+            .then((result) => {
+              const skills = Array.isArray(result?.skills) ? result.skills : [];
+              if (result?.disabled || skills.length === 0) {
+                _addMessage('system', 'No meta-skills available.');
+                return;
+              }
+              const lines = skills.map((s) => {
+                const name = s?.name || '';
+                const desc = s?.description ? ` — ${s.description}` : '';
+                return `- ${name}${desc}`;
+              });
+              _addMessage('system', 'Available meta-skills:\n' + lines.join('\n'));
+            })
+            .catch((err) => UI.toast('meta.list failed: ' + err.message, 'err'));
+          break;
+        }
+        // With <name> → stamp the run, then send a normal turn so the
+        // pipeline seed auto-launches the skill on the next turn.
+        _rpc.call('meta.run', { name: skillName, sessionKey: _sessionKey })
+          .then((result) => {
+            if (result && result.ok) {
+              _sendTextOverride = `/meta ${skillName}`;
+              _onSend();
+              return;
+            }
+            const error = (result && result.error) || 'meta.run failed';
+            _addMessage('error', `meta.run failed: ${error}`);
+          })
+          .catch((err) => UI.toast('meta.run failed: ' + err.message, 'err'));
+        break;
+      }
     }
   }
 
@@ -3319,10 +3388,49 @@ const ChatView = (() => {
   // the whole animation (scan + ~360ms settle transition) stays under ~1s.
   const _ROUTER_FX_SCAN_MS = 600;
   const _ROUTER_FX_START_DELAY_MS = 280;
-  const _routerFx = { enabled: true, variant: 'default' };
+  const _ROUTER_FX_GRID_COLS = 5;
+  const _ROUTER_FX_GRID_ROWS = 3;
+  const _ROUTER_FX_GRID_CELLS = _ROUTER_FX_GRID_COLS * _ROUTER_FX_GRID_ROWS;
+  const _ROUTER_FX_REAL_ANCHOR_CELLS = [1, 6, 8, 13, 11, 3, 5, 9, 12, 14, 0, 4, 7, 10, 2];
+  const _ROUTER_FX_DECOY_POOL = [
+    'gpt-5.5',
+    'claude-opus-4.8',
+    'gemini-3.5-flash',
+    'qwen3-coder-plus',
+    'grok-4.3',
+    'gpt-5.4-mini',
+    'claude-sonnet-4.6',
+    'gemini-3.1-pro',
+    'deepseek-v3.2',
+    'kimi-k2.6',
+    'command-a-plus',
+    'grok-build-0.1',
+    'glm-4.6',
+    'mistral-medium-3.5',
+    'claude-haiku-4.5',
+  ];
+  const _routerFx = { enabled: true, visualMode: 'real_candidates', variant: 'default' };
+  function _routerFxNormalizeVisualMode(mode) {
+    const normalized = typeof mode === 'string'
+      ? mode.trim().toLowerCase().replace(/-/g, '_')
+      : '';
+    if (normalized === 'legacy_grid' || normalized === 'model_space' || normalized === 'modelspace') {
+      return 'legacy_grid';
+    }
+    return 'real_candidates';
+  }
+  function _routerFxPanelDataset(mode) {
+    return _routerFxNormalizeVisualMode(mode) === 'legacy_grid'
+      ? 'legacy-grid'
+      : 'real-candidates';
+  }
+  function _routerFxApplyConfigVisualMode(mode) {
+    _routerFx.visualMode = _routerFxNormalizeVisualMode(mode);
+  }
   function _routerFxLoadPref() {
     // Defaults stand (enabled ON, default variant) unless a stored pref
     // overrides them. localStorage may throw (private mode / quota) — swallow.
+    _routerFx.visualMode = 'real_candidates';
     _routerFx.variant = 'default';
     try {
       const raw = localStorage.getItem(_ROUTER_FX_PREF_KEY);
@@ -3553,6 +3661,36 @@ const ChatView = (() => {
   function _routerFxResolveLayoutSeed(sessionKey, hintTimestamp) {
     return _routerFxResolveSeed(sessionKey, 0, 'layout', hintTimestamp);
   }
+  function _routerFxSeedHash(seedKey) {
+    const text = seedKey == null ? '' : String(seedKey);
+    let hash = 2166136261;
+    for (let i = 0; i < text.length; i++) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return hash >>> 0;
+  }
+  function _routerFxSeededRandom(seedKey) {
+    let state = _routerFxSeedHash(seedKey) || 0x9e3779b9;
+    return () => {
+      state += 0x6d2b79f5;
+      let t = state;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function _routerFxShuffle(items, seedKey) {
+    const out = items.slice();
+    const random = seedKey ? _routerFxSeededRandom(seedKey) : Math.random;
+    for (let i = out.length - 1; i > 0; i--) {
+      const j = Math.floor(random() * (i + 1));
+      const tmp = out[i];
+      out[i] = out[j];
+      out[j] = tmp;
+    }
+    return out;
+  }
   function _routerFxIdentity(model, tier) {
     const modelPart = typeof model === 'string' ? model.trim().toLowerCase() : '';
     const tierPart = _routerFxNormalizeTier(tier);
@@ -3617,9 +3755,9 @@ const ChatView = (() => {
     return _routerFxVisualEntries(requestKind, decision);
   }
 
-  // Assemble the grid from real candidates only. No filler/decoy wall: every
-  // visible model name is a candidate that could actually be called this turn.
-  function _routerFxBuildGridCells(realEntries, seedKey) {
+  // Assemble the default panel from real candidates only. No filler/decoy
+  // wall: every visible model name is callable for this turn.
+  function _routerFxBuildCandidateGridCells(realEntries, seedKey) {
     const orderedRealEntries = realEntries.slice().sort((a, b) => (
       (a.displayName || a.key || '').localeCompare(b.displayName || b.key || '')
     ));
@@ -3628,6 +3766,63 @@ const ChatView = (() => {
       entry,
       displayName: entry.displayName,
     }));
+  }
+
+  // Legacy grid is a visual wall only: real candidates keep their in-memory
+  // entries for winner lookup, while decoys are labels with no tier metadata.
+  function _routerFxBuildLegacyGridCells(realEntries, seedKey) {
+    const cells = Array.from({ length: _ROUTER_FX_GRID_CELLS }, () => null);
+    const realNames = new Set();
+    const orderedRealEntries = realEntries.slice().sort((a, b) => (
+      (a.label || a.displayName || a.key || '').localeCompare(b.label || b.displayName || b.key || '')
+    ));
+    orderedRealEntries.forEach((entry, i) => {
+      const anchor = _ROUTER_FX_REAL_ANCHOR_CELLS[i];
+      const idx = typeof anchor === 'number' ? anchor : cells.findIndex((cell) => cell == null);
+      if (idx < 0 || idx >= cells.length) return;
+      cells[idx] = {
+        kind: 'real',
+        entry,
+        displayName: entry.displayName,
+        label: entry.label || entry.displayName,
+        title: entry.title || entry.label || entry.displayName,
+      };
+      if (entry.displayName) realNames.add(entry.displayName);
+      if (entry.label) realNames.add(entry.label);
+    });
+
+    const decoys = [];
+    for (let i = 0; i < _ROUTER_FX_DECOY_POOL.length && decoys.length < _ROUTER_FX_GRID_CELLS; i++) {
+      const name = _ROUTER_FX_DECOY_POOL[i];
+      if (realNames.has(name)) continue;
+      decoys.push({
+        kind: 'decoy',
+        displayName: name,
+        label: name,
+        title: name,
+      });
+    }
+    while (decoys.length < _ROUTER_FX_GRID_CELLS) {
+      decoys.push({
+        kind: 'decoy',
+        displayName: '-',
+        label: '-',
+        title: '-',
+      });
+    }
+    const orderedDecoys = _routerFxShuffle(decoys, seedKey ? seedKey + ':decoy' : undefined);
+    let decoyIdx = 0;
+    for (let i = 0; i < cells.length; i++) {
+      if (cells[i] == null) cells[i] = orderedDecoys[decoyIdx++];
+    }
+    return cells;
+  }
+
+  function _routerFxBuildGridCells(realEntries, seedKey, visualMode) {
+    if (_routerFxNormalizeVisualMode(visualMode) === 'legacy_grid') {
+      return _routerFxBuildLegacyGridCells(realEntries, seedKey);
+    }
+    return _routerFxBuildCandidateGridCells(realEntries, seedKey);
   }
 
   function _buildRouterFxElement(decision, opts) {
@@ -3668,17 +3863,24 @@ const ChatView = (() => {
     // layout on every rebuild, so the field never reshuffles after lock.
     const seedKey = opts && opts.seedKey ? String(opts.seedKey) : '';
     if (seedKey) wrap.dataset.seed = seedKey;
+    const visualMode = _routerFxNormalizeVisualMode(
+      opts.visualMode != null ? opts.visualMode : _routerFx.visualMode,
+    );
+    wrap.dataset.panel = _routerFxPanelDataset(visualMode);
 
     const requestKind = _routerFxRequestKindFromDecision(decision, opts.requestKind);
     const realEntries = _routerFxRealEntries(decision, requestKind);
     if (realEntries.length <= 1) return null;
-    const gridCells = _routerFxBuildGridCells(realEntries, seedKey || undefined);
+    const gridCells = _routerFxBuildGridCells(realEntries, seedKey || undefined, visualMode);
 
     const grid = document.createElement('div');
     grid.className = 'router-fx-grid';
-    const cols = Math.min(4, Math.max(2, gridCells.length));
-    const mobileCols = gridCells.length > 2 ? 2 : gridCells.length;
+    const isLegacyGrid = visualMode === 'legacy_grid';
+    const cols = isLegacyGrid ? _ROUTER_FX_GRID_COLS : Math.min(4, Math.max(2, gridCells.length));
+    const rows = isLegacyGrid ? _ROUTER_FX_GRID_ROWS : 1;
+    const mobileCols = isLegacyGrid ? 3 : (gridCells.length > 2 ? 2 : gridCells.length);
     grid.style.setProperty('--router-fx-cols', String(cols));
+    grid.style.setProperty('--router-fx-rows', String(rows));
     grid.style.setProperty('--router-fx-mobile-cols', String(Math.max(1, mobileCols)));
     gridCells.forEach((cellInfo, i) => {
       const cell = document.createElement('div');
@@ -5901,6 +6103,7 @@ const ChatView = (() => {
                 if (identityChanged) savedUsage.__savings_ui_suppressed = true;
               }
               if (window.SavingsFX) window.SavingsFX.noteTurn(savedUsage);
+              const routerPanel = _routerFxPanelDataset(_routerFx.visualMode);
               // Place a pre-settled router slider directly beneath the
               // user message that triggered this turn — never above
               // it, never with anything wedged in between.
@@ -5924,7 +6127,8 @@ const ChatView = (() => {
               if (userMsg && userMsg.parentNode === _thread) {
                 const ownStrips = Array.from(_thread.querySelectorAll('.router-fx')).filter(
                   (el) => el.dataset.sessionKey === (_sessionKey || '')
-                    && el.dataset.turnIndex === String(_histUserIdx),
+                    && el.dataset.turnIndex === String(_histUserIdx)
+                    && _routerFxPanelDataset(el.dataset.panel) === routerPanel,
                 );
                 const keep = ownStrips.find((el) => el.dataset.routerIdentity === routerIdentity)
                   || null;
@@ -5945,7 +6149,8 @@ const ChatView = (() => {
               const existingStrip = (placed && placed.classList
                   && placed.classList.contains('router-fx')) ? placed : null;
               const alreadyInPlace = existingStrip
-                && existingStrip.dataset.routerIdentity === routerIdentity;
+                && existingStrip.dataset.routerIdentity === routerIdentity
+                && _routerFxPanelDataset(existingStrip.dataset.panel) === routerPanel;
               if (!alreadyInPlace) {
                 if (existingStrip) _routerFxRemoveStrip(existingStrip);
                 const hint = msg.timestamp || msg.ts || msg.message_id || '';

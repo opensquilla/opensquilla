@@ -8,16 +8,22 @@ OVERVIEW_CSS = Path("src/opensquilla/gateway/static/css/views/overview.css")
 HEALTH_JS = Path("src/opensquilla/gateway/static/js/views/health.js")
 HEALTH_CSS = Path("src/opensquilla/gateway/static/css/views/health.css")
 INDEX_HTML = Path("src/opensquilla/gateway/templates/index.html")
+VUE_SHARED_ROUTES = Path("opensquilla-webui/src/router/sharedRoutes.ts")
+VUE_HEALTH_VIEW = Path("opensquilla-webui/src/views/HealthView.vue")
 
 
 def test_health_view_is_registered_and_loaded() -> None:
     app = APP_JS.read_text(encoding="utf-8")
-    index = INDEX_HTML.read_text(encoding="utf-8")
+    shared_routes = VUE_SHARED_ROUTES.read_text(encoding="utf-8")
 
     assert "_renderStandardView(HealthView, el)" in app
     assert 'data-path="/health"' in app
-    assert "views/health.js" in index
-    assert "views/health.css" in index
+    # The Vue shell folds readiness/doctor into Overview; the /health deep link
+    # stays valid as a redirect rather than a standalone view.
+    assert "path: '/health'" in shared_routes
+    assert "redirect: '/overview'" in shared_routes
+    assert "HealthView.vue" not in shared_routes
+    assert not VUE_HEALTH_VIEW.exists()
 
 
 def test_health_view_calls_doctor_status_and_renders_fix_steps() -> None:

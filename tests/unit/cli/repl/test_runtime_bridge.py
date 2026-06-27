@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -10,6 +12,9 @@ from opensquilla.cli.repl import gateway_runtime, standalone_runtime
 from opensquilla.cli.repl.session_state import ChatSessionState
 from opensquilla.cli.repl.stream import TurnResult
 from opensquilla.engine.commands import Surface
+
+REMOVED_TEXT_BACKEND = "text" + "ual"
+REMOVED_BACKEND_IDS = ["terminal", REMOVED_TEXT_BACKEND, f"live-{REMOVED_TEXT_BACKEND}"]
 
 
 async def _fake_gateway_stream(*args: Any, **kwargs: Any) -> TurnResult:
@@ -26,6 +31,53 @@ async def _fake_standalone_stream(*args: Any, **kwargs: Any) -> TurnResult:
 
 def _fake_error_panel(message: str, *, title: str = "Error") -> Panel:
     return Panel(message, title=title)
+
+
+class _FakeStreamOutput:
+    async def __aenter__(self):
+        return lambda _payload: None
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None
+
+
+class _FakeOutputHandle:
+    approval_surface = Surface.CLI_GATEWAY
+
+    async def write_through(self, payload: str) -> None:
+        return None
+
+    def stream_output(self) -> _FakeStreamOutput:
+        return _FakeStreamOutput()
+
+    def set_toolbar(self, key: str, value: object | None) -> None:
+        return None
+
+    def invalidate(self) -> None:
+        return None
+
+
+class _FakeTuiSurface:
+    output_handle = _FakeOutputHandle()
+
+    async def next_line(self) -> str | None:
+        return None
+
+    def set_cancel_callback(self, cb) -> None:
+        return None
+
+    def set_shutdown_callback(self, cb) -> None:
+        return None
+
+    def emit_eof(self) -> None:
+        return None
+
+    async def write_through(self, payload: str) -> None:
+        return None
+
+    @property
+    def redraw_callback(self):
+        return lambda: None
 
 
 class _RecordingConsole:
@@ -182,6 +234,177 @@ async def test_gateway_runtime_bridge_owns_default_turn_callbacks(
     deps = cast(gateway_runtime.GatewayRuntimeDependencies, captured["deps"])
     assert deps.stream_response is runtime_bridge.stream_response_gateway
     assert deps.handle_slash_command is runtime_bridge.handle_gateway_slash_command
+
+
+@pytest.mark.asyncio
+async def test_run_concurrent_repl_defaults_to_native_bridge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.cli.repl import runtime_bridge
+
+    monkeypatch.delenv("OPENSQUILLA_TUI_BACKEND", raising=False)
+    calls: list[dict[str, Any]] = []
+
+    async def fake_native_repl(**kwargs: Any) -> None:
+        calls.append(kwargs)
+
+    async def fake_dispatch(_value: str) -> bool:
+        return True
+
+    scope: dict[str, Any] = {}
+    monkeypatch.setattr(runtime_bridge._native_bridge, "run_concurrent_repl", fake_native_repl)
+
+    await runtime_bridge.run_concurrent_repl(
+        surface=Surface.CLI_GATEWAY,
+        scope=scope,
+        dispatch=fake_dispatch,
+    )
+
+    assert calls == [
+        {
+            "surface": Surface.CLI_GATEWAY,
+            "scope": scope,
+            "dispatch": fake_dispatch,
+            "queue_max_size": runtime_bridge.PENDING_QUEUE_MAX_SIZE,
+            "abort_active_turn": None,
+        }
+    ]
+
+
+@pytest.mark.parametrize("backend_id", REMOVED_BACKEND_IDS)
+def test_validate_tui_backend_selection_rejects_removed_backends(
+    monkeypatch: pytest.MonkeyPatch,
+    backend_id: str,
+) -> None:
+    from opensquilla.cli.repl import runtime_bridge
+
+    monkeypatch.setenv("OPENSQUILLA_TUI_BACKEND", backend_id)
+
+    with pytest.raises(ValueError) as exc_info:
+        runtime_bridge.validate_tui_backend_selection()
+
+    assert "Unsupported TUI backend" in str(exc_info.value)
+    assert backend_id in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_run_concurrent_repl_uses_opentui_bridge_when_selected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.cli.repl import runtime_bridge
+
+    monkeypatch.setenv("OPENSQUILLA_TUI_BACKEND", "opentui")
+    calls: list[dict[str, Any]] = []
+
+    async def fake_opentui_repl(**kwargs: Any) -> None:
+        calls.append(kwargs)
+
+    async def fake_dispatch(_value: str) -> bool:
+        return True
+
+    scope: dict[str, Any] = {}
+    monkeypatch.setattr(
+        runtime_bridge,
+        "validate_tui_backend_selection",
+        lambda env=None: "opentui",
+    )
+    monkeypatch.setattr(runtime_bridge._opentui_bridge, "run_concurrent_repl", fake_opentui_repl)
+
+    await runtime_bridge.run_concurrent_repl(
+        surface=Surface.CLI_GATEWAY,
+        scope=scope,
+        dispatch=fake_dispatch,
+        queue_max_size=5,
+    )
+
+    assert calls == [
+        {
+            "surface": Surface.CLI_GATEWAY,
+            "scope": scope,
+            "dispatch": fake_dispatch,
+            "queue_max_size": 5,
+            "abort_active_turn": None,
+        }
+    ]
+
+
+def test_turn_stream_dependencies_use_native_renderer_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.cli.repl import runtime_bridge
+    from opensquilla.cli.tui.native.renderer import NativeStreamRenderer
+
+    monkeypatch.delenv("OPENSQUILLA_TUI_BACKEND", raising=False)
+
+    deps = runtime_bridge._turn_stream_dependencies()
+
+    assert deps.renderer_factory is NativeStreamRenderer
+
+
+def test_turn_stream_dependencies_use_opentui_renderer_when_selected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.cli.repl import runtime_bridge
+    from opensquilla.cli.tui.opentui.renderer import OpenTuiStreamRenderer
+
+    monkeypatch.setattr(
+        runtime_bridge,
+        "validate_tui_backend_selection",
+        lambda env=None: "opentui",
+    )
+
+    deps = runtime_bridge._turn_stream_dependencies()
+
+    assert deps.renderer_factory is OpenTuiStreamRenderer
+
+
+@pytest.mark.asyncio
+async def test_opentui_chat_runtime_exposes_launch_scoped_plugin_manager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.cli.tui.backend.plugins import TuiPluginManager
+    from opensquilla.cli.tui.opentui import runtime as opentui_runtime
+    from opensquilla.cli.tui.plugins.router_hud import RouterHudPlugin
+
+    scope: dict[str, object] = {}
+    captured: dict[str, object] = {}
+    fake_surface = _FakeTuiSurface()
+
+    @asynccontextmanager
+    async def fake_open_opentui_surface(**_kwargs: object):
+        yield fake_surface
+
+    async def fake_run_tui_runtime(**kwargs: object):
+        hooks = kwargs["hooks"]
+        assert not opentui_runtime.get_tui_output(scope)
+        hooks.expose_surface(fake_surface)
+        output = opentui_runtime.get_tui_output(scope)
+        captured["output"] = output
+        captured["manager"] = getattr(output, "plugin_manager", None)
+        hooks.clear_exposed_surface()
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        opentui_runtime,
+        "open_opentui_surface",
+        fake_open_opentui_surface,
+    )
+    monkeypatch.setattr(opentui_runtime, "run_tui_runtime", fake_run_tui_runtime)
+
+    async def fake_dispatch(_value: str) -> bool:
+        return True
+
+    await opentui_runtime.run_opentui_chat_runtime(
+        surface=Surface.CLI_GATEWAY,
+        scope=scope,
+        dispatch=fake_dispatch,
+        queue_max_size=8,
+    )
+
+    assert opentui_runtime.get_tui_output(scope) is None
+    manager = captured["manager"]
+    assert isinstance(manager, TuiPluginManager)
+    assert any(isinstance(plugin, RouterHudPlugin) for plugin in manager.plugins)
 
 
 @pytest.mark.asyncio

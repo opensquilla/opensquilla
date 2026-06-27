@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +13,7 @@ from opensquilla.artifacts import (
     DEFAULT_ARTIFACT_MAX_BYTES,
     ArtifactBudgetError,
     ArtifactIntegrityError,
+    ArtifactNotFoundError,
     ArtifactStore,
     artifact_payload,
 )
@@ -126,6 +129,65 @@ def test_artifact_store_uses_short_material_paths_for_uuid_sessions(tmp_path: Pa
     assert resolved_path == material_path
 
 
+def test_artifact_store_resolves_legacy_short_material_paths(tmp_path: Path) -> None:
+    store = ArtifactStore(tmp_path)
+    session_id = "532d5065-abce-499f-97b0-bbf2a067d5ab"
+
+    ref = store.publish_bytes(
+        b"pptx",
+        session_id=session_id,
+        session_key="agent:main:webchat:default",
+        name="brief.pptx",
+        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        source="publish_artifact",
+    )
+
+    current_dir = store.path_for(ref).parent
+    legacy_session_token = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:16]
+    legacy_artifact_token = hashlib.sha256(ref.id.encode("utf-8")).hexdigest()[:16]
+    legacy_dir = tmp_path / "artifacts" / "s" / legacy_session_token / legacy_artifact_token
+    legacy_dir.parent.mkdir(parents=True)
+    current_dir.rename(legacy_dir)
+
+    resolved_ref, resolved_path = store.resolve_for_download(ref.id, session_id=session_id)
+
+    assert resolved_ref == ref
+    assert resolved_path == legacy_dir / "data"
+
+
+def test_artifact_store_resolves_legacy_short_thumbnail_paths(tmp_path: Path) -> None:
+    from PIL import Image
+
+    store = ArtifactStore(tmp_path)
+    session_id = "532d5065-abce-499f-97b0-bbf2a067d5ab"
+    out = io.BytesIO()
+    Image.new("RGB", (8, 8), color="red").save(out, format="PNG")
+
+    ref = store.publish_bytes(
+        out.getvalue(),
+        session_id=session_id,
+        session_key="agent:main:webchat:default",
+        name="chart.png",
+        mime="image/png",
+        source="publish_artifact",
+    )
+    assert ref.has_thumbnail is True
+
+    current_dir = store.path_for(ref).parent
+    legacy_session_token = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:16]
+    legacy_artifact_token = hashlib.sha256(ref.id.encode("utf-8")).hexdigest()[:16]
+    legacy_dir = tmp_path / "artifacts" / "s" / legacy_session_token / legacy_artifact_token
+    legacy_dir.parent.mkdir(parents=True)
+    current_dir.rename(legacy_dir)
+
+    thumbnail = store.resolve_thumbnail_for_download(ref.id, session_id=session_id)
+
+    assert thumbnail is not None
+    resolved_ref, thumbnail_path = thumbnail
+    assert resolved_ref == ref
+    assert thumbnail_path == legacy_dir / "thumb.webp"
+
+
 def test_artifact_payload_omits_session_key_and_query_token(tmp_path: Path) -> None:
     store = ArtifactStore(tmp_path)
     ref = store.publish_bytes(
@@ -142,6 +204,57 @@ def test_artifact_payload_omits_session_key_and_query_token(tmp_path: Path) -> N
     assert "session_key" not in payload
     assert "sessionKey" not in json.dumps(payload)
     assert payload["download_url"] == f"/api/v1/artifacts/{ref.id}"
+
+
+def test_artifact_payload_keeps_thumbnail_url_across_persist_and_replay() -> None:
+    # Live event carries the internal has_thumbnail boolean; the public payload
+    # exposes only the reconstructed thumbnail_url string.
+    live = artifact_payload(
+        SimpleNamespace(
+            id="art-bmYMIceM2Ddx3rkFM4BOmZ7A",
+            kind="artifact_ref",
+            sha256="a" * 64,
+            name="chart.png",
+            mime="image/png",
+            size=954199,
+            session_id="session-1",
+            source="publish_artifact",
+            created_at="2026-06-13T00:00:00Z",
+            store="artifacts",
+            download_url="/api/v1/artifacts/art-bmYMIceM2Ddx3rkFM4BOmZ7A",
+            has_thumbnail=True,
+        )
+    )
+    assert "has_thumbnail" not in live
+    assert live["thumbnail_url"] == "/api/v1/artifacts/art-bmYMIceM2Ddx3rkFM4BOmZ7A?variant=thumb"
+
+    # Replaying the persisted public payload (which no longer carries the boolean)
+    # must rebuild the same thumbnail_url instead of falling back to the full file.
+    persisted = json.loads(json.dumps(live))
+    replayed = artifact_payload(persisted)
+    assert replayed["thumbnail_url"] == live["thumbnail_url"]
+
+
+def test_artifact_payload_omits_thumbnail_url_without_thumbnail() -> None:
+    no_thumb = artifact_payload(
+        SimpleNamespace(
+            id="art-NoThumbXXXXXXXXXXXXXXXXX",
+            kind="artifact_ref",
+            sha256="b" * 64,
+            name="doc.pdf",
+            mime="application/pdf",
+            size=1000,
+            session_id="session-1",
+            source="publish_artifact",
+            created_at="2026-06-13T00:00:00Z",
+            store="artifacts",
+            download_url="/api/v1/artifacts/art-NoThumbXXXXXXXXXXXXXXXXX",
+            has_thumbnail=False,
+        )
+    )
+    assert "thumbnail_url" not in no_thumb
+    replayed = artifact_payload(json.loads(json.dumps(no_thumb)))
+    assert "thumbnail_url" not in replayed
 
 
 def test_artifact_store_preserves_unicode_filename_and_normalizes_mime_params(
@@ -649,3 +762,174 @@ async def test_publish_artifact_tool_rejects_missing_workspace_and_escape(tmp_pa
             await publish_artifact(path="../outside.txt")
     finally:
         current_tool_context.reset(token)
+
+
+def test_copy_session_artifacts_rebinds_to_child_and_preserves_isolation(
+    tmp_path: Path,
+) -> None:
+    store = ArtifactStore(tmp_path)
+    ref = store.publish_bytes(
+        b"deliverable bytes",
+        session_id="parent-1",
+        session_key="agent:main:webchat:parent-1",
+        name="report.txt",
+        mime="text/plain",
+        source="publish_artifact",
+    )
+
+    # Before the copy the child cannot see the parent's artifact.
+    with pytest.raises(ArtifactNotFoundError):
+        store.resolve_for_download(ref.id, session_id="child-1")
+
+    copied = store.copy_session_artifacts(
+        source_session_id="parent-1",
+        target_session_id="child-1",
+        target_session_key="agent:main:webchat:child-1",
+    )
+    assert copied == 1
+
+    child_ref, child_path = store.resolve_for_download(ref.id, session_id="child-1")
+    assert child_path.read_bytes() == b"deliverable bytes"
+    assert child_ref.id == ref.id  # stable id keeps the transcript/URL linkage valid
+    assert child_ref.session_id == "child-1"
+    assert child_ref.session_key == "agent:main:webchat:child-1"
+    assert child_ref.sha256 == ref.sha256
+
+    # The parent still owns its copy and an unrelated session stays blocked.
+    parent_ref, _ = store.resolve_for_download(ref.id, session_id="parent-1")
+    assert parent_ref.session_id == "parent-1"
+    with pytest.raises(ArtifactNotFoundError):
+        store.resolve_for_download(ref.id, session_id="stranger")
+
+    # Re-copying is idempotent: nothing new is materialized.
+    assert (
+        store.copy_session_artifacts(
+            source_session_id="parent-1",
+            target_session_id="child-1",
+            target_session_key="agent:main:webchat:child-1",
+        )
+        == 0
+    )
+
+
+def test_copy_session_artifacts_carries_thumbnail(tmp_path: Path) -> None:
+    from PIL import Image
+
+    store = ArtifactStore(tmp_path)
+    out = io.BytesIO()
+    Image.new("RGB", (8, 8), color="red").save(out, format="PNG")
+    ref = store.publish_bytes(
+        out.getvalue(),
+        session_id="parent-1",
+        session_key="agent:main:webchat:parent-1",
+        name="chart.png",
+        mime="image/png",
+        source="publish_artifact",
+    )
+    assert ref.has_thumbnail is True
+
+    store.copy_session_artifacts(
+        source_session_id="parent-1",
+        target_session_id="child-1",
+        target_session_key="agent:main:webchat:child-1",
+    )
+
+    thumbnail = store.resolve_thumbnail_for_download(ref.id, session_id="child-1")
+    assert thumbnail is not None
+    _, thumb_path = thumbnail
+    assert thumb_path.exists()
+
+
+def test_copy_session_artifacts_reads_legacy_short_layout(tmp_path: Path) -> None:
+    store = ArtifactStore(tmp_path)
+    session_id = "532d5065-abce-499f-97b0-bbf2a067d5ab"
+    ref = store.publish_bytes(
+        b"legacy material",
+        session_id=session_id,
+        session_key="agent:main:webchat:legacy",
+        name="old.txt",
+        mime="text/plain",
+        source="publish_artifact",
+    )
+
+    # Relocate the artifact into the 16-char legacy session/artifact layout.
+    current_dir = store.path_for(ref).parent
+    legacy_session_token = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:16]
+    legacy_artifact_token = hashlib.sha256(ref.id.encode("utf-8")).hexdigest()[:16]
+    legacy_dir = tmp_path / "artifacts" / "s" / legacy_session_token / legacy_artifact_token
+    legacy_dir.parent.mkdir(parents=True)
+    current_dir.rename(legacy_dir)
+
+    copied = store.copy_session_artifacts(
+        source_session_id=session_id,
+        target_session_id="child-1",
+        target_session_key="agent:main:webchat:child-1",
+    )
+    assert copied == 1
+    _, child_path = store.resolve_for_download(ref.id, session_id="child-1")
+    assert child_path.read_bytes() == b"legacy material"
+
+
+def test_copy_session_artifacts_reads_legacy_plain_layout(tmp_path: Path) -> None:
+    from opensquilla.artifacts import _safe_token
+
+    store = ArtifactStore(tmp_path)
+    session_id = "plain-session"
+    ref = store.publish_bytes(
+        b"plain layout material",
+        session_id=session_id,
+        session_key="agent:main:webchat:plain",
+        name="legacy.txt",
+        mime="text/plain",
+        source="publish_artifact",
+    )
+
+    # Relocate into the oldest "plain" layout where the material file is named by the
+    # sha (not "data"): artifacts/<safe_token(session)>/<artifact-id>/<sha256>.
+    current_dir = store.path_for(ref).parent
+    plain_dir = tmp_path / "artifacts" / _safe_token(session_id) / ref.id
+    plain_dir.mkdir(parents=True)
+    (current_dir / "data").rename(plain_dir / ref.sha256)
+    (current_dir / "meta.json").rename(plain_dir / "meta.json")
+
+    copied = store.copy_session_artifacts(
+        source_session_id=session_id,
+        target_session_id="child-1",
+        target_session_key="agent:main:webchat:child-1",
+    )
+    assert copied == 1
+    _, child_path = store.resolve_for_download(ref.id, session_id="child-1")
+    assert child_path.read_bytes() == b"plain layout material"
+
+
+def test_copy_session_artifacts_skips_artifact_with_missing_material(tmp_path: Path) -> None:
+    store = ArtifactStore(tmp_path)
+    good = store.publish_bytes(
+        b"good bytes",
+        session_id="parent-1",
+        session_key="agent:main:webchat:parent-1",
+        name="good.txt",
+        mime="text/plain",
+        source="publish_artifact",
+    )
+    bad = store.publish_bytes(
+        b"vanishing bytes",
+        session_id="parent-1",
+        session_key="agent:main:webchat:parent-1",
+        name="bad.txt",
+        mime="text/plain",
+        source="publish_artifact",
+    )
+    # Drop the bad artifact's material, leaving its meta.json behind.
+    store.path_for(bad).unlink()
+
+    copied = store.copy_session_artifacts(
+        source_session_id="parent-1",
+        target_session_id="child-1",
+        target_session_key="agent:main:webchat:child-1",
+    )
+    assert copied == 1  # only the artifact with intact material is carried
+    _, child_path = store.resolve_for_download(good.id, session_id="child-1")
+    assert child_path.read_bytes() == b"good bytes"
+    with pytest.raises(ArtifactNotFoundError):
+        store.resolve_for_download(bad.id, session_id="child-1")

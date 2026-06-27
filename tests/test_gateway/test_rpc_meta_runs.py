@@ -426,8 +426,27 @@ async def test_meta_runs_read_only_requires_session_key_for_history(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_meta_runs_read_only_denies_arbitrary_session_key(tmp_path: Path) -> None:
+async def test_meta_runs_read_only_allows_session_scoped_history(tmp_path: Path) -> None:
     writer, run_id = _seed_writer(tmp_path)
+    other_plan = MetaPlan(
+        name="beta-skill",
+        triggers=("beta request",),
+        priority=10,
+        steps=(MetaStep(id="s1", skill="writer", kind="agent", label="Write"),),
+    )
+    other_run_id = writer.begin_run_sync(
+        meta_skill_name="beta-skill",
+        meta_plan=other_plan,
+        triggered_by="soft_meta_invoke",
+        inputs={"user_message": "Write a beta brief"},
+        session_key="sess-2",
+        turn_id="turn-2",
+    )
+    writer.finish_run_sync(
+        run_id=other_run_id,
+        status="ok",
+        result=MetaResult(ok=True, final_text="done"),
+    )
     read_only = Principal(
         role="operator",
         scopes=frozenset({READ_SCOPE}),
@@ -442,14 +461,15 @@ async def test_meta_runs_read_only_denies_arbitrary_session_key(tmp_path: Path) 
             {"sessionKey": "sess-1", "limit": 5},
             ctx,
         )
-        assert res.error is not None
-        assert res.error.code == ERROR_UNAUTHORIZED
+        assert res.error is None, res.error
+        assert [run["run_id"] for run in res.payload["runs"]] == [run_id]
+        assert all(run["session_key"] == "sess-1" for run in res.payload["runs"])
     finally:
         writer.close()
 
 
 @pytest.mark.asyncio
-async def test_meta_runs_failures_read_only_denies_arbitrary_session_key(
+async def test_meta_runs_failures_read_only_allows_session_scoped_history(
     tmp_path: Path,
 ) -> None:
     writer, run_id = _seed_writer(tmp_path)
@@ -457,6 +477,25 @@ async def test_meta_runs_failures_read_only_denies_arbitrary_session_key(
         run_id=run_id,
         status="failed",
         result=MetaResult(ok=False, error="failed", failed_step_id="s1"),
+    )
+    other_plan = MetaPlan(
+        name="beta-skill",
+        triggers=("beta request",),
+        priority=10,
+        steps=(MetaStep(id="s1", skill="writer", kind="agent", label="Write"),),
+    )
+    other_run_id = writer.begin_run_sync(
+        meta_skill_name="beta-skill",
+        meta_plan=other_plan,
+        triggered_by="soft_meta_invoke",
+        inputs={"user_message": "Write a beta brief"},
+        session_key="sess-2",
+        turn_id="turn-2",
+    )
+    writer.finish_run_sync(
+        run_id=other_run_id,
+        status="failed",
+        result=MetaResult(ok=False, error="other failed", failed_step_id="s1"),
     )
     read_only = Principal(
         role="operator",
@@ -472,8 +511,9 @@ async def test_meta_runs_failures_read_only_denies_arbitrary_session_key(
             {"sessionKey": "sess-1", "limit": 5},
             ctx,
         )
-        assert res.error is not None
-        assert res.error.code == ERROR_UNAUTHORIZED
+        assert res.error is None, res.error
+        assert [run["run_id"] for run in res.payload["runs"]] == [run_id]
+        assert all(run["session_key"] == "sess-1" for run in res.payload["runs"])
     finally:
         writer.close()
 

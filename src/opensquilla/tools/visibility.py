@@ -75,6 +75,7 @@ _CHANNEL_DEFAULT_ALLOW: frozenset[str] = frozenset(
         "voice_clone",
         "voice_convert",
         "voice_search",
+        "web_discover",
         "web_fetch",
         "web_search",
     }

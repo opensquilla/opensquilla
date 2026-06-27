@@ -102,6 +102,27 @@ def test_resolve_agent_iteration_timeout_invalid_env_falls_through(
     assert runner._resolve_agent_iteration_timeout("agent:main:test") == 333.0
 
 
+def test_resolve_agent_iteration_timeout_floors_to_5400_in_coding_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENSQUILLA_AGENT_ITERATION_TIMEOUT", raising=False)
+    cfg = GatewayConfig(agent_iteration_timeout_seconds=600.0)
+    cfg.skills.coding_mode = True  # coding mode waits on code-task up to 90 min
+    runner = TurnRunner(provider_selector=None, config=cfg)
+    # the per-iteration watchdog is floored so a long process(wait) is not clamped
+    assert runner._resolve_agent_iteration_timeout("agent:main:test") == 5400.0
+
+
+def test_resolve_agent_iteration_timeout_no_floor_when_coding_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENSQUILLA_AGENT_ITERATION_TIMEOUT", raising=False)
+    cfg = GatewayConfig(agent_iteration_timeout_seconds=600.0)
+    runner = TurnRunner(provider_selector=None, config=cfg)
+    # coding mode OFF -> the configured small value is preserved (no floor)
+    assert runner._resolve_agent_iteration_timeout("agent:main:test") == 600.0
+
+
 def test_resolve_agent_iteration_timeout_rejects_invalid_explicit_value() -> None:
     runner = TurnRunner(provider_selector=None, config=GatewayConfig())
 

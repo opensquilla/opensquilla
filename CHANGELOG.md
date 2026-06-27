@@ -8,7 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- OpenTUI preview backend documentation now covers explicit opt-in usage,
+  dependency setup, replay benchmarks, and real-terminal harness evidence.
+
 ### Changed
+
+- Terminal chat documentation now distinguishes the stable Python-native default
+  backend from the opt-in OpenTUI preview backend.
+- Meta-skills are now **manual-only by default**. They no longer auto-trigger from
+  message keywords or appear in the runtime prompt; run them explicitly with the
+  new `/meta` command (`/meta` lists available meta-skills, `/meta <name>` runs
+  one). To restore the previous automatic behavior, set
+  `meta_skill.auto_trigger = true`. Full list+run is available in web chat and the
+  CLI gateway TUI; the channel and standalone CLI surfaces support `/meta` listing
+  only.
 
 ### Fixed
 

@@ -369,7 +369,7 @@ def test_upsert_router_forces_image_model_role_invariants():
         tiers={
             "image_model": {
                 "provider": "openrouter",
-                "model": "anthropic/claude-opus-4.7",
+                "model": "anthropic/claude-opus-4.8",
                 "supportsImage": False,
                 "image_only": False,
             }
@@ -377,7 +377,7 @@ def test_upsert_router_forces_image_model_role_invariants():
     )
 
     image_tier = res.config.squilla_router.tiers["image_model"]
-    assert image_tier["model"] == "anthropic/claude-opus-4.7"
+    assert image_tier["model"] == "anthropic/claude-opus-4.8"
     assert image_tier["supports_image"] is True
     assert image_tier["image_only"] is True
 
@@ -521,6 +521,21 @@ def test_upsert_search_provider_configures_brave():
     assert res.public_payload["api_key"] == REDACTED_PLACEHOLDER
 
 
+def test_upsert_search_provider_configures_tavily_with_api_key():
+    cfg = GatewayConfig()
+    res = upsert_search_provider(
+        cfg,
+        provider_id="tavily",
+        api_key="tavily-key",
+    )
+
+    assert res.config.search_provider == "tavily"
+    assert res.config.search_api_key == "tavily-key"
+    assert res.config.search_api_key_env == ""
+    assert res.public_payload["api_key"] == REDACTED_PLACEHOLDER
+    assert res.public_payload["api_key_source"] == "explicit"
+
+
 def test_upsert_search_provider_strips_trailing_paste_punctuation_from_api_key():
     cfg = GatewayConfig()
     res = upsert_search_provider(cfg, provider_id="brave", api_key="brave-key、")
@@ -539,6 +554,21 @@ def test_upsert_search_provider_can_use_env_key_reference():
     assert res.config.search_provider == "brave"
     assert res.config.search_api_key == ""
     assert res.config.search_api_key_env == "BRAVE_SEARCH_API_KEY"
+    assert res.public_payload["api_key_source"] == "env"
+
+
+def test_upsert_search_provider_can_use_tavily_env_key_reference():
+    cfg = GatewayConfig()
+    res = upsert_search_provider(
+        cfg,
+        provider_id="tavily",
+        api_key="",
+        api_key_env="TAVILY_API_KEY",
+    )
+
+    assert res.config.search_provider == "tavily"
+    assert res.config.search_api_key == ""
+    assert res.config.search_api_key_env == "TAVILY_API_KEY"
     assert res.public_payload["api_key_source"] == "env"
 
 
@@ -638,7 +668,7 @@ def test_search_provider_requiring_key_rejects_missing_key():
 def test_unsupported_search_provider_rejected():
     cfg = GatewayConfig()
     with pytest.raises(ValueError, match="not runtime-supported"):
-        upsert_search_provider(cfg, provider_id="tavily", api_key="k")
+        upsert_search_provider(cfg, provider_id="perplexity", api_key="k")
 
 
 def test_upsert_channel_preserves_secret_when_blank():

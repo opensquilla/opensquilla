@@ -6,23 +6,33 @@ from opensquilla.search.types import SearchProvider, SearchProviderSpec
 
 _providers: dict[str, type[SearchProvider]] = {}
 _provider_specs: dict[str, SearchProviderSpec] = {
+    "bocha": SearchProviderSpec(
+        provider_id="bocha",
+        requires_api_key=True,
+        env_key="BOCHA_SEARCH_API_KEY",
+        capabilities=frozenset({"web", "freshness", "content"}),
+    ),
     "brave": SearchProviderSpec(
         provider_id="brave",
         requires_api_key=True,
         env_key="BRAVE_SEARCH_API_KEY",
+        capabilities=frozenset({"web", "freshness"}),
     ),
-    "duckduckgo": SearchProviderSpec(provider_id="duckduckgo"),
+    "duckduckgo": SearchProviderSpec(
+        provider_id="duckduckgo",
+        capabilities=frozenset({"web", "no_key"}),
+    ),
     "tavily": SearchProviderSpec(
         provider_id="tavily",
-        runtime_supported=False,
         requires_api_key=True,
         env_key="TAVILY_API_KEY",
+        capabilities=frozenset({"web", "freshness", "domain_filter"}),
     ),
     "exa": SearchProviderSpec(
         provider_id="exa",
-        runtime_supported=False,
         requires_api_key=True,
         env_key="EXA_API_KEY",
+        capabilities=frozenset({"web", "freshness", "domain_filter", "semantic", "content"}),
     ),
     "perplexity": SearchProviderSpec(
         provider_id="perplexity",

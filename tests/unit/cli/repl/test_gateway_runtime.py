@@ -21,10 +21,11 @@ def test_gateway_runtime_has_no_raw_prompt_application_dependency(monkeypatch) -
     )
 
     original_import = __import__
+    blocked_module = "prompt" + "_toolkit"
 
     def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):  # noqa: ANN001
-        if name == "prompt_toolkit" or name.startswith("prompt_toolkit."):
-            raise AssertionError(f"gateway runtime imported prompt_toolkit via {name}")
+        if name == blocked_module or name.startswith(f"{blocked_module}."):
+            raise AssertionError(f"gateway runtime imported {blocked_module} via {name}")
         return original_import(name, globals, locals, fromlist, level)
 
     monkeypatch.setattr("builtins.__import__", _guarded_import)
@@ -56,6 +57,62 @@ def test_gateway_session_context_mirrors_state_to_legacy_scope() -> None:
 
 
 @pytest.mark.asyncio
+async def test_gateway_runtime_connects_to_configured_gateway_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.cli.repl import gateway_runtime
+
+    class _FakeGatewayClient:
+        connected_url: str | None = None
+        connected_token: str | None = None
+        closed = False
+
+        async def connect(self, url: str, *, token: str | None = None) -> None:
+            type(self).connected_url = url
+            type(self).connected_token = token
+
+        async def create_session(self, model: str | None = None) -> str:
+            return "agent:main:new"
+
+        async def resolve_session(self, key: str) -> dict[str, str]:
+            return {"model": "gateway/resolved"}
+
+        async def close(self) -> None:
+            type(self).closed = True
+
+    monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", _FakeGatewayClient)
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_URL", "http://127.0.0.1:18790")
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_TOKEN", "branch-token")
+
+    async def fake_run_concurrent_repl(
+        *,
+        scope: gateway_runtime.GatewayRuntimeScope,
+        dispatch,
+        abort_active_turn=None,
+    ) -> None:
+        return None
+
+    deps = gateway_runtime.GatewayRuntimeDependencies(
+        stream_response=cast(Any, None),
+        handle_slash_command=cast(Any, None),
+        run_input_loop=fake_run_concurrent_repl,
+        get_tui_output=lambda _scope: None,
+        is_exit_command=lambda _value: False,
+        notify=lambda _notice: None,
+    )
+
+    await gateway_runtime.run_gateway_chat(
+        model=None,
+        session_id=None,
+        deps=deps,
+    )
+
+    assert _FakeGatewayClient.connected_url == "ws://127.0.0.1:18790/ws"
+    assert _FakeGatewayClient.connected_token == "branch-token"
+    assert _FakeGatewayClient.closed is True
+
+
+@pytest.mark.asyncio
 async def test_gateway_runtime_dispatches_messages_slash_commands_and_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -72,7 +129,7 @@ async def test_gateway_runtime_dispatches_messages_slash_commands_and_exit(
             self.abort_calls: list[str] = []
             _FakeGatewayClient.instances.append(self)
 
-        async def connect(self) -> None:
+        async def connect(self, url: str, *, token: str | None = None) -> None:
             self.connected = True
 
         async def create_session(self, model: str | None = None) -> str:
@@ -220,7 +277,7 @@ async def test_gateway_abort_targets_active_turn_session_after_session_changes(
             self.abort_calls: list[str] = []
             _FakeGatewayClient.instances.append(self)
 
-        async def connect(self) -> None:
+        async def connect(self, url: str, *, token: str | None = None) -> None:
             return None
 
         async def create_session(self, model: str | None = None) -> str:

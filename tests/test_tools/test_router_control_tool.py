@@ -51,7 +51,7 @@ async def test_router_control_set_hold_writes_store_and_requests_replay() -> Non
     assert result.terminates_turn is True
     assert payload["accepted"] is True
     assert payload["target_tier"] == "c3"
-    assert payload["target_model"] == "anthropic/claude-opus-4.7"
+    assert payload["target_model"] == "anthropic/claude-opus-4.8"
     assert payload["replay_required"] is True
     hold = ctx.router_control_hold_store.get_valid(ctx.session_key or "")
     assert hold is not None
@@ -69,8 +69,8 @@ async def test_router_control_rejects_alias_without_mutating_hold() -> None:
             tool_name="router_control",
             arguments={
                 "action": "set_hold",
-                "target_id": "Claude Opus 4.7",
-                "evidence": "use Claude Opus 4.7",
+                "target_id": "Claude Opus 4.8",
+                "evidence": "use Claude Opus 4.8",
             },
         )
     )
@@ -93,7 +93,7 @@ def test_router_control_tool_schema_includes_dynamic_target_enum() -> None:
     assert "enum" in target_schema
     assert "tier:c3" in target_schema["enum"]
     assert "tier:t3" not in target_schema["enum"]
-    assert "model:anthropic/claude-opus-4.7" not in target_schema["enum"]
+    assert "model:anthropic/claude-opus-4.8" not in target_schema["enum"]
 
 
 @pytest.mark.asyncio

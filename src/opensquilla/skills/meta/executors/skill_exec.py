@@ -71,6 +71,14 @@ async def run_skill_exec_step(
         raise RuntimeError(
             f"step {step.id!r}: skill {effective_skill!r} not found in loader",
         )
+    # Operator gate: a coding-mode / disabled skill stays unreachable even when
+    # a meta-skill composes it as a step (codex review — every reach path).
+    from opensquilla.skills.eligibility import is_skill_available_live
+
+    if not is_skill_available_live(effective_skill):
+        raise RuntimeError(
+            f"step {step.id!r}: skill {effective_skill!r} is gated by operator config",
+        )
     entrypoint = getattr(skill_spec, "entrypoint", None)
     if not isinstance(entrypoint, dict) or not entrypoint:
         raise RuntimeError(

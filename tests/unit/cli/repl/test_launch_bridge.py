@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import logging
+from io import StringIO
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -20,10 +23,15 @@ class FakeConsole:
         self.prints.append(payload)
 
 
+class FakeTerminalStream(StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
 def test_launch_bridge_prepares_terminal_and_quiets_logs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from opensquilla.cli.repl import launch_bridge
+    from opensquilla.cli.tui.adapters import launch_bridge
 
     calls: list[str] = []
 
@@ -48,8 +56,57 @@ def test_launch_bridge_prepares_terminal_and_quiets_logs(
     assert console.clears == 1
 
 
+def test_launch_bridge_routes_interactive_structlog_to_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import structlog
+
+    from opensquilla.cli.tui.adapters import launch_bridge
+
+    original_config = structlog.get_config()
+    root = logging.getLogger()
+    original_root_handlers = list(root.handlers)
+    original_root_level = root.level
+    monkeypatch.setenv("OPENSQUILLA_LOG_DIR", str(tmp_path))
+    monkeypatch.delenv("OPENSQUILLA_LOG_LEVEL", raising=False)
+    for handler in original_root_handlers:
+        root.removeHandler(handler)
+    terminal_stream = FakeTerminalStream()
+    root.addHandler(logging.StreamHandler(terminal_stream))
+
+    try:
+        launch_bridge.quiet_logs_for_interactive_chat()
+        structlog.get_logger("opensquilla.test").warning(
+            "ui.hidden_warning",
+            answer=42,
+        )
+        logging.getLogger("opensquilla.test").warning("ui.hidden_stdlib_warning")
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
+        assert terminal_stream.getvalue() == ""
+        log_text = (tmp_path / "interactive.log").read_text()
+        assert "ui.hidden_warning" in log_text
+        assert "ui.hidden_stdlib_warning" in log_text
+    finally:
+        for handler in list(root.handlers):
+            root.removeHandler(handler)
+            handler.close()
+        for handler in original_root_handlers:
+            root.addHandler(handler)
+        root.setLevel(original_root_level)
+        handle = getattr(launch_bridge, "_INTERACTIVE_STRUCTLOG_FILE", None)
+        if handle is not None:
+            handle.close()
+            setattr(launch_bridge, "_INTERACTIVE_STRUCTLOG_FILE", None)
+        structlog.configure(**original_config)
+
+
 def test_launch_bridge_rejects_non_interactive_input() -> None:
-    from opensquilla.cli.repl import launch_bridge
+    from opensquilla.cli.tui.adapters import launch_bridge
 
     class FakeStdin:
         def isatty(self) -> bool:
@@ -67,7 +124,7 @@ def test_launch_bridge_rejects_non_interactive_input() -> None:
 def test_launch_bridge_prints_standalone_banner_and_runs_standalone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from opensquilla.cli.repl import launch_bridge
+    from opensquilla.cli.tui.adapters import launch_bridge
 
     calls: list[dict[str, Any]] = []
     console = FakeConsole(is_terminal=True)
@@ -107,7 +164,7 @@ def test_launch_bridge_prints_standalone_banner_and_runs_standalone(
 def test_launch_bridge_warns_gateway_workspace_options_without_forwarding(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from opensquilla.cli.repl import launch_bridge
+    from opensquilla.cli.tui.adapters import launch_bridge
 
     calls: list[dict[str, Any]] = []
     console = FakeConsole(is_terminal=True)
@@ -139,7 +196,7 @@ def test_launch_chat_command_uses_typed_overrides() -> None:
         ChatCommandLaunchOverrides,
         ChatCommandRequest,
     )
-    from opensquilla.cli.repl import launch_bridge
+    from opensquilla.cli.tui.adapters import launch_bridge
 
     calls: list[dict[str, Any]] = []
 
@@ -184,7 +241,7 @@ def test_launch_chat_command_uses_typed_overrides() -> None:
 
 def test_launch_chat_command_keeps_legacy_override_mapping() -> None:
     from opensquilla.cli.chat.launch import ChatCommandRequest
-    from opensquilla.cli.repl import launch_bridge
+    from opensquilla.cli.tui.adapters import launch_bridge
 
     calls: list[dict[str, Any]] = []
 

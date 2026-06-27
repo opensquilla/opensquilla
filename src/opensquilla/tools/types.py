@@ -61,6 +61,7 @@ class ToolContext:
     workspace_file_writes: list[dict[str, Any]] = field(default_factory=list)
     allowed_tools: set[str] | None = None
     denied_tools: set[str] = field(default_factory=set)
+    coding_mode: bool = False  # operator coding-mode toggle (affects tool defaults)
     on_memory_source_write: Callable[[str, str], None] | None = None
     on_bootstrap_source_write: Callable[[str, str], None] | None = None
     # Elevated mode: None/"off" = sandboxed, "on" = host exec with approval,
@@ -117,6 +118,7 @@ CRON_AGENT_ALLOW: frozenset[str] = frozenset(
         "session_status",
         "sessions_history",
         "sessions_list",
+        "web_discover",
         "web_fetch",
         "web_search",
     }

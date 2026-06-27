@@ -35,7 +35,8 @@ class StaleEpochError(Exception):
 # Version 5 added structured compaction summary metadata.
 # Version 6 added portable/provider context state records.
 # Version 7 added archived transcript rows for canonical recovery after compaction.
-SCHEMA_VERSION = 7
+# Version 8 added the derived_title column for LLM-generated session titles.
+SCHEMA_VERSION = 8
 
 # SQLite CREATE statements derived from SQLModel metadata
 _CREATE_SESSIONS = """
@@ -87,6 +88,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     queue_mode TEXT NOT NULL DEFAULT 'steer',
     label TEXT,
     display_name TEXT,
+    derived_title TEXT,
     channel TEXT,
     group_id TEXT,
     subject TEXT,
@@ -96,6 +98,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     epoch INTEGER NOT NULL DEFAULT 0
 )
 """
+
+# Recency ordering for list_sessions and the title search (ORDER BY updated_at
+# DESC LIMIT). Without it both do a full table sort on every call.
+_CREATE_IDX_SESSIONS_UPDATED = (
+    "CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at)"
+)
 
 _CREATE_TRANSCRIPT = """
 CREATE TABLE IF NOT EXISTS transcript_entries (
@@ -380,6 +388,16 @@ def _deserialize_row(row: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _py_lower(value: Any) -> Any:
+    """Unicode-aware lowercase for the ``py_lower`` SQL function.
+
+    SQLite's built-in LIKE / lower() only case-fold ASCII, so non-ASCII title /
+    content search (Cyrillic, Greek, accented Latin, …) would otherwise be
+    case-sensitive. Registered per connection in ``connect``.
+    """
+    return value.lower() if isinstance(value, str) else value
+
+
 class SessionStorage:
     """Low-level async SQLite operations for session persistence."""
 
@@ -396,6 +414,11 @@ class SessionStorage:
     async def connect(self) -> None:
         self._conn = await aiosqlite.connect(self._db_path)
         self._conn.row_factory = aiosqlite.Row
+        # Unicode-aware case folding for non-ASCII LIKE search (see _py_lower).
+        # aiosqlite proxies create_function to sqlite3 at runtime; its stub omits it.
+        await self._conn.create_function(  # type: ignore[attr-defined]
+            "py_lower", 1, _py_lower, deterministic=True
+        )
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.execute("PRAGMA foreign_keys=ON")
         await self._initialize_schema()
@@ -440,11 +463,19 @@ class SessionStorage:
         await self._conn.commit()
         # Migrate older databases — add the epoch column if missing.
         await self._migrate_epoch_column()
+        await self._migrate_derived_title_column()
         await self._migrate_transcript_reasoning_content_column()
         await self._migrate_transcript_turn_usage_column()
         await self._migrate_summary_metadata_columns()
         await self._migrate_memory_durable_receipt_coverage_columns()
         await self._conn.execute(_CREATE_IDX_MEMORY_DURABLE_RECEIPTS_COVERAGE)
+        # Recency index for list_sessions / title search. Guarded on the column
+        # because a very old (pre-updated_at) sessions table can survive here
+        # without it — connect must not fail on those legacy databases.
+        async with self._conn.execute("PRAGMA table_info(sessions)") as cur:
+            session_columns = {row[1] for row in await cur.fetchall()}
+        if "updated_at" in session_columns:
+            await self._conn.execute(_CREATE_IDX_SESSIONS_UPDATED)
         await self._conn.commit()
         await self.mark_abandoned_agent_tasks()
 
@@ -472,6 +503,22 @@ class SessionStorage:
         if null_count > 0:
             await self._conn.execute(
                 "UPDATE sessions SET epoch = 0 WHERE epoch IS NULL"
+            )
+            await self._conn.commit()
+
+    async def _migrate_derived_title_column(self) -> None:
+        """Idempotently add the derived_title column to an existing sessions table.
+
+        Holds the LLM-generated session title. Sits between display_name (manual
+        rename) and subject in the title precedence, so it never overrides a name
+        the user set by hand. NULL is the natural default (no title generated yet).
+        """
+        assert self._conn is not None
+        async with self._conn.execute("PRAGMA table_info(sessions)") as cur:
+            columns = [row[1] for row in await cur.fetchall()]
+        if "derived_title" not in columns:
+            await self._conn.execute(
+                "ALTER TABLE sessions ADD COLUMN derived_title TEXT"
             )
             await self._conn.commit()
 
@@ -1185,6 +1232,49 @@ class SessionStorage:
             result.setdefault(sid, 0)
         return result
 
+    async def list_user_transcript_content_batch(
+        self,
+        session_ids: list[str],
+        *,
+        limit_per_session: int = 3,
+    ) -> dict[str, list[str]]:
+        """Return early user transcript content for many sessions.
+
+        ``sessions.list`` uses this to render semantic conversation titles
+        without issuing one transcript query per session row.
+        """
+        if not session_ids:
+            return {}
+        chunk = 300
+        result: dict[str, list[str]] = {sid: [] for sid in session_ids}
+        for i in range(0, len(session_ids), chunk):
+            batch = session_ids[i : i + chunk]
+            placeholders = ",".join(["?"] * len(batch))
+            sql = f"""
+                SELECT session_id, content
+                FROM (
+                    SELECT
+                        session_id,
+                        content,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY session_id
+                            ORDER BY created_at ASC, id ASC
+                        ) AS rn
+                    FROM transcript_entries
+                    WHERE session_id IN ({placeholders})
+                        AND role = 'user'
+                        AND COALESCE(content, '') != ''
+                )
+                WHERE rn <= ?
+                ORDER BY session_id ASC, rn ASC
+            """
+            async with self.conn.execute(sql, [*batch, limit_per_session]) as cur:
+                rows = await cur.fetchall()
+            for sid, content in rows:
+                if isinstance(content, str):
+                    result.setdefault(sid, []).append(content)
+        return result
+
     async def delete_transcript(self, session_id: str) -> None:
         await self.conn.execute(
             "DELETE FROM transcript_entries WHERE session_id = ?", (session_id,)
@@ -1618,6 +1708,132 @@ class SessionStorage:
         async with self.conn.execute(sql, params) as cur:
             rows = await cur.fetchall()
         return [dict(r) for r in rows]
+
+    @staticmethod
+    def _like_escape(raw: str) -> str:
+        """Escape LIKE wildcards so user input matches literally under ESCAPE '\\'."""
+        return raw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    @classmethod
+    def _like_tokens(cls, query: str, max_tokens: int = 10) -> list[str]:
+        """Whitespace-split a query into lowercased, wildcard-escaped LIKE patterns.
+
+        Each token becomes ``%token%`` and callers AND them, so multi-word and
+        mixed ASCII+CJK queries (e.g. ``deploy 部署``) match every term
+        independently instead of requiring one contiguous substring. Lowercased
+        to pair with the ``py_lower`` column side for Unicode case-insensitivity.
+        """
+        return [f"%{cls._like_escape(tok.lower())}%" for tok in query.split()[:max_tokens] if tok]
+
+    @staticmethod
+    def _needs_unicode_fold(query: str) -> bool:
+        """Whether a query needs the per-row ``py_lower`` to match case-insensitively.
+
+        Only non-ASCII *cased* scripts (Cyrillic, Greek, accented Latin, …) need
+        it. ASCII is folded by SQLite's own LIKE, and caseless scripts (CJK,
+        digits, symbols) don't differ by case — both take the faster plain-LIKE
+        path. So the (Chinese-dominant) common case never pays the fold cost.
+        """
+        return any(ord(ch) > 127 and ch.lower() != ch.upper() for ch in query)
+
+    @staticmethod
+    def _make_snippet(content: str, needle: str, window: int = 40) -> str:
+        """Build a ``>>>match<<<`` snippet around the first case-insensitive hit.
+
+        Mirrors the delimiter contract of the FTS ``snippet()`` output so the UI
+        highlighter treats LIKE and FTS results identically.
+        """
+        idx = content.lower().find(needle.lower())
+        if idx < 0:
+            return content[: window * 2]
+        end_match = idx + len(needle)
+        start = max(0, idx - window)
+        end = min(len(content), end_match + window)
+        prefix = "..." if start > 0 else ""
+        suffix = "..." if end < len(content) else ""
+        return (
+            f"{prefix}{content[start:idx]}>>>{content[idx:end_match]}<<<"
+            f"{content[end_match:end]}{suffix}"
+        )
+
+    async def search_sessions_by_title(
+        self,
+        query: str,
+        limit: int = 20,
+    ) -> list[SessionNode]:
+        """Substring match over title columns across ALL sessions (not a recent
+        page). Every whitespace-separated term must match in one of the title
+        columns (display_name / derived_title / subject / label). Matching is
+        case-insensitive: ASCII via SQLite's own LIKE, and cased non-ASCII scripts
+        via ``py_lower`` (only paid when the query actually contains one)."""
+        tokens = self._like_tokens(query)
+        if not tokens:
+            return []
+        col = (lambda c: f"py_lower({c})") if self._needs_unicode_fold(query) else (lambda c: c)
+        cols = ("display_name", "derived_title", "subject", "label")
+        clauses: list[str] = []
+        params: list[Any] = []
+        for token in tokens:
+            clauses.append("(" + " OR ".join(f"{col(c)} LIKE ? ESCAPE '\\'" for c in cols) + ")")
+            params.extend([token] * len(cols))
+        params.append(limit)
+        sql = (
+            f"SELECT * FROM sessions WHERE {' AND '.join(clauses)} "
+            "ORDER BY updated_at DESC LIMIT ?"
+        )
+        async with self.conn.execute(sql, params) as cur:
+            rows = await cur.fetchall()
+        return [SessionNode(**_deserialize_row(dict(r))) for r in rows]
+
+    async def search_transcript_like(
+        self,
+        query: str,
+        session_id: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Substring content search for queries the FTS tokenizer can't handle.
+
+        SQLite's default ``unicode61`` FTS tokenizer does not segment CJK and
+        other scripts, and ``sanitize_fts_query`` strips non-ASCII entirely, so
+        full-text search returns nothing for e.g. Chinese. Each whitespace term
+        must appear in the content, so mixed/multi-word queries match all terms;
+        cased non-ASCII scripts fold via ``py_lower`` (caseless CJK skips it for
+        speed). The handler only reaches this for non-ASCII queries (ASCII stays
+        on the indexed FTS path). Returns the same shape as ``search_transcript``.
+        """
+        tokens = self._like_tokens(query)
+        if not tokens:
+            return []
+        col = "py_lower(content)" if self._needs_unicode_fold(query) else "content"
+        clauses = [f"{col} LIKE ? ESCAPE '\\'" for _ in tokens]
+        params: list[Any] = list(tokens)
+        where = " AND ".join(clauses)
+        if session_id:
+            where += " AND session_id = ?"
+            params.append(session_id)
+        params.append(limit)
+        sql = (
+            "SELECT id, session_key, role, content, created_at "
+            f"FROM transcript_entries WHERE {where} "
+            "ORDER BY created_at DESC LIMIT ?"
+        )
+        async with self.conn.execute(sql, params) as cur:
+            rows = await cur.fetchall()
+        # Snippet highlights the first term; the others are guaranteed present too.
+        first_term = query.split()[0]
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            d = dict(r)
+            out.append(
+                {
+                    "id": d.get("id"),
+                    "session_key": d.get("session_key"),
+                    "role": d.get("role"),
+                    "created_at": d.get("created_at"),
+                    "snippet": self._make_snippet(str(d.get("content") or ""), first_term),
+                }
+            )
+        return out
 
     async def __aenter__(self) -> SessionStorage:
         await self.connect()

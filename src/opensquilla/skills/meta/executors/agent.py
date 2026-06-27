@@ -86,6 +86,14 @@ async def run_step_with_skill_stream(
         raise ValueError(
             f"step {step.id!r}: skill {effective_skill!r} not found in loader",
         )
+    # Operator gate: a coding-mode / disabled skill stays unreachable even when
+    # a meta-skill composes it as a step (codex review — every reach path).
+    from opensquilla.skills.eligibility import is_skill_available_live
+
+    if not is_skill_available_live(effective_skill):
+        raise ValueError(
+            f"step {step.id!r}: skill {effective_skill!r} is gated by operator config",
+        )
     if getattr(skill_spec, "kind", "skill") == "meta":
         raise ValueError(
             f"step {step.id!r}: cannot compose another meta-skill ({effective_skill!r})",
@@ -166,6 +174,14 @@ async def run_step_with_skill_text_only(
     if skill_spec is None:
         raise ValueError(
             f"step {step.id!r}: skill {effective_skill!r} not found in loader",
+        )
+    # Operator gate: a coding-mode / disabled skill stays unreachable even when
+    # a meta-skill composes it as a step (codex review — every reach path).
+    from opensquilla.skills.eligibility import is_skill_available_live
+
+    if not is_skill_available_live(effective_skill):
+        raise ValueError(
+            f"step {step.id!r}: skill {effective_skill!r} is gated by operator config",
         )
     if getattr(skill_spec, "kind", "skill") == "meta":
         raise ValueError(

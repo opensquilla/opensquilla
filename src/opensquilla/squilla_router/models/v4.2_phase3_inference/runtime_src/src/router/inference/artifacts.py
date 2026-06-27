@@ -53,7 +53,7 @@ class InferenceArtifacts:
     def load(cls, model_dir: str) -> InferenceArtifacts:
         root = Path(model_dir)
         manifest_path = root / "inference_manifest.json"
-        manifest = json.loads(manifest_path.read_text())
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
         if manifest.get("feature_dim") != 390:
             raise ValueError(

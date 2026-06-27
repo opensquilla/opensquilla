@@ -81,6 +81,9 @@ def transcript_entries_to_chat_messages(
         transcript_id = getattr(entry, "id", None)
         if transcript_id is not None:
             msg["transcript_id"] = transcript_id
+        reasoning = getattr(entry, "reasoning_content", None)
+        if isinstance(reasoning, str) and reasoning.strip():
+            msg["reasoning_content"] = reasoning
         if attachments:
             msg["attachments"] = attachments
         if artifacts:

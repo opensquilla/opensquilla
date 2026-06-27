@@ -191,7 +191,7 @@ class MatrixChannel:
         if not path.exists():
             return None
         try:
-            data = json.loads(path.read_text())
+            data = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as exc:
             log.warning("matrix.session_load_failed", error=str(exc))
             return None
@@ -216,7 +216,7 @@ class MatrixChannel:
             "device_id": device_id,
             "access_token": access_token,
         }
-        path.write_text(json.dumps(payload))
+        path.write_text(json.dumps(payload), encoding="utf-8")
 
     # ------------------------------------------------------------------
     # Olm gating
@@ -436,7 +436,7 @@ class MatrixChannel:
         )
 
     async def _on_room_message_media(self, room: Any, event: Any) -> None:
-        """Surface inbound media as a textual placeholder.
+        """Surface inbound media as a text placeholder.
 
         Image / audio / video / file events arrive as nio
         ``RoomMessageMedia`` subclasses. The adapter turns each into an

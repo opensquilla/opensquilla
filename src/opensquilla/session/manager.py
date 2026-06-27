@@ -178,6 +178,7 @@ class SessionManager:
         agent_registry: Any = None,
         task_runtime: Any = None,
         checkpoint_workspace_dir: str | Path | None = None,
+        media_root: str | Path | None = None,
     ) -> None:
         self._storage = storage
         self._memory_sync_notify = memory_sync_notify
@@ -190,6 +191,9 @@ class SessionManager:
             if checkpoint_workspace_dir is not None
             else None
         )
+        # Attachment/artifact media root, used to carry material into forked
+        # children; None disables the copy (e.g. in tests that never touch disk).
+        self._media_root = Path(media_root).expanduser() if media_root is not None else None
         # In-process epoch cache so _emit_to_subscribers can
         # read the current epoch without a DB round-trip on every event.
         # Invalidated (updated) whenever increment_epoch commits a new value.
@@ -623,11 +627,15 @@ class SessionManager:
         new_session_key: str,
         fork_transcript: bool = False,
         max_fork_tokens: int | None = None,
+        status: SessionStatus | str = SessionStatus.RUNNING,
     ) -> SessionNode:
         """
         Create a child session branched from parent.
         If fork_transcript=True and parent token budget permits, copy parent transcript
         as initial context in the child (forkedFromParent flag set).
+        ``status`` sets the child's initial lifecycle status; pass a resting
+        status such as ``SessionStatus.DONE`` when the child should not appear
+        as an active run until its first turn starts.
         """
         parent_session_key = canonicalize_session_key(parent_session_key)
         new_session_key = canonicalize_session_key(new_session_key)
@@ -646,7 +654,7 @@ class SessionManager:
             created_at=now,
             updated_at=now,
             started_at=now,
-            status=SessionStatus.RUNNING,
+            status=status,
             model=parent.model,
             model_provider=parent.model_provider,
             channel=parent.channel,
@@ -724,9 +732,58 @@ class SessionManager:
                         )
                     )
                 child.forked_from_parent = True
+                await self._copy_fork_materials(
+                    parent.session_id, child.session_id, new_session_key
+                )
 
         await self._storage.upsert_session(child)
         return child
+
+    async def _copy_fork_materials(
+        self,
+        source_session_id: str,
+        target_session_id: str,
+        target_session_key: str,
+    ) -> None:
+        """Carry a parent session's attachment/artifact material into a forked child.
+
+        ``branch`` copies transcript rows, but the artifact and attachment material
+        stores are keyed by session id, so without this the child's generated images,
+        generated files, and uploaded attachments resolve to an empty bucket and fail
+        to preview or replay. Runs off the event loop and never raises: a copy failure
+        must not abort the fork, whose session row is committed by the caller next.
+        """
+        media_root = self._media_root
+        if media_root is None:
+            return
+        import structlog as _structlog
+
+        _log = _structlog.get_logger(__name__)
+
+        def _run() -> None:
+            from opensquilla.artifacts import ArtifactStore
+            from opensquilla.attachment_refs import copy_transcript_material
+
+            ArtifactStore(media_root).copy_session_artifacts(
+                source_session_id=source_session_id,
+                target_session_id=target_session_id,
+                target_session_key=target_session_key,
+            )
+            copy_transcript_material(
+                media_root=media_root,
+                source_session_id=source_session_id,
+                target_session_id=target_session_id,
+            )
+
+        try:
+            await asyncio.to_thread(_run)
+        except Exception:
+            _log.warning(
+                "session.fork.material_copy_failed",
+                source_session_id=source_session_id,
+                target_session_id=target_session_id,
+                exc_info=True,
+            )
 
     # ── Transcript ───────────────────────────────────────────────────────────
 

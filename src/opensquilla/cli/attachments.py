@@ -8,9 +8,15 @@ from pathlib import Path
 from typing import Any
 
 from opensquilla.contracts.attachments import (
+    DOCX_MIME,
+    EML_MIME,
     IMAGE_ATTACHMENT_BYTES,
     MAX_STAGED_PDF_BYTES,
+    MBOX_MIME,
+    MSG_MIME,
+    PPTX_MIME,
     TEXT_ATTACHMENT_BYTES,
+    XLSX_MIME,
     can_stage_attachment_mime,
 )
 from opensquilla.contracts.attachments import (
@@ -41,6 +47,12 @@ CLI_ALLOWED_FILE_MIMES: dict[str, str] = {
     "htm": "text/html",
     "csv": "text/csv",
     "json": "application/json",
+    "docx": DOCX_MIME,
+    "xlsx": XLSX_MIME,
+    "pptx": PPTX_MIME,
+    "eml": EML_MIME,
+    "mbox": MBOX_MIME,
+    "msg": MSG_MIME,
 }
 CLI_TEXT_FAMILY_MIMES: frozenset[str] = frozenset(
     {
@@ -112,12 +124,42 @@ def _allowed_label() -> str:
     return ", ".join(sorted(set(CLI_ALLOWED_FILE_MIMES.values())))
 
 
+_TEXT_FALLBACK_MAX_SNIFF_BYTES = 4 * 1000 * 1000
+
+
+def _looks_like_utf8_text(path: Path) -> bool:
+    """True if the file is decodable UTF-8 with no NUL byte, mirroring the
+    gateway's unknown-text fallback so it is reachable from the CLI too."""
+
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return False
+    if size == 0 or size > _TEXT_FALLBACK_MAX_SNIFF_BYTES:
+        return False
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return False
+    if b"\x00" in data:
+        return False
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
 def mime_for_path(path: Path) -> str:
     ext = path.suffix.lower().lstrip(".")
     mime = CLI_ALLOWED_FILE_MIMES.get(ext)
-    if not mime:
-        raise ValueError(f"Unsupported format: .{ext}. Allowed: {_allowed_label()}")
-    return mime
+    if mime:
+        return mime
+    # Unknown extension: accept as plain text when the bytes are decodable UTF-8
+    # (the gateway re-validates); otherwise stay fail-closed.
+    if _looks_like_utf8_text(path):
+        return "text/plain"
+    raise ValueError(f"Unsupported format: .{ext}. Allowed: {_allowed_label()}")
 
 
 def _ensure_existing_file(path: Path) -> None:

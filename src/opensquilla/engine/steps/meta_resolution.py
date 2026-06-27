@@ -1190,6 +1190,16 @@ async def meta_resolution(ctx: TurnContext) -> TurnContext:
             _sticky_drop(session_id)
             return ctx
 
+    # Manual-only mode: automatic activation is disabled. Resume of an in-flight
+    # run is handled by the awaiting branch above and still works; here we
+    # short-circuit BEFORE any fresh keyword/semantic matching, soft-hint
+    # injection, model upgrade, or sticky-cache write, so meta-skills only run
+    # via the explicit /meta command.
+    from opensquilla.skills.meta.enabled import is_meta_auto_trigger_enabled
+
+    if not is_meta_auto_trigger_enabled(getattr(ctx, "config", None)):
+        return ctx
+
     # ── Original trigger-matching path (with sticky continuation) ──
     loader = ctx.metadata.get("skill_loader")
     if loader is None:

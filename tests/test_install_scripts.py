@@ -131,3 +131,17 @@ def test_windows_installer_bootstraps_vc_redist_for_router_runtime() -> None:
         assert "safe router fallback" in ps1
         assert "If automatic installation fails, install it manually" in ps1
         assert "After installing, reopen PowerShell and restart OpenSquilla" in ps1
+
+
+def test_source_install_pins_python_312_and_refuses_below() -> None:
+    sh = SOURCE_SH.read_text(encoding="utf-8")
+    ps1 = SOURCE_PS1.read_text(encoding="utf-8")
+    # uv provisions a known-good 3.12, never the ambient interpreter
+    assert "--python 3.12" in sh
+    assert "'--python', '3.12'" in ps1
+    # the pip fallback refuses to install on python < 3.12 (no silent broken install)
+    assert "sys.version_info >= (3, 12)" in sh
+    assert "astral.sh/uv/install.sh" in sh
+    # Windows pip fallback also gated; self-check targets code-task, not just --version
+    assert "sys.version_info >= (3, 12)" in ps1
+    assert "code-task --help" in sh

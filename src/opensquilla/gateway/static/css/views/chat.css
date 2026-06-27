@@ -3110,6 +3110,12 @@ select.clarify-form-input {
   overflow: hidden;
 }
 
+.router-fx[data-panel="legacy-grid"] .router-fx-grid {
+  grid-template-columns: repeat(var(--router-fx-cols, 5), minmax(0, 1fr));
+  grid-template-rows: repeat(var(--router-fx-rows, 3), 30px);
+  grid-auto-rows: auto;
+}
+
 .router-fx-cell {
   position: relative;
   display: flex;
@@ -3374,6 +3380,11 @@ select.clarify-form-input {
     padding: 6px;
     gap: 3px;
   }
+  .router-fx[data-panel="legacy-grid"] .router-fx-grid {
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(5, 28px);
+    grid-auto-rows: auto;
+  }
   .router-fx-cell { font-size: 10px; padding: 0 5px; }
   .router-fx-header { font-size: 9.5px; letter-spacing: 0.36em; }
 }
@@ -3382,6 +3393,11 @@ select.clarify-form-input {
     grid-template-columns: repeat(var(--router-fx-mobile-cols, 2), 1fr);
     grid-template-rows: none;
     grid-auto-rows: 28px;
+  }
+  .router-fx[data-panel="legacy-grid"] .router-fx-grid {
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(5, 26px);
+    grid-auto-rows: auto;
   }
   .router-fx-cell { font-size: 9.5px; padding: 0 4px; }
 }

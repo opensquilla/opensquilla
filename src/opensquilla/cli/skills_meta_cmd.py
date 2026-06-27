@@ -600,7 +600,7 @@ def proposals_cmd(
                 gates: dict[str, Any] = {}
                 if gates_path.is_file():
                     try:
-                        gates = _json.loads(gates_path.read_text())
+                        gates = _json.loads(gates_path.read_text(encoding="utf-8"))
                     except _json.JSONDecodeError:
                         gates = {}
                 rows.append({
@@ -648,7 +648,7 @@ def proposals_cmd(
             raise typer.Exit(1)
         gates_text = ""
         if (src / "gates.json").is_file():
-            gates_text = (src / "gates.json").read_text()
+            gates_text = (src / "gates.json").read_text(encoding="utf-8")
         skill_md = (src / "SKILL.md").read_text(encoding="utf-8")
         if json_out:
             typer.echo(_json.dumps({
@@ -673,7 +673,7 @@ def proposals_cmd(
     gates = {}
     if (src / "gates.json").is_file():
         try:
-            gates = _json.loads((src / "gates.json").read_text())
+            gates = _json.loads((src / "gates.json").read_text(encoding="utf-8"))
         except _json.JSONDecodeError:
             gates = {}
     if not gates.get("auto_enable_eligible") and not force:

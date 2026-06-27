@@ -216,7 +216,8 @@ trust. For tool behavior, approval flow, and workspace containment, see
 
 OpenSquilla documentation is part of the product. If a setup step is confusing,
 a command is stale, or a feature guide needs a clearer example, open a small
-pull request against `dev`.
+pull request against `main`. Existing `dev` pull requests may continue during
+the branch transition.
 
 Read [`docs/contributing-docs.md`](docs/contributing-docs.md) for docs-specific
 guidance.

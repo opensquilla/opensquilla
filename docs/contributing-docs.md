@@ -26,7 +26,8 @@ write access will submit this through a fork and pull request.
 2. If you are not sure of the fix, open a
    [documentation issue](https://github.com/opensquilla/opensquilla/issues/new?template=docs_report.yml)
    with the affected page and expected outcome.
-3. Open documentation pull requests against `dev`.
+3. Open documentation pull requests against `main`. Existing `dev` pull
+   requests may continue during the branch transition.
 4. Keep docs changes small and topic-focused.
 5. Use relative links for repository pages.
 6. Prefer concrete commands and examples over abstract descriptions.

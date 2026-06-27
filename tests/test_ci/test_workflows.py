@@ -182,24 +182,27 @@ def test_default_ci_blocks_pull_requests_and_main_and_dev_pushes() -> None:
     assert "workflow_changed" not in text
 
 
-def test_pr_target_validator_allows_dev_pull_requests(tmp_path: Path) -> None:
-    result = _validate_pr_target(tmp_path, base="dev")
-
-    assert result.returncode == 0
-
-
-def test_pr_target_validator_blocks_ordinary_main_pull_requests(tmp_path: Path) -> None:
+def test_pr_target_validator_allows_main_pull_requests(tmp_path: Path) -> None:
     result = _validate_pr_target(
         tmp_path,
         base="main",
         changed_files=["src/opensquilla/engine/agent.py"],
     )
 
-    assert result.returncode == 1
-    assert "Ordinary pull requests should target dev" in result.stderr
+    assert result.returncode == 0
+    assert "Pull request targets main." in result.stdout
 
 
-def test_pr_target_validator_blocks_unlabeled_docs_only_main_pull_requests(
+def test_pr_target_validator_allows_dev_pull_requests_during_transition(
+    tmp_path: Path,
+) -> None:
+    result = _validate_pr_target(tmp_path, base="dev")
+
+    assert result.returncode == 0
+    assert "main-default transition" in result.stdout
+
+
+def test_pr_target_validator_allows_docs_only_main_pull_requests(
     tmp_path: Path,
 ) -> None:
     result = _validate_pr_target(
@@ -210,11 +213,11 @@ def test_pr_target_validator_blocks_unlabeled_docs_only_main_pull_requests(
         changed_files=["docs/testing/framework.md"],
     )
 
-    assert result.returncode == 1
-    assert "Ordinary pull requests should target dev" in result.stderr
+    assert result.returncode == 0
+    assert "Pull request targets main." in result.stdout
 
 
-def test_pr_target_validator_allows_maintainer_labeled_main_pull_requests(
+def test_pr_target_validator_allows_labeled_main_pull_requests_without_exception(
     tmp_path: Path,
 ) -> None:
     labels = [
@@ -236,7 +239,7 @@ def test_pr_target_validator_allows_maintainer_labeled_main_pull_requests(
         )
 
         assert result.returncode == 0
-        assert "Pull request targets main with maintainer approval label." in result.stdout
+        assert "Pull request targets main." in result.stdout
 
 
 def test_pr_target_validator_allows_staging_branch_pull_requests(
@@ -257,7 +260,7 @@ def test_pr_target_validator_allows_staging_branch_pull_requests(
 
         assert result.returncode == 0
         assert "staging/collaboration" in result.stdout
-        assert "final integration" in result.stdout
+        assert "target main" in result.stdout
 
 
 def test_pr_target_validator_allows_labeled_staging_pull_requests(
@@ -285,7 +288,7 @@ def test_pr_target_validator_blocks_unknown_target_branches(tmp_path: Path) -> N
     )
 
     assert result.returncode == 1
-    assert "Ordinary pull requests should target dev" in result.stderr
+    assert "Ordinary pull requests should target main" in result.stderr
 
 
 def test_pr_target_validator_handles_missing_event_path() -> None:
@@ -303,7 +306,7 @@ def test_pr_target_validator_handles_missing_event_path() -> None:
     )
 
     assert result.returncode == 1
-    assert "Ordinary pull requests should target dev" in result.stderr
+    assert "Ordinary pull requests should target main" in result.stderr
     assert "Traceback" not in result.stderr
 
 

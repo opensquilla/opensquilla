@@ -150,8 +150,11 @@ def test_pull_request_template_uses_structured_governance_fields() -> None:
     required_phrases = [
         "Scope boundary",
         "Non-goals",
-        "Base branch: dev | main | staging/collaboration",
-        "Main exception: N/A | release | hotfix | release-docs | main-sync | maintainer-approved",
+        "Base branch: main | dev (transition) | staging/collaboration",
+        (
+            "Target exception: N/A | dev-transition | release | hotfix | "
+            "staging/collaboration | maintainer-approved"
+        ),
         "Linked issue: Fixes #... | Refs #... | None",
         "If None, reason",
         "Release note: NONE |",

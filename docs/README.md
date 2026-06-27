@@ -67,14 +67,15 @@ root release README with task-oriented guides.
 
 Documentation improvements are welcome. Start with
 [`contributing-docs.md`](contributing-docs.md) for docs-specific guidance, then
-open a small pull request against `dev`.
+open a small pull request against `main`. Existing `dev` pull requests may
+continue during the branch transition.
 
 Fast paths:
 
 - Report a stale command, broken link, or confusing page with the
   [documentation issue template](https://github.com/opensquilla/opensquilla/issues/new?template=docs_report.yml).
 - Edit the affected Markdown page on GitHub and open a focused pull request
-  against `dev`.
+  against `main`.
 - For new feature documentation, keep independent features on independent pages
   under `docs/features/`.
 

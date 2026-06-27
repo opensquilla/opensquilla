@@ -12,8 +12,13 @@ if [[ -z "${base_ref}" ]]; then
   exit 1
 fi
 
+if [[ "${base_ref}" == "main" ]]; then
+  echo "Pull request targets main."
+  exit 0
+fi
+
 if [[ "${base_ref}" == "dev" ]]; then
-  echo "Pull request targets dev."
+  echo "Pull request targets dev during the main-default transition."
   exit 0
 fi
 
@@ -61,9 +66,6 @@ has_allowed_label() {
 
   while IFS= read -r label; do
     case "${allowed_kind}:${label}" in
-      main:allow-main-target | main:release | main:hotfix | main:main-sync | main:release-docs | main:sync-to-main | main:docs-preview)
-        return 0
-        ;;
       staging:maintainer-staging | staging:collaboration)
         return 0
         ;;
@@ -83,21 +85,16 @@ is_staging_branch() {
   return 1
 }
 
-if [[ "${base_ref}" == "main" ]] && has_allowed_label main; then
-  echo "Pull request targets main with maintainer approval label."
-  exit 0
-fi
-
 if is_staging_branch || has_allowed_label staging; then
   echo "Pull request targets a staging/collaboration branch."
-  echo "This is not a final integration path; final integration should target dev, while release or hotfix work should target main with an approval label."
+  echo "This is not a final integration path; final integration should target main, or dev during the transition window."
   exit 0
 fi
 
 {
-  echo "::error title=Wrong PR target::Ordinary pull requests should target dev."
-  echo "Use main only for maintainer-approved release, hotfix, release-docs, or main-sync work."
+  echo "::error title=Wrong PR target::Ordinary pull requests should target main."
+  echo "Use dev only for existing pull requests during the transition window or when maintainers explicitly request it."
   echo "Use sandbox-*, integration/*, staging/*, release/*, or a maintainer-staging/collaboration label for maintainer collaboration PRs."
-  echo "Retarget this pull request to dev, or ask a maintainer to add an explicit exception label."
+  echo "Retarget this pull request to main, dev during transition, or an approved staging/collaboration branch."
 } >&2
 exit 1

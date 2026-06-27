@@ -24,6 +24,28 @@ def test_pr_body_lint_accepts_complete_structured_template_body() -> None:
     body = "\n".join(
         [
             "Scope boundary: update CI governance",
+            "Base branch: main",
+            "Target exception: N/A",
+            "Linked issue: Refs #210",
+            "Release note: NONE",
+            "Tests:",
+            "Ruff: uv run ruff check tests",
+            "Pytest: uv run pytest tests/test_ci -q",
+            "Build: not run locally; CI only",
+            "Maintainer live check: no",
+            "Third-party origin: none",
+        ]
+    )
+
+    assert lint.missing_fields(body) == []
+
+
+def test_pr_body_lint_accepts_legacy_main_exception_field() -> None:
+    lint = _load_lint_module()
+
+    body = "\n".join(
+        [
+            "Scope boundary: update CI governance",
             "Base branch: dev",
             "Main exception: N/A",
             "Linked issue: Refs #210",
@@ -54,6 +76,7 @@ def test_pr_body_lint_warns_for_old_unstructured_checklist() -> None:
 
     assert "Scope boundary" in missing
     assert "Base branch" in missing
+    assert "Target exception" in missing
     assert "Linked issue" in missing
     assert "Release note" in missing
     assert "Maintainer live check" in missing

@@ -4,14 +4,16 @@ Thanks for improving OpenSquilla. Keep pull requests small, focused, and covered
 
 ## Target Branch
 
-Open pull requests against `dev` by default. OpenSquilla uses `dev` as the active integration branch for feature work, bug fixes, tests, and contributor changes.
+Open pull requests against `main` by default. OpenSquilla now uses `main` as the active integration branch for feature work, bug fixes, tests, documentation, and contributor changes.
 
-Use `main` only for maintainer-directed release candidates, release stabilization, documentation-only preview, or urgent hotfix work that starts from the current published line. When in doubt, target `dev`; maintainers will route release-ready changes from `dev` to `main`. If a pull request was opened against `main` by mistake, retarget it to `dev` before review.
+The `dev` branch remains available during the transition for existing pull
+requests and maintainer-directed compatibility work. When in doubt, target
+`main`; maintainers will ask you to retarget only when a temporary integration
+branch is needed.
 
 After a release, maintainers may start a new development cycle from the
-latest `main` release point. When that requires replacing the active
-`dev` branch, the previous branch will be archived and contributors
-will be asked to rebase or retarget open pull requests.
+latest `main` release point. If the transition branch is retired, contributors
+with open `dev` pull requests will be asked to rebase or retarget.
 
 ## Linked Issues
 
@@ -21,12 +23,14 @@ Declare issue relationships in pull request descriptions with GitHub keywords:
 - Use `Refs #123` when the pull request is related but should not move the issue toward closure.
 - Use `None` when no public issue is linked.
 
-OpenSquilla keeps issue closure tied to the release branch. Merging a fixing
-pull request into `dev` marks the issue as `merged-to-dev` and
-`needs-verification`; the issue remains open until the fix reaches the default
-branch through a release or hotfix pull request. Maintainers may use
-`has-linked-pr` while work is still under review. If a linked pull request is
-closed without merging, the automation removes `has-linked-pr`.
+OpenSquilla keeps issue closure tied to the default branch. Merging a fixing
+pull request into `main` removes the linked-pull-request marker so the issue
+can follow GitHub's normal closing flow. During the transition, merging a
+fixing pull request into `dev` still marks the issue as `merged-to-dev` and
+`needs-verification`; the issue remains open until the fix reaches `main`.
+Maintainers may use `has-linked-pr` while work is still under review. If a
+linked pull request is closed without merging, the automation removes
+`has-linked-pr`.
 
 ## Attribution On Squash Or Replay
 

@@ -68,7 +68,11 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           GH_TOKEN: ${{ github.token }}
-        run: npm run dist:local -- --publish never
+        run: |
+          npm run build:web
+          npm run build:gateway
+          npm run build
+          npx electron-builder --mac --publish never
 
       - name: Verify Electron package
         working-directory: desktop/electron
@@ -133,7 +137,11 @@ jobs:
         working-directory: desktop/electron
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: npm run dist:local -- --publish never
+        run: |
+          npm run build:web
+          npm run build:gateway
+          npm run build
+          npx electron-builder --win --publish never
 
       - name: Verify Electron package
         working-directory: desktop/electron

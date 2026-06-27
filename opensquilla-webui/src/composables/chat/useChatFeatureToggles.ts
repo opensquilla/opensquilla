@@ -34,6 +34,9 @@ interface ChatFeatureConfig {
   permissions?: {
     default_mode?: string
   }
+  skills?: {
+    coding_mode?: boolean
+  }
 }
 
 const ROUTER_FX_PREF_KEY = 'opensquilla.routerFx'
@@ -44,6 +47,8 @@ export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
   const routerVisualEffectsEnabled = ref(true)
   const routerVisualMode = ref(DEFAULT_ROUTER_VISUAL_MODE)
   const routerSettingsBusy = ref(false)
+  const codingModeEnabled = ref(false)
+  const codingModeSettingsBusy = ref(false)
   const routerSlots = ref<string[]>([])
   const routerModels = ref<Record<string, string>>({})
   const routerTierConfigs = ref<Record<string, ChatRouterTierConfig>>({})
@@ -52,45 +57,52 @@ export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
   // twin can hold its slot on the first turn, before config.get resolves.
   hydrateRouterShape()
 
+  async function applyFeatureConfig(cfg: ChatFeatureConfig | undefined, applyOptions: { refreshUsage?: boolean } = {}) {
+    const router = cfg?.squilla_router || {}
+
+    routerEnabled.value = Boolean(router.enabled && router.rollout_phase !== 'observe')
+    codingModeEnabled.value = cfg?.skills?.coding_mode === true
+    routerVisualMode.value = normalizeRouterVisualMode(router.visual_mode)
+    loadRouterVisualEffectsPreference()
+
+    const tiers = router.tiers
+    const tierKeys: string[] = []
+    const tierModels: Record<string, string> = {}
+    const tierConfigs: Record<string, ChatRouterTierConfig> = {}
+    if (tiers && typeof tiers === 'object') {
+      Object.keys(tiers).forEach((tier) => {
+        if (!tier) return
+        const lower = normalizeRouterTier(tier)
+        if (!lower) return
+        tierKeys.push(lower)
+        const rawTier = tiers[tier] || {}
+        const model = rawTier.model
+        if (typeof model === 'string' && model.trim()) {
+          tierModels[lower] = model.trim()
+        }
+        tierConfigs[lower] = {
+          model: typeof model === 'string' ? model.trim() : '',
+          supportsImage: (rawTier as Record<string, unknown>).supports_image === true || (rawTier as Record<string, unknown>).supportsImage === true,
+          imageOnly: (rawTier as Record<string, unknown>).image_only === true || (rawTier as Record<string, unknown>).imageOnly === true,
+        }
+      })
+    }
+
+    routerSlots.value = sortRouterTiers(tierKeys)
+    routerModels.value = tierModels
+    routerTierConfigs.value = tierConfigs
+    persistRouterShape()
+    options.setGlobalElevatedMode(cfg?.permissions?.default_mode || '')
+    if (applyOptions.refreshUsage) {
+      await options.loadCurrentSessionUsage()
+    }
+  }
+
   async function loadFeatureToggles() {
     try {
       await options.rpc.waitForConnection()
       const cfg = await options.rpc.call<ChatFeatureConfig>('config.get')
-      const router = cfg?.squilla_router || {}
-
-      routerEnabled.value = Boolean(router.enabled && router.rollout_phase !== 'observe')
-      routerVisualMode.value = normalizeRouterVisualMode(router.visual_mode)
-      loadRouterVisualEffectsPreference()
-
-      const tiers = router.tiers
-      const tierKeys: string[] = []
-      const tierModels: Record<string, string> = {}
-      const tierConfigs: Record<string, ChatRouterTierConfig> = {}
-      if (tiers && typeof tiers === 'object') {
-        Object.keys(tiers).forEach((tier) => {
-          if (!tier) return
-          const lower = normalizeRouterTier(tier)
-          if (!lower) return
-          tierKeys.push(lower)
-          const rawTier = tiers[tier] || {}
-          const model = rawTier.model
-          if (typeof model === 'string' && model.trim()) {
-            tierModels[lower] = model.trim()
-          }
-          tierConfigs[lower] = {
-            model: typeof model === 'string' ? model.trim() : '',
-            supportsImage: (rawTier as Record<string, unknown>).supports_image === true || (rawTier as Record<string, unknown>).supportsImage === true,
-            imageOnly: (rawTier as Record<string, unknown>).image_only === true || (rawTier as Record<string, unknown>).imageOnly === true,
-          }
-        })
-      }
-
-      routerSlots.value = sortRouterTiers(tierKeys)
-      routerModels.value = tierModels
-      routerTierConfigs.value = tierConfigs
-      persistRouterShape()
-      options.setGlobalElevatedMode(cfg?.permissions?.default_mode || '')
-      await options.loadCurrentSessionUsage()
+      await applyFeatureConfig(cfg, { refreshUsage: true })
     } catch {
       // Feature toggles are optional for older gateways.
     }
@@ -174,6 +186,28 @@ export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
     }
   }
 
+  async function setCodingModeEnabled(enabled: boolean) {
+    if (codingModeSettingsBusy.value) return
+    const nextEnabled = Boolean(enabled)
+    const previous = codingModeEnabled.value
+    codingModeSettingsBusy.value = true
+    try {
+      await options.rpc.waitForConnection()
+      await options.rpc.call('config.patch.safe', {
+        patches: {
+          'skills.coding_mode': nextEnabled,
+        },
+      })
+      const cfg = await options.rpc.call<ChatFeatureConfig>('config.get')
+      await applyFeatureConfig(cfg)
+    } catch (err) {
+      codingModeEnabled.value = previous
+      console.warn('Failed to update Coding mode:', err instanceof Error ? err.message : String(err))
+    } finally {
+      codingModeSettingsBusy.value = false
+    }
+  }
+
   function bindFeatureRefresh(scheduleHistorySync?: () => void) {
     let timer: ReturnType<typeof setTimeout> | null = null
     const schedule = () => {
@@ -201,11 +235,14 @@ export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
     routerVisualEffectsEnabled,
     routerVisualMode,
     routerSettingsBusy,
+    codingModeEnabled,
+    codingModeSettingsBusy,
     routerSlots,
     routerModels,
     routerTierConfigs,
     loadFeatureToggles,
     setRouterEnabled,
+    setCodingModeEnabled,
     setRouterVisualEffectsEnabled,
     bindFeatureRefresh,
   }

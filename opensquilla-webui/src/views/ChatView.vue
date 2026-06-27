@@ -422,6 +422,8 @@
       :router-enabled="routerEnabled"
       :router-visual-effects-enabled="routerVisualEffectsEnabled"
       :router-settings-busy="routerSettingsBusy"
+      :coding-mode-enabled="codingModeEnabled"
+      :coding-mode-settings-busy="codingModeSettingsBusy"
       :voice-busy="voiceBusy"
       :voice-recording="voiceRecording"
       @composition-change="composing = $event"
@@ -433,6 +435,7 @@
       @set-elevated-mode="setComposerElevatedMode"
       @set-router-enabled="setComposerRouterEnabled"
       @set-visual-effects-enabled="setComposerVisualEffectsEnabled"
+      @set-coding-mode-enabled="setComposerCodingModeEnabled"
       @voice-input="onVoiceInput"
       @export-markdown="exportMarkdown"
       @send="onSend"
@@ -827,9 +830,12 @@ const {
   routerVisualEffectsEnabled,
   routerVisualMode,
   routerSettingsBusy,
+  codingModeEnabled,
+  codingModeSettingsBusy,
   routerTierConfigs,
   loadFeatureToggles,
   setRouterEnabled,
+  setCodingModeEnabled,
   setRouterVisualEffectsEnabled,
   bindFeatureRefresh,
 } = chatFeatureToggles
@@ -1417,6 +1423,10 @@ async function setComposerRouterEnabled(enabled: boolean) {
 function setComposerVisualEffectsEnabled(enabled: boolean) {
   setRouterVisualEffectsEnabled(enabled)
   scheduleHistorySync()
+}
+
+async function setComposerCodingModeEnabled(enabled: boolean) {
+  await setCodingModeEnabled(enabled)
 }
 
 // A landing suggestion chip replaces the draft composer text; the user still

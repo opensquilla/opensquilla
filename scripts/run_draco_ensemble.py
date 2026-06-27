@@ -84,6 +84,7 @@ GROUP_SPECS: dict[str, dict[str, str]] = {
     "G13": {"kind": "profile", "profile": "g13_five_proposers"},
     "G14": {"kind": "profile", "profile": "g14_k2_replace_qwen"},
     "G15": {"kind": "profile", "profile": "g15_g8_top3_prefilter"},
+    "G16": {"kind": "profile", "profile": "g16_sampled_cheap_proposers"},
 }
 
 TOOL_MODE_PROVIDER_ONLY = "provider_only"
@@ -967,16 +968,23 @@ def apply_generation_policy_to_profile(profile: Any, policy: dict[str, Any]) -> 
     member_update: dict[str, Any] = {"temperature": DEFAULT_GENERATION_TEMPERATURE}
     if mode != GENERATION_THINKING_PROFILE:
         member_update["thinking"] = "off" if mode == "off" else mode
+
+    preserve_temperature = bool(getattr(profile, "preserve_member_temperature", False))
+
+    def _apply_member_policy(member: Any) -> Any:
+        update = dict(member_update)
+        if preserve_temperature and getattr(member, "temperature", None) is not None:
+            update.pop("temperature", None)
+        return member.model_copy(update=update)
+
     proposers = [
-        proposer.model_copy(update=member_update)
+        _apply_member_policy(proposer)
         for proposer in profile.proposers
     ]
-    aggregator = profile.aggregator.model_copy(update=member_update)
+    aggregator = _apply_member_policy(profile.aggregator)
     update: dict[str, Any] = {"proposers": proposers, "aggregator": aggregator}
     if getattr(profile, "candidate_scorer", None) is not None:
-        update["candidate_scorer"] = profile.candidate_scorer.model_copy(
-            update=member_update
-        )
+        update["candidate_scorer"] = _apply_member_policy(profile.candidate_scorer)
     return profile.model_copy(update=update)
 
 

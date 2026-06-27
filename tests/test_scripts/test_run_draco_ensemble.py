@@ -913,6 +913,47 @@ def test_draco_runner_g15_profile_configures_topk_prefilter() -> None:
     assert provider.candidate_scorer.thinking == "high"
 
 
+def test_draco_runner_g16_preserves_profile_sampling_temperature() -> None:
+    cfg = GatewayConfig()
+    inherited = ProviderConfig(
+        provider="openrouter",
+        model="z-ai/glm-5.2",
+        api_key="sk-test",
+        base_url="https://openrouter.ai/api",
+    )
+
+    provider = build_profile_provider(
+        config=cfg,
+        inherited=inherited,
+        group="G16",
+        profile="g16_sampled_cheap_proposers",
+        dry_run=False,
+        generation_policy=generation_thinking_policy(Namespace(generation_thinking="high")),
+    )
+
+    assert [member.provider_config.model for member in provider.proposers] == [
+        "deepseek/deepseek-v4-pro",
+        "z-ai/glm-5.2",
+        "google/gemini-3-flash-preview",
+        "qwen/qwen3.7-plus",
+    ]
+    assert [member.k for member in provider.proposers] == [1, 1, 2, 2]
+    assert [member.temperature for member in provider.proposers] == [
+        0.0,
+        0.0,
+        0.3,
+        0.3,
+    ]
+    assert [member.thinking for member in provider.proposers] == [
+        "high",
+        "high",
+        "high",
+        "high",
+    ]
+    assert provider.aggregator.provider_config.model == "z-ai/glm-5.2"
+    assert provider.aggregator.temperature == 0.0
+
+
 @pytest.mark.asyncio
 async def test_draco_runner_collect_run_passes_tools_to_provider() -> None:
     provider = _ToolCaptureProvider()

@@ -151,6 +151,57 @@ async def test_ensemble_runs_proposers_text_only_and_aggregator_with_tools(
 
 
 @pytest.mark.asyncio
+async def test_ensemble_expands_proposer_k_into_multiple_samples(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def _events(model: str, text: str, in_tokens: int, out_tokens: int):
+        return lambda _messages, _tools: [
+            TextDeltaEvent(text=text),
+            DoneEvent(input_tokens=in_tokens, output_tokens=out_tokens, model=model),
+        ]
+
+    factories = {
+        "p1": _events("p1", "draft from p1", 10, 2),
+        "p2": _events("p2", "draft from p2", 11, 3),
+        "agg": _events("agg", "final fused", 20, 5),
+    }
+
+    def fake_build_provider(cfg: ProviderConfig) -> _FakeProvider:
+        return _FakeProvider(cfg, calls, factories)
+
+    monkeypatch.setattr("opensquilla.provider.selector._build_provider", fake_build_provider)
+    provider = EnsembleProvider(
+        profile_name="test",
+        proposers=[_member("p1", k=2), _member("p2")],
+        aggregator=_member("agg"),
+        record_candidates=True,
+        shuffle_candidates=False,
+    )
+
+    events = [event async for event in provider.chat([Message(role="user", content="solve")])]
+
+    done = events[-1]
+    assert isinstance(done, DoneEvent)
+    assert done.ensemble_trace["total_candidates"] == 3
+    assert done.ensemble_trace["llm_request_count"] == 4
+    assert [row["model"] for row in done.model_usage_breakdown] == [
+        "p1",
+        "p1",
+        "p2",
+        "agg",
+    ]
+    assert [row["sample_index"] for row in done.model_usage_breakdown] == [0, 1, 0, 0]
+    assert [candidate["sample_index"] for candidate in done.ensemble_trace["candidates"]] == [
+        0,
+        1,
+        0,
+    ]
+    assert [call["model"] for call in calls].count("p1") == 2
+
+
+@pytest.mark.asyncio
 async def test_ensemble_prefilters_candidates_with_scorer_before_aggregation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

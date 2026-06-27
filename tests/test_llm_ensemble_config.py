@@ -80,6 +80,18 @@ def test_llm_ensemble_config_defaults_disabled_with_profiles() -> None:
     assert g15.candidate_scorer is not None
     assert g15.candidate_scorer.model == "google/gemini-3-flash-preview"
     assert g15.candidate_prefilter_top_k == 3
+    g16 = cfg.llm_ensemble.profiles["g16_sampled_cheap_proposers"]
+    assert [ref.model for ref in g16.proposers] == [
+        "deepseek/deepseek-v4-pro",
+        "z-ai/glm-5.2",
+        "google/gemini-3-flash-preview",
+        "qwen/qwen3.7-plus",
+    ]
+    assert [ref.k for ref in g16.proposers] == [1, 1, 2, 2]
+    assert [ref.temperature for ref in g16.proposers] == [0.0, 0.0, 0.3, 0.3]
+    assert g16.aggregator.model == "z-ai/glm-5.2"
+    assert g16.aggregator.temperature == 0.0
+    assert g16.preserve_member_temperature is True
     assert cfg.llm_ensemble.profiles["g3_standard"].record_candidates is False
 
 

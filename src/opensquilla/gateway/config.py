@@ -292,6 +292,7 @@ def _ensemble_profile(
     *,
     candidate_scorer: dict[str, Any] | None = None,
     candidate_prefilter_top_k: int = 0,
+    preserve_member_temperature: bool = False,
     proposer_timeout_seconds: float | None = None,
     aggregator_timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
@@ -303,6 +304,8 @@ def _ensemble_profile(
         payload["candidate_scorer"] = candidate_scorer
     if candidate_prefilter_top_k > 0:
         payload["candidate_prefilter_top_k"] = candidate_prefilter_top_k
+    if preserve_member_temperature:
+        payload["preserve_member_temperature"] = preserve_member_temperature
     if proposer_timeout_seconds is not None:
         payload["proposer_timeout_seconds"] = proposer_timeout_seconds
     if aggregator_timeout_seconds is not None:
@@ -415,6 +418,34 @@ def _default_llm_ensemble_profiles() -> dict[str, dict[str, Any]]:
             candidate_scorer=_ensemble_ref("google/gemini-3-flash-preview", thinking="high"),
             candidate_prefilter_top_k=3,
         ),
+        "g16_sampled_cheap_proposers": _ensemble_profile(
+            [
+                _ensemble_ref(
+                    "deepseek/deepseek-v4-pro",
+                    thinking="high",
+                    temperature=0.0,
+                ),
+                _ensemble_ref(
+                    "z-ai/glm-5.2",
+                    thinking="high",
+                    temperature=0.0,
+                ),
+                _ensemble_ref(
+                    "google/gemini-3-flash-preview",
+                    thinking="high",
+                    temperature=0.3,
+                    k=2,
+                ),
+                _ensemble_ref(
+                    "qwen/qwen3.7-plus",
+                    thinking="high",
+                    temperature=0.3,
+                    k=2,
+                ),
+            ],
+            _ensemble_ref("z-ai/glm-5.2", thinking="high", temperature=0.0),
+            preserve_member_temperature=True,
+        ),
     }
 
 
@@ -443,6 +474,7 @@ class EnsembleProfile(BaseModel):
     aggregator: EnsembleModelRef = Field(default_factory=EnsembleModelRef)
     candidate_scorer: EnsembleModelRef | None = None
     candidate_prefilter_top_k: int = Field(default=0, ge=0)
+    preserve_member_temperature: bool = False
     candidate_max_chars: int = Field(default=24_000, ge=0)
     proposer_timeout_seconds: float = Field(default=120.0, gt=0.0)
     aggregator_timeout_seconds: float = Field(default=120.0, gt=0.0)

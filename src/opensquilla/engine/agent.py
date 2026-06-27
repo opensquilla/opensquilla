@@ -3311,10 +3311,10 @@ class Agent:
 
                 # Build assistant message for history
                 assistant_content: list[Any] = []
-                if iter_reasoning_content and iter_thinking_signature:
+                if iter_thinking_signature:
                     assistant_content.append(
                         ContentBlockThinking(
-                            thinking=iter_reasoning_content,
+                            thinking=iter_reasoning_content or "",
                             signature=iter_thinking_signature,
                         )
                     )

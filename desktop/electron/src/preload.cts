@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('opensquillaDesktop', {
   getBootState: () => ipcRenderer.invoke('desktop:boot:state'),
   retryStartup: () => ipcRenderer.invoke('desktop:boot:retry'),
   quitApp: () => ipcRenderer.invoke('desktop:boot:quit'),
+  uninstallSummary: () => ipcRenderer.invoke('desktop:uninstall:summary'),
+  uninstallRun: (payload: unknown) => ipcRenderer.invoke('desktop:uninstall:run', payload),
   onBootStatus: (callback: (payload: unknown) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => callback(payload)
     ipcRenderer.on('desktop:boot:status', listener)

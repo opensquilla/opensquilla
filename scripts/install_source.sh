@@ -283,6 +283,31 @@ echo "install_source.sh: running: ${install_cmd}"
 
 verify_install
 
+# Write an install receipt to aid `opensquilla uninstall`. Best-effort.
+write_install_receipt() {
+    home="${OPENSQUILLA_STATE_DIR:-${HOME}/.opensquilla}"
+    receipt="${home}/install-receipt.json"
+    installed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")"
+    if [[ "${installer}" == "uv" ]]; then
+        method="uv-tool"
+    else
+        method="pip"
+    fi
+    mkdir -p "${home}" 2>/dev/null || return 0
+    cat >"${receipt}" 2>/dev/null <<RECEIPT || return 0
+{
+  "version": 1,
+  "install_method": "${method}",
+  "installed_at": "${installed_at}",
+  "entrypoints": [],
+  "owned_paths": [],
+  "data_root": "${home}"
+}
+RECEIPT
+    chmod 600 "${receipt}" 2>/dev/null || true
+}
+write_install_receipt || true
+
 print_banner
 if [[ "${OPENSQUILLA_LISTEN:-}" = "0.0.0.0" ]]; then
     print_listen_warning

@@ -37,6 +37,7 @@ from opensquilla.cli.search_cmd import search_app  # noqa: E402
 from opensquilla.cli.sessions_cmd import app as sessions_app  # noqa: E402
 from opensquilla.cli.skills_cmd import skills_app  # noqa: E402
 from opensquilla.cli.swebench_cmd import swebench_app  # noqa: E402
+from opensquilla.cli.uninstall_cmd import uninstall_command  # noqa: E402
 
 app = typer.Typer(
     name="opensquilla",
@@ -67,6 +68,7 @@ app.add_typer(codetask_app, name="code-task")
 
 app.command("init")(init_command)
 app.command("doctor")(doctor_command)
+app.command("uninstall")(uninstall_command)
 app.add_typer(onboard_app, name="onboard")
 app.command("configure")(configure_command)
 

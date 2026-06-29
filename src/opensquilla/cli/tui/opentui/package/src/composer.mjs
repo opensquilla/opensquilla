@@ -839,6 +839,17 @@ export function createComposer(deps) {
     cursorPos = pos - 1;
   }
 
+  // Forward delete: remove the grapheme AT the caret (the Delete key). The caret
+  // stays put, like every other terminal input.
+  function deleteAtCursor() {
+    const chars = Array.from(inputText);
+    const pos = Math.max(0, Math.min(cursorPos, chars.length));
+    if (pos >= chars.length) return;
+    inputText = [...chars.slice(0, pos), ...chars.slice(pos + 1)].join("");
+    composer.text = inputText;
+    cursorPos = pos;
+  }
+
   function acceptCompletion() {
     const item = menu.filtered[clamp(menu.selected, 0, menu.filtered.length - 1)];
     if (!item) {
@@ -1016,6 +1027,29 @@ export function createComposer(deps) {
       }
       if (key.name === "backspace") {
         deleteBeforeCursor();
+        updateMenuFromInput();
+        wakeCursor();
+        rerenderInputRegion();
+        return;
+      }
+      // Forward word delete (Alt+D / Ctrl+Delete) — must precede the plain Delete
+      // branch, which ignores modifiers.
+      if (
+        ((key.meta || key.alt || key.option) && key.name === "d") ||
+        (key.ctrl && key.name === "delete")
+      ) {
+        const edited = spliceOut(inputText, cursorPos, wordEndIndex(inputText, cursorPos));
+        inputText = edited.text;
+        composer.text = inputText;
+        cursorPos = edited.cursor;
+        historyIndex = inputHistory.length;
+        updateMenuFromInput();
+        wakeCursor();
+        rerenderInputRegion();
+        return;
+      }
+      if (key.name === "delete") {
+        deleteAtCursor(); // forward-delete the character at the caret
         updateMenuFromInput();
         wakeCursor();
         rerenderInputRegion();

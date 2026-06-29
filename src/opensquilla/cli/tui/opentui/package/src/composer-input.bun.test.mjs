@@ -151,3 +151,15 @@ test("Alt+B / Alt+F also move the caret by word", async () => {
 test("plain Left still moves a single character (word movement needs a modifier)", async () => {
   expect(await submittedAfter([...typed("abc"), { name: "left" }, { name: "X", sequence: "X" }])).toBe("abXc");
 });
+
+test("the Delete key forward-deletes the character at the caret", async () => {
+  // Ctrl+A to the start, then Delete removes the first character.
+  expect(await submittedAfter([...typed("abc"), ctrl("a"), { name: "delete" }])).toBe("bc");
+  // Delete at the end of the input is a no-op.
+  expect(await submittedAfter([...typed("abc"), { name: "delete" }])).toBe("abc");
+});
+
+test("Alt+D and Ctrl+Delete delete the next word", async () => {
+  expect(await submittedAfter([...typed("foo bar"), ctrl("a"), alt("d")])).toBe(" bar");
+  expect(await submittedAfter([...typed("foo bar"), ctrl("a"), { name: "delete", ctrl: true }])).toBe(" bar");
+});

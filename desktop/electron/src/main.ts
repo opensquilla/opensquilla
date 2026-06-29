@@ -1,11 +1,12 @@
 import { app, BrowserWindow, Menu, ipcMain, nativeTheme, safeStorage, shell } from 'electron'
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { createWriteStream, mkdirSync } from 'node:fs'
 import { access, constants, readFile, readdir, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import net from 'node:net'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { secretStorageBackendForPolicy } from './secret-storage-policy.js'
 
 interface GatewayState {
   url: string
@@ -128,6 +129,7 @@ let isQuitting = false
 let gatewayStartPromise: Promise<GatewayState> | null = null
 let resolveOnboarding: ((credential: DesktopConnection) => void) | null = null
 let rejectOnboarding: ((error: Error) => void) | null = null
+let secretStorageBackendCache: SecretEncryption | null = null
 let bootStatus: BootStatus = {
   label: 'Preparing desktop profile',
   at: new Date().toISOString(),
@@ -537,23 +539,52 @@ function routerConfigTomlLines(credential: DesktopConnection): string[] {
   ]
 }
 
-function encryptSecret(secret: string): { value: string; encryption: SecretEncryption } {
-  if (safeStorage.isEncryptionAvailable()) {
-    return {
-      value: safeStorage.encryptString(secret).toString('base64'),
-      encryption: 'safeStorage',
-    }
-  }
+function plainSecret(secret: string): { value: string; encryption: SecretEncryption } {
   return {
     value: Buffer.from(secret, 'utf8').toString('base64'),
     encryption: 'plain',
   }
 }
 
+function macCodeSignatureDiagnostic(): string {
+  if (process.platform !== 'darwin' || !app.isPackaged) return ''
+  const result = spawnSync('/usr/bin/codesign', ['-dv', '--verbose=4', process.execPath], { encoding: 'utf8' })
+  return `${result.stdout || ''}\n${result.stderr || ''}`
+}
+
+function desktopSecretStorageBackend(): SecretEncryption {
+  if (secretStorageBackendCache) return secretStorageBackendCache
+  const selected = secretStorageBackendForPolicy({
+    envMode: process.env.OPENSQUILLA_DESKTOP_SECRET_STORAGE,
+    platform: process.platform,
+    appPackaged: app.isPackaged,
+    codesignDiagnostic: macCodeSignatureDiagnostic(),
+  })
+  secretStorageBackendCache = selected === 'safeStorage' && safeStorage.isEncryptionAvailable() ? 'safeStorage' : 'plain'
+  return secretStorageBackendCache
+}
+
+function encryptSecret(secret: string): { value: string; encryption: SecretEncryption } {
+  if (desktopSecretStorageBackend() === 'safeStorage') {
+    try {
+      return {
+        value: safeStorage.encryptString(secret).toString('base64'),
+        encryption: 'safeStorage',
+      }
+    } catch {
+      return plainSecret(secret)
+    }
+  }
+  return plainSecret(secret)
+}
+
 function decryptSecret(encryptedValue: string | undefined, encryption: SecretEncryption): string {
   if (!encryptedValue) return ''
   const payload = Buffer.from(encryptedValue, 'base64')
   if (encryption === 'safeStorage') {
+    if (desktopSecretStorageBackend() !== 'safeStorage') {
+      throw new Error('Saved desktop credential requires macOS Keychain, but this local build uses plain credential storage.')
+    }
     return safeStorage.decryptString(payload)
   }
   return payload.toString('utf8')
@@ -639,7 +670,7 @@ async function saveDesktopCredential(payload: OnboardingPayload): Promise<Deskto
   const searchApiKeySecret = resolvedSearchApiKey ? encryptSecret(resolvedSearchApiKey) : null
   const encryptedApiKey = apiKeySecret?.value || ''
   const encryptedSearchApiKey = searchApiKeySecret?.value || ''
-  const encryption = apiKeySecret?.encryption || searchApiKeySecret?.encryption || (safeStorage.isEncryptionAvailable() ? 'safeStorage' : 'plain')
+  const encryption = apiKeySecret?.encryption || searchApiKeySecret?.encryption || 'plain'
 
   if (defaults.requiresApiKey && !encryptedApiKey) throw new Error('API key is required.')
   if (!routerModel && routerMode !== 'disabled') throw new Error('Router tiers require a default model.')

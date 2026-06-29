@@ -56,6 +56,10 @@ const ChatView = (() => {
   const _STREAM_SEQ_SEEN_WINDOW = 800;
   const _liveStreamStateBySession = new Map();
   let _activeTaskGroups = new Set();
+  // Task id whose output the live stream is currently rendering. Empty = unknown
+  // (no guard). Set on task.running, reset on session switch. Binds late events
+  // to the current turn so a prior task can't leak into it (issue 344).
+  let _activeStreamTaskId = '';
   let _pendingFinalizedAssistantBubble = null;
   let _pendingFinalizedAssistantFallbackId = '';
   const _pendingRouterDecisions = new Map();
@@ -1151,7 +1155,12 @@ const ChatView = (() => {
 
   function _persistSession(key) {
     const canonicalKey = _canonicalSessionKey(key);
-    if (canonicalKey !== _sessionKey) _clearActiveTaskGroups();
+    if (canonicalKey !== _sessionKey) {
+      _clearActiveTaskGroups();
+      // The newly shown session has its own (possibly running) task; forget the
+      // previous session's active task so we stay lenient until it re-asserts.
+      _activeStreamTaskId = '';
+    }
     _sessionKey = canonicalKey;
     _syncLastStreamSeqFromSession(canonicalKey);
     if (_sessionInput && _sessionInput.value !== canonicalKey) _sessionInput.value = canonicalKey;
@@ -1657,6 +1666,22 @@ const ChatView = (() => {
     return payload?.key || payload?.session_key || payload?.sessionKey || '';
   }
 
+  function _payloadTaskId(payload) {
+    const id = payload && (payload.task_id || payload.taskId);
+    return (typeof id === 'string' && id) ? id : '';
+  }
+
+  // Lenient task guard (issue 344): an event is foreign only when a task owns
+  // the live stream AND the event is tagged with a DIFFERENT task. Untagged
+  // events (non-TaskRuntime: approvals, task groups, router…) and an unknown
+  // active task always pass, so only positively-mismatched events are dropped.
+  function _isForeignTaskPayload(payload) {
+    if (!_activeStreamTaskId) return false;
+    const taskId = _payloadTaskId(payload);
+    if (!taskId) return false;
+    return taskId !== _activeStreamTaskId;
+  }
+
   function _sessionStreamSeq(key) {
     const stored = _streamSeqBySession.get(key || '');
     return (typeof stored === 'number' && Number.isFinite(stored)) ? stored : 0;
@@ -1701,9 +1726,17 @@ const ChatView = (() => {
   }
 
   function _dropForeignSessionPayload(event, payload) {
-    if (_isCurrentSessionPayload(payload)) return false;
-    _chatDiag(`${event}.drop.foreign_session`, _chatDiagSummarizePayload(payload));
-    return true;
+    if (!_isCurrentSessionPayload(payload)) {
+      _chatDiag(`${event}.drop.foreign_session`, _chatDiagSummarizePayload(payload));
+      return true;
+    }
+    // Same session, but a stale task's late event must not leak into the turn
+    // the live stream is rendering now (issue 344).
+    if (_isForeignTaskPayload(payload)) {
+      _chatDiag(`${event}.drop.foreign_task`, _chatDiagSummarizePayload(payload));
+      return true;
+    }
+    return false;
   }
 
   function _sessionChangeIsTerminal(payload) {
@@ -5326,6 +5359,10 @@ const ChatView = (() => {
 
     _unsubs.push(_rpc.on('task.running', (payload) => {
       if (!_isCurrentSessionPayload(payload)) return;
+      // task.running is the authoritative "this task now owns the live stream"
+      // signal; bind subsequent stream events to it (issue 344).
+      const taskId = _payloadTaskId(payload);
+      if (taskId) _activeStreamTaskId = taskId;
       _applySessionRunState({
         run_status: 'running',
         active_task: { ...(payload || {}), status: 'running' },
@@ -5366,6 +5403,13 @@ const ChatView = (() => {
       const terminalStatus = _taskTerminalStatus(rawEvent);
       if (terminalStatus) {
         if (!_isCurrentSessionPayload(rawPayload)) return;
+        // A stale task's terminal must not flip run-state, end the stream, or
+        // drain the pending queue for the turn rendering now (issue 344). The
+        // normalized done/error path below is covered by _dropForeignSessionPayload.
+        if (_isForeignTaskPayload(rawPayload)) {
+          _chatDiag('event.terminal.drop.foreign_task', _chatDiagSummarizePayload(rawPayload));
+          return;
+        }
         const terminalRunStatus = terminalStatus === 'succeeded' ? 'idle'
           : terminalStatus === 'abandoned' ? 'interrupted'
           : terminalStatus;

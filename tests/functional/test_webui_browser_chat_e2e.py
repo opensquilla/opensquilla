@@ -4436,3 +4436,201 @@ def test_meta_skill_ribbon_renders_and_progresses_in_real_browser(tmp_path: Path
     assert len(payload["chipsAfterAnnounce"]) == 2
     for cls in payload["finalChips"]:
         assert "succeeded" in cls, f"chip class did not reach succeeded: {cls}"
+
+
+def test_issue344_stale_task_events_do_not_leak_into_active_turn_in_real_browser(
+    tmp_path: Path,
+) -> None:
+    """issue 344: a stale task's late events must not leak into the active turn.
+
+    Legacy static chat UI (frontend=legacy, the surface hosting chat.js). task-B
+    owns the live stream; we then inject task-A's late tool_use_start and terminal
+    failure. With the task-id guard they are dropped (recorded as
+    ``*.drop.foreign_task`` in the chat diagnostics log) and never render, while
+    task-B's own tool and an untagged legacy event still render. Without the guard
+    the stale tool card and "turn failed" error leaked into task-B's turn.
+    """
+    if os.environ.get("OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E") != "1":
+        pytest.skip("set OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E=1 to run chat browser e2e")
+
+    port = _free_port()
+    server_script = tmp_path / "issue344_server.py"
+    browser_script = tmp_path / "issue344_browser.js"
+    server_script.write_text(
+        textwrap.dedent(
+            f"""
+            import uvicorn
+
+            from opensquilla.gateway.app import create_gateway_app
+            from opensquilla.gateway.config import AuthConfig, GatewayConfig
+
+            config = GatewayConfig(
+                host="127.0.0.1",
+                port={port},
+                auth=AuthConfig(mode="none"),
+            )
+            app = create_gateway_app(config)
+
+            if __name__ == "__main__":
+                uvicorn.run(app, host="127.0.0.1", port={port}, log_level="warning")
+            """
+        ),
+        encoding="utf-8",
+    )
+    browser_script.write_text(
+        textwrap.dedent(
+            r"""
+            const { chromium } = require("playwright");
+
+            // Dispatch an RPC frame through chat.js's own listeners: named events
+            // hit their dedicated handler; terminal events ride the wildcard (*)
+            // listener, exactly as the live RPC bus delivers them.
+            async function emit(page, event, payload, wild) {
+              await page.evaluate(({ event, payload, wild }) => {
+                const ls = App.getRpc()._listeners;
+                if (wild) {
+                  const h = ls.get("*");
+                  if (h) h.forEach(fn => fn(event, payload));
+                } else {
+                  const h = ls.get(event);
+                  if (h) h.forEach(fn => fn(payload));
+                }
+              }, { event, payload, wild: !!wild });
+            }
+
+            (async () => {
+              const browser = await chromium.launch({ headless: true });
+              const page = await browser.newPage();
+              const pageErrors = [];
+              page.on("pageerror", e => pageErrors.push(String(e)));
+
+              await page.goto(process.env.TARGET_URL, {
+                waitUntil: "domcontentloaded",
+                timeout: 30000,
+              });
+              await page.waitForSelector("#chat-textarea", { timeout: 15000 });
+              await page.waitForFunction(
+                () =>
+                  typeof App !== "undefined" &&
+                  App.getRpc &&
+                  App.getRpc()?.state === "connected",
+                { timeout: 15000 }
+              );
+
+              // Record guard drops in the chat diagnostics log.
+              await page.evaluate(() =>
+                localStorage.setItem("opensquilla.chat.debug.enabled", "1")
+              );
+
+              // task-B takes over the live stream and renders its own work.
+              await emit(page, "task.running", { task_id: "task-B" });
+              await emit(page, "session.event.text_delta", {
+                text: "Generating HTML",
+                task_id: "task-B",
+              });
+              await emit(page, "session.event.tool_use_start", {
+                task_id: "task-B",
+                tool_use_id: "tb1",
+                tool_name: "write_html",
+              });
+              // Stale task-A tool — must be dropped.
+              await emit(page, "session.event.tool_use_start", {
+                task_id: "task-A",
+                tool_use_id: "ta1",
+                tool_name: "create_pdf_py_stale",
+              });
+              // Untagged legacy event — must still render (lenient guard).
+              await emit(page, "session.event.tool_use_start", {
+                tool_use_id: "leg1",
+                tool_name: "legacy_untagged_tool",
+              });
+              // Stale task-A terminal failure — must not end the stream or render.
+              await emit(
+                page,
+                "task.failed",
+                { task_id: "task-A", terminal_message: "STALE_PPTX_FAILURE_MARKER" },
+                true
+              );
+
+              await page.waitForTimeout(300);
+
+              const result = await page.evaluate(() => {
+                const log = JSON.parse(
+                  localStorage.getItem("opensquilla.chat.debugLog") || "[]"
+                );
+                const labels = log.map(e => e.label);
+                const appendNames = log
+                  .filter(e => e.label === "tool_call.append.done")
+                  .map(e => (e.data && e.data.name) || "");
+                const bodyText = document.body ? document.body.textContent : "";
+                return {
+                  droppedStaleTool: labels.includes(
+                    "event.tool_use_start.drop.foreign_task"
+                  ),
+                  droppedStaleTerminal: labels.includes(
+                    "event.terminal.drop.foreign_task"
+                  ),
+                  appendNames,
+                  bodyHasActiveTool: bodyText.includes("write_html"),
+                  bodyHasUntaggedTool: bodyText.includes("legacy_untagged_tool"),
+                  bodyHasStaleTool: bodyText.includes("create_pdf_py_stale"),
+                  bodyHasStaleError: bodyText.includes("STALE_PPTX_FAILURE_MARKER"),
+                };
+              });
+              result.pageErrors = pageErrors;
+              console.log(JSON.stringify(result));
+              await browser.close();
+            })().catch(err => {
+              console.error(err && err.stack ? err.stack : String(err));
+              process.exit(1);
+            });
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["OPENSQUILLA_STATE_DIR"] = str(tmp_path / "state")
+    env["OPENSQUILLA_LOG_DIR"] = str(tmp_path / "logs")
+    # Serve the legacy static chat UI (the surface that hosts chat.js).
+    env["OPENSQUILLA_CONTROL_UI_FRONTEND"] = "legacy"
+    server = subprocess.Popen(
+        [sys.executable, str(server_script)],
+        cwd=Path.cwd(),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    try:
+        _wait_for_health(port, server)
+        _install_playwright(tmp_path)
+        result = subprocess.run(
+            [_node(), str(browser_script)],
+            cwd=tmp_path,
+            env=dict(env, TARGET_URL=f"http://127.0.0.1:{port}/control/chat"),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+        assert result.returncode == 0, result.stderr or result.stdout
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+    finally:
+        _stop_process(server)
+
+    assert payload["pageErrors"] == [], payload["pageErrors"]
+    # Guard fired: the stale task's late tool + terminal were dropped.
+    assert payload["droppedStaleTool"], "stale task-A tool_use_start was not dropped"
+    assert payload["droppedStaleTerminal"], "stale task-A terminal was not dropped"
+    # Stale task-A artifacts never rendered into task-B's turn.
+    assert not payload["bodyHasStaleTool"], "stale tool card leaked into the turn"
+    assert not payload["bodyHasStaleError"], "stale terminal error leaked into the turn"
+    assert "create_pdf_py_stale" not in payload["appendNames"]
+    # task-B's own tool and untagged legacy events still flow.
+    assert payload["bodyHasActiveTool"], "active task tool did not render"
+    assert payload["bodyHasUntaggedTool"], "untagged legacy tool was wrongly dropped"
+    assert "write_html" in payload["appendNames"]
+    assert "legacy_untagged_tool" in payload["appendNames"]

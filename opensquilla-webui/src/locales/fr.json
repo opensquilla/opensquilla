@@ -382,18 +382,18 @@
     },
     "needs": {
       "noApiKey": "Aucune clé API requise.",
-      "bundledLocal": "Plongements locaux intégrés pour le chemin par défaut.",
-      "noEmbedding": "Aucun service de plongement ; la recherche par mots-clés reste disponible.",
-      "localOnnx": "Ressources de plongement ONNX locales issues de l'installation recommandée.",
+      "bundledLocal": "Embeddings locaux intégrés pour le chemin par défaut.",
+      "noEmbedding": "Aucun service d'embedding ; la recherche par mots-clés reste disponible.",
+      "localOnnx": "Ressources d'embedding ONNX locales issues de l'installation recommandée.",
       "optionalRemoteFallback": "Identifiants de repli distant facultatifs si configurés.",
       "imageProviderModel": "Un ID de fournisseur/modèle prenant en charge la génération d'images.",
-      "optionalEmbeddingModel": "Remplacement facultatif du modèle de plongement.",
+      "optionalEmbeddingModel": "Remplacement facultatif du modèle d'embedding.",
       "optionalOnnxDir": "Remplacement facultatif du répertoire ONNX pour des ressources locales personnalisées.",
       "providerModelId": "Identifiant du fournisseur/modèle.",
       "optionalLocaleHint": "Indice de langue facultatif tel que zh-CN, en-US ou en-GB.",
       "offSurfacesError": "off affiche l'erreur d'origine du fournisseur.",
       "audioEnvVar": "Variable d'environnement à lire pour l'accès au fournisseur audio.",
-      "remoteEmbeddingKey": "Clé API de plongement distant ou référence d'environnement."
+      "remoteEmbeddingKey": "Clé API d'embedding distant ou référence d'environnement."
     }
   },
   "sessions": {
@@ -591,7 +591,7 @@
       "badge": {
         "diagnostic": "Diagnostics incomplets",
         "repair": "Réparation en attente",
-        "config": "Désaccord de configuration"
+        "config": "Incompatibilité de configuration"
       },
       "dotStatus": {
         "active": "Actif",

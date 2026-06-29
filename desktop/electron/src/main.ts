@@ -104,7 +104,10 @@ interface RuntimeLaunch {
   mode: 'bundled' | 'dev'
 }
 
+type BootPhaseId = 'profile' | 'gateway-start' | 'gateway-health' | 'control' | 'ready'
+
 interface BootStatus {
+  phaseId: BootPhaseId
   label: string
   at: string
 }
@@ -129,6 +132,7 @@ let gatewayStartPromise: Promise<GatewayState> | null = null
 let resolveOnboarding: ((credential: DesktopConnection) => void) | null = null
 let rejectOnboarding: ((error: Error) => void) | null = null
 let bootStatus: BootStatus = {
+  phaseId: 'profile',
   label: 'Preparing desktop profile',
   at: new Date().toISOString(),
 }
@@ -170,8 +174,8 @@ function appIconPath(): string {
     : join(packageRoot, 'assets', 'icon.png')
 }
 
-function sendBootStatus(label: string): void {
-  bootStatus = { label, at: new Date().toISOString() }
+function sendBootStatus(phaseId: BootPhaseId): void {
+  bootStatus = { phaseId, label: desktopT('boot.' + phaseId), at: new Date().toISOString() }
   bootError = null
   mainWindow?.webContents.send('desktop:boot:status', bootStatus)
 }
@@ -872,12 +876,134 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.view': 'View',
     'menu.window': 'Window',
     'window.onboarding': 'Set up OpenSquilla',
+    'boot.profile': 'Preparing desktop profile',
+    'boot.gateway-start': 'Starting local runtime',
+    'boot.gateway-health': 'Checking gateway health',
+    'boot.control': 'Loading Control UI',
+    'boot.ready': 'Ready',
+    'onboarding.title': 'Set up OpenSquilla',
+    'onboarding.rail.title': 'Desktop setup',
+    'onboarding.rail.subtitle': 'Configure the local runtime in the same order as the guided CLI.',
+    'onboarding.rail.foot': 'OpenSquilla keeps this profile local to this device.',
+    'onboarding.aria.setupSteps': 'Setup steps',
+    'onboarding.aria.setupDepth': 'Setup depth',
+    'onboarding.aria.routerMode': 'Router mode',
+    'onboarding.aria.searchProvider': 'Search provider',
+    'onboarding.nav.mode.title': 'Mode',
+    'onboarding.nav.mode.sub': 'Setup depth',
+    'onboarding.nav.provider.title': 'Provider',
+    'onboarding.nav.provider.sub': 'Model access',
+    'onboarding.nav.router.title': 'Smart Router',
+    'onboarding.nav.router.sub': 'Routing mode',
+    'onboarding.nav.tiers.title': 'Tiers',
+    'onboarding.nav.tiers.sub': 'Default models',
+    'onboarding.nav.search.title': 'Search',
+    'onboarding.nav.search.sub': 'Optional web access',
+    'onboarding.step1.badge': 'Start',
+    'onboarding.step1.heading': 'Choose setup depth',
+    'onboarding.step1.subtitle': 'Start with the shortest working path, or open the full router and tier controls now.',
+    'onboarding.step1.simpleTitle': 'Simple setup',
+    'onboarding.step1.simpleDesc': 'Pick one provider, add its key, choose search, and start OpenSquilla with defaults.',
+    'onboarding.step1.advancedTitle': 'Advanced setup',
+    'onboarding.step1.advancedDesc': 'Review Smart Router mode, tier defaults, and direct model details before startup.',
+    'onboarding.step1.note': 'You can change provider, router, and search settings later from the desktop Settings page.',
+    'onboarding.step1.quit': 'Quit',
+    'onboarding.step1.continue': 'Continue',
+    'onboarding.step2.badge': 'Required',
+    'onboarding.step2.heading': 'Connect a provider',
+    'onboarding.step2.subtitle': 'This is the account the local runtime uses for model calls. OpenRouter is the default; more providers stay tucked away until you need them.',
+    'onboarding.step2.apiKey': 'API key',
+    'onboarding.step2.endpointSummary': 'Endpoint and direct model',
+    'onboarding.step2.baseUrl': 'Base URL',
+    'onboarding.step2.directModel': 'Direct model',
+    'onboarding.step2.back': 'Back',
+    'onboarding.step2.next': 'Next',
+    'onboarding.step3.badge': 'Routing',
+    'onboarding.step3.heading': 'Select Smart Router mode',
+    'onboarding.step3.subtitle': 'Choose whether OpenSquilla should route work across tier defaults or call one model directly.',
+    'onboarding.step3.back': 'Back',
+    'onboarding.step3.next': 'Next',
+    'onboarding.step4.badge': 'Models',
+    'onboarding.step4.heading': 'Review tier models',
+    'onboarding.step4.subtitle': 'Pick the default text tier and keep the CLI defaults, or customize the model ids before startup.',
+    'onboarding.step4.back': 'Back',
+    'onboarding.step4.next': 'Next',
+    'onboarding.step5.badge': 'Optional',
+    'onboarding.step5.heading': 'Choose web search',
+    'onboarding.step5.subtitle': 'Search is optional. Start without another key, or connect a runtime-supported search provider.',
+    'onboarding.step5.searchKey': 'Search API key',
+    'onboarding.step5.searchHintDefault': 'DuckDuckGo is enough to start.',
+    'onboarding.step5.back': 'Back',
+    'onboarding.step5.finish': 'Start OpenSquilla',
+    'onboarding.more.show': 'More providers',
+    'onboarding.more.hide': 'Hide providers',
   },
   'zh-Hans': {
     'menu.edit': '编辑',
     'menu.view': '视图',
     'menu.window': '窗口',
     'window.onboarding': '设置 OpenSquilla',
+    'boot.profile': '正在准备桌面配置',
+    'boot.gateway-start': '正在启动本地运行时',
+    'boot.gateway-health': '正在检查网关健康状态',
+    'boot.control': '正在加载控制界面',
+    'boot.ready': '就绪',
+    'onboarding.title': '设置 OpenSquilla',
+    'onboarding.rail.title': '桌面设置',
+    'onboarding.rail.subtitle': '按照引导式 CLI 的相同顺序配置本地运行时。',
+    'onboarding.rail.foot': 'OpenSquilla 将此配置保留在本设备本地。',
+    'onboarding.aria.setupSteps': '设置步骤',
+    'onboarding.aria.setupDepth': '设置深度',
+    'onboarding.aria.routerMode': '路由模式',
+    'onboarding.aria.searchProvider': '搜索提供商',
+    'onboarding.nav.mode.title': '模式',
+    'onboarding.nav.mode.sub': '设置深度',
+    'onboarding.nav.provider.title': '提供商',
+    'onboarding.nav.provider.sub': '模型访问',
+    'onboarding.nav.router.title': 'Smart Router',
+    'onboarding.nav.router.sub': '路由模式',
+    'onboarding.nav.tiers.title': '层级',
+    'onboarding.nav.tiers.sub': '默认模型',
+    'onboarding.nav.search.title': '搜索',
+    'onboarding.nav.search.sub': '可选的网络访问',
+    'onboarding.step1.badge': '开始',
+    'onboarding.step1.heading': '选择设置深度',
+    'onboarding.step1.subtitle': '从最短的可用路径开始，或者现在就打开完整的路由器和层级控件。',
+    'onboarding.step1.simpleTitle': '简单设置',
+    'onboarding.step1.simpleDesc': '选择一个提供商，添加其密钥，选择搜索，然后使用默认设置启动 OpenSquilla。',
+    'onboarding.step1.advancedTitle': '高级设置',
+    'onboarding.step1.advancedDesc': '在启动前查看 Smart Router 模式、层级默认值和直连模型详情。',
+    'onboarding.step1.note': '稍后可在桌面设置页面更改提供商、路由器和搜索设置。',
+    'onboarding.step1.quit': '退出',
+    'onboarding.step1.continue': '继续',
+    'onboarding.step2.badge': '必填',
+    'onboarding.step2.heading': '连接提供商',
+    'onboarding.step2.subtitle': '这是本地运行时用于模型调用的账户。默认使用 OpenRouter；其他提供商会收起，需要时再展开。',
+    'onboarding.step2.apiKey': 'API 密钥',
+    'onboarding.step2.endpointSummary': '端点和直连模型',
+    'onboarding.step2.baseUrl': 'Base URL',
+    'onboarding.step2.directModel': '直连模型',
+    'onboarding.step2.back': '返回',
+    'onboarding.step2.next': '下一步',
+    'onboarding.step3.badge': '路由',
+    'onboarding.step3.heading': '选择 Smart Router 模式',
+    'onboarding.step3.subtitle': '选择 OpenSquilla 是按层级默认值分配工作，还是直接调用单个模型。',
+    'onboarding.step3.back': '返回',
+    'onboarding.step3.next': '下一步',
+    'onboarding.step4.badge': '模型',
+    'onboarding.step4.heading': '查看层级模型',
+    'onboarding.step4.subtitle': '选择默认文本层级并保留 CLI 默认值，或在启动前自定义模型 id。',
+    'onboarding.step4.back': '返回',
+    'onboarding.step4.next': '下一步',
+    'onboarding.step5.badge': '可选',
+    'onboarding.step5.heading': '选择网络搜索',
+    'onboarding.step5.subtitle': '搜索为可选项。可以不添加其他密钥直接开始，或连接运行时支持的搜索提供商。',
+    'onboarding.step5.searchKey': '搜索 API 密钥',
+    'onboarding.step5.searchHintDefault': 'DuckDuckGo 足以开始使用。',
+    'onboarding.step5.back': '返回',
+    'onboarding.step5.finish': '启动 OpenSquilla',
+    'onboarding.more.show': '更多提供商',
+    'onboarding.more.hide': '收起提供商',
   },
   ja: {
     'menu.edit': '編集',
@@ -2272,7 +2398,7 @@ async function reuseHealthyGatewayState(): Promise<GatewayState | null> {
   if (await healthCheck(gatewayState.url)) {
     gatewayState.status = 'ready'
     gatewayState.error = undefined
-    sendBootStatus('Loading Control UI')
+    sendBootStatus('control')
     return gatewayState
   }
 
@@ -2300,7 +2426,7 @@ async function startGateway(): Promise<GatewayState> {
   const overrideUrl = process.env.OPENSQUILLA_DESKTOP_GATEWAY_URL
   const explicitPort = process.env.OPENSQUILLA_DESKTOP_GATEWAY_PORT
   if (overrideUrl) {
-    sendBootStatus('Checking gateway health')
+    sendBootStatus('gateway-health')
     gatewayState.url = overrideUrl.replace(/\/$/, '')
     gatewayState.port = Number(new URL(gatewayState.url).port || 0)
     gatewayState.owned = false
@@ -2312,7 +2438,7 @@ async function startGateway(): Promise<GatewayState> {
   }
 
   if (!app.isPackaged && !explicitPort && await healthCheck('http://127.0.0.1:18791')) {
-    sendBootStatus('Loading Control UI')
+    sendBootStatus('control')
     gatewayState.url = 'http://127.0.0.1:18791'
     gatewayState.port = 18791
     gatewayState.owned = false
@@ -2320,7 +2446,7 @@ async function startGateway(): Promise<GatewayState> {
     return gatewayState
   }
 
-  sendBootStatus('Preparing desktop profile')
+  sendBootStatus('profile')
   const connection = await runOnboarding()
   const apiKey = decryptApiKey(connection)
   if (!apiKey) throw new Error('Saved desktop API key could not be read.')
@@ -2329,7 +2455,7 @@ async function startGateway(): Promise<GatewayState> {
   // and is otherwise the RPC-owned source of truth — so it is intentionally NOT
   // regenerated here on every boot.
 
-  sendBootStatus('Starting local runtime')
+  sendBootStatus('gateway-start')
   const runtime = await resolveGatewayRuntime()
 
   const port = await findGatewayPort()
@@ -2381,10 +2507,10 @@ async function startGateway(): Promise<GatewayState> {
     sendBootError(gatewayState.error)
   })
 
-  sendBootStatus('Checking gateway health')
+  sendBootStatus('gateway-health')
   await waitForGateway(url)
   await waitForControlUi(url)
-  sendBootStatus('Loading Control UI')
+  sendBootStatus('control')
   gatewayState.status = 'ready'
   return gatewayState
 }
@@ -2458,7 +2584,7 @@ function currentMainWindow(): BrowserWindow | null {
 
 function ensureGatewayStarted(): Promise<GatewayState> {
   if (!gatewayStartPromise) {
-    sendBootStatus('Preparing desktop profile')
+    sendBootStatus('profile')
     gatewayStartPromise = startGateway().finally(() => {
       gatewayStartPromise = null
     })
@@ -2470,14 +2596,14 @@ async function loadControlUiIntoCurrentWindow(gatewayUrl: string): Promise<void>
   const window = currentMainWindow()
   if (!window) return
 
-  sendBootStatus('Loading Control UI')
+  sendBootStatus('control')
   try {
     await loadControlUi(window, gatewayUrl)
   } catch (error) {
     if (window.isDestroyed()) return
     throw error
   }
-  sendBootStatus('Ready')
+  sendBootStatus('ready')
 }
 
 async function openOrResumeDesktopApp(): Promise<void> {

@@ -1,4 +1,10 @@
 {
+  "common": {
+    "close": "Close",
+    "save": "Save",
+    "discard": "Discard",
+    "cancel": "Cancel"
+  },
   "nav": {
     "chat": "Chat",
     "sessions": "Sessions",
@@ -30,6 +36,34 @@
       "themeDesc": "Follow your system, or force light or dark. The sidebar toggle is a shortcut to this same setting.",
       "languageLabel": "Language",
       "languageDesc": "Display language for the interface. Applies instantly to this browser."
+    },
+    "dialog": {
+      "title": "Settings",
+      "actionNeeded": "Action needed ({count})",
+      "readyToRun": "Ready to run",
+      "cliHandoff": "CLI handoff",
+      "fixNow": "Fix now",
+      "cliRecipes": "CLI recipes",
+      "configSummary": "Config summary",
+      "sections": "Settings sections",
+      "openSection": "{label} — open {section}",
+      "unsavedSuffix": ", unsaved changes",
+      "unsavedIn": "Unsaved changes in {sections}",
+      "moreOptionsIn": "More options live in",
+      "copyConfigPath": "Copy config path",
+      "applyLiveNote": "Most changes apply live; some need a gateway restart"
+    },
+    "rail": {
+      "connection": "Connection",
+      "runtime": "Runtime",
+      "provider": "Provider",
+      "behavior": "Behavior",
+      "router": "Router",
+      "channels": "Channels",
+      "capabilities": "Capabilities",
+      "appearance": "Appearance",
+      "keyboard": "Keyboard",
+      "advanced": "Advanced"
     }
   },
   "errorBoundary": {

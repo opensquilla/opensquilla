@@ -1,4 +1,10 @@
 {
+  "common": {
+    "close": "关闭",
+    "save": "保存",
+    "discard": "放弃",
+    "cancel": "取消"
+  },
   "nav": {
     "chat": "对话",
     "sessions": "会话",
@@ -30,6 +36,34 @@
       "themeDesc": "跟随系统，或强制使用浅色或深色。侧边栏的切换按钮是此设置的快捷方式。",
       "languageLabel": "语言",
       "languageDesc": "界面的显示语言。即时应用于此浏览器。"
+    },
+    "dialog": {
+      "title": "设置",
+      "actionNeeded": "需要处理（{count}）",
+      "readyToRun": "已就绪",
+      "cliHandoff": "CLI 交接",
+      "fixNow": "立即修复",
+      "cliRecipes": "CLI 示例",
+      "configSummary": "配置摘要",
+      "sections": "设置分区",
+      "openSection": "{label} — 打开{section}",
+      "unsavedSuffix": "，有未保存的更改",
+      "unsavedIn": "{sections}中有未保存的更改",
+      "moreOptionsIn": "更多选项位于",
+      "copyConfigPath": "复制配置路径",
+      "applyLiveNote": "大多数更改即时生效；部分需要重启网关"
+    },
+    "rail": {
+      "connection": "连接",
+      "runtime": "运行时",
+      "provider": "服务商",
+      "behavior": "行为",
+      "router": "路由",
+      "channels": "频道",
+      "capabilities": "能力",
+      "appearance": "外观",
+      "keyboard": "键盘",
+      "advanced": "高级"
     }
   },
   "errorBoundary": {

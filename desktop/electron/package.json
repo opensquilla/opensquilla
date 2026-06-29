@@ -16,7 +16,8 @@
     "dev": "npm run build && electron .",
     "dist:local": "npm run build:web && npm run build:gateway && npm run dist",
     "pack:local": "npm run build:web && npm run build:gateway && npm run pack",
-    "verify:package": "node scripts/verify-package.mjs",
+    "verify:icons": "node scripts/verify-icon-config.mjs",
+    "verify:package": "npm run verify:icons && node scripts/verify-package.mjs",
     "start": "electron .",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder"
@@ -84,6 +85,7 @@
       ]
     },
     "win": {
+      "icon": "assets/icon.ico",
       "target": [
         "nsis"
       ]
@@ -91,7 +93,9 @@
     "nsis": {
       "oneClick": false,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico"
     }
   }
 }

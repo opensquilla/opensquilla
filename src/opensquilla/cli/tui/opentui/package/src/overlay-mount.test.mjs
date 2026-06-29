@@ -30,12 +30,17 @@ class FakeNode {
 
 function makeHarness({ terminalWidth = 100 } = {}) {
   const keypressHandlers = [];
+  const cursorPositions = [];
   const renderer = {
     terminalWidth,
+    terminalHeight: 24,
     keyInput: {
       on(event, handler) {
         if (event === "keypress") keypressHandlers.push(handler);
       },
+    },
+    setCursorPosition(x, y, visible) {
+      cursorPositions.push({ x, y, visible });
     },
     requestRender() {},
   };
@@ -59,7 +64,8 @@ function makeHarness({ terminalWidth = 100 } = {}) {
   });
   composer.install();
   const press = (key) => keypressHandlers.forEach((handler) => handler(key));
-  return { composer, press, inputBox, overlayLayer, conversationBox };
+  const lastCursor = () => cursorPositions.at(-1);
+  return { composer, press, inputBox, overlayLayer, conversationBox, lastCursor };
 }
 
 function findDeep(node, id) {
@@ -166,4 +172,24 @@ test("completion menu clips long rows to the menu body width", () => {
     rowContents.every((content) => textWidth(content) <= 33),
     "row content must fit the 72-column menu body",
   );
+});
+
+test("composer anchors the terminal cursor at the visual caret for IME popovers", () => {
+  const { press, lastCursor } = makeHarness();
+
+  assert.deepEqual(lastCursor(), { x: 3, y: 19, visible: false });
+
+  press({ name: "h", sequence: "h" });
+  press({ name: "i", sequence: "i" });
+  assert.deepEqual(lastCursor(), { x: 5, y: 19, visible: false });
+
+  press({ name: "backspace" });
+  press({ name: "backspace" });
+  press({ name: "你", sequence: "你" });
+  press({ name: "好", sequence: "好" });
+  assert.deepEqual(lastCursor(), { x: 7, y: 19, visible: false });
+
+  press({ name: "return", option: true });
+  press({ name: "a", sequence: "a" });
+  assert.deepEqual(lastCursor(), { x: 4, y: 20, visible: false });
 });

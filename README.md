@@ -344,22 +344,23 @@ block startup.
 What is sent:
 
 - schema version
-- random locally generated `install_id`
+- locally generated stable `install_id` digest
 - OpenSquilla version
 - event type (`install` or `version_seen`)
 - install method (`pip`, `source`, `docker`, `desktop`, or `unknown`)
 - operating system, OS version, CPU architecture, and Python major/minor
   version
 - first-seen and sent timestamps
+- CI/test-environment marker (`ci_environment`)
 
-The `install_id` is random and is not derived from your account, device name,
-hostname, or local paths.
+The `install_id` is a local one-way SHA-256 digest derived from usable MAC
+addresses, then local IP addresses when no MAC is available, with a random
+persisted fallback. Raw MAC/IP values are not uploaded.
 
-What is not sent: usernames, email addresses, hostnames, local paths, API keys,
-provider configuration, chat history, session data, memory, agent content, file
-names, or file contents. HTTP servers can technically observe source IP
-addresses at the transport layer; IP addresses are not part of the payload and
-should not be used as an install-count field by the collector.
+What is not sent: usernames, hostnames, paths, API keys, provider config,
+chat/session/memory/agent content, file names, or file contents. Source IP may
+be visible to HTTP servers at the transport layer, but is not part of the
+payload.
 
 To opt out:
 

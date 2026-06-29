@@ -400,6 +400,7 @@ import { useAgentOptions } from './composables/useAgentOptions'
 import { useToasts } from './composables/useToasts'
 import { useNavigation } from './app/useNavigation'
 import { normalizeAgentId } from './utils/chat/sessionKeys'
+import { installSessionNavigationDiagConsole, recordSessionNavigationDiag } from './utils/chat/sessionNavigationDiag'
 import type { RpcEventHandler } from '@/lib/rpc'
 import { isMacPlatform } from './utils/browser'
 import { useShortcutsStore } from './stores/shortcuts'
@@ -421,6 +422,8 @@ const { allSessions, sessionListError, isLoading, loadSessions } = useSessions()
 const { consoleSections, bottomRoutes, workNav } = useNavigation()
 const { pushToast } = useToasts()
 const webConfigEnabled = getPlatform().capabilities.hasWebConfig
+
+installSessionNavigationDiagConsole()
 
 // Shared agents.list state + fetch (singleton): App.vue and ChatView's
 // in-draft switcher use the same list and one fetch.
@@ -727,11 +730,15 @@ function onPaletteToggleTheme() {
 }
 
 function onPaletteSelectSession(key: string) {
-  switchToSession(key)
+  switchToSession(key, 'command_palette.select_session')
 }
 
-function switchToSession(key: string) {
+function switchToSession(key: string, source = 'app.switchToSession') {
   if (!key) return
+  recordSessionNavigationDiag(source, {
+    from: currentSessionKey.value,
+    to: key,
+  })
   router.push({ path: '/chat', query: { session: key } })
   if (appStore.sidebarHovered) {
     appStore.setSidebarHovered(false)
@@ -806,7 +813,7 @@ async function onDeleteSession(key: string) {
 function openBlockedApprovalSession() {
   const oldest = appStore.oldestPendingWithSession
   if (oldest?.sessionKey) {
-    switchToSession(oldest.sessionKey)
+    switchToSession(oldest.sessionKey, 'approval.openBlockedSession')
     return
   }
   router.push('/approvals')

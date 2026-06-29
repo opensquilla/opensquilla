@@ -14,6 +14,27 @@ export function cardHeaderRule(label, terminalWidth) {
   return prefix + "─".repeat(width - textWidth(prefix));
 }
 
+// True when a scroll position is within `slack` rows of the bottom — i.e. the
+// view should keep following new content as it streams in. When the user has
+// scrolled up to read history this is false, so auto-follow never yanks them
+// down. (stickyScroll alone does not re-follow while a child grows in place.)
+export function isPinnedToBottom(scrollTop, scrollHeight, viewportHeight, slack = 2) {
+  const maxTop = Math.max(0, scrollHeight - viewportHeight);
+  return scrollTop >= maxTop - slack;
+}
+
+// Mirror an OpenTUI selection into the system clipboard via OSC 52. A
+// mouse-capturing TUI never receives the terminal's Cmd/Ctrl+C, so the renderer's
+// "selection" event (fired on a completed drag-select) is the copy trigger.
+// Guarded by isOsc52Supported so unsupported terminals are a silent no-op rather
+// than emitting stray escape bytes. Returns whether bytes were written.
+export function copySelectionToClipboard(renderer, selection) {
+  const text =
+    selection?.getSelectedText?.() ?? renderer?.getSelection?.()?.getSelectedText?.() ?? "";
+  if (!text || !renderer?.isOsc52Supported?.()) return false;
+  return renderer.copyToClipboardOSC52?.(text) ?? false;
+}
+
 export function cellWidth(char) {
   return /[ᄀ-ᅟ〈〉⺀-꓏가-힣豈-﫿︐-︙︰-﹯＀-｠￠-￦]/u.test(char)
     ? 2

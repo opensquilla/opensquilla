@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import process from "node:process";
 import { THEME, applyTheme } from "./theme.mjs";
-import { stripTerminalControls } from "./primitives.mjs";
+import { copySelectionToClipboard, isPinnedToBottom, stripTerminalControls } from "./primitives.mjs";
 import { createComposer } from "./composer.mjs";
 import { createTurnView } from "./turnView.mjs";
 import { createIpc, createDispatcher } from "./ipc.mjs";
@@ -124,6 +124,25 @@ async function main() {
     return activeTurn;
   };
 
+  // Keep the conversation pinned to the newest content as it grows. stickyScroll
+  // does not re-follow while a child (e.g. a streaming answer) grows in place, so
+  // we explicitly snap to the bottom after a mutation — but ONLY if the user was
+  // already at the bottom, so scrolling up to read history is never yanked away.
+  const SCROLL_PIN_SLACK = 2;
+  function scrollConversationToBottom() {
+    conversationBox.scrollTop = conversationBox.scrollHeight;
+  }
+  function withBottomFollow(mutate) {
+    const pinned = isPinnedToBottom(
+      conversationBox.scrollTop,
+      conversationBox.scrollHeight,
+      conversationBox.height,
+      SCROLL_PIN_SLACK,
+    );
+    mutate();
+    if (pinned) scrollConversationToBottom();
+  }
+
   const dispatch = createDispatcher({
     turnBegin: (m) => { ensureTurn(m.id); },
     turnEnd: () => { if (activeTurn) activeTurn.ended = true; },
@@ -135,9 +154,9 @@ async function main() {
     completionContext: (m) => composer.setCompletionContext(m),
     completionResponse: (m) => composer.applyCompletionResponse(m),
     routerUpdate: (m) => composer.setRouterState(m),
-    blockBegin: (m) => ensureTurn().begin(m.id, m.kind, m.meta),
-    blockAppend: (m) => activeTurn?.append(m.id, m.delta),
-    blockUpdate: (m) => activeTurn?.update(m.id, m.patch),
+    blockBegin: (m) => withBottomFollow(() => ensureTurn().begin(m.id, m.kind, m.meta)),
+    blockAppend: (m) => withBottomFollow(() => activeTurn?.append(m.id, m.delta)),
+    blockUpdate: (m) => withBottomFollow(() => activeTurn?.update(m.id, m.patch)),
     blockEnd: (m) => activeTurn?.end(m.id),
     // prompt.echo arrives BEFORE turn.begin (it is emitted by the input-echo
     // hook). ensureTurn here starts the turn view; the following turn.begin
@@ -146,15 +165,20 @@ async function main() {
     promptEcho: (m) => {
       const turn = ensureTurn(m.id);
       turn.begin(`prompt-${scrollbackSeq++}`, "prompt", { text: String(m.text ?? "") });
+      // The user just submitted — always snap to the bottom so they see their
+      // message and the incoming response, even if they had scrolled up.
+      scrollConversationToBottom();
     },
     // model.text is a minor queue marker. Render it as a thinking line (purple
     // ✻) by seeding a thinking block and flushing it immediately on end.
     modelText: (m) => {
-      const turn = ensureTurn();
-      const id = `note-${scrollbackSeq++}`;
-      turn.begin(id, "thinking", {});
-      turn.append(id, String(m.text ?? ""));
-      turn.end(id);
+      withBottomFollow(() => {
+        const turn = ensureTurn();
+        const id = `note-${scrollbackSeq++}`;
+        turn.begin(id, "thinking", {});
+        turn.append(id, String(m.text ?? ""));
+        turn.end(id);
+      });
     },
     // Live theme switch (sent by the /theme slash command). Repaint every owned
     // surface and re-render the footer; new content picks up THEME automatically.
@@ -174,12 +198,21 @@ async function main() {
         content: stripTerminalControls(String(m.text ?? "")),
         fg: THEME.muted,
       });
-      conversationBox.add(node);
+      withBottomFollow(() => conversationBox.add(node));
       renderer.requestRender?.();
     },
     shutdown: () => { renderer.destroy(); process.exit(0); },
     unknown: (m) => ipc.send({ type: "error", message: `Unknown Python message type: ${m.type}` }),
   });
+
+  // Select-to-copy. A mouse-capturing TUI never receives the terminal's
+  // Cmd/Ctrl+C (the terminal intercepts the shortcut), so mirror the OpenTUI
+  // selection into the system clipboard via OSC 52 as the user drags. Drag-select
+  // any conversation text and it is copied; paste anywhere as usual. Requires a
+  // terminal with OSC 52 write support (iTerm2, kitty, WezTerm, Alacritty, or tmux
+  // with `set-clipboard on`); macOS Terminal.app users can Option-drag to use the
+  // terminal's own selection instead.
+  renderer.on?.("selection", (selection) => copySelectionToClipboard(renderer, selection));
 
   renderer.on?.("resize", () => {
     const h = renderer.terminalHeight ?? 24;

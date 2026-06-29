@@ -206,6 +206,13 @@ export function menuKeyAction(menu, keyName) {
       if (keyName === "return") return { handled: false, action: "pass", menu: { ...menu, active: false } };
       return { handled: true, action: "close", menu: { ...menu, active: false } };
     }
+    // Enter on a slash command RUNS it (accept + submit) in one keystroke instead
+    // of just inserting it and waiting for a second Enter. Tab completes it so you
+    // can still type arguments (e.g. `/theme dark`). File completions only insert
+    // the path — Enter there keeps composing the message, never submits it.
+    if (keyName === "return" && menu.kind === "slash") {
+      return { handled: true, action: "accept_submit", menu };
+    }
     return { handled: true, action: "accept", menu };
   }
   return { handled: false, action: "pass", menu };
@@ -806,6 +813,12 @@ export function createComposer(deps) {
     if (!result.handled) return false;
     if (result.action === "accept") {
       acceptCompletion();
+      return true;
+    }
+    if (result.action === "accept_submit") {
+      // Insert the highlighted command, then submit it — one Enter runs it.
+      acceptCompletion();
+      submitInput();
       return true;
     }
     Object.assign(menu, result.menu);

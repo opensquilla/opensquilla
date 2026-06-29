@@ -125,6 +125,31 @@ test("menuKeyAction handles menu navigation before submit and cancel keys", () =
   assert.equal(menuKeyAction(menu, "backspace").handled, false);
 });
 
+test("Enter runs a highlighted slash command in one keystroke; Tab only completes", () => {
+  const menu = {
+    active: true,
+    kind: "slash",
+    selected: 0,
+    filtered: [{ label: "/theme", insert_text: "/theme " }],
+  };
+  // Enter accepts AND submits (runs it) — no second Enter needed.
+  assert.equal(menuKeyAction(menu, "return").action, "accept_submit");
+  // Tab just completes so you can still type arguments (e.g. `/theme dark`).
+  assert.equal(menuKeyAction(menu, "tab").action, "accept");
+});
+
+test("Enter on a file completion inserts the path without submitting the message", () => {
+  const menu = {
+    active: true,
+    kind: "file",
+    selected: 0,
+    filtered: [{ label: "src/a.ts", insert_text: "@src/a.ts " }],
+  };
+  // File completions are part of a message being composed: never auto-submit.
+  assert.equal(menuKeyAction(menu, "return").action, "accept");
+  assert.equal(menuKeyAction(menu, "tab").action, "accept");
+});
+
 test("menuKeyAction lets Enter submit when the menu has no matches", () => {
   const empty = { active: true, kind: "command", filtered: [], selected: 0 };
   // With nothing to accept, Enter must NOT be swallowed — it falls through so the

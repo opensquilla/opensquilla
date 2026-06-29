@@ -191,6 +191,11 @@ export interface ToolUsePayload extends SessionEventPayload {
   json_fragment?: string
   jsonFragment?: string
   fragment?: string
+  // Server wall-clock tool start time (epoch ms). Present on tool_use_start so a
+  // running tool's elapsed timer survives page switches / stream replay instead of
+  // restarting from a fresh local clock on remount (issue #329). 0/absent => use
+  // the local clock.
+  started_at?: number
 }
 
 export interface ToolDeltaPayload extends ToolUsePayload {

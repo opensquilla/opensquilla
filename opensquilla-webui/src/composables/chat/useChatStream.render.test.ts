@@ -148,4 +148,49 @@ describe('useChatStream render coalescing', () => {
     expect(messages.value[0]?.text).toBe('prefixprefixsuffix')
     api.cleanup()
   })
+
+  // Issue #329: a running tool's elapsed timer must come from the server-stamped
+  // start time so it survives a page switch / stream replay (where the component
+  // remounts and replays tool_use_start) instead of restarting from the local clock.
+  it('seeds a running tool elapsed timer from the server start time', () => {
+    const { api } = makeStream()
+    vi.setSystemTime(100_000)
+
+    // Server says the tool started 5s before "now".
+    api.appendToolCall({ tool_use_id: 'tool-1', tool_name: 'web_search', started_at: 95_000 })
+
+    expect(api.streamToolElapsedText({ toolId: 'tool-1' })).toBe('5s')
+    api.cleanup()
+  })
+
+  it('falls back to the local clock when the server start time is absent or sentinel', () => {
+    const { api } = makeStream()
+    vi.setSystemTime(100_000)
+
+    // No started_at, and the 0 "unstamped" sentinel: both fall back to now -> 0s.
+    api.appendToolCall({ tool_use_id: 'tool-2', tool_name: 'web_search' })
+    api.appendToolCall({ tool_use_id: 'tool-3', tool_name: 'web_search', started_at: 0 })
+
+    expect(api.streamToolElapsedText({ toolId: 'tool-2' })).toBe('0s')
+    expect(api.streamToolElapsedText({ toolId: 'tool-3' })).toBe('0s')
+    api.cleanup()
+  })
+
+  // Clock-skew guard: a server start in the future or implausibly far in the past
+  // (skewed gateway clock) is distrusted and falls back to the local clock, so the
+  // timer can't render a wildly wrong duration. "now" is set well past
+  // MAX_TRUSTED_TOOL_AGE_MS so the stale branch is exercised.
+  it('ignores a skewed server start time and falls back to the local clock', () => {
+    const { api } = makeStream()
+    vi.setSystemTime(5_000_000)
+
+    // Future start (server clock ahead) -> distrusted -> local clock -> 0s.
+    api.appendToolCall({ tool_use_id: 'tool-4', tool_name: 'web_search', started_at: 5_100_000 })
+    // Implausibly old start (server far behind / garbage) -> distrusted -> 0s.
+    api.appendToolCall({ tool_use_id: 'tool-5', tool_name: 'web_search', started_at: 1_000 })
+
+    expect(api.streamToolElapsedText({ toolId: 'tool-4' })).toBe('0s')
+    expect(api.streamToolElapsedText({ toolId: 'tool-5' })).toBe('0s')
+    api.cleanup()
+  })
 })

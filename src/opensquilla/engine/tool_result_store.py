@@ -88,13 +88,15 @@ class ToolResultStore:
         sha = hashlib.sha256(payload).hexdigest()
         primary_handle = f"tr-{sha[:_CONTENT_HANDLE_HEX]}"
 
-        # Enforce retention first — a cheap, dedup-bounded stat scan — so a deduped
-        # write never bypasses cleanup and, crucially, never reuses a record that
-        # retention is about to evict. (If reuse ran before expiry, a small/zero
-        # retention_seconds would hand back a handle to an immediately-reaped record.)
-        # An expired record is removed here, so the lookup below falls through to a
-        # fresh write rather than returning a dangling handle.
-        self._remove_expired(retention_seconds)
+        # One cleanup scan feeds both retention and the budget prune below, so a new
+        # write pays a single store walk instead of re-scanning the whole store once
+        # per cleanup pass (issue #305). Retention runs first — a deduped write must
+        # never bypass cleanup nor reuse a record retention is about to evict (a
+        # small/zero retention_seconds would otherwise hand back a handle to an
+        # immediately-reaped record) — and the surviving records prune to fit.
+        surviving_records = self._remove_expired(
+            self._iter_record_stats(), retention_seconds
+        )
 
         # Content-addressed snapshots: identical content that survived retention is
         # reused instead of rewritten — refreshing its access time so a frequently
@@ -116,7 +118,7 @@ class ToolResultStore:
             return reused
 
         if disk_budget_bytes is not None:
-            self._prune_to_fit(size_bytes, disk_budget_bytes)
+            self._prune_to_fit(surviving_records, size_bytes, disk_budget_bytes)
 
         created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         # The deterministic handle is tried first; a random handle is only needed for
@@ -315,17 +317,31 @@ class ToolResultStore:
             )
         return records
 
-    def _remove_expired(self, retention_seconds: int | None) -> None:
+    def _remove_expired(
+        self, records: list[_StoredMeta], retention_seconds: int | None
+    ) -> list[_StoredMeta]:
+        """Delete records older than the retention window and return the survivors,
+        so the caller can reuse this single scan for the budget prune instead of
+        walking the store again."""
         if retention_seconds is None:
-            return
+            return records
         cutoff = datetime.now(UTC) - timedelta(seconds=max(0, int(retention_seconds)))
-        for record in self._iter_record_stats():
+        survivors: list[_StoredMeta] = []
+        for record in records:
             if record.created_at < cutoff:
                 _remove_record_dir(record.record_dir)
+            else:
+                survivors.append(record)
+        return survivors
 
-    def _prune_to_fit(self, incoming_bytes: int, disk_budget_bytes: int) -> None:
+    def _prune_to_fit(
+        self,
+        records: list[_StoredMeta],
+        incoming_bytes: int,
+        disk_budget_bytes: int,
+    ) -> None:
         budget = max(0, int(disk_budget_bytes))
-        records = sorted(self._iter_record_stats(), key=lambda item: item.created_at)
+        records = sorted(records, key=lambda item: item.created_at)
         current = sum(record.size_bytes for record in records)
         if current + incoming_bytes <= budget:
             return

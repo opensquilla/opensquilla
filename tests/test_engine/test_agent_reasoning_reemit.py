@@ -65,7 +65,7 @@ def test_agent_reemits_reasoning_as_thinking_event() -> None:
 
 
 from opensquilla.engine import ToolResult  # noqa: E402
-from opensquilla.engine.types import TextDeltaEvent, ToolCall  # noqa: E402
+from opensquilla.engine.types import TextDeltaEvent, ToolCall, ToolUseStartEvent  # noqa: E402
 from opensquilla.provider import (  # noqa: E402
     ToolDefinition,
     ToolInputSchema,
@@ -105,7 +105,12 @@ class _TextThenToolThenAnswerProvider:
         yield ProviderDone(stop_reason="end_turn", input_tokens=6, output_tokens=3)
 
 
-def test_pre_tool_text_is_intermediate_final_text_is_answer() -> None:
+def test_text_streams_live_as_answer_until_a_tool_appears() -> None:
+    """Issue #358 regression guard: assistant text streams live, token by token, the
+    moment it arrives instead of being buffered until the provider call ends. Until a
+    tool appears the running text is the answer (the common plain-Q&A case), so nothing
+    is held back and the UI updates incrementally rather than freezing then dumping the
+    whole reply at once."""
     import asyncio
 
     async def tool_handler(call: ToolCall) -> ToolResult:
@@ -133,10 +138,126 @@ def test_pre_tool_text_is_intermediate_final_text_is_answer() -> None:
     events = asyncio.run(run())
     text_events = [e for e in events if isinstance(e, TextDeltaEvent)]
 
+    # Every provider text delta is surfaced as its own live event — no buffering and
+    # no end-of-call flush that lumps the reply into one blob.
+    assert [e.text for e in text_events] == [
+        "Let me look ",
+        "at the file.",
+        "Here is the answer.",
+    ]
+    # No tool has appeared when any of this text arrives, so all of it streams as the
+    # answer; nothing is withheld as intermediate.
+    intermediate = "".join(e.text for e in text_events if e.presentation == "intermediate")
+    answer = "".join(e.text for e in text_events if e.presentation == "answer")
+    assert intermediate == ""
+    assert answer == "Let me look at the file.Here is the answer."
+
+
+class _ToolThenTextThenAnswerProvider:
+    """Round 1: a tool call, then narration text *after* it. Round 2: final answer."""
+
+    provider_name = "fake"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def chat(
+        self,
+        messages: list[Message],
+        tools: list[Any] | None = None,
+        config: ChatConfig | None = None,
+    ) -> AsyncIterator[Any]:
+        self.calls += 1
+        return self._stream(self.calls)
+
+    async def _stream(self, call: int) -> AsyncIterator[Any]:
+        if call == 1:
+            yield ProviderToolStart(tool_use_id="t1", tool_name="read")
+            yield ProviderToolEnd(tool_use_id="t1", tool_name="read", arguments={})
+            # narration the model speaks between tool calls
+            yield ProviderText(text="Now let me ")
+            yield ProviderText(text="explain.")
+            yield ProviderDone(stop_reason="tool_use", input_tokens=5, output_tokens=2)
+            return
+        yield ProviderText(text="Final answer.")
+        yield ProviderDone(stop_reason="end_turn", input_tokens=6, output_tokens=3)
+
+
+def test_text_after_a_tool_is_intermediate_narration() -> None:
+    """Once a tool has appeared in a round, later text in that round is intermediate
+    narration between tools (purple), while the final no-tool round is the answer."""
+    import asyncio
+
+    async def tool_handler(call: ToolCall) -> ToolResult:
+        return ToolResult(
+            tool_use_id=call.tool_use_id,
+            tool_name=call.tool_name,
+            content="{}",
+        )
+
+    async def run() -> list[Any]:
+        agent = Agent(
+            provider=_ToolThenTextThenAnswerProvider(),
+            config=AgentConfig(max_iterations=3),
+            tool_definitions=[
+                ToolDefinition(
+                    name="read",
+                    description="read a file",
+                    input_schema=ToolInputSchema(properties={}, required=[]),
+                )
+            ],
+            tool_handler=tool_handler,
+        )
+        return [event async for event in agent.run_turn("hi")]
+
+    events = asyncio.run(run())
+    text_events = [e for e in events if isinstance(e, TextDeltaEvent)]
+
     intermediate = "".join(e.text for e in text_events if e.presentation == "intermediate")
     answer = "".join(e.text for e in text_events if e.presentation == "answer")
 
-    # text before the tool call is intermediate narration (purple), the text
-    # in the final no-tool round is the answer (card)
-    assert intermediate == "Let me look at the file."
-    assert answer == "Here is the answer."
+    assert intermediate == "Now let me explain."
+    assert answer == "Final answer."
+
+
+def test_tool_use_start_carries_server_start_timestamp() -> None:
+    """Issue #329: the engine stamps ToolUseStartEvent with a server wall-clock start
+    time (epoch ms). A client seeds the running tool's elapsed timer from this instead
+    of its own clock, so the timer survives page switches / stream replay (where the
+    component remounts) rather than restarting from zero on every remount."""
+    import asyncio
+    import time
+
+    async def tool_handler(call: ToolCall) -> ToolResult:
+        return ToolResult(
+            tool_use_id=call.tool_use_id,
+            tool_name=call.tool_name,
+            content="{}",
+        )
+
+    async def run() -> list[Any]:
+        agent = Agent(
+            provider=_ToolThenTextThenAnswerProvider(),
+            config=AgentConfig(max_iterations=3),
+            tool_definitions=[
+                ToolDefinition(
+                    name="read",
+                    description="read a file",
+                    input_schema=ToolInputSchema(properties={}, required=[]),
+                )
+            ],
+            tool_handler=tool_handler,
+        )
+        return [event async for event in agent.run_turn("hi")]
+
+    before_ms = int(time.time() * 1000)
+    events = asyncio.run(run())
+    after_ms = int(time.time() * 1000)
+
+    starts = [e for e in events if isinstance(e, ToolUseStartEvent)]
+    assert starts, "expected at least one tool_use_start event"
+    for ev in starts:
+        # Stamped with a real server time within the turn's wall-clock window, not the
+        # 0 "unstamped" sentinel.
+        assert ev.started_at > 0
+        assert before_ms <= ev.started_at <= after_ms

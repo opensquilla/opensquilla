@@ -97,12 +97,15 @@ class OpenTuiStreamRenderer:
             await self._emit(
                 "turn.status", TurnStatusState(phase="output", label="output", active=True)
             )
-        # The agent tells us, per text segment, whether it is the turn's final
-        # answer (-> cyan card) or intermediate narration between tool calls
-        # (-> purple ✱ thinking line). We trust that signal and open the right
-        # block kind from the first delta — the block never changes kind, so the
-        # final answer is a card from its first visible character (no flicker),
-        # and intermediate text never masquerades as an answer card.
+        # The agent tells us, per text segment, whether it is the turn's answer
+        # (-> cyan card) or intermediate narration between tool calls (-> purple ✱
+        # thinking line), and we open the matching block kind from the first delta.
+        # A single block never changes kind, but a call CAN switch presentation:
+        # text streams live as the answer until a tool appears, after which later
+        # text in the same call is intermediate (the agent streams rather than
+        # buffering — see agent.py / issue #358). When that happens the open block
+        # is closed and a fresh block of the new kind is opened (below), so each
+        # segment stays its own correctly-typed block.
         kind = "answer" if presentation == "answer" else "thinking"
         # A reasoning stream that was open must close before assistant text.
         await self._close_reasoning()

@@ -37,6 +37,11 @@ import { useChatTurnLog } from '@/composables/chat/useChatTurnLog'
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 210000
 const THINKING_DELAY_MS = 400
 const THINKING_TTL_MS = 60000
+// Bounds for trusting a server-stamped tool start time against the local clock
+// (see serverToolStartedAt). Tolerate small server-ahead skew; reject starts older
+// than this (longer than any realistic provider tool run) as skew/garbage.
+const SERVER_CLOCK_TOLERANCE_MS = 5000
+const MAX_TRUSTED_TOOL_AGE_MS = 60 * 60 * 1000
 const SQUILLA_VERBS = ['Planning next step', 'Reading context', 'Waiting for model', 'Preparing output']
 
 // Internal phase labels stay English (they double as stable keys for dedup,
@@ -507,6 +512,25 @@ export function useChatStream(options: UseChatStreamOptions) {
     if (streamIdleTimer.value) { clearTimeout(streamIdleTimer.value); streamIdleTimer.value = null }
   }
 
+  // The server-stamped tool start time (epoch ms), or null when absent/invalid.
+  // 0 is the backend's "unstamped" sentinel and is treated as absent.
+  //
+  // The elapsed timer differences this server start against the client's Date.now(),
+  // so a gateway whose wall clock is skewed from the browser's (common on remote /
+  // non-NTP boxes) would distort elapsed. We bound that: a start in the future
+  // (server ahead) or implausibly far in the past (server behind / garbage) is not
+  // trusted and we fall back to the local clock — capping any residual error rather
+  // than letting a skewed clock render a wildly wrong duration. On synced clocks
+  // (e.g. the gateway serving its own UI) this is exact.
+  function serverToolStartedAt(payload: ToolUsePayload | ToolResultPayload): number | null {
+    const raw = (payload as ToolUsePayload).started_at
+    if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return null
+    const now = Date.now()
+    if (raw > now + SERVER_CLOCK_TOLERANCE_MS) return null
+    if (raw < now - MAX_TRUSTED_TOOL_AGE_MS) return null
+    return raw
+  }
+
   function ensureStreamToolCall(payload: ToolUsePayload | ToolResultPayload, optionsArg: { running: boolean }): ChatToolCall | null {
     if (!payload) return null
     const name = normalizeToolName(payload)
@@ -534,8 +558,13 @@ export function useChatStream(options: UseChatStreamOptions) {
 
     // Only calls observed from their start get a wall clock; result-only
     // calls (and replayed history) never show a fabricated elapsed time.
+    // Prefer the server-stamped start time (epoch ms) so the elapsed timer is
+    // stable across page switches / stream replay, where the component remounts
+    // and would otherwise restart the clock from now (issue #329). Fall back to
+    // the local clock when the server did not stamp one.
     if (optionsArg.running && !toolTimes.value.has(toolId)) {
-      toolTimes.value.set(toolId, { startedAt: Date.now() })
+      const serverStartedAt = serverToolStartedAt(payload)
+      toolTimes.value.set(toolId, { startedAt: serverStartedAt ?? Date.now() })
     }
 
     const operationKey = toolOperationKey(name)

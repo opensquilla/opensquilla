@@ -1532,7 +1532,11 @@ class Agent:
             )
             return result
 
-        stored = self._store_tool_result_snapshot(
+        # The snapshot write does blocking filesystem work — including a store-wide
+        # cleanup scan — so run it in a worker thread to keep the gateway event loop
+        # responsive while the store grows (issue #305).
+        stored = await asyncio.to_thread(
+            self._store_tool_result_snapshot,
             result.content,
             tool_use_id=result.tool_use_id,
             tool_name=result.tool_name,
@@ -2177,14 +2181,10 @@ class Agent:
                     assistant_text_parts = []
                     tool_calls = []
                     pending_tools = {}
-                    # Buffer for plain assistant text on a tools-enabled call. We
-                    # cannot know whether the text is the final answer (-> card)
-                    # or intermediate narration before a tool (-> purple) until a
-                    # tool_use appears or the call ends, so we hold the deltas and
-                    # classify them once that is known. text_presentation_decided
-                    # flips to True the moment we commit to "intermediate" (a tool
-                    # showed up), after which later text streams straight through.
-                    pending_text_deltas: list[str] = []
+                    # Plain assistant text streams live as the answer the moment it
+                    # arrives. text_presentation_decided flips to True once a tool
+                    # appears this call, after which later text is tagged as
+                    # intermediate narration between tools rather than the answer.
                     text_presentation_decided = False
                     tool_argument_heartbeat_chars = {}
                     iter_input_tokens = 0
@@ -2313,24 +2313,26 @@ class Agent:
                                 assistant_text_parts.append(raw_ev.text)
                                 if raw_ev.text:
                                     attempt_user_visible_emitted = True
-                                if not tools_supported_for_call:
-                                    # No tool can follow on this call, so the text
-                                    # is the final answer: stream it as a card,
-                                    # token by token, right now.
-                                    yield TextDeltaEvent(
-                                        text=raw_ev.text, presentation="answer"
-                                    )
-                                elif text_presentation_decided:
+                                if text_presentation_decided:
                                     # A tool already appeared this call, so all
                                     # text here is intermediate narration.
                                     yield TextDeltaEvent(
                                         text=raw_ev.text, presentation="intermediate"
                                     )
                                 else:
-                                    # Ambiguous: hold until a tool appears
-                                    # (-> intermediate) or the call ends with no
-                                    # tools (-> answer).
-                                    pending_text_deltas.append(raw_ev.text)
+                                    # No tool has appeared yet. Stream the text live,
+                                    # token by token, as the answer rather than
+                                    # holding it until the call ends: buffering froze
+                                    # the Web UI for the whole generation on plain
+                                    # (no-tool) Q&A, which is the common case on any
+                                    # tools-capable model (issue #358). If a tool
+                                    # later appears this call, subsequent text flips
+                                    # to "intermediate" above; the few pre-tool tokens
+                                    # already shown as answer are a deliberate,
+                                    # harmless trade for live output.
+                                    yield TextDeltaEvent(
+                                        text=raw_ev.text, presentation="answer"
+                                    )
 
                             elif isinstance(raw_ev, ProviderReasoningDelta):
                                 # Reasoning is the model's thinking, not the
@@ -2347,15 +2349,8 @@ class Agent:
                                     ):
                                         ignored_post_delivery_tool_use = True
                                     continue
-                                # A tool follows, so any text held this call was
-                                # intermediate narration: flush it as purple now,
-                                # before the tool block opens.
-                                if pending_text_deltas:
-                                    for _held in pending_text_deltas:
-                                        yield TextDeltaEvent(
-                                            text=_held, presentation="intermediate"
-                                        )
-                                    pending_text_deltas = []
+                                # A tool follows, so any further text this call is
+                                # intermediate narration between tools, not the answer.
                                 text_presentation_decided = True
                                 pending_tools[raw_ev.tool_use_id] = _StreamAccumulator(
                                     tool_use_id=raw_ev.tool_use_id,
@@ -2368,6 +2363,7 @@ class Agent:
                                     tool_use_id=raw_ev.tool_use_id,
                                     tool_name=raw_ev.tool_name,
                                     synthetic_from_text=raw_ev.synthetic_from_text,
+                                    started_at=int(time.time() * 1000),
                                 )
 
                             elif raw_ev.kind == "tool_use_delta":
@@ -2431,17 +2427,8 @@ class Agent:
                                 )
 
                             elif isinstance(raw_ev, ProviderDoneEvent):
-                                # Call ended. If text is still held here, no tool
-                                # ever appeared, so it is the final answer: flush
-                                # it as a card. (If a tool had appeared, the held
-                                # text was already flushed as intermediate above.)
-                                if pending_text_deltas:
-                                    for _held in pending_text_deltas:
-                                        yield TextDeltaEvent(
-                                            text=_held, presentation="answer"
-                                        )
-                                    pending_text_deltas = []
-                                    text_presentation_decided = True
+                                # Call ended. All text was already streamed live as
+                                # it arrived, so there is nothing held to flush here.
                                 provider_done_for_log = raw_ev
                                 _got_done_event = True
                                 iter_input_tokens = raw_ev.input_tokens
@@ -2525,14 +2512,6 @@ class Agent:
                         )
                         yield terminal_error
                         break
-
-                    # Safety net: if the stream ended without a Done event (e.g.
-                    # truncated) and text is still held, surface it as the answer
-                    # rather than silently dropping it.
-                    if pending_text_deltas:
-                        for _held in pending_text_deltas:
-                            yield TextDeltaEvent(text=_held, presentation="answer")
-                        pending_text_deltas = []
 
                     call_duration_ms = int((time.monotonic() - call_started_at) * 1000)
                     response_payload = {

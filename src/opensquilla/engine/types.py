@@ -85,6 +85,12 @@ class ToolUseStartEvent:
     tool_use_id: str = ""
     tool_name: str = ""
     synthetic_from_text: bool = False
+    # Server wall-clock start time in epoch milliseconds, stamped when the tool
+    # call begins. Lets a client show a stable elapsed timer that survives
+    # page switches / stream replay instead of restarting from a fresh local
+    # clock every time the component remounts (see issue #329). 0 means
+    # "unstamped" — clients fall back to their own clock.
+    started_at: int = 0
 
 
 @dataclass

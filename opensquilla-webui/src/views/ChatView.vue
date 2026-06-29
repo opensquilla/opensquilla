@@ -554,6 +554,7 @@ import type { InterruptViewState } from '@/types/parts'
 import { artifactDownloadUrl } from '@/utils/chat/artifacts'
 import { copyTextWithFallback, copyImageToClipboard, downloadBlob, shareCopyImageSupported } from '@/utils/browser'
 import { useCopyFeedback } from '@/composables/chat/useCopyFeedback'
+import { recordSessionNavigationDiag } from '@/utils/chat/sessionNavigationDiag'
 import {
   toolCallGroups,
   toolGroupStatusText,
@@ -1893,7 +1894,7 @@ onMounted(async () => {
     if (!isDraftRoute() || hasLegacyNewChatQuery()) goToDraft({ replace: true })
     consumeDraftPrefill()
   } else {
-    persistSession(sessionKey.value, { updateRoute: false })
+    persistSession(sessionKey.value, { updateRoute: false, source: 'chatView.initialSession' })
   }
 
   // Load elevated mode
@@ -1969,6 +1970,11 @@ useDocumentEvent('keydown', onDocumentKeydown)
 // Watch for route changes
 watch(() => route.query.session, (newSession) => {
   if (newSession && typeof newSession === 'string') {
+    recordSessionNavigationDiag('route.query.session', {
+      from: sessionKey.value,
+      to: newSession,
+      routeSession: newSession,
+    })
     switchToSession(newSession)
   }
 })
@@ -1988,7 +1994,7 @@ watch(() => [route.query.newChat, route.query.new], () => {
 watch(pendingSessionIntent, (intent, previous) => {
   if (previous !== 'new_chat' || intent !== null) return
   if (!isDraftRoute()) return
-  persistSession(sessionKey.value)
+  persistSession(sessionKey.value, { source: 'chatView.draftMaterialized' })
 })
 
 watch(sessionKey, () => {

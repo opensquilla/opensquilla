@@ -7,9 +7,36 @@ import type {
 } from '@/types/rpc'
 import type { ChatRpcStreamApi } from '@/composables/chat/useChatRpcEventHandlers'
 import type { BusySendMode } from '@/composables/chat/useChatPendingQueue'
+import { recordSessionNavigationDiag } from '@/utils/chat/sessionNavigationDiag'
 
 type RpcClient = {
   call: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+}
+
+type PersistSessionOptions = { updateRoute?: boolean; source?: string }
+
+export type SendResponseSessionDecision =
+  | { action: 'ignore'; reason: 'missing_response_session' | 'current_session_changed' | 'same_session' }
+  | { action: 'persist'; responseSessionKey: string }
+
+export function decideSendResponseSession(input: {
+  requestSessionKey: string
+  currentSessionKey: string
+  responseSessionKey?: string | null
+}): SendResponseSessionDecision {
+  const responseSessionKey = input.responseSessionKey || ''
+  if (!responseSessionKey) return { action: 'ignore', reason: 'missing_response_session' }
+  if (input.currentSessionKey !== input.requestSessionKey) {
+    return { action: 'ignore', reason: 'current_session_changed' }
+  }
+  if (responseSessionKey === input.currentSessionKey) {
+    return { action: 'ignore', reason: 'same_session' }
+  }
+  return { action: 'persist', responseSessionKey }
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
 }
 
 export interface UseChatSendOptions {
@@ -25,7 +52,7 @@ export interface UseChatSendOptions {
   autoScroll: Ref<boolean>
   stream: ChatRpcStreamApi
   normalizeElevatedMode: (mode: string) => string
-  persistSession: (key: string) => void
+  persistSession: (key: string, options?: PersistSessionOptions) => void
   isCompactInFlightForCurrentSession: () => boolean
   hasPendingAttachmentWork: () => boolean
   enqueuePendingInput: (text: string) => boolean
@@ -88,10 +115,15 @@ export function useChatSend(options: UseChatSendOptions) {
   }
 
   async function dispatchSend(text: string, sendOpts?: { queueMode?: 'steer' }) {
-    if (!options.sessionKey.value) return
+    const requestSessionKey = options.sessionKey.value
+    if (!requestSessionKey) return
 
     options.aborted.value = false
     options.closeSlashMenu()
+    recordSessionNavigationDiag('send.start', {
+      requestSession: requestSessionKey,
+      current: requestSessionKey,
+    })
 
     const now = new Date().toISOString()
     const userText = text
@@ -99,7 +131,7 @@ export function useChatSend(options: UseChatSendOptions) {
     options.autoScroll.value = true
     options.scrollToBottom()
 
-    const params: ChatSendParams = { message: text || 'Describe these attachments', sessionKey: options.sessionKey.value }
+    const params: ChatSendParams = { message: text || 'Describe these attachments', sessionKey: requestSessionKey }
     if (sendOpts?.queueMode) params.queueMode = sendOpts.queueMode
     const elevated = options.normalizeElevatedMode(options.elevatedMode.value)
     if (elevated) params._source = { elevated }
@@ -129,10 +161,37 @@ export function useChatSend(options: UseChatSendOptions) {
 
     try {
       const res = await options.rpc.call<ChatSendResponse>('chat.send', params)
-      if (res?.sessionKey && res.sessionKey !== options.sessionKey.value) options.persistSession(res.sessionKey)
+      const decision = decideSendResponseSession({
+        requestSessionKey,
+        currentSessionKey: options.sessionKey.value,
+        responseSessionKey: res?.sessionKey,
+      })
+      if (decision.action === 'persist') {
+        recordSessionNavigationDiag('send.response.persist', {
+          requestSession: requestSessionKey,
+          responseSession: decision.responseSessionKey,
+          current: options.sessionKey.value,
+        })
+        options.persistSession(decision.responseSessionKey, { source: 'send.response' })
+      } else if (decision.reason === 'current_session_changed') {
+        recordSessionNavigationDiag('send.response.stale', {
+          requestSession: requestSessionKey,
+          responseSession: res?.sessionKey,
+          current: options.sessionKey.value,
+          reason: decision.reason,
+        })
+      }
     } catch (err: unknown) {
+      if (options.sessionKey.value !== requestSessionKey) {
+        recordSessionNavigationDiag('send.error.stale', {
+          requestSession: requestSessionKey,
+          current: options.sessionKey.value,
+          reason: errorMessage(err),
+        })
+        return
+      }
       if (!wasStreaming) options.stream.endStreaming()
-      const message = err instanceof Error ? err.message : String(err)
+      const message = errorMessage(err)
       options.messages.value.push({ role: 'error', text: 'Send failed: ' + message, ts: new Date().toISOString() })
     }
   }
@@ -164,7 +223,8 @@ export function useChatSend(options: UseChatSendOptions) {
    * a hiddenControl flag) so the drain restores both.
    */
   async function dispatchHiddenSend(providerText: string, displayText: string) {
-    if (!options.sessionKey.value || !providerText) return
+    const requestSessionKey = options.sessionKey.value
+    if (!requestSessionKey || !providerText) return
     const compactInFlight = options.isCompactInFlightForCurrentSession()
     if (options.stream.isStreaming.value || compactInFlight) {
       options.enqueueHiddenControl?.({ text: providerText, displayText })
@@ -172,6 +232,10 @@ export function useChatSend(options: UseChatSendOptions) {
     }
 
     options.aborted.value = false
+    recordSessionNavigationDiag('hiddenSend.start', {
+      requestSession: requestSessionKey,
+      current: requestSessionKey,
+    })
     // Show the visible confirmation as a user bubble (NOT the marker text).
     const now = new Date().toISOString()
     if (displayText) {
@@ -180,7 +244,7 @@ export function useChatSend(options: UseChatSendOptions) {
       options.scrollToBottom()
     }
 
-    const params: ChatSendParams = { message: providerText, sessionKey: options.sessionKey.value }
+    const params: ChatSendParams = { message: providerText, sessionKey: requestSessionKey }
     if (displayText && displayText !== providerText) params.displayText = displayText
     const elevated = options.normalizeElevatedMode(options.elevatedMode.value)
     if (elevated) params._source = { elevated }
@@ -193,10 +257,37 @@ export function useChatSend(options: UseChatSendOptions) {
 
     try {
       const res = await options.rpc.call<ChatSendResponse>('chat.send', params)
-      if (res?.sessionKey && res.sessionKey !== options.sessionKey.value) options.persistSession(res.sessionKey)
+      const decision = decideSendResponseSession({
+        requestSessionKey,
+        currentSessionKey: options.sessionKey.value,
+        responseSessionKey: res?.sessionKey,
+      })
+      if (decision.action === 'persist') {
+        recordSessionNavigationDiag('hiddenSend.response.persist', {
+          requestSession: requestSessionKey,
+          responseSession: decision.responseSessionKey,
+          current: options.sessionKey.value,
+        })
+        options.persistSession(decision.responseSessionKey, { source: 'hiddenSend.response' })
+      } else if (decision.reason === 'current_session_changed') {
+        recordSessionNavigationDiag('hiddenSend.response.stale', {
+          requestSession: requestSessionKey,
+          responseSession: res?.sessionKey,
+          current: options.sessionKey.value,
+          reason: decision.reason,
+        })
+      }
     } catch (err: unknown) {
+      if (options.sessionKey.value !== requestSessionKey) {
+        recordSessionNavigationDiag('hiddenSend.error.stale', {
+          requestSession: requestSessionKey,
+          current: options.sessionKey.value,
+          reason: errorMessage(err),
+        })
+        return
+      }
       if (!wasStreaming) options.stream.endStreaming()
-      const message = err instanceof Error ? err.message : String(err)
+      const message = errorMessage(err)
       options.messages.value.push({ role: 'error', text: 'Send failed: ' + message, ts: new Date().toISOString() })
     }
   }

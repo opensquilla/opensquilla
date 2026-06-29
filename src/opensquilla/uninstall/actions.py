@@ -121,27 +121,16 @@ def _quiesce_gateway(inventory: Inventory) -> ActionResult:
         )
 
     try:
-        # Resolve host/port from the actual config so the probe targets the real
-        # gateway (a configured non-default port would otherwise be missed).
-        host = "127.0.0.1"
-        port = 18791
-        try:
-            from opensquilla.gateway.config import GatewayConfig
+        from opensquilla.gateway.boot import gateway_shutdown_deadline
 
-            cfg = GatewayConfig.load(str(inventory.config_path) if inventory.config_path else None)
-            host = cfg.host or "127.0.0.1"
-            port = cfg.port
-        except Exception:  # noqa: BLE001 — fall back to defaults if config won't load
-            pass
-
+        host, port, state_dirs = _gateway_quiesce_targets(inventory)
         mgr = GatewayLifecycleManager(
             host=host,
             port=port,
             config_path=str(inventory.config_path) if inventory.config_path else None,
+            shutdown_timeout=gateway_shutdown_deadline(),  # don't SIGKILL mid-drain
         )
         status = mgr.status()
-        if status.state in ("not_started", "stale"):
-            return ActionResult("stop-gateway", "Gateway not running", ok=True, detail=status.state)
         if status.state in ("unmanaged", "target_mismatch"):
             return ActionResult(
                 "stop-gateway",
@@ -151,14 +140,38 @@ def _quiesce_gateway(inventory: Inventory) -> ActionResult:
                     f"state={status.state}; stop it manually (opensquilla gateway stop) and re-run."
                 ),
             )
-        stop = mgr.stop()
-        if stop.exit_code == 0:
-            return ActionResult("stop-gateway", "Gateway stopped", ok=True, detail=stop.state)
+        stopped_state = status.state
+        if status.state not in ("not_started", "stale"):
+            stop = mgr.stop()
+            if stop.exit_code != 0:
+                return ActionResult(
+                    "stop-gateway",
+                    "Could not stop the running gateway",
+                    ok=False,
+                    detail=stop.message or stop.state,
+                )
+            stopped_state = stop.state
+
+        # Port-independent backstop: a live gateway.pid (written by EVERY gateway
+        # run — foreground / desktop / unmanaged — unlike the lifecycle gateway.json
+        # that only `gateway start` writes) means a gateway still holds this
+        # profile. The lifecycle stop above only covers the managed case, so refuse
+        # to delete if any live pid remains.
+        live = _live_gateway_pid(state_dirs)
+        if live is not None:
+            return ActionResult(
+                "stop-gateway",
+                "A gateway is still running on this profile",
+                ok=False,
+                detail=f"pid {live} is alive; stop it (opensquilla gateway stop) and re-run.",
+            )
+
+        running = stopped_state not in ("not_started", "stale")
         return ActionResult(
             "stop-gateway",
-            "Could not stop the running gateway",
-            ok=False,
-            detail=stop.message or stop.state,
+            "Gateway stopped" if running else "Gateway not running",
+            ok=True,
+            detail=stopped_state,
         )
     except Exception as exc:  # noqa: BLE001 — destructive op: unknown state must block
         return ActionResult(
@@ -167,6 +180,43 @@ def _quiesce_gateway(inventory: Inventory) -> ActionResult:
             ok=False,
             detail=f"{exc}; stop the gateway manually (opensquilla gateway stop) and re-run.",
         )
+
+
+def _gateway_quiesce_targets(inventory: Inventory) -> tuple[str, int, set[Path]]:
+    """Resolve (host, port, state-dir candidates) for the quiesce probe.
+
+    Host/port come from the gateway config so the lifecycle probe targets the real
+    endpoint. State-dir candidates are where a ``gateway.pid`` could live (the
+    home's ``state/`` and any relocated ``config.state_dir``).
+    """
+    host = "127.0.0.1"
+    port = 18791
+    state_dirs: set[Path] = {inventory.state_root}
+    try:
+        from opensquilla.gateway.config import GatewayConfig
+
+        cfg = GatewayConfig.load(str(inventory.config_path) if inventory.config_path else None)
+        host = cfg.host or "127.0.0.1"
+        port = cfg.port
+        relocated = getattr(cfg, "state_dir", None)
+        if isinstance(relocated, str) and relocated.strip():
+            state_dirs.add(Path(relocated).expanduser())
+    except Exception:  # noqa: BLE001 — config is advisory here; pid backstop is the guard
+        pass
+    return host, port, state_dirs
+
+
+def _live_gateway_pid(state_dirs: set[Path]) -> int | None:
+    """Return a live PID from any ``<state_dir>/gateway.pid``, else None."""
+    try:
+        from opensquilla.gateway.pidlock import _is_alive, _read_pid_from_path
+    except ImportError:
+        return None
+    for state_dir in state_dirs:
+        pid = _read_pid_from_path(Path(state_dir) / "gateway.pid")
+        if pid is not None and _is_alive(pid):
+            return pid
+    return None
 
 
 def _unregister_service(action: Action) -> ActionResult:

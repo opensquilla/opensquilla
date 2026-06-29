@@ -41,7 +41,7 @@ const canReset = computed(() => Boolean(platform.settings.resetDesktopSettings))
 // Uninstall is wired directly on the desktop preload bridge (desktop-only,
 // self-contained — it shells out to `opensquilla uninstall` in the Python core).
 interface UninstallBridge {
-  uninstallRun?: (payload: { purgeData: boolean }) => Promise<{ ok: boolean }>
+  uninstallRun?: (payload: { purgeData: boolean }) => Promise<{ ok: boolean; aborted?: boolean; detail?: string }>
   quitApp?: () => Promise<unknown>
 }
 const desktopBridge = (
@@ -122,8 +122,16 @@ async function uninstall(purgeData: boolean) {
   busy.value = true
   try {
     const result = await desktopBridge.uninstallRun({ purgeData })
+    if (result?.aborted) {
+      // Cancelled at the native dialog, or refused (e.g. a gateway still running).
+      // Not an error — surface the reason only when it is informative.
+      if (result.detail && result.detail !== 'cancelled') {
+        pushToast(result.detail, { tone: 'danger' })
+      }
+      return
+    }
     if (!result?.ok) {
-      pushToast('Uninstall reported errors; check the gateway log.', { tone: 'danger' })
+      pushToast('Uninstall failed: ' + (result?.detail || 'check the gateway log.'), { tone: 'danger' })
       return
     }
     pushToast('OpenSquilla uninstalled. The app will now close.')

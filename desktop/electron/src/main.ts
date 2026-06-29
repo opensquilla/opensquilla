@@ -2616,7 +2616,9 @@ ipcMain.handle('desktop:artifact:open', async (_event, payload: ArtifactOpenRequ
 // (<userData>/opensquilla/state), but the uninstaller's "home" must be
 // desktopHome() (<userData>/opensquilla) so it resolves config.toml + state/
 // correctly. So we run the CLI with OPENSQUILLA_STATE_DIR=desktopHome().
-async function runUninstallCli(extraArgs: string[]): Promise<{ ok: boolean; stdout: string }> {
+async function runUninstallCli(
+  extraArgs: string[],
+): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   const runtime = await resolveGatewayRuntime()
   const prefix = runtime.args.slice(0, -2) // drop the trailing ['gateway','run']
   const child = spawn(runtime.command, [...prefix, 'uninstall', ...extraArgs], {
@@ -2630,15 +2632,18 @@ async function runUninstallCli(extraArgs: string[]): Promise<{ ok: boolean; stdo
     },
   })
   let stdout = ''
+  let stderr = ''
   child.stdout.on('data', (chunk) => {
     stdout += String(chunk)
   })
-  child.stderr.on('data', () => {})
+  child.stderr.on('data', (chunk) => {
+    stderr += String(chunk)
+  })
   const code: number = await new Promise((res) => {
     child.once('exit', (c) => res(c ?? 1))
     child.once('error', () => res(1))
   })
-  return { ok: code === 0, stdout }
+  return { ok: code === 0, stdout, stderr }
 }
 
 ipcMain.handle('desktop:uninstall:summary', async () => {
@@ -2697,6 +2702,13 @@ ipcMain.handle('desktop:uninstall:run', async (_event, payload?: { purgeData?: b
   const args = ['--yes', '--json']
   if (purgeData) args.push('--purge-all', '--confirm-purge-all', 'delete everything')
   const result = await runUninstallCli(args)
+
+  // The CLI exited non-zero (e.g. quiesce refused, or a delete failed). The app
+  // is still running, so restore normal crash reporting and surface the reason.
+  if (!result.ok) {
+    isQuitting = false
+    return { ok: false, detail: (result.stderr || result.stdout || '').slice(-2000) }
+  }
 
   // Remove desktop-owned files outside the OpenSquilla home (only on a full data
   // purge — these hold the encrypted credential and logs).

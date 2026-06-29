@@ -146,16 +146,15 @@ def looks_like_opensquilla_home(home: Path) -> bool:
     """Positive check that ``home`` is an OpenSquilla home (gates whole-tree rmtree).
 
     Required (in addition to :func:`protected_root_reason` being clear) before a
-    ``--purge-all`` blanket ``rmtree`` of the home: either the canonical leaf name
-    or a tell-tale OpenSquilla artifact present. An unrecognized/relocated root
-    falls back to deleting only the known buckets individually.
+    ``--purge-all`` blanket ``rmtree`` of the home. To avoid green-lighting an
+    arbitrary relocated directory, the signal must be UNAMBIGUOUS: the canonical
+    leaf name (resolved), or the OpenSquilla-specific install receipt. Generic
+    files like ``config.toml`` / ``state`` are intentionally NOT accepted — a
+    relocated dir that merely contains them falls back to per-bucket removal.
     """
-    if home.name in OPENSQUILLA_HOME_NAMES:
+    if resolve_real(home).name in OPENSQUILLA_HOME_NAMES:
         return True
-    for marker in ("install-receipt.json", "config.toml", "state"):
-        try:
-            if (home / marker).exists():
-                return True
-        except OSError:
-            continue
-    return False
+    try:
+        return (home / "install-receipt.json").exists()
+    except OSError:
+        return False

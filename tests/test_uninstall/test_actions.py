@@ -179,3 +179,62 @@ def test_execute_unregister_service_removes_unit(monkeypatch, tmp_path: Path) ->
     result = execute(plan, _bare_inventory(tmp_path / "home"))
     assert result.ok is True
     assert not unit.exists()
+
+
+def test_quiesce_fails_closed_on_live_gateway_pidfile(monkeypatch, tmp_path: Path) -> None:
+    """A live gateway.pid (any port, written by `gateway run`) must block deletion."""
+    import json
+    import os
+    from types import SimpleNamespace
+
+    from opensquilla.cli import gateway_lifecycle as gl
+    from opensquilla.gateway import config as gwconfig
+
+    home = tmp_path / "home"
+    state = home / "state"
+    state.mkdir(parents=True)
+    (state / "gateway.pid").write_text(json.dumps({"pid": os.getpid(), "start_ts": "t"}))
+
+    # Isolate: lifecycle reports not_started; config resolves no relocated state dir.
+    monkeypatch.setattr(
+        gl.GatewayLifecycleManager, "status", lambda self: SimpleNamespace(state="not_started")
+    )
+    monkeypatch.setattr(
+        gwconfig.GatewayConfig,
+        "load",
+        classmethod(
+            lambda cls, p=None: SimpleNamespace(host="127.0.0.1", port=18791, state_dir=None)
+        ),
+    )
+
+    r = actions._quiesce_gateway(_bare_inventory(home))
+    assert r.ok is False
+    assert "still running" in r.summary.lower()
+
+
+def test_quiesce_ok_when_gateway_pidfile_is_stale(monkeypatch, tmp_path: Path) -> None:
+    import json
+    from types import SimpleNamespace
+
+    from opensquilla.cli import gateway_lifecycle as gl
+    from opensquilla.gateway import config as gwconfig
+
+    home = tmp_path / "home"
+    state = home / "state"
+    state.mkdir(parents=True)
+    # A PID that is not alive — stale pidfile, no real gateway.
+    (state / "gateway.pid").write_text(json.dumps({"pid": 2147480000, "start_ts": "t"}))
+
+    monkeypatch.setattr(
+        gl.GatewayLifecycleManager, "status", lambda self: SimpleNamespace(state="not_started")
+    )
+    monkeypatch.setattr(
+        gwconfig.GatewayConfig,
+        "load",
+        classmethod(
+            lambda cls, p=None: SimpleNamespace(host="127.0.0.1", port=18791, state_dir=None)
+        ),
+    )
+
+    r = actions._quiesce_gateway(_bare_inventory(home))
+    assert r.ok is True

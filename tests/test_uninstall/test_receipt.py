@@ -50,3 +50,12 @@ def test_detect_uses_receipt_hint_only_when_unknown(monkeypatch) -> None:
     # A concrete runtime signal is never overridden by the hint.
     monkeypatch.setattr(inventory, "_has_distribution", lambda: True)
     assert inventory.detect_install_method(receipt_hint="uv-tool") == METHOD_PIP
+
+
+def test_read_receipt_tolerates_utf8_bom(tmp_path: Path) -> None:
+    # Windows PowerShell 5.1 `Set-Content -Encoding utf8` writes a BOM.
+    payload = '{"version": 1, "install_method": "uv-tool"}'
+    (tmp_path / "install-receipt.json").write_bytes(b"\xef\xbb\xbf" + payload.encode("utf-8"))
+    loaded = read_receipt(tmp_path)
+    assert loaded is not None
+    assert loaded["install_method"] == "uv-tool"

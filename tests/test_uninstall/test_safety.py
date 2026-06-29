@@ -86,10 +86,15 @@ def test_protected_root_flags_top_level_home_dirs(monkeypatch, tmp_path: Path) -
 def test_looks_like_opensquilla_home(tmp_path: Path) -> None:
     canonical = tmp_path / ".opensquilla"
     canonical.mkdir()
-    assert safety.looks_like_opensquilla_home(canonical)  # by name
+    assert safety.looks_like_opensquilla_home(canonical)  # by canonical name
 
     shaped = tmp_path / "weirdname"
     shaped.mkdir()
     assert not safety.looks_like_opensquilla_home(shaped)
+    # Generic files are NOT sufficient — an arbitrary relocated dir could have them.
     (shaped / "config.toml").write_text("x")
-    assert safety.looks_like_opensquilla_home(shaped)  # by marker
+    (shaped / "state").mkdir()
+    assert not safety.looks_like_opensquilla_home(shaped)
+    # The OpenSquilla-specific receipt IS an unambiguous signal.
+    (shaped / "install-receipt.json").write_text("{}")
+    assert safety.looks_like_opensquilla_home(shaped)

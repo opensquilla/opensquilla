@@ -35,7 +35,9 @@ def read_receipt(home: Path | None = None) -> dict[str, Any] | None:
     """
     path = receipt_path(home)
     try:
-        raw = path.read_text(encoding="utf-8")
+        # utf-8-sig tolerates a BOM (Windows PowerShell 5.1 Set-Content -Encoding
+        # utf8 writes one) as well as plain UTF-8.
+        raw = path.read_text(encoding="utf-8-sig")
     except (OSError, ValueError):
         return None
     try:

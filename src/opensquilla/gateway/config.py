@@ -324,19 +324,19 @@ def _default_llm_ensemble_profiles() -> dict[str, dict[str, Any]]:
     g3_proposers = [
         _ensemble_ref("deepseek/deepseek-v4-pro", thinking="high"),
         _ensemble_ref("z-ai/glm-5.2", thinking="high"),
-        _ensemble_ref("google/gemini-3-flash-preview", thinking="high"),
+        _ensemble_ref("google/gemini-3.1-pro-preview", thinking="high"),
     ]
     g8_proposers = [
         _ensemble_ref("deepseek/deepseek-v4-pro", thinking="high"),
         _ensemble_ref("z-ai/glm-5.2", thinking="high"),
-        _ensemble_ref("google/gemini-3-flash-preview", thinking="high"),
-        _ensemble_ref("qwen/qwen3.7-plus", thinking="high"),
+        _ensemble_ref("google/gemini-3.1-pro-preview", thinking="high"),
+        _ensemble_ref("qwen/qwen3.7-max", thinking="high"),
     ]
     g12_proposers = [
         _ensemble_ref("deepseek/deepseek-v4-pro", thinking="high"),
         _ensemble_ref("z-ai/glm-5.2", thinking="high"),
         _ensemble_ref("moonshotai/kimi-k2.7-code", thinking="high"),
-        _ensemble_ref("qwen/qwen3.7-plus", thinking="high"),
+        _ensemble_ref("qwen/qwen3.7-max", thinking="high"),
     ]
     g13_proposers = [
         *list(g8_proposers),
@@ -358,8 +358,8 @@ def _default_llm_ensemble_profiles() -> dict[str, dict[str, Any]]:
         "g2_general": _ensemble_profile(
             [
                 _ensemble_ref("z-ai/glm-5.2", thinking="high"),
-                _ensemble_ref("qwen/qwen3.7-plus", thinking="high"),
-                _ensemble_ref("moonshotai/kimi-k2.6", thinking="medium"),
+                _ensemble_ref("qwen/qwen3.7-max", thinking="high"),
+                _ensemble_ref("moonshotai/kimi-k2.7-code", thinking="high"),
             ],
             _ensemble_ref("z-ai/glm-5.2", thinking="high"),
         ),
@@ -369,7 +369,7 @@ def _default_llm_ensemble_profiles() -> dict[str, dict[str, Any]]:
         ),
         "g4_gemini_aggregator": _ensemble_profile(
             list(g3_proposers),
-            _ensemble_ref("google/gemini-3-flash-preview", thinking="high"),
+            _ensemble_ref("google/gemini-3.1-pro-preview", thinking="high"),
         ),
         "g5_opus_aggregator": _ensemble_profile(
             list(g3_proposers),
@@ -377,7 +377,7 @@ def _default_llm_ensemble_profiles() -> dict[str, dict[str, Any]]:
         ),
         "g6_gpt_aggregator": _ensemble_profile(
             list(g3_proposers),
-            _ensemble_ref("openai/gpt-5.5", thinking="high"),
+            _ensemble_ref("openai/gpt-5.5-pro", thinking="high"),
             aggregator_timeout_seconds=300.0,
         ),
         "g7_two_proposers": _ensemble_profile(
@@ -393,11 +393,11 @@ def _default_llm_ensemble_profiles() -> dict[str, dict[str, Any]]:
         ),
         "g9_qwen_aggregator": _ensemble_profile(
             list(g8_proposers),
-            _ensemble_ref("qwen/qwen3.7-plus", thinking="high"),
+            _ensemble_ref("qwen/qwen3.7-max", thinking="high"),
         ),
         "g10_gemini_aggregator": _ensemble_profile(
             list(g8_proposers),
-            _ensemble_ref("google/gemini-3-flash-preview", thinking="high"),
+            _ensemble_ref("google/gemini-3.1-pro-preview", thinking="high"),
         ),
         "g11_deepseek_aggregator": _ensemble_profile(
             list(g8_proposers),
@@ -415,7 +415,7 @@ def _default_llm_ensemble_profiles() -> dict[str, dict[str, Any]]:
             [
                 _ensemble_ref("deepseek/deepseek-v4-pro", thinking="high"),
                 _ensemble_ref("z-ai/glm-5.2", thinking="high"),
-                _ensemble_ref("google/gemini-3-flash-preview", thinking="high"),
+                _ensemble_ref("google/gemini-3.1-pro-preview", thinking="high"),
                 _ensemble_ref("moonshotai/kimi-k2.7-code", thinking="high"),
             ],
             _ensemble_ref("z-ai/glm-5.2", thinking="high"),
@@ -423,7 +423,7 @@ def _default_llm_ensemble_profiles() -> dict[str, dict[str, Any]]:
         "g15_g8_top3_prefilter": _ensemble_profile(
             list(g8_proposers),
             _ensemble_ref("z-ai/glm-5.2", thinking="high"),
-            candidate_scorer=_ensemble_ref("google/gemini-3-flash-preview", thinking="high"),
+            candidate_scorer=_ensemble_ref("google/gemini-3.1-pro-preview", thinking="high"),
             candidate_prefilter_top_k=3,
         ),
         "g16_sampled_cheap_proposers": _ensemble_profile(
@@ -439,13 +439,13 @@ def _default_llm_ensemble_profiles() -> dict[str, dict[str, Any]]:
                     temperature=0.0,
                 ),
                 _ensemble_ref(
-                    "google/gemini-3-flash-preview",
+                    "google/gemini-3.1-pro-preview",
                     thinking="high",
                     temperature=0.3,
                     k=2,
                 ),
                 _ensemble_ref(
-                    "qwen/qwen3.7-plus",
+                    "qwen/qwen3.7-max",
                     thinking="high",
                     temperature=0.3,
                     k=2,
@@ -467,19 +467,19 @@ def _default_llm_ensemble_profiles() -> dict[str, dict[str, Any]]:
         "g19_g12_top3_prefilter": _ensemble_profile(
             list(g12_proposers),
             _ensemble_ref("z-ai/glm-5.2", thinking="high"),
-            candidate_scorer=_ensemble_ref("google/gemini-3-flash-preview", thinking="high"),
+            candidate_scorer=_ensemble_ref("google/gemini-3.1-pro-preview", thinking="high"),
             candidate_prefilter_top_k=3,
         ),
         "g20_g12_top2_prefilter": _ensemble_profile(
             list(g12_proposers),
             _ensemble_ref("z-ai/glm-5.2", thinking="high"),
-            candidate_scorer=_ensemble_ref("google/gemini-3-flash-preview", thinking="high"),
+            candidate_scorer=_ensemble_ref("google/gemini-3.1-pro-preview", thinking="high"),
             candidate_prefilter_top_k=2,
         ),
         "g21_g13_top3_prefilter": _ensemble_profile(
             list(g13_proposers),
             _ensemble_ref("z-ai/glm-5.2", thinking="high"),
-            candidate_scorer=_ensemble_ref("google/gemini-3-flash-preview", thinking="high"),
+            candidate_scorer=_ensemble_ref("google/gemini-3.1-pro-preview", thinking="high"),
             candidate_prefilter_top_k=3,
         ),
         "g22_g12_glm_top3_prefilter": _ensemble_profile(
@@ -506,13 +506,13 @@ def _default_llm_ensemble_profiles() -> dict[str, dict[str, Any]]:
                     temperature=0.0,
                 ),
                 _ensemble_ref(
-                    "qwen/qwen3.7-plus",
+                    "qwen/qwen3.7-max",
                     thinking="high",
                     temperature=0.3,
                     k=2,
                 ),
                 _ensemble_ref(
-                    "google/gemini-3-flash-preview",
+                    "google/gemini-3.1-pro-preview",
                     thinking="high",
                     temperature=0.3,
                     k=2,
@@ -520,7 +520,7 @@ def _default_llm_ensemble_profiles() -> dict[str, dict[str, Any]]:
             ],
             _ensemble_ref("z-ai/glm-5.2", thinking="high", temperature=0.0),
             candidate_scorer=_ensemble_ref(
-                "google/gemini-3-flash-preview",
+                "google/gemini-3.1-pro-preview",
                 thinking="high",
                 temperature=0.0,
             ),

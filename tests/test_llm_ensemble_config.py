@@ -34,22 +34,22 @@ def test_llm_ensemble_config_defaults_disabled_with_profiles() -> None:
     assert [ref.model for ref in cfg.llm_ensemble.profiles["g3_standard"].proposers] == [
         "deepseek/deepseek-v4-pro",
         "z-ai/glm-5.2",
-        "google/gemini-3-flash-preview",
+        "google/gemini-3.1-pro-preview",
     ]
     assert cfg.llm_ensemble.profiles["g3_standard"].aggregator.model == "z-ai/glm-5.2"
     assert (
         cfg.llm_ensemble.profiles["g4_gemini_aggregator"].aggregator.model
-        == "google/gemini-3-flash-preview"
+        == "google/gemini-3.1-pro-preview"
     )
     assert (
         cfg.llm_ensemble.profiles["g6_gpt_aggregator"].aggregator_timeout_seconds
         == 300.0
     )
     assert cfg.llm_ensemble.profiles["g9_qwen_aggregator"].aggregator.model == (
-        "qwen/qwen3.7-plus"
+        "qwen/qwen3.7-max"
     )
     assert cfg.llm_ensemble.profiles["g10_gemini_aggregator"].aggregator.model == (
-        "google/gemini-3-flash-preview"
+        "google/gemini-3.1-pro-preview"
     )
     assert cfg.llm_ensemble.profiles["g11_deepseek_aggregator"].aggregator.model == (
         "deepseek/deepseek-v4-pro"
@@ -59,33 +59,33 @@ def test_llm_ensemble_config_defaults_disabled_with_profiles() -> None:
         "deepseek/deepseek-v4-pro",
         "z-ai/glm-5.2",
         "moonshotai/kimi-k2.7-code",
-        "qwen/qwen3.7-plus",
+        "qwen/qwen3.7-max",
     ]
     assert len(cfg.llm_ensemble.profiles["g13_five_proposers"].proposers) == 5
     g14_proposers = cfg.llm_ensemble.profiles["g14_k2_replace_qwen"].proposers
     assert [ref.model for ref in g14_proposers] == [
         "deepseek/deepseek-v4-pro",
         "z-ai/glm-5.2",
-        "google/gemini-3-flash-preview",
+        "google/gemini-3.1-pro-preview",
         "moonshotai/kimi-k2.7-code",
     ]
     g15 = cfg.llm_ensemble.profiles["g15_g8_top3_prefilter"]
     assert [ref.model for ref in g15.proposers] == [
         "deepseek/deepseek-v4-pro",
         "z-ai/glm-5.2",
-        "google/gemini-3-flash-preview",
-        "qwen/qwen3.7-plus",
+        "google/gemini-3.1-pro-preview",
+        "qwen/qwen3.7-max",
     ]
     assert g15.aggregator.model == "z-ai/glm-5.2"
     assert g15.candidate_scorer is not None
-    assert g15.candidate_scorer.model == "google/gemini-3-flash-preview"
+    assert g15.candidate_scorer.model == "google/gemini-3.1-pro-preview"
     assert g15.candidate_prefilter_top_k == 3
     g16 = cfg.llm_ensemble.profiles["g16_sampled_cheap_proposers"]
     assert [ref.model for ref in g16.proposers] == [
         "deepseek/deepseek-v4-pro",
         "z-ai/glm-5.2",
-        "google/gemini-3-flash-preview",
-        "qwen/qwen3.7-plus",
+        "google/gemini-3.1-pro-preview",
+        "qwen/qwen3.7-max",
     ]
     assert [ref.k for ref in g16.proposers] == [1, 1, 2, 2]
     assert [ref.temperature for ref in g16.proposers] == [0.0, 0.0, 0.3, 0.3]
@@ -96,8 +96,8 @@ def test_llm_ensemble_config_defaults_disabled_with_profiles() -> None:
     assert [ref.model for ref in g17.proposers] == [
         "deepseek/deepseek-v4-pro",
         "z-ai/glm-5.2",
-        "google/gemini-3-flash-preview",
-        "qwen/qwen3.7-plus",
+        "google/gemini-3.1-pro-preview",
+        "qwen/qwen3.7-max",
     ]
     assert g17.aggregator.model == "z-ai/glm-5.2"
     assert g17.moa_layers == 2
@@ -105,8 +105,8 @@ def test_llm_ensemble_config_defaults_disabled_with_profiles() -> None:
     assert [ref.model for ref in g18.proposers] == [
         "deepseek/deepseek-v4-pro",
         "z-ai/glm-5.2",
-        "google/gemini-3-flash-preview",
-        "qwen/qwen3.7-plus",
+        "google/gemini-3.1-pro-preview",
+        "qwen/qwen3.7-max",
     ]
     assert g18.aggregator.model == "z-ai/glm-5.2"
     assert g18.output_strategy == "select_best_candidate"
@@ -116,11 +116,11 @@ def test_llm_ensemble_config_defaults_disabled_with_profiles() -> None:
         "deepseek/deepseek-v4-pro",
         "z-ai/glm-5.2",
         "moonshotai/kimi-k2.7-code",
-        "qwen/qwen3.7-plus",
+        "qwen/qwen3.7-max",
     ]
     assert g19.aggregator.model == "z-ai/glm-5.2"
     assert g19.candidate_scorer is not None
-    assert g19.candidate_scorer.model == "google/gemini-3-flash-preview"
+    assert g19.candidate_scorer.model == "google/gemini-3.1-pro-preview"
     assert g19.candidate_prefilter_top_k == 3
     assert g19.moa_layers == 1
     g20 = cfg.llm_ensemble.profiles["g20_g12_top2_prefilter"]
@@ -128,22 +128,22 @@ def test_llm_ensemble_config_defaults_disabled_with_profiles() -> None:
         "deepseek/deepseek-v4-pro",
         "z-ai/glm-5.2",
         "moonshotai/kimi-k2.7-code",
-        "qwen/qwen3.7-plus",
+        "qwen/qwen3.7-max",
     ]
     assert g20.candidate_scorer is not None
-    assert g20.candidate_scorer.model == "google/gemini-3-flash-preview"
+    assert g20.candidate_scorer.model == "google/gemini-3.1-pro-preview"
     assert g20.candidate_prefilter_top_k == 2
     assert g20.moa_layers == 1
     g21 = cfg.llm_ensemble.profiles["g21_g13_top3_prefilter"]
     assert [ref.model for ref in g21.proposers] == [
         "deepseek/deepseek-v4-pro",
         "z-ai/glm-5.2",
-        "google/gemini-3-flash-preview",
-        "qwen/qwen3.7-plus",
+        "google/gemini-3.1-pro-preview",
+        "qwen/qwen3.7-max",
         "moonshotai/kimi-k2.7-code",
     ]
     assert g21.candidate_scorer is not None
-    assert g21.candidate_scorer.model == "google/gemini-3-flash-preview"
+    assert g21.candidate_scorer.model == "google/gemini-3.1-pro-preview"
     assert g21.candidate_prefilter_top_k == 3
     assert g21.moa_layers == 1
     g22 = cfg.llm_ensemble.profiles["g22_g12_glm_top3_prefilter"]
@@ -151,7 +151,7 @@ def test_llm_ensemble_config_defaults_disabled_with_profiles() -> None:
         "deepseek/deepseek-v4-pro",
         "z-ai/glm-5.2",
         "moonshotai/kimi-k2.7-code",
-        "qwen/qwen3.7-plus",
+        "qwen/qwen3.7-max",
     ]
     assert g22.candidate_scorer is not None
     assert g22.candidate_scorer.model == "z-ai/glm-5.2"
@@ -162,8 +162,8 @@ def test_llm_ensemble_config_defaults_disabled_with_profiles() -> None:
         "deepseek/deepseek-v4-pro",
         "z-ai/glm-5.2",
         "moonshotai/kimi-k2.7-code",
-        "qwen/qwen3.7-plus",
-        "google/gemini-3-flash-preview",
+        "qwen/qwen3.7-max",
+        "google/gemini-3.1-pro-preview",
     ]
     assert [ref.k for ref in g23.proposers] == [1, 1, 1, 2, 2]
     assert [ref.temperature for ref in g23.proposers] == [
@@ -176,7 +176,7 @@ def test_llm_ensemble_config_defaults_disabled_with_profiles() -> None:
     assert g23.aggregator.model == "z-ai/glm-5.2"
     assert g23.aggregator.temperature == 0.0
     assert g23.candidate_scorer is not None
-    assert g23.candidate_scorer.model == "google/gemini-3-flash-preview"
+    assert g23.candidate_scorer.model == "google/gemini-3.1-pro-preview"
     assert g23.candidate_prefilter_top_k == 3
     assert g23.preserve_member_temperature is True
     assert g23.moa_layers == 1

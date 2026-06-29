@@ -131,9 +131,15 @@ def _resolve_reasoning_effort(level: ThinkingLevel | None, budget: int) -> str:
         ThinkingLevel.MEDIUM: "medium",
         ThinkingLevel.HIGH: "high",
         ThinkingLevel.XHIGH: "xhigh",
+        ThinkingLevel.MAX: "max",
     }
-    if level and level in _level_map:
-        return _level_map[level]
+    if level:
+        try:
+            normalized_level = ThinkingLevel(str(level))
+        except ValueError:
+            normalized_level = None
+        if normalized_level in _level_map:
+            return _level_map[normalized_level]
     if budget <= 1024:
         return "low"
     elif budget <= 10000:
@@ -148,7 +154,11 @@ def _resolve_deepseek_reasoning_effort(level: ThinkingLevel | None) -> str:
         ThinkingLevel,  # local: avoids circular import at module load
     )
 
-    if level == ThinkingLevel.XHIGH:
+    try:
+        normalized_level = ThinkingLevel(str(level)) if level is not None else None
+    except ValueError:
+        normalized_level = None
+    if normalized_level in {ThinkingLevel.XHIGH, ThinkingLevel.MAX}:
         return "max"
     return "high"
 

@@ -273,6 +273,30 @@ def test_openrouter_stream_timeout_non_stream_fallback_keeps_capabilities(
     assert done.provider_usage["server_tool_use"] == {"web_search_requests": 1}
 
 
+def test_openrouter_reasoning_preserves_provider_max_effort(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="anthropic/claude-opus-4.8",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+    cfg = ChatConfig(
+        thinking=True,
+        thinking_level="max",
+        model_capabilities=ModelCapabilities(
+            supports_reasoning=True,
+            supports_tools=True,
+            reasoning_format="openrouter",
+        ),
+    )
+
+    _collect(provider, cfg)
+
+    assert captured["payload"]["reasoning"] == {"effort": "max"}
+
+
 def test_openrouter_list_models_reports_openrouter_provider(monkeypatch: Any) -> None:
     captured: dict[str, Any] = {}
     _patch_get_transport_response(

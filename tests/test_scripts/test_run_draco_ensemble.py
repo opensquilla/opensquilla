@@ -40,6 +40,7 @@ from scripts.run_draco_ensemble import (
     collect_run,
     generation_chat_config,
     generation_thinking_policy,
+    generation_thinking_for_model,
     group_timeout_seconds,
     judge_text,
     load_tasks,
@@ -320,7 +321,7 @@ async def test_draco_runner_dry_run_writes_jsonl_and_summary(tmp_path: Path) -> 
     assert g3["total_tool_call_count"] == 0
     assert g3["llm_request_count"] == 3
     assert g3["trajectory_steps"] == 3
-    assert g3["generation_policy"]["generation_thinking"] == "xhigh"
+    assert g3["generation_policy"]["generation_thinking"] == "model_max"
     assert g3["generation_config"]["thinking"] is True
     assert g3["generation_config"]["temperature"] == 0.0
     assert g3["generation_attempt_count"] == 1
@@ -346,7 +347,7 @@ async def test_draco_runner_dry_run_writes_jsonl_and_summary(tmp_path: Path) -> 
     ]
     assert len(trace_rows) == len(rows)
     assert trace_rows[0]["run_trace"]["events"]
-    assert trace_rows[0]["generation_policy"]["generation_thinking"] == "xhigh"
+    assert trace_rows[0]["generation_policy"]["generation_thinking"] == "model_max"
     assert trace_rows[0]["generation_attempt_count"] == 1
     assert trace_rows[0]["generation_retry_backoff_s"] == 0.0
     assert "llm_request_count" in trace_rows[0]
@@ -364,7 +365,7 @@ async def test_draco_runner_dry_run_writes_jsonl_and_summary(tmp_path: Path) -> 
     assert manifest["tool_policy"]["tool_mode"] == "provider_only"
     assert manifest["runner_mode"] == "provider"
     assert manifest["agent_max_iterations"] == 12
-    assert manifest["generation_policy"]["generation_thinking"] == "xhigh"
+    assert manifest["generation_policy"]["generation_thinking"] == "model_max"
     assert "huggingface.co" in manifest["tool_policy"]["contamination_blocked_domains"]
 
 
@@ -416,13 +417,13 @@ def test_draco_runner_generation_thinking_flag_is_removed() -> None:
 def test_draco_runner_existing_experiment_group_specs_are_stable() -> None:
     expected = {
         "B0": {"kind": "single", "model": "anthropic/claude-opus-4.8"},
-        "B1": {"kind": "single", "model": "openai/gpt-5.5"},
+        "B1": {"kind": "single", "model": "openai/gpt-5.5-pro"},
         "B2": {"kind": "single", "model": "z-ai/glm-5.2"},
         "B3": {"kind": "profile", "profile": "b3_glm_self_fusion"},
         "B4": {"kind": "single", "model": "deepseek/deepseek-v4-pro"},
         "B5": {"kind": "single", "model": "moonshotai/kimi-k2.7-code"},
-        "B6": {"kind": "single", "model": "qwen/qwen3.7-plus"},
-        "B7": {"kind": "single", "model": "google/gemini-3-flash-preview"},
+        "B6": {"kind": "single", "model": "qwen/qwen3.7-max"},
+        "B7": {"kind": "single", "model": "google/gemini-3.1-pro-preview"},
         "G1": {"kind": "profile", "profile": "g1_code"},
         "G2": {"kind": "profile", "profile": "g2_general"},
         "G3": {"kind": "profile", "profile": "g3_standard"},
@@ -451,8 +452,8 @@ def test_draco_runner_single_model_baselines_cover_extra_frontiers() -> None:
         "B2": "z-ai/glm-5.2",
         "B4": "deepseek/deepseek-v4-pro",
         "B5": "moonshotai/kimi-k2.7-code",
-        "B6": "qwen/qwen3.7-plus",
-        "B7": "google/gemini-3-flash-preview",
+        "B6": "qwen/qwen3.7-max",
+        "B7": "google/gemini-3.1-pro-preview",
     }
     args = build_parser().parse_args([
         "--input",
@@ -925,7 +926,7 @@ def test_draco_runner_profile_provider_enables_proposer_tools_when_requested() -
     assert provider.proposer_tools is True
 
 
-def test_draco_runner_generation_thinking_policy_forces_xhigh_members() -> None:
+def test_draco_runner_generation_thinking_policy_uses_model_specific_max_members() -> None:
     cfg = GatewayConfig()
     inherited = ProviderConfig(
         provider="openrouter",
@@ -948,7 +949,11 @@ def test_draco_runner_generation_thinking_policy_forces_xhigh_members() -> None:
     assert provider.shuffle_candidates is False
     assert provider.proposer_timeout_seconds == 120.0
     assert provider.aggregator_timeout_seconds == 300.0
-    assert [member.thinking for member in provider.proposers] == ["xhigh"] * 3
+    assert [member.thinking for member in provider.proposers] == [
+        "xhigh",
+        "xhigh",
+        "high",
+    ]
     assert provider.aggregator.thinking == "xhigh"
 
 
@@ -1056,10 +1061,10 @@ def test_draco_runner_g15_profile_configures_topk_prefilter() -> None:
     assert provider.candidate_scorer is not None
     assert (
         provider.candidate_scorer.provider_config.model
-        == "google/gemini-3-flash-preview"
+        == "google/gemini-3.1-pro-preview"
     )
     assert provider.candidate_scorer.temperature == 0.0
-    assert provider.candidate_scorer.thinking == "xhigh"
+    assert provider.candidate_scorer.thinking == "high"
 
 
 def test_draco_runner_g16_preserves_profile_sampling_temperature() -> None:
@@ -1083,8 +1088,8 @@ def test_draco_runner_g16_preserves_profile_sampling_temperature() -> None:
     assert [member.provider_config.model for member in provider.proposers] == [
         "deepseek/deepseek-v4-pro",
         "z-ai/glm-5.2",
-        "google/gemini-3-flash-preview",
-        "qwen/qwen3.7-plus",
+        "google/gemini-3.1-pro-preview",
+        "qwen/qwen3.7-max",
     ]
     assert [member.k for member in provider.proposers] == [1, 1, 2, 2]
     assert [member.temperature for member in provider.proposers] == [
@@ -1096,11 +1101,12 @@ def test_draco_runner_g16_preserves_profile_sampling_temperature() -> None:
     assert [member.thinking for member in provider.proposers] == [
         "xhigh",
         "xhigh",
-        "xhigh",
+        "high",
         "xhigh",
     ]
     assert provider.aggregator.provider_config.model == "z-ai/glm-5.2"
     assert provider.aggregator.temperature == 0.0
+    assert provider.aggregator.thinking == "xhigh"
 
 
 def test_draco_runner_g17_configures_two_layer_moa() -> None:
@@ -1125,8 +1131,8 @@ def test_draco_runner_g17_configures_two_layer_moa() -> None:
     assert [member.provider_config.model for member in provider.proposers] == [
         "deepseek/deepseek-v4-pro",
         "z-ai/glm-5.2",
-        "google/gemini-3-flash-preview",
-        "qwen/qwen3.7-plus",
+        "google/gemini-3.1-pro-preview",
+        "qwen/qwen3.7-max",
     ]
     assert [member.k for member in provider.proposers] == [1, 1, 1, 1]
     assert [member.temperature for member in provider.proposers] == [
@@ -1162,8 +1168,8 @@ def test_draco_runner_g18_configures_select_best_candidate_strategy() -> None:
     assert [member.provider_config.model for member in provider.proposers] == [
         "deepseek/deepseek-v4-pro",
         "z-ai/glm-5.2",
-        "google/gemini-3-flash-preview",
-        "qwen/qwen3.7-plus",
+        "google/gemini-3.1-pro-preview",
+        "qwen/qwen3.7-max",
     ]
     assert [member.k for member in provider.proposers] == [1, 1, 1, 1]
     assert [member.temperature for member in provider.proposers] == [
@@ -1183,12 +1189,12 @@ def test_draco_runner_g18_configures_select_best_candidate_strategy() -> None:
             "G19",
             "g19_g12_top3_prefilter",
             3,
-            "google/gemini-3-flash-preview",
+            "google/gemini-3.1-pro-preview",
             [
                 "deepseek/deepseek-v4-pro",
                 "z-ai/glm-5.2",
                 "moonshotai/kimi-k2.7-code",
-                "qwen/qwen3.7-plus",
+                "qwen/qwen3.7-max",
             ],
             [1, 1, 1, 1],
         ),
@@ -1196,12 +1202,12 @@ def test_draco_runner_g18_configures_select_best_candidate_strategy() -> None:
             "G20",
             "g20_g12_top2_prefilter",
             2,
-            "google/gemini-3-flash-preview",
+            "google/gemini-3.1-pro-preview",
             [
                 "deepseek/deepseek-v4-pro",
                 "z-ai/glm-5.2",
                 "moonshotai/kimi-k2.7-code",
-                "qwen/qwen3.7-plus",
+                "qwen/qwen3.7-max",
             ],
             [1, 1, 1, 1],
         ),
@@ -1209,12 +1215,12 @@ def test_draco_runner_g18_configures_select_best_candidate_strategy() -> None:
             "G21",
             "g21_g13_top3_prefilter",
             3,
-            "google/gemini-3-flash-preview",
+            "google/gemini-3.1-pro-preview",
             [
                 "deepseek/deepseek-v4-pro",
                 "z-ai/glm-5.2",
-                "google/gemini-3-flash-preview",
-                "qwen/qwen3.7-plus",
+                "google/gemini-3.1-pro-preview",
+                "qwen/qwen3.7-max",
                 "moonshotai/kimi-k2.7-code",
             ],
             [1, 1, 1, 1, 1],
@@ -1228,7 +1234,7 @@ def test_draco_runner_g18_configures_select_best_candidate_strategy() -> None:
                 "deepseek/deepseek-v4-pro",
                 "z-ai/glm-5.2",
                 "moonshotai/kimi-k2.7-code",
-                "qwen/qwen3.7-plus",
+                "qwen/qwen3.7-max",
             ],
             [1, 1, 1, 1],
         ),
@@ -1236,13 +1242,13 @@ def test_draco_runner_g18_configures_select_best_candidate_strategy() -> None:
             "G23",
             "g23_g12_plus_gemini_sampled_top3_prefilter",
             3,
-            "google/gemini-3-flash-preview",
+            "google/gemini-3.1-pro-preview",
             [
                 "deepseek/deepseek-v4-pro",
                 "z-ai/glm-5.2",
                 "moonshotai/kimi-k2.7-code",
-                "qwen/qwen3.7-plus",
-                "google/gemini-3-flash-preview",
+                "qwen/qwen3.7-max",
+                "google/gemini-3.1-pro-preview",
             ],
             [1, 1, 1, 2, 2],
         ),
@@ -1279,15 +1285,15 @@ def test_draco_runner_g19_g23_configure_prefilter_profiles(
     assert provider.candidate_prefilter_top_k == top_k
     assert provider.candidate_scorer is not None
     assert provider.candidate_scorer.provider_config.model == scorer_model
-    assert provider.candidate_scorer.thinking == "xhigh"
+    assert provider.candidate_scorer.thinking == generation_thinking_for_model(scorer_model)
     assert provider.candidate_scorer.temperature == 0.0
     assert [member.provider_config.model for member in provider.proposers] == proposer_models
-    assert [member.thinking for member in provider.proposers] == ["xhigh"] * len(
-        proposer_models
-    )
+    assert [member.thinking for member in provider.proposers] == [
+        generation_thinking_for_model(model) for model in proposer_models
+    ]
     assert [member.k for member in provider.proposers] == k_values
     assert provider.aggregator.provider_config.model == "z-ai/glm-5.2"
-    assert provider.aggregator.thinking == "xhigh"
+    assert provider.aggregator.thinking == generation_thinking_for_model("z-ai/glm-5.2")
     assert provider.aggregator.temperature == 0.0
 
 
@@ -1361,6 +1367,18 @@ def test_draco_runner_generation_chat_config_uses_xhigh_by_default() -> None:
     assert str(config.thinking_level) == "xhigh"
     assert config.thinking_budget_tokens == 50_000
     assert config.temperature == 0.0
+
+
+def test_draco_runner_generation_chat_config_uses_model_specific_max() -> None:
+    policy = generation_thinking_policy()
+
+    opus_config = generation_chat_config(policy, model="anthropic/claude-opus-4.8")
+    gemini_config = generation_chat_config(policy, model="google/gemini-3.1-pro-preview")
+
+    assert str(opus_config.thinking_level) == "max"
+    assert opus_config.thinking_budget_tokens == 50_000
+    assert str(gemini_config.thinking_level) == "high"
+    assert gemini_config.thinking_budget_tokens == 20_000
 
 
 def test_draco_runner_compact_generation_config_marks_xhigh_thinking() -> None:

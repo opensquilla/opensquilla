@@ -62,13 +62,13 @@ from opensquilla.tools.types import CallerKind, InteractionMode, ToolContext, To
 
 GROUP_SPECS: dict[str, dict[str, str]] = {
     "B0": {"kind": "single", "model": "anthropic/claude-opus-4.8"},
-    "B1": {"kind": "single", "model": "openai/gpt-5.5"},
+    "B1": {"kind": "single", "model": "openai/gpt-5.5-pro"},
     "B2": {"kind": "single", "model": "z-ai/glm-5.2"},
     "B3": {"kind": "profile", "profile": "b3_glm_self_fusion"},
     "B4": {"kind": "single", "model": "deepseek/deepseek-v4-pro"},
     "B5": {"kind": "single", "model": "moonshotai/kimi-k2.7-code"},
-    "B6": {"kind": "single", "model": "qwen/qwen3.7-plus"},
-    "B7": {"kind": "single", "model": "google/gemini-3-flash-preview"},
+    "B6": {"kind": "single", "model": "qwen/qwen3.7-max"},
+    "B7": {"kind": "single", "model": "google/gemini-3.1-pro-preview"},
     "G1": {"kind": "profile", "profile": "g1_code"},
     "G2": {"kind": "profile", "profile": "g2_general"},
     "G3": {"kind": "profile", "profile": "g3_standard"},
@@ -115,7 +115,18 @@ DEFAULT_OPENROUTER_WEB_SEARCH_CONTEXT_SIZE = "medium"
 DEFAULT_OPENROUTER_WEB_FETCH_ENGINE = "openrouter"
 DEFAULT_OPENROUTER_WEB_FETCH_MAX_USES = 5
 DEFAULT_OPENROUTER_WEB_FETCH_MAX_CONTENT_TOKENS = 50_000
-DEFAULT_GENERATION_THINKING = "xhigh"
+GENERATION_THINKING_MODEL_MAX = "model_max"
+DEFAULT_GENERATION_THINKING = GENERATION_THINKING_MODEL_MAX
+DEFAULT_GENERATION_THINKING_FALLBACK = "xhigh"
+DEFAULT_MODEL_MAX_GENERATION_THINKING: dict[str, str] = {
+    "anthropic/claude-opus-4.8": "max",
+    "deepseek/deepseek-v4-pro": "xhigh",
+    "google/gemini-3.1-pro-preview": "high",
+    "moonshotai/kimi-k2.7-code": "max",
+    "openai/gpt-5.5-pro": "xhigh",
+    "qwen/qwen3.7-max": "xhigh",
+    "z-ai/glm-5.2": "xhigh",
+}
 DEFAULT_GENERATION_TEMPERATURE = 0.0
 DEFAULT_CONTAMINATION_BLOCKED_DOMAINS = (
     "hf.co",
@@ -897,19 +908,50 @@ def build_benchmark_tool_context(
 def generation_thinking_policy(args: argparse.Namespace | None = None) -> dict[str, Any]:
     _ = args
     mode = DEFAULT_GENERATION_THINKING
-    level = ThinkingLevel(mode)
+    fallback_level = ThinkingLevel(DEFAULT_GENERATION_THINKING_FALLBACK)
     return {
         "generation_thinking": mode,
         "temperature": DEFAULT_GENERATION_TEMPERATURE,
         "thinking_enabled": True,
-        "thinking_level": level.value,
-        "thinking_budget_tokens": THINKING_BUDGETS[level],
+        "thinking_level": "model-specific",
+        "default_thinking_level": fallback_level.value,
+        "thinking_budget_tokens": "model-specific",
+        "max_thinking_budget_tokens": THINKING_BUDGETS[ThinkingLevel.MAX],
+        "model_thinking_levels": dict(DEFAULT_MODEL_MAX_GENERATION_THINKING),
         "applies_to": "single baselines and ensemble members",
     }
 
 
-def generation_chat_config(policy: dict[str, Any]) -> ChatConfig:
+def _normalized_model_id(model: str | None) -> str:
+    return str(model or "").strip().lower()
+
+
+def generation_thinking_for_model(
+    model: str | None,
+    policy: dict[str, Any] | None = None,
+) -> str:
+    policy = policy or generation_thinking_policy()
     mode = str(policy.get("generation_thinking") or DEFAULT_GENERATION_THINKING)
+    if mode != GENERATION_THINKING_MODEL_MAX:
+        return mode
+    raw_mapping = policy.get("model_thinking_levels")
+    mapping = raw_mapping if isinstance(raw_mapping, dict) else {}
+    normalized_mapping = {
+        _normalized_model_id(str(key)): str(value)
+        for key, value in mapping.items()
+    }
+    return normalized_mapping.get(
+        _normalized_model_id(model),
+        str(policy.get("default_thinking_level") or DEFAULT_GENERATION_THINKING_FALLBACK),
+    )
+
+
+def generation_chat_config(
+    policy: dict[str, Any],
+    *,
+    model: str | None = None,
+) -> ChatConfig:
+    mode = generation_thinking_for_model(model, policy)
     level = ThinkingLevel(mode)
     return ChatConfig(
         temperature=DEFAULT_GENERATION_TEMPERATURE,
@@ -920,14 +962,16 @@ def generation_chat_config(policy: dict[str, Any]) -> ChatConfig:
 
 
 def apply_generation_policy_to_profile(profile: Any, policy: dict[str, Any]) -> Any:
-    mode = str(policy.get("generation_thinking") or DEFAULT_GENERATION_THINKING)
-    member_update: dict[str, Any] = {"temperature": DEFAULT_GENERATION_TEMPERATURE}
-    member_update["thinking"] = mode
-
     preserve_temperature = bool(getattr(profile, "preserve_member_temperature", False))
 
     def _apply_member_policy(member: Any) -> Any:
-        update = dict(member_update)
+        update: dict[str, Any] = {
+            "temperature": DEFAULT_GENERATION_TEMPERATURE,
+            "thinking": generation_thinking_for_model(
+                str(getattr(member, "model", "") or ""),
+                policy,
+            ),
+        }
         if preserve_temperature and getattr(member, "temperature", None) is not None:
             update.pop("temperature", None)
         return member.model_copy(update=update)
@@ -2485,11 +2529,14 @@ async def run_one(
     generation_retry_backoff_s = bounded_generation_retry_backoff(
         generation_retry_backoff
     )
-    generation_config = generation_chat_config(generation_policy)
     effective_timeout = group_timeout_seconds(
         requested_timeout=timeout,
         config=config,
         group=group,
+    )
+    generation_config = generation_chat_config(
+        generation_policy,
+        model=spec["model"] if spec["kind"] == "single" else None,
     )
     try:
         if spec["kind"] == "single":
@@ -3071,6 +3118,12 @@ def render_markdown(
             f"Runner mode: `{runner_mode}`; tool mode: `{policy.get('tool_mode') or RUNNER_MODE}`; "
             "external research tools are not attached."
         )
+    generation_budget_note = f"budget: `{generation.get('thinking_budget_tokens')}`"
+    if generation.get("max_thinking_budget_tokens") is not None:
+        generation_budget_note = (
+            f"{generation_budget_note}, "
+            f"max budget: `{generation.get('max_thinking_budget_tokens')}`"
+        )
 
     def _signed_pct(value: Any) -> str:
         return f"{float(value):+.2f}%" if isinstance(value, int | float) else ""
@@ -3085,7 +3138,7 @@ def render_markdown(
         f"`{generation.get('generation_thinking')}` "
         f"(enabled: `{generation.get('thinking_enabled')}`, "
         f"level: `{generation.get('thinking_level')}`, "
-        f"budget: `{generation.get('thinking_budget_tokens')}`, "
+        f"{generation_budget_note}, "
         f"temperature: `{generation.get('temperature')}`).",
         f"Agent max iterations: `{agent_max_iterations}`.",
         tool_line,

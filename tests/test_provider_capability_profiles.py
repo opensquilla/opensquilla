@@ -53,10 +53,10 @@ def test_openrouter_static_reasoning_models_use_openrouter_reasoning_format() ->
     for model in (
         "anthropic/claude-opus-4.8",
         "deepseek/deepseek-v4-pro",
-        "google/gemini-3-flash-preview",
+        "google/gemini-3.1-pro-preview",
         "moonshotai/kimi-k2.7-code",
-        "openai/gpt-5.5",
-        "qwen/qwen3.7-plus",
+        "openai/gpt-5.5-pro",
+        "qwen/qwen3.7-max",
         "z-ai/glm-5.2",
     ):
         caps = catalog.get_capabilities(

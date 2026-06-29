@@ -20,10 +20,21 @@ stack into the test.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from typing import Any
 from unittest.mock import MagicMock
 
+from opensquilla.engine import Agent, AgentConfig, ToolResult
+from opensquilla.engine.types import DoneEvent as EngineDoneEvent
+from opensquilla.engine.types import ToolCall
 from opensquilla.engine.usage import UsageTracker
+from opensquilla.provider import ChatConfig, Message, ToolDefinition, ToolInputSchema
+from opensquilla.provider import DoneEvent as ProviderDoneEvent
+from opensquilla.provider import TextDeltaEvent as ProviderTextDeltaEvent
+from opensquilla.provider import ToolUseEndEvent as ProviderToolUseEndEvent
+from opensquilla.provider import ToolUseStartEvent as ProviderToolUseStartEvent
 
 
 @dataclass
@@ -46,6 +57,21 @@ class _FakeProviderDoneEvent:
     thinking_signature: str | None = None
     tool_use_id: str | None = None
     tool_name: str | None = None
+    model_usage_breakdown: list[dict[str, Any]] | None = None
+
+
+def _usage_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _usage_float(value: Any) -> float:
+    try:
+        return max(0.0, float(value or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _simulate_agent_raw_ev_block(
@@ -61,6 +87,26 @@ def _simulate_agent_raw_ev_block(
     test below asserts the call shape, so a divergence fails fast.
     """
     if tracker and session_key:
+        usage_breakdown = getattr(raw_ev, "model_usage_breakdown", None)
+        if isinstance(usage_breakdown, list) and usage_breakdown:
+            for usage_row in usage_breakdown:
+                if not isinstance(usage_row, dict):
+                    continue
+                cache_read = (
+                    usage_row.get("cache_read_tokens")
+                    if "cache_read_tokens" in usage_row
+                    else usage_row.get("cached_tokens")
+                )
+                tracker.add(
+                    session_key,
+                    input_tokens=_usage_int(usage_row.get("input_tokens") or 0),
+                    output_tokens=_usage_int(usage_row.get("output_tokens") or 0),
+                    model_id=str(usage_row.get("model") or fallback_model_id or ""),
+                    cache_read_tokens=_usage_int(cache_read or 0),
+                    cache_write_tokens=_usage_int(usage_row.get("cache_write_tokens") or 0),
+                    billed_cost=_usage_float(usage_row.get("billed_cost") or 0.0),
+                )
+            return
         tracker.add(
             session_key,
             input_tokens=raw_ev.input_tokens,
@@ -162,6 +208,185 @@ def test_multiple_raw_events_accumulate_per_model() -> None:
     assert by_model["z-ai/glm-5.1"]["costUsd"] == 0.0111
     assert by_model["z-ai/glm-5.1"]["costSource"] == "provider_billed"
     assert sum(row["costUsd"] for row in breakdown) == 0.1365
+
+
+def test_ensemble_breakdown_accumulates_each_underlying_model() -> None:
+    tracker = UsageTracker()
+    session_key = "agent:test:webchat:ensemble"
+    raw_ev = _FakeProviderDoneEvent(
+        input_tokens=33,
+        output_tokens=12,
+        cached_tokens=0,
+        cache_write_tokens=0,
+        billed_cost=0.03,
+        model="z-ai/glm-5.2",
+        model_usage_breakdown=[
+            {
+                "model": "deepseek/deepseek-v4-pro",
+                "input_tokens": 10,
+                "output_tokens": 2,
+                "cached_tokens": 1,
+                "cache_write_tokens": 0,
+                "billed_cost": 0.01,
+            },
+            {
+                "model": "z-ai/glm-5.2",
+                "input_tokens": 23,
+                "output_tokens": 10,
+                "cached_tokens": 0,
+                "cache_write_tokens": 4,
+                "billed_cost": 0.02,
+            },
+        ],
+    )
+
+    _simulate_agent_raw_ev_block(tracker, session_key, raw_ev)
+
+    usage = tracker.get(session_key)
+    assert usage is not None
+    by_model = {row["model"]: row for row in usage.model_breakdown}
+    assert by_model["deepseek/deepseek-v4-pro"]["inputTokens"] == 10
+    assert by_model["deepseek/deepseek-v4-pro"]["cacheReadTokens"] == 1
+    assert by_model["z-ai/glm-5.2"]["outputTokens"] == 10
+    assert by_model["z-ai/glm-5.2"]["cacheWriteTokens"] == 4
+    assert usage.billed_cost == 0.03
+
+
+class _TwoStepEnsembleBreakdownProvider:
+    provider_name = "fake"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def chat(
+        self,
+        messages: list[Message],
+        tools: list[Any] | None = None,
+        config: ChatConfig | None = None,
+    ) -> AsyncIterator[Any]:
+        self.calls += 1
+        return self._stream(self.calls)
+
+    async def _stream(self, call: int) -> AsyncIterator[Any]:
+        if call == 1:
+            yield ProviderToolUseStartEvent(tool_use_id="lookup-1", tool_name="lookup")
+            yield ProviderToolUseEndEvent(
+                tool_use_id="lookup-1",
+                tool_name="lookup",
+                arguments={"q": "demo"},
+            )
+            yield ProviderDoneEvent(
+                stop_reason="tool_use",
+                input_tokens=30,
+                output_tokens=3,
+                billed_cost=0.03,
+                model="agg-tool",
+                model_usage_breakdown=[
+                    {"role": "proposer", "model": "proposer-tool", "input_tokens": 10},
+                    {
+                        "role": "aggregator",
+                        "model": "agg-tool",
+                        "input_tokens": 20,
+                        "output_tokens": 3,
+                        "billed_cost": 0.03,
+                    },
+                ],
+            )
+            return
+        yield ProviderTextDeltaEvent(text="final answer")
+        yield ProviderDoneEvent(
+            stop_reason="end_turn",
+            input_tokens=40,
+            output_tokens=4,
+            billed_cost=0.04,
+            model="agg-final",
+            model_usage_breakdown=[
+                {"role": "proposer", "model": "proposer-final", "input_tokens": 15},
+                {
+                    "role": "aggregator",
+                    "model": "agg-final",
+                    "input_tokens": 25,
+                    "output_tokens": 4,
+                    "billed_cost": 0.04,
+                },
+            ],
+        )
+
+    async def list_models(self) -> list[Any]:
+        return []
+
+
+def test_agent_final_done_accumulates_ensemble_breakdown_across_tool_iterations() -> None:
+    async def tool_handler(call: ToolCall) -> ToolResult:
+        return ToolResult(
+            tool_use_id=call.tool_use_id,
+            tool_name=call.tool_name,
+            content="lookup result",
+        )
+
+    async def run() -> EngineDoneEvent:
+        agent = Agent(
+            provider=_TwoStepEnsembleBreakdownProvider(),
+            config=AgentConfig(max_iterations=3),
+            tool_definitions=[
+                ToolDefinition(
+                    name="lookup",
+                    description="lookup",
+                    input_schema=ToolInputSchema(properties={}, required=[]),
+                )
+            ],
+            tool_handler=tool_handler,
+        )
+        events = [event async for event in agent.run_turn("hi")]
+        done_events = [event for event in events if isinstance(event, EngineDoneEvent)]
+        assert done_events
+        return done_events[-1]
+
+    done = asyncio.run(run())
+
+    assert [row["model"] for row in done.model_usage_breakdown] == [
+        "proposer-tool",
+        "agg-tool",
+        "proposer-final",
+        "agg-final",
+    ]
+    assert done.input_tokens == 70
+    assert done.output_tokens == 7
+    assert done.billed_cost == 0.07
+
+
+def test_ensemble_breakdown_malformed_usage_values_do_not_raise() -> None:
+    tracker = UsageTracker()
+    session_key = "agent:test:webchat:ensemble-malformed"
+    raw_ev = _FakeProviderDoneEvent(
+        input_tokens=0,
+        output_tokens=0,
+        cached_tokens=0,
+        cache_write_tokens=0,
+        billed_cost=0.0,
+        model="fallback-model",
+        model_usage_breakdown=[
+            {
+                "model": "bad-row",
+                "input_tokens": "not-an-int",
+                "output_tokens": None,
+                "cached_tokens": "also-bad",
+                "cache_write_tokens": -3,
+                "billed_cost": "not-a-float",
+            }
+        ],
+    )
+
+    _simulate_agent_raw_ev_block(tracker, session_key, raw_ev)
+
+    usage = tracker.get(session_key)
+    assert usage is not None
+    by_model = {row["model"]: row for row in usage.model_breakdown}
+    assert by_model["bad-row"]["inputTokens"] == 0
+    assert by_model["bad-row"]["outputTokens"] == 0
+    assert by_model["bad-row"]["cacheReadTokens"] == 0
+    assert by_model["bad-row"]["cacheWriteTokens"] == 0
+    assert by_model["bad-row"]["costUsd"] == 0
 
 
 def test_mock_tracker_receives_billed_cost_kwarg() -> None:

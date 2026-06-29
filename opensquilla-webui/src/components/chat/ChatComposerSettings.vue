@@ -59,6 +59,14 @@
         :busy="codingModeSettingsBusy"
         @change="$emit('setCodingModeEnabled', $event)"
       />
+      <ControlSwitch
+        label="LLM Ensemble"
+        :caption="llmEnsembleEnabled ? 'Enabled' : 'Disabled'"
+        aria-label="LLM Ensemble"
+        :checked="llmEnsembleEnabled"
+        :busy="llmEnsembleSettingsBusy"
+        @change="$emit('setLlmEnsembleEnabled', $event)"
+      />
     </div>
   </section>
 </template>
@@ -83,6 +91,8 @@ const props = defineProps<{
   visualEffectsEnabled: boolean
   codingModeEnabled: boolean
   codingModeSettingsBusy: boolean
+  llmEnsembleEnabled: boolean
+  llmEnsembleSettingsBusy: boolean
 }>()
 
 defineEmits<{
@@ -91,6 +101,7 @@ defineEmits<{
   setRouterEnabled: [enabled: boolean]
   setVisualEffectsEnabled: [enabled: boolean]
   setCodingModeEnabled: [enabled: boolean]
+  setLlmEnsembleEnabled: [enabled: boolean]
 }>()
 
 const normalizedElevatedMode = computed(() => {

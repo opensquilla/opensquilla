@@ -59,11 +59,14 @@
                 :visual-effects-enabled="routerVisualEffectsEnabled"
                 :coding-mode-enabled="codingModeEnabled"
                 :coding-mode-settings-busy="codingModeSettingsBusy"
+                :llm-ensemble-enabled="llmEnsembleEnabled"
+                :llm-ensemble-settings-busy="llmEnsembleSettingsBusy"
                 @close="settingsOpen = false"
                 @set-elevated-mode="emit('setElevatedMode', $event)"
                 @set-router-enabled="emit('setRouterEnabled', $event)"
                 @set-visual-effects-enabled="emit('setVisualEffectsEnabled', $event)"
                 @set-coding-mode-enabled="emit('setCodingModeEnabled', $event)"
+                @set-llm-ensemble-enabled="emit('setLlmEnsembleEnabled', $event)"
               />
             </div>
             <button
@@ -155,6 +158,8 @@ defineProps<{
   routerSettingsBusy: boolean
   codingModeEnabled: boolean
   codingModeSettingsBusy: boolean
+  llmEnsembleEnabled: boolean
+  llmEnsembleSettingsBusy: boolean
   voiceBusy: boolean
   voiceRecording: boolean
 }>()
@@ -171,6 +176,7 @@ const emit = defineEmits<{
   setRouterEnabled: [enabled: boolean]
   setVisualEffectsEnabled: [enabled: boolean]
   setCodingModeEnabled: [enabled: boolean]
+  setLlmEnsembleEnabled: [enabled: boolean]
   voiceInput: []
   exportMarkdown: []
   stop: []

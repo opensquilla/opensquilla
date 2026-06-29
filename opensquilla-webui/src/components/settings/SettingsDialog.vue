@@ -167,6 +167,15 @@
               @update-tier-field="updateTierField"
               @save="saveRouter"
             />
+            <SetupEnsemblePanel
+              v-else-if="section === 'ensemble'"
+              :panel="ensemblePanel"
+              @update-enabled="setEnsembleEnabled"
+              @update-proposer-field="updateEnsembleProposerField"
+              @update-aggregator-field="updateEnsembleAggregatorField"
+              @reset="resetEnsembleDefaults"
+              @save="saveEnsemble"
+            />
             <SetupChannelsPanel
               v-else-if="section === 'channels'"
               :panel="channelsPanel"
@@ -232,6 +241,7 @@ import SetupBehaviorPanel from '@/components/setup/SetupBehaviorPanel.vue'
 import SetupConnectionPanel from '@/components/settings/SetupConnectionPanel.vue'
 import SetupProviderPanel from '@/components/setup/SetupProviderPanel.vue'
 import SetupRouterPanel from '@/components/setup/SetupRouterPanel.vue'
+import SetupEnsemblePanel from '@/components/setup/SetupEnsemblePanel.vue'
 import SetupChannelsPanel from '@/components/setup/SetupChannelsPanel.vue'
 import SetupCapabilitiesPanel from '@/components/setup/SetupCapabilitiesPanel.vue'
 import SettingsAppearancePanel from '@/components/settings/SettingsAppearancePanel.vue'
@@ -260,6 +270,7 @@ const {
   providerPanel,
   behaviorPanel,
   routerPanel,
+  ensemblePanel,
   channelsPanel,
   capabilitiesPanel,
   hasSetupAction,
@@ -281,6 +292,10 @@ const {
   setRouterMode,
   setRouterDefaultTier,
   setRouterVisualMode,
+  setEnsembleEnabled,
+  updateEnsembleProposerField,
+  updateEnsembleAggregatorField,
+  resetEnsembleDefaults,
   selectChannelType,
   updateProviderField,
   updateLlmTimeout,
@@ -295,6 +310,7 @@ const {
   saveProvider,
   saveBehavior,
   saveRouter,
+  saveEnsemble,
   saveChannel,
   saveSearch,
   saveMemory,

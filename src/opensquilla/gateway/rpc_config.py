@@ -280,6 +280,7 @@ _SAFE_WRITE_PATCH_PATHS = frozenset(
         "skills.filter_rrf_k",
         "skills.disabled",
         "skills.coding_mode",
+        "llm_ensemble.enabled",
         "naming.enabled",
         "prompt_cache.mode",
         "squilla_router.enabled",

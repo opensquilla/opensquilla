@@ -1,5 +1,9 @@
 import { computed, type Ref } from 'vue'
 import type {
+  ChatEnsembleMeta,
+  ChatEnsembleMetaModel,
+  ChatEnsembleTrace,
+  ChatEnsembleUsageRow,
   ChatMessage,
   ChatMessageMeta,
   ChatRenderedMessage,
@@ -297,6 +301,7 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
     const hasTier = !!(u.routed_tier && u.routing_source && u.routing_source !== 'none')
     const turnSavedPct = typeof u.total_savings_pct === 'number' && u.total_savings_pct > 0 ? u.total_savings_pct : 0
     const hasSaved = hasTier && turnSavedPct > 0 && !u.__savings_ui_suppressed
+    const ensemble = ensembleMeta(u)
     return {
       model,
       modelShort: model.includes('/') ? (model.split('/').pop() || model) : model,
@@ -309,7 +314,71 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
       hasSaved,
       turnSavedPct,
       savedLabel: turnSavedPct > 0 ? `Saved ~${Math.round(turnSavedPct)}%` : 'Cost optimized',
+      ensemble,
     }
+  }
+
+  function ensembleMeta(usage: Record<string, unknown>): ChatEnsembleMeta | undefined {
+    const breakdown = normalizeEnsembleUsageRows(
+      usage.model_usage_breakdown || usage.modelUsageBreakdown,
+    )
+    const trace = normalizeEnsembleTrace(usage.ensemble_trace || usage.ensembleTrace)
+    const hasTrace = Boolean(trace?.profile || trace?.mode)
+    if (!breakdown.length && !hasTrace) return undefined
+
+    const models = breakdown
+      .map(rowToEnsembleModel)
+      .filter((row): row is ChatEnsembleMetaModel => row !== null)
+    const uniqueModels = new Set(models.map(row => `${row.role}:${row.provider}:${row.model}`))
+    const rowCost = models.reduce((sum, row) => sum + row.costUsd, 0)
+    const explicitCost = numeric(usage.cost_usd ?? usage.costUsd)
+    const savedUsd = Math.max(0, numeric(usage.total_savings_usd ?? usage.totalSavingsUsd ?? usage.savings_usd ?? usage.savingsUsd))
+    const savedPct = Math.max(0, numeric(usage.total_savings_pct ?? usage.totalSavingsPct ?? usage.savings_pct ?? usage.savingsPct))
+
+    return {
+      profile: String(trace?.profile || breakdown[0]?.profile || 'llm_ensemble'),
+      modelCount: uniqueModels.size || models.length || numeric(trace?.total_candidates),
+      requestCount: Math.max(0, numeric(trace?.llm_request_count), models.length),
+      fallbackUsed: trace?.fallback_used === true || trace?.fallbackUsed === true,
+      costUsd: explicitCost > 0 ? explicitCost : rowCost,
+      savedUsd,
+      savedPct,
+      models,
+    }
+  }
+
+  function normalizeEnsembleUsageRows(value: unknown): ChatEnsembleUsageRow[] {
+    if (!Array.isArray(value)) return []
+    return value.filter((row): row is ChatEnsembleUsageRow => !!row && typeof row === 'object' && !Array.isArray(row))
+  }
+
+  function normalizeEnsembleTrace(value: unknown): ChatEnsembleTrace | null {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? value as ChatEnsembleTrace
+      : null
+  }
+
+  function rowToEnsembleModel(row: ChatEnsembleUsageRow): ChatEnsembleMetaModel | null {
+    const model = String(row.model || '').trim()
+    if (!model) return null
+    const provider = String(row.provider || '').trim()
+    const role = String(row.role || '').trim() || 'member'
+    const label = String(row.label || role).trim() || role
+    return {
+      role,
+      label,
+      provider,
+      model,
+      modelShort: shortModelName(model),
+      input: numeric(row.input_tokens ?? row.inputTokens),
+      output: numeric(row.output_tokens ?? row.outputTokens),
+      costUsd: numeric(row.cost_usd ?? row.costUsd ?? row.billed_cost ?? row.billedCost),
+    }
+  }
+
+  function numeric(value: unknown): number {
+    const n = Number(value)
+    return Number.isFinite(n) ? n : 0
   }
 
   function routerDecisionCells(decision: NormalizedRouterDecision): ChatRouterCell[] {

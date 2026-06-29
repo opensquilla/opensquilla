@@ -10,7 +10,14 @@ import pytest
 from opensquilla.gateway.auth import Principal
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
-from opensquilla.gateway.scopes import ADMIN_SCOPE, METHOD_SCOPES, READ_SCOPE, WRITE_SCOPE
+from opensquilla.gateway.scopes import (
+    ADMIN_SCOPE,
+    METHOD_SCOPES,
+    READ_SCOPE,
+    REMOTE_OPERATOR_SCOPES,
+    WRITE_SCOPE,
+    authorize_call,
+)
 from opensquilla.memory.types import MemorySearchResult, MemorySource, SearchIntent
 from opensquilla.search.registry import register_provider
 from opensquilla.search.types import SearchProviderError, SearchProviderSpec, SearchResult
@@ -158,6 +165,43 @@ async def test_search_query_is_classified_write_scope_and_denies_read_only():
 
     assert res.error is not None
     assert res.error.code == "UNAUTHORIZED"
+
+
+def test_sessions_delete_is_write_scope_and_allows_remote_operator():
+    """Regression for #357 / #307: deleting a session from the Web UI must work for
+    a no-auth remote operator.
+
+    On the default Docker bind (``OPENSQUILLA_LISTEN=0.0.0.0``) the gateway is not a
+    loopback bind, so even a ``127.0.0.1`` peer is not the local owner and is granted
+    only :data:`REMOTE_OPERATOR_SCOPES` (read/write/approvals, no admin). While
+    ``sessions.delete`` was admin-gated, every such delete failed with
+    ``UNAUTHORIZED`` and the UI showed "Failed to delete session". It is now
+    write-scoped like its sibling destructive ops (reset/truncate), so a remote
+    operator is authorized.
+    """
+    dispatcher = get_dispatcher()
+    assert METHOD_SCOPES["sessions.delete"] == WRITE_SCOPE
+    entry = dispatcher.get_entry("sessions.delete")
+    assert entry is not None
+    assert entry.required_scope == WRITE_SCOPE
+
+    # The no-auth remote-operator scope set never carries admin, which is exactly
+    # why the old admin gate broke deletion on non-loopback binds.
+    assert ADMIN_SCOPE not in REMOTE_OPERATOR_SCOPES
+
+    allowed, missing = authorize_call(
+        "sessions.delete", entry.required_scope, "operator", REMOTE_OPERATOR_SCOPES
+    )
+    assert allowed is True
+    assert missing is None
+
+    # And the old classification would still be denied for the same caller, proving
+    # the admin gate was the cause rather than some unrelated wiring.
+    denied, missing_admin = authorize_call(
+        "sessions.delete", ADMIN_SCOPE, "operator", REMOTE_OPERATOR_SCOPES
+    )
+    assert denied is False
+    assert missing_admin == ADMIN_SCOPE
 
 
 @pytest.mark.asyncio

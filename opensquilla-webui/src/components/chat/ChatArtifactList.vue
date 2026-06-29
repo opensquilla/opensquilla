@@ -202,9 +202,7 @@ import {
   type ArtifactPreviewState,
 } from '@/composables/chat/useArtifactPreview'
 import {
-  artifactOpenFailureMessage,
   fetchArtifactBlob,
-  isActiveDocumentArtifact,
   openArtifactBlobUrl,
 } from '@/utils/chat/artifactAccess'
 import { usePlatform } from '@/platform'
@@ -319,7 +317,8 @@ function openPreview(artifact: ArtifactPayload) {
 // Desktop: `window.open` is denied by the Electron shell handler, so the blob
 // popup path below can never succeed. Fetch the bytes (with auth) and hand them
 // to the main process, which writes a temp file and opens it with the OS
-// default app. Web keeps the in-browser new-tab path.
+// default app. Web keeps the in-browser new-tab path and its active-document
+// guard.
 async function openFile(artifact: ArtifactPayload) {
   if (platform.capabilities.canOpenArtifactsNatively && platform.files.openArtifact) {
     const fetched = await fetchArtifactBlob(artifact, {
@@ -329,10 +328,6 @@ async function openFile(artifact: ArtifactPayload) {
     })
     if (!fetched.ok) {
       pushToast(fetched.message, { tone: 'danger' })
-      return
-    }
-    if (isActiveDocumentArtifact(artifact, fetched.blob)) {
-      pushToast(artifactOpenFailureMessage(0, artifactFileTitle(artifact)), { tone: 'danger' })
       return
     }
     const data = await fetched.blob.arrayBuffer()

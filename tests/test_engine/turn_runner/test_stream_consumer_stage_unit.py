@@ -340,6 +340,78 @@ def test_text_delta_handler_holds_split_malformed_tool_protocol_html() -> None:
     assert "<tvoe" not in "".join(state.final_text_parts)
 
 
+def test_text_delta_handler_strips_cumulative_post_tool_snapshot() -> None:
+    state = _make_state()
+    text_handler = _TextDeltaHandler()
+    text_handler.handle(TextDeltaEvent(text="prefix"), state)
+    _ToolUseStartHandler().handle(
+        ToolUseStartEvent(tool_use_id="tool-1", tool_name="web_search"),
+        state,
+    )
+    _ToolResultHandler().handle(
+        ToolResultEvent(tool_use_id="tool-1", tool_name="web_search", result="ok"),
+        state,
+    )
+
+    out = text_handler.handle(TextDeltaEvent(text="prefixsuffix"), state)
+
+    assert out.text == "suffix"
+    assert state.final_text_parts == ["prefix", "suffix"]
+    assert state.current_text_parts == ["suffix"]
+
+
+def test_text_delta_handler_preserves_plain_post_tool_delta() -> None:
+    state = _make_state()
+    text_handler = _TextDeltaHandler()
+    text_handler.handle(TextDeltaEvent(text="prefix"), state)
+    _ToolUseStartHandler().handle(
+        ToolUseStartEvent(tool_use_id="tool-1", tool_name="web_search"),
+        state,
+    )
+    _ToolResultHandler().handle(
+        ToolResultEvent(tool_use_id="tool-1", tool_name="web_search", result="ok"),
+        state,
+    )
+
+    out = text_handler.handle(TextDeltaEvent(text="suffix"), state)
+
+    assert out.text == "suffix"
+    assert state.final_text_parts == ["prefix", "suffix"]
+    assert state.current_text_parts == ["suffix"]
+
+
+def test_text_delta_handler_preserves_cumulative_text_before_tool_boundary() -> None:
+    state = _make_state()
+    handler = _TextDeltaHandler()
+    handler.handle(TextDeltaEvent(text="prefix"), state)
+
+    out = handler.handle(TextDeltaEvent(text="prefixsuffix"), state)
+
+    assert out.text == "prefixsuffix"
+    assert state.final_text_parts == ["prefix", "prefixsuffix"]
+    assert state.current_text_parts == ["prefix", "prefixsuffix"]
+
+
+def test_text_delta_handler_drops_duplicate_post_tool_snapshot() -> None:
+    state = _make_state()
+    text_handler = _TextDeltaHandler()
+    text_handler.handle(TextDeltaEvent(text="prefix"), state)
+    _ToolUseStartHandler().handle(
+        ToolUseStartEvent(tool_use_id="tool-1", tool_name="web_search"),
+        state,
+    )
+    _ToolResultHandler().handle(
+        ToolResultEvent(tool_use_id="tool-1", tool_name="web_search", result="ok"),
+        state,
+    )
+
+    out = text_handler.handle(TextDeltaEvent(text="prefix"), state)
+
+    assert out.text == ""
+    assert state.final_text_parts == ["prefix"]
+    assert state.current_text_parts == []
+
+
 def test_tool_use_start_handler_drops_tool_scaffold_text_segment() -> None:
     state = _make_state()
     text_handler = _TextDeltaHandler()

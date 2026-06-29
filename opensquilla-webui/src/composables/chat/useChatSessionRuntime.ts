@@ -3,6 +3,7 @@ import type {
   ChatMessage,
   ChatRunStatusSource,
 } from '@/types/chat'
+import type { PersistSessionOptions } from '@/composables/chat/useChatSessionRoute'
 
 export interface ChatUsageAccumulator {
   input: number
@@ -28,7 +29,7 @@ export interface UseChatSessionRuntimeOptions {
   usageAccum: Ref<ChatUsageAccumulator>
   usageModel: Ref<string>
   createSessionKey: (agentId?: string) => string
-  persistSession: (key: string, options?: { updateRoute?: boolean }) => void
+  persistSession: (key: string, options?: PersistSessionOptions) => void
   unsubscribeSession: () => void | Promise<void>
   subscribeSession: () => void | Promise<void>
   loadHistory: () => void | Promise<void>
@@ -95,7 +96,7 @@ export function useChatSessionRuntime(options: UseChatSessionRuntimeOptions) {
     if (!key || key === options.sessionKey.value) return
 
     options.unsubscribeSession()
-    options.persistSession(key)
+    options.persistSession(key, { source: 'runtime.switchToSession' })
     resetSessionRuntimeState()
     options.pendingSessionIntent.value = null
     resetCompactAndQueueState()

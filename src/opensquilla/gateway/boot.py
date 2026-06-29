@@ -2981,7 +2981,9 @@ async def start_gateway_server(
         # in-flight agent turns and background completions. uvicorn's default
         # handlers would race ours and exit without that drain, so suppress them
         # and let the embedding process own shutdown signalling.
-        server.install_signal_handlers = lambda: None  # type: ignore[method-assign]
+        # setattr (not direct assignment) so this is robust to uvicorn type stubs
+        # that don't expose install_signal_handlers — it exists at runtime.
+        setattr(server, "install_signal_handlers", lambda: None)  # noqa: B010
         server_handle._server = server
 
         task = create_background_task(server.serve())

@@ -843,6 +843,43 @@ async function openArtifactWithDefaultApp(payload: ArtifactOpenRequest): Promise
   }
 }
 
+// --- Desktop native-shell i18n (English + Simplified Chinese, v1) ---
+// The embedded Web UI carries its own vue-i18n layer; this small catalog covers
+// the main-process surfaces that live OUTSIDE the BrowserWindow (app-authored
+// menu group labels and the onboarding window title), keyed off the OS locale.
+// Role-based menu items (Cut/Copy/Paste/…) are localized by Electron itself.
+type DesktopLocale = 'en' | 'zh-Hans'
+let desktopLocale: DesktopLocale = 'en'
+
+function resolveDesktopLocale(): DesktopLocale {
+  const preferred = typeof app.getPreferredSystemLanguages === 'function'
+    ? app.getPreferredSystemLanguages()
+    : []
+  for (const tag of [...preferred, app.getLocale()]) {
+    if (typeof tag === 'string' && tag.toLowerCase().startsWith('zh')) return 'zh-Hans'
+  }
+  return 'en'
+}
+
+const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
+  en: {
+    'menu.edit': 'Edit',
+    'menu.view': 'View',
+    'menu.window': 'Window',
+    'window.onboarding': 'Set up OpenSquilla',
+  },
+  'zh-Hans': {
+    'menu.edit': '编辑',
+    'menu.view': '视图',
+    'menu.window': '窗口',
+    'window.onboarding': '设置 OpenSquilla',
+  },
+}
+
+function desktopT(key: string): string {
+  return DESKTOP_MESSAGES[desktopLocale][key] ?? DESKTOP_MESSAGES.en[key] ?? key
+}
+
 function createApplicationMenu(): void {
   const template: Electron.MenuItemConstructorOptions[] = [
     {
@@ -854,7 +891,7 @@ function createApplicationMenu(): void {
       ],
     },
     {
-      label: 'Edit',
+      label: desktopT('menu.edit'),
       submenu: [
         { role: 'undo' },
         { role: 'redo' },
@@ -869,7 +906,7 @@ function createApplicationMenu(): void {
       ],
     },
     {
-      label: 'View',
+      label: desktopT('menu.view'),
       submenu: [
         { role: 'reload' },
         { role: 'forceReload' },
@@ -881,7 +918,7 @@ function createApplicationMenu(): void {
       ],
     },
     {
-      label: 'Window',
+      label: desktopT('menu.window'),
       submenu: [
         { role: 'minimize' },
         { role: 'zoom' },
@@ -2044,7 +2081,7 @@ async function runOnboarding(): Promise<DesktopConnection> {
       height: 820,
       minWidth: 900,
       minHeight: 720,
-      title: 'Set up OpenSquilla',
+      title: desktopT('window.onboarding'),
       icon: appIconPath(),
       resizable: true,
       show: false,
@@ -2441,6 +2478,7 @@ function stopGateway(): void {
   }, 4000).unref()
 }
 
+ipcMain.handle('desktop:os-locale', () => desktopLocale)
 ipcMain.handle('gateway:status', () => ({ ...gatewayState }))
 ipcMain.handle('gateway:reveal-log', async () => {
   if (!gatewayState.logPath) return false
@@ -2541,6 +2579,7 @@ if (!gotSingleInstanceLock) {
 
   void app.whenReady().then(async () => {
     app.name = 'OpenSquilla'
+    desktopLocale = resolveDesktopLocale()
     createApplicationMenu()
     void openOrResumeDesktopApp()
   })

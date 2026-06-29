@@ -1,5 +1,6 @@
 import { ref, computed, watch } from 'vue'
 import { defineStore } from 'pinia'
+import { getPlatform } from '@/platform'
 import i18n, {
   resolveInitialLocale,
   loadLocaleMessages,
@@ -122,12 +123,18 @@ export const useAppStore = defineStore('app', () => {
     document.documentElement.setAttribute('dir', 'ltr')
   }
 
-  // Resolve and apply the startup locale (saved → data-locale → <html lang> →
-  // navigator → en). Loads the locale chunk before applying so the first paint
-  // is never half-translated; a failed chunk load falls back to en. Does NOT
-  // write localStorage — it only reflects what is already chosen.
+  // Resolve and apply the startup locale (saved → OS locale → data-locale →
+  // <html lang> → navigator → en). Loads the locale chunk before applying so the
+  // first paint is never half-translated; a failed chunk load falls back to en.
+  // Does NOT write localStorage — it only reflects what is already chosen.
   async function initLocale() {
-    const resolved = resolveInitialLocale()
+    let osLocale: string | undefined
+    try {
+      osLocale = await getPlatform().getOsLocale()
+    } catch {
+      osLocale = undefined
+    }
+    const resolved = resolveInitialLocale(osLocale)
     try {
       await loadLocaleMessages(resolved)
       locale.value = resolved

@@ -9,6 +9,7 @@ import { useSettingsSection } from '@/composables/setup/useSettingsSection'
 import { SETTINGS_SECTIONS, type SettingsSectionId } from '@/composables/setup/settingsSections'
 import { useRpcStore } from '@/stores/rpc'
 import { useToasts } from '@/composables/useToasts'
+import { saveFailedMessage } from '@/lib/rpcErrors'
 import { copyTextWithFallback } from '@/utils/browser'
 import { TEXT_TIERS, routerTierLabel } from '@/utils/chat/routerTiers'
 
@@ -934,7 +935,7 @@ async function saveProvider() {
     }
     pushToast(restart ? 'Provider saved. Restart required.' : 'Provider saved.')
   } catch (err) {
-    pushToast('Save failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
+    pushToast(saveFailedMessage(err), { tone: 'danger' })
   }
 }
 
@@ -944,7 +945,7 @@ async function saveBehavior() {
     pushToast(restart ? 'Behavior saved. Restart required.' : 'Behavior saved.')
     await loadData()
   } catch (err) {
-    pushToast('Save failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
+    pushToast(saveFailedMessage(err), { tone: 'danger' })
   }
 }
 
@@ -961,7 +962,7 @@ async function saveRouter() {
     pushToast(restart ? 'Router saved. Restart required.' : 'Router saved.')
     await loadData()
   } catch (err) {
-    pushToast('Save failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
+    pushToast(saveFailedMessage(err), { tone: 'danger' })
   }
 }
 
@@ -973,7 +974,7 @@ async function saveChannel() {
     pushToast('Channel saved. Restart required.')
     await loadData()
   } catch (err) {
-    pushToast('Save failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
+    pushToast(saveFailedMessage(err), { tone: 'danger' })
   }
 }
 
@@ -984,7 +985,7 @@ async function saveSearch() {
     pushToast('Search saved.')
     await loadData()
   } catch (err) {
-    pushToast('Save failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
+    pushToast(saveFailedMessage(err), { tone: 'danger' })
   }
 }
 
@@ -1006,7 +1007,7 @@ async function saveMemory() {
     }
     await loadData()
   } catch (err) {
-    pushToast('Save failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
+    pushToast(saveFailedMessage(err), { tone: 'danger' })
   }
 }
 
@@ -1020,7 +1021,7 @@ async function saveImage() {
     }
     await loadData()
   } catch (err) {
-    pushToast('Save failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
+    pushToast(saveFailedMessage(err), { tone: 'danger' })
   }
 }
 
@@ -1037,7 +1038,7 @@ async function saveAudio() {
     }
     await loadData()
   } catch (err) {
-    pushToast('Save failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
+    pushToast(saveFailedMessage(err), { tone: 'danger' })
   }
 }
 

@@ -78,6 +78,18 @@ describe('resolveInitialLocale (first match wins)', () => {
     vi.stubGlobal('navigator', { languages: ['fr-FR'], language: 'fr-FR' })
     expect(resolveInitialLocale()).toBe('en')
   })
+
+  it('honors the desktop OS locale (arg) ahead of navigator', () => {
+    vi.stubGlobal('navigator', { languages: ['en-US'], language: 'en-US' })
+    expect(resolveInitialLocale('zh-CN')).toBe('zh-Hans')
+    // an unsupported OS locale falls through to navigator → en
+    expect(resolveInitialLocale('fr-FR')).toBe('en')
+  })
+
+  it('saved preference still beats the OS locale', () => {
+    localStorage.setItem('opensquilla-locale', 'en')
+    expect(resolveInitialLocale('zh-CN')).toBe('en')
+  })
 })
 
 describe('appStore locale state', () => {

@@ -68,20 +68,24 @@ export async function loadLocaleMessages(code: LocaleCode): Promise<void> {
 /**
  * Resolve the initial locale, first match wins:
  *   1. saved preference (localStorage)
- *   2. server/desktop-injected #opensquilla-data data-locale
- *   3. <html lang> (set by the gateway template / pre-paint guard)
- *   4. navigator.languages
- *   5. DEFAULT_LOCALE
- * The desktop OS-locale bridge (Platform.getOsLocale) is wired in a later phase
- * and slots in after step 1.
+ *   2. host OS locale (Platform.getOsLocale, desktop) — passed in by the store
+ *   3. server/desktop-injected #opensquilla-data data-locale
+ *   4. <html lang> (set by the gateway template / pre-paint guard)
+ *   5. navigator.languages
+ *   6. DEFAULT_LOCALE
+ * The OS locale precedes data-locale because the desktop gateway injects a
+ * default-`en` data-locale; the actual OS preference must win over it.
  */
-export function resolveInitialLocale(): LocaleCode {
+export function resolveInitialLocale(osLocale?: string | null): LocaleCode {
   try {
     const saved = localStorage.getItem('opensquilla-locale')
     if (isSupportedLocale(saved)) return saved
   } catch {
     // localStorage unavailable (private mode) — fall through
   }
+
+  const os = normalizeLocale(osLocale)
+  if (os) return os
 
   try {
     const data = document.getElementById('opensquilla-data')?.dataset.locale

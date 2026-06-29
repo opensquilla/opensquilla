@@ -11,6 +11,7 @@ export function createDesktopPlatform(): Platform {
   return {
     id: 'desktop',
     capabilities: desktopCapabilities,
+    getOsLocale: () => requireDesktopApi().getOsLocale(),
     gateway: {
       getStatus: () => requireDesktopApi().getGatewayStatus(),
       revealLog: () => requireDesktopApi().revealGatewayLog(),

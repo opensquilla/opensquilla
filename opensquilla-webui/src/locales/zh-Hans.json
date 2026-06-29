@@ -37,5 +37,15 @@
     "defaultMessage": "发生意外错误。",
     "reload": "重新加载页面",
     "dismiss": "关闭"
+  },
+  "errors": {
+    "saveFailed": "保存失败",
+    "onboarding": {
+      "provider": "无法保存服务商 — 请检查模型与凭据",
+      "router": "无法保存路由 — 请检查模式与分级",
+      "search": "无法保存搜索服务商 — 请检查设置",
+      "channel": "无法保存频道 — 请检查字段",
+      "channelNotFound": "该频道已不存在"
+    }
   }
 }

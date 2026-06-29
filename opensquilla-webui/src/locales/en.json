@@ -37,5 +37,15 @@
     "defaultMessage": "An unexpected error occurred.",
     "reload": "Reload page",
     "dismiss": "Dismiss"
+  },
+  "errors": {
+    "saveFailed": "Save failed",
+    "onboarding": {
+      "provider": "Couldn't save the provider — check the model and credentials",
+      "router": "Couldn't save the router — check the mode and tiers",
+      "search": "Couldn't save the search provider — check the settings",
+      "channel": "Couldn't save the channel — check the fields",
+      "channelNotFound": "That channel no longer exists"
+    }
   }
 }

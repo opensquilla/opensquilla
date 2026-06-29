@@ -109,4 +109,10 @@ export interface Platform {
   settings: PlatformSettingsApi
   onboarding: PlatformOnboardingApi
   files: PlatformFilesApi
+  /**
+   * The host OS locale (BCP-47), used only to seed the initial UI language on
+   * first run. Desktop reads it from Electron's app.getLocale(); web returns
+   * undefined so the renderer falls back to navigator.language.
+   */
+  getOsLocale: () => Promise<string | undefined>
 }

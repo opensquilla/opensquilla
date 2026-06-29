@@ -156,6 +156,13 @@ METHOD_SCOPES: dict[str, str] = {
     "sessions.contextCompact": WRITE_SCOPE,
     "sessions.compact": WRITE_SCOPE,
     "sessions.truncate": WRITE_SCOPE,
+    # Deleting a session is a routine, per-user write op like reset/truncate above,
+    # so it is write-scoped rather than admin-gated. Admin-gating it broke deletion
+    # for every no-auth operator on a non-loopback bind — notably the default Docker
+    # 0.0.0.0 listen, where even a 127.0.0.1 peer is not the local owner and so gets
+    # REMOTE_OPERATOR_SCOPES (no admin) — surfacing as "Failed to delete session"
+    # (issues #357, #307).
+    "sessions.delete": WRITE_SCOPE,
     # OpenSquilla-only; explicit override of `config.` admin prefix.
     "config.patch.safe": WRITE_SCOPE,
     # OpenSquilla-only; manual ``/meta`` command launch stamp.
@@ -221,7 +228,6 @@ METHOD_SCOPES: dict[str, str] = {
     "cron.remove": ADMIN_SCOPE,
     "cron.run": ADMIN_SCOPE,
     "sessions.patch": ADMIN_SCOPE,
-    "sessions.delete": ADMIN_SCOPE,
     "memory.index": ADMIN_SCOPE,
     "memory.raw_fallbacks.list": ADMIN_SCOPE,
     "memory.raw_fallbacks.show": ADMIN_SCOPE,

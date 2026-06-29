@@ -2125,7 +2125,7 @@ def _reset_response(
     }
 
 
-@_d.method("sessions.delete", scope="operator.admin")
+@_d.method("sessions.delete", scope="operator.write")
 async def _handle_sessions_delete(params: dict | None, ctx: RpcContext) -> dict:
     """Delete one or more sessions. Accepts {key} for single or {keys} for bulk."""
     if ctx.session_manager is None:

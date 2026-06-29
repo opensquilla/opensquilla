@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { ref } from 'vue'
 import { useChatStream } from './useChatStream'
+import type { ChatMessage } from '@/types/chat'
 
 // Focused coverage for the streaming render coalescer: stream deltas are
 // batched onto the frame clock (requestAnimationFrame) and the live reveal
@@ -8,8 +9,9 @@ import { useChatStream } from './useChatStream'
 // stubbed and driven manually; fake timers cover the Date.now() flush throttle.
 function makeStream(renderMarkdown = vi.fn((t: string, _o?: { highlight?: boolean }) => `<p>${t}</p>`)) {
   const scrollToBottom = vi.fn()
+  const messages = ref<ChatMessage[]>([])
   const api = useChatStream({
-    messages: ref([]) as never,
+    messages,
     lastHeaderRole: ref(''),
     aborted: ref(false),
     autoScroll: ref(true),
@@ -20,7 +22,7 @@ function makeStream(renderMarkdown = vi.fn((t: string, _o?: { highlight?: boolea
     stripProtocolTextLeak: (t: string) => t,
     scrollToBottom,
   })
-  return { api, scrollToBottom, renderMarkdown }
+  return { api, messages, scrollToBottom, renderMarkdown }
 }
 
 describe('useChatStream render coalescing', () => {
@@ -92,5 +94,58 @@ describe('useChatStream render coalescing', () => {
     rafCbs[0](0) // firing the cancelled frame must not render
 
     expect(renderMarkdown).not.toHaveBeenCalled()
+  })
+
+  it('renders cumulative post-tool text snapshots as only the new suffix', () => {
+    const { api, messages } = makeStream()
+    const prefix = 'prefix'
+    const suffix = 'suffix'
+
+    api.appendDelta(prefix)
+    api.appendToolCall({ tool_use_id: 'tool-1', tool_name: 'web_search' })
+    api.appendToolResult({ tool_use_id: 'tool-1', tool_name: 'web_search', result: 'ok' })
+    api.appendDelta(prefix + suffix)
+
+    expect(api.foldedTurn.value.rawText).toBe(prefix + suffix)
+
+    api.endStreaming()
+
+    expect(messages.value[0]?.text).toBe(prefix + suffix)
+    expect(messages.value[0]?.timeline).toEqual([
+      { type: 'text', raw: prefix },
+      { type: 'tool-group', groupId: 'stream:tool-group:web.search:0', operationKey: 'web.search' },
+      { type: 'text', raw: suffix },
+    ])
+    api.cleanup()
+  })
+
+  it('keeps additive post-tool text deltas unchanged', () => {
+    const { api, messages } = makeStream()
+
+    api.appendDelta('prefix')
+    api.appendToolCall({ tool_use_id: 'tool-1', tool_name: 'web_search' })
+    api.appendToolResult({ tool_use_id: 'tool-1', tool_name: 'web_search', result: 'ok' })
+    api.appendDelta('suffix')
+
+    expect(api.foldedTurn.value.rawText).toBe('prefixsuffix')
+
+    api.endStreaming()
+
+    expect(messages.value[0]?.text).toBe('prefixsuffix')
+    api.cleanup()
+  })
+
+  it('keeps cumulative-looking text before a tool boundary unchanged', () => {
+    const { api, messages } = makeStream()
+
+    api.appendDelta('prefix')
+    api.appendDelta('prefixsuffix')
+
+    expect(api.foldedTurn.value.rawText).toBe('prefixprefixsuffix')
+
+    api.endStreaming()
+
+    expect(messages.value[0]?.text).toBe('prefixprefixsuffix')
+    api.cleanup()
   })
 })

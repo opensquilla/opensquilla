@@ -115,7 +115,11 @@ def test_package_verifier_hard_fails_stale_runtime_and_boot_contract() -> None:
     verifier = _read("desktop/electron/scripts/verify-package.mjs")
     package_json = json.loads(_read("desktop/electron/package.json"))
 
-    assert package_json["scripts"]["verify:package"] == "node scripts/verify-package.mjs"
+    assert package_json["scripts"]["verify:icons"] == "node scripts/verify-icon-config.mjs"
+    assert (
+        package_json["scripts"]["verify:package"]
+        == "npm run verify:icons && node scripts/verify-package.mjs"
+    )
     for expected in [
         "runtime is empty",
         "_AsyncConnection.create_function",
@@ -126,7 +130,6 @@ def test_package_verifier_hard_fails_stale_runtime_and_boot_contract() -> None:
         "process.exit(1)",
     ]:
         assert expected in verifier
-
 
 def test_desktop_gateway_build_and_verifier_cover_runtime_capabilities() -> None:
     build_gateway = _read("desktop/electron/scripts/build-gateway.mjs")
@@ -154,8 +157,9 @@ def test_desktop_gateway_build_and_verifier_cover_runtime_capabilities() -> None
     assert "timeout: 120000" in verifier
 
 
-def test_desktop_native_artifact_open_blocks_active_documents() -> None:
+def test_desktop_native_artifact_open_allows_active_documents_with_file_extensions() -> None:
     main_ts = _read("desktop/electron/src/main.ts")
+    artifact_list_vue = _read("opensquilla-webui/src/components/chat/ChatArtifactList.vue")
     mime_extensions = _section(main_ts, "const MIME_EXTENSIONS", "}\n\n")
     native_open = _section(
         main_ts,
@@ -163,7 +167,8 @@ def test_desktop_native_artifact_open_blocks_active_documents() -> None:
         "function createApplicationMenu",
     )
 
-    assert "'text/html'" not in mime_extensions
-    assert "'application/xhtml+xml'" not in mime_extensions
-    assert "function isActiveDocumentArtifactRequest" in main_ts
-    assert "isActiveDocumentArtifactRequest(name, payload?.mime)" in native_open
+    assert "'text/html': '.html'" in mime_extensions
+    assert "'application/xhtml+xml': '.xhtml'" in mime_extensions
+    assert "function isActiveDocumentArtifactRequest" not in main_ts
+    assert "shell.openPath(filePath)" in native_open
+    assert "isActiveDocumentArtifact(artifact, fetched.blob)" not in artifact_list_vue

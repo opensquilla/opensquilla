@@ -1,10 +1,14 @@
 import { THEME, STATUS_PULSE_FRAMES } from "./theme.mjs";
-import { cellWidth, clipToCells } from "./primitives.mjs";
+import { cellWidth, clipToCells, textWidth } from "./primitives.mjs";
 
 const COMPLETION_MENU_LEFT = 1;
 const COMPLETION_MENU_RIGHT = 34;
 const COMPLETION_MENU_CHROME_CELLS = 4; // left/right border plus left/right padding
 const MIN_COMPLETION_ROW_CELLS = 16;
+const COMPOSER_LEFT = 1;
+const COMPOSER_RIGHT = 34;
+const COMPOSER_CONTENT_LEFT = COMPOSER_LEFT + 2; // border plus left padding
+const COMPOSER_CONTENT_TOP_OFFSET = 1; // top border
 
 // Last path segment of a model id ("vendor/big-model" -> "big-model").
 export function shortModel(m) {
@@ -479,8 +483,8 @@ export function createComposer(deps) {
     const composerNode = new BoxRenderable(renderer, {
       id: "composer-box",
       position: "absolute",
-      left: 1,
-      right: 34,
+      left: COMPOSER_LEFT,
+      right: COMPOSER_RIGHT,
       bottom: 0,
       height: footerHeight,
       borderStyle: "rounded",
@@ -522,6 +526,7 @@ export function createComposer(deps) {
     routerNode.add(new TextRenderable(renderer, { id: "router-context", content: fixedRouterRow("ctx", routerState.context), fg: THEME.routerWarning }));
     inputBox.add(routerNode);
     renderCompletionMenu();
+    syncTerminalCursorToCaret();
     renderer.requestRender?.();
   }
 
@@ -578,6 +583,40 @@ export function createComposer(deps) {
       }
     }
     return { line, col, chars, pos };
+  }
+
+  function caretVisualLineCol() {
+    const chars = Array.from(inputText);
+    const pos = Math.max(0, Math.min(cursorPos, chars.length));
+    let line = 0;
+    let lineText = "";
+    for (let i = 0; i < pos; i += 1) {
+      if (chars[i] === "\n") {
+        line += 1;
+        lineText = "";
+      } else {
+        lineText += chars[i];
+      }
+    }
+    return { line, col: textWidth(lineText) };
+  }
+
+  function syncTerminalCursorToCaret() {
+    const setCursorPosition = renderer?.setCursorPosition;
+    if (typeof setCursorPosition !== "function") return;
+    const terminalWidth = Number(renderer?.terminalWidth ?? renderer?.width) || 80;
+    const terminalHeight = Number(renderer?.terminalHeight ?? renderer?.height) || 24;
+    const footerTop = Math.max(0, terminalHeight - footerHeight);
+    const { line, col } = caretVisualLineCol();
+    const maxX = Math.max(COMPOSER_CONTENT_LEFT, terminalWidth - COMPOSER_RIGHT - 2);
+    const maxY = Math.max(footerTop, footerTop + footerHeight - 2);
+    const x = clamp(COMPOSER_CONTENT_LEFT + col, COMPOSER_CONTENT_LEFT, maxX);
+    const y = clamp(
+      footerTop + COMPOSER_CONTENT_TOP_OFFSET + line,
+      footerTop + COMPOSER_CONTENT_TOP_OFFSET,
+      maxY,
+    );
+    setCursorPosition.call(renderer, x, y, false);
   }
 
   // Convert a (line, col) back to a grapheme index into the char array.

@@ -520,7 +520,9 @@ onUnmounted(() => {
   line-height: 1.5;
   margin: 0;
   overflow: hidden;
+  overflow-wrap: anywhere;
   padding: var(--sp-2) var(--sp-4) var(--sp-3);
+  white-space: pre-wrap;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }

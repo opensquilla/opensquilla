@@ -5,9 +5,15 @@ import {
   canonicalSessionKey,
   webchatSessionKey,
 } from '@/utils/chat/sessionKeys'
+import { recordSessionNavigationDiag } from '@/utils/chat/sessionNavigationDiag'
 
 const ACTIVE_SESSION_STORAGE_KEY = 'opensquilla_active_session'
 const DRAFT_CHAT_PATH = '/chat/new'
+
+export interface PersistSessionOptions {
+  updateRoute?: boolean
+  source?: string
+}
 
 function routeStringParam(value: unknown): string {
   return typeof value === 'string' ? value : ''
@@ -25,8 +31,18 @@ export function useChatSessionRoute(sessionKey: Ref<string>) {
   const route = useRoute()
   const router = useRouter()
 
-  function persistSession(key: string, options: { updateRoute?: boolean } = {}) {
-    sessionKey.value = canonicalSessionKey(key)
+  function persistSession(key: string, options: PersistSessionOptions = {}) {
+    const previous = sessionKey.value
+    const next = canonicalSessionKey(key)
+    const routeSession = readSessionFromUrl()
+    recordSessionNavigationDiag(options.source || 'persistSession', {
+      from: previous,
+      to: next,
+      routeSession,
+      reason: options.updateRoute === false ? 'state_only' : 'route_replace',
+    })
+
+    sessionKey.value = next
     writeStoredSession(sessionKey.value)
     if (options.updateRoute === false) return
     if (readSessionFromUrl() === sessionKey.value) return

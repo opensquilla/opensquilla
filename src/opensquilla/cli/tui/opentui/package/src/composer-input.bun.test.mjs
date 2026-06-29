@@ -129,3 +129,25 @@ test("line editing acts on the current line in a multi-line draft", async () => 
   ];
   expect(await submittedAfter(keys)).toBe("ab\nXcd");
 });
+
+const alt = (name) => ({ name, meta: true });
+
+test("Ctrl+Left / Ctrl+Right move the caret by word", async () => {
+  const X = { name: "X", sequence: "X" };
+  // From the end, Ctrl+Left lands at the start of "bar".
+  expect(await submittedAfter([...typed("foo bar"), ctrl("left"), X])).toBe("foo Xbar");
+  // Twice lands at the start of "foo".
+  expect(await submittedAfter([...typed("foo bar"), ctrl("left"), ctrl("left"), X])).toBe("Xfoo bar");
+  // From the start (Ctrl+A), Ctrl+Right lands at the end of "foo".
+  expect(await submittedAfter([...typed("foo bar"), ctrl("a"), ctrl("right"), X])).toBe("fooX bar");
+});
+
+test("Alt+B / Alt+F also move the caret by word", async () => {
+  const X = { name: "X", sequence: "X" };
+  expect(await submittedAfter([...typed("foo bar"), alt("b"), X])).toBe("foo Xbar");
+  expect(await submittedAfter([...typed("foo bar"), ctrl("a"), alt("f"), X])).toBe("fooX bar");
+});
+
+test("plain Left still moves a single character (word movement needs a modifier)", async () => {
+  expect(await submittedAfter([...typed("abc"), { name: "left" }, { name: "X", sequence: "X" }])).toBe("abXc");
+});

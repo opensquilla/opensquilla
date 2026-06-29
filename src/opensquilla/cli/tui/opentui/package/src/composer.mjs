@@ -197,12 +197,22 @@ export function lineEndIndex(text, pos) {
 }
 
 // Start of the whitespace-delimited word before the caret (skip trailing
-// whitespace, then the word). Powers Ctrl+W / Alt+Backspace.
+// whitespace, then the word). Powers Ctrl+W / Alt+Backspace and Ctrl+Left.
 export function wordStartIndex(text, pos) {
   const chars = Array.from(String(text ?? ""));
   let i = clamp(Number(pos) || 0, 0, chars.length);
   while (i > 0 && /\s/u.test(chars[i - 1])) i -= 1;
   while (i > 0 && !/\s/u.test(chars[i - 1])) i -= 1;
+  return i;
+}
+
+// End of the whitespace-delimited word after the caret (skip leading whitespace,
+// then the word). Powers Ctrl+Right / Alt+F.
+export function wordEndIndex(text, pos) {
+  const chars = Array.from(String(text ?? ""));
+  let i = clamp(Number(pos) || 0, 0, chars.length);
+  while (i < chars.length && /\s/u.test(chars[i])) i += 1;
+  while (i < chars.length && !/\s/u.test(chars[i])) i += 1;
   return i;
 }
 
@@ -924,6 +934,23 @@ export function createComposer(deps) {
         cursorPos = edited.cursor;
         historyIndex = inputHistory.length;
         updateMenuFromInput();
+        wakeCursor();
+        rerenderInputRegion();
+        return;
+      }
+      // Word-wise cursor movement (must precede the plain left/right branches,
+      // which ignore modifiers). Ctrl+Left/Alt+B back a word; Ctrl+Right/Alt+F
+      // forward a word.
+      const wordBack =
+        (key.ctrl && key.name === "left") ||
+        ((key.meta || key.alt || key.option) && key.name === "b");
+      const wordForward =
+        (key.ctrl && key.name === "right") ||
+        ((key.meta || key.alt || key.option) && key.name === "f");
+      if (wordBack || wordForward) {
+        cursorPos = wordBack
+          ? wordStartIndex(inputText, cursorPos)
+          : wordEndIndex(inputText, cursorPos);
         wakeCursor();
         rerenderInputRegion();
         return;

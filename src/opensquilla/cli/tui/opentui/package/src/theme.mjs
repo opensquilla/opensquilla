@@ -114,10 +114,27 @@ export function resolveThemeName(name) {
 export const THEME = {};
 let activeTheme = DEFAULT_THEME;
 
+// Listeners fired AFTER THEME is repopulated, so host-owned derived state that is
+// NOT a THEME token (e.g. the markdown SyntaxStyle) can refresh on every live
+// /theme switch. A listener must never throw — theming must not be breakable.
+const _themeListeners = new Set();
+
+export function onThemeApplied(listener) {
+  _themeListeners.add(listener);
+  return () => _themeListeners.delete(listener);
+}
+
 export function applyTheme(name) {
   const resolved = resolveThemeName(name);
   Object.assign(THEME, toTokens(PALETTES[resolved]));
   activeTheme = resolved;
+  for (const listener of _themeListeners) {
+    try {
+      listener(THEME, resolved);
+    } catch {
+      // A faulty listener must not break theme application.
+    }
+  }
   return resolved;
 }
 

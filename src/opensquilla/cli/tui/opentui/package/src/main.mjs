@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import process from "node:process";
-import { THEME, applyTheme } from "./theme.mjs";
-import { copySelectionToClipboard, isPinnedToBottom, stripTerminalControls } from "./primitives.mjs";
+import { THEME, applyTheme, onThemeApplied } from "./theme.mjs";
+import { registerThemeStyles } from "./syntaxTheme.mjs";
+import { parseNotice, isStructuredLine, NOTICE_LEVELS } from "./ansiNotice.mjs";
+import { TOOL_INDENT, copySelectionToClipboard, isPinnedToBottom, stripTerminalControls } from "./primitives.mjs";
 import { createComposer } from "./composer.mjs";
 import { createTurnView } from "./turnView.mjs";
 import { createIpc, createDispatcher } from "./ipc.mjs";
@@ -42,7 +44,16 @@ async function main() {
     // invisible on light terminals) and the terminal diff always clears cells.
     backgroundColor: THEME.appBg,
   });
+  // Color the markdown answer body from the active theme. A bare SyntaxStyle has
+  // no "default" style, so unstyled paragraph text would fall back to an
+  // invisible light foreground on light themes. Register the theme's tokens now
+  // and refresh them in place on every live /theme switch.
   const syntaxStyle = SyntaxStyle.create();
+  registerThemeStyles(syntaxStyle, THEME);
+  onThemeApplied((t) => {
+    registerThemeStyles(syntaxStyle, t);
+    renderer.requestRender?.();
+  });
 
   const conversationBox = new ScrollBoxRenderable(renderer, {
     id: "conversation",
@@ -193,6 +204,24 @@ async function main() {
         content: stripTerminalControls(String(m.text ?? "")),
         fg: THEME.muted,
       });
+      withBottomFollow(() => conversationBox.add(node));
+      renderer.requestRender?.();
+    },
+    // Command notices captured from the Python side's stdout (slash-command and
+    // runtime messages). They arrive one Rich-rendered line at a time; render
+    // them INSIDE the conversation in the active theme's semantic color (never on
+    // the terminal, so they can no longer bleed over or clip against the host).
+    notice: (m) => {
+      const { text, level } = parseNotice(String(m.text ?? ""));
+      if (!text.trim()) return; // drop blank spacer lines
+      const spec = NOTICE_LEVELS[level] ?? NOTICE_LEVELS.detail;
+      const fg = THEME[spec.token] ?? THEME.detailText;
+      // Plain status lines get a severity glyph; table/panel borders render as-is
+      // so their box-drawing stays aligned.
+      const content = isStructuredLine(text)
+        ? `${TOOL_INDENT}${text}`
+        : `${TOOL_INDENT}${spec.glyph} ${text}`;
+      const node = new TextRenderable(renderer, { id: `notice-${scrollbackSeq++}`, content, fg });
       withBottomFollow(() => conversationBox.add(node));
       renderer.requestRender?.();
     },

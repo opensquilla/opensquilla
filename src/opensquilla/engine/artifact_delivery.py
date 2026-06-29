@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import mimetypes
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -12,9 +11,12 @@ from typing import Any
 from opensquilla.artifacts import (
     DEFAULT_ARTIFACT_DISK_BUDGET_BYTES,
     DEFAULT_ARTIFACT_MAX_BYTES,
+    INSTALLER_ARTIFACT_SUFFIXES,
     ArtifactBudgetError,
     ArtifactStore,
+    artifact_mime_for_name,
     artifact_payload,
+    artifact_publish_max_bytes_for_name,
 )
 from opensquilla.tools.types import ToolContext
 
@@ -30,6 +32,7 @@ _DELIVERABLE_SUFFIXES = frozenset(
         ".pptx",
         ".tsv",
         ".xlsx",
+        *INSTALLER_ARTIFACT_SUFFIXES,
     }
 )
 _EXCLUDED_TOP_LEVEL_DIRS = frozenset({".claude", ".codex", ".omx", "memory"})
@@ -116,7 +119,7 @@ def auto_publish_omitted_workspace_artifacts(
             artifact_key = (target_sha256, target.name)
             if artifact_key in known_artifact_keys:
                 continue
-            artifact_mime = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+            artifact_mime = artifact_mime_for_name(target.name)
             existing = store.find_existing_ref(
                 session_id=ctx.artifact_session_id,
                 session_key=ctx.session_key,
@@ -132,9 +135,12 @@ def auto_publish_omitted_workspace_artifacts(
                     name=target.name,
                     mime=artifact_mime,
                     source="auto_publish_omitted",
-                    max_bytes=ctx.artifact_max_bytes
-                    if ctx.artifact_max_bytes is not None
-                    else DEFAULT_ARTIFACT_MAX_BYTES,
+                    max_bytes=artifact_publish_max_bytes_for_name(
+                        target.name,
+                        ctx.artifact_max_bytes
+                        if ctx.artifact_max_bytes is not None
+                        else DEFAULT_ARTIFACT_MAX_BYTES,
+                    ),
                     disk_budget_bytes=ctx.artifact_disk_budget_bytes
                     if ctx.artifact_disk_budget_bytes is not None
                     else DEFAULT_ARTIFACT_DISK_BUDGET_BYTES,

@@ -4,6 +4,7 @@ import json
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -348,6 +349,87 @@ def test_run_shell_resolves_python_from_repo_venv_in_foreign_cwd(tmp_path):
     assert rc == 0 and "VENV_PY_OK" in out, (rc, out)
     rc, out = verification._run_shell("python3", cwd=foreign, timeout=30, repo=repo)
     assert rc == 0 and "VENV_PY_OK" in out, (rc, out)  # python3 too (uv-venv safety)
+
+
+def test_repo_venv_python_candidates_include_windows_scripts(tmp_path):
+    from opensquilla.contrib.codetask import verification
+
+    repo = tmp_path / "repo"
+    scripts = repo / ".venv" / "Scripts"
+    scripts.mkdir(parents=True)
+    exe = scripts / "python.exe"
+    exe.write_text("fake", encoding="utf-8")
+
+    got = list(verification._repo_venv_python_candidates(repo))
+
+    assert exe in got
+
+
+def test_repo_venv_python_candidates_keep_posix_first(tmp_path):
+    from opensquilla.contrib.codetask import verification
+
+    repo = tmp_path / "repo"
+
+    assert verification._repo_venv_python_candidates(repo) == (
+        repo / ".venv" / "bin" / "python",
+        repo / ".venv" / "Scripts" / "python.exe",
+        repo / ".venv" / "Scripts" / "python",
+    )
+
+
+def test_bash_path_entry_converts_windows_drive_path_to_msys(monkeypatch):
+    from opensquilla.contrib.codetask import verification
+
+    monkeypatch.setattr(verification.os, "name", "nt")
+
+    assert (
+        verification._bash_path_entry(Path(r"C:\repo\.venv\Scripts\python.exe"))
+        == "/c/repo/.venv/Scripts/python.exe"
+    )
+    assert (
+        verification._bash_path_entry(Path("D:/Work/repo/.venv/Scripts"))
+        == "/d/Work/repo/.venv/Scripts"
+    )
+
+
+def test_bash_path_entry_preserves_posix_path(monkeypatch):
+    from opensquilla.contrib.codetask import verification
+
+    monkeypatch.setattr(verification.os, "name", "posix")
+    path = Path("/tmp/repo/.venv/bin/python")
+
+    assert verification._bash_path_entry(path) == str(path)
+
+
+def test_write_python_shim_falls_back_to_wrapper_when_symlink_fails(tmp_path, monkeypatch):
+    from opensquilla.contrib.codetask import verification
+
+    chmod_calls = []
+
+    def fail_symlink(self, target):
+        raise OSError("symlinks unavailable")
+
+    def record_chmod(self, mode):
+        chmod_calls.append((self.name, mode))
+
+    monkeypatch.setattr(verification.Path, "symlink_to", fail_symlink)
+    monkeypatch.setattr(verification.Path, "chmod", record_chmod)
+    monkeypatch.setattr(verification.os, "name", "nt")
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir()
+
+    verification._write_python_shim(
+        shim_dir,
+        "python",
+        Path(r"C:\repo\.venv\Scripts\python.exe"),
+    )
+
+    shim = shim_dir / "python"
+    assert shim.read_text(encoding="utf-8") == (
+        "#!/usr/bin/env bash\n"
+        'exec /c/repo/.venv/Scripts/python.exe "$@"\n'
+    )
+    assert chmod_calls == [("python", 0o755)]
 
 
 def test_run_shell_sets_uv_project_for_uv_repo(tmp_path):

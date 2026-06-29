@@ -332,6 +332,28 @@ In this mode, prefix every `opensquilla` command in
 development checkout through a user-local `opensquilla` command — that
 command runs in a different Python environment.
 
+### Uninstall
+
+Remove OpenSquilla with `opensquilla uninstall`. It keeps your data by default
+and removes only the program:
+
+```sh
+opensquilla uninstall --dry-run   # preview what would be removed and kept
+opensquilla uninstall             # remove the program, keep your data
+```
+
+To delete data too, opt in explicitly:
+
+```sh
+opensquilla uninstall --purge-state    # sessions, logs, cache, scheduler, memory
+opensquilla uninstall --purge-config   # config.toml and secrets (.env)
+opensquilla uninstall --purge-all      # everything (asks you to type a confirmation)
+```
+
+The running gateway is drained and stopped first, deletion stays inside the
+OpenSquilla home, and Docker/desktop installs get guided removal steps instead.
+See [`docs/cli.md`](docs/cli.md#uninstall) for the full reference.
+
 ---
 
 ## Installation Privacy

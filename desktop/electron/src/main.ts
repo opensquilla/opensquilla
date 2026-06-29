@@ -1,11 +1,12 @@
-import { app, BrowserWindow, Menu, ipcMain, nativeTheme, safeStorage, shell } from 'electron'
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { app, BrowserWindow, dialog, Menu, ipcMain, nativeTheme, safeStorage, shell } from 'electron'
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { createWriteStream, mkdirSync } from 'node:fs'
+import { createWriteStream, existsSync, mkdirSync } from 'node:fs'
 import { access, constants, readFile, readdir, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import net from 'node:net'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { secretStorageBackendForPolicy, shouldUseChromiumMockKeychainForPolicy } from './secret-storage-policy.js'
 
 interface GatewayState {
   url: string
@@ -131,6 +132,8 @@ let isQuitting = false
 let gatewayStartPromise: Promise<GatewayState> | null = null
 let resolveOnboarding: ((credential: DesktopConnection) => void) | null = null
 let rejectOnboarding: ((error: Error) => void) | null = null
+let secretStorageBackendCache: SecretEncryption | null = null
+let macCodeSignatureDiagnosticCache: string | null = null
 let bootStatus: BootStatus = {
   phaseId: 'profile',
   label: 'Preparing desktop profile',
@@ -541,23 +544,65 @@ function routerConfigTomlLines(credential: DesktopConnection): string[] {
   ]
 }
 
-function encryptSecret(secret: string): { value: string; encryption: SecretEncryption } {
-  if (safeStorage.isEncryptionAvailable()) {
-    return {
-      value: safeStorage.encryptString(secret).toString('base64'),
-      encryption: 'safeStorage',
-    }
-  }
+function plainSecret(secret: string): { value: string; encryption: SecretEncryption } {
   return {
     value: Buffer.from(secret, 'utf8').toString('base64'),
     encryption: 'plain',
   }
 }
 
+function macCodeSignatureDiagnostic(): string {
+  if (macCodeSignatureDiagnosticCache !== null) return macCodeSignatureDiagnosticCache
+  if (process.platform !== 'darwin' || !app.isPackaged) return ''
+  const result = spawnSync('/usr/bin/codesign', ['-dv', '--verbose=4', process.execPath], { encoding: 'utf8' })
+  macCodeSignatureDiagnosticCache = `${result.stdout || ''}\n${result.stderr || ''}`
+  return macCodeSignatureDiagnosticCache
+}
+
+function configureChromiumKeychainPolicy(): void {
+  if (shouldUseChromiumMockKeychainForPolicy({
+    envMode: process.env.OPENSQUILLA_DESKTOP_SECRET_STORAGE,
+    platform: process.platform,
+    appPackaged: app.isPackaged,
+    codesignDiagnostic: macCodeSignatureDiagnostic(),
+  })) {
+    app.commandLine.appendSwitch('use-mock-keychain')
+  }
+}
+
+function desktopSecretStorageBackend(): SecretEncryption {
+  if (secretStorageBackendCache) return secretStorageBackendCache
+  const selected = secretStorageBackendForPolicy({
+    envMode: process.env.OPENSQUILLA_DESKTOP_SECRET_STORAGE,
+    platform: process.platform,
+    appPackaged: app.isPackaged,
+    codesignDiagnostic: macCodeSignatureDiagnostic(),
+  })
+  secretStorageBackendCache = selected === 'safeStorage' && safeStorage.isEncryptionAvailable() ? 'safeStorage' : 'plain'
+  return secretStorageBackendCache
+}
+
+function encryptSecret(secret: string): { value: string; encryption: SecretEncryption } {
+  if (desktopSecretStorageBackend() === 'safeStorage') {
+    try {
+      return {
+        value: safeStorage.encryptString(secret).toString('base64'),
+        encryption: 'safeStorage',
+      }
+    } catch {
+      return plainSecret(secret)
+    }
+  }
+  return plainSecret(secret)
+}
+
 function decryptSecret(encryptedValue: string | undefined, encryption: SecretEncryption): string {
   if (!encryptedValue) return ''
   const payload = Buffer.from(encryptedValue, 'base64')
   if (encryption === 'safeStorage') {
+    if (desktopSecretStorageBackend() !== 'safeStorage') {
+      throw new Error('Saved desktop credential requires macOS Keychain, but this local build uses plain credential storage.')
+    }
     return safeStorage.decryptString(payload)
   }
   return payload.toString('utf8')
@@ -643,7 +688,7 @@ async function saveDesktopCredential(payload: OnboardingPayload): Promise<Deskto
   const searchApiKeySecret = resolvedSearchApiKey ? encryptSecret(resolvedSearchApiKey) : null
   const encryptedApiKey = apiKeySecret?.value || ''
   const encryptedSearchApiKey = searchApiKeySecret?.value || ''
-  const encryption = apiKeySecret?.encryption || searchApiKeySecret?.encryption || (safeStorage.isEncryptionAvailable() ? 'safeStorage' : 'plain')
+  const encryption = apiKeySecret?.encryption || searchApiKeySecret?.encryption || 'plain'
 
   if (defaults.requiresApiKey && !encryptedApiKey) throw new Error('API key is required.')
   if (!routerModel && routerMode !== 'disabled') throw new Error('Router tiers require a default model.')
@@ -2764,6 +2809,51 @@ function packagedRuntimeRoot(): string {
   return join(packageRoot, 'runtime')
 }
 
+function pathDelimiter(): string {
+  return process.platform === 'win32' ? ';' : ':'
+}
+
+function splitPathValue(value?: string): string[] {
+  return (value || '').split(pathDelimiter()).filter(Boolean)
+}
+
+function desktopNodeBinCandidates(): string[] {
+  const candidates = process.platform === 'win32'
+    ? [
+        join(packagedRuntimeRoot(), 'node'),
+        process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Programs', 'nodejs') : '',
+        process.env.ProgramFiles ? join(process.env.ProgramFiles, 'nodejs') : '',
+        process.env['ProgramFiles(x86)'] ? join(process.env['ProgramFiles(x86)'], 'nodejs') : '',
+      ]
+    : [
+        join(packagedRuntimeRoot(), 'node', 'bin'),
+        join(app.getPath('home'), '.local', 'bin'),
+        join(app.getPath('home'), '.npm-global', 'bin'),
+        '/opt/homebrew/bin',
+        '/usr/local/bin',
+      ]
+  const seen = new Set<string>()
+  return candidates.filter((candidate) => {
+    if (!candidate || seen.has(candidate) || !existsSync(candidate)) return false
+    seen.add(candidate)
+    return true
+  })
+}
+
+function desktopChildPath(nodeBinCandidates = desktopNodeBinCandidates()): string {
+  const currentPath = process.env.PATH || process.env.Path || ''
+  const currentParts = splitPathValue(currentPath)
+  const systemParts = process.platform === 'win32' ? [] : ['/usr/bin', '/bin', '/usr/sbin', '/sbin']
+  const orderedParts = [...nodeBinCandidates, ...currentParts, ...systemParts]
+  const seen = new Set<string>()
+  const merged = orderedParts.filter((part) => {
+    if (!part || seen.has(part)) return false
+    seen.add(part)
+    return true
+  })
+  return merged.join(pathDelimiter())
+}
+
 async function resolveGatewayRuntime(): Promise<RuntimeLaunch> {
   const binaryName = process.platform === 'win32' ? 'opensquilla-gateway.exe' : 'opensquilla-gateway'
   const runtimeRoot = join(packagedRuntimeRoot(), 'gateway')
@@ -2932,21 +3022,28 @@ async function startGateway(): Promise<GatewayState> {
   gatewayState.status = 'starting'
   gatewayState.logPath = logPath
 
+  const nodeBinCandidates = desktopNodeBinCandidates()
+  const childPath = desktopChildPath(nodeBinCandidates)
+  const childEnv = {
+    ...process.env,
+    PATH: childPath,
+    ...(process.platform === 'win32' ? { Path: childPath } : {}),
+    [connection.apiKeyEnv]: apiKey,
+    ...(connection.searchApiKeyEnv && searchApiKey ? { [connection.searchApiKeyEnv]: searchApiKey } : {}),
+    OPENSQUILLA_DESKTOP: '1',
+    OPENSQUILLA_INSTALL_METHOD: 'desktop',
+    OPENSQUILLA_GATEWAY_CONFIG_PATH: desktopConfigPath(),
+    OPENSQUILLA_NODE_BIN_DIR: nodeBinCandidates.join(pathDelimiter()),
+    OPENSQUILLA_STATE_DIR: desktopStateDir(),
+    PYTHONUNBUFFERED: '1',
+  }
+
   const child = spawn(
     runtime.command,
     [...runtime.args, '--port', String(port), '--bind', '127.0.0.1', '--config', desktopConfigPath()],
     {
       cwd: runtime.cwd,
-      env: {
-        ...process.env,
-        [connection.apiKeyEnv]: apiKey,
-        ...(connection.searchApiKeyEnv && searchApiKey ? { [connection.searchApiKeyEnv]: searchApiKey } : {}),
-        OPENSQUILLA_DESKTOP: '1',
-        OPENSQUILLA_INSTALL_METHOD: 'desktop',
-        OPENSQUILLA_GATEWAY_CONFIG_PATH: desktopConfigPath(),
-        OPENSQUILLA_STATE_DIR: desktopStateDir(),
-        PYTHONUNBUFFERED: '1',
-      },
+      env: childEnv,
     }
   )
   gatewayProcess = child
@@ -3084,14 +3181,81 @@ async function openOrResumeDesktopApp(): Promise<void> {
   }
 }
 
+// SIGKILL deadline for the owned gateway child. The Python gateway drains
+// in-flight agent turns and background completions on shutdown (up to two
+// graceful phases plus teardown — see gateway_shutdown_deadline()), so the
+// force-kill must exceed that worst case or the drain is cut off mid-write.
+// Keep in sync with the default OPENSQUILLA_GATEWAY_GRACEFUL_TIMEOUT (30s).
+const GATEWAY_SHUTDOWN_KILL_AFTER_MS = 75_000
+// Short SIGKILL backstop after a hard terminate (TerminateProcess / SIGTERM)
+// when the graceful path was skipped or already overran its deadline.
+const GATEWAY_HARD_KILL_BACKSTOP_MS = 5_000
+
+// Ask the gateway to shut down gracefully over its owner-only HTTP endpoint,
+// which runs the full GatewayServer.close() drain before exiting. The desktop
+// child is loopback (no-auth owner), so no token is needed. Best-effort:
+// returns false if the gateway is unreachable or rejects the request.
+async function requestGatewayShutdown(url: string): Promise<boolean> {
+  if (!url) return false
+  try {
+    const response = await fetch(`${url}/api/system/shutdown`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+      signal: AbortSignal.timeout(2000),
+    })
+    return response.ok
+  } catch {
+    return false
+  }
+}
+
 function stopGateway(): void {
   if (!gatewayProcess || !gatewayState.owned) return
   const child = gatewayProcess
+  const url = gatewayState.url
   gatewayProcess = null
+
+  const hardTerminate = () => {
+    if (child.killed) return
+    child.kill('SIGTERM')
+    setTimeout(() => {
+      if (!child.killed) child.kill('SIGKILL')
+    }, GATEWAY_HARD_KILL_BACKSTOP_MS).unref()
+  }
+
+  // The Windows HTTP graceful path is async (fetch + timers) and only works
+  // while the main process stays alive to drive it. On app quit (isQuitting) the
+  // process is about to exit, so that fire-and-forget work would race teardown
+  // and orphan the child — leaving it holding the listen port + PID lock and
+  // breaking the next launch. So only take the graceful path when NOT quitting;
+  // on quit, fall through to a synchronous TerminateProcess.
+  if (process.platform === 'win32' && !isQuitting) {
+    // Windows has no real SIGTERM — child.kill('SIGTERM') maps to an immediate
+    // TerminateProcess that skips the drain. Trigger the HTTP graceful path,
+    // wait for the child to exit on its own, and only force-terminate if it
+    // overruns the deadline or the gateway never accepted the request.
+    let exited = false
+    child.once('exit', () => {
+      exited = true
+    })
+    void requestGatewayShutdown(url).then((accepted) => {
+      if (!accepted && !exited) hardTerminate()
+    })
+    setTimeout(() => {
+      if (!exited) hardTerminate()
+    }, GATEWAY_SHUTDOWN_KILL_AFTER_MS).unref()
+    return
+  }
+
+  // POSIX: SIGTERM triggers the gateway's graceful drain directly (the detached
+  // child drains and exits on its own after the main process is gone).
+  // Windows-on-quit: SIGTERM maps to a synchronous TerminateProcess, killing the
+  // child before the main process exits — no drain, but no orphan either.
   child.kill('SIGTERM')
   setTimeout(() => {
     if (!child.killed) child.kill('SIGKILL')
-  }, 4000).unref()
+  }, GATEWAY_SHUTDOWN_KILL_AFTER_MS).unref()
 }
 
 ipcMain.handle('desktop:os-locale', () => desktopLocale)
@@ -3108,6 +3272,119 @@ ipcMain.handle('desktop:settings:reset', async () => {
   return { ok: true }
 })
 ipcMain.handle('desktop:artifact:open', async (_event, payload: ArtifactOpenRequest) => openArtifactWithDefaultApp(payload))
+
+// ── Uninstall ──────────────────────────────────────────────────────────────
+// The deletion logic lives in the Python core (`opensquilla uninstall`); the
+// desktop only triggers it via the bundled CLI and then removes the few
+// desktop-owned files that live outside the OpenSquilla home (the encrypted
+// credential and gateway logs under userData/).
+//
+// Path note: the gateway runs with OPENSQUILLA_STATE_DIR=desktopStateDir()
+// (<userData>/opensquilla/state), but the uninstaller's "home" must be
+// desktopHome() (<userData>/opensquilla) so it resolves config.toml + state/
+// correctly. So we run the CLI with OPENSQUILLA_STATE_DIR=desktopHome().
+async function runUninstallCli(
+  extraArgs: string[],
+): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  const runtime = await resolveGatewayRuntime()
+  const prefix = runtime.args.slice(0, -2) // drop the trailing ['gateway','run']
+  const child = spawn(runtime.command, [...prefix, 'uninstall', ...extraArgs], {
+    cwd: runtime.cwd,
+    env: {
+      ...process.env,
+      OPENSQUILLA_DESKTOP: '1',
+      OPENSQUILLA_INSTALL_METHOD: 'desktop',
+      OPENSQUILLA_GATEWAY_CONFIG_PATH: desktopConfigPath(),
+      OPENSQUILLA_STATE_DIR: desktopHome(),
+    },
+  })
+  let stdout = ''
+  let stderr = ''
+  child.stdout.on('data', (chunk) => {
+    stdout += String(chunk)
+  })
+  child.stderr.on('data', (chunk) => {
+    stderr += String(chunk)
+  })
+  const code: number = await new Promise((res) => {
+    child.once('exit', (c) => res(c ?? 1))
+    child.once('error', () => res(1))
+  })
+  return { ok: code === 0, stdout, stderr }
+}
+
+ipcMain.handle('desktop:uninstall:summary', async () => {
+  const { ok, stdout } = await runUninstallCli(['--dry-run', '--json'])
+  try {
+    return { ok, plan: JSON.parse(stdout) }
+  } catch {
+    return { ok: false, plan: null, raw: stdout }
+  }
+})
+
+ipcMain.handle('desktop:uninstall:run', async (_event, payload?: { purgeData?: boolean }) => {
+  const purgeData = Boolean(payload?.purgeData)
+
+  // A total wipe is irreversible: confirm at the main-process trust boundary
+  // (a renderer-forged IPC call alone must not be able to delete all data).
+  if (purgeData) {
+    const { response } = await dialog.showMessageBox({
+      type: 'warning',
+      buttons: ['Cancel', 'Delete everything'],
+      defaultId: 0,
+      cancelId: 0,
+      title: 'Delete all OpenSquilla data?',
+      message: 'This permanently deletes all OpenSquilla data on this machine.',
+      detail: 'Sessions, configuration, and secrets will be removed. This cannot be undone.',
+    })
+    if (response !== 1) return { ok: false, aborted: true, detail: 'cancelled' }
+  }
+
+  // Quiesce the owned gateway before the CLI touches files. Wait for the child to
+  // actually EXIT (child.killed flips true the instant SIGTERM is sent, not when
+  // the drain finishes), bounded by the kill deadline.
+  isQuitting = true
+  if (gatewayProcess && gatewayState.owned) {
+    const child = gatewayProcess
+    stopGateway()
+    await new Promise<void>((res) => {
+      if (child.exitCode !== null || child.signalCode !== null) return res()
+      child.once('exit', () => res())
+      setTimeout(res, GATEWAY_SHUTDOWN_KILL_AFTER_MS).unref()
+    })
+  }
+
+  // Refuse to purge while a gateway still serves this profile (covers an
+  // unmanaged/adopted gateway the desktop did not spawn). The app keeps running,
+  // so clear isQuitting to restore normal gateway-crash reporting.
+  if (purgeData && gatewayState.url && (await healthCheck(gatewayState.url))) {
+    isQuitting = false
+    return {
+      ok: false,
+      aborted: true,
+      detail: 'A gateway is still serving this profile; stop it and retry.',
+    }
+  }
+
+  const args = ['--yes', '--json']
+  if (purgeData) args.push('--purge-all', '--confirm-purge-all', 'delete everything')
+  const result = await runUninstallCli(args)
+
+  // The CLI exited non-zero (e.g. quiesce refused, or a delete failed). The app
+  // is still running, so restore normal crash reporting and surface the reason.
+  if (!result.ok) {
+    isQuitting = false
+    return { ok: false, detail: (result.stderr || result.stdout || '').slice(-2000) }
+  }
+
+  // Remove desktop-owned files outside the OpenSquilla home (only on a full data
+  // purge — these hold the encrypted credential and logs).
+  if (purgeData) {
+    await rm(credentialPath(), { force: true }).catch(() => null)
+    await rm(join(app.getPath('userData'), 'logs'), { recursive: true, force: true }).catch(() => null)
+  }
+  return result
+})
 ipcMain.handle('desktop:boot:state', () => ({
   status: bootStatus,
   error: bootError,
@@ -3183,6 +3460,8 @@ app.on('window-all-closed', () => {
 app.on('activate', () => {
   void openOrResumeDesktopApp()
 })
+
+configureChromiumKeychainPolicy()
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 

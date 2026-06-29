@@ -10,21 +10,25 @@ test_changed=false
 ci_changed=false
 dependency_changed=false
 release_changed=false
+windows_full_required=false
 seen_file=false
 
 mark_runtime_changed() {
   docs_only=false
   runtime_changed=true
+  windows_full_required=true
 }
 
 mark_test_changed() {
   docs_only=false
   test_changed=true
+  windows_full_required=true
 }
 
 mark_ci_changed() {
   docs_only=false
   ci_changed=true
+  windows_full_required=true
 }
 
 mark_dependency_changed() {
@@ -36,6 +40,11 @@ mark_dependency_changed() {
 mark_release_changed() {
   docs_only=false
   release_changed=true
+  windows_full_required=true
+}
+
+mark_frontend_changed() {
+  docs_only=false
 }
 
 while IFS= read -r path || [[ -n "${path}" ]]; do
@@ -51,6 +60,7 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
       ci_changed=true
       dependency_changed=true
       release_changed=true
+      windows_full_required=true
       ;;
     pyproject.toml | uv.lock)
       mark_dependency_changed
@@ -79,6 +89,9 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
     install.sh | install.ps1 | start.sh | start.ps1 | README.release.md | RELEASES.md)
       mark_release_changed
       ;;
+    opensquilla-webui/*)
+      mark_frontend_changed
+      ;;
     src/* | scripts/* | migrations/*)
       mark_runtime_changed
       ;;
@@ -97,6 +110,7 @@ if [[ "${seen_file}" == "false" ]]; then
   ci_changed=true
   dependency_changed=true
   release_changed=true
+  windows_full_required=true
 fi
 
 {
@@ -106,4 +120,5 @@ fi
   printf 'ci_changed=%s\n' "${ci_changed}"
   printf 'dependency_changed=%s\n' "${dependency_changed}"
   printf 'release_changed=%s\n' "${release_changed}"
+  printf 'windows_full_required=%s\n' "${windows_full_required}"
 } >> "${output_file}"

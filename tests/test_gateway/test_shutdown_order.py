@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -53,3 +54,52 @@ async def test_runtime_drained_before_channel_stop() -> None:
     assert call_order[1] == "channel_manager.stop_all", (
         f"Expected channel_manager.stop_all second, got: {call_order}"
     )
+
+
+@pytest.mark.asyncio
+async def test_close_stops_server_even_if_teardown_raises() -> None:
+    """A failing teardown step must not leave the serve task pending.
+
+    close() is now invoked on every shutdown (signal or HTTP), so the serve task
+    is typically still running when it runs. If a teardown step (channel stop, WS
+    broadcast) raises, the error still propagates to the caller, but the server
+    stop + serve-task join + pid-lock release must run first — otherwise the
+    uvicorn serve task is leaked ("Task was destroyed but it is pending").
+    """
+    server = GatewayServer.__new__(GatewayServer)
+
+    fake_server = MagicMock()
+    fake_server.should_exit = False
+    server._server = fake_server
+
+    async def _serve() -> None:
+        return None
+
+    server._task = asyncio.ensure_future(_serve())
+
+    mock_services = MagicMock()
+    mock_services.task_runtime = None
+    mock_services.close = AsyncMock()
+    server._services = mock_services
+
+    # The teardown step raises — close() must still stop the server and release
+    # the pid lock (in finally) before the error propagates.
+    mock_channel_manager = MagicMock()
+    mock_channel_manager.stop_all = AsyncMock(side_effect=RuntimeError("boom"))
+    server._channel_manager = mock_channel_manager
+
+    mock_pid_lock = MagicMock()
+    server._pid_lock = mock_pid_lock
+
+    mock_registry = MagicMock()
+    mock_registry.broadcast = AsyncMock()
+    mock_registry.all = MagicMock(return_value=[])
+
+    with patch("opensquilla.gateway.boot.get_registry", return_value=mock_registry):
+        with pytest.raises(RuntimeError, match="boom"):
+            await server.close(reason="test")
+
+    assert fake_server.should_exit is True  # server stop ran despite the failure
+    mock_services.close.assert_awaited_once()
+    mock_pid_lock.release.assert_called_once()  # pid lock always released
+    assert server._task.done()  # serve task awaited, not leaked

@@ -314,6 +314,24 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+# Write an install receipt to aid `opensquilla uninstall`. Best-effort.
+try {
+    $receiptHome = if ($env:OPENSQUILLA_STATE_DIR) { $env:OPENSQUILLA_STATE_DIR } else { Join-Path $HOME '.opensquilla' }
+    $receiptMethod = if ($installer -eq 'uv') { 'uv-tool' } else { 'pip' }
+    New-Item -ItemType Directory -Force -Path $receiptHome | Out-Null
+    $receipt = [ordered]@{
+        version        = 1
+        install_method = $receiptMethod
+        installed_at   = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        entrypoints    = @()
+        owned_paths    = @()
+        data_root      = $receiptHome
+    }
+    $receipt | ConvertTo-Json | Set-Content -Path (Join-Path $receiptHome 'install-receipt.json') -Encoding utf8
+} catch {
+    # Receipt is optional; never fail the install over it.
+}
+
 Write-Banner
 if ($env:OPENSQUILLA_LISTEN -eq '0.0.0.0') {
     Write-ListenWarning

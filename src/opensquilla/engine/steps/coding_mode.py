@@ -9,10 +9,10 @@ injected on every turn while coding mode is on, and not at all while it is off.
 
 The directive does NOT tell the agent to run a BARE ``opensquilla``: the gateway
 shell tools inherit the gateway process PATH, which frequently does NOT contain
-the CLI's bin (the gateway is commonly started via an absolute interpreter
-path). A bare command then fails to resolve, and the agent tends to
-"self-install" and degrade to hand-editing. So the directive injects a
-PATH-independent invocation resolved from the running interpreter (see
+the CLI's bin (the gateway is commonly started via an absolute interpreter path
+or a packaged desktop binary). A bare command then fails to resolve, and the
+agent tends to "self-install" and degrade to hand-editing. So the directive
+injects a PATH-independent invocation resolved from the running process (see
 ``resolve_code_task_command``), and falls back to a fail-loud directive when
 code-task cannot be run at all.
 """
@@ -25,7 +25,7 @@ import shlex
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import structlog
 
@@ -34,6 +34,7 @@ from opensquilla.engine.pipeline import TurnContext
 log = structlog.get_logger(__name__)
 
 _CODE_TASK_PREFLIGHT_TIMEOUT = 15.0
+_PACKAGED_GATEWAY_EXECUTABLES = {"opensquilla-gateway", "opensquilla-gateway.exe"}
 
 
 def _runs_code_task(argv: list[str]) -> bool:
@@ -64,7 +65,8 @@ def resolve_code_task_command() -> str | None:
     """Resolve a PATH-independent, runnable ``code-task`` command prefix.
 
     Returns a shell-ready prefix ending at ``code-task`` (the caller appends
-    ``solve ...``), e.g. ``/opt/env/bin/opensquilla code-task`` or
+    ``solve ...``), e.g. ``/opt/env/bin/opensquilla code-task``,
+    ``/Applications/OpenSquilla.app/.../opensquilla-gateway code-task``, or
     ``/opt/env/bin/python -P -m opensquilla.cli.main code-task``; or ``None`` if
     code-task cannot be run here.
 
@@ -90,6 +92,13 @@ def _quote(path: str) -> str:
     return shlex.quote(path)
 
 
+def _is_packaged_gateway_executable(path: str) -> bool:
+    name = Path(path).name
+    if name == path and ("\\" in path or ":" in path):
+        name = PureWindowsPath(path).name
+    return name.lower() in _PACKAGED_GATEWAY_EXECUTABLES
+
+
 def _resolve_code_task_command_uncached() -> str | None:
     base = Path(sys.executable).parent
     # 1) The console script next to the running interpreter. On Windows it is
@@ -98,12 +107,17 @@ def _resolve_code_task_command_uncached() -> str | None:
         cand = base / name
         if cand.is_file() and os.access(cand, os.X_OK) and _runs_code_task([str(cand)]):
             return f"{_quote(str(cand))} code-task"
-    # 2) Module invocation via the EXACT interpreter the gateway runs on. ``-P``
+    # 2) Packaged desktop gateways are PyInstaller CLI binaries
+    #    (opensquilla-gateway[.exe]), so sys.executable itself may own
+    #    ``code-task`` even though it is not named ``opensquilla``.
+    if _is_packaged_gateway_executable(sys.executable) and _runs_code_task([sys.executable]):
+        return f"{_quote(sys.executable)} code-task"
+    # 3) Module invocation via the EXACT interpreter the gateway runs on. ``-P``
     #    (Python 3.11+) keeps a cwd ``opensquilla`` package from shadowing the
     #    import once the agent cd's into a target repo.
     if _runs_code_task([sys.executable, "-P", "-m", "opensquilla.cli.main"]):
         return f"{_quote(sys.executable)} -P -m opensquilla.cli.main code-task"
-    # 3) Whatever ``opensquilla`` is on PATH (shutil.which honors PATHEXT on
+    # 4) Whatever ``opensquilla`` is on PATH (shutil.which honors PATHEXT on
     #    Windows) — but only if it actually runs.
     on_path = shutil.which("opensquilla")
     if on_path and _runs_code_task([on_path]):
@@ -175,7 +189,14 @@ _CODING_MODE_DIRECTIVE_TEMPLATE = (
     "one is still running. Decide success ONLY from the returned result (its "
     "state and build.installer_path, which point into the run directory); the "
     "run prints its run directory on startup and writes live progress to "
-    "<run_dir>/status.json.\n"
+    "<run_dir>/status.json. That status file includes phase, pid, current_command, "
+    "log_paths, last_output_at, and terminal error/final_failure_reason fields; "
+    "for build mode it also reports scaffold_running/scaffold_complete, "
+    "agent_running, verifying, completed, or stalled.\n"
+    "If process(action=\"wait\") returns a non-zero exit, an environment_blocked "
+    "state, or a build result with no installer_path for build mode, STOP and "
+    "report the code-task result. Do NOT manually rebuild the app, copy files, "
+    "or publish a workaround artifact from this session.\n"
     "Do NOT clone the repository yourself and do NOT hand-edit its files in "
     "this session: the file-editing tools (write_file, edit_file, apply_patch, "
     "execute_code, git_commit, create_*) are DISABLED while coding mode is on, and "
@@ -193,18 +214,10 @@ _CODING_MODE_DIRECTIVE_TEMPLATE = (
     "breaks argv on POSIX too. The escape hatch is to send the task "
     "content through a PIPE, which neither shell touches:\n"
     "    1. exec_command(\n"
-    "         command=\"__PYTHON_CMD__ -c \\\"import os, sys, shlex, "
-    "tempfile; fd, p = tempfile.mkstemp(prefix='codetask-task-', "
-    "suffix='.txt'); f = os.fdopen(fd, 'wb'); f.write("
-    "sys.stdin.buffer.read()); f.close(); sys.stdout.write("
-    "'\\\\\\\"' + p + '\\\\\\\"' if os.name == 'nt' else "
-    "shlex.quote(p))\\\"\",\n"
+    "         command=\"__CODE_TASK_CMD__ stage-task-file\",\n"
     "         stdin=\"<task text, any length, any chars, any newlines>\",\n"
     "       )\n"
-    "    # tempfile.mkstemp creates an atomic, 0600 unique file — no "
-    "race, no clobber, no symlink trap. os.fdopen+write handles partial "
-    "writes from a large stdin payload correctly (os.write may "
-    "short-write on long buffers). The script emits a SHELL-SAFE QUOTED "
+    "    # stage-task-file creates an atomic, 0600 unique file and emits a SHELL-SAFE QUOTED "
     "TOKEN on its own stdout line — `\"<path>\"` on Windows (safe for "
     "spaces / & / non-ASCII in ordinary %TEMP% paths; cmd.exe DOES "
     "still expand %VAR% inside double quotes, but %TEMP% itself is "
@@ -223,6 +236,11 @@ _CODING_MODE_DIRECTIVE_TEMPLATE = (
     "    2b. (Case 2, scratch) background_process(\n"
     "          command=\"__CODE_TASK_CMD__ solve --task-file <quoted-"
     "path-from-step-1> --verification-mode scratch --yes\",\n"
+    "          timeout=5400,\n"
+    "        )\n"
+    "    2c. (Case 3, app build from scratch) background_process(\n"
+    "          command=\"__CODE_TASK_CMD__ solve --task-file <quoted-"
+    "path-from-step-1> --verification-mode build --yes\",\n"
     "          timeout=5400,\n"
     "        )\n"
     "Why this works: stdin rides through a real OS pipe — neither cmd.exe "
@@ -264,19 +282,13 @@ def _build_coding_mode_directive() -> str:
     """The coding-mode directive with a resolved, runnable code-task command,
     or a fail-loud directive when code-task cannot be run in this environment.
 
-    Two placeholders are substituted:
+    One placeholder is substituted:
     - ``__CODE_TASK_CMD__`` — the resolved code-task invocation prefix.
-    - ``__PYTHON_CMD__`` — the resolved Python interpreter the gateway is
-      running on. Used by the directive's task-file staging recipe so the
-      agent does not invoke a bare ``python`` whose PATH resolution may
-      surface a different interpreter than the one we just verified.
     """
     cmd = resolve_code_task_command()
     if cmd is None:
         return _CODING_MODE_UNAVAILABLE_DIRECTIVE
-    return _CODING_MODE_DIRECTIVE_TEMPLATE.replace(
-        "__CODE_TASK_CMD__", cmd
-    ).replace("__PYTHON_CMD__", _quote(sys.executable))
+    return _CODING_MODE_DIRECTIVE_TEMPLATE.replace("__CODE_TASK_CMD__", cmd)
 
 
 def _coding_mode_on(ctx: TurnContext) -> bool:

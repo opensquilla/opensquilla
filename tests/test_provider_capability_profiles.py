@@ -105,6 +105,11 @@ def test_volcengine_doubao_thinking_models_use_volcengine_reasoning_format() -> 
         provider_name="volcengine",
         base_url="https://ark.cn-beijing.volces.com/api/v3",
     )
+    seed_2_caps = catalog.get_capabilities(
+        "doubao-seed-2-0-lite-260215",
+        provider_name="volcengine",
+        base_url="https://ark.cn-beijing.volces.com/api/v3",
+    )
     plain_caps = catalog.get_capabilities(
         "doubao-seed-1-6-251015",
         provider_name="volcengine",
@@ -113,8 +118,46 @@ def test_volcengine_doubao_thinking_models_use_volcengine_reasoning_format() -> 
 
     assert thinking_caps.supports_reasoning is True
     assert thinking_caps.reasoning_format == "volcengine"
+    assert seed_2_caps.supports_reasoning is True
+    assert seed_2_caps.reasoning_format == "volcengine"
     assert plain_caps.supports_reasoning is False
     assert plain_caps.reasoning_format == "none"
+
+
+def test_byteplus_seed_and_kimi_models_use_modelark_reasoning_format() -> None:
+    catalog = ModelCatalog()
+
+    seed_caps = catalog.get_capabilities(
+        "seed-2-0-lite-260228",
+        provider_name="byteplus",
+        base_url="https://ark.ap-southeast.bytepluses.com/api/v3",
+    )
+    seed_18_caps = catalog.get_capabilities(
+        "seed-1-8-251228",
+        provider_name="byteplus",
+        base_url="https://ark.ap-southeast.bytepluses.com/api/v3",
+    )
+    kimi_caps = catalog.get_capabilities(
+        "kimi-k2-5-260127",
+        provider_name="byteplus",
+        base_url="https://ark.ap-southeast.bytepluses.com/api/v3",
+    )
+    unknown_caps = catalog.get_capabilities(
+        "byteplus-unknown-model",
+        provider_name="byteplus",
+        base_url="https://ark.ap-southeast.bytepluses.com/api/v3",
+    )
+
+    for caps in (seed_caps, seed_18_caps, kimi_caps):
+        assert caps.supports_reasoning is True
+        assert caps.supports_tools is True
+        assert caps.supports_vision is True
+        assert caps.reasoning_format == "volcengine"
+
+    assert unknown_caps.supports_reasoning is False
+    assert unknown_caps.supports_tools is True
+    assert unknown_caps.supports_vision is False
+    assert unknown_caps.reasoning_format == "none"
 
 
 def test_unknown_compatible_model_degrades_to_tools_only() -> None:

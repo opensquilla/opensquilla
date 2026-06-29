@@ -13,10 +13,14 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
+import threading
 import time
 import tomllib
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -35,8 +39,12 @@ from opensquilla.contrib.codetask.types import AgentOutcome
 logger = logging.getLogger(__name__)
 
 SUBPROCESS_TIMEOUT_BUFFER = 120
+DEFAULT_QUIET_TIMEOUT = 300
+STATUS_HEARTBEAT_SECONDS = 15
+POLL_INTERVAL_SECONDS = 0.5
 
 _JSON_OBJECT_RE = re.compile(r"\{(?:[^{}]|(?:\{[^{}]*\}))*\}")
+StatusCallback = Callable[[dict[str, Any]], None]
 
 
 class LocalAdapter:
@@ -62,6 +70,8 @@ class LocalAdapter:
         repo: Path,
         scratch_dir: Path,
         artifact_dir: Path,
+        status_callback: StatusCallback | None = None,
+        quiet_timeout: int | None = None,
     ) -> AgentOutcome:
         """Run one agent turn with ``repo`` as the workspace.
 
@@ -76,6 +86,13 @@ class LocalAdapter:
         artifact_dir.mkdir(parents=True, exist_ok=True)
         transcript_path = artifact_dir / "transcript.jsonl"
         usage_path = artifact_dir / "usage.json"
+        stdout_path = artifact_dir / "agent_stdout.log"
+        stderr_path = artifact_dir / "agent_stderr.log"
+        stdout_path.write_text("", encoding="utf-8")
+        stderr_path.write_text("", encoding="utf-8")
+        transcript_path.touch()
+        if not usage_path.exists():
+            usage_path.write_text("{}", encoding="utf-8")
 
         argv: list[str] = [
             "opensquilla",
@@ -117,10 +134,13 @@ class LocalAdapter:
             argv += ["--thinking", self.thinking]
 
         py_code = f"import sys\nsys.argv = {argv!r}\nfrom opensquilla.cli.main import app\napp()\n"
-        cmd = [agent_python(), "-c", py_code]
+        cmd = _agent_command(agent_python(), argv, py_code)
+        command_label = _display_command(agent_python(), argv)
 
         start = time.time()
         timed_out = False
+        stalled = False
+        stall_error = ""
         # cwd = repo so relative tool paths and test commands resolve there.
         # env inherits OPENROUTER_API_KEY and points the agent at code-task's
         # own config (OPENSQUILLA_GATEWAY_CONFIG_PATH) so coding-irrelevant tools
@@ -167,22 +187,55 @@ class LocalAdapter:
         except FileNotFoundError as exc:
             raise RuntimeError(f"could not launch agent interpreter: {exc}") from exc
 
-        try:
-            stdout, stderr = proc.communicate(timeout=self.timeout + SUBPROCESS_TIMEOUT_BUFFER)
-            exit_code = proc.returncode
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            exit_code = -1
-            _kill_process_group(proc)
-            stdout, stderr = proc.communicate()
-            logger.warning("agent subprocess timed out after %ds; killed group", self.timeout)
+        if status_callback is not None:
+            status_callback(
+                {
+                    "pid": getattr(proc, "pid", None),
+                    "current_command": command_label,
+                    "log_paths": {
+                        "stdout": str(stdout_path),
+                        "stderr": str(stderr_path),
+                        "transcript": str(transcript_path),
+                        "usage": str(usage_path),
+                    },
+                    "started_at": datetime.now(UTC).isoformat(),
+                }
+            )
+
+        if not hasattr(proc, "poll") or getattr(proc, "stdout", None) is None:
+            try:
+                stdout, stderr = proc.communicate(
+                    timeout=self.timeout + SUBPROCESS_TIMEOUT_BUFFER
+                )
+                exit_code = proc.returncode
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                exit_code = -1
+                _kill_process_group(proc)
+                stdout, stderr = proc.communicate()
+                logger.warning("agent subprocess timed out after %ds; killed group", self.timeout)
+            stdout_path.write_text(stdout or "", encoding="utf-8")
+            stderr_path.write_text(stderr or "", encoding="utf-8")
+        else:
+            quiet_timeout = _quiet_timeout(quiet_timeout)
+            stdout, stderr, exit_code, timed_out, stalled, stall_error = _monitor_process(
+                proc,
+                timeout=self.timeout + SUBPROCESS_TIMEOUT_BUFFER,
+                quiet_timeout=quiet_timeout,
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
+                transcript_path=transcript_path,
+                usage_path=usage_path,
+                status_callback=status_callback,
+                command_label=command_label,
+            )
 
         duration = time.time() - start
-        (artifact_dir / "agent_stdout.log").write_text(stdout or "", encoding="utf-8")
-        (artifact_dir / "agent_stderr.log").write_text(stderr or "", encoding="utf-8")
 
         envelope = _parse_json_envelope(stdout)
-        if timed_out:
+        if stalled:
+            finish = "stalled"
+        elif timed_out:
             finish = "timeout"
         elif exit_code != 0:
             finish = "error"
@@ -208,7 +261,177 @@ class LocalAdapter:
             duration_seconds=round(duration, 1),
             session_id=(envelope or {}).get("session_key"),
             usage=usage,
+            error=stall_error or None,
         )
+
+
+def _monitor_process(
+    proc: subprocess.Popen,
+    *,
+    timeout: int,
+    quiet_timeout: int,
+    stdout_path: Path,
+    stderr_path: Path,
+    transcript_path: Path,
+    usage_path: Path,
+    status_callback: StatusCallback | None,
+    command_label: str,
+) -> tuple[str, str, int, bool, bool, str]:
+    stdout_parts: list[str] = []
+    stderr_parts: list[str] = []
+    lock = threading.Lock()
+    last_activity = time.monotonic()
+    last_output_at = datetime.now(UTC).isoformat()
+    killed_for_timeout = False
+    killed_for_stall = False
+    stall_error = ""
+
+    def mark_activity() -> None:
+        nonlocal last_activity, last_output_at
+        with lock:
+            last_activity = time.monotonic()
+            last_output_at = datetime.now(UTC).isoformat()
+
+    def read_stream(pipe: Any, path: Path, parts: list[str]) -> None:
+        try:
+            with path.open("a", encoding="utf-8") as handle:
+                while True:
+                    chunk = pipe.readline()
+                    if not chunk:
+                        break
+                    if isinstance(chunk, bytes):
+                        chunk = chunk.decode(errors="replace")
+                    parts.append(chunk)
+                    handle.write(chunk)
+                    handle.flush()
+                    mark_activity()
+        finally:
+            try:
+                pipe.close()
+            except Exception:
+                pass
+
+    threads = [
+        threading.Thread(
+            target=read_stream, args=(proc.stdout, stdout_path, stdout_parts), daemon=True
+        ),
+        threading.Thread(
+            target=read_stream, args=(proc.stderr, stderr_path, stderr_parts), daemon=True
+        ),
+    ]
+    for thread in threads:
+        thread.start()
+
+    side_mtimes = {
+        transcript_path: _mtime_or_zero(transcript_path),
+        usage_path: _mtime_or_zero(usage_path),
+    }
+    deadline = time.monotonic() + timeout
+    next_status = time.monotonic() + STATUS_HEARTBEAT_SECONDS
+
+    while True:
+        rc = proc.poll()
+        now = time.monotonic()
+        for path, previous in list(side_mtimes.items()):
+            current = _mtime_or_zero(path)
+            if current > previous:
+                side_mtimes[path] = current
+                mark_activity()
+
+        if rc is not None:
+            break
+        if now >= deadline:
+            killed_for_timeout = True
+            _kill_process_group(proc)
+            logger.warning("agent subprocess timed out after %ds; killed group", timeout)
+            break
+
+        with lock:
+            quiet_for = now - last_activity
+            output_at = last_output_at
+        if quiet_timeout > 0 and quiet_for >= quiet_timeout:
+            killed_for_stall = True
+            stall_error = (
+                f"agent produced no stdout/stderr/transcript/usage updates for "
+                f"{int(quiet_for)}s"
+            )
+            _kill_process_group(proc)
+            logger.warning("%s; killed group", stall_error)
+            break
+
+        if status_callback is not None and now >= next_status:
+            status_callback(
+                {
+                    "pid": getattr(proc, "pid", None),
+                    "current_command": command_label,
+                    "last_output_at": output_at,
+                    "quiet_for_seconds": round(quiet_for, 1),
+                    "log_paths": {
+                        "stdout": str(stdout_path),
+                        "stderr": str(stderr_path),
+                        "transcript": str(transcript_path),
+                        "usage": str(usage_path),
+                    },
+                }
+            )
+            next_status = now + STATUS_HEARTBEAT_SECONDS
+        time.sleep(POLL_INTERVAL_SECONDS)
+
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        _kill_process_group(proc)
+        proc.wait(timeout=10)
+
+    for thread in threads:
+        thread.join(timeout=2)
+
+    return (
+        "".join(stdout_parts),
+        "".join(stderr_parts),
+        proc.returncode if proc.returncode is not None else -1,
+        killed_for_timeout,
+        killed_for_stall,
+        stall_error,
+    )
+
+
+def _quiet_timeout(value: int | None) -> int:
+    if value is not None:
+        return value
+    raw = os.environ.get("OPENSQUILLA_CODETASK_AGENT_QUIET_TIMEOUT")
+    if raw:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            pass
+    return DEFAULT_QUIET_TIMEOUT
+
+
+def _mtime_or_zero(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _display_command(executable: str, argv: list[str]) -> str:
+    shown: list[str]
+    if _looks_like_python_interpreter(executable):
+        shown = [executable, "-m", "opensquilla.cli.main", *argv[1:]]
+    else:
+        shown = [executable, *argv[1:]]
+    sanitized: list[str] = []
+    skip_next = False
+    for part in shown:
+        if skip_next:
+            sanitized.append("<prompt>")
+            skip_next = False
+            continue
+        sanitized.append(part)
+        if part == "--message":
+            skip_next = True
+    return " ".join(shlex.quote(str(part)) for part in sanitized)
 
 
 def _kill_process_group(proc) -> None:
@@ -253,6 +476,18 @@ def _kill_process_group(proc) -> None:
         proc.kill()
     except OSError:
         pass
+
+
+def _agent_command(executable: str, argv: list[str], py_code: str) -> list[str]:
+    """Build the agent subprocess command for source and packaged runtimes."""
+    if _looks_like_python_interpreter(executable):
+        return [executable, "-c", py_code]
+    return [executable, *argv[1:]]
+
+
+def _looks_like_python_interpreter(executable: str) -> bool:
+    name = Path(executable).name.lower()
+    return name.startswith("python") or name in {"py", "py.exe"}
 
 
 def _parse_json_envelope(stdout: str) -> dict | None:

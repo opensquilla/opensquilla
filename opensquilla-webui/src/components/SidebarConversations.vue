@@ -44,6 +44,7 @@ import { useI18n } from 'vue-i18n'
 import Icon from './Icon.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useDocumentEvent } from '@/composables/useDocumentEvent'
+import { shouldShowAgentFilterBadge } from '@/utils/sidebarConversations'
 
 const props = defineProps<{
   sections: SidebarSection[]
@@ -440,7 +441,7 @@ function onSelectRow(row: SidebarConversationItem) {
 
             <!-- Agent-initial badge: indicator + click-to-filter (Chats only) -->
             <button
-              v-else-if="section.family === 'chats' && renamingKey !== row.key"
+              v-else-if="shouldShowAgentFilterBadge(section.family, row) && renamingKey !== row.key"
               type="button"
               class="sidebar-agent-badge"
               :class="{ 'is-active': agentFilter === row.effectiveAgentId }"

@@ -16,6 +16,7 @@ opensquilla <command> --help
 | --- | --- |
 | `opensquilla init` | Initialize a workspace. |
 | `opensquilla doctor` | Diagnose readiness and print recovery steps. |
+| `opensquilla uninstall` | Remove OpenSquilla; keeps your data by default (`--purge-*` to delete). |
 | `opensquilla onboard` | Run or inspect first-run setup. |
 | `opensquilla configure` | Reconfigure provider, router, channels, search, image generation, or memory embedding. |
 | `opensquilla gateway` | Run and manage the gateway server. |
@@ -297,6 +298,25 @@ opensquilla mcp-server run --gateway ws://localhost:18792/ws
 ```
 
 Read: [`mcp-server.md`](mcp-server.md)
+
+## Uninstall
+
+```sh
+opensquilla uninstall --dry-run        # preview what is removed and kept
+opensquilla uninstall                  # remove the program, keep your data
+opensquilla uninstall --purge-state    # also delete runtime state (sessions, logs, cache)
+opensquilla uninstall --purge-config   # also delete config and secrets
+opensquilla uninstall --purge-all      # delete ALL OpenSquilla data (needs a typed phrase)
+opensquilla uninstall --json           # machine-readable plan/result
+```
+
+Your data is kept by default; `--purge-*` opts into deletion, and `--purge-all`
+requires typing a confirmation phrase (or `--confirm-purge-all "delete
+everything"` on non-interactive surfaces). The running gateway is drained and
+stopped before anything is removed, and deletion is contained to the OpenSquilla
+home — a relocated or shared root is refused. Docker and desktop installs print
+guided removal steps instead of deleting an image layer or app bundle; source
+installs never delete your checkout.
 
 ---
 

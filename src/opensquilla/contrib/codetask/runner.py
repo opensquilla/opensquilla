@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import shlex
 import shutil
+import subprocess
 import time
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -18,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from opensquilla.contrib.codetask import config, envprobe, workspace
-from opensquilla.contrib.codetask.adapter import LocalAdapter
+from opensquilla.contrib.codetask.adapter import LocalAdapter, _kill_process_group
 from opensquilla.contrib.codetask.inputs import InputError, TaskSpec, render_task_md, resolve_task
 from opensquilla.contrib.codetask.types import TaskResult, TaskState
 from opensquilla.contrib.codetask.verification import verify
@@ -40,6 +43,8 @@ def _default_run_id(slug: str) -> str:
 _DEFAULT_MAX_ATTEMPTS = 3
 _VERIFY_RESERVE_SECONDS = 300  # keep this much of the shared budget for verify
 _MIN_USEFUL_AGENT_SECONDS = 120  # do not start a retry with less budget than this
+_SCAFFOLD_TIMEOUT_SECONDS = 300
+_SCAFFOLD_STATUS_SECONDS = 10
 _RETRYABLE_STATES = frozenset({TaskState.FAILED, TaskState.INVALID_ACCEPTANCE_TEST})
 _ATTEMPT_SNAPSHOT_FILES = (
     "prompt.txt",
@@ -205,6 +210,7 @@ def solve(
 
     spec: TaskSpec
     run_id = run_id or _default_run_id("task")
+    from_scratch_build = verification_mode == "build" and not repo
 
     if verification_mode == "scratch":
         # No repo: write self-contained code from scratch in an empty git repo.
@@ -252,11 +258,6 @@ def solve(
     )
     config.artifact_path(rid, "task.md").write_text(task_md, encoding="utf-8")
 
-    # 3. Probe environment + render prompt.
-    probe = envprobe.probe(prepared.path)
-    is_edit = verification_mode == "build" and _repo_has_app(prepared.path)
-    base_prompt = _render_prompt(task_md, probe.as_hints(), scratch, verification_mode, is_edit)
-
     result = TaskResult(
         task_slug=spec.slug,
         run_id=rid,
@@ -271,7 +272,30 @@ def solve(
         verification_mode, "red_green"
     )
 
-    # 4. Verify->fix loop. Re-run the agent on the SAME prepared repo (clone +
+    # 3. Build-from-scratch gets a runner-owned scaffold before the agent.
+    # This removes the observed silent hang where a model-driven `npx create-*`
+    # process waits forever with no log/status visibility.
+    runner_scaffolded = False
+    if from_scratch_build and not _repo_has_app(prepared.path):
+        ok, detail = _scaffold_build_app(rid, prepared.path, artifact_dir)
+        if not ok:
+            result.state = TaskState.ENVIRONMENT_BLOCKED
+            result.error = detail
+            result.final_failure_reason = detail
+            _persist(result)
+            return result
+        runner_scaffolded = True
+
+    # 4. Probe environment + render prompt.
+    probe = envprobe.probe(prepared.path)
+    is_edit = (
+        verification_mode == "build"
+        and _repo_has_app(prepared.path)
+        and not runner_scaffolded
+    )
+    base_prompt = _render_prompt(task_md, probe.as_hints(), scratch, verification_mode, is_edit)
+
+    # 5. Verify->fix loop. Re-run the agent on the SAME prepared repo (clone +
     #    built venv + the prior attempt's changes all preserved) when the
     #    runner's authoritative verification fails, feeding the concrete failure
     #    back so the retry CORRECTS the prior attempt instead of re-cloning and
@@ -340,10 +364,34 @@ def solve(
             attempt=attempt, max_attempts=max_attempts,
         )
         adapter = LocalAdapter(model=model, thinking=thinking, timeout=agent_budget)
+        agent_status_base = {
+            "repo": repo,
+            "run_dir": str(artifact_dir),
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+        }
+
+        def _agent_status(update: dict[str, Any]) -> None:
+            _write_status(rid, "agent_running", **agent_status_base, **update)
+
         try:
-            outcome = adapter.run(
-                prompt, repo=prepared.path, scratch_dir=scratch, artifact_dir=artifact_dir
-            )
+            try:
+                outcome = adapter.run(
+                    prompt,
+                    repo=prepared.path,
+                    scratch_dir=scratch,
+                    artifact_dir=artifact_dir,
+                    status_callback=_agent_status,
+                )
+            except TypeError as exc:
+                if "status_callback" not in str(exc):
+                    raise
+                outcome = adapter.run(
+                    prompt,
+                    repo=prepared.path,
+                    scratch_dir=scratch,
+                    artifact_dir=artifact_dir,
+                )
         except RuntimeError as exc:
             result.error = str(exc)
             break
@@ -351,6 +399,8 @@ def solve(
         result.duration_seconds = (result.duration_seconds or 0.0) + (
             outcome.duration_seconds or 0.0
         )
+        outcome_finish_reason = getattr(outcome, "finish_reason", "")
+        outcome_error = getattr(outcome, "error", None)
 
         _write_status(rid, "collecting_change", run_dir=str(artifact_dir))
         files_changed, diffstat, patch = workspace.collect_change(
@@ -379,6 +429,26 @@ def solve(
         if outcome.timeout:
             result.state = TaskState.ENVIRONMENT_BLOCKED
             result.error = "agent timed out before finishing"
+            _write_status(
+                rid,
+                "stalled" if outcome_finish_reason == "stalled" else "agent_timeout",
+                run_dir=str(artifact_dir),
+                attempt=attempt,
+                max_attempts=max_attempts,
+                error=result.error,
+            )
+            break
+        if outcome_finish_reason == "stalled":
+            result.state = TaskState.ENVIRONMENT_BLOCKED
+            result.error = outcome_error or "agent stalled with no output"
+            _write_status(
+                rid,
+                "stalled",
+                run_dir=str(artifact_dir),
+                attempt=attempt,
+                max_attempts=max_attempts,
+                error=result.error,
+            )
             break
 
         _write_status(
@@ -497,6 +567,246 @@ def _repo_has_app(repo: Path) -> bool:
     return (repo / "package.json").is_file() and (repo / "src").is_dir()
 
 
+def _scaffold_build_app(run_id: str, repo: Path, artifact_dir: Path) -> tuple[bool, str]:
+    """Create the fixed Electron/Vite scaffold under runner control.
+
+    The sub-agent still owns product implementation, but the fragile
+    interactive template bootstrap is bounded, logged, and reflected in
+    status.json by the runner.
+    """
+    from opensquilla.contrib.codetask.build_verify import _build_env, _resolve_cli
+
+    timeout = _scaffold_timeout()
+    scaffold_root = artifact_dir / "scaffold"
+    generated = scaffold_root / "app"
+    stdout_path = artifact_dir / "scaffold_stdout.log"
+    stderr_path = artifact_dir / "scaffold_stderr.log"
+    npm_stdout_path = artifact_dir / "scaffold_npm_stdout.log"
+    npm_stderr_path = artifact_dir / "scaffold_npm_stderr.log"
+    if scaffold_root.exists():
+        shutil.rmtree(scaffold_root, ignore_errors=True)
+    scaffold_root.mkdir(parents=True, exist_ok=True)
+    stdout_path.write_text("", encoding="utf-8")
+    stderr_path.write_text("", encoding="utf-8")
+
+    env = _build_env()
+    env.update(
+        {
+            "CI": "1",
+            "YES": "1",
+            "npm_config_yes": "true",
+            "npm_config_fund": "false",
+            "npm_config_audit": "false",
+        }
+    )
+    cmd = [
+        _resolve_cli("npm"),
+        "create",
+        "@quick-start/electron@latest",
+        "app",
+        "--",
+        "--template",
+        "react-ts",
+        "--yes",
+    ]
+    ok, detail = _run_logged_step(
+        run_id,
+        "scaffold_running",
+        cmd,
+        cwd=scaffold_root,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+        timeout=timeout,
+        env=env,
+    )
+    if not ok:
+        _write_status(
+            run_id,
+            "scaffold_failed",
+            run_dir=str(artifact_dir),
+            error=detail,
+            log_paths={"stdout": str(stdout_path), "stderr": str(stderr_path)},
+        )
+        return False, detail
+    if not (generated / "package.json").is_file():
+        detail = "scaffold command completed but did not create app/package.json"
+        _write_status(
+            run_id,
+            "scaffold_failed",
+            run_dir=str(artifact_dir),
+            error=detail,
+            log_paths={"stdout": str(stdout_path), "stderr": str(stderr_path)},
+        )
+        return False, detail
+
+    _write_status(run_id, "scaffold_copying", run_dir=str(artifact_dir))
+    _copy_scaffold_contents(generated, repo)
+    if not (repo / "package-lock.json").is_file():
+        npm = _resolve_cli("npm")
+        npm_stdout_path.write_text("", encoding="utf-8")
+        npm_stderr_path.write_text("", encoding="utf-8")
+        ok, detail = _run_logged_step(
+            run_id,
+            "scaffold_lockfile",
+            [npm, "install", "--package-lock-only"],
+            cwd=repo,
+            stdout_path=npm_stdout_path,
+            stderr_path=npm_stderr_path,
+            timeout=timeout,
+            env=env,
+        )
+        if not ok:
+            _write_status(
+                run_id,
+                "scaffold_failed",
+                run_dir=str(artifact_dir),
+                error=detail,
+                log_paths={
+                    "stdout": str(npm_stdout_path),
+                    "stderr": str(npm_stderr_path),
+                },
+            )
+            return False, detail
+
+    _write_status(
+        run_id,
+        "scaffold_complete",
+        run_dir=str(artifact_dir),
+        log_paths={
+            "stdout": str(stdout_path),
+            "stderr": str(stderr_path),
+            "npm_stdout": str(npm_stdout_path),
+            "npm_stderr": str(npm_stderr_path),
+        },
+    )
+    return True, "scaffold complete"
+
+
+def _scaffold_timeout() -> int:
+    raw = os.environ.get("OPENSQUILLA_CODETASK_SCAFFOLD_TIMEOUT")
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    return _SCAFFOLD_TIMEOUT_SECONDS
+
+
+def _run_logged_step(
+    run_id: str,
+    phase: str,
+    cmd: list[str],
+    *,
+    cwd: Path,
+    stdout_path: Path,
+    stderr_path: Path,
+    timeout: int,
+    env: dict[str, str],
+) -> tuple[bool, str]:
+    stdout_path.parent.mkdir(parents=True, exist_ok=True)
+    stderr_path.parent.mkdir(parents=True, exist_ok=True)
+    command = _command_label(cmd)
+    try:
+        with stdout_path.open("a", encoding="utf-8") as out, stderr_path.open(
+            "a", encoding="utf-8"
+        ) as err:
+            popen_kwargs: dict[str, Any] = {
+                "cwd": str(cwd),
+                "stdin": subprocess.DEVNULL,
+                "stdout": out,
+                "stderr": err,
+                "text": True,
+                "encoding": "utf-8",
+                "errors": "replace",
+                "env": env,
+            }
+            if os.name == "posix":
+                popen_kwargs["start_new_session"] = True
+            else:
+                popen_kwargs["creationflags"] = getattr(
+                    subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+                )
+            proc = subprocess.Popen(cmd, **popen_kwargs)
+            _write_status(
+                run_id,
+                phase,
+                pid=proc.pid,
+                cwd=str(cwd),
+                current_command=command,
+                timeout_seconds=timeout,
+                log_paths={"stdout": str(stdout_path), "stderr": str(stderr_path)},
+            )
+            deadline = time.monotonic() + timeout
+            next_status = time.monotonic() + _SCAFFOLD_STATUS_SECONDS
+            while proc.poll() is None:
+                now = time.monotonic()
+                if now >= deadline:
+                    _kill_process_group(proc)
+                    try:
+                        proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        _kill_process_group(proc)
+                    detail = (
+                        f"{phase} timed out after {timeout}s while running: {command}\n"
+                        f"stderr tail:\n{_tail_file(stderr_path)}"
+                    )
+                    return False, detail
+                if now >= next_status:
+                    _write_status(
+                        run_id,
+                        phase,
+                        pid=proc.pid,
+                        cwd=str(cwd),
+                        current_command=command,
+                        elapsed_seconds=round(now - (deadline - timeout), 1),
+                        log_paths={
+                            "stdout": str(stdout_path),
+                            "stderr": str(stderr_path),
+                        },
+                    )
+                    next_status = now + _SCAFFOLD_STATUS_SECONDS
+                time.sleep(0.5)
+            if proc.returncode != 0:
+                detail = (
+                    f"{phase} failed with exit {proc.returncode}: {command}\n"
+                    f"stderr tail:\n{_tail_file(stderr_path)}"
+                )
+                return False, detail
+    except FileNotFoundError as exc:
+        return False, f"{phase} command not found: {exc}"
+    except OSError as exc:
+        return False, f"{phase} could not start: {exc}"
+    return True, f"{phase} complete"
+
+
+def _copy_scaffold_contents(src: Path, dest: Path) -> None:
+    skip = {"node_modules", "dist", "out", "build", ".git"}
+    for child in src.iterdir():
+        if child.name in skip:
+            continue
+        target = dest / child.name
+        if target.exists():
+            if target.is_dir() and not target.is_symlink():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+        if child.is_dir():
+            shutil.copytree(child, target, symlinks=True)
+        else:
+            shutil.copy2(child, target)
+
+
+def _tail_file(path: Path, *, lines: int = 25) -> str:
+    try:
+        return "\n".join(path.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:])
+    except OSError:
+        return ""
+
+
+def _command_label(cmd: list[str]) -> str:
+    return " ".join(shlex.quote(str(part)) for part in cmd)
+
+
 def _render_prompt(
     task_md: str,
     hints: str,
@@ -560,5 +870,7 @@ def _persist(result: TaskResult) -> None:
         "completed",
         state=result.state.value,
         verified=result.verified,
+        error=result.error,
+        final_failure_reason=result.final_failure_reason,
         installer_path=(result.build.installer_path if result.build else None),
     )

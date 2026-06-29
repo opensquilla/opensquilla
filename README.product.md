@@ -185,6 +185,8 @@ and [`docs/authoring/meta-skills.md`](docs/authoring/meta-skills.md)
 - Track usage and estimated cost with `opensquilla cost`.
 - Diagnose readiness with `opensquilla doctor` and `/control/` health views.
 - Export reproducible install state with `opensquilla dist`.
+- Remove OpenSquilla cleanly with `opensquilla uninstall` — keeps your data
+  unless you pass `--purge-state` / `--purge-config` / `--purge-all`.
 - Bridge OpenSquilla into MCP-capable clients with `opensquilla mcp-server run`
   when the `mcp` extra is installed.
 - Create and deliver artifacts such as HTML files, PDF reports, slides,

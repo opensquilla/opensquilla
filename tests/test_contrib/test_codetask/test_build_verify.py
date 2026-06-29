@@ -12,6 +12,7 @@ from opensquilla.contrib.codetask.types import TaskState
 
 
 def _make_repo(tmp_path: Path, *, pkg: bool = True, lock: bool = True) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     if pkg:
         (tmp_path / "package.json").write_text("{}")
     if lock:
@@ -112,6 +113,38 @@ def test_command_not_found_is_recorded(tmp_path, monkeypatch):
     assert out.state is TaskState.ENVIRONMENT_BLOCKED  # npm_ci is the first check
     assert out.build.checks[0].ran is False
     assert "not found" in out.build.checks[0].raw_tail
+
+
+def test_resolve_cli_uses_desktop_node_bin_env(tmp_path, monkeypatch):
+    node_bin = tmp_path / "node-bin"
+    node_bin.mkdir()
+    npm = node_bin / ("npm.cmd" if sys.platform == "win32" else "npm")
+    npm.write_text("", encoding="utf-8")
+    npm.chmod(0o755)
+    monkeypatch.setenv("OPENSQUILLA_NODE_BIN_DIR", str(node_bin))
+    monkeypatch.setattr(build_verify.shutil, "which", lambda *a, **k: None)
+
+    assert build_verify._resolve_cli("npm") == str(npm)
+
+
+def test_verify_build_prepends_desktop_node_bin_to_child_path(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path / "repo")
+    node_bin = tmp_path / "node-bin"
+    node_bin.mkdir()
+    monkeypatch.setenv("OPENSQUILLA_NODE_BIN_DIR", str(node_bin))
+    monkeypatch.setattr(build_verify, "_resolve_cli", lambda name: name)
+
+    seen_paths: list[str] = []
+
+    def fake_run(argv, **kwargs):
+        seen_paths.append(kwargs["env"]["PATH"])
+        return _FakeProc(1, "", "stop after first check")
+
+    monkeypatch.setattr(build_verify.subprocess, "run", fake_run)
+    build_verify.verify_build(repo)
+
+    assert seen_paths
+    assert seen_paths[0].split(build_verify.os.pathsep)[0] == str(node_bin)
 
 
 def test_package_step_is_mac_dmg_on_darwin(monkeypatch):

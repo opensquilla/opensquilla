@@ -300,6 +300,12 @@ jobs:
         working-directory: desktop/electron
         run: npm run verify:package
 
+      - name: Smoke packaged gateway
+        working-directory: desktop/electron
+        env:
+          OPENSQUILLA_REQUIRE_PACKAGED_GATEWAY_SMOKE: "1"
+        run: npm run verify:gateway-smoke
+
       - name: List macOS artifacts
         run: find dist/desktop-electron -maxdepth 2 -type f -print
 
@@ -369,6 +375,12 @@ jobs:
       - name: Verify Electron package
         working-directory: desktop/electron
         run: npm run verify:package
+
+      - name: Smoke packaged gateway
+        working-directory: desktop/electron
+        env:
+          OPENSQUILLA_REQUIRE_PACKAGED_GATEWAY_SMOKE: "1"
+        run: npm run verify:gateway-smoke
 
       - name: List Windows artifacts
         shell: bash

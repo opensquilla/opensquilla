@@ -32,6 +32,18 @@ def gateway_log_path() -> Path:
     return default_opensquilla_home() / "logs" / "gateway.log"
 
 
+def _running_on_windows() -> bool:
+    """Indirection over ``os.name`` so the kill path is easy to exercise in tests."""
+    return os.name == "nt"
+
+
+# Short bound on how long to wait for a process to disappear after a *hard*
+# terminate (TerminateProcess / SIGKILL), which is near-instant — distinct from
+# the graceful ``shutdown_timeout`` budget that precedes it. Reusing the full
+# graceful budget here would double the worst-case stop time.
+_HARD_KILL_BACKSTOP_S = 5.0
+
+
 @dataclass
 class GatewayLifecycleResult:
     action: str
@@ -563,9 +575,78 @@ class GatewayLifecycleManager:
             return False
         return True
 
+    def _request_graceful_shutdown(self) -> bool:
+        """POST the owner-only graceful shutdown endpoint.
+
+        Returns True if the gateway accepted the request (2xx). The endpoint runs
+        the full ``GatewayServer.close()`` drain before exiting, so the caller
+        should then poll for process exit rather than killing immediately. Used
+        on Windows, where ``os.kill`` cannot deliver a drain-triggering SIGTERM.
+
+        The endpoint is owner-gated (loopback-proven, matching elevated mode), so
+        this returns False for a gateway bound to a non-loopback host (e.g.
+        ``0.0.0.0``): the request gets 403 and the caller falls back to a hard
+        terminate. Graceful drain on Windows therefore requires a loopback bind,
+        which the desktop and the default CLI both use.
+        """
+        url = f"{_http_url(self.probe_host, self.port)}/api/system/shutdown"
+        headers = {"Content-Type": "application/json"}
+        try:
+            from opensquilla.cli.gateway_rpc import default_gateway_token
+
+            token = default_gateway_token(self.config_path)
+        except Exception:  # noqa: BLE001 — token resolution must never block stop
+            token = None
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        request = Request(url, data=b"{}", headers=headers, method="POST")
+        try:
+            with urlopen(request, timeout=2.0) as response:  # noqa: S310 - local shutdown.
+                return 200 <= int(response.status) < 300
+        except HTTPError as exc:
+            return 200 <= int(getattr(exc, "code", 0)) < 300
+        except (OSError, URLError, TimeoutError):
+            return False
+
+    def _wait_for_exit(self, pid: int, timeout: float) -> bool:
+        deadline = time.monotonic() + max(timeout, 0.0)
+        while time.monotonic() <= deadline:
+            if not self._pid_running(pid):
+                return True
+            time.sleep(self.poll_interval)
+        return not self._pid_running(pid)
+
+    def _hard_kill(self, pid: int) -> bool:
+        sigkill = getattr(signal, "SIGKILL", None)
+        if sigkill is not None and not _running_on_windows():
+            try:
+                os.kill(pid, sigkill)
+            except OSError:
+                pass
+            return not self._pid_running(pid)
+        # Windows has no SIGKILL; os.kill maps SIGTERM to TerminateProcess.
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+        return self._wait_for_exit(pid, _HARD_KILL_BACKSTOP_S)
+
     def _terminate_pid(self, pid: int) -> bool:
         if not self._pid_running(pid):
             return True
+
+        if _running_on_windows():
+            # Windows os.kill cannot deliver a drain-triggering SIGTERM (it maps
+            # to an immediate TerminateProcess). Prefer the gateway's owner-only
+            # HTTP shutdown endpoint, which runs the full close() drain, and fall
+            # back to a hard terminate only if it does not exit in time.
+            if self._request_graceful_shutdown() and self._wait_for_exit(
+                pid, self.shutdown_timeout
+            ):
+                return True
+            return self._hard_kill(pid)
+
+        # POSIX: SIGTERM triggers the gateway's asyncio shutdown drain.
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -575,20 +656,9 @@ class GatewayLifecycleManager:
         except OSError:
             return False
 
-        deadline = time.monotonic() + max(self.shutdown_timeout, 0.0)
-        while time.monotonic() <= deadline:
-            if not self._pid_running(pid):
-                return True
-            time.sleep(self.poll_interval)
-
-        sigkill = getattr(signal, "SIGKILL", None)
-        if sigkill is not None and os.name != "nt":
-            try:
-                os.kill(pid, sigkill)
-            except OSError:
-                pass
-            return not self._pid_running(pid)
-        return False
+        if self._wait_for_exit(pid, self.shutdown_timeout):
+            return True
+        return self._hard_kill(pid)
 
     @staticmethod
     def _now() -> str:

@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import logging
+import mimetypes
 import re
 import secrets
 from collections.abc import Iterator
@@ -29,6 +30,29 @@ ARTIFACT_STORE_TOKEN_CHARS = 12
 LEGACY_ARTIFACT_STORE_TOKEN_CHARS = 16
 DEFAULT_ARTIFACT_MAX_BYTES = 30 * 1024 * 1024
 DEFAULT_ARTIFACT_DISK_BUDGET_BYTES = 512 * 1024 * 1024
+INSTALLER_ARTIFACT_MAX_BYTES = DEFAULT_ARTIFACT_DISK_BUDGET_BYTES
+INSTALLER_ARTIFACT_SUFFIXES = frozenset(
+    {
+        ".appimage",
+        ".deb",
+        ".dmg",
+        ".exe",
+        ".msi",
+        ".rpm",
+        ".snap",
+        ".zip",
+    }
+)
+_INSTALLER_MIME_BY_SUFFIX = {
+    ".appimage": "application/octet-stream",
+    ".deb": "application/vnd.debian.binary-package",
+    ".dmg": "application/x-apple-diskimage",
+    ".exe": "application/vnd.microsoft.portable-executable",
+    ".msi": "application/x-msi",
+    ".rpm": "application/x-rpm",
+    ".snap": "application/octet-stream",
+    ".zip": "application/zip",
+}
 
 _UNSAFE_FILENAME_RE = re.compile(r'[\x00-\x1f\x7f<>:"/\\|?*]+')
 _SAFE_TOKEN_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -152,6 +176,33 @@ def artifact_payload(event_or_ref: Any) -> dict[str, Any]:
 
 def artifact_download_url(artifact_id: str) -> str:
     return f"/api/v1/artifacts/{_validate_artifact_id(artifact_id)}"
+
+
+def is_installer_artifact_name(name: str | Path) -> bool:
+    return Path(str(name)).suffix.casefold() in INSTALLER_ARTIFACT_SUFFIXES
+
+
+def installer_artifact_mime(name: str | Path) -> str | None:
+    return _INSTALLER_MIME_BY_SUFFIX.get(Path(str(name)).suffix.casefold())
+
+
+def artifact_mime_for_name(name: str | Path) -> str:
+    return (
+        installer_artifact_mime(name)
+        or mimetypes.guess_type(str(name))[0]
+        or "application/octet-stream"
+    )
+
+
+def artifact_publish_max_bytes_for_name(
+    name: str | Path,
+    configured_max_bytes: int | None,
+) -> int | None:
+    if not is_installer_artifact_name(name):
+        return configured_max_bytes
+    if configured_max_bytes is None:
+        return None
+    return max(configured_max_bytes, INSTALLER_ARTIFACT_MAX_BYTES)
 
 
 def artifact_thumbnail_url(artifact_id: str) -> str:

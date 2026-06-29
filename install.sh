@@ -232,6 +232,28 @@ echo "install.sh: installing OpenSquilla ${display_version} (${profile})"
 
 tool_bin_dir="$("${uv_bin}" tool dir --bin 2>/dev/null || true)"
 
+# Write an install receipt to aid `opensquilla uninstall`. Best-effort: never
+# fail the install if this cannot be written.
+write_install_receipt() {
+    home="${OPENSQUILLA_STATE_DIR:-${HOME}/.opensquilla}"
+    receipt="${home}/install-receipt.json"
+    tool_dir="$("${uv_bin}" tool dir 2>/dev/null || true)"
+    installed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")"
+    mkdir -p "${home}" 2>/dev/null || return 0
+    cat >"${receipt}" 2>/dev/null <<RECEIPT || return 0
+{
+  "version": 1,
+  "install_method": "uv-tool",
+  "installed_at": "${installed_at}",
+  "entrypoints": ["${tool_bin_dir}/opensquilla", "${tool_bin_dir}/gateway"],
+  "owned_paths": ["${tool_dir}/opensquilla", "${tool_bin_dir}/opensquilla", "${tool_bin_dir}/gateway"],
+  "data_root": "${home}"
+}
+RECEIPT
+    chmod 600 "${receipt}" 2>/dev/null || true
+}
+write_install_receipt || true
+
 cat <<DONE
 ----------------------------------------------------------------------------
 OpenSquilla installed from ${display_version}.

@@ -787,6 +787,23 @@ class TestSessionsList:
         assert row["interactive"] is True
 
     @pytest.mark.asyncio
+    async def test_list_returns_each_session_once(self, dispatcher):
+        sessions = [
+            FakeSession(session_key="agent:main:webchat:first"),
+            FakeSession(session_key="agent:main:webchat:second"),
+        ]
+        ctx = make_ctx(session_manager=FakeSessionManager(sessions))
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        assert [row["key"] for row in res.payload["sessions"]] == [
+            "agent:main:webchat:first",
+            "agent:main:webchat:second",
+        ]
+        assert res.payload["count"] == 2
+
+    @pytest.mark.asyncio
     async def test_list_webchat_title_uses_first_user_message(self, dispatcher):
         session = FakeSession(
             session_key="agent:main:webchat:semantic-title",

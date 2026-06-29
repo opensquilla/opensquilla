@@ -28,6 +28,7 @@ jobs:
       ci_changed: ${{ steps.classify.outputs.ci_changed }}
       dependency_changed: ${{ steps.classify.outputs.dependency_changed }}
       release_changed: ${{ steps.classify.outputs.release_changed }}
+      windows_full_required: ${{ steps.classify.outputs.windows_full_required }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -192,9 +193,68 @@ jobs:
         run: uv build --wheel
 
   windows-compat:
-    name: Lint, test, and build (windows-latest, 3.12)
+    name: Windows compatibility smoke (3.12)
     needs: classify-changes
     if: needs.classify-changes.outputs.docs_only != 'true'
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    env:
+      UV_PYTHON: "3.12"
+      PYTHONPATH: ${{ github.workspace }}
+      OPENSQUILLA_TURN_CALL_LOG: "0"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Configure runtime directories
+        shell: bash
+        run: |
+          printf 'OPENSQUILLA_STATE_DIR=%s/opensquilla-state\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'OPENSQUILLA_LOG_DIR=%s/opensquilla-logs\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install OpenTUI host dependencies
+        shell: bash
+        run: bun install --frozen-lockfile --cwd=src/opensquilla/cli/tui/opentui/package
+
+      - name: Install dependencies
+        shell: bash
+        run: uv sync --extra dev --extra recommended --extra mcp --frozen
+
+      - name: Test Windows compatibility smoke
+        shell: bash
+        run: |
+          uv run pytest \
+            tests/test_artifacts.py \
+            tests/test_contrib/test_codetask \
+            tests/test_desktop/test_electron_startup_contract.py \
+            tests/test_engine/test_coding_mode.py \
+            tests/test_engine/test_stream_wrappers.py \
+            tests/test_tools/test_shell_process_isolation.py \
+            -q
+
+  windows-full:
+    name: Windows full test suite (conditional)
+    needs: classify-changes
+    if: needs.classify-changes.outputs.windows_full_required == 'true'
     runs-on: windows-latest
     timeout-minutes: 20
 
@@ -293,6 +353,7 @@ jobs:
       - frontend-check
       - ubuntu-quality
       - windows-compat
+      - windows-full
       - release-packaging
     if: always()
     runs-on: ubuntu-latest
@@ -307,7 +368,8 @@ jobs:
           workflow_lint_result="${{ needs.workflow-lint.result }}"
           frontend_result="${{ needs.frontend-check.result }}"
           ubuntu_result="${{ needs.ubuntu-quality.result }}"
-          windows_result="${{ needs.windows-compat.result }}"
+          windows_smoke_result="${{ needs.windows-compat.result }}"
+          windows_full_result="${{ needs.windows-full.result }}"
           release_result="${{ needs.release-packaging.result }}"
           docs_only="${{ needs.classify-changes.outputs.docs_only }}"
           runtime_changed="${{ needs.classify-changes.outputs.runtime_changed }}"
@@ -315,15 +377,17 @@ jobs:
           ci_changed="${{ needs.classify-changes.outputs.ci_changed }}"
           dependency_changed="${{ needs.classify-changes.outputs.dependency_changed }}"
           release_changed="${{ needs.classify-changes.outputs.release_changed }}"
+          windows_full_required="${{ needs.classify-changes.outputs.windows_full_required }}"
 
           printf 'classify-changes: %s\n' "${classify_result}"
           printf 'workflow-lint: %s\n' "${workflow_lint_result}"
           printf 'frontend-check: %s\n' "${frontend_result}"
           printf 'ubuntu-quality: %s\n' "${ubuntu_result}"
-          printf 'windows-compat: %s\n' "${windows_result}"
+          printf 'windows-compat-smoke: %s\n' "${windows_smoke_result}"
+          printf 'windows-full: %s\n' "${windows_full_result}"
           printf 'release-packaging: %s\n' "${release_result}"
-          printf 'docs_only=%s runtime_changed=%s test_changed=%s ci_changed=%s dependency_changed=%s release_changed=%s\n' \
-            "${docs_only}" "${runtime_changed}" "${test_changed}" "${ci_changed}" "${dependency_changed}" "${release_changed}"
+          printf 'docs_only=%s runtime_changed=%s test_changed=%s ci_changed=%s dependency_changed=%s release_changed=%s windows_full_required=%s\n' \
+            "${docs_only}" "${runtime_changed}" "${test_changed}" "${ci_changed}" "${dependency_changed}" "${release_changed}" "${windows_full_required}"
 
           if [[ "${classify_result}" != "success" ]]; then
             echo "Classify changed files must succeed."
@@ -345,8 +409,13 @@ jobs:
             exit 1
           fi
 
-          if [[ "${docs_only}" != "true" && "${windows_result}" != "success" ]]; then
-            echo "Windows compatibility tests must succeed for non-documentation changes."
+          if [[ "${docs_only}" != "true" && "${windows_smoke_result}" != "success" ]]; then
+            echo "Windows compatibility smoke tests must succeed for non-documentation changes."
+            exit 1
+          fi
+
+          if [[ "${windows_full_required}" == "true" && "${windows_full_result}" != "success" ]]; then
+            echo "Windows full test suite must succeed for high-risk changes."
             exit 1
           fi
 

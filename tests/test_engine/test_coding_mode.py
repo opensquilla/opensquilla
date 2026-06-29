@@ -161,20 +161,18 @@ class TestDirectiveInjection:
         assert "exec_command" in suffix
         assert "stdin=" in suffix
         assert "background_process" in suffix
-        assert "sys.stdin.buffer.read()" in suffix
-        # Atomic-and-secure file creation (mkstemp), not a guessed path.
-        assert "tempfile.mkstemp" in suffix
-        # os.fdopen+write handles partial writes from large stdin; raw
-        # os.write can short-write at multi-100KB payloads on some OS.
-        assert "os.fdopen" in suffix
-        # Cross-platform shell-quoting: " on Windows, shlex.quote on POSIX.
-        # Defends against $/`/backslash on POSIX and against the path
-        # itself containing characters that need shell escaping.
-        assert "shlex.quote" in suffix
+        assert "code-task stage-task-file" in suffix
+        # Packaged desktop gateways are not Python interpreters. The staging
+        # recipe must therefore be a code-task subcommand, never
+        # `opensquilla-gateway -c ...`.
+        assert " -c " not in suffix
+        assert "sys.stdin.buffer.read()" not in suffix
         # Both real-repo (case 1) and scratch (case 2) recipes are shown,
         # otherwise weaker models copy the scratch command for repo edits.
         assert "Case 1, real repo" in suffix
         assert "Case 2, scratch" in suffix
+        assert "Case 3, app build from scratch" in suffix
+        assert "--verification-mode build --yes" in suffix
         # Explicit framing of exec_command's exit_code=0 prefix so the
         # agent doesn't try to parse the wrong stdout line.
         assert "exit_code=0" in suffix
@@ -185,25 +183,31 @@ class TestDirectiveInjection:
         assert "del " in suffix and "rm " in suffix  # Windows + POSIX
 
     @pytest.mark.asyncio
-    async def test_directive_uses_resolved_python_not_bare_name(
+    async def test_directive_uses_codetask_stage_task_file_not_python_dash_c(
         self, monkeypatch
     ):
-        """The staging recipe must invoke the SAME interpreter the gateway
-        is running on — not a bare ``python`` that could resolve to a
-        different (or broken) interpreter via PATH. Mirrors how
-        __CODE_TASK_CMD__ is already a fully-qualified path."""
+        """Packaged gateways are CLI binaries, not Python interpreters.
+
+        A desktop build previously rendered the staging recipe as
+        `opensquilla-gateway -c ...`, which Typer rejects with
+        "No such option: -c".  The directive must route staging through the
+        verified code-task command prefix instead.
+        """
         from opensquilla.engine.steps import coding_mode as _cm
+        packaged_code_task = (
+            "/Applications/OpenSquilla.app/Contents/Resources/runtime/"
+            "gateway/opensquilla-gateway code-task"
+        )
         monkeypatch.setattr(
-            _cm, "sys", SimpleNamespace(executable="/fake/venv/bin/python")
+            _cm,
+            "resolve_code_task_command",
+            lambda: packaged_code_task,
         )
 
         ctx = await enforce_coding_mode(self._ctx(True))
         _, suffix = ctx.system_prompt
-        assert "/fake/venv/bin/python -c" in suffix
-        # No bare `python -c` invocation anywhere — always the resolved path.
-        # (Allow the literal word "python" in prose; check it never appears
-        # as a standalone command token.)
-        assert " python -c" not in suffix and "\npython -c" not in suffix
+        assert "opensquilla-gateway code-task stage-task-file" in suffix
+        assert "opensquilla-gateway -c" not in suffix
 
     @pytest.mark.asyncio
     async def test_off_injects_nothing(self):
@@ -285,6 +289,60 @@ class TestWriteToolDenyEnforcement:
         assert "edit_file" in names
 
 
+class TestPackagedCodeTaskResolution:
+    """Packaged desktop gateways are the CLI executable, not a Python binary."""
+
+    def test_uses_current_executable_when_it_runs_codetask(self, monkeypatch, tmp_path):
+        from opensquilla.engine.steps import coding_mode as cm
+
+        cm._reset_resolution_cache()
+        app_dir = tmp_path / "OpenSquilla App"
+        app_dir.mkdir()
+        exe = app_dir / "opensquilla-gateway"
+        exe.write_text("")
+        exe.chmod(0o755)
+        monkeypatch.setattr(cm.sys, "executable", str(exe))
+        monkeypatch.setattr(cm.shutil, "which", lambda name: None)
+        monkeypatch.setattr(cm, "_runs_code_task", lambda argv: argv == [str(exe)])
+
+        assert cm.resolve_code_task_command() == f"{cm._quote(str(exe))} code-task"
+
+        cm._reset_resolution_cache()
+
+    def test_uses_current_windows_gateway_executable_path(self, monkeypatch):
+        from opensquilla.engine.steps import coding_mode as cm
+
+        cm._reset_resolution_cache()
+        exe = r"C:\Program Files\OpenSquilla\opensquilla-gateway.exe"
+        monkeypatch.setattr(cm.sys, "executable", exe)
+        monkeypatch.setattr(cm.shutil, "which", lambda name: None)
+        monkeypatch.setattr(cm, "_runs_code_task", lambda argv: argv == [exe])
+
+        assert cm.resolve_code_task_command() == f"{cm._quote(exe)} code-task"
+
+        cm._reset_resolution_cache()
+
+    def test_does_not_accept_direct_probe_for_plain_python(self, monkeypatch, tmp_path):
+        from opensquilla.engine.steps import coding_mode as cm
+
+        cm._reset_resolution_cache()
+        py = str(tmp_path / "python")
+        monkeypatch.setattr(cm.sys, "executable", py)
+        monkeypatch.setattr(cm.shutil, "which", lambda name: None)
+        calls: list[list[str]] = []
+
+        def fake_runs(argv: list[str]) -> bool:
+            calls.append(argv)
+            return argv == [py]
+
+        monkeypatch.setattr(cm, "_runs_code_task", fake_runs)
+
+        assert cm.resolve_code_task_command() is None
+        assert [py] not in calls
+
+        cm._reset_resolution_cache()
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="code-task Windows support is WIP")
 class TestCodeTaskResolution:
     """resolve_code_task_command picks a PATH-independent, runnable invocation."""
@@ -333,15 +391,15 @@ class TestCodeTaskResolution:
     def test_failure_is_not_cached_retries(self, monkeypatch, tmp_path):
         from opensquilla.engine.steps import coding_mode as cm
         cm._reset_resolution_cache()
-        monkeypatch.setattr(cm.sys, "executable", str(tmp_path / "python"))
+        py = str(tmp_path / "python")
+        monkeypatch.setattr(cm.sys, "executable", py)
         monkeypatch.setattr(cm.shutil, "which", lambda name: None)
-        calls = {"n": 0}
+        available = {"ok": False}
         def flaky(argv):
-            calls["n"] += 1
-            return calls["n"] > 1  # first probe fails, later succeed
+            return available["ok"] and argv[:2] == [py, "-P"]
         monkeypatch.setattr(cm, "_runs_code_task", flaky)
         assert cm.resolve_code_task_command() is None      # transient failure, NOT cached
-        monkeypatch.setattr(cm, "_runs_code_task", lambda argv: True)
+        available["ok"] = True
         assert cm.resolve_code_task_command() is not None  # retried, resolves
         cm._reset_resolution_cache()
 

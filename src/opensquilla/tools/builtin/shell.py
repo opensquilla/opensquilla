@@ -487,7 +487,63 @@ def _bg_session_payload(session: _BgSession) -> dict[str, object]:
     }
     if session.local_urls:
         payload["local_urls"] = list(session.local_urls)
+    code_task = _code_task_status_payload(session)
+    if code_task:
+        payload["code_task"] = code_task
     return payload
+
+
+def _code_task_status_payload(session: _BgSession) -> dict[str, object] | None:
+    if "code-task" not in session.command:
+        return None
+    output = "".join(session.output_lines)
+    marker = _parse_code_task_marker(output)
+    if marker is None:
+        return None
+    status_path = Path(marker["status_path"]).expanduser()
+    payload: dict[str, object] = dict(marker)
+    if status_path.is_file():
+        try:
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            status = {}
+        if isinstance(status, dict):
+            for key in (
+                "phase",
+                "updated",
+                "pid",
+                "current_command",
+                "last_output_at",
+                "quiet_for_seconds",
+                "state",
+                "verified",
+                "error",
+                "final_failure_reason",
+                "installer_path",
+                "log_paths",
+            ):
+                if key in status:
+                    payload[key] = status[key]
+    return payload
+
+
+def _parse_code_task_marker(output: str) -> dict[str, str] | None:
+    for line in output.splitlines():
+        if "[code-task] run started:" not in line or "status=" not in line:
+            continue
+        status_tail = line.split("status=", 1)[1]
+        status_end = status_tail.find("status.json")
+        if status_end < 0:
+            continue
+        status_path = status_tail[: status_end + len("status.json")]
+        payload = {"status_path": status_path}
+        run_match = re.search(r"run_id=([^\s]+)", line)
+        if run_match:
+            payload["run_id"] = run_match.group(1)
+        if "artifact_dir=" in line and " status=" in line:
+            payload["artifact_dir"] = line.split("artifact_dir=", 1)[1].split(" status=", 1)[0]
+        return payload
+    return None
 
 
 def _local_server_urls_from_command(command: str) -> list[str]:
@@ -680,6 +736,30 @@ async def _write_exec_stdin(proc: Any, stdin_bytes: bytes | None) -> None:
             proc.stdin.close()
 
 
+async def _wait_exec_stdin_writer(writer_task: asyncio.Task[None], timeout: float) -> bool:
+    done, _ = await asyncio.wait({writer_task}, timeout=max(0.0, timeout))
+    if writer_task not in done:
+        return False
+    with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+        await writer_task
+    return True
+
+
+async def _cancel_exec_stdin_writer(proc: Any, writer_task: asyncio.Task[None] | None) -> None:
+    if writer_task is None or writer_task.done():
+        return
+    if proc.stdin is not None and not proc.stdin.is_closing():
+        proc.stdin.close()
+    writer_task.cancel()
+    with contextlib.suppress(
+        TimeoutError,
+        asyncio.CancelledError,
+        BrokenPipeError,
+        ConnectionResetError,
+    ):
+        await asyncio.wait_for(writer_task, timeout=0.05)
+
+
 async def _run_host_shell_command(
     command: str,
     *,
@@ -709,18 +789,26 @@ async def _run_host_shell_command(
             timeout_result = f"[timeout after {effective_timeout}s]\ncommand: {command}"
 
             proc = await asyncio.create_subprocess_shell(command, **subprocess_kwargs)
+            stdin_writer: asyncio.Task[None] | None = None
             remaining = deadline - loop.time()
             if remaining <= 0:
                 await _terminate_exec_process_tree(proc)
                 return timeout_result
             try:
-                await asyncio.wait_for(_write_exec_stdin(proc, stdin_bytes), timeout=remaining)
+                if stdin_bytes is not None:
+                    stdin_writer = asyncio.create_task(_write_exec_stdin(proc, stdin_bytes))
+                    if not await _wait_exec_stdin_writer(stdin_writer, remaining):
+                        await _cancel_exec_stdin_writer(proc, stdin_writer)
+                        await _terminate_exec_process_tree(proc)
+                        return timeout_result
             except TimeoutError:
+                await _cancel_exec_stdin_writer(proc, stdin_writer)
                 await _terminate_exec_process_tree(proc)
                 return timeout_result
 
             remaining = deadline - loop.time()
             if remaining <= 0 or not await _wait_exec_process(proc, remaining):
+                await _cancel_exec_stdin_writer(proc, stdin_writer)
                 await _terminate_exec_process_tree(proc)
                 return timeout_result
             if os.name == "posix":

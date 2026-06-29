@@ -6,7 +6,7 @@ import sys
 import pytest
 
 from opensquilla.contrib.codetask import adapter
-from opensquilla.contrib.codetask.adapter import LocalAdapter
+from opensquilla.contrib.codetask.adapter import LocalAdapter, _agent_command
 
 
 class FakePopen:
@@ -81,6 +81,22 @@ def test_api_key_never_in_argv(monkeypatch, tmp_path):
     assert all("sk-or-secret-xyz" not in part for part in captured["cmd"])
 
 
+def test_agent_command_uses_packaged_cli_directly_for_gateway_executable():
+    cmd = _agent_command(
+        "/Applications/OpenSquilla.app/Contents/Resources/runtime/gateway/opensquilla-gateway/opensquilla-gateway",
+        ["opensquilla", "agent", "--message", "hello"],
+        "print('unused')",
+    )
+
+    assert cmd == [
+        "/Applications/OpenSquilla.app/Contents/Resources/runtime/gateway/opensquilla-gateway/opensquilla-gateway",
+        "agent",
+        "--message",
+        "hello",
+    ]
+    assert "-c" not in cmd
+
+
 def test_timeout_kills_group_and_reports_timeout(monkeypatch, tmp_path):
     captured = {}
     _install_popen(monkeypatch, captured, timeout=True)
@@ -96,6 +112,69 @@ def test_timeout_kills_group_and_reports_timeout(monkeypatch, tmp_path):
     assert out.timeout is True
     assert out.finish_reason == "timeout"
     assert killed["group"] is True
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process-group signal differs on Windows")
+def test_run_streams_logs_and_touches_observability_files(monkeypatch, tmp_path):
+    script = (
+        "import json, sys, time\n"
+        "print('first line')\n"
+        "sys.stdout.flush()\n"
+        "time.sleep(0.1)\n"
+        "print(json.dumps({'status': 'ok', 'text': 'done', 'usage': {'total_tokens': 7}}))\n"
+        "sys.stdout.flush()\n"
+    )
+    monkeypatch.setattr(adapter, "agent_python", lambda: sys.executable)
+    monkeypatch.setattr(
+        adapter, "_agent_command", lambda executable, argv, py_code: [sys.executable, "-c", script]
+    )
+    monkeypatch.setattr(adapter, "POLL_INTERVAL_SECONDS", 0.05)
+    statuses = []
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    out = LocalAdapter(timeout=5).run(
+        "secret prompt",
+        repo=repo,
+        scratch_dir=tmp_path / "s",
+        artifact_dir=tmp_path / "a",
+        status_callback=statuses.append,
+        quiet_timeout=2,
+    )
+
+    assert out.success is True
+    assert out.usage["total_tokens"] == 7
+    assert "first line" in (tmp_path / "a" / "agent_stdout.log").read_text("utf-8")
+    assert (tmp_path / "a" / "agent_stderr.log").is_file()
+    assert (tmp_path / "a" / "transcript.jsonl").is_file()
+    assert (tmp_path / "a" / "usage.json").is_file()
+    assert statuses
+    assert statuses[0]["log_paths"]["stdout"].endswith("agent_stdout.log")
+    assert "secret prompt" not in statuses[0]["current_command"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process-group signal differs on Windows")
+def test_run_marks_silent_agent_as_stalled(monkeypatch, tmp_path):
+    script = "import time\ntime.sleep(30)\n"
+    monkeypatch.setattr(adapter, "agent_python", lambda: sys.executable)
+    monkeypatch.setattr(
+        adapter, "_agent_command", lambda executable, argv, py_code: [sys.executable, "-c", script]
+    )
+    monkeypatch.setattr(adapter, "POLL_INTERVAL_SECONDS", 0.05)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    out = LocalAdapter(timeout=10).run(
+        "x",
+        repo=repo,
+        scratch_dir=tmp_path / "s",
+        artifact_dir=tmp_path / "a",
+        quiet_timeout=1,
+    )
+
+    assert out.success is False
+    assert out.finish_reason == "stalled"
+    assert out.error and "no stdout/stderr/transcript/usage updates" in out.error
 
 
 def test_run_clears_stale_scratch_manifest(monkeypatch, tmp_path):

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import platform
+import signal
 import sys
 from types import SimpleNamespace
+from urllib.error import URLError
 
+import pytest
 from typer.testing import CliRunner
 
 from opensquilla.cli import gateway_cmd, gateway_lifecycle
@@ -693,3 +698,301 @@ def test_gateway_restart_stops_before_starting(tmp_path, monkeypatch) -> None:
     assert result.exit_code == 0, result.stdout
     assert events == ["stop", "start"]
     assert _payload(result)["state"] == "running"
+
+
+# ---------------------------------------------------------------------------
+# Graceful shutdown signal handling (gateway run)
+#
+# Regression coverage for the SIGTERM drain bug: _run() must route SIGINT and
+# SIGTERM through GatewayServer.close() (the only path that drains in-flight
+# agent turns + background completions), not let uvicorn's default handler exit
+# without the drain.
+# ---------------------------------------------------------------------------
+
+
+class _ShutdownProbeServer:
+    """Fake GatewayServer whose serve task only ends when close() is called.
+
+    ``fire`` is the shutdown reason to simulate once the loop is running; ``via``
+    selects how it is delivered — "signal" through the captured signal handler,
+    or "http" through ``app.state.request_shutdown`` (the HTTP endpoint path).
+    """
+
+    def __init__(self, *, fire: str | None = None, via: str = "signal") -> None:
+        self.closed: list[str] = []
+        self._fire = fire
+        self._via = via
+        self._on_signal = None
+        self.app = SimpleNamespace(state=SimpleNamespace())
+        self._task: asyncio.Task | None = None
+
+    def spawn(self) -> None:
+        # Must run inside the event loop, so the fake start coroutine calls it.
+        self._task = asyncio.ensure_future(self._serve())
+
+    async def _serve(self) -> None:
+        if self._fire is not None:
+            await asyncio.sleep(0.01)
+            if self._via == "http":
+                self.app.state.request_shutdown(self._fire)
+            else:
+                assert self._on_signal is not None, "shutdown handler not captured"
+                self._on_signal(self._fire)
+        await asyncio.Event().wait()
+
+    async def close(self, reason: str) -> None:
+        self.closed.append(reason)
+        if self._task is not None:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+
+
+def _install_fake_start(server, holder, monkeypatch) -> None:
+    async def fake_start(*, config, subscription_manager, run):
+        server.spawn()
+        holder["server"] = server
+        return server
+
+    monkeypatch.setattr(gateway_cmd, "start_gateway_server", fake_start)
+
+
+def test_gateway_run_drains_via_close_on_shutdown_signal(tmp_path, monkeypatch) -> None:
+    """A delivered SIGTERM must trigger server.close() (the graceful drain)."""
+    config = tmp_path / "gw.toml"
+    config.write_text('host = "127.0.0.1"\nport = 18791\n', encoding="utf-8")
+
+    holder: dict = {}
+    server = _ShutdownProbeServer(fire="sigterm", via="signal")
+    # Capture the handler _run installs, and feed it back into the fake server so
+    # it can simulate signal delivery deterministically (no real os.kill).
+    real_install = gateway_cmd._install_shutdown_handlers
+
+    def capturing_install(loop, on_signal):
+        server._on_signal = on_signal
+        return real_install(loop, on_signal)
+
+    monkeypatch.setattr(gateway_cmd, "_install_shutdown_handlers", capturing_install)
+    _install_fake_start(server, holder, monkeypatch)
+
+    gateway_cmd.run_gateway(
+        port=None, bind=None, listen="", debug=False, config_path=str(config)
+    )
+
+    assert holder["server"].closed == ["sigterm"]
+
+
+def test_gateway_run_drains_when_server_task_exits_on_its_own(
+    tmp_path, monkeypatch
+) -> None:
+    """If the serve task ends without a signal, close() still runs the drain."""
+    config = tmp_path / "gw.toml"
+    config.write_text('host = "127.0.0.1"\nport = 18791\n', encoding="utf-8")
+
+    class _SelfExitingServer:
+        def __init__(self) -> None:
+            self.closed: list[str] = []
+            self._task: asyncio.Task | None = None
+
+        def spawn(self) -> None:
+            async def done() -> None:
+                return None
+
+            self._task = asyncio.ensure_future(done())
+
+        async def close(self, reason: str) -> None:
+            self.closed.append(reason)
+
+    holder: dict = {}
+    _install_fake_start(_SelfExitingServer(), holder, monkeypatch)
+
+    gateway_cmd.run_gateway(
+        port=None, bind=None, listen="", debug=False, config_path=str(config)
+    )
+
+    assert holder["server"].closed == ["shutdown"]
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="loop.add_signal_handler is unsupported on Windows"
+)
+def test_install_shutdown_handlers_traps_real_sigterm() -> None:
+    """The installed asyncio handler must trap a real SIGTERM (not let it kill)."""
+
+    async def main() -> list[str]:
+        loop = asyncio.get_running_loop()
+        got: list[str] = []
+        installed = gateway_cmd._install_shutdown_handlers(loop, got.append)
+        try:
+            # Only deliver the signal once we've confirmed our handler owns it,
+            # so a failed install can never fall through to the default (kill).
+            assert signal.SIGTERM in installed
+            os.kill(os.getpid(), signal.SIGTERM)
+            for _ in range(100):
+                if got:
+                    break
+                await asyncio.sleep(0.01)
+        finally:
+            gateway_cmd._remove_shutdown_handlers(loop, installed)
+        return got
+
+    assert asyncio.run(main()) == ["sigterm"]
+
+
+def test_gateway_shutdown_deadline_exceeds_graceful_budget(monkeypatch) -> None:
+    """The kill deadline must always exceed the (two-phase) graceful drain."""
+    from opensquilla.gateway import boot
+
+    monkeypatch.delenv(boot.GATEWAY_GRACEFUL_TIMEOUT_ENV, raising=False)
+    assert boot.gateway_shutdown_deadline() > boot.gateway_graceful_timeout() * 2
+
+    monkeypatch.setenv(boot.GATEWAY_GRACEFUL_TIMEOUT_ENV, "5")
+    assert boot.gateway_graceful_timeout() == 5.0
+    assert boot.gateway_shutdown_deadline() > 5.0 * 2
+
+    # Bounded: absurd values clamp, junk falls back to the default.
+    monkeypatch.setenv(boot.GATEWAY_GRACEFUL_TIMEOUT_ENV, "100000")
+    assert boot.gateway_graceful_timeout() == 120.0
+    monkeypatch.setenv(boot.GATEWAY_GRACEFUL_TIMEOUT_ENV, "not-a-number")
+    assert boot.gateway_graceful_timeout() == 30.0
+
+
+def test_gateway_run_drains_via_http_shutdown_trigger(tmp_path, monkeypatch) -> None:
+    """_run must expose app.state.request_shutdown; calling it drains via close()."""
+    config = tmp_path / "gw.toml"
+    config.write_text('host = "127.0.0.1"\nport = 18791\n', encoding="utf-8")
+
+    holder: dict = {}
+    # via="http" makes the fake server fire through app.state.request_shutdown,
+    # which _run wires to the same graceful-drain trigger as the signal handlers.
+    server = _ShutdownProbeServer(fire="api_shutdown", via="http")
+    _install_fake_start(server, holder, monkeypatch)
+
+    gateway_cmd.run_gateway(
+        port=None, bind=None, listen="", debug=False, config_path=str(config)
+    )
+
+    assert holder["server"].closed == ["api_shutdown"]
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle stop: graceful HTTP shutdown (Windows) + POSIX SIGTERM fallback
+# ---------------------------------------------------------------------------
+
+
+class _FakeShutdownResponse:
+    def __init__(self, status: int) -> None:
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        return None
+
+
+def test_request_graceful_shutdown_posts_with_token(monkeypatch) -> None:
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_TOKEN", "secret-tok")
+    captured: dict = {}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["method"] = request.method
+        captured["auth"] = request.headers.get("Authorization")
+        captured["timeout"] = timeout
+        return _FakeShutdownResponse(202)
+
+    monkeypatch.setattr(gateway_lifecycle, "urlopen", fake_urlopen)
+    mgr = Manager(host="127.0.0.1", port=18791)
+
+    assert mgr._request_graceful_shutdown() is True
+    assert captured["url"] == "http://127.0.0.1:18791/api/system/shutdown"
+    assert captured["method"] == "POST"
+    assert captured["auth"] == "Bearer secret-tok"
+
+
+def test_request_graceful_shutdown_returns_false_when_unreachable(monkeypatch) -> None:
+    def fake_urlopen(request, timeout):
+        raise URLError("connection refused")
+
+    monkeypatch.setattr(gateway_lifecycle, "urlopen", fake_urlopen)
+    monkeypatch.delenv("OPENSQUILLA_GATEWAY_TOKEN", raising=False)
+    mgr = Manager(host="127.0.0.1", port=18791, config_path=None)
+
+    assert mgr._request_graceful_shutdown() is False
+
+
+def test_terminate_pid_windows_prefers_graceful_endpoint(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_lifecycle, "_running_on_windows", lambda: True)
+    monkeypatch.setattr(Manager, "_pid_running", lambda self, pid: True)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        Manager,
+        "_request_graceful_shutdown",
+        lambda self: calls.append("graceful") or True,
+    )
+    monkeypatch.setattr(Manager, "_wait_for_exit", lambda self, pid, timeout: True)
+    killed: list = []
+    monkeypatch.setattr(gateway_lifecycle.os, "kill", lambda *a: killed.append(a))
+
+    mgr = Manager(host="127.0.0.1", port=18791, shutdown_timeout=1.0)
+    assert mgr._terminate_pid(4321) is True
+    assert calls == ["graceful"]
+    assert killed == []  # graceful exit means no hard kill
+
+
+def test_terminate_pid_windows_falls_back_to_terminate(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_lifecycle, "_running_on_windows", lambda: True)
+    monkeypatch.setattr(Manager, "_pid_running", lambda self, pid: True)
+    monkeypatch.setattr(Manager, "_request_graceful_shutdown", lambda self: False)
+    monkeypatch.setattr(Manager, "_wait_for_exit", lambda self, pid, timeout: True)
+    killed: list = []
+    monkeypatch.setattr(gateway_lifecycle.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+
+    mgr = Manager(host="127.0.0.1", port=18791, shutdown_timeout=1.0)
+    assert mgr._terminate_pid(4321) is True
+    # Graceful rejected -> hard terminate via TerminateProcess (os.kill SIGTERM).
+    assert killed == [(4321, signal.SIGTERM)]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="SIGKILL is POSIX-only")
+def test_terminate_pid_posix_uses_sigterm_then_sigkill(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_lifecycle, "_running_on_windows", lambda: False)
+    monkeypatch.setattr(Manager, "_pid_running", lambda self, pid: True)
+    sent: list = []
+    monkeypatch.setattr(gateway_lifecycle.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+    # First wait (after SIGTERM) times out, forcing the SIGKILL hard-kill path.
+    monkeypatch.setattr(Manager, "_wait_for_exit", lambda self, pid, timeout: False)
+    # Never reach the HTTP path on POSIX.
+    monkeypatch.setattr(
+        Manager,
+        "_request_graceful_shutdown",
+        lambda self: (_ for _ in ()).throw(AssertionError("HTTP path used on POSIX")),
+    )
+
+    mgr = Manager(host="127.0.0.1", port=18791, shutdown_timeout=0.0)
+    mgr._terminate_pid(4321)
+    assert (4321, signal.SIGTERM) in sent
+    assert any(sig == getattr(signal, "SIGKILL", None) for _pid, sig in sent)
+
+
+def test_hard_kill_backstop_does_not_reuse_full_shutdown_timeout(monkeypatch) -> None:
+    """Windows accepted-but-slow path must not wait the full graceful budget twice."""
+    monkeypatch.setattr(gateway_lifecycle, "_running_on_windows", lambda: True)
+    monkeypatch.setattr(Manager, "_pid_running", lambda self, pid: True)
+    monkeypatch.setattr(Manager, "_request_graceful_shutdown", lambda self: True)
+    waits: list[float] = []
+
+    def fake_wait(self, pid, timeout):
+        waits.append(timeout)
+        return len(waits) > 1  # graceful wait times out; hard-kill wait succeeds
+
+    monkeypatch.setattr(Manager, "_wait_for_exit", fake_wait)
+    monkeypatch.setattr(gateway_lifecycle.os, "kill", lambda *a: None)
+
+    mgr = Manager(host="127.0.0.1", port=18791, shutdown_timeout=75.0)
+    assert mgr._terminate_pid(4321) is True
+    # First wait uses the graceful budget; the hard-kill backstop is short, not 75s again.
+    assert waits == [75.0, gateway_lifecycle._HARD_KILL_BACKSTOP_S]

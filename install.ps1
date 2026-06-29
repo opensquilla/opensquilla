@@ -257,6 +257,25 @@ try {
     $toolBinDir = ''
 }
 
+# Write an install receipt to aid `opensquilla uninstall`. Best-effort.
+try {
+    $receiptHome = if ($env:OPENSQUILLA_STATE_DIR) { $env:OPENSQUILLA_STATE_DIR } else { Join-Path $HOME '.opensquilla' }
+    $toolDir = ''
+    try { $toolDir = (& $uvBin tool dir 2>$null).Trim() } catch { $toolDir = '' }
+    New-Item -ItemType Directory -Force -Path $receiptHome | Out-Null
+    $receipt = [ordered]@{
+        version        = 1
+        install_method = 'uv-tool'
+        installed_at   = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        entrypoints    = @("$toolBinDir/opensquilla", "$toolBinDir/gateway")
+        owned_paths    = @("$toolDir/opensquilla", "$toolBinDir/opensquilla", "$toolBinDir/gateway")
+        data_root      = $receiptHome
+    }
+    $receipt | ConvertTo-Json | Set-Content -Path (Join-Path $receiptHome 'install-receipt.json') -Encoding utf8
+} catch {
+    # Receipt is optional; never fail the install over it.
+}
+
 @"
 ----------------------------------------------------------------------------
 OpenSquilla installed from $displayVersion.

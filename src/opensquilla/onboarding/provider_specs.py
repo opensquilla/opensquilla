@@ -92,6 +92,7 @@ _ONBOARDING_VERIFIED_PROVIDER_IDS = frozenset(
         "zhipu",
         "qianfan",
         "volcengine",
+        "byteplus",
     }
 )
 

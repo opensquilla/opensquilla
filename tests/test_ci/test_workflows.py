@@ -169,7 +169,8 @@ def test_default_ci_blocks_pull_requests_and_main_and_dev_pushes() -> None:
     assert "actionlint@v1.7.12" in text
     assert "Classify changed files" in text
     assert "Ubuntu quality gate" in text
-    assert "Windows compatibility tests" in text
+    assert "Windows compatibility smoke tests" in text
+    assert "Windows full test suite" in text
     assert "Release packaging contracts" in text
     assert "CI result" in text
     assert 'push)\n              printf \'.ci/run-all\\n\' > "${changed_files}"' in text
@@ -178,6 +179,7 @@ def test_default_ci_blocks_pull_requests_and_main_and_dev_pushes() -> None:
     assert "ci_changed" in text
     assert "dependency_changed" in text
     assert "release_changed" in text
+    assert "windows_full_required" in text
     assert "code_changed" not in text
     assert "workflow_changed" not in text
 
@@ -372,6 +374,7 @@ def test_ci_change_classifier_allows_root_and_docs_markdown_only(tmp_path: Path)
         "ci_changed": "false",
         "dependency_changed": "false",
         "release_changed": "false",
+        "windows_full_required": "false",
     }
 
 
@@ -397,6 +400,7 @@ def test_ci_change_classifier_accepts_crlf_changed_files(tmp_path: Path) -> None
 
     assert outputs["docs_only"] == "true"
     assert outputs["runtime_changed"] == "false"
+    assert outputs["windows_full_required"] == "false"
 
 
 def test_ci_change_classifier_treats_runtime_markdown_as_runtime(tmp_path: Path) -> None:
@@ -411,6 +415,7 @@ def test_ci_change_classifier_treats_runtime_markdown_as_runtime(tmp_path: Path)
     assert outputs["ci_changed"] == "false"
     assert outputs["dependency_changed"] == "false"
     assert outputs["release_changed"] == "false"
+    assert outputs["windows_full_required"] == "true"
 
 
 def test_ci_change_classifier_tracks_test_changes_separately(tmp_path: Path) -> None:
@@ -425,6 +430,24 @@ def test_ci_change_classifier_tracks_test_changes_separately(tmp_path: Path) -> 
     assert outputs["ci_changed"] == "false"
     assert outputs["dependency_changed"] == "false"
     assert outputs["release_changed"] == "false"
+    assert outputs["windows_full_required"] == "true"
+
+
+def test_ci_change_classifier_keeps_webui_only_changes_off_windows_full(
+    tmp_path: Path,
+) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        ["opensquilla-webui/src/views/ChatView.vue"],
+    )
+
+    assert outputs["docs_only"] == "false"
+    assert outputs["runtime_changed"] == "false"
+    assert outputs["test_changed"] == "false"
+    assert outputs["ci_changed"] == "false"
+    assert outputs["dependency_changed"] == "false"
+    assert outputs["release_changed"] == "false"
+    assert outputs["windows_full_required"] == "false"
 
 
 def test_ci_change_classifier_tracks_ci_dependency_and_release_changes(tmp_path: Path) -> None:
@@ -439,6 +462,7 @@ def test_ci_change_classifier_tracks_ci_dependency_and_release_changes(tmp_path:
     assert outputs["ci_changed"] == "true"
     assert outputs["dependency_changed"] == "true"
     assert outputs["release_changed"] == "true"
+    assert outputs["windows_full_required"] == "true"
 
 
 def test_ci_change_classifier_tracks_release_surface_changes(tmp_path: Path) -> None:
@@ -459,6 +483,7 @@ def test_ci_change_classifier_tracks_release_surface_changes(tmp_path: Path) -> 
     assert outputs["ci_changed"] == "true"
     assert outputs["dependency_changed"] == "false"
     assert outputs["release_changed"] == "true"
+    assert outputs["windows_full_required"] == "true"
 
 
 def test_manual_workflows_reference_existing_test_files() -> None:

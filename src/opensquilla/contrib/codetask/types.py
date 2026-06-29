@@ -101,6 +101,7 @@ class AgentOutcome:
     duration_seconds: float = 0.0
     session_id: str | None = None
     usage: dict = field(default_factory=dict)
+    error: str | None = None
 
 
 @dataclass

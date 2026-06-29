@@ -10,7 +10,7 @@ def test_router_catalog_exposes_supported_profiles_and_tiers():
     payload = router_catalog_payload()
 
     profiles = {p["profileId"]: p for p in payload["profiles"]}
-    assert {"openrouter", "deepseek", "openai"} <= set(profiles)
+    assert {"openrouter", "deepseek", "openai", "byteplus"} <= set(profiles)
     deepseek = profiles["deepseek"]
     assert deepseek["providerId"] == "deepseek"
     assert set(deepseek["tiers"]) == {"c0", "c1", "c2", "c3"}
@@ -21,6 +21,10 @@ def test_router_catalog_exposes_supported_profiles_and_tiers():
     openrouter = profiles["openrouter"]
     assert "image_model" in openrouter["tiers"]
     assert openrouter["tiers"]["image_model"]["supportsImage"] is True
+    byteplus = profiles["byteplus"]
+    assert byteplus["providerId"] == "byteplus"
+    assert byteplus["tiers"]["c1"]["model"] == "seed-2-0-lite-260228"
+    assert byteplus["tiers"]["c1"]["provider"] == "byteplus"
     assert payload["defaultTier"] == "c1"
     assert set(payload["textTiers"]) == {"c0", "c1", "c2", "c3"}
 

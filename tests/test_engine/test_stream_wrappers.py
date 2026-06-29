@@ -49,7 +49,9 @@ async def test_heartbeat_stream_preserves_upstream_generator_context() -> None:
 
     events = [event async for event in heartbeat_stream(source(), interval=0.02)]
 
-    assert [event.text for event in events] == ["first", "second"]
+    text_events = [event for event in events if isinstance(event, TextDeltaEvent)]
+    assert [event.text for event in text_events] == ["first", "second"]
+    assert owner.get() is None
 
 
 @pytest.mark.asyncio

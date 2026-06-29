@@ -8,7 +8,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- `opensquilla uninstall` removes OpenSquilla across install methods (uv-tool,
+  pip, pipx, and source; portable removes its venv; Docker and desktop print
+  guided removal steps). It keeps your data by default — pass `--purge-state`,
+  `--purge-config`, or `--purge-all` to delete it (a total wipe requires a typed
+  confirmation phrase on every surface), and `--dry-run` / `--json` preview the
+  exact remove/keep/manual plan without touching anything. Deletion is contained
+  to the OpenSquilla home; a relocated or shared root is refused. The desktop
+  Settings → Runtime panel gains a matching "Danger zone".
+
 ### Changed
+
+- Stopping, restarting, or uninstalling the gateway now drains in-flight agent
+  turns and background completions before exit instead of cutting them off
+  mid-write. The force-kill deadline exceeds the drain budget (tunable via
+  `OPENSQUILLA_GATEWAY_GRACEFUL_TIMEOUT`); on Windows, an owner-only
+  `POST /api/system/shutdown` endpoint provides the same graceful stop where
+  POSIX signals are unavailable.
 
 ### Fixed
 

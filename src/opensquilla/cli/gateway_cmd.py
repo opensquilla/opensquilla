@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import signal
+from collections.abc import Callable
 
 import typer
 
@@ -14,9 +16,49 @@ from opensquilla.cli.gateway_lifecycle import (
     remote_gateway_status,
 )
 from opensquilla.cli.ui import ACCENT_MARKUP, console
-from opensquilla.gateway.boot import start_gateway_server
+from opensquilla.gateway.boot import (
+    gateway_shutdown_deadline,
+    start_gateway_server,
+)
 from opensquilla.gateway.config import GatewayConfig, is_public_bind, resolve_listen_address
 from opensquilla.paths import default_opensquilla_home
+
+_SHUTDOWN_SIGNALS: tuple[signal.Signals, ...] = tuple(
+    sig
+    for sig in (getattr(signal, "SIGINT", None), getattr(signal, "SIGTERM", None))
+    if sig is not None
+)
+
+
+def _install_shutdown_handlers(
+    loop: asyncio.AbstractEventLoop, on_signal: Callable[[str], None]
+) -> list[signal.Signals]:
+    """Install asyncio SIGINT/SIGTERM handlers that trigger a graceful drain.
+
+    Returns the signals that were actually wired so the caller can remove them.
+    ``loop.add_signal_handler`` is unsupported on Windows (NotImplementedError)
+    and outside the main thread (ValueError); in those cases SIGINT still
+    surfaces as KeyboardInterrupt for the caller to catch, and SIGTERM falls back
+    to the platform default (no in-process drain — Windows has no real SIGTERM).
+    """
+    installed: list[signal.Signals] = []
+    for sig in _SHUTDOWN_SIGNALS:
+        try:
+            loop.add_signal_handler(sig, on_signal, sig.name.lower())
+        except (NotImplementedError, RuntimeError, ValueError):
+            continue
+        installed.append(sig)
+    return installed
+
+
+def _remove_shutdown_handlers(
+    loop: asyncio.AbstractEventLoop, installed: list[signal.Signals]
+) -> None:
+    for sig in installed:
+        try:
+            loop.remove_signal_handler(sig)
+        except (NotImplementedError, RuntimeError, ValueError):
+            continue
 
 
 def gateway_startup_guidance(host: str, port: int, scheme: str = "http") -> tuple[str, ...]:
@@ -104,10 +146,46 @@ def run_gateway(
             run=True,
         )
         assert server._task is not None
+
+        # Trigger OpenSquilla's graceful drain on SIGINT/SIGTERM. uvicorn's own
+        # handlers are suppressed in start_gateway_server, so server.close() —
+        # the only path that drains in-flight agent turns and background
+        # completions — runs whether shutdown comes from a signal (POSIX) or the
+        # server task ending on its own.
+        loop = asyncio.get_running_loop()
+        shutdown = asyncio.Event()
+        shutdown_reason = "shutdown"
+
+        def _request_shutdown(reason: str) -> None:
+            nonlocal shutdown_reason
+            if not shutdown.is_set():
+                shutdown_reason = reason
+                shutdown.set()
+
+        installed_signals = _install_shutdown_handlers(loop, _request_shutdown)
+        # Expose the same trigger to the owner-only HTTP shutdown endpoint so a
+        # graceful stop also works where POSIX signals can't drain — notably
+        # Windows, where SIGTERM maps to an immediate TerminateProcess.
+        app = getattr(server, "app", None)
+        if app is not None and hasattr(app, "state"):
+            app.state.request_shutdown = _request_shutdown
+        server_task = server._task
+        waiter = asyncio.ensure_future(shutdown.wait())
         try:
-            await server._task
+            await asyncio.wait(
+                {server_task, waiter}, return_when=asyncio.FIRST_COMPLETED
+            )
+            await server.close(shutdown_reason)
         except (KeyboardInterrupt, asyncio.CancelledError):
+            # Fallback for platforms where add_signal_handler is unavailable
+            # (Windows / non-main-thread): SIGINT arrives as KeyboardInterrupt.
+            shutdown.set()
             await server.close("keyboard_interrupt")
+        finally:
+            waiter.cancel()
+            _remove_shutdown_handlers(loop, installed_signals)
+        if shutdown.is_set():
+            console.print("\n[yellow]Gateway stopped.[/yellow]")
 
     try:
         asyncio.run(_run())
@@ -237,7 +315,11 @@ def stop_gateway(
     bind: str | None = typer.Option("127.0.0.1", "--bind", "-b", help="Host to stop"),
     listen: str = typer.Option("", "--listen", help="Host to stop (wins over --bind)"),
     config_path: str | None = typer.Option(None, "--config", help="Override config path"),
-    shutdown_timeout: float = typer.Option(10.0, "--timeout", help="Shutdown wait timeout"),
+    shutdown_timeout: float | None = typer.Option(
+        None,
+        "--timeout",
+        help="SIGKILL deadline in seconds (default: exceeds the graceful drain budget)",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
     """Stop the recorded gateway process."""
@@ -247,7 +329,9 @@ def stop_gateway(
         bind=bind,
         listen=listen,
         config_path=config_path,
-        shutdown_timeout=shutdown_timeout,
+        shutdown_timeout=(
+            shutdown_timeout if shutdown_timeout is not None else gateway_shutdown_deadline()
+        ),
     )
     _emit_lifecycle_result(manager.stop(), json_output=json_output)
 
@@ -258,8 +342,10 @@ def restart_gateway(
     listen: str = typer.Option("", "--listen", help="Host to restart (wins over --bind)"),
     config_path: str | None = typer.Option(None, "--config", help="Override config path"),
     health_timeout: float = typer.Option(60.0, "--timeout", help="Readiness wait timeout"),
-    shutdown_timeout: float = typer.Option(
-        10.0, "--shutdown-timeout", help="Shutdown wait timeout"
+    shutdown_timeout: float | None = typer.Option(
+        None,
+        "--shutdown-timeout",
+        help="SIGKILL deadline in seconds (default: exceeds the graceful drain budget)",
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
 ) -> None:
@@ -271,6 +357,8 @@ def restart_gateway(
         listen=listen,
         config_path=config_path,
         health_timeout=health_timeout,
-        shutdown_timeout=shutdown_timeout,
+        shutdown_timeout=(
+            shutdown_timeout if shutdown_timeout is not None else gateway_shutdown_deadline()
+        ),
     )
     _emit_lifecycle_result(manager.restart(), json_output=json_output)

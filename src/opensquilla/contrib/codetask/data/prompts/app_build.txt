@@ -16,7 +16,10 @@ STACK (fixed)
   SQLite file via Electron's filesystem access). NO backend, NO server, NO
   remote API.
 - No live preview is needed; you will NOT launch the GUI.
-- Scaffold with electron-vite, non-interactively:
+- The runner may already have created the Electron/Vite scaffold for you. If
+  package.json and src/ exist, DO NOT run `npm create` or scaffold again; build
+  the requested app inside the existing scaffold.
+- If the scaffold is missing, scaffold with electron-vite, non-interactively:
     npm create @quick-start/electron@latest app -- --template react-ts --yes
   (the `--yes` flag accepts defaults so no interactive prompt is needed;
   POSIX-only piping like `yes "" | ...` will NOT work under cmd.exe /

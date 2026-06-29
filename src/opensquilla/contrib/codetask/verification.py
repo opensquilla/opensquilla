@@ -583,6 +583,38 @@ def _reset_bash_cache() -> None:
     _BASH_CACHED = None
 
 
+def _repo_venv_python_candidates(repo: Path) -> tuple[Path, ...]:
+    return (
+        repo / ".venv" / "bin" / "python",
+        repo / ".venv" / "Scripts" / "python.exe",
+        repo / ".venv" / "Scripts" / "python",
+    )
+
+
+def _bash_path_entry(path: Path) -> str:
+    raw = str(path)
+    if os.name == "nt":
+        raw = raw.replace("\\", "/")
+        if len(raw) >= 2 and raw[1] == ":":
+            raw = f"/{raw[0].lower()}{raw[2:]}"
+    return raw
+
+
+def _write_python_shim(shim_dir: Path, name: str, venv_python: Path) -> None:
+    target = shim_dir / name
+    try:
+        target.symlink_to(venv_python)
+        return
+    except OSError:
+        pass
+    script = f'#!/usr/bin/env bash\nexec {shlex.quote(_bash_path_entry(venv_python))} "$@"\n'
+    target.write_text(script, encoding="utf-8")
+    try:
+        target.chmod(0o755)
+    except OSError:
+        pass
+
+
 def _run_shell(
     command: str, *, cwd: Path, timeout: int, repo: Path | None = None
 ) -> tuple[int, str]:
@@ -623,16 +655,15 @@ def _run_shell(
         # in the base worktree. uv venvs often expose only `.venv/bin/python`,
         # so a small shim covers `python3` too. Exports run AFTER `bash -lc`
         # startup files, so they win over any login-profile PATH.
-        venv_python = repo / ".venv" / "bin" / "python"
-        if venv_python.exists():
+        venv_python = next((p for p in _repo_venv_python_candidates(repo) if p.exists()), None)
+        if venv_python is not None:
             try:
                 shim = Path(tempfile.mkdtemp(prefix="codetask-pyshim-"))
                 for _name in ("python", "python3"):
-                    try:
-                        (shim / _name).symlink_to(venv_python)
-                    except OSError:
-                        pass
-                _vbin = shlex.quote(f"{shim}:{venv_python.parent}")
+                    _write_python_shim(shim, _name, venv_python)
+                _vbin = shlex.quote(
+                    f"{_bash_path_entry(shim)}:{_bash_path_entry(venv_python.parent)}"
+                )
                 exports += f'export PATH={_vbin}:"$PATH"; '
             except OSError:
                 shim = None

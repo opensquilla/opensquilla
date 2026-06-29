@@ -11,6 +11,7 @@ import pytest
 from opensquilla.artifacts import (
     DEFAULT_ARTIFACT_DISK_BUDGET_BYTES,
     DEFAULT_ARTIFACT_MAX_BYTES,
+    INSTALLER_ARTIFACT_MAX_BYTES,
     ArtifactBudgetError,
     ArtifactIntegrityError,
     ArtifactNotFoundError,
@@ -332,6 +333,7 @@ def test_artifact_store_enforces_per_file_and_disk_budgets(tmp_path: Path) -> No
 def test_artifact_budget_defaults_are_open_source_sized() -> None:
     assert DEFAULT_ARTIFACT_MAX_BYTES == 30 * 1024 * 1024
     assert DEFAULT_ARTIFACT_DISK_BUDGET_BYTES == 512 * 1024 * 1024
+    assert INSTALLER_ARTIFACT_MAX_BYTES == DEFAULT_ARTIFACT_DISK_BUDGET_BYTES
 
 
 @pytest.mark.asyncio
@@ -381,6 +383,36 @@ async def test_publish_artifact_tool_allows_workspace_file_only(tmp_path: Path) 
         if k not in {"workspace_path", "local_path"}
     }
     assert {k: v for k, v in full_artifact.items() if k != "download_url"} == llm_artifact
+
+
+@pytest.mark.asyncio
+async def test_publish_artifact_tool_allows_large_installer_artifact(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    output = workspace / "OpenSquilla-0.4.0-arm64.dmg"
+    with output.open("wb") as handle:
+        handle.seek(DEFAULT_ARTIFACT_MAX_BYTES + 1)
+        handle.write(b"x")
+    ctx = ToolContext(
+        is_owner=True,
+        caller_kind=CallerKind.WEB,
+        workspace_dir=str(workspace),
+        artifact_media_root=str(tmp_path / "media"),
+        artifact_session_id="session-1",
+        session_key="agent:main:webchat:session-1",
+    )
+
+    token = current_tool_context.set(ctx)
+    try:
+        result = await publish_artifact(path=output.name)
+    finally:
+        current_tool_context.reset(token)
+
+    payload = json.loads(result)
+    assert payload["status"] == "published"
+    assert payload["artifact"]["name"] == output.name
+    assert payload["artifact"]["size"] > DEFAULT_ARTIFACT_MAX_BYTES
+    assert payload["artifact"]["mime"] == "application/x-apple-diskimage"
 
 
 @pytest.mark.asyncio

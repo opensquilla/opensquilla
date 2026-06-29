@@ -31,6 +31,11 @@ from pathlib import Path
 from opensquilla.contrib.codetask.types import BuildCheck, BuildResult, TaskState
 
 _TAIL_LINES = 25
+_NODE_BIN_ENV_KEYS = (
+    "OPENSQUILLA_NODE_BIN_DIR",
+    "OPENSQUILLA_DESKTOP_NODE_BIN_DIR",
+    "OPENSQUILLA_BUNDLED_NODE_BIN",
+)
 
 
 def _resolve_cli(name: str) -> str:
@@ -42,7 +47,74 @@ def _resolve_cli(name: str) -> str:
     directly. Falls back to the bare name on POSIX (or when not found, so the
     later ``FileNotFoundError`` surfaces with a clear message).
     """
-    return shutil.which(name) or name
+    on_path = shutil.which(name)
+    if on_path:
+        return on_path
+    for node_bin_dir in _node_bin_dirs():
+        for candidate_name in _cli_candidate_names(name):
+            candidate = node_bin_dir / candidate_name
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+    return name
+
+
+def _cli_candidate_names(name: str) -> tuple[str, ...]:
+    if sys.platform == "win32":
+        return (name, f"{name}.cmd", f"{name}.bat", f"{name}.exe")
+    return (name,)
+
+
+def _node_bin_dirs() -> list[Path]:
+    candidates: list[Path] = []
+    for env_key in _NODE_BIN_ENV_KEYS:
+        raw = os.environ.get(env_key)
+        if not raw:
+            continue
+        for part in raw.split(os.pathsep):
+            if not part:
+                continue
+            path = Path(part).expanduser()
+            candidates.append(path.parent if path.is_file() else path)
+
+    home = Path.home()
+    if sys.platform == "win32":
+        for env_key in ("LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)"):
+            root = os.environ.get(env_key)
+            if root:
+                candidates.append(Path(root) / "nodejs")
+    else:
+        candidates.extend(
+            [
+                home / ".local" / "bin",
+                home / ".npm-global" / "bin",
+                Path("/opt/homebrew/bin"),
+                Path("/usr/local/bin"),
+            ]
+        )
+
+    seen: set[str] = set()
+    existing: list[Path] = []
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        if candidate.is_dir():
+            existing.append(candidate)
+    return existing
+
+
+def _build_env() -> dict[str, str]:
+    env = {**os.environ, **_PACKAGE_ENV}
+    node_dirs = [str(path) for path in _node_bin_dirs()]
+    if node_dirs:
+        current_path = env.get("PATH") or env.get("Path") or ""
+        current_parts = [part for part in current_path.split(os.pathsep) if part]
+        merged = [*node_dirs, *[part for part in current_parts if part not in node_dirs]]
+        env["PATH"] = os.pathsep.join(merged)
+        if sys.platform == "win32":
+            env["Path"] = env["PATH"]
+    return env
 
 # Build unsigned, deterministically: never auto-discover a keychain identity
 # (which can prompt/hang or sign host-dependently in an automated run).
@@ -223,7 +295,7 @@ def verify_build(
             ),
         )
 
-    env = {**os.environ, **_PACKAGE_ENV}
+    env = _build_env()
     checklist = _checklist()
     checks: list[BuildCheck] = []
     for name, argv in checklist:

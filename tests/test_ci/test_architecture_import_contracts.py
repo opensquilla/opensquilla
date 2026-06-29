@@ -36,6 +36,7 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("cli", "session"),
     ("cli", "skills"),
     ("cli", "tools"),
+    ("cli", "uninstall"),
     ("engine", "agents"),
     ("engine", "channels"),
     ("engine", "contracts"),
@@ -132,6 +133,7 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("tools", "search"),
     ("tools", "session"),
     ("tools", "skills"),
+    ("uninstall", "gateway"),
 })
 
 APPROVED_CYCLIC_PACKAGES: frozenset[str] = frozenset({

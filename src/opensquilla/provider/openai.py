@@ -57,6 +57,16 @@ _PLAIN_JSON_TOOL_PREFIX_RE = re.compile(
 )
 
 _OPENAI_TOOL_STATUS_OUTPUT_MAX_CHARS = 4000
+_VOLCENGINE_UNSUPPORTED_TOOL_SCHEMA_KEYWORDS = frozenset(
+    {
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+        "minContains",
+        "maxContains",
+    }
+)
 
 
 def _openai_tool_result_content(block: Any) -> str:
@@ -87,6 +97,7 @@ def _provider_display_name(provider_kind: str) -> str:
         "zhipu": "Zhipu",
         "qianfan": "Qianfan",
         "volcengine": "Volcengine",
+        "byteplus": "BytePlus",
     }.get(provider_kind, "Provider")
 
 
@@ -116,6 +127,26 @@ def _format_chat_http_error(provider_kind: str, status_code: int, body: bytes | 
         f"{_provider_display_name(provider_kind)} chat request failed "
         f"(HTTP {status_code}): {body_text}"
     )
+
+
+def _provider_unsupported_tool_schema_keywords(provider_kind: str) -> frozenset[str]:
+    if provider_kind in {"volcengine", "byteplus"}:
+        return _VOLCENGINE_UNSUPPORTED_TOOL_SCHEMA_KEYWORDS
+    return frozenset()
+
+
+def _strip_tool_schema_keywords(value: Any, unsupported: frozenset[str]) -> Any:
+    if not unsupported:
+        return value
+    if isinstance(value, dict):
+        return {
+            key: _strip_tool_schema_keywords(item, unsupported)
+            for key, item in value.items()
+            if key not in unsupported
+        }
+    if isinstance(value, list):
+        return [_strip_tool_schema_keywords(item, unsupported) for item in value]
+    return value
 
 
 def _resolve_reasoning_effort(level: ThinkingLevel | None, budget: int) -> str:
@@ -449,13 +480,18 @@ def _synthesize_text_tool_events(
     return events
 
 
-def _build_openai_tool(tool: ToolDefinition) -> dict[str, Any]:
+def _build_openai_tool(tool: ToolDefinition, *, provider_kind: str = "") -> dict[str, Any]:
+    schema = tool.input_schema.model_dump(exclude_none=True)
+    schema = _strip_tool_schema_keywords(
+        schema,
+        _provider_unsupported_tool_schema_keywords(provider_kind),
+    )
     return {
         "type": "function",
         "function": {
             "name": tool.name,
             "description": tool.description,
-            "parameters": tool.input_schema.model_dump(exclude_none=True),
+            "parameters": schema,
         },
     }
 
@@ -808,7 +844,9 @@ class OpenAIProvider:
         if cfg.stop_sequences:
             payload["stop"] = cfg.stop_sequences
         if tools:
-            payload["tools"] = [_build_openai_tool(t) for t in tools]
+            payload["tools"] = [
+                _build_openai_tool(t, provider_kind=self._provider_kind) for t in tools
+            ]
             if cfg.tool_choice is not None:
                 payload["tool_choice"] = cfg.tool_choice
         if self._provider_kind == "openrouter":

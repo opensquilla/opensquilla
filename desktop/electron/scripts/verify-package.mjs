@@ -1,6 +1,8 @@
-import { existsSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { existsSync, statSync } from 'node:fs'
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
+import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))
@@ -14,6 +16,89 @@ const failures = []
 
 function fail(message) {
   failures.push(message)
+}
+
+function pathIsFileSync(path) {
+  try {
+    return statSync(path).isFile()
+  } catch {
+    return false
+  }
+}
+
+function gatewayBinary(root, platform) {
+  const binaryName = platform === 'win32' ? 'opensquilla-gateway.exe' : 'opensquilla-gateway'
+  const candidates = [join(root, 'opensquilla-gateway', binaryName), join(root, binaryName)]
+  const binary = candidates.find(pathIsFileSync)
+  return { binary, candidates }
+}
+
+function verificationEnv() {
+  const keys = [
+    'PATH',
+    'Path',
+    'HOME',
+    'USERPROFILE',
+    'TMPDIR',
+    'TEMP',
+    'TMP',
+    'SystemRoot',
+    'ComSpec',
+    'PATHEXT',
+    'LANG',
+    'LC_ALL',
+  ]
+  const env = { PYTHONUNBUFFERED: '1' }
+
+  for (const key of keys) {
+    if (process.env[key] !== undefined) env[key] = process.env[key]
+  }
+
+  return env
+}
+
+function outputTail(output) {
+  const tail = [output.stdout, output.stderr]
+    .filter(Boolean)
+    .join('\n')
+    .trim()
+    .split(/\r?\n/)
+    .slice(-12)
+    .join('\n')
+    .trim()
+
+  return tail ? `\nOutput tail:\n${tail}` : ''
+}
+
+function requireGatewayBinary(root, label, platform) {
+  const { binary, candidates } = gatewayBinary(root, platform)
+  if (!binary) {
+    fail(`${label} gateway binary is missing; checked ${candidates.join(', ')}`)
+    return null
+  }
+  return binary
+}
+
+function verifyGatewayCommand(binary, label, args, options = {}) {
+  const result = spawnSync(binary, args, {
+    cwd: dirname(binary),
+    encoding: 'utf8',
+    env: verificationEnv(),
+    input: options.input,
+    timeout: options.timeout ?? 30000,
+    windowsHide: true,
+  })
+
+  const commandLabel = `${label} gateway command ${args.join(' ')}`
+  if (result.error) {
+    fail(`${commandLabel} could not start: ${result.error.message}${outputTail(result)}`)
+    return
+  }
+
+  if (result.status !== 0) {
+    const exitReason = result.signal ? `signal ${result.signal}` : `exit ${result.status}`
+    fail(`${commandLabel} failed with ${exitReason}${outputTail(result)}`)
+  }
 }
 
 async function listFiles(root) {
@@ -42,7 +127,7 @@ async function listFiles(root) {
   return files
 }
 
-async function verifyRuntime(root, label) {
+async function verifyRuntime(root, label, { platform, executeCommands }) {
   if (!existsSync(root)) {
     fail(`${label} runtime is missing at ${root}`)
     return
@@ -63,12 +148,21 @@ async function verifyRuntime(root, label) {
   const compatFile = files.find((path) => path.endsWith(join('opensquilla', 'compat', 'aiosqlite.py')))
   if (!compatFile) {
     fail(`${label} runtime is missing opensquilla/compat/aiosqlite.py`)
-    return
+  } else {
+    const source = await readFile(compatFile, 'utf8')
+    if (!source.includes('async def create_function(') || !source.includes('self._conn.create_function')) {
+      fail(`${label} runtime aiosqlite.py does not contain _AsyncConnection.create_function`)
+    }
   }
 
-  const source = await readFile(compatFile, 'utf8')
-  if (!source.includes('async def create_function(') || !source.includes('self._conn.create_function')) {
-    fail(`${label} runtime aiosqlite.py does not contain _AsyncConnection.create_function`)
+  const binary = requireGatewayBinary(root, label, platform)
+  if (executeCommands) {
+    if (!binary) return
+    verifyGatewayCommand(binary, label, ['--help'])
+    verifyGatewayCommand(binary, label, ['code-task', '--help'])
+    verifyGatewayCommand(binary, label, ['code-task', 'stage-task-file'], { input: 'desktop package smoke\n' })
+    verifyGatewayCommand(binary, label, ['code-task', 'smoke-imports'], { timeout: 120000 })
+    verifyGatewayCommand(binary, label, ['code-task', 'smoke-router'], { timeout: 120000 })
   }
 }
 
@@ -101,9 +195,16 @@ async function verifyCompiledMain() {
   verifyMainProcess(await readFile(compiledMainPath, 'utf8'), 'compiled')
 }
 
-async function findGeneratedApps(root) {
-  const apps = []
-  if (!existsSync(root)) return apps
+async function findGeneratedBundles(root) {
+  const bundles = []
+  const seenResourcesDirs = new Set()
+  if (!existsSync(root)) return bundles
+
+  function addBundle(bundle) {
+    if (seenResourcesDirs.has(bundle.resourcesDir)) return
+    seenResourcesDirs.add(bundle.resourcesDir)
+    bundles.push(bundle)
+  }
 
   async function walk(dir, depth) {
     if (depth > 5) return
@@ -112,7 +213,17 @@ async function findGeneratedApps(root) {
       if (!entry.isDirectory()) continue
       const path = join(dir, entry.name)
       if (entry.name.endsWith('.app')) {
-        apps.push(path)
+        addBundle({
+          label: `app bundle ${path}`,
+          resourcesDir: join(path, 'Contents', 'Resources'),
+          platform: 'darwin',
+        })
+      } else if (entry.name === 'win-unpacked' || entry.name === 'linux-unpacked') {
+        addBundle({
+          label: `generated bundle ${path}`,
+          resourcesDir: join(path, 'resources'),
+          platform: entry.name === 'win-unpacked' ? 'win32' : 'linux',
+        })
       } else {
         await walk(path, depth + 1)
       }
@@ -120,7 +231,7 @@ async function findGeneratedApps(root) {
   }
 
   await walk(root, 0)
-  return apps
+  return bundles
 }
 
 async function readAsarText(asarPath, innerPath) {
@@ -128,29 +239,31 @@ async function readAsarText(asarPath, innerPath) {
   return asar.extractFile(asarPath, innerPath).toString('utf8')
 }
 
-async function verifyGeneratedApp(appPath) {
-  const resourcesDir = join(appPath, 'Contents', 'Resources')
-  await verifyRuntime(join(resourcesDir, 'runtime', 'gateway'), `app bundle ${appPath}`)
+async function verifyGeneratedBundle({ label, resourcesDir, platform }) {
+  await verifyRuntime(join(resourcesDir, 'runtime', 'gateway'), label, {
+    platform,
+    executeCommands: platform === process.platform,
+  })
 
   const asarPath = join(resourcesDir, 'app.asar')
   if (!existsSync(asarPath)) {
-    fail(`app bundle ${appPath} is missing app.asar`)
+    fail(`${label} is missing app.asar`)
     return
   }
 
   try {
-    verifyMainProcess(await readAsarText(asarPath, 'dist/main.js'), `app bundle ${appPath}`)
+    verifyMainProcess(await readAsarText(asarPath, 'dist/main.js'), label)
   } catch (error) {
-    fail(`app bundle ${appPath} app.asar could not be inspected: ${error instanceof Error ? error.message : String(error)}`)
+    fail(`${label} app.asar could not be inspected: ${error instanceof Error ? error.message : String(error)}`)
   }
 }
 
-await verifyRuntime(runtimeGatewayDir, 'source')
+await verifyRuntime(runtimeGatewayDir, 'source', { platform: process.platform, executeCommands: true })
 await verifyCompiledMain()
 
-const generatedApps = await findGeneratedApps(desktopOutputDir)
-for (const appPath of generatedApps) {
-  await verifyGeneratedApp(appPath)
+const generatedBundles = await findGeneratedBundles(desktopOutputDir)
+for (const bundle of generatedBundles) {
+  await verifyGeneratedBundle(bundle)
 }
 
 if (failures.length > 0) {

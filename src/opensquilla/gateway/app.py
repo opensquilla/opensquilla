@@ -157,6 +157,34 @@ def create_gateway_app(
             }
         )
 
+    async def api_system_shutdown(request: Request) -> JSONResponse:
+        """Owner-only graceful shutdown trigger.
+
+        Signals the run loop to run the full ``GatewayServer.close()`` drain
+        (in-flight agent turns + background completions, then scheduler/channel
+        teardown) and exit. This is the cross-platform shutdown path the CLI and
+        desktop use where POSIX signals are unavailable or unreliable — notably
+        Windows, which has no real ``SIGTERM`` (``os.kill`` / ``child.kill`` map
+        to an immediate ``TerminateProcess`` that skips the drain).
+
+        Gated on loopback-proven ownership so a remote peer can never stop the
+        gateway. Returns 202 once the drain is requested (the response flushes
+        before the server stops, since ``close()`` drains before unbinding), and
+        503 when no run loop is attached (app built without a server — e.g. in
+        tests or embedded ``run=False`` use).
+        """
+        ctx = _make_ctx(request)
+        if not ctx.principal.is_owner:
+            return JSONResponse({"error": "owner privileges required"}, status_code=403)
+        request_shutdown = getattr(request.app.state, "request_shutdown", None)
+        if request_shutdown is None:
+            return JSONResponse(
+                {"error": "graceful shutdown is not available in this mode"},
+                status_code=503,
+            )
+        request_shutdown("api_shutdown")
+        return JSONResponse({"status": "accepted"}, status_code=202)
+
     async def api_usage(request: Request) -> JSONResponse:
         ctx = _make_ctx(request)
         result = await dispatcher.dispatch("_http", "usage.status", None, ctx)
@@ -485,6 +513,7 @@ def create_gateway_app(
         Route("/api/agents", api_agents, methods=["GET"]),
         Route("/api/cron", api_cron, methods=["GET"]),
         Route("/api/system/status", api_system_status, methods=["GET"]),
+        Route("/api/system/shutdown", api_system_shutdown, methods=["POST"]),
         Route("/api/usage", api_usage, methods=["GET"]),
         Route("/api/channels/status", api_channels_status, methods=["GET"]),
         Route("/api/channels/logout", api_channels_logout, methods=["POST"]),

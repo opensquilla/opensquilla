@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import mimetypes
 import os
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -14,7 +13,9 @@ from opensquilla.artifacts import (
     DEFAULT_ARTIFACT_MAX_BYTES,
     ArtifactBudgetError,
     ArtifactStore,
+    artifact_mime_for_name,
     artifact_payload,
+    artifact_publish_max_bytes_for_name,
 )
 from opensquilla.tools.path_aliases import resolve_workspace_alias
 from opensquilla.tools.path_policy import reject_foreign_host_path
@@ -143,8 +144,8 @@ def _publish_artifact_metadata(
     if mime:
         artifact_mime = mime.strip()
     else:
-        target_mime = mimetypes.guess_type(target.name)[0]
-        artifact_name_mime = mimetypes.guess_type(artifact_name)[0]
+        target_mime = artifact_mime_for_name(target.name)
+        artifact_name_mime = artifact_mime_for_name(artifact_name)
         artifact_mime = target_mime or artifact_name_mime or ""
         if target_mime == "application/octet-stream" and artifact_name_mime:
             artifact_mime = artifact_name_mime
@@ -259,6 +260,11 @@ async def publish_artifact(
             },
             ensure_ascii=False,
         )
+    configured_max_bytes = (
+        ctx.artifact_max_bytes
+        if ctx.artifact_max_bytes is not None
+        else DEFAULT_ARTIFACT_MAX_BYTES
+    )
     try:
         ref = store.publish_file(
             target,
@@ -267,9 +273,10 @@ async def publish_artifact(
             name=artifact_name,
             mime=artifact_mime,
             source="publish_artifact",
-            max_bytes=ctx.artifact_max_bytes
-            if ctx.artifact_max_bytes is not None
-            else DEFAULT_ARTIFACT_MAX_BYTES,
+            max_bytes=artifact_publish_max_bytes_for_name(
+                artifact_name,
+                configured_max_bytes,
+            ),
             disk_budget_bytes=ctx.artifact_disk_budget_bytes
             if ctx.artifact_disk_budget_bytes is not None
             else DEFAULT_ARTIFACT_DISK_BUDGET_BYTES,

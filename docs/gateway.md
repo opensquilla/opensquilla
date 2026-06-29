@@ -45,6 +45,14 @@ opensquilla gateway restart
 opensquilla gateway stop
 ```
 
+Stop and restart shut down gracefully: in-flight agent turns and background
+completions are drained before the process exits, and the force-kill deadline
+exceeds that drain budget so work is not cut off mid-write. Tune the per-phase
+drain budget with `OPENSQUILLA_GATEWAY_GRACEFUL_TIMEOUT` (seconds; default 30,
+bounded). The same drain runs on `Ctrl+C` / `SIGTERM` for a foreground gateway.
+On Windows — which has no real `SIGTERM` — the desktop app and `gateway stop`
+trigger the drain through an owner-only, loopback `POST /api/system/shutdown`.
+
 Use the managed gateway for the Web UI, channels, scheduled jobs, and local
 automation that should survive the current terminal tab.
 

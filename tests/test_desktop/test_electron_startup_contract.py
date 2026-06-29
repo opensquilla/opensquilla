@@ -96,6 +96,21 @@ def test_start_gateway_reuses_healthy_gateway_before_spawn() -> None:
     assert "stopGateway()" in start
 
 
+def test_start_gateway_enriches_child_path_for_code_task_builds() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    start = _section(
+        main_ts,
+        "async function startGateway",
+        "async function loadControlUi",
+    )
+
+    assert "function desktopChildPath" in main_ts
+    assert "function desktopNodeBinCandidates" in main_ts
+    assert "packagedRuntimeRoot(), 'node', 'bin'" in main_ts
+    assert "OPENSQUILLA_NODE_BIN_DIR" in start
+    assert "PATH: childPath" in start
+
+
 def test_package_verifier_hard_fails_stale_runtime_and_boot_contract() -> None:
     verifier = _read("desktop/electron/scripts/verify-package.mjs")
     package_json = json.loads(_read("desktop/electron/package.json"))
@@ -115,6 +130,31 @@ def test_package_verifier_hard_fails_stale_runtime_and_boot_contract() -> None:
         "process.exit(1)",
     ]:
         assert expected in verifier
+
+def test_desktop_gateway_build_and_verifier_cover_runtime_capabilities() -> None:
+    build_gateway = _read("desktop/electron/scripts/build-gateway.mjs")
+    verifier = _read("desktop/electron/scripts/verify-package.mjs")
+
+    for extra in ["recommended", "mcp", "msg", "matrix", "document-extras"]:
+        assert f"'{extra}'" in build_gateway
+    for module in ["joblib", "sklearn", "lightgbm", "tokenizers", "tiktoken", "onnxruntime", "mcp"]:
+        assert f"'{module}'" in build_gateway
+    assert "'--collect-all',\n  'sklearn'" not in build_gateway
+    assert "'--collect-all',\n  'lightgbm'" not in build_gateway
+    assert "'--collect-binaries',\n  'sklearn'" in build_gateway
+    assert "lib_lightgbm.dylib" in build_gateway
+    assert "libomp.dylib" in build_gateway
+    assert "Git LFS pointer file, not the real router artifact" in build_gateway
+    assert "git lfs pull --include=" in build_gateway
+    assert "findFilesByName(runtimeGatewayDir, 'libomp.dylib')" in build_gateway
+    assert "install_name_tool" in build_gateway
+    assert "codesign" in build_gateway
+    assert "'--force', '--sign', '-'" in build_gateway
+    assert "@loader_path/libomp.dylib" in build_gateway
+    assert "code-task', 'stage-task-file'" in verifier
+    assert "code-task', 'smoke-imports'" in verifier
+    assert "code-task', 'smoke-router'" in verifier
+    assert "timeout: 120000" in verifier
 
 
 def test_desktop_native_artifact_open_allows_active_documents_with_file_extensions() -> None:

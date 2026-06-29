@@ -59,6 +59,26 @@ def test_release_workflow_builds_desktop_installers() -> None:
     assert "gh release upload \"${TAG}\" dist/* --clobber" in workflow
 
 
+def test_release_workflow_hydrates_and_smokes_desktop_router_runtime() -> None:
+    workflow = Path(".github/workflows/wheelhouse-release.yml").read_text(encoding="utf-8")
+
+    for job_name in ["build-desktop-macos", "build-desktop-windows"]:
+        start = workflow.index(f"  {job_name}:")
+        end = len(workflow)
+        for next_job in ["build-desktop-windows", "publish-release"]:
+            marker = f"\n  {next_job}:"
+            pos = workflow.find(marker, start + 1)
+            if pos != -1:
+                end = min(end, pos)
+        job = workflow[start:end]
+        assert "lfs: true" in job
+        assert 'git lfs pull --include="src/opensquilla/squilla_router/models/**"' in job
+        assert "npm run build:gateway" in job
+        assert "npm run verify:package" in job
+        assert "npm run verify:gateway-smoke" in job
+        assert 'OPENSQUILLA_REQUIRE_PACKAGED_GATEWAY_SMOKE: "1"' in job
+
+
 def test_release_workflow_keeps_macos_signing_identity_auto_selected() -> None:
     workflow = Path(".github/workflows/wheelhouse-release.yml").read_text(encoding="utf-8")
     mac_step = workflow.split("- name: Build signed macOS installer", 1)[1].split(

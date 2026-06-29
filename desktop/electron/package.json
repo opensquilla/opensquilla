@@ -18,6 +18,8 @@
     "pack:local": "npm run build:web && npm run build:gateway && npm run pack",
     "verify:icons": "node scripts/verify-icon-config.mjs",
     "verify:package": "npm run verify:icons && node scripts/verify-package.mjs",
+    "verify:gateway-smoke": "node scripts/smoke-gateway.mjs",
+    "test:secret-storage": "npm run build && node scripts/test-secret-storage-policy.mjs",
     "start": "electron .",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder"

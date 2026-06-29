@@ -350,6 +350,32 @@ def test_run_shell_resolves_python_from_repo_venv_in_foreign_cwd(tmp_path):
     assert rc == 0 and "VENV_PY_OK" in out, (rc, out)  # python3 too (uv-venv safety)
 
 
+def test_repo_venv_python_candidates_include_windows_scripts(tmp_path):
+    from opensquilla.contrib.codetask import verification
+
+    repo = tmp_path / "repo"
+    scripts = repo / ".venv" / "Scripts"
+    scripts.mkdir(parents=True)
+    exe = scripts / "python.exe"
+    exe.write_text("fake", encoding="utf-8")
+
+    got = list(verification._repo_venv_python_candidates(repo))
+
+    assert exe in got
+
+
+def test_repo_venv_python_candidates_keep_posix_first(tmp_path):
+    from opensquilla.contrib.codetask import verification
+
+    repo = tmp_path / "repo"
+
+    assert verification._repo_venv_python_candidates(repo) == (
+        repo / ".venv" / "bin" / "python",
+        repo / ".venv" / "Scripts" / "python.exe",
+        repo / ".venv" / "Scripts" / "python",
+    )
+
+
 def test_run_shell_sets_uv_project_for_uv_repo(tmp_path):
     """For a uv project (has uv.lock), _run_shell exports UV_PROJECT=<repo> so
     `uv run` reuses the run repo's env even from the base worktree; non-uv repos

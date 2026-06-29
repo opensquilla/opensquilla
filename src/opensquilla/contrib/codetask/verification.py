@@ -583,6 +583,14 @@ def _reset_bash_cache() -> None:
     _BASH_CACHED = None
 
 
+def _repo_venv_python_candidates(repo: Path) -> tuple[Path, ...]:
+    return (
+        repo / ".venv" / "bin" / "python",
+        repo / ".venv" / "Scripts" / "python.exe",
+        repo / ".venv" / "Scripts" / "python",
+    )
+
+
 def _run_shell(
     command: str, *, cwd: Path, timeout: int, repo: Path | None = None
 ) -> tuple[int, str]:
@@ -623,8 +631,8 @@ def _run_shell(
         # in the base worktree. uv venvs often expose only `.venv/bin/python`,
         # so a small shim covers `python3` too. Exports run AFTER `bash -lc`
         # startup files, so they win over any login-profile PATH.
-        venv_python = repo / ".venv" / "bin" / "python"
-        if venv_python.exists():
+        venv_python = next((p for p in _repo_venv_python_candidates(repo) if p.exists()), None)
+        if venv_python is not None:
             try:
                 shim = Path(tempfile.mkdtemp(prefix="codetask-pyshim-"))
                 for _name in ("python", "python3"):

@@ -270,6 +270,29 @@ class StreamConsumerStageInput:
 # Per-event handler classes
 # ---------------------------------------------------------------------------
 
+def _has_tool_boundary(state: _StreamState) -> bool:
+    return any(
+        segment.get("type") in {"tool_use", "tool_result"}
+        for segment in state.turn_segments
+    )
+
+
+def _normalize_cumulative_text_delta(text: str, state: _StreamState) -> str:
+    """Convert a post-tool cumulative text snapshot back into a delta."""
+
+    if not text or not _has_tool_boundary(state):
+        return text
+
+    accumulated_text = "".join(state.final_text_parts)
+    if not accumulated_text:
+        return text
+    if text == accumulated_text:
+        return ""
+    if text.startswith(accumulated_text):
+        return text[len(accumulated_text) :]
+    return text
+
+
 class _TextDeltaHandler:
     """Accumulate streamed text deltas into the final-text and current-text buffers."""
 
@@ -278,7 +301,10 @@ class _TextDeltaHandler:
         event: TextDeltaEvent,
         state: _StreamState,
     ) -> TextDeltaEvent:
-        cleaned_delta = state.protocol_text_guard.push(event.text)
+        cleaned_delta = _normalize_cumulative_text_delta(
+            state.protocol_text_guard.push(event.text),
+            state,
+        )
         if cleaned_delta:
             state.final_text_parts.append(cleaned_delta)
             state.current_text_parts.append(cleaned_delta)

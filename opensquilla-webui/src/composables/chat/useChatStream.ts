@@ -336,21 +336,37 @@ export function useChatStream(options: UseChatStreamOptions) {
     streamBubble.value = false
   }
 
+  function normalizeIncomingTextDelta(text: string): string {
+    const raw = typeof text === 'string' ? text : ''
+    if (!raw || !streamRaw.value) return raw
+
+    const sawToolBoundary =
+      streamToolCalls.value.length > 0 ||
+      streamSegments.value.some(seg => seg.type === 'tool-group')
+    if (!sawToolBoundary) return raw
+
+    if (raw === streamRaw.value) return ''
+    if (raw.startsWith(streamRaw.value)) return raw.slice(streamRaw.value.length)
+    return raw
+  }
+
   function appendDelta(text: string) {
     if (options.aborted.value) return
+    const deltaText = normalizeIncomingTextDelta(text)
+    if (!deltaText) return
     if (!isStreaming.value) startStreaming()
     setStreamActivity('Writing reply', `write:${streamRound.value}`)
-    streamRaw.value += text
+    streamRaw.value += deltaText
 
     const lastSegment = streamSegments.value[streamSegments.value.length - 1]
     if (!lastSegment || lastSegment.type !== 'text') {
-      streamSegments.value.push({ type: 'text', raw: text, html: '', dirty: true })
+      streamSegments.value.push({ type: 'text', raw: deltaText, html: '', dirty: true })
     } else {
-      lastSegment.raw = (lastSegment.raw || '') + text
+      lastSegment.raw = (lastSegment.raw || '') + deltaText
       lastSegment.dirty = true
     }
 
-    if (useReducer.value) appendFrame({ kind: 'text', text })
+    if (useReducer.value) appendFrame({ kind: 'text', text: deltaText })
     scheduleRender()
   }
 

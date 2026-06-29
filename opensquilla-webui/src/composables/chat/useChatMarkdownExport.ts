@@ -8,6 +8,12 @@ export interface UseChatMarkdownExportOptions {
   currentTitle: Readonly<Ref<string>>
 }
 
+export interface BuildChatMarkdownOptions {
+  messages: readonly ChatRenderedMessage[]
+  title: string
+  exportedAt: string
+}
+
 function markdownFilename(title: string): string {
   const slug = String(title || 'chat')
     .toLowerCase()
@@ -21,36 +27,64 @@ function markdownEscape(text: string): string {
   return String(text || '').replace(/\r\n/g, '\n').trim()
 }
 
+function subagentCompletionMarkdown(text: string): string {
+  try {
+    const parsed = JSON.parse(text)
+    if (!parsed || parsed.type !== 'subagent_completion') return markdownEscape(text)
+    const child = String(parsed.child_session_key || 'subagent')
+    const status = String(parsed.status || 'finished')
+    const reason = parsed.terminal_reason ? ` (${parsed.terminal_reason})` : ''
+    const resultText = markdownEscape(parsed.result?.text || '')
+    const lines = [`Subagent ${child} completed with status ${status}${reason}.`]
+    if (resultText) lines.push('', 'Result:', resultText)
+    return lines.join('\n')
+  } catch {
+    return markdownEscape(text)
+  }
+}
+
+export function buildChatMarkdown(options: BuildChatMarkdownOptions): string {
+  const lines: string[] = [
+    `# ${options.title || 'OpenSquilla chat'}`,
+    '',
+    `Exported: ${options.exportedAt}`,
+    '',
+  ]
+  for (const message of options.messages) {
+    if (message.isRouterStrip) {
+      const winner = message.gridCells?.[message.winnerIdx ?? -1]
+      if (winner) lines.push(`> Router selected ${winner.displayName || winner.model || winner.tier}`)
+      continue
+    }
+    if (!['user', 'assistant', 'system', 'subagent', 'error'].includes(message.displayRole || message.role)) continue
+    lines.push(`## ${message.roleLabel || message.displayRole || message.role}`)
+    if (message.timeStr) lines.push(`_${message.timeStr}_`)
+    if (message.text) {
+      const body = message.displayRole === 'subagent'
+        ? subagentCompletionMarkdown(message.text)
+        : markdownEscape(message.text)
+      if (body) lines.push('', body)
+    }
+    if (message.artifacts?.length) {
+      lines.push('', 'Artifacts:')
+      for (const artifact of message.artifacts) {
+        const meta = artifactMeta(artifact)
+        lines.push(`- ${artifactName(artifact)}${meta ? ` (${meta})` : ''}`)
+      }
+    }
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
 export function useChatMarkdownExport(options: UseChatMarkdownExportOptions) {
   function exportMarkdown() {
-    const lines: string[] = [
-      `# ${options.currentTitle.value || 'OpenSquilla chat'}`,
-      '',
-      `Exported: ${new Date().toISOString()}`,
-      '',
-    ]
-    for (const message of options.messages.value) {
-      if (message.isRouterStrip) {
-        const winner = message.gridCells?.[message.winnerIdx ?? -1]
-        if (winner) lines.push(`> Router selected ${winner.displayName || winner.model || winner.tier}`)
-        continue
-      }
-      if (!['user', 'assistant', 'system', 'subagent', 'error'].includes(message.displayRole || message.role)) continue
-      lines.push(`## ${message.roleLabel || message.displayRole || message.role}`)
-      if (message.timeStr) lines.push(`_${message.timeStr}_`)
-      if (message.text) {
-        lines.push('', markdownEscape(message.text))
-      }
-      if (message.artifacts?.length) {
-        lines.push('', 'Artifacts:')
-        for (const artifact of message.artifacts) {
-          const meta = artifactMeta(artifact)
-          lines.push(`- ${artifactName(artifact)}${meta ? ` (${meta})` : ''}`)
-        }
-      }
-      lines.push('')
-    }
-    downloadText(markdownFilename(options.currentTitle.value), 'text/markdown;charset=utf-8', lines.join('\n'))
+    const markdown = buildChatMarkdown({
+      title: options.currentTitle.value,
+      exportedAt: new Date().toISOString(),
+      messages: options.messages.value,
+    })
+    downloadText(markdownFilename(options.currentTitle.value), 'text/markdown;charset=utf-8', markdown)
   }
 
   return {

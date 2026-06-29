@@ -6,7 +6,7 @@ import sys
 import pytest
 
 from opensquilla.contrib.codetask import adapter
-from opensquilla.contrib.codetask.adapter import LocalAdapter
+from opensquilla.contrib.codetask.adapter import LocalAdapter, _agent_command
 
 
 class FakePopen:
@@ -79,6 +79,22 @@ def test_api_key_never_in_argv(monkeypatch, tmp_path):
     repo.mkdir()
     LocalAdapter().run("x", repo=repo, scratch_dir=tmp_path / "s", artifact_dir=tmp_path / "a")
     assert all("sk-or-secret-xyz" not in part for part in captured["cmd"])
+
+
+def test_agent_command_uses_packaged_cli_directly_for_gateway_executable():
+    cmd = _agent_command(
+        "/Applications/OpenSquilla.app/Contents/Resources/runtime/gateway/opensquilla-gateway/opensquilla-gateway",
+        ["opensquilla", "agent", "--message", "hello"],
+        "print('unused')",
+    )
+
+    assert cmd == [
+        "/Applications/OpenSquilla.app/Contents/Resources/runtime/gateway/opensquilla-gateway/opensquilla-gateway",
+        "agent",
+        "--message",
+        "hello",
+    ]
+    assert "-c" not in cmd
 
 
 def test_timeout_kills_group_and_reports_timeout(monkeypatch, tmp_path):

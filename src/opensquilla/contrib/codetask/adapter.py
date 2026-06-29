@@ -117,7 +117,7 @@ class LocalAdapter:
             argv += ["--thinking", self.thinking]
 
         py_code = f"import sys\nsys.argv = {argv!r}\nfrom opensquilla.cli.main import app\napp()\n"
-        cmd = [agent_python(), "-c", py_code]
+        cmd = _agent_command(agent_python(), argv, py_code)
 
         start = time.time()
         timed_out = False
@@ -253,6 +253,18 @@ def _kill_process_group(proc) -> None:
         proc.kill()
     except OSError:
         pass
+
+
+def _agent_command(executable: str, argv: list[str], py_code: str) -> list[str]:
+    """Build the agent subprocess command for source and packaged runtimes."""
+    if _looks_like_python_interpreter(executable):
+        return [executable, "-c", py_code]
+    return [executable, *argv[1:]]
+
+
+def _looks_like_python_interpreter(executable: str) -> bool:
+    name = Path(executable).name.lower()
+    return name.startswith("python") or name in {"py", "py.exe"}
 
 
 def _parse_json_envelope(stdout: str) -> dict | None:

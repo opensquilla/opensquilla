@@ -1,5 +1,5 @@
 <template>
-  <ul class="hub-ledger" aria-label="Sessions">
+  <ul class="hub-ledger" :aria-label="t('sessions.title')">
     <li
       v-for="entry in entries"
       :key="entry.item.key"
@@ -13,7 +13,7 @@
         class="hub-row__main"
         :class="{ 'hub-row__main--running': channel(entry.item).running }"
         :style="{ '--readout-ch': channel(entry.item).token }"
-        :aria-label="rowAccessibleName('Inspect', entry)"
+        :aria-label="rowAccessibleName('inspect', entry)"
         @click="emit('open', entry.item)"
       >
         <span
@@ -28,7 +28,7 @@
           <span class="hub-row__title">{{ rowTitle(entry) }}</span>
           <span v-if="entry.item.subtitle" class="hub-row__subtitle">{{ entry.item.subtitle }}</span>
         </span>
-        <span v-if="entry.item.forkedFromParent" class="hub-row__fork-badge">Fork</span>
+        <span v-if="entry.item.forkedFromParent" class="hub-row__fork-badge">{{ t('sessions.ledger.fork') }}</span>
         <span class="hub-row__agent">{{ agentName(entry.item) }}</span>
         <span
           v-if="statusBadge(entry.item)"
@@ -48,14 +48,14 @@
           {{ statusBadge(entry.item)!.label }}
         </span>
         <span class="hub-row__meta">
-          <span class="hub-row__count">{{ entry.item.messageCount ? entry.item.messageCount.toLocaleString() + ' msg' : '—' }}</span>
+          <span class="hub-row__count">{{ entry.item.messageCount ? t('sessions.msgCount', { count: entry.item.messageCount.toLocaleString() }) : '—' }}</span>
           <span class="hub-row__time">{{ formatRelativeTime(entry.item.updatedAt) }}</span>
         </span>
       </button>
       <button
         type="button"
         class="hub-row__delete"
-        :aria-label="rowAccessibleName('Delete', entry)"
+        :aria-label="rowAccessibleName('delete', entry)"
         @click="emit('remove', entry.item)"
       >
         <Icon name="trash" :size="14" />
@@ -65,10 +65,13 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import type { IconName } from '@/utils/icons'
 import type { SessionItem, SessionLedgerEntry } from '@/composables/useSessions'
 import { formatRelativeTime, subagentRowTitle } from './sessionDisplay'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   entries: SessionLedgerEntry[]
@@ -91,23 +94,24 @@ function surfaceIcon(item: SessionItem): IconName {
 
 function agentName(item: SessionItem): string {
   const id = item.effectiveAgentId
-  if (!id || id === 'unknown') return 'Unknown agent'
+  if (!id || id === 'unknown') return t('sessions.unknownAgent')
   return props.agentNames.get(id) || id
 }
 
 function statusBadge(item: SessionItem): { label: string; cls: string } | null {
   if (props.needsInputKeys.has(item.key)) {
-    return { label: 'Needs input', cls: 'hub-row__status--needs-input' }
+    return { label: t('sessions.status.needsInput'), cls: 'hub-row__status--needs-input' }
   }
-  const map: Record<string, { label: string; cls: string }> = {
-    running: { label: 'Running', cls: 'hub-row__status--running' },
-    queued: { label: 'Queued', cls: 'hub-row__status--queued' },
-    failed: { label: 'Failed', cls: 'hub-row__status--failed' },
-    timeout: { label: 'Timed out', cls: 'hub-row__status--failed' },
-    interrupted: { label: 'Interrupted', cls: 'hub-row__status--queued' },
-    cancelled: { label: 'Cancelled', cls: 'hub-row__status--off' },
+  const map: Record<string, { labelKey: string; cls: string }> = {
+    running: { labelKey: 'sessions.status.running', cls: 'hub-row__status--running' },
+    queued: { labelKey: 'sessions.status.queued', cls: 'hub-row__status--queued' },
+    failed: { labelKey: 'sessions.status.failed', cls: 'hub-row__status--failed' },
+    timeout: { labelKey: 'sessions.status.timeout', cls: 'hub-row__status--failed' },
+    interrupted: { labelKey: 'sessions.status.interrupted', cls: 'hub-row__status--queued' },
+    cancelled: { labelKey: 'sessions.status.cancelled', cls: 'hub-row__status--off' },
   }
-  return map[item.runStatus] || null
+  const entry = map[item.runStatus]
+  return entry ? { label: t(entry.labelKey), cls: entry.cls } : null
 }
 
 // The Stomatopod channel readout, applied to existing row data (no new wiring):
@@ -139,12 +143,12 @@ function rowTitle(entry: SessionLedgerEntry): string {
 
 // Screen readers announce "↳" as "right-pointing arrow" noise; the accessible
 // name carries the lineage in words instead.
-function rowAccessibleName(verb: string, entry: SessionLedgerEntry): string {
+function rowAccessibleName(verb: 'inspect' | 'delete', entry: SessionLedgerEntry): string {
   const plain = rowTitle(entry).replace(/^↳\s*/, '')
   const kind = entry.depth > 0
-    ? (entry.item.forkedFromParent ? 'forked session' : 'subagent session')
-    : 'session'
-  return `${verb} ${kind}: ${plain}`
+    ? (entry.item.forkedFromParent ? t('sessions.ledger.forkedSession') : t('sessions.ledger.subagentSession'))
+    : t('sessions.ledger.session')
+  return t(`sessions.ledger.a11y.${verb}`, { kind, title: plain })
 }
 </script>
 

@@ -2,8 +2,8 @@
   <div class="sk-stage control-stage control-stage--spacious">
     <header class="sk-stage__header control-stage__header">
       <div class="sk-stage__title-block control-stage__title-block">
-        <h2 class="sk-stage__title control-stage__title">Skills</h2>
-        <p class="sk-stage__subtitle control-stage__subtitle">Composable agent capabilities: bundled OpenSquilla skills plus local managed, personal, project, and workspace packs.</p>
+        <h2 class="sk-stage__title control-stage__title">{{ t('cronSkills.skillsView.title') }}</h2>
+        <p class="sk-stage__subtitle control-stage__subtitle">{{ t('cronSkills.skillsView.subtitle') }}</p>
       </div>
       <div class="sk-stage__actions control-stage__actions">
         <div class="sk-search-wrap" :style="{ visibility: activeTab === 'installed' ? 'visible' : 'hidden' }">
@@ -14,13 +14,13 @@
             v-model="filterText"
             class="sk-search-input"
             type="search"
-            placeholder="Filter skills..."
+            :placeholder="t('cronSkills.skillsView.filterPlaceholder')"
             autocomplete="off"
           />
         </div>
-        <button class="btn btn--ghost" title="Refresh" @click="loadData">
+        <button class="btn btn--ghost" :title="t('cronSkills.skillsView.refresh')" @click="loadData">
           <Icon name="refresh" :size="16" />
-          <span>Refresh</span>
+          <span>{{ t('cronSkills.skillsView.refresh') }}</span>
         </button>
       </div>
     </header>
@@ -33,7 +33,7 @@
       @show-proposals="scrollToProposals"
     />
 
-    <div class="sk-tabs" role="tablist" aria-label="Skill source">
+    <div class="sk-tabs" role="tablist" :aria-label="t('cronSkills.skillsView.tabsLabel')">
       <button
         id="sk-tab-installed"
         class="sk-tab"
@@ -45,7 +45,7 @@
         @click="activeTab = 'installed'"
       >
         <Icon name="skills" :size="16" />
-        <span>Installed</span>
+        <span>{{ t('cronSkills.skillsView.tabInstalled') }}</span>
       </button>
       <button
         id="sk-tab-registry"
@@ -58,7 +58,7 @@
         @click="activeTab = 'registry'"
       >
         <Icon name="download" :size="16" />
-        <span>Community</span>
+        <span>{{ t('cronSkills.skillsView.tabCommunity') }}</span>
       </button>
     </div>
 
@@ -71,9 +71,9 @@
         >
           <summary class="sk-group__head">
             <span class="sk-group__caret">▾</span>
-            <span class="sk-group__label">Auto-Propose Settings</span>
-            <span class="sk-group__count">{{ proposalsSettingsOn ? 'on' : 'off' }}</span>
-            <span class="sk-group__meta">Unattended synthesis of new meta-skills from your usage patterns.</span>
+            <span class="sk-group__label">{{ t('cronSkills.autoPropose.title') }}</span>
+            <span class="sk-group__count">{{ proposalsSettingsOn ? t('cronSkills.autoPropose.on') : t('cronSkills.autoPropose.off') }}</span>
+            <span class="sk-group__meta">{{ t('cronSkills.autoPropose.meta') }}</span>
           </summary>
           <div class="sk-ap-settings">
             <label class="sk-ap-toggle">
@@ -82,8 +82,10 @@
                 :checked="proposalsSettings.enabled"
                 @change="toggleAutoPropose('enabled', ($event.target as HTMLInputElement).checked)"
               />
-              <span class="sk-ap-toggle__label">Scheduled (cron)</span>
-              <span class="sk-ap-toggle__hint">Run on <code>{{ proposalsSettings.cron || '0 5 * * *' }}</code>. Drives the meta-skill-creator DAG against your top co-occurrence patterns.</span>
+              <span class="sk-ap-toggle__label">{{ t('cronSkills.autoPropose.scheduledLabel') }}</span>
+              <i18n-t keypath="cronSkills.autoPropose.scheduledHint" tag="span" class="sk-ap-toggle__hint">
+                <template #cron><code>{{ proposalsSettings.cron || '0 5 * * *' }}</code></template>
+              </i18n-t>
             </label>
             <label class="sk-ap-toggle">
               <input
@@ -91,8 +93,8 @@
                 :checked="proposalsSettings.on_dream_complete"
                 @change="toggleAutoPropose('on_dream_complete', ($event.target as HTMLInputElement).checked)"
               />
-              <span class="sk-ap-toggle__label">After memory consolidation (dream)</span>
-              <span class="sk-ap-toggle__hint">Piggyback on the memory-dream completion. Independent of the cron toggle.</span>
+              <span class="sk-ap-toggle__label">{{ t('cronSkills.autoPropose.dreamLabel') }}</span>
+              <span class="sk-ap-toggle__hint">{{ t('cronSkills.autoPropose.dreamHint') }}</span>
             </label>
             <label class="sk-ap-toggle">
               <input
@@ -100,21 +102,23 @@
                 :checked="proposalsSettings.auto_enable"
                 @change="toggleAutoPropose('auto_enable', ($event.target as HTMLInputElement).checked)"
               />
-              <span class="sk-ap-toggle__label">Auto-enable gated proposals</span>
-              <span class="sk-ap-toggle__hint">Promote only proposals that pass all gates and stay within the configured <code>{{ proposalsSettings.auto_enable_max_risk || 'low' }}</code> risk ceiling.</span>
+              <span class="sk-ap-toggle__label">{{ t('cronSkills.autoPropose.autoEnableLabel') }}</span>
+              <i18n-t keypath="cronSkills.autoPropose.autoEnableHint" tag="span" class="sk-ap-toggle__hint">
+                <template #risk><code>{{ proposalsSettings.auto_enable_max_risk || 'low' }}</code></template>
+              </i18n-t>
             </label>
             <label class="sk-ap-toggle">
-              <span class="sk-ap-toggle__label">Auto-enable risk ceiling</span>
+              <span class="sk-ap-toggle__label">{{ t('cronSkills.autoPropose.riskCeilingLabel') }}</span>
               <select
                 class="sk-ap-select"
                 :value="proposalsSettings.auto_enable_max_risk || 'low'"
                 @change="setAutoEnableRisk(($event.target as HTMLSelectElement).value)"
               >
-                <option value="low">Low</option>
-                <option value="medium">Medium</option>
-                <option value="high">High</option>
+                <option value="low">{{ t('cronSkills.autoPropose.riskLow') }}</option>
+                <option value="medium">{{ t('cronSkills.autoPropose.riskMedium') }}</option>
+                <option value="high">{{ t('cronSkills.autoPropose.riskHigh') }}</option>
               </select>
-              <span class="sk-ap-toggle__hint">Low is the default. Higher ceilings still run the static safety preflight and keep audit metadata.</span>
+              <span class="sk-ap-toggle__hint">{{ t('cronSkills.autoPropose.riskCeilingHint') }}</span>
             </label>
           </div>
         </details>
@@ -128,8 +132,8 @@
         />
         <AutoEnabledSkills :skills="autoEnabledSkills" @disable="disableAutoEnabled" />
         <SkillGroup
-          title="Meta-Skills"
-          description="Composed workflows that drive a DAG of sub-skills."
+          :title="t('cronSkills.skillsView.metaSkillsTitle')"
+          :description="t('cronSkills.skillsView.metaSkillsDesc')"
           :skills="metaSkills"
           group-class="sk-group--meta"
           meta
@@ -149,7 +153,9 @@
             <Icon name="skills" :size="36" />
           </div>
           <p class="state-text">
-            <template v-if="filterText">No skills match <strong>{{ filterText }}</strong>.</template>
+            <i18n-t v-if="filterText" keypath="cronSkills.skillsView.noMatchFilter">
+              <template #filter><strong>{{ filterText }}</strong></template>
+            </i18n-t>
             <template v-else>{{ emptyMessage }}</template>
           </p>
         </div>
@@ -183,6 +189,7 @@
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import AutoEnabledSkills from '@/components/skills/AutoEnabledSkills.vue'
 import PendingSkillProposals from '@/components/skills/PendingSkillProposals.vue'
@@ -196,6 +203,7 @@ import { skillLayerHelp, skillLayerLabel, useSkillsCatalog } from '@/composables
 import { useRpcStore } from '@/stores/rpc'
 import type { Proposal, Skill } from '@/types/skills'
 
+const { t } = useI18n()
 const rpc = useRpcStore()
 const activeTab = ref('installed')
 const selectedSkill = ref<Skill | null>(null)

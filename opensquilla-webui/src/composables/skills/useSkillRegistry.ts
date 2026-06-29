@@ -1,4 +1,5 @@
 import { ref, type Ref } from 'vue'
+import i18n from '@/i18n'
 import type { useRpcStore } from '@/stores/rpc'
 import { useToasts } from '@/composables/useToasts'
 import type { RegistryResult } from '@/types/skills'
@@ -36,6 +37,7 @@ export function useSkillRegistry(
   loadData: () => Promise<void>,
 ): SkillRegistry {
   const { pushToast } = useToasts()
+  const t = i18n.global.t
   const registryQuery = ref('')
   const githubUrl = ref('')
   const registryResults = ref<RegistryResult[]>([])
@@ -52,7 +54,7 @@ export function useSkillRegistry(
       const data = await rpc.call<RegistrySearchData>('skills.search', { query: registryQuery.value.trim(), limit: 20 })
       registryResults.value = data.results || []
     } catch (err) {
-      pushToast('Search failed: ' + (err as Error).message, { tone: 'danger' })
+      pushToast(t('cronSkills.registry.toastSearchFailed', { error: (err as Error).message }), { tone: 'danger' })
     } finally {
       registryLoading.value = false
     }
@@ -71,7 +73,7 @@ export function useSkillRegistry(
       if (res.success) {
         await loadData()
       } else {
-        pushToast(res.message || 'Install failed', { tone: 'danger' })
+        pushToast(res.message || t('cronSkills.registry.installFailed'), { tone: 'danger' })
       }
     } catch (err) {
       pushToast((err as Error).message, { tone: 'danger' })
@@ -86,13 +88,13 @@ export function useSkillRegistry(
     try {
       const res = await rpc.call<InstallResult>('skills.deps.install', { name, install_id: installId })
       if (res.success) {
-        pushToast(res.message || 'Installed', { tone: 'ok' })
+        pushToast(res.message || t('cronSkills.registry.installed'), { tone: 'ok' })
         const still = res.missing_still || {}
         const stillMissing = (still.bins || []).length + (still.env || []).length
         await loadData()
         return stillMissing === 0
       }
-      pushToast(res.message || 'Install failed', { tone: 'danger' })
+      pushToast(res.message || t('cronSkills.registry.installFailed'), { tone: 'danger' })
       return false
     } catch (err) {
       pushToast((err as Error).message, { tone: 'danger' })
@@ -110,7 +112,7 @@ export function useSkillRegistry(
         await loadData()
         return true
       }
-      pushToast(res.message || 'Uninstall failed', { tone: 'danger' })
+      pushToast(res.message || t('cronSkills.registry.uninstallFailed'), { tone: 'danger' })
       return false
     } catch (err) {
       pushToast((err as Error).message, { tone: 'danger' })

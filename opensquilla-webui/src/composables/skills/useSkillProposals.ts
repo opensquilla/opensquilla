@@ -1,4 +1,5 @@
 import { computed, ref, type ComputedRef, type Ref } from 'vue'
+import i18n from '@/i18n'
 import type { useRpcStore } from '@/stores/rpc'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToasts } from '@/composables/useToasts'
@@ -59,6 +60,7 @@ export function useSkillProposals(
 ): SkillProposals {
   const { confirm } = useConfirm()
   const { pushToast } = useToasts()
+  const t = i18n.global.t
   const proposals = ref<Proposal[]>([])
   const autoEnabledSkills = ref<AutoEnabledSkill[]>([])
   const proposalsSettings = ref<ProposalsSettings>({ ...DEFAULT_PROPOSAL_SETTINGS })
@@ -93,13 +95,13 @@ export function useSkillProposals(
     try {
       const out = await rpc.call<ProposalSettingsData>('exec.proposals.settings.set', { [key]: value })
       if (out && out.status === 'error') {
-        pushToast('Settings update failed: ' + (out.reason || 'unknown'), { tone: 'danger' })
+        pushToast(t('cronSkills.proposals.toastSettingsFailed', { reason: out.reason || t('cronSkills.proposals.unknown') }), { tone: 'danger' })
         return
       }
       proposalsSettings.value = out.settings || proposalsSettings.value
       await loadData()
     } catch (err) {
-      pushToast('Settings update failed: ' + (err as Error).message, { tone: 'danger' })
+      pushToast(t('cronSkills.proposals.toastSettingsFailed', { reason: (err as Error).message }), { tone: 'danger' })
     }
   }
 
@@ -107,12 +109,12 @@ export function useSkillProposals(
     try {
       const out = await rpc.call<ProposalSettingsData>('exec.proposals.settings.set', { auto_enable_max_risk: value })
       if (out && out.status === 'error') {
-        pushToast('Settings update failed: ' + (out.reason || 'unknown'), { tone: 'danger' })
+        pushToast(t('cronSkills.proposals.toastSettingsFailed', { reason: out.reason || t('cronSkills.proposals.unknown') }), { tone: 'danger' })
         return
       }
       proposalsSettings.value = out.settings || proposalsSettings.value
     } catch (err) {
-      pushToast('Settings update failed: ' + (err as Error).message, { tone: 'danger' })
+      pushToast(t('cronSkills.proposals.toastSettingsFailed', { reason: (err as Error).message }), { tone: 'danger' })
     }
   }
 
@@ -120,12 +122,12 @@ export function useSkillProposals(
     try {
       const data = await rpc.call<ProposalShowData>('exec.proposals.show', { proposal_id: proposalId })
       if (data.status !== 'ok') {
-        pushToast('Show failed: ' + (data.reason || 'unknown'), { tone: 'danger' })
+        pushToast(t('cronSkills.proposals.toastShowFailed', { reason: data.reason || t('cronSkills.proposals.unknown') }), { tone: 'danger' })
         return null
       }
       return { proposal_id: proposalId, ...data }
     } catch (err) {
-      pushToast('Show failed: ' + (err as Error).message, { tone: 'danger' })
+      pushToast(t('cronSkills.proposals.toastShowFailed', { reason: (err as Error).message }), { tone: 'danger' })
       return null
     }
   }
@@ -135,58 +137,58 @@ export function useSkillProposals(
       let data = await rpc.call<ProposalActionData>('exec.proposals.accept', { proposal_id: proposalId })
       if (data.status === 'refused' && data.reason && data.reason.indexOf('gates') !== -1) {
         const ok = await confirm({
-          title: 'Accept proposal anyway?',
-          body: `Proposal ${proposalId} did not pass all gates.\n\n${data.reason}\n\nAccept anyway (force)?`,
-          primaryLabel: 'Force accept',
+          title: t('cronSkills.proposals.acceptAnywayTitle'),
+          body: t('cronSkills.proposals.acceptAnywayBody', { id: proposalId, reason: data.reason }),
+          primaryLabel: t('cronSkills.proposals.forceAccept'),
         })
         if (!ok) return
         data = await rpc.call<ProposalActionData>('exec.proposals.accept', { proposal_id: proposalId, force: true })
       }
       if (data.status !== 'ok') {
-        pushToast('Accept failed: ' + (data.reason || data.status), { tone: 'danger' })
+        pushToast(t('cronSkills.proposals.toastAcceptFailed', { reason: data.reason || data.status }), { tone: 'danger' })
         return
       }
       await loadData()
     } catch (err) {
-      pushToast('Accept failed: ' + (err as Error).message, { tone: 'danger' })
+      pushToast(t('cronSkills.proposals.toastAcceptFailed', { reason: (err as Error).message }), { tone: 'danger' })
     }
   }
 
   async function rejectProposal(proposalId: string) {
     const ok = await confirm({
-      title: 'Reject proposal',
-      body: `Reject and delete proposal ${proposalId}? This cannot be undone.`,
-      primaryLabel: 'Reject',
+      title: t('cronSkills.proposals.rejectTitle'),
+      body: t('cronSkills.proposals.rejectBody', { id: proposalId }),
+      primaryLabel: t('cronSkills.proposals.reject'),
     })
     if (!ok) return
     try {
       const data = await rpc.call<ProposalActionData>('exec.proposals.reject', { proposal_id: proposalId })
       if (data.status !== 'ok') {
-        pushToast('Reject failed: ' + (data.reason || data.status), { tone: 'danger' })
+        pushToast(t('cronSkills.proposals.toastRejectFailed', { reason: data.reason || data.status }), { tone: 'danger' })
         return
       }
       await loadData()
     } catch (err) {
-      pushToast('Reject failed: ' + (err as Error).message, { tone: 'danger' })
+      pushToast(t('cronSkills.proposals.toastRejectFailed', { reason: (err as Error).message }), { tone: 'danger' })
     }
   }
 
   async function disableAutoEnabled(name: string) {
     const ok = await confirm({
-      title: 'Disable auto-enabled skill',
-      body: `Disable auto-enabled skill ${name} and move it back to pending proposals?`,
-      primaryLabel: 'Disable',
+      title: t('cronSkills.proposals.disableTitle'),
+      body: t('cronSkills.proposals.disableBody', { name }),
+      primaryLabel: t('cronSkills.proposals.disable'),
     })
     if (!ok) return
     try {
       const data = await rpc.call<ProposalActionData>('exec.proposals.auto_enabled.disable', { name })
       if (data.status !== 'ok') {
-        pushToast('Disable failed: ' + (data.reason || data.status), { tone: 'danger' })
+        pushToast(t('cronSkills.proposals.toastDisableFailed', { reason: data.reason || data.status }), { tone: 'danger' })
         return
       }
       await loadData()
     } catch (err) {
-      pushToast('Disable failed: ' + (err as Error).message, { tone: 'danger' })
+      pushToast(t('cronSkills.proposals.toastDisableFailed', { reason: (err as Error).message }), { tone: 'danger' })
     }
   }
 

@@ -16,7 +16,7 @@
           </span>
           <span class="attachment-chip__name">{{ att.name }}</span>
           <span class="attachment-chip__meta">{{ attachmentMeta(att) }}</span>
-          <button class="attachment-remove" title="Remove" @click="emit('removeAttachment', i)">&times;</button>
+          <button class="attachment-remove" :title="t('chat.remove')" @click="emit('removeAttachment', i)">&times;</button>
         </div>
       </div>
       <div class="chat-input-panel">
@@ -28,7 +28,7 @@
             rows="1"
             :placeholder="placeholder"
             maxlength="100000"
-            aria-label="Message to send"
+            :aria-label="t('chat.messageToSend')"
             @input="emit('input')"
             @keydown="emit('keydown', $event)"
             @compositionstart="emit('compositionChange', true)"
@@ -37,14 +37,14 @@
         </div>
         <div class="chat-input-footer">
           <div class="chat-input-actions chat-input-actions--left">
-            <button class="btn btn--icon btn--ghost chat-plus-btn" title="Attach files: PNG, JPEG, GIF, WEBP, PDF, TXT, MD, HTML, CSV, JSON" aria-label="Attach files" @click="fileInputEl?.click()">
+            <button class="btn btn--icon btn--ghost chat-plus-btn" :title="t('chat.attachFilesTitle')" :aria-label="t('chat.attachFiles')" @click="fileInputEl?.click()">
               <Icon name="plus" :size="18" />
             </button>
             <div class="chat-settings-anchor">
               <button
                 class="btn btn--icon btn--ghost"
-                title="Composer settings"
-                aria-label="Composer settings"
+                :title="t('chat.composerSettings')"
+                :aria-label="t('chat.composerSettings')"
                 :aria-expanded="settingsOpen ? 'true' : 'false'"
                 @click="settingsOpen = !settingsOpen"
               >
@@ -69,45 +69,45 @@
             <button
               class="btn btn--icon btn--ghost"
               :class="{ 'is-active': voiceRecording }"
-              title="Record voice input"
-              aria-label="Record voice input"
+              :title="t('chat.recordVoice')"
+              :aria-label="t('chat.recordVoice')"
               :disabled="voiceBusy"
               @click="emit('voiceInput')"
             >
               <Icon name="microphone" :size="17" />
             </button>
-            <button class="btn btn--icon btn--ghost" title="Export as Markdown" aria-label="Export as Markdown" @click="emit('exportMarkdown')">
+            <button class="btn btn--icon btn--ghost" :title="t('chat.exportMarkdown')" :aria-label="t('chat.exportMarkdown')" @click="emit('exportMarkdown')">
               <Icon name="download" :size="17" />
             </button>
           </div>
           <div class="chat-input-actions chat-input-actions--right">
             <Transition name="composer-ctl">
-              <div v-if="isStreaming" class="chat-busy-mode" role="group" aria-label="Delivery mode while the agent is responding">
+              <div v-if="isStreaming" class="chat-busy-mode" role="group" :aria-label="t('chat.deliveryModeLabel')">
                 <button
                   class="chat-busy-mode__btn"
                   :class="{ 'is-active': busySendMode === 'queue' }"
                   :aria-pressed="busySendMode === 'queue' ? 'true' : 'false'"
-                  title="Queue: the message waits and auto-sends when the current response finishes"
+                  :title="t('chat.queueModeHint')"
                   @click="emit('setBusySendMode', 'queue')"
                 >
-                  Queue
+                  {{ t('chat.queueMode') }}
                 </button>
                 <button
                   class="chat-busy-mode__btn"
                   :class="{ 'is-active': busySendMode === 'steer' }"
                   :aria-pressed="busySendMode === 'steer' ? 'true' : 'false'"
-                  title="Steer: the message sends now and redirects the response in progress"
+                  :title="t('chat.steerModeHint')"
                   @click="emit('setBusySendMode', 'steer')"
                 >
-                  Steer
+                  {{ t('chat.steerMode') }}
                 </button>
               </div>
             </Transition>
-            <button class="btn btn--icon btn--primary chat-send-btn" :class="{ 'is-ready': hasSendContent }" :title="sendButtonTitle" aria-label="Send" @click="emit('send')">
+            <button class="btn btn--icon btn--primary chat-send-btn" :class="{ 'is-ready': hasSendContent }" :title="sendButtonTitle" :aria-label="t('chat.send')" @click="emit('send')">
               <Icon name="arrowUp" :size="17" />
             </button>
             <Transition name="composer-ctl">
-              <button v-if="isStreaming" class="btn btn--icon btn--danger chat-send-btn" title="Stop current response (Esc)" aria-label="Stop current response" @click="emit('stop')">
+              <button v-if="isStreaming" class="btn btn--icon btn--danger chat-send-btn" :title="t('chat.stopResponseEsc')" :aria-label="t('chat.stopResponse')" @click="emit('stop')">
                 <Icon name="stop" :size="16" />
               </button>
             </Transition>
@@ -128,6 +128,7 @@
 
 <script setup lang="ts">
 import { nextTick, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import type { IconName } from '@/utils/icons'
 import ChatComposerSettings from '@/components/chat/ChatComposerSettings.vue'
@@ -175,6 +176,8 @@ const emit = defineEmits<{
   exportMarkdown: []
   stop: []
 }>()
+
+const { t } = useI18n()
 
 const inputText = defineModel<string>({ required: true })
 const composerEl = ref<HTMLElement | null>(null)

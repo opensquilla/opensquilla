@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import ControlSwitch from '@/components/ControlSwitch.vue'
 import { useShortcutsStore, SHORTCUT_DEFS, type ShortcutId } from '@/stores/shortcuts'
 import { eventToBinding, formatBinding } from '@/utils/keychord'
 import { isMacPlatform } from '@/utils/browser'
+
+const { t } = useI18n()
 
 // Client-only preferences: global chord shortcuts persisted to this browser via
 // the shortcuts store. Like Appearance, changes apply instantly and never enter
@@ -55,14 +58,14 @@ function onRecordKey(e: KeyboardEvent) {
   // Null while only modifiers are held, or when no primary modifier is present —
   // keep waiting for a full Ctrl/⌘-based chord rather than recording a bare key.
   if (!binding) {
-    recordError.value = `Add ${mac ? '⌘' : 'Ctrl'} (and optionally ⇧ / ⌥) to the key.`
+    recordError.value = t('setup.keyboard.addModifier', { modifier: mac ? '⌘' : 'Ctrl' })
     return
   }
 
   const conflict = shortcuts.findConflict(binding, id)
   if (conflict) {
     const other = SHORTCUT_DEFS.find(d => d.id === conflict)
-    recordError.value = `Already used by “${other?.label ?? conflict}”.`
+    recordError.value = t('setup.keyboard.conflict', { label: other?.label ?? conflict })
     return
   }
 
@@ -86,8 +89,8 @@ onBeforeUnmount(stopRecording)
 <template>
   <section class="control-section">
     <div class="control-section__head">
-      <h3 class="control-section__title">Keyboard</h3>
-      <p class="control-section__desc">Global shortcuts for this browser. Changes apply instantly &mdash; no save needed.</p>
+      <h3 class="control-section__title">{{ t('setup.keyboard.title') }}</h3>
+      <p class="control-section__desc">{{ t('setup.keyboard.desc') }}</p>
     </div>
 
     <div v-for="def in SHORTCUT_DEFS" :key="def.id" class="control-row">
@@ -99,19 +102,19 @@ onBeforeUnmount(stopRecording)
 
       <div class="control-row__control kb-control">
         <template v-if="recordingId === def.id">
-          <span class="kb-recording" aria-live="polite">Press keys…</span>
-          <button type="button" class="btn btn--ghost kb-btn" @click="stopRecording">Cancel</button>
+          <span class="kb-recording" aria-live="polite">{{ t('setup.keyboard.pressKeys') }}</span>
+          <button type="button" class="btn btn--ghost kb-btn" @click="stopRecording">{{ t('common.cancel') }}</button>
         </template>
         <template v-else>
           <kbd
             class="kb-chord"
             :class="{ 'is-off': !shortcuts.states[def.id].enabled }"
           >{{ displayChord(def.id) || '—' }}</kbd>
-          <button type="button" class="btn btn--ghost kb-btn" @click="startRecording(def.id)">Rebind</button>
-          <button type="button" class="btn btn--ghost kb-btn" @click="reset(def.id)">Reset</button>
+          <button type="button" class="btn btn--ghost kb-btn" @click="startRecording(def.id)">{{ t('setup.keyboard.rebind') }}</button>
+          <button type="button" class="btn btn--ghost kb-btn" @click="reset(def.id)">{{ t('setup.keyboard.reset') }}</button>
           <ControlSwitch
             :checked="shortcuts.states[def.id].enabled"
-            :aria-label="`Enable the ${def.label} shortcut`"
+            :aria-label="t('setup.keyboard.enableAria', { label: def.label })"
             @change="onToggle(def.id, $event)"
           />
         </template>

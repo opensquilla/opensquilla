@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import ControlSwitch from '@/components/ControlSwitch.vue'
+
+const { t } = useI18n()
 
 // Client-only "Labs" preferences. Each row reads/writes ONE localStorage key
 // directly. The chat composables that consume these read the value once at
@@ -70,25 +73,25 @@ function localStorageGet(key: string): string | null {
 <template>
   <section class="control-section">
     <div class="control-section__head">
-      <h3 class="control-section__title">Advanced</h3>
-      <p class="control-section__desc">Experimental client preferences for this browser. They apply instantly &mdash; no save needed. Items marked <em>reload</em> take effect after a page refresh.</p>
+      <h3 class="control-section__title">{{ t('setup.advanced.title') }}</h3>
+      <p class="control-section__desc">{{ t('setup.advanced.desc') }} <em>{{ t('setup.advanced.reload') }}</em> {{ t('setup.advanced.descReloadSuffix') }}</p>
     </div>
 
     <label class="control-row">
       <div class="control-row__label-block">
-        <span class="control-row__label">Live turn fold</span>
-        <span class="control-row__desc">Render the streaming work-card from the new fold engine (off = legacy render).</span>
+        <span class="control-row__label">{{ t('setup.advanced.foldLabel') }}</span>
+        <span class="control-row__desc">{{ t('setup.advanced.foldDesc') }}</span>
       </div>
       <div class="control-row__control">
-        <span class="labs-hint">reload</span>
-        <ControlSwitch name="labs_fold_live_turn" :checked="foldOn" aria-label="Live turn fold (takes effect after reload)" @change="setFold" />
+        <span class="labs-hint">{{ t('setup.advanced.reload') }}</span>
+        <ControlSwitch name="labs_fold_live_turn" :checked="foldOn" :aria-label="t('setup.advanced.foldAria')" @change="setFold" />
       </div>
     </label>
 
     <div class="control-row control-row--stack">
       <div class="control-row__label-block">
-        <span id="labs-reveal-label" class="control-row__label">Answer reveal window (ms)</span>
-        <span class="control-row__desc">Hold the live answer's reveal in a [min, max] window so the router can decide first. min &le; max.</span>
+        <span id="labs-reveal-label" class="control-row__label">{{ t('setup.advanced.revealLabel') }}</span>
+        <span class="control-row__desc">{{ t('setup.advanced.revealDesc') }}</span>
       </div>
       <div class="control-row__control labs-range" role="group" aria-labelledby="labs-reveal-label">
         <input
@@ -96,7 +99,7 @@ function localStorageGet(key: string): string | null {
           name="labs_reveal_min"
           type="number" min="0" step="100" inputmode="numeric"
           v-model.number="revealMin"
-          aria-label="Answer reveal minimum milliseconds"
+          :aria-label="t('setup.advanced.revealMinAria')"
           :aria-invalid="!revealValid ? 'true' : 'false'"
           aria-describedby="labs-reveal-error"
           @change="commitReveal"
@@ -107,44 +110,44 @@ function localStorageGet(key: string): string | null {
           name="labs_reveal_max"
           type="number" min="0" step="100" inputmode="numeric"
           v-model.number="revealMax"
-          aria-label="Answer reveal maximum milliseconds"
+          :aria-label="t('setup.advanced.revealMaxAria')"
           :aria-invalid="!revealValid ? 'true' : 'false'"
           aria-describedby="labs-reveal-error"
           @change="commitReveal"
         >
-        <span v-if="!revealValid" id="labs-reveal-error" class="labs-invalid" role="alert">min must be &ge; 0 and &le; max</span>
+        <span v-if="!revealValid" id="labs-reveal-error" class="labs-invalid" role="alert">{{ t('setup.advanced.revealInvalid') }}</span>
       </div>
     </div>
 
     <label class="control-row">
       <div class="control-row__label-block">
-        <span class="control-row__label">Approval recovery polling</span>
-        <span class="control-row__desc">Restore the ~2s approvals poll as a self-healing fallback (default off; approvals already stream).</span>
+        <span class="control-row__label">{{ t('setup.advanced.approvalPollLabel') }}</span>
+        <span class="control-row__desc">{{ t('setup.advanced.approvalPollDesc') }}</span>
       </div>
       <div class="control-row__control">
-        <ControlSwitch name="labs_approval_poll" :checked="approvalPoll" aria-label="Approval recovery polling" @change="setApprovalPoll" />
+        <ControlSwitch name="labs_approval_poll" :checked="approvalPoll" :aria-label="t('setup.advanced.approvalPollLabel')" @change="setApprovalPoll" />
       </div>
     </label>
 
     <label class="control-row">
       <div class="control-row__label-block">
-        <span class="control-row__label">History reconcile-by-id merge <span class="labs-exp">experimental</span></span>
-        <span class="control-row__desc">On history sync, merge by message id and keep live-only fields (default off, transitioning on).</span>
+        <span class="control-row__label">{{ t('setup.advanced.historyMergeLabel') }} <span class="labs-exp">{{ t('setup.advanced.experimental') }}</span></span>
+        <span class="control-row__desc">{{ t('setup.advanced.historyMergeDesc') }}</span>
       </div>
       <div class="control-row__control">
-        <span class="labs-hint">reload</span>
-        <ControlSwitch name="labs_history_merge" :checked="historyMerge" aria-label="History reconcile-by-id merge (takes effect after reload)" @change="setHistoryMerge" />
+        <span class="labs-hint">{{ t('setup.advanced.reload') }}</span>
+        <ControlSwitch name="labs_history_merge" :checked="historyMerge" :aria-label="t('setup.advanced.historyMergeAria')" @change="setHistoryMerge" />
       </div>
     </label>
 
     <label class="control-row">
       <div class="control-row__label-block">
-        <span class="control-row__label">Run-trace drawer in Logs</span>
-        <span class="control-row__desc">Make log lines interactive and open a per-line node-step detail drawer in the Logs view.</span>
+        <span class="control-row__label">{{ t('setup.advanced.runTraceLabel') }}</span>
+        <span class="control-row__desc">{{ t('setup.advanced.runTraceDesc') }}</span>
       </div>
       <div class="control-row__control">
-        <span class="labs-hint">reload</span>
-        <ControlSwitch name="labs_run_trace" :checked="runTrace" aria-label="Run-trace drawer in Logs (takes effect after reload)" @change="setRunTrace" />
+        <span class="labs-hint">{{ t('setup.advanced.reload') }}</span>
+        <ControlSwitch name="labs_run_trace" :checked="runTrace" :aria-label="t('setup.advanced.runTraceAria')" @change="setRunTrace" />
       </div>
     </label>
   </section>

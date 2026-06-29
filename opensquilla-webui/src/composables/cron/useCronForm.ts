@@ -1,5 +1,6 @@
 import { computed, nextTick, onUnmounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
+import i18n from '@/i18n'
 import { useRpcStore } from '@/stores/rpc'
 import { useToasts } from '@/composables/useToasts'
 import type { CronJob, CronJobFormModel, CronPanelTemplate } from '@/types/cron'
@@ -15,9 +16,10 @@ export function useCronForm(options: UseCronFormOptions) {
   const rpc = useRpcStore()
   const route = useRoute()
   const { pushToast } = useToasts()
+  const t = i18n.global.t
   const panelOpen = ref(false)
   const editingJob = ref<CronJob | null>(null)
-  const cronExplainHuman = ref('Enter a 5-field cron expression to preview')
+  const cronExplainHuman = ref(t('cronSkills.form.cronPreviewPlaceholder'))
   const cronExplainValid = ref(false)
   const cronExplainInvalid = ref(false)
   const cronExplainUpcoming = ref<Date[]>([])
@@ -53,29 +55,29 @@ export function useCronForm(options: UseCronFormOptions) {
   })
 
   const jobModeHint = computed(() => {
-    if (form.payloadKind === 'system_event') return 'System events append text to the agent main session and wake the heartbeat.'
-    if (form.payloadKind === 'reminder') return 'Static reminders deliver this message directly; no model call or scheduled agent turn is created.'
-    return 'Agent tasks run as scheduled turns and use the selected session target.'
+    if (form.payloadKind === 'system_event') return t('cronSkills.form.jobModeHint.systemEvent')
+    if (form.payloadKind === 'reminder') return t('cronSkills.form.jobModeHint.reminder')
+    return t('cronSkills.form.jobModeHint.agentTurn')
   })
 
   const sessionTargetHint = computed(() => {
-    if (form.payloadKind === 'system_event') return 'Main is locked for system events. Use Static Reminder for direct reminders.'
-    if (form.payloadKind === 'reminder') return 'Static reminders run isolated and deliver back to the originating chat when one is available.'
-    if (form.sessionTarget === 'current') return 'The scheduled agent task continues in the active chat session.'
-    if (form.sessionTarget === 'isolated') return 'The scheduled agent task runs in its own cron session, separate from Main.'
-    if (form.sessionTarget === 'session') return 'The scheduled agent task continues in the named session key.'
-    return 'Choose where this background agent task keeps its conversation context.'
+    if (form.payloadKind === 'system_event') return t('cronSkills.form.sessionTargetHint.systemEvent')
+    if (form.payloadKind === 'reminder') return t('cronSkills.form.sessionTargetHint.reminder')
+    if (form.sessionTarget === 'current') return t('cronSkills.form.sessionTargetHint.current')
+    if (form.sessionTarget === 'isolated') return t('cronSkills.form.sessionTargetHint.isolated')
+    if (form.sessionTarget === 'session') return t('cronSkills.form.sessionTargetHint.session')
+    return t('cronSkills.form.sessionTargetHint.default')
   })
 
   const showTargetSessionRow = computed(() => form.payloadKind === 'agent_turn' && (form.sessionTarget === 'current' || form.sessionTarget === 'session'))
-  const targetSessionLabel = computed(() => form.sessionTarget === 'current' ? 'Current session key' : 'Named session key')
+  const targetSessionLabel = computed(() => form.sessionTarget === 'current' ? t('cronSkills.form.targetSessionLabel.current') : t('cronSkills.form.targetSessionLabel.named'))
   const targetSessionHint = computed(() => form.sessionTarget === 'current'
-    ? 'Current is bound to the active WebChat session key when the job is saved.'
-    : 'Use a full session key from the chat header.')
+    ? t('cronSkills.form.targetSessionHint.current')
+    : t('cronSkills.form.targetSessionHint.named'))
   const messageLabel = computed(() => {
-    if (form.payloadKind === 'system_event') return 'Event text'
-    if (form.payloadKind === 'reminder') return 'Reminder text'
-    return 'Task prompt'
+    if (form.payloadKind === 'system_event') return t('cronSkills.form.messageLabel.systemEvent')
+    if (form.payloadKind === 'reminder') return t('cronSkills.form.messageLabel.reminder')
+    return t('cronSkills.form.messageLabel.agentTurn')
   })
 
   function openPanel(job: CronJob | null, template?: CronPanelTemplate) {
@@ -142,7 +144,7 @@ export function useCronForm(options: UseCronFormOptions) {
     if (!trimmed) {
       cronExplainValid.value = false
       cronExplainInvalid.value = false
-      cronExplainHuman.value = 'Enter a 5-field cron expression to preview'
+      cronExplainHuman.value = t('cronSkills.form.cronPreviewPlaceholder')
       cronExplainUpcoming.value = []
       return
     }
@@ -150,13 +152,13 @@ export function useCronForm(options: UseCronFormOptions) {
     if (!parsed) {
       cronExplainValid.value = false
       cronExplainInvalid.value = true
-      cronExplainHuman.value = 'Could not parse expression — expected 5 fields (m h dom mon dow).'
+      cronExplainHuman.value = t('cronSkills.form.cronParseError')
       cronExplainUpcoming.value = []
       return
     }
     cronExplainInvalid.value = false
     cronExplainValid.value = true
-    cronExplainHuman.value = explainCron(trimmed) || 'matches a custom cadence'
+    cronExplainHuman.value = explainCron(trimmed) || t('cronSkills.form.cronCustomCadence')
     if (previewTimer) clearTimeout(previewTimer)
     previewTimer = setTimeout(() => {
       cronExplainUpcoming.value = nextRuns(parsed, 3)
@@ -166,7 +168,7 @@ export function useCronForm(options: UseCronFormOptions) {
   async function saveJob() {
     const name = form.name.trim()
     if (!name) {
-      pushToast('Name is required', { tone: 'danger' })
+      pushToast(t('cronSkills.form.toastNameRequired'), { tone: 'danger' })
       return
     }
     const payloadKind = form.payloadKind
@@ -189,14 +191,14 @@ export function useCronForm(options: UseCronFormOptions) {
     } else if (form.type === 'every') {
       const everySeconds = Number(form.every)
       if (!Number.isInteger(everySeconds) || everySeconds < 1) {
-        pushToast('Interval must be an integer number of seconds', { tone: 'danger' })
+        pushToast(t('cronSkills.form.toastIntervalInvalid'), { tone: 'danger' })
         return
       }
       payload.schedule = { kind: 'every', every_seconds: everySeconds }
     } else if (form.type === 'at') {
       const at = form.at.trim()
       if (!at) {
-        pushToast('ISO time is required', { tone: 'danger' })
+        pushToast(t('cronSkills.form.toastIsoTimeRequired'), { tone: 'danger' })
         return
       }
       payload.schedule = { kind: 'at', at }
@@ -235,7 +237,7 @@ export function useCronForm(options: UseCronFormOptions) {
     if (sessionTarget === 'current') {
       const boundSessionKey = targetSessionKey || activeChatSessionKey() || jobSessionKey(editingJob.value)
       if (!boundSessionKey) {
-        pushToast('Current session key is required', { tone: 'danger' })
+        pushToast(t('cronSkills.form.toastCurrentSessionRequired'), { tone: 'danger' })
         return
       }
       payload.sessionKey = boundSessionKey
@@ -245,7 +247,7 @@ export function useCronForm(options: UseCronFormOptions) {
     if (payloadKind === 'reminder' && activeChatSessionKey()) payload.originSessionKey = activeChatSessionKey()
     if (sessionTarget === 'session') {
       if (!targetSessionKey) {
-        pushToast('Named session key is required', { tone: 'danger' })
+        pushToast(t('cronSkills.form.toastNamedSessionRequired'), { tone: 'danger' })
         return
       }
       payload.targetSessionKey = targetSessionKey
@@ -254,11 +256,11 @@ export function useCronForm(options: UseCronFormOptions) {
     if (editingJob.value) payload.id = editingJob.value.id
     try {
       await rpc.call(editingJob.value ? 'cron.update' : 'cron.create', payload)
-      pushToast(editingJob.value ? 'Schedule updated' : 'Schedule created', { tone: 'ok' })
+      pushToast(editingJob.value ? t('cronSkills.form.toastUpdated') : t('cronSkills.form.toastCreated'), { tone: 'ok' })
       closePanel()
       options.afterSaved()
     } catch (err) {
-      pushToast('Save failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
+      pushToast(t('cronSkills.form.toastSaveFailed', { error: err instanceof Error ? err.message : String(err) }), { tone: 'danger' })
     }
   }
 

@@ -8,13 +8,13 @@
       :aria-labelledby="titleId"
     >
       <header class="share-modal__header">
-        <h3 :id="titleId" class="share-modal__title">Share preview</h3>
+        <h3 :id="titleId" class="share-modal__title">{{ t('chat.sharePreview') }}</h3>
         <button
           ref="closeBtn"
           type="button"
           class="btn btn--icon btn--ghost"
-          aria-label="Close"
-          title="Close"
+          :aria-label="t('common.close')"
+          :title="t('common.close')"
           @click="emit('close')"
         >
           <Icon name="x" :size="16" />
@@ -27,15 +27,15 @@
             v-if="imageUrl"
             class="share-modal__image"
             :src="imageUrl"
-            alt="Share preview"
+            :alt="t('chat.sharePreview')"
             decoding="async"
           />
-          <p v-else class="share-modal__empty" role="status">Nothing to preview yet.</p>
+          <p v-else class="share-modal__empty" role="status">{{ t('chat.nothingToPreview') }}</p>
           <div
             v-if="busy"
             class="share-modal__loading"
             role="status"
-            aria-label="Rendering preview"
+            :aria-label="t('chat.renderingPreview')"
           >
             <span class="share-modal__spinner" aria-hidden="true" />
           </div>
@@ -46,7 +46,7 @@
         <div
           class="share-modal__seg"
           role="group"
-          aria-label="Export theme"
+          :aria-label="t('chat.exportTheme')"
         >
           <button
             type="button"
@@ -57,7 +57,7 @@
             @click="emit('setTheme', 'light')"
           >
             <Icon name="sun" :size="14" />
-            <span>Light</span>
+            <span>{{ t('chat.themeLight') }}</span>
           </button>
           <button
             type="button"
@@ -68,7 +68,7 @@
             @click="emit('setTheme', 'dark')"
           >
             <Icon name="moon" :size="14" />
-            <span>Dark</span>
+            <span>{{ t('chat.themeDark') }}</span>
           </button>
         </div>
 
@@ -81,7 +81,7 @@
             @click="emit('copy')"
           >
             <Icon name="copy" :size="14" />
-            <span>Copy image</span>
+            <span>{{ t('chat.copyImage') }}</span>
           </button>
           <button
             type="button"
@@ -90,7 +90,7 @@
             @click="emit('download')"
           >
             <Icon name="download" :size="14" />
-            <span>Download image</span>
+            <span>{{ t('chat.downloadImage') }}</span>
           </button>
         </div>
       </footer>
@@ -100,7 +100,10 @@
 
 <script setup lang="ts">
 import { nextTick, onUnmounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
+
+const { t } = useI18n()
 
 // The parent owns the blob and its object URL lifecycle: it creates `imageUrl`
 // (a `blob:` URL), swaps it on a theme change, and revokes it on close. This

@@ -13,7 +13,7 @@
       docked: appStore.sidebarOpen,
       hovered: appStore.sidebarHovered,
     }"
-    aria-label="Primary"
+    :aria-label="t('chrome.primaryNav')"
     id="sidebar-nav"
     @mouseleave="onHoverLeave"
   >
@@ -22,7 +22,7 @@
       <router-link
         to="/"
         class="sidebar-brand-link"
-        aria-label="OpenSquilla home"
+        :aria-label="t('chrome.brandHome')"
         @click="handleNavClick"
       >
         <img class="sidebar-brand-mark" :src="brandMarkUrl" alt="" aria-hidden="true" />
@@ -47,7 +47,7 @@
         @click="startNewChatInstant"
       >
         <Icon name="plus" :size="16" />
-        <span class="sidebar-new-session__label">New chat</span>
+        <span class="sidebar-new-session__label">{{ t('chrome.newChat') }}</span>
         <!-- Badge tracks the configured binding and hides when the shortcut is
              disabled (Settings → Keyboard), so it never advertises a dead key. -->
         <kbd v-if="newChatHint" class="sidebar-kbd" aria-hidden="true">{{ newChatHint }}</kbd>
@@ -70,7 +70,7 @@
     <!-- Always-visible grouped nav index. Bounded and self-scrolling under a
          short viewport so it never squeezes Recents, which owns the elastic
          space below; every destination stays a labelled text row. -->
-    <div class="sidebar-section sidebar-core" role="navigation" aria-label="Control navigation">
+    <div class="sidebar-section sidebar-core" role="navigation" :aria-label="t('chrome.controlNav')">
       <!-- Pinned level-1 rows (Sessions / Cron / Skills), single-sourced from the
            Work band of the route taxonomy so promoting a route is a one-line meta
            edit and the rail, the mobile drawer, and the palette never drift. -->
@@ -125,7 +125,7 @@
         @click="toggleMore"
       >
         <Icon name="menu" :size="16" />
-        <span class="sidebar-fn-label">More</span>
+        <span class="sidebar-fn-label">{{ t('chrome.more') }}</span>
         <span
           v-if="appStore.approvalCount > 0"
           class="sidebar-count-badge"
@@ -192,7 +192,7 @@
       class="sidebar-more-popover"
       :style="moreStyle"
       role="dialog"
-      aria-label="More destinations"
+      :aria-label="t('chrome.moreDestinations')"
     >
       <template v-for="section in consoleSections" :key="section.group">
         <p class="sidebar-nav-group-label">{{ section.label }}</p>
@@ -206,7 +206,7 @@
             @click="onMoreApprovals"
           >
             <Icon name="approvals" :size="16" />
-            <span class="sidebar-fn-label">Approvals</span>
+            <span class="sidebar-fn-label">{{ t('nav.approvals') }}</span>
             <span
               v-if="appStore.approvalCount > 0"
               class="sidebar-count-badge"
@@ -245,8 +245,8 @@
         <button
           v-show="!appStore.sidebarOpen"
           class="sidebar-dock-toggle topbar-toggle"
-          title="Expand sidebar"
-          aria-label="Expand sidebar"
+          :title="t('chrome.expandSidebar')"
+          :aria-label="t('chrome.expandSidebar')"
           @click="toggleDock"
         >
           <Icon name="panel-left-open" :size="16" />
@@ -257,17 +257,17 @@
           v-if="appStore.approvalCount > 0"
           class="approval-inline"
           @click="openBlockedApprovalSession"
-          title="Open the blocked session"
+          :title="t('chrome.openBlockedSession')"
         >
-          Approval required
+          {{ t('chrome.approvalRequired') }}
         </button>
         <button
           v-if="webConfigEnabled"
           type="button"
           class="conn-pill conn-pill--link"
           :class="rpcStore.state"
-          :title="`Connection: ${rpcStore.state} — manage in Settings`"
-          aria-label="Manage gateway connection"
+          :title="t('chrome.connectionTitle', { state: rpcStore.state })"
+          :aria-label="t('chrome.manageConnection')"
           @click="openConnectionSettings"
         >{{ rpcStore.state }}</button>
         <span v-else class="conn-pill" :class="rpcStore.state">{{ rpcStore.state }}</span>
@@ -320,7 +320,7 @@
   <nav
     class="mobile-tabbar"
     :class="{ 'is-keyboard-open': mobileKeyboardOpen }"
-    aria-label="Primary mobile"
+    :aria-label="t('chrome.primaryMobile')"
   >
     <router-link
       to="/chat"
@@ -329,7 +329,7 @@
       @click="handleNavClick"
     >
       <Icon name="chat" :size="20" />
-      <span class="mobile-tab__label">Chat</span>
+      <span class="mobile-tab__label">{{ t('nav.chat') }}</span>
     </router-link>
     <router-link
       to="/sessions"
@@ -338,7 +338,7 @@
       @click="handleNavClick"
     >
       <Icon name="sessions" :size="20" />
-      <span class="mobile-tab__label">Sessions</span>
+      <span class="mobile-tab__label">{{ t('nav.sessions') }}</span>
     </router-link>
     <router-link
       to="/approvals"
@@ -347,7 +347,7 @@
       @click="handleNavClick"
     >
       <Icon name="approvals" :size="20" />
-      <span class="mobile-tab__label">Approvals</span>
+      <span class="mobile-tab__label">{{ t('nav.approvals') }}</span>
       <span v-if="appStore.approvalCount > 0" class="mobile-tab__badge">{{ appStore.approvalCount }}</span>
     </router-link>
     <button
@@ -357,7 +357,7 @@
       @click="appStore.setSidebarOpen(true)"
     >
       <Icon name="menu" :size="20" />
-      <span class="mobile-tab__label">More</span>
+      <span class="mobile-tab__label">{{ t('chrome.more') }}</span>
     </button>
   </nav>
 

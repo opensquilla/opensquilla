@@ -11,7 +11,7 @@
       <button
         type="button"
         class="toast__dismiss"
-        aria-label="Dismiss notification"
+        :aria-label="t('shared.toast.dismiss')"
         @click="dismissToast(toast.id)"
       >
         <Icon name="x" :size="14" />
@@ -21,9 +21,11 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import { useToasts } from '@/composables/useToasts'
 
+const { t } = useI18n()
 const { toasts, dismissToast } = useToasts()
 </script>
 

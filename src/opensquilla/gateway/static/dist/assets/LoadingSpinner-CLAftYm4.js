@@ -1,2 +1,0 @@
-import{T as e,V as t,k as n,n as r}from"./Icon-CRzPmY6o.js";var i={class:`loading-spinner`,"aria-label":`Loading`,role:`status`},a=r(n({__name:`LoadingSpinner`,setup(n){return(n,r)=>(t(),e(`span`,i))}}),[[`__scopeId`,`data-v-71bfc79a`]]);export{a as t};
-//# sourceMappingURL=LoadingSpinner-CLAftYm4.js.map

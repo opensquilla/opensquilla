@@ -1,4 +1,5 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
+import i18n from '@/i18n'
 import type { IconName } from '@/utils/icons'
 
 const COPY_FEEDBACK_RESET_MS = 1200
@@ -24,10 +25,10 @@ export function useCopyFeedback(copy: () => Promise<boolean>) {
     copyState.value === 'ok' ? 'check' : copyState.value === 'err' ? 'x' : 'copy',
   )
   const copyTitle = computed(() =>
-    copyState.value === 'ok' ? 'Copied' : copyState.value === 'err' ? 'Copy failed' : 'Copy',
+    copyState.value === 'ok' ? i18n.global.t('chat.copied') : copyState.value === 'err' ? i18n.global.t('chat.toast.copyFailed') : i18n.global.t('chat.copy'),
   )
   const copyLiveText = computed(() =>
-    copyState.value === 'ok' ? 'Copied' : copyState.value === 'err' ? 'Copy failed' : '',
+    copyState.value === 'ok' ? i18n.global.t('chat.copied') : copyState.value === 'err' ? i18n.global.t('chat.toast.copyFailed') : '',
   )
 
   return { copyState, copyIconName, copyTitle, copyLiveText, onCopyClick }

@@ -2,62 +2,62 @@
   <div class="ch-stage control-stage">
     <header class="ch-stage__header control-stage__header">
       <div class="ch-stage__title-block control-stage__title-block">
-        <h2 class="ch-stage__title control-stage__title">Channels</h2>
+        <h2 class="ch-stage__title control-stage__title">{{ t('console.channels.title') }}</h2>
         <p class="ch-stage__subtitle control-stage__subtitle">
-          Runtime status for configured channels. Add or change channel configuration in Settings or the CLI.
+          {{ t('console.channels.subtitle') }}
         </p>
       </div>
       <div class="ch-stage__actions control-stage__actions">
         <button
           class="ch-link"
           type="button"
-          title="Channel configuration lives in Settings"
+          :title="t('console.channels.settingsHint')"
           @click="openSettingsSurface"
         >
-          open settings &rarr;
+          {{ t('console.channels.openSettings') }} &rarr;
         </button>
-        <button class="btn btn--ghost" title="Refresh" @click="loadData">
+        <button class="btn btn--ghost" :title="t('console.common.refresh')" @click="loadData">
           <Icon name="refresh" :size="16" />
-          <span>Refresh</span>
+          <span>{{ t('console.common.refresh') }}</span>
         </button>
       </div>
     </header>
 
     <section class="stat-row control-stat-grid control-stat-grid--fixed" style="--control-stat-columns: 4">
       <div class="stat stat--hero control-stat control-stat--hero">
-        <div class="stat-label control-stat__label">Total channels</div>
+        <div class="stat-label control-stat__label">{{ t('console.channels.totalChannels') }}</div>
         <div class="stat-value control-stat__value">{{ total }}</div>
-        <div class="stat-hint control-stat__hint">{{ typeCount }} type{{ typeCount === 1 ? '' : 's' }}</div>
+        <div class="stat-hint control-stat__hint">{{ t('console.channels.typeCount', { n: typeCount }) }}</div>
       </div>
       <div class="stat control-stat">
-        <div class="stat-label control-stat__label">Connected</div>
+        <div class="stat-label control-stat__label">{{ t('console.channels.connected') }}</div>
         <div class="stat-value control-stat__value">
           {{ connected }}
           <span v-if="connected > 0" class="dot ok"></span>
         </div>
         <div class="stat-hint control-stat__hint">
-          {{ connected > 0 ? 'live' : (attention > 0 ? `${attention} unhealthy` : 'all idle') }}
+          {{ connected > 0 ? t('console.channels.live') : (attention > 0 ? t('console.channels.unhealthy', { n: attention }) : t('console.channels.allIdle')) }}
         </div>
       </div>
       <div class="stat control-stat">
-        <div class="stat-label control-stat__label">Inactive</div>
+        <div class="stat-label control-stat__label">{{ t('console.channels.inactive') }}</div>
         <div class="stat-value control-stat__value">{{ inactive }}</div>
         <div class="stat-hint control-stat__hint">
-          <span v-if="attention > 0" class="ch-neg">{{ attention }} need attention</span>
+          <span v-if="attention > 0" class="ch-neg">{{ t('console.channels.needAttention', { n: attention }) }}</span>
           <span v-else>{{ inactiveHint }}</span>
         </div>
       </div>
       <div class="stat control-stat">
-        <div class="stat-label control-stat__label">Restart attempts</div>
+        <div class="stat-label control-stat__label">{{ t('console.channels.restartAttempts') }}</div>
         <div class="stat-value mono control-stat__value control-stat__value--mono">{{ restarts }}</div>
-        <div class="stat-hint control-stat__hint">since gateway start</div>
+        <div class="stat-hint control-stat__hint">{{ t('console.channels.sinceGatewayStart') }}</div>
       </div>
     </section>
 
     <section class="ch-list">
       <div class="ch-list__head">
         <h3 class="ch-list__title">
-          Configured channels
+          {{ t('console.channels.configuredChannels') }}
           <span v-if="channels.length > 0" class="ch-list__count">{{ channels.length }}</span>
         </h3>
       </div>
@@ -94,14 +94,14 @@
             </g>
           </svg>
         </div>
-        <div class="ch-empty__title">No configured channels.</div>
+        <div class="ch-empty__title">{{ t('console.channels.emptyTitle') }}</div>
         <p class="ch-empty__msg">
-          Channel provisioning lives in Settings and the CLI so credentials, dependency extras, webhook URLs, and restart requirements stay explicit.
+          {{ t('console.channels.emptyMsg') }}
         </p>
         <div class="ch-empty__actions">
           <button class="btn btn--primary" type="button" @click="openSettingsSurface">
             <Icon name="settings" :size="16" />
-            <span>Open settings</span>
+            <span>{{ t('console.channels.openSettingsBtn') }}</span>
           </button>
         </div>
         <code class="ch-empty__code">opensquilla onboard configure channels &middot; opensquilla channels list</code>
@@ -116,8 +116,8 @@
         >
           <header class="ch-card__head">
             <span :class="['dot', dotClass(ch.status)]"></span>
-            <span class="ch-card__name" :title="ch.name || ch.id || 'Unknown'">
-              {{ ch.name || ch.id || 'Unknown' }}
+            <span class="ch-card__name" :title="ch.name || ch.id || t('console.channels.unknown')">
+              {{ ch.name || ch.id || t('console.channels.unknown') }}
             </span>
             <span class="chip mono">{{ ch.type || 'unknown' }}</span>
           </header>
@@ -126,16 +126,16 @@
           </div>
           <dl class="ch-card__meta">
             <div>
-              <dt>Connected</dt>
+              <dt>{{ t('console.channels.connected') }}</dt>
               <dd class="ch-mono">{{ formatSince(ch.connected_since) }}</dd>
             </div>
             <div>
-              <dt>Restart attempts</dt>
+              <dt>{{ t('console.channels.restartAttempts') }}</dt>
               <dd class="ch-mono">{{ ch.restart_attempts ?? '0' }}</dd>
             </div>
           </dl>
           <details class="ch-card__config">
-            <summary>Adapter config</summary>
+            <summary>{{ t('console.channels.adapterConfig') }}</summary>
             <pre class="ch-card__config-pre">{{ formatConfig(ch) }}</pre>
           </details>
           <footer class="ch-card__footnote">
@@ -149,6 +149,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
 import Icon from '@/components/Icon.vue'
@@ -194,13 +195,14 @@ const STATUS_ORDER: Record<string, number> = {
 // State
 // ---------------------------------------------------------------------------
 
+const { t } = useI18n()
 const rpc = useRpcStore()
 const router = useRouter()
 
 const { data: channelsData, loading, error, refresh } = useRequest<ChannelsStatusResponse>(
   'channels.status',
   undefined,
-  { errorLabel: 'Failed to load channels' },
+  { errorLabel: t('console.channels.loadFailed') },
 )
 
 const channels = computed<Channel[]>(() => {
@@ -248,9 +250,9 @@ const typeCount = computed(() => {
 })
 
 const inactiveHint = computed(() => {
-  if (inactive.value === 0) return 'no inactive channels'
-  if (disabled.value > 0) return `${disabled.value} disabled`
-  return 'configured but idle'
+  if (inactive.value === 0) return t('console.channels.noInactive')
+  if (disabled.value > 0) return t('console.channels.disabledCount', { n: disabled.value })
+  return t('console.channels.configuredButIdle')
 })
 
 // ---------------------------------------------------------------------------
@@ -329,21 +331,21 @@ function statusHint(ch: Channel): string {
   const name = ch.name || '<name>'
 
   if (!enabled) {
-    return 'Disabled in config — gateway restart required after re-enabling. Run `opensquilla onboard configure channels` to change.'
+    return t('console.channels.hintDisabled')
   }
   if (dead) {
-    return `Adapter is dead. Inspect gateway logs, then \`opensquilla channels restart ${name}\`.`
+    return t('console.channels.hintDead', { cmd: `opensquilla channels restart ${name}` })
   }
   if (running) {
-    return 'Adapter is live in the current gateway process.'
+    return t('console.channels.hintRunning')
   }
   if (status === 'restarting') {
-    return 'Adapter is restarting after dispatch errors.'
+    return t('console.channels.hintRestarting')
   }
   if (status === 'exhausted') {
-    return `Adapter exhausted its retry budget. Try \`opensquilla channels restart ${name}\`.`
+    return t('console.channels.hintExhausted', { cmd: `opensquilla channels restart ${name}` })
   }
-  return 'Configured on disk but not active in this gateway process — restart the gateway to load it.'
+  return t('console.channels.hintConfiguredInactive')
 }
 </script>
 

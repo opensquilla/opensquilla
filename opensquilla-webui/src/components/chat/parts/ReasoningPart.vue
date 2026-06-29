@@ -10,16 +10,19 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import type { ChatPart } from '@/types/parts'
+
+const { t } = useI18n()
 
 const props = defineProps<{ part: Extract<ChatPart, { type: 'reasoning' }> }>()
 
 const summary = computed(() => {
   const seconds = props.part.seconds || 0
-  if (seconds < 1) return 'Thought process'
-  if (seconds < 60) return `Thought for ${seconds}s`
-  return `Thought for ${Math.floor(seconds / 60)}m ${seconds % 60}s`
+  if (seconds < 1) return t('chat.thoughtProcess')
+  if (seconds < 60) return t('chat.thoughtForSeconds', { seconds })
+  return t('chat.thoughtForMinutes', { minutes: Math.floor(seconds / 60), seconds: seconds % 60 })
 })
 </script>
 

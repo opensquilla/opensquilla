@@ -1,4 +1,5 @@
 import { computed, ref, type ComputedRef } from 'vue'
+import i18n from '@/i18n'
 import {
   DEFAULT_TEXT_TIER,
   IMAGE_TIER,
@@ -21,10 +22,14 @@ export interface SetupTierRow extends SetupTierValue {
   name: string
 }
 
-const ROUTER_VISUAL_MODE_OPTIONS: Array<{ value: RouterVisualMode; label: string }> = [
-  { value: 'real_candidates', label: 'Real routing candidates' },
-  { value: 'legacy_grid', label: 'Three-tier visual panel' },
-]
+const ROUTER_VISUAL_MODE_VALUES: readonly RouterVisualMode[] = ['real_candidates', 'legacy_grid']
+
+function routerVisualModeOptions(): Array<{ value: RouterVisualMode; label: string }> {
+  return ROUTER_VISUAL_MODE_VALUES.map((value) => ({
+    value,
+    label: i18n.global.t(`setup.router.visualMode.${value}`),
+  }))
+}
 
 export function buildRouterPayload(
   mode: string,
@@ -157,7 +162,7 @@ export function useSetupRouterForm() {
       routerDefaultTier: routerDefaultTier.value,
       routerVisualMode: routerVisualMode.value,
       routerVisualModeDirty: visualModeDirty.value,
-      routerVisualModeOptions: ROUTER_VISUAL_MODE_OPTIONS,
+      routerVisualModeOptions: routerVisualModeOptions(),
       hasSavedProvider: context.hasSavedProvider.value,
       textTiers: context.textTiers,
       tierRows: tierRows(context.textTiers),

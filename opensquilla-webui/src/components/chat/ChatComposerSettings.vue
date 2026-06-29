@@ -4,18 +4,18 @@
     tabindex="-1"
     class="composer-settings"
     role="dialog"
-    aria-label="Composer settings"
+    :aria-label="t('chat.composerSettings')"
     @keydown.esc.stop="$emit('close')"
   >
     <div class="composer-settings__head">
-      <span>Composer settings</span>
-      <button type="button" class="composer-settings__close" aria-label="Close composer settings" @click="$emit('close')">
+      <span>{{ t('chat.composerSettings') }}</span>
+      <button type="button" class="composer-settings__close" :aria-label="t('chat.closeComposerSettings')" @click="$emit('close')">
         <Icon name="x" :size="14" />
       </button>
     </div>
 
     <div class="composer-settings__section">
-      <span class="composer-settings__label">Execution mode</span>
+      <span class="composer-settings__label">{{ t('chat.composer.executionMode') }}</span>
       <label
         v-for="option in executionOptions"
         :key="option.value"
@@ -32,13 +32,13 @@
         />
         <span>{{ option.label }}</span>
       </label>
-      <span v-if="elevatedUnavailable" class="composer-settings__hint">Owner-only mode is unavailable for this browser session.</span>
+      <span v-if="elevatedUnavailable" class="composer-settings__hint">{{ t('chat.composer.ownerOnlyUnavailable') }}</span>
     </div>
 
     <div class="composer-settings__section composer-settings__section--rows">
       <ControlSwitch
         label="Squilla Router"
-        :caption="routerEnabled ? 'Enabled' : 'Disabled'"
+        :caption="routerEnabled ? t('chat.composer.enabled') : t('chat.composer.disabled')"
         aria-label="Squilla Router"
         :checked="routerEnabled"
         :busy="routerSettingsBusy"
@@ -46,14 +46,14 @@
       />
       <ControlSwitch
         label="Visual effects"
-        :caption="visualEffectsEnabled ? 'Router animation on' : 'Router animation off'"
+        :caption="visualEffectsEnabled ? t('chat.composer.routerAnimationOn') : t('chat.composer.routerAnimationOff')"
         aria-label="Visual effects"
         :checked="visualEffectsEnabled"
         @change="$emit('setVisualEffectsEnabled', $event)"
       />
       <ControlSwitch
         label="Coding mode"
-        :caption="codingModeEnabled ? 'Enabled' : 'Disabled'"
+        :caption="codingModeEnabled ? t('chat.composer.enabled') : t('chat.composer.disabled')"
         aria-label="Coding mode"
         :checked="codingModeEnabled"
         :busy="codingModeSettingsBusy"
@@ -65,15 +65,18 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import ControlSwitch from '@/components/ControlSwitch.vue'
 
-const executionOptions = [
-  { value: '', label: 'Off' },
-  { value: 'on', label: 'Prompt for approvals' },
-  { value: 'bypass', label: 'Bypass approvals' },
-  { value: 'full', label: 'Full access' },
-] as const
+const { t } = useI18n()
+
+const executionOptions = computed(() => [
+  { value: '', label: t('chat.composer.execOff') },
+  { value: 'on', label: t('chat.composer.execPrompt') },
+  { value: 'bypass', label: t('chat.composer.execBypass') },
+  { value: 'full', label: t('chat.composer.execFull') },
+] as const)
 
 const props = defineProps<{
   elevatedMode: string
@@ -94,7 +97,7 @@ defineEmits<{
 }>()
 
 const normalizedElevatedMode = computed(() => {
-  return executionOptions.some(option => option.value === props.elevatedMode) ? props.elevatedMode : ''
+  return executionOptions.value.some(option => option.value === props.elevatedMode) ? props.elevatedMode : ''
 })
 
 // Anchored popover (mounted only while open): move focus into the panel on open

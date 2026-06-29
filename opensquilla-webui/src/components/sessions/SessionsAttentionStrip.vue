@@ -1,7 +1,7 @@
 <template>
-  <p v-if="isIdle" class="hub-attention-clear" aria-label="Needs attention">
+  <p v-if="isIdle" class="hub-attention-clear" :aria-label="t('sessions.attention.ariaLabel')">
     <span class="hub-attention-clear__mark" aria-hidden="true">✓</span>
-    <span class="hub-attention-clear__text">All clear</span>
+    <span class="hub-attention-clear__text">{{ t('sessions.attention.allClear') }}</span>
     <template v-if="costUsd != null">
       <span class="hub-attention-clear__sep" aria-hidden="true">·</span>
       <button
@@ -9,7 +9,7 @@
         class="hub-attention-clear__cost"
         @click="emit('open-usage')"
       >
-        ${{ costUsd.toFixed(2) }} today
+        {{ t('sessions.attention.costToday', { amount: '$' + costUsd.toFixed(2) }) }}
       </button>
     </template>
   </p>
@@ -17,7 +17,7 @@
     v-else
     class="hub-attention control-stat-grid"
     style="--control-stat-min: 180px"
-    aria-label="Needs attention"
+    :aria-label="t('sessions.attention.ariaLabel')"
   >
     <button
       type="button"
@@ -25,22 +25,22 @@
       :class="{ 'control-stat--warn': approvalsCount > 0, 'is-blocked': approvalsCount > 0 }"
       @click="emit('open-approvals')"
     >
-      <span class="control-stat__label">Needs approval</span>
+      <span class="control-stat__label">{{ t('sessions.attention.needsApproval') }}</span>
       <span class="control-stat__value">{{ approvalsCount }}</span>
       <span class="control-stat__hint">
-        {{ approvalsCount > 0 ? 'open the blocked session →' : 'nothing waiting on you' }}
+        {{ approvalsCount > 0 ? t('sessions.attention.openBlocked') : t('sessions.attention.nothingWaiting') }}
       </span>
     </button>
     <div
       class="control-stat control-stat--static hub-attention__tile"
       :class="{ 'control-stat--accent': activeCount > 0, 'is-active': runningCount > 0 }"
     >
-      <span class="control-stat__label">Active</span>
+      <span class="control-stat__label">{{ t('sessions.attention.active') }}</span>
       <span class="control-stat__value">
         {{ activeCount }}<span v-if="runningCount > 0" class="hub-attention__dot" aria-hidden="true"></span>
       </span>
       <span class="control-stat__hint">
-        {{ runningCount }} running · {{ queuedCount }} queued
+        {{ t('sessions.attention.runningQueued', { running: runningCount, queued: queuedCount }) }}
       </span>
     </div>
     <button
@@ -49,15 +49,18 @@
       class="control-stat control-stat--clickable hub-attention__tile"
       @click="emit('open-usage')"
     >
-      <span class="control-stat__label">Cost to date</span>
+      <span class="control-stat__label">{{ t('sessions.attention.costToDate') }}</span>
       <span class="control-stat__value control-stat__value--mono">${{ costUsd.toFixed(2) }}</span>
-      <span class="control-stat__hint">view usage →</span>
+      <span class="control-stat__hint">{{ t('sessions.attention.viewUsage') }}</span>
     </button>
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   approvalsCount: number

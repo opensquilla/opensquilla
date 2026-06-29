@@ -1,4 +1,5 @@
 import { ref, type Ref } from 'vue'
+import i18n from '@/i18n'
 
 type RpcClient = {
   waitForConnection: () => Promise<void>
@@ -206,15 +207,15 @@ export function useChatSlashCommands(options: UseChatSlashCommandsOptions) {
       case '/compact': {
         const compactKey = options.sessionKey.value
         options.setCompactInFlight(true, compactKey)
-        options.showCompactStatus('started', 'Compacting context', { tone: 'info' })
+        options.showCompactStatus('started', i18n.global.t('chat.compact.compacting'), { tone: 'info' })
         options.rpc.call('sessions.contextCompact', { key: compactKey })
           .then(() => {
             if (compactKey !== options.sessionKey.value) return
-            options.showCompactStatus('completed', 'Context compacted', { tone: 'ok', dismissMs: 5000 })
+            options.showCompactStatus('completed', i18n.global.t('chat.compact.compacted'), { tone: 'ok', dismissMs: 5000 })
           })
           .catch((err: unknown) => {
             if (compactKey !== options.sessionKey.value) return
-            options.showCompactStatus('failed', 'Compact failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'err', dismissMs: 10000 })
+            options.showCompactStatus('failed', i18n.global.t('chat.compact.failed') + ': ' + (err instanceof Error ? err.message : String(err)), { tone: 'err', dismissMs: 10000 })
           })
         break
       }
@@ -242,10 +243,10 @@ export function useChatSlashCommands(options: UseChatSlashCommandsOptions) {
             if (result?.ok) {
               options.dispatchHidden('/meta ' + skillName, '/meta ' + skillName)
             } else {
-              options.notify(result?.error || ('Could not run meta-skill ' + skillName + '.'))
+              options.notify(result?.error || i18n.global.t('chat.metaRuns.couldNotRunSkill', { skill: skillName }))
             }
           })
-          .catch((err: unknown) => options.notify('Could not run meta-skill: ' + (err instanceof Error ? err.message : String(err))))
+          .catch((err: unknown) => options.notify(i18n.global.t('chat.metaRuns.couldNotRunSkillError', { error: err instanceof Error ? err.message : String(err) })))
         break
       }
     }

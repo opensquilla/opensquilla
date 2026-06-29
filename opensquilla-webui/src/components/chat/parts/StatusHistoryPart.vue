@@ -2,7 +2,7 @@
   <details class="status-history">
     <summary class="status-history__summary">
       <Icon class="status-history__chevron" name="chevronRight" :size="12" />
-      <span>Activity · {{ entries.length }} {{ entries.length === 1 ? 'step' : 'steps' }}</span>
+      <span>{{ t('chat.activitySteps', { count: entries.length }) }}</span>
     </summary>
     <ol class="status-history__list">
       <li v-for="(entry, i) in entries" :key="`${entry.action}:${entry.at}:${i}`" class="status-history__row">
@@ -15,8 +15,11 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import type { StatusPart } from '@/types/parts'
+
+const { t } = useI18n()
 
 const props = defineProps<{ entries: StatusPart[] }>()
 

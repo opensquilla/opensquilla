@@ -1,4 +1,5 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import i18n from '@/i18n'
 import { useRpcStore } from '@/stores/rpc'
 import { useRequest } from '@/composables/useRequest'
 import { useToasts } from '@/composables/useToasts'
@@ -12,6 +13,7 @@ interface CronListResponse {
 export function useCronJobs() {
   const rpc = useRpcStore()
   const { pushToast } = useToasts()
+  const t = i18n.global.t
   const searchText = ref('')
   const viewMode = ref<'cards' | 'table'>('cards')
   const runningJobIds = ref<Set<string>>(new Set())
@@ -22,7 +24,7 @@ export function useCronJobs() {
   const { data: cronData, loading, error, refresh } = useRequest<CronListResponse | CronJob[]>(
     'cron.list',
     undefined,
-    { errorLabel: 'Failed to load cron jobs' },
+    { errorLabel: t('cronSkills.jobs.errLoad') },
   )
 
   const jobs = computed<CronJob[]>(() => {
@@ -49,7 +51,7 @@ export function useCronJobs() {
   const nextCountdown = computed(() => nextJob.value ? humanCountdown(new Date(nextJob.value.ts), now.value) : '—')
   const nextRunHint = computed(() => nextJob.value
     ? `${nextJob.value.job.name || nextJob.value.job.id} · ${humanTime(new Date(nextJob.value.ts))}`
-    : 'no upcoming runs')
+    : t('cronSkills.jobs.noUpcomingRuns'))
 
   const last24h = computed(() => jobs.value.reduce((acc, job) => {
     const ts = job.last_run ? new Date(job.last_run) : null
@@ -112,10 +114,10 @@ export function useCronJobs() {
   async function toggleJob(job: CronJob) {
     try {
       await rpc.call('cron.update', { id: job.id, enabled: !job.enabled })
-      pushToast(`Job ${job.enabled ? 'paused' : 'resumed'}`, { tone: 'ok' })
+      pushToast(job.enabled ? t('cronSkills.jobs.toastPaused') : t('cronSkills.jobs.toastResumed'), { tone: 'ok' })
       void refresh()
     } catch (err) {
-      pushToast('Update failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
+      pushToast(t('cronSkills.jobs.toastUpdateFailed', { error: err instanceof Error ? err.message : String(err) }), { tone: 'danger' })
     }
   }
 
@@ -127,10 +129,10 @@ export function useCronJobs() {
     runningJobIds.value = new Set(runningJobIds.value).add(id)
     try {
       const res = await rpc.call<{ reply?: string; error?: string }>('cron.run', { id })
-      if (res?.error) pushToast(`Run failed: ${res.error}`, { tone: 'danger' })
-      else pushToast(res?.reply ? `Run complete: ${res.reply.substring(0, 120)}` : 'Job triggered', { tone: 'ok' })
+      if (res?.error) pushToast(t('cronSkills.jobs.toastRunFailed', { error: res.error }), { tone: 'danger' })
+      else pushToast(res?.reply ? t('cronSkills.jobs.toastRunComplete', { reply: res.reply.substring(0, 120) }) : t('cronSkills.jobs.toastTriggered'), { tone: 'ok' })
     } catch (err) {
-      pushToast('Run failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
+      pushToast(t('cronSkills.jobs.toastRunFailed', { error: err instanceof Error ? err.message : String(err) }), { tone: 'danger' })
     } finally {
       const next = new Set(runningJobIds.value)
       next.delete(id)
@@ -140,7 +142,7 @@ export function useCronJobs() {
 
   async function removeJob(id: string) {
     await rpc.call('cron.remove', { id })
-    pushToast('Job deleted', { tone: 'ok' })
+    pushToast(t('cronSkills.jobs.toastDeleted'), { tone: 'ok' })
     void refresh()
   }
 
@@ -195,11 +197,11 @@ export function isUpcomingRun(job: CronJob, now = Date.now()): boolean {
 
 export function nextRunText(job: CronJob, now = Date.now()): string {
   if (!job.enabled) return '—'
-  if (job.status === 'running') return 'running'
+  if (job.status === 'running') return i18n.global.t('cronSkills.jobs.running')
   if (!job.next_run) return '—'
   const ts = new Date(job.next_run)
   if (isNaN(ts.getTime())) return '—'
-  if (ts.getTime() <= now) return 'awaiting update'
+  if (ts.getTime() <= now) return i18n.global.t('cronSkills.jobs.awaitingUpdate')
   return humanCountdown(ts, now)
 }
 
@@ -219,9 +221,9 @@ export function dotClass(job: CronJob): string {
 
 export function jobKindLabel(job: CronJob): string {
   const kind = job.payloadKind || job.payload_kind
-  if (kind === 'reminder') return 'Reminder'
-  if (kind === 'system_event') return 'System event'
-  return 'Agent task'
+  if (kind === 'reminder') return i18n.global.t('cronSkills.jobs.kindReminder')
+  if (kind === 'system_event') return i18n.global.t('cronSkills.jobs.kindSystemEvent')
+  return i18n.global.t('cronSkills.jobs.kindAgentTask')
 }
 
 export function jobKindClass(job: CronJob): string {

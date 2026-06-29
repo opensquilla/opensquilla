@@ -18,16 +18,16 @@
     class="approval-card"
     data-testid="approval-card"
     role="group"
-    :aria-label="`Approval required: ${approval.toolName}`"
+    :aria-label="t('chat.approval.requiredFor', { tool: approval.toolName })"
   >
     <!-- Concise live announcement: screen readers hear only this line, not the full card body -->
     <div
       class="approval-card__announce"
       aria-live="assertive"
       aria-atomic="true"
-    >Approval needed: {{ approval.toolName }}</div>
+    >{{ t('chat.approval.neededFor', { tool: approval.toolName }) }}</div>
     <header class="approval-card__head">
-      <span class="approval-card__eyebrow">Approval required</span>
+      <span class="approval-card__eyebrow">{{ t('chat.approval.required') }}</span>
       <span class="approval-card__tool">{{ approval.toolName }}</span>
       <span v-if="approval.namespace && approval.namespace !== 'exec'" class="approval-card__ns">
         {{ approval.namespace }}
@@ -37,11 +37,11 @@
 
     <div class="approval-card__body">
       <template v-if="approval.command">
-        <div class="approval-card__label">Command</div>
+        <div class="approval-card__label">{{ t('chat.approval.command') }}</div>
         <pre class="approval-card__pre approval-card__pre--cmd">{{ approval.command }}</pre>
       </template>
       <template v-else-if="formattedArgs">
-        <div class="approval-card__label">Arguments</div>
+        <div class="approval-card__label">{{ t('chat.approval.arguments') }}</div>
         <pre class="approval-card__pre">{{ formattedArgs }}</pre>
       </template>
       <p v-if="approval.warning" class="approval-card__warning">{{ approval.warning }}</p>
@@ -64,20 +64,20 @@
           :disabled="busy"
           @click="$emit('extend')"
         >
-          Extend
+          {{ t('chat.approval.extend') }}
         </button>
       </div>
       <input
         v-model="denyNote"
         class="approval-card__note"
         type="text"
-        placeholder="Deny reason (optional) — sent to the agent"
-        aria-label="Deny reason, optional, sent to the agent"
+        :placeholder="t('chat.approval.denyReasonPlaceholder')"
+        :aria-label="t('chat.approval.denyReasonLabel')"
         :disabled="busy"
       />
       <div class="approval-card__actions">
         <button class="btn btn--primary" type="button" :disabled="busy" @click="$emit('allow-once')">
-          Allow once
+          {{ t('chat.approval.allowOnce') }}
         </button>
         <button
           v-if="canAllowAlways"
@@ -86,7 +86,7 @@
           :disabled="busy"
           @click="$emit('allow-always')"
         >
-          Always allow this
+          {{ t('chat.approval.allowAlways') }}
         </button>
         <button
           class="btn approval-card__deny"
@@ -94,7 +94,7 @@
           :disabled="busy"
           @click="emitDeny"
         >
-          Deny
+          {{ t('chat.approval.deny') }}
         </button>
       </div>
       <p v-if="error" class="approval-card__error" role="alert">{{ error }}</p>
@@ -104,6 +104,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import type { ChatApprovalItem, ChatApprovalResolution } from '@/composables/chat/useChatApprovals'
 import { formatCountdown } from '@/composables/chat/useChatApprovals'
@@ -111,6 +112,8 @@ import { formatCountdown } from '@/composables/chat/useChatApprovals'
 // Below this remaining time the countdown switches to the warning token and
 // reveals the Extend affordance (WCAG 2.2.1: a countdown alone is not enough).
 const WARN_THRESHOLD_SECONDS = 60
+
+const { t } = useI18n()
 
 const props = defineProps<{
   approval: ChatApprovalItem
@@ -163,7 +166,7 @@ const showCountdown = computed(() => !props.resolution && remainingSeconds.value
 const timeIsLow = computed(() =>
   remainingSeconds.value !== null && remainingSeconds.value <= WARN_THRESHOLD_SECONDS)
 const countdownText = computed(() =>
-  remainingSeconds.value === null ? '' : `Expires in ${formatCountdown(remainingSeconds.value)}`)
+  remainingSeconds.value === null ? '' : t('chat.approval.expiresIn', { time: formatCountdown(remainingSeconds.value) }))
 
 const canAllowAlways = computed(() =>
   props.approval.namespace === 'exec' && !!props.approval.command)
@@ -178,10 +181,10 @@ const formattedArgs = computed(() => {
 })
 
 const outcomeText = computed(() => {
-  if (props.resolution === 'expired') return 'Expired — not run'
-  if (props.resolution === 'denied') return 'Denied'
-  if (props.resolution === 'approved_always') return 'Approved · always allowed'
-  return 'Approved · run resumed'
+  if (props.resolution === 'expired') return t('chat.approval.outcomeExpired')
+  if (props.resolution === 'denied') return t('chat.approval.outcomeDenied')
+  if (props.resolution === 'approved_always') return t('chat.approval.outcomeApprovedAlways')
+  return t('chat.approval.outcomeApproved')
 })
 
 const outcomeClass = computed(() => {

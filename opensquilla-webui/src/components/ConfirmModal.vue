@@ -18,7 +18,7 @@
             <button :class="['btn', confirmState.primaryClass]" @click="onConfirm">
               {{ confirmState.primaryLabel }}
             </button>
-            <button ref="cancelBtn" class="btn btn--ghost" @click="onCancel">Cancel</button>
+            <button ref="cancelBtn" class="btn btn--ghost" @click="onCancel">{{ t('common.cancel') }}</button>
           </div>
         </div>
       </div>
@@ -28,9 +28,11 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useConfirm } from '@/composables/useConfirm'
 import { useDialogA11y } from '@/composables/useDialogA11y'
 
+const { t } = useI18n()
 const { confirmState, resolveConfirm } = useConfirm()
 
 const modalRef = ref<HTMLElement | null>(null)

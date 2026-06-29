@@ -4,16 +4,16 @@
     <header class="ov-stage__header control-stage__header">
       <div class="ov-stage__title-block control-stage__title-block">
         <h2 class="ov-stage__title control-stage__title">OpenSquilla</h2>
-        <p class="ov-stage__subtitle control-stage__subtitle">Live status, recent sessions, and the event stream.</p>
+        <p class="ov-stage__subtitle control-stage__subtitle">{{ t('sessions.overview.subtitle') }}</p>
       </div>
       <div class="ov-stage__actions control-stage__actions">
-        <button class="btn btn--ghost" title="Refresh" :disabled="refreshing" @click="refresh">
+        <button class="btn btn--ghost" :title="t('sessions.refresh')" :disabled="refreshing" @click="refresh">
           <Icon name="refresh" :size="16" />
-          <span>{{ refreshing ? 'Refreshing…' : 'Refresh' }}</span>
+          <span>{{ refreshing ? t('sessions.refreshing') : t('sessions.refresh') }}</span>
         </button>
-        <button class="btn btn--primary" title="Open chat" @click="router.push('/chat')">
+        <button class="btn btn--primary" :title="t('sessions.overview.openChat')" @click="router.push('/chat')">
           <Icon name="chat" :size="16" />
-          <span>Open chat</span>
+          <span>{{ t('sessions.overview.openChat') }}</span>
         </button>
       </div>
     </header>
@@ -24,34 +24,34 @@
         <div class="ov-stat__icon control-stat__icon">
           <Icon name="usage" :size="18" />
         </div>
-        <div class="ov-stat__label control-stat__label">Total tokens</div>
+        <div class="ov-stat__label control-stat__label">{{ t('sessions.overview.totalTokens') }}</div>
         <div class="ov-stat__value control-stat__value">{{ tokensDisplay }}</div>
         <div class="ov-stat__hint control-stat__hint">{{ costLine }}</div>
       </button>
 
-      <button class="ov-stat control-stat control-stat--clickable" type="button" title="Total sessions across all statuses" @click="router.push('/sessions')">
+      <button class="ov-stat control-stat control-stat--clickable" type="button" :title="t('sessions.overview.totalSessionsTitle')" @click="router.push('/sessions')">
         <div class="ov-stat__icon control-stat__icon">
           <Icon name="sessions" :size="18" />
         </div>
-        <div class="ov-stat__label control-stat__label">Total sessions</div>
+        <div class="ov-stat__label control-stat__label">{{ t('sessions.overview.totalSessions') }}</div>
         <div class="ov-stat__value control-stat__value">{{ sessionsCount }}</div>
-        <div class="ov-stat__hint control-stat__hint">view all &rarr;</div>
+        <div class="ov-stat__hint control-stat__hint">{{ t('sessions.overview.viewAll') }}</div>
       </button>
 
       <button class="ov-stat control-stat control-stat--clickable" type="button" @click="router.push('/agents')">
         <div class="ov-stat__icon control-stat__icon">
           <Icon name="agents" :size="18" />
         </div>
-        <div class="ov-stat__label control-stat__label">Provider</div>
+        <div class="ov-stat__label control-stat__label">{{ t('sessions.overview.provider') }}</div>
         <div class="ov-stat__value ov-stat__value--mono control-stat__value control-stat__value--mono">{{ provider }}</div>
-        <div class="ov-stat__hint control-stat__hint">manage agents &rarr;</div>
+        <div class="ov-stat__hint control-stat__hint">{{ t('sessions.overview.manageAgents') }}</div>
       </button>
 
-      <button class="ov-stat control-stat control-stat--clickable" type="button" title="Jump to the readiness report" @click="scrollToHealth">
+      <button class="ov-stat control-stat control-stat--clickable" type="button" :title="t('sessions.overview.jumpToReadiness')" @click="scrollToHealth">
         <div class="ov-stat__icon control-stat__icon">
           <Icon name="logs" :size="18" />
         </div>
-        <div class="ov-stat__label control-stat__label">Health</div>
+        <div class="ov-stat__label control-stat__label">{{ t('sessions.overview.health') }}</div>
         <div class="ov-stat__value ov-stat__value--status control-stat__value">{{ statusLabelText }}</div>
         <div class="ov-stat__hint control-stat__hint">{{ statusSummary }}</div>
       </button>
@@ -60,7 +60,7 @@
         <div class="ov-stat__icon control-stat__icon">
           <Icon name="cron" :size="18" />
         </div>
-        <div class="ov-stat__label control-stat__label">Uptime</div>
+        <div class="ov-stat__label control-stat__label">{{ t('sessions.overview.uptime') }}</div>
         <div class="ov-stat__value ov-stat__value--mono control-stat__value control-stat__value--mono">{{ uptime }}</div>
         <div class="ov-stat__hint control-stat__hint">{{ versionLine }}</div>
       </div>
@@ -71,13 +71,13 @@
       id="overview-health"
       class="health-status__rail"
       :class="stripClass"
-      aria-label="Health summary"
+      :aria-label="t('sessions.overview.healthSummary')"
     >
       <div class="health-score control-stat control-stat--hero">
-        <span class="health-score__label control-stat__label">Readiness</span>
+        <span class="health-score__label control-stat__label">{{ t('sessions.overview.readiness') }}</span>
         <strong class="control-stat__value">{{ statusLabelText }}</strong>
         <span class="health-score__summary control-stat__hint">{{ statusSummary }}</span>
-        <div v-if="contextItems.length" class="health-report-context" aria-label="Health report context">
+        <div v-if="contextItems.length" class="health-report-context" :aria-label="t('sessions.overview.healthContext')">
           <span v-for="([label, value], idx) in contextItems" :key="idx" class="health-report-context__item">
             <b>{{ label }}</b>
             <span class="health-report-context__value">{{ value }}</span>
@@ -86,30 +86,30 @@
       </div>
       <div class="health-count-grid">
         <div class="health-count control-stat" :class="`is-${classToken('blocks_ready')}`">
-          <span class="control-stat__label">Needs action</span>
+          <span class="control-stat__label">{{ t('sessions.overview.needsAction') }}</span>
           <strong class="control-stat__value">{{ impactCounts.blocks_ready || 0 }}</strong>
         </div>
         <div class="health-count control-stat" :class="`is-${classToken('degrades')}`">
-          <span class="control-stat__label">Degraded</span>
+          <span class="control-stat__label">{{ t('sessions.overview.degraded') }}</span>
           <strong class="control-stat__value">{{ impactCounts.degrades || 0 }}</strong>
         </div>
         <div class="health-count control-stat" :class="`is-${classToken('optional')}`">
-          <span class="control-stat__label">Optional</span>
+          <span class="control-stat__label">{{ t('sessions.overview.optional') }}</span>
           <strong class="control-stat__value">{{ impactCounts.optional || 0 }}</strong>
         </div>
         <div class="health-count control-stat" :class="`is-${classToken('none')}`">
-          <span class="control-stat__label">Ready</span>
+          <span class="control-stat__label">{{ t('sessions.overview.ready') }}</span>
           <strong class="control-stat__value">{{ impactCounts.none || 0 }}</strong>
         </div>
       </div>
     </section>
 
-    <section class="health-findings" aria-label="Health findings">
+    <section class="health-findings" :aria-label="t('sessions.overview.healthFindings')">
       <template v-if="healthLoading">
-        <article class="health-empty control-card">Loading health report</article>
+        <article class="health-empty control-card">{{ t('sessions.overview.loadingHealth') }}</article>
       </template>
       <template v-else-if="groupedFindings.length === 0">
-        <article class="health-empty control-card">No findings returned.</article>
+        <article class="health-empty control-card">{{ t('sessions.overview.noFindings') }}</article>
       </template>
       <template v-else>
         <section
@@ -146,10 +146,10 @@
                 >
                   {{ findingBadgeText(finding) }}
                 </span>
-                <span v-if="finding.restartRequired" class="health-chip">Recovery requires restart</span>
+                <span v-if="finding.restartRequired" class="health-chip">{{ t('sessions.overview.recoveryRestart') }}</span>
               </div>
               <div class="health-finding__title">
-                {{ finding.title || finding.id || `Finding ${fIdx + 1}` }}
+                {{ finding.title || finding.id || t('sessions.overview.findingFallback', { n: fIdx + 1 }) }}
               </div>
               <div v-if="finding.detail" class="health-finding__detail">{{ finding.detail }}</div>
               <div v-if="visibleEvidenceEntries(finding.evidence).length" class="health-evidence" aria-label="Finding evidence">
@@ -167,14 +167,14 @@
                   >
                     <span class="health-step__number">{{ sIdx + 1 }}</span>
                     <span class="health-step__body">
-                      <b>{{ step.label || 'Step' }}</b>
+                      <b>{{ step.label || t('sessions.overview.step') }}</b>
                       <span v-if="step.command" class="health-step__command">
                         <code>{{ step.command }}</code>
                         <button
                           class="health-step__copy"
                           type="button"
-                          title="Copy command"
-                          aria-label="Copy command"
+                          :title="t('sessions.overview.copyCommand')"
+                          :aria-label="t('sessions.overview.copyCommand')"
                           @click="copyCommand(step.command!)"
                         >
                           <Icon name="copy" :size="14" />
@@ -197,11 +197,11 @@
       <section class="ov-panel ov-panel--span2 control-panel">
         <div class="ov-panel__head control-panel__head">
           <div>
-            <span class="ov-panel__eyebrow control-panel__eyebrow">Recent activity</span>
-            <h3 class="ov-panel__title control-panel__title">Sessions</h3>
+            <span class="ov-panel__eyebrow control-panel__eyebrow">{{ t('sessions.overview.recentActivity') }}</span>
+            <h3 class="ov-panel__title control-panel__title">{{ t('sessions.title') }}</h3>
           </div>
           <button class="ov-link" type="button" @click="router.push('/sessions')">
-            View all &rarr;
+            {{ t('sessions.overview.viewAllArrow') }}
           </button>
         </div>
         <div class="ov-recent">
@@ -216,7 +216,7 @@
               <div class="ov-recent__empty-icon">
                 <Icon name="sessions" :size="36" />
               </div>
-              <div>No sessions yet &mdash; open chat to start your first one.</div>
+              <div>{{ t('sessions.overview.noSessions') }}</div>
             </div>
           </template>
           <template v-else>
@@ -247,14 +247,14 @@
       <section class="ov-panel control-panel">
         <div class="ov-panel__head control-panel__head">
           <div>
-            <span class="ov-panel__eyebrow control-panel__eyebrow">Connection</span>
-            <h3 class="ov-panel__title control-panel__title">Gateway</h3>
+            <span class="ov-panel__eyebrow control-panel__eyebrow">{{ t('sessions.overview.connection') }}</span>
+            <h3 class="ov-panel__title control-panel__title">{{ t('sessions.overview.gateway') }}</h3>
           </div>
-          <span class="conn-pill" :class="connPillClass">{{ connPillState }}</span>
+          <span class="conn-pill" :class="connPillClass">{{ connPillLabel }}</span>
         </div>
         <div class="ov-form">
-          <p class="ov-conn-hint">The gateway WebSocket URL and token now live in Settings.</p>
-          <router-link class="btn btn--ghost btn--sm" to="/settings/connection">Manage connection in Settings &rarr;</router-link>
+          <p class="ov-conn-hint">{{ t('sessions.overview.connHint') }}</p>
+          <router-link class="btn btn--ghost btn--sm" to="/settings/connection">{{ t('sessions.overview.manageConnection') }}</router-link>
         </div>
       </section>
 
@@ -262,15 +262,15 @@
       <section class="ov-panel ov-panel--span3 control-panel">
         <div class="ov-panel__head control-panel__head">
           <div>
-            <span class="ov-panel__eyebrow control-panel__eyebrow">Live</span>
-            <h3 class="ov-panel__title control-panel__title">Event stream</h3>
+            <span class="ov-panel__eyebrow control-panel__eyebrow">{{ t('sessions.overview.live') }}</span>
+            <h3 class="ov-panel__title control-panel__title">{{ t('sessions.overview.eventStream') }}</h3>
           </div>
           <span class="ov-panel__meta">{{ eventCountText }}</span>
         </div>
         <div class="ov-event-log">
           <div v-if="eventLog.length === 0" class="ov-event-log__empty">
             <span class="ov-event-log__pulse" />
-            Listening for events&hellip;
+            {{ t('sessions.overview.listening') }}
           </div>
           <div
             v-for="(e, i) in eventLog"
@@ -290,6 +290,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
 import { useRequest } from '@/composables/useRequest'
@@ -372,6 +373,7 @@ interface LogEvent {
 // Stores & Router
 // ---------------------------------------------------------------------------
 
+const { t } = useI18n()
 const router = useRouter()
 const rpc = useRpcStore()
 
@@ -467,10 +469,10 @@ const connPillClass = computed(() => {
   return 'err'
 })
 
-const eventCountText = computed(() => {
-  const n = eventLog.value.length
-  return `${n} event${n === 1 ? '' : 's'}`
-})
+const connPillLabel = computed(() => t(`sessions.overview.conn.${connPillState.value}`))
+
+const eventCountText = computed(() =>
+  t('sessions.overview.eventCount', { count: eventLog.value.length }))
 
 const stripClass = computed(() => {
   if (healthLoading.value) return 'is-loading'
@@ -479,14 +481,14 @@ const stripClass = computed(() => {
 })
 
 const statusLabelText = computed(() => {
-  if (healthLoading.value) return 'Checking'
+  if (healthLoading.value) return t('sessions.overview.checking')
   if (healthError.value) return statusLabel('unavailable', false)
   return statusLabel(healthReport.value?.status || 'unknown', healthReport.value?.ready)
 })
 
 const statusSummary = computed(() => {
-  if (healthLoading.value) return 'Waiting for doctor.status'
-  if (healthError.value) return 'Gateway health report unavailable'
+  if (healthLoading.value) return t('sessions.overview.waitingDoctor')
+  if (healthError.value) return t('sessions.overview.healthUnavailable')
   return healthReport.value?.summary || healthReport.value?.status || ''
 })
 
@@ -501,12 +503,12 @@ const contextItems = computed<[string, string][]>(() => {
   if (healthLoading.value) return []
   const items: [string, string][] = []
   const gatewayUrl = healthReport.value?.gatewayUrl || gatewayContextUrl()
-  if (gatewayUrl) items.push(['Gateway', gatewayUrl])
-  if (healthReport.value?.configPath) items.push(['Config', healthReport.value.configPath])
+  if (gatewayUrl) items.push([t('sessions.overview.ctxGateway'), gatewayUrl])
+  if (healthReport.value?.configPath) items.push([t('sessions.overview.ctxConfig'), healthReport.value.configPath])
   if (healthReport.value?.requestedConfigPath && healthReport.value.requestedConfigPath !== healthReport.value.configPath) {
-    items.push(['Requested config', healthReport.value.requestedConfigPath])
+    items.push([t('sessions.overview.ctxRequestedConfig'), healthReport.value.requestedConfigPath])
   }
-  if (healthReport.value?.agentId) items.push(['Agent', healthReport.value.agentId])
+  if (healthReport.value?.agentId) items.push([t('sessions.overview.ctxAgent'), healthReport.value.agentId])
   return items
 })
 
@@ -519,23 +521,23 @@ const groupedFindings = computed<FindingGroup[]>(() => {
 
   const groups: FindingGroup[] = [
     {
-      title: 'Needs action',
-      note: 'Fix these first to make OpenSquilla ready.',
+      title: t('sessions.overview.group.action.title'),
+      note: t('sessions.overview.group.action.note'),
       findings: findings.filter(f => findingGroupKind(f) === 'action'),
     },
     {
-      title: 'Degraded capabilities',
-      note: 'OpenSquilla can run, but these capabilities need attention.',
+      title: t('sessions.overview.group.degraded.title'),
+      note: t('sessions.overview.group.degraded.note'),
       findings: findings.filter(f => findingGroupKind(f) === 'degraded'),
     },
     {
-      title: 'Optional setup',
-      note: 'These improve capability or posture but do not block readiness.',
+      title: t('sessions.overview.group.optional.title'),
+      note: t('sessions.overview.group.optional.note'),
       findings: findings.filter(f => findingGroupKind(f) === 'optional'),
     },
     {
-      title: 'Ready checks',
-      note: 'These surfaces are already working.',
+      title: t('sessions.overview.group.ready.title'),
+      note: t('sessions.overview.group.ready.note'),
       findings: findings.filter(f => findingGroupKind(f) === 'ready'),
     },
   ]
@@ -708,25 +710,25 @@ function findingTone(kind: 'action' | 'degraded' | 'optional' | 'ready'): 'error
 }
 
 function impactLabel(impact: string): string {
-  const labels: Record<string, string> = {
-    blocks_ready: 'Blocks readiness',
-    degrades: 'Degrades',
-    optional: 'Optional',
-    none: 'Reference',
+  const keys: Record<string, string> = {
+    blocks_ready: 'sessions.overview.impact.blocksReady',
+    degrades: 'sessions.overview.impact.degrades',
+    optional: 'sessions.overview.impact.optional',
+    none: 'sessions.overview.impact.reference',
   }
-  return labels[impact] || 'Reference'
+  return t(keys[impact] || 'sessions.overview.impact.reference')
 }
 
 function statusLabel(status: string, ready: boolean | undefined): string {
-  if (ready && status === 'degraded') return 'Ready with warnings'
-  if (ready) return 'Ready'
-  const labels: Record<string, string> = {
-    action_required: 'Action required',
-    degraded: 'Degraded',
-    unavailable: 'Unavailable',
-    ready: 'Ready',
+  if (ready && status === 'degraded') return t('sessions.overview.statusLabel.readyWithWarnings')
+  if (ready) return t('sessions.overview.statusLabel.ready')
+  const keys: Record<string, string> = {
+    action_required: 'sessions.overview.statusLabel.actionRequired',
+    degraded: 'sessions.overview.statusLabel.degraded',
+    unavailable: 'sessions.overview.statusLabel.unavailable',
+    ready: 'sessions.overview.statusLabel.ready',
   }
-  return labels[status] || status
+  return keys[status] ? t(keys[status]) : status
 }
 
 function evidenceLabel(key: string): string {
@@ -755,9 +757,9 @@ function visibleEvidenceEntries(evidence: Record<string, unknown> | undefined): 
 }
 
 function stepsHeading(kind: 'action' | 'degraded' | 'optional' | 'ready'): string {
-  if (kind === 'optional') return 'Optional setup steps'
-  if (kind === 'ready') return 'Reference steps'
-  return 'Recovery steps'
+  if (kind === 'optional') return t('sessions.overview.steps.optional')
+  if (kind === 'ready') return t('sessions.overview.steps.reference')
+  return t('sessions.overview.steps.recovery')
 }
 
 function shellArg(value: string | undefined | null): string {
@@ -773,19 +775,19 @@ function bootstrapConfigPath(): string {
 function gatewayUnavailableDetail(gatewayUrl: string, err: Error | null): string {
   const reason = err?.message || String(err)
   if (!gatewayUrl) return reason
-  return `Cannot load doctor.status from ${gatewayUrl}. ${reason}`
+  return t('sessions.overview.gw.cannotLoad', { url: gatewayUrl, reason })
 }
 
 function gatewayUnavailableFixSteps(gatewayUrl: string): FixStep[] {
   if (!isLocalGatewayUrl(gatewayUrl)) {
     return [
       {
-        label: 'Inspect remote gateway',
+        label: t('sessions.overview.gw.inspectRemote'),
         command: `opensquilla gateway status --gateway ${shellArg(gatewayUrl)} --json`,
       },
       {
-        label: 'Repair remote deployment',
-        detail: 'Start or repair the remote OpenSquilla gateway deployment, then refresh health.',
+        label: t('sessions.overview.gw.repairRemote'),
+        detail: t('sessions.overview.gw.repairRemoteDetail'),
       },
     ]
   }
@@ -797,12 +799,12 @@ function gatewayUnavailableFixSteps(gatewayUrl: string): FixStep[] {
   const targetArgs = useConfigTarget ? '' : bindArgs
   return [
     {
-      label: 'Run local doctor',
+      label: t('sessions.overview.gw.runLocalDoctor'),
       command: `opensquilla doctor${doctorTarget}${configTarget} --json`,
-      detail: 'Checks local config and onboarding before restarting the gateway.',
+      detail: t('sessions.overview.gw.runLocalDoctorDetail'),
     },
-    { label: 'Start local gateway', command: `opensquilla gateway start${targetArgs}${configTarget}` },
-    { label: 'Inspect local gateway', command: `opensquilla gateway status${targetArgs} --json${configTarget}` },
+    { label: t('sessions.overview.gw.startLocal'), command: `opensquilla gateway start${targetArgs}${configTarget}` },
+    { label: t('sessions.overview.gw.inspectLocal'), command: `opensquilla gateway status${targetArgs} --json${configTarget}` },
   ]
 }
 
@@ -850,7 +852,7 @@ function gatewayUnavailableFinding(): Finding {
     severity: 'error',
     readinessImpact: 'blocks_ready',
     surface: 'gateway',
-    title: 'Gateway health report unavailable',
+    title: t('sessions.overview.healthUnavailable'),
     detail: gatewayUnavailableDetail(gatewayUrl, healthError.value),
     evidence: configPath ? { gatewayUrl, configPath } : { gatewayUrl },
     fixSteps: gatewayUnavailableFixSteps(gatewayUrl),
@@ -876,9 +878,9 @@ function findingBadges(finding: Finding): boolean {
 
 function findingBadgeText(finding: Finding): string {
   const id = String(finding?.id || '')
-  if (id.endsWith('.diagnostic.incomplete')) return 'Diagnostics incomplete'
-  if (id.endsWith('.repair.pending')) return 'Repair pending'
-  if (id === 'gateway.config.mismatch') return 'Config mismatch'
+  if (id.endsWith('.diagnostic.incomplete')) return t('sessions.overview.badge.diagnostic')
+  if (id.endsWith('.repair.pending')) return t('sessions.overview.badge.repair')
+  if (id === 'gateway.config.mismatch') return t('sessions.overview.badge.config')
   return ''
 }
 
@@ -901,21 +903,21 @@ function sessionStatusClass(status: string | undefined): string {
 
 function sessionStatusLabel(status: string | undefined): string {
   const s = (status || 'unknown').toLowerCase()
-  const labels: Record<string, string> = {
-    active: 'Active',
-    ready: 'Ready',
-    ok: 'OK',
-    paused: 'Paused',
-    degraded: 'Degraded',
-    warn: 'Warning',
-    error: 'Error',
-    failed: 'Failed',
-    closed: 'Closed',
-    ended: 'Ended',
-    offline: 'Offline',
-    unknown: 'Unknown',
+  const keys: Record<string, string> = {
+    active: 'sessions.overview.dotStatus.active',
+    ready: 'sessions.overview.dotStatus.ready',
+    ok: 'sessions.overview.dotStatus.ok',
+    paused: 'sessions.overview.dotStatus.paused',
+    degraded: 'sessions.overview.dotStatus.degraded',
+    warn: 'sessions.overview.dotStatus.warn',
+    error: 'sessions.overview.dotStatus.error',
+    failed: 'sessions.overview.dotStatus.failed',
+    closed: 'sessions.overview.dotStatus.closed',
+    ended: 'sessions.overview.dotStatus.ended',
+    offline: 'sessions.overview.dotStatus.offline',
+    unknown: 'sessions.overview.dotStatus.unknown',
   }
-  return labels[s] || s.charAt(0).toUpperCase() + s.slice(1)
+  return keys[s] ? t(keys[s]) : s.charAt(0).toUpperCase() + s.slice(1)
 }
 
 function relTime(dateStr: string | undefined): string {
@@ -930,16 +932,16 @@ function relTime(dateStr: string | undefined): string {
   const diffHour = Math.floor(diffMin / 60)
   const diffDay = Math.floor(diffHour / 24)
 
-  if (diffSec < 10) return 'just now'
-  if (diffSec < 60) return `${diffSec}s ago`
-  if (diffMin < 60) return `${diffMin}m ago`
-  if (diffHour < 24) return `${diffHour}h ago`
-  if (diffDay < 7) return `${diffDay}d ago`
+  if (diffSec < 10) return t('sessions.relTime.justNow')
+  if (diffSec < 60) return t('sessions.relTime.seconds', { n: diffSec })
+  if (diffMin < 60) return t('sessions.relTime.minutes', { n: diffMin })
+  if (diffHour < 24) return t('sessions.relTime.hours', { n: diffHour })
+  if (diffDay < 7) return t('sessions.relTime.days', { n: diffDay })
   return d.toLocaleDateString()
 }
 
 function formatMessageCount(n: number): string {
-  return `${n.toLocaleString()} msg`
+  return t('sessions.msgCount', { count: n.toLocaleString() })
 }
 
 // ---------------------------------------------------------------------------

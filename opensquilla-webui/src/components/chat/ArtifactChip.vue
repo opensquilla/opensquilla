@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import type { IconName } from '@/utils/icons'
 import type { ArtifactPayload } from '@/types/rpc'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   artifact: ArtifactPayload
@@ -67,17 +70,17 @@ const bodyLabel = computed(() => {
         v-if="previewable"
         type="button"
         class="msg-artifact-action"
-        :aria-label="`Open ${title}`"
+        :aria-label="t('chat.openTitle', { title })"
         @click="emit('open', artifact)"
       >
         <Icon name="externalLink" :size="14" />
-        <span class="msg-artifact-action__label">Open</span>
+        <span class="msg-artifact-action__label">{{ t('chat.open') }}</span>
       </button>
       <button
         v-if="previewable"
         type="button"
         class="msg-artifact-download"
-        :aria-label="`Download ${title}`"
+        :aria-label="t('chat.downloadTitle', { title })"
         @click="emit('download', artifact)"
       >
         <Icon name="download" :size="16" />
@@ -86,11 +89,11 @@ const bodyLabel = computed(() => {
         v-else
         type="button"
         class="msg-artifact-action"
-        :aria-label="`Download ${title}`"
+        :aria-label="t('chat.downloadTitle', { title })"
         @click="emit('download', artifact)"
       >
         <Icon name="download" :size="14" />
-        <span class="msg-artifact-action__label">Download</span>
+        <span class="msg-artifact-action__label">{{ t('chat.download') }}</span>
       </button>
     </span>
   </div>

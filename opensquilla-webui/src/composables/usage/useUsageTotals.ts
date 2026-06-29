@@ -1,5 +1,8 @@
 import { computed, type ComputedRef, type Ref } from 'vue'
+import i18n from '@/i18n'
 import type { SessionRow, UsageTotals } from '@/types/usage'
+
+const t = i18n.global.t
 
 export function useUsageTotals(options: {
   visibleSessions: ComputedRef<SessionRow[]>
@@ -29,10 +32,10 @@ export function useUsageTotals(options: {
   const tokensBreakdownParts = computed(() => {
     const t = usageTotals.value
     const parts: Array<{ label: string; value: string }> = []
-    if (t.input != null) parts.push({ label: 'In', value: t.input.toLocaleString() })
-    if (t.output != null) parts.push({ label: 'Out', value: t.output.toLocaleString() })
-    if (t.cacheRead) parts.push({ label: 'Cache R', value: t.cacheRead.toLocaleString() })
-    if (t.cacheWrite) parts.push({ label: 'Cache W', value: t.cacheWrite.toLocaleString() })
+    if (t.input != null) parts.push({ label: i18n.global.t('usageLogs.tokenParts.in'), value: t.input.toLocaleString() })
+    if (t.output != null) parts.push({ label: i18n.global.t('usageLogs.tokenParts.out'), value: t.output.toLocaleString() })
+    if (t.cacheRead) parts.push({ label: i18n.global.t('usageLogs.tokenParts.cacheRead'), value: t.cacheRead.toLocaleString() })
+    if (t.cacheWrite) parts.push({ label: i18n.global.t('usageLogs.tokenParts.cacheWrite'), value: t.cacheWrite.toLocaleString() })
     return parts
   })
 
@@ -52,7 +55,7 @@ export function useUsageTotals(options: {
   })
 
   const costHintTitle = computed(() => {
-    return `CNY values use baked-in rate ${options.cnyRate}. Verify against current FX for accounting use.`
+    return t('usageLogs.costHintTitle', { rate: options.cnyRate })
   })
 
   const sessionCountDisplay = computed(() => {

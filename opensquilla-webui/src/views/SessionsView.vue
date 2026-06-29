@@ -2,15 +2,15 @@
   <div class="hub control-stage">
     <header class="control-stage__header">
       <div class="control-stage__title-block">
-        <h2 class="control-stage__title">Sessions</h2>
+        <h2 class="control-stage__title">{{ t('sessions.title') }}</h2>
         <p class="control-stage__subtitle">
-          Start a task, unblock a run, or pick up where you left off.
+          {{ t('sessions.subtitle') }}
         </p>
       </div>
       <div class="control-stage__actions">
-        <button class="btn btn--ghost" title="Refresh" :disabled="refreshing" @click="refresh">
+        <button class="btn btn--ghost" :title="t('sessions.refresh')" :disabled="refreshing" @click="refresh">
           <Icon name="refresh" :size="16" />
-          <span>{{ refreshing ? 'Refreshing…' : 'Refresh' }}</span>
+          <span>{{ refreshing ? t('sessions.refreshing') : t('sessions.refresh') }}</span>
         </button>
       </div>
     </header>
@@ -28,7 +28,7 @@
 
     <section class="hub-list">
       <div class="hub-list__head">
-        <div class="hub-filters" role="group" aria-label="Filter sessions">
+        <div class="hub-filters" role="group" :aria-label="t('sessions.filter.ariaLabel')">
           <button
             v-for="chip in FILTER_CHIPS"
             :key="chip.id"
@@ -38,7 +38,7 @@
             :aria-pressed="filter === chip.id"
             @click="filter = chip.id"
           >
-            {{ chip.label }}
+            {{ t(chip.labelKey) }}
           </button>
         </div>
         <div class="hub-search">
@@ -49,8 +49,8 @@
             v-model="search"
             type="text"
             class="hub-search__input"
-            placeholder="Search sessions…"
-            aria-label="Search sessions"
+            :placeholder="t('sessions.search.placeholder')"
+            :aria-label="t('sessions.search.ariaLabel')"
             autocomplete="off"
           />
         </div>
@@ -58,26 +58,26 @@
 
       <ErrorState
         v-if="sessionListError"
-        message="Could not load sessions."
+        :message="t('sessions.error.load')"
         :on-retry="loadAll"
       />
 
       <div v-else-if="isLoading && allSessions.length === 0" class="hub-state">
         <LoadingSpinner />
-        <p class="hub-state__text">Loading sessions…</p>
+        <p class="hub-state__text">{{ t('sessions.loading') }}</p>
       </div>
 
       <div v-else-if="allSessions.length === 0" class="hub-state">
-        <div class="hub-state__title">No sessions yet.</div>
+        <div class="hub-state__title">{{ t('sessions.empty.title') }}</div>
         <p class="hub-state__text">
-          Start your first task above — sessions appear here as agents pick up work.
+          {{ t('sessions.empty.body') }}
         </p>
       </div>
 
       <div v-else-if="ledgerEntries.length === 0" class="hub-state">
-        <div class="hub-state__title">No matches</div>
-        <p class="hub-state__text">No sessions match the current filter.</p>
-        <button class="btn btn--ghost" @click="clearFilters">Clear filters</button>
+        <div class="hub-state__title">{{ t('sessions.noMatches.title') }}</div>
+        <p class="hub-state__text">{{ t('sessions.noMatches.body') }}</p>
+        <button class="btn btn--ghost" @click="clearFilters">{{ t('sessions.noMatches.clear') }}</button>
       </div>
 
       <SessionsLedger
@@ -105,6 +105,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
 import Icon from '@/components/Icon.vue'
@@ -138,11 +139,11 @@ interface DeleteResponse {
   errors?: unknown[]
 }
 
-const FILTER_CHIPS: Array<{ id: FilterId; label: string }> = [
-  { id: 'all', label: 'All' },
-  { id: 'chats', label: 'Chats' },
-  { id: 'automations', label: 'Automations' },
-  { id: 'channels', label: 'Channels' },
+const FILTER_CHIPS: Array<{ id: FilterId; labelKey: string }> = [
+  { id: 'all', labelKey: 'sessions.filter.all' },
+  { id: 'chats', labelKey: 'sessions.filter.chats' },
+  { id: 'automations', labelKey: 'sessions.filter.automations' },
+  { id: 'channels', labelKey: 'sessions.filter.channels' },
 ]
 
 const FILTER_KINDS: Record<Exclude<FilterId, 'all'>, string> = {
@@ -154,6 +155,7 @@ const FILTER_KINDS: Record<Exclude<FilterId, 'all'>, string> = {
 const REFRESH_DEBOUNCE_MS = 150
 const FALLBACK_POLL_MS = 30000
 
+const { t } = useI18n()
 const router = useRouter()
 const rpc = useRpcStore()
 const { confirm } = useConfirm()
@@ -217,7 +219,7 @@ const inspectParent = computed(() => {
 
 const inspectAgentName = computed(() => {
   const id = inspectItem.value?.effectiveAgentId
-  if (!id || id === 'unknown') return 'Unknown agent'
+  if (!id || id === 'unknown') return t('sessions.unknownAgent')
   return agentNames.value.get(id) || id
 })
 
@@ -352,9 +354,9 @@ function clearFilters() {
 
 async function removeSession(item: SessionItem) {
   const ok = await confirm({
-    title: 'Delete session',
-    body: `Delete session "${item.title}"? This cannot be undone.\n\nThe transcript will not be flushed to disk; use /reset first if you want a backup.`,
-    primaryLabel: 'Delete',
+    title: t('sessions.delete.title'),
+    body: t('sessions.delete.body', { title: item.title }),
+    primaryLabel: t('sessions.delete.confirm'),
   })
   if (!ok) {
     return

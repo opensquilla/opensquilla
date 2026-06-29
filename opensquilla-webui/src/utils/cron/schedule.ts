@@ -1,3 +1,5 @@
+import i18n from '@/i18n'
+
 interface ParsedField {
   all: boolean
   set?: Set<number>
@@ -68,41 +70,50 @@ export function nextRuns(parsed: ParsedCron, count: number, fromTs = Date.now())
 }
 
 export function explainCron(expr: string): string {
+  const t = i18n.global.t
   const p = parseCron(expr)
   if (!p) return ''
+  // Canonical English day/month tokens — used only for the structural Mon–Fri /
+  // Sat+Sun detection below; the display labels come from i18n keys.
   const dowNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-  const monNames = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  const dowLabel = (v: number) => t(`cronSkills.explain.dow.${dowNames[v].toLowerCase()}`)
+  const monKeys = ['', 'jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+  const monLabel = (v: number) => t(`cronSkills.explain.mon.${monKeys[v]}`)
 
-  if (p.minute.all && p.hour.all) return 'Every minute'
+  if (p.minute.all && p.hour.all) return t('cronSkills.explain.everyMinute')
   if (!p.minute.all && p.minute.set!.size === 1 && p.hour.all) {
-    return `Every hour at :${String([...p.minute.set!][0]).padStart(2, '0')}`
+    return t('cronSkills.explain.everyHourAt', { minute: String([...p.minute.set!][0]).padStart(2, '0') })
   }
   if (!p.minute.all && p.minute.set!.size === 1 && !p.hour.all && p.hour.set!.size === 1) {
     const m = [...p.minute.set!][0]
     const h = [...p.hour.set!][0]
     const time = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
-    if (p.dom.all && p.dow.all && p.month.all) return `Every day at ${time}`
+    if (p.dom.all && p.dow.all && p.month.all) return t('cronSkills.explain.everyDayAt', { time })
     if (!p.dow.all && p.dom.all && p.month.all) {
-      const days = [...p.dow.set!].sort((a, b) => a - b).map(v => dowNames[v])
-      if (days.length === 5 && days[0] === 'Mon' && days[4] === 'Fri') return `Weekdays at ${time}`
-      if (days.length === 2 && days.includes('Sat') && days.includes('Sun')) return `Weekends at ${time}`
-      return `${days.join(', ')} at ${time}`
+      const dowVals = [...p.dow.set!].sort((a, b) => a - b)
+      const tokens = dowVals.map(v => dowNames[v])
+      if (tokens.length === 5 && tokens[0] === 'Mon' && tokens[4] === 'Fri') return t('cronSkills.explain.weekdaysAt', { time })
+      if (tokens.length === 2 && tokens.includes('Sat') && tokens.includes('Sun')) return t('cronSkills.explain.weekendsAt', { time })
+      return t('cronSkills.explain.daysAt', { days: dowVals.map(dowLabel).join(', '), time })
     }
     if (!p.dom.all && p.dow.all && p.month.all) {
-      return `Day ${[...p.dom.set!].sort((a, b) => a - b).join(', ')} of every month at ${time}`
+      return t('cronSkills.explain.dayOfMonthAt', { days: [...p.dom.set!].sort((a, b) => a - b).join(', '), time })
     }
     if (!p.dom.all && p.dow.all && !p.month.all) {
-      const months = [...p.month.set!].sort((a, b) => a - b).map(v => monNames[v]).join(', ')
+      const months = [...p.month.set!].sort((a, b) => a - b).map(monLabel).join(', ')
       const days = [...p.dom.set!].sort((a, b) => a - b).join(', ')
-      return `${months} ${days} at ${time}`
+      return t('cronSkills.explain.monthDaysAt', { months, days, time })
     }
   }
   if (!p.minute.all && p.minute.set!.size > 1 && p.hour.all) {
     const arr = [...p.minute.set!].sort((a, b) => a - b)
     const diffs = arr.slice(1).map((v, i) => v - arr[i])
-    if (diffs.length && diffs.every(d => d === diffs[0]) && arr[0] % diffs[0] === 0) return `Every ${diffs[0]} minutes`
+    if (diffs.length && diffs.every(d => d === diffs[0]) && arr[0] % diffs[0] === 0) return t('cronSkills.explain.everyNMinutes', { n: diffs[0] })
   }
-  return `at minute ${humanizeFieldList(p.minute, 'every minute')}, hour ${humanizeFieldList(p.hour, 'every hour')}`
+  return t('cronSkills.explain.fallback', {
+    minute: humanizeFieldList(p.minute, t('cronSkills.explain.everyMinuteField')),
+    hour: humanizeFieldList(p.hour, t('cronSkills.explain.everyHourField')),
+  })
 }
 
 function parseField(field: string, min: number, max: number, names?: Record<string, number>): ParsedField {
@@ -159,5 +170,5 @@ function humanizeFieldList(field: ParsedField, allLabel: string): string {
   const display = arr.map(v => String(v).padStart(2, '0'))
   if (display.length === 1) return display[0]
   if (display.length <= 4) return display.join(', ')
-  return display.slice(0, 3).join(', ') + ` & ${display.length - 3} more`
+  return display.slice(0, 3).join(', ') + i18n.global.t('cronSkills.explain.andMore', { n: display.length - 3 })
 }

@@ -1,6 +1,9 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import SetupField from '@/components/SetupField.vue'
 import SetupNeedList from '@/components/SetupNeedList.vue'
+
+const { t } = useI18n()
 
 interface ChannelSpec {
   type: string
@@ -57,18 +60,18 @@ function onChannelTypeSelect(event: Event) {
   <div class="setup-channels">
     <section class="control-section">
       <div class="control-section__head">
-        <h3 class="control-section__title">Channels</h3>
-        <p class="control-section__desc">{{ panel.channelRuntimeRows.length }} configured</p>
+        <h3 class="control-section__title">{{ t('setup.channels.title') }}</h3>
+        <p class="control-section__desc">{{ t('setup.channels.configuredCount', { count: panel.channelRuntimeRows.length }) }}</p>
       </div>
       <label class="control-row">
-        <div class="control-row__label-block"><span class="control-row__label">Channel type</span></div>
+        <div class="control-row__label-block"><span class="control-row__label">{{ t('setup.channels.channelType') }}</span></div>
         <div class="control-row__control">
           <select class="control-input" :value="panel.channelType" name="setup_channel_type" @change="onChannelTypeSelect">
             <option v-for="c in panel.catalogChannels" :key="c.type" :value="c.type">{{ c.label }}</option>
           </select>
         </div>
       </label>
-      <SetupNeedList :items="panel.channelSpec?.whatYouNeed" label="Channel needs" />
+      <SetupNeedList :items="panel.channelSpec?.whatYouNeed" :label="t('setup.channels.needs')" />
       <SetupField
         v-for="row in panel.channelFields"
         :key="row.field.name"
@@ -78,19 +81,19 @@ function onChannelTypeSelect(event: Event) {
         @update="(name, val) => emit('updateChannelField', name, val)"
       />
       <div class="control-section__actions">
-        <button class="btn btn--primary" @click="emit('save')">Save Channel</button>
+        <button class="btn btn--primary" @click="emit('save')">{{ t('setup.channels.save') }}</button>
       </div>
     </section>
     <section class="control-section setup-runtime">
-      <h3 class="control-section__title">Runtime status</h3>
+      <h3 class="control-section__title">{{ t('setup.channels.runtimeStatus') }}</h3>
       <template v-if="panel.channelRuntimeRows.length > 0">
         <div v-for="row in panel.channelRuntimeRows" :key="row.name" class="setup-runtime__row" :class="row.connected === true ? 'is-ok' : 'is-warn'">
           <span>{{ row.name }}</span>
           <span>{{ row.type || '' }}</span>
-          <strong>{{ row.connected === true ? 'Connected' : (row.status === 'stopped' ? 'Action needed' : row.status || 'connecting') }}</strong>
+          <strong>{{ row.connected === true ? t('setup.channels.connected') : (row.status === 'stopped' ? t('setup.channels.actionNeeded') : row.status || t('setup.channels.connecting')) }}</strong>
         </div>
       </template>
-      <p v-else class="setup-muted">No channels configured.</p>
+      <p v-else class="setup-muted">{{ t('setup.channels.none') }}</p>
     </section>
   </div>
 </template>

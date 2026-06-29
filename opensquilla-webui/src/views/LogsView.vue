@@ -2,29 +2,33 @@
   <div class="lg-stage control-stage">
     <header class="control-stage__header">
       <div class="control-stage__title-block">
-        <span class="control-panel__eyebrow">Control &middot; Logs</span>
-        <h2 class="control-stage__title">Logs</h2>
-        <p class="control-stage__subtitle">Live gateway log stream — filter, follow, and export.</p>
+        <span class="control-panel__eyebrow">{{ t('usageLogs.logs.eyebrow') }}</span>
+        <h2 class="control-stage__title">{{ t('usageLogs.logs.title') }}</h2>
+        <p class="control-stage__subtitle">{{ t('usageLogs.logs.subtitle') }}</p>
       </div>
       <div class="control-stage__actions">
         <div class="lg-status-pills">
           <span
             v-if="!status"
             class="control-pill control-pill--warn"
-            aria-label="Log status unavailable; log tailing can still work."
-            title="logs.status is unavailable; log tailing can still work."
-          >Log status unavailable</span>
+            :aria-label="t('usageLogs.logs.statusUnavailableAria')"
+            :title="t('usageLogs.logs.statusUnavailableTitle')"
+          >{{ t('usageLogs.logs.statusUnavailable') }}</span>
           <template v-else>
             <span
               :class="['control-pill', fileLogEnabled ? '' : 'control-pill--warn']"
-              :aria-label="`File log ${fileLogEnabled ? 'on' : 'off'}. Path: ${filePath}. Configurable via log_file_enabled, log_level, rotation, and OPENSQUILLA_LOG_DIR.`"
-              :title="`Gateway file logging is configurable via log_file_enabled, log_level, rotation settings, and OPENSQUILLA_LOG_DIR. Path: ${filePath}.`"
-            >File log {{ fileLogEnabled ? 'on' : 'off' }}</span>
+              :aria-label="fileLogEnabled
+                ? t('usageLogs.logs.fileLogAriaOn', { path: filePath })
+                : t('usageLogs.logs.fileLogAriaOff', { path: filePath })"
+              :title="t('usageLogs.logs.fileLogTitle', { path: filePath })"
+            >{{ fileLogEnabled ? t('usageLogs.logs.fileLogOn') : t('usageLogs.logs.fileLogOff') }}</span>
             <span
               :class="['control-pill', rawLogEnabled ? '' : 'control-pill--warn']"
-              :aria-label="`Raw turn-call ${rawLogEnabled ? 'on' : 'off'}. Source: ${rawSource}. Directory: ${rawPath}. Enable with OPENSQUILLA_TURN_CALL_LOG=1.`"
-              :title="`Raw turn-call capture is enabled by OPENSQUILLA_TURN_CALL_LOG=1 or opensquilla diagnostics on --raw. Source: ${rawSource}. Directory: ${rawPath}.`"
-            >Raw turn-call {{ rawLogEnabled ? 'on' : 'off' }}</span>
+              :aria-label="rawLogEnabled
+                ? t('usageLogs.logs.rawAriaOn', { source: rawSource, path: rawPath })
+                : t('usageLogs.logs.rawAriaOff', { source: rawSource, path: rawPath })"
+              :title="t('usageLogs.logs.rawTitle', { source: rawSource, path: rawPath })"
+            >{{ rawLogEnabled ? t('usageLogs.logs.rawOn') : t('usageLogs.logs.rawOff') }}</span>
             <span
               class="control-pill control-pill--warn"
               :aria-label="`${diagnosticsLabel}. ${diagnosticsCopy}`"
@@ -32,39 +36,39 @@
             >{{ diagnosticsLabel }}</span>
           </template>
         </div>
-        <button class="btn btn--ghost" title="Download filtered log lines" @click="exportLogs">
+        <button class="btn btn--ghost" :title="t('usageLogs.logs.exportTitle')" @click="exportLogs">
           <Icon name="download" :size="16" />
-          <span>Export</span>
+          <span>{{ t('usageLogs.usage.export') }}</span>
         </button>
       </div>
     </header>
 
     <section class="stat-row">
       <div class="stat stat--hero">
-        <div class="stat-label">In view</div>
+        <div class="stat-label">{{ t('usageLogs.logs.inView') }}</div>
         <div class="stat-value">{{ visibleCount.toLocaleString() }}</div>
-        <div class="stat-hint">of {{ totalCount.toLocaleString() }} loaded</div>
+        <div class="stat-hint">{{ t('usageLogs.logs.ofLoaded', { total: totalCount.toLocaleString() }) }}</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Errors</div>
+        <div class="stat-label">{{ t('usageLogs.logs.errors') }}</div>
         <div class="stat-value">{{ errorCount }}</div>
-        <div class="stat-hint">{{ errorCount > 0 ? 'review needed' : 'all clear' }}</div>
+        <div class="stat-hint">{{ errorCount > 0 ? t('usageLogs.logs.reviewNeeded') : t('usageLogs.logs.allClear') }}</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Warnings</div>
+        <div class="stat-label">{{ t('usageLogs.logs.warnings') }}</div>
         <div class="stat-value">{{ warnCount }}</div>
-        <div class="stat-hint">{{ warnCount > 0 ? 'recent advisories' : 'none' }}</div>
+        <div class="stat-hint">{{ warnCount > 0 ? t('usageLogs.logs.recentAdvisories') : t('usageLogs.logs.none') }}</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Info / Debug</div>
+        <div class="stat-label">{{ t('usageLogs.logs.infoDebug') }}</div>
         <div class="stat-value mono">{{ infoCount }}<span>/</span>{{ debugCount }}</div>
-        <div class="stat-hint">routine output</div>
+        <div class="stat-hint">{{ t('usageLogs.logs.routineOutput') }}</div>
       </div>
     </section>
 
     <section class="lg-toolbar">
       <div class="lg-levels">
-        <span class="lg-toolbar__label">Levels</span>
+        <span class="lg-toolbar__label">{{ t('usageLogs.logs.levels') }}</span>
         <div class="lg-levels__row">
           <button
             v-for="level in LEVELS"
@@ -83,14 +87,14 @@
           v-model="searchText"
           class="lg-search-input"
           type="search"
-          placeholder="Filter messages…"
+          :placeholder="t('usageLogs.logs.filterPlaceholder')"
           autocomplete="off"
         />
       </div>
       <label class="lg-toggle">
         <input v-model="autoFollow" type="checkbox" />
         <span class="lg-toggle__track"><span class="lg-toggle__thumb"></span></span>
-        <span class="lg-toggle__label">Auto-follow</span>
+        <span class="lg-toggle__label">{{ t('usageLogs.logs.autoFollow') }}</span>
       </label>
     </section>
 
@@ -98,11 +102,11 @@
       <div ref="displayRef" class="lg-display" @scroll="onScroll">
         <div v-if="allLines.length === 0" class="lg-display__placeholder">
           <span class="lg-spinner"></span>
-          Loading logs…
+          {{ t('usageLogs.logs.loading') }}
         </div>
         <div v-else-if="filteredLines.length === 0" class="lg-display__placeholder">
           <span class="lg-display__placeholder-icon"><Icon name="logs" :size="24" /></span>
-          No lines match the current filter.
+          {{ t('usageLogs.logs.noMatch') }}
         </div>
         <div
           v-else
@@ -145,16 +149,16 @@
         class="lg-detail"
         role="dialog"
         aria-modal="true"
-        aria-label="Log line detail"
+        :aria-label="t('usageLogs.logs.lineDetail')"
       >
         <header class="lg-detail__head">
-          <span class="lg-detail__title">Log line detail</span>
+          <span class="lg-detail__title">{{ t('usageLogs.logs.lineDetail') }}</span>
           <button
             ref="detailCloseBtn"
             type="button"
             class="btn btn--icon btn--ghost"
-            aria-label="Close"
-            title="Close"
+            :aria-label="t('common.close')"
+            :title="t('common.close')"
             @click="closeDetail"
           >
             <Icon name="x" :size="16" />
@@ -180,6 +184,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated, watch, nextTick } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRpcStore } from '@/stores/rpc'
 import { useFixedWindow } from '@/composables/useFixedWindow'
 import { downloadText } from '@/utils/browser'
@@ -253,6 +258,7 @@ const WINDOW_MIN_WIDTH = '(min-width: 481px)'
 // State
 // ---------------------------------------------------------------------------
 
+const { t } = useI18n()
 const rpc = useRpcStore()
 const allLines = ref<LogLine[]>([])
 const cursor = ref(0)
@@ -334,16 +340,16 @@ const rawPath = computed(() => status.value?.raw_turn_call_log?.directory?.path 
 const diagnosticsCopy = computed(() => {
   const detail = status.value?.diagnostics_enabled?.detail
   if (detail === 'raw') {
-    return `Diagnostics raw mode is active for future turns. Raw source: ${rawSource.value}.`
+    return t('usageLogs.logs.diagnosticsCopyRaw', { source: rawSource.value })
   }
-  return 'Standard diagnostics and raw capture are separate levels. Use opensquilla diagnostics on --raw for raw turn-call capture.'
+  return t('usageLogs.logs.diagnosticsCopyStandard')
 })
 
 const diagnosticsLabel = computed(() => {
   const detail = status.value?.diagnostics_enabled?.detail
-  if (detail === 'raw') return 'Diagnostics raw'
-  if (status.value?.diagnostics_enabled?.effective) return 'Diagnostics standard'
-  return 'Diagnostics off'
+  if (detail === 'raw') return t('usageLogs.logs.diagnosticsRaw')
+  if (status.value?.diagnostics_enabled?.effective) return t('usageLogs.logs.diagnosticsStandard')
+  return t('usageLogs.logs.diagnosticsOff')
 })
 
 // A run-bearing line carries structured tool_calls in its raw JSON payload; the

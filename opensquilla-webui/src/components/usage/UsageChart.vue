@@ -1,21 +1,21 @@
 <template>
   <section class="usage-chart">
     <div class="usage-chart__head">
-      <div class="usage-segs" role="tablist" aria-label="Chart metric">
+      <div class="usage-segs" role="tablist" :aria-label="t('usageLogs.chart.metric')">
         <button
           class="usage-seg"
           :class="{ 'is-active': chartMode === 'tokens' }"
           role="tab"
           @click="emit('update:chartMode', 'tokens')"
-        >Tokens</button>
+        >{{ t('usageLogs.chart.tokens') }}</button>
         <button
           class="usage-seg"
           :class="{ 'is-active': chartMode === 'cost' }"
           role="tab"
           @click="emit('update:chartMode', 'cost')"
-        >Cost</button>
+        >{{ t('usageLogs.chart.cost') }}</button>
       </div>
-      <div class="usage-range" role="tablist" aria-label="Date range">
+      <div class="usage-range" role="tablist" :aria-label="t('usageLogs.chart.dateRange')">
         <button
           v-for="r in ['all', '7', '14', '30']"
           :key="r"
@@ -23,12 +23,12 @@
           :class="{ 'is-active': range === r }"
           role="tab"
           @click="emit('setRange', r)"
-        >{{ r === 'all' ? 'All' : r + 'd' }}</button>
+        >{{ r === 'all' ? t('usageLogs.chart.rangeAll') : t('usageLogs.chart.rangeDays', { days: r }) }}</button>
       </div>
     </div>
     <div class="usage-chart__legend">
-      <span class="usage-chart__legend-item"><span class="usage-chart__swatch usage-chart__swatch--input" />Input</span>
-      <span v-show="chartMode === 'tokens'" class="usage-chart__legend-item"><span class="usage-chart__swatch usage-chart__swatch--output" />Output</span>
+      <span class="usage-chart__legend-item"><span class="usage-chart__swatch usage-chart__swatch--input" />{{ t('usageLogs.chart.input') }}</span>
+      <span v-show="chartMode === 'tokens'" class="usage-chart__legend-item"><span class="usage-chart__swatch usage-chart__swatch--output" />{{ t('usageLogs.chart.output') }}</span>
       <span class="usage-chart__legend-spacer" />
       <span class="usage-chart__caption">{{ caption }}</span>
     </div>
@@ -38,7 +38,7 @@
           <div class="usage-bars__empty-icon">
             <Icon name="usage" :size="36" />
           </div>
-          <div>No data in the selected window.</div>
+          <div>{{ t('usageLogs.chart.emptyWindow') }}</div>
         </div>
       </template>
       <button
@@ -46,7 +46,7 @@
         :key="i"
         class="usage-bar-row"
         type="button"
-        :title="`Open ${row.sessionKey}`"
+        :title="t('usageLogs.chart.openSession', { session: row.sessionKey })"
         :style="`--i:${i}`"
         @click="emit('openSession', row.sessionKey)"
       >
@@ -67,8 +67,11 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import type { ChartRow } from '@/types/usage'
+
+const { t } = useI18n()
 
 defineProps<{
   chartMode: 'tokens' | 'cost'

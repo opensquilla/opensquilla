@@ -1,3 +1,4 @@
+import i18n from '@/i18n'
 import type {
   ChatToolCall,
   ChatToolCallGroup,
@@ -101,16 +102,17 @@ export function toolOperationKey(name: string): string {
 
 export function toolActionLabel(name: string): string {
   const key = toolOperationKey(name)
-  if (key === 'web.discover') return 'Discover links'
-  if (key === 'web.search') return 'Search web'
-  if (key === 'web.read') return 'Read web page'
-  if (key === 'code.python') return 'Run Python'
-  if (key === 'command.run') return 'Run command'
-  if (key === 'file.inspect') return 'Inspect files'
-  if (key === 'file.write') return 'Write file'
-  if (key === 'file.edit') return 'Edit file'
-  if (key === 'artifact.create') return 'Create file'
-  if (key === 'memory.search') return 'Search memory'
+  const t = i18n.global.t
+  if (key === 'web.discover') return t('chat.tool.discoverLinks')
+  if (key === 'web.search') return t('chat.tool.searchWeb')
+  if (key === 'web.read') return t('chat.tool.readWebPage')
+  if (key === 'code.python') return t('chat.tool.runPython')
+  if (key === 'command.run') return t('chat.tool.runCommand')
+  if (key === 'file.inspect') return t('chat.tool.inspectFiles')
+  if (key === 'file.write') return t('chat.tool.writeFile')
+  if (key === 'file.edit') return t('chat.tool.editFile')
+  if (key === 'artifact.create') return t('chat.tool.createFile')
+  if (key === 'memory.search') return t('chat.tool.searchMemory')
   return name.replace(/[_-]+/g, ' ')
 }
 
@@ -125,10 +127,11 @@ export function summarizeToolGroup(calls: ChatToolCall[]): string {
   const done = calls.filter(toolCall => toolCall.status === 'success').length
   const failed = calls.filter(toolCall => toolCall.status === 'error').length
   const sample = calls.map(toolCall => toolSecondaryText(toolCall)).find(Boolean)
+  const t = i18n.global.t
   const parts = []
-  if (running) parts.push(`${running} running`)
-  if (done) parts.push(`${done} done`)
-  if (failed) parts.push(`${failed} failed`)
+  if (running) parts.push(t('chat.tool.countRunning', { count: running }))
+  if (done) parts.push(t('chat.tool.countDone', { count: done }))
+  if (failed) parts.push(t('chat.tool.countFailed', { count: failed }))
   if (sample) parts.push(sample)
   return parts.join(' · ')
 }
@@ -196,20 +199,22 @@ export function toolResultIsError(payload: unknown): boolean {
 }
 
 export function toolStatusText(toolCall: ChatToolCall): string {
-  if (toolCall.isRunning) return 'Running'
-  if (toolCall.status === 'error') return 'Failed'
+  const t = i18n.global.t
+  if (toolCall.isRunning) return t('chat.tool.running')
+  if (toolCall.status === 'error') return t('chat.tool.failed')
   const count = toolResultCount(toolCall.result)
-  if (count !== null) return `${count} results`
-  if (toolCall.status === 'success') return 'Done'
-  return 'Pending'
+  if (count !== null) return t('chat.tool.results', { count })
+  if (toolCall.status === 'success') return t('chat.tool.done')
+  return t('chat.tool.pending')
 }
 
 export function toolGroupStatusText(group: ChatToolCallGroup): string {
-  if (group.isRunning) return 'Running'
-  if (group.isError) return 'Failed'
+  const t = i18n.global.t
+  if (group.isRunning) return t('chat.tool.running')
+  if (group.isError) return t('chat.tool.failed')
   const counts = group.calls.map(toolCall => toolResultCount(toolCall.result)).filter((count): count is number => count !== null)
-  if (counts.length && group.calls.length === 1) return `${counts[0]} results`
-  if (counts.length) return `${counts.reduce((sum, count) => sum + count, 0)} results`
-  if (group.status === 'success') return 'Done'
-  return 'Pending'
+  if (counts.length && group.calls.length === 1) return t('chat.tool.results', { count: counts[0] })
+  if (counts.length) return t('chat.tool.results', { count: counts.reduce((sum, count) => sum + count, 0) })
+  if (group.status === 'success') return t('chat.tool.done')
+  return t('chat.tool.pending')
 }

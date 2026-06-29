@@ -10,7 +10,7 @@
   >
     <div class="router-fx-header">
       <span class="glyph">&#8592;</span>
-      <span class="title">AI model router</span>
+      <span class="title">{{ t('chat.aiModelRouter') }}</span>
       <span class="glyph">&#8594;</span>
     </div>
     <div class="router-fx-grid" :style="gridStyle">
@@ -32,7 +32,10 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { ChatRenderedMessage } from '@/types/chat'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   message: ChatRenderedMessage

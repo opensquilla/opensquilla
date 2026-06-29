@@ -104,7 +104,7 @@
                 class="msg-meta__more-btn"
                 :aria-expanded="metaDetailsOpen"
                 :aria-controls="metaDetailsId"
-                aria-label="Usage details"
+                :aria-label="t('chat.usageDetails')"
                 @click="metaPinned = !metaPinned"
               >
                 <Icon name="info" :size="12" />
@@ -114,7 +114,7 @@
                 :id="metaDetailsId"
                 class="msg-meta-popover"
                 role="group"
-                aria-label="Usage details"
+                :aria-label="t('chat.usageDetails')"
               >
                 <div v-if="message.meta.hasTokens" class="msg-meta-popover__row">
                   <span class="msg-meta-popover__label">tokens</span>
@@ -143,7 +143,7 @@
               <Icon :name="copyIconName" :size="12" />
             </button>
             <span class="msg-copy-live" aria-live="polite">{{ copyLiveText }}</span>
-            <button type="button" class="msg-action" title="Regenerate" aria-label="Regenerate" @click="$emit('regenerate', message)">
+            <button type="button" class="msg-action" :title="t('chat.regenerate')" :aria-label="t('chat.regenerate')" @click="$emit('regenerate', message)">
               <Icon name="refresh" :size="12" />
             </button>
             <button
@@ -152,8 +152,8 @@
               class="msg-action msg-action--fork"
               data-testid="fork-conversation"
               :disabled="forkBusy"
-              title="Fork conversation"
-              aria-label="Fork conversation"
+              :title="t('chat.forkConversation')"
+              :aria-label="t('chat.forkConversation')"
               @click="$emit('fork')"
             >
               <Icon name="fork" :size="12" />
@@ -172,6 +172,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import ChatArtifactList from '@/components/chat/ChatArtifactList.vue'
 import SourcesRow from '@/components/chat/SourcesRow.vue'
@@ -231,6 +232,8 @@ const emit = defineEmits<{
 
 // Absolute label is static; only the relative label subscribes to the shared
 // clock, so a tick re-evaluates one cheap computed per visible bubble.
+const { t } = useI18n()
+
 const now = useRelativeNow()
 const timeIso = computed(() => isoTime(props.message.ts))
 const timeAbs = computed(() => absoluteTime(props.message.ts))

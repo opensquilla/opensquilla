@@ -13,8 +13,8 @@
       class="chat-share-picker"
       :class="{ 'is-selected': shareSelected }"
       :aria-pressed="shareSelected"
-      :title="shareSelected ? 'Remove from share image' : 'Add to share image'"
-      :aria-label="shareSelected ? 'Remove from share image' : 'Add to share image'"
+      :title="shareSelected ? t('chat.removeFromShare') : t('chat.addToShare')"
+      :aria-label="shareSelected ? t('chat.removeFromShare') : t('chat.addToShare')"
       @click.stop="emit('toggleShare', shareMessageId)"
     >
       <Icon v-if="shareSelected" name="check" :size="13" />
@@ -50,7 +50,7 @@
         <Icon :name="copyIconName" :size="12" />
       </button>
       <span class="msg-copy-live" aria-live="polite">{{ copyLiveText }}</span>
-      <button type="button" class="msg-action" title="Edit" @click="$emit('edit', message)">
+      <button type="button" class="msg-action" :title="t('chat.edit')" :aria-label="t('chat.edit')" @click="$emit('edit', message)">
         <Icon name="edit" :size="12" />
       </button>
       <time v-if="timeIso" class="msg-time" :datetime="timeIso" :title="timeFull">
@@ -64,11 +64,14 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import { useCopyFeedback } from '@/composables/chat/useCopyFeedback'
 import { useRelativeNow } from '@/composables/useRelativeNow'
 import type { ChatRenderedMessage } from '@/types/chat'
 import { absoluteTime, fullTime, isoTime, relativeTime } from '@/utils/messageTime'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   message: ChatRenderedMessage

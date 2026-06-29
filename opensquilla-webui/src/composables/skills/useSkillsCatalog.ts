@@ -1,4 +1,5 @@
 import { computed, ref, type ComputedRef, type Ref } from 'vue'
+import i18n from '@/i18n'
 import type { useRpcStore } from '@/stores/rpc'
 import type { AutoEnabledSkill, ProposalsSettings, Skill, SkillLayerGroup, SkillStatTile } from '@/types/skills'
 
@@ -29,23 +30,8 @@ export interface SkillsCatalog {
 
 const LAYER_ORDER = ['workspace', 'bundled', 'managed', 'personal', 'project', 'extra']
 
-export const LAYER_LABEL: Record<string, string> = {
-  workspace: 'Workspace',
-  bundled: 'Bundled',
-  managed: 'Managed',
-  personal: 'Personal',
-  project: 'Project',
-  extra: 'Extra',
-}
-
-export const LAYER_HELP: Record<string, string> = {
-  workspace: 'Workspace skills are local to the active workspace.',
-  bundled: 'Bundled skills ship with OpenSquilla.',
-  managed: 'Managed skills are locally installed into OpenSquilla state.',
-  personal: 'Personal skills are local user installs, not bundled.',
-  project: 'Project skills are local to the current project.',
-  extra: 'Extra skills come from configured local directories.',
-}
+// Known layer keys; labels/help text resolve through i18n by key.
+const KNOWN_LAYERS = new Set(LAYER_ORDER)
 
 export function isMetaSkill(skill: Skill): boolean {
   return skill.kind === 'meta' || skill.kind === 'meta_sop'
@@ -74,7 +60,7 @@ export function skillStatusDotClass(skill: Skill): string {
 }
 
 export function skillStatusDotTitle(skill: Skill): string {
-  return skill.status_detail || (skill.eligible ? 'Ready' : 'Needs setup')
+  return skill.status_detail || (skill.eligible ? i18n.global.t('cronSkills.skills.dotReady') : i18n.global.t('cronSkills.skills.dotNeedsSetup'))
 }
 
 export function skillStatusChipClass(skill: Skill): string {
@@ -86,23 +72,26 @@ export function skillStatusChipClass(skill: Skill): string {
 
 export function skillStatusChipText(skill: Skill): string {
   const status = skill.status || (skill.eligible ? 'ready' : 'needs_setup')
-  if (status === 'ready') return 'ready'
-  if (status === 'not_declared') return 'no deps declared'
-  return 'needs deps'
+  if (status === 'ready') return i18n.global.t('cronSkills.skills.statusReady')
+  if (status === 'not_declared') return i18n.global.t('cronSkills.skills.statusNoDeps')
+  return i18n.global.t('cronSkills.skills.statusNeedsDeps')
 }
 
 export function skillLayerLabel(layer: string | undefined): string {
-  return LAYER_LABEL[layer || ''] || layer || 'Unknown'
+  if (layer && KNOWN_LAYERS.has(layer)) return i18n.global.t(`cronSkills.skills.layerLabel.${layer}`)
+  return layer || i18n.global.t('cronSkills.skills.layerLabel.unknown')
 }
 
 export function skillLayerHelp(layer: string | undefined): string {
-  return LAYER_HELP[layer || ''] || 'Configured local skill directory.'
+  if (layer && KNOWN_LAYERS.has(layer)) return i18n.global.t(`cronSkills.skills.layerHelp.${layer}`)
+  return i18n.global.t('cronSkills.skills.layerHelp.default')
 }
 
 export function useSkillsCatalog(
   rpc: ReturnType<typeof useRpcStore>,
   options: SkillsCatalogOptions,
 ): SkillsCatalog {
+  const t = i18n.global.t
   const allSkills = ref<Skill[]>([])
   const filterText = ref('')
   const statusFilter = ref('all')
@@ -154,11 +143,11 @@ export function useSkillsCatalog(
   })
 
   const emptyMessage = computed(() => {
-    if (filterText.value) return 'No skills match the current filter.'
-    if (statusFilter.value === 'ready') return 'No skills are ready. Install dependencies to enable them.'
-    if (statusFilter.value === 'needs-setup') return 'No skills currently need setup.'
-    if (statusFilter.value === 'not-declared') return 'No skills without declared dependencies.'
-    return 'No skills installed.'
+    if (filterText.value) return t('cronSkills.skills.emptyFilter')
+    if (statusFilter.value === 'ready') return t('cronSkills.skills.emptyReady')
+    if (statusFilter.value === 'needs-setup') return t('cronSkills.skills.emptyNeedsSetup')
+    if (statusFilter.value === 'not-declared') return t('cronSkills.skills.emptyNotDeclared')
+    return t('cronSkills.skills.emptyNone')
   })
 
   const statTiles = computed<SkillStatTile[]>(() => {
@@ -169,10 +158,10 @@ export function useSkillsCatalog(
     const layers = new Set(allSkills.value.map(s => s.layer).filter(Boolean))
 
     return [
-      { key: 'all', label: 'All skills', value: String(total), hint: `${layers.size} layer${layers.size === 1 ? '' : 's'}`, mods: 'sk-stat--accent' },
-      { key: 'ready', label: 'Ready', value: String(ready), hint: ready ? 'install-ready' : 'none ready', mods: '', tone: 'sk-stat__ok' },
-      { key: 'needs-setup', label: 'Needs setup', value: String(needs), hint: needs ? 'awaiting deps' : 'all set', mods: '', tone: 'sk-stat__warn' },
-      { key: 'not-declared', label: 'Not declared', value: String(notDeclared), hint: 'no manifest', mods: '' },
+      { key: 'all', label: t('cronSkills.skills.tileAll'), value: String(total), hint: t('cronSkills.skills.tileLayerCount', { count: layers.size }), mods: 'sk-stat--accent' },
+      { key: 'ready', label: t('cronSkills.skills.tileReady'), value: String(ready), hint: ready ? t('cronSkills.skills.tileReadyHintSome') : t('cronSkills.skills.tileReadyHintNone'), mods: '', tone: 'sk-stat__ok' },
+      { key: 'needs-setup', label: t('cronSkills.skills.tileNeedsSetup'), value: String(needs), hint: needs ? t('cronSkills.skills.tileNeedsSetupHintSome') : t('cronSkills.skills.tileNeedsSetupHintNone'), mods: '', tone: 'sk-stat__warn' },
+      { key: 'not-declared', label: t('cronSkills.skills.tileNotDeclared'), value: String(notDeclared), hint: t('cronSkills.skills.tileNotDeclaredHint'), mods: '' },
     ]
   })
 

@@ -14,8 +14,8 @@
       <span v-else-if="isMetaSkill(skill)" class="sk-card__kind-badge" title="meta">META</span>
     </div>
     <p class="sk-card__desc" :title="skill.description || ''">{{ skill.description || '' }}</p>
-    <div v-if="skill.sub_skills && skill.sub_skills.length" class="sk-card__sub-row" title="Sub-skills used by this meta-skill">
-      <span class="sk-card__sub-label">uses</span>
+    <div v-if="skill.sub_skills && skill.sub_skills.length" class="sk-card__sub-row" :title="t('cronSkills.skillCard.subSkillsTitle')">
+      <span class="sk-card__sub-label">{{ t('cronSkills.skillCard.uses') }}</span>
       <span v-for="n in skill.sub_skills.slice(0, 6)" :key="n" class="sk-card__sub-chip">{{ n }}</span>
       <span v-if="skill.sub_skills.length > 6" class="sk-card__sub-chip sk-card__sub-chip--more">+{{ skill.sub_skills.length - 6 }}</span>
     </div>
@@ -23,12 +23,15 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import type { Skill } from '@/types/skills'
 import {
   isMetaSkill,
   skillStatusDotClass,
   skillStatusDotTitle,
 } from '@/composables/skills/useSkillsCatalog'
+
+const { t } = useI18n()
 
 defineProps<{
   skill: Skill

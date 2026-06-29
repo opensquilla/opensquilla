@@ -1,7 +1,7 @@
 <template>
   <section class="usage-sessions">
     <div class="usage-section-head">
-      <h3 class="usage-section-title">Sessions</h3>
+      <h3 class="usage-section-title">{{ t('usageLogs.sessions.title') }}</h3>
       <span class="usage-section-meta">{{ sessionsMeta }}</span>
     </div>
     <div class="usage-table-wrap">
@@ -27,8 +27,8 @@
                   <div class="state-icon">
                     <Icon name="usage" :size="36" />
                   </div>
-                  <div class="state-title">No usage data yet</div>
-                  <p class="state-text">Run a session and token spend will appear here automatically.</p>
+                  <div class="state-title">{{ t('usageLogs.sessions.emptyTitle') }}</div>
+                  <p class="state-text">{{ t('usageLogs.sessions.emptyText') }}</p>
                 </div>
               </td>
             </tr>
@@ -40,7 +40,7 @@
                   v-if="row.sessionKey"
                   href="#"
                   class="usage-sess-link"
-                  :title="`Open chat for ${row.sessionKey}`"
+                  :title="t('usageLogs.sessions.openChat', { session: row.sessionKey })"
                   @click.prevent="emit('openSession', row.sessionKey)"
                 >{{ row.sessionKey }}</a>
                 <span v-else>-</span>
@@ -92,8 +92,11 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import UsageModelBreakdown from '@/components/usage/UsageModelBreakdown.vue'
+
+const { t } = useI18n()
 import type { BreakdownRow, SessionRow, SortedRow, TableColumn } from '@/types/usage'
 
 defineProps<{

@@ -5,32 +5,32 @@
       class="deliv-drawer"
       role="dialog"
       aria-modal="true"
-      :aria-label="`Deliverables (${artifacts.length})`"
+      :aria-label="t('chat.deliverablesCount', { count: artifacts.length })"
     >
       <header class="deliv-head">
-        <h3 class="deliv-head__title">Deliverables</h3>
+        <h3 class="deliv-head__title">{{ t('chat.deliverables') }}</h3>
         <span class="deliv-head__count" aria-hidden="true">{{ artifacts.length }}</span>
         <button
           ref="closeBtn"
           type="button"
           class="btn btn--icon btn--ghost"
-          aria-label="Close"
-          title="Close"
+          :aria-label="t('common.close')"
+          :title="t('common.close')"
           @click="emit('close')"
         >
           <Icon name="x" :size="16" />
         </button>
       </header>
 
-      <div class="deliv-body" aria-label="Session deliverables">
-        <p v-if="artifacts.length === 0" class="deliv-empty">No deliverables yet.</p>
+      <div class="deliv-body" :aria-label="t('chat.sessionDeliverables')">
+        <p v-if="artifacts.length === 0" class="deliv-empty">{{ t('chat.noDeliverables') }}</p>
         <ul v-else class="deliv-grid">
           <li v-for="artifact in artifacts" :key="artifactKey(artifact)" class="deliv-tile-wrap">
             <button
               type="button"
               class="deliv-tile"
               :title="artifactFileTitle(artifact)"
-              :aria-label="`Open ${artifactFileTitle(artifact)}, ${artifactFileSubtitle(artifact)}`"
+              :aria-label="t('chat.openArtifact', { title: artifactFileTitle(artifact), subtitle: artifactFileSubtitle(artifact) })"
               @click="openPreview(artifact)"
             >
               <span class="deliv-tile__thumb" :data-kind="artifactCategory(artifact)">
@@ -70,7 +70,7 @@
       class="deliv-preview"
       role="dialog"
       aria-modal="true"
-      :aria-label="`Preview: ${artifactFileTitle(active)}`"
+      :aria-label="t('chat.previewOf', { title: artifactFileTitle(active) })"
       @click.self="closePreview"
     >
       <div class="deliv-preview__panel">
@@ -80,8 +80,8 @@
             ref="previewCloseBtn"
             type="button"
             class="btn btn--icon btn--ghost"
-            aria-label="Close preview"
-            title="Close preview"
+            :aria-label="t('chat.closePreview')"
+            :title="t('chat.closePreview')"
             @click="closePreview"
           >
             <Icon name="x" :size="16" />
@@ -101,24 +101,24 @@
             role="status"
           >
             <p class="deliv-preview__meta">
-              {{ fullState === 'timeout' ? 'Preview timed out.' : 'Preview failed to load.' }}
+              {{ fullState === 'timeout' ? t('chat.previewTimedOut') : t('chat.previewFailed') }}
             </p>
             <button type="button" class="btn btn--ghost" @click="retryFull">
               <Icon name="refresh" :size="14" />
-              <span>Retry</span>
+              <span>{{ t('chat.retry') }}</span>
             </button>
           </div>
           <div
             v-else-if="isVisual(active)"
             class="deliv-preview__loading"
             role="status"
-            aria-label="Loading preview"
+            :aria-label="t('chat.loadingPreview')"
           >
             <div
               v-if="fullProgress !== null"
               class="deliv-preview__progress"
               role="progressbar"
-              aria-label="Preview download"
+              :aria-label="t('chat.previewDownload')"
               :aria-valuenow="fullProgress ?? 0"
               aria-valuemin="0"
               aria-valuemax="100"
@@ -137,7 +137,7 @@
         <footer class="deliv-preview__actions">
           <button type="button" class="btn btn--primary" @click="emit('download', active)">
             <Icon name="download" :size="14" />
-            <span>Download</span>
+            <span>{{ t('chat.download') }}</span>
           </button>
         </footer>
       </div>
@@ -147,8 +147,11 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import type { ArtifactPayload } from '@/types/rpc'
+
+const { t } = useI18n()
 import {
   createArtifactPreview,
   type ArtifactPreviewController,

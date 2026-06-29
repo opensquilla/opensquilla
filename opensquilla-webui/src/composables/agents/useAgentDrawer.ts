@@ -1,4 +1,5 @@
 import { computed, ref, type Ref } from 'vue'
+import i18n from '@/i18n'
 import type { Agent, AgentForm } from '@/types/agents'
 
 export function isAgentBuiltin(agent: Agent): boolean {
@@ -52,7 +53,9 @@ export function useAgentDrawer(
   })
 
   const drawerTitle = computed(() =>
-    drawerMode.value === 'edit' ? `Edit agent: ${drawerAgentId.value}` : `Agent: ${drawerAgentId.value}`
+    drawerMode.value === 'edit'
+      ? i18n.global.t('console.agents.drawerTitleEdit', { id: drawerAgentId.value })
+      : i18n.global.t('console.agents.drawerTitleView', { id: drawerAgentId.value })
   )
 
   const isDirty = computed(() => {

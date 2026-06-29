@@ -8,7 +8,10 @@ import { useUsageChartRows } from '@/composables/usage/useUsageChartRows'
 import { useUsageModelCards } from '@/composables/usage/useUsageModelCards'
 import { useUsageSessionRows } from '@/composables/usage/useUsageSessionRows'
 import { downloadText } from '@/utils/browser'
+import i18n from '@/i18n'
 import type { BreakdownRow, ModelBreakdownItem, SessionRow, TableColumn, UsageStatusData } from '@/types/usage'
+
+const t = i18n.global.t
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -16,16 +19,18 @@ import type { BreakdownRow, ModelBreakdownItem, SessionRow, TableColumn, UsageSt
 
 const CNY_RATE = 7.25
 
-const TABLE_COLUMNS: TableColumn[] = [
-  { key: 'session', label: 'Session' },
-  { key: 'updated_at', label: 'Modified' },
-  { key: 'input_tokens', label: 'Input' },
-  { key: 'output_tokens', label: 'Output' },
-  { key: 'cache_read_tokens', label: 'Cache R' },
-  { key: 'cache_write_tokens', label: 'Cache W' },
-  { key: 'cost_usd', label: 'Cost' },
-  { key: 'cost_source', label: 'Source' },
-  { key: 'model', label: 'Model' },
+// Column labels are resolved through i18n in the `tableColumns` computed so they
+// react to locale changes; this maps each column key to its message key.
+const TABLE_COLUMN_KEYS: Array<{ key: string; labelKey: string }> = [
+  { key: 'session', labelKey: 'usageLogs.columns.session' },
+  { key: 'updated_at', labelKey: 'usageLogs.columns.modified' },
+  { key: 'input_tokens', labelKey: 'usageLogs.columns.input' },
+  { key: 'output_tokens', labelKey: 'usageLogs.columns.output' },
+  { key: 'cache_read_tokens', labelKey: 'usageLogs.columns.cacheRead' },
+  { key: 'cache_write_tokens', labelKey: 'usageLogs.columns.cacheWrite' },
+  { key: 'cost_usd', labelKey: 'usageLogs.columns.cost' },
+  { key: 'cost_source', labelKey: 'usageLogs.columns.source' },
+  { key: 'model', labelKey: 'usageLogs.columns.model' },
 ]
 
 const SORTABLE_COLS = ['session', 'updated_at', 'input_tokens', 'output_tokens', 'cost_usd', 'model']
@@ -55,7 +60,7 @@ const expandedSessions = ref<Set<string>>(new Set())
 const { data: usageStatusData, loading: usageLoading, error: usageError, refresh: refreshUsage } = useRequest<UsageStatusData>(
   'usage.status',
   undefined,
-  { errorLabel: 'Failed to load usage', immediate: false },
+  { errorLabel: t('usageLogs.errors.loadFailed'), immediate: false },
 )
 
 const sessions = computed<SessionRow[]>(() => usageStatusData.value?.sessions || [])
@@ -67,7 +72,8 @@ let autoRefreshId: ReturnType<typeof setInterval> | null = null
 // Computed
 // ---------------------------------------------------------------------------
 
-const tableColumns = computed(() => TABLE_COLUMNS)
+const tableColumns = computed<TableColumn[]>(() =>
+  TABLE_COLUMN_KEYS.map(({ key, labelKey }) => ({ key, label: t(labelKey) })))
 const sortableCols = computed(() => SORTABLE_COLS)
 
 const visibleSessions = computed(() => {
@@ -87,7 +93,7 @@ const undatedHiddenCount = computed(() => {
 const rangeHiddenHint = computed(() => {
   const hidden = undatedHiddenCount.value
   if (hidden <= 0) return ''
-  return `${hidden} undated legacy session${hidden === 1 ? '' : 's'} hidden`
+  return t('usageLogs.rangeHiddenHint', { count: hidden })
 })
 
 const {
@@ -317,32 +323,28 @@ function costSourceClass(source: string): string {
   return 'none'
 }
 
-function costSourceLabel(row: SessionRow | ModelBreakdownItem): string {
+// A stable source key (independent of locale) used both for labels and for the
+// composition-hint tally; the user-facing strings are looked up from it.
+function costSourceKey(row: SessionRow | ModelBreakdownItem): string {
   const source = costSource(row)
   const ephemeral = Boolean(rowVal(row as Record<string, unknown>, 'cost_ephemeral', 'costEphemeral'))
-  if (ephemeral) return 'Ephemeral'
+  if (ephemeral) return 'ephemeral'
   switch (source) {
-    case 'provider_billed': return 'Actual'
-    case 'provider_billed_prorated': return 'Actual'
-    case 'opensquilla_estimate': return 'Estimated'
-    case 'mixed': return 'Mixed'
-    case 'unavailable': return 'Unpriced'
-    default: return 'None'
+    case 'provider_billed': return 'actual'
+    case 'provider_billed_prorated': return 'actual'
+    case 'opensquilla_estimate': return 'estimated'
+    case 'mixed': return 'mixed'
+    case 'unavailable': return 'unpriced'
+    default: return 'none'
   }
 }
 
+function costSourceLabel(row: SessionRow | ModelBreakdownItem): string {
+  return t(`usageLogs.costSource.${costSourceKey(row)}.label`)
+}
+
 function costSourceTooltip(row: SessionRow | ModelBreakdownItem): string {
-  const source = costSource(row)
-  const ephemeral = Boolean(rowVal(row as Record<string, unknown>, 'cost_ephemeral', 'costEphemeral'))
-  if (ephemeral) return 'Ephemeral session — cost not yet persisted'
-  switch (source) {
-    case 'provider_billed': return 'Actual — cost billed by the provider'
-    case 'provider_billed_prorated': return 'Total is real billed; per-model split is estimated.'
-    case 'opensquilla_estimate': return 'Estimated — derived locally from token counts'
-    case 'mixed': return 'Mixed — partial billing data, rest estimated'
-    case 'unavailable': return 'Unpriced — no pricing table entry for this model'
-    default: return 'No cost recorded'
-  }
+  return t(`usageLogs.costSource.${costSourceKey(row)}.tooltip`)
 }
 
 function costSourceClasses(row: SessionRow | ModelBreakdownItem): Record<string, boolean> {
@@ -367,21 +369,24 @@ function costSourceTooltipForBreakdown(m: BreakdownRow): string {
 }
 
 function sourceCompositionHint(rows: SessionRow[]): string {
-  const counts: Record<string, number> = { Actual: 0, Estimated: 0, Mixed: 0, Unpriced: 0, Ephemeral: 0 }
+  const order = ['actual', 'estimated', 'mixed', 'unpriced', 'ephemeral']
+  const counts: Record<string, number> = { actual: 0, estimated: 0, mixed: 0, unpriced: 0, ephemeral: 0 }
   rows.forEach(row => {
-    const label = costSourceLabel(row)
-    if (counts[label] != null) counts[label] += 1
+    const key = costSourceKey(row)
+    if (counts[key] != null) counts[key] += 1
   })
-  return Object.entries(counts)
-    .filter(([, n]) => n > 0)
-    .map(([label, n]) => `${label.toLowerCase()} ${n}`)
+  return order
+    .filter(key => counts[key] > 0)
+    .map(key => `${t(`usageLogs.costSource.${key}.short`)} ${counts[key]}`)
     .join(' · ')
 }
 
 function modelDisplayLabel(row: SessionRow): string {
   const bd = row.modelBreakdown
   if (Array.isArray(bd) && bd.length > 0) {
-    return bd.length > 1 ? `auto · ${bd.length} models` : (bd[0].model || row.model || '—')
+    return bd.length > 1
+      ? t('usageLogs.sessions.autoModels', { count: bd.length })
+      : (bd[0].model || row.model || '—')
   }
   return row.model || '—'
 }
@@ -432,11 +437,11 @@ function relTime(timestamp: number | string): string {
   const diffHour = Math.floor(diffMin / 60)
   const diffDay = Math.floor(diffHour / 24)
 
-  if (diffSec < 10) return 'just now'
-  if (diffSec < 60) return `${diffSec}s ago`
-  if (diffMin < 60) return `${diffMin}m ago`
-  if (diffHour < 24) return `${diffHour}h ago`
-  if (diffDay < 7) return `${diffDay}d ago`
+  if (diffSec < 10) return t('usageLogs.relTime.justNow')
+  if (diffSec < 60) return t('usageLogs.relTime.seconds', { n: diffSec })
+  if (diffMin < 60) return t('usageLogs.relTime.minutes', { n: diffMin })
+  if (diffHour < 24) return t('usageLogs.relTime.hours', { n: diffHour })
+  if (diffDay < 7) return t('usageLogs.relTime.days', { n: diffDay })
   return d.toLocaleDateString()
 }
 

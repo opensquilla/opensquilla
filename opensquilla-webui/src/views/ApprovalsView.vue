@@ -2,26 +2,26 @@
   <div class="ap-stage control-stage">
     <header class="control-stage__header">
       <div class="control-stage__title-block">
-        <span class="control-panel__eyebrow">Control &middot; Approvals</span>
-        <h2 class="control-stage__title">Approvals</h2>
-        <p class="control-stage__subtitle">Tool execution gate — keep risky actions paused until you say go.</p>
+        <span class="control-panel__eyebrow">{{ t('console.approvals.eyebrow') }}</span>
+        <h2 class="control-stage__title">{{ t('console.approvals.title') }}</h2>
+        <p class="control-stage__subtitle">{{ t('console.approvals.subtitle') }}</p>
       </div>
       <div class="control-stage__actions">
-        <button class="btn btn--ghost" title="Refresh" @click="loadData">
+        <button class="btn btn--ghost" :title="t('console.common.refresh')" @click="loadData">
           <Icon name="refresh" :size="16" />
-          <span>Refresh</span>
+          <span>{{ t('console.common.refresh') }}</span>
         </button>
       </div>
     </header>
 
     <section class="stat-row">
       <div class="stat stat--hero">
-        <div class="stat-label">Pending</div>
+        <div class="stat-label">{{ t('console.approvals.pending') }}</div>
         <div class="stat-value">{{ pending.length }}</div>
-        <div class="stat-hint">{{ pending.length ? 'awaiting decision' : 'all clear' }}</div>
+        <div class="stat-hint">{{ pending.length ? t('console.approvals.awaitingDecision') : t('console.approvals.allClear') }}</div>
       </div>
       <div class="stat">
-        <div class="stat-label">Strategy</div>
+        <div class="stat-label">{{ t('console.approvals.strategy') }}</div>
         <div class="stat-value">{{ activeModeLabel }}</div>
         <div class="stat-hint">{{ activeModeDesc }}</div>
       </div>
@@ -36,10 +36,10 @@
     <template v-else>
     <section class="ap-strategy">
       <div class="ap-strategy__head">
-        <span class="ap-panel__eyebrow">Strategy</span>
-        <h3 class="ap-panel__title">How approvals are handled</h3>
+        <span class="ap-panel__eyebrow">{{ t('console.approvals.strategy') }}</span>
+        <h3 class="ap-panel__title">{{ t('console.approvals.strategyTitle') }}</h3>
       </div>
-      <div class="ap-strategy__options" role="radiogroup" aria-label="Approval strategy">
+      <div class="ap-strategy__options" role="radiogroup" :aria-label="t('console.approvals.strategyAriaLabel')">
         <label
           v-for="opt in modeOptions"
           :key="opt.value"
@@ -65,14 +65,14 @@
       <div class="state-icon">
         <Icon name="check" :size="48" />
       </div>
-      <div class="state-title">No pending approvals.</div>
-      <p class="state-text">When an agent reaches a risky tool call, it will appear here for your sign-off.</p>
+      <div class="state-title">{{ t('console.approvals.emptyTitle') }}</div>
+      <p class="state-text">{{ t('console.approvals.emptyText') }}</p>
     </section>
 
     <section v-else class="ap-pending">
       <div class="ap-list-head">
         <h3 class="ap-list__title">
-          Pending requests <span class="ap-list__count">{{ pending.length }}</span>
+          {{ t('console.approvals.pendingRequests') }} <span class="ap-list__count">{{ pending.length }}</span>
         </h3>
       </div>
       <div class="ap-pending__list">
@@ -82,18 +82,18 @@
               <span class="ap-card__name">{{ toolName(item) }}</span>
               <span v-if="item.namespace" class="ap-pill ap-pill--ns">{{ item.namespace }}</span>
             </div>
-            <span class="ap-card__time">awaiting decision</span>
+            <span class="ap-card__time">{{ t('console.approvals.awaitingDecision') }}</span>
           </header>
           <div class="ap-card__meta">
-            <span v-if="item.agent"><em>Agent</em> {{ item.agent }}</span>
-            <span v-if="item.sessionKey"><em>Session</em> <code>{{ item.sessionKey }}</code></span>
+            <span v-if="item.agent"><em>{{ t('console.approvals.agent') }}</em> {{ item.agent }}</span>
+            <span v-if="item.sessionKey"><em>{{ t('console.approvals.session') }}</em> <code>{{ item.sessionKey }}</code></span>
           </div>
           <div v-if="approvalCommand(item)" class="ap-card__block">
-            <div class="ap-card__block-label">Command</div>
+            <div class="ap-card__block-label">{{ t('console.approvals.command') }}</div>
             <pre class="ap-card__pre ap-card__pre--cmd">{{ approvalCommand(item) }}</pre>
           </div>
           <div v-if="approvalDetail(item)" class="ap-card__block">
-            <div class="ap-card__block-label">Details</div>
+            <div class="ap-card__block-label">{{ t('console.approvals.details') }}</div>
             <pre class="ap-card__pre">{{ approvalDetail(item) }}</pre>
           </div>
           <div class="ap-card__actions">
@@ -103,7 +103,7 @@
               @click="resolveApproval(item, 'approve')"
             >
               <Icon name="check" :size="16" />
-              <span>Approve once</span>
+              <span>{{ t('console.approvals.approveOnce') }}</span>
             </button>
             <button
               v-if="canAlways(item)"
@@ -111,15 +111,15 @@
               :disabled="resolvingId === item.id"
               @click="resolveApproval(item, 'always')"
             >
-              Always allow this type
+              {{ t('console.approvals.alwaysAllow') }}
             </button>
             <button
               class="btn btn--warn"
-              title="Bypass approval prompts while keeping sensitive-path checks"
+              :title="t('console.approvals.bypassHint')"
               :disabled="resolvingId === item.id"
               @click="resolveApproval(item, 'bypass')"
             >
-              Bypass approvals
+              {{ t('console.approvals.bypass') }}
             </button>
             <button
               class="btn btn--danger"
@@ -127,7 +127,7 @@
               @click="resolveApproval(item, 'deny')"
             >
               <Icon name="x" :size="16" />
-              <span>Deny</span>
+              <span>{{ t('console.approvals.deny') }}</span>
             </button>
           </div>
         </article>
@@ -139,6 +139,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import Icon from '@/components/Icon.vue'
 import ErrorState from '@/components/ErrorState.vue'
@@ -183,18 +184,19 @@ const ELEVATED_MODE_KEY = 'opensquilla.elevatedMode'
 const ELEVATED_MODE_VERSION_KEY = 'opensquilla.elevatedMode.version'
 const ELEVATED_MODE_STORAGE_VERSION = '2'
 
-const modeOptions: ModeOption[] = [
-  { value: 'prompt', label: 'Ask every time', desc: 'Every risky tool execution opens an approval prompt.' },
-  { value: 'auto-approve', label: 'Auto approve', desc: 'All tool executions are automatically approved.' },
-  { value: 'auto-deny', label: 'Auto deny', desc: 'All tool executions are automatically denied.' },
-]
-
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
 
+const { t } = useI18n()
 const appStore = useAppStore()
 const { pushToast } = useToasts()
+
+const modeOptions = computed<ModeOption[]>(() => [
+  { value: 'prompt', label: t('console.approvals.modePromptLabel'), desc: t('console.approvals.modePromptDesc') },
+  { value: 'auto-approve', label: t('console.approvals.modeAutoApproveLabel'), desc: t('console.approvals.modeAutoApproveDesc') },
+  { value: 'auto-deny', label: t('console.approvals.modeAutoDenyLabel'), desc: t('console.approvals.modeAutoDenyDesc') },
+])
 
 const pending = ref<ApprovalItem[]>([])
 const mode = ref('prompt')
@@ -211,7 +213,7 @@ let pollInterval: ReturnType<typeof setInterval> | null = null
 // Computed
 // ---------------------------------------------------------------------------
 
-const activeMode = computed(() => modeOptions.find(m => m.value === mode.value) || modeOptions[0])
+const activeMode = computed(() => modeOptions.value.find(m => m.value === mode.value) || modeOptions.value[0])
 const activeModeLabel = computed(() => loaded.value ? activeMode.value.label : '—')
 const activeModeDesc = computed(() => loaded.value ? activeMode.value.desc : '')
 
@@ -266,7 +268,7 @@ async function loadData() {
     approvalErrorToasted = false
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    error.value = 'Failed to load approvals: ' + msg
+    error.value = t('console.approvals.loadFailed', { msg })
     // The 5s poll must not spam a danger toast every tick during an outage
     // (that evicts every other toast). Surface it once per outage; the inline
     // error strip carries the persistent state.
@@ -280,7 +282,7 @@ async function loadData() {
 }
 
 function toolName(item: ApprovalItem): string {
-  return item.toolName || item.pluginId || item.actionKind || 'Unknown'
+  return item.toolName || item.pluginId || item.actionKind || t('console.approvals.unknownTool')
 }
 
 function approvalCommand(item: ApprovalItem): string {
@@ -326,12 +328,12 @@ async function resolveApproval(item: ApprovalItem, decision: string) {
     if (!res.ok) throw new Error('HTTP ' + res.status)
     if (elevatedMode) setBrowserElevated(elevatedMode)
     const msg = elevatedMode
-      ? 'Approval bypass enabled'
-      : (approved ? 'Approved' : 'Denied')
+      ? t('console.approvals.bypassEnabled')
+      : (approved ? t('console.approvals.approved') : t('console.approvals.denied'))
     pushToast(msg + ': ' + id, { tone: 'ok' })
     await loadData()
   } catch (err) {
-    pushToast('Failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
+    pushToast(t('console.approvals.toastFailed', { msg: err instanceof Error ? err.message : String(err) }), { tone: 'danger' })
   } finally {
     if (resolvingId.value === id) resolvingId.value = null
   }
@@ -346,10 +348,10 @@ async function onModeChange() {
       body: JSON.stringify({ mode: newMode }),
     })
     if (!res.ok) throw new Error('HTTP ' + res.status)
-    pushToast('Approval strategy: ' + newMode, { tone: 'ok' })
+    pushToast(t('console.approvals.toastStrategy', { mode: newMode }), { tone: 'ok' })
     await loadData()
   } catch (err) {
-    pushToast('Failed to save strategy: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
+    pushToast(t('console.approvals.toastStrategyFailed', { msg: err instanceof Error ? err.message : String(err) }), { tone: 'danger' })
   }
 }
 

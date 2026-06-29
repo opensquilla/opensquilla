@@ -1,4 +1,5 @@
 import { computed, ref, type ComputedRef, type Ref } from 'vue'
+import i18n from '@/i18n'
 
 interface ProviderSpec {
   providerId: string
@@ -197,11 +198,11 @@ export function useSetupCapabilitiesForm() {
   const memoryApiKeyEnvValue = computed(() => memoryApiKeyEnv.value)
   const imageApiKeyEnvValue = computed(() => imageApiKeyEnv.value)
   const memoryRemoteOptionsOpen = computed(() => memoryProvider.value !== 'auto' || Boolean(memoryModel.value || memoryApiKey.value || memoryApiKeyEnv.value || memoryBaseUrl.value))
-  const memoryRemoteOptionsSummary = computed(() => memoryProvider.value === 'auto' ? 'Remote fallback options' : 'Connection options')
-  const memoryModelPlaceholder = computed(() => memoryProvider.value === 'ollama' ? 'nomic-embed-text' : (memoryRemoteControlEnabled.value ? 'remote-embedding-model' : 'not used by this provider'))
-  const memoryBasePlaceholder = computed(() => memoryProvider.value === 'ollama' ? 'http://localhost:11434' : (memoryRemoteControlEnabled.value ? 'https://api.example.com/v1' : 'not used by this provider'))
-  const memoryOnnxPlaceholder = computed(() => memoryLocalControlEnabled.value ? 'models/bge-onnx' : 'only for bundled local provider')
-  const memoryApiKeyLabel = computed(() => memoryProvider.value === 'auto' ? 'Fallback API key' : 'API key')
+  const memoryRemoteOptionsSummary = computed(() => i18n.global.t(memoryProvider.value === 'auto' ? 'setup.memory.remoteFallbackOptions' : 'setup.memory.connectionOptions'))
+  const memoryModelPlaceholder = computed(() => memoryProvider.value === 'ollama' ? 'nomic-embed-text' : (memoryRemoteControlEnabled.value ? 'remote-embedding-model' : i18n.global.t('setup.memory.notUsedByProvider')))
+  const memoryBasePlaceholder = computed(() => memoryProvider.value === 'ollama' ? 'http://localhost:11434' : (memoryRemoteControlEnabled.value ? 'https://api.example.com/v1' : i18n.global.t('setup.memory.notUsedByProvider')))
+  const memoryOnnxPlaceholder = computed(() => memoryLocalControlEnabled.value ? 'models/bge-onnx' : i18n.global.t('setup.memory.onnxOnlyLocal'))
+  const memoryApiKeyLabel = computed(() => i18n.global.t(memoryProvider.value === 'auto' ? 'setup.memory.fallbackApiKey' : 'setup.common.apiKey'))
 
   function initSearchFromConfig(config: ConfigData, providers: ProviderSpec[]) {
     searchProvider.value = config.search_provider || providers.find(p => p.providerId === 'duckduckgo')?.providerId || providers[0]?.providerId || 'duckduckgo'

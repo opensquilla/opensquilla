@@ -7,7 +7,7 @@
       :disabled="state.loading"
       @click="$emit('loadEarlier')"
     >
-      {{ state.loading ? 'Loading...' : 'Load earlier messages' }}
+      {{ state.loading ? t('chat.loadingEllipsis') : t('chat.loadEarlier') }}
     </button>
     <span v-if="scopeText" class="chat-history-scope__text">{{ scopeText }}</span>
   </div>
@@ -15,7 +15,10 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { ChatHistoryState } from '@/composables/chat/useChatHistory'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   state: ChatHistoryState
@@ -26,8 +29,8 @@ defineEmits<{
 }>()
 
 const scopeText = computed(() => {
-  if (props.state.historyScope === 'compacted') return 'Older content is represented by session summaries.'
-  if (props.state.historyScope === 'latest_window') return 'Showing the latest message window.'
+  if (props.state.historyScope === 'compacted') return t('chat.scopeCompacted')
+  if (props.state.historyScope === 'latest_window') return t('chat.scopeLatestWindow')
   return ''
 })
 

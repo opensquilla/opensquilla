@@ -1,4 +1,5 @@
 import { ref } from 'vue'
+import i18n from '@/i18n'
 
 export interface ConfirmOptions {
   title: string
@@ -28,7 +29,7 @@ function confirm(options: ConfirmOptions): Promise<boolean> {
     confirmState.value = {
       title: options.title,
       body: options.body,
-      primaryLabel: options.primaryLabel ?? 'Confirm',
+      primaryLabel: options.primaryLabel ?? i18n.global.t('shared.confirm.defaultPrimary'),
       primaryClass: options.primaryClass ?? 'btn--danger',
       resolve,
     }

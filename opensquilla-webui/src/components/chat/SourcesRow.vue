@@ -6,7 +6,7 @@
       :aria-expanded="open"
       @click="open = !open"
     >
-      <span class="sources-row__label">Sources</span>
+      <span class="sources-row__label">{{ t('chat.sources') }}</span>
       <span class="sources-row__count">{{ sources.length }}</span>
       <span class="sources-row__chips" aria-hidden="true">
         <span v-for="source in chipSources" :key="source.url" class="sources-row__chip">
@@ -43,8 +43,11 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import type { ChatToolCall } from '@/types/chat'
+
+const { t } = useI18n()
 import type { SourcePart } from '@/types/parts'
 import { toolOperationKey } from '@/utils/chat/toolDisplay'
 

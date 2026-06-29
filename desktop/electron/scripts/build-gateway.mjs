@@ -1,4 +1,4 @@
-import { rmSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
@@ -9,7 +9,12 @@ const repoRoot = resolve(packageRoot, '..', '..')
 const runtimeGatewayDir = join(packageRoot, 'runtime', 'gateway')
 const pyinstallerWorkDir = join(packageRoot, '.pyinstaller')
 const entryPath = join(scriptDir, 'gateway-entry.py')
+const controlUiDistDir = join(repoRoot, 'src', 'opensquilla', 'gateway', 'static', 'dist')
 const addDataSeparator = process.platform === 'win32' ? ';' : ':'
+
+if (!existsSync(join(controlUiDistDir, 'index.html'))) {
+  throw new Error(`Built Control UI not found at ${controlUiDistDir}. Run npm run build:web before npm run build:gateway.`)
+}
 
 rmSync(runtimeGatewayDir, { recursive: true, force: true })
 mkdirSync(runtimeGatewayDir, { recursive: true })
@@ -43,6 +48,8 @@ const args = [
   'yoyo.backends.core.sqlite3',
   '--add-data',
   `${join(repoRoot, 'migrations')}${addDataSeparator}opensquilla/_migrations`,
+  '--add-data',
+  `${controlUiDistDir}${addDataSeparator}opensquilla/gateway/static/dist`,
   entryPath,
 ]
 

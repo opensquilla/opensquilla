@@ -184,6 +184,46 @@ async function healthCheck(url) {
   }
 }
 
+async function fetchText(url) {
+  const response = await fetch(url, { signal: AbortSignal.timeout(2_000) })
+  const body = await response.text()
+  if (!response.ok) {
+    throw new Error(`${url} returned HTTP ${response.status}: ${bodySnippet(body)}`)
+  }
+  return body
+}
+
+function controlAssetUrls(html, baseUrl) {
+  const urls = []
+  for (const match of html.matchAll(/<script\b[^>]*\btype="module"[^>]*\bsrc="([^"]+)"/g)) {
+    urls.push(new URL(match[1], baseUrl).toString())
+  }
+  for (const match of html.matchAll(/<link\b[^>]*\brel="stylesheet"[^>]*\bhref="([^"]+)"/g)) {
+    urls.push(new URL(match[1], baseUrl).toString())
+  }
+  return urls
+}
+
+async function verifyControlUi(port, stdoutTail, stderrTail) {
+  const controlUrl = `http://127.0.0.1:${port}/control/`
+  const html = await fetchText(controlUrl)
+  const assetUrls = controlAssetUrls(html, controlUrl)
+
+  const hasModule = assetUrls.some((url) => url.includes('/static/dist/') && url.endsWith('.js'))
+  const hasStylesheet = assetUrls.some((url) => url.includes('/static/dist/') && url.endsWith('.css'))
+  if (!hasModule || !hasStylesheet) {
+    throw new Error(
+      `${controlUrl} did not inject Vite JS/CSS assets from /static/dist/. ` +
+        `Found assets: ${assetUrls.length > 0 ? assetUrls.join(', ') : '(none)'}.` +
+        formatTail(stdoutTail, stderrTail)
+    )
+  }
+
+  for (const url of assetUrls.filter((assetUrl) => assetUrl.includes('/static/dist/'))) {
+    await fetchText(url)
+  }
+}
+
 async function waitForGateway(port, childExit, stdoutTail, stderrTail) {
   const deadline = Date.now() + deadlineMs
   const healthzUrl = `http://127.0.0.1:${port}/healthz`
@@ -335,6 +375,7 @@ async function main() {
     })
 
     await waitForGateway(port, childExit, stdoutTail, stderrTail)
+    await verifyControlUi(port, stdoutTail, stderrTail)
     console.log('OpenSquilla packaged gateway smoke passed.')
   } finally {
     if (child) await terminateChild(child, childClosed)

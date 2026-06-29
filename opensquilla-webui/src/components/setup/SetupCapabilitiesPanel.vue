@@ -134,8 +134,11 @@ function onImageProviderSelect(event: Event) {
         @copy="emit('copy', $event)"
       />
       <SetupNeedList :items="panel.state.searchNeeds" :label="t('setup.search.needs')" />
-      <label class="control-row">
-        <div class="control-row__label-block"><span class="control-row__label">{{ t('setup.search.credentialProvider') }}</span></div>
+      <label class="control-row control-row--stack">
+        <div class="control-row__label-block">
+          <span class="control-row__label">{{ t('setup.search.credentialProvider') }}</span>
+          <span class="control-row__desc">{{ t('setup.search.multiProviderHint') }}</span>
+        </div>
         <div class="control-row__control">
           <select class="control-input" :value="panel.form.searchProvider" name="setup_search_provider" @change="onSearchProviderSelect">
             <option v-for="p in panel.options.searchProviders" :key="p.providerId" :value="p.providerId">{{ p.label }}</option>
@@ -353,7 +356,7 @@ function onImageProviderSelect(event: Event) {
         <label class="control-row">
           <div class="control-row__label-block"><span class="control-row__label">{{ t('setup.common.apiKeyEnv') }}</span></div>
           <div class="control-row__control">
-            <input class="control-input" :value="panel.form.audioApiKeyEnv" name="setup_audio_api_key_env" placeholder="AUDIO_PROVIDER_API_KEY" @input="emit('updateField', 'audio', 'apiKeyEnv', ($event.target as HTMLInputElement).value)">
+            <input class="control-input" :value="panel.form.audioApiKeyEnv" name="setup_audio_api_key_env" placeholder="ELEVENLABS_API_KEY" @input="emit('updateField', 'audio', 'apiKeyEnv', ($event.target as HTMLInputElement).value)">
           </div>
         </label>
       </template>

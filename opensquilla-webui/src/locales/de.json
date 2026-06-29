@@ -211,6 +211,7 @@
       "copyKeyCommand": "Befehl zum Setzen des Suchschlüssels kopieren",
       "needs": "Suche benötigt",
       "credentialProvider": "Zugangsdaten-Anbieter",
+      "multiProviderHint": "Die Suche bewertet automatisch alle Anbieter, für die ein API-Schlüssel gesetzt ist, und wählt daraus aus. Der hier gewählte Anbieter liefert seinen eingebetteten Schlüssel und die Standardeinstellungen; setzen Sie die Schlüssel-Umgebungsvariablen weiterer Anbieter, um diese ebenfalls einzubeziehen.",
       "defaultResults": "Standardergebnisse pro Suche",
       "advanced": "Erweiterte Suchoptionen",
       "httpProxy": "HTTP-Proxy",

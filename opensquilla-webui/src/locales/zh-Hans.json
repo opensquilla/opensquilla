@@ -211,6 +211,7 @@
       "copyKeyCommand": "复制设置搜索密钥的命令",
       "needs": "搜索所需",
       "credentialProvider": "凭据服务商",
+      "multiProviderHint": "搜索会自动在所有已设置 API 密钥的服务商之间进行排序选择。此处选择的服务商用于提供其内联密钥和默认设置；设置其他服务商的密钥环境变量即可将它们一并纳入。",
       "defaultResults": "每次搜索的默认结果数",
       "advanced": "高级搜索选项",
       "httpProxy": "HTTP 代理",

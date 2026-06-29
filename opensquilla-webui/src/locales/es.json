@@ -211,6 +211,7 @@
       "copyKeyCommand": "Copiar comando para establecer la clave de búsqueda",
       "needs": "La búsqueda necesita",
       "credentialProvider": "Proveedor de credenciales",
+      "multiProviderHint": "La búsqueda clasifica automáticamente entre todos los proveedores que tengan configurada una clave API. El proveedor elegido aquí aporta su clave integrada y los ajustes predeterminados; configura las variables de entorno de clave de otros proveedores para incluirlos también.",
       "defaultResults": "Resultados predeterminados por búsqueda",
       "advanced": "Opciones avanzadas de búsqueda",
       "httpProxy": "Proxy HTTP",

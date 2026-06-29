@@ -211,6 +211,7 @@
       "copyKeyCommand": "Copier la commande de définition de la clé de recherche",
       "needs": "La recherche a besoin de",
       "credentialProvider": "Fournisseur d'identifiants",
+      "multiProviderHint": "La recherche effectue automatiquement un classement parmi tous les fournisseurs dont la clé API est définie. Le fournisseur choisi ici fournit sa clé intégrée et ses paramètres par défaut ; définissez les variables d'environnement de clé des autres fournisseurs pour les inclure également.",
       "defaultResults": "Résultats par défaut par recherche",
       "advanced": "Options de recherche avancées",
       "httpProxy": "Proxy HTTP",

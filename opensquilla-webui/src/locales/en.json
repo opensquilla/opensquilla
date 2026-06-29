@@ -211,6 +211,7 @@
       "copyKeyCommand": "Copy set search key command",
       "needs": "Search needs",
       "credentialProvider": "Credential provider",
+      "multiProviderHint": "Search automatically ranks across every provider whose API key is set. The provider chosen here supplies its inline key and default settings; set other providers' key environment variables to include them too.",
       "defaultResults": "Default results per search",
       "advanced": "Advanced search options",
       "httpProxy": "HTTP proxy",

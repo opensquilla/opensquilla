@@ -22,3 +22,9 @@ export function secretStorageBackendForPolicy(input: SecretStoragePolicyInput): 
 
   return 'safeStorage'
 }
+
+export function shouldUseChromiumMockKeychainForPolicy(input: SecretStoragePolicyInput): boolean {
+  return input.platform === 'darwin' &&
+    input.appPackaged &&
+    secretStorageBackendForPolicy(input) === 'plain'
+}

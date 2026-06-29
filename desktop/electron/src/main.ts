@@ -6,7 +6,7 @@ import { access, constants, readFile, readdir, rm, stat, unlink, writeFile } fro
 import net from 'node:net'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { secretStorageBackendForPolicy } from './secret-storage-policy.js'
+import { secretStorageBackendForPolicy, shouldUseChromiumMockKeychainForPolicy } from './secret-storage-policy.js'
 
 interface GatewayState {
   url: string
@@ -130,6 +130,7 @@ let gatewayStartPromise: Promise<GatewayState> | null = null
 let resolveOnboarding: ((credential: DesktopConnection) => void) | null = null
 let rejectOnboarding: ((error: Error) => void) | null = null
 let secretStorageBackendCache: SecretEncryption | null = null
+let macCodeSignatureDiagnosticCache: string | null = null
 let bootStatus: BootStatus = {
   label: 'Preparing desktop profile',
   at: new Date().toISOString(),
@@ -547,9 +548,22 @@ function plainSecret(secret: string): { value: string; encryption: SecretEncrypt
 }
 
 function macCodeSignatureDiagnostic(): string {
+  if (macCodeSignatureDiagnosticCache !== null) return macCodeSignatureDiagnosticCache
   if (process.platform !== 'darwin' || !app.isPackaged) return ''
   const result = spawnSync('/usr/bin/codesign', ['-dv', '--verbose=4', process.execPath], { encoding: 'utf8' })
-  return `${result.stdout || ''}\n${result.stderr || ''}`
+  macCodeSignatureDiagnosticCache = `${result.stdout || ''}\n${result.stderr || ''}`
+  return macCodeSignatureDiagnosticCache
+}
+
+function configureChromiumKeychainPolicy(): void {
+  if (shouldUseChromiumMockKeychainForPolicy({
+    envMode: process.env.OPENSQUILLA_DESKTOP_SECRET_STORAGE,
+    platform: process.platform,
+    appPackaged: app.isPackaged,
+    codesignDiagnostic: macCodeSignatureDiagnostic(),
+  })) {
+    app.commandLine.appendSwitch('use-mock-keychain')
+  }
 }
 
 function desktopSecretStorageBackend(): SecretEncryption {
@@ -2560,6 +2574,8 @@ app.on('window-all-closed', () => {
 app.on('activate', () => {
   void openOrResumeDesktopApp()
 })
+
+configureChromiumKeychainPolicy()
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 

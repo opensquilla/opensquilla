@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   macCodeSignatureIsAdHoc,
   secretStorageBackendForPolicy,
+  shouldUseChromiumMockKeychainForPolicy,
 } from '../dist/secret-storage-policy.js'
 
 assert.equal(macCodeSignatureIsAdHoc('Signature=adhoc'), true)
@@ -43,5 +44,33 @@ assert.equal(secretStorageBackendForPolicy({
   appPackaged: true,
   codesignDiagnostic: '',
 }), 'safeStorage')
+
+assert.equal(shouldUseChromiumMockKeychainForPolicy({
+  envMode: undefined,
+  platform: 'darwin',
+  appPackaged: true,
+  codesignDiagnostic: 'Signature=adhoc',
+}), true)
+
+assert.equal(shouldUseChromiumMockKeychainForPolicy({
+  envMode: 'safeStorage',
+  platform: 'darwin',
+  appPackaged: true,
+  codesignDiagnostic: 'Signature=adhoc',
+}), false)
+
+assert.equal(shouldUseChromiumMockKeychainForPolicy({
+  envMode: undefined,
+  platform: 'darwin',
+  appPackaged: true,
+  codesignDiagnostic: 'Authority=Developer ID Application: OpenSquilla',
+}), false)
+
+assert.equal(shouldUseChromiumMockKeychainForPolicy({
+  envMode: undefined,
+  platform: 'win32',
+  appPackaged: true,
+  codesignDiagnostic: '',
+}), false)
 
 console.log('Secret storage policy tests passed.')

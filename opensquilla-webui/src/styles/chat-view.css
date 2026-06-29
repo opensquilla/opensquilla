@@ -34,6 +34,14 @@
   border-bottom: 0;
   background: var(--bg-surface);
   flex-shrink: 0;
+  /* The absolutely-positioned topbar right cluster (connection pill + language
+     switcher + theme) floats over this band's right edge at every width and
+     intercepts pointer events. Reserve exactly its measured width so the
+     header actions never slide under the pill. The value is published live by
+     App.vue's ResizeObserver (--topbar-right-reserve), so it tracks the
+     connection state and the locale's language-label width instead of a brittle
+     constant; the fallback only covers the first paint before measurement. */
+  padding-right: var(--topbar-right-reserve, 224px);
 }
 
 .chat-header-left {
@@ -48,12 +56,9 @@
   align-items: center;
   gap: 0.5rem;
   flex-shrink: 0;
-  /* The fixed topbar's right cluster (connection pill, theme) floats over
-     this band at every width and intercepts pointer events; reserve its full
-     width so the header action buttons stay clickable and never sit under the
-     pill — sized for the pill's widest state (DISCONNECTED) plus the theme
-     button and inset, matching the narrow-screen reservation below. */
-  margin-right: 204px;
+  /* The clearance for the floating topbar cluster lives on .chat-header's
+     padding-right (var(--topbar-right-reserve)); this group just hugs the
+     right edge of that reserved content box. */
 }
 
 .chat-share-banner {
@@ -1092,16 +1097,10 @@
   }
 
   .chat-header {
-    /* Keep the header actions clear of the floating topbar cluster (conn pill
-       + theme menu) that overlays this band's right edge on narrow screens.
-       The cluster is right-anchored and intrudes ~194px at its widest — 62px
-       of fixed chrome right of the pill plus the pill in its longest state
-       (DISCONNECTED, ~132px) — so reserve that plus a small margin. */
-    padding: 0.5rem 204px 0.5rem 0.75rem;
-  }
-
-  .chat-header-right {
-    margin-right: 0;
+    /* Same measured reservation as desktop — App.vue's --topbar-right-reserve
+       already reflects the narrow-screen topbar inset and the live cluster
+       width, so the right padding tracks the floating pill exactly here too. */
+    padding: 0.5rem var(--topbar-right-reserve, 224px) 0.5rem 0.75rem;
   }
 
   /* Collapse header share/deliverables buttons to icon-only. Target the

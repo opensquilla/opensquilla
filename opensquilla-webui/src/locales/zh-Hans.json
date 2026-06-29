@@ -30,6 +30,11 @@
     "approvalRequired": "需要审批",
     "manageConnection": "管理网关连接",
     "connectionTitle": "连接：{state} — 在设置中管理",
+    "connectionState": {
+      "connected": "已连接",
+      "connecting": "连接中",
+      "disconnected": "已断开"
+    },
     "brandHome": "OpenSquilla 主页",
     "controlNav": "控制台导航",
     "primaryNav": "主导航",

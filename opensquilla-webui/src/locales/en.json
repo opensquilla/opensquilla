@@ -30,6 +30,11 @@
     "approvalRequired": "Approval required",
     "manageConnection": "Manage gateway connection",
     "connectionTitle": "Connection: {state} — manage in Settings",
+    "connectionState": {
+      "connected": "Connected",
+      "connecting": "Connecting",
+      "disconnected": "Disconnected"
+    },
     "brandHome": "OpenSquilla home",
     "controlNav": "Control navigation",
     "primaryNav": "Primary",

@@ -30,6 +30,11 @@
     "approvalRequired": "Genehmigung erforderlich",
     "manageConnection": "Gateway-Verbindung verwalten",
     "connectionTitle": "Verbindung: {state} — in den Einstellungen verwalten",
+    "connectionState": {
+      "connected": "Verbunden",
+      "connecting": "Wird verbunden",
+      "disconnected": "Getrennt"
+    },
     "brandHome": "OpenSquilla Startseite",
     "controlNav": "Navigation steuern",
     "primaryNav": "Primär",

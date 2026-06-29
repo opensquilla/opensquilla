@@ -30,6 +30,11 @@
     "approvalRequired": "Aprobación requerida",
     "manageConnection": "Gestionar conexión de la puerta de enlace",
     "connectionTitle": "Conexión: {state} — gestionar en Ajustes",
+    "connectionState": {
+      "connected": "Conectado",
+      "connecting": "Conectando",
+      "disconnected": "Desconectado"
+    },
     "brandHome": "Inicio de OpenSquilla",
     "controlNav": "Navegación de control",
     "primaryNav": "Principal",

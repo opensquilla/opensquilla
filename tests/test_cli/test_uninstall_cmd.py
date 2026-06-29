@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -57,6 +60,39 @@ def test_dry_run_json_emits_plan_and_does_nothing(monkeypatch, tmp_path: Path) -
     payload = json.loads(result.stdout)
     assert payload["dry_run"] is True
     assert payload["plan"]["method"] == "pip"
+
+
+def test_dry_run_json_subprocess_stdout_stays_machine_readable(tmp_path: Path) -> None:
+    """Import-time env loading must not pollute stdout before JSON output."""
+    home = tmp_path / "home"
+    env_home = home / ".opensquilla"
+    env_home.mkdir(parents=True)
+    (env_home / ".env").write_text("OPENSQUILLA_ENV_JSON_TEST=1\n", encoding="utf-8")
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+            "HTTP_PROXY": "http://127.0.0.1:9",
+        }
+    )
+    env.pop("OPENSQUILLA_TRUST_ENV", None)
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "opensquilla.cli.main", "uninstall", "--dry-run", "--json"],
+        cwd=Path(__file__).resolve().parents[2],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr + completed.stdout
+    assert completed.stdout.lstrip().startswith("{")
+    payload = json.loads(completed.stdout)
+    assert payload["dry_run"] is True
 
 
 def test_non_interactive_without_yes_refuses(monkeypatch, tmp_path: Path) -> None:

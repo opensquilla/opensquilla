@@ -12,14 +12,13 @@ Existing environment variables are NEVER overridden.
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
-import structlog
-
 from opensquilla.paths import default_opensquilla_home
 
-log = structlog.get_logger(__name__)
+log = logging.getLogger(__name__)
 
 _TRUTHY = {"1", "true", "yes", "on"}
 _PROXY_ENV_VARS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
@@ -44,9 +43,9 @@ def warn_if_proxy_ignored() -> None:
     present = [v for v in _PROXY_ENV_VARS if os.environ.get(v)]
     if present:
         log.warning(
-            "env.proxy_ignored",
-            vars=present,
-            hint="Set OPENSQUILLA_TRUST_ENV=1 to let opensquilla honor env proxy settings.",
+            "env.proxy_ignored vars=%s hint=%s",
+            present,
+            "Set OPENSQUILLA_TRUST_ENV=1 to let opensquilla honor env proxy settings.",
         )
 
 
@@ -103,7 +102,7 @@ def load_env(cwd: str | Path | None = None) -> int:
         for key, value in _parse_env_file(path).items():
             if key not in merged:
                 merged[key] = value
-                log.debug("env.loaded", key=key, source=str(path))
+                log.debug("env.loaded key=%s source=%s", key, path)
 
     # Inject into os.environ — never override existing
     injected = 0
@@ -113,6 +112,6 @@ def load_env(cwd: str | Path | None = None) -> int:
             injected += 1
 
     if injected:
-        log.info("env.injected", count=injected)
+        log.info("env.injected count=%s", injected)
 
     return injected

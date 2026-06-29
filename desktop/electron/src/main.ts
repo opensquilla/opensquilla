@@ -3273,11 +3273,12 @@ ipcMain.handle('desktop:settings:reset', async () => {
 })
 ipcMain.handle('desktop:artifact:open', async (_event, payload: ArtifactOpenRequest) => openArtifactWithDefaultApp(payload))
 
-// ── Uninstall ──────────────────────────────────────────────────────────────
-// The deletion logic lives in the Python core (`opensquilla uninstall`); the
-// desktop only triggers it via the bundled CLI and then removes the few
+// ── Desktop data cleanup ───────────────────────────────────────────────────
+// The data deletion logic lives in the Python core (`opensquilla uninstall`);
+// the desktop only triggers it via the bundled CLI and then removes the few
 // desktop-owned files that live outside the OpenSquilla home (the encrypted
-// credential and gateway logs under userData/).
+// credential and gateway logs under userData/). It intentionally does not
+// remove the installed .app / NSIS application; users do that through the OS.
 //
 // Path note: the gateway runs with OPENSQUILLA_STATE_DIR=desktopStateDir()
 // (<userData>/opensquilla/state), but the uninstaller's "home" must be
@@ -3333,9 +3334,9 @@ ipcMain.handle('desktop:uninstall:run', async (_event, payload?: { purgeData?: b
       buttons: ['Cancel', 'Delete everything'],
       defaultId: 0,
       cancelId: 0,
-      title: 'Delete all OpenSquilla data?',
-      message: 'This permanently deletes all OpenSquilla data on this machine.',
-      detail: 'Sessions, configuration, and secrets will be removed. This cannot be undone.',
+      title: 'Delete local OpenSquilla desktop data?',
+      message: 'This permanently deletes the local desktop profile on this machine.',
+      detail: 'Sessions, configuration, and secrets will be removed. The installed app itself will remain; remove it through your OS after the app closes.',
     })
     if (response !== 1) return { ok: false, aborted: true, detail: 'cancelled' }
   }

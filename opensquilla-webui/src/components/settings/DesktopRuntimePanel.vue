@@ -44,8 +44,9 @@ const canRevealLog = computed(() => Boolean(platform.gateway.revealLog))
 const canRestart = computed(() => Boolean(platform.gateway.retryStartup))
 const canReset = computed(() => Boolean(platform.settings.resetDesktopSettings))
 
-// Uninstall is wired directly on the desktop preload bridge (desktop-only,
-// self-contained — it shells out to `opensquilla uninstall` in the Python core).
+// Desktop data cleanup is wired directly on the desktop preload bridge
+// (desktop-only, self-contained — it shells out to `opensquilla uninstall` in
+// the Python core). It does not remove the installed app bundle itself.
 interface UninstallBridge {
   uninstallRun?: (payload: { purgeData: boolean }) => Promise<{ ok: boolean; aborted?: boolean; detail?: string }>
   quitApp?: () => Promise<unknown>

@@ -177,3 +177,30 @@ def test_desktop_native_artifact_open_allows_active_documents_with_file_extensio
     assert "function isActiveDocumentArtifactRequest" not in main_ts
     assert "shell.openPath(filePath)" in native_open
     assert "isActiveDocumentArtifact(artifact, fetched.blob)" not in artifact_list_vue
+
+
+def test_desktop_cleanup_does_not_claim_os_app_uninstall() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    panel_vue = _read("opensquilla-webui/src/components/settings/DesktopRuntimePanel.vue")
+    en_locale = json.loads(_read("opensquilla-webui/src/locales/en.json"))
+    zh_locale = json.loads(_read("opensquilla-webui/src/locales/zh-Hans.json"))
+
+    cleanup = _section(
+        main_ts,
+        "// ── Desktop data cleanup",
+        "ipcMain.handle('desktop:boot:state'",
+    )
+
+    assert "OPENSQUILLA_INSTALL_METHOD: 'desktop'" in cleanup
+    assert "OPENSQUILLA_STATE_DIR: desktopHome()" in cleanup
+    assert "remove the installed .app / NSIS application" in cleanup
+    assert "installed app itself will remain" in cleanup
+    assert "does not remove the installed app bundle itself" in panel_vue
+
+    en_runtime = en_locale["setup"]["runtime"]
+    zh_runtime = zh_locale["setup"]["runtime"]
+    assert "desktop data cleanup" in en_runtime["uninstallLabel"]
+    assert "uninstalled" not in en_runtime["uninstallDone"].lower()
+    assert "remove OpenSquilla through your OS" in en_runtime["uninstallDone"]
+    assert "清理桌面本地数据" in zh_runtime["uninstallLabel"]
+    assert "已卸载" not in zh_runtime["uninstallDone"]

@@ -132,7 +132,9 @@ def test_configured_endpoint_uploads_install_once_and_dedupes(tmp_path, monkeypa
         "python_version",
         "first_seen_at",
         "sent_at",
+        "ci_environment",
     }
+    assert payload["ci_environment"] is False
     state = _load(state_path)
     assert state["uploaded_install"] is True
     assert state["uploaded_versions"] == ["1.0.0"]
@@ -220,6 +222,23 @@ def test_opensquilla_testing_env_skips_without_creating_state(tmp_path, monkeypa
     assert result.sent is False
     assert result.skipped_reason == "environment:OPENSQUILLA_TESTING"
     assert not state_path.exists()
+
+
+def test_payload_marks_ci_environment_when_detected(monkeypatch):
+    _enable_telemetry_for_test(monkeypatch)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+
+    payload = telemetry._build_payload(
+        {
+            "install_id": "stable-install-id",
+            "first_seen_at": "2026-06-29T00:00:00Z",
+        },
+        event="install",
+        current_version="1.0.0",
+        sent_at="2026-06-29T00:00:01Z",
+    )
+
+    assert payload["ci_environment"] is True
 
 
 def test_upload_failure_does_not_mark_install_uploaded(tmp_path, monkeypatch):

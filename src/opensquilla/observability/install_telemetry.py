@@ -157,14 +157,25 @@ def _telemetry_disabled() -> bool:
 def _telemetry_skip_reason() -> str | None:
     if _telemetry_disabled():
         return "disabled"
+    ci_env = _ci_environment_name()
+    if ci_env is not None:
+        return f"environment:{ci_env}"
+    return None
+
+
+def _ci_environment_detected() -> bool:
+    return _ci_environment_name() is not None
+
+
+def _ci_environment_name() -> str | None:
     for name in _AUTO_SKIP_ENV_VARS:
         value = os.environ.get(name, "")
         if name == "PYTEST_CURRENT_TEST":
             if value.strip():
-                return f"environment:{name}"
+                return name
             continue
         if value.strip().lower() in _TRUE_VALUES:
-            return f"environment:{name}"
+            return name
     return None
 
 
@@ -405,6 +416,7 @@ def _build_payload(
         "python_version": f"{sys.version_info.major}.{sys.version_info.minor}",
         "first_seen_at": state["first_seen_at"],
         "sent_at": sent_at,
+        "ci_environment": _ci_environment_detected(),
     }
 
 

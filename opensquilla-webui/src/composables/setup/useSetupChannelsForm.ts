@@ -44,6 +44,9 @@ export function buildChannelEntry(type: string, values: Record<string, unknown>)
 export function useSetupChannelsForm() {
   const channelType = ref('')
   const channelFieldValues = ref<Record<string, unknown>>({})
+  // Fields of the currently-selected channel spec — kept so payload() can drop
+  // values of fields that show_when has hidden.
+  const activeFields = ref<ChannelFieldSpec[]>([])
   const selectedChannelType = computed(() => channelType.value)
 
   const serialized = computed(() => JSON.stringify({ t: channelType.value, v: channelFieldValues.value }))
@@ -62,6 +65,7 @@ export function useSetupChannelsForm() {
 
   // Switching channel type resets the entry form; type choice alone is not an unsaved edit.
   function resetForSpec(spec: ChannelSpec | null | undefined) {
+    activeFields.value = (spec?.fields ?? []) as ChannelFieldSpec[]
     channelFieldValues.value = {}
     spec?.fields?.forEach(field => {
       channelFieldValues.value[field.name] = field.default ?? ''
@@ -78,14 +82,43 @@ export function useSetupChannelsForm() {
   }
 
   function payload(): Record<string, unknown> {
-    return buildChannelEntry(channelType.value, channelFieldValues.value)
+    // Only submit values for fields that are currently visible. A hidden
+    // field's stale value (e.g. a Socket-mode app_token left over after the
+    // user switched connection_mode to webhook) must not be sent.
+    const visible = new Set(channelFieldRows(activeFields.value).map(row => row.field.name))
+    const filtered: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(channelFieldValues.value)) {
+      if (visible.has(key)) filtered[key] = value
+    }
+    return buildChannelEntry(channelType.value, filtered)
+  }
+
+  // Current value of a field (user edit, else its default) — used both to render
+  // a field and to evaluate other fields' show_when conditions against it.
+  function fieldCurrentValue(name: string, fields: ChannelFieldSpec[]): string {
+    const v = channelFieldValues.value[name]
+    if (v !== undefined) return String(v ?? '')
+    const f = fields.find(x => x.name === name)
+    return String(f?.default ?? '')
+  }
+
+  // A field is shown unless its show_when references a controlling field whose
+  // current value doesn't match. Backend ships show_when as `field.showWhen`,
+  // e.g. { connection_mode: 'socket' } or { transport_name: 'webhook' }; all
+  // keys must match. This is what makes the form show the fields for the chosen
+  // connection mode instead of every field at once.
+  function fieldVisible(field: ChannelFieldSpec, fields: ChannelFieldSpec[]): boolean {
+    const showWhen = field.showWhen as Record<string, unknown> | undefined
+    if (!showWhen || typeof showWhen !== 'object') return true
+    return Object.entries(showWhen).every(
+      ([ctrl, expected]) => fieldCurrentValue(ctrl, fields) === String(expected),
+    )
   }
 
   function channelFieldRows(fields: ChannelFieldSpec[]): ChannelFieldRow[] {
-    return fields.map(field => ({
-      field,
-      value: String(channelFieldValues.value[field.name] ?? field.default ?? ''),
-    }))
+    return fields
+      .filter(field => fieldVisible(field, fields))
+      .map(field => ({ field, value: fieldCurrentValue(field.name, fields) }))
   }
 
   function createPanel(context: ChannelsPanelContext) {

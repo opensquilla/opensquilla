@@ -80,6 +80,28 @@ def _request_ws_url(request: Request, config: GatewayConfig) -> str:
     return f"{ws_scheme}://{host}/ws"
 
 
+_SUPPORTED_LOCALES = ("en", "zh-Hans")
+
+
+def _resolve_locale(config: GatewayConfig, request: Request) -> str:
+    """Resolve the first-paint locale rendered into <html lang> and #opensquilla-data.
+
+    Honors the configured default. Only when that default is the baseline 'en'
+    do we sniff Accept-Language (a zh* preference yields zh-Hans), so an operator
+    who explicitly pins a default is never overridden. The browser's saved
+    localStorage choice and the in-app switcher always win client-side.
+    """
+    default = getattr(config.control_ui, "default_locale", "en")
+    if default in _SUPPORTED_LOCALES and default != "en":
+        return default
+    accept = request.headers.get("accept-language", "") or ""
+    for part in accept.split(","):
+        token = part.split(";", 1)[0].strip().lower()
+        if token.startswith("zh"):
+            return "zh-Hans"
+    return "en"
+
+
 def _build_bootstrap_context(config: GatewayConfig, request: Request) -> dict:
     """Build the template context for bootstrap config injection."""
     return {
@@ -88,6 +110,7 @@ def _build_bootstrap_context(config: GatewayConfig, request: Request) -> dict:
         "auth_mode": config.auth.mode,
         "base_path": config.control_ui.base_path,
         "config_path": config.config_path or "",
+        "locale": _resolve_locale(config, request),
         "features": {
             "diagnostics": config.diagnostics_enabled,
         },

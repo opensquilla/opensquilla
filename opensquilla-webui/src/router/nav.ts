@@ -1,6 +1,8 @@
 import { getPlatform } from '@/platform'
 import type { PlatformId } from '@/platform'
+import type { RouteRecordRaw } from 'vue-router'
 import type { IconName } from '@/utils/icons'
+import i18n from '@/i18n'
 import { desktopRoutes } from './desktopRoutes'
 import { CONSOLE_GROUP_ORDER, type NavGroup } from './meta'
 import { sharedRoutes } from './sharedRoutes'
@@ -39,6 +41,20 @@ function routePlatforms(platforms: unknown): PlatformId[] {
   return platforms.filter((item): item is PlatformId => item === 'web' || item === 'desktop')
 }
 
+// Localize a nav row title from its route name token (e.g. `nav.sessions`),
+// falling back to the English meta.title literal when no key exists. Called
+// inside the useNavigation() computeds, so reading the reactive i18n locale here
+// makes the rail/drawer/palette re-render on a language switch.
+function navTitle(route: RouteRecordRaw): string {
+  const name = typeof route.name === 'string' ? route.name : ''
+  if (name) {
+    const key = `nav.${name}`
+    const translated = i18n.global.t(key)
+    if (translated !== key) return translated
+  }
+  return String(route.meta?.title || route.name || route.path)
+}
+
 export function getNavigationItems(slot: NavigationSlot): NavigationItem[] {
   const platform = getPlatform()
   return navRoutes
@@ -47,7 +63,7 @@ export function getNavigationItems(slot: NavigationSlot): NavigationItem[] {
     .sort((a, b) => Number(a.meta?.navOrder || 0) - Number(b.meta?.navOrder || 0))
     .map((route) => ({
       path: route.path,
-      title: String(route.meta?.title || route.name || route.path),
+      title: navTitle(route),
       icon: (route.meta?.icon || 'home') as IconName,
     }))
 }

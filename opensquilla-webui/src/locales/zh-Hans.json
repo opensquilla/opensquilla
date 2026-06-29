@@ -1,0 +1,41 @@
+{
+  "nav": {
+    "chat": "对话",
+    "sessions": "会话",
+    "approvals": "审批",
+    "agents": "智能体",
+    "channels": "频道",
+    "cron": "定时任务",
+    "skills": "技能",
+    "overview": "概览",
+    "usage": "用量",
+    "logs": "日志",
+    "settings": "设置"
+  },
+  "chrome": {
+    "settings": "设置",
+    "theme": "主题",
+    "language": "语言",
+    "themeMode": {
+      "light": "浅色",
+      "dark": "深色",
+      "system": "跟随系统"
+    }
+  },
+  "settings": {
+    "appearance": {
+      "title": "外观",
+      "desc": "此浏览器的主题与语言。更改即时生效，无需保存。",
+      "themeLabel": "主题",
+      "themeDesc": "跟随系统，或强制使用浅色或深色。侧边栏的切换按钮是此设置的快捷方式。",
+      "languageLabel": "语言",
+      "languageDesc": "界面的显示语言。即时应用于此浏览器。"
+    }
+  },
+  "errorBoundary": {
+    "title": "出错了",
+    "defaultMessage": "发生意外错误。",
+    "reload": "重新加载页面",
+    "dismiss": "关闭"
+  }
+}

@@ -159,7 +159,7 @@
         @click="openSettings"
       >
         <Icon name="settings" :size="16" />
-        <span class="sidebar-fn-label">Settings</span>
+        <span class="sidebar-fn-label">{{ t('chrome.settings') }}</span>
       </button>
     </div>
   </nav>
@@ -271,19 +271,20 @@
           @click="openConnectionSettings"
         >{{ rpcStore.state }}</button>
         <span v-else class="conn-pill" :class="rpcStore.state">{{ rpcStore.state }}</span>
+        <LanguageSwitcher />
         <div class="theme-menu-wrap">
           <button
             ref="themeButtonRef"
             class="btn btn--icon btn--ghost"
-            title="Theme"
-            aria-label="Theme"
+            :title="t('chrome.theme')"
+            :aria-label="t('chrome.theme')"
             aria-haspopup="menu"
             :aria-expanded="themeMenuOpen"
             @click.stop="themeMenuOpen = !themeMenuOpen"
           >
             <Icon :name="themeIconName" :size="16" />
           </button>
-          <div v-if="themeMenuOpen" class="theme-menu" role="menu" aria-label="Theme">
+          <div v-if="themeMenuOpen" class="theme-menu" role="menu" :aria-label="t('chrome.theme')">
             <button
               v-for="opt in themeOptions"
               :key="opt.mode"
@@ -294,7 +295,7 @@
               @click="pickTheme(opt.mode)"
             >
               <Icon :name="opt.icon" :size="15" />
-              <span>{{ opt.label }}</span>
+              <span>{{ t('chrome.themeMode.' + opt.mode) }}</span>
               <Icon v-if="appStore.theme === opt.mode" class="theme-menu__check" name="check" :size="14" />
             </button>
           </div>
@@ -373,6 +374,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
+import { routeTitle } from './router'
 import { getPlatform } from '@/platform'
 import { useDialogA11y } from '@/composables/useDialogA11y'
 import { useAppStore, type ThemeMode, type PendingApproval } from './stores/app'
@@ -391,6 +394,7 @@ import ConfirmModal from './components/ConfirmModal.vue'
 import SidebarConversations from './components/SidebarConversations.vue'
 import SidebarSetupBanner from './components/SidebarSetupBanner.vue'
 import CommandPalette from './components/CommandPalette.vue'
+import LanguageSwitcher from './components/LanguageSwitcher.vue'
 import { useDocumentEvent } from './composables/useDocumentEvent'
 import { useAgentOptions } from './composables/useAgentOptions'
 import { useToasts } from './composables/useToasts'
@@ -404,8 +408,15 @@ import { bindingMatches, formatBinding } from './utils/keychord'
 const appStore = useAppStore()
 const rpcStore = useRpcStore()
 const shortcutsStore = useShortcutsStore()
+const { t } = useI18n()
 const $route = useRoute()
 const router = useRouter()
+
+// afterEach only fires on navigation, so a same-route language switch needs an
+// explicit re-localize of the tab title.
+watch(() => appStore.locale, () => {
+  document.title = `${routeTitle($route)} — OpenSquilla`
+})
 const { allSessions, sessionListError, isLoading, loadSessions } = useSessions()
 const { consoleSections, bottomRoutes, workNav } = useNavigation()
 const { pushToast } = useToasts()

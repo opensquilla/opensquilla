@@ -1,0 +1,41 @@
+{
+  "nav": {
+    "chat": "Chat",
+    "sessions": "Sessions",
+    "approvals": "Approvals",
+    "agents": "Agents",
+    "channels": "Channels",
+    "cron": "Cron",
+    "skills": "Skills",
+    "overview": "Overview",
+    "usage": "Usage",
+    "logs": "Logs",
+    "settings": "Settings"
+  },
+  "chrome": {
+    "settings": "Settings",
+    "theme": "Theme",
+    "language": "Language",
+    "themeMode": {
+      "light": "Light",
+      "dark": "Dark",
+      "system": "System"
+    }
+  },
+  "settings": {
+    "appearance": {
+      "title": "Appearance",
+      "desc": "Theme and language for this browser. Changes apply instantly — no save needed.",
+      "themeLabel": "Theme",
+      "themeDesc": "Follow your system, or force light or dark. The sidebar toggle is a shortcut to this same setting.",
+      "languageLabel": "Language",
+      "languageDesc": "Display language for the interface. Applies instantly to this browser."
+    }
+  },
+  "errorBoundary": {
+    "title": "Something went wrong",
+    "defaultMessage": "An unexpected error occurred.",
+    "reload": "Reload page",
+    "dismiss": "Dismiss"
+  }
+}

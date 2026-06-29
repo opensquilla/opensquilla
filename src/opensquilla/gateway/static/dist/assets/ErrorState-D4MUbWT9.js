@@ -1,0 +1,2 @@
+import{S as e,T as t,V as n,k as r,n as i,ut as a,w as o}from"./Icon-CRzPmY6o.js";var s={class:`error-state`,role:`alert`},c={class:`error-state__message`},l=i(r({__name:`ErrorState`,props:{message:{},onRetry:{type:Function}},setup(r){return(i,l)=>(n(),t(`div`,s,[e(`p`,c,a(r.message),1),r.onRetry?(n(),t(`button`,{key:0,type:`button`,class:`error-state__retry btn btn--primary`,onClick:l[0]||=(...e)=>r.onRetry&&r.onRetry(...e)},` Retry `)):o(``,!0)]))}}),[[`__scopeId`,`data-v-ef5d1eef`]]);export{l as t};
+//# sourceMappingURL=ErrorState-D4MUbWT9.js.map

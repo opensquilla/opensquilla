@@ -285,6 +285,26 @@ class TestWriteToolDenyEnforcement:
         assert "edit_file" in names
 
 
+class TestPackagedCodeTaskResolution:
+    """Packaged desktop gateways are the CLI executable, not a Python binary."""
+
+    def test_uses_current_executable_when_it_runs_codetask(self, monkeypatch, tmp_path):
+        from opensquilla.engine.steps import coding_mode as cm
+
+        cm._reset_resolution_cache()
+        exe_name = "opensquilla-gateway.exe" if sys.platform == "win32" else "opensquilla-gateway"
+        exe = tmp_path / exe_name
+        exe.write_text("")
+        exe.chmod(0o755)
+        monkeypatch.setattr(cm.sys, "executable", str(exe))
+        monkeypatch.setattr(cm.shutil, "which", lambda name: None)
+        monkeypatch.setattr(cm, "_runs_code_task", lambda argv: argv == [str(exe)])
+
+        assert cm.resolve_code_task_command() == f"{cm._quote(str(exe))} code-task"
+
+        cm._reset_resolution_cache()
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="code-task Windows support is WIP")
 class TestCodeTaskResolution:
     """resolve_code_task_command picks a PATH-independent, runnable invocation."""
@@ -333,15 +353,15 @@ class TestCodeTaskResolution:
     def test_failure_is_not_cached_retries(self, monkeypatch, tmp_path):
         from opensquilla.engine.steps import coding_mode as cm
         cm._reset_resolution_cache()
-        monkeypatch.setattr(cm.sys, "executable", str(tmp_path / "python"))
+        py = str(tmp_path / "python")
+        monkeypatch.setattr(cm.sys, "executable", py)
         monkeypatch.setattr(cm.shutil, "which", lambda name: None)
-        calls = {"n": 0}
+        available = {"ok": False}
         def flaky(argv):
-            calls["n"] += 1
-            return calls["n"] > 1  # first probe fails, later succeed
+            return available["ok"] and argv[:2] == [py, "-P"]
         monkeypatch.setattr(cm, "_runs_code_task", flaky)
         assert cm.resolve_code_task_command() is None      # transient failure, NOT cached
-        monkeypatch.setattr(cm, "_runs_code_task", lambda argv: True)
+        available["ok"] = True
         assert cm.resolve_code_task_command() is not None  # retried, resolves
         cm._reset_resolution_cache()
 

@@ -9,10 +9,10 @@ injected on every turn while coding mode is on, and not at all while it is off.
 
 The directive does NOT tell the agent to run a BARE ``opensquilla``: the gateway
 shell tools inherit the gateway process PATH, which frequently does NOT contain
-the CLI's bin (the gateway is commonly started via an absolute interpreter
-path). A bare command then fails to resolve, and the agent tends to
-"self-install" and degrade to hand-editing. So the directive injects a
-PATH-independent invocation resolved from the running interpreter (see
+the CLI's bin (the gateway is commonly started via an absolute interpreter path
+or a packaged desktop binary). A bare command then fails to resolve, and the
+agent tends to "self-install" and degrade to hand-editing. So the directive
+injects a PATH-independent invocation resolved from the running process (see
 ``resolve_code_task_command``), and falls back to a fail-loud directive when
 code-task cannot be run at all.
 """
@@ -64,7 +64,8 @@ def resolve_code_task_command() -> str | None:
     """Resolve a PATH-independent, runnable ``code-task`` command prefix.
 
     Returns a shell-ready prefix ending at ``code-task`` (the caller appends
-    ``solve ...``), e.g. ``/opt/env/bin/opensquilla code-task`` or
+    ``solve ...``), e.g. ``/opt/env/bin/opensquilla code-task``,
+    ``/Applications/OpenSquilla.app/.../opensquilla-gateway code-task``, or
     ``/opt/env/bin/python -P -m opensquilla.cli.main code-task``; or ``None`` if
     code-task cannot be run here.
 
@@ -98,12 +99,17 @@ def _resolve_code_task_command_uncached() -> str | None:
         cand = base / name
         if cand.is_file() and os.access(cand, os.X_OK) and _runs_code_task([str(cand)]):
             return f"{_quote(str(cand))} code-task"
-    # 2) Module invocation via the EXACT interpreter the gateway runs on. ``-P``
+    # 2) Packaged desktop gateways are PyInstaller CLI binaries
+    #    (opensquilla-gateway[.exe]), so sys.executable itself may own
+    #    ``code-task`` even though it is not named ``opensquilla``.
+    if _runs_code_task([sys.executable]):
+        return f"{_quote(sys.executable)} code-task"
+    # 3) Module invocation via the EXACT interpreter the gateway runs on. ``-P``
     #    (Python 3.11+) keeps a cwd ``opensquilla`` package from shadowing the
     #    import once the agent cd's into a target repo.
     if _runs_code_task([sys.executable, "-P", "-m", "opensquilla.cli.main"]):
         return f"{_quote(sys.executable)} -P -m opensquilla.cli.main code-task"
-    # 3) Whatever ``opensquilla`` is on PATH (shutil.which honors PATHEXT on
+    # 4) Whatever ``opensquilla`` is on PATH (shutil.which honors PATHEXT on
     #    Windows) — but only if it actually runs.
     on_path = shutil.which("opensquilla")
     if on_path and _runs_code_task([on_path]):

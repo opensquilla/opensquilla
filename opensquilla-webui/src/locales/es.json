@@ -178,28 +178,29 @@
     "router": {
       "title": "Niveles del enrutador",
       "mode": "Modo",
-      "modeDisabled": "Desactivado",
-      "defaultTextModel": "Modelo de texto predeterminado",
+      "modeRecommended": "Seguir niveles del proveedor actual",
+      "modeDisabled": "Modelo único directo",
+      "defaultTextModel": "Nivel de texto predeterminado",
       "panelLabel": "Panel del enrutador",
-      "panelDesc": "Elige la visualización de la franja de chat; el enrutamiento sigue los niveles guardados.",
+      "panelDesc": "Los modelos de la tabla de niveles se envían por la entrada de solicitud actual; los niveles agregados de OpenRouter usan OpenRouter para llegar a distintos modelos ascendentes.",
       "colTier": "Nivel",
-      "colProvider": "Proveedor",
+      "colProvider": "Entrada de solicitud",
       "colModel": "Modelo",
       "colThinking": "Razonamiento",
       "colImage": "Imagen",
-      "tierProviderAria": "Proveedor de {tier}",
+      "tierProviderAria": "Entrada de solicitud de {tier}",
       "tierModelAria": "Modelo de {tier}",
       "tierThinkingAria": "Nivel de razonamiento de {tier}",
       "tierImageAria": "{tier} admite imagen",
       "providerFirst": "Elige primero un proveedor para previsualizar y guardar los niveles de SquillaRouter.",
       "save": "Guardar enrutador",
       "chooseProviderFirst": "elige primero un proveedor",
-      "summaryDisabled": "desactivado",
+      "summaryDisabled": "modelo único directo",
       "visualMode": {
         "real_candidates": "Candidatos de enrutamiento reales",
         "legacy_grid": "Panel visual de tres niveles"
       },
-      "modeOpenrouterMix": "Mezcla de modelos OpenRouter"
+      "modeOpenrouterMix": "Niveles de modelos agregados de OpenRouter"
     },
     "channels": {
       "title": "Canales",

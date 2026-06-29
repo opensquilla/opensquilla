@@ -49,4 +49,32 @@ describe('useSetupRouterForm — openrouter-mix round-trip', () => {
     expect(makePanel(f, false).value.canUseOpenrouterMix).toBe(false)
     expect(makePanel(f, true).value.canUseOpenrouterMix).toBe(true)
   })
+
+  it('keeps tier provider values in the save payload even when the panel renders them read-only', () => {
+    const f = useSetupRouterForm()
+    f.initFromConfig({
+      enabled: true,
+      tier_profile: null,
+      tiers: {
+        c0: {
+          provider: 'openrouter',
+          model: 'deepseek/deepseek-v4-flash',
+          thinking_level: 'high',
+          supports_image: false,
+        },
+      },
+    }, {}, 'openrouter')
+
+    expect(f.payload()).toMatchObject({
+      mode: 'openrouter-mix',
+      tiers: {
+        c0: {
+          provider: 'openrouter',
+          model: 'deepseek/deepseek-v4-flash',
+          thinkingLevel: 'high',
+          supportsImage: false,
+        },
+      },
+    })
+  })
 })

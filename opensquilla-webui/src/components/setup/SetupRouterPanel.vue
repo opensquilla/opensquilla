@@ -49,7 +49,7 @@ const emit = defineEmits<{
       <div class="control-row__label-block"><span class="control-row__label">{{ t('setup.router.mode') }}</span></div>
       <div class="control-row__control">
         <select class="control-input" :value="panel.routerMode" name="setup_router_mode" :disabled="!panel.hasSavedProvider" @change="emit('updateRouterMode', ($event.target as HTMLSelectElement).value)">
-          <option value="recommended">SquillaRouter</option>
+          <option value="recommended">{{ t('setup.router.modeRecommended') }}</option>
           <option v-if="panel.canUseOpenrouterMix || panel.routerMode === 'openrouter-mix'" value="openrouter-mix">{{ t('setup.router.modeOpenrouterMix') }}</option>
           <option value="disabled">{{ t('setup.router.modeDisabled') }}</option>
         </select>
@@ -80,7 +80,7 @@ const emit = defineEmits<{
       </div>
       <div v-for="tier in panel.tierRows" :key="tier.name" class="setup-tier-table__row" role="row">
         <span><code>{{ tier.name }}</code></span>
-        <input :value="tier.provider" :aria-label="t('setup.router.tierProviderAria', { tier: tier.name })" :placeholder="t('setup.router.tierProviderAria', { tier: tier.name })" @input="emit('updateTierField', tier.name, 'provider', ($event.target as HTMLInputElement).value)">
+        <span class="setup-tier-table__readonly" :aria-label="t('setup.router.tierProviderAria', { tier: tier.name })" :title="t('setup.router.tierProviderAria', { tier: tier.name })">{{ tier.provider || '-' }}</span>
         <input :value="tier.model" :aria-label="t('setup.router.tierModelAria', { tier: tier.name })" :placeholder="t('setup.router.tierModelAria', { tier: tier.name })" @input="emit('updateTierField', tier.name, 'model', ($event.target as HTMLInputElement).value)">
         <select :value="tier.thinkingLevel" :aria-label="t('setup.router.tierThinkingAria', { tier: tier.name })" @change="emit('updateTierField', tier.name, 'thinkingLevel', ($event.target as HTMLSelectElement).value)">
           <option v-for="v in ['', 'off', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh']" :key="v" :value="v">{{ v || '-' }}</option>

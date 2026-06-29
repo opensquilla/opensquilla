@@ -178,28 +178,29 @@
     "router": {
       "title": "ルーターのティア",
       "mode": "モード",
-      "modeDisabled": "無効",
-      "defaultTextModel": "既定のテキストモデル",
+      "modeRecommended": "現在のプロバイダー階層に従う",
+      "modeDisabled": "単一モデルに直接接続",
+      "defaultTextModel": "既定のテキストティア",
       "panelLabel": "ルーターパネル",
-      "panelDesc": "チャットストリップの表示を選択します。ルーティングは引き続き保存済みのティアに従います。",
+      "panelDesc": "ティア表のモデルは現在のリクエスト入口から送信されます。OpenRouter 集約ティアは OpenRouter 経由で別々の上流モデルにアクセスします。",
       "colTier": "ティア",
-      "colProvider": "プロバイダー",
+      "colProvider": "リクエスト入口",
       "colModel": "モデル",
       "colThinking": "思考",
       "colImage": "画像",
-      "tierProviderAria": "{tier} のプロバイダー",
+      "tierProviderAria": "{tier} のリクエスト入口",
       "tierModelAria": "{tier} のモデル",
       "tierThinkingAria": "{tier} の思考レベル",
       "tierImageAria": "{tier} の画像対応",
       "providerFirst": "SquillaRouter のティアをプレビューして保存するには、まずプロバイダーを選択してください。",
       "save": "ルーターを保存",
       "chooseProviderFirst": "まずプロバイダーを選択してください",
-      "summaryDisabled": "無効",
+      "summaryDisabled": "単一モデルに直接接続",
       "visualMode": {
         "real_candidates": "実際のルーティング候補",
         "legacy_grid": "3 ティアのビジュアルパネル"
       },
-      "modeOpenrouterMix": "OpenRouter モデルミックス"
+      "modeOpenrouterMix": "OpenRouter 集約モデルティア"
     },
     "channels": {
       "title": "チャンネル",

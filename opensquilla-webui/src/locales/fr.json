@@ -178,28 +178,29 @@
     "router": {
       "title": "Niveaux du routeur",
       "mode": "Mode",
-      "modeDisabled": "Désactivé",
-      "defaultTextModel": "Modèle de texte par défaut",
+      "modeRecommended": "Suivre les niveaux du fournisseur actuel",
+      "modeDisabled": "Modèle unique direct",
+      "defaultTextModel": "Niveau texte par défaut",
       "panelLabel": "Panneau du routeur",
-      "panelDesc": "Choisissez la visualisation de la barre de chat ; le routage suit toujours les niveaux enregistrés.",
+      "panelDesc": "Les modèles des niveaux passent par l'entrée de requête actuelle ; les niveaux agrégés OpenRouter utilisent OpenRouter pour joindre différents modèles amont.",
       "colTier": "Niveau",
-      "colProvider": "Fournisseur",
+      "colProvider": "Entrée de requête",
       "colModel": "Modèle",
       "colThinking": "Réflexion",
       "colImage": "Image",
-      "tierProviderAria": "Fournisseur {tier}",
+      "tierProviderAria": "Entrée de requête {tier}",
       "tierModelAria": "Modèle {tier}",
       "tierThinkingAria": "Niveau de réflexion {tier}",
       "tierImageAria": "{tier} prend en charge l'image",
       "providerFirst": "Choisissez d'abord un fournisseur pour prévisualiser et enregistrer les niveaux SquillaRouter.",
       "save": "Enregistrer le routeur",
       "chooseProviderFirst": "choisissez d'abord un fournisseur",
-      "summaryDisabled": "désactivé",
+      "summaryDisabled": "modèle unique direct",
       "visualMode": {
         "real_candidates": "Candidats de routage réels",
         "legacy_grid": "Panneau visuel à trois niveaux"
       },
-      "modeOpenrouterMix": "Mélange de modèles OpenRouter"
+      "modeOpenrouterMix": "Niveaux de modèles agrégés OpenRouter"
     },
     "channels": {
       "title": "Canaux",

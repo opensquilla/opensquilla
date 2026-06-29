@@ -178,28 +178,29 @@
     "router": {
       "title": "Router-Stufen",
       "mode": "Modus",
-      "modeDisabled": "Deaktiviert",
-      "defaultTextModel": "Standard-Textmodell",
+      "modeRecommended": "Aktuelle Anbieter-Stufen verwenden",
+      "modeDisabled": "Direktes Einzelmodell",
+      "defaultTextModel": "Standard-Textstufe",
       "panelLabel": "Router-Panel",
-      "panelDesc": "Wählen Sie die Visualisierung der Chat-Leiste; das Routing folgt weiterhin den gespeicherten Stufen.",
+      "panelDesc": "Die Modelle in der Stufentabelle werden über den aktuellen Anfrageeingang gesendet; aggregierte OpenRouter-Stufen erreichen unterschiedliche Upstream-Modelle über OpenRouter.",
       "colTier": "Stufe",
-      "colProvider": "Anbieter",
+      "colProvider": "Anfrageeingang",
       "colModel": "Modell",
       "colThinking": "Denken",
       "colImage": "Bild",
-      "tierProviderAria": "{tier}-Anbieter",
+      "tierProviderAria": "{tier}-Anfrageeingang",
       "tierModelAria": "{tier}-Modell",
       "tierThinkingAria": "{tier}-Denkstufe",
       "tierImageAria": "{tier} unterstützt Bilder",
       "providerFirst": "Wählen Sie zuerst einen Anbieter aus, um SquillaRouter-Stufen anzuzeigen und zu speichern.",
       "save": "Router speichern",
       "chooseProviderFirst": "zuerst einen Anbieter auswählen",
-      "summaryDisabled": "deaktiviert",
+      "summaryDisabled": "direktes Einzelmodell",
       "visualMode": {
         "real_candidates": "Echte Routing-Kandidaten",
         "legacy_grid": "Dreistufiges visuelles Panel"
       },
-      "modeOpenrouterMix": "OpenRouter-Modellmix"
+      "modeOpenrouterMix": "Aggregierte OpenRouter-Modellstufen"
     },
     "channels": {
       "title": "Kanäle",

@@ -340,7 +340,9 @@ const imageEnvCommand = computed(() => envRecoveryCommand('image_generation'))
 
 const routerSummary = computed(() => {
   if (!hasSavedProvider.value) return t('setup.router.chooseProviderFirst')
-  return routerForm.mode.value === 'disabled' ? t('setup.router.summaryDisabled') : 'SquillaRouter'
+  if (routerForm.mode.value === 'disabled') return t('setup.router.summaryDisabled')
+  if (routerForm.mode.value === 'openrouter-mix') return t('setup.router.modeOpenrouterMix')
+  return t('setup.router.modeRecommended')
 })
 
 const behaviorStatusText = computed(() => {

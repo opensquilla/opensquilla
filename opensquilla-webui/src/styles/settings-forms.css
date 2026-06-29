@@ -92,6 +92,20 @@
   padding: var(--sp-1) var(--sp-2);
 }
 
+.setup-tier-table__readonly {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
+  padding: var(--sp-1) var(--sp-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .setup-runtime {
   background: var(--bg-elevated);
   border: 1px solid var(--border);

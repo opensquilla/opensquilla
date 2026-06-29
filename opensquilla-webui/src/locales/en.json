@@ -178,28 +178,29 @@
     "router": {
       "title": "Router Tiers",
       "mode": "Mode",
-      "modeDisabled": "Disabled",
-      "defaultTextModel": "Default text model",
+      "modeRecommended": "Follow current provider tiers",
+      "modeDisabled": "Direct single model",
+      "defaultTextModel": "Default text tier",
       "panelLabel": "Router panel",
-      "panelDesc": "Choose the chat strip visualization; routing still follows the saved tiers.",
+      "panelDesc": "Tier models are sent through the current request entry; OpenRouter aggregated tiers use OpenRouter to reach different upstream models.",
       "colTier": "Tier",
-      "colProvider": "Provider",
+      "colProvider": "Request entry",
       "colModel": "Model",
       "colThinking": "Thinking",
       "colImage": "Image",
-      "tierProviderAria": "{tier} provider",
+      "tierProviderAria": "{tier} request entry",
       "tierModelAria": "{tier} model",
       "tierThinkingAria": "{tier} thinking level",
       "tierImageAria": "{tier} supports image",
       "providerFirst": "Choose a provider first to preview and save SquillaRouter tiers.",
       "save": "Save Router",
       "chooseProviderFirst": "choose a provider first",
-      "summaryDisabled": "disabled",
+      "summaryDisabled": "direct single model",
       "visualMode": {
         "real_candidates": "Real routing candidates",
         "legacy_grid": "Three-tier visual panel"
       },
-      "modeOpenrouterMix": "OpenRouter model mix"
+      "modeOpenrouterMix": "OpenRouter aggregated model tiers"
     },
     "channels": {
       "title": "Channels",

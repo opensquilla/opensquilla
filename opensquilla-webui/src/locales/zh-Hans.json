@@ -178,28 +178,29 @@
     "router": {
       "title": "路由分层",
       "mode": "模式",
-      "modeDisabled": "已禁用",
-      "defaultTextModel": "默认文本模型",
+      "modeRecommended": "跟随当前服务商分层",
+      "modeDisabled": "直连单模型",
+      "defaultTextModel": "默认文本分层",
       "panelLabel": "路由面板",
-      "panelDesc": "选择聊天条的可视化方式；路由仍按已保存的分层执行。",
+      "panelDesc": "分层表中的模型会通过当前请求入口发送；OpenRouter 聚合分层会通过 OpenRouter 访问不同上游模型。",
       "colTier": "分层",
-      "colProvider": "服务商",
+      "colProvider": "请求入口",
       "colModel": "模型",
       "colThinking": "思考",
       "colImage": "图像",
-      "tierProviderAria": "{tier} 服务商",
+      "tierProviderAria": "{tier} 请求入口",
       "tierModelAria": "{tier} 模型",
       "tierThinkingAria": "{tier} 思考级别",
       "tierImageAria": "{tier} 支持图像",
       "providerFirst": "请先选择服务商，以预览并保存 SquillaRouter 分层。",
       "save": "保存路由",
       "chooseProviderFirst": "请先选择服务商",
-      "summaryDisabled": "已禁用",
+      "summaryDisabled": "直连单模型",
       "visualMode": {
         "real_candidates": "真实路由候选",
         "legacy_grid": "三层可视化面板"
       },
-      "modeOpenrouterMix": "OpenRouter 模型混合"
+      "modeOpenrouterMix": "OpenRouter 聚合模型分层"
     },
     "channels": {
       "title": "频道",

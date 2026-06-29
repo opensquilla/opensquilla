@@ -11,6 +11,7 @@ import {
   shouldTriggerMenu,
   spliceOut,
   tokenUnderCaret,
+  wordEndIndex,
   wordStartIndex,
 } from "./composer.mjs";
 import { createDispatcher } from "./ipc.mjs";
@@ -195,6 +196,10 @@ test("line-edit index helpers compute line and word boundaries", () => {
   assert.equal(wordStartIndex("hello world", 11), 6);
   assert.equal(wordStartIndex("hello world  ", 13), 6);
   assert.equal(wordStartIndex("solo", 4), 0);
+  // word end: skip leading whitespace, then the word
+  assert.equal(wordEndIndex("hello world", 0), 5);
+  assert.equal(wordEndIndex("  hello", 0), 7);
+  assert.equal(wordEndIndex("hello world", 5), 11);
   // splice removes the [from,to) range and collapses the caret to the cut start
   assert.deepEqual(spliceOut("hello world", 6, 11), { text: "hello ", cursor: 6 });
   assert.deepEqual(spliceOut("hello world", 11, 6), { text: "hello ", cursor: 6 }); // order-agnostic

@@ -10,6 +10,7 @@ export interface EnsembleMemberValue {
 }
 
 export interface EnsembleMemberRow extends EnsembleMemberValue {
+  canRemove: boolean
   label: string
   role: 'proposer' | 'aggregator'
   index: number
@@ -29,6 +30,7 @@ interface EnsembleProfileConfig {
 export interface EnsembleConfig {
   enabled?: boolean
   active_profile?: string
+  model_options?: string[]
   profiles?: Record<string, EnsembleProfileConfig>
 }
 
@@ -37,62 +39,39 @@ export interface EnsembleSelectOption {
   label: string
 }
 
-type EnsembleOptionSource = readonly EnsembleSelectOption[] | { value: readonly EnsembleSelectOption[] }
-
-export interface EnsemblePanelContext {
-  providerOptions?: EnsembleOptionSource
-  modelOptions?: EnsembleOptionSource
-}
-
+const DEFAULT_PROVIDER = 'openrouter'
 const DEFAULT_THINKING = 'high'
 
+const DEFAULT_MODEL_VALUES = [
+  'deepseek/deepseek-v4-pro',
+  'z-ai/glm-5.2',
+  'google/gemini-3-flash-preview',
+  'qwen/qwen3.7-plus',
+]
+
 const DEFAULT_PROPOSERS: EnsembleMemberValue[] = [
-  { provider: 'openrouter', model: 'deepseek/deepseek-v4-pro', thinking: DEFAULT_THINKING },
-  { provider: 'openrouter', model: 'z-ai/glm-5.2', thinking: DEFAULT_THINKING },
-  { provider: 'openrouter', model: 'google/gemini-3-flash-preview', thinking: DEFAULT_THINKING },
-  { provider: 'openrouter', model: 'qwen/qwen3.7-plus', thinking: DEFAULT_THINKING },
+  { provider: DEFAULT_PROVIDER, model: DEFAULT_MODEL_VALUES[0], thinking: DEFAULT_THINKING },
+  { provider: DEFAULT_PROVIDER, model: DEFAULT_MODEL_VALUES[1], thinking: DEFAULT_THINKING },
+  { provider: DEFAULT_PROVIDER, model: DEFAULT_MODEL_VALUES[2], thinking: DEFAULT_THINKING },
+  { provider: DEFAULT_PROVIDER, model: DEFAULT_MODEL_VALUES[3], thinking: DEFAULT_THINKING },
 ]
 
 const DEFAULT_AGGREGATOR: EnsembleMemberValue = {
-  provider: 'openrouter',
-  model: 'z-ai/glm-5.2',
+  provider: DEFAULT_PROVIDER,
+  model: DEFAULT_MODEL_VALUES[1],
   thinking: DEFAULT_THINKING,
 }
 
 const DEFAULT_PROVIDER_OPTIONS: EnsembleSelectOption[] = [
-  { value: 'openrouter', label: 'openrouter' },
-]
-
-const DEFAULT_MODEL_OPTIONS: EnsembleSelectOption[] = [
-  ...DEFAULT_PROPOSERS.map(member => ({ value: member.model, label: member.model })),
-  { value: DEFAULT_AGGREGATOR.model, label: DEFAULT_AGGREGATOR.model },
+  { value: DEFAULT_PROVIDER, label: DEFAULT_PROVIDER },
 ]
 
 function cloneMember(member: EnsembleMemberValue): EnsembleMemberValue {
-  return { provider: member.provider, model: member.model, thinking: DEFAULT_THINKING }
+  return { provider: DEFAULT_PROVIDER, model: member.model, thinking: DEFAULT_THINKING }
 }
 
-function normalizeMember(
-  value: EnsembleMemberConfig | undefined,
-  fallback: EnsembleMemberValue,
-): EnsembleMemberValue {
-  return {
-    provider: String(value?.provider || fallback.provider || 'openrouter').trim(),
-    model: String(value?.model || fallback.model || '').trim(),
-    thinking: DEFAULT_THINKING,
-  }
-}
-
-function memberPayload(member: EnsembleMemberValue): Record<string, unknown> {
-  return {
-    provider: member.provider.trim(),
-    model: member.model.trim(),
-    thinking: DEFAULT_THINKING,
-  }
-}
-
-function optionFromValue(value: string): EnsembleSelectOption | null {
-  const normalized = String(value || '').trim()
+function optionFromModel(model: string): EnsembleSelectOption | null {
+  const normalized = String(model || '').trim()
   return normalized ? { value: normalized, label: normalized } : null
 }
 
@@ -108,19 +87,59 @@ function uniqueOptions(options: Array<EnsembleSelectOption | null | undefined>):
   return out
 }
 
-function optionSourceValues(source: EnsembleOptionSource | undefined): readonly EnsembleSelectOption[] {
-  if (!source) return []
-  return 'value' in source ? source.value : source
+function optionsFromConfig(config: EnsembleConfig | undefined): EnsembleSelectOption[] {
+  const configured = Array.isArray(config?.model_options)
+    ? config.model_options.map(model => optionFromModel(model))
+    : []
+  const configuredOptions = uniqueOptions(configured)
+  if (configuredOptions.length) return configuredOptions
+  return DEFAULT_MODEL_VALUES.map(model => ({ value: model, label: model }))
+}
+
+function firstModel(options: readonly EnsembleSelectOption[]): string {
+  return options[0]?.value || DEFAULT_MODEL_VALUES[0]
+}
+
+function normalizeModel(
+  model: string | undefined,
+  fallback: string,
+  options: readonly EnsembleSelectOption[],
+): string {
+  const allowed = new Set(options.map(option => option.value))
+  const candidate = String(model || '').trim()
+  if (candidate && allowed.has(candidate)) return candidate
+  if (fallback && allowed.has(fallback)) return fallback
+  return firstModel(options)
+}
+
+function normalizeMember(
+  value: EnsembleMemberConfig | undefined,
+  fallback: EnsembleMemberValue,
+  options: readonly EnsembleSelectOption[],
+): EnsembleMemberValue {
+  return {
+    provider: DEFAULT_PROVIDER,
+    model: normalizeModel(value?.model, fallback.model, options),
+    thinking: DEFAULT_THINKING,
+  }
+}
+
+function memberPayload(member: EnsembleMemberValue): Record<string, unknown> {
+  return {
+    provider: DEFAULT_PROVIDER,
+    model: member.model.trim(),
+    thinking: DEFAULT_THINKING,
+  }
 }
 
 export function useSetupEnsembleForm() {
   const enabled = ref(false)
   const profileId = ref(G8_ENSEMBLE_PROFILE_ID)
+  const modelOptions = ref<EnsembleSelectOption[]>(optionsFromConfig(undefined))
   const proposers = ref<EnsembleMemberValue[]>(DEFAULT_PROPOSERS.map(cloneMember))
   const aggregator = ref<EnsembleMemberValue>(cloneMember(DEFAULT_AGGREGATOR))
 
   const serialized = computed(() => JSON.stringify({
-    enabled: enabled.value,
     profileId: profileId.value,
     proposers: proposers.value,
     aggregator: aggregator.value,
@@ -134,12 +153,19 @@ export function useSetupEnsembleForm() {
     const profile = profiles[G8_ENSEMBLE_PROFILE_ID]
       || profiles[LEGACY_G8_ENSEMBLE_PROFILE_ID]
       || {}
+    const options = optionsFromConfig(cfg)
+    modelOptions.value = options
     enabled.value = cfg.enabled === true
     profileId.value = G8_ENSEMBLE_PROFILE_ID
-    proposers.value = DEFAULT_PROPOSERS.map((fallback, index) => (
-      normalizeMember(profile.proposers?.[index], fallback)
-    ))
-    aggregator.value = normalizeMember(profile.aggregator, DEFAULT_AGGREGATOR)
+    const savedProposers = Array.isArray(profile.proposers)
+      ? profile.proposers.filter(member => String(member?.model || '').trim())
+      : []
+    proposers.value = (savedProposers.length ? savedProposers : DEFAULT_PROPOSERS)
+      .map((member, index) => normalizeMember(member, DEFAULT_PROPOSERS[index] || DEFAULT_PROPOSERS[0], options))
+    if (!proposers.value.length) {
+      proposers.value = [normalizeMember(undefined, DEFAULT_PROPOSERS[0], options)]
+    }
+    aggregator.value = normalizeMember(profile.aggregator, DEFAULT_AGGREGATOR, options)
     baseline.value = serialized.value
   }
 
@@ -154,23 +180,52 @@ export function useSetupEnsembleForm() {
   ) {
     const row = proposers.value[index]
     if (!row) return
-    row[key] = String(value)
+    if (key === 'provider') {
+      row.provider = DEFAULT_PROVIDER
+      return
+    }
+    if (key === 'thinking') {
+      row.thinking = DEFAULT_THINKING
+      return
+    }
+    row.model = normalizeModel(value, row.model, modelOptions.value)
   }
 
   function updateAggregatorField(key: keyof EnsembleMemberValue, value: string) {
-    aggregator.value[key] = String(value)
+    if (key === 'provider') {
+      aggregator.value.provider = DEFAULT_PROVIDER
+      return
+    }
+    if (key === 'thinking') {
+      aggregator.value.thinking = DEFAULT_THINKING
+      return
+    }
+    aggregator.value.model = normalizeModel(value, aggregator.value.model, modelOptions.value)
+  }
+
+  function addProposer() {
+    proposers.value.push({
+      provider: DEFAULT_PROVIDER,
+      model: firstModel(modelOptions.value),
+      thinking: DEFAULT_THINKING,
+    })
+  }
+
+  function removeProposer(index: number) {
+    if (proposers.value.length <= 1) return
+    if (index < 0 || index >= proposers.value.length) return
+    proposers.value.splice(index, 1)
   }
 
   function resetToDefaults() {
     profileId.value = G8_ENSEMBLE_PROFILE_ID
-    proposers.value = DEFAULT_PROPOSERS.map(cloneMember)
-    aggregator.value = cloneMember(DEFAULT_AGGREGATOR)
+    proposers.value = DEFAULT_PROPOSERS.map(member => normalizeMember(member, member, modelOptions.value))
+    aggregator.value = normalizeMember(DEFAULT_AGGREGATOR, DEFAULT_AGGREGATOR, modelOptions.value)
   }
 
   function payload(): Record<string, unknown> {
     return {
       llm_ensemble: {
-        enabled: enabled.value,
         active_profile: G8_ENSEMBLE_PROFILE_ID,
         profiles: {
           [G8_ENSEMBLE_PROFILE_ID]: {
@@ -182,33 +237,34 @@ export function useSetupEnsembleForm() {
     }
   }
 
-  function createPanel(context: EnsemblePanelContext = {}) {
+  function patches(): Record<string, unknown> {
+    return {
+      'llm_ensemble.active_profile': G8_ENSEMBLE_PROFILE_ID,
+      'llm_ensemble.profiles.default.proposers': proposers.value.map(memberPayload),
+      'llm_ensemble.profiles.default.aggregator': memberPayload(aggregator.value),
+    }
+  }
+
+  function createPanel() {
     return computed(() => ({
-      enabled: enabled.value,
       profileId: profileId.value,
       dirty: isDirty.value,
-      providerOptions: uniqueOptions([
-        ...optionSourceValues(context.providerOptions),
-        ...DEFAULT_PROVIDER_OPTIONS,
-        ...proposers.value.map(member => optionFromValue(member.provider)),
-        optionFromValue(aggregator.value.provider),
-      ]),
-      modelOptions: uniqueOptions([
-        ...optionSourceValues(context.modelOptions),
-        ...DEFAULT_MODEL_OPTIONS,
-        ...proposers.value.map(member => optionFromValue(member.model)),
-        optionFromValue(aggregator.value.model),
-      ]),
+      providerOptions: DEFAULT_PROVIDER_OPTIONS,
+      modelOptions: modelOptions.value,
       proposerRows: proposers.value.map((member, index): EnsembleMemberRow => ({
         ...member,
+        provider: DEFAULT_PROVIDER,
         thinking: DEFAULT_THINKING,
+        canRemove: proposers.value.length > 1,
         role: 'proposer',
         index,
         label: `Proposer ${index + 1}`,
       })),
       aggregatorRow: {
         ...aggregator.value,
+        provider: DEFAULT_PROVIDER,
         thinking: DEFAULT_THINKING,
+        canRemove: false,
         role: 'aggregator' as const,
         index: 0,
         label: 'Aggregator',
@@ -226,8 +282,11 @@ export function useSetupEnsembleForm() {
     setEnabled,
     updateProposerField,
     updateAggregatorField,
+    addProposer,
+    removeProposer,
     resetToDefaults,
     payload,
+    patches,
     createPanel,
   }
 }

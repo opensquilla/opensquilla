@@ -1,9 +1,8 @@
 <script setup lang="ts">
-import ControlSwitch from '@/components/ControlSwitch.vue'
+import Icon from '@/components/Icon.vue'
 import type { EnsembleMemberRow, EnsembleMemberValue, EnsembleSelectOption } from '@/composables/setup/useSetupEnsembleForm'
 
 interface EnsemblePanelContract {
-  enabled: boolean
   profileId: string
   dirty: boolean
   providerOptions: readonly EnsembleSelectOption[]
@@ -17,9 +16,10 @@ defineProps<{
 }>()
 
 const emit = defineEmits<{
-  updateEnabled: [value: boolean]
   updateProposerField: [index: number, key: keyof EnsembleMemberValue, value: string]
   updateAggregatorField: [key: keyof EnsembleMemberValue, value: string]
+  addProposer: []
+  removeProposer: [index: number]
   reset: []
   save: []
 }>()
@@ -32,23 +32,9 @@ const emit = defineEmits<{
       <p class="control-section__desc">{{ panel.profileId }}</p>
     </div>
 
-    <label class="control-row">
-      <div class="control-row__label-block">
-        <span class="control-row__label">Enable ensemble</span>
-        <span class="control-row__desc">Runs the G8 proposers before the aggregator answers.</span>
-      </div>
-      <div class="control-row__control">
-        <ControlSwitch
-          :checked="panel.enabled"
-          aria-label="Enable LLM Ensemble"
-          @change="emit('updateEnabled', $event)"
-        />
-      </div>
-    </label>
-
     <div class="setup-ensemble-table" role="table" aria-label="G8 proposer models">
       <div class="setup-ensemble-table__row is-head" role="row">
-        <span>Role</span><span>Provider</span><span>Model</span>
+        <span>Role</span><span>Provider</span><span>Model</span><span class="setup-ensemble-table__actions-head">Actions</span>
       </div>
       <div
         v-for="row in panel.proposerRows"
@@ -60,6 +46,7 @@ const emit = defineEmits<{
         <select
           :value="row.provider"
           :aria-label="`${row.label} provider`"
+          disabled
           @change="emit('updateProposerField', row.index, 'provider', ($event.target as HTMLSelectElement).value)"
         >
           <option v-for="option in panel.providerOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
@@ -71,6 +58,22 @@ const emit = defineEmits<{
         >
           <option v-for="option in panel.modelOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
         </select>
+        <button
+          type="button"
+          class="btn btn--icon btn--ghost setup-ensemble-table__icon-btn"
+          :disabled="!row.canRemove"
+          :title="row.canRemove ? `Remove ${row.label}` : 'At least one proposer is required'"
+          :aria-label="`Remove ${row.label}`"
+          @click="emit('removeProposer', row.index)"
+        >
+          <Icon name="trash" :size="14" />
+        </button>
+      </div>
+      <div class="setup-ensemble-table__footer">
+        <button type="button" class="btn" @click="emit('addProposer')">
+          <Icon name="plus" :size="14" />
+          Add proposer
+        </button>
       </div>
     </div>
 
@@ -83,6 +86,7 @@ const emit = defineEmits<{
         <select
           :value="panel.aggregatorRow.provider"
           aria-label="Aggregator provider"
+          disabled
           @change="emit('updateAggregatorField', 'provider', ($event.target as HTMLSelectElement).value)"
         >
           <option v-for="option in panel.providerOptions" :key="option.value" :value="option.value">{{ option.label }}</option>

@@ -5,7 +5,7 @@ import { useSetupCapabilitiesForm } from '@/composables/setup/useSetupCapabiliti
 import { useSetupBehaviorForm } from '@/composables/setup/useSetupBehaviorForm'
 import { hasEffectiveProvider, useSetupProviderForm } from '@/composables/setup/useSetupProviderForm'
 import { useSetupRouterForm } from '@/composables/setup/useSetupRouterForm'
-import { useSetupEnsembleForm, type EnsembleConfig, type EnsembleMemberValue, type EnsembleSelectOption } from '@/composables/setup/useSetupEnsembleForm'
+import { useSetupEnsembleForm, type EnsembleConfig, type EnsembleMemberValue } from '@/composables/setup/useSetupEnsembleForm'
 import { useSettingsPromotedForm, DEFAULT_LLM_TIMEOUT_SECONDS } from '@/composables/setup/useSettingsPromotedForm'
 import { useSettingsSection } from '@/composables/setup/useSettingsSection'
 import { SETTINGS_SECTIONS, type SettingsSectionId } from '@/composables/setup/settingsSections'
@@ -192,24 +192,6 @@ interface ConfigData {
   }
 }
 
-function option(value: string | undefined, label?: string): EnsembleSelectOption | null {
-  const normalized = String(value || '').trim()
-  if (!normalized) return null
-  return { value: normalized, label: String(label || normalized).trim() || normalized }
-}
-
-function uniqueSelectOptions(options: Array<EnsembleSelectOption | null | undefined>): EnsembleSelectOption[] {
-  const seen = new Set<string>()
-  const out: EnsembleSelectOption[] = []
-  for (const item of options) {
-    const value = String(item?.value || '').trim()
-    if (!value || seen.has(value)) continue
-    seen.add(value)
-    out.push({ value, label: String(item?.label || value).trim() || value })
-  }
-  return out
-}
-
 export interface SettingsActionItem {
   label: string
   section: SettingsSectionId
@@ -322,31 +304,6 @@ const imageProviders = computed(() => (catalog.value.imageGenerationProviders ||
 const memoryProviders = computed(() => catalog.value.memoryEmbeddingProviders || [])
 const routerProfiles = computed(() => catalog.value.routerProfiles?.profiles || [])
 const currentRouterProfile = computed(() => routerProfiles.value.find(p => p.providerId === currentProvider.value))
-const ensembleProviderOptions = computed(() => uniqueSelectOptions([
-  ...runtimeProviders.value.map(provider => option(provider.providerId, provider.providerId)),
-  option(currentProvider.value),
-]))
-const ensembleModelOptions = computed(() => {
-  const llmModel = option(config.value.llm?.model)
-  const providerDefaultModels = runtimeProviders.value.map(provider => option(provider.defaultModel))
-  const providerFieldChoices = runtimeProviders.value.flatMap(provider => (
-    provider.fields || []
-  ).flatMap(field => (
-    field.name === 'model' && Array.isArray(field.choices)
-      ? field.choices.map(choice => option(String(choice)))
-      : []
-  )))
-  const routerTierModels = routerProfiles.value.flatMap(profile => (
-    Object.values(profile.tiers || {}).map(tier => option(tier.model))
-  ))
-  return uniqueSelectOptions([
-    llmModel,
-    ...providerDefaultModels,
-    ...providerFieldChoices,
-    ...routerTierModels,
-  ])
-})
-
 const providerSpec = computed(() => runtimeProviders.value.find(p => p.providerId === providerForm.selectedProvider.value) || null)
 const providerFields = computed(() => providerSpec.value?.fields || [])
 const providerCoreFields = computed(() => providerFields.value.filter(f => !isProviderAdvancedField(f)))
@@ -506,10 +463,7 @@ const routerPanel = routerForm.createPanel({
   tierLabel,
 })
 
-const ensemblePanel = ensembleForm.createPanel({
-  providerOptions: ensembleProviderOptions,
-  modelOptions: ensembleModelOptions,
-})
+const ensemblePanel = ensembleForm.createPanel()
 
 const channelsPanel = channelsForm.createPanel({
   channelRuntimeRows,
@@ -890,10 +844,6 @@ function updateTierField(
   routerForm.updateTierField(name, key, value)
 }
 
-function setEnsembleEnabled(value: boolean) {
-  ensembleForm.setEnabled(value)
-}
-
 function updateEnsembleProposerField(
   index: number,
   key: keyof EnsembleMemberValue,
@@ -904,6 +854,14 @@ function updateEnsembleProposerField(
 
 function updateEnsembleAggregatorField(key: keyof EnsembleMemberValue, value: string) {
   ensembleForm.updateAggregatorField(key, value)
+}
+
+function addEnsembleProposer() {
+  ensembleForm.addProposer()
+}
+
+function removeEnsembleProposer(index: number) {
+  ensembleForm.removeProposer(index)
 }
 
 function resetEnsembleDefaults() {
@@ -1145,8 +1103,8 @@ async function saveRouter() {
 
 async function saveEnsemble() {
   try {
-    const res = await rpc.call<{ restartRequired?: boolean }>('config.patch', {
-      patch: ensembleForm.payload(),
+    const res = await rpc.call<{ restartRequired?: boolean }>('config.patch.safe', {
+      patches: ensembleForm.patches(),
     })
     pushToast(res?.restartRequired ? 'Ensemble saved. Restart required.' : 'Ensemble saved.')
     await loadData()
@@ -1354,9 +1312,10 @@ async function copyConfigPath() {
     setRouterMode,
     setRouterDefaultTier,
     setRouterVisualMode,
-    setEnsembleEnabled,
     updateEnsembleProposerField,
     updateEnsembleAggregatorField,
+    addEnsembleProposer,
+    removeEnsembleProposer,
     resetEnsembleDefaults,
     selectChannelType,
     updateProviderField,

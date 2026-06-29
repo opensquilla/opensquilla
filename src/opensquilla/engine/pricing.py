@@ -335,6 +335,8 @@ _PRICING_TABLE: list[tuple[str, PriceEntry]] = [
     ("deepseek/deepseek-v4-flash", PriceEntry(0.14, 0.28)),
     ("deepseek/deepseek-v4-pro", PriceEntry(1.74, 3.48)),
     ("deepseek/deepseek-v3.2", PriceEntry(0.26, 0.38)),
+    ("google/gemini-3-flash-preview", PriceEntry(0.50, 3.0)),
+    ("qwen/qwen3.7-plus", PriceEntry(0.40, 1.60)),
     ("z-ai/glm-5.2", PriceEntry(1.40, 4.40)),
     ("z-ai/glm-5.1", PriceEntry(1.40, 4.40)),
     ("z-ai/glm-5", PriceEntry(0.72, 2.30)),

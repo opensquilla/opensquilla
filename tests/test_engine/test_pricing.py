@@ -126,6 +126,27 @@ def test_glm_5_static_price_matches_openrouter_native_provider(
     assert price.output_per_m == pytest.approx(4.40)
 
 
+@pytest.mark.parametrize(
+    ("model", "input_per_m", "output_per_m"),
+    [
+        ("qwen/qwen3.7-plus-20260602", 0.40, 1.60),
+        ("google/gemini-3-flash-preview-20251217", 0.50, 3.0),
+    ],
+)
+def test_g8_ensemble_static_fallback_prices_do_not_use_generic_default(
+    monkeypatch: pytest.MonkeyPatch,
+    model: str,
+    input_per_m: float,
+    output_per_m: float,
+) -> None:
+    monkeypatch.setenv("OPENSQUILLA_OPENROUTER_LIVE_PRICING", "0")
+
+    price = lookup_price(model)
+
+    assert price.input_per_m == pytest.approx(input_per_m)
+    assert price.output_per_m == pytest.approx(output_per_m)
+
+
 def test_claude_opus_4_8_static_price_matches_openrouter_model_catalog(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -138,6 +138,52 @@ class _DoneUsageProvider:
         return []
 
 
+class _DoneBreakdownProvider:
+    provider_name = "fake"
+
+    def chat(
+        self,
+        messages: list[Message],
+        tools: list[Any] | None = None,
+        config: ChatConfig | None = None,
+    ) -> AsyncIterator[Any]:
+        return self._stream()
+
+    async def _stream(self) -> AsyncIterator[Any]:
+        yield ProviderText(text="done")
+        yield ProviderDone(
+            stop_reason="stop",
+            input_tokens=2000,
+            output_tokens=1000,
+            billed_cost=0.01,
+            model="z-ai/glm-5.2",
+            cost_source="mixed",
+            model_usage_breakdown=[
+                {
+                    "role": "proposer",
+                    "provider": "openrouter",
+                    "model": "deepseek/deepseek-v4-pro-20260423",
+                    "input_tokens": 1000,
+                    "output_tokens": 1000,
+                    "billed_cost": 0.0,
+                    "cost_source": "none",
+                },
+                {
+                    "role": "aggregator",
+                    "provider": "openrouter",
+                    "model": "z-ai/glm-5.2",
+                    "input_tokens": 1000,
+                    "output_tokens": 0,
+                    "billed_cost": 0.01,
+                    "cost_source": "provider_billed",
+                },
+            ],
+        )
+
+    async def list_models(self) -> list[Any]:
+        return []
+
+
 class _ArtifactThenProviderErrorProvider:
     provider_name = "fake"
 
@@ -502,6 +548,35 @@ async def test_agent_done_event_uses_current_turn_real_billed_usage_delta() -> N
     assert done.cost_source == "provider_billed"
     assert done.session_totals is not None
     assert done.session_totals.billed_cost == pytest.approx(0.173)
+
+
+@pytest.mark.asyncio
+async def test_agent_enriches_model_usage_breakdown_with_estimated_costs() -> None:
+    tracker = UsageTracker()
+    session_key = "agent:test:webchat:ensemble-costs"
+    agent = Agent(
+        provider=_DoneBreakdownProvider(),
+        config=AgentConfig(model_id="z-ai/glm-5.2"),
+        usage_tracker=tracker,
+        session_key=session_key,
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+    done = next(event for event in events if event.kind == "done")
+
+    assert done.cost_source == "mixed"
+    assert done.cost_usd == pytest.approx(0.01522)
+    assert done.billed_cost == pytest.approx(0.01)
+    deepseek_row = done.model_usage_breakdown[0]
+    assert deepseek_row["model"] == "deepseek/deepseek-v4-pro-20260423"
+    assert deepseek_row["cost_usd"] == pytest.approx(0.00522)
+    assert deepseek_row["estimated_cost_usd"] == pytest.approx(0.00522)
+    assert deepseek_row["billed_cost_usd"] == 0.0
+    assert deepseek_row["cost_source"] == "opensquilla_estimate"
+    aggregator_row = done.model_usage_breakdown[1]
+    assert aggregator_row["cost_usd"] == pytest.approx(0.01)
+    assert aggregator_row["billed_cost_usd"] == pytest.approx(0.01)
+    assert aggregator_row["cost_source"] == "provider_billed"
 
 
 @pytest.mark.asyncio

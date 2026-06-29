@@ -338,6 +338,12 @@ def _ensemble_profile(
 
 DEFAULT_LLM_ENSEMBLE_PROFILE_ID = "default"
 LEGACY_G8_LLM_ENSEMBLE_PROFILE_ID = "g8_four_proposers"
+DEFAULT_LLM_ENSEMBLE_MODEL_OPTIONS = [
+    "deepseek/deepseek-v4-pro",
+    "z-ai/glm-5.2",
+    "google/gemini-3-flash-preview",
+    "qwen/qwen3.7-plus",
+]
 
 
 def _default_llm_ensemble_profiles() -> dict[str, dict[str, Any]]:
@@ -345,14 +351,19 @@ def _default_llm_ensemble_profiles() -> dict[str, dict[str, Any]]:
     return {
         DEFAULT_LLM_ENSEMBLE_PROFILE_ID: _ensemble_profile(
             [
-                _ensemble_ref("deepseek/deepseek-v4-pro", thinking="high"),
-                _ensemble_ref("z-ai/glm-5.2", thinking="high"),
-                _ensemble_ref("google/gemini-3-flash-preview", thinking="high"),
-                _ensemble_ref("qwen/qwen3.7-plus", thinking="high"),
+                _ensemble_ref(DEFAULT_LLM_ENSEMBLE_MODEL_OPTIONS[0], thinking="high"),
+                _ensemble_ref(DEFAULT_LLM_ENSEMBLE_MODEL_OPTIONS[1], thinking="high"),
+                _ensemble_ref(DEFAULT_LLM_ENSEMBLE_MODEL_OPTIONS[2], thinking="high"),
+                _ensemble_ref(DEFAULT_LLM_ENSEMBLE_MODEL_OPTIONS[3], thinking="high"),
             ],
-            _ensemble_ref("z-ai/glm-5.2", thinking="high"),
+            _ensemble_ref(DEFAULT_LLM_ENSEMBLE_MODEL_OPTIONS[1], thinking="high"),
         )
     }
+
+
+def _default_llm_ensemble_model_options() -> list[str]:
+    """Models operators may select for the built-in ensemble Settings UI."""
+    return list(DEFAULT_LLM_ENSEMBLE_MODEL_OPTIONS)
 
 
 class EnsembleModelRef(BaseModel):
@@ -398,10 +409,23 @@ class LlmEnsembleConfig(BaseSettings):
     proposer_tools: bool = False
     min_successful_proposers: int = Field(default=1, ge=1)
     all_failed_policy: Literal["fallback_single", "error"] = "fallback_single"
+    model_options: list[str] = Field(default_factory=_default_llm_ensemble_model_options)
     profiles: dict[str, EnsembleProfile] = Field(default_factory=_default_llm_ensemble_profiles)
 
     @model_validator(mode="after")
     def _merge_default_profiles_and_validate_active(self) -> LlmEnsembleConfig:
+        model_options: list[str] = []
+        seen_options: set[str] = set()
+        for model in self.model_options:
+            normalized = str(model or "").strip()
+            if not normalized or normalized in seen_options:
+                continue
+            seen_options.add(normalized)
+            model_options.append(normalized)
+        if not model_options:
+            raise ValueError("llm_ensemble.model_options must define at least one model")
+        self.model_options = model_options
+
         legacy_profile = self.profiles.get(LEGACY_G8_LLM_ENSEMBLE_PROFILE_ID)
         if self.active_profile == LEGACY_G8_LLM_ENSEMBLE_PROFILE_ID:
             self.active_profile = DEFAULT_LLM_ENSEMBLE_PROFILE_ID

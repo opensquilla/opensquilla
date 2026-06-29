@@ -46,6 +46,7 @@ from opensquilla.engine.tool_result_store import (
 )
 from opensquilla.engine.tool_text_compat import strip_synthetic_tool_call_suffix
 from opensquilla.engine.tool_token_estimate import estimate_tokens as get_approx_tokens
+from opensquilla.engine.usage import model_usage_cost_fields
 from opensquilla.execution_status import (
     mark_execution_status_truncated,
     runtime_execution_status,
@@ -181,6 +182,31 @@ def _usage_float(value: Any) -> float:
         return max(0.0, float(value or 0.0))
     except (TypeError, ValueError):
         return 0.0
+
+
+def _with_model_usage_cost_fields(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        model_id = str(item.get("model") or "")
+        if model_id:
+            item.update(
+                model_usage_cost_fields(
+                    model_id=model_id,
+                    input_tokens=_usage_int(item.get("input_tokens") or item.get("inputTokens")),
+                    output_tokens=_usage_int(
+                        item.get("output_tokens") or item.get("outputTokens")
+                    ),
+                    billed_cost=_usage_float(
+                        item.get("billed_cost")
+                        or item.get("billedCost")
+                        or item.get("billed_cost_usd")
+                        or item.get("billedCostUsd")
+                    ),
+                )
+            )
+        enriched.append(item)
+    return enriched
 
 
 MAX_META_INVOKE_DEPTH = 3
@@ -3959,6 +3985,7 @@ class Agent:
             or done_cache_write_tokens
             or done_billed_cost
         )
+        enriched_model_usage_breakdown = _with_model_usage_cost_fields(turn_model_usage_breakdown)
         if terminal_error is None or has_usage:
             if terminal_error is None:
                 yield self._transition(AgentState.DONE)
@@ -3980,7 +4007,7 @@ class Agent:
                     "\n".join(final_reasoning_parts) if final_reasoning_parts else None
                 ),
                 session_totals=session_totals,
-                model_usage_breakdown=turn_model_usage_breakdown,
+                model_usage_breakdown=enriched_model_usage_breakdown,
                 ensemble_trace=last_ensemble_trace,
             )
         # Reset for next turn

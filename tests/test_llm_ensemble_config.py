@@ -16,6 +16,12 @@ def test_llm_ensemble_defaults_to_disabled_g8_profile() -> None:
     assert ensemble.mode == "b5_fusion"
     assert ensemble.proposer_tools is False
     assert ensemble.min_successful_proposers == 1
+    assert ensemble.model_options == [
+        "deepseek/deepseek-v4-pro",
+        "z-ai/glm-5.2",
+        "google/gemini-3-flash-preview",
+        "qwen/qwen3.7-plus",
+    ]
 
     profile = ensemble.profiles["default"]
     assert [member.model for member in profile.proposers] == [
@@ -88,6 +94,30 @@ def test_llm_ensemble_validates_enabled_profile_has_proposers() -> None:
                 },
             }
         )
+
+
+def test_llm_ensemble_validates_model_options_not_empty() -> None:
+    with pytest.raises(ValueError, match="model_options"):
+        GatewayConfig(llm_ensemble={"model_options": []})
+
+
+def test_llm_ensemble_model_options_are_operator_configurable() -> None:
+    cfg = GatewayConfig(
+        llm_ensemble={
+            "model_options": [" custom/model ", "custom/model", "other/model"],
+            "profiles": {
+                "default": {
+                    "proposers": [{"provider": "openrouter", "model": "custom/model"}],
+                    "aggregator": {"provider": "openrouter", "model": "other/model"},
+                }
+            },
+        }
+    )
+
+    assert cfg.llm_ensemble.model_options == ["custom/model", "other/model"]
+    assert [member.model for member in cfg.llm_ensemble.profiles["default"].proposers] == [
+        "custom/model"
+    ]
 
 
 def test_llm_ensemble_validates_enabled_profile_has_aggregator_model() -> None:

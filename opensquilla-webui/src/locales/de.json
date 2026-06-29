@@ -91,7 +91,8 @@
       "router": "Router konnte nicht gespeichert werden — Modus und Stufen prüfen",
       "search": "Suchanbieter konnte nicht gespeichert werden — Einstellungen prüfen",
       "channel": "Kanal konnte nicht gespeichert werden — Felder prüfen",
-      "channelNotFound": "Dieser Kanal existiert nicht mehr"
+      "channelNotFound": "Dieser Kanal existiert nicht mehr",
+      "image": "Bildgenerierung konnte nicht gespeichert werden – prüfen Sie Modell, Größe und Format"
     }
   },
   "setup": {
@@ -257,7 +258,11 @@
       "statusDisabled": "Die Bildgenerierung ist für Agenten ausgeblendet, bis diese Fähigkeit aktiviert wird.",
       "statusReadyFallback": "Die Bildgenerierung wird in neuen Durchläufen mit demselben Anbieterschlüssel verfügbar sein.",
       "statusReady": "Die Bildgenerierung wird in neuen Durchläufen verfügbar sein, sobald das Gateway den sichtbaren Schlüssel hat.",
-      "statusNeedsKey": "Die Bildgenerierung ist aktiviert, benötigt aber noch einen sichtbaren Anbieterschlüssel, bevor Agenten sie verwenden können."
+      "statusNeedsKey": "Die Bildgenerierung ist aktiviert, benötigt aber noch einen sichtbaren Anbieterschlüssel, bevor Agenten sie verwenden können.",
+      "size": "Bildgröße",
+      "outputFormat": "Ausgabeformat",
+      "fallbacks": "Fallback-Modelle",
+      "fallbacksHint": "Durch Kommas getrennte Anbieter/Modell-IDs, die der Reihe nach versucht werden, wenn das primäre Modell fehlschlägt."
     },
     "audio": {
       "title": "Audio",

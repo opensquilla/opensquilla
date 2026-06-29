@@ -366,15 +366,20 @@ async def _image_generation_configure(params: Any, ctx: RpcContext) -> dict[str,
 
     provider_id = _require(params, "providerId")
     cfg = _active_config(ctx)
-    res = upsert_image_generation_provider(
-        cfg,
-        provider_id=provider_id,
-        primary=params.get("primary", "") if isinstance(params, dict) else "",
-        api_key=params.get("apiKey", "") if isinstance(params, dict) else "",
-        api_key_env=params.get("apiKeyEnv", "") if isinstance(params, dict) else "",
-        base_url=params.get("baseUrl", "") if isinstance(params, dict) else "",
-        enabled=params.get("enabled", True) if isinstance(params, dict) else True,
-    )
+    fallbacks = params.get("fallbacks") if isinstance(params, dict) else None
+    with _validation_error("onboarding.imageGeneration.invalid"):
+        res = upsert_image_generation_provider(
+            cfg,
+            provider_id=provider_id,
+            primary=params.get("primary", "") if isinstance(params, dict) else "",
+            api_key=params.get("apiKey", "") if isinstance(params, dict) else "",
+            api_key_env=params.get("apiKeyEnv", "") if isinstance(params, dict) else "",
+            base_url=params.get("baseUrl", "") if isinstance(params, dict) else "",
+            enabled=params.get("enabled", True) if isinstance(params, dict) else True,
+            size=params.get("size", "") if isinstance(params, dict) else "",
+            output_format=params.get("outputFormat", "") if isinstance(params, dict) else "",
+            fallbacks=list(fallbacks) if isinstance(fallbacks, list) else None,
+        )
     _apply_inplace(ctx, res.config)
     _sync_image_generation(res.config)
     config_path = _persist(ctx, res.config, restart_required=res.restart_required)

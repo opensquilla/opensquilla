@@ -91,7 +91,8 @@
       "router": "Couldn't save the router — check the mode and tiers",
       "search": "Couldn't save the search provider — check the settings",
       "channel": "Couldn't save the channel — check the fields",
-      "channelNotFound": "That channel no longer exists"
+      "channelNotFound": "That channel no longer exists",
+      "image": "Couldn't save image generation — check the model, size, and format"
     }
   },
   "setup": {
@@ -257,7 +258,11 @@
       "statusDisabled": "Image generation is hidden from agents until this capability is enabled.",
       "statusReadyFallback": "Image generation will be available in new turns using the same provider key.",
       "statusReady": "Image generation will be available in new turns once the gateway has the visible key.",
-      "statusNeedsKey": "Image generation is enabled but still needs a visible provider key before agents can use it."
+      "statusNeedsKey": "Image generation is enabled but still needs a visible provider key before agents can use it.",
+      "size": "Image size",
+      "outputFormat": "Output format",
+      "fallbacks": "Fallback models",
+      "fallbacksHint": "Comma-separated provider/model ids tried in order if the primary fails."
     },
     "audio": {
       "title": "Audio",

@@ -51,6 +51,23 @@ def test_channel_error_distinguishes_not_found_from_invalid():
     assert bad.value.code == "onboarding.channel.invalid"
 
 
+def test_image_generation_configure_invalid_primary_yields_stable_code(tmp_path, monkeypatch):
+    # The image RPC was the one onboarding handler not wrapped in _validation_error;
+    # a bad primary model must now surface as a stable code, not a generic dispatch error.
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
+    res = asyncio.run(
+        get_dispatcher().dispatch(
+            "img1",
+            "onboarding.imageGeneration.configure",
+            {"providerId": "openrouter", "primary": "bogus-no-slash"},
+            _admin_ctx(),
+        )
+    )
+    assert res.error is not None
+    assert res.error.code == "onboarding.imageGeneration.invalid"
+    assert res.error.message  # carries the original English detail
+
+
 def test_provider_configure_invalid_provider_yields_stable_code(tmp_path, monkeypatch):
     # Driven synchronously via asyncio.run so the test does not depend on
     # pytest-asyncio being active (CI uses asyncio_mode=auto; this runs anywhere).

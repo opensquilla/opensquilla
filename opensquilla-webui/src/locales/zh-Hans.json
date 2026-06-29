@@ -91,7 +91,8 @@
       "router": "无法保存路由 — 请检查模式与分级",
       "search": "无法保存搜索服务商 — 请检查设置",
       "channel": "无法保存频道 — 请检查字段",
-      "channelNotFound": "该频道已不存在"
+      "channelNotFound": "该频道已不存在",
+      "image": "无法保存图像生成——请检查模型、尺寸和格式"
     }
   },
   "setup": {
@@ -257,7 +258,11 @@
       "statusDisabled": "在启用此能力之前，图像生成对智能体不可见。",
       "statusReadyFallback": "图像生成将在新一轮对话中使用相同的服务商密钥提供。",
       "statusReady": "网关获得可读取的密钥后，图像生成将在新一轮对话中提供。",
-      "statusNeedsKey": "图像生成已启用，但在智能体使用前仍需要一个可读取的服务商密钥。"
+      "statusNeedsKey": "图像生成已启用，但在智能体使用前仍需要一个可读取的服务商密钥。",
+      "size": "图像尺寸",
+      "outputFormat": "输出格式",
+      "fallbacks": "回退模型",
+      "fallbacksHint": "以逗号分隔的“服务商/模型”标识；当主模型失败时按顺序尝试。"
     },
     "audio": {
       "title": "音频",

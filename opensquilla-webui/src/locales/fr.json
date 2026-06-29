@@ -91,7 +91,8 @@
       "router": "Impossible d'enregistrer le routeur — vérifiez le mode et les niveaux",
       "search": "Impossible d'enregistrer le fournisseur de recherche — vérifiez les paramètres",
       "channel": "Impossible d'enregistrer le canal — vérifiez les champs",
-      "channelNotFound": "Ce canal n'existe plus"
+      "channelNotFound": "Ce canal n'existe plus",
+      "image": "Impossible d'enregistrer la génération d'images — vérifiez le modèle, la taille et le format"
     }
   },
   "setup": {
@@ -257,7 +258,11 @@
       "statusDisabled": "La génération d'images est masquée aux agents tant que cette capacité n'est pas activée.",
       "statusReadyFallback": "La génération d'images sera disponible dans les nouveaux tours en utilisant la même clé de fournisseur.",
       "statusReady": "La génération d'images sera disponible dans les nouveaux tours une fois que la passerelle disposera de la clé visible.",
-      "statusNeedsKey": "La génération d'images est activée mais nécessite encore une clé de fournisseur visible avant que les agents puissent l'utiliser."
+      "statusNeedsKey": "La génération d'images est activée mais nécessite encore une clé de fournisseur visible avant que les agents puissent l'utiliser.",
+      "size": "Taille de l'image",
+      "outputFormat": "Format de sortie",
+      "fallbacks": "Modèles de secours",
+      "fallbacksHint": "Identifiants fournisseur/modèle séparés par des virgules, essayés dans l'ordre si le modèle principal échoue."
     },
     "audio": {
       "title": "Audio",

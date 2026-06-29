@@ -40,6 +40,9 @@ interface CapabilitiesPanelContract {
     imageApiKeyEnv: string
     imageBaseUrl: string
     imageEnabled: boolean
+    imageSize: string
+    imageOutputFormat: string
+    imageFallbacks: string
     memoryAutoCapture: boolean
     audioEnabled: boolean
     audioApiKey: string
@@ -326,6 +329,35 @@ function onImageProviderSelect(event: Event) {
           <div class="control-row__label-block"><span class="control-row__label">{{ t('setup.common.baseUrl') }}</span></div>
           <div class="control-row__control">
             <input class="control-input" :value="panel.form.imageBaseUrl" name="setup_image_base_url" :placeholder="panel.options.imageSpec?.defaultBaseUrl || 'https://api.example.com/v1'" @input="emit('updateField', 'image', 'baseUrl', ($event.target as HTMLInputElement).value)">
+          </div>
+        </label>
+        <label class="control-row">
+          <div class="control-row__label-block"><span class="control-row__label">{{ t('setup.image.size') }}</span></div>
+          <div class="control-row__control">
+            <select class="control-input" :value="panel.form.imageSize" name="setup_image_size" @change="emit('updateField', 'image', 'size', ($event.target as HTMLSelectElement).value)">
+              <option value="1024x1024">1024×1024</option>
+              <option value="1536x1024">1536×1024</option>
+              <option value="1024x1536">1024×1536</option>
+            </select>
+          </div>
+        </label>
+        <label class="control-row">
+          <div class="control-row__label-block"><span class="control-row__label">{{ t('setup.image.outputFormat') }}</span></div>
+          <div class="control-row__control">
+            <select class="control-input" :value="panel.form.imageOutputFormat" name="setup_image_output_format" @change="emit('updateField', 'image', 'outputFormat', ($event.target as HTMLSelectElement).value)">
+              <option value="png">PNG</option>
+              <option value="jpeg">JPEG</option>
+              <option value="webp">WebP</option>
+            </select>
+          </div>
+        </label>
+        <label class="control-row control-row--stack">
+          <div class="control-row__label-block">
+            <span class="control-row__label">{{ t('setup.image.fallbacks') }}</span>
+            <span class="control-row__desc">{{ t('setup.image.fallbacksHint') }}</span>
+          </div>
+          <div class="control-row__control">
+            <input class="control-input" :value="panel.form.imageFallbacks" name="setup_image_fallbacks" placeholder="openai/gpt-image-1, openrouter/google/gemini-3.1-flash-image-preview" @input="emit('updateField', 'image', 'fallbacks', ($event.target as HTMLInputElement).value)">
           </div>
         </label>
       </template>

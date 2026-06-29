@@ -13,6 +13,7 @@ const RPC_ERROR_KEYS: Record<string, string> = {
   'onboarding.provider.invalid': 'errors.onboarding.provider',
   'onboarding.router.invalid': 'errors.onboarding.router',
   'onboarding.search.invalid': 'errors.onboarding.search',
+  'onboarding.imageGeneration.invalid': 'errors.onboarding.image',
   'onboarding.channel.invalid': 'errors.onboarding.channel',
   'onboarding.channel.not_found': 'errors.onboarding.channelNotFound',
 }

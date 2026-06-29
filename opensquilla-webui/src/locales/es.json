@@ -91,7 +91,8 @@
       "router": "No se pudo guardar el enrutador; comprueba el modo y los niveles",
       "search": "No se pudo guardar el proveedor de búsqueda; comprueba los ajustes",
       "channel": "No se pudo guardar el canal; comprueba los campos",
-      "channelNotFound": "Ese canal ya no existe"
+      "channelNotFound": "Ese canal ya no existe",
+      "image": "No se pudo guardar la generación de imágenes — comprueba el modelo, el tamaño y el formato"
     }
   },
   "setup": {
@@ -257,7 +258,11 @@
       "statusDisabled": "La generación de imágenes está oculta para los agentes hasta que se active esta capacidad.",
       "statusReadyFallback": "La generación de imágenes estará disponible en nuevos turnos usando la misma clave del proveedor.",
       "statusReady": "La generación de imágenes estará disponible en nuevos turnos una vez que la puerta de enlace tenga la clave visible.",
-      "statusNeedsKey": "La generación de imágenes está activada pero aún necesita una clave de proveedor visible antes de que los agentes puedan usarla."
+      "statusNeedsKey": "La generación de imágenes está activada pero aún necesita una clave de proveedor visible antes de que los agentes puedan usarla.",
+      "size": "Tamaño de imagen",
+      "outputFormat": "Formato de salida",
+      "fallbacks": "Modelos de reserva",
+      "fallbacksHint": "Identificadores proveedor/modelo separados por comas, probados en orden si el principal falla."
     },
     "audio": {
       "title": "Audio",

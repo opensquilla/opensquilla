@@ -404,10 +404,16 @@ def test_bash_path_entry_preserves_posix_path(monkeypatch):
 def test_write_python_shim_falls_back_to_wrapper_when_symlink_fails(tmp_path, monkeypatch):
     from opensquilla.contrib.codetask import verification
 
+    chmod_calls = []
+
     def fail_symlink(self, target):
         raise OSError("symlinks unavailable")
 
+    def record_chmod(self, mode):
+        chmod_calls.append((self.name, mode))
+
     monkeypatch.setattr(verification.Path, "symlink_to", fail_symlink)
+    monkeypatch.setattr(verification.Path, "chmod", record_chmod)
     monkeypatch.setattr(verification.os, "name", "nt")
     shim_dir = tmp_path / "shim"
     shim_dir.mkdir()
@@ -423,7 +429,7 @@ def test_write_python_shim_falls_back_to_wrapper_when_symlink_fails(tmp_path, mo
         "#!/usr/bin/env bash\n"
         'exec /c/repo/.venv/Scripts/python.exe "$@"\n'
     )
-    assert shim.stat().st_mode & 0o111
+    assert chmod_calls == [("python", 0o755)]
 
 
 def test_run_shell_sets_uv_project_for_uv_repo(tmp_path):

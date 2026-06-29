@@ -924,7 +924,12 @@ export function createComposer(deps) {
         return;
       }
       const printable = key.sequence ?? key.name ?? "";
-      if (printable.length > 0 && !key.ctrl && !key.meta && key.name !== "space") {
+      // Only single keystrokes reach here (paste has its own handler below).
+      // Reject control bytes: Tab (\t) and the ESC sequences from unhandled
+      // special keys (home/end/delete/F-keys) would otherwise be inserted
+      // verbatim and end up submitted in the message. Real typed text is printable.
+      const isControlKey = /[\u0000-\u001f\u007f]/u.test(printable);
+      if (printable.length > 0 && !isControlKey && !key.ctrl && !key.meta && key.name !== "space") {
         insertAtCursor(printable);
         historyIndex = inputHistory.length;
         updateMenuFromInput();

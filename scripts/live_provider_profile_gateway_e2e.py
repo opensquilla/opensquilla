@@ -45,6 +45,7 @@ DEFAULT_PROVIDERS = [
     "deepseek",
     "gemini",
     "volcengine",
+    "byteplus",
     "openai",
     "zhipu",
     "moonshot",
@@ -56,6 +57,7 @@ BASE_ENV = {
     "deepseek": "DEEPSEEK_BASE_URL",
     "gemini": "GEMINI_BASE_URL",
     "volcengine": "VOLCENGINE_BASE_URL",
+    "byteplus": "BYTEPLUS_BASE_URL",
     "moonshot": "MOONSHOT_BASE_URL",
     "zhipu": "ZAI_BASE_URL",
 }

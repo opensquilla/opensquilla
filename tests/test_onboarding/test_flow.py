@@ -102,6 +102,7 @@ def test_interactive_provider_choice_offers_only_verified_supported_providers():
         "zhipu",
         "qianfan",
         "volcengine",
+        "byteplus",
     }
 
 

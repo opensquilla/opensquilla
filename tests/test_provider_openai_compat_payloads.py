@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 import httpx
+import pytest
 
 from opensquilla.engine.types import ThinkingLevel
 from opensquilla.provider.openai import OpenAIProvider, _stream_timeout
@@ -1032,6 +1033,99 @@ def test_volcengine_non_thinking_sends_provider_disabled(monkeypatch: Any) -> No
     _collect(provider, cfg)
 
     assert captured["payload"]["thinking"] == {"type": "disabled"}
+
+
+def test_byteplus_seed_thinking_uses_provider_thinking_object(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="seed-2-0-lite-260228",
+        base_url="https://ark.ap-southeast.bytepluses.com/api/v3",
+        provider_kind="byteplus",
+    )
+    cfg = ChatConfig(
+        thinking=True,
+        model_capabilities=ModelCapabilities(
+            supports_reasoning=True,
+            supports_tools=True,
+            reasoning_format="volcengine",
+        ),
+    )
+
+    _collect(provider, cfg)
+
+    assert captured["payload"]["thinking"] == {"type": "enabled"}
+    assert captured["payload"]["stream_options"] == {"include_usage": True}
+
+
+@pytest.mark.parametrize(
+    ("provider_kind", "model", "base_url"),
+    [
+        ("volcengine", "doubao-seed-2-0-lite-260215", "https://ark.cn-beijing.volces.com/api/v3"),
+        ("byteplus", "seed-2-0-lite-260228", "https://ark.ap-southeast.bytepluses.com/api/v3"),
+    ],
+)
+def test_volcengine_and_byteplus_strip_unsupported_tool_schema_keywords(
+    monkeypatch: Any,
+    provider_kind: str,
+    model: str,
+    base_url: str,
+) -> None:
+    unsupported = {
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+        "minContains",
+        "maxContains",
+    }
+
+    def assert_no_unsupported_keys(value: Any) -> None:
+        if isinstance(value, dict):
+            assert not (set(value) & unsupported)
+            for item in value.values():
+                assert_no_unsupported_keys(item)
+        elif isinstance(value, list):
+            for item in value:
+                assert_no_unsupported_keys(item)
+
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model=model,
+        base_url=base_url,
+        provider_kind=provider_kind,
+    )
+    tool = ToolDefinition(
+        name="bounded",
+        description="Exercise provider schema filtering.",
+        input_schema=ToolInputSchema(
+            properties={
+                "name": {"type": "string", "minLength": 1, "maxLength": 10},
+                "items": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 3,
+                    "items": {"type": "string", "minLength": 2},
+                },
+                "nested": {
+                    "type": "object",
+                    "properties": {"value": {"type": "string", "maxLength": 4}},
+                },
+            },
+            required=["name"],
+        ),
+    )
+
+    _collect_events(provider, ChatConfig(), tools=[tool])
+
+    schema = captured["payload"]["tools"][0]["function"]["parameters"]
+    assert_no_unsupported_keys(schema)
+    assert schema["properties"]["name"]["type"] == "string"
+    assert schema["properties"]["items"]["items"]["type"] == "string"
+    assert schema["properties"]["nested"]["properties"]["value"]["type"] == "string"
 
 
 def test_moonshot_kimi_k2_6_omits_temperature_for_fixed_sampling(monkeypatch: Any) -> None:

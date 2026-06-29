@@ -60,11 +60,11 @@ from opensquilla.onboarding.provider_specs import (  # noqa: E402
 EXPECTED_SUPPORTED = {
     "openrouter", "openai", "openai_responses", "anthropic", "ollama", "deepseek",
     "gemini", "dashscope", "moonshot", "zhipu", "qianfan",
-    "volcengine",
+    "volcengine", "byteplus",
 }
 EXPECTED_DISABLED = {
     "azure", "bailian_coding", "minimax", "minimax_openai", "minimax_cn",
-    "minimax_global", "mistral", "groq", "aihubmix", "byteplus", "vllm",
+    "minimax_global", "mistral", "groq", "aihubmix", "vllm",
     "lm_studio", "siliconflow", "ovms",
     "volcengine_coding_plan", "byteplus_coding_plan",
     "openai_codex", "github_copilot",

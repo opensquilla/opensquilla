@@ -176,7 +176,7 @@ def test_deepseek_direct_legacy_openrouter_model_default_is_normalized() -> None
 def test_each_provider_profile_has_four_text_tiers_without_default_image_model() -> None:
     squilla_router_config_cls = _squilla_router_config_cls()
 
-    for profile in ("dashscope", "deepseek", "gemini", "volcengine"):
+    for profile in ("dashscope", "deepseek", "gemini", "volcengine", "byteplus"):
         cfg = squilla_router_config_cls(tier_profile=profile)
         assert {"c0", "c1", "c2", "c3"}.issubset(cfg.tiers)
         assert "image_model" not in cfg.tiers
@@ -250,6 +250,21 @@ def test_volcengine_profile_uses_seed_2_capability_ladder() -> None:
     assert cfg.tiers["c2"]["model"] == "doubao-seed-2-0-pro-260215"
     assert cfg.tiers["c2"]["thinking_level"] == "medium"
     assert cfg.tiers["c3"]["model"] == "doubao-seed-2-0-code-preview-260215"
+    assert cfg.tiers["c3"]["thinking_level"] == "high"
+
+
+def test_byteplus_profile_uses_seed_2_modelark_ladder() -> None:
+    squilla_router_config_cls = _squilla_router_config_cls()
+
+    cfg = squilla_router_config_cls(tier_profile="byteplus")
+
+    assert cfg.tiers["c0"]["model"] == "seed-2-0-lite-260228"
+    assert cfg.tiers["c0"]["thinking_level"] == "off"
+    assert cfg.tiers["c1"]["model"] == "seed-2-0-lite-260228"
+    assert cfg.tiers["c1"]["thinking_level"] == "low"
+    assert cfg.tiers["c2"]["model"] == "seed-2-0-lite-260228"
+    assert cfg.tiers["c2"]["thinking_level"] == "medium"
+    assert cfg.tiers["c3"]["model"] == "seed-2-0-lite-260228"
     assert cfg.tiers["c3"]["thinking_level"] == "high"
 
 

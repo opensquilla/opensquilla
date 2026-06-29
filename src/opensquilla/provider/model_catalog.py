@@ -187,7 +187,7 @@ class ModelCatalog:
                 supports_vision=model_l.startswith(("kimi-k2.5", "kimi-k2.6")),
                 reasoning_format="moonshot" if supports_reasoning else "none",
             )
-        if provider_id in {"volcengine", "byteplus"}:
+        if provider_id == "volcengine":
             supports_reasoning = (
                 "thinking" in model_l
                 or model_l.startswith("doubao-seed-2")
@@ -197,6 +197,21 @@ class ModelCatalog:
                 supports_reasoning=supports_reasoning,
                 supports_tools=True,
                 supports_vision=model_l.startswith(("doubao-seed-1-8", "doubao-seed-2")),
+                reasoning_format="volcengine" if supports_reasoning else "none",
+            )
+        if provider_id == "byteplus":
+            supports_reasoning = (
+                "thinking" in model_l
+                or model_l.startswith("seed-2")
+                or model_l.startswith("seed-1-8")
+                or model_l.startswith(("kimi-k2-", "kimi-k2."))
+            )
+            return ModelCapabilities(
+                supports_reasoning=supports_reasoning,
+                supports_tools=True,
+                supports_vision=model_l.startswith(
+                    ("seed-1-8", "seed-2", "kimi-k2-", "kimi-k2.")
+                ),
                 reasoning_format="volcengine" if supports_reasoning else "none",
             )
         return ModelCapabilities(

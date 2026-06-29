@@ -29,6 +29,7 @@ def test_gateway_e2e_defaults_cover_all_router_profiles() -> None:
         "deepseek",
         "gemini",
         "volcengine",
+        "byteplus",
         "openai",
         "zhipu",
         "moonshot",

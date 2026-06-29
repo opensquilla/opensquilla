@@ -130,7 +130,10 @@ def test_glm_5_static_price_matches_openrouter_native_provider(
     ("model", "input_per_m", "output_per_m"),
     [
         ("qwen/qwen3.7-plus-20260602", 0.40, 1.60),
+        ("qwen/qwen3.7-max", 1.25, 3.75),
         ("google/gemini-3-flash-preview-20251217", 0.50, 3.0),
+        ("mistralai/mistral-large-2512", 0.50, 1.50),
+        ("meta-llama/llama-4-maverick", 0.15, 0.60),
     ],
 )
 def test_g8_ensemble_static_fallback_prices_do_not_use_generic_default(

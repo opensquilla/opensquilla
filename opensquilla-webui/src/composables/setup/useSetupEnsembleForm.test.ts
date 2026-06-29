@@ -28,6 +28,16 @@ describe('useSetupEnsembleForm', () => {
       'z-ai/glm-5.2',
       'google/gemini-3-flash-preview',
       'qwen/qwen3.7-plus',
+      'deepseek/deepseek-v4-flash',
+      'qwen/qwen3.7-max',
+      'anthropic/claude-sonnet-4.6',
+      'anthropic/claude-opus-4.8',
+      'openai/gpt-5.5',
+      'openai/gpt-5.4-mini',
+      'x-ai/grok-4.3',
+      'moonshotai/kimi-k2.6',
+      'mistralai/mistral-large-2512',
+      'meta-llama/llama-4-maverick',
     ])
     expect(form.isDirty.value).toBe(false)
   })

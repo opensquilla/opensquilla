@@ -11,40 +11,80 @@ ci_changed=false
 dependency_changed=false
 release_changed=false
 windows_full_required=false
+frontend_changed=false
+tui_changed=false
+python_changed=false
+platform_sensitive_changed=false
+build_wheel_required=false
+full_required=false
 seen_file=false
 
-mark_runtime_changed() {
+mark_non_docs_changed() {
   docs_only=false
+}
+
+mark_runtime_changed() {
+  mark_non_docs_changed
   runtime_changed=true
-  windows_full_required=true
+  python_changed=true
+  build_wheel_required=true
 }
 
 mark_test_changed() {
-  docs_only=false
+  mark_non_docs_changed
   test_changed=true
-  windows_full_required=true
+  python_changed=true
 }
 
 mark_ci_changed() {
-  docs_only=false
+  mark_non_docs_changed
   ci_changed=true
-  windows_full_required=true
+  python_changed=true
 }
 
 mark_dependency_changed() {
   mark_runtime_changed
   dependency_changed=true
   release_changed=true
+  windows_full_required=true
 }
 
 mark_release_changed() {
-  docs_only=false
+  mark_non_docs_changed
   release_changed=true
   windows_full_required=true
 }
 
 mark_frontend_changed() {
+  mark_non_docs_changed
+  frontend_changed=true
+}
+
+mark_tui_changed() {
+  mark_runtime_changed
+  tui_changed=true
+}
+
+mark_platform_sensitive_changed() {
+  mark_non_docs_changed
+  platform_sensitive_changed=true
+  windows_full_required=true
+}
+
+mark_full_required() {
   docs_only=false
+  runtime_changed=true
+  test_changed=true
+  ci_changed=true
+  dependency_changed=true
+  release_changed=true
+  windows_full_required=true
+  frontend_changed=true
+  tui_changed=true
+  python_changed=true
+  platform_sensitive_changed=true
+  build_wheel_required=true
+  full_required=true
 }
 
 while IFS= read -r path || [[ -n "${path}" ]]; do
@@ -54,16 +94,16 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
 
   case "${path}" in
     .ci/run-all)
-      docs_only=false
-      runtime_changed=true
-      test_changed=true
-      ci_changed=true
-      dependency_changed=true
-      release_changed=true
-      windows_full_required=true
+      mark_full_required
       ;;
     pyproject.toml | uv.lock)
       mark_dependency_changed
+      ;;
+    opensquilla-webui/*)
+      mark_frontend_changed
+      ;;
+    src/opensquilla/cli/tui/opentui/package/*)
+      mark_tui_changed
       ;;
     .github/workflows/wheelhouse-release.yml)
       mark_ci_changed
@@ -79,6 +119,10 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
       mark_test_changed
       mark_release_changed
       ;;
+    tests/test_tools/test_shell_* | tests/test_tools/test_path_* | tests/test_sandbox/* | tests/test_desktop/* | tests/test_compat/*)
+      mark_test_changed
+      mark_platform_sensitive_changed
+      ;;
     tests/*)
       mark_test_changed
       ;;
@@ -89,8 +133,12 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
     install.sh | install.ps1 | start.sh | start.ps1 | README.release.md | RELEASES.md)
       mark_release_changed
       ;;
-    opensquilla-webui/*)
-      mark_frontend_changed
+    desktop/*)
+      mark_platform_sensitive_changed
+      ;;
+    src/opensquilla/sandbox/* | src/opensquilla/tools/boundary.py | src/opensquilla/tools/builtin/code_exec.py | src/opensquilla/tools/builtin/filesystem.py | src/opensquilla/tools/builtin/git.py | src/opensquilla/tools/builtin/shell.py | src/opensquilla/tools/builtin/shell_policy.py | src/opensquilla/tools/path_* | src/opensquilla/tools/policy* | src/opensquilla/tools/write_*)
+      mark_runtime_changed
+      mark_platform_sensitive_changed
       ;;
     src/* | scripts/* | migrations/*)
       mark_runtime_changed
@@ -104,13 +152,7 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
 done < "${changed_files}"
 
 if [[ "${seen_file}" == "false" ]]; then
-  docs_only=false
-  runtime_changed=true
-  test_changed=true
-  ci_changed=true
-  dependency_changed=true
-  release_changed=true
-  windows_full_required=true
+  mark_full_required
 fi
 
 {
@@ -121,4 +163,10 @@ fi
   printf 'dependency_changed=%s\n' "${dependency_changed}"
   printf 'release_changed=%s\n' "${release_changed}"
   printf 'windows_full_required=%s\n' "${windows_full_required}"
+  printf 'frontend_changed=%s\n' "${frontend_changed}"
+  printf 'tui_changed=%s\n' "${tui_changed}"
+  printf 'python_changed=%s\n' "${python_changed}"
+  printf 'platform_sensitive_changed=%s\n' "${platform_sensitive_changed}"
+  printf 'build_wheel_required=%s\n' "${build_wheel_required}"
+  printf 'full_required=%s\n' "${full_required}"
 } >> "${output_file}"

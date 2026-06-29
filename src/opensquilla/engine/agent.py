@@ -184,6 +184,18 @@ def _usage_float(value: Any) -> float:
         return 0.0
 
 
+def _model_usage_row_cost_source(sources: list[str], *, cost_usd: float) -> str:
+    meaningful = [source for source in sources if source not in {"", "none"}]
+    if not meaningful:
+        return "unavailable" if cost_usd <= 0.0 else "opensquilla_estimate"
+    unique = set(meaningful)
+    if unique == {"provider_billed"}:
+        return "provider_billed"
+    if unique <= {"opensquilla_estimate", "unavailable"}:
+        return "opensquilla_estimate" if cost_usd > 0.0 else "unavailable"
+    return "mixed"
+
+
 def _with_model_usage_cost_fields(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     enriched: list[dict[str, Any]] = []
     for row in rows:
@@ -207,6 +219,80 @@ def _with_model_usage_cost_fields(rows: list[dict[str, Any]]) -> list[dict[str, 
             )
         enriched.append(item)
     return enriched
+
+
+def _summarize_model_usage_breakdown(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    aggregated: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    sources_by_key: dict[tuple[str, str, str, str], list[str]] = {}
+    for row in _with_model_usage_cost_fields(rows):
+        model_id = str(row.get("model") or "").strip()
+        if not model_id:
+            continue
+        role = str(row.get("role") or "").strip() or "member"
+        label = str(row.get("label") or role).strip() or role
+        provider = str(row.get("provider") or "").strip()
+        key = (role, label, provider, model_id)
+        if key not in aggregated:
+            aggregated[key] = {
+                "role": role,
+                "profile": row.get("profile"),
+                "label": label,
+                "provider": provider,
+                "model": model_id,
+                "sample_index": row.get("sample_index", 0),
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "reasoning_tokens": 0,
+                "cached_tokens": 0,
+                "cache_write_tokens": 0,
+                "billed_cost": 0.0,
+                "cost_usd": 0.0,
+                "billed_cost_usd": 0.0,
+                "estimated_cost_usd": 0.0,
+                "request_count": 0,
+            }
+            sources_by_key[key] = []
+        target = aggregated[key]
+        for field in (
+            "input_tokens",
+            "output_tokens",
+            "reasoning_tokens",
+            "cached_tokens",
+            "cache_write_tokens",
+        ):
+            target[field] += _usage_int(row.get(field) or row.get(_camel_usage_key(field)))
+        target["billed_cost"] += _usage_float(row.get("billed_cost") or row.get("billedCost"))
+        target["cost_usd"] += _usage_float(row.get("cost_usd") or row.get("costUsd"))
+        target["billed_cost_usd"] += _usage_float(
+            row.get("billed_cost_usd") or row.get("billedCostUsd")
+        )
+        target["estimated_cost_usd"] += _usage_float(
+            row.get("estimated_cost_usd") or row.get("estimatedCostUsd")
+        )
+        target["request_count"] += max(1, _usage_int(row.get("request_count") or 1))
+        sources_by_key[key].append(str(row.get("cost_source") or row.get("costSource") or "none"))
+
+    summarized: list[dict[str, Any]] = []
+    for key, row in aggregated.items():
+        row["cost_usd"] = round(float(row["cost_usd"] or 0.0), 6)
+        row["billed_cost"] = round(float(row["billed_cost"] or 0.0), 6)
+        row["billed_cost_usd"] = round(float(row["billed_cost_usd"] or 0.0), 6)
+        row["estimated_cost_usd"] = round(float(row["estimated_cost_usd"] or 0.0), 6)
+        row["cost_source"] = _model_usage_row_cost_source(
+            sources_by_key.get(key, []),
+            cost_usd=float(row["cost_usd"] or 0.0),
+        )
+        row["costUsd"] = row["cost_usd"]
+        row["billedCostUsd"] = row["billed_cost_usd"]
+        row["estimatedCostUsd"] = row["estimated_cost_usd"]
+        row["costSource"] = row["cost_source"]
+        summarized.append(row)
+    return summarized
+
+
+def _camel_usage_key(field: str) -> str:
+    parts = field.split("_")
+    return parts[0] + "".join(part.capitalize() for part in parts[1:])
 
 
 MAX_META_INVOKE_DEPTH = 3
@@ -1982,6 +2068,7 @@ class Agent:
         last_actual_model = ""
         turn_model_usage_breakdown: list[dict[str, Any]] = []
         last_ensemble_trace: dict[str, Any] | None = None
+        turn_ensemble_request_count = 0
         terminal_error: ErrorEvent | None = None
         final_text_parts: list[str] = []
         final_reasoning_parts: list[str] = []
@@ -2566,6 +2653,9 @@ class Agent:
                                 ensemble_trace = getattr(raw_ev, "ensemble_trace", None)
                                 if isinstance(ensemble_trace, dict):
                                     last_ensemble_trace = dict(ensemble_trace)
+                                    turn_ensemble_request_count += _usage_int(
+                                        ensemble_trace.get("llm_request_count") or 0
+                                    )
 
                             elif isinstance(raw_ev, ProviderErrorEvent):
                                 provider_error_for_log = raw_ev
@@ -3985,7 +4075,14 @@ class Agent:
             or done_cache_write_tokens
             or done_billed_cost
         )
-        enriched_model_usage_breakdown = _with_model_usage_cost_fields(turn_model_usage_breakdown)
+        summarized_model_usage_breakdown = _summarize_model_usage_breakdown(
+            turn_model_usage_breakdown
+        )
+        final_ensemble_trace = (
+            dict(last_ensemble_trace) if isinstance(last_ensemble_trace, dict) else None
+        )
+        if final_ensemble_trace is not None and turn_ensemble_request_count > 0:
+            final_ensemble_trace["llm_request_count"] = turn_ensemble_request_count
         if terminal_error is None or has_usage:
             if terminal_error is None:
                 yield self._transition(AgentState.DONE)
@@ -4007,8 +4104,8 @@ class Agent:
                     "\n".join(final_reasoning_parts) if final_reasoning_parts else None
                 ),
                 session_totals=session_totals,
-                model_usage_breakdown=enriched_model_usage_breakdown,
-                ensemble_trace=last_ensemble_trace,
+                model_usage_breakdown=summarized_model_usage_breakdown,
+                ensemble_trace=final_ensemble_trace,
             )
         # Reset for next turn
         self._state = AgentState.IDLE

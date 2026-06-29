@@ -280,15 +280,28 @@ class _TwoStepEnsembleBreakdownProvider:
                 input_tokens=30,
                 output_tokens=3,
                 billed_cost=0.03,
-                model="agg-tool",
+                model="z-ai/glm-5.2",
+                ensemble_trace={"profile": "default", "llm_request_count": 2},
                 model_usage_breakdown=[
-                    {"role": "proposer", "model": "proposer-tool", "input_tokens": 10},
+                    {
+                        "role": "proposer",
+                        "label": "proposer_1",
+                        "provider": "openrouter",
+                        "model": "deepseek/deepseek-v4-pro",
+                        "input_tokens": 10,
+                        "output_tokens": 1,
+                        "billed_cost": 0.01,
+                        "cost_source": "provider_billed",
+                    },
                     {
                         "role": "aggregator",
-                        "model": "agg-tool",
+                        "label": "aggregator",
+                        "provider": "openrouter",
+                        "model": "z-ai/glm-5.2",
                         "input_tokens": 20,
-                        "output_tokens": 3,
-                        "billed_cost": 0.03,
+                        "output_tokens": 2,
+                        "billed_cost": 0.02,
+                        "cost_source": "provider_billed",
                     },
                 ],
             )
@@ -299,15 +312,28 @@ class _TwoStepEnsembleBreakdownProvider:
             input_tokens=40,
             output_tokens=4,
             billed_cost=0.04,
-            model="agg-final",
+            model="z-ai/glm-5.2",
+            ensemble_trace={"profile": "default", "llm_request_count": 2},
             model_usage_breakdown=[
-                {"role": "proposer", "model": "proposer-final", "input_tokens": 15},
+                {
+                    "role": "proposer",
+                    "label": "proposer_1",
+                    "provider": "openrouter",
+                    "model": "deepseek/deepseek-v4-pro",
+                    "input_tokens": 15,
+                    "output_tokens": 1,
+                    "billed_cost": 0.02,
+                    "cost_source": "provider_billed",
+                },
                 {
                     "role": "aggregator",
-                    "model": "agg-final",
+                    "label": "aggregator",
+                    "provider": "openrouter",
+                    "model": "z-ai/glm-5.2",
                     "input_tokens": 25,
-                    "output_tokens": 4,
-                    "billed_cost": 0.04,
+                    "output_tokens": 3,
+                    "billed_cost": 0.02,
+                    "cost_source": "provider_billed",
                 },
             ],
         )
@@ -316,7 +342,7 @@ class _TwoStepEnsembleBreakdownProvider:
         return []
 
 
-def test_agent_final_done_accumulates_ensemble_breakdown_across_tool_iterations() -> None:
+def test_agent_final_done_summarizes_ensemble_breakdown_across_tool_iterations() -> None:
     async def tool_handler(call: ToolCall) -> ToolResult:
         return ToolResult(
             tool_use_id=call.tool_use_id,
@@ -345,11 +371,25 @@ def test_agent_final_done_accumulates_ensemble_breakdown_across_tool_iterations(
     done = asyncio.run(run())
 
     assert [row["model"] for row in done.model_usage_breakdown] == [
-        "proposer-tool",
-        "agg-tool",
-        "proposer-final",
-        "agg-final",
+        "deepseek/deepseek-v4-pro",
+        "z-ai/glm-5.2",
     ]
+    proposer_row = done.model_usage_breakdown[0]
+    assert proposer_row["label"] == "proposer_1"
+    assert proposer_row["input_tokens"] == 25
+    assert proposer_row["output_tokens"] == 2
+    assert proposer_row["billed_cost"] == 0.03
+    assert proposer_row["cost_usd"] == 0.03
+    assert proposer_row["request_count"] == 2
+    aggregator_row = done.model_usage_breakdown[1]
+    assert aggregator_row["label"] == "aggregator"
+    assert aggregator_row["input_tokens"] == 45
+    assert aggregator_row["output_tokens"] == 5
+    assert aggregator_row["billed_cost"] == 0.04
+    assert aggregator_row["cost_usd"] == 0.04
+    assert aggregator_row["request_count"] == 2
+    assert done.ensemble_trace is not None
+    assert done.ensemble_trace["llm_request_count"] == 4
     assert done.input_tokens == 70
     assert done.output_tokens == 7
     assert done.billed_cost == 0.07

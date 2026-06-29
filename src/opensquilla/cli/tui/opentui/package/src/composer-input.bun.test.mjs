@@ -75,3 +75,23 @@ test("normal printable typing (incl. space) is unaffected", async () => {
   );
   expect(text).toBe("hello world");
 });
+
+async function pastedThenSubmitted(text) {
+  const { renderer, sent } = await setupComposer();
+  renderer.keyInput.emit("paste", { bytes: new TextEncoder().encode(text) });
+  renderer.keyInput.emit("keypress", { name: "return" });
+  const submitted = sent.find((m) => m.type === "input.submit")?.text;
+  renderer.destroy?.();
+  return submitted;
+}
+
+test("pasted ANSI/terminal output is stripped of escape and control bytes", async () => {
+  const submitted = await pastedThenSubmitted("a\u001b[31mred\u001b[0m b");
+  expect(submitted).toBe("ared b"); // colors removed
+  expect(submitted.includes("\u001b")).toBe(false); // no raw control bytes submitted
+});
+
+test("paste preserves newlines and tabs (multi-line / indented paste)", async () => {
+  const submitted = await pastedThenSubmitted("line1\nline2\tindented");
+  expect(submitted).toBe("line1\nline2\tindented");
+});

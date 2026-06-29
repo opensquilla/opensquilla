@@ -1,5 +1,5 @@
 import { THEME, THEME_NAMES, STATUS_PULSE_FRAMES, applyTheme, activeThemeName } from "./theme.mjs";
-import { cellWidth, clipToCells, textWidth } from "./primitives.mjs";
+import { cellWidth, clipToCells, stripTerminalControls, textWidth } from "./primitives.mjs";
 
 const COMPLETION_MENU_LEFT = 1;
 const COMPLETION_MENU_RIGHT = 34;
@@ -946,7 +946,12 @@ export function createComposer(deps) {
 
     const decoder = new TextDecoder();
     renderer.keyInput.on("paste", (event) => {
-      const pasted = decoder.decode(event.bytes);
+      // Sanitize pasted text: strip ANSI/escape sequences and C0/DEL control
+      // bytes (e.g. pasting colored terminal output or a log) so they cannot
+      // corrupt the input or get submitted to the model. Newlines and tabs are
+      // preserved, so multi-line and indented pastes are unaffected.
+      const pasted = stripTerminalControls(decoder.decode(event.bytes));
+      if (!pasted) return;
       insertAtCursor(pasted);
       historyIndex = inputHistory.length;
       if (pasted.includes("\n")) resetMenu();

@@ -100,7 +100,11 @@ def test_package_verifier_hard_fails_stale_runtime_and_boot_contract() -> None:
     verifier = _read("desktop/electron/scripts/verify-package.mjs")
     package_json = json.loads(_read("desktop/electron/package.json"))
 
-    assert package_json["scripts"]["verify:package"] == "node scripts/verify-package.mjs"
+    assert package_json["scripts"]["verify:icons"] == "node scripts/verify-icon-config.mjs"
+    assert (
+        package_json["scripts"]["verify:package"]
+        == "npm run verify:icons && node scripts/verify-package.mjs"
+    )
     for expected in [
         "runtime is empty",
         "_AsyncConnection.create_function",

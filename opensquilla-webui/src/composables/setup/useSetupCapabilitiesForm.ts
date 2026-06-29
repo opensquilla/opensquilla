@@ -1,4 +1,5 @@
 import { computed, ref, type ComputedRef, type Ref } from 'vue'
+import i18n from '@/i18n'
 
 interface ProviderSpec {
   providerId: string
@@ -30,6 +31,9 @@ interface ConfigData {
     }
   }
   image_generation?: {
+    size?: string
+    output_format?: string
+    fallbacks?: string[]
     providers?: Record<string, { api_key_env?: string; base_url?: string }>
   }
 }
@@ -73,6 +77,10 @@ interface CapabilitiesPanelContext {
   audioEnabled: Ref<boolean>
   audioApiKey: Ref<string>
   audioApiKeyEnv: Ref<string>
+  audioBaseUrl: Ref<string>
+  audioTtsVoice: Ref<string>
+  audioTtsModel: Ref<string>
+  audioLanguageCode: Ref<string>
   audioStatusText: ComputedRef<string>
   audioBadgeTone: ComputedRef<string>
   audioBadgeLabel: ComputedRef<string>
@@ -106,6 +114,18 @@ export interface ImageFormValues {
   apiKey: string
   apiKeyEnv: string
   baseUrl: string
+  size: string
+  outputFormat: string
+  fallbacks: string
+}
+
+// Fallbacks are entered as one comma/newline-separated string; split to the
+// provider/model array the backend expects.
+export function parseImageFallbacks(raw: string): string[] {
+  return raw
+    .split(/[\n,]/)
+    .map((s) => s.trim())
+    .filter(Boolean)
 }
 
 export function buildSearchPayload(values: SearchFormValues): Record<string, unknown> {
@@ -139,6 +159,10 @@ export function buildImagePayload(values: ImageFormValues): Record<string, unkno
   if (values.apiKey) params.apiKey = values.apiKey
   if (values.apiKeyEnv) params.apiKeyEnv = values.apiKeyEnv
   if (values.baseUrl) params.baseUrl = values.baseUrl
+  if (values.size) params.size = values.size
+  if (values.outputFormat) params.outputFormat = values.outputFormat
+  // Empty array is "keep current" backend-side; send the parsed list either way.
+  params.fallbacks = parseImageFallbacks(values.fallbacks)
   return params
 }
 
@@ -165,6 +189,9 @@ export function useSetupCapabilitiesForm() {
   const imageApiKeyEnv = ref('')
   const imageBaseUrl = ref('')
   const imageEnabled = ref(true)
+  const imageSize = ref('1024x1024')
+  const imageOutputFormat = ref('png')
+  const imageFallbacks = ref('')
 
   const searchSerialized = computed(() => JSON.stringify([
     searchProvider.value, searchMaxResults.value, searchApiKey.value, searchApiKeyEnv.value,
@@ -177,6 +204,7 @@ export function useSetupCapabilitiesForm() {
   const imageSerialized = computed(() => JSON.stringify([
     imageProvider.value, imagePrimary.value, imageApiKey.value, imageApiKeyEnv.value,
     imageBaseUrl.value, imageEnabled.value,
+    imageSize.value, imageOutputFormat.value, imageFallbacks.value,
   ]))
   // Seed from the initial state so the pristine forms are never dirty while config loads.
   const searchBaseline = ref(searchSerialized.value)
@@ -197,11 +225,11 @@ export function useSetupCapabilitiesForm() {
   const memoryApiKeyEnvValue = computed(() => memoryApiKeyEnv.value)
   const imageApiKeyEnvValue = computed(() => imageApiKeyEnv.value)
   const memoryRemoteOptionsOpen = computed(() => memoryProvider.value !== 'auto' || Boolean(memoryModel.value || memoryApiKey.value || memoryApiKeyEnv.value || memoryBaseUrl.value))
-  const memoryRemoteOptionsSummary = computed(() => memoryProvider.value === 'auto' ? 'Remote fallback options' : 'Connection options')
-  const memoryModelPlaceholder = computed(() => memoryProvider.value === 'ollama' ? 'nomic-embed-text' : (memoryRemoteControlEnabled.value ? 'remote-embedding-model' : 'not used by this provider'))
-  const memoryBasePlaceholder = computed(() => memoryProvider.value === 'ollama' ? 'http://localhost:11434' : (memoryRemoteControlEnabled.value ? 'https://api.example.com/v1' : 'not used by this provider'))
-  const memoryOnnxPlaceholder = computed(() => memoryLocalControlEnabled.value ? 'models/bge-onnx' : 'only for bundled local provider')
-  const memoryApiKeyLabel = computed(() => memoryProvider.value === 'auto' ? 'Fallback API key' : 'API key')
+  const memoryRemoteOptionsSummary = computed(() => i18n.global.t(memoryProvider.value === 'auto' ? 'setup.memory.remoteFallbackOptions' : 'setup.memory.connectionOptions'))
+  const memoryModelPlaceholder = computed(() => memoryProvider.value === 'ollama' ? 'nomic-embed-text' : (memoryRemoteControlEnabled.value ? 'remote-embedding-model' : i18n.global.t('setup.memory.notUsedByProvider')))
+  const memoryBasePlaceholder = computed(() => memoryProvider.value === 'ollama' ? 'http://localhost:11434' : (memoryRemoteControlEnabled.value ? 'https://api.example.com/v1' : i18n.global.t('setup.memory.notUsedByProvider')))
+  const memoryOnnxPlaceholder = computed(() => memoryLocalControlEnabled.value ? 'models/bge-onnx' : i18n.global.t('setup.memory.onnxOnlyLocal'))
+  const memoryApiKeyLabel = computed(() => i18n.global.t(memoryProvider.value === 'auto' ? 'setup.memory.fallbackApiKey' : 'setup.common.apiKey'))
 
   function initSearchFromConfig(config: ConfigData, providers: ProviderSpec[]) {
     searchProvider.value = config.search_provider || providers.find(p => p.providerId === 'duckduckgo')?.providerId || providers[0]?.providerId || 'duckduckgo'
@@ -238,6 +266,9 @@ export function useSetupCapabilitiesForm() {
     imageApiKeyEnv.value = providerConfig.api_key_env || ''
     imageBaseUrl.value = providerConfig.base_url || ''
     imageEnabled.value = status.imageGenerationEnabled !== false
+    imageSize.value = imageConfig.size || '1024x1024'
+    imageOutputFormat.value = imageConfig.output_format || 'png'
+    imageFallbacks.value = (imageConfig.fallbacks || []).join(', ')
     imageApiKey.value = ''
     imageBaseline.value = imageSerialized.value
   }
@@ -295,6 +326,9 @@ export function useSetupCapabilitiesForm() {
     else if (key === 'apiKeyEnv') imageApiKeyEnv.value = String(value)
     else if (key === 'baseUrl') imageBaseUrl.value = String(value)
     else if (key === 'enabled') imageEnabled.value = Boolean(value)
+    else if (key === 'size') imageSize.value = String(value)
+    else if (key === 'outputFormat') imageOutputFormat.value = String(value)
+    else if (key === 'fallbacks') imageFallbacks.value = String(value)
   }
 
   function searchPayload(): Record<string, unknown> {
@@ -329,6 +363,9 @@ export function useSetupCapabilitiesForm() {
       apiKey: imageApiKey.value,
       apiKeyEnv: imageApiKeyEnv.value,
       baseUrl: imageBaseUrl.value,
+      size: imageSize.value,
+      outputFormat: imageOutputFormat.value,
+      fallbacks: imageFallbacks.value,
     })
   }
 
@@ -355,10 +392,17 @@ export function useSetupCapabilitiesForm() {
         imageApiKeyEnv: imageApiKeyEnv.value,
         imageBaseUrl: imageBaseUrl.value,
         imageEnabled: imageEnabled.value,
+        imageSize: imageSize.value,
+        imageOutputFormat: imageOutputFormat.value,
+        imageFallbacks: imageFallbacks.value,
         memoryAutoCapture: context.memoryAutoCapture.value,
         audioEnabled: context.audioEnabled.value,
         audioApiKey: context.audioApiKey.value,
         audioApiKeyEnv: context.audioApiKeyEnv.value,
+        audioBaseUrl: context.audioBaseUrl.value,
+        audioTtsVoice: context.audioTtsVoice.value,
+        audioTtsModel: context.audioTtsModel.value,
+        audioLanguageCode: context.audioLanguageCode.value,
       },
       options: {
         searchProviders: context.searchProviders.value,

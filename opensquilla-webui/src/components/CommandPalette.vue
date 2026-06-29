@@ -10,7 +10,7 @@
       class="cmdp-dialog"
       role="dialog"
       aria-modal="true"
-      aria-label="Search and go to"
+      :aria-label="t('shared.cmdp.dialogLabel')"
     >
       <div class="cmdp-search">
         <Icon name="search" :size="16" class="cmdp-search__icon" />
@@ -19,7 +19,7 @@
           v-model="query"
           type="text"
           class="cmdp-search__input"
-          placeholder="Search pages, actions, and conversations…"
+          :placeholder="t('shared.cmdp.placeholder')"
           role="combobox"
           aria-expanded="true"
           aria-controls="cmdp-listbox"
@@ -37,12 +37,12 @@
         ref="listRef"
         class="cmdp-list"
         role="listbox"
-        aria-label="Results"
+        :aria-label="t('shared.cmdp.resultsLabel')"
       >
-        <p v-if="flatItems.length === 0 && !searching" class="cmdp-empty">No matches</p>
+        <p v-if="flatItems.length === 0 && !searching" class="cmdp-empty">{{ t('shared.cmdp.noMatches') }}</p>
         <template v-for="group in groups" :key="group.label">
           <template v-if="group.items.length > 0">
-            <p class="cmdp-group-label" aria-hidden="true">{{ group.label }}</p>
+            <p class="cmdp-group-label" aria-hidden="true">{{ groupLabel(group.label) }}</p>
             <button
               v-for="item in group.items"
               :id="`cmdp-opt-${item.index}`"
@@ -66,7 +66,7 @@
             </button>
           </template>
         </template>
-        <p v-if="searching" class="cmdp-searching" aria-live="polite">Searching conversations…</p>
+        <p v-if="searching" class="cmdp-searching" aria-live="polite">{{ t('shared.cmdp.searching') }}</p>
       </div>
     </section>
   </div>
@@ -74,6 +74,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import Icon from './Icon.vue'
 import { useDialogA11y } from '@/composables/useDialogA11y'
@@ -92,6 +93,7 @@ const emit = defineEmits<{
   (e: 'select-session', key: string): void
 }>()
 
+const { t } = useI18n()
 const router = useRouter()
 const rpcStore = useRpcStore()
 
@@ -129,6 +131,22 @@ interface Command {
 // Stable group order for the rendered palette. Conversation groups sort below
 // the static nav/action groups so "go to page" stays the top, instant result.
 const GROUP_ORDER = ['Work', 'Manage', 'Monitor', 'Actions', 'Conversations', 'Messages'] as const
+
+// Display label for a group. The internal group ids above match the (currently
+// English) nav band labels from the nav helper; map the known ids to localized
+// strings, falling back to the raw label for anything unmapped.
+const GROUP_LABEL_KEYS: Record<string, string> = {
+  Work: 'shared.cmdp.groupWork',
+  Manage: 'shared.cmdp.groupManage',
+  Monitor: 'shared.cmdp.groupMonitor',
+  Actions: 'shared.cmdp.groupActions',
+  Conversations: 'shared.cmdp.groupConversations',
+  Messages: 'shared.cmdp.groupMessages',
+}
+function groupLabel(label: string): string {
+  const key = GROUP_LABEL_KEYS[label]
+  return key ? t(key) : label
+}
 
 function navTo(path: string): Run {
   return () => {
@@ -174,7 +192,7 @@ const allCommands = computed<Command[]>(() => {
   out.push(
     {
       id: 'action:new-chat',
-      title: 'New chat',
+      title: t('shared.cmdp.actionNewChat'),
       icon: 'plus',
       keywords: 'new chat conversation compose start',
       group: 'Actions',
@@ -182,7 +200,7 @@ const allCommands = computed<Command[]>(() => {
     },
     {
       id: 'action:settings',
-      title: 'Open Settings',
+      title: t('shared.cmdp.actionOpenSettings'),
       icon: 'settings',
       keywords: 'settings preferences configure options',
       group: 'Actions',
@@ -190,7 +208,7 @@ const allCommands = computed<Command[]>(() => {
     },
     {
       id: 'action:toggle-theme',
-      title: 'Toggle theme',
+      title: t('shared.cmdp.actionToggleTheme'),
       icon: 'monitor',
       keywords: 'theme dark light appearance toggle',
       group: 'Actions',
@@ -272,7 +290,7 @@ const conversationCommands = computed<Command[]>(() => {
   for (const hit of sessionHits.value) {
     out.push({
       id: `session:${hit.key}`,
-      title: hit.title || 'Untitled chat',
+      title: hit.title || t('shared.cmdp.untitledChat'),
       icon: 'chat',
       keywords: '',
       group: 'Conversations',
@@ -283,7 +301,7 @@ const conversationCommands = computed<Command[]>(() => {
   messageHits.value.forEach((hit, i) => {
     out.push({
       id: `message:${hit.key}:${hit.createdAt ?? i}:${i}`,
-      title: hit.title || 'Untitled chat',
+      title: hit.title || t('shared.cmdp.untitledChat'),
       icon: 'search',
       keywords: '',
       group: 'Messages',

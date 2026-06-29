@@ -1,4 +1,5 @@
 import { computed, ref, type Ref } from 'vue'
+import i18n from '@/i18n'
 import type {
   ChatMessage,
   ChatRunStatusSource,
@@ -37,6 +38,23 @@ const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 210000
 const THINKING_DELAY_MS = 400
 const THINKING_TTL_MS = 60000
 const SQUILLA_VERBS = ['Planning next step', 'Reading context', 'Waiting for model', 'Preparing output']
+
+// Internal phase labels stay English (they double as stable keys for dedup,
+// matching, and the appended status-frame action). Localize only at the display
+// boundary via this map; unmapped labels (e.g. tool-specific micro-verbs) fall
+// back to their English text.
+const STREAM_LABEL_KEYS: Record<string, string> = {
+  Sending: 'chat.stream.sending',
+  'Planning next step': 'chat.stream.planningNextStep',
+  'Reading context': 'chat.stream.readingContext',
+  'Waiting for model': 'chat.stream.waitingForModel',
+  'Preparing output': 'chat.stream.preparingOutput',
+}
+
+function localizeStreamLabel(label: string): string {
+  const key = STREAM_LABEL_KEYS[label]
+  return key ? i18n.global.t(key) : label
+}
 const SQUILLA_DWELL_MS = 2500
 const STALE_SIGNAL_MS = 20000
 
@@ -112,13 +130,13 @@ export function useChatStream(options: UseChatStreamOptions) {
     const now = Date.now()
     if (lastSignalAt.value > 0 && now - lastSignalAt.value > STALE_SIGNAL_MS) {
       const silent = Math.floor((now - lastSignalAt.value) / 1000)
-      return `Still working — last signal ${silent}s ago`
+      return i18n.global.t('chat.stream.stillWorking', { seconds: silent })
     }
     const startedAt = streamActivity.value.startedAt || now
     const seconds = Math.max(0, Math.floor((now - startedAt) / 1000))
     return seconds >= 10 && streamActivity.value.label === 'Planning next step'
-      ? 'Still waiting for model'
-      : streamActivity.value.label
+      ? i18n.global.t('chat.stream.stillWaiting')
+      : localizeStreamLabel(streamActivity.value.label)
   })
 
   // Elapsed seconds for the current phase, rendered as its own chip.

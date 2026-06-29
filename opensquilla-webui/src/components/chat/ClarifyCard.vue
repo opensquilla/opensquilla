@@ -14,10 +14,10 @@
     </span>
     <span class="clarify-outcome__copy">
       <span class="clarify-outcome__title">
-        {{ busy ? 'Reply received · continuing run…' : 'Reply sent · run resumed' }}
+        {{ busy ? t('chat.clarify.replyReceived') : t('chat.clarify.outcomeDoneTitle') }}
       </span>
       <span class="clarify-outcome__detail">
-        {{ busy ? 'Your reply is being processed now.' : 'The agent has accepted this reply and moved on.' }}
+        {{ busy ? t('chat.clarify.outcomeBusyDetail') : t('chat.clarify.outcomeDoneDetail') }}
       </span>
     </span>
   </div>
@@ -28,16 +28,16 @@
     class="clarify-card"
     data-testid="clarify-card"
     role="group"
-    aria-label="The agent needs input"
+    :aria-label="t('chat.clarify.needsInput')"
   >
     <!-- Concise live announcement: screen readers hear only this line, not the full card body -->
     <div
       class="clarify-card__announce"
       aria-live="polite"
       aria-atomic="true"
-    >Input needed from agent</div>
+    >{{ t('chat.clarify.inputNeededFromAgent') }}</div>
     <header class="clarify-card__head">
-      <span class="clarify-card__eyebrow">Input needed</span>
+      <span class="clarify-card__eyebrow">{{ t('chat.clarify.inputNeeded') }}</span>
       <p v-if="request.intro" class="clarify-card__intro">{{ request.intro }}</p>
     </header>
 
@@ -48,7 +48,7 @@
           <span v-if="field.prompt && field.prompt !== field.name" class="clarify-field__prompt">
             {{ field.prompt }}
           </span>
-          <span class="clarify-field__req">{{ field.required ? 'required' : 'optional' }}</span>
+          <span class="clarify-field__req">{{ field.required ? t('chat.clarify.required') : t('chat.clarify.optional') }}</span>
         </label>
 
         <!-- Enum: numbered choices -->
@@ -108,10 +108,10 @@
           :disabled="busy"
           @click="onSubmit"
         >
-          {{ busy ? 'Sending reply…' : 'Send reply' }}
+          {{ busy ? t('chat.clarify.sendingReply') : t('chat.clarify.sendReply') }}
         </button>
         <button class="btn btn--ghost" type="button" :disabled="busy" @click="$emit('dismiss')">
-          Dismiss
+          {{ t('chat.clarify.dismiss') }}
         </button>
       </div>
       <p
@@ -121,7 +121,7 @@
         role="status"
         aria-live="polite"
       >
-        Sending reply · continuing run…
+        {{ t('chat.clarify.sendingContinuing') }}
       </p>
       <p v-if="error" class="clarify-card__error" role="alert">{{ error }}</p>
     </footer>
@@ -130,8 +130,11 @@
 
 <script setup lang="ts">
 import { reactive, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import type { ChatClarifyRequest } from '@/composables/chat/useChatApprovals'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   request: ChatClarifyRequest

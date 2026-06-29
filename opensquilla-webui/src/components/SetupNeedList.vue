@@ -2,20 +2,46 @@
   <div v-if="needs.length > 0" class="setup-need-list" :aria-label="label">
     <span>{{ label }}</span>
     <ul>
-      <li v-for="(item, i) in needs" :key="i">{{ item }}</li>
+      <li v-for="(item, i) in needs" :key="i">{{ localizeNeed(item) }}</li>
     </ul>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 const props = defineProps<{
   items?: string[]
   label: string
 }>()
 
+const { t } = useI18n()
 const needs = computed(() => (props.items || []).filter(Boolean))
+
+// The backend onboarding specs emit "what you need" bullets as English text.
+// Map the known, non-interpolated ones to localized copy; dynamic/credential
+// items (which embed env-var names) fall back to their raw English text.
+const NEED_KEYS: Record<string, string> = {
+  'No API key required.': 'setup.needs.noApiKey',
+  'Bundled local embeddings for the default path.': 'setup.needs.bundledLocal',
+  'No embedding service; keyword search remains available.': 'setup.needs.noEmbedding',
+  'Local ONNX embedding assets from the recommended install.': 'setup.needs.localOnnx',
+  'Optional remote fallback credentials if configured.': 'setup.needs.optionalRemoteFallback',
+  'A provider/model id that supports image generation.': 'setup.needs.imageProviderModel',
+  'Optional embedding model override.': 'setup.needs.optionalEmbeddingModel',
+  'Optional ONNX directory override for custom local assets.': 'setup.needs.optionalOnnxDir',
+  'Provider/model identifier.': 'setup.needs.providerModelId',
+  'Optional locale hint such as zh-CN, en-US, or en-GB.': 'setup.needs.optionalLocaleHint',
+  'off surfaces the original provider error.': 'setup.needs.offSurfacesError',
+  'Environment variable to read for audio provider access.': 'setup.needs.audioEnvVar',
+  'Remote embedding API key or env reference.': 'setup.needs.remoteEmbeddingKey',
+}
+
+function localizeNeed(item: string): string {
+  const key = NEED_KEYS[item]
+  return key ? t(key) : item
+}
 </script>
 
 <style scoped>

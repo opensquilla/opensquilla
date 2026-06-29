@@ -1,5 +1,8 @@
 import { computed, type ComputedRef } from 'vue'
+import i18n from '@/i18n'
 import type { ModelCard, SessionRow } from '@/types/usage'
+
+const t = i18n.global.t
 
 export function useUsageModelCards(options: {
   visibleSessions: ComputedRef<SessionRow[]>
@@ -66,7 +69,7 @@ export function useUsageModelCards(options: {
 
   const modelsMeta = computed(() => {
     const n = modelCards.value.length
-    return `${n} model${n === 1 ? '' : 's'}`
+    return t('usageLogs.models.count', { count: n })
   })
 
   return { modelCards, modelsMeta }

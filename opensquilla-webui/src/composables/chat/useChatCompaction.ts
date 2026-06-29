@@ -1,4 +1,5 @@
 import { computed, ref, type Ref } from 'vue'
+import i18n from '@/i18n'
 
 export type ChatCompactStatusTone = 'info' | 'ok' | 'warn' | 'err' | string
 
@@ -242,7 +243,7 @@ export function useChatCompaction(options: UseChatCompactionOptions) {
     if (status === 'started') {
       if (source === 'manual') setCompactInFlight(true, payload.key || options.sessionKey.value)
       const occupancy = parseContextOccupancy(payload)
-      showCompactStatus('started', 'Compacting context', {
+      showCompactStatus('started', i18n.global.t('chat.compact.compacting'), {
         tone: 'info',
         occupancyPercent: occupancy ? occupancy.percent : null,
         contextWindowLabel: occupancy ? occupancy.windowLabel : '',
@@ -251,23 +252,23 @@ export function useChatCompaction(options: UseChatCompactionOptions) {
     }
     if (status === 'skipped') {
       settleCompactInFlight(payload || {})
-      showCompactStatus('skipped', 'Context within budget.', { tone: 'info', dismissMs: 5000 })
+      showCompactStatus('skipped', i18n.global.t('chat.compact.withinBudget'), { tone: 'info', dismissMs: 5000 })
       return
     }
     if (status === 'failed' || status === 'error') {
       const preservePending = compactFailureBlocksPending(payload || {})
       settleCompactInFlight(payload || {}, { preservePending })
-      showCompactStatus('failed', 'Compact failed', { tone: 'err', dismissMs: 10000 })
+      showCompactStatus('failed', i18n.global.t('chat.compact.failed'), { tone: 'err', dismissMs: 10000 })
       return
     }
     if (status === 'cancelled') {
       settleCompactInFlight(payload || {}, { recoverPending: true })
-      showCompactStatus('cancelled', 'Compact cancelled', { tone: 'warn', dismissMs: 8000 })
+      showCompactStatus('cancelled', i18n.global.t('chat.compact.cancelled'), { tone: 'warn', dismissMs: 8000 })
       return
     }
     if (status === 'completed') {
       settleCompactInFlight(payload || {})
-      showCompactStatus('completed', 'Context compacted', { tone: 'ok', dismissMs: 5000 })
+      showCompactStatus('completed', i18n.global.t('chat.compact.compacted'), { tone: 'ok', dismissMs: 5000 })
     }
   }
 

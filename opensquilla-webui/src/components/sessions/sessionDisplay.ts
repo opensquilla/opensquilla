@@ -1,3 +1,4 @@
+import i18n from '@/i18n'
 import type { IconName } from '@/utils/icons'
 import type { SessionItem } from '@/composables/useSessions'
 
@@ -15,18 +16,20 @@ export function sessionSurfaceIcon(item: SessionItem): IconName {
 }
 
 export function sessionStatusBadge(item: SessionItem, needsInput = false): SessionStatusBadge | null {
+  const t = i18n.global.t
   if (needsInput) {
-    return { label: 'Needs input', cls: 'is-needs-input' }
+    return { label: t('sessions.status.needsInput'), cls: 'is-needs-input' }
   }
-  const map: Record<string, SessionStatusBadge> = {
-    running: { label: 'Running', cls: 'is-running' },
-    queued: { label: 'Queued', cls: 'is-queued' },
-    failed: { label: 'Failed', cls: 'is-failed' },
-    timeout: { label: 'Timed out', cls: 'is-failed' },
-    interrupted: { label: 'Interrupted', cls: 'is-queued' },
-    cancelled: { label: 'Cancelled', cls: 'is-off' },
+  const map: Record<string, { labelKey: string; cls: string }> = {
+    running: { labelKey: 'sessions.status.running', cls: 'is-running' },
+    queued: { labelKey: 'sessions.status.queued', cls: 'is-queued' },
+    failed: { labelKey: 'sessions.status.failed', cls: 'is-failed' },
+    timeout: { labelKey: 'sessions.status.timeout', cls: 'is-failed' },
+    interrupted: { labelKey: 'sessions.status.interrupted', cls: 'is-queued' },
+    cancelled: { labelKey: 'sessions.status.cancelled', cls: 'is-off' },
   }
-  return map[item.runStatus] || null
+  const entry = map[item.runStatus]
+  return entry ? { label: t(entry.labelKey), cls: entry.cls } : null
 }
 
 /**
@@ -44,11 +47,12 @@ export function formatRelativeTime(timestamp: number | null | undefined): string
   const diffHour = Math.floor(diffMin / 60)
   const diffDay = Math.floor(diffHour / 24)
 
-  if (diffSec < 10) return 'just now'
-  if (diffSec < 60) return `${diffSec}s ago`
-  if (diffMin < 60) return `${diffMin}m ago`
-  if (diffHour < 24) return `${diffHour}h ago`
-  if (diffDay < 7) return `${diffDay}d ago`
+  const t = i18n.global.t
+  if (diffSec < 10) return t('sessions.relTime.justNow')
+  if (diffSec < 60) return t('sessions.relTime.seconds', { n: diffSec })
+  if (diffMin < 60) return t('sessions.relTime.minutes', { n: diffMin })
+  if (diffHour < 24) return t('sessions.relTime.hours', { n: diffHour })
+  if (diffDay < 7) return t('sessions.relTime.days', { n: diffDay })
   return d.toLocaleDateString()
 }
 
@@ -61,6 +65,9 @@ export const sessionRelTime = formatRelativeTime
  * raw key. The arrow + label conveys lineage without rendering UUIDs.
  */
 export function subagentRowTitle(parentTitle: string | null | undefined): string {
+  const t = i18n.global.t
   const parent = (parentTitle || '').trim()
-  return parent ? `↳ Subagent · ${parent}` : '↳ Subagent'
+  return parent
+    ? `↳ ${t('sessions.ledger.subagentWithParent', { parent })}`
+    : `↳ ${t('sessions.ledger.subagent')}`
 }

@@ -1,5 +1,8 @@
 import { computed, type ComputedRef, type Ref } from 'vue'
+import i18n from '@/i18n'
 import type { SessionRow, SortedRow } from '@/types/usage'
+
+const t = i18n.global.t
 
 export function useUsageSessionRows(options: {
   visibleSessions: ComputedRef<SessionRow[]>
@@ -46,7 +49,7 @@ export function useUsageSessionRows(options: {
 
   const sessionsMeta = computed(() => {
     const n = sortedRows.value.length
-    return [`${n} session${n === 1 ? '' : 's'}`, options.rangeHiddenHint.value].filter(Boolean).join(' · ')
+    return [t('usageLogs.sessions.count', { count: n }), options.rangeHiddenHint.value].filter(Boolean).join(' · ')
   })
 
   return { sortedRows, sessionsMeta }

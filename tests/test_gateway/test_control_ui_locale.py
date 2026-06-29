@@ -1,0 +1,82 @@
+"""Control UI first-paint locale resolution + template injection (i18n v1)."""
+
+from types import SimpleNamespace
+
+from opensquilla.gateway import control_ui
+from opensquilla.gateway.config import ControlUiConfig, GatewayConfig
+
+
+def _req(accept_language: str | None = None) -> SimpleNamespace:
+    headers: dict[str, str] = {}
+    if accept_language is not None:
+        headers["accept-language"] = accept_language
+    return SimpleNamespace(headers=headers)
+
+
+def test_default_is_en_with_no_header():
+    assert control_ui._resolve_locale(GatewayConfig(), _req()) == "en"
+
+
+def test_accept_language_zh_yields_zh_hans():
+    cfg = GatewayConfig()
+    assert control_ui._resolve_locale(cfg, _req("zh-CN,zh;q=0.9,en;q=0.8")) == "zh-Hans"
+
+
+def test_accept_language_supported_non_en():
+    cfg = GatewayConfig()
+    assert control_ui._resolve_locale(cfg, _req("fr-FR,fr;q=0.9")) == "fr"
+    assert control_ui._resolve_locale(cfg, _req("ja-JP")) == "ja"
+
+
+def test_accept_language_unsupported_falls_back_to_en():
+    cfg = GatewayConfig()
+    # Korean is not a supported locale → default en
+    assert control_ui._resolve_locale(cfg, _req("ko-KR,ko;q=0.9")) == "en"
+
+
+def test_configured_default_wins_over_accept_language():
+    cfg = GatewayConfig(control_ui=ControlUiConfig(default_locale="zh-Hans"))
+    # An explicit non-en default is honored regardless of the browser header.
+    assert control_ui._resolve_locale(cfg, _req("en-US,en;q=0.9")) == "zh-Hans"
+
+
+def test_garbage_accept_language_never_throws():
+    cfg = GatewayConfig()
+    assert control_ui._resolve_locale(cfg, _req(";;;,,q=junk")) == "en"
+
+
+def test_config_clamps_arbitrary_locale_values():
+    assert ControlUiConfig(default_locale="zh").default_locale == "zh-Hans"
+    assert ControlUiConfig(default_locale="zh-TW").default_locale == "zh-Hans"
+    assert ControlUiConfig(default_locale="ZH-hans").default_locale == "zh-Hans"
+    assert ControlUiConfig(default_locale="fr").default_locale == "fr"
+    assert ControlUiConfig(default_locale="ja-JP").default_locale == "ja"
+    assert ControlUiConfig(default_locale="ko").default_locale == "en"
+    assert ControlUiConfig().default_locale == "en"
+
+
+def _render(locale: str) -> str:
+    tpl = control_ui._get_jinja_env().get_template("index.html")
+    return tpl.render(
+        version="0.0.0",
+        ws_url="ws://host/ws",
+        auth_mode="none",
+        base_path="/control",
+        config_path="",
+        locale=locale,
+        features={},
+        vite_js_url="",
+        vite_css_urls=[],
+    )
+
+
+def test_template_injects_zh_hans():
+    html = _render("zh-Hans")
+    assert '<html lang="zh-Hans">' in html
+    assert 'data-locale="zh-Hans"' in html
+
+
+def test_template_injects_en():
+    html = _render("en")
+    assert '<html lang="en">' in html
+    assert 'data-locale="en"' in html

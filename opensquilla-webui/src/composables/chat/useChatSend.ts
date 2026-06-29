@@ -1,4 +1,5 @@
 import type { Ref } from 'vue'
+import i18n from '@/i18n'
 import { useToasts } from '@/composables/useToasts'
 import type { Attachment, ChatMessage } from '@/types/chat'
 import type {
@@ -73,7 +74,7 @@ export function useChatSend(options: UseChatSendOptions) {
     let isLiteralSlash = false
 
     if (options.hasPendingAttachmentWork()) {
-      pushToast('Wait for file attachment processing to finish', { tone: 'info' })
+      pushToast(i18n.global.t('chat.toast.waitAttachments'), { tone: 'info' })
       return
     }
 
@@ -86,7 +87,10 @@ export function useChatSend(options: UseChatSendOptions) {
     const compactInFlight = options.isCompactInFlightForCurrentSession()
     if (options.stream.isStreaming.value || compactInFlight) {
       if (!isLiteralSlash && text.startsWith('/')) {
-        pushToast(`Wait for ${compactInFlight ? 'context compaction' : 'the current response'} before running ${text.split(/\s+/, 1)[0]}.`, { tone: 'info' })
+        pushToast(i18n.global.t(
+          compactInFlight ? 'chat.toast.waitCompactionBeforeCommand' : 'chat.toast.waitResponseBeforeCommand',
+          { command: text.split(/\s+/, 1)[0] },
+        ), { tone: 'info' })
         return
       }
       if (!hasPayload) return
@@ -99,7 +103,7 @@ export function useChatSend(options: UseChatSendOptions) {
       // Surface a full queue instead of silently dropping the send: the draft is
       // preserved (enqueue returns false before clearing the composer).
       if (!options.enqueuePendingInput(text)) {
-        pushToast('Queue is full — wait for the current response to finish.', { tone: 'info' })
+        pushToast(i18n.global.t('chat.toast.queueFull'), { tone: 'info' })
       }
       return
     }

@@ -2,59 +2,59 @@
   <div class="cron-stage control-stage">
     <header class="cron-stage__header control-stage__header">
       <div class="cron-stage__title-block control-stage__title-block">
-        <h2 class="cron-stage__title control-stage__title">Cron Jobs</h2>
-        <p class="cron-stage__subtitle control-stage__subtitle">Time-driven tasks &mdash; orchestrate reminders, agent turns, and recurring work.</p>
+        <h2 class="cron-stage__title control-stage__title">{{ t('cronSkills.view.title') }}</h2>
+        <p class="cron-stage__subtitle control-stage__subtitle">{{ t('cronSkills.view.subtitle') }}</p>
       </div>
       <div class="cron-stage__actions control-stage__actions">
         <div class="cron-search-wrap">
           <span class="cron-search-icon"><Icon name="search" :size="16" /></span>
-          <input v-model="cronJobs.searchText.value" class="cron-search-input" type="search" placeholder="Search jobs&hellip;" autocomplete="off">
+          <input v-model="cronJobs.searchText.value" class="cron-search-input" type="search" :placeholder="t('cronSkills.view.searchPlaceholder')" autocomplete="off">
         </div>
-        <button class="btn btn--ghost" title="Refresh" :disabled="refreshing" @click="refreshCron">
-          <Icon name="refresh" :size="16" /><span>{{ refreshing ? 'Refreshing…' : 'Refresh' }}</span>
+        <button class="btn btn--ghost" :title="t('cronSkills.view.refresh')" :disabled="refreshing" @click="refreshCron">
+          <Icon name="refresh" :size="16" /><span>{{ refreshing ? t('cronSkills.view.refreshing') : t('cronSkills.view.refresh') }}</span>
         </button>
         <button class="btn btn--primary" @click="cronForm.openPanel(null)">
-          <Icon name="plus" :size="16" /><span>New job</span>
+          <Icon name="plus" :size="16" /><span>{{ t('cronSkills.view.newJob') }}</span>
         </button>
       </div>
     </header>
 
     <section class="cron-summary control-stat-grid control-stat-grid--fixed" style="--control-stat-columns: 4">
       <div class="stat stat--hero control-stat control-stat--hero">
-        <div class="stat-label control-stat__label">Active schedules</div>
+        <div class="stat-label control-stat__label">{{ t('cronSkills.view.activeSchedules') }}</div>
         <div class="stat-value control-stat__value">{{ cronJobs.enabledCount.value }}<span class="stat-total"> / {{ cronJobs.jobs.value.length }}</span></div>
-        <div class="stat-hint control-stat__hint">{{ cronJobs.pausedCount.value ? `${cronJobs.pausedCount.value} paused` : 'all enabled' }}</div>
+        <div class="stat-hint control-stat__hint">{{ cronJobs.pausedCount.value ? t('cronSkills.view.pausedCount', { n: cronJobs.pausedCount.value }) : t('cronSkills.view.allEnabled') }}</div>
       </div>
       <div class="stat control-stat">
-        <div class="stat-label control-stat__label">Next run</div>
+        <div class="stat-label control-stat__label">{{ t('cronSkills.view.nextRun') }}</div>
         <div class="stat-value mono control-stat__value control-stat__value--mono">{{ cronJobs.nextCountdown.value }}</div>
         <div class="stat-hint control-stat__hint">{{ cronJobs.nextRunHint.value }}</div>
       </div>
       <div class="stat control-stat">
-        <div class="stat-label control-stat__label">Last 24h runs</div>
+        <div class="stat-label control-stat__label">{{ t('cronSkills.view.last24hRuns') }}</div>
         <div class="stat-value control-stat__value">{{ cronJobs.last24h.value.runs }}</div>
         <div class="stat-hint control-stat__hint">
-          <span v-if="cronJobs.last24h.value.ok" class="cron-pos">{{ cronJobs.last24h.value.ok }} ok</span>
+          <span v-if="cronJobs.last24h.value.ok" class="cron-pos">{{ t('cronSkills.view.okCount', { n: cronJobs.last24h.value.ok }) }}</span>
           <span v-if="cronJobs.last24h.value.ok && cronJobs.last24h.value.err"> &middot; </span>
-          <span v-if="cronJobs.last24h.value.err" class="cron-neg">{{ cronJobs.last24h.value.err }} fail</span>
-          <span v-if="!cronJobs.last24h.value.ok && !cronJobs.last24h.value.err">awaiting first run</span>
+          <span v-if="cronJobs.last24h.value.err" class="cron-neg">{{ t('cronSkills.view.failCount', { n: cronJobs.last24h.value.err }) }}</span>
+          <span v-if="!cronJobs.last24h.value.ok && !cronJobs.last24h.value.err">{{ t('cronSkills.view.awaitingFirstRun') }}</span>
         </div>
       </div>
       <div class="stat control-stat">
-        <div class="stat-label control-stat__label">Mix</div>
+        <div class="stat-label control-stat__label">{{ t('cronSkills.view.mix') }}</div>
         <div class="stat-value control-stat__value">
-          <span title="Reminders"><span class="stat__chip stat__chip--info">{{ cronJobs.reminderCount.value }}</span></span>
+          <span :title="t('cronSkills.view.reminders')"><span class="stat__chip stat__chip--info">{{ cronJobs.reminderCount.value }}</span></span>
           <span>/</span>
-          <span title="Agent tasks"><span class="stat__chip stat__chip--accent">{{ cronJobs.agentTaskCount.value }}</span></span>
+          <span :title="t('cronSkills.view.agentTasks')"><span class="stat__chip stat__chip--accent">{{ cronJobs.agentTaskCount.value }}</span></span>
         </div>
-        <div class="stat-hint control-stat__hint">reminders &middot; agent tasks</div>
+        <div class="stat-hint control-stat__hint">{{ t('cronSkills.view.mixHint') }}</div>
       </div>
     </section>
 
     <section v-if="cronJobs.upcomingHorizon.value.length > 0" class="cron-horizon">
       <div class="cron-horizon__head">
-        <span class="cron-horizon__title">Next 12 hours</span>
-        <span class="cron-horizon__legend"><span class="cron-horizon__dot" />upcoming run</span>
+        <span class="cron-horizon__title">{{ t('cronSkills.view.next12h') }}</span>
+        <span class="cron-horizon__legend"><span class="cron-horizon__dot" />{{ t('cronSkills.view.upcomingRun') }}</span>
       </div>
       <div class="cron-horizon__rail">
         <button
@@ -74,7 +74,7 @@
       <div class="cron-horizon__axis">
         <span v-for="h in [0, 3, 6, 9, 12]" :key="h" class="cron-horizon__tick" :style="{ left: (h / 12) * 100 + '%' }">
           <span class="cron-horizon__tick-line" />
-          <span class="cron-horizon__tick-label">{{ h === 0 ? 'now' : horizonTickLabel(h) }}</span>
+          <span class="cron-horizon__tick-label">{{ h === 0 ? t('cronSkills.view.nowTick') : horizonTickLabel(h) }}</span>
         </span>
       </div>
     </section>
@@ -153,6 +153,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import Icon from '@/components/Icon.vue'
 import ErrorState from '@/components/ErrorState.vue'
@@ -169,6 +170,7 @@ import type { CronJob } from '@/types/cron'
 import { humanCountdown } from '@/utils/cron/time'
 
 const router = useRouter()
+const { t } = useI18n()
 const { pushToast } = useToasts()
 const selectedId = ref<string | null>(null)
 const deleteModalOpen = ref(false)
@@ -238,7 +240,7 @@ async function confirmDelete() {
     await cronJobs.removeJob(id)
     if (selectedId.value === id) selectedId.value = null
   } catch (err) {
-    pushToast('Delete failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
+    pushToast(t('cronSkills.view.deleteFailed', { error: err instanceof Error ? err.message : String(err) }), { tone: 'danger' })
   } finally {
     closeDeleteDialog()
   }

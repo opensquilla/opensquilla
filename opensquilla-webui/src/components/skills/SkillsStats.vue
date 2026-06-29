@@ -24,17 +24,21 @@
       class="sk-stat sk-stat--proposals control-stat control-stat--clickable control-stat--accent control-stat--warn"
       :class="{ 'is-active': activeKey === 'proposals', 'control-stat--hero': activeKey === 'proposals' }"
       type="button"
-      title="Pending meta-skill proposals - synthesised by meta-skill-creator from your usage patterns"
+      :title="t('cronSkills.stats.proposalsTitle')"
       @click="emit('showProposals')"
     >
-      <div class="sk-stat__label control-stat__label">Pending Proposals</div>
+      <div class="sk-stat__label control-stat__label">{{ t('cronSkills.stats.proposalsLabel') }}</div>
       <div class="sk-stat__value control-stat__value"><span class="sk-stat__warn">{{ proposalCount }}</span></div>
-      <div class="sk-stat__hint control-stat__hint">awaiting review</div>
+      <div class="sk-stat__hint control-stat__hint">{{ t('cronSkills.stats.awaitingReview') }}</div>
     </button>
   </section>
 </template>
 
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
+
 export interface SkillStatTile {
   key: string
   label: string

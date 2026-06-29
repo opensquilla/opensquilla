@@ -5,7 +5,7 @@
       class="inspect-drawer"
       role="dialog"
       aria-modal="true"
-      :aria-label="'Session details: ' + item.title"
+      :aria-label="t('sessions.inspect.dialogLabel', { title: item.title })"
     >
       <header class="inspect-head">
         <span class="inspect-head__icon" aria-hidden="true">
@@ -13,13 +13,13 @@
         </span>
         <div class="inspect-head__titles">
           <h3 class="inspect-head__title">{{ item.title }}</h3>
-          <p v-if="parentItem" class="inspect-head__lineage">Subagent of {{ parentItem.title }}</p>
+          <p v-if="parentItem" class="inspect-head__lineage">{{ t('sessions.inspect.subagentOf', { title: parentItem.title }) }}</p>
         </div>
         <button
           type="button"
           class="btn btn--icon btn--ghost"
-          :aria-label="keyCopied ? 'Session key copied' : 'Copy session key'"
-          :title="keyCopied ? 'Copied' : 'Copy session key'"
+          :aria-label="keyCopied ? t('sessions.inspect.keyCopied') : t('sessions.inspect.copyKey')"
+          :title="keyCopied ? t('sessions.inspect.copied') : t('sessions.inspect.copyKey')"
           @click="copyKey"
         >
           <Icon :name="keyCopied ? 'check' : 'copy'" :size="16" />
@@ -28,8 +28,8 @@
           ref="closeBtn"
           type="button"
           class="btn btn--icon btn--ghost"
-          aria-label="Close"
-          title="Close"
+          :aria-label="t('common.close')"
+          :title="t('common.close')"
           @click="emit('close')"
         >
           <Icon name="x" :size="16" />
@@ -40,31 +40,31 @@
         <span class="inspect-meta__agent">{{ agentName }}</span>
         <span v-if="badge" class="inspect-meta__status" :class="badge.cls">{{ badge.label }}</span>
         <span class="inspect-meta__stats">
-          {{ item.messageCount != null ? item.messageCount.toLocaleString() : '—' }} msg
-          · updated {{ sessionRelTime(item.updatedAt) }}<template v-if="costText"> · {{ costText }}</template>
+          {{ t('sessions.msgCount', { count: item.messageCount != null ? item.messageCount.toLocaleString() : '—' }) }}
+          · {{ t('sessions.inspect.updated', { time: sessionRelTime(item.updatedAt) }) }}<template v-if="costText"> · {{ costText }}</template>
         </span>
       </div>
 
       <p v-if="snippetText" class="inspect-snippet">{{ snippetText }}</p>
 
-      <div ref="bodyRef" class="inspect-body" aria-label="Transcript preview">
+      <div ref="bodyRef" class="inspect-body" :aria-label="t('sessions.inspect.transcriptPreview')">
         <RunTrace v-if="!transcriptError" class="inspect-summary" :summary="summary" />
         <ErrorState
           v-if="transcriptError"
-          message="Could not load the transcript."
+          :message="t('sessions.inspect.transcriptError')"
           :on-retry="reload"
         />
         <div v-else-if="loading" class="inspect-state">
           <LoadingSpinner />
-          <p class="inspect-state__text">Loading transcript…</p>
+          <p class="inspect-state__text">{{ t('sessions.inspect.loadingTranscript') }}</p>
         </div>
         <template v-else>
           <div v-if="hasEarlier" class="inspect-earlier">
             <button type="button" class="btn btn--ghost" :disabled="loadingEarlier" @click="onLoadEarlier">
-              {{ loadingEarlier ? 'Loading…' : 'Load earlier' }}
+              {{ loadingEarlier ? t('sessions.inspect.loading') : t('sessions.inspect.loadEarlier') }}
             </button>
           </div>
-          <p v-if="transcriptRows.length === 0" class="inspect-empty">No messages yet.</p>
+          <p v-if="transcriptRows.length === 0" class="inspect-empty">{{ t('sessions.inspect.noMessages') }}</p>
           <article
             v-for="row in transcriptRows"
             :key="row.id"
@@ -89,8 +89,8 @@
                 <button
                   type="button"
                   class="btn btn--icon btn--ghost"
-                  aria-label="Close result"
-                  title="Close result"
+                  :aria-label="t('sessions.inspect.closeResult')"
+                  :title="t('sessions.inspect.closeResult')"
                   @click="resultView = null"
                 >
                   <Icon name="x" :size="14" />
@@ -104,7 +104,7 @@
 
       <footer class="inspect-actions">
         <button type="button" class="btn btn--primary" @click="emit('open-chat', item)">
-          Open in chat
+          {{ t('sessions.inspect.openInChat') }}
         </button>
         <button
           v-if="canAbort"
@@ -113,7 +113,7 @@
           :disabled="aborting"
           @click="onAbort"
         >
-          {{ aborting ? 'Aborting…' : 'Abort run' }}
+          {{ aborting ? t('sessions.inspect.aborting') : t('sessions.inspect.abortRun') }}
         </button>
       </footer>
     </aside>
@@ -122,6 +122,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import ErrorState from '@/components/ErrorState.vue'
 import LoadingSpinner from '@/components/LoadingSpinner.vue'
@@ -172,6 +173,7 @@ const {
   reset,
 } = useSessionInspect()
 
+const { t } = useI18n()
 const { renderMarkdown, stripDirectiveTags, stripTimePrefix } = useChatTextRendering()
 const { pushToast } = useToasts()
 const { confirm } = useConfirm()
@@ -213,8 +215,8 @@ function roleTone(role: string): string {
 }
 
 function roleLabel(role: string): string {
-  if (role === 'user') return 'You'
-  if (role === 'assistant') return 'Agent'
+  if (role === 'user') return t('sessions.inspect.roleYou')
+  if (role === 'assistant') return t('sessions.inspect.roleAgent')
   return role.charAt(0).toUpperCase() + role.slice(1)
 }
 
@@ -296,7 +298,7 @@ async function copyKey() {
     if (keyCopiedTimer) clearTimeout(keyCopiedTimer)
     keyCopiedTimer = setTimeout(() => { keyCopied.value = false }, 1500)
   } catch {
-    pushToast('Could not copy the session key.', { tone: 'danger' })
+    pushToast(t('sessions.inspect.copyKeyFailed'), { tone: 'danger' })
   }
 }
 
@@ -304,18 +306,18 @@ async function onAbort() {
   const item = props.item
   if (!item || aborting.value) return
   const ok = await confirm({
-    title: 'Abort run',
-    body: `Abort the active run in "${item.title}"?`,
-    primaryLabel: 'Abort',
+    title: t('sessions.inspect.abortTitle'),
+    body: t('sessions.inspect.abortBody', { title: item.title }),
+    primaryLabel: t('sessions.inspect.abortConfirm'),
   })
   if (!ok) return
   aborting.value = true
   try {
     const aborted = await abortSession(item.key)
-    pushToast(aborted ? 'Run aborted.' : 'No active run to abort.')
+    pushToast(aborted ? t('sessions.inspect.abortDone') : t('sessions.inspect.abortNone'))
     emit('aborted', item)
   } catch {
-    pushToast('Abort failed.', { tone: 'danger' })
+    pushToast(t('sessions.inspect.abortFailed'), { tone: 'danger' })
   } finally {
     aborting.value = false
   }

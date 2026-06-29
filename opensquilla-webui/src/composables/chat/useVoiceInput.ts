@@ -1,5 +1,6 @@
 import { ref } from 'vue'
 
+import i18n from '@/i18n'
 import { useToasts } from '@/composables/useToasts'
 
 interface TranscriptionResponse {
@@ -34,7 +35,7 @@ export function useVoiceInput() {
   async function startRecording(onText: (text: string) => void) {
     if (voiceBusy.value || voiceRecording.value) return
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
-      pushToast('Voice input is not supported in this browser', { tone: 'danger' })
+      pushToast(i18n.global.t('chat.toast.voiceUnsupported'), { tone: 'danger' })
       return
     }
     voiceBusy.value = true

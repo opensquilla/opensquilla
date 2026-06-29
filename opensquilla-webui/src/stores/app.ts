@@ -1,5 +1,12 @@
 import { ref, computed, watch } from 'vue'
 import { defineStore } from 'pinia'
+import { getPlatform } from '@/platform'
+import i18n, {
+  resolveInitialLocale,
+  loadLocaleMessages,
+  isSupportedLocale,
+  type LocaleCode,
+} from '@/i18n'
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 
@@ -17,6 +24,11 @@ export interface PendingApproval {
 
 export const useAppStore = defineStore('app', () => {
   const theme = ref<ThemeMode>('system')
+  // Active UI locale. Mirrors the theme pattern: localStorage is the source of
+  // truth, set instantly with no save, applied to <html lang>/dir and the
+  // vue-i18n instance. The sidebar/topbar switcher and the Settings Appearance
+  // Language row both write through setLocale, so they can never drift.
+  const locale = ref<LocaleCode>('en')
   const sidebarOpen = ref(true)
   const sidebarHovered = ref(false)
   // App-wide pending approvals, kept live by the gateway push events and a
@@ -105,6 +117,47 @@ export const useAppStore = defineStore('app', () => {
     setTheme(next)
   }
 
+  function applyLocale(code: LocaleCode) {
+    i18n.global.locale.value = code
+    document.documentElement.setAttribute('lang', code)
+    document.documentElement.setAttribute('dir', 'ltr')
+  }
+
+  // Resolve and apply the startup locale (saved → OS locale → data-locale →
+  // <html lang> → navigator → en). Loads the locale chunk before applying so the
+  // first paint is never half-translated; a failed chunk load falls back to en.
+  // Does NOT write localStorage — it only reflects what is already chosen.
+  async function initLocale() {
+    let osLocale: string | undefined
+    try {
+      osLocale = await getPlatform().getOsLocale()
+    } catch {
+      osLocale = undefined
+    }
+    const resolved = resolveInitialLocale(osLocale)
+    try {
+      await loadLocaleMessages(resolved)
+      locale.value = resolved
+      applyLocale(resolved)
+    } catch {
+      locale.value = 'en'
+      applyLocale('en')
+    }
+  }
+
+  async function setLocale(code: LocaleCode) {
+    if (!isSupportedLocale(code)) return
+    let target = code
+    try {
+      await loadLocaleMessages(target)
+    } catch {
+      target = 'en'
+    }
+    locale.value = target
+    try { localStorage.setItem('opensquilla-locale', target) } catch {}
+    applyLocale(target)
+  }
+
   function setSidebarOpen(open: boolean) {
     sidebarOpen.value = open
     if (!open) sidebarHovered.value = false
@@ -163,6 +216,7 @@ export const useAppStore = defineStore('app', () => {
 
   return {
     theme,
+    locale,
     resolvedTheme,
     sidebarOpen,
     sidebarHovered,
@@ -174,6 +228,8 @@ export const useAppStore = defineStore('app', () => {
     destroyTheme,
     setTheme,
     cycleTheme,
+    initLocale,
+    setLocale,
     setSidebarOpen,
     toggleSidebar,
     setSidebarHovered,

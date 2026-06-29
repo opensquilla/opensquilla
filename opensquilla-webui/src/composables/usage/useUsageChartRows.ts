@@ -1,5 +1,8 @@
 import { computed, type ComputedRef, type Ref } from 'vue'
+import i18n from '@/i18n'
 import type { ChartRow, SessionRow } from '@/types/usage'
+
+const t = i18n.global.t
 
 export function useUsageChartRows(options: {
   visibleSessions: ComputedRef<SessionRow[]>
@@ -15,8 +18,10 @@ export function useUsageChartRows(options: {
       return (inp + out) > 0
     })
     const shown = Math.min(20, pool.length)
-    const suffix = pool.length > shown ? ` · showing ${shown} of ${pool.length}` : ''
-    return (options.chartMode.value === 'cost' ? 'Top sessions by cost' : 'Top sessions by total tokens') + suffix
+    const suffix = pool.length > shown ? ` · ${t('usageLogs.chart.showingOf', { shown, total: pool.length })}` : ''
+    return (options.chartMode.value === 'cost'
+      ? t('usageLogs.chart.topByCost')
+      : t('usageLogs.chart.topByTokens')) + suffix
   })
 
   const chartRows = computed((): ChartRow[] => {

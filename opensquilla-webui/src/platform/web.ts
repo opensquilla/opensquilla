@@ -13,6 +13,9 @@ export function createWebPlatform(): Platform {
   return {
     id: 'web',
     capabilities: webCapabilities,
+    async getOsLocale() {
+      return undefined
+    },
     gateway: {
       async getStatus() {
         return { ...unavailableGateway }

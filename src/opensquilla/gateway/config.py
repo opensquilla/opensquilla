@@ -102,6 +102,10 @@ class ControlUiConfig(BaseSettings):
     enabled: bool = True
     base_path: str = "/control"
     frontend: Literal["vue", "legacy"] = "vue"
+    # Default UI locale served on first paint when the browser has no saved
+    # preference. The client (localStorage) and a manual switch always override
+    # it. Anything zh* clamps to zh-Hans; anything else to en.
+    default_locale: Literal["en", "zh-Hans", "ja", "fr", "de", "es"] = "en"
     allowed_origins: list[str] = Field(default_factory=list)
 
     @field_validator("base_path")
@@ -114,6 +118,19 @@ class ControlUiConfig(BaseSettings):
     def _normalize_frontend(cls, v: object) -> object:
         if isinstance(v, str):
             return v.strip().lower()
+        return v
+
+    @field_validator("default_locale", mode="before")
+    @classmethod
+    def _normalize_locale(cls, v: object) -> object:
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s.startswith("zh"):
+                return "zh-Hans"
+            for code in ("ja", "fr", "de", "es"):
+                if s.startswith(code):
+                    return code
+            return "en"
         return v
 
 

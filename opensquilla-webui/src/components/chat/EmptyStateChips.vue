@@ -2,7 +2,7 @@
   <div class="empty-state">
     <p class="empty-state__greeting">{{ greeting }}</p>
     <p class="empty-state__identity">{{ identityLine }}</p>
-    <div v-if="!suppressed" class="empty-state__chips" role="group" aria-label="Suggested tasks">
+    <div v-if="!suppressed" class="empty-state__chips" role="group" :aria-label="t('chat.suggestedTasks')">
       <button
         v-for="chip in chips"
         :key="chip"
@@ -16,7 +16,10 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRpcCall } from '@/composables/useRpc'
+
+const { t } = useI18n()
 
 /** Capability flags from the same onboarding.status snapshot SetupView reads. */
 interface CapabilityStatus {
@@ -40,38 +43,38 @@ const emit = defineEmits<{
 
 // Rendered immediately so a late capability lookup swaps labels in place
 // instead of shifting the landing layout, and kept whenever the lookup fails.
-const FALLBACK_CHIPS = [
-  'What can you do?',
-  'Summarize a webpage for me',
-  'Draft a plan for my week',
-]
+const FALLBACK_CHIPS = computed(() => [
+  t('chat.chips.whatCanYouDo'),
+  t('chat.chips.summarizeWebpage'),
+  t('chat.chips.planWeek'),
+])
 
 const capabilityStatus = useRpcCall<CapabilityStatus>('onboarding.status')
 const identity = useRpcCall<AgentIdentityPayload>('agent.identity.get', { agentId: props.agentId })
 
 const greeting = computed(() => {
   const hour = new Date().getHours()
-  if (hour >= 5 && hour < 12) return 'Good morning.'
-  if (hour >= 12 && hour < 18) return 'Good afternoon.'
-  return 'Good evening.'
+  if (hour >= 5 && hour < 12) return t('chat.greetingMorning')
+  if (hour >= 12 && hour < 18) return t('chat.greetingAfternoon')
+  return t('chat.greetingEvening')
 })
 
 const identityLine = computed(() => {
   const name = identity.data.value?.name
   const label = typeof name === 'string' && name.trim() ? name.trim() : props.agentId
-  return `${label} · ready`
+  return t('chat.identityReady', { label })
 })
 
 const chips = computed(() => {
   const status = capabilityStatus.data.value
-  if (!status) return FALLBACK_CHIPS
+  if (!status) return FALLBACK_CHIPS.value
   const derived: string[] = []
-  if (status.searchConfigured) derived.push("Search today's AI news")
+  if (status.searchConfigured) derived.push(t('chat.chips.searchAiNews'))
   if (status.imageGenerationConfigured && status.imageGenerationEnabled !== false) {
-    derived.push('Generate an image of a tiny squid mascot')
+    derived.push(t('chat.chips.generateImage'))
   }
-  derived.push('Summarize a webpage for me', 'What can you do?')
-  if (derived.length < 3) derived.push('Draft a plan for my week')
+  derived.push(t('chat.chips.summarizeWebpage'), t('chat.chips.whatCanYouDo'))
+  if (derived.length < 3) derived.push(t('chat.chips.planWeek'))
   return derived.slice(0, 4)
 })
 </script>

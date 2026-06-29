@@ -6,7 +6,7 @@
     style="--control-stat-columns: 5"
   >
     <div class="control-stat control-stat--static">
-      <div class="control-stat__label">Status</div>
+      <div class="control-stat__label">{{ t('shared.runTrace.status') }}</div>
       <div class="control-stat__value">
         <span v-if="summary.loading" class="run-trace__skeleton" aria-hidden="true" />
         <template v-else-if="summary.status">
@@ -21,28 +21,28 @@
       </div>
     </div>
     <div class="control-stat control-stat--static">
-      <div class="control-stat__label">Executor</div>
+      <div class="control-stat__label">{{ t('shared.runTrace.executor') }}</div>
       <div class="control-stat__value run-trace__summary-text">
         <span v-if="summary.loading" class="run-trace__skeleton" aria-hidden="true" />
         <template v-else>{{ summary.executor || '—' }}</template>
       </div>
     </div>
     <div class="control-stat control-stat--static">
-      <div class="control-stat__label">Time</div>
+      <div class="control-stat__label">{{ t('shared.runTrace.time') }}</div>
       <div class="control-stat__value control-stat__value--mono">
         <span v-if="summary.loading" class="run-trace__skeleton" aria-hidden="true" />
         <template v-else>{{ fmtMs(summary.elapsedMs) }}</template>
       </div>
     </div>
     <div class="control-stat control-stat--static">
-      <div class="control-stat__label">Tokens</div>
+      <div class="control-stat__label">{{ t('shared.runTrace.tokens') }}</div>
       <div class="control-stat__value control-stat__value--mono">
         <span v-if="summary.loading" class="run-trace__skeleton" aria-hidden="true" />
         <template v-else>{{ fmtTok(summary.tokens) }}</template>
       </div>
     </div>
     <div class="control-stat control-stat--static">
-      <div class="control-stat__label">Steps</div>
+      <div class="control-stat__label">{{ t('shared.runTrace.steps') }}</div>
       <div class="control-stat__value control-stat__value--mono">
         <span v-if="summary.loading" class="run-trace__skeleton" aria-hidden="true" />
         <template v-else>{{ summary.steps != null ? summary.steps : '—' }}</template>
@@ -56,10 +56,10 @@
       v-else-if="item.type === 'overflow'"
       type="button"
       class="tool-overflow-note"
-      title="Show all calls"
+      :title="t('shared.runTrace.showAllCalls')"
       @click="showAllRows = true"
     >
-      …{{ item.hiddenCount }} earlier calls
+      {{ t('shared.runTrace.earlierCalls', { count: item.hiddenCount }) }}
     </button>
     <div v-else class="step-card">
       <div
@@ -81,7 +81,7 @@
           >
             <span class="tool-row__bullet" :class="groupBulletClass(item.group)" aria-hidden="true" />
             <span class="tool-row__label">{{ item.group.label }}</span>
-            <span class="step-count">{{ item.group.calls.length }} calls</span>
+            <span class="step-count">{{ t('shared.runTrace.callsCount', { count: item.group.calls.length }) }}</span>
             <span v-if="item.group.secondary" class="tool-row__arg">{{ item.group.secondary }}</span>
             <span class="tool-row__trailing">
               <span class="tool-row__status">{{ resolvedGroupStatusText(item.group) }}</span>
@@ -150,6 +150,7 @@
 
 <script lang="ts">
 import { defineComponent, h, type PropType } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { ChatToolCallRenderItem } from '@/types/chat'
 
 const SECTION_PREVIEW_LIMIT = 200
@@ -223,13 +224,14 @@ const ToolRowSections = defineComponent({
   },
   emits: ['showResult'],
   setup(props, { emit }) {
+    const { t } = useI18n()
     return () => {
       const call = props.call
       const sections = []
       if (call.inputPreview) {
         const fullInput = call.inputRaw || ''
         sections.push(h('section', { class: 'tool-row-section' }, [
-          h('div', { class: 'tool-row-section__label' }, 'input'),
+          h('div', { class: 'tool-row-section__label' }, t('shared.runTrace.sectionInput')),
           h('pre', { class: 'tool-row-section__pre' }, call.inputPreview),
           fullInput.length > SECTION_PREVIEW_LIMIT
             ? h('button', {
@@ -237,25 +239,27 @@ const ToolRowSections = defineComponent({
                 class: 'step-view-btn',
                 onClick: (event: Event) => {
                   event.stopPropagation()
-                  emit('showResult', fullInput, `${props.label} · input`)
+                  emit('showResult', fullInput, `${props.label} · ${t('shared.runTrace.sectionInput')}`)
                 },
-              }, 'view full')
+              }, t('shared.runTrace.viewFull'))
             : null,
         ]))
       }
       const diagnostics = webDiagnosticsSummary(call.result)
       if (diagnostics) {
         sections.push(h('section', { class: 'tool-row-section' }, [
-          h('div', { class: 'tool-row-section__label' }, 'diagnostics'),
+          h('div', { class: 'tool-row-section__label' }, t('shared.runTrace.sectionDiagnostics')),
           h('pre', { class: 'tool-row-section__pre' }, diagnostics),
         ]))
       }
       if (call.result) {
-        const kind = call.isError ? 'error' : 'result'
+        const kindLabel = call.isError
+          ? t('shared.runTrace.sectionError')
+          : t('shared.runTrace.sectionResult')
         sections.push(h('section', {
           class: ['tool-row-section', { 'tool-row-section--error': call.isError }],
         }, [
-          h('div', { class: 'tool-row-section__label' }, kind),
+          h('div', { class: 'tool-row-section__label' }, kindLabel),
           h('pre', { class: 'tool-row-section__pre' }, call.resultPreview),
           call.result.length > SECTION_PREVIEW_LIMIT
             ? h('button', {
@@ -263,9 +267,9 @@ const ToolRowSections = defineComponent({
                 class: 'step-view-btn',
                 onClick: (event: Event) => {
                   event.stopPropagation()
-                  emit('showResult', call.result, `${props.label} · ${kind}`)
+                  emit('showResult', call.result, `${props.label} · ${kindLabel}`)
                 },
-              }, 'view full')
+              }, t('shared.runTrace.viewFull'))
             : null,
         ]))
       }
@@ -293,6 +297,8 @@ import {
 } from '@/utils/chat/toolDisplay'
 import { toolState } from '@/utils/chat/toParts'
 import { composeTree, statusVisual, type StatusVisual } from '@/components/run/runTrace'
+
+const { t } = useI18n()
 
 const MAX_TOOL_ROWS = 30
 
@@ -470,7 +476,7 @@ function groupBulletClass(group: ChatToolCallGroup) {
 function resultCountText(call: ChatToolCallRenderItem): string {
   if (call.isRunning || call.isError) return ''
   const count = toolResultCount(call.result)
-  return count === null ? '' : `${count} results`
+  return count === null ? '' : t('shared.runTrace.resultsCount', { count })
 }
 
 function elapsedFor(call: ChatToolCallRenderItem): string {
@@ -500,13 +506,13 @@ const STATUS_TONE: Record<RunTraceStatus, string> = {
   cancelled: 'idle',
 }
 
-const STATUS_LABEL: Record<RunTraceStatus, string> = {
-  idle: 'Idle',
-  queued: 'Queued',
-  running: 'Running',
-  success: 'Done',
-  error: 'Failed',
-  cancelled: 'Cancelled',
+const STATUS_LABEL_KEYS: Record<RunTraceStatus, string> = {
+  idle: 'shared.runTrace.statusIdle',
+  queued: 'shared.runTrace.statusQueued',
+  running: 'shared.runTrace.statusRunning',
+  success: 'shared.runTrace.statusDone',
+  error: 'shared.runTrace.statusFailed',
+  cancelled: 'shared.runTrace.statusCancelled',
 }
 
 const statusTone = computed(() => {
@@ -516,7 +522,7 @@ const statusTone = computed(() => {
 
 const statusLabel = computed(() => {
   const status = props.summary?.status
-  return status ? STATUS_LABEL[status] : '—'
+  return status ? t(STATUS_LABEL_KEYS[status]) : '—'
 })
 
 function fmtMs(ms?: number | null): string {

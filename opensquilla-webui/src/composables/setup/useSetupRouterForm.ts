@@ -1,4 +1,5 @@
 import { computed, ref, type ComputedRef } from 'vue'
+import i18n from '@/i18n'
 import {
   DEFAULT_TEXT_TIER,
   IMAGE_TIER,
@@ -21,10 +22,14 @@ export interface SetupTierRow extends SetupTierValue {
   name: string
 }
 
-const ROUTER_VISUAL_MODE_OPTIONS: Array<{ value: RouterVisualMode; label: string }> = [
-  { value: 'real_candidates', label: 'Real routing candidates' },
-  { value: 'legacy_grid', label: 'Three-tier visual panel' },
-]
+const ROUTER_VISUAL_MODE_VALUES: readonly RouterVisualMode[] = ['real_candidates', 'legacy_grid']
+
+function routerVisualModeOptions(): Array<{ value: RouterVisualMode; label: string }> {
+  return ROUTER_VISUAL_MODE_VALUES.map((value) => ({
+    value,
+    label: i18n.global.t(`setup.router.visualMode.${value}`),
+  }))
+}
 
 export function buildRouterPayload(
   mode: string,
@@ -57,12 +62,14 @@ interface RouterConfig {
   enabled?: boolean
   default_tier?: string
   visual_mode?: string
+  tier_profile?: string | null
   tiers?: Record<string, TierConfig>
 }
 
 interface RouterPanelContext {
   routerSummary: ComputedRef<string>
   hasSavedProvider: ComputedRef<boolean>
+  isOpenrouter: ComputedRef<boolean>
   textTiers: readonly string[]
   tierLabel: (tier: string) => string
 }
@@ -86,8 +93,18 @@ export function useSetupRouterForm() {
   function initFromConfig(
     router: RouterConfig,
     profileTiers: Record<string, TierConfig>,
+    provider = '',
   ) {
-    routerMode.value = router.enabled === false ? 'disabled' : 'recommended'
+    // openrouter-mix is the only enabled router mode whose tier_profile is null,
+    // and it is only valid for the openrouter LLM provider; recommended carries
+    // tier_profile = the provider. Anything else enabled is recommended.
+    if (router.enabled === false) {
+      routerMode.value = 'disabled'
+    } else if (provider.toLowerCase() === 'openrouter' && !router.tier_profile) {
+      routerMode.value = 'openrouter-mix'
+    } else {
+      routerMode.value = 'recommended'
+    }
     routerDefaultTier.value = normalizeRouterTier(router.default_tier || '') || DEFAULT_TEXT_TIER
     routerVisualMode.value = normalizeRouterVisualMode(router.visual_mode)
 
@@ -157,8 +174,9 @@ export function useSetupRouterForm() {
       routerDefaultTier: routerDefaultTier.value,
       routerVisualMode: routerVisualMode.value,
       routerVisualModeDirty: visualModeDirty.value,
-      routerVisualModeOptions: ROUTER_VISUAL_MODE_OPTIONS,
+      routerVisualModeOptions: routerVisualModeOptions(),
       hasSavedProvider: context.hasSavedProvider.value,
+      canUseOpenrouterMix: context.isOpenrouter.value,
       textTiers: context.textTiers,
       tierRows: tierRows(context.textTiers),
       tierLabel: context.tierLabel,

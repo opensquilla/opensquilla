@@ -1,5 +1,6 @@
 import { onMounted, onUnmounted, computed } from 'vue'
 import { useRequest } from '@/composables/useRequest'
+import i18n from '@/i18n'
 import type { Agent } from '@/types/agents'
 
 interface AgentsListResponse {
@@ -13,7 +14,7 @@ export function useAgentsData() {
   const { data, loading, error, refresh } = useRequest<AgentsListResponse>(
     'agents.list',
     undefined,
-    { errorLabel: 'Failed to load agents' },
+    { errorLabel: i18n.global.t('console.agents.loadFailed') },
   )
   const agents = computed<Agent[]>(() => data.value?.agents ?? [])
 

@@ -1,41 +1,60 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { useAppStore, type ThemeMode } from '@/stores/app'
+import { SUPPORTED_LOCALES, type LocaleCode } from '@/i18n'
 import Icon from '@/components/Icon.vue'
 
 // Client-only preferences: applied instantly to this browser and persisted via
-// the theme store. No readiness state; never part of the settings dirty bar.
-// This is theme's canonical home — the sidebar theme button is a reactive
-// shortcut over the SAME store, so the two can never drift.
+// the app store. No readiness state; never part of the settings dirty bar.
+// This is the canonical home for theme AND language — the sidebar theme button
+// and the topbar LanguageSwitcher are reactive shortcuts over the SAME store, so
+// the surfaces can never drift.
 const appStore = useAppStore()
+const { t } = useI18n()
 
 const themeOptions = [
-  { mode: 'system', label: 'System', icon: 'monitor' },
-  { mode: 'light', label: 'Light', icon: 'sun' },
-  { mode: 'dark', label: 'Dark', icon: 'moon' },
+  { mode: 'system', icon: 'monitor' },
+  { mode: 'light', icon: 'sun' },
+  { mode: 'dark', icon: 'moon' },
 ] as const
+
+// Native language names — deliberately NOT translated.
+const LOCALE_LABELS: Record<LocaleCode, string> = {
+  en: 'English',
+  'zh-Hans': '中文',
+  ja: '日本語',
+  fr: 'Français',
+  de: 'Deutsch',
+  es: 'Español',
+}
+const localeOptions = SUPPORTED_LOCALES.map((code) => ({ code, label: LOCALE_LABELS[code] }))
 
 function pickTheme(mode: ThemeMode) {
   appStore.setTheme(mode)
+}
+
+function pickLocale(code: LocaleCode) {
+  void appStore.setLocale(code)
 }
 </script>
 
 <template>
   <section class="control-section">
     <div class="control-section__head">
-      <h3 class="control-section__title">Appearance</h3>
-      <p class="control-section__desc">Theme for this browser. Changes apply instantly &mdash; no save needed.</p>
+      <h3 class="control-section__title">{{ t('settings.appearance.title') }}</h3>
+      <p class="control-section__desc">{{ t('settings.appearance.desc') }}</p>
     </div>
 
     <div class="control-row">
       <div class="control-row__label-block">
-        <span class="control-row__label">Theme</span>
-        <span class="control-row__desc">Follow your system, or force light or dark. The sidebar toggle is a shortcut to this same setting.</span>
+        <span class="control-row__label">{{ t('settings.appearance.themeLabel') }}</span>
+        <span class="control-row__desc">{{ t('settings.appearance.themeDesc') }}</span>
       </div>
       <div class="control-row__control">
         <!-- Native radio group: the browser handles arrow-key roving, focus and
              state announcement; the inputs are visually hidden and the labels
              render the segmented control. -->
-        <div class="appearance-theme" role="radiogroup" aria-label="Theme">
+        <div class="appearance-theme" role="radiogroup" :aria-label="t('settings.appearance.themeLabel')">
           <label
             v-for="opt in themeOptions"
             :key="opt.mode"
@@ -51,6 +70,39 @@ function pickTheme(mode: ThemeMode) {
               @change="pickTheme(opt.mode)"
             >
             <Icon :name="opt.icon" :size="15" aria-hidden="true" />
+            <span>{{ t('chrome.themeMode.' + opt.mode) }}</span>
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <div class="control-row">
+      <div class="control-row__label-block">
+        <span class="control-row__label">{{ t('settings.appearance.languageLabel') }}</span>
+        <span class="control-row__desc">{{ t('settings.appearance.languageDesc') }}</span>
+      </div>
+      <div class="control-row__control">
+        <div
+          class="appearance-theme"
+          role="radiogroup"
+          :aria-label="t('settings.appearance.languageLabel')"
+          data-testid="settings-language-group"
+        >
+          <label
+            v-for="opt in localeOptions"
+            :key="opt.code"
+            class="appearance-theme__opt"
+            :class="{ 'is-active': appStore.locale === opt.code }"
+          >
+            <input
+              class="appearance-theme__radio"
+              type="radio"
+              name="appearance-locale"
+              :value="opt.code"
+              :checked="appStore.locale === opt.code"
+              :data-testid="`settings-language-${opt.code}`"
+              @change="pickLocale(opt.code)"
+            >
             <span>{{ opt.label }}</span>
           </label>
         </div>

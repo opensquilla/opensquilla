@@ -1,12 +1,12 @@
 <template>
   <section class="usage-models">
     <div class="usage-section-head">
-      <h3 class="usage-section-title">By model</h3>
+      <h3 class="usage-section-title">{{ t('usageLogs.models.title') }}</h3>
       <span class="usage-section-meta">{{ modelsMeta }}</span>
     </div>
     <div class="usage-model-grid control-card-grid" style="--control-card-min: 260px">
       <template v-if="modelCards.length === 0">
-        <div class="usage-models__empty">No model usage yet.</div>
+        <div class="usage-models__empty">{{ t('usageLogs.models.empty') }}</div>
       </template>
       <article
         v-for="(m, i) in modelCards"
@@ -19,19 +19,19 @@
             <span v-if="m.provider" class="usage-model-card__provider">{{ m.provider }}</span>
             <span class="usage-model-card__name" :title="m.model">{{ m.name }}</span>
           </div>
-          <span class="usage-model-card__share" title="Share of total cost">{{ m.share.toFixed(1) }}%</span>
+          <span class="usage-model-card__share" :title="t('usageLogs.models.shareOfTotalCost')">{{ m.share.toFixed(1) }}%</span>
         </header>
         <div class="usage-model-card__share-bar">
           <span class="usage-model-card__share-fill" :style="`width:${m.share.toFixed(1)}%`" />
         </div>
         <dl class="usage-model-card__rows">
-          <div><dt>Tokens</dt><dd class="usage-mono">{{ m.totalTokens.toLocaleString() }}</dd></div>
-          <div><dt>Input</dt><dd class="usage-mono usage-dim">{{ m.inputTokens.toLocaleString() }}</dd></div>
-          <div><dt>Output</dt><dd class="usage-mono usage-dim">{{ m.outputTokens.toLocaleString() }}</dd></div>
-          <div v-if="m.cacheReadTokens > 0"><dt>Cache R</dt><dd class="usage-mono usage-dim">{{ m.cacheReadTokens.toLocaleString() }}</dd></div>
-          <div v-if="m.cacheWriteTokens > 0"><dt>Cache W</dt><dd class="usage-mono usage-dim">{{ m.cacheWriteTokens.toLocaleString() }}</dd></div>
-          <div><dt>Sessions</dt><dd>{{ m.sessions }}</dd></div>
-          <div class="usage-model-card__cost-row"><dt>Cost</dt><dd class="usage-mono usage-cost">{{ fmtCost(m.costUsd) }}</dd></div>
+          <div><dt>{{ t('usageLogs.metrics.tokens') }}</dt><dd class="usage-mono">{{ m.totalTokens.toLocaleString() }}</dd></div>
+          <div><dt>{{ t('usageLogs.metrics.input') }}</dt><dd class="usage-mono usage-dim">{{ m.inputTokens.toLocaleString() }}</dd></div>
+          <div><dt>{{ t('usageLogs.metrics.output') }}</dt><dd class="usage-mono usage-dim">{{ m.outputTokens.toLocaleString() }}</dd></div>
+          <div v-if="m.cacheReadTokens > 0"><dt>{{ t('usageLogs.metrics.cacheRead') }}</dt><dd class="usage-mono usage-dim">{{ m.cacheReadTokens.toLocaleString() }}</dd></div>
+          <div v-if="m.cacheWriteTokens > 0"><dt>{{ t('usageLogs.metrics.cacheWrite') }}</dt><dd class="usage-mono usage-dim">{{ m.cacheWriteTokens.toLocaleString() }}</dd></div>
+          <div><dt>{{ t('usageLogs.metrics.sessions') }}</dt><dd>{{ m.sessions }}</dd></div>
+          <div class="usage-model-card__cost-row"><dt>{{ t('usageLogs.metrics.cost') }}</dt><dd class="usage-mono usage-cost">{{ fmtCost(m.costUsd) }}</dd></div>
         </dl>
       </article>
     </div>
@@ -39,7 +39,10 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import type { ModelCard } from '@/types/usage'
+
+const { t } = useI18n()
 
 defineProps<{
   modelCards: ModelCard[]

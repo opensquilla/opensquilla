@@ -1,4 +1,5 @@
 import { ref } from 'vue'
+import i18n from '@/i18n'
 import { useToasts } from '@/composables/useToasts'
 import type { Attachment } from '@/types/chat'
 
@@ -100,13 +101,13 @@ export function useChatAttachments() {
       if (await fileLooksLikeUtf8Text(file)) {
         mime = 'text/plain'
       } else {
-        pushToast(`Unsupported file: ${file.name} (${mime})`, { tone: 'danger' })
+        pushToast(i18n.global.t('chat.toast.unsupportedFile', { name: file.name, mime }), { tone: 'danger' })
         return
       }
     }
     const hardCap = attachmentHardCapBytes(mime)
     if (file.size > hardCap) {
-      pushToast(`File too large: ${file.name}`, { tone: 'danger' })
+      pushToast(i18n.global.t('chat.toast.fileTooLarge', { name: file.name }), { tone: 'danger' })
       return
     }
 
@@ -125,21 +126,21 @@ export function useChatAttachments() {
       }
       reader.onerror = () => {
         removeAttachmentByLocalId(localId)
-        pushToast(`Could not read file: ${file.name}`, { tone: 'danger' })
+        pushToast(i18n.global.t('chat.toast.couldNotReadFile', { name: file.name }), { tone: 'danger' })
       }
       reader.readAsDataURL(file)
       return
     }
 
     if (!canStageAttachmentMime(mime)) {
-      pushToast(`File too large: ${file.name}`, { tone: 'danger' })
+      pushToast(i18n.global.t('chat.toast.fileTooLarge', { name: file.name }), { tone: 'danger' })
       return
     }
 
     pendingAttachments.value.push({ kind: 'uploading', local_id: localId, name: file.name, mime, size: file.size })
     uploadAttachmentStaged(file, mime, localId).catch((err) => {
       removeAttachmentByLocalId(localId)
-      pushToast(`Upload failed for ${file.name}: ` + (err?.message || err), { tone: 'danger' })
+      pushToast(i18n.global.t('chat.toast.uploadFailed', { name: file.name }) + ': ' + (err?.message || err), { tone: 'danger' })
     })
   }
 

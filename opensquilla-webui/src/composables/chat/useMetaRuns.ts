@@ -1,4 +1,5 @@
 import { reactive, ref, watch, type Ref } from 'vue'
+import i18n from '@/i18n'
 import type { RpcEventHandler } from '@/lib/rpc'
 import type {
   MetaPreflightPayload,
@@ -221,9 +222,10 @@ export function useMetaRuns(options: UseMetaRunsOptions) {
   }
 
   // Toast-only actions: vanilla surfaces guidance and does NOT call replay.
+  // Maps the action to its i18n message key (resolved at toast time).
   const TOAST_ACTIONS: Record<string, string> = {
-    'install-dependency': 'Install the missing dependency, then retry this MetaSkill run.',
-    'continue-text-only': 'Continue with text outputs only, then retry if an artifact is still needed.',
+    'install-dependency': 'chat.metaRuns.toastInstallDependency',
+    'continue-text-only': 'chat.metaRuns.toastContinueTextOnly',
   }
 
   async function onRibbonAction(payload: { action: string; stepId: string | null; runId: string }) {
@@ -234,7 +236,7 @@ export function useMetaRuns(options: UseMetaRunsOptions) {
       // refill the composer with the prior user message and re-send it.
       const text = options.lastUserMessageText()
       if (!text) {
-        options.pushToast('No previous message to retry', { tone: 'info' })
+        options.pushToast(i18n.global.t('chat.metaRuns.noPreviousMessage'), { tone: 'info' })
         return
       }
       options.sendComposerText(text)
@@ -262,7 +264,7 @@ export function useMetaRuns(options: UseMetaRunsOptions) {
 
     if (action in TOAST_ACTIONS) {
       // install-dependency / continue-text-only are toast-only in vanilla.
-      options.pushToast(TOAST_ACTIONS[action], { tone: 'info', duration: 3000 })
+      options.pushToast(i18n.global.t(TOAST_ACTIONS[action]), { tone: 'info', duration: 3000 })
       return
     }
 
@@ -287,7 +289,7 @@ export function useMetaRuns(options: UseMetaRunsOptions) {
       if (message) options.sendComposerText(message)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      options.pushToast(`Replay failed — ${message}`, { tone: 'danger' })
+      options.pushToast(i18n.global.t('chat.metaRuns.replayFailed', { message }), { tone: 'danger' })
     }
   }
 

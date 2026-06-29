@@ -101,8 +101,20 @@ export function useSetupProviderForm() {
     return ''
   }
 
+  function isNonEmpty(value: unknown): boolean {
+    return typeof value === 'string' ? value.trim() !== '' : value !== undefined && value !== null && value !== ''
+  }
+
   function updateField(name: string, value: unknown) {
     providerFieldValues.value[name] = value
+    // api_key (pasted) and api_key_env (env reference) are mutually exclusive:
+    // the gateway rejects a save that carries both. Setting one to a non-empty
+    // value clears the other in the form so the two can never be submitted
+    // together (the env field is often pre-filled from a detected variable).
+    if (isNonEmpty(value)) {
+      if (name === 'api_key') providerFieldValues.value.api_key_env = ''
+      else if (name === 'api_key_env') providerFieldValues.value.api_key = ''
+    }
   }
 
   function selectProvider(value: string) {
@@ -110,7 +122,16 @@ export function useSetupProviderForm() {
   }
 
   function payload(): Record<string, unknown> {
-    return buildProviderPayload(providerSelected.value, providerFieldValues.value)
+    // Hard guard (independent of UI state): never submit both a pasted key and
+    // an env reference. A non-empty pasted api_key wins; otherwise the env
+    // reference is used. buildProviderPayload drops empty values.
+    const values: Record<string, unknown> = { ...providerFieldValues.value }
+    if (isNonEmpty(values.api_key)) {
+      delete values.api_key_env // a real pasted key wins
+    } else {
+      delete values.api_key // blank/whitespace paste is not a credential, keep env reference
+    }
+    return buildProviderPayload(providerSelected.value, values)
   }
 
   function createPanel(context: ProviderPanelContext) {

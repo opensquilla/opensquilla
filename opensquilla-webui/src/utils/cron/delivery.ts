@@ -1,3 +1,4 @@
+import i18n from '@/i18n'
 import type { CronDeliveryFormValues, CronJob, DeliveryConfig, FailureDestination } from '@/types/cron'
 
 export interface NormalizedCronDeliveryFields {
@@ -59,7 +60,7 @@ export function buildDeliveryFromValues(values: CronDeliveryFormValues): CronDel
   }
   if (mode === 'webhook') {
     const url = values.deliveryWebhookUrl.trim()
-    if (!url) return { error: 'Webhook URL is required for webhook delivery' }
+    if (!url) return { error: i18n.global.t('cronSkills.delivery.errWebhookUrlRequired') }
     const out: DeliveryConfig = { mode: 'webhook', webhookUrl: url }
     const token = values.deliveryWebhookToken.trim()
     if (token) out.webhookToken = token
@@ -86,7 +87,7 @@ function buildFailureDestinationFromValues(values: CronDeliveryFormValues): { de
   if (!values.fdMode) return { delivery: null }
   if (values.fdMode === 'webhook') {
     const url = values.fdWebhookUrl.trim()
-    if (!url) return { error: 'Failure-destination webhook URL is required' }
+    if (!url) return { error: i18n.global.t('cronSkills.delivery.errFdWebhookUrlRequired') }
     const out: FailureDestination = { mode: 'webhook', webhookUrl: url }
     const token = values.fdWebhookToken.trim()
     if (token) out.webhookToken = token
@@ -95,7 +96,7 @@ function buildFailureDestinationFromValues(values: CronDeliveryFormValues): { de
   const channel = values.fdChannel.trim()
   const to = values.fdTo.trim()
   const account = values.fdAccount.trim()
-  if (!channel && !to) return { error: 'Failure destination channel needs a channel or recipient' }
+  if (!channel && !to) return { error: i18n.global.t('cronSkills.delivery.errFdChannelNeedsTarget') }
   const out: FailureDestination = { mode: 'channel' }
   if (channel) out.channelName = channel.toLowerCase()
   if (to) out.to = to

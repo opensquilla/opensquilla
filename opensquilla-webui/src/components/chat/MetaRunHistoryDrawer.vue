@@ -5,19 +5,19 @@
       class="meta-runs-drawer"
       role="dialog"
       aria-modal="true"
-      aria-label="MetaSkill run history"
+      :aria-label="t('chat.metaRunHistory')"
     >
       <header class="meta-runs-head">
-        <h3 class="meta-runs-head__title">MetaSkill runs</h3>
+        <h3 class="meta-runs-head__title">{{ t('chat.metaRuns.title') }}</h3>
         <button type="button" class="btn btn--ghost" :disabled="loading" @click="loadFailures">
-          Failures
+          {{ t('chat.metaRuns.failures') }}
         </button>
         <button
           ref="closeBtn"
           type="button"
           class="btn btn--icon btn--ghost"
-          aria-label="Close MetaSkill run history"
-          title="Close"
+          :aria-label="t('chat.metaRuns.closeHistory')"
+          :title="t('common.close')"
           @click="emit('close')"
         >
           <Icon name="x" :size="16" />
@@ -25,9 +25,9 @@
       </header>
 
       <div class="meta-runs-body">
-        <p v-if="loading" class="meta-runs-empty">Loading…</p>
+        <p v-if="loading" class="meta-runs-empty">{{ t('chat.metaRuns.loading') }}</p>
         <p v-else-if="error" class="meta-runs-error" role="alert">{{ error }}</p>
-        <p v-else-if="runs.length === 0" class="meta-runs-empty">No MetaSkill runs for this session.</p>
+        <p v-else-if="runs.length === 0" class="meta-runs-empty">{{ t('chat.metaRuns.empty') }}</p>
         <ol v-else class="meta-runs-list">
           <li v-for="run in runs" :key="runKey(run)" class="meta-runs-item" :data-run-id="run.run_id || ''">
             <div class="meta-runs-item__row">
@@ -37,10 +37,10 @@
               <span class="meta-runs-item__status">{{ run.status || 'unknown' }}{{ costText(run) }}</span>
             </div>
             <div class="meta-runs-item__actions">
-              <button type="button" class="btn btn--ghost" @click="runAction('draft', run)">Draft</button>
-              <button type="button" class="btn btn--ghost" @click="runAction('diff', run)">Diff</button>
-              <button type="button" class="btn btn--ghost" @click="runAction('replay', run)">Replay</button>
-              <button type="button" class="btn btn--ghost" @click="runAction('cost', run)">Cost</button>
+              <button type="button" class="btn btn--ghost" @click="runAction('draft', run)">{{ t('chat.metaRuns.draft') }}</button>
+              <button type="button" class="btn btn--ghost" @click="runAction('diff', run)">{{ t('chat.metaRuns.diff') }}</button>
+              <button type="button" class="btn btn--ghost" @click="runAction('replay', run)">{{ t('chat.metaRuns.replay') }}</button>
+              <button type="button" class="btn btn--ghost" @click="runAction('cost', run)">{{ t('chat.metaRuns.cost') }}</button>
               <button
                 type="button"
                 class="btn btn--ghost meta-runs-validate"
@@ -48,7 +48,7 @@
                 :title="validationTitle(run)"
                 @click="runAction('validate', run)"
               >
-                Validate
+                {{ t('chat.metaRuns.validate') }}
               </button>
             </div>
             <!-- Detail panel: replace-or-toggle per run+kind (not append-forever) -->
@@ -66,8 +66,11 @@
 
 <script setup lang="ts">
 import { ref, toRef, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import { useDialogA11y } from '@/composables/useDialogA11y'
+
+const { t } = useI18n()
 
 interface MetaRunUsage {
   available?: boolean
@@ -143,8 +146,8 @@ function validationAvailable(run: MetaRunListItem): boolean {
 
 function validationTitle(run: MetaRunListItem): string {
   return validationAvailable(run)
-    ? 'Validation available'
-    : run.validation?.reason || 'Validation unavailable'
+    ? t('chat.metaRuns.validationAvailable')
+    : run.validation?.reason || t('chat.metaRuns.validationUnavailable')
 }
 
 function detailFor(run: MetaRunListItem) {
@@ -166,7 +169,7 @@ function setDetail(runId: string, kind: string, payload: unknown) {
 
 function setDetailError(runId: string, message: string) {
   const next = new Map(details.value)
-  next.set(runId, { kind: 'error', json: message || 'Action failed' })
+  next.set(runId, { kind: 'error', json: message || t('chat.metaRuns.actionFailed') })
   details.value = next
 }
 
@@ -190,7 +193,7 @@ async function loadRuns() {
     runs.value = Array.isArray(payload?.runs) ? payload.runs : []
   } catch (err) {
     runs.value = []
-    error.value = err instanceof Error ? err.message : String(err || 'Failed to load runs')
+    error.value = err instanceof Error ? err.message : String(err || t('chat.metaRuns.loadFailed'))
   } finally {
     loading.value = false
   }
@@ -207,7 +210,7 @@ async function loadFailures() {
     next.set('__failures__', { kind: 'failures', json: JSON.stringify(payload ?? {}, null, 2) })
     details.value = next
   } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err || 'Action failed')
+    error.value = err instanceof Error ? err.message : String(err || t('chat.metaRuns.actionFailed'))
   }
 }
 
@@ -227,7 +230,7 @@ async function runAction(action: string, run: MetaRunListItem) {
     } else if (action === 'diff') {
       const previousRunId = previousRunIdFor(runId)
       if (!previousRunId) {
-        setDetailError(runId, 'No previous run to diff against.')
+        setDetailError(runId, t('chat.metaRuns.noPreviousRun'))
         return
       }
       const payload = await props.rpc.call<{ diff?: unknown }>('meta.runs.diff', {

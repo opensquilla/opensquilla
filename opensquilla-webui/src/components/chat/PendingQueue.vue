@@ -3,27 +3,27 @@
     <div class="chat-pending-header">
       <span
         class="chat-pending-label"
-        title="Alt+&#8593; pulls the most recent back into the input &#183; ESC recovers all to input &#183; sends FIFO when the current response finishes"
+        :title="t('chat.pending.hint')"
       >
-        Pending {{ items.length }}/{{ maxPending }}
+        {{ t('chat.pending.label', { count: items.length, max: maxPending }) }}
       </span>
       <span
         v-if="mode"
         class="chat-pending-mode"
         :class="{ 'chat-pending-mode--steer': mode === 'steer' }"
         :title="mode === 'steer'
-          ? 'Steer mode: new sends interrupt the response now; these queued messages still auto-send after the turn'
-          : 'Queue mode: these messages auto-send in order when the current response finishes'"
+          ? t('chat.pending.steerHint')
+          : t('chat.pending.queueHint')"
       >
-        {{ mode === 'steer' ? 'Steer' : 'Queue' }}
+        {{ mode === 'steer' ? t('chat.steerMode') : t('chat.queueMode') }}
       </span>
       <button
         v-if="items.length >= 2"
         class="chat-pending-clear"
-        aria-label="Clear all pending messages"
+        :aria-label="t('chat.pending.clearAll')"
         @click="$emit('clear')"
       >
-        Clear all
+        {{ t('chat.pending.clearAll') }}
       </button>
     </div>
     <div class="chat-pending-chips">
@@ -37,8 +37,8 @@
         <span v-if="item.attachments?.length" class="chat-pending-attch">&#128206;{{ item.attachments.length }}</span>
         <button
           class="chat-pending-chip-remove"
-          :aria-label="`Remove pending message ${index + 1}`"
-          title="Remove"
+          :aria-label="t('chat.pending.removeMessage', { index: index + 1 })"
+          :title="t('chat.remove')"
           @click="$emit('remove', index)"
         >
           &times;
@@ -49,7 +49,10 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import type { Attachment } from '@/types/chat'
+
+const { t } = useI18n()
 
 interface PendingQueueItem {
   text: string

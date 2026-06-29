@@ -1,4 +1,5 @@
 import type { RouteRecordRaw } from 'vue-router'
+import { readLastRoute } from './lastRoute'
 
 const OverviewView = () => import('@/views/OverviewView.vue')
 const ChatView = () => import('@/views/ChatView.vue')
@@ -15,6 +16,11 @@ export const sharedRoutes: RouteRecordRaw[] = [
   {
     path: '/',
     redirect: () => {
+      // Reopen the last-viewed view if one is saved (and still valid). This
+      // only fires when landing on the root, so an explicit deep link to a
+      // specific view is never overridden. Falls back to the platform default.
+      const saved = readLastRoute()
+      if (saved) return saved
       const isMobile = window.matchMedia('(max-width: 768px)').matches
       return isMobile ? '/chat' : '/sessions'
     },

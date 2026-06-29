@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import Icon from './Icon.vue'
 import { useRpcCall } from '@/composables/useRpc'
@@ -8,6 +9,7 @@ import {
   type ReadinessStatus,
 } from '@/composables/setup/useReadinessSummary'
 
+const { t } = useI18n()
 const router = useRouter()
 const { data: status } = useRpcCall<ReadinessStatus>('onboarding.status')
 const { needsAction, actionCount } = useReadinessSummary(status)
@@ -34,30 +36,30 @@ function openReadiness() { router.push('/overview') }
     class="sidebar-setup-banner"
     role="status"
     aria-live="polite"
-    aria-label="Gateway setup needed"
+    :aria-label="t('shared.setupBanner.ariaLabel')"
   >
     <div class="sidebar-setup-banner__row">
       <Icon class="sidebar-setup-banner__icon" name="info" :size="15" aria-hidden="true" />
       <span class="sidebar-setup-banner__text">
-        Setup needed<span v-if="actionCount > 1"> ({{ actionCount }})</span>
+        {{ t('shared.setupBanner.title') }}<span v-if="actionCount > 1"> ({{ actionCount }})</span>
       </span>
       <button
         type="button"
         class="sidebar-setup-banner__dismiss"
-        title="Dismiss"
-        aria-label="Dismiss setup notice"
+        :title="t('shared.setupBanner.dismiss')"
+        :aria-label="t('shared.setupBanner.dismissNotice')"
         @click="dismiss"
       >
         <Icon name="x" :size="13" aria-hidden="true" />
       </button>
     </div>
-    <p class="sidebar-setup-banner__hint">The gateway isn't ready to run yet.</p>
+    <p class="sidebar-setup-banner__hint">{{ t('shared.setupBanner.hint') }}</p>
     <div class="sidebar-setup-banner__actions">
       <button type="button" class="sidebar-setup-banner__cta" @click="openSetup">
-        Finish setup
+        {{ t('shared.setupBanner.finishSetup') }}
       </button>
       <button type="button" class="sidebar-setup-banner__link" @click="openReadiness">
-        View readiness
+        {{ t('shared.setupBanner.viewReadiness') }}
       </button>
     </div>
   </section>

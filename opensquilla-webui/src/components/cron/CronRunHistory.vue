@@ -2,22 +2,22 @@
   <div class="cron-detail">
     <div class="cron-detail__head">
       <div>
-        <span class="cron-detail__eyebrow">Run history</span>
+        <span class="cron-detail__eyebrow">{{ t('cronSkills.runHistory.eyebrow') }}</span>
         <strong class="cron-detail__name">{{ job.name || job.id }}</strong>
       </div>
-      <button type="button" class="cron-iconbtn" aria-label="Close" @click="emit('close')">
+      <button type="button" class="cron-iconbtn" :aria-label="t('common.close')" @click="emit('close')">
         <Icon name="x" :size="16" />
       </button>
     </div>
     <div class="cron-detail__runs">
-      <p v-if="loading" class="cron-muted">Loading&hellip;</p>
-      <p v-else-if="runs.length === 0" class="cron-muted">No run history yet.</p>
+      <p v-if="loading" class="cron-muted">{{ t('cronSkills.runHistory.loading') }}</p>
+      <p v-else-if="runs.length === 0" class="cron-muted">{{ t('cronSkills.runHistory.empty') }}</p>
       <DataTable
         v-else
         class="cron-runs-table"
         :columns="runColumns"
         :rows="runRows"
-        empty-text="No run history yet."
+        :empty-text="t('cronSkills.runHistory.empty')"
       >
         <template #status="{ row }">
           <span :class="`status status--${row.status === 'ok' ? 'ok' : 'err'}`">{{ row.statusLabel }}</span>
@@ -27,7 +27,7 @@
         </template>
         <template #_chat="{ row }">
           <button v-if="row.sessionKey" type="button" class="cron-link cron-run-chat-link" @click="emit('openChat', String(row.sessionKey))">
-            &rarr; Chat
+            {{ t('cronSkills.runHistory.openChat') }}
           </button>
         </template>
       </DataTable>
@@ -37,9 +37,12 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import DataTable from '@/components/DataTable.vue'
 import Icon from '@/components/Icon.vue'
 import { relTime } from '@/utils/cron/time'
+
+const { t } = useI18n()
 
 interface CronRunHistoryJob {
   id: string
@@ -67,20 +70,20 @@ const emit = defineEmits<{
   openChat: [sessionKey: string]
 }>()
 
-const runColumns = [
-  { key: 'time', label: 'Time' },
-  { key: 'status', label: 'Status' },
-  { key: 'duration', label: 'Duration' },
-  { key: 'delivery', label: 'Delivery' },
-  { key: 'reply', label: 'Reply' },
+const runColumns = computed(() => [
+  { key: 'time', label: t('cronSkills.runHistory.colTime') },
+  { key: 'status', label: t('cronSkills.runHistory.colStatus') },
+  { key: 'duration', label: t('cronSkills.runHistory.colDuration') },
+  { key: 'delivery', label: t('cronSkills.runHistory.colDelivery') },
+  { key: 'reply', label: t('cronSkills.runHistory.colReply') },
   { key: '_chat', label: '' },
-]
+])
 
 const runRows = computed(() =>
   props.runs.map(run => ({
     time: run.started_at ? relTime(run.started_at) : '—',
     status: run.status || 'unknown',
-    statusLabel: run.status || 'unknown',
+    statusLabel: run.status || t('cronSkills.runHistory.unknown'),
     duration: run.duration_ms != null ? run.duration_ms + 'ms' : '—',
     delivery: deliveryStatusText(run),
     reply: run.summary ? run.summary.substring(0, 120) : '—',

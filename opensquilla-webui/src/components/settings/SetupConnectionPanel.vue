@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRpcStore } from '@/stores/rpc'
+
+const { t } = useI18n()
 
 // Gateway connection editor. This is the one Settings section that must work
 // while the gateway is NOT connected — it is exactly how you point the UI at a
@@ -48,16 +51,16 @@ const statusPillClass = computed(() => {
 })
 
 const statusLabel = computed(() => {
-  if (statusState.value === 'connected') return 'Connected'
-  if (statusState.value === 'connecting') return 'Connecting'
-  return 'Disconnected'
+  if (statusState.value === 'connected') return t('setup.connection.connected')
+  if (statusState.value === 'connecting') return t('setup.connection.connecting')
+  return t('setup.connection.disconnected')
 })
 
 const statusReason = computed(() => {
-  if (statusState.value === 'connected') return 'Live link to the gateway socket.'
-  if (statusState.value === 'connecting') return 'Reaching the gateway…'
-  if (rpc.error) return `Last attempt failed: ${rpc.error}`
-  return 'Not connected. Check the WebSocket URL and try Connect.'
+  if (statusState.value === 'connected') return t('setup.connection.reasonConnected')
+  if (statusState.value === 'connecting') return t('setup.connection.reasonConnecting')
+  if (rpc.error) return t('setup.connection.reasonFailed', { error: rpc.error })
+  return t('setup.connection.reasonDisconnected')
 })
 
 function connect() {
@@ -75,8 +78,8 @@ function disconnect() {
 <template>
   <section class="control-section">
     <div class="control-section__head">
-      <h3 class="control-section__title">Connection</h3>
-      <p class="control-section__desc">Point this browser at a gateway. Connecting applies immediately &mdash; no save needed.</p>
+      <h3 class="control-section__title">{{ t('setup.connection.title') }}</h3>
+      <p class="control-section__desc">{{ t('setup.connection.desc') }}</p>
     </div>
 
     <div class="conn-status" :class="statusPillClass" role="status" aria-live="polite">
@@ -86,8 +89,8 @@ function disconnect() {
 
     <div class="control-row control-row--stack">
       <div class="control-row__label-block">
-        <label class="control-row__label" for="conn-ws-url">WebSocket URL</label>
-        <span class="control-row__desc">The gateway socket endpoint, e.g. <code>ws://host:port/ws</code>.</span>
+        <label class="control-row__label" for="conn-ws-url">{{ t('setup.connection.wsUrlLabel') }}</label>
+        <span class="control-row__desc">{{ t('setup.connection.wsUrlDesc') }} <code>ws://host:port/ws</code></span>
       </div>
       <div class="control-row__control">
         <input
@@ -104,8 +107,8 @@ function disconnect() {
 
     <div class="control-row control-row--stack">
       <div class="control-row__label-block">
-        <label class="control-row__label" for="conn-ws-token">Token <span class="conn-optional">optional</span></label>
-        <span class="control-row__desc">Bearer token for gateways that require auth. Stored in this tab only.</span>
+        <label class="control-row__label" for="conn-ws-token">{{ t('setup.connection.tokenLabel') }} <span class="conn-optional">{{ t('setup.connection.optional') }}</span></label>
+        <span class="control-row__desc">{{ t('setup.connection.tokenDesc') }}</span>
       </div>
       <div class="control-row__control">
         <input
@@ -121,9 +124,9 @@ function disconnect() {
 
     <div class="conn-actions">
       <button type="button" class="btn btn--primary" @click="connect">
-        {{ statusState === 'connected' ? 'Reconnect' : 'Connect' }}
+        {{ statusState === 'connected' ? t('setup.connection.reconnect') : t('setup.connection.connect') }}
       </button>
-      <button type="button" class="btn" @click="disconnect">Disconnect</button>
+      <button type="button" class="btn" @click="disconnect">{{ t('setup.connection.disconnect') }}</button>
     </div>
   </section>
 </template>

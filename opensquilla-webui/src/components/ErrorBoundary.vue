@@ -1,11 +1,11 @@
 <template>
   <div v-if="hasError" class="error-boundary">
     <div class="error-boundary__content">
-      <h2>Something went wrong</h2>
-      <p class="error-boundary__message">{{ errorMessage }}</p>
+      <h2>{{ t('errorBoundary.title') }}</h2>
+      <p class="error-boundary__message">{{ errorMessage || t('errorBoundary.defaultMessage') }}</p>
       <div class="error-boundary__actions">
-        <button class="btn btn--primary" @click="reload">Reload page</button>
-        <button class="btn btn--ghost" @click="clearError">Dismiss</button>
+        <button class="btn btn--primary" @click="reload">{{ t('errorBoundary.reload') }}</button>
+        <button class="btn btn--ghost" @click="clearError">{{ t('errorBoundary.dismiss') }}</button>
       </div>
     </div>
   </div>
@@ -14,9 +14,14 @@
 
 <script setup lang="ts">
 import { ref, onErrorCaptured } from 'vue'
+import { useI18n } from 'vue-i18n'
+
+// useScope:'global' so the outermost error boundary never depends on a scoped
+// i18n instance being present when it has to render.
+const { t } = useI18n({ useScope: 'global' })
 
 const hasError = ref(false)
-const errorMessage = ref('An unexpected error occurred.')
+const errorMessage = ref('')
 
 onErrorCaptured((err: unknown) => {
   hasError.value = true

@@ -2,15 +2,15 @@
   <div class="usage-expand">
     <div class="usage-expand__head">
       <span class="usage-expand__connector" aria-hidden="true" />
-      <span class="usage-expand__eyebrow">Model breakdown</span>
-      <span class="usage-expand__count">{{ rows.length }} model{{ rows.length === 1 ? '' : 's' }}</span>
+      <span class="usage-expand__eyebrow">{{ t('usageLogs.breakdown.title') }}</span>
+      <span class="usage-expand__count">{{ t('usageLogs.breakdown.modelCount', { count: rows.length }) }}</span>
       <span class="usage-expand__spacer" />
-      <span class="usage-expand__total">{{ totalTokens.toLocaleString() }} tokens &middot; {{ fmtCost(totalCost) }}</span>
+      <span class="usage-expand__total">{{ t('usageLogs.breakdown.total', { tokens: totalTokens.toLocaleString(), cost: fmtCost(totalCost) }) }}</span>
     </div>
     <div v-if="anyProrated" class="usage-expand__notice" role="note">
-      Per-model split is estimated; total is the actual billed amount.
+      {{ t('usageLogs.breakdown.proratedNotice') }}
     </div>
-    <div class="usage-expand__list" role="table" aria-label="Model breakdown">
+    <div class="usage-expand__list" role="table" :aria-label="t('usageLogs.breakdown.title')">
       <div
         v-for="(m, mi) in rows"
         :key="mi"
@@ -42,7 +42,10 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import type { BreakdownRow } from '@/types/usage'
+
+const { t } = useI18n()
 
 defineProps<{
   rows: BreakdownRow[]

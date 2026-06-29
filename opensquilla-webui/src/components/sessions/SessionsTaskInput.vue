@@ -5,19 +5,19 @@
       v-model="text"
       class="hub-task__input"
       rows="2"
-      placeholder="Start a new task…"
-      aria-label="New task"
+      :placeholder="t('sessions.taskInput.placeholder')"
+      :aria-label="t('sessions.taskInput.ariaLabel')"
       @keydown.enter.exact.prevent="submit"
     ></textarea>
     <div class="hub-task__bar">
-      <span v-show="text.trim()" class="hub-task__hint">Enter to start · Shift+Enter for a new line</span>
+      <span v-show="text.trim()" class="hub-task__hint">{{ t('sessions.taskInput.hint') }}</span>
       <button
         type="submit"
         class="btn btn--primary hub-task__send"
         :disabled="!text.trim()"
       >
         <Icon name="arrowUp" :size="16" />
-        <span>Start task</span>
+        <span>{{ t('sessions.taskInput.start') }}</span>
       </button>
     </div>
   </form>
@@ -25,7 +25,10 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
+
+const { t } = useI18n()
 
 const emit = defineEmits<{
   submit: [text: string]

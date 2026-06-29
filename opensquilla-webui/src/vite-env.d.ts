@@ -9,6 +9,7 @@ import type {
 
 declare global {
   interface OpenSquillaDesktopApi {
+    getOsLocale: () => Promise<string | undefined>
     getGatewayStatus: () => Promise<DesktopSettings['gateway']>
     revealGatewayLog: () => Promise<boolean>
     getDesktopSettings: () => Promise<DesktopSettings>

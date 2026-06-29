@@ -4,10 +4,12 @@ import source from './ClarifyCard.vue?raw'
 
 describe('ClarifyCard submit feedback', () => {
   it('shows immediate visible feedback while a clarify reply is being sent', () => {
-    expect(source).toContain("{{ busy ? 'Sending reply…' : 'Send reply' }}")
+    // Localized (i18n) but the feedback contract is unchanged: a busy/idle submit
+    // label, a live submit-status row, and the "reply received" outcome title.
+    expect(source).toContain("busy ? t('chat.clarify.sendingReply') : t('chat.clarify.sendReply')")
     expect(source).toContain('data-testid="clarify-submit-status"')
-    expect(source).toContain('Sending reply · continuing run…')
-    expect(source).toContain("Reply received · continuing run…")
+    expect(source).toContain("t('chat.clarify.sendingContinuing')")
+    expect(source).toContain("t('chat.clarify.replyReceived')")
   })
 
   it('renders a prominent submitted banner instead of a low-contrast text row', () => {

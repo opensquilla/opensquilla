@@ -1,5 +1,8 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import ControlSwitch from '@/components/ControlSwitch.vue'
+
+const { t } = useI18n()
 
 interface BehaviorPanelContract {
   autoSessionTitles: boolean
@@ -20,25 +23,25 @@ const emit = defineEmits<{
 <template>
   <section class="control-section">
     <div class="control-section__head">
-      <h3 class="control-section__title">Session behavior</h3>
+      <h3 class="control-section__title">{{ t('setup.behavior.title') }}</h3>
       <p class="control-section__desc">{{ panel.statusText }}</p>
     </div>
     <label class="control-row">
       <div class="control-row__label-block">
-        <span class="control-row__label">Auto session titles</span>
-        <span class="control-row__desc">Generate short titles after the first message; off uses the first-message fallback.</span>
+        <span class="control-row__label">{{ t('setup.behavior.autoTitlesLabel') }}</span>
+        <span class="control-row__desc">{{ t('setup.behavior.autoTitlesDesc') }}</span>
       </div>
       <div class="control-row__control">
         <ControlSwitch
           :checked="panel.autoSessionTitles"
           name="setup_auto_session_titles"
-          aria-label="Auto session titles"
+          :aria-label="t('setup.behavior.autoTitlesLabel')"
           @change="(value) => emit('updateAutoSessionTitles', value)"
         />
       </div>
     </label>
     <div class="control-section__actions">
-      <button class="btn btn--primary" :disabled="!panel.autoSessionTitlesDirty" @click="emit('save')">Save behavior</button>
+      <button class="btn btn--primary" :disabled="!panel.autoSessionTitlesDirty" @click="emit('save')">{{ t('setup.behavior.save') }}</button>
     </div>
   </section>
 </template>

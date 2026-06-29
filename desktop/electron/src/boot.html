@@ -1,5 +1,5 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';">
@@ -247,40 +247,109 @@
 </head>
 <body>
   <div class="shell">
-    <main class="boot" aria-label="OpenSquilla startup">
+    <main class="boot" aria-label="OpenSquilla startup" data-i18n-aria="bootAria">
       <section class="brand">
         <div class="mark-row">
           <span class="mark" aria-hidden="true"></span>
           <h1>OpenSquilla</h1>
         </div>
-        <p class="subtitle">Starting the desktop control surface.</p>
+        <p class="subtitle" data-i18n="subtitle">Starting the desktop control surface.</p>
       </section>
 
       <section class="status" aria-live="polite">
         <div class="status-line" aria-hidden="true"></div>
         <div class="status-copy">
-          <span class="phase" id="phase">Preparing desktop profile</span>
+          <span class="phase" id="phase" data-i18n="phaseDefault">Preparing desktop profile</span>
           <span class="timer" id="timer">00.0s</span>
         </div>
         <div class="steps" aria-hidden="true">
-          <span class="step active" data-step="profile">Profile</span>
-          <span class="step" data-step="gateway">Gateway</span>
-          <span class="step" data-step="control">Control</span>
+          <span class="step active" data-step="profile" data-i18n="stepProfile">Profile</span>
+          <span class="step" data-step="gateway" data-i18n="stepGateway">Gateway</span>
+          <span class="step" data-step="control" data-i18n="stepControl">Control</span>
         </div>
       </section>
 
       <section class="error" id="errorPanel" aria-live="polite">
-        <strong>Startup needs attention</strong>
-        <p id="errorMessage">The gateway did not finish starting.</p>
+        <strong data-i18n="errorTitle">Startup needs attention</strong>
+        <p id="errorMessage" data-i18n="errorDefault">The gateway did not finish starting.</p>
         <div class="actions">
-          <button id="revealLog" type="button">Reveal log</button>
-          <button id="quit" type="button">Quit</button>
-          <button id="retry" class="primary" type="button">Retry</button>
+          <button id="revealLog" type="button" data-i18n="revealLog">Reveal log</button>
+          <button id="quit" type="button" data-i18n="quit">Quit</button>
+          <button id="retry" class="primary" type="button" data-i18n="retry">Retry</button>
         </div>
       </section>
     </main>
   </div>
   <script>
+    // Static-string catalog for the splash screen. The main process owns the
+    // live phase labels (already localized when sent over IPC), so this only
+    // covers the pre-IPC chrome: subtitle, default phase, step chips, error
+    // panel, and buttons. The first sub-second paint shows the English markup;
+    // we swap to the OS locale as soon as getOsLocale() resolves.
+    const MESSAGES = {
+      en: {
+        title: 'Starting OpenSquilla', bootAria: 'OpenSquilla startup',
+        subtitle: 'Starting the desktop control surface.',
+        phaseDefault: 'Preparing desktop profile',
+        stepProfile: 'Profile', stepGateway: 'Gateway', stepControl: 'Control',
+        errorTitle: 'Startup needs attention',
+        errorDefault: 'The gateway did not finish starting.',
+        revealLog: 'Reveal log', quit: 'Quit', retry: 'Retry',
+        startupPaused: 'Startup paused',
+      },
+      'zh-Hans': {
+        title: '正在启动 OpenSquilla', bootAria: 'OpenSquilla 启动',
+        subtitle: '正在启动桌面控制界面。',
+        phaseDefault: '正在准备桌面配置',
+        stepProfile: '配置', stepGateway: '网关', stepControl: '控制',
+        errorTitle: '启动需要处理',
+        errorDefault: '网关未能完成启动。',
+        revealLog: '显示日志', quit: '退出', retry: '重试',
+        startupPaused: '启动已暂停',
+      },
+      ja: {
+        title: 'OpenSquilla を起動しています', bootAria: 'OpenSquilla の起動',
+        subtitle: 'デスクトップのコントロール画面を起動しています。',
+        phaseDefault: 'デスクトッププロファイルを準備しています',
+        stepProfile: 'プロファイル', stepGateway: 'ゲートウェイ', stepControl: 'コントロール',
+        errorTitle: '起動の確認が必要です',
+        errorDefault: 'ゲートウェイの起動が完了しませんでした。',
+        revealLog: 'ログを表示', quit: '終了', retry: '再試行',
+        startupPaused: '起動を一時停止しました',
+      },
+      fr: {
+        title: 'Démarrage d\'OpenSquilla', bootAria: 'Démarrage d\'OpenSquilla',
+        subtitle: 'Démarrage de l\'interface de contrôle du bureau.',
+        phaseDefault: 'Préparation du profil de bureau',
+        stepProfile: 'Profil', stepGateway: 'Passerelle', stepControl: 'Contrôle',
+        errorTitle: 'Le démarrage nécessite votre attention',
+        errorDefault: 'La passerelle n\'a pas terminé son démarrage.',
+        revealLog: 'Afficher le journal', quit: 'Quitter', retry: 'Réessayer',
+        startupPaused: 'Démarrage en pause',
+      },
+      de: {
+        title: 'OpenSquilla wird gestartet', bootAria: 'OpenSquilla-Start',
+        subtitle: 'Die Desktop-Steueroberfläche wird gestartet.',
+        phaseDefault: 'Desktop-Profil wird vorbereitet',
+        stepProfile: 'Profil', stepGateway: 'Gateway', stepControl: 'Control',
+        errorTitle: 'Der Start erfordert Ihre Aufmerksamkeit',
+        errorDefault: 'Das Gateway hat den Start nicht abgeschlossen.',
+        revealLog: 'Protokoll anzeigen', quit: 'Beenden', retry: 'Wiederholen',
+        startupPaused: 'Start angehalten',
+      },
+      es: {
+        title: 'Iniciando OpenSquilla', bootAria: 'Inicio de OpenSquilla',
+        subtitle: 'Iniciando la superficie de control del escritorio.',
+        phaseDefault: 'Preparando el perfil de escritorio',
+        stepProfile: 'Perfil', stepGateway: 'Pasarela', stepControl: 'Control',
+        errorTitle: 'El inicio necesita atención',
+        errorDefault: 'La pasarela no terminó de iniciarse.',
+        revealLog: 'Mostrar registro', quit: 'Salir', retry: 'Reintentar',
+        startupPaused: 'Inicio en pausa',
+      },
+    };
+    let msg = MESSAGES.en;
+
     const started = performance.now();
     const phase = document.getElementById('phase');
     const timer = document.getElementById('timer');
@@ -292,13 +361,28 @@
       control: document.querySelector('[data-step="control"]'),
     };
 
+    // Map the stable phaseId from main to one of the three visible step chips.
     const stepMap = {
-      'Preparing desktop profile': 'profile',
-      'Starting local runtime': 'gateway',
-      'Checking gateway health': 'gateway',
-      'Loading Control UI': 'control',
-      Ready: 'control',
+      profile: 'profile',
+      'gateway-start': 'gateway',
+      'gateway-health': 'gateway',
+      control: 'control',
+      ready: 'control',
     };
+
+    function applyLocale(locale) {
+      msg = MESSAGES[locale] || MESSAGES.en;
+      document.documentElement.lang = MESSAGES[locale] ? locale : 'en';
+      document.title = msg.title;
+      document.querySelectorAll('[data-i18n]').forEach((el) => {
+        const key = el.getAttribute('data-i18n');
+        if (msg[key]) el.textContent = msg[key];
+      });
+      document.querySelectorAll('[data-i18n-aria]').forEach((el) => {
+        const key = el.getAttribute('data-i18n-aria');
+        if (msg[key]) el.setAttribute('aria-label', msg[key]);
+      });
+    }
 
     function setStepState(activeKey, ready) {
       let passedActive = false;
@@ -314,15 +398,17 @@
     }
 
     function applyStatus(payload) {
-      const label = payload && payload.label ? String(payload.label) : 'Preparing desktop profile';
-      phase.textContent = label;
+      const phaseId = payload && payload.phaseId ? String(payload.phaseId) : 'profile';
+      // The label is already localized by the main process; fall back to the
+      // local default phase string only when no label was provided.
+      phase.textContent = payload && payload.label ? String(payload.label) : msg.phaseDefault;
       errorPanel.classList.remove('visible');
-      setStepState(stepMap[label] || 'profile', label === 'Ready');
+      setStepState(stepMap[phaseId] || 'profile', phaseId === 'ready');
     }
 
     function applyError(payload) {
-      const message = payload && payload.message ? String(payload.message) : 'The gateway did not finish starting.';
-      phase.textContent = 'Startup paused';
+      const message = payload && payload.message ? String(payload.message) : msg.errorDefault;
+      phase.textContent = msg.startupPaused;
       errorMessage.textContent = message;
       errorPanel.classList.add('visible');
     }
@@ -333,6 +419,9 @@
 
     const api = window.opensquillaDesktop;
     if (api) {
+      if (typeof api.getOsLocale === 'function') {
+        api.getOsLocale().then((locale) => applyLocale(String(locale || 'en'))).catch(() => {});
+      }
       api.onBootStatus(applyStatus);
       api.onBootError(applyError);
       api.getBootState().then((state) => {

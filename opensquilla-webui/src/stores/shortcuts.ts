@@ -1,5 +1,6 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
+import i18n from '@/i18n'
 import { bindingsEqual, type Binding } from '@/utils/keychord'
 
 // Global chord shortcuts the operator can enable / disable / rebind from the
@@ -27,18 +28,21 @@ export interface ShortcutState {
 }
 
 // `primary` = Cmd on macOS / Ctrl elsewhere (see utils/keychord).
+// `label` / `description` are getters that resolve the current locale on each
+// read, so consumers (the Keyboard settings panel) re-render on a language
+// switch without the def list itself becoming reactive state.
 export const SHORTCUT_DEFS: readonly ShortcutDef[] = [
   {
     id: 'command-palette',
-    label: 'Search / command palette',
-    description: 'Open the search-and-go-to palette to jump to any page, action, or conversation.',
+    get label() { return i18n.global.t('shared.shortcuts.commandPalette.label') },
+    get description() { return i18n.global.t('shared.shortcuts.commandPalette.description') },
     defaultBinding: { primary: true, key: 'k' },
     defaultEnabled: true,
   },
   {
     id: 'new-chat',
-    label: 'New chat',
-    description: 'Start a new chat against your preferred agent. Disabled by default — enable it to bind a key.',
+    get label() { return i18n.global.t('shared.shortcuts.newChat.label') },
+    get description() { return i18n.global.t('shared.shortcuts.newChat.description') },
     defaultBinding: { primary: true, shift: true, key: 'k' },
     // Off out of the box: the chord previously fired unconditionally; operators
     // opt back in here rather than having it bound for them.

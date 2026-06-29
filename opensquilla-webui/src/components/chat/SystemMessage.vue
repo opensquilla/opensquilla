@@ -6,7 +6,7 @@
         <Icon name="info" :size="16" />
       </span>
       <div class="msg-error-card__body">
-        <span class="msg-error-card__heading">Turn failed</span>
+        <span class="msg-error-card__heading">{{ t('chat.turnFailed') }}</span>
         <span v-if="message.text" class="msg-error-card__text">{{ message.text }}</span>
       </div>
       <time v-if="timeIso" class="msg-error-card__time" :datetime="timeIso" :title="timeFull">{{ timeAbs }}</time>
@@ -33,9 +33,12 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import type { ChatRenderedMessage } from '@/types/chat'
 import { absoluteTime, fullTime, isoTime } from '@/utils/messageTime'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   message: ChatRenderedMessage

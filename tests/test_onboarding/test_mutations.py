@@ -717,3 +717,56 @@ def test_upsert_channel_replaces_secret_when_provided():
     raw = [e.model_dump(mode="python") for e in second.config.channels.channels]
     entry = next(e for e in raw if e["name"] == "w")
     assert entry["token"] == "xoxb-new"
+
+
+_IMG_PRIMARY = "openrouter/google/gemini-3.1-flash-image-preview"
+
+
+def test_upsert_image_generation_applies_size_format_fallbacks():
+    cfg = GatewayConfig()
+    res = upsert_image_generation_provider(
+        cfg,
+        provider_id="openrouter",
+        primary=_IMG_PRIMARY,
+        api_key="sk-img",
+        size="1536x1024",
+        output_format="webp",
+        fallbacks=["openai/gpt-image-1", "  openrouter/x  ", ""],
+    )
+    ig = res.config.image_generation
+    assert ig.size == "1536x1024"
+    assert ig.output_format == "webp"
+    assert ig.fallbacks == ["openai/gpt-image-1", "openrouter/x"]
+    assert res.public_payload["size"] == "1536x1024"
+    assert res.public_payload["fallbacks"] == ["openai/gpt-image-1", "openrouter/x"]
+
+
+def test_upsert_image_generation_empty_keeps_current():
+    cfg = GatewayConfig()
+    cfg.image_generation.size = "1024x1536"
+    cfg.image_generation.output_format = "jpeg"
+    cfg.image_generation.fallbacks = ["openrouter/keep"]
+    res = upsert_image_generation_provider(
+        cfg, provider_id="openrouter", primary=_IMG_PRIMARY, api_key="sk-img"
+    )
+    ig = res.config.image_generation
+    assert ig.size == "1024x1536"
+    assert ig.output_format == "jpeg"
+    assert ig.fallbacks == ["openrouter/keep"]
+
+
+def test_upsert_image_generation_rejects_bad_size():
+    cfg = GatewayConfig()
+    with pytest.raises(ValueError, match="image size"):
+        upsert_image_generation_provider(
+            cfg, provider_id="openrouter", primary=_IMG_PRIMARY, api_key="sk-img", size="999x999"
+        )
+
+
+def test_upsert_image_generation_rejects_bad_fallback_reference():
+    cfg = GatewayConfig()
+    with pytest.raises(ValueError, match="fallback"):
+        upsert_image_generation_provider(
+            cfg, provider_id="openrouter", primary=_IMG_PRIMARY, api_key="sk-img",
+            fallbacks=["no-slash-ref"],
+        )

@@ -10,9 +10,9 @@
             class="btn btn--ghost tool-sheet__mode"
             @click="rawMode = !rawMode"
           >
-            {{ rawMode ? 'Tree' : 'Raw' }}
+            {{ rawMode ? t('chat.toolModal.tree') : t('chat.toolModal.raw') }}
           </button>
-          <button ref="closeBtn" class="btn btn--icon btn--ghost" title="Close" aria-label="Close" @click="$emit('close')">
+          <button ref="closeBtn" class="btn btn--icon btn--ghost" :title="t('common.close')" :aria-label="t('common.close')" @click="$emit('close')">
             <Icon name="x" :size="16" />
           </button>
         </div>
@@ -27,8 +27,11 @@
 
 <script setup lang="ts">
 import { computed, ref, toRef, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import { useDialogA11y } from '@/composables/useDialogA11y'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   open: boolean

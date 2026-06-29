@@ -9,13 +9,13 @@
           :value="registryQuery"
           class="sk-search-input sk-search-input--lg"
           type="search"
-          placeholder="Search community skills..."
+          :placeholder="t('cronSkills.registry.searchPlaceholder')"
           autocomplete="off"
           @input="emit('update:registryQuery', ($event.target as HTMLInputElement).value)"
           @keydown.enter="emit('search')"
         />
       </div>
-      <button class="btn btn--primary" @click="emit('search')">Search</button>
+      <button class="btn btn--primary" @click="emit('search')">{{ t('cronSkills.registry.search') }}</button>
     </div>
     <div class="sk-github-install">
       <div class="sk-search-wrap sk-search-wrap--lg">
@@ -32,13 +32,13 @@
           @keydown.enter="emit('installGithub')"
         />
       </div>
-      <button class="btn btn--primary" @click="emit('installGithub')">Install GitHub URL</button>
+      <button class="btn btn--primary" @click="emit('installGithub')">{{ t('cronSkills.registry.installGithub') }}</button>
     </div>
     <div class="sk-registry__results">
       <template v-if="loading">
         <div class="sk-registry__loading">
           <span class="sk-spinner" />
-          Searching ClawHub...
+          {{ t('cronSkills.registry.searching') }}
         </div>
       </template>
       <template v-else-if="results.length === 0">
@@ -46,8 +46,8 @@
           <div class="sk-registry__hint-icon">
             <Icon name="skills" :size="36" />
           </div>
-          <p>Search ClawHub skills to browse and install.</p>
-          <p class="sk-dim">Paste a GitHub skill URL above for direct install.</p>
+          <p>{{ t('cronSkills.registry.hintBrowse') }}</p>
+          <p class="sk-dim">{{ t('cronSkills.registry.hintGithub') }}</p>
         </div>
       </template>
       <template v-else>
@@ -65,14 +65,14 @@
             <span class="sk-chip" :class="row.trusted ? 'sk-chip--ok' : 'sk-chip--warn'">{{ row.trustLabel }}</span>
           </template>
           <template #_install="{ row }">
-            <button v-if="row.installed" class="btn btn--sm" disabled>Installed</button>
+            <button v-if="row.installed" class="btn btn--sm" disabled>{{ t('cronSkills.registry.installedBtn') }}</button>
             <button
               v-else
               class="btn btn--primary btn--sm"
               :disabled="installingId === row.installId"
               @click="emit('install', String(row.installId), String(row.installSource))"
             >
-              {{ installingId === row.installId ? 'Installing...' : 'Install' }}
+              {{ installingId === row.installId ? t('cronSkills.registry.installing') : t('cronSkills.registry.install') }}
             </button>
           </template>
         </DataTable>
@@ -83,9 +83,12 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import DataTable from '@/components/DataTable.vue'
 import Icon from '@/components/Icon.vue'
 import type { RegistryResult } from '@/types/skills'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   registryQuery: string
@@ -103,13 +106,13 @@ const emit = defineEmits<{
   install: [identifier: string, source: string]
 }>()
 
-const resultColumns = [
-  { key: 'name', label: 'Name' },
-  { key: 'description', label: 'Description' },
-  { key: 'source', label: 'Source' },
-  { key: 'trust', label: 'Trust' },
+const resultColumns = computed(() => [
+  { key: 'name', label: t('cronSkills.registry.colName') },
+  { key: 'description', label: t('cronSkills.registry.colDescription') },
+  { key: 'source', label: t('cronSkills.registry.colSource') },
+  { key: 'trust', label: t('cronSkills.registry.colTrust') },
   { key: '_install', label: '' },
-]
+])
 
 const resultRows = computed(() =>
   props.results.map(r => ({
@@ -117,7 +120,7 @@ const resultRows = computed(() =>
     description: (r.description || '').slice(0, 80),
     source: r.source || '',
     trusted: r.trust_level === 'trusted',
-    trustLabel: r.trust_level || 'community',
+    trustLabel: r.trust_level || t('cronSkills.registry.community'),
     installed: !!r.installed,
     installId: r.identifier || r.name,
     installSource: r.source || 'clawhub',

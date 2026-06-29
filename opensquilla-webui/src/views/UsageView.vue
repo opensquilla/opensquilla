@@ -2,30 +2,30 @@
   <div class="usage-stage control-stage control-stage--spacious">
     <header class="usage-stage__header control-stage__header">
       <div class="usage-stage__title-block control-stage__title-block">
-        <h2 class="usage-stage__title control-stage__title">Usage</h2>
-        <p class="usage-stage__subtitle control-stage__subtitle">Tokens, cost, and per-model spend across every session.</p>
+        <h2 class="usage-stage__title control-stage__title">{{ t('usageLogs.usage.title') }}</h2>
+        <p class="usage-stage__subtitle control-stage__subtitle">{{ t('usageLogs.usage.subtitle') }}</p>
         <small class="usage-range-notice" aria-live="polite">{{ rangeHiddenHint }}</small>
       </div>
       <div class="usage-stage__actions control-stage__actions mobile-action-strip">
-        <div class="usage-currency mobile-action-strip__item" role="group" aria-label="Currency">
+        <div class="usage-currency mobile-action-strip__item" role="group" :aria-label="t('usageLogs.usage.currency')">
           <button
             class="usage-currency__btn"
             :class="{ 'is-active': currency === 'USD' }"
-            title="US Dollar"
+            :title="t('usageLogs.usage.usDollar')"
             @click="setCurrency('USD')"
           >$ USD</button>
           <button
             class="usage-currency__btn"
             :class="{ 'is-active': currency === 'CNY' }"
-            title="Chinese Yuan"
+            :title="t('usageLogs.usage.chineseYuan')"
             @click="setCurrency('CNY')"
           >¥ CNY</button>
         </div>
-        <button class="btn btn--ghost mobile-action-strip__button" title="Download CSV" @click="exportCsv">
-          <Icon name="download" :size="16" /><span class="mobile-action-strip__label">Export</span>
+        <button class="btn btn--ghost mobile-action-strip__button" :title="t('usageLogs.usage.downloadCsv')" @click="exportCsv">
+          <Icon name="download" :size="16" /><span class="mobile-action-strip__label">{{ t('usageLogs.usage.export') }}</span>
         </button>
-        <button class="btn btn--ghost mobile-action-strip__button" title="Refresh" :disabled="refreshing" @click="refresh">
-          <Icon name="refresh" :size="16" /><span class="mobile-action-strip__label">{{ refreshing ? 'Refreshing…' : 'Refresh' }}</span>
+        <button class="btn btn--ghost mobile-action-strip__button" :title="t('usageLogs.usage.refresh')" :disabled="refreshing" @click="refresh">
+          <Icon name="refresh" :size="16" /><span class="mobile-action-strip__label">{{ refreshing ? t('usageLogs.usage.refreshing') : t('usageLogs.usage.refresh') }}</span>
         </button>
       </div>
     </header>
@@ -92,6 +92,7 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import UsageSummaryStats from '@/components/usage/UsageSummaryStats.vue'
 import UsageChart from '@/components/usage/UsageChart.vue'
 import UsageModelCards from '@/components/usage/UsageModelCards.vue'
@@ -100,6 +101,8 @@ import Icon from '@/components/Icon.vue'
 import ErrorState from '@/components/ErrorState.vue'
 import LoadingSpinner from '@/components/LoadingSpinner.vue'
 import { useUsageData } from '@/composables/usage/useUsageData'
+
+const { t } = useI18n()
 
 const {
   currency,

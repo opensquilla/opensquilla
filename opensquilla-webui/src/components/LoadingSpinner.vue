@@ -1,9 +1,12 @@
 <template>
-  <span class="loading-spinner" aria-label="Loading" role="status"></span>
+  <span class="loading-spinner" :aria-label="t('shared.loading')" role="status"></span>
 </template>
 
 <script setup lang="ts">
-// No props or logic needed — pure presentational spinner
+import { useI18n } from 'vue-i18n'
+
+// Pure presentational spinner; i18n only supplies the screen-reader label.
+const { t } = useI18n()
 </script>
 
 <style scoped>

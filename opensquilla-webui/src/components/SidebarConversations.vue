@@ -40,6 +40,7 @@ export type { SidebarSection as SidebarSectionType }
 
 <script setup lang="ts">
 import { computed, nextTick, ref, type ComponentPublicInstance } from 'vue'
+import { useI18n } from 'vue-i18n'
 import Icon from './Icon.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useDocumentEvent } from '@/composables/useDocumentEvent'
@@ -62,6 +63,7 @@ const emit = defineEmits<{
 }>()
 
 const { confirm } = useConfirm()
+const { t } = useI18n()
 
 /* ── Agent filter (lives within the Chats section) ─────────────────── */
 
@@ -257,9 +259,9 @@ function onRenameBlur() {
 async function requestDelete(row: SidebarConversationItem) {
   closeMenu()
   const ok = await confirm({
-    title: 'Delete session',
-    body: `Delete session "${row.title}"? This cannot be undone.`,
-    primaryLabel: 'Delete',
+    title: t('shared.sidebar.deleteSessionTitle'),
+    body: t('shared.sidebar.deleteSessionBody', { title: row.title }),
+    primaryLabel: t('shared.sidebar.deleteSessionConfirm'),
   })
   if (!ok) return
   emit('delete', row.key)
@@ -272,13 +274,13 @@ function onSelectRow(row: SidebarConversationItem) {
 </script>
 
 <template>
-  <div class="sidebar-section sidebar-history" aria-label="Recent conversations">
+  <div class="sidebar-section sidebar-history" :aria-label="t('shared.sidebar.recentConversations')">
     <div class="sidebar-recents-header">
-      <span class="sidebar-recents-eyebrow">Recents</span>
+      <span class="sidebar-recents-eyebrow">{{ t('shared.sidebar.recents') }}</span>
       <button
         class="sidebar-refresh-btn"
-        title="Refresh conversations"
-        aria-label="Refresh conversations"
+        :title="t('shared.sidebar.refresh')"
+        :aria-label="t('shared.sidebar.refresh')"
         :class="{ spinning: loading }"
         @click="emit('refresh')"
       >
@@ -290,7 +292,7 @@ function onSelectRow(row: SidebarConversationItem) {
       <button
         type="button"
         class="sidebar-agent-chip"
-        :aria-label="`Clear agent filter: ${agentFilterName}`"
+        :aria-label="t('shared.sidebar.clearAgentFilter', { name: agentFilterName })"
         @click="clearAgentFilter"
       >
         {{ agentFilterName }} <span aria-hidden="true">&times;</span>
@@ -298,24 +300,24 @@ function onSelectRow(row: SidebarConversationItem) {
     </div>
 
     <div v-if="error" class="sidebar-history-empty">
-      Unable to load sessions
+      {{ t('shared.sidebar.loadError') }}
     </div>
 
     <!-- Filtered to nothing within the Chats agent filter -->
     <div v-else-if="agentFilter && !hasFilterMatches" class="sidebar-history-empty">
-      No matches
+      {{ t('shared.sidebar.noMatches') }}
     </div>
 
     <!-- First-run onboarding: no sessions exist yet -->
     <div v-else-if="totalRows === 0" class="sidebar-onboarding">
-      <p class="sidebar-onboarding__lead">No conversations yet.</p>
+      <p class="sidebar-onboarding__lead">{{ t('shared.sidebar.noConversations') }}</p>
       <button type="button" class="sidebar-onboarding__cta" @click="emit('new-chat')">
         <Icon name="plus" :size="14" />
-        <span>Start a chat</span>
+        <span>{{ t('shared.sidebar.startChat') }}</span>
       </button>
       <div class="sidebar-onboarding__links">
-        <router-link to="/sessions" class="sidebar-onboarding__link">Sessions</router-link>
-        <router-link to="/overview" class="sidebar-onboarding__link">Overview</router-link>
+        <router-link to="/sessions" class="sidebar-onboarding__link">{{ t('shared.sidebar.linkSessions') }}</router-link>
+        <router-link to="/overview" class="sidebar-onboarding__link">{{ t('shared.sidebar.linkOverview') }}</router-link>
       </div>
     </div>
 
@@ -360,7 +362,7 @@ function onSelectRow(row: SidebarConversationItem) {
               v-model="renameDraft"
               class="sidebar-history-rename"
               type="text"
-              :aria-label="`Rename ${row.title}`"
+              :aria-label="t('shared.sidebar.renameLabel', { title: row.title })"
               @keydown.enter.prevent="commitRename"
               @keydown.esc.prevent="cancelRename"
               @blur="onRenameBlur"
@@ -377,15 +379,15 @@ function onSelectRow(row: SidebarConversationItem) {
                 class="sidebar-history-dot"
                 :class="`status--${row.runStatus}`"
                 role="img"
-                :aria-label="`Status: ${row.runLabel}`"
+                :aria-label="t('shared.sidebar.statusLabel', { status: row.runLabel })"
               />
               <span class="sidebar-history-title">{{ row.title }}</span>
               <span
                 v-if="contractDebugEnabled && row.hasContractGaps"
                 class="sidebar-history-gap"
-                aria-label="Backend session-list-v1 contract fields are missing"
-                title="Backend session-list-v1 contract fields are missing"
-              >Gap</span>
+                :aria-label="t('shared.sidebar.contractGap')"
+                :title="t('shared.sidebar.contractGap')"
+              >{{ t('shared.sidebar.contractGapBadge') }}</span>
               <span v-if="row.runStatus !== 'idle'" class="sidebar-history-run">{{ row.runLabel }}</span>
             </button>
 
@@ -399,8 +401,8 @@ function onSelectRow(row: SidebarConversationItem) {
                 class="sidebar-row-menu-btn"
                 aria-haspopup="menu"
                 :aria-expanded="openMenuKey === row.key"
-                :aria-label="`Actions for ${row.title}`"
-                :title="`Actions for ${row.title}`"
+                :aria-label="t('shared.sidebar.rowActions', { title: row.title })"
+                :title="t('shared.sidebar.rowActions', { title: row.title })"
                 @click.stop="toggleMenu(row.key, $event)"
               >
                 <span aria-hidden="true">&#8943;</span>
@@ -412,7 +414,7 @@ function onSelectRow(row: SidebarConversationItem) {
                 class="sidebar-row-menu"
                 :style="menuStyle"
                 role="menu"
-                :aria-label="`Actions for ${row.title}`"
+                :aria-label="t('shared.sidebar.rowActions', { title: row.title })"
                 @keydown="onMenuKeydown"
               >
                 <button
@@ -422,7 +424,7 @@ function onSelectRow(row: SidebarConversationItem) {
                   @click.stop="startRename(row)"
                 >
                   <Icon name="pencil" :size="14" />
-                  <span>Rename</span>
+                  <span>{{ t('shared.sidebar.rename') }}</span>
                 </button>
                 <button
                   type="button"
@@ -431,7 +433,7 @@ function onSelectRow(row: SidebarConversationItem) {
                   @click.stop="requestDelete(row)"
                 >
                   <Icon name="trash" :size="14" />
-                  <span>Delete</span>
+                  <span>{{ t('shared.sidebar.delete') }}</span>
                 </button>
               </div>
               </Teleport>
@@ -444,8 +446,8 @@ function onSelectRow(row: SidebarConversationItem) {
               class="sidebar-agent-badge"
               :class="{ 'is-active': agentFilter === row.effectiveAgentId }"
               :aria-pressed="agentFilter === row.effectiveAgentId"
-              :aria-label="`Filter by ${row.agentName}`"
-              :title="`Filter by ${row.agentName}`"
+              :aria-label="t('shared.sidebar.filterByAgent', { name: row.agentName })"
+              :title="t('shared.sidebar.filterByAgent', { name: row.agentName })"
               @click.stop="toggleAgentFilter(row.effectiveAgentId)"
             >
               {{ agentInitial(row.agentName) }}

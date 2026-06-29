@@ -1,7 +1,10 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import SetupField from '@/components/SetupField.vue'
 import SetupNeedList from '@/components/SetupNeedList.vue'
 import SetupCommandBlock from '@/components/setup/SetupCommandBlock.vue'
+
+const { t } = useI18n()
 
 interface ProviderOption {
   providerId: string
@@ -55,21 +58,21 @@ function onProviderSelect(event: Event) {
 <template>
   <section class="control-section">
     <div class="control-section__head">
-      <h3 class="control-section__title">Provider</h3>
+      <h3 class="control-section__title">{{ t('setup.provider.title') }}</h3>
       <p class="control-section__desc">{{ panel.providerSummary }}</p>
     </div>
-    <SetupNeedList :items="panel.providerNeeds" label="Provider needs" />
+    <SetupNeedList :items="panel.providerNeeds" :label="t('setup.provider.needs')" />
     <label class="control-row">
-      <div class="control-row__label-block"><span class="control-row__label">Provider</span></div>
+      <div class="control-row__label-block"><span class="control-row__label">{{ t('setup.provider.title') }}</span></div>
       <div class="control-row__control">
         <select class="control-input" :value="panel.providerSelected" name="setup_provider" @change="onProviderSelect">
-          <option value="" disabled :selected="!panel.providerSelected">Choose a provider</option>
+          <option value="" disabled :selected="!panel.providerSelected">{{ t('setup.provider.choose') }}</option>
           <option v-for="p in panel.runtimeProviders" :key="p.providerId" :value="p.providerId">{{ p.label }}</option>
         </select>
       </div>
     </label>
     <div class="control-row">
-      <div class="control-row__label-block"><span class="control-row__label">SquillaRouter tiers</span></div>
+      <div class="control-row__label-block"><span class="control-row__label">{{ t('setup.provider.routerTiers') }}</span></div>
       <div class="control-row__control">
         <strong class="control-pill" :class="panel.routerSupportTone">{{ panel.routerSupportText }}</strong>
       </div>
@@ -83,7 +86,7 @@ function onProviderSelect(event: Event) {
       @update="(name, val) => emit('updateProviderField', name, val)"
     />
     <details :open="panel.providerAdvancedOpen">
-      <summary class="control-row control-row--divider">Advanced provider options</summary>
+      <summary class="control-row control-row--divider">{{ t('setup.provider.advanced') }}</summary>
       <SetupField
         v-for="field in panel.providerAdvancedFields"
         :key="field.name"
@@ -94,8 +97,8 @@ function onProviderSelect(event: Event) {
       />
       <label class="control-row">
         <div class="control-row__label-block">
-          <span class="control-row__label">Request timeout (seconds)</span>
-          <span class="control-row__desc">How long to wait for a single model response before timing out &mdash; raise this for slow local models (Ollama, vLLM, LM Studio).</span>
+          <span class="control-row__label">{{ t('setup.provider.timeoutLabel') }}</span>
+          <span class="control-row__desc">{{ t('setup.provider.timeoutDesc') }}</span>
         </div>
         <div class="control-row__control">
           <input
@@ -112,17 +115,17 @@ function onProviderSelect(event: Event) {
       </label>
     </details>
     <div v-if="panel.providerEnvMissing" class="setup-warning">
-      <div>{{ panel.providerEnvKey }} is not visible to this gateway process. Set it before starting or restarting the gateway, or paste an API key instead.</div>
+      <div>{{ t('setup.provider.envMissing', { envKey: panel.providerEnvKey }) }}</div>
       <SetupCommandBlock
         v-if="panel.providerEnvCommand"
         class="setup-warning__command"
         :command="panel.providerEnvCommand"
-        copy-label="Copy set provider key command"
+        :copy-label="t('setup.provider.copyKeyCommand')"
         @copy="emit('copy', $event)"
       />
     </div>
     <div class="control-section__actions">
-      <button class="btn btn--primary" :disabled="!panel.providerSelected" @click="emit('save')">Save Provider</button>
+      <button class="btn btn--primary" :disabled="!panel.providerSelected" @click="emit('save')">{{ t('setup.provider.save') }}</button>
     </div>
   </section>
 </template>

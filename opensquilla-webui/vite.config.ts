@@ -13,6 +13,13 @@ const gatewayTarget = process.env.OPENSQUILLA_GATEWAY_URL || 'http://127.0.0.1:1
 export default defineConfig({
   plugins: [vue()],
   base: './',
+  // vue-i18n build feature flags — silences the bundler warnings and drops the
+  // legacy API + prod devtools from the bundle (Composition mode only).
+  define: {
+    __VUE_I18N_FULL_INSTALL__: 'true',
+    __VUE_I18N_LEGACY_API__: 'false',
+    __INTLIFY_PROD_DEVTOOLS__: 'false',
+  },
   server: {
     proxy: {
       // REST endpoints (approvals, artifacts under /api/v1, file upload, audio, …).

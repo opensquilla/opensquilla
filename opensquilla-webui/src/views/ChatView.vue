@@ -7,8 +7,8 @@
         <button
           class="chat-session-copy-btn"
           :class="{ 'chat-session-copy-btn--ok': sessionCopyState === 'ok' }"
-          :title="sessionCopyState === 'ok' ? 'Copied' : 'Copy session key'"
-          :aria-label="sessionCopyState === 'ok' ? 'Copied' : 'Copy session key'"
+          :title="sessionCopyState === 'ok' ? t('chat.copied') : t('chat.copySessionKey')"
+          :aria-label="sessionCopyState === 'ok' ? t('chat.copied') : t('chat.copySessionKey')"
           @click="onSessionCopyClick"
         >
           <Icon :name="sessionCopyIcon" :size="14" />
@@ -20,23 +20,23 @@
           v-if="sessionArtifacts.length > 0"
           type="button"
           class="chat-share-btn chat-deliverables-btn"
-          :title="`Deliverables (${sessionArtifacts.length})`"
-          :aria-label="`Deliverables (${sessionArtifacts.length})`"
+          :title="t('chat.deliverablesCount', { count: sessionArtifacts.length })"
+          :aria-label="t('chat.deliverablesCount', { count: sessionArtifacts.length })"
           @click="openDeliverables"
         >
           <Icon name="download" :size="14" />
-          <span class="chat-share-btn__label">Deliverables ({{ sessionArtifacts.length }})</span>
+          <span class="chat-share-btn__label">{{ t('chat.deliverablesCount', { count: sessionArtifacts.length }) }}</span>
         </button>
         <button
           v-if="appStore.features.metaRuns"
           type="button"
           class="chat-share-btn"
-          title="MetaSkill run history"
-          aria-label="MetaSkill run history"
+          :title="t('chat.metaRunHistory')"
+          :aria-label="t('chat.metaRunHistory')"
           @click="metaRunsHistoryOpen = true"
         >
           <Icon name="clock" :size="14" />
-          <span class="chat-share-btn__label">Runs</span>
+          <span class="chat-share-btn__label">{{ t('chat.runs') }}</span>
         </button>
         <button
           v-if="!shareMode"
@@ -44,12 +44,12 @@
           type="button"
           class="chat-share-btn"
           :disabled="shareableMessageCount === 0"
-          :title="shareableMessageCount === 0 ? 'Send a message first to share' : 'Select bubbles to save as a share image'"
-          :aria-label="shareableMessageCount === 0 ? 'Send a message first to share' : 'Share'"
+          :title="shareableMessageCount === 0 ? t('chat.shareSendFirst') : t('chat.shareSelectHint')"
+          :aria-label="shareableMessageCount === 0 ? t('chat.shareSendFirst') : t('chat.share')"
           @click="startShareMode"
         >
           <Icon name="share" :size="14" />
-          <span class="chat-share-btn__label">Share</span>
+          <span class="chat-share-btn__label">{{ t('chat.share') }}</span>
         </button>
         <span class="chat-chip" :class="runStatusChipClass" :title="runStatusTitle">{{ runStatusLabel }}</span>
       </div>
@@ -65,30 +65,30 @@
         class="chat-share-banner"
         tabindex="-1"
         role="group"
-        aria-label="Share selected messages"
+        :aria-label="t('chat.shareSelectedMessages')"
         data-testid="share-banner"
       >
-        <span class="chat-share-banner__hint">Select bubbles to share</span>
-        <span class="chat-share-banner__count" role="status" aria-live="polite">{{ selectedShareCount }} selected</span>
+        <span class="chat-share-banner__hint">{{ t('chat.shareBannerHint') }}</span>
+        <span class="chat-share-banner__count" role="status" aria-live="polite">{{ t('chat.shareSelectedCount', { count: selectedShareCount }) }}</span>
         <button
           type="button"
           class="chat-share-btn chat-share-btn--save"
           :disabled="selectedShareCount === 0 || shareSaving"
-          :title="selectedShareCount === 0 ? 'Select at least one bubble first' : 'Save selected bubbles as PNG'"
+          :title="selectedShareCount === 0 ? t('chat.shareSelectAtLeastOne') : t('chat.shareSavePngHint')"
           @click="saveShareImage"
         >
           <Icon name="download" :size="14" />
-          <span>{{ shareSaving ? 'Saving…' : 'Save PNG' }}</span>
+          <span>{{ shareSaving ? t('chat.saving') : t('chat.savePng') }}</span>
         </button>
-        <button type="button" class="chat-share-btn" title="Cancel share selection" @click="endShareMode">
-          Cancel
+        <button type="button" class="chat-share-btn" :title="t('chat.shareCancelHint')" @click="endShareMode">
+          {{ t('common.cancel') }}
         </button>
       </div>
       <div
         ref="threadRef"
         class="chat-thread"
         role="region"
-        aria-label="Chat conversation"
+        :aria-label="t('chat.conversation')"
         :aria-busy="isStreaming"
         @scroll="onThreadScroll"
         @dragover.prevent="threadDragOver = true"
@@ -103,7 +103,7 @@
               class="chat-landing-agent__btn"
               aria-haspopup="menu"
               :aria-expanded="agentSwitcherOpen"
-              :title="`Agent: ${landingAgentName}`"
+              :title="t('chat.agentLabel', { name: landingAgentName })"
               @click.stop="toggleAgentSwitcher"
             >
               <Icon name="agents" :size="14" />
@@ -114,7 +114,7 @@
               v-if="agentSwitcherOpen"
               class="chat-landing-agent__menu"
               role="menu"
-              aria-label="Choose agent"
+              :aria-label="t('chat.chooseAgent')"
               @keydown="onAgentSwitcherKeydown"
             >
               <button
@@ -141,11 +141,11 @@
                 @click.stop="createAgentFromSwitcher"
               >
                 <Icon name="plus" :size="14" />
-                <span>Create agent…</span>
+                <span>{{ t('chat.createAgent') }}</span>
               </button>
             </div>
           </div>
-          <div class="chat-landing-brand" aria-label="OpenSquilla new chat">
+          <div class="chat-landing-brand" :aria-label="t('chat.newChatBrand')">
             <EmptyStateChips
               :key="landingAgentId"
               :agent-id="landingAgentId"
@@ -154,7 +154,7 @@
             />
           </div>
         </template>
-        <div v-else-if="messages.length === 0 && !isStreaming" class="chat-empty">No messages yet.</div>
+        <div v-else-if="messages.length === 0 && !isStreaming" class="chat-empty">{{ t('chat.noMessagesYet') }}</div>
         <ChatHistoryScopeRow
           v-if="!isNewChatLanding"
           :state="historyState"
@@ -247,7 +247,7 @@
               <details v-if="liveThinkingText" class="thinking-fold">
                 <summary class="thinking-fold__summary">
                   <Icon class="thinking-fold__chevron" name="chevronRight" :size="12" />
-                  <span>Thinking · {{ streamThinkingElapsedText }}</span>
+                  <span>{{ t('chat.thinking') }} · {{ streamThinkingElapsedText }}</span>
                 </summary>
                 <div class="thinking-fold__body">{{ liveThinkingText }}</div>
               </details>
@@ -385,12 +385,12 @@
         v-if="showJumpToLatest"
         type="button"
         class="chat-jump-latest"
-        aria-label="Jump to latest"
-        title="Jump to latest"
+        :aria-label="t('chat.jumpToLatest')"
+        :title="t('chat.jumpToLatest')"
         @click="jumpToLatest"
       >
         <Icon name="chevronRight" :size="14" class="chat-jump-latest__icon" />
-        <span>Latest</span>
+        <span>{{ t('chat.latest') }}</span>
       </button>
     </Transition>
     <!-- Slash command menu -->
@@ -484,6 +484,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick, watch, watchEffect } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
 import { useAppStore } from '@/stores/app'
@@ -594,6 +595,7 @@ const toolResultModal = ref({ open: false, title: '', content: '' })
 const rpc = useRpcStore()
 const appStore = useAppStore()
 const router = useRouter()
+const { t } = useI18n()
 const { pushToast } = useToasts()
 const isCompactViewport = useMediaQuery('(max-width: 480px)')
 const isDesktopViewport = useMediaQuery('(min-width: 769px)')
@@ -650,7 +652,7 @@ const {
 } = chatElevatedMode
 
 // Run status
-const runStatus = ref<ChatRunStatus>({ status: 'idle', label: 'Idle', task: null })
+const runStatus = ref<ChatRunStatus>({ status: 'idle', label: t('chat.status.idle'), task: null })
 
 // Epoch / seq
 const currentEpoch = ref(0)
@@ -872,7 +874,7 @@ const agentSwitcherRef = ref<HTMLElement | null>(null)
 const landingAgentName = computed(() => {
   const id = landingAgentId.value
   const match = selectableAgents.value.find(agent => agent.id === id)
-  return match?.name || (id === 'main' ? 'Main Agent' : id)
+  return match?.name || (id === 'main' ? t('chat.mainAgent') : id)
 })
 
 function toggleAgentSwitcher() {
@@ -1366,8 +1368,8 @@ const isNewChatLanding = computed(() => {
 })
 
 const composerPlaceholder = computed(() => {
-  if (isNewChatLanding.value) return 'Assign a task or ask anything'
-  return isCompactViewport.value ? 'Message...' : 'Send a message...'
+  if (isNewChatLanding.value) return t('chat.placeholderLanding')
+  return isCompactViewport.value ? t('chat.placeholderCompact') : t('chat.placeholder')
 })
 
 const hasSendContent = computed(() => {
@@ -1375,13 +1377,13 @@ const hasSendContent = computed(() => {
 })
 
 const sendButtonTitle = computed(() => {
-  if (isCompactInFlightForCurrentSession()) return 'Send (queues until compaction finishes)'
+  if (isCompactInFlightForCurrentSession()) return t('chat.sendQueuesUntilCompaction')
   if (isStreaming.value) {
     return busySendMode.value === 'steer'
-      ? 'Send (steers the current response now)'
-      : 'Send (queues for after current response)'
+      ? t('chat.sendSteers')
+      : t('chat.sendQueues')
   }
-  return 'Send'
+  return t('chat.send')
 })
 
 const currentChatTitle = computed(() => {
@@ -1390,8 +1392,8 @@ const currentChatTitle = computed(() => {
     return truncate(stripTimePrefix(firstUser.text).replace(/\s+/g, ' ').trim(), 28)
   }
   const suffix = sessionKey.value.split(':').pop() || ''
-  if (!suffix || suffix === 'default') return 'New chat'
-  return `Chat ${suffix}`
+  if (!suffix || suffix === 'default') return t('chat.newChat')
+  return t('chat.chatWithSuffix', { suffix })
 })
 
 const chatMarkdownExport = useChatMarkdownExport({
@@ -1464,10 +1466,16 @@ function normalizeRunStatus(status: string): ChatRunStatusState {
 
 function runStatusLabelText(status: ChatRunStatusState): string {
   const labels: Record<string, string> = {
-    queued: 'Queued', running: 'Running', approval_pending: 'Approval pending', interrupted: 'Interrupted',
-    failed: 'Failed', timeout: 'Timed out', cancelled: 'Cancelled', idle: 'Idle',
+    queued: t('chat.status.queued'),
+    running: t('chat.status.running'),
+    approval_pending: t('chat.status.approvalPending'),
+    interrupted: t('chat.status.interrupted'),
+    failed: t('chat.status.failed'),
+    timeout: t('chat.status.timeout'),
+    cancelled: t('chat.status.cancelled'),
+    idle: t('chat.status.idle'),
   }
-  return labels[status] || 'Idle'
+  return labels[status] || t('chat.status.idle')
 }
 
 function sessionRunStatus(source: ChatRunStatusSource | null | undefined): ChatRunStatus {
@@ -1495,8 +1503,8 @@ function isSubagentCompletionMessage(role: string, text: string, options?: ChatM
 function subagentSummary(text: string): string {
   try {
     const parsed = JSON.parse(text)
-    return 'Subagent: ' + (parsed.child_session_key || parsed.session_key || 'completion')
-  } catch { return 'Subagent completion' }
+    return t('chat.subagentPrefix') + (parsed.child_session_key || parsed.session_key || 'completion')
+  } catch { return t('chat.subagentCompletion') }
 }
 
 function subagentBody(text: string): string {
@@ -1526,14 +1534,14 @@ async function downloadArtifact(artifact: ArtifactPayload) {
       credentials: sameOrigin ? 'same-origin' : 'omit',
     })
     if (!response.ok) {
-      pushToast(`Download failed — HTTP ${response.status}`, { tone: 'danger' })
+      pushToast(t('chat.toast.downloadFailedHttp', { status: response.status }), { tone: 'danger' })
       return
     }
     const blob = await response.blob()
     downloadBlob(blob, artifact.name || 'artifact')
   } catch (err) {
     console.warn('Download failed:', err)
-    pushToast('Download failed', { tone: 'danger' })
+    pushToast(t('chat.toast.downloadFailed'), { tone: 'danger' })
   }
 }
 
@@ -1587,7 +1595,7 @@ async function forkConversation() {
     router.push({ path: '/chat', query: { session: childKey } }).catch(() => {})
   } catch (err) {
     console.warn('Fork failed:', err)
-    pushToast('Fork failed', { tone: 'danger' })
+    pushToast(t('chat.toast.forkFailed'), { tone: 'danger' })
   } finally {
     forkInFlight.value = false
   }
@@ -1604,7 +1612,7 @@ const {
     await copyTextWithFallback(sessionKey.value)
     return true
   } catch {
-    pushToast('Copy failed', { tone: 'danger' })
+    pushToast(t('chat.toast.copyFailed'), { tone: 'danger' })
     return false
   }
 })
@@ -1657,14 +1665,14 @@ async function saveShareImage() {
       theme: shareTheme.value,
     })
     if (!result) {
-      pushToast('Share export failed', { tone: 'danger' })
+      pushToast(t('chat.toast.shareExportFailed'), { tone: 'danger' })
       return
     }
     const url = URL.createObjectURL(result.blob)
     sharePreview.value = { url, blob: result.blob, filename: result.filename }
   } catch (err) {
     console.warn('Share image export failed:', err)
-    pushToast('Share export failed', { tone: 'danger' })
+    pushToast(t('chat.toast.shareExportFailed'), { tone: 'danger' })
   } finally {
     shareSaving.value = false
   }
@@ -1674,7 +1682,7 @@ function onShareDownload() {
   const preview = sharePreview.value
   if (!preview) return
   downloadBlob(preview.blob, preview.filename)
-  pushToast(`Saved ${preview.filename}`, { duration: 4000 })
+  pushToast(t('chat.toast.saved', { filename: preview.filename }), { duration: 4000 })
   // endShareMode revokes the preview URL and drops the modal, then exits share
   // mode (which remounts the header Share button); focus lands back on it. The
   // modal's Download button held focus, outside the banner, so endShareMode's
@@ -1689,7 +1697,7 @@ async function onShareCopy() {
   const ok = await copyImageToClipboard(preview.blob)
   // Approved decision: the modal stays open after a copy so the user can copy
   // again or then download; only Download / Cancel / Escape closes it.
-  pushToast(ok ? 'Copied to clipboard' : 'Copy not supported — download instead', {
+  pushToast(ok ? t('chat.toast.copiedToClipboard') : t('chat.toast.copyNotSupported'), {
     tone: ok ? undefined : 'danger',
   })
 }
@@ -1704,7 +1712,7 @@ async function onShareSetTheme(next: ShareExportTheme) {
   try {
     const result = await chatShareExport.buildShareImage(selectedShareMessageIds.value, { theme: next })
     if (!result) {
-      pushToast('Share export failed', { tone: 'danger' })
+      pushToast(t('chat.toast.shareExportFailed'), { tone: 'danger' })
       return
     }
     const previous = sharePreview.value
@@ -1716,7 +1724,7 @@ async function onShareSetTheme(next: ShareExportTheme) {
     if (previous) URL.revokeObjectURL(previous.url)
   } catch (err) {
     console.warn('Share image re-render failed:', err)
-    pushToast('Share export failed', { tone: 'danger' })
+    pushToast(t('chat.toast.shareExportFailed'), { tone: 'danger' })
   } finally {
     shareSaving.value = false
   }
@@ -1773,7 +1781,7 @@ function jumpToLatest() {
 
 /* ── Tool calls ────────────────────────────────────────────────────── */
 
-function showToolResultModal(content: string, title = 'Tool Result') {
+function showToolResultModal(content: string, title = t('chat.toolResult')) {
   toolResultModal.value = { open: true, title, content }
 }
 

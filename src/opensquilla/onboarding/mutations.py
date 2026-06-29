@@ -467,6 +467,11 @@ def _image_generation_api_key_source(
     return "none"
 
 
+ImageOutputFormat = Literal["png", "jpeg", "webp"]
+_VALID_IMAGE_SIZES = ("1024x1024", "1536x1024", "1024x1536")
+_VALID_IMAGE_OUTPUT_FORMATS: tuple[ImageOutputFormat, ...] = ("png", "jpeg", "webp")
+
+
 def upsert_image_generation_provider(
     config: GatewayConfig,
     *,
@@ -476,6 +481,9 @@ def upsert_image_generation_provider(
     api_key_env: str = "",
     base_url: str = "",
     enabled: bool = True,
+    size: str = "",
+    output_format: str = "",
+    fallbacks: list[str] | None = None,
 ) -> MutationResult:
     spec = get_image_generation_provider_setup_spec(provider_id)
     if not spec.runtime_supported:
@@ -490,6 +498,26 @@ def upsert_image_generation_provider(
             "primary must be a provider/model reference for "
             f"image generation provider {provider_id!r}"
     )
+
+    # size/output_format are constrained; empty keeps the current value.
+    effective_size = (size or "").strip() or config.image_generation.size
+    if effective_size not in _VALID_IMAGE_SIZES:
+        raise ValueError(
+            f"image size must be one of {', '.join(_VALID_IMAGE_SIZES)}"
+        )
+    effective_output_format = (output_format or "").strip() or config.image_generation.output_format
+    if effective_output_format not in _VALID_IMAGE_OUTPUT_FORMATS:
+        raise ValueError(
+            f"image output format must be one of {', '.join(_VALID_IMAGE_OUTPUT_FORMATS)}"
+        )
+    # fallbacks: each must be a provider/model reference; an empty list keeps current.
+    cleaned_fallbacks = [f.strip() for f in (fallbacks or []) if f and f.strip()]
+    for fb in cleaned_fallbacks:
+        if "/" not in fb:
+            raise ValueError(
+                f"image fallback {fb!r} must be a provider/model reference"
+            )
+    effective_fallbacks = cleaned_fallbacks or list(config.image_generation.fallbacks)
 
     current_provider_cfg = _image_generation_provider_config(config, provider_id)
     explicit_env_key = _clean_optional_str(api_key_env)
@@ -533,6 +561,9 @@ def upsert_image_generation_provider(
     new_cfg = _clone(config)
     new_cfg.image_generation.enabled = bool(enabled)
     new_cfg.image_generation.primary = primary_model
+    new_cfg.image_generation.size = effective_size
+    new_cfg.image_generation.output_format = cast(ImageOutputFormat, effective_output_format)
+    new_cfg.image_generation.fallbacks = effective_fallbacks
     next_provider_cfg = _image_generation_provider_config(new_cfg, provider_id)
     next_provider_cfg.api_key = effective_api_key
     next_provider_cfg.api_key_env = env_key
@@ -548,6 +579,9 @@ def upsert_image_generation_provider(
         "api_key_env": env_key,
         "api_key_source": api_key_source,
         "base_url": effective_base_url,
+        "size": effective_size,
+        "output_format": effective_output_format,
+        "fallbacks": effective_fallbacks,
     }
     return MutationResult(
         config=new_cfg,

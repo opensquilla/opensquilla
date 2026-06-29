@@ -80,6 +80,41 @@ def _request_ws_url(request: Request, config: GatewayConfig) -> str:
     return f"{ws_scheme}://{host}/ws"
 
 
+_SUPPORTED_LOCALES = ("en", "zh-Hans", "ja", "fr", "de", "es")
+
+
+def _locale_from_tag(tag: str) -> str | None:
+    """Map a single BCP-47 Accept-Language tag to a supported locale, else None."""
+    t = tag.strip().lower()
+    if not t:
+        return None
+    if t.startswith("zh"):
+        return "zh-Hans"
+    for code in ("ja", "fr", "de", "es", "en"):
+        if t == code or t.startswith(code + "-"):
+            return code
+    return None
+
+
+def _resolve_locale(config: GatewayConfig, request: Request) -> str:
+    """Resolve the first-paint locale rendered into <html lang> and #opensquilla-data.
+
+    Honors the configured default. Only when that default is the baseline 'en'
+    do we sniff Accept-Language (the first supported tag wins), so an operator
+    who explicitly pins a default is never overridden. The browser's saved
+    localStorage choice and the in-app switcher always win client-side.
+    """
+    default = getattr(config.control_ui, "default_locale", "en")
+    if default in _SUPPORTED_LOCALES and default != "en":
+        return default
+    accept = request.headers.get("accept-language", "") or ""
+    for part in accept.split(","):
+        code = _locale_from_tag(part.split(";", 1)[0])
+        if code:
+            return code
+    return "en"
+
+
 def _build_bootstrap_context(config: GatewayConfig, request: Request) -> dict:
     """Build the template context for bootstrap config injection."""
     return {
@@ -88,6 +123,7 @@ def _build_bootstrap_context(config: GatewayConfig, request: Request) -> dict:
         "auth_mode": config.auth.mode,
         "base_path": config.control_ui.base_path,
         "config_path": config.config_path or "",
+        "locale": _resolve_locale(config, request),
         "features": {
             "diagnostics": config.diagnostics_enabled,
         },

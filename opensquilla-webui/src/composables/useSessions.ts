@@ -1,4 +1,5 @@
 import { ref, computed } from 'vue'
+import i18n from '@/i18n'
 import { useRpcStore } from '@/stores/rpc'
 import type { RawSessionItem, RawSessionListEntry, SessionsListResponse } from '@/types/rpc'
 
@@ -66,16 +67,17 @@ export function normalizeRunStatus(status: string | undefined): string {
 }
 
 export function runStatusLabelText(status: string): string {
-  const labels: Record<string, string> = {
-    queued: 'Queued',
-    running: 'Running',
-    interrupted: 'Interrupted',
-    failed: 'Failed',
-    timeout: 'Timed out',
-    cancelled: 'Cancelled',
-    idle: 'Idle',
+  const t = i18n.global.t
+  const keys: Record<string, string> = {
+    queued: 'sessions.status.queued',
+    running: 'sessions.status.running',
+    interrupted: 'sessions.status.interrupted',
+    failed: 'sessions.status.failed',
+    timeout: 'sessions.status.timeout',
+    cancelled: 'sessions.status.cancelled',
+    idle: 'sessions.status.idle',
   }
-  return labels[status] || 'Idle'
+  return t(keys[status] || 'sessions.status.idle')
 }
 
 function terminalRunStatus(row: RawSessionItem): string {
@@ -182,11 +184,11 @@ function deriveGroupLabel(row: RawSessionItem, key: string, sessionKind: string,
       textValue(row.cron?.jobId) ||
       textValue(row.cron?.id) ||
       textValue(row.subject) ||
-      'Cron'
+      i18n.global.t('sessions.kindLabel.cron')
     )
   }
   if (sessionKind === 'channel') {
-    const channel = channelKind(row) || 'Channel'
+    const channel = channelKind(row) || i18n.global.t('sessions.kindLabel.channel')
     const target = (
       textValue(row.lastTo) ||
       textValue(row.last_to) ||
@@ -199,17 +201,18 @@ function deriveGroupLabel(row: RawSessionItem, key: string, sessionKind: string,
     )
     return target ? `${channel} / ${target}` : channel
   }
-  return 'Operational sessions'
+  return i18n.global.t('sessions.group.operational')
 }
 
 function fallbackSessionTitle(row: RawSessionItem, key: string, sessionKind: string): string {
+  const t = i18n.global.t
   const semantic = fallbackTitle(row)
   if (semantic) return semantic
-  if (sessionKind === 'chat') return 'New chat'
-  if (sessionKind === 'cron') return textValue(row.subject) || 'Automation run'
-  if (sessionKind === 'channel') return textValue(row.subject) || 'Channel conversation'
-  if (sessionKind === 'task') return 'Subagent task'
-  return key || 'Untitled session'
+  if (sessionKind === 'chat') return t('sessions.fallbackTitle.chat')
+  if (sessionKind === 'cron') return textValue(row.subject) || t('sessions.fallbackTitle.cron')
+  if (sessionKind === 'channel') return textValue(row.subject) || t('sessions.fallbackTitle.channel')
+  if (sessionKind === 'task') return t('sessions.fallbackTitle.task')
+  return key || t('sessions.fallbackTitle.untitled')
 }
 
 function normalizeUpdatedAt(row: RawSessionItem, gaps: string[]): number {
@@ -257,7 +260,7 @@ export function normalizeSessionItem(item: unknown): SessionItem | null {
   const surface = deriveSurface(raw, key, sessionKind)
   const groupLabel = deriveGroupLabel(raw, key, sessionKind, derivedAgentId)
   let title = normalizeRequiredString(raw, 'title', fallbackSessionTitle(raw, key, sessionKind), gaps)
-  if (sessionKind === 'task' && /^you are a subagent\b/i.test(title)) title = 'Subagent task'
+  if (sessionKind === 'task' && /^you are a subagent\b/i.test(title)) title = i18n.global.t('sessions.fallbackTitle.task')
   const subtitle = hasOwn(raw, 'subtitle') ? textValue(raw.subtitle) : ''
   if (!hasOwn(raw, 'subtitle')) gaps.push('subtitle')
   const effectiveAgentId = normalizeEffectiveAgentId(raw, gaps, derivedAgentId)
@@ -409,10 +412,10 @@ function sidebarFamilyForSession(item: SessionItem): SidebarSectionFamily | null
   return null
 }
 
-const SIDEBAR_SECTION_LABELS: Record<SidebarSectionFamily, string> = {
-  chats: 'Chats',
-  channels: 'Channels',
-  automations: 'Automations',
+const SIDEBAR_SECTION_LABEL_KEYS: Record<SidebarSectionFamily, string> = {
+  chats: 'sessions.filter.chats',
+  channels: 'sessions.filter.channels',
+  automations: 'sessions.filter.automations',
 }
 
 const SIDEBAR_SECTION_ORDER: SidebarSectionFamily[] = ['chats', 'channels', 'automations']
@@ -463,7 +466,7 @@ export function arrangeSidebarSections(items: SessionItem[]): SidebarSection[] {
     } else {
       rows = [...bucket].sort(byRecency).map(item => toRow(item, 0))
     }
-    return { family, label: SIDEBAR_SECTION_LABELS[family], rows }
+    return { family, label: i18n.global.t(SIDEBAR_SECTION_LABEL_KEYS[family]), rows }
   })
 }
 
@@ -488,7 +491,7 @@ export function sessionMatches(item: SessionItem, query: string): boolean {
 export function groupSessions(items: SessionItem[]): SessionGroup[] {
   const groups = new Map<string, SessionGroup>()
   for (const item of items) {
-    const label = item.groupLabel || 'Backend contract gaps'
+    const label = item.groupLabel || i18n.global.t('sessions.group.contractGaps')
     const existing = groups.get(label)
     if (existing) {
       existing.items.push(item)

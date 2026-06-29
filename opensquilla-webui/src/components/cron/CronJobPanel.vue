@@ -9,34 +9,34 @@
           :class="{ 'is-open': open }"
           role="dialog"
           aria-modal="true"
-          :aria-label="editingJob ? 'Edit schedule' : 'Create a job'"
+          :aria-label="editingJob ? t('cronSkills.panel.ariaEdit') : t('cronSkills.panel.ariaCreate')"
         >
           <div class="cron-panel__head">
             <div>
-              <span class="cron-panel__eyebrow">{{ editingJob ? 'Edit schedule' : 'New schedule' }}</span>
-              <h3 class="cron-panel__title">{{ editingJob ? 'Edit Schedule' : 'Create a job' }}</h3>
+              <span class="cron-panel__eyebrow">{{ editingJob ? t('cronSkills.panel.eyebrowEdit') : t('cronSkills.panel.eyebrowNew') }}</span>
+              <h3 class="cron-panel__title">{{ editingJob ? t('cronSkills.panel.titleEdit') : t('cronSkills.panel.titleCreate') }}</h3>
             </div>
-            <button class="cron-iconbtn" aria-label="Close" @click="emit('close')">
+            <button class="cron-iconbtn" :aria-label="t('common.close')" @click="emit('close')">
               <Icon name="x" :size="16" />
             </button>
           </div>
           <div class="cron-panel__body">
             <div class="cron-field">
-              <label class="cron-field__label" for="cp-name">Name</label>
+              <label class="cron-field__label" for="cp-name">{{ t('cronSkills.panel.name') }}</label>
               <input id="cp-name" v-model="form.name" class="cron-field__input" type="text" placeholder="my-job" autocomplete="off">
             </div>
 
             <div class="cron-field">
-              <label class="cron-field__label" for="cp-type">Schedule type</label>
+              <label class="cron-field__label" for="cp-type">{{ t('cronSkills.panel.scheduleType') }}</label>
               <select id="cp-type" v-model="form.type" class="cron-field__input">
-                <option value="cron">Cron expression</option>
-                <option value="every">Fixed interval</option>
-                <option value="at">One-time ISO time</option>
+                <option value="cron">{{ t('cronSkills.panel.typeCron') }}</option>
+                <option value="every">{{ t('cronSkills.panel.typeEvery') }}</option>
+                <option value="at">{{ t('cronSkills.panel.typeAt') }}</option>
               </select>
             </div>
 
             <div v-show="form.type === 'cron'" class="cron-field">
-              <label class="cron-field__label" for="cp-cron">Cron expression</label>
+              <label class="cron-field__label" for="cp-cron">{{ t('cronSkills.panel.cronExpression') }}</label>
               <input
                 id="cp-cron"
                 v-model="form.cron"
@@ -61,52 +61,55 @@
                 </ul>
               </div>
               <div class="cron-presets">
-                <span class="cron-presets__label">Presets:</span>
-                <button type="button" class="cron-preset" @click="emit('preset', '*/5 * * * *')">Every 5m</button>
-                <button type="button" class="cron-preset" @click="emit('preset', '0 * * * *')">Hourly</button>
-                <button type="button" class="cron-preset" @click="emit('preset', '0 9 * * 1-5')">Weekdays 09:00</button>
-                <button type="button" class="cron-preset" @click="emit('preset', '0 0 * * 0')">Sundays midnight</button>
+                <span class="cron-presets__label">{{ t('cronSkills.panel.presetsLabel') }}</span>
+                <button type="button" class="cron-preset" @click="emit('preset', '*/5 * * * *')">{{ t('cronSkills.panel.preset5m') }}</button>
+                <button type="button" class="cron-preset" @click="emit('preset', '0 * * * *')">{{ t('cronSkills.panel.presetHourly') }}</button>
+                <button type="button" class="cron-preset" @click="emit('preset', '0 9 * * 1-5')">{{ t('cronSkills.panel.presetWeekdays') }}</button>
+                <button type="button" class="cron-preset" @click="emit('preset', '0 0 * * 0')">{{ t('cronSkills.panel.presetSundays') }}</button>
               </div>
             </div>
 
             <div v-show="form.type === 'every'" class="cron-field">
-              <label class="cron-field__label" for="cp-every">Interval (seconds)</label>
+              <label class="cron-field__label" for="cp-every">{{ t('cronSkills.panel.intervalSeconds') }}</label>
               <input id="cp-every" v-model="form.every" class="cron-field__input" type="number" min="1" placeholder="60">
             </div>
 
             <div v-show="form.type === 'at'" class="cron-field">
-              <label class="cron-field__label" for="cp-at">ISO time</label>
+              <label class="cron-field__label" for="cp-at">{{ t('cronSkills.panel.isoTime') }}</label>
               <input id="cp-at" v-model="form.at" class="cron-field__input cron-field__input--mono" type="text" placeholder="2026-05-18T09:00:00+08:00">
             </div>
 
             <div class="cron-field">
-              <label class="cron-field__label" for="cp-tz">Timezone (IANA)</label>
+              <label class="cron-field__label" for="cp-tz">{{ t('cronSkills.panel.timezone') }}</label>
               <input id="cp-tz" v-model="form.tz" class="cron-field__input cron-field__input--mono" type="text" placeholder="America/Los_Angeles" autocomplete="off" spellcheck="false">
-              <div class="cron-field__hint">Leave empty to evaluate the cron expression in UTC. Example: <code>Asia/Shanghai</code>, <code>Europe/London</code>.</div>
+              <i18n-t keypath="cronSkills.panel.timezoneHint" tag="div" class="cron-field__hint">
+                <template #example1><code>Asia/Shanghai</code></template>
+                <template #example2><code>Europe/London</code></template>
+              </i18n-t>
             </div>
 
             <div class="cron-field">
-              <label class="cron-field__label" for="cp-payload-kind">Job mode</label>
+              <label class="cron-field__label" for="cp-payload-kind">{{ t('cronSkills.panel.jobMode') }}</label>
               <select id="cp-payload-kind" v-model="form.payloadKind" class="cron-field__input" @change="emit('payloadKindChange')">
-                <option value="reminder">Static Reminder (no model)</option>
-                <option value="agent_turn">Background Agent Task (choose session)</option>
-                <option value="system_event">System Event (Main)</option>
+                <option value="reminder">{{ t('cronSkills.panel.modeReminder') }}</option>
+                <option value="agent_turn">{{ t('cronSkills.panel.modeAgentTurn') }}</option>
+                <option value="system_event">{{ t('cronSkills.panel.modeSystemEvent') }}</option>
               </select>
               <div class="cron-field__hint">{{ jobModeHint }}</div>
             </div>
 
             <div class="cron-field">
-              <label class="cron-field__label" for="cp-agent-id">Agent ID</label>
+              <label class="cron-field__label" for="cp-agent-id">{{ t('cronSkills.panel.agentId') }}</label>
               <input id="cp-agent-id" v-model="form.agentId" class="cron-field__input" type="text" placeholder="main">
             </div>
 
             <div v-show="form.payloadKind === 'agent_turn'" class="cron-field">
-              <label class="cron-field__label" for="cp-session-target">Session target</label>
+              <label class="cron-field__label" for="cp-session-target">{{ t('cronSkills.panel.sessionTarget') }}</label>
               <select id="cp-session-target" v-model="form.sessionTarget" class="cron-field__input" @change="emit('sessionTargetChange')">
-                <option value="main">Agent main session</option>
-                <option value="current">Current chat session</option>
-                <option value="isolated">Isolated cron session</option>
-                <option value="session">Named session</option>
+                <option value="main">{{ t('cronSkills.panel.targetMain') }}</option>
+                <option value="current">{{ t('cronSkills.panel.targetCurrent') }}</option>
+                <option value="isolated">{{ t('cronSkills.panel.targetIsolated') }}</option>
+                <option value="session">{{ t('cronSkills.panel.targetNamed') }}</option>
               </select>
               <div class="cron-field__hint">{{ sessionTargetHint }}</div>
             </div>
@@ -119,89 +122,91 @@
 
             <div class="cron-field">
               <label class="cron-field__label" for="cp-message">{{ messageLabel }}</label>
-              <textarea id="cp-message" v-model="form.message" class="cron-field__input cron-field__input--textarea" rows="4" placeholder="Run daily report&hellip;" />
+              <textarea id="cp-message" v-model="form.message" class="cron-field__input cron-field__input--textarea" rows="4" :placeholder="t('cronSkills.panel.messagePlaceholder')" />
             </div>
 
             <details class="cron-advanced">
-              <summary class="cron-advanced__summary">Advanced delivery &amp; wake</summary>
+              <summary class="cron-advanced__summary">{{ t('cronSkills.panel.advancedSummary') }}</summary>
               <div class="cron-advanced__body">
                 <div class="cron-field">
-                  <label class="cron-field__label" for="cp-wake-mode">Wake mode</label>
+                  <label class="cron-field__label" for="cp-wake-mode">{{ t('cronSkills.panel.wakeMode') }}</label>
                   <select id="cp-wake-mode" v-model="form.wakeMode" class="cron-field__input">
-                    <option value="now">Now (fire immediately on schedule)</option>
-                    <option value="next-heartbeat">Next heartbeat (defer to main loop)</option>
+                    <option value="now">{{ t('cronSkills.panel.wakeNow') }}</option>
+                    <option value="next-heartbeat">{{ t('cronSkills.panel.wakeNextHeartbeat') }}</option>
                   </select>
-                  <div class="cron-field__hint">Use <code>next-heartbeat</code> for main-session jobs that should ride the existing turn queue.</div>
+                  <i18n-t keypath="cronSkills.panel.wakeModeHint" tag="div" class="cron-field__hint">
+                    <template #code><code>next-heartbeat</code></template>
+                  </i18n-t>
                 </div>
 
                 <div class="cron-field">
-                  <label class="cron-field__label" for="cp-delivery-mode">Delivery mode</label>
+                  <label class="cron-field__label" for="cp-delivery-mode">{{ t('cronSkills.panel.deliveryMode') }}</label>
                   <select id="cp-delivery-mode" v-model="form.deliveryMode" class="cron-field__input">
-                    <option value="">Default (inferred from session)</option>
-                    <option value="none">None (run silently)</option>
-                    <option value="announce">Announce to channel</option>
-                    <option value="webhook">Post to webhook</option>
+                    <option value="">{{ t('cronSkills.panel.deliveryDefault') }}</option>
+                    <option value="none">{{ t('cronSkills.panel.deliveryNone') }}</option>
+                    <option value="announce">{{ t('cronSkills.panel.deliveryAnnounce') }}</option>
+                    <option value="webhook">{{ t('cronSkills.panel.deliveryWebhook') }}</option>
                   </select>
                 </div>
 
                 <div v-show="form.deliveryMode === 'announce'" class="cron-field">
-                  <label class="cron-field__label" for="cp-delivery-channel">Channel</label>
+                  <label class="cron-field__label" for="cp-delivery-channel">{{ t('cronSkills.panel.channel') }}</label>
                   <input id="cp-delivery-channel" v-model="form.deliveryChannel" class="cron-field__input" type="text" placeholder="slack" autocomplete="off">
                 </div>
                 <div v-show="form.deliveryMode === 'announce'" class="cron-field">
-                  <label class="cron-field__label" for="cp-delivery-to">Recipient</label>
+                  <label class="cron-field__label" for="cp-delivery-to">{{ t('cronSkills.panel.recipient') }}</label>
                   <input id="cp-delivery-to" v-model="form.deliveryTo" class="cron-field__input" type="text" placeholder="C-team-alerts" autocomplete="off">
                 </div>
                 <div v-show="form.deliveryMode === 'announce'" class="cron-field">
-                  <label class="cron-field__label" for="cp-delivery-account">Account id</label>
+                  <label class="cron-field__label" for="cp-delivery-account">{{ t('cronSkills.panel.accountId') }}</label>
                   <input id="cp-delivery-account" v-model="form.deliveryAccount" class="cron-field__input" type="text" autocomplete="off">
                 </div>
 
                 <div v-show="form.deliveryMode === 'webhook'" class="cron-field">
-                  <label class="cron-field__label" for="cp-delivery-webhook-url">Webhook URL</label>
+                  <label class="cron-field__label" for="cp-delivery-webhook-url">{{ t('cronSkills.panel.webhookUrl') }}</label>
                   <input id="cp-delivery-webhook-url" v-model="form.deliveryWebhookUrl" class="cron-field__input cron-field__input--mono" type="url" placeholder="https://hooks.example/cron" autocomplete="off">
                 </div>
                 <div v-show="form.deliveryMode === 'webhook'" class="cron-field">
-                  <label class="cron-field__label" for="cp-delivery-webhook-token">Webhook bearer token</label>
-                  <input id="cp-delivery-webhook-token" v-model="form.deliveryWebhookToken" class="cron-field__input" type="password" placeholder="optional bearer token" autocomplete="off">
+                  <label class="cron-field__label" for="cp-delivery-webhook-token">{{ t('cronSkills.panel.webhookToken') }}</label>
+                  <input id="cp-delivery-webhook-token" v-model="form.deliveryWebhookToken" class="cron-field__input" type="password" :placeholder="t('cronSkills.panel.webhookTokenPlaceholder')" autocomplete="off">
                 </div>
 
                 <label v-show="form.deliveryMode === 'announce' || form.deliveryMode === 'webhook'" class="cron-toggle">
                   <input v-model="form.deliveryBestEffort" type="checkbox">
                   <span class="cron-toggle__track"><span class="cron-toggle__thumb" /></span>
-                  <span class="cron-toggle__label">Best-effort delivery (do not fail the job when delivery fails)</span>
+                  <span class="cron-toggle__label">{{ t('cronSkills.panel.bestEffort') }}</span>
                 </label>
 
                 <details class="cron-advanced cron-advanced--nested">
-                  <summary class="cron-advanced__summary">Failure destination</summary>
+                  <summary class="cron-advanced__summary">{{ t('cronSkills.panel.failureDestination') }}</summary>
                   <div class="cron-advanced__body">
                     <div class="cron-field">
-                      <label class="cron-field__label" for="cp-fd-mode">Route failures to</label>
+                      <label class="cron-field__label" for="cp-fd-mode">{{ t('cronSkills.panel.routeFailuresTo') }}</label>
                       <select id="cp-fd-mode" v-model="form.fdMode" class="cron-field__input">
-                        <option value="">Disabled (no separate failure alert)</option>
-                        <option value="channel">A channel</option>
-                        <option value="webhook">A webhook</option>
+                        <option value="">{{ t('cronSkills.panel.fdDisabled') }}</option>
+                        <option value="channel">{{ t('cronSkills.panel.fdChannel') }}</option>
+                        <option value="webhook">{{ t('cronSkills.panel.fdWebhook') }}</option>
                       </select>
                     </div>
                     <div v-show="form.fdMode === 'channel'" class="cron-field">
-                      <label class="cron-field__label" for="cp-fd-channel">Channel</label>
+                      <label class="cron-field__label" for="cp-fd-channel">{{ t('cronSkills.panel.channel') }}</label>
                       <input id="cp-fd-channel" v-model="form.fdChannel" class="cron-field__input" type="text" placeholder="slack" autocomplete="off">
                     </div>
                     <div v-show="form.fdMode === 'channel'" class="cron-field">
-                      <label class="cron-field__label" for="cp-fd-to">Recipient</label>
+                      <label class="cron-field__label" for="cp-fd-to">{{ t('cronSkills.panel.recipient') }}</label>
                       <input id="cp-fd-to" v-model="form.fdTo" class="cron-field__input" type="text" placeholder="C-ops-alerts" autocomplete="off">
                     </div>
                     <div v-show="form.fdMode === 'channel'" class="cron-field">
-                      <label class="cron-field__label" for="cp-fd-account">Account id</label>
+                      <label class="cron-field__label" for="cp-fd-account">{{ t('cronSkills.panel.accountId') }}</label>
                       <input id="cp-fd-account" v-model="form.fdAccount" class="cron-field__input" type="text" autocomplete="off">
                     </div>
                     <div v-show="form.fdMode === 'webhook'" class="cron-field">
-                      <label class="cron-field__label" for="cp-fd-webhook-url">Webhook URL</label>
+                      <label class="cron-field__label" for="cp-fd-webhook-url">{{ t('cronSkills.panel.webhookUrl') }}</label>
                       <input id="cp-fd-webhook-url" v-model="form.fdWebhookUrl" class="cron-field__input cron-field__input--mono" type="url" placeholder="https://hooks.example/alert" autocomplete="off">
                     </div>
                     <div v-show="form.fdMode === 'webhook'" class="cron-field">
-                      <label class="cron-field__label" for="cp-fd-webhook-token">Webhook bearer token</label>
-                      <input id="cp-fd-webhook-token" v-model="form.fdWebhookToken" class="cron-field__input" type="password" placeholder="optional bearer token" autocomplete="off">
+                      <label class="cron-field__label" for="cp-fd-webhook-token">{{ t('cronSkills.panel.webhookToken') }}</label>
+                      <input id="cp-fd-webhook-token" v-model="form.fdWebhookToken" class="cron-field__input" type="password" :placeholder="t('cronSkills.panel.webhookTokenPlaceholder')" autocomplete="off">
                     </div>
                   </div>
                 </details>
@@ -211,12 +216,12 @@
             <label class="cron-toggle">
               <input v-model="form.enabled" type="checkbox">
               <span class="cron-toggle__track"><span class="cron-toggle__thumb" /></span>
-              <span class="cron-toggle__label">Enabled</span>
+              <span class="cron-toggle__label">{{ t('cronSkills.panel.enabled') }}</span>
             </label>
 
             <div class="cron-panel__actions">
-              <button class="btn btn--primary" @click="emit('save')">Save schedule</button>
-              <button class="btn btn--ghost" @click="emit('close')">Cancel</button>
+              <button class="btn btn--primary" @click="emit('save')">{{ t('cronSkills.panel.saveSchedule') }}</button>
+              <button class="btn btn--ghost" @click="emit('close')">{{ t('common.cancel') }}</button>
             </div>
           </div>
         </div>
@@ -227,10 +232,13 @@
 
 <script setup lang="ts">
 import { ref, toRef } from 'vue'
+import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import type { CronJob, CronJobFormModel } from '@/types/cron'
 import { humanCountdown, humanTime } from '@/utils/cron/time'
 import { useDialogA11y } from '@/composables/useDialogA11y'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   open: boolean

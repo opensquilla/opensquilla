@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{ locale }}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
@@ -7,7 +7,8 @@
     <link rel="icon" href="{{ base_path }}/static/img/opensquilla-mark.png?v={{ version }}" type="image/png">
     <link rel="shortcut icon" href="{{ base_path }}/static/img/opensquilla-mark.png?v={{ version }}" type="image/png">
     <link rel="apple-touch-icon" href="{{ base_path }}/static/img/opensquilla-mark.png?v={{ version }}">
-    <!-- Theme flash prevention: mirrors theme.js logic -->
+    <!-- Theme + locale flash prevention: applies the saved choice before the
+         bundle loads. Locale falls back to the server-rendered <html lang>. -->
     <script>
       (function () {
         try {
@@ -19,6 +20,12 @@
         } catch (e) {
           document.documentElement.setAttribute('data-theme', 'light');
         }
+        try {
+          var l = localStorage.getItem('opensquilla-locale');
+          if (l === 'en' || l === 'zh-Hans') {
+            document.documentElement.setAttribute('lang', l);
+          }
+        } catch (e) { /* keep server-rendered lang */ }
       })();
     </script>
     <!-- Vite build output (hashed filenames, read dynamically from dist/) -->
@@ -42,6 +49,7 @@
          data-auth-mode="{{ auth_mode }}"
          data-base-path="{{ base_path }}"
          data-config-path="{{ config_path }}"
+         data-locale="{{ locale }}"
          style="display:none"></div>
 
     <!-- Prism syntax highlighting (used by ChatView for code blocks) -->

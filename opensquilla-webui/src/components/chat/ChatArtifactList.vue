@@ -6,7 +6,7 @@
         v-for="artifact in visualArtifacts"
         :key="`media-${artifactKey(artifact)}`"
         class="msg-media-card"
-        :aria-label="`${artifactFileTitle(artifact)}, ${artifactFileSubtitle(artifact)}`"
+        :aria-label="t('chat.artifactTitleSubtitle', { title: artifactFileTitle(artifact), subtitle: artifactFileSubtitle(artifact) })"
       >
         <!-- Reserved aspect-ratio box: the preview only fetches once this scrolls
              into view (lazy), shows progress/skeleton while loading, and degrades
@@ -15,7 +15,7 @@
           v-if="previewStateFor(artifact) === 'loaded' && thumbUrlFor(artifact)"
           type="button"
           class="msg-media-card__img"
-          :aria-label="`Open ${artifactFileTitle(artifact)}`"
+          :aria-label="t('chat.openTitle', { title: artifactFileTitle(artifact) })"
           @click="openPreview(artifact)"
         >
           <img
@@ -36,26 +36,26 @@
           :data-state="previewStateFor(artifact)"
         >
           <p class="msg-media-card__error-text">
-            {{ previewStateFor(artifact) === 'timeout' ? 'Preview timed out' : 'Preview failed' }}
+            {{ previewStateFor(artifact) === 'timeout' ? t('chat.previewTimedOutShort') : t('chat.previewFailedShort') }}
           </p>
           <span class="msg-media-card__error-actions">
             <button
               type="button"
               class="msg-media-card__retry"
-              :aria-label="`Retry preview for ${artifactFileTitle(artifact)}`"
+              :aria-label="t('chat.retryPreviewFor', { title: artifactFileTitle(artifact) })"
               @click="retryPreview(artifact)"
             >
               <Icon name="refresh" :size="14" />
-              <span>Retry</span>
+              <span>{{ t('chat.retry') }}</span>
             </button>
             <button
               type="button"
               class="msg-media-card__retry"
-              :aria-label="`Download ${artifactFileTitle(artifact)}`"
+              :aria-label="t('chat.downloadTitle', { title: artifactFileTitle(artifact) })"
               @click="$emit('download', artifact)"
             >
               <Icon name="download" :size="14" />
-              <span>Download</span>
+              <span>{{ t('chat.download') }}</span>
             </button>
           </span>
         </div>
@@ -65,13 +65,13 @@
           :ref="el => registerObserver(artifact, el)"
           class="msg-media-card__img msg-media-card__img--loading"
           role="status"
-          aria-label="Loading preview"
+          :aria-label="t('chat.loadingPreview')"
         >
           <div
             v-if="previewProgressFor(artifact) !== null"
             class="msg-media-card__progress"
             role="progressbar"
-            aria-label="Preview download"
+            :aria-label="t('chat.previewDownload')"
             :aria-valuenow="previewProgressFor(artifact) ?? 0"
             aria-valuemin="0"
             aria-valuemax="100"
@@ -88,7 +88,7 @@
           <button
             type="button"
             class="msg-media-card__download"
-            :aria-label="`Download ${artifactFileTitle(artifact)}`"
+            :aria-label="t('chat.downloadTitle', { title: artifactFileTitle(artifact) })"
             @click="$emit('download', artifact)"
           >
             <Icon name="download" :size="16" />
@@ -121,7 +121,7 @@
       class="deliv-preview"
       role="dialog"
       aria-modal="true"
-      :aria-label="`Preview: ${artifactFileTitle(active)}`"
+      :aria-label="t('chat.previewOf', { title: artifactFileTitle(active) })"
       @click.self="closePreview"
     >
       <div ref="lightboxPanel" class="deliv-preview__panel">
@@ -131,8 +131,8 @@
             ref="lightboxCloseBtn"
             type="button"
             class="btn btn--icon btn--ghost"
-            aria-label="Close preview"
-            title="Close preview"
+            :aria-label="t('chat.closePreview')"
+            :title="t('chat.closePreview')"
             @click="closePreview"
           >
             <Icon name="x" :size="16" />
@@ -152,18 +152,18 @@
             role="status"
           >
             <p class="deliv-preview__meta">
-              {{ fullState === 'timeout' ? 'Preview timed out.' : 'Preview failed to load.' }}
+              {{ fullState === 'timeout' ? t('chat.previewTimedOut') : t('chat.previewFailed') }}
             </p>
             <button type="button" class="btn btn--ghost" @click="retryFull">
               <Icon name="refresh" :size="14" />
-              <span>Retry</span>
+              <span>{{ t('chat.retry') }}</span>
             </button>
           </div>
           <div
             v-else
             class="deliv-preview__loading"
             role="status"
-            aria-label="Loading preview"
+            :aria-label="t('chat.loadingPreview')"
           >
             <div
               v-if="fullProgress !== null"
@@ -182,7 +182,7 @@
         <footer class="deliv-preview__actions">
           <button type="button" class="btn btn--primary" @click="$emit('download', active)">
             <Icon name="download" :size="14" />
-            <span>Download</span>
+            <span>{{ t('chat.download') }}</span>
           </button>
         </footer>
       </div>
@@ -192,6 +192,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import ArtifactChip from '@/components/chat/ArtifactChip.vue'
 import type { ArtifactPayload } from '@/types/rpc'
@@ -229,6 +230,7 @@ defineEmits<{
   download: [artifact: ArtifactPayload]
 }>()
 
+const { t } = useI18n()
 const { pushToast } = useToasts()
 const platform = usePlatform()
 
@@ -337,7 +339,7 @@ async function openFile(artifact: ArtifactPayload) {
       mime: fetched.blob.type || String(artifact.mime || ''),
     })
     if (!result.ok) {
-      pushToast(result.message || 'Artifact open failed. Use Download instead.', { tone: 'danger' })
+      pushToast(result.message || t('chat.toast.artifactOpenFailed'), { tone: 'danger' })
     }
     return
   }

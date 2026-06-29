@@ -16,10 +16,42 @@ handler bodies.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
-from opensquilla.gateway.rpc import RpcContext, get_dispatcher
+from opensquilla.gateway.rpc import RpcContext, RpcHandlerError, get_dispatcher
 from opensquilla.search.types import DEFAULT_SEARCH_MAX_RESULTS
+
+
+@contextmanager
+def _validation_error(code: str) -> Iterator[None]:
+    """Translate a mutation validation error into a stable, client-localizable
+    ``RpcHandlerError`` code, keeping the original English text as the message so
+    the Web UI can fall back to it (and developers keep the detail).
+
+    Catches both ``ValueError`` (bad fields) and ``KeyError`` (an unknown/
+    unverified provider id), since on these onboarding config paths both are user
+    validation failures, not internal faults. Other exceptions propagate
+    unchanged and still collapse to the dispatcher's coarse codes — only the
+    high-value onboarding validation paths are wrapped.
+    """
+    try:
+        yield
+    except (ValueError, KeyError) as exc:
+        raise RpcHandlerError(code, str(exc)) from exc
+
+
+@contextmanager
+def _channel_error() -> Iterator[None]:
+    """Channel mutations raise ``KeyError`` for an unknown name and ``ValueError``
+    for bad fields; map them to distinct stable codes."""
+    try:
+        yield
+    except KeyError as exc:
+        raise RpcHandlerError("onboarding.channel.not_found", str(exc)) from exc
+    except ValueError as exc:
+        raise RpcHandlerError("onboarding.channel.invalid", str(exc)) from exc
 
 _d = get_dispatcher()
 
@@ -220,15 +252,16 @@ async def _provider_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
     provider_id = _require(params, "providerId")
     model = params.get("model", "") if isinstance(params, dict) else ""
     cfg = _active_config(ctx)
-    res = upsert_llm_provider(
-        cfg,
-        provider_id=provider_id,
-        model=model,
-        api_key=params.get("apiKey", "") if isinstance(params, dict) else "",
-        api_key_env=params.get("apiKeyEnv", "") if isinstance(params, dict) else "",
-        base_url=params.get("baseUrl", "") if isinstance(params, dict) else "",
-        proxy=params.get("proxy", "") if isinstance(params, dict) else "",
-    )
+    with _validation_error("onboarding.provider.invalid"):
+        res = upsert_llm_provider(
+            cfg,
+            provider_id=provider_id,
+            model=model,
+            api_key=params.get("apiKey", "") if isinstance(params, dict) else "",
+            api_key_env=params.get("apiKeyEnv", "") if isinstance(params, dict) else "",
+            base_url=params.get("baseUrl", "") if isinstance(params, dict) else "",
+            proxy=params.get("proxy", "") if isinstance(params, dict) else "",
+        )
     _apply_inplace(ctx, res.config)
     _sync_provider_selector(ctx, res.config.llm)
     _sync_image_generation(res.config)
@@ -257,7 +290,8 @@ async def _router_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
     mode = params.get("mode", "recommended") if isinstance(params, dict) else "recommended"
     default_tier = params.get("defaultTier") if isinstance(params, dict) else None
     tiers = params.get("tiers") if isinstance(params, dict) else None
-    res = upsert_router(cfg, mode=mode, default_tier=default_tier, tiers=tiers)
+    with _validation_error("onboarding.router.invalid"):
+        res = upsert_router(cfg, mode=mode, default_tier=default_tier, tiers=tiers)
     _apply_inplace(ctx, res.config)
     _sync_provider_selector(ctx, res.config.llm)
     config_path = _persist(ctx, res.config, restart_required=res.restart_required)
@@ -278,7 +312,8 @@ async def _channel_probe(params: Any, ctx: RpcContext) -> dict[str, Any]:
     entry = _require(params, "entry")
     if not isinstance(entry, dict):
         raise ValueError("params.entry must be an object")
-    normalized = validate_channel_entry(entry)
+    with _channel_error():
+        normalized = validate_channel_entry(entry)
     type_name = str(normalized.get("type") or "")
     return {
         "status": "ready",
@@ -295,23 +330,24 @@ async def _search_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
 
     provider_id = _require(params, "providerId")
     cfg = _active_config(ctx)
-    res = upsert_search_provider(
-        cfg,
-        provider_id=provider_id,
-        api_key=params.get("apiKey", "") if isinstance(params, dict) else "",
-        api_key_env=params.get("apiKeyEnv", "") if isinstance(params, dict) else "",
-        max_results=(
-            params.get("maxResults", DEFAULT_SEARCH_MAX_RESULTS)
-            if isinstance(params, dict)
-            else DEFAULT_SEARCH_MAX_RESULTS
-        ),
-        proxy=params.get("proxy", "") if isinstance(params, dict) else "",
-        use_env_proxy=(params.get("useEnvProxy", False) if isinstance(params, dict) else False),
-        fallback_policy=(
-            params.get("fallbackPolicy", "off") if isinstance(params, dict) else "off"
-        ),
-        diagnostics=params.get("diagnostics", False) if isinstance(params, dict) else False,
-    )
+    with _validation_error("onboarding.search.invalid"):
+        res = upsert_search_provider(
+            cfg,
+            provider_id=provider_id,
+            api_key=params.get("apiKey", "") if isinstance(params, dict) else "",
+            api_key_env=params.get("apiKeyEnv", "") if isinstance(params, dict) else "",
+            max_results=(
+                params.get("maxResults", DEFAULT_SEARCH_MAX_RESULTS)
+                if isinstance(params, dict)
+                else DEFAULT_SEARCH_MAX_RESULTS
+            ),
+            proxy=params.get("proxy", "") if isinstance(params, dict) else "",
+            use_env_proxy=(params.get("useEnvProxy", False) if isinstance(params, dict) else False),
+            fallback_policy=(
+                params.get("fallbackPolicy", "off") if isinstance(params, dict) else "off"
+            ),
+            diagnostics=params.get("diagnostics", False) if isinstance(params, dict) else False,
+        )
     _apply_inplace(ctx, res.config)
     _sync_search_provider(res.config)
     config_path = _persist(ctx, res.config, restart_required=res.restart_required)
@@ -330,15 +366,20 @@ async def _image_generation_configure(params: Any, ctx: RpcContext) -> dict[str,
 
     provider_id = _require(params, "providerId")
     cfg = _active_config(ctx)
-    res = upsert_image_generation_provider(
-        cfg,
-        provider_id=provider_id,
-        primary=params.get("primary", "") if isinstance(params, dict) else "",
-        api_key=params.get("apiKey", "") if isinstance(params, dict) else "",
-        api_key_env=params.get("apiKeyEnv", "") if isinstance(params, dict) else "",
-        base_url=params.get("baseUrl", "") if isinstance(params, dict) else "",
-        enabled=params.get("enabled", True) if isinstance(params, dict) else True,
-    )
+    fallbacks = params.get("fallbacks") if isinstance(params, dict) else None
+    with _validation_error("onboarding.imageGeneration.invalid"):
+        res = upsert_image_generation_provider(
+            cfg,
+            provider_id=provider_id,
+            primary=params.get("primary", "") if isinstance(params, dict) else "",
+            api_key=params.get("apiKey", "") if isinstance(params, dict) else "",
+            api_key_env=params.get("apiKeyEnv", "") if isinstance(params, dict) else "",
+            base_url=params.get("baseUrl", "") if isinstance(params, dict) else "",
+            enabled=params.get("enabled", True) if isinstance(params, dict) else True,
+            size=params.get("size", "") if isinstance(params, dict) else "",
+            output_format=params.get("outputFormat", "") if isinstance(params, dict) else "",
+            fallbacks=list(fallbacks) if isinstance(fallbacks, list) else None,
+        )
     _apply_inplace(ctx, res.config)
     _sync_image_generation(res.config)
     config_path = _persist(ctx, res.config, restart_required=res.restart_required)
@@ -414,7 +455,8 @@ async def _channel_upsert(params: Any, ctx: RpcContext) -> dict[str, Any]:
     if not isinstance(entry, dict):
         raise ValueError("params.entry must be an object")
     cfg = _active_config(ctx)
-    res = upsert_channel(cfg, entry_payload=entry)
+    with _channel_error():
+        res = upsert_channel(cfg, entry_payload=entry)
     _apply_inplace(ctx, res.config)
     config_path = _persist(ctx, res.config, restart_required=True)
     return {
@@ -432,7 +474,8 @@ async def _channel_remove(params: Any, ctx: RpcContext) -> dict[str, Any]:
 
     name = _require(params, "name")
     cfg = _active_config(ctx)
-    res = remove_channel(cfg, name=name)
+    with _channel_error():
+        res = remove_channel(cfg, name=name)
     _apply_inplace(ctx, res.config)
     config_path = _persist(ctx, res.config, restart_required=True)
     return {
@@ -448,7 +491,8 @@ async def _toggle(ctx: RpcContext, params: Any, enabled: bool) -> dict[str, Any]
 
     name = _require(params, "name")
     cfg = _active_config(ctx)
-    res = set_channel_enabled(cfg, name=name, enabled=enabled)
+    with _channel_error():
+        res = set_channel_enabled(cfg, name=name, enabled=enabled)
     _apply_inplace(ctx, res.config)
     config_path = _persist(ctx, res.config, restart_required=True)
     return {

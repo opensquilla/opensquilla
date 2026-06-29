@@ -7,12 +7,16 @@
       class="error-state__retry btn btn--primary"
       @click="onRetry"
     >
-      Retry
+      {{ t('shared.errorState.retry') }}
     </button>
   </div>
 </template>
 
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
+
 defineProps<{
   message: string
   onRetry?: () => void

@@ -2,69 +2,69 @@
   <div class="ag-stage control-stage">
     <header class="ag-stage__header control-stage__header">
       <div class="ag-stage__title-block control-stage__title-block">
-        <h2 class="ag-stage__title control-stage__title">Agents</h2>
-        <p class="ag-stage__subtitle control-stage__subtitle">Custom personalities and skill sets you can chat with.</p>
+        <h2 class="ag-stage__title control-stage__title">{{ t('console.agents.title') }}</h2>
+        <p class="ag-stage__subtitle control-stage__subtitle">{{ t('console.agents.subtitle') }}</p>
       </div>
       <div class="ag-stage__actions control-stage__actions">
         <button
           class="ag-link"
           type="button"
-          title="Provider and model defaults live in Settings"
+          :title="t('console.agents.settingsHint')"
           @click="openSettingsSurface"
         >
-          open settings &rarr;
+          {{ t('console.agents.openSettings') }} &rarr;
         </button>
         <button class="btn btn--ghost" @click="loadData">
           <Icon name="refresh" :size="16" />
-          <span>Refresh</span>
+          <span>{{ t('console.common.refresh') }}</span>
         </button>
       </div>
     </header>
 
     <section class="stat-row control-stat-grid control-stat-grid--fixed" style="--control-stat-columns: 3">
       <div class="stat stat--hero control-stat control-stat--hero">
-        <div class="stat-label control-stat__label">Total agents</div>
+        <div class="stat-label control-stat__label">{{ t('console.agents.totalAgents') }}</div>
         <div class="stat-value control-stat__value">{{ total }}</div>
         <div class="stat-hint control-stat__hint">
-          {{ builtins ? `${builtins} built-in` : '' }}
+          {{ builtins ? t('console.agents.builtinCount', { n: builtins }) : '' }}
           {{ builtins && customs ? ' &middot; ' : '' }}
-          {{ customs ? `${customs} custom` : '' }}
+          {{ customs ? t('console.agents.customCount', { n: customs }) : '' }}
         </div>
       </div>
       <div class="stat control-stat">
-        <div class="stat-label control-stat__label">Models in use</div>
+        <div class="stat-label control-stat__label">{{ t('console.agents.modelsInUse') }}</div>
         <div class="stat-value mono control-stat__value control-stat__value--mono">{{ models.size || '—' }}</div>
-        <div class="stat-hint control-stat__hint">{{ models.size ? 'distinct models' : 'unset' }}</div>
+        <div class="stat-hint control-stat__hint">{{ models.size ? t('console.agents.distinctModels') : t('console.agents.unset') }}</div>
       </div>
       <div class="stat control-stat">
-        <div class="stat-label control-stat__label">Tools wired</div>
+        <div class="stat-label control-stat__label">{{ t('console.agents.toolsWired') }}</div>
         <div class="stat-value control-stat__value">{{ toolsCount }}</div>
-        <div class="stat-hint control-stat__hint">across all agents</div>
+        <div class="stat-hint control-stat__hint">{{ t('console.agents.acrossAllAgents') }}</div>
       </div>
     </section>
 
     <section class="ag-create">
       <form class="ag-create__form" @submit.prevent="onInlineAdd">
         <label class="ag-field">
-          <span>Agent ID</span>
+          <span>{{ t('console.agents.agentId') }}</span>
           <input v-model="newId" class="ag-input" name="id" autocomplete="off" required placeholder="e.g. data-analyst" />
         </label>
         <label class="ag-field">
-          <span>Display name <span class="ag-field__optional">(optional)</span></span>
-          <input v-model="newName" class="ag-input" name="name" autocomplete="off" placeholder="Defaults to ID" />
+          <span>{{ t('console.agents.displayName') }} <span class="ag-field__optional">{{ t('console.agents.optional') }}</span></span>
+          <input v-model="newName" class="ag-input" name="name" autocomplete="off" :placeholder="t('console.agents.defaultsToId')" />
         </label>
         <button class="btn btn--primary" type="submit">
           <Icon name="plus" :size="16" />
-          <span>Add</span>
+          <span>{{ t('console.agents.add') }}</span>
         </button>
       </form>
-      <p class="ag-create__hint">Created agents inherit the global default model. Click a card to view or edit details.</p>
+      <p class="ag-create__hint">{{ t('console.agents.createHint') }}</p>
     </section>
 
     <section class="ag-list">
       <div class="ag-list__head">
         <h3 class="ag-list__title">
-          Configured agents
+          {{ t('console.agents.configuredAgents') }}
           <span v-if="agents.length > 0" class="ag-list__count">{{ agents.length }}</span>
         </h3>
       </div>
@@ -79,8 +79,8 @@
         <div class="state-icon">
           <Icon name="agents" :size="48" />
         </div>
-        <div class="state-title">No agents configured.</div>
-        <p class="state-text">Use the form above to add one. The default <code>main</code> agent is always available.</p>
+        <div class="state-title">{{ t('console.agents.emptyTitle') }}</div>
+        <p class="state-text">{{ t('console.agents.emptyTextBefore') }} <code>main</code> {{ t('console.agents.emptyTextAfter') }}</p>
       </div>
 
       <div v-else class="ag-cards control-card-grid" style="--control-card-min: 320px">
@@ -98,39 +98,39 @@
                 class="ag-card__id ag-card__id-btn"
                 @click="openDrawer('view', a.id || a.name || '')"
               >{{ a.id || a.name || '—' }}</button>
-              <span :class="['chip', isAgentBuiltin(a) ? 'chip-ok' : 'chip-info']">{{ a.type || (a.isBuiltin ? 'builtin' : 'custom') }}</span>
+              <span :class="['chip', isAgentBuiltin(a) ? 'chip-ok' : 'chip-info']">{{ a.type || (a.isBuiltin ? t('console.agents.builtin') : t('console.agents.custom')) }}</span>
             </div>
             <div class="ag-card__actions">
-              <button class="ag-iconbtn" title="Open chat" @click.stop="openChat(a.id)">
+              <button class="ag-iconbtn" :title="t('console.agents.openChat')" @click.stop="openChat(a.id)">
                 <Icon name="chat" :size="16" />
-                <span>Chat</span>
+                <span>{{ t('console.agents.chat') }}</span>
               </button>
               <button
                 v-if="isAgentBuiltin(a)"
                 class="ag-iconbtn"
-                title="Use as starting point for a new agent"
+                :title="t('console.agents.customizeHint')"
                 @click.stop="customizeFromBuiltin(a.id)"
               >
                 <Icon name="plus" :size="16" />
-                <span>Customize&hellip;</span>
+                <span>{{ t('console.agents.customize') }}&hellip;</span>
               </button>
               <button
                 v-else
                 class="ag-iconbtn"
-                title="Edit"
+                :title="t('console.common.edit')"
                 @click.stop="openDrawer('edit', a.id)"
               >
                 <Icon name="edit" :size="16" />
-                <span>Edit</span>
+                <span>{{ t('console.common.edit') }}</span>
               </button>
               <button
                 v-if="!isAgentBuiltin(a)"
                 class="ag-iconbtn ag-iconbtn--danger"
-                title="Delete"
+                :title="t('console.common.delete')"
                 @click.stop="deleteAgent(a.id)"
               >
                 <Icon name="trash" :size="16" />
-                <span>Delete</span>
+                <span>{{ t('console.common.delete') }}</span>
               </button>
             </div>
           </header>
@@ -138,20 +138,20 @@
           <p v-if="a.description" class="ag-card__desc">{{ a.description }}</p>
           <dl class="ag-card__meta">
             <div v-if="a.model">
-              <dt>Model</dt>
+              <dt>{{ t('console.agents.model') }}</dt>
               <dd class="ag-mono">{{ a.model }}</dd>
             </div>
             <div v-if="agentTools(a).length">
-              <dt>Tools</dt>
+              <dt>{{ t('console.agents.tools') }}</dt>
               <dd>{{ agentTools(a).length }}</dd>
             </div>
             <div v-if="agentSkills(a).length">
-              <dt>Skills</dt>
+              <dt>{{ t('console.agents.skills') }}</dt>
               <dd>{{ agentSkills(a).length }}</dd>
             </div>
           </dl>
           <div v-if="agentTools(a).length" class="ag-card__chips">
-            <span class="ag-chips-label">Tools</span>
+            <span class="ag-chips-label">{{ t('console.agents.tools') }}</span>
             <span v-for="t in agentTools(a).slice(0, 8)" :key="t" class="ag-chip">{{ t }}</span>
             <span v-if="agentTools(a).length > 8" class="ag-chip ag-chip--dim">+{{ agentTools(a).length - 8 }}</span>
           </div>
@@ -174,73 +174,73 @@
           >
             <div class="drawer__header">
               <h3 id="agents-drawer-title" class="drawer__title">{{ drawerTitle }}</h3>
-              <button class="drawer__close" aria-label="Close" @click="closeDrawer">
+              <button class="drawer__close" :aria-label="t('common.close')" @click="closeDrawer">
                 <Icon name="x" :size="20" />
               </button>
             </div>
             <div class="drawer__body">
               <div class="ag-drawer__sections">
                 <fieldset class="ag-drawer__section">
-                  <legend>Identity</legend>
+                  <legend>{{ t('console.agents.identity') }}</legend>
                   <label class="ag-field">
-                    <span>Agent ID</span>
+                    <span>{{ t('console.agents.agentId') }}</span>
                     <input v-model="form.id" class="ag-input" type="text" autocomplete="off" disabled />
                   </label>
                   <label class="ag-field">
-                    <span>Display name</span>
-                    <input v-model="form.name" class="ag-input" type="text" autocomplete="off" :disabled="drawerMode === 'view'" placeholder="Defaults to ID" />
+                    <span>{{ t('console.agents.displayName') }}</span>
+                    <input v-model="form.name" class="ag-input" type="text" autocomplete="off" :disabled="drawerMode === 'view'" :placeholder="t('console.agents.defaultsToId')" />
                   </label>
                   <label class="ag-field">
-                    <span>Description</span>
-                    <input v-model="form.description" class="ag-input" type="text" autocomplete="off" :disabled="drawerMode === 'view'" placeholder="A short one-liner" />
+                    <span>{{ t('console.agents.description') }}</span>
+                    <input v-model="form.description" class="ag-input" type="text" autocomplete="off" :disabled="drawerMode === 'view'" :placeholder="t('console.agents.descriptionPlaceholder')" />
                   </label>
                 </fieldset>
 
                 <details class="ag-drawer__section ag-drawer__section--advanced" :open="advancedOpen">
-                  <summary>Capabilities &middot; Advanced</summary>
+                  <summary>{{ t('console.agents.capabilitiesAdvanced') }}</summary>
                   <label class="ag-field">
-                    <span>Tools (comma-separated)</span>
-                    <input v-model="toolsInput" class="ag-input" type="text" autocomplete="off" :disabled="drawerMode === 'view'" placeholder="Leave blank to inherit defaults" />
+                    <span>{{ t('console.agents.toolsCommaSeparated') }}</span>
+                    <input v-model="toolsInput" class="ag-input" type="text" autocomplete="off" :disabled="drawerMode === 'view'" :placeholder="t('console.agents.toolsPlaceholder')" />
                   </label>
                   <label class="ag-field">
-                    <span>Workspace</span>
-                    <input v-model="form.workspace" class="ag-input" type="text" autocomplete="off" :disabled="drawerMode === 'view'" placeholder="Leave blank to use the default path" />
+                    <span>{{ t('console.agents.workspace') }}</span>
+                    <input v-model="form.workspace" class="ag-input" type="text" autocomplete="off" :disabled="drawerMode === 'view'" :placeholder="t('console.agents.workspacePlaceholder')" />
                   </label>
                   <label class="ag-field">
-                    <span>Agent dir</span>
-                    <input v-model="form.agentDir" class="ag-input" type="text" autocomplete="off" :disabled="drawerMode === 'view'" placeholder="Optional" />
+                    <span>{{ t('console.agents.agentDir') }}</span>
+                    <input v-model="form.agentDir" class="ag-input" type="text" autocomplete="off" :disabled="drawerMode === 'view'" :placeholder="t('console.agents.optionalPlaceholder')" />
                   </label>
                   <label class="ag-field ag-field--inline">
                     <input v-model="form.enabled" type="checkbox" :disabled="drawerMode === 'view'" />
-                    <span>Enabled</span>
+                    <span>{{ t('console.agents.enabled') }}</span>
                   </label>
                 </details>
 
                 <div v-if="drawerModel || systemPromptHint" class="ag-drawer__readonly-meta">
                   <div v-if="drawerModel">
-                    <dt>Inherited model</dt>
+                    <dt>{{ t('console.agents.inheritedModel') }}</dt>
                     <dd class="ag-mono">{{ drawerModel }}</dd>
                   </div>
                   <div v-if="systemPromptHint">
-                    <dt>System prompt</dt>
-                    <dd class="ag-dim">Stored in config &mdash; runtime currently sources from agent SOUL.md instead.</dd>
+                    <dt>{{ t('console.agents.systemPrompt') }}</dt>
+                    <dd class="ag-dim">{{ t('console.agents.systemPromptHint') }}</dd>
                   </div>
                 </div>
               </div>
             </div>
             <div class="drawer__footer">
               <template v-if="drawerMode === 'view'">
-                <button class="btn btn--ghost" @click="closeDrawer">Close</button>
+                <button class="btn btn--ghost" @click="closeDrawer">{{ t('common.close') }}</button>
                 <button v-if="drawerIsBuiltin" class="btn btn--primary" @click="customizeFromBuiltin(drawerAgentId)">
                   <Icon name="plus" :size="16" />
-                  <span>Customize&hellip;</span>
+                  <span>{{ t('console.agents.customize') }}&hellip;</span>
                 </button>
-                <button v-else class="btn btn--primary" @click="enterEditMode">Edit</button>
+                <button v-else class="btn btn--primary" @click="enterEditMode">{{ t('console.common.edit') }}</button>
               </template>
               <template v-else>
-                <button class="btn btn--ghost" @click="onCancelEdit">Cancel</button>
+                <button class="btn btn--ghost" @click="onCancelEdit">{{ t('common.cancel') }}</button>
                 <button class="btn btn--primary" :disabled="!isDirty || saving" @click="onSave">
-                  Save changes{{ isDirty ? ' &bull;' : '' }}
+                  {{ t('console.agents.saveChanges') }}{{ isDirty ? ' &bull;' : '' }}
                 </button>
               </template>
             </div>
@@ -267,7 +267,7 @@
             </div>
             <div class="modal__footer">
               <button :class="['btn', confirmPrimaryClass]" @click="onConfirmPrimary">{{ confirmPrimaryLabel }}</button>
-              <button ref="confirmCancelBtn" class="btn btn--ghost" @click="cancelConfirm">Cancel</button>
+              <button ref="confirmCancelBtn" class="btn btn--ghost" @click="cancelConfirm">{{ t('common.cancel') }}</button>
             </div>
           </div>
         </div>
@@ -278,6 +278,7 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
 import Icon from '@/components/Icon.vue'
@@ -293,6 +294,7 @@ import { useToasts } from '@/composables/useToasts'
 // State
 // ---------------------------------------------------------------------------
 
+const { t } = useI18n()
 const rpc = useRpcStore()
 const { pushToast } = useToasts()
 const router = useRouter()
@@ -304,7 +306,7 @@ const newName = ref('')
 const confirmOpen = ref(false)
 const confirmTitle = ref('')
 const confirmBody = ref('')
-const confirmPrimaryLabel = ref('Confirm')
+const confirmPrimaryLabel = ref(t('console.common.confirm'))
 const confirmPrimaryClass = ref('btn--danger')
 let confirmResolve: ((value: boolean) => void) | null = null
 
@@ -389,14 +391,14 @@ async function onInlineAdd() {
   if (name) payload.name = name
   try {
     await rpc.call('agents.create', payload)
-    pushToast('Agent created: ' + id, { tone: 'ok' })
+    pushToast(t('console.agents.toastCreated', { id }), { tone: 'ok' })
     newId.value = ''
     newName.value = ''
     await loadData()
   } catch (err: unknown) {
     const code = rpcErrorCode(err)
-    if (code === 'agent.exists') pushToast(`Agent "${id}" already exists`, { tone: 'danger' })
-    else pushToast('Failed to create agent: ' + errorMessage(err), { tone: 'danger' })
+    if (code === 'agent.exists') pushToast(t('console.agents.toastExists', { id }), { tone: 'danger' })
+    else pushToast(t('console.agents.toastCreateFailed', { msg: errorMessage(err) }), { tone: 'danger' })
   }
 }
 
@@ -412,7 +414,7 @@ function customizeFromBuiltin(builtinId?: string) {
     }
     document.querySelector('.ag-create')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
   })
-  pushToast('Tweak the ID, then click Add to create your copy')
+  pushToast(t('console.agents.toastTweakId'))
 }
 
 async function onSave() {
@@ -421,12 +423,12 @@ async function onSave() {
   try {
     const payload = buildSavePayload()
     if (Object.keys(payload).length <= 1) {
-      pushToast('Nothing to save')
+      pushToast(t('console.agents.toastNothingToSave'))
       saving.value = false
       return
     }
     await rpc.call('agents.update', payload)
-    pushToast('Agent updated: ' + drawerAgentId.value, { tone: 'ok' })
+    pushToast(t('console.agents.toastUpdated', { id: drawerAgentId.value }), { tone: 'ok' })
     await loadData()
     const updated = agents.value.find(a => a.id === drawerAgentId.value)
     if (updated) {
@@ -435,9 +437,9 @@ async function onSave() {
   } catch (err: unknown) {
     const code = rpcErrorCode(err)
     const msg = errorMessage(err)
-    let friendly = 'Failed to save: ' + msg
-    if (code === 'agent.not_found') friendly = `Agent "${drawerAgentId.value}" no longer exists.`
-    if (code === 'agent.builtin_immutable') friendly = `"${drawerAgentId.value}" is a built-in agent and cannot be modified.`
+    let friendly = t('console.agents.toastSaveFailed', { msg })
+    if (code === 'agent.not_found') friendly = t('console.agents.toastNotFound', { id: drawerAgentId.value })
+    if (code === 'agent.builtin_immutable') friendly = t('console.agents.toastBuiltinImmutable', { id: drawerAgentId.value })
     pushToast(friendly, { tone: 'danger' })
   } finally {
     saving.value = false
@@ -451,18 +453,18 @@ async function onSave() {
 async function deleteAgent(id?: string) {
   if (!id) return
   const ok = await confirmModal(
-    'Delete agent',
-    `Delete agent ${id}? Existing chats with this agent will keep working but become unmanaged.`,
-    'Delete',
+    t('console.agents.deleteTitle'),
+    t('console.agents.deleteBody', { id }),
+    t('console.common.delete'),
     'btn--danger'
   )
   if (!ok) return
   try {
     await rpc.call('agents.delete', { id })
-    pushToast('Agent deleted: ' + id, { tone: 'ok' })
+    pushToast(t('console.agents.toastDeleted', { id }), { tone: 'ok' })
     await loadData()
   } catch (err: unknown) {
-    pushToast('Failed to delete agent: ' + errorMessage(err), { tone: 'danger' })
+    pushToast(t('console.agents.toastDeleteFailed', { msg: errorMessage(err) }), { tone: 'danger' })
   }
 }
 
@@ -470,7 +472,7 @@ async function deleteAgent(id?: string) {
 // Confirm helpers
 // ---------------------------------------------------------------------------
 
-function confirmModal(title: string, bodyText: string, primaryLabel = 'Confirm', primaryCls = 'btn--danger'): Promise<boolean> {
+function confirmModal(title: string, bodyText: string, primaryLabel = t('console.common.confirm'), primaryCls = 'btn--danger'): Promise<boolean> {
   return new Promise((resolve) => {
     confirmTitle.value = title
     confirmBody.value = bodyText
@@ -499,9 +501,9 @@ function cancelConfirm() {
 
 function confirmDiscard(): Promise<boolean> {
   return confirmModal(
-    'Discard unsaved changes?',
-    'You have unsaved edits. Closing now will lose them.',
-    'Discard',
+    t('console.agents.discardTitle'),
+    t('console.agents.discardBody'),
+    t('common.discard'),
     'btn--danger'
   )
 }

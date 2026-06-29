@@ -8,13 +8,13 @@
       aria-labelledby="settings-modal-title"
     >
       <header class="settings-modal__head">
-        <h2 id="settings-modal-title" class="settings-modal__title">Settings</h2>
+        <h2 id="settings-modal-title" class="settings-modal__title">{{ t('settings.dialog.title') }}</h2>
         <button
           ref="closeBtn"
           type="button"
           class="btn btn--icon btn--ghost"
-          aria-label="Close"
-          title="Close"
+          :aria-label="t('common.close')"
+          :title="t('common.close')"
           @click="requestClose()"
         >
           <Icon name="x" :size="16" />
@@ -29,19 +29,19 @@
         <div class="settings-banner__row">
           <Icon :name="hasSetupAction ? 'info' : 'check'" :size="16" aria-hidden="true" />
           <template v-if="hasSetupAction">
-            <strong class="settings-banner__count">Action needed ({{ actionItems.length }})</strong>
+            <strong class="settings-banner__count">{{ t('settings.dialog.actionNeeded', { count: actionItems.length }) }}</strong>
             <span class="settings-banner__items">
               <button
                 v-for="item in actionItems"
                 :key="item.label"
                 type="button"
                 class="settings-banner__item"
-                :aria-label="`${item.label} — open ${sectionLabel(item.section)}`"
+                :aria-label="t('settings.dialog.openSection', { label: item.label, section: sectionLabel(item.section) })"
                 @click="selectSection(item.section)"
               >{{ item.label }}</button>
             </span>
           </template>
-          <span v-else class="settings-banner__ready">Ready to run</span>
+          <span v-else class="settings-banner__ready">{{ t('settings.dialog.readyToRun') }}</span>
           <span class="settings-banner__spacer"></span>
           <button
             type="button"
@@ -51,13 +51,13 @@
             @click="disclosureOpen = !disclosureOpen"
           >
             <span class="settings-banner__chevron" :class="{ 'is-open': disclosureOpen }" aria-hidden="true">&#9656;</span>
-            <span>CLI handoff</span>
+            <span>{{ t('settings.dialog.cliHandoff') }}</span>
           </button>
         </div>
         <div v-show="disclosureOpen" id="settings-banner-disclosure" class="settings-banner__disclosure">
           <div class="setup-cli">
-            <section v-if="fixCommands.length > 0" class="setup-cli__group" aria-label="Fix now">
-              <div class="setup-cli__group-head"><h4 class="control-panel__eyebrow">Fix now</h4></div>
+            <section v-if="fixCommands.length > 0" class="setup-cli__group" :aria-label="t('settings.dialog.fixNow')">
+              <div class="setup-cli__group-head"><h4 class="control-panel__eyebrow">{{ t('settings.dialog.fixNow') }}</h4></div>
               <SetupCommandBlock
                 v-for="cmd in fixCommands"
                 :key="cmd.label"
@@ -67,8 +67,8 @@
                 @copy="copyCommand"
               />
             </section>
-            <section class="setup-cli__group" aria-label="CLI handoff">
-              <div class="setup-cli__group-head"><h4 class="control-panel__eyebrow">CLI handoff</h4></div>
+            <section class="setup-cli__group" :aria-label="t('settings.dialog.cliHandoff')">
+              <div class="setup-cli__group-head"><h4 class="control-panel__eyebrow">{{ t('settings.dialog.cliHandoff') }}</h4></div>
               <SetupCommandBlock
                 v-for="cmd in handoffCommands"
                 :key="cmd.label"
@@ -78,8 +78,8 @@
                 @copy="copyCommand"
               />
             </section>
-            <section class="setup-cli__group" aria-label="CLI recipes">
-              <div class="setup-cli__group-head"><h4 class="control-panel__eyebrow">CLI recipes</h4></div>
+            <section class="setup-cli__group" :aria-label="t('settings.dialog.cliRecipes')">
+              <div class="setup-cli__group-head"><h4 class="control-panel__eyebrow">{{ t('settings.dialog.cliRecipes') }}</h4></div>
               <SetupCommandBlock
                 v-for="cmd in recipeCommands"
                 :key="cmd.label"
@@ -90,7 +90,7 @@
               />
             </section>
           </div>
-          <div class="setup-summary" aria-label="Config summary">
+          <div class="setup-summary" :aria-label="t('settings.dialog.configSummary')">
             <div v-for="row in configSummary" :key="row.label">
               <span>{{ row.label }}</span><strong>{{ row.value }}</strong>
             </div>
@@ -100,7 +100,7 @@
       </template>
 
       <div class="settings-body">
-        <nav class="settings-rail" role="tablist" aria-label="Settings sections" :aria-orientation="railOrientation">
+        <nav class="settings-rail" role="tablist" :aria-label="t('settings.dialog.sections')" :aria-orientation="railOrientation">
           <button
             v-for="s in visibleSections"
             :id="'settings-rail-' + s.id"
@@ -111,11 +111,11 @@
             :class="{ 'is-active': section === s.id }"
             :aria-selected="section === s.id ? 'true' : 'false'"
             :aria-controls="'settings-section-' + s.id"
-            :aria-label="s.client ? s.label : `${s.label}: ${sectionStatus(s.id).label}${sectionDirty(s.id) ? ', unsaved changes' : ''}`"
+            :aria-label="s.client ? t('settings.rail.' + s.id) : `${t('settings.rail.' + s.id)}: ${sectionStatus(s.id).label}${sectionDirty(s.id) ? t('settings.dialog.unsavedSuffix') : ''}`"
             @click="selectSection(s.id)"
           >
             <Icon :name="s.icon" :size="16" aria-hidden="true" />
-            <span class="settings-rail__label">{{ s.label }}</span>
+            <span class="settings-rail__label">{{ t('settings.rail.' + s.id) }}</span>
             <span v-if="sectionDirty(s.id)" class="settings-rail__dirty" aria-hidden="true"></span>
             <span v-if="!s.client" class="settings-rail__dot" :class="sectionStatus(s.id).tone" aria-hidden="true"></span>
           </button>
@@ -174,6 +174,9 @@
               @channel-type-change="onChannelTypeChange"
               @update-channel-field="updateChannelField"
               @save="saveChannel"
+              @enable-channel="enableChannel"
+              @disable-channel="disableChannel"
+              @remove-channel="removeChannel"
             />
             <SetupCapabilitiesPanel
               v-else-if="section === 'capabilities'"
@@ -197,26 +200,26 @@
 
       <div v-if="loaded && hasUnsavedChanges" class="settings-dirtybar" aria-live="polite">
         <span class="settings-dirtybar__pulse" aria-hidden="true"></span>
-        <span class="settings-dirtybar__text">Unsaved changes in {{ dirtySectionNames }}</span>
+        <span class="settings-dirtybar__text">{{ t('settings.dialog.unsavedIn', { sections: dirtySectionNames }) }}</span>
         <span class="settings-dirtybar__spacer"></span>
-        <button type="button" class="btn" @click="discardChanges">Discard</button>
-        <button type="button" class="btn btn--primary" @click="saveDirtySections">Save</button>
+        <button type="button" class="btn" @click="discardChanges">{{ t('common.discard') }}</button>
+        <button type="button" class="btn btn--primary" @click="saveDirtySections">{{ t('common.save') }}</button>
       </div>
 
       <footer class="settings-foot">
-        <span class="settings-foot__text">More options live in</span>
+        <span class="settings-foot__text">{{ t('settings.dialog.moreOptionsIn') }}</span>
         <code class="settings-foot__path">{{ displayConfigPath }}</code>
         <button
           type="button"
           class="settings-foot__copy"
-          aria-label="Copy config path"
-          title="Copy config path"
+          :aria-label="t('settings.dialog.copyConfigPath')"
+          :title="t('settings.dialog.copyConfigPath')"
           @click="copyDisplayPath"
         >
           <Icon name="copy" :size="13" />
         </button>
         <span class="settings-foot__sep" aria-hidden="true">&middot;</span>
-        <span class="settings-foot__text">Most changes apply live; some need a gateway restart</span>
+        <span class="settings-foot__text">{{ t('settings.dialog.applyLiveNote') }}</span>
       </footer>
     </section>
   </div>
@@ -225,6 +228,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import LoadingSpinner from '@/components/LoadingSpinner.vue'
 import SetupCommandBlock from '@/components/setup/SetupCommandBlock.vue'
@@ -246,6 +250,7 @@ import '@/styles/settings-forms.css'
 
 const route = useRoute()
 const router = useRouter()
+const { t } = useI18n()
 const { confirm, confirmState } = useConfirm()
 
 // Desktop owns a local gateway, so it exposes a Runtime section the web build
@@ -296,6 +301,9 @@ const {
   saveBehavior,
   saveRouter,
   saveChannel,
+  enableChannel,
+  disableChannel,
+  removeChannel,
   saveSearch,
   saveMemory,
   saveImage,

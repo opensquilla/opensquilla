@@ -168,6 +168,21 @@ def _cost_source_for_usage(cost_usd: float, billed_cost: float) -> str:
         return "opensquilla_estimate"
     return "unavailable"
 
+
+def _usage_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _usage_float(value: Any) -> float:
+    try:
+        return max(0.0, float(value or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 MAX_META_INVOKE_DEPTH = 3
 MAX_META_INVOKE_PER_TURN = 8
 
@@ -1939,6 +1954,8 @@ class Agent:
         turn_llm_calls = 0
         turn_tool_errors = 0
         last_actual_model = ""
+        turn_model_usage_breakdown: list[dict[str, Any]] = []
+        last_ensemble_trace: dict[str, Any] | None = None
         terminal_error: ErrorEvent | None = None
         final_text_parts: list[str] = []
         final_reasoning_parts: list[str] = []
@@ -2452,6 +2469,22 @@ class Agent:
                                 # invalid responses still consumed provider tokens, but
                                 # they must not be appended to conversation history or the
                                 # live context-window gauge below.
+                                usage_breakdown = getattr(
+                                    raw_ev,
+                                    "model_usage_breakdown",
+                                    None,
+                                )
+                                valid_usage_breakdown = (
+                                    [
+                                        dict(usage_row)
+                                        for usage_row in usage_breakdown
+                                        if isinstance(usage_row, dict)
+                                    ]
+                                    if isinstance(usage_breakdown, list)
+                                    else []
+                                )
+                                if valid_usage_breakdown:
+                                    turn_model_usage_breakdown.extend(valid_usage_breakdown)
                                 if self._usage_tracker and self._session_key:
                                     # Forward the provider's real per-call billed_cost so
                                     # the per-model breakdown can show actual numbers
@@ -2460,16 +2493,53 @@ class Agent:
                                     # gateway/rpc_usage.py:_reconcile_breakdown_to_row
                                     # (the pro-rate fallback now skips when items
                                     # already carry real billed totals).
-                                    self._usage_tracker.add(
-                                        self._session_key,
-                                        input_tokens=raw_ev.input_tokens,
-                                        output_tokens=raw_ev.output_tokens,
-                                        model_id=raw_ev.model or self.config.model_id or "",
-                                        cache_read_tokens=raw_ev.cached_tokens,
-                                        cache_write_tokens=raw_ev.cache_write_tokens,
-                                        billed_cost=raw_ev.billed_cost,
-                                        provider=getattr(self.provider, "provider_name", ""),
-                                    )
+                                    if valid_usage_breakdown:
+                                        for usage_row in valid_usage_breakdown:
+                                            cache_read = (
+                                                usage_row.get("cache_read_tokens")
+                                                if "cache_read_tokens" in usage_row
+                                                else usage_row.get("cached_tokens")
+                                            )
+                                            self._usage_tracker.add(
+                                                self._session_key,
+                                                input_tokens=_usage_int(
+                                                    usage_row.get("input_tokens") or 0
+                                                ),
+                                                output_tokens=_usage_int(
+                                                    usage_row.get("output_tokens") or 0
+                                                ),
+                                                model_id=str(
+                                                    usage_row.get("model")
+                                                    or self.config.model_id
+                                                    or ""
+                                                ),
+                                                cache_read_tokens=_usage_int(cache_read or 0),
+                                                cache_write_tokens=_usage_int(
+                                                    usage_row.get("cache_write_tokens") or 0
+                                                ),
+                                                billed_cost=_usage_float(
+                                                    usage_row.get("billed_cost") or 0.0
+                                                ),
+                                                provider=str(
+                                                    usage_row.get("provider")
+                                                    or getattr(self.provider, "provider_name", "")
+                                                    or ""
+                                                ),
+                                            )
+                                    else:
+                                        self._usage_tracker.add(
+                                            self._session_key,
+                                            input_tokens=raw_ev.input_tokens,
+                                            output_tokens=raw_ev.output_tokens,
+                                            model_id=raw_ev.model or self.config.model_id or "",
+                                            cache_read_tokens=raw_ev.cached_tokens,
+                                            cache_write_tokens=raw_ev.cache_write_tokens,
+                                            billed_cost=raw_ev.billed_cost,
+                                            provider=getattr(self.provider, "provider_name", ""),
+                                        )
+                                ensemble_trace = getattr(raw_ev, "ensemble_trace", None)
+                                if isinstance(ensemble_trace, dict):
+                                    last_ensemble_trace = dict(ensemble_trace)
 
                             elif isinstance(raw_ev, ProviderErrorEvent):
                                 provider_error_for_log = raw_ev
@@ -2547,6 +2617,18 @@ class Agent:
                             "cost_source": getattr(provider_done_for_log, "cost_source", "none"),
                             "model": provider_done_for_log.model,
                         }
+                        model_usage_breakdown = getattr(
+                            provider_done_for_log,
+                            "model_usage_breakdown",
+                            None,
+                        )
+                        if model_usage_breakdown:
+                            response_payload["usage"][
+                                "model_usage_breakdown"
+                            ] = model_usage_breakdown
+                        ensemble_trace = getattr(provider_done_for_log, "ensemble_trace", None)
+                        if ensemble_trace:
+                            response_payload["ensemble_trace"] = ensemble_trace
                     if provider_error_for_log is not None:
                         response_payload["error"] = {
                             "message": provider_error_for_log.message,
@@ -3898,6 +3980,8 @@ class Agent:
                     "\n".join(final_reasoning_parts) if final_reasoning_parts else None
                 ),
                 session_totals=session_totals,
+                model_usage_breakdown=turn_model_usage_breakdown,
+                ensemble_trace=last_ensemble_trace,
             )
         # Reset for next turn
         self._state = AgentState.IDLE

@@ -286,6 +286,52 @@ async def test_simple_text_with_done_event_fires_rollup() -> None:
 
 
 @pytest.mark.asyncio
+async def test_turn_usage_persists_ensemble_breakdown_and_trace() -> None:
+    stage, recs = _make_stage()
+    done = DoneEvent(
+        text="ensemble answer",
+        input_tokens=11,
+        output_tokens=7,
+        model="z-ai/glm-5.2",
+        model_usage_breakdown=[
+            {
+                "role": "proposer",
+                "label": "proposer_1",
+                "provider": "openrouter",
+                "model": "deepseek/deepseek-v4-pro",
+                "input_tokens": 3,
+                "output_tokens": 2,
+                "billed_cost": 0.01,
+            },
+            {
+                "role": "aggregator",
+                "label": "aggregator",
+                "provider": "openrouter",
+                "model": "z-ai/glm-5.2",
+                "input_tokens": 8,
+                "output_tokens": 5,
+                "billed_cost": 0.02,
+            },
+        ],
+        ensemble_trace={
+            "mode": "b5_fusion",
+            "profile": "default",
+            "llm_request_count": 2,
+            "fallback_used": False,
+        },
+    )
+    inp = _make_input(final_text_parts=["ensemble answer"], done_event=done)
+
+    await stage.run(inp)
+
+    usage = recs["transcript_append"].calls[0]["turn_usage"]
+    assert usage["model_usage_breakdown"][0]["model"] == "deepseek/deepseek-v4-pro"
+    assert usage["model_usage_breakdown"][1]["role"] == "aggregator"
+    assert usage["ensemble_trace"]["profile"] == "default"
+    assert usage["ensemble_trace"]["llm_request_count"] == 2
+
+
+@pytest.mark.asyncio
 async def test_turn_usage_persists_vision_followup_metadata() -> None:
     stage, recs = _make_stage()
     done = DoneEvent(text="ok", input_tokens=5, output_tokens=3)

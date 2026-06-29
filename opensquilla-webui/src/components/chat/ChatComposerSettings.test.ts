@@ -84,3 +84,42 @@ describe('ChatComposerSettings coding mode contract', () => {
     expect(viewSource).toContain('await setCodingModeEnabled(enabled)')
   })
 })
+
+describe('ChatComposerSettings LLM Ensemble contract', () => {
+  it('places LLM Ensemble immediately after Coding mode', () => {
+    const codingModeIndex = source.indexOf('label="Coding mode"')
+    const ensembleIndex = source.indexOf('label="LLM Ensemble"')
+
+    expect(codingModeIndex).toBeGreaterThanOrEqual(0)
+    expect(ensembleIndex).toBeGreaterThan(codingModeIndex)
+  })
+
+  it('binds LLM Ensemble checked and busy state to typed props', () => {
+    const block = controlSwitchBlock('LLM Ensemble')
+
+    expect(block).toContain(':checked="llmEnsembleEnabled"')
+    expect(block).toContain(':busy="llmEnsembleSettingsBusy"')
+    expect(source).toContain('llmEnsembleEnabled: boolean')
+    expect(source).toContain('llmEnsembleSettingsBusy: boolean')
+  })
+
+  it('emits LLM Ensemble changes through the typed settings event', () => {
+    const block = controlSwitchBlock('LLM Ensemble')
+
+    expect(block).toContain('@change="$emit(\'setLlmEnsembleEnabled\', $event)"')
+    expect(source).toContain('setLlmEnsembleEnabled: [enabled: boolean]')
+  })
+
+  it('threads LLM Ensemble props and events through ChatComposer and ChatView', () => {
+    expect(composerSource).toContain(':llm-ensemble-enabled="llmEnsembleEnabled"')
+    expect(composerSource).toContain(':llm-ensemble-settings-busy="llmEnsembleSettingsBusy"')
+    expect(composerSource).toContain('@set-llm-ensemble-enabled="emit(\'setLlmEnsembleEnabled\', $event)"')
+    expect(composerSource).toContain('setLlmEnsembleEnabled: [enabled: boolean]')
+
+    expect(viewSource).toContain(':llm-ensemble-enabled="llmEnsembleEnabled"')
+    expect(viewSource).toContain(':llm-ensemble-settings-busy="llmEnsembleSettingsBusy"')
+    expect(viewSource).toContain('@set-llm-ensemble-enabled="setComposerLlmEnsembleEnabled"')
+    expect(viewSource).toContain('async function setComposerLlmEnsembleEnabled(enabled: boolean)')
+    expect(viewSource).toContain('await setLlmEnsembleEnabled(enabled)')
+  })
+})

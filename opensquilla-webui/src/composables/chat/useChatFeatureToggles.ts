@@ -37,6 +37,9 @@ interface ChatFeatureConfig {
   skills?: {
     coding_mode?: boolean
   }
+  llm_ensemble?: {
+    enabled?: boolean
+  }
 }
 
 const ROUTER_FX_PREF_KEY = 'opensquilla.routerFx'
@@ -49,6 +52,8 @@ export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
   const routerSettingsBusy = ref(false)
   const codingModeEnabled = ref(false)
   const codingModeSettingsBusy = ref(false)
+  const llmEnsembleEnabled = ref(false)
+  const llmEnsembleSettingsBusy = ref(false)
   const routerSlots = ref<string[]>([])
   const routerModels = ref<Record<string, string>>({})
   const routerTierConfigs = ref<Record<string, ChatRouterTierConfig>>({})
@@ -62,6 +67,7 @@ export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
 
     routerEnabled.value = Boolean(router.enabled && router.rollout_phase !== 'observe')
     codingModeEnabled.value = cfg?.skills?.coding_mode === true
+    llmEnsembleEnabled.value = cfg?.llm_ensemble?.enabled === true
     routerVisualMode.value = normalizeRouterVisualMode(router.visual_mode)
     loadRouterVisualEffectsPreference()
 
@@ -208,6 +214,28 @@ export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
     }
   }
 
+  async function setLlmEnsembleEnabled(enabled: boolean) {
+    if (llmEnsembleSettingsBusy.value) return
+    const nextEnabled = Boolean(enabled)
+    const previous = llmEnsembleEnabled.value
+    llmEnsembleSettingsBusy.value = true
+    try {
+      await options.rpc.waitForConnection()
+      await options.rpc.call('config.patch.safe', {
+        patches: {
+          'llm_ensemble.enabled': nextEnabled,
+        },
+      })
+      const cfg = await options.rpc.call<ChatFeatureConfig>('config.get')
+      await applyFeatureConfig(cfg)
+    } catch (err) {
+      llmEnsembleEnabled.value = previous
+      console.warn('Failed to update LLM Ensemble:', err instanceof Error ? err.message : String(err))
+    } finally {
+      llmEnsembleSettingsBusy.value = false
+    }
+  }
+
   function bindFeatureRefresh(scheduleHistorySync?: () => void) {
     let timer: ReturnType<typeof setTimeout> | null = null
     const schedule = () => {
@@ -237,12 +265,15 @@ export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
     routerSettingsBusy,
     codingModeEnabled,
     codingModeSettingsBusy,
+    llmEnsembleEnabled,
+    llmEnsembleSettingsBusy,
     routerSlots,
     routerModels,
     routerTierConfigs,
     loadFeatureToggles,
     setRouterEnabled,
     setCodingModeEnabled,
+    setLlmEnsembleEnabled,
     setRouterVisualEffectsEnabled,
     bindFeatureRefresh,
   }

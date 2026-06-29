@@ -446,6 +446,8 @@
       :router-settings-busy="routerSettingsBusy"
       :coding-mode-enabled="codingModeEnabled"
       :coding-mode-settings-busy="codingModeSettingsBusy"
+      :llm-ensemble-enabled="llmEnsembleEnabled"
+      :llm-ensemble-settings-busy="llmEnsembleSettingsBusy"
       :voice-busy="voiceBusy"
       :voice-recording="voiceRecording"
       @composition-change="composing = $event"
@@ -460,6 +462,7 @@
       @set-router-enabled="setComposerRouterEnabled"
       @set-visual-effects-enabled="setComposerVisualEffectsEnabled"
       @set-coding-mode-enabled="setComposerCodingModeEnabled"
+      @set-llm-ensemble-enabled="setComposerLlmEnsembleEnabled"
       @voice-input="onVoiceInput"
       @export-markdown="exportMarkdown"
       @send="onSend"
@@ -912,10 +915,13 @@ const {
   routerSettingsBusy,
   codingModeEnabled,
   codingModeSettingsBusy,
+  llmEnsembleEnabled,
+  llmEnsembleSettingsBusy,
   routerTierConfigs,
   loadFeatureToggles,
   setRouterEnabled,
   setCodingModeEnabled,
+  setLlmEnsembleEnabled,
   setRouterVisualEffectsEnabled,
   bindFeatureRefresh,
 } = chatFeatureToggles
@@ -1520,6 +1526,10 @@ function setComposerVisualEffectsEnabled(enabled: boolean) {
 
 async function setComposerCodingModeEnabled(enabled: boolean) {
   await setCodingModeEnabled(enabled)
+}
+
+async function setComposerLlmEnsembleEnabled(enabled: boolean) {
+  await setLlmEnsembleEnabled(enabled)
 }
 
 // A landing suggestion chip replaces the draft composer text; the user still

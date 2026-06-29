@@ -215,3 +215,111 @@ describe('useChatFeatureToggles coding mode', () => {
     expect(setterSource).not.toMatch(/localStorage|sessionStorage/)
   })
 })
+
+describe('useChatFeatureToggles LLM Ensemble', () => {
+  it('reads enabled LLM Ensemble from backend config', async () => {
+    const { api } = createHarness({
+      configGetResults: [{ llm_ensemble: { enabled: true } }],
+    })
+
+    await api.loadFeatureToggles()
+
+    expect(api.llmEnsembleEnabled.value).toBe(true)
+  })
+
+  it.each([
+    {},
+    { llm_ensemble: {} },
+  ])('defaults missing LLM Ensemble to off for %j', async (config) => {
+    const { api } = createHarness({
+      configGetResults: [config],
+    })
+
+    await api.loadFeatureToggles()
+
+    expect(api.llmEnsembleEnabled.value).toBe(false)
+  })
+
+  it('writes LLM Ensemble through the safe backend patch path', async () => {
+    const { api, rpc } = createHarness({
+      configGetResults: [{ llm_ensemble: { enabled: true } }],
+    })
+
+    await api.setLlmEnsembleEnabled(true)
+
+    expect(rpc.call).toHaveBeenCalledWith('config.patch.safe', {
+      patches: { 'llm_ensemble.enabled': true },
+    })
+  })
+
+  it('keeps LLM Ensemble backend-confirmed while a write is pending', async () => {
+    const pendingPatch = deferred<void>()
+    const { api } = createHarness({
+      patchResults: [pendingPatch.promise],
+      configGetResults: [{ llm_ensemble: { enabled: true } }],
+    })
+
+    const write = api.setLlmEnsembleEnabled(true)
+    await Promise.resolve()
+
+    expect(api.llmEnsembleSettingsBusy.value).toBe(true)
+    expect(api.llmEnsembleEnabled.value).toBe(false)
+
+    pendingPatch.resolve(undefined)
+    await write
+    expect(api.llmEnsembleEnabled.value).toBe(true)
+  })
+
+  it('rolls back LLM Ensemble when the backend patch fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { api } = createHarness({
+      configGetResults: [{ llm_ensemble: { enabled: true } }],
+      patchResults: [new Error('patch failed')],
+    })
+
+    await api.loadFeatureToggles()
+    await api.setLlmEnsembleEnabled(false)
+
+    expect(api.llmEnsembleEnabled.value).toBe(true)
+    expect(warn).toHaveBeenCalledWith('Failed to update LLM Ensemble:', 'patch failed')
+  })
+
+  it('uses the post-patch backend value as authoritative', async () => {
+    const { api } = createHarness({
+      configGetResults: [{ llm_ensemble: { enabled: false } }],
+    })
+
+    await api.setLlmEnsembleEnabled(true)
+
+    expect(api.llmEnsembleEnabled.value).toBe(false)
+  })
+
+  it('prevents overlapping LLM Ensemble writes while busy', async () => {
+    const pendingPatch = deferred<void>()
+    const { api, rpc } = createHarness({
+      patchResults: [pendingPatch.promise],
+      configGetResults: [{ llm_ensemble: { enabled: true } }],
+    })
+
+    const firstWrite = api.setLlmEnsembleEnabled(true)
+    await api.setLlmEnsembleEnabled(false)
+    await Promise.resolve()
+
+    expect(patchCalls(rpc)).toHaveLength(1)
+    expect(rpc.call).toHaveBeenCalledWith('config.patch.safe', {
+      patches: { 'llm_ensemble.enabled': true },
+    })
+
+    pendingPatch.resolve(undefined)
+    await firstWrite
+  })
+
+  it('does not persist LLM Ensemble through browser storage APIs', () => {
+    const setterStart = source.indexOf('async function setLlmEnsembleEnabled')
+    const setterEnd = source.indexOf('function bindFeatureRefresh', setterStart)
+    const setterSource = source.slice(setterStart, setterEnd)
+
+    expect(setterSource).toContain('llm_ensemble.enabled')
+    expect(setterSource).not.toMatch(/localStorage|sessionStorage/)
+  })
+})

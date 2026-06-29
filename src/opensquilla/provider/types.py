@@ -84,6 +84,8 @@ class DoneEvent:
     # tests does not silently shift earlier args.
     cache_write_tokens: int = 0
     cost_source: str = "none"
+    model_usage_breakdown: list[dict[str, Any]] = field(default_factory=list)
+    ensemble_trace: dict[str, Any] | None = None
 
     @property
     def upstream_cost_usd(self) -> float:

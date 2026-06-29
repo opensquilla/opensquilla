@@ -4,6 +4,7 @@ import type {
   ChatPendingItem,
   ChatRunStatus,
   ChatRunStatusSource,
+  ChatUsagePayload,
 } from '@/types/chat'
 import type {
   ArtifactPayload,
@@ -106,6 +107,10 @@ type ChatDoneUsageFields = {
   cost_usd?: number
   model?: string
   text?: string
+  model_usage_breakdown?: unknown
+  modelUsageBreakdown?: unknown
+  ensemble_trace?: unknown
+  ensembleTrace?: unknown
 }
 
 type ChatDoneUsagePayload = SessionEventPayload & ChatDoneUsageFields & {
@@ -230,6 +235,26 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
       turnReasoningLog.splice(0, turnReasoningLog.length - REASONING_LOG_LIMIT)
     }
     attachTurnReasoning()
+  }
+
+  function doneUsagePayload(donePayload: ChatDoneUsagePayload): ChatUsagePayload | undefined {
+    const raw = (donePayload.usage || donePayload || {}) as Record<string, unknown>
+    if (!raw || typeof raw !== 'object') return undefined
+    const usage = { ...raw } as ChatUsagePayload
+    const direct = donePayload as Record<string, unknown>
+    if (direct.model_usage_breakdown != null && usage.model_usage_breakdown == null) {
+      usage.model_usage_breakdown = direct.model_usage_breakdown as never
+    }
+    if (direct.modelUsageBreakdown != null && usage.modelUsageBreakdown == null) {
+      usage.modelUsageBreakdown = direct.modelUsageBreakdown as never
+    }
+    if (direct.ensemble_trace != null && usage.ensemble_trace == null) {
+      usage.ensemble_trace = direct.ensemble_trace as never
+    }
+    if (direct.ensembleTrace != null && usage.ensembleTrace == null) {
+      usage.ensembleTrace = direct.ensembleTrace as never
+    }
+    return usage
   }
 
   watch(sessionKey, () => {
@@ -551,15 +576,25 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
         ? Math.max(0, Math.floor((Date.now() - liveThinking.startedAt) / 1000))
         : 0
       clearLiveThinking()
+      const messageCountBeforeEnd = messages.value.length
       stream.endStreaming()
       // endStreaming pushes the assistant message only when the turn kept
       // visible output; sentinel/empty bubbles must not record reasoning.
       // Bind reasoning to that exact bubble, then keep a record so the
       // measured duration survives history replacements.
-      const lastMessage = messages.value[messages.value.length - 1]
-      if (reasoningText && payload?.reason !== 'aborted' && lastMessage?.role === 'assistant') {
-        lastMessage.reasoning = { text: reasoningText, seconds: reasoningSeconds }
-        recordTurnReasoning(reasoningText, reasoningSeconds, lastMessage.text.trim())
+      const completedMessage = messages.value[messageCountBeforeEnd]
+      const completedAssistant = completedMessage?.role === 'assistant'
+        ? completedMessage
+        : null
+      if (completedAssistant && payload?.reason !== 'aborted') {
+        completedAssistant.usage = doneUsagePayload(donePayload)
+        if (u.model) completedAssistant.model = u.model
+        if (u.input_tokens) completedAssistant.input_tokens = u.input_tokens
+        if (u.output_tokens) completedAssistant.output_tokens = u.output_tokens
+      }
+      if (reasoningText && payload?.reason !== 'aborted' && completedAssistant) {
+        completedAssistant.reasoning = { text: reasoningText, seconds: reasoningSeconds }
+        recordTurnReasoning(reasoningText, reasoningSeconds, completedAssistant.text.trim())
       }
       options.scheduleHistorySync()
 

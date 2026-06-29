@@ -106,6 +106,51 @@
   white-space: nowrap;
 }
 
+/* Ensemble table */
+.setup-ensemble-table {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  margin-bottom: var(--sp-4);
+  overflow: hidden;
+}
+
+.setup-ensemble-table--single {
+  margin-bottom: var(--sp-3);
+}
+
+.setup-ensemble-table__row {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: var(--sp-2);
+  grid-template-columns: 104px minmax(120px, 0.8fr) minmax(220px, 1.4fr);
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.setup-ensemble-table__row.is-head {
+  background: var(--bg-elevated);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.setup-ensemble-table__row:last-child {
+  border-bottom: none;
+}
+
+.setup-ensemble-table__row input,
+.setup-ensemble-table__row select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 12px;
+  min-width: 0;
+  padding: var(--sp-1) var(--sp-2);
+}
+
 .setup-runtime {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
@@ -211,5 +256,9 @@
   }
   .setup-tier-table__row {
     min-width: 520px;
+  }
+
+  .setup-ensemble-table__row {
+    grid-template-columns: 86px minmax(84px, 0.8fr) minmax(140px, 1.2fr);
   }
 }

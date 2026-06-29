@@ -11,7 +11,8 @@ from opensquilla.engine.pipeline import TurnContext
 from opensquilla.engine.runtime import TurnRunner
 from opensquilla.engine.steps import squilla_router as squilla_router_step
 from opensquilla.gateway.config import GatewayConfig, SquillaRouterConfig
-from opensquilla.provider import ChatConfig, Message
+from opensquilla.provider import ChatConfig, EnsembleProvider, Message
+from opensquilla.provider.selector import ProviderConfig
 
 
 class _Provider:
@@ -27,6 +28,33 @@ class _Provider:
 
     async def list_models(self) -> list[Any]:
         return []
+
+
+class _FakeSelector:
+    def __init__(self) -> None:
+        self._cfg = ProviderConfig(
+            provider="openrouter",
+            model="base-model",
+            api_key="sk-test",
+            base_url="https://openrouter.ai/api",
+        )
+
+    @property
+    def current_config(self) -> ProviderConfig:
+        return self._cfg
+
+    def override_model(self, model: str) -> None:
+        self._cfg = ProviderConfig(
+            provider=self._cfg.provider,
+            model=model,
+            api_key=self._cfg.api_key,
+            base_url=self._cfg.base_url,
+            proxy=self._cfg.proxy,
+            provider_routing=self._cfg.provider_routing,
+        )
+
+    def resolve(self) -> _Provider:
+        return _Provider()
 
 
 class _SlowHistoryStrategy:
@@ -77,6 +105,40 @@ def _config_with_router_timeout() -> GatewayConfig:
     return GatewayConfig(
         squilla_router=SquillaRouterConfig(routing_timeout_seconds=0.01)
     )
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_wraps_provider_when_llm_ensemble_enabled() -> None:
+    config = GatewayConfig(
+        squilla_router=SquillaRouterConfig(enabled=False),
+        llm_ensemble={
+            "enabled": True,
+            "active_profile": "custom",
+            "profiles": {
+                "custom": {
+                    "proposers": [{"model": "p1"}],
+                    "aggregator": {"model": "agg"},
+                }
+            },
+        },
+    )
+    runner = TurnRunner(provider_selector=None, config=config)
+    selector = _FakeSelector()
+
+    turn, provider = await runner._run_pipeline(
+        "hello",
+        "agent:main:test",
+        _Provider(),
+        selector,
+        [],
+        "system prompt",
+        [],
+    )
+
+    assert isinstance(provider, EnsembleProvider)
+    assert turn.metadata["ensemble_enabled"] is True
+    assert turn.metadata["ensemble_profile"] == "custom"
+    assert turn.metadata["routed_model_before_ensemble"]
 
 
 @pytest.mark.asyncio

@@ -160,8 +160,8 @@ Plan a safe 20-minute balcony plant science project for a 7-year-old. Include
 materials, steps, safety notes, and a simple presentation outline.
 ```
 
-This is the normal 0.4.0 path. It is best for important, expensive, or easily
-confused tasks because the workflow launch is explicit.
+This is the normal 0.4 release-line path. It is best for important, expensive,
+or easily confused tasks because the workflow launch is explicit.
 
 ### Compatibility: Automatic Triggering
 

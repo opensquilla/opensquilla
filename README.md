@@ -353,16 +353,13 @@ What is sent:
 - first-seen and sent timestamps
 - CI/test-environment marker (`ci_environment`)
 
-The `install_id` is derived locally before upload. OpenSquilla prefers usable
-machine MAC addresses and falls back to usable local machine IP addresses only
-when no usable MAC address is available. The raw MAC or IP value is not uploaded;
-the payload contains only a one-way SHA-256 digest. If neither stable signal is
-available, OpenSquilla falls back to a random locally persisted ID.
+The `install_id` is a local one-way SHA-256 digest derived from usable MAC
+addresses, then local IP addresses when no MAC is available, with a random
+persisted fallback. Raw MAC/IP values are not uploaded.
 
-What is not sent: usernames, email addresses, hostnames, local paths, API keys,
-provider configuration, chat history, session data, memory, agent content, file
-names, file contents, raw MAC addresses, or raw local IP addresses. Source IP may
-be visible to HTTP servers at the transport layer, but it is not part of the
+What is not sent: usernames, hostnames, paths, API keys, provider config,
+chat/session/memory/agent content, file names, or file contents. Source IP may
+be visible to HTTP servers at the transport layer, but is not part of the
 payload.
 
 To opt out:

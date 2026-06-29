@@ -199,7 +199,12 @@ async function verifyRuntime(root, label, { platform, executeCommands }) {
 }
 
 function verifyMainProcess(source, label) {
-  for (const expected of ['gatewayStartPromise', 'openOrResumeDesktopApp', 'ensureGatewayStarted']) {
+  for (const expected of [
+    'gatewayStartPromise',
+    'openOrResumeDesktopApp',
+    'ensureGatewayStarted',
+    'isCurrentWindowAtControlUi',
+  ]) {
     if (!source.includes(expected)) fail(`${label} main process is missing ${expected}`)
   }
 
@@ -215,6 +220,18 @@ function verifyMainProcess(source, label) {
   }
   if (!/second-instance[\s\S]{0,240}openOrResumeDesktopApp/.test(source)) {
     fail(`${label} main process second-instance handler does not route through openOrResumeDesktopApp`)
+  }
+
+  const loadCurrentIndex = source.indexOf('async function loadControlUiIntoCurrentWindow')
+  const controlGuardIndex = source.indexOf('isCurrentWindowAtControlUi(window, gatewayUrl)', loadCurrentIndex)
+  const controlLoadIndex = source.indexOf('loadControlUi(window, gatewayUrl)', loadCurrentIndex)
+  if (
+    loadCurrentIndex === -1
+    || controlGuardIndex === -1
+    || controlLoadIndex === -1
+    || controlGuardIndex > controlLoadIndex
+  ) {
+    fail(`${label} main process reloads the Control UI before checking whether it is already loaded`)
   }
 }
 

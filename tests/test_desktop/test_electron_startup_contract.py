@@ -27,6 +27,10 @@ def test_desktop_resume_is_visible_first_and_single_flight() -> None:
     assert "function ensureGatewayStarted(): Promise<GatewayState>" in main_ts
     assert "gatewayStartPromise = startGateway().finally" in main_ts
     assert "gatewayStartPromise = null" in main_ts
+    assert (
+        "function isCurrentWindowAtControlUi(window: BrowserWindow, gatewayUrl: string): boolean"
+        in main_ts
+    )
 
     assert resume.index("await createMainWindow()") < resume.index("ensureGatewayStarted()")
     assert "focusMainWindow()" in resume
@@ -46,6 +50,12 @@ def test_desktop_gateway_completion_uses_current_live_window() -> None:
     assert "const window = currentMainWindow()" in load_current
     assert "if (!window) return" in load_current
     assert "if (window.isDestroyed()) return" in load_current
+    assert "isCurrentWindowAtControlUi(window, gatewayUrl)" in load_current
+    guard_index = load_current.index("isCurrentWindowAtControlUi(window, gatewayUrl)")
+    load_index = load_current.index("await loadControlUi(window, gatewayUrl)")
+    assert guard_index < load_index
+    assert "current.pathname === '/control'" in main_ts
+    assert "current.pathname.startsWith('/control/')" in main_ts
     assert "if (mainWindow === window) mainWindow = null" in main_ts
 
 

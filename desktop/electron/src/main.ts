@@ -3088,6 +3088,22 @@ async function loadControlUi(window: BrowserWindow, gatewayUrl: string): Promise
   throw lastError ?? new Error(`Failed to load ${url}`)
 }
 
+function isCurrentWindowAtControlUi(window: BrowserWindow, gatewayUrl: string): boolean {
+  const currentUrl = window.webContents.getURL()
+  if (!currentUrl) return false
+
+  try {
+    const current = new URL(currentUrl)
+    const gateway = new URL(gatewayUrl)
+    return (
+      current.origin === gateway.origin
+      && (current.pathname === '/control' || current.pathname.startsWith('/control/'))
+    )
+  } catch {
+    return false
+  }
+}
+
 async function createMainWindow(): Promise<BrowserWindow> {
   if (mainWindow && !mainWindow.isDestroyed()) return mainWindow
 
@@ -3155,6 +3171,11 @@ async function loadControlUiIntoCurrentWindow(gatewayUrl: string): Promise<void>
   if (!window) return
 
   sendBootStatus('control')
+  if (isCurrentWindowAtControlUi(window, gatewayUrl)) {
+    sendBootStatus('ready')
+    return
+  }
+
   try {
     await loadControlUi(window, gatewayUrl)
   } catch (error) {

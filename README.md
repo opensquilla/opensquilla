@@ -341,38 +341,24 @@ version adoption, and runtime compatibility. Data is sent on first gateway
 startup and once per OpenSquilla version. Uploads use a short timeout and never
 block startup.
 
-What is sent:
-
-- schema version
-- locally generated stable `install_id` digest
-- OpenSquilla version
-- event type (`install` or `version_seen`)
-- install method (`pip`, `source`, `docker`, `desktop`, or `unknown`)
-- operating system, OS version, CPU architecture, and Python major/minor
-  version
-- first-seen and sent timestamps
-
-The `install_id` is derived locally before upload. OpenSquilla prefers usable
-machine MAC addresses and falls back to usable local machine IP addresses only
-when no usable MAC address is available. The raw MAC or IP value is not uploaded;
-the payload contains only a one-way SHA-256 digest. If neither stable signal is
-available, OpenSquilla falls back to a random locally persisted ID.
+What is sent: schema version, stable `install_id` digest, OpenSquilla version,
+event type, install method, OS/runtime details, and first-seen/sent timestamps.
+The `install_id` is derived locally from usable MAC addresses, or usable local IP
+addresses when no MAC is available. Raw MAC/IP values are never uploaded; the
+payload contains only a one-way SHA-256 digest. If no stable signal is available,
+OpenSquilla falls back to a random locally persisted ID.
 
 What is not sent: usernames, email addresses, hostnames, local paths, API keys,
 provider configuration, chat history, session data, memory, agent content, file
-names, file contents, raw MAC addresses, or raw local IP addresses. HTTP servers
-can technically observe source IP addresses at the transport layer; source IP
-addresses are not part of the payload and should not be used as an install-count
-field by the collector.
+names, file contents, raw MAC addresses, or raw local IP addresses. Source IP may
+be visible to HTTP servers at the transport layer, but it is not part of the
+payload.
 
 To opt out:
 
 ```sh
 OPENSQUILLA_TELEMETRY_DISABLED=true
 ```
-
-Telemetry is also skipped automatically in GitHub Actions, while pytest is
-running, or when `OPENSQUILLA_TESTING=true` is set.
 
 Advanced deployments can use their own endpoint:
 

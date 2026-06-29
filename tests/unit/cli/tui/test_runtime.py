@@ -646,3 +646,57 @@ async def test_runtime_degrades_gracefully_on_surface_read_error() -> None:
     assert any("Input surface error" in notice for notice in notices)
     # the dynamic error text is markup-escaped so the notice itself cannot crash.
     assert any("\\[boom]" in notice for notice in notices)
+
+
+@pytest.mark.asyncio
+async def test_runtime_runs_local_command_inline_without_echo_or_queue() -> None:
+    # A LOCAL command (e.g. /theme) typed while a turn is streaming must run
+    # immediately, never echoed as a prompt and never queued behind the turn.
+    inputs: asyncio.Queue[str | None] = asyncio.Queue()
+    surface = _FakeSurface(inputs)
+    dispatched: list[str] = []
+    echoed: list[str] = []
+    queued_starts = 0
+    turn_running = asyncio.Event()
+    release_turn = asyncio.Event()
+
+    async def _dispatch(user_input: str) -> bool:
+        dispatched.append(user_input)
+        if user_input == "hi":
+            turn_running.set()
+            await release_turn.wait()  # hold the turn in flight
+        return True
+
+    async def _echo(_surface: Any, text: str) -> None:
+        echoed.append(text)
+
+    async def _queued_start(_surface: Any) -> None:
+        nonlocal queued_starts
+        queued_starts += 1
+
+    def _classify(text: str) -> TuiInputKind:
+        return TuiInputKind.LOCAL if text.startswith("/theme") else TuiInputKind.NORMAL
+
+    task = asyncio.ensure_future(
+        run_tui_runtime(
+            dispatch=_dispatch,
+            surface_factory=_surface_factory(surface),
+            config=_runtime_config(concurrent_input_during_turn=True, classify_input=_classify),
+            hooks=TuiRuntimeHooks(on_user_input_echo=_echo, on_queued_turn_start=_queued_start),
+        )
+    )
+
+    await inputs.put("hi")
+    await turn_running.wait()
+    await inputs.put("/theme")  # LOCAL command while "hi" streams
+    await _wait_until(lambda: "/theme" in dispatched)
+
+    # dispatched immediately, NOT echoed as a prompt, NOT queued, no queued marker
+    assert echoed == ["hi"]  # only the chat message was echoed
+    assert queued_starts == 0
+    assert surface.next_line_calls  # input was being read concurrently
+
+    release_turn.set()
+    await inputs.put(None)
+    await asyncio.wait_for(task, timeout=2.0)
+    assert dispatched == ["hi", "/theme"]

@@ -216,13 +216,23 @@ async def run_tui_runtime(
                         hooks.notice("[yellow]Goodbye.[/yellow]")
                     return runtime_state
 
+                category = config.classify_input(user_input)
+
+                if category is TuiInputKind.LOCAL:
+                    # Host-only UI command (e.g. /theme): act now, inline on the
+                    # loop, with no prompt echo and no queue — the in-flight turn
+                    # keeps streaming. A single host IPC frame is atomic, so it
+                    # cannot interleave with the streaming turn.
+                    keep_going = await dispatch(user_input)
+                    if not keep_going:
+                        return runtime_state
+                    continue
+
                 await hooks.on_user_input_echo(tui_surface, user_input)
                 _emit(
                     config.event_sink,
                     TuiEvent(TuiEventKind.USER_INPUT_ACCEPTED, input_text=user_input),
                 )
-
-                category = config.classify_input(user_input)
 
                 if category is TuiInputKind.DESTRUCTIVE:
                     runtime_state.clear_pending()

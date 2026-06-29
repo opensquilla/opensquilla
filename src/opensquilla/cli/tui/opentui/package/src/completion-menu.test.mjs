@@ -125,6 +125,17 @@ test("menuKeyAction handles menu navigation before submit and cancel keys", () =
   assert.equal(menuKeyAction(menu, "backspace").handled, false);
 });
 
+test("menuKeyAction lets Enter submit when the menu has no matches", () => {
+  const empty = { active: true, kind: "command", filtered: [], selected: 0 };
+  // With nothing to accept, Enter must NOT be swallowed — it falls through so the
+  // message is submitted instead of silently lost.
+  assert.equal(menuKeyAction(empty, "return").handled, false);
+  // Tab just closes the menu (no stray insert), without submitting.
+  const tab = menuKeyAction(empty, "tab");
+  assert.equal(tab.handled, true);
+  assert.equal(tab.action, "close");
+});
+
 test("ipc dispatcher routes completion responses", () => {
   let seen = null;
   const dispatch = createDispatcher({

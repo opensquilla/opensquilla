@@ -200,6 +200,12 @@ export function menuKeyAction(menu, keyName) {
     return { handled: true, action: "close", menu: { ...menu, active: false } };
   }
   if (keyName === "return" || keyName === "tab") {
+    // Nothing to accept (zero matches): Enter must still SUBMIT the message
+    // (fall through, don't swallow it); Tab just closes the menu with no insert.
+    if ((menu.filtered?.length ?? 0) === 0) {
+      if (keyName === "return") return { handled: false, action: "pass", menu: { ...menu, active: false } };
+      return { handled: true, action: "close", menu: { ...menu, active: false } };
+    }
     return { handled: true, action: "accept", menu };
   }
   return { handled: false, action: "pass", menu };

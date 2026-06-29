@@ -43,6 +43,7 @@ _MODEL_ENV = {
     "deepseek": "DEEPSEEK_MODEL",
     "gemini": "GEMINI_MODEL",
     "volcengine": "VOLCENGINE_MODEL",
+    "byteplus": "BYTEPLUS_MODEL",
     "bailian_coding": "BAILIAN_CODING_MODEL",
     "moonshot": "MOONSHOT_MODEL",
     "zhipu": "ZAI_MODEL",
@@ -58,6 +59,7 @@ _BASE_ENV = {
     "deepseek": "DEEPSEEK_BASE_URL",
     "gemini": "GEMINI_BASE_URL",
     "volcengine": "VOLCENGINE_BASE_URL",
+    "byteplus": "BYTEPLUS_BASE_URL",
     "bailian_coding": "BAILIAN_CODING_BASE_URL",
     "moonshot": "MOONSHOT_BASE_URL",
     "zhipu": "ZAI_BASE_URL",
@@ -73,6 +75,7 @@ _DEFAULT_MODELS = {
     "deepseek": "deepseek-v4-flash",
     "gemini": "gemini-2.5-flash",
     "volcengine": "doubao-seed-1-6-251015",
+    "byteplus": "seed-2-0-lite-260228",
     "bailian_coding": "kimi-k2.5",
     "moonshot": "kimi-k2.6",
     "zhipu": "glm-4.5",
@@ -407,7 +410,7 @@ async def main() -> int:
     parser.add_argument(
         "--providers",
         nargs="+",
-        default=["dashscope", "deepseek", "gemini", "volcengine"],
+        default=["dashscope", "deepseek", "gemini", "volcengine", "byteplus"],
     )
     parser.add_argument("--models")
     parser.add_argument("--model")

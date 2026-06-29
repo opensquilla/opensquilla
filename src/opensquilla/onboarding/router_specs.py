@@ -26,6 +26,7 @@ _PROFILE_LABELS: dict[str, str] = {
     "deepseek": "DeepSeek",
     "gemini": "Google Gemini",
     "volcengine": "Volcengine Ark",
+    "byteplus": "BytePlus ModelArk",
     "openai": "OpenAI",
     "zhipu": "Zhipu",
     "moonshot": "Moonshot AI",

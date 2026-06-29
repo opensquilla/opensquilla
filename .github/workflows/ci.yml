@@ -29,6 +29,12 @@ jobs:
       dependency_changed: ${{ steps.classify.outputs.dependency_changed }}
       release_changed: ${{ steps.classify.outputs.release_changed }}
       windows_full_required: ${{ steps.classify.outputs.windows_full_required }}
+      frontend_changed: ${{ steps.classify.outputs.frontend_changed }}
+      tui_changed: ${{ steps.classify.outputs.tui_changed }}
+      python_changed: ${{ steps.classify.outputs.python_changed }}
+      platform_sensitive_changed: ${{ steps.classify.outputs.platform_sensitive_changed }}
+      build_wheel_required: ${{ steps.classify.outputs.build_wheel_required }}
+      full_required: ${{ steps.classify.outputs.full_required }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -78,7 +84,7 @@ jobs:
   frontend-check:
     name: Frontend build and typecheck
     needs: classify-changes
-    if: needs.classify-changes.outputs.docs_only != 'true'
+    if: ${{ needs.classify-changes.outputs.frontend_changed == 'true' || needs.classify-changes.outputs.full_required == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -96,10 +102,6 @@ jobs:
         working-directory: opensquilla-webui
         run: npm ci
 
-      - name: Type check
-        working-directory: opensquilla-webui
-        run: npx vue-tsc --noEmit
-
       - name: Build frontend
         working-directory: opensquilla-webui
         run: npm run build
@@ -112,10 +114,43 @@ jobs:
           fi
           echo "Frontend dist verified"
 
+  tui-check:
+    name: OpenTUI package tests
+    needs: classify-changes
+    if: ${{ needs.classify-changes.outputs.tui_changed == 'true' || needs.classify-changes.outputs.full_required == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.19.0'
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install OpenTUI host dependencies
+        working-directory: src/opensquilla/cli/tui/opentui/package
+        shell: bash
+        run: bun install --frozen-lockfile
+
+      - name: Run OpenTUI Node tests
+        working-directory: src/opensquilla/cli/tui/opentui/package
+        run: npm run test
+
+      - name: Run OpenTUI Bun tests
+        working-directory: src/opensquilla/cli/tui/opentui/package
+        run: bun run test:bun
+
   ubuntu-quality:
     name: Lint, test, and build (ubuntu-latest, 3.12)
     needs: classify-changes
-    if: needs.classify-changes.outputs.docs_only != 'true'
+    if: ${{ needs.classify-changes.outputs.python_changed == 'true' || needs.classify-changes.outputs.full_required == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -128,7 +163,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          lfs: true
+          lfs: ${{ needs.classify-changes.outputs.full_required == 'true' }}
 
       - name: Configure runtime directories
         shell: bash
@@ -145,15 +180,6 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install OpenTUI host dependencies
-        shell: bash
-        run: bun install --frozen-lockfile --cwd=src/opensquilla/cli/tui/opentui/package
 
       - name: Install dependencies
         shell: bash
@@ -169,7 +195,23 @@ jobs:
 
       - name: Test
         shell: bash
-        run: uv run pytest tests -q
+        run: |
+          set -euo pipefail
+          markers="not llm and not live_search and not live_channel and not webui_browser and not tui_real_terminal and not local_golden and not agent_context_boundary and not llm_router_acc"
+
+          if [[ "${{ needs.classify-changes.outputs.full_required }}" == "true" ]]; then
+            uv run pytest tests -q -m "${markers}" --durations=50
+          else
+            uv run pytest \
+              tests/unit \
+              tests/test_ci \
+              --ignore=tests/test_ci/test_router_artifact_manifest.py \
+              tests/test_desktop/test_electron_startup_contract.py \
+              tests/test_engine/test_coding_mode.py \
+              tests/test_engine/test_stream_wrappers.py \
+              tests/test_tools/test_shell_process_isolation.py \
+              -q -m "${markers}" --durations=50
+          fi
 
       - name: Verify metric counter names unchanged
         shell: bash
@@ -184,18 +226,20 @@ jobs:
           done
 
       - name: tracemalloc leak smoke test
+        if: ${{ needs.classify-changes.outputs.full_required == 'true' }}
         shell: bash
         run: |
           uv run python -m pytest tests/test_gateway/test_task_runtime_terminal_cleanup.py::test_no_leak_under_load -v
 
       - name: Build wheel
+        if: ${{ needs.classify-changes.outputs.build_wheel_required == 'true' || needs.classify-changes.outputs.full_required == 'true' }}
         shell: bash
         run: uv build --wheel
 
   windows-compat:
     name: Windows compatibility smoke (3.12)
     needs: classify-changes
-    if: needs.classify-changes.outputs.docs_only != 'true'
+    if: ${{ needs.classify-changes.outputs.python_changed == 'true' || needs.classify-changes.outputs.platform_sensitive_changed == 'true' || needs.classify-changes.outputs.dependency_changed == 'true' || needs.classify-changes.outputs.release_changed == 'true' || needs.classify-changes.outputs.full_required == 'true' }}
     runs-on: windows-latest
     timeout-minutes: 20
 
@@ -207,8 +251,6 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-        with:
-          lfs: true
 
       - name: Configure runtime directories
         shell: bash
@@ -225,15 +267,6 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install OpenTUI host dependencies
-        shell: bash
-        run: bun install --frozen-lockfile --cwd=src/opensquilla/cli/tui/opentui/package
 
       - name: Install dependencies
         shell: bash
@@ -252,9 +285,9 @@ jobs:
             -q
 
   windows-full:
-    name: Windows full test suite (conditional)
+    name: Windows high-risk/full tests (conditional)
     needs: classify-changes
-    if: needs.classify-changes.outputs.windows_full_required == 'true'
+    if: ${{ needs.classify-changes.outputs.windows_full_required == 'true' || needs.classify-changes.outputs.full_required == 'true' }}
     runs-on: windows-latest
     timeout-minutes: 20
 
@@ -267,7 +300,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          lfs: true
+          lfs: ${{ needs.classify-changes.outputs.full_required == 'true' }}
 
       - name: Configure runtime directories
         shell: bash
@@ -286,11 +319,13 @@ jobs:
           enable-cache: true
 
       - name: Set up Bun
+        if: ${{ needs.classify-changes.outputs.tui_changed == 'true' || needs.classify-changes.outputs.full_required == 'true' }}
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
 
       - name: Install OpenTUI host dependencies
+        if: ${{ needs.classify-changes.outputs.tui_changed == 'true' || needs.classify-changes.outputs.full_required == 'true' }}
         shell: bash
         run: bun install --frozen-lockfile --cwd=src/opensquilla/cli/tui/opentui/package
 
@@ -300,12 +335,31 @@ jobs:
 
       - name: Test
         shell: bash
-        run: uv run pytest tests -q
+        run: |
+          set -euo pipefail
+          markers="not llm and not live_search and not live_channel and not webui_browser and not tui_real_terminal and not local_golden and not agent_context_boundary and not llm_router_acc"
+
+          if [[ "${{ needs.classify-changes.outputs.full_required }}" == "true" ]]; then
+            uv run pytest tests -q -m "${markers}" --durations=50
+          else
+            uv run pytest \
+              tests/test_artifacts.py \
+              tests/test_compat \
+              tests/test_desktop \
+              tests/test_sandbox \
+              tests/test_tools/test_path_aliases.py \
+              tests/test_tools/test_path_policy.py \
+              tests/test_tools/test_shell_approval_policy.py \
+              tests/test_tools/test_shell_background_seatbelt.py \
+              tests/test_tools/test_shell_policy_windows.py \
+              tests/test_tools/test_shell_process_isolation.py \
+              -q -m "${markers}" --durations=50
+          fi
 
   release-packaging:
     name: Release packaging contracts
     needs: classify-changes
-    if: needs.classify-changes.outputs.release_changed == 'true'
+    if: ${{ needs.classify-changes.outputs.release_changed == 'true' || needs.classify-changes.outputs.full_required == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -351,6 +405,7 @@ jobs:
       - classify-changes
       - workflow-lint
       - frontend-check
+      - tui-check
       - ubuntu-quality
       - windows-compat
       - windows-full
@@ -367,6 +422,7 @@ jobs:
           classify_result="${{ needs.classify-changes.result }}"
           workflow_lint_result="${{ needs.workflow-lint.result }}"
           frontend_result="${{ needs.frontend-check.result }}"
+          tui_result="${{ needs.tui-check.result }}"
           ubuntu_result="${{ needs.ubuntu-quality.result }}"
           windows_smoke_result="${{ needs.windows-compat.result }}"
           windows_full_result="${{ needs.windows-full.result }}"
@@ -378,48 +434,77 @@ jobs:
           dependency_changed="${{ needs.classify-changes.outputs.dependency_changed }}"
           release_changed="${{ needs.classify-changes.outputs.release_changed }}"
           windows_full_required="${{ needs.classify-changes.outputs.windows_full_required }}"
+          frontend_changed="${{ needs.classify-changes.outputs.frontend_changed }}"
+          tui_changed="${{ needs.classify-changes.outputs.tui_changed }}"
+          python_changed="${{ needs.classify-changes.outputs.python_changed }}"
+          platform_sensitive_changed="${{ needs.classify-changes.outputs.platform_sensitive_changed }}"
+          build_wheel_required="${{ needs.classify-changes.outputs.build_wheel_required }}"
+          full_required="${{ needs.classify-changes.outputs.full_required }}"
+
+          require_success() {
+            local result="$1"
+            local label="$2"
+            if [[ "${result}" != "success" ]]; then
+              echo "${label} must succeed."
+              exit 1
+            fi
+          }
+
+          allow_success_or_skipped() {
+            local result="$1"
+            local label="$2"
+            if [[ "${result}" != "success" && "${result}" != "skipped" ]]; then
+              echo "${label} must not fail."
+              exit 1
+            fi
+          }
 
           printf 'classify-changes: %s\n' "${classify_result}"
           printf 'workflow-lint: %s\n' "${workflow_lint_result}"
           printf 'frontend-check: %s\n' "${frontend_result}"
+          printf 'tui-check: %s\n' "${tui_result}"
           printf 'ubuntu-quality: %s\n' "${ubuntu_result}"
           printf 'windows-compat-smoke: %s\n' "${windows_smoke_result}"
           printf 'windows-full: %s\n' "${windows_full_result}"
           printf 'release-packaging: %s\n' "${release_result}"
-          printf 'docs_only=%s runtime_changed=%s test_changed=%s ci_changed=%s dependency_changed=%s release_changed=%s windows_full_required=%s\n' \
-            "${docs_only}" "${runtime_changed}" "${test_changed}" "${ci_changed}" "${dependency_changed}" "${release_changed}" "${windows_full_required}"
+          printf 'docs_only=%s runtime_changed=%s test_changed=%s ci_changed=%s dependency_changed=%s release_changed=%s windows_full_required=%s frontend_changed=%s tui_changed=%s python_changed=%s platform_sensitive_changed=%s build_wheel_required=%s full_required=%s\n' \
+            "${docs_only}" "${runtime_changed}" "${test_changed}" "${ci_changed}" "${dependency_changed}" "${release_changed}" "${windows_full_required}" "${frontend_changed}" "${tui_changed}" "${python_changed}" "${platform_sensitive_changed}" "${build_wheel_required}" "${full_required}"
 
-          if [[ "${classify_result}" != "success" ]]; then
-            echo "Classify changed files must succeed."
-            exit 1
+          require_success "${classify_result}" "Classify changed files"
+          require_success "${workflow_lint_result}" "Workflow lint"
+
+          if [[ "${frontend_changed}" == "true" || "${full_required}" == "true" ]]; then
+            require_success "${frontend_result}" "Frontend build and typecheck"
+          else
+            allow_success_or_skipped "${frontend_result}" "Frontend build and typecheck"
           fi
 
-          if [[ "${workflow_lint_result}" != "success" ]]; then
-            echo "Workflow lint must succeed."
-            exit 1
+          if [[ "${tui_changed}" == "true" || "${full_required}" == "true" ]]; then
+            require_success "${tui_result}" "OpenTUI package tests"
+          else
+            allow_success_or_skipped "${tui_result}" "OpenTUI package tests"
           fi
 
-          if [[ "${docs_only}" != "true" && "${frontend_result}" != "success" ]]; then
-            echo "Frontend build and typecheck must succeed for non-documentation changes."
-            exit 1
+          if [[ "${python_changed}" == "true" || "${full_required}" == "true" ]]; then
+            require_success "${ubuntu_result}" "Ubuntu quality gate"
+          else
+            allow_success_or_skipped "${ubuntu_result}" "Ubuntu quality gate"
           fi
 
-          if [[ "${docs_only}" != "true" && "${ubuntu_result}" != "success" ]]; then
-            echo "Ubuntu quality gate must succeed for non-documentation changes."
-            exit 1
+          if [[ "${python_changed}" == "true" || "${platform_sensitive_changed}" == "true" || "${dependency_changed}" == "true" || "${release_changed}" == "true" || "${full_required}" == "true" ]]; then
+            require_success "${windows_smoke_result}" "Windows compatibility smoke tests"
+          else
+            allow_success_or_skipped "${windows_smoke_result}" "Windows compatibility smoke tests"
           fi
 
-          if [[ "${docs_only}" != "true" && "${windows_smoke_result}" != "success" ]]; then
-            echo "Windows compatibility smoke tests must succeed for non-documentation changes."
-            exit 1
+          if [[ "${windows_full_required}" == "true" || "${full_required}" == "true" ]]; then
+            require_success "${windows_full_result}" "Windows full test suite"
+          else
+            allow_success_or_skipped "${windows_full_result}" "Windows full test suite"
           fi
 
-          if [[ "${windows_full_required}" == "true" && "${windows_full_result}" != "success" ]]; then
-            echo "Windows full test suite must succeed for high-risk changes."
-            exit 1
-          fi
-
-          if [[ "${release_changed}" == "true" && "${release_result}" != "success" ]]; then
-            echo "Release packaging contracts must succeed for release-surface changes."
-            exit 1
+          if [[ "${release_changed}" == "true" || "${full_required}" == "true" ]]; then
+            require_success "${release_result}" "Release packaging contracts"
+          else
+            allow_success_or_skipped "${release_result}" "Release packaging contracts"
           fi

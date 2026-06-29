@@ -102,6 +102,26 @@ def _classify_changed_files(
     return outputs
 
 
+def _expected_classifier_outputs(**overrides: str) -> dict[str, str]:
+    outputs = {
+        "docs_only": "false",
+        "runtime_changed": "false",
+        "test_changed": "false",
+        "ci_changed": "false",
+        "dependency_changed": "false",
+        "release_changed": "false",
+        "windows_full_required": "false",
+        "frontend_changed": "false",
+        "tui_changed": "false",
+        "python_changed": "false",
+        "platform_sensitive_changed": "false",
+        "build_wheel_required": "false",
+        "full_required": "false",
+    }
+    outputs.update(overrides)
+    return outputs
+
+
 def _validate_pr_target(
     tmp_path: Path,
     *,
@@ -168,9 +188,10 @@ def test_default_ci_blocks_pull_requests_and_main_and_dev_pushes() -> None:
     assert "OPENSQUILLA_TURN_CALL_LOG: \"0\"" in text
     assert "actionlint@v1.7.12" in text
     assert "Classify changed files" in text
+    assert "OpenTUI package tests" in text
     assert "Ubuntu quality gate" in text
     assert "Windows compatibility smoke tests" in text
-    assert "Windows full test suite" in text
+    assert "Windows high-risk/full tests" in text
     assert "Release packaging contracts" in text
     assert "CI result" in text
     assert 'push)\n              printf \'.ci/run-all\\n\' > "${changed_files}"' in text
@@ -180,6 +201,13 @@ def test_default_ci_blocks_pull_requests_and_main_and_dev_pushes() -> None:
     assert "dependency_changed" in text
     assert "release_changed" in text
     assert "windows_full_required" in text
+    assert "frontend_changed" in text
+    assert "tui_changed" in text
+    assert "python_changed" in text
+    assert "platform_sensitive_changed" in text
+    assert "build_wheel_required" in text
+    assert "full_required" in text
+    assert "allow_success_or_skipped" in text
     assert "code_changed" not in text
     assert "workflow_changed" not in text
 
@@ -367,15 +395,7 @@ def test_ci_change_classifier_allows_root_and_docs_markdown_only(tmp_path: Path)
         ],
     )
 
-    assert outputs == {
-        "docs_only": "true",
-        "runtime_changed": "false",
-        "test_changed": "false",
-        "ci_changed": "false",
-        "dependency_changed": "false",
-        "release_changed": "false",
-        "windows_full_required": "false",
-    }
+    assert outputs == _expected_classifier_outputs(docs_only="true")
 
 
 def test_classifier_helper_prefers_git_bash_over_windows_wsl_bash(tmp_path: Path) -> None:
@@ -401,6 +421,8 @@ def test_ci_change_classifier_accepts_crlf_changed_files(tmp_path: Path) -> None
     assert outputs["docs_only"] == "true"
     assert outputs["runtime_changed"] == "false"
     assert outputs["windows_full_required"] == "false"
+    assert outputs["python_changed"] == "false"
+    assert outputs["full_required"] == "false"
 
 
 def test_ci_change_classifier_treats_runtime_markdown_as_runtime(tmp_path: Path) -> None:
@@ -409,13 +431,11 @@ def test_ci_change_classifier_treats_runtime_markdown_as_runtime(tmp_path: Path)
         ["src/opensquilla/identity/templates/bootstrap/AGENTS.md"],
     )
 
-    assert outputs["docs_only"] == "false"
-    assert outputs["runtime_changed"] == "true"
-    assert outputs["test_changed"] == "false"
-    assert outputs["ci_changed"] == "false"
-    assert outputs["dependency_changed"] == "false"
-    assert outputs["release_changed"] == "false"
-    assert outputs["windows_full_required"] == "true"
+    assert outputs == _expected_classifier_outputs(
+        runtime_changed="true",
+        python_changed="true",
+        build_wheel_required="true",
+    )
 
 
 def test_ci_change_classifier_tracks_test_changes_separately(tmp_path: Path) -> None:
@@ -424,13 +444,10 @@ def test_ci_change_classifier_tracks_test_changes_separately(tmp_path: Path) -> 
         ["tests/test_ci/test_workflows.py"],
     )
 
-    assert outputs["docs_only"] == "false"
-    assert outputs["runtime_changed"] == "false"
-    assert outputs["test_changed"] == "true"
-    assert outputs["ci_changed"] == "false"
-    assert outputs["dependency_changed"] == "false"
-    assert outputs["release_changed"] == "false"
-    assert outputs["windows_full_required"] == "true"
+    assert outputs == _expected_classifier_outputs(
+        test_changed="true",
+        python_changed="true",
+    )
 
 
 def test_ci_change_classifier_keeps_webui_only_changes_off_windows_full(
@@ -441,13 +458,7 @@ def test_ci_change_classifier_keeps_webui_only_changes_off_windows_full(
         ["opensquilla-webui/src/views/ChatView.vue"],
     )
 
-    assert outputs["docs_only"] == "false"
-    assert outputs["runtime_changed"] == "false"
-    assert outputs["test_changed"] == "false"
-    assert outputs["ci_changed"] == "false"
-    assert outputs["dependency_changed"] == "false"
-    assert outputs["release_changed"] == "false"
-    assert outputs["windows_full_required"] == "false"
+    assert outputs == _expected_classifier_outputs(frontend_changed="true")
 
 
 def test_ci_change_classifier_tracks_ci_dependency_and_release_changes(tmp_path: Path) -> None:
@@ -456,13 +467,15 @@ def test_ci_change_classifier_tracks_ci_dependency_and_release_changes(tmp_path:
         [".github/workflows/ci.yml", ".github/scripts/classify-ci-changes.sh", "uv.lock"],
     )
 
-    assert outputs["docs_only"] == "false"
-    assert outputs["runtime_changed"] == "true"
-    assert outputs["test_changed"] == "false"
-    assert outputs["ci_changed"] == "true"
-    assert outputs["dependency_changed"] == "true"
-    assert outputs["release_changed"] == "true"
-    assert outputs["windows_full_required"] == "true"
+    assert outputs == _expected_classifier_outputs(
+        runtime_changed="true",
+        ci_changed="true",
+        dependency_changed="true",
+        release_changed="true",
+        windows_full_required="true",
+        python_changed="true",
+        build_wheel_required="true",
+    )
 
 
 def test_ci_change_classifier_tracks_release_surface_changes(tmp_path: Path) -> None:
@@ -477,13 +490,124 @@ def test_ci_change_classifier_tracks_release_surface_changes(tmp_path: Path) -> 
         ],
     )
 
-    assert outputs["docs_only"] == "false"
-    assert outputs["runtime_changed"] == "true"
-    assert outputs["test_changed"] == "true"
-    assert outputs["ci_changed"] == "true"
-    assert outputs["dependency_changed"] == "false"
-    assert outputs["release_changed"] == "true"
-    assert outputs["windows_full_required"] == "true"
+    assert outputs == _expected_classifier_outputs(
+        runtime_changed="true",
+        test_changed="true",
+        ci_changed="true",
+        release_changed="true",
+        windows_full_required="true",
+        python_changed="true",
+        build_wheel_required="true",
+    )
+
+
+def test_ci_change_classifier_tracks_tui_changes_without_windows_full(tmp_path: Path) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        ["src/opensquilla/cli/tui/opentui/package/src/composer.mjs"],
+    )
+
+    assert outputs == _expected_classifier_outputs(
+        runtime_changed="true",
+        tui_changed="true",
+        python_changed="true",
+        build_wheel_required="true",
+    )
+
+
+def test_ci_change_classifier_tracks_platform_sensitive_changes(tmp_path: Path) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        ["tests/test_tools/test_shell_process_isolation.py"],
+    )
+
+    assert outputs == _expected_classifier_outputs(
+        test_changed="true",
+        windows_full_required="true",
+        python_changed="true",
+        platform_sensitive_changed="true",
+    )
+
+
+def test_ci_change_classifier_run_all_requires_full_ci(tmp_path: Path) -> None:
+    outputs = _classify_changed_files(tmp_path, [".ci/run-all"])
+
+    assert outputs == _expected_classifier_outputs(
+        runtime_changed="true",
+        test_changed="true",
+        ci_changed="true",
+        dependency_changed="true",
+        release_changed="true",
+        windows_full_required="true",
+        frontend_changed="true",
+        tui_changed="true",
+        python_changed="true",
+        platform_sensitive_changed="true",
+        build_wheel_required="true",
+        full_required="true",
+    )
+
+
+def test_default_ci_uses_layered_job_conditions() -> None:
+    data = _workflow("ci.yml")
+    jobs = data["jobs"]
+
+    assert "tui-check" in jobs
+    assert "frontend_changed == 'true'" in jobs["frontend-check"]["if"]
+    assert "full_required == 'true'" in jobs["frontend-check"]["if"]
+    assert "tui_changed == 'true'" in jobs["tui-check"]["if"]
+    assert "python_changed == 'true'" in jobs["ubuntu-quality"]["if"]
+    assert "platform_sensitive_changed == 'true'" in jobs["windows-compat"]["if"]
+    assert "windows_full_required == 'true'" in jobs["windows-full"]["if"]
+    assert "release_changed == 'true'" in jobs["release-packaging"]["if"]
+    assert "tui-check" in jobs["ci-result"]["needs"]
+
+
+def test_windows_smoke_does_not_install_bun_by_default() -> None:
+    data = _workflow("ci.yml")
+    jobs = data["jobs"]
+
+    windows_steps = jobs["windows-compat"]["steps"]
+    assert all(step.get("uses") != "oven-sh/setup-bun@v2" for step in windows_steps)
+    assert all("OpenTUI" not in step.get("name", "") for step in windows_steps)
+    assert "lfs" not in windows_steps[0].get("with", {})
+
+    tui_steps = jobs["tui-check"]["steps"]
+    assert any(step.get("uses") == "oven-sh/setup-bun@v2" for step in tui_steps)
+    assert any("bun run test:bun" in step.get("run", "") for step in tui_steps)
+
+
+def test_windows_high_risk_job_uses_subset_until_full_ci() -> None:
+    data = _workflow("ci.yml")
+    jobs = data["jobs"]
+    windows_full = jobs["windows-full"]
+    text = (WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
+
+    assert windows_full["name"] == "Windows high-risk/full tests (conditional)"
+    assert windows_full["steps"][0]["with"]["lfs"] == (
+        "${{ needs.classify-changes.outputs.full_required == 'true' }}"
+    )
+    assert 'uv run pytest tests -q -m "${markers}" --durations=50' in text
+    assert "tests/test_compat" in text
+    assert "tests/test_sandbox" in text
+    assert "tests/test_tools/test_shell_policy_windows.py" in text
+    assert "tests/test_tools/test_shell_background_seatbelt.py" in text
+    assert "needs.classify-changes.outputs.tui_changed == 'true'" in text
+
+
+def test_ubuntu_quality_only_fetches_lfs_for_full_ci() -> None:
+    data = _workflow("ci.yml")
+    ubuntu_steps = data["jobs"]["ubuntu-quality"]["steps"]
+    checkout = ubuntu_steps[0]
+    test_step = next(step for step in ubuntu_steps if step.get("name") == "Test")
+
+    assert checkout["uses"] == "actions/checkout@v4"
+    assert checkout["with"]["lfs"] == (
+        "${{ needs.classify-changes.outputs.full_required == 'true' }}"
+    )
+    assert "uv run pytest tests -q" in test_step["run"]
+    assert "tests/test_artifacts.py" not in test_step["run"]
+    assert "--ignore=tests/test_ci/test_router_artifact_manifest.py" in test_step["run"]
 
 
 def test_manual_workflows_reference_existing_test_files() -> None:

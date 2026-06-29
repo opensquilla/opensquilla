@@ -94,10 +94,11 @@ def _smoke_import_modules(modules: list[str] | tuple[str, ...]) -> dict[str, obj
 def _smoke_router_runtime() -> dict[str, object]:
     import asyncio
 
-    from opensquilla.squilla_router.v4_phase3 import V4Phase3Strategy
+    router_module = importlib.import_module("opensquilla.squilla_router.v4_phase3")
+    strategy_cls = getattr(router_module, "V4Phase3Strategy")
 
     async def _run() -> dict[str, object]:
-        strategy = V4Phase3Strategy(require_router_runtime=True)
+        strategy = strategy_cls(require_router_runtime=True)
         tier, confidence, source, metadata = await strategy.classify(
             "Summarize this short note.",
             valid_tiers=["c0", "c1", "c2", "c3"],

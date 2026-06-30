@@ -60,6 +60,10 @@ _DEFAULT_WEBSOCKET_URL = "wss://openws.work.weixin.qq.com"
 _WEBSOCKET_HANDSHAKE_TIMEOUT_S = 10.0
 _WEBSOCKET_REQUEST_TIMEOUT_S = 10.0
 _WEBSOCKET_PING_INTERVAL_S = 30.0
+_WEBSOCKET_APP_PING_INTERVAL_S = 30.0
+_WEBSOCKET_REPLY_REQ_ID_TTL_S = 300.0
+_WEBSOCKET_RECONNECT_INITIAL_S = 1.0
+_WEBSOCKET_RECONNECT_MAX_S = 60.0
 
 _APP_CMD_SUBSCRIBE = "aibot_subscribe"
 _APP_CMD_CALLBACK = "aibot_msg_callback"
@@ -69,9 +73,7 @@ _APP_CMD_SEND = "aibot_send_msg"
 _APP_CMD_RESPONSE = "aibot_respond_msg"
 _APP_CMD_PING = "ping"
 _APP_CMD_PONG = "pong"
-_CALLBACK_COMMANDS = frozenset(
-    {_APP_CMD_CALLBACK, _APP_CMD_LEGACY_CALLBACK, _APP_CMD_EVENT_CALLBACK}
-)
+_MESSAGE_CALLBACK_COMMANDS = frozenset({_APP_CMD_CALLBACK, _APP_CMD_LEGACY_CALLBACK})
 
 # Channel-contract constants pinned by the adapter audit.
 CAPABILITY_TIER = "GREEN-shipping"
@@ -159,11 +161,16 @@ class WeComChannel:
     _refresh_task: asyncio.Task | None = field(default=None, init=False, repr=False)
     _ws: Any | None = field(default=None, init=False, repr=False)
     _ws_task: asyncio.Task | None = field(default=None, init=False, repr=False)
+    _ws_heartbeat_task: asyncio.Task | None = field(default=None, init=False, repr=False)
     _pending_ws_responses: dict[str, asyncio.Future[dict[str, Any]]] = field(
         default_factory=dict, init=False, repr=False
     )
-    _reply_req_ids: dict[str, str] = field(default_factory=dict, init=False, repr=False)
-    _last_chat_req_ids: dict[str, str] = field(default_factory=dict, init=False, repr=False)
+    _reply_req_ids: dict[str, tuple[str, float]] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _last_chat_req_ids: dict[str, tuple[str, float]] = field(
+        default_factory=dict, init=False, repr=False
+    )
     _queue: asyncio.Queue[IncomingMessage] = field(
         default_factory=asyncio.Queue, init=False, repr=False
     )
@@ -416,8 +423,7 @@ class WeComChannel:
         errmsg = str(payload.get("errmsg") or body.get("errmsg") or "")
         return errcode, errmsg
 
-    async def _start_websocket(self) -> None:
-        self._require_websocket_credentials()
+    async def _open_and_authenticate_websocket(self) -> None:
         self._ws = await self._connect_websocket()
         req_id = self._new_req_id("subscribe")
         await self._ws_send_json(
@@ -439,28 +445,58 @@ class WeComChannel:
                 f"aibot_subscribe failed: errcode={errcode} errmsg={errmsg or 'unknown'}"
             )
         self._connected = True
+
+    async def _start_websocket(self) -> None:
+        self._require_websocket_credentials()
+        try:
+            await self._open_and_authenticate_websocket()
+        except Exception:
+            await self._close_websocket()
+            raise
         self._ws_task = asyncio.create_task(
             self._websocket_receive_loop(), name=f"wecom-websocket:{self.config.name}"
+        )
+        self._ws_heartbeat_task = asyncio.create_task(
+            self._websocket_heartbeat_loop(), name=f"wecom-websocket-heartbeat:{self.config.name}"
         )
         log.info("wecom.websocket_started", name=self.config.name)
 
     async def _stop_websocket(self) -> None:
+        if self._ws_heartbeat_task is not None:
+            self._ws_heartbeat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._ws_heartbeat_task
+            self._ws_heartbeat_task = None
         if self._ws_task is not None:
             self._ws_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._ws_task
             self._ws_task = None
-        for future in list(self._pending_ws_responses.values()):
-            if not future.done():
-                future.cancel()
-        self._pending_ws_responses.clear()
-        if self._ws is not None:
-            close = getattr(self._ws, "close", None)
-            if callable(close):
-                await close()
-            self._ws = None
+        self._fail_pending_ws_responses(asyncio.CancelledError())
+        await self._close_websocket()
+        self._reply_req_ids.clear()
+        self._last_chat_req_ids.clear()
         if self.config.connection_mode == "websocket":
             self._connected = False
+
+    async def _close_websocket(self) -> None:
+        ws = self._ws
+        self._ws = None
+        if ws is None:
+            return
+        close = getattr(ws, "close", None)
+        if callable(close):
+            with contextlib.suppress(Exception):
+                await close()
+
+    def _fail_pending_ws_responses(self, exc: BaseException) -> None:
+        for future in list(self._pending_ws_responses.values()):
+            if not future.done():
+                if isinstance(exc, asyncio.CancelledError):
+                    future.cancel()
+                else:
+                    future.set_exception(exc)
+        self._pending_ws_responses.clear()
 
     async def _wait_for_ws_response(self, req_id: str) -> dict[str, Any]:
         while True:
@@ -470,25 +506,65 @@ class WeComChannel:
             await self._handle_websocket_payload(payload, pre_auth=True)
 
     async def _websocket_receive_loop(self) -> None:
+        backoff = _WEBSOCKET_RECONNECT_INITIAL_S
+        while True:
+            try:
+                while True:
+                    payload = await self._ws_recv_json()
+                    await self._handle_websocket_payload(payload)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._connected = False
+                self._fail_pending_ws_responses(exc)
+                log.warning("wecom.websocket_error", error=str(exc))
+                await self._close_websocket()
+            await asyncio.sleep(backoff)
+            try:
+                await self._open_and_authenticate_websocket()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._connected = False
+                log.warning("wecom.websocket_reconnect_failed", error=str(exc), backoff_s=backoff)
+                await self._close_websocket()
+                backoff = min(backoff * 2, _WEBSOCKET_RECONNECT_MAX_S)
+                continue
+            log.info("wecom.websocket_reconnected", name=self.config.name)
+            backoff = _WEBSOCKET_RECONNECT_INITIAL_S
+
+    async def _websocket_heartbeat_loop(self) -> None:
         try:
             while True:
-                payload = await self._ws_recv_json()
-                await self._handle_websocket_payload(payload)
+                await asyncio.sleep(_WEBSOCKET_APP_PING_INTERVAL_S)
+                if not self._connected or self._ws is None:
+                    continue
+                try:
+                    await self._send_ws_request(_APP_CMD_PING, {})
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self._connected = False
+                    log.warning("wecom.websocket_heartbeat_failed", error=str(exc))
+                    await self._close_websocket()
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
-            self._connected = False
-            for future in list(self._pending_ws_responses.values()):
-                if not future.done():
-                    future.set_exception(exc)
-            self._pending_ws_responses.clear()
-            log.warning("wecom.websocket_error", error=str(exc))
 
     async def _handle_websocket_payload(
         self, payload: dict[str, Any], *, pre_auth: bool = False
     ) -> None:
         cmd = str(payload.get("cmd") or "")
         req_id = self._payload_req_id(payload)
+        if (
+            not pre_auth
+            and req_id in self._pending_ws_responses
+            and cmd not in _MESSAGE_CALLBACK_COMMANDS
+            and cmd != _APP_CMD_EVENT_CALLBACK
+        ):
+            future = self._pending_ws_responses.get(req_id)
+            if future is not None and not future.done():
+                future.set_result(payload)
+            return
         if cmd == _APP_CMD_PING:
             await self._ws_send_json(
                 {
@@ -498,12 +574,10 @@ class WeComChannel:
                 }
             )
             return
-        if not pre_auth and req_id in self._pending_ws_responses and cmd not in _CALLBACK_COMMANDS:
-            future = self._pending_ws_responses.get(req_id)
-            if future is not None and not future.done():
-                future.set_result(payload)
+        if cmd == _APP_CMD_EVENT_CALLBACK:
+            log.info("wecom.websocket_event_ignored", req_id=req_id)
             return
-        if cmd in _CALLBACK_COMMANDS:
+        if cmd in _MESSAGE_CALLBACK_COMMANDS:
             msg = self._parse_inbound_websocket_json(payload)
             if msg is None:
                 return
@@ -540,23 +614,53 @@ class WeComChannel:
             raise WeComApiError(errmsg or "websocket request failed", code=errcode)
         return response
 
+    def _reply_req_id_expires_at(self) -> float:
+        return time.monotonic() + _WEBSOCKET_REPLY_REQ_ID_TTL_S
+
     def _remember_reply_req_id(self, message_id: str, req_id: str) -> None:
         if not message_id or not req_id:
             return
-        self._reply_req_ids[message_id] = req_id
+        self._reply_req_ids[message_id] = (req_id, self._reply_req_id_expires_at())
         while len(self._reply_req_ids) > _DEDUPE_SIZE:
             self._reply_req_ids.pop(next(iter(self._reply_req_ids)))
 
     def _remember_chat_req_id(self, chat_id: str, req_id: str) -> None:
         if not chat_id or not req_id:
             return
-        self._last_chat_req_ids[chat_id] = req_id
+        self._last_chat_req_ids[chat_id] = (req_id, self._reply_req_id_expires_at())
         while len(self._last_chat_req_ids) > _DEDUPE_SIZE:
             self._last_chat_req_ids.pop(next(iter(self._last_chat_req_ids)))
 
+    def _get_valid_reply_req_id(self, message_id: str) -> str:
+        return self._get_valid_req_id(self._reply_req_ids, message_id)
+
+    def _get_valid_chat_req_id(self, chat_id: str) -> str:
+        return self._get_valid_req_id(self._last_chat_req_ids, chat_id)
+
+    @staticmethod
+    def _get_valid_req_id(store: dict[str, tuple[str, float]], key: str) -> str:
+        if not key:
+            return ""
+        entry = store.get(key)
+        if entry is None:
+            return ""
+        req_id, expires_at = entry
+        if time.monotonic() >= expires_at:
+            store.pop(key, None)
+            return ""
+        return req_id
+
+    def _forget_req_id(self, req_id: str) -> None:
+        if not req_id:
+            return
+        for store in (self._reply_req_ids, self._last_chat_req_ids):
+            for key, (stored_req_id, _expires_at) in list(store.items()):
+                if stored_req_id == req_id:
+                    store.pop(key, None)
+
     @staticmethod
     def _extract_websocket_text(body: dict[str, Any], msg_type: str) -> str:
-        for key in ("text", "markdown"):
+        for key in ("text", "markdown", "voice"):
             value = body.get(key)
             if isinstance(value, dict):
                 content = value.get("content")
@@ -591,6 +695,7 @@ class WeComChannel:
             "chat_id": chat_id,
             "wecom_protocol": "aibot",
             "wecom_req_id": req_id,
+            "wecom_req_id_expires_at": self._reply_req_id_expires_at(),
             "bot_mentioned": True,
         }
         return IncomingMessage(
@@ -759,6 +864,35 @@ class WeComChannel:
             and bool(msg.metadata.get("bot_mentioned"))
         )
 
+    def _websocket_reply_metadata(self, inbound: IncomingMessage) -> dict[str, Any]:
+        metadata: dict[str, Any] = {
+            "chat_id": inbound.metadata.get("chat_id") or inbound.channel_id,
+        }
+        req_id = str(inbound.metadata.get("wecom_req_id") or "")
+        if req_id:
+            metadata["wecom_req_id"] = req_id
+            expires_at = inbound.metadata.get("wecom_req_id_expires_at")
+            if isinstance(expires_at, int | float):
+                metadata["wecom_req_id_expires_at"] = float(expires_at)
+        return metadata
+
+    def build_reply_message(self, content: str, inbound: IncomingMessage) -> OutgoingMessage:
+        if self.config.connection_mode != "websocket":
+            return OutgoingMessage(content=content)
+        return OutgoingMessage(
+            content=content,
+            reply_to=inbound.channel_id,
+            metadata=self._websocket_reply_metadata(inbound),
+        )
+
+    def streaming_reply_kwargs(self, inbound: IncomingMessage) -> dict[str, Any]:
+        if self.config.connection_mode != "websocket":
+            return {}
+        return {
+            "reply_to": inbound.channel_id,
+            "metadata": self._websocket_reply_metadata(inbound),
+        }
+
     # ------------------------------------------------------------------
     # Outbound
     # ------------------------------------------------------------------
@@ -805,9 +939,15 @@ class WeComChannel:
 
     async def _send_websocket_message(self, message: OutgoingMessage) -> None:
         metadata = dict(message.metadata or {})
-        reply_req_id = str(metadata.get("wecom_req_id") or "")
+        reply_req_id = self._metadata_reply_req_id(metadata)
         if not reply_req_id and message.reply_to:
-            reply_req_id = self._reply_req_ids.get(str(message.reply_to), "")
+            reply_req_id = self._get_valid_reply_req_id(str(message.reply_to))
+        explicit_target = bool(
+            message.reply_to
+            or metadata.get("chatid")
+            or metadata.get("chat_id")
+            or metadata.get("touser")
+        )
         target = str(
             message.reply_to
             or metadata.get("chatid")
@@ -815,12 +955,11 @@ class WeComChannel:
             or metadata.get("touser")
             or ""
         )
-        if not reply_req_id and not target and self._last_incoming_envelope is not None:
+        if not reply_req_id and not explicit_target and self._last_incoming_envelope is not None:
             last = self._last_incoming_envelope
-            target = str(last.metadata.get("chat_id") or last.channel_id or "")
-            reply_req_id = str(last.metadata.get("wecom_req_id") or "")
-        if not reply_req_id and target:
-            reply_req_id = self._last_chat_req_ids.get(target, "")
+            last_target = str(last.metadata.get("chat_id") or last.channel_id or "")
+            target = last_target
+            reply_req_id = self._get_valid_chat_req_id(last_target)
 
         body = {
             "msgtype": "markdown",
@@ -828,12 +967,23 @@ class WeComChannel:
         }
         if reply_req_id:
             await self._send_ws_request(_APP_CMD_RESPONSE, body, req_id=reply_req_id)
+            self._forget_req_id(reply_req_id)
             log.info("wecom.websocket_reply_sent", req_id=reply_req_id)
             return
         if not target:
             raise WeComApiError("chatid is required for proactive websocket sends")
         await self._send_ws_request(_APP_CMD_SEND, {"chatid": target, **body})
         log.info("wecom.websocket_outbound_sent", chatid=target)
+
+    @staticmethod
+    def _metadata_reply_req_id(metadata: dict[str, Any]) -> str:
+        req_id = str(metadata.get("wecom_req_id") or "")
+        if not req_id:
+            return ""
+        expires_at = metadata.get("wecom_req_id_expires_at")
+        if isinstance(expires_at, int | float) and time.monotonic() >= float(expires_at):
+            return ""
+        return req_id
 
     async def send_file(
         self,
@@ -955,10 +1105,14 @@ class WeComChannel:
         out_meta: dict[str, Any] = dict(metadata or {})
         target = reply_to or out_meta.get("touser")
         if not target and last is not None:
-            target = last.sender_id
-            for inherit_key in ("toparty", "totag"):
-                if inherit_key not in out_meta and inherit_key in last.metadata:
-                    out_meta[inherit_key] = last.metadata[inherit_key]
+            if self.config.connection_mode == "websocket":
+                target = last.metadata.get("chat_id") or last.channel_id
+                out_meta.update(self._websocket_reply_metadata(last))
+            else:
+                target = last.sender_id
+                for inherit_key in ("toparty", "totag"):
+                    if inherit_key not in out_meta and inherit_key in last.metadata:
+                        out_meta[inherit_key] = last.metadata[inherit_key]
         await self.send(
             OutgoingMessage(
                 content=accumulated,

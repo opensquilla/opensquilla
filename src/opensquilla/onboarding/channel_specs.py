@@ -443,10 +443,13 @@ def channel_catalog_payload() -> list[dict[str, Any]]:
 
 
 def _what_you_need(spec: ChannelSetupSpec) -> list[str]:
+    defaults = {field.name: field.default for field in spec.fields}
     needs = [
         f"{field.label}."
         for field in spec.fields
-        if field.required and field.name not in {"name", "enabled", "agent_id"}
+        if field.required
+        and field.name not in {"name", "enabled", "agent_id"}
+        and _field_visible_by_default(field, defaults)
     ]
     if spec.requires_public_url:
         needs.append("A public URL reachable by the channel provider.")
@@ -455,3 +458,12 @@ def _what_you_need(spec: ChannelSetupSpec) -> list[str]:
     if not needs:
         needs.append("A channel entry name and provider-side bot/app setup.")
     return needs
+
+
+def _field_visible_by_default(
+    field: ChannelSetupField,
+    defaults: dict[str, str | int | float | bool | None],
+) -> bool:
+    if not field.show_when:
+        return True
+    return all(str(defaults.get(key, "")) == expected for key, expected in field.show_when.items())

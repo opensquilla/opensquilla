@@ -3,7 +3,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SOURCES_ROW = ROOT / "opensquilla-webui/src/components/chat/SourcesRow.vue"
 CHAT_TYPES = ROOT / "opensquilla-webui/src/types/chat.ts"
+PART_TYPES = ROOT / "opensquilla-webui/src/types/parts.ts"
 RENDERED_MESSAGES = ROOT / "opensquilla-webui/src/composables/chat/useChatRenderedMessages.ts"
+TEXT_PART = ROOT / "opensquilla-webui/src/components/chat/parts/TextPart.vue"
+CITATIONS = ROOT / "opensquilla-webui/src/utils/chat/citations.ts"
 
 
 def _read(path: Path) -> str:
@@ -33,3 +36,35 @@ def test_chat_tool_call_type_and_history_normalizer_preserve_sources() -> None:
     assert "sources?: unknown" in raw_tool_call_payload_source
     assert "sources: item.sources" in rendered_source
     assert "if (tc.sources !== undefined) item.sources = tc.sources" in rendered_source
+
+
+def test_source_part_type_preserves_search_trust_metadata() -> None:
+    source = _read(PART_TYPES)
+    source_part = source[source.index("export interface SourcePart") :]
+
+    assert "canonicalUrl?: string" in source_part
+    assert "provider?: string" in source_part
+    assert "fetched?: boolean" in source_part
+    assert "fetchStatus?: string" in source_part
+
+
+def test_sources_row_renders_search_trust_states() -> None:
+    source = _read(SOURCES_ROW)
+
+    assert "sourceTrustLabel(source)" in source
+    assert "Verified" in source
+    assert "Search result" in source
+    assert "Fetch failed" in source
+    assert "sources-row__status--verified" in source
+    assert "sources-row__status--failed" in source
+
+
+def test_text_part_reports_missing_citations_from_decorator() -> None:
+    text_part = _read(TEXT_PART)
+    citations = _read(CITATIONS)
+
+    assert "Some citations do not map to available sources" in text_part
+    assert "onMissingCitations" in text_part
+    assert "missingCitationIds" in text_part
+    assert "onMissingCitations?: (sourceIds: number[]) => void" in citations
+    assert "missing.add(n)" in citations

@@ -20,7 +20,7 @@
     <!-- Brand -->
     <div class="sidebar-brand">
       <router-link
-        to="/"
+        to="/sessions"
         class="sidebar-brand-link"
         :aria-label="t('chrome.brandHome')"
         @click="handleNavClick"

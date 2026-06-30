@@ -269,6 +269,9 @@ def test_gateway_start_refuses_unmanaged_healthy_gateway(tmp_path, monkeypatch) 
     assert payload["ok"] is False
     assert payload["state"] == "unmanaged"
     assert payload["code"] == "UNMANAGED_GATEWAY_RUNNING"
+    assert "http://127.0.0.1:18791" in payload["message"]
+    assert "host=127.0.0.1" in payload["message"]
+    assert "port=18791" in payload["message"]
     assert not gateway_lifecycle.gateway_pidfile_path().exists()
 
 
@@ -580,6 +583,8 @@ def test_gateway_start_refuses_live_pidfile_for_different_target(tmp_path, monke
     payload = _payload(result)
     assert payload["state"] == "target_mismatch"
     assert payload["code"] == "MANAGED_GATEWAY_TARGET_MISMATCH"
+    assert "http://127.0.0.1:18791" in payload["message"]
+    assert "http://127.0.0.1:18792" in payload["message"]
     assert gateway_lifecycle.gateway_pidfile_path().exists()
 
 

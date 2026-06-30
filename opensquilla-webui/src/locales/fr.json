@@ -1414,6 +1414,8 @@
     "remove": "Supprimer",
     "attachFiles": "Joindre des fichiers",
     "attachFilesTitle": "Joindre des fichiers : PNG, JPEG, GIF, WEBP, PDF, TXT, MD, HTML, CSV, JSON",
+    "dropOverlayTitle": "Déposez pour joindre",
+    "dropOverlayHint": "Les fichiers seront ajoutés au compositeur",
     "composerSettings": "Paramètres du compositeur",
     "closeComposerSettings": "Fermer les paramètres du compositeur",
     "recordVoice": "Enregistrer une entrée vocale",

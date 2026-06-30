@@ -1414,6 +1414,8 @@
     "remove": "削除",
     "attachFiles": "ファイルを添付",
     "attachFilesTitle": "ファイルを添付: PNG、JPEG、GIF、WEBP、PDF、TXT、MD、HTML、CSV、JSON",
+    "dropOverlayTitle": "離して添付",
+    "dropOverlayHint": "ファイルは入力欄に追加されます",
     "composerSettings": "入力欄の設定",
     "closeComposerSettings": "入力欄の設定を閉じる",
     "recordVoice": "音声入力を録音",

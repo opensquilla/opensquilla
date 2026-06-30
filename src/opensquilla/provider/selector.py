@@ -123,6 +123,8 @@ def _build_provider(cfg: ProviderConfig) -> LLMProvider:
                 kwargs["base_url"] = base_url
             if cfg.proxy:
                 kwargs["proxy"] = cfg.proxy
+            if cfg.api_key:
+                kwargs["api_key"] = cfg.api_key
             return OllamaProvider(**kwargs)
 
         case _:

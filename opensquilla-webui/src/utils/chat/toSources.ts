@@ -8,6 +8,17 @@ interface SourceLink {
   url: string
   title: string
   domain: string
+  canonicalUrl?: string
+  provider?: string
+  fetched?: boolean
+  fetchStatus?: string
+}
+
+interface SourceMeta {
+  canonicalUrl?: string
+  provider?: string
+  fetched?: boolean
+  fetchStatus?: string
 }
 
 function parseJsonRecord(text: string): Record<string, unknown> | null {
@@ -33,7 +44,42 @@ function domainFor(url: string): string {
   }
 }
 
-function addSource(out: SourceLink[], seen: Map<string, SourceLink>, url: unknown, title: unknown) {
+function sourceText(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function sourceMeta(entry: Record<string, unknown>): SourceMeta {
+  const meta: SourceMeta = {}
+  const canonicalUrl = sourceText(entry.canonical_url) || sourceText(entry.canonicalUrl)
+  const provider = sourceText(entry.provider)
+  const fetchStatus = sourceText(entry.fetch_status) || sourceText(entry.fetchStatus)
+  if (canonicalUrl) meta.canonicalUrl = canonicalUrl
+  if (provider) meta.provider = provider
+  if (typeof entry.fetched === 'boolean') meta.fetched = entry.fetched
+  if (fetchStatus) meta.fetchStatus = fetchStatus
+  return meta
+}
+
+function mergeMeta(source: SourceLink, meta: SourceMeta) {
+  if (!source.canonicalUrl && meta.canonicalUrl) source.canonicalUrl = meta.canonicalUrl
+  if (!source.provider && meta.provider) source.provider = meta.provider
+  if (source.fetched !== true && meta.fetched === true) source.fetched = true
+  if (
+    meta.fetchStatus === 'ok' ||
+    !source.fetchStatus ||
+    source.fetchStatus === 'not_requested'
+  ) {
+    if (meta.fetchStatus) source.fetchStatus = meta.fetchStatus
+  }
+}
+
+function addSource(
+  out: SourceLink[],
+  seen: Map<string, SourceLink>,
+  url: unknown,
+  title: unknown,
+  meta: SourceMeta = {},
+) {
   if (typeof url !== 'string') return
   const trimmed = url.trim()
   // Persisted tool results compact long strings with a trailing '…'; a
@@ -46,9 +92,10 @@ function addSource(out: SourceLink[], seen: Map<string, SourceLink>, url: unknow
   const existing = seen.get(key)
   if (existing) {
     if (!existing.title && cleanTitle) existing.title = cleanTitle
+    mergeMeta(existing, meta)
     return
   }
-  const source: SourceLink = { url: trimmed, title: cleanTitle, domain }
+  const source: SourceLink = { url: trimmed, title: cleanTitle, domain, ...meta }
   seen.set(key, source)
   out.push(source)
 }
@@ -59,7 +106,13 @@ function extractSources(raw: unknown, out: SourceLink[], seen: Map<string, Sourc
   for (const item of raw) {
     if (item && typeof item === 'object') {
       const entry = item as Record<string, unknown>
-      addSource(out, seen, entry.url || entry.final_url || entry.canonical_url, entry.title)
+      addSource(
+        out,
+        seen,
+        entry.url || entry.final_url || entry.canonical_url,
+        entry.title,
+        sourceMeta(entry),
+      )
     }
   }
   return out.length - before
@@ -112,7 +165,7 @@ export function toSources(msg: ChatRenderedMessage): SourcePart[] {
         for (const item of results) {
           if (item && typeof item === 'object') {
             const entry = item as Record<string, unknown>
-            addSource(out, seen, entry.url, entry.title)
+            addSource(out, seen, entry.url, entry.title, sourceMeta(entry))
           }
         }
       } else if (call.result) {
@@ -121,7 +174,7 @@ export function toSources(msg: ChatRenderedMessage): SourcePart[] {
       continue
     }
     if (record) {
-      addSource(out, seen, record.final_url || record.url, record.title)
+      addSource(out, seen, record.final_url || record.url, record.title, sourceMeta(record))
     } else {
       const input = parseJsonRecord(call.inputRaw || '')
       addSource(out, seen, input?.url, '')
@@ -132,5 +185,9 @@ export function toSources(msg: ChatRenderedMessage): SourcePart[] {
     url: source.url,
     title: source.title,
     domain: source.domain,
+    canonicalUrl: source.canonicalUrl,
+    provider: source.provider,
+    fetched: source.fetched,
+    fetchStatus: source.fetchStatus,
   }))
 }

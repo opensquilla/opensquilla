@@ -435,6 +435,11 @@ _PRICING_TABLE: list[tuple[str, PriceEntry]] = [
 
 _DEFAULT_PRICING = PriceEntry(3.0, 15.0)
 
+# Providers whose runtime is local — inference is free regardless of the model
+# id. Their model ids are unqualified (e.g. ``qwen3:4b``), so without this the
+# pricing table misses the ``ollama/`` free entry and applies the cloud default.
+_LOCAL_FREE_PROVIDERS = frozenset({"ollama", "lm_studio", "ovms", "vllm", "local"})
+
 
 def _lookup_static_price(model_id: str) -> PriceEntry:
     override = _lookup_price_override(model_id)
@@ -458,13 +463,19 @@ def _should_fetch_live_price(model_id: str) -> bool:
     return True
 
 
-def lookup_price(model_id: str) -> PriceEntry:
+def lookup_price(model_id: str, provider: str = "") -> PriceEntry:
     """Look up pricing, preferring live OpenRouter endpoint prices.
 
     Live lookup uses ``prompt``/``completion`` endpoint prices, explicitly not
     cache-read prices. If OpenRouter is unreachable, the static table is only a
     fail-open fallback so cost estimation keeps working offline.
+
+    ``provider`` is the configured provider id. Local runtimes (Ollama, …) are
+    free regardless of the model id, which is otherwise unqualified (e.g.
+    ``qwen3:4b``) and would fall through to the cloud default estimate.
     """
+    if provider and provider.strip().lower() in _LOCAL_FREE_PROVIDERS:
+        return PriceEntry(0.0, 0.0)
     model_id = str(model_id or "").strip()
     override = _lookup_price_override(model_id)
     if override is not None:

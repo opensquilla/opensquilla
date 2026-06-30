@@ -1414,6 +1414,8 @@
     "remove": "Quitar",
     "attachFiles": "Adjuntar archivos",
     "attachFilesTitle": "Adjuntar archivos: PNG, JPEG, GIF, WEBP, PDF, TXT, MD, HTML, CSV, JSON",
+    "dropOverlayTitle": "Suelta para adjuntar",
+    "dropOverlayHint": "Los archivos se añadirán al redactor",
     "composerSettings": "Ajustes del redactor",
     "closeComposerSettings": "Cerrar ajustes del redactor",
     "recordVoice": "Grabar entrada de voz",

@@ -6,6 +6,7 @@ import type {
   RawToolCallPayload,
 } from '@/types/chat'
 import type { ChatHistoryMessage, ChatHistoryResponse } from '@/types/rpc'
+import { normalizeDisplayAttachments } from '@/utils/chat/attachments'
 import { reconcileHistoryMessages } from '@/utils/chat/historyMerge'
 
 type RpcClient = {
@@ -95,6 +96,7 @@ export function useChatHistory(options: UseChatHistoryOptions) {
     // History rows carry the turn's reasoning text but not the measured
     // thinking duration; live turn records re-fill seconds after sync.
     const reasoningText = typeof msg.reasoning_content === 'string' ? msg.reasoning_content.trim() : ''
+    const messageId = msg.message_id || msg.id || ''
     return {
       role: msg.role || 'assistant',
       text: msg.role === 'user' ? options.stripTimePrefix(msg.text || '') : msg.text || '',
@@ -104,7 +106,7 @@ export function useChatHistory(options: UseChatHistoryOptions) {
       artifacts: msg.artifacts || [],
       tool_calls: recordArray<RawToolCallPayload>(msg.tool_calls),
       timeline: recordArray<ChatTimelineSegment>(msg.timeline),
-      attachments: msg.attachments || [],
+      attachments: normalizeDisplayAttachments(msg.attachments, { messageId }),
       provenanceKind: msg.provenance_kind || '',
       provenanceSourceSessionKey: msg.provenance_source_session_key || '',
       provenanceSourceTool: msg.provenance_source_tool || '',
@@ -112,7 +114,7 @@ export function useChatHistory(options: UseChatHistoryOptions) {
       model: msg.model || undefined,
       input: msg.input || msg.input_tokens || undefined,
       output: msg.output || msg.output_tokens || undefined,
-      messageId: msg.message_id || msg.id || '',
+      messageId,
       restoredFromHistory: true,
     }
   }

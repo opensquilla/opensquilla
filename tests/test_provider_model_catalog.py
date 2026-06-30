@@ -117,3 +117,35 @@ async def test_fetch_openrouter_adds_app_attribution_headers() -> None:
     model = catalog.get("openai/gpt-4o")
     assert model is not None
     assert model.context_window == 128_000
+
+
+def test_local_provider_context_window_uses_runtime_default_not_cloud() -> None:
+    from opensquilla.provider.model_catalog import (
+        _LOCAL_CONTEXT_WINDOW,
+        DEFAULT_CONTEXT_WINDOW,
+    )
+
+    catalog = ModelCatalog()
+    # Without provider context a bare ollama id falls to the 200k cloud default.
+    assert catalog.resolve_context_window("qwen3:4b") == DEFAULT_CONTEXT_WINDOW
+    # With the local provider it reports the runtime window instead.
+    assert catalog.resolve_context_window("qwen3:4b", provider="ollama") == _LOCAL_CONTEXT_WINDOW
+    assert _LOCAL_CONTEXT_WINDOW < DEFAULT_CONTEXT_WINDOW
+
+
+def test_local_provider_max_tokens_clamped_to_local_window() -> None:
+    from opensquilla.provider.model_catalog import _LOCAL_CONTEXT_WINDOW
+
+    catalog = ModelCatalog()
+    # max_tokens cannot exceed the (smaller) local context window.
+    assert catalog.resolve_max_tokens("llama3.2:3b", provider="ollama") <= _LOCAL_CONTEXT_WINDOW
+
+
+def test_cloud_provider_context_window_unchanged() -> None:
+    from opensquilla.provider.model_catalog import DEFAULT_CONTEXT_WINDOW
+
+    catalog = ModelCatalog()
+    # An unknown cloud model id is unaffected by the provider argument.
+    assert catalog.resolve_context_window("some-cloud-model", provider="openai") == (
+        DEFAULT_CONTEXT_WINDOW
+    )

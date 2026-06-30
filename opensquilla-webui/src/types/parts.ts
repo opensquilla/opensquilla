@@ -94,7 +94,17 @@ export type Part =
       error?: string            // == output when isError, else undefined
     }
   | { type: 'artifact'; artifact: ArtifactPayload }
-  | { type: 'source'; sourceId: number; url: string; title: string; domain: string }
+  | {
+      type: 'source'
+      sourceId: number
+      url: string
+      title: string
+      domain: string
+      canonicalUrl?: string
+      provider?: string
+      fetched?: boolean
+      fetchStatus?: string
+    }
   | {
       type: 'interrupt'
       interruptKind: 'approval' | 'clarify'
@@ -119,6 +129,10 @@ export interface SourcePart {
   url: string
   title: string
   domain: string
+  canonicalUrl?: string
+  provider?: string
+  fetched?: boolean
+  fetchStatus?: string
 }
 
 export interface StatusPart {

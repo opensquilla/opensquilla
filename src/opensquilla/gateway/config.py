@@ -1341,16 +1341,56 @@ class DingTalkChannelEntry(ConfiguredChannelEntry):
 
 
 class WeComChannelEntry(ConfiguredChannelEntry):
-    """Gateway config entry for a WeCom corp-app channel."""
+    """Gateway config entry for WeCom AI Bot or corp-app callback."""
 
     type: Literal["wecom"] = "wecom"
-    corp_id: str
-    corp_secret: str
-    agent_id_int: int
-    token: str
-    encoding_aes_key: str
+    connection_mode: Literal["webhook", "websocket"] = "webhook"
+    bot_id: str = ""
+    bot_secret: str = ""
+    websocket_url: str = "wss://openws.work.weixin.qq.com"
+    corp_id: str = ""
+    corp_secret: str = ""
+    agent_id_int: int = 0
+    token: str = ""
+    encoding_aes_key: str = ""
     webhook_path: str = "/wecom/events"
     api_base: str = "https://qyapi.weixin.qq.com"
+
+    @model_validator(mode="after")
+    def validate_wecom_mode(self) -> WeComChannelEntry:
+        if self.connection_mode == "websocket":
+            missing = [
+                field
+                for field in ("bot_id", "bot_secret")
+                if not str(getattr(self, field)).strip()
+            ]
+            if missing:
+                raise ValueError(
+                    "wecom websocket mode requires bot_id and bot_secret; "
+                    "corp_id/corp_secret/access_token are for webhook mode"
+                )
+            if not self.websocket_url.strip():
+                raise ValueError("wecom websocket mode requires websocket_url")
+            return self
+
+        missing = [
+            field
+            for field in (
+                "corp_id",
+                "corp_secret",
+                "token",
+                "encoding_aes_key",
+            )
+            if not str(getattr(self, field)).strip()
+        ]
+        if self.agent_id_int <= 0:
+            missing.append("agent_id_int")
+        if missing:
+            raise ValueError(
+                "wecom webhook mode requires corp_id, corp_secret, agent_id_int, "
+                "token, and encoding_aes_key"
+            )
+        return self
 
 
 class QQChannelEntry(ConfiguredChannelEntry):

@@ -467,6 +467,21 @@ class PromptAssemblerStage:
             else:
                 inp.cloned_selector.override_model(inp.model)
             provider = inp.cloned_selector.resolve()
+            # An explicit model overrides the routed choice, so the turn
+            # actually runs inp.model. Realign routed_model (read by the
+            # RouterDecisionEvent and the comprehensive-savings cost) and
+            # drop the now-inapplicable savings figures, so telemetry and
+            # billing reflect the model that ran, not the one routing
+            # recommended.
+            if turn.metadata.get("routed_model") not in (None, inp.model):
+                turn.metadata["routed_model"] = inp.model
+                for savings_key in (
+                    "savings_pct",
+                    "savings_max_price_per_m",
+                    "savings_routed_price_per_m",
+                ):
+                    if savings_key in turn.metadata:
+                        turn.metadata[savings_key] = 0.0
         if inp.cloned_selector is not None:
             # Local import to avoid pulling _SelectorFallbackProvider name
             # into the stage's module-top namespace.

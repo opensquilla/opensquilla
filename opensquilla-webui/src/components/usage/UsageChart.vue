@@ -1,25 +1,25 @@
 <template>
   <section class="usage-chart">
     <div class="usage-chart__head">
-      <div class="usage-segs" role="tablist" :aria-label="t('usageLogs.chart.metric')">
+      <div class="control-segmented" role="tablist" :aria-label="t('usageLogs.chart.metric')">
         <button
-          class="usage-seg"
+          class="control-segmented__btn"
           :class="{ 'is-active': chartMode === 'tokens' }"
           role="tab"
           @click="emit('update:chartMode', 'tokens')"
         >{{ t('usageLogs.chart.tokens') }}</button>
         <button
-          class="usage-seg"
+          class="control-segmented__btn"
           :class="{ 'is-active': chartMode === 'cost' }"
           role="tab"
           @click="emit('update:chartMode', 'cost')"
         >{{ t('usageLogs.chart.cost') }}</button>
       </div>
-      <div class="usage-range" role="tablist" :aria-label="t('usageLogs.chart.dateRange')">
+      <div class="control-segmented" role="tablist" :aria-label="t('usageLogs.chart.dateRange')">
         <button
           v-for="r in ['all', '7', '14', '30']"
           :key="r"
-          class="usage-range__btn"
+          class="control-segmented__btn"
           :class="{ 'is-active': range === r }"
           role="tab"
           @click="emit('setRange', r)"

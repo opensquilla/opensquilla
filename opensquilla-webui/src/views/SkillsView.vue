@@ -2,7 +2,7 @@
   <div class="sk-stage control-stage control-stage--spacious">
     <header class="sk-stage__header control-stage__header">
       <div class="sk-stage__title-block control-stage__title-block">
-        <h2 class="sk-stage__title control-stage__title">{{ t('cronSkills.skillsView.title') }}</h2>
+        <h1 class="sk-stage__title control-stage__title">{{ t('cronSkills.skillsView.title') }}</h1>
         <p class="sk-stage__subtitle control-stage__subtitle">{{ t('cronSkills.skillsView.subtitle') }}</p>
       </div>
       <div class="sk-stage__actions control-stage__actions">
@@ -77,10 +77,10 @@
           </summary>
           <div class="sk-ap-settings">
             <label class="sk-ap-toggle">
-              <input
-                type="checkbox"
+              <ControlSwitch
                 :checked="proposalsSettings.enabled"
-                @change="toggleAutoPropose('enabled', ($event.target as HTMLInputElement).checked)"
+                :aria-label="t('cronSkills.autoPropose.scheduledLabel')"
+                @change="(v) => toggleAutoPropose('enabled', v)"
               />
               <span class="sk-ap-toggle__label">{{ t('cronSkills.autoPropose.scheduledLabel') }}</span>
               <i18n-t keypath="cronSkills.autoPropose.scheduledHint" tag="span" class="sk-ap-toggle__hint">
@@ -88,19 +88,19 @@
               </i18n-t>
             </label>
             <label class="sk-ap-toggle">
-              <input
-                type="checkbox"
+              <ControlSwitch
                 :checked="proposalsSettings.on_dream_complete"
-                @change="toggleAutoPropose('on_dream_complete', ($event.target as HTMLInputElement).checked)"
+                :aria-label="t('cronSkills.autoPropose.dreamLabel')"
+                @change="(v) => toggleAutoPropose('on_dream_complete', v)"
               />
               <span class="sk-ap-toggle__label">{{ t('cronSkills.autoPropose.dreamLabel') }}</span>
               <span class="sk-ap-toggle__hint">{{ t('cronSkills.autoPropose.dreamHint') }}</span>
             </label>
             <label class="sk-ap-toggle">
-              <input
-                type="checkbox"
+              <ControlSwitch
                 :checked="proposalsSettings.auto_enable"
-                @change="toggleAutoPropose('auto_enable', ($event.target as HTMLInputElement).checked)"
+                :aria-label="t('cronSkills.autoPropose.autoEnableLabel')"
+                @change="(v) => toggleAutoPropose('auto_enable', v)"
               />
               <span class="sk-ap-toggle__label">{{ t('cronSkills.autoPropose.autoEnableLabel') }}</span>
               <i18n-t keypath="cronSkills.autoPropose.autoEnableHint" tag="span" class="sk-ap-toggle__hint">
@@ -188,9 +188,10 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onActivated, onDeactivated, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
+import ControlSwitch from '@/components/ControlSwitch.vue'
 import AutoEnabledSkills from '@/components/skills/AutoEnabledSkills.vue'
 import PendingSkillProposals from '@/components/skills/PendingSkillProposals.vue'
 import SkillDetailDialog from '@/components/skills/SkillDetailDialog.vue'
@@ -263,9 +264,26 @@ const {
   uninstallSkill,
 } = registry
 
-onMounted(() => {
+// This view is kept-alive (route meta.keepAlive), so the data fetch is bound on
+// activation rather than mount — onMounted/onUnmounted only fire on first mount /
+// cache eviction, not when navigating away and back. onActivated also runs on
+// first display, so it covers the initial load while also refreshing on revisit.
+// There are no subscriptions or polls in this view's data stack, so teardown is a
+// no-op, but it is kept idempotent and wired to both onDeactivated and onUnmounted
+// to match the reference pattern and guard against future additions.
+let unsubs: Array<() => void> = []
+
+function teardownLive() {
+  unsubs.forEach(unsub => unsub())
+  unsubs = []
+}
+
+onActivated(() => {
   void loadData()
 })
+
+onDeactivated(teardownLive)
+onUnmounted(teardownLive)
 
 function scrollToProposals() {
   proposalsPanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -410,7 +428,7 @@ async function uninstallSkillAndClose(name: string) {
 .sk-group__caret {
   color: var(--text-dim);
   font-size: 10px;
-  transition: transform 200ms ease;
+  transition: transform var(--dur-base) var(--ease-standard);
 }
 .sk-group[open] .sk-group__caret {
   transform: rotate(180deg);
@@ -453,7 +471,7 @@ async function uninstallSkillAndClose(name: string) {
   background: var(--ok);
 }
 .sk-card__dot.is-needs {
-  background: var(--warn);
+  background: var(--warn-fill);
 }
 .sk-card__dot.is-unverified {
   background: var(--text-dim);
@@ -611,7 +629,7 @@ async function uninstallSkillAndClose(name: string) {
   font-size: var(--fs-xs);
   color: var(--text-muted);
   width: 100%;
-  margin-left: 24px;
+  margin-left: 44px;
 }
 .sk-ap-select {
   padding: 4px 8px;

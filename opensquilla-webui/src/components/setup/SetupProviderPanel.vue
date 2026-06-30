@@ -83,6 +83,7 @@ function onProviderSelect(event: Event) {
       :field="field"
       :value="panel.providerFieldValue(field)"
       scope="provider"
+      :stack="!['bool', 'select', 'int', 'float'].includes(field.type || '')"
       @update="(name, val) => emit('updateProviderField', name, val)"
     />
     <details :open="panel.providerAdvancedOpen">

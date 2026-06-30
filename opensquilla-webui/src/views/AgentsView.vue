@@ -2,17 +2,18 @@
   <div class="ag-stage control-stage">
     <header class="ag-stage__header control-stage__header">
       <div class="ag-stage__title-block control-stage__title-block">
-        <h2 class="ag-stage__title control-stage__title">{{ t('console.agents.title') }}</h2>
+        <h1 class="ag-stage__title control-stage__title">{{ t('console.agents.title') }}</h1>
         <p class="ag-stage__subtitle control-stage__subtitle">{{ t('console.agents.subtitle') }}</p>
       </div>
       <div class="ag-stage__actions control-stage__actions">
         <button
-          class="ag-link"
+          class="btn btn--ghost"
           type="button"
           :title="t('console.agents.settingsHint')"
           @click="openSettingsSurface"
         >
-          {{ t('console.agents.openSettings') }} &rarr;
+          <Icon name="settings" :size="16" aria-hidden="true" />
+          <span>{{ t('console.agents.openSettings') }}</span>
         </button>
         <button class="btn btn--ghost" @click="loadData">
           <Icon name="refresh" :size="16" />
@@ -75,12 +76,10 @@
 
       <ErrorState v-else-if="error" :message="error" :on-retry="loadData" />
 
-      <div v-else-if="agents.length === 0" class="state">
-        <div class="state-icon">
-          <Icon name="agents" :size="48" />
-        </div>
-        <div class="state-title">{{ t('console.agents.emptyTitle') }}</div>
-        <p class="state-text">{{ t('console.agents.emptyTextBefore') }} <code>main</code> {{ t('console.agents.emptyTextAfter') }}</p>
+      <div v-else-if="agents.length === 0" class="control-empty">
+        <Icon name="agents" :size="32" class="control-empty__icon" aria-hidden="true" />
+        <div class="control-empty__title">{{ t('console.agents.emptyTitle') }}</div>
+        <p class="control-empty__hint">{{ t('console.agents.emptyTextBefore') }} <code>main</code> {{ t('console.agents.emptyTextAfter') }}</p>
       </div>
 
       <div v-else class="ag-cards control-card-grid" style="--control-card-min: 320px">
@@ -524,26 +523,6 @@ function rpcErrorCode(err: unknown): string {
   min-height: 116px;
 }
 
-.ag-link {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  color: var(--accent);
-  cursor: pointer;
-  display: inline-flex;
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  justify-content: center;
-  letter-spacing: 0.04em;
-  min-height: 40px;
-  padding: 0 var(--sp-1);
-  white-space: nowrap;
-}
-
-.ag-link:hover {
-  color: var(--accent-hover);
-}
-
 .ag-create {
   background: var(--bg-surface);
   border: 1px solid var(--border);
@@ -812,23 +791,6 @@ function rpcErrorCode(err: unknown): string {
   text-align: center;
 }
 
-.state-icon {
-  color: var(--text-dim);
-}
-
-.state-title {
-  font-size: var(--fs-lg);
-  font-weight: 600;
-}
-
-.state-text {
-  color: var(--text-muted);
-  font-size: var(--fs-sm);
-  line-height: 1.5;
-  margin: 0;
-  max-width: 520px;
-}
-
 /* Drawer */
 .drawer-overlay {
   align-items: flex-end;
@@ -1018,7 +980,7 @@ function rpcErrorCode(err: unknown): string {
 /* Transitions */
 .drawer-enter-active,
 .drawer-leave-active {
-  transition: opacity 0.2s;
+  transition: opacity var(--dur-base);
 }
 
 .drawer-enter-from,
@@ -1028,7 +990,7 @@ function rpcErrorCode(err: unknown): string {
 
 .modal-enter-active,
 .modal-leave-active {
-  transition: opacity 0.2s;
+  transition: opacity var(--dur-base);
 }
 
 .modal-enter-from,

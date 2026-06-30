@@ -2,7 +2,7 @@
   <div class="hub control-stage">
     <header class="control-stage__header">
       <div class="control-stage__title-block">
-        <h2 class="control-stage__title">{{ t('sessions.title') }}</h2>
+        <h1 class="control-stage__title">{{ t('sessions.title') }}</h1>
         <p class="control-stage__subtitle">
           {{ t('sessions.subtitle') }}
         </p>
@@ -28,12 +28,12 @@
 
     <section class="hub-list">
       <div class="hub-list__head">
-        <div class="hub-filters" role="group" :aria-label="t('sessions.filter.ariaLabel')">
+        <div class="hub-filters control-segmented" role="group" :aria-label="t('sessions.filter.ariaLabel')">
           <button
             v-for="chip in FILTER_CHIPS"
             :key="chip.id"
             type="button"
-            class="hub-filter"
+            class="hub-filter control-segmented__btn"
             :class="{ 'is-active': filter === chip.id }"
             :aria-pressed="filter === chip.id"
             @click="filter = chip.id"
@@ -62,21 +62,21 @@
         :on-retry="loadAll"
       />
 
-      <div v-else-if="isLoading && allSessions.length === 0" class="hub-state">
+      <div v-else-if="isLoading && allSessions.length === 0" class="hub-state control-empty">
         <LoadingSpinner />
-        <p class="hub-state__text">{{ t('sessions.loading') }}</p>
+        <p class="control-empty__hint">{{ t('sessions.loading') }}</p>
       </div>
 
-      <div v-else-if="allSessions.length === 0" class="hub-state">
-        <div class="hub-state__title">{{ t('sessions.empty.title') }}</div>
-        <p class="hub-state__text">
-          {{ t('sessions.empty.body') }}
-        </p>
+      <div v-else-if="allSessions.length === 0" class="hub-state control-empty">
+        <Icon name="sessions" :size="32" class="control-empty__icon" aria-hidden="true" />
+        <div class="control-empty__title">{{ t('sessions.empty.title') }}</div>
+        <p class="control-empty__hint">{{ t('sessions.empty.body') }}</p>
       </div>
 
-      <div v-else-if="ledgerEntries.length === 0" class="hub-state">
-        <div class="hub-state__title">{{ t('sessions.noMatches.title') }}</div>
-        <p class="hub-state__text">{{ t('sessions.noMatches.body') }}</p>
+      <div v-else-if="ledgerEntries.length === 0" class="hub-state control-empty">
+        <Icon name="search" :size="32" class="control-empty__icon" aria-hidden="true" />
+        <div class="control-empty__title">{{ t('sessions.noMatches.title') }}</div>
+        <p class="control-empty__hint">{{ t('sessions.noMatches.body') }}</p>
         <button class="btn btn--ghost" @click="clearFilters">{{ t('sessions.noMatches.clear') }}</button>
       </div>
 
@@ -104,7 +104,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onActivated, onDeactivated, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
@@ -373,7 +373,19 @@ async function removeSession(item: SessionItem) {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-onMounted(() => {
+// This view is kept-alive (route meta.keepAlive), so live subscriptions and the
+// fallback poll are bound on activation and released on deactivation — they must
+// not keep firing while the view is cached and off-screen. onActivated also runs
+// on first display, covering the initial load. onUnmounted is a final safety net
+// for the rare case the KeepAlive cache evicts this instance.
+function teardownLive() {
+  unsubs.forEach(unsub => unsub())
+  unsubs = []
+  if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null }
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+}
+
+onActivated(() => {
   loadAll()
   unsubs = [
     rpc.on('sessions.changed', scheduleSessionRefresh),
@@ -385,12 +397,8 @@ onMounted(() => {
   pollTimer = setInterval(loadAll, FALLBACK_POLL_MS)
 })
 
-onUnmounted(() => {
-  unsubs.forEach(unsub => unsub())
-  unsubs = []
-  if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null }
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
-})
+onDeactivated(teardownLive)
+onUnmounted(teardownLive)
 </script>
 
 <style scoped>
@@ -408,38 +416,9 @@ onUnmounted(() => {
   justify-content: space-between;
 }
 
-.hub-filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-2);
-}
-
-.hub-filter {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: var(--fs-xs);
-  font-weight: 650;
-  padding: var(--sp-1) var(--sp-3);
-  transition: background var(--transition), border-color var(--transition), color var(--transition);
-}
-
-.hub-filter:hover {
-  border-color: var(--border-focus);
-  color: var(--text);
-}
-
 .hub-filter:focus-visible {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
   outline: none;
-}
-
-.hub-filter.is-active {
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-  color: var(--accent);
 }
 
 .hub-search {
@@ -473,30 +452,6 @@ onUnmounted(() => {
   color: var(--text-dim);
 }
 
-.hub-state {
-  align-items: center;
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  color: var(--text-muted);
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-  padding: var(--sp-8) var(--sp-4);
-  text-align: center;
-}
-
-.hub-state__title {
-  color: var(--text);
-  font-size: var(--fs-lg);
-  font-weight: 600;
-}
-
-.hub-state__text {
-  font-size: var(--fs-sm);
-  line-height: 1.5;
-  margin: 0;
-}
 
 @media (max-width: 760px) {
   .hub-list__head {

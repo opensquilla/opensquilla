@@ -3,7 +3,7 @@
     <!-- Header -->
     <header class="ov-stage__header control-stage__header">
       <div class="ov-stage__title-block control-stage__title-block">
-        <h2 class="ov-stage__title control-stage__title">OpenSquilla</h2>
+        <h1 class="ov-stage__title control-stage__title">OpenSquilla</h1>
         <p class="ov-stage__subtitle control-stage__subtitle">{{ t('sessions.overview.subtitle') }}</p>
       </div>
       <div class="ov-stage__actions control-stage__actions">
@@ -119,7 +119,7 @@
         >
           <header class="health-finding-group__header">
             <div>
-              <h3>{{ group.title }}</h3>
+              <h2>{{ group.title }}</h2>
               <p>{{ group.note }}</p>
             </div>
             <span>{{ group.findings.length }}</span>
@@ -198,7 +198,7 @@
         <div class="ov-panel__head control-panel__head">
           <div>
             <span class="ov-panel__eyebrow control-panel__eyebrow">{{ t('sessions.overview.recentActivity') }}</span>
-            <h3 class="ov-panel__title control-panel__title">{{ t('sessions.title') }}</h3>
+            <h2 class="ov-panel__title control-panel__title">{{ t('sessions.title') }}</h2>
           </div>
           <button class="ov-link" type="button" @click="router.push('/sessions')">
             {{ t('sessions.overview.viewAllArrow') }}
@@ -212,11 +212,9 @@
             <ErrorState :message="sessionsError" :on-retry="refreshSessions" />
           </template>
           <template v-else-if="recentSessions.length === 0">
-            <div class="ov-recent__empty">
-              <div class="ov-recent__empty-icon">
-                <Icon name="sessions" :size="36" />
-              </div>
-              <div>{{ t('sessions.overview.noSessions') }}</div>
+            <div class="control-empty">
+              <Icon name="sessions" :size="32" class="control-empty__icon" aria-hidden="true" />
+              <div class="control-empty__title">{{ t('sessions.overview.noSessions') }}</div>
             </div>
           </template>
           <template v-else>
@@ -248,7 +246,7 @@
         <div class="ov-panel__head control-panel__head">
           <div>
             <span class="ov-panel__eyebrow control-panel__eyebrow">{{ t('sessions.overview.connection') }}</span>
-            <h3 class="ov-panel__title control-panel__title">{{ t('sessions.overview.gateway') }}</h3>
+            <h2 class="ov-panel__title control-panel__title">{{ t('sessions.overview.gateway') }}</h2>
           </div>
           <span class="conn-pill" :class="connPillClass">{{ connPillLabel }}</span>
         </div>
@@ -263,7 +261,7 @@
         <div class="ov-panel__head control-panel__head">
           <div>
             <span class="ov-panel__eyebrow control-panel__eyebrow">{{ t('sessions.overview.live') }}</span>
-            <h3 class="ov-panel__title control-panel__title">{{ t('sessions.overview.eventStream') }}</h3>
+            <h2 class="ov-panel__title control-panel__title">{{ t('sessions.overview.eventStream') }}</h2>
           </div>
           <span class="ov-panel__meta">{{ eventCountText }}</span>
         </div>
@@ -1053,7 +1051,7 @@ function gatewayContextUrl(): string {
   text-align: left;
   font: inherit;
   color: inherit;
-  transition: background var(--transition), border-color var(--transition), transform 80ms ease;
+  transition: background var(--transition), border-color var(--transition), transform var(--dur-fast) var(--ease-standard);
 }
 .ov-recent__row:hover {
   background: var(--bg-elevated);
@@ -1106,30 +1104,13 @@ function gatewayContextUrl(): string {
   color: var(--text-dim);
   font-size: 12px;
   opacity: 0;
-  transition: opacity var(--transition), transform 120ms ease;
+  transition: opacity var(--transition), transform var(--dur-fast) var(--ease-standard);
 }
 .ov-recent__row:hover .ov-recent__arrow {
   opacity: 1;
   color: var(--accent);
   transform: translateX(2px);
 }
-.ov-recent__empty {
-  padding: var(--sp-5) var(--sp-3);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  color: var(--text-muted);
-  font-size: var(--fs-sm);
-}
-.ov-recent__empty-icon {
-  width: 36px;
-  height: 36px;
-  color: var(--text-dim);
-  line-height: 1;
-}
-
 /* Skeleton loading */
 .skeleton-row {
   height: 4rem;
@@ -1249,7 +1230,7 @@ function gatewayContextUrl(): string {
 }
 .ov-event-log__row.is-fresh {
   background: color-mix(in srgb, var(--accent) 6%, transparent);
-  animation: ov-row-flash 1.4s ease-out forwards;
+  animation: ov-row-flash 1.4s ease-out forwards; /* motion-allow: long one-shot row-flash, outside the transition scale */
 }
 @keyframes ov-row-flash {
   from { background: color-mix(in srgb, var(--accent) 18%, transparent); }
@@ -1288,7 +1269,7 @@ function gatewayContextUrl(): string {
   background: var(--ok);
 }
 .dot.warn {
-  background: var(--warn);
+  background: var(--warn-fill);
 }
 .dot.err {
   background: var(--danger);
@@ -1409,7 +1390,7 @@ function gatewayContextUrl(): string {
 .health-count.is-degrades::before,
 .health-count.is-warn::before,
 .health-finding.is-warn .health-finding__dot {
-  background: var(--warn);
+  background: var(--warn-fill);
 }
 
 .health-count.is-optional::before,
@@ -1781,7 +1762,7 @@ function gatewayContextUrl(): string {
   height: 40px;
   justify-content: center;
   padding: 0;
-  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  transition: background var(--dur-fast) var(--ease-standard), border-color var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
   width: 40px;
 }
 

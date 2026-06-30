@@ -3,7 +3,7 @@
     <header class="control-stage__header">
       <div class="control-stage__title-block">
         <span class="control-panel__eyebrow">{{ t('console.approvals.eyebrow') }}</span>
-        <h2 class="control-stage__title">{{ t('console.approvals.title') }}</h2>
+        <h1 class="control-stage__title">{{ t('console.approvals.title') }}</h1>
         <p class="control-stage__subtitle">{{ t('console.approvals.subtitle') }}</p>
       </div>
       <div class="control-stage__actions">
@@ -37,7 +37,7 @@
     <section class="ap-strategy">
       <div class="ap-strategy__head">
         <span class="ap-panel__eyebrow">{{ t('console.approvals.strategy') }}</span>
-        <h3 class="ap-panel__title">{{ t('console.approvals.strategyTitle') }}</h3>
+        <h2 class="ap-panel__title">{{ t('console.approvals.strategyTitle') }}</h2>
       </div>
       <div class="ap-strategy__options" role="radiogroup" :aria-label="t('console.approvals.strategyAriaLabel')">
         <label
@@ -61,12 +61,10 @@
       </div>
     </section>
 
-    <section v-if="pending.length === 0" class="state">
-      <div class="state-icon">
-        <Icon name="check" :size="48" />
-      </div>
-      <div class="state-title">{{ t('console.approvals.emptyTitle') }}</div>
-      <p class="state-text">{{ t('console.approvals.emptyText') }}</p>
+    <section v-if="pending.length === 0" class="control-empty">
+      <Icon name="check" :size="32" class="control-empty__icon" aria-hidden="true" />
+      <div class="control-empty__title">{{ t('console.approvals.emptyTitle') }}</div>
+      <p class="control-empty__hint">{{ t('console.approvals.emptyText') }}</p>
     </section>
 
     <section v-else class="ap-pending">
@@ -138,7 +136,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onActivated, onDeactivated, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import Icon from '@/components/Icon.vue'
@@ -207,7 +205,8 @@ const loaded = ref(false)
 // double-click (or a second decision) cannot fire a duplicate resolve mid-flight.
 const resolvingId = ref<string | null>(null)
 
-let pollInterval: ReturnType<typeof setInterval> | null = null
+const POLL_MS = 5000
+let pollTimer: ReturnType<typeof setInterval> | null = null
 
 // ---------------------------------------------------------------------------
 // Computed
@@ -221,21 +220,28 @@ const activeModeDesc = computed(() => loaded.value ? activeMode.value.desc : '')
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-onMounted(() => {
+// This view is kept-alive (route meta.keepAlive), so the fallback poll binds on
+// activation and is released on deactivation — it must not keep firing while the
+// view is cached and off-screen. onActivated also runs on first display (covering
+// the initial load) and on every revisit (a background refresh). App.vue owns the
+// app-wide approval rpc subscriptions and badge count, so this view deliberately
+// keeps to its own HTTP fetch/poll and adds no rpc.on here. onUnmounted is a final
+// safety net for the rare case the KeepAlive cache evicts this instance.
+function teardownLive() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+}
+
+onActivated(() => {
   loadData()
   // Skip background polling while the tab is hidden to avoid wasted RPC churn.
-  pollInterval = setInterval(() => {
+  pollTimer = setInterval(() => {
     if (document.hidden) return
     loadData()
-  }, 5000)
+  }, POLL_MS)
 })
 
-onUnmounted(() => {
-  if (pollInterval) {
-    clearInterval(pollInterval)
-    pollInterval = null
-  }
-})
+onDeactivated(teardownLive)
+onUnmounted(teardownLive)
 
 // ---------------------------------------------------------------------------
 // Actions
@@ -461,7 +467,7 @@ function setBrowserElevated(m: string) {
   display: flex;
   gap: var(--sp-3);
   padding: var(--sp-4);
-  transition: border-color 0.15s, background 0.15s;
+  transition: border-color var(--dur-fast), background var(--dur-fast);
 }
 
 .ap-radio:hover {
@@ -534,23 +540,6 @@ function setBrowserElevated(m: string) {
   gap: var(--sp-4);
   padding: var(--sp-8) var(--sp-4);
   text-align: center;
-}
-
-.state-icon {
-  color: var(--text-dim);
-}
-
-.state-title {
-  font-size: var(--fs-lg);
-  font-weight: 600;
-}
-
-.state-text {
-  color: var(--text-muted);
-  font-size: var(--fs-sm);
-  line-height: 1.5;
-  margin: 0;
-  max-width: 520px;
 }
 
 .ap-list-head {

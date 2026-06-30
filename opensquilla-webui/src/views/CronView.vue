@@ -2,7 +2,7 @@
   <div class="cron-stage control-stage">
     <header class="cron-stage__header control-stage__header">
       <div class="cron-stage__title-block control-stage__title-block">
-        <h2 class="cron-stage__title control-stage__title">{{ t('cronSkills.view.title') }}</h2>
+        <h1 class="cron-stage__title control-stage__title">{{ t('cronSkills.view.title') }}</h1>
         <p class="cron-stage__subtitle control-stage__subtitle">{{ t('cronSkills.view.subtitle') }}</p>
       </div>
       <div class="cron-stage__actions control-stage__actions">
@@ -451,27 +451,6 @@ async function confirmDelete() {
   padding: 2px 8px;
 }
 
-.cron-view-toggle {
-  display: flex;
-  gap: 2px;
-}
-
-.cron-view-toggle__btn {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: var(--fs-sm);
-  padding: 4px 12px;
-}
-
-.cron-view-toggle__btn.is-active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-foreground);
-}
-
 .cron-card.is-selected {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent);
@@ -900,7 +879,7 @@ async function confirmDelete() {
   position: fixed;
   right: 0;
   top: 0;
-  transition: opacity 0.22s;
+  transition: opacity var(--dur-base);
 }
 
 .cron-panel__scrim.is-open {
@@ -918,7 +897,7 @@ async function confirmDelete() {
   right: 0;
   top: 0;
   transform: translateX(100%);
-  transition: transform 0.22s ease-out;
+  transition: transform var(--dur-base) var(--ease-out);
   width: 100%;
   z-index: 1001;
 }
@@ -1122,40 +1101,6 @@ async function confirmDelete() {
   margin-bottom: var(--sp-3);
 }
 
-.cron-toggle input {
-  display: none;
-}
-
-.cron-toggle__track {
-  background: var(--border);
-  border-radius: 12px;
-  display: inline-block;
-  height: 20px;
-  position: relative;
-  transition: background 0.15s;
-  width: 36px;
-}
-
-.cron-toggle input:checked + .cron-toggle__track {
-  background: var(--accent);
-}
-
-.cron-toggle__thumb {
-  background: var(--bg);
-  border-radius: 50%;
-  display: block;
-  height: 16px;
-  left: 2px;
-  position: absolute;
-  top: 2px;
-  transition: transform 0.15s;
-  width: 16px;
-}
-
-.cron-toggle input:checked + .cron-toggle__track .cron-toggle__thumb {
-  transform: translateX(16px);
-}
-
 .cron-toggle__label {
   color: var(--text-muted);
   font-size: var(--fs-sm);
@@ -1217,7 +1162,7 @@ async function confirmDelete() {
 /* Transitions */
 .panel-enter-active,
 .panel-leave-active {
-  transition: opacity 0.2s;
+  transition: opacity var(--dur-base);
 }
 
 .panel-enter-from,
@@ -1227,7 +1172,7 @@ async function confirmDelete() {
 
 .modal-enter-active,
 .modal-leave-active {
-  transition: opacity 0.2s;
+  transition: opacity var(--dur-base);
 }
 
 .modal-enter-from,

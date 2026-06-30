@@ -3,7 +3,7 @@
     <header class="control-stage__header">
       <div class="control-stage__title-block">
         <span class="control-panel__eyebrow">{{ t('usageLogs.logs.eyebrow') }}</span>
-        <h2 class="control-stage__title">{{ t('usageLogs.logs.title') }}</h2>
+        <h1 class="control-stage__title">{{ t('usageLogs.logs.title') }}</h1>
         <p class="control-stage__subtitle">{{ t('usageLogs.logs.subtitle') }}</p>
       </div>
       <div class="control-stage__actions">
@@ -74,6 +74,7 @@
             v-for="level in LEVELS"
             :key="level"
             :class="['lg-level-btn', `lg-level-btn--${level.toLowerCase()}`, activeLevels.has(level) ? 'is-active' : '']"
+            :aria-pressed="activeLevels.has(level) ? 'true' : 'false'"
             @click="toggleLevel(level)"
           >
             <span class="lg-level-btn__dot"></span>
@@ -92,8 +93,7 @@
         />
       </div>
       <label class="lg-toggle">
-        <input v-model="autoFollow" type="checkbox" />
-        <span class="lg-toggle__track"><span class="lg-toggle__thumb"></span></span>
+        <ControlSwitch v-model:checked="autoFollow" :aria-label="t('usageLogs.logs.autoFollow')" />
         <span class="lg-toggle__label">{{ t('usageLogs.logs.autoFollow') }}</span>
       </label>
     </section>
@@ -139,6 +139,7 @@
       </div>
     </section>
 
+    <Transition name="lg-detail">
     <div
       v-if="runTraceEnabled && selectedLine"
       class="lg-detail-overlay"
@@ -179,6 +180,7 @@
         </div>
       </aside>
     </div>
+    </Transition>
   </div>
 </template>
 
@@ -189,6 +191,7 @@ import { useRpcStore } from '@/stores/rpc'
 import { useFixedWindow } from '@/composables/useFixedWindow'
 import { downloadText } from '@/utils/browser'
 import Icon from '@/components/Icon.vue'
+import ControlSwitch from '@/components/ControlSwitch.vue'
 import RunTrace from '@/components/run/RunTrace.vue'
 import { useRunTrace } from '@/composables/run/useRunTrace'
 import { nodeStepsFromHistoryMessage } from '@/components/run/runTrace'
@@ -751,7 +754,7 @@ function escRegex(s: string): string {
   letter-spacing: 0.04em;
   padding: 4px 10px;
   text-transform: uppercase;
-  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  transition: background var(--dur-fast) var(--ease-standard), border-color var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
 }
 
 .lg-level-btn:hover {
@@ -774,7 +777,7 @@ function escRegex(s: string): string {
 .lg-level-btn--trace .lg-level-btn__dot { background: var(--text-dim); }
 .lg-level-btn--debug .lg-level-btn__dot { background: var(--accent); }
 .lg-level-btn--info  .lg-level-btn__dot { background: var(--ok); }
-.lg-level-btn--warn  .lg-level-btn__dot { background: var(--warn); }
+.lg-level-btn--warn  .lg-level-btn__dot { background: var(--warn-fill); }
 .lg-level-btn--error .lg-level-btn__dot { background: var(--danger); }
 
 .lg-search-wrap {
@@ -815,45 +818,6 @@ function escRegex(s: string): string {
   display: inline-flex;
   gap: 8px;
   user-select: none;
-}
-
-.lg-toggle input {
-  clip: rect(0 0 0 0);
-  height: 1px;
-  margin: -1px;
-  overflow: hidden;
-  position: absolute;
-  width: 1px;
-}
-
-.lg-toggle__track {
-  background: var(--border);
-  border-radius: 999px;
-  display: inline-block;
-  height: 18px;
-  position: relative;
-  transition: background 0.2s ease;
-  width: 32px;
-}
-
-.lg-toggle input:checked + .lg-toggle__track {
-  background: var(--accent);
-}
-
-.lg-toggle__thumb {
-  background: var(--text);
-  border-radius: 999px;
-  display: block;
-  height: 14px;
-  left: 2px;
-  position: absolute;
-  top: 2px;
-  transition: transform 0.2s ease;
-  width: 14px;
-}
-
-.lg-toggle input:checked + .lg-toggle__track .lg-toggle__thumb {
-  transform: translateX(14px);
 }
 
 .lg-toggle__label {
@@ -998,7 +962,6 @@ function escRegex(s: string): string {
 }
 
 .lg-detail {
-  animation: lg-detail-in 0.18s ease;
   background: var(--bg-surface);
   border-left: 1px solid var(--border);
   box-shadow: var(--shadow-lg);
@@ -1008,10 +971,16 @@ function escRegex(s: string): string {
   width: min(560px, 100%);
 }
 
-@keyframes lg-detail-in {
-  from { transform: translateX(24px); opacity: 0.4; }
-  to { transform: translateX(0); opacity: 1; }
-}
+/* Symmetric open/close: scrim fades, panel slides from the right both ways
+   (was an entrance-only keyframe that popped on close). */
+.lg-detail-enter-active { transition: opacity var(--dur-base) var(--ease-out); }
+.lg-detail-leave-active { transition: opacity var(--dur-fast) var(--ease-in); }
+.lg-detail-enter-from,
+.lg-detail-leave-to { opacity: 0; }
+.lg-detail-enter-active .lg-detail { transition: transform var(--dur-base) var(--ease-out); }
+.lg-detail-leave-active .lg-detail { transition: transform var(--dur-fast) var(--ease-in); }
+.lg-detail-enter-from .lg-detail { transform: translateX(24px); }
+.lg-detail-leave-to .lg-detail { transform: translateX(24px); }
 
 .lg-detail__head {
   align-items: center;
@@ -1045,8 +1014,11 @@ function escRegex(s: string): string {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .lg-detail {
-    animation: none;
+  .lg-detail-enter-active,
+  .lg-detail-leave-active,
+  .lg-detail-enter-active .lg-detail,
+  .lg-detail-leave-active .lg-detail {
+    transition: none;
   }
 }
 

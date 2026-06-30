@@ -133,6 +133,66 @@ async def test_duckduckgo_provider_maps_provider_and_source() -> None:
 
 
 @pytest.mark.asyncio
+async def test_duckduckgo_provider_treats_anomaly_challenge_as_blocked() -> None:
+    html = """
+    <html>
+      <body>
+        <form id="challenge-form" action="//duckduckgo.com/anomaly.js">
+          <div class="anomaly-modal">Unfortunately, bots use DuckDuckGo too.</div>
+        </form>
+      </body>
+    </html>
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(202, text=html)
+
+    provider = DuckDuckGoProvider(transport=httpx.MockTransport(handler))
+
+    with pytest.raises(SearchProviderError) as exc_info:
+        await provider.search("duck")
+
+    assert exc_info.value.provider == "duckduckgo"
+    assert exc_info.value.kind == "blocked"
+    assert exc_info.value.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_duckduckgo_provider_allows_real_no_results() -> None:
+    html = """
+    <html>
+      <body>
+        <div class="no-results">No results found for improbable query.</div>
+      </body>
+    </html>
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=html)
+
+    provider = DuckDuckGoProvider(transport=httpx.MockTransport(handler))
+
+    assert await provider.search("improbable query") == []
+
+
+@pytest.mark.asyncio
+async def test_duckduckgo_provider_treats_unparseable_empty_page_as_parse_error() -> None:
+    html = "<html><body><main>DuckDuckGo</main></body></html>"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=html)
+
+    provider = DuckDuckGoProvider(transport=httpx.MockTransport(handler))
+
+    with pytest.raises(SearchProviderError) as exc_info:
+        await provider.search("duck")
+
+    assert exc_info.value.provider == "duckduckgo"
+    assert exc_info.value.kind == "parse"
+    assert exc_info.value.retryable is True
+
+
+@pytest.mark.asyncio
 async def test_duckduckgo_provider_surfaces_network_failures() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("network down", request=request)

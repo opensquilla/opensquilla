@@ -120,6 +120,26 @@ class NetworkFailProvider:
         raise SearchProviderError("tavily", "network", "Network failed", retryable=True)
 
 
+class BlockedProvider:
+    def __init__(self, name: str = "duckduckgo") -> None:
+        self.name = name
+
+    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+        raise SearchProviderError(
+            self.name,
+            "blocked",
+            "Provider returned an anti-bot challenge",
+            retryable=True,
+        )
+
+
+class EmptyProvider:
+    name = "duckduckgo"
+
+    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+        return []
+
+
 class FallbackProvider:
     name = "duckduckgo"
 
@@ -326,6 +346,7 @@ async def test_canonical_web_search_dedupes_and_uses_provider_content_without_fe
             "domain": "www.python.org",
             "provider": "tavily",
             "fetched": False,
+            "fetch_status": "not_requested",
         }
     ]
 
@@ -568,6 +589,57 @@ async def test_canonical_web_search_explicit_provider_does_not_fallback_when_pol
     assert payload["provider_attempts"] == [
         {"provider": "tavily", "status": "error", "error_kind": "network"}
     ]
+
+
+@pytest.mark.asyncio
+async def test_canonical_web_search_surfaces_blocked_provider_failure() -> None:
+    payload = await run_canonical_web_search(
+        SearchOptions(query="q", provider="duckduckgo", fetch_top_k=0),
+        provider_factory=lambda name: BlockedProvider(name),
+    )
+
+    assert payload["ok"] is False
+    assert payload["error_kind"] == "blocked"
+    assert payload["provider_attempts"] == [
+        {"provider": "duckduckgo", "status": "error", "error_kind": "blocked"}
+    ]
+    assert payload["diagnostics"]["empty_reason"] == ""
+
+
+@pytest.mark.asyncio
+async def test_canonical_web_search_falls_back_on_retryable_blocked_error() -> None:
+    def provider_factory(name: str) -> BlockedProvider | FallbackProvider:
+        if name == "tavily":
+            return BlockedProvider(name)
+        return FallbackProvider()
+
+    payload = await run_canonical_web_search(
+        SearchOptions(query="q", provider="tavily", fetch_top_k=0),
+        runtime=resolve_search_runtime(
+            SearchRuntimeConfig(provider="tavily", api_key="tavily-key", fallback_policy="network")
+        ),
+        provider_factory=provider_factory,
+    )
+
+    assert payload["ok"] is True
+    assert payload["provider_attempts"] == [
+        {"provider": "tavily", "status": "error", "error_kind": "blocked"},
+        {"provider": "duckduckgo", "status": "success"},
+    ]
+    assert payload["results"][0]["provider"] == "duckduckgo"
+
+
+@pytest.mark.asyncio
+async def test_canonical_web_search_marks_true_empty_results() -> None:
+    payload = await run_canonical_web_search(
+        SearchOptions(query="q", provider="duckduckgo", fetch_top_k=0),
+        provider_factory=lambda name: EmptyProvider(),
+    )
+
+    assert payload["ok"] is True
+    assert payload["results"] == []
+    assert payload["sources"] == []
+    assert payload["diagnostics"]["empty_reason"] == "no_results"
 
 
 @pytest.mark.asyncio

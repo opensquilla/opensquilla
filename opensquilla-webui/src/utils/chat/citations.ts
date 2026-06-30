@@ -15,6 +15,8 @@ export interface CitationDecorateOptions {
   onActivate: (sourceId: number) => void
   /** Accessible label fragment for a source, keyed by sourceId (title or domain). */
   labelFor: (sourceId: number) => string
+  /** Called with citation ids that were present in prose but not in sources. */
+  onMissingCitations?: (sourceIds: number[]) => void
 }
 
 /**
@@ -48,8 +50,12 @@ export function decorateCitations(
   }
 
   let created = 0
+  const missing = new Set<number>()
   for (const node of candidates) {
-    created += decorateTextNode(node, sources, opts)
+    created += decorateTextNode(node, sources, opts, missing)
+  }
+  if (missing.size > 0) {
+    opts.onMissingCitations?.([...missing].sort((a, b) => a - b))
   }
   return created
 }
@@ -68,6 +74,7 @@ function decorateTextNode(
   node: Text,
   sources: readonly SourcePart[],
   opts: CitationDecorateOptions,
+  missing: Set<number>,
 ): number {
   const text = node.nodeValue ?? ''
   CITATION_RE.lastIndex = 0
@@ -91,6 +98,8 @@ function decorateTextNode(
       lastIndex = end
       created += 1
       changed = true
+    } else {
+      missing.add(n)
     }
     match = CITATION_RE.exec(text)
   }

@@ -7,7 +7,16 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
-SearchErrorKind = Literal["auth", "rate_limit", "timeout", "network", "http", "parse", "unknown"]
+SearchErrorKind = Literal[
+    "auth",
+    "rate_limit",
+    "timeout",
+    "network",
+    "http",
+    "parse",
+    "blocked",
+    "unknown",
+]
 SearchMode = Literal["auto", "news", "technical", "broad"]
 Recency = Literal["day", "week", "month", "year"]
 
@@ -150,6 +159,7 @@ class SearchDiagnostics:
     recency_supported: bool = True
     recency_degraded: bool = False
     cache_status: str = "disabled"
+    empty_reason: str = ""
     loop_guard: dict[str, Any] = field(default_factory=dict)
 
 

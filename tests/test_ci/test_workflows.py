@@ -345,7 +345,8 @@ def test_pr_target_branch_workflow_runs_trusted_base_validator() -> None:
     data = _workflow("pr-target-branch.yml")
     text = (WORKFLOW_DIR / "pr-target-branch.yml").read_text(encoding="utf-8")
 
-    assert _trigger_keys(data) == {"pull_request"}
+    assert _trigger_keys(data) == {"pull_request", "pull_request_review"}
+    assert data["on"]["pull_request_review"]["types"] == ["submitted", "dismissed"]
     assert "pull_request_target" not in text
     assert "Validate target branch" in text
     assert "github.event.repository.default_branch" in text

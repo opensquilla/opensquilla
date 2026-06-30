@@ -878,6 +878,9 @@ def _persisted_web_search_source(candidate: Any) -> dict[str, Any] | None:
     fetched = candidate.get("fetched")
     if isinstance(fetched, bool):
         source["fetched"] = fetched
+    fetch_status = _persisted_source_text(candidate.get("fetch_status"), max_chars=64)
+    if fetch_status:
+        source["fetch_status"] = fetch_status
     return source
 
 

@@ -158,6 +158,8 @@ async def run_canonical_web_search(
 
     diagnostics.returned_chars = sum(len(hit.excerpt) for hit in hits)
     diagnostics.budget_clamped = any(hit.content_truncated for hit in hits)
+    if not hits:
+        diagnostics.empty_reason = "no_results" if not raw_results else "filtered"
 
     payload = {
         "ok": True,
@@ -546,6 +548,8 @@ def _public_error_message(provider: str, kind: str) -> str:
         return f"{provider_name} search request timed out."
     if kind == "rate_limit":
         return f"{provider_name} search rate limit was reached."
+    if kind == "blocked":
+        return f"{provider_name} search was blocked by an upstream challenge."
     if kind == "http":
         return f"{provider_name} search request failed."
     return f"{provider_name} search request failed."
@@ -570,4 +574,5 @@ def _public_source_payload(hit: SearchHit) -> dict[str, Any]:
         "domain": hit.domain,
         "provider": hit.provider,
         "fetched": hit.fetched,
+        "fetch_status": hit.fetch_status,
     }

@@ -1,9 +1,14 @@
 <template>
-  <div ref="rootEl" class="msg-ai-text" v-html="part.html" />
+  <div>
+    <div ref="rootEl" class="msg-ai-text" v-html="part.html" />
+    <p v-if="missingCitationLabel" class="msg-ai-citation-warning">
+      Some citations do not map to available sources: {{ missingCitationLabel }}
+    </p>
+  </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import type { ChatPart, SourcePart } from '@/types/parts'
 import { decorateCitations } from '@/utils/chat/citations'
 
@@ -18,6 +23,11 @@ const props = withDefaults(
 const emit = defineEmits<{ citation: [sourceId: number] }>()
 
 const rootEl = ref<HTMLDivElement | null>(null)
+const missingCitationIds = ref<number[]>([])
+
+const missingCitationLabel = computed(() =>
+  missingCitationIds.value.map(id => `[${id}]`).join(', '),
+)
 
 function labelFor(sourceId: number): string {
   const source = props.sources[sourceId - 1]
@@ -31,9 +41,13 @@ function labelFor(sourceId: number): string {
 function decorate() {
   const root = rootEl.value
   if (!root) return
+  missingCitationIds.value = []
   decorateCitations(root, props.sources, {
     onActivate: n => emit('citation', n),
     labelFor,
+    onMissingCitations: ids => {
+      missingCitationIds.value = props.sources.length > 0 ? ids : []
+    },
   })
 }
 
@@ -74,6 +88,13 @@ watch(() => props.sources, decorate, { flush: 'post' })
 .msg-ai-text :deep(pre code) {
   background: transparent;
   padding: 0;
+}
+
+.msg-ai-citation-warning {
+  margin: 0.25rem 0 0.5rem;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--text-muted);
 }
 
 /* Citation pills are injected outside Vue's template (built by decorateCitations

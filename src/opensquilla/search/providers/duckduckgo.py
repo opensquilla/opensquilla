@@ -17,6 +17,18 @@ _HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     ),
 }
+_BLOCKED_MARKERS = (
+    "anomaly.js",
+    "challenge-form",
+    "anomaly-modal",
+    "bots use duckduckgo",
+    "please complete the following challenge",
+)
+_NO_RESULTS_MARKERS = (
+    "no results found",
+    "no results.",
+    "not many results contain",
+)
 
 
 class DuckDuckGoProvider:
@@ -72,6 +84,15 @@ class DuckDuckGoProvider:
                 ),
             ) from exc
 
+        if response.status_code == 202 or _is_blocked_response(response.text):
+            raise SearchProviderError(
+                provider=self.name,
+                kind="blocked",
+                message="DuckDuckGo returned an anti-bot challenge.",
+                retryable=True,
+                status_code=response.status_code,
+            )
+
         soup = BeautifulSoup(response.text, "html.parser")
         results: list[SearchResult] = []
 
@@ -107,7 +128,28 @@ class DuckDuckGoProvider:
             if len(results) >= max_results:
                 break
 
+        if not results and not _is_no_results_response(soup):
+            raise SearchProviderError(
+                provider=self.name,
+                kind="parse",
+                message="DuckDuckGo search response did not contain parseable results.",
+                retryable=True,
+                status_code=response.status_code,
+            )
+
         return results
+
+
+def _is_blocked_response(html: str) -> bool:
+    lowered = html.lower()
+    return any(marker in lowered for marker in _BLOCKED_MARKERS)
+
+
+def _is_no_results_response(soup: BeautifulSoup) -> bool:
+    if soup.select_one("#no-results, .no-results, .no-results__message, .result--no-result"):
+        return True
+    lowered = " ".join(soup.get_text(" ", strip=True).lower().split())
+    return any(marker in lowered for marker in _NO_RESULTS_MARKERS)
 
 
 register_provider("duckduckgo", DuckDuckGoProvider)

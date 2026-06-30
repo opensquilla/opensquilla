@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .anthropic import AnthropicProvider
 from .ollama import OllamaProvider
@@ -306,10 +306,23 @@ class ModelSelector:
     def clone(self) -> ModelSelector:
         """Return an independent copy for concurrent use.
 
-        The clone starts at index 0 with its own chain list, so mutations
-        (override_model, next_fallback) don't affect the original.
+        Deep-copies the config (primary + fallbacks, including each
+        provider_routing dict) so the clone starts at index 0 with its own
+        chain and is unaffected by later mutations of the original's
+        config — whether a rebind (sync_primary) or an in-place edit of a
+        shared ProviderConfig's provider_routing.
         """
-        return ModelSelector(self._config, plugin=self._plugin)
+        config_copy = SelectorConfig(
+            primary=replace(
+                self._config.primary,
+                provider_routing=dict(self._config.primary.provider_routing),
+            ),
+            fallbacks=[
+                replace(cfg, provider_routing=dict(cfg.provider_routing))
+                for cfg in self._config.fallbacks
+            ],
+        )
+        return ModelSelector(config_copy, plugin=self._plugin)
 
     async def list_models(self) -> list[dict]:
         """Aggregate models from all configured providers in the chain."""

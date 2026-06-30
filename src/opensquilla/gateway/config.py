@@ -567,6 +567,105 @@ class MemoryConfig(BaseSettings):
     dream: DreamConfig = Field(default_factory=DreamConfig)
 
 
+RagRetrievalMode = Literal["hybrid", "fts", "vector_only"]
+RagSourceMode = Literal["reference", "imported"]
+RagScaleHint = Literal["small", "default", "large"]
+
+
+class RagSourceConfig(BaseModel):
+    """Bootstrap source for local document RAG.
+
+    Runtime source state is stored in the RAG database. Entries here are
+    startup bootstrap entries and are upserted only when RAG is enabled.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str | None = None
+    collection_id: str = "default"
+    name: str | None = None
+    path: str
+    mode: RagSourceMode = "reference"
+    include: list[str] = Field(default_factory=list)
+    exclude: list[str] = Field(default_factory=list)
+    enabled: bool = True
+    scale_hint: RagScaleHint = "default"
+
+    @field_validator("source_id", "collection_id")
+    @classmethod
+    def _validate_identifier(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("identifier must not be empty")
+        allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
+        if any(ch not in allowed for ch in cleaned):
+            raise ValueError("identifier may only contain letters, digits, '.', '_' and '-'")
+        if len(cleaned) > 128:
+            raise ValueError("identifier must be 128 characters or fewer")
+        return cleaned
+
+    @field_validator("include", "exclude")
+    @classmethod
+    def _validate_globs(cls, values: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for raw in values:
+            value = str(raw).strip().replace("\\", "/")
+            if not value:
+                continue
+            if value.startswith("/") or value == ".." or value.startswith("../") or "/../" in value:
+                raise ValueError("RAG source globs must be relative and stay within the source")
+            cleaned.append(value)
+        return cleaned
+
+
+class RagConfig(BaseSettings):
+    """Local document RAG settings."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="OPENSQUILLA_RAG_",
+        env_nested_delimiter="__",
+        extra="forbid",
+    )
+
+    enabled: bool = False
+    db_name: str = "rag.db"
+    retrieval_mode: RagRetrievalMode = "hybrid"
+    chunk_size: int = Field(default=900, ge=200, le=8000)
+    chunk_overlap: int = Field(default=120, ge=0, le=2000)
+    max_file_size_kb: int = Field(default=1024, ge=1)
+    max_source_files: int = Field(default=5000, ge=1)
+    max_source_size_mb: int = Field(default=512, ge=1)
+    search_limit_default: int = Field(default=8, ge=1, le=100)
+    search_limit_max: int = Field(default=50, ge=1, le=200)
+    min_score_default: float = Field(default=0.0, ge=0.0, le=1.0)
+    vector_weight: float = Field(default=0.7, ge=0.0, le=1.0)
+    text_weight: float = Field(default=0.3, ge=0.0, le=1.0)
+    embedding: MemoryEmbeddingConfig = Field(default_factory=MemoryEmbeddingConfig)
+    sources: list[RagSourceConfig] = Field(default_factory=list)
+
+    @field_validator("db_name")
+    @classmethod
+    def _validate_db_name(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("rag.db_name must not be empty")
+        if "/" in cleaned or "\\" in cleaned or cleaned in {".", ".."}:
+            raise ValueError("rag.db_name must be a simple file name")
+        if ".." in Path(cleaned).parts:
+            raise ValueError("rag.db_name must be a simple file name")
+        return cleaned
+
+    @model_validator(mode="after")
+    def _validate_ranges(self) -> RagConfig:
+        if self.chunk_overlap >= self.chunk_size:
+            raise ValueError("rag.chunk_overlap must be smaller than rag.chunk_size")
+        if self.vector_weight + self.text_weight <= 0:
+            raise ValueError("rag vector/text weights must have a positive sum")
+        return self
+
+
 def _default_tiers() -> dict:
     """Default model routing config."""
     return {
@@ -1603,6 +1702,7 @@ class GatewayConfig(BaseSettings):
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     prompt: PromptConfig = Field(default_factory=PromptConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    rag: RagConfig = Field(default_factory=RagConfig)
     squilla_router: SquillaRouterConfig = Field(default_factory=SquillaRouterConfig)
     agent_token_saving: AgentTokenSavingConfig = Field(default_factory=AgentTokenSavingConfig)
     compaction: CompactionLlmConfig = Field(default_factory=CompactionLlmConfig)

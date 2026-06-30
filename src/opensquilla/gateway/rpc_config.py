@@ -198,6 +198,21 @@ def _channels_restart_fingerprint(config: Any) -> Any:
     )
 
 
+def _rag_restart_fingerprint(config: Any) -> dict[str, Any]:
+    if config is None or not hasattr(config, "model_dump"):
+        return {}
+    data = config.model_dump(mode="python")
+    rag = data.get("rag") if isinstance(data, dict) else None
+    if not isinstance(rag, dict):
+        return {}
+    return {
+        "enabled": rag.get("enabled"),
+        "db_name": rag.get("db_name"),
+        "embedding": rag.get("embedding"),
+        "sources": rag.get("sources"),
+    }
+
+
 def _sandbox_posture_restart_fingerprint(config: Any) -> dict[str, Any]:
     if config is None or not hasattr(config, "model_dump"):
         return {}
@@ -214,12 +229,14 @@ def _restart_required(
     *,
     old_memory_fingerprint: dict[str, Any],
     old_channels_fingerprint: Any,
+    old_rag_fingerprint: dict[str, Any],
     old_sandbox_posture_fingerprint: dict[str, Any],
     new_config: Any,
 ) -> bool:
     return (
         old_memory_fingerprint != _memory_restart_fingerprint(new_config)
         or old_channels_fingerprint != _channels_restart_fingerprint(new_config)
+        or old_rag_fingerprint != _rag_restart_fingerprint(new_config)
         or old_sandbox_posture_fingerprint
         != _sandbox_posture_restart_fingerprint(new_config)
     )
@@ -268,6 +285,19 @@ def _sync_image_generation(config: Any) -> None:
         squilla_router_config=getattr(config, "squilla_router", None),
     )
     configure_audio(getattr(config, "audio", None))
+
+
+def _sync_rag_runtime(ctx: RpcContext) -> None:
+    manager = getattr(ctx, "rag_manager", None)
+    config = getattr(ctx, "config", None)
+    if manager is None or config is None:
+        return
+    manager.config = config
+    manager.enabled = bool(getattr(getattr(config, "rag", None), "enabled", False))
+    if getattr(manager, "ingestion", None) is not None:
+        manager.ingestion.config = config.rag
+    if getattr(manager, "retrieval", None) is not None:
+        manager.retrieval.config = config.rag
 
 
 # Read-only paths that cannot be modified via config.set/patch/apply
@@ -344,6 +374,7 @@ async def _handle_config_set(params: dict | None, ctx: RpcContext) -> dict[str, 
 
     old_memory_fingerprint = _memory_restart_fingerprint(ctx.config)
     old_channels_fingerprint = _channels_restart_fingerprint(ctx.config)
+    old_rag_fingerprint = _rag_restart_fingerprint(ctx.config)
     old_sandbox_posture_fingerprint = _sandbox_posture_restart_fingerprint(ctx.config)
     cfg_dict = ctx.config.model_dump() if hasattr(ctx.config, "model_dump") else {}
     # Validate path exists
@@ -369,11 +400,13 @@ async def _handle_config_set(params: dict | None, ctx: RpcContext) -> dict[str, 
     _sync_provider_selector(ctx, new_config)
     _update_config_in_place(ctx.config, new_config)
     _sync_image_generation(new_config)
+    _sync_rag_runtime(ctx)
     _persist_config(ctx.config)
     return {
         "restartRequired": _restart_required(
             old_memory_fingerprint=old_memory_fingerprint,
             old_channels_fingerprint=old_channels_fingerprint,
+            old_rag_fingerprint=old_rag_fingerprint,
             old_sandbox_posture_fingerprint=old_sandbox_posture_fingerprint,
             new_config=new_config,
         )
@@ -397,6 +430,7 @@ async def _handle_config_patch(params: dict | None, ctx: RpcContext) -> dict[str
 
     old_memory_fingerprint = _memory_restart_fingerprint(ctx.config)
     old_channels_fingerprint = _channels_restart_fingerprint(ctx.config)
+    old_rag_fingerprint = _rag_restart_fingerprint(ctx.config)
     old_sandbox_posture_fingerprint = _sandbox_posture_restart_fingerprint(ctx.config)
     cfg_dict = ctx.config.model_dump() if hasattr(ctx.config, "model_dump") else {}
     source_cfg_dict = copy.deepcopy(cfg_dict) if isinstance(cfg_dict, dict) else {}
@@ -442,6 +476,7 @@ async def _handle_config_patch(params: dict | None, ctx: RpcContext) -> dict[str
     # Update in-memory config so subsequent requests see changes immediately
     _update_config_in_place(ctx.config, new_config)
     _sync_image_generation(new_config)
+    _sync_rag_runtime(ctx)
 
     _persist_config(ctx.config)
     return {
@@ -449,6 +484,7 @@ async def _handle_config_patch(params: dict | None, ctx: RpcContext) -> dict[str
         "restartRequired": _restart_required(
             old_memory_fingerprint=old_memory_fingerprint,
             old_channels_fingerprint=old_channels_fingerprint,
+            old_rag_fingerprint=old_rag_fingerprint,
             old_sandbox_posture_fingerprint=old_sandbox_posture_fingerprint,
             new_config=new_config,
         ),
@@ -496,6 +532,7 @@ async def _handle_config_apply(params: dict | None, ctx: RpcContext) -> dict[str
 
     old_memory_fingerprint = _memory_restart_fingerprint(ctx.config)
     old_channels_fingerprint = _channels_restart_fingerprint(ctx.config)
+    old_rag_fingerprint = _rag_restart_fingerprint(ctx.config)
     old_sandbox_posture_fingerprint = _sandbox_posture_restart_fingerprint(ctx.config)
     old_payload = (
         ctx.config.model_dump(mode="python")
@@ -512,12 +549,14 @@ async def _handle_config_apply(params: dict | None, ctx: RpcContext) -> dict[str
     _sync_provider_selector(ctx, new_config)
     if ctx.config is not None:
         _update_config_in_place(ctx.config, new_config)
+        _sync_rag_runtime(ctx)
     _sync_image_generation(new_config)
     _persist_config(ctx.config if ctx.config is not None else new_config)
     return {
         "restartRequired": _restart_required(
             old_memory_fingerprint=old_memory_fingerprint,
             old_channels_fingerprint=old_channels_fingerprint,
+            old_rag_fingerprint=old_rag_fingerprint,
             old_sandbox_posture_fingerprint=old_sandbox_posture_fingerprint,
             new_config=new_config,
         )

@@ -92,6 +92,21 @@ const ConfigView = (() => {
     ],
   };
 
+  const _DATALIST_OPTIONS = {
+    'llm.model': [
+      { value: 'deepseek/deepseek-v4-pro', label: 'DeepSeek V4 Pro - balanced RAG and coding' },
+      { value: 'z-ai/glm-5.2', label: 'GLM 5.2 - strong long-context reasoning' },
+      { value: 'anthropic/claude-sonnet-4.6', label: 'Claude Sonnet 4.6 - reliable agent work' },
+      { value: 'anthropic/claude-opus-4.8', label: 'Claude Opus 4.8 - highest quality, higher cost' },
+      { value: 'openai/gpt-5.5', label: 'GPT-5.5 - frontier reasoning, higher cost' },
+      { value: 'openai/gpt-5.4-mini', label: 'GPT-5.4 Mini - lower-cost OpenAI route' },
+      { value: 'google/gemini-3.5-flash', label: 'Gemini 3.5 Flash - fast multimodal route' },
+      { value: 'moonshotai/kimi-k2.6', label: 'Kimi K2.6 - long-context multimodal route' },
+      { value: 'qwen/qwen3-coder-plus', label: 'Qwen3 Coder Plus - coding-focused route' },
+      { value: 'x-ai/grok-4.3', label: 'Grok 4.3 - alternative frontier route' },
+    ],
+  };
+
   function _helpFor(key) {
     if (key in _HELP) return _HELP[key];
     return 'No description yet — see the docs.';
@@ -99,6 +114,10 @@ const ConfigView = (() => {
 
   function _selectOptionsForKey(key) {
     return _SELECT_OPTIONS[key] || null;
+  }
+
+  function _datalistOptionsForKey(key) {
+    return _DATALIST_OPTIONS[key] || null;
   }
 
   // ---- render / destroy ------------------------------------------------
@@ -448,6 +467,7 @@ const ConfigView = (() => {
     const curVal = isDirty ? _dirty[k].new : v;
     const inputId = `cfg-input-${_safeId(k)}`;
     const selectOptions = _selectOptionsForKey(k);
+    const datalistOptions = _datalistOptionsForKey(k);
 
     let inputHtml;
     if (selectOptions) {
@@ -484,9 +504,17 @@ const ConfigView = (() => {
       const showBtn = isSensitive
         ? `<button class="btn btn--sm" data-cfg-show="${ek}" type="button">Show</button>`
         : '';
+      const datalistId = datalistOptions ? `${inputId}-options` : '';
+      const listAttr = datalistId ? ` list="${_esc(datalistId)}"` : '';
+      const datalistHtml = datalistOptions ? `<datalist id="${_esc(datalistId)}">
+        ${datalistOptions.map((option) => (
+          `<option value="${_esc(String(option.value))}" label="${_esc(String(option.label))}"></option>`
+        )).join('')}
+      </datalist>` : '';
       inputHtml = `<div class="cfg-input-row">
-        <input id="${inputId}" class="input cfg-input-text" type="${type}" data-cfg-key="${ek}" data-cfg-type="string" value="${_esc(String(curVal ?? ''))}">
+        <input id="${inputId}" class="input cfg-input-text" type="${type}" data-cfg-key="${ek}" data-cfg-type="string" value="${_esc(String(curVal ?? ''))}"${listAttr}>
         ${showBtn}
+        ${datalistHtml}
       </div>`;
     }
 

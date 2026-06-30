@@ -86,6 +86,7 @@ class SandboxSettings(BaseSettings):
     backend: BackendName = "auto"
     allow_legacy_mode: bool = False
     run_mode: RunModeName | None = None
+    auto_setup: bool = True
 
     network_default: NetworkDefault = "proxy_allowlist"
     denial_threshold: int = 3

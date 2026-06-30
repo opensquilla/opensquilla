@@ -49,12 +49,34 @@ async def test_sandbox_setup_status_returns_platform_payload(monkeypatch) -> Non
             requires_admin=True,
         )
 
-    monkeypatch.setattr(rpc_sandbox, "current_sandbox_setup_status", fake_status)
+    monkeypatch.setattr(rpc_sandbox, "current_sandbox_setup_runtime_status", fake_status)
 
     payload = await rpc_sandbox._handle_sandbox_setup_status({}, _ctx())
 
     assert payload["state"] == "not_setup"
     assert payload["requiresAdmin"] is True
+
+
+@pytest.mark.asyncio
+async def test_sandbox_setup_status_returns_setting_up_payload(monkeypatch) -> None:
+    from opensquilla.gateway import rpc_sandbox
+    from opensquilla.sandbox.setup_state import SandboxSetupState, SetupResult
+
+    async def fake_status(config):
+        return SetupResult(
+            state=SandboxSetupState.SETTING_UP,
+            platform="auto",
+            message="Sandbox setup is running.",
+            requires_admin=False,
+        )
+
+    monkeypatch.setattr(rpc_sandbox, "current_sandbox_setup_runtime_status", fake_status)
+
+    payload = await rpc_sandbox._handle_sandbox_setup_status({}, _ctx())
+
+    assert payload["state"] == "setting_up"
+    assert payload["platform"] == "auto"
+    assert payload["requiresAdmin"] is False
 
 
 @pytest.mark.asyncio

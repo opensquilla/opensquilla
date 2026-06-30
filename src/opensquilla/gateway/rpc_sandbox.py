@@ -27,10 +27,6 @@ from opensquilla.sandbox.run_context import (
     normalize_workspace_path,
     set_run_mode,
 )
-from opensquilla.sandbox.run_mode_policy import (
-    coerce_run_mode_for_principal,
-    run_mode_allowed_for_principal,
-)
 from opensquilla.sandbox.run_context_service import (
     add_domain_grant,
     add_mount_grant,
@@ -46,6 +42,11 @@ from opensquilla.sandbox.run_mode import (
     execution_target,
     normalize_run_mode,
 )
+from opensquilla.sandbox.run_mode_policy import (
+    coerce_run_mode_for_principal,
+    run_mode_allowed_for_principal,
+)
+from opensquilla.sandbox.setup_runtime import current_sandbox_setup_runtime_status
 from opensquilla.sandbox.setup_state import (
     SandboxSetupState,
     current_sandbox_setup_status,
@@ -321,7 +322,7 @@ async def _handle_sandbox_status(params: dict | None, ctx: RpcContext) -> dict:
 
 @_d.method("sandbox.setup.status", scope="operator.read")
 async def _handle_sandbox_setup_status(params: dict | None, ctx: RpcContext) -> dict:
-    result = await current_sandbox_setup_status(ctx.config)
+    result = await current_sandbox_setup_runtime_status(ctx.config)
     return result.to_payload()
 
 

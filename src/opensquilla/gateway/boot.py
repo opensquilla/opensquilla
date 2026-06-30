@@ -781,10 +781,23 @@ def _gateway_home(config: GatewayConfig) -> Path:
 
 
 async def _ensure_sandbox_setup_on_boot(config: GatewayConfig) -> Any | None:
-    """Sandbox setup is intentionally user-initiated from the WebUI."""
+    """Run automatic sandbox setup when enabled."""
 
-    _ = config
-    return None
+    if not config.sandbox.auto_setup:
+        log.info("boot.sandbox_setup_auto_disabled")
+        return None
+
+    from opensquilla.sandbox.setup_runtime import ensure_sandbox_setup_auto
+
+    result = await ensure_sandbox_setup_auto(config)
+    log.info(
+        "boot.sandbox_setup_auto_completed",
+        state=result.state.value,
+        platform=result.platform,
+        requires_admin=result.requires_admin,
+        detail=result.detail,
+    )
+    return result
 
 
 def _task_runtime_max_concurrency(config: GatewayConfig) -> int:
@@ -1693,6 +1706,8 @@ async def build_services(
             "build_services.sandbox_ready",
             **effective.effective.as_dict(),
         )
+        if config.sandbox.auto_setup:
+            create_background_task(_ensure_sandbox_setup_on_boot(config))
     except Exception as e:  # pragma: no cover - boot diagnostics only
         log.exception("build_services.sandbox_configure_failed", error=str(e))
         raise

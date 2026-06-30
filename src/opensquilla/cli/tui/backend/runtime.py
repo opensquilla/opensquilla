@@ -236,6 +236,24 @@ async def run_tui_runtime(
                         return runtime_state
                     continue
 
+                # A full queue rejects new typed-ahead BEFORE it is echoed —
+                # otherwise the message appears accepted in the transcript yet
+                # never runs. Destructive/exit commands are exempt: they purge or
+                # drain the queue rather than enqueue, so fullness must not block
+                # them.
+                if (
+                    category not in (TuiInputKind.DESTRUCTIVE, TuiInputKind.EXIT)
+                    and turn_task is not None
+                    and not turn_task.done()
+                    and runtime_state.pending_size >= config.queue_max_size
+                ):
+                    if hooks.notice is not None:
+                        hooks.notice(
+                            f"[yellow]Queue full ({config.queue_max_size} items)."
+                            " Wait for the current turn to complete.[/yellow]"
+                        )
+                    continue
+
                 await hooks.on_user_input_echo(tui_surface, user_input)
                 _emit(
                     config.event_sink,
@@ -273,13 +291,8 @@ async def run_tui_runtime(
                     continue
 
                 if turn_task is not None and not turn_task.done():
-                    if runtime_state.pending_size >= config.queue_max_size:
-                        if hooks.notice is not None:
-                            hooks.notice(
-                                f"[yellow]Queue full ({config.queue_max_size} items)."
-                                " Wait for the current turn to complete.[/yellow]"
-                            )
-                        continue
+                    # Fullness was already rejected before the echo above, so the
+                    # queue has room here.
                     runtime_state.enqueue(user_input)
                     # The message was echoed like a normal submission, but it did
                     # NOT start a turn — tell the user it is queued behind the

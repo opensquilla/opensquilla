@@ -235,6 +235,19 @@ def test_main_is_thin_entry_with_mouse_and_alt_screen() -> None:
     assert "answer.demote" not in main
 
 
+def test_resize_reflows_existing_card_headers() -> None:
+    # Baked full-width header rules ("╭─ squilla ─…" / "╭─ prompt ─…") must
+    # re-rule to the new width on resize instead of wrapping (shrink) or
+    # stranding (grow). main tracks every turn and reflows them; turnView and
+    # promptBlock expose relayout() that recomputes their header rule.
+    main = _read("main.mjs")
+    turn = _read("turnView.mjs")
+    prompt = _read("blocks/promptBlock.mjs")
+    assert "turns" in main and "relayout" in main
+    assert "relayout()" in turn and 'cardHeaderRule("squilla"' in turn
+    assert "relayout()" in prompt and 'cardHeaderRule("prompt"' in prompt
+
+
 def test_no_legacy_optimistic_demote_in_host() -> None:
     # The optimistic-render + demote/retype model is gone entirely: reasoning
     # and answer arrive as distinct streams, so no block ever changes kind.

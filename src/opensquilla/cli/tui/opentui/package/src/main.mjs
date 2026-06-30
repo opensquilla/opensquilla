@@ -126,6 +126,10 @@ async function main() {
   composer.install();
 
   let activeTurn = null;
+  // Every turn ever created, so a resize can reflow ALL of them (their baked
+  // full-width header rules don't re-rule themselves). The conversation already
+  // retains every turn box, so this only adds a reference, not a copy.
+  const turns = [];
   let scrollbackSeq = 0;
   let statusActive = false;
   let pulseFrame = 0;
@@ -133,6 +137,7 @@ async function main() {
   const ensureTurn = (id) => {
     if (!activeTurn || activeTurn.ended) {
       activeTurn = createTurnView(turnDeps, id ?? scrollbackSeq++);
+      turns.push(activeTurn);
     }
     return activeTurn;
   };
@@ -246,6 +251,9 @@ async function main() {
     inputBox.height = fh; // clamp so a short terminal never overflows the footer
     conversationBox.height = Math.max(1, h - fh);
     composer.onResize();
+    // Reflow every existing turn's full-width header rule to the new width, so a
+    // resize re-rules the cards instead of leaving baked rules to wrap or strand.
+    for (const t of turns) t.relayout?.();
     const w = renderer.terminalWidth ?? 0;
     if (w && h) ipc.send({ type: "resize", width: w, height: h });
   });

@@ -26,6 +26,7 @@ export function createTurnView(deps, id) {
   // emits e.g. a usage summary never draws an empty card, and closes once on
   // turn end (or when a trailing out-of-card block such as usage begins).
   let cardBody = null;
+  let cardTop = null; // the "╭─ squilla ─…" header rule (width-dependent)
   let cardOpen = false;
   let cardClosed = false;
   let lastInCardKind = null; // for prose<->procedure spacing inside the card
@@ -35,7 +36,8 @@ export function createTurnView(deps, id) {
     if (cardOpen) return;
     cardOpen = true;
     box.add(new TextRenderable(renderer, { id: `turn-${id}-cardgap`, content: `${TOOL_INDENT}│`, fg: THEME.detailText }));
-    box.add(new TextRenderable(renderer, { id: `turn-${id}-cardtop`, content: cardHeaderRule("squilla", renderer.terminalWidth), fg: THEME.answerFrame }));
+    cardTop = new TextRenderable(renderer, { id: `turn-${id}-cardtop`, content: cardHeaderRule("squilla", renderer.terminalWidth), fg: THEME.answerFrame });
+    box.add(cardTop);
     cardBody = new BoxRenderable(renderer, { id: `turn-${id}-cardbody`, width: "100%", flexDirection: "column", border: ["left"], borderColor: THEME.answerFrame, paddingLeft: 1, flexShrink: 0 });
     box.add(cardBody);
   }
@@ -94,6 +96,16 @@ export function createTurnView(deps, id) {
     // Close the single per-turn card once the turn is over (the runtime calls
     // this on turn.end). Idempotent and a no-op when no card ever opened.
     finish() { closeCard(); },
+    // Reflow width-dependent chrome to the current terminal width on resize, so
+    // existing cards re-rule instead of leaving their baked full-width header to
+    // wrap (shrink) or strand (grow). Markdown bodies and text lines already
+    // re-wrap at layout time; only the rule strings must be recomputed. The
+    // prompt block reflows its own header via the per-block relayout() below.
+    relayout() {
+      if (cardTop) cardTop.content = cardHeaderRule("squilla", renderer.terminalWidth);
+      for (const entry of blocks.values()) entry.r.relayout?.();
+      renderer.requestRender?.();
+    },
     refreshPulse(frame) {
       const toolGlyph = STATUS_PULSE_FRAMES.tool[frame % STATUS_PULSE_FRAMES.tool.length];
       const thinkingGlyph = STATUS_PULSE_FRAMES.thinking[frame % STATUS_PULSE_FRAMES.thinking.length];

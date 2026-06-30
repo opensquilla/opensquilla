@@ -1,4 +1,4 @@
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onActivated, onDeactivated, onUnmounted, ref } from 'vue'
 import i18n from '@/i18n'
 import { useRpcStore } from '@/stores/rpc'
 import { useRequest } from '@/composables/useRequest'
@@ -146,7 +146,23 @@ export function useCronJobs() {
     void refresh()
   }
 
-  onMounted(() => {
+  // CronView is kept-alive (route meta.keepAlive), so the clock tick, the cron
+  // subscription, and the run-finished listener are bound on activation and
+  // released on deactivation — they must not keep firing while the view is
+  // cached off-screen. onActivated also runs on first display; loadData() runs
+  // the silent background refresh on every (re)entry so a revisit is never
+  // stale (the initial loading skeleton is driven by useRequest's own onMounted
+  // execute(), so this silent refresh never flashes a spinner). onUnmounted is a
+  // final safety net for the rare case the KeepAlive cache evicts this instance.
+  function teardownLive() {
+    if (tickInterval) { clearInterval(tickInterval); tickInterval = null }
+    if (reloadTimer) { clearTimeout(reloadTimer); reloadTimer = null }
+    if (unsubRunFinished) { unsubRunFinished(); unsubRunFinished = null }
+    rpc.call('cron.unsubscribe', {}).catch(() => {})
+  }
+
+  onActivated(() => {
+    void loadData()
     tickInterval = setInterval(() => { now.value = Date.now() }, 1000)
     rpc.waitForConnection()
       .then(() => rpc.call('cron.subscribe', {}))
@@ -154,12 +170,8 @@ export function useCronJobs() {
     unsubRunFinished = rpc.on('cron.run.finished', scheduleReload)
   })
 
-  onUnmounted(() => {
-    if (tickInterval) clearInterval(tickInterval)
-    if (reloadTimer) clearTimeout(reloadTimer)
-    if (unsubRunFinished) unsubRunFinished()
-    rpc.call('cron.unsubscribe', {}).catch(() => {})
-  })
+  onDeactivated(teardownLive)
+  onUnmounted(teardownLive)
 
   return {
     jobs,

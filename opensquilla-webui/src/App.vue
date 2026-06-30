@@ -164,6 +164,11 @@
     </div>
   </nav>
 
+  <!-- Sidebar drop-shadow on its own compositor layer (see .sidebar-shadow):
+       fades via opacity + slides in sync with the sidebar's hover overlay,
+       instead of repainting box-shadow on the overflow:hidden .sidebar. -->
+  <div class="sidebar-shadow" :class="{ visible: appStore.sidebarHovered }" aria-hidden="true" />
+
   <!-- Mobile drawer scrim: tap outside the sidebar to close it (<=768px only) -->
   <div
     v-if="appStore.sidebarOpen"
@@ -306,8 +311,12 @@
     <main class="content" :class="{ 'content--chat': isChatRoute }" id="content">
       <ErrorBoundary>
         <router-view v-slot="{ Component, route }">
+          <!-- out-in: one view in the DOM at a time, so pages never overlap (no
+               double-exposure, and never two composers/textareas mid-swap).
+               Console views are kept-alive, so the entering page is instant —
+               out-in no longer incurs the old remount/fetch "dead gap". -->
           <Transition name="route-fade" mode="out-in">
-            <KeepAlive v-if="route.meta.keepAlive" :max="5">
+            <KeepAlive v-if="route.meta.keepAlive" :max="12">
               <component :is="Component" :key="route.name" />
             </KeepAlive>
             <component v-else :is="Component" :key="route.name" />
@@ -424,7 +433,9 @@ const router = useRouter()
 watch(() => appStore.locale, () => {
   document.title = `${routeTitle($route)} — OpenSquilla`
   // The language switcher prints the locale's own name, so switching locales
-  // resizes the topbar cluster; re-measure once the new label has laid out.
+  // resizes the topbar cluster; drop the memoized pill width and re-measure once
+  // the new label has laid out.
+  invalidatePillWidthCache()
   void nextTick(syncTopbarReserve)
 })
 const { allSessions, sessionListError, isLoading, loadSessions } = useSessions()
@@ -490,8 +501,17 @@ let pillMeasureCanvas: HTMLCanvasElement | null = null
 
 const CONNECTION_STATES = ['connected', 'connecting', 'disconnected'] as const
 
+// The widest-pill measurement (getComputedStyle + 3× canvas measureText) is
+// invariant across a dock/resize animation — only the locale labels and the
+// rendered font change it. Memoize by that signature so the high-frequency
+// ResizeObserver path doesn't re-run text metrics every callback.
+let pillWidthCache: { key: string; value: number } | null = null
+function invalidatePillWidthCache() { pillWidthCache = null }
+
 function widestPillWidth(pill: Element): number {
   const cs = getComputedStyle(pill)
+  const cacheKey = `${appStore.locale}|${cs.fontStyle}|${cs.fontWeight}|${cs.fontSize}|${cs.fontFamily}|${cs.letterSpacing}|${cs.paddingLeft}|${cs.paddingRight}|${cs.borderLeftWidth}|${cs.borderRightWidth}`
+  if (pillWidthCache && pillWidthCache.key === cacheKey) return pillWidthCache.value
   const chrome =
     parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight) +
     parseFloat(cs.borderLeftWidth) + parseFloat(cs.borderRightWidth)
@@ -508,7 +528,22 @@ function widestPillWidth(pill: Element): number {
     const width = ctx.measureText(text).width + letterSpacing * text.length + chrome
     if (width > widest) widest = width
   }
+  pillWidthCache = { key: cacheKey, value: widest }
   return widest
+}
+
+// Coalesce bursts of reserve recalcs into one per frame. The ResizeObserver and
+// window-resize listeners can fire many times per animation frame (e.g. while a
+// panel resizes); each syncTopbarReserve() forces synchronous layout, so without
+// this they thrash the main thread. nextTick-driven one-shot callers still call
+// syncTopbarReserve() directly since they need it after a specific layout pass.
+let topbarReserveRaf = 0
+function scheduleTopbarReserve() {
+  if (topbarReserveRaf) return
+  topbarReserveRaf = requestAnimationFrame(() => {
+    topbarReserveRaf = 0
+    syncTopbarReserve()
+  })
 }
 
 function syncTopbarReserve() {
@@ -1149,11 +1184,11 @@ onMounted(() => {
   // Re-measure the topbar reserve whenever the panel or the cluster itself
   // changes size (window resize, sidebar dock, approval button, font swap).
   if (typeof ResizeObserver !== 'undefined') {
-    topbarReserveObserver = new ResizeObserver(() => syncTopbarReserve())
+    topbarReserveObserver = new ResizeObserver(scheduleTopbarReserve)
     if (mainRef.value) topbarReserveObserver.observe(mainRef.value)
     if (topbarRightRef.value) topbarReserveObserver.observe(topbarRightRef.value)
   }
-  window.addEventListener('resize', syncTopbarReserve)
+  window.addEventListener('resize', scheduleTopbarReserve)
   syncTopbarReserve()
   loadAgents()
   loadSessions()
@@ -1170,7 +1205,11 @@ onUnmounted(() => {
     topbarReserveObserver.disconnect()
     topbarReserveObserver = null
   }
-  window.removeEventListener('resize', syncTopbarReserve)
+  if (topbarReserveRaf) {
+    cancelAnimationFrame(topbarReserveRaf)
+    topbarReserveRaf = 0
+  }
+  window.removeEventListener('resize', scheduleTopbarReserve)
   if (hoverLeaveTimer) clearTimeout(hoverLeaveTimer)
   if (sessionRefreshTimer) clearTimeout(sessionRefreshTimer)
   if (rpcUnsubSessionsChanged) rpcUnsubSessionsChanged()

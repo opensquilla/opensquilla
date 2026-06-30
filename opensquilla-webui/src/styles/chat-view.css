@@ -284,6 +284,7 @@
 }
 
 .chat-body {
+  position: relative;
   flex: 1;
   overflow: hidden;
   display: flex;
@@ -1071,8 +1072,137 @@
 }
 
 /* Drag over */
-.drag-over {
-  background: color-mix(in srgb, var(--info) 5%, transparent);
+.chat-drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: clamp(1rem, 2.4vw, 1.75rem);
+  overflow: hidden;
+  background: color-mix(in srgb, var(--bg-surface) 58%, transparent);
+  backdrop-filter: blur(16px) saturate(0.9);
+  -webkit-backdrop-filter: blur(16px) saturate(0.9);
+  color: var(--text);
+  pointer-events: none;
+}
+
+.chat-drop-overlay__frame {
+  position: absolute;
+  inset: clamp(0.875rem, 2vw, 1.5rem);
+  border: 1px solid color-mix(in srgb, var(--info) 42%, var(--border));
+  border-radius: var(--radius-lg);
+  opacity: 0.92;
+}
+
+.chat-drop-overlay__frame::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+.chat-drop-overlay__frame::after {
+  content: none;
+}
+
+.chat-drop-overlay__beacon {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  width: min(21rem, 100%);
+  text-align: center;
+  animation: chat-drop-beacon-in var(--dur-enter) var(--ease-out);
+}
+
+.chat-drop-overlay__glyph {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 5rem;
+  height: 5rem;
+  border: 1px solid color-mix(in srgb, var(--info) 44%, var(--border));
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--bg-elevated) 54%, transparent);
+  box-shadow:
+    0 18px 44px color-mix(in srgb, var(--bg) 24%, transparent),
+    inset 0 0 0 8px color-mix(in srgb, var(--bg-surface) 24%, transparent);
+  color: var(--text);
+}
+
+.chat-drop-overlay__glyph::before {
+  content: "";
+  position: absolute;
+  inset: 0.55rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, transparent);
+  border-radius: 50%;
+}
+
+.chat-drop-overlay__plus {
+  position: absolute;
+  right: 0.75rem;
+  bottom: 0.8rem;
+  display: grid;
+  place-items: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  border: 1px solid color-mix(in srgb, var(--bg-surface) 72%, transparent);
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-foreground);
+  box-shadow: 0 0.4rem 1rem color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.chat-drop-overlay__copy {
+  display: grid;
+  gap: 0.3125rem;
+  max-width: 20rem;
+  padding: 0.375rem 0.625rem;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--bg-surface) 62%, transparent);
+  box-shadow: 0 0.75rem 2rem color-mix(in srgb, var(--bg) 16%, transparent);
+}
+
+.chat-drop-overlay__title {
+  color: var(--text);
+  font-size: 0.98rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.chat-drop-overlay__hint {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+@keyframes chat-drop-beacon-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.4rem) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .chat-drop-overlay {
+    background: color-mix(in srgb, var(--bg-surface) 88%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-drop-overlay__beacon {
+    animation: none;
+  }
 }
 
 /* Hidden */

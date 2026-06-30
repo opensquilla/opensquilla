@@ -1414,6 +1414,8 @@
     "remove": "移除",
     "attachFiles": "添加文件",
     "attachFilesTitle": "添加文件：PNG、JPEG、GIF、WEBP、PDF、TXT、MD、HTML、CSV、JSON",
+    "dropOverlayTitle": "松开即可附加",
+    "dropOverlayHint": "文件会添加到输入框",
     "composerSettings": "输入框设置",
     "closeComposerSettings": "关闭输入框设置",
     "recordVoice": "录制语音输入",

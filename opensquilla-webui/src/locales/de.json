@@ -1414,6 +1414,8 @@
     "remove": "Entfernen",
     "attachFiles": "Dateien anhängen",
     "attachFilesTitle": "Dateien anhängen: PNG, JPEG, GIF, WEBP, PDF, TXT, MD, HTML, CSV, JSON",
+    "dropOverlayTitle": "Zum Anhängen loslassen",
+    "dropOverlayHint": "Dateien werden dem Verfasser hinzugefügt",
     "composerSettings": "Verfasser-Einstellungen",
     "closeComposerSettings": "Verfasser-Einstellungen schließen",
     "recordVoice": "Spracheingabe aufnehmen",

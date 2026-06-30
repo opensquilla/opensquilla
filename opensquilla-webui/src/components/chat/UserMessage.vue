@@ -24,17 +24,21 @@
         {{ stripTimePrefix(message.text) }}
       </template>
       <div v-if="message.attachments?.length" class="msg-attachments">
-        <template v-for="attachment in message.attachments" :key="attachment.name">
+        <template v-for="attachment in message.attachments" :key="attachment.renderKey">
           <img
-            v-if="attachment.dataUrl || attachment.data"
+            v-if="isImageDisplayAttachment(attachment) && (attachment.dataUrl || attachment.data)"
             class="msg-thumb"
-            :src="attachment.dataUrl || `data:${attachment.mime || 'image/png'};base64,${attachment.data}`"
+            :src="attachmentImageSrc(attachment)"
             :alt="attachment.name"
           />
           <span v-else class="msg-file-chip" :title="attachment.name">
-            <span class="msg-file-chip__icon" aria-hidden="true">file</span>
-            <span class="msg-file-chip__name">{{ attachment.name }}</span>
-            <span class="msg-file-chip__meta">{{ attachment.mime || 'attachment' }}</span>
+            <span class="msg-file-chip__icon" aria-hidden="true">
+              <Icon name="fileText" :size="16" />
+            </span>
+            <span class="msg-file-chip__body">
+              <span class="msg-file-chip__name">{{ attachment.name }}</span>
+              <span class="msg-file-chip__meta">{{ attachmentMeta(attachment) }}</span>
+            </span>
           </span>
         </template>
       </div>
@@ -68,7 +72,8 @@ import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import { useCopyFeedback } from '@/composables/chat/useCopyFeedback'
 import { useRelativeNow } from '@/composables/useRelativeNow'
-import type { ChatRenderedMessage } from '@/types/chat'
+import type { ChatRenderedMessage, DisplayAttachment } from '@/types/chat'
+import { isImageDisplayAttachment } from '@/utils/chat/attachments'
 import { absoluteTime, fullTime, isoTime, relativeTime } from '@/utils/messageTime'
 
 const { t } = useI18n()
@@ -103,6 +108,17 @@ function onMessageClick(event: MouseEvent) {
   if (!props.shareMode) return
   if ((event.target as HTMLElement | null)?.closest('button,a,input,textarea,select')) return
   emit('toggleShare', props.shareMessageId)
+}
+
+function attachmentImageSrc(attachment: DisplayAttachment): string {
+  return attachment.dataUrl || `data:${attachment.mime || 'image/png'};base64,${attachment.data || ''}`
+}
+
+function attachmentMeta(attachment: DisplayAttachment): string {
+  const mime = attachment.mime || 'attachment'
+  const subtype = mime.includes('/') ? mime.split('/').pop() || mime : mime
+  const label = subtype.includes('.') ? subtype.split('.').pop() || subtype : subtype
+  return label.toUpperCase()
 }
 </script>
 
@@ -271,8 +287,13 @@ function onMessageClick(event: MouseEvent) {
 .msg-attachments {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.375rem;
-  margin-top: 0.5rem;
+  gap: 0.5rem;
+  margin-top: 0.625rem;
+  max-width: min(100%, 24rem);
+}
+
+.msg-attachments:first-child {
+  margin-top: 0;
 }
 
 .msg-thumb {
@@ -286,21 +307,50 @@ function onMessageClick(event: MouseEvent) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0.125rem 0.375rem;
-  background: var(--bg-hover);
-  border-radius: 0.25rem;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  text-transform: uppercase;
+  flex: 0 0 2rem;
+  width: 2rem;
+  height: 2rem;
+  background: color-mix(in srgb, var(--text) 7%, var(--bg-surface));
+  border: 1px solid color-mix(in srgb, var(--text) 9%, var(--border));
+  border-radius: 0.375rem;
+  color: var(--text-muted);
+}
+
+.msg-file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.625rem;
+  min-width: min(15rem, 100%);
+  max-width: min(100%, 24rem);
+  padding: 0.5rem 0.625rem;
+  border: 1px solid color-mix(in srgb, var(--text) 8%, var(--border));
+  border-radius: 0.625rem;
+  background: color-mix(in srgb, var(--bg-surface) 74%, var(--bg-elevated));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text) 6%, transparent);
+  text-align: left;
+}
+
+.msg-file-chip__body {
+  display: grid;
+  gap: 0.0625rem;
+  min-width: 0;
 }
 
 .msg-file-chip__name {
   font-weight: 500;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .msg-file-chip__meta {
-  font-size: 0.8125rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0;
   color: var(--text-dim);
+  line-height: 1.2;
+  text-transform: uppercase;
 }
 
 @media (max-width: 640px) {

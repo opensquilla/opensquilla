@@ -1,5 +1,26 @@
 <template>
-  <div class="chat" :class="{ 'chat--new-landing': isNewChatLanding }">
+  <div
+    class="chat"
+    :class="{ 'chat--new-landing': isNewChatLanding, 'chat--drag-over': threadDragOver }"
+    @dragenter="onChatDragEnter"
+    @dragover="onChatDragOver"
+    @dragleave="onChatDragLeave"
+    @drop="onChatDrop"
+  >
+    <div v-if="threadDragOver" class="chat-drop-overlay" role="status" aria-live="polite" aria-atomic="true">
+      <div class="chat-drop-overlay__frame" aria-hidden="true"></div>
+      <div class="chat-drop-overlay__beacon">
+        <span class="chat-drop-overlay__glyph" aria-hidden="true">
+          <Icon name="fileText" :size="30" />
+          <Icon class="chat-drop-overlay__plus" name="plus" :size="12" />
+        </span>
+        <span class="chat-drop-overlay__copy">
+          <span class="chat-drop-overlay__title">{{ t('chat.dropOverlayTitle') }}</span>
+          <span class="chat-drop-overlay__hint">{{ t('chat.dropOverlayHint') }}</span>
+        </span>
+      </div>
+    </div>
+
     <!-- Header -->
     <div v-if="!isNewChatLanding" class="chat-header">
       <div class="chat-header-left">
@@ -91,10 +112,6 @@
         :aria-label="t('chat.conversation')"
         :aria-busy="isStreaming"
         @scroll="onThreadScroll"
-        @dragover.prevent="threadDragOver = true"
-        @dragleave="threadDragOver = false"
-        @drop.prevent="onThreadDrop"
-        :class="{ 'drag-over': threadDragOver }"
       >
         <template v-if="isNewChatLanding">
           <div ref="agentSwitcherRef" class="chat-landing-agent">
@@ -432,6 +449,7 @@
       @input="onTextareaInput"
       @keydown="onTextareaKeydown"
       @remove-attachment="removeAttachment"
+      @retry-attachment="retryAttachment"
       @set-busy-send-mode="busySendMode = $event"
       @set-elevated-mode="setComposerElevatedMode"
       @set-router-enabled="setComposerRouterEnabled"
@@ -563,6 +581,7 @@ import {
   toolSecondaryText,
   toolStatusText,
 } from '@/utils/chat/toolDisplay'
+import { isSendableAttachment } from '@/utils/chat/attachments'
 import { isShareableChatMessage } from '@/utils/chat/messageIdentity'
 import { agentIdFromSessionKey, normalizeAgentId } from '@/utils/chat/sessionKeys'
 
@@ -627,6 +646,7 @@ const messages = ref<Message[]>([])
 const lastHeaderRole = ref('')
 const lastHeaderDay = ref('')
 const threadDragOver = ref(false)
+const threadDragDepth = ref(0)
 const shareMode = ref(false)
 const shareSaving = ref(false)
 const selectedShareMessageIds = ref<Set<string>>(new Set())
@@ -752,8 +772,9 @@ const chatAttachments = useChatAttachments()
 const {
   pendingAttachments,
   onFileInputChange,
-  addAttachment,
+  addAttachments,
   removeAttachment,
+  retryAttachment,
   hasPendingAttachmentWork,
 } = chatAttachments
 
@@ -1380,7 +1401,7 @@ const composerPlaceholder = computed(() => {
 })
 
 const hasSendContent = computed(() => {
-  return inputText.value.trim().length > 0 || pendingAttachments.value.length > 0
+  return inputText.value.trim().length > 0 || pendingAttachments.value.some(isSendableAttachment)
 })
 
 const sendButtonTitle = computed(() => {
@@ -1794,11 +1815,42 @@ function showToolResultModal(content: string, title = t('chat.toolResult')) {
 
 /* ── Attachments ───────────────────────────────────────────────────── */
 
-function onThreadDrop(e: DragEvent) {
-  threadDragOver.value = false
-  if (e.dataTransfer?.files) {
-    Array.from(e.dataTransfer.files).forEach(addAttachment)
+function dragEventHasFiles(e: DragEvent): boolean {
+  const types = Array.from(e.dataTransfer?.types || [])
+  return types.includes('Files')
+}
+
+function onChatDragEnter(e: DragEvent) {
+  if (!dragEventHasFiles(e)) return
+  e.preventDefault()
+  threadDragDepth.value += 1
+  threadDragOver.value = true
+}
+
+function onChatDragOver(e: DragEvent) {
+  if (!dragEventHasFiles(e)) return
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+  threadDragOver.value = true
+}
+
+function onChatDragLeave(e: DragEvent) {
+  if (!dragEventHasFiles(e)) return
+  threadDragDepth.value = Math.max(0, threadDragDepth.value - 1)
+  if (threadDragDepth.value === 0) {
+    threadDragOver.value = false
   }
+}
+
+function onChatDrop(e: DragEvent) {
+  e.preventDefault()
+  threadDragDepth.value = 0
+  threadDragOver.value = false
+  if (!dragEventHasFiles(e)) return
+  const files = Array.from(e.dataTransfer?.files || [])
+  if (files.length === 0) return
+  void addAttachments(files)
+  composerRef.value?.focusTextarea()
 }
 
 /* ── Textarea ──────────────────────────────────────────────────────── */
@@ -1812,16 +1864,18 @@ function autoResizeTextarea() {
 function onDocumentPaste(e: ClipboardEvent) {
   const items = e.clipboardData?.items
   if (!items) return
+  const files: File[] = []
   let attachedImage = false
   for (let i = 0; i < items.length; i++) {
     if (items[i].type.startsWith('image/')) {
       const file = items[i].getAsFile()
       if (file) {
-        addAttachment(file)
+        files.push(file)
         attachedImage = true
       }
     }
   }
+  if (files.length > 0) void addAttachments(files)
   // Screenshot tools put both the image and its local file path on the
   // clipboard; once we have attached the image, suppress the default paste so
   // the path text is not also dumped into the composer (and then sent to the

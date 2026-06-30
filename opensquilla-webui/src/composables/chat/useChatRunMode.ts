@@ -1,5 +1,6 @@
-import { computed, ref } from 'vue'
-import type { RunMode } from '@/types/rpc'
+import { computed, ref, watch } from 'vue'
+import type { Ref } from 'vue'
+import type { HelloAuthInfo, RunMode, RunModePolicyInfo } from '@/types/rpc'
 
 type RpcClient = {
   call: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -15,24 +16,68 @@ type SandboxSetupStatus = {
 
 export interface UseChatRunModeOptions {
   rpc: RpcClient
+  auth?: Readonly<Ref<HelloAuthInfo | null>>
   pushToast?: (message: string, options?: { tone?: 'info' | 'danger'; duration?: number }) => void
 }
 
-export function normalizeRunMode(mode: unknown): RunMode {
+const RUN_MODES: RunMode[] = ['standard', 'trusted', 'full']
+
+export function normalizeRunMode(mode: unknown, fallback: RunMode = 'trusted'): RunMode {
   const value = String(mode || '').trim().toLowerCase().replace(/_/g, '-')
   if (value === 'standard' || value === 'standard-sandbox') return 'standard'
   if (value === 'trusted' || value === 'trust' || value === 'trusted-sandbox') return 'trusted'
   if (value === 'full' || value === 'full-host-access' || value === 'host') return 'full'
-  return 'full'
+  return fallback
 }
 
 export function useChatRunMode(options: UseChatRunModeOptions) {
-  const runMode = ref<RunMode>('full')
+  const runModePolicy = computed<RunModePolicyInfo | null>(() => {
+    return options.auth?.value?.runModePolicy || null
+  })
+  const allowedRunModes = computed<RunMode[]>(() => {
+    const policyAllowed = runModePolicy.value?.allowedRunModes
+    if (!policyAllowed) return [...RUN_MODES]
+    const allowed = policyAllowed
+      .map(mode => normalizeRunMode(mode))
+      .filter((mode, index, modes) => RUN_MODES.includes(mode) && modes.indexOf(mode) === index)
+    return allowed.length ? allowed : [...RUN_MODES]
+  })
+  const defaultRunMode = computed<RunMode>(() => {
+    const allowed = allowedRunModes.value
+    const policyDefault = runModePolicy.value?.defaultRunMode
+    if (policyDefault) {
+      const normalized = normalizeRunMode(policyDefault)
+      if (allowed.includes(normalized)) return normalized
+    }
+    if (allowed.includes('full')) return 'full'
+    if (allowed.includes('trusted')) return 'trusted'
+    return allowed[0] || 'trusted'
+  })
+  const fullHostAccessDisabledReason = computed(() => {
+    return runModePolicy.value?.fullHostAccessDisabledReason || null
+  })
+  const runMode = ref<RunMode>(defaultRunMode.value)
   const sandboxSetupStatus = ref<SandboxSetupStatus>(null)
   const sandboxSetupBusy = ref(false)
   const sandboxSetupPromptDismissed = ref(false)
   const pendingSandboxSetupMode = ref<RunMode | ''>('')
   let sandboxSetupRequestSeq = 0
+
+  function modeAllowed(mode: RunMode): boolean {
+    return allowedRunModes.value.includes(mode)
+  }
+
+  function clampRunMode(mode: unknown): RunMode {
+    const normalized = normalizeRunMode(mode, defaultRunMode.value)
+    return modeAllowed(normalized) ? normalized : defaultRunMode.value
+  }
+
+  watch([allowedRunModes, defaultRunMode], () => {
+    runMode.value = clampRunMode(runMode.value)
+    if (pendingSandboxSetupMode.value && !modeAllowed(pendingSandboxSetupMode.value)) {
+      pendingSandboxSetupMode.value = ''
+    }
+  }, { immediate: true })
 
   function isSandboxSetupReadyPayload(payload: SandboxSetupStatus): boolean {
     return String(payload?.state || '').toLowerCase() === 'ready'
@@ -52,12 +97,11 @@ export function useChatRunMode(options: UseChatRunModeOptions) {
   }
 
   const sandboxSetupVisible = computed(() => {
-    const mode = normalizeRunMode(pendingSandboxSetupMode.value || runMode.value)
     const setupKnown = sandboxSetupStatus.value !== null
     const setupReady = isSandboxSetupReadyPayload(sandboxSetupStatus.value)
-    const optionalPrompt = mode === 'full' && !sandboxSetupPromptDismissed.value
-    const pendingPrompt = mode !== 'full' || !!pendingSandboxSetupMode.value
-    return !setupReady && (pendingPrompt || (setupKnown && optionalPrompt))
+    const pendingPrompt = !!pendingSandboxSetupMode.value
+    const optionalPrompt = setupKnown && !sandboxSetupPromptDismissed.value
+    return !setupReady && (pendingPrompt || optionalPrompt)
   })
 
   const sandboxSetupDetail = computed(() => {
@@ -65,7 +109,7 @@ export function useChatRunMode(options: UseChatRunModeOptions) {
   })
 
   async function loadSandboxSetupStatus(optionsArg: { mode?: RunMode; showPrompt?: boolean } = {}) {
-    const mode = normalizeRunMode(optionsArg.mode || runMode.value)
+    const mode = clampRunMode(optionsArg.mode || runMode.value)
     if (optionsArg.showPrompt) sandboxSetupPromptDismissed.value = false
     const requestSeq = ++sandboxSetupRequestSeq
     try {
@@ -76,9 +120,9 @@ export function useChatRunMode(options: UseChatRunModeOptions) {
       if (isSandboxSetupReadyPayload(sandboxSetupStatus.value) && pendingSandboxSetupMode.value) {
         const pending = pendingSandboxSetupMode.value
         pendingSandboxSetupMode.value = ''
-        runMode.value = pending
+        runMode.value = clampRunMode(pending)
       } else if (mode === 'full') {
-        runMode.value = 'full'
+        runMode.value = clampRunMode('full')
       }
       return sandboxSetupStatus.value
     } catch {
@@ -97,7 +141,7 @@ export function useChatRunMode(options: UseChatRunModeOptions) {
       if (ready && pendingSandboxSetupMode.value) {
         const pendingMode = pendingSandboxSetupMode.value
         pendingSandboxSetupMode.value = ''
-        runMode.value = pendingMode
+        runMode.value = clampRunMode(pendingMode)
       }
       options.pushToast?.(ready ? 'Sandbox established' : 'Sandbox setup is not ready', {
         tone: ready ? undefined : 'info',
@@ -131,6 +175,11 @@ export function useChatRunMode(options: UseChatRunModeOptions) {
 
   async function setRunMode(mode: RunMode, toast = true) {
     const normalized = normalizeRunMode(mode)
+    if (!modeAllowed(normalized)) {
+      runMode.value = defaultRunMode.value
+      options.pushToast?.('Full Host Access requires owner permission.', { tone: 'info', duration: 2400 })
+      return false
+    }
     if (!(await requestSandboxSetupForMode(normalized))) return false
     runMode.value = normalized
     if (toast) {
@@ -150,11 +199,15 @@ export function useChatRunMode(options: UseChatRunModeOptions) {
   function dismissSandboxSetupPrompt() {
     sandboxSetupPromptDismissed.value = true
     pendingSandboxSetupMode.value = ''
-    runMode.value = 'full'
+    runMode.value = defaultRunMode.value
   }
 
   return {
+    allowedRunModes,
+    defaultRunMode,
+    fullHostAccessDisabledReason,
     runMode,
+    runModePolicy,
     sandboxSetupBusy,
     sandboxSetupDetail,
     sandboxSetupPromptDismissed,
@@ -163,6 +216,7 @@ export function useChatRunMode(options: UseChatRunModeOptions) {
     ensureSandboxSetupOnly,
     isSandboxSetupReadyPayload,
     loadSandboxSetupStatus,
+    modeAllowed,
     normalizeRunMode,
     requestSandboxSetupForMode,
     sandboxSetupReadyForMode,

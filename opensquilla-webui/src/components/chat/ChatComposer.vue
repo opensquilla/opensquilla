@@ -74,6 +74,17 @@
                 @set-coding-mode-enabled="emit('setCodingModeEnabled', $event)"
               />
             </div>
+            <ChatRunModeMenu
+              :run-mode="runMode"
+              :allowed-run-modes="allowedRunModes"
+              :full-host-access-disabled-reason="fullHostAccessDisabledReason"
+              :sandbox-setup-busy="sandboxSetupBusy"
+              :sandbox-setup-message="sandboxSetupMessage"
+              :sandbox-setup-visible="sandboxSetupVisible"
+              @dismiss-sandbox-setup="emit('dismissSandboxSetup')"
+              @ensure-sandbox-setup="emit('ensureSandboxSetup')"
+              @set-run-mode="emit('setRunMode', $event)"
+            />
             <button
               class="btn btn--icon btn--ghost"
               :class="{ 'is-active': voiceRecording }"
@@ -140,7 +151,9 @@ import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import type { IconName } from '@/utils/icons'
 import ChatComposerSettings from '@/components/chat/ChatComposerSettings.vue'
+import ChatRunModeMenu from '@/components/chat/ChatRunModeMenu.vue'
 import type { Attachment } from '@/types/chat'
+import type { RunMode } from '@/types/rpc'
 import { isAttachmentBusy, isImageDisplayAttachment } from '@/utils/chat/attachments'
 
 interface ChatComposerExpose {
@@ -165,6 +178,12 @@ defineProps<{
   routerSettingsBusy: boolean
   codingModeEnabled: boolean
   codingModeSettingsBusy: boolean
+  runMode: RunMode
+  allowedRunModes: RunMode[]
+  fullHostAccessDisabledReason?: string | null
+  sandboxSetupBusy: boolean
+  sandboxSetupMessage: string
+  sandboxSetupVisible: boolean
   voiceBusy: boolean
   voiceRecording: boolean
 }>()
@@ -180,9 +199,12 @@ const emit = defineEmits<{
   send: []
   setBusySendMode: [mode: 'queue' | 'steer']
   setElevatedMode: [mode: string]
+  setRunMode: [mode: RunMode]
   setRouterEnabled: [enabled: boolean]
   setVisualEffectsEnabled: [enabled: boolean]
   setCodingModeEnabled: [enabled: boolean]
+  dismissSandboxSetup: []
+  ensureSandboxSetup: []
   voiceInput: []
   exportMarkdown: []
   stop: []

@@ -446,6 +446,12 @@
       :router-settings-busy="routerSettingsBusy"
       :coding-mode-enabled="codingModeEnabled"
       :coding-mode-settings-busy="codingModeSettingsBusy"
+      :run-mode="runMode"
+      :allowed-run-modes="allowedRunModes"
+      :full-host-access-disabled-reason="fullHostAccessDisabledReason"
+      :sandbox-setup-busy="sandboxSetupBusy"
+      :sandbox-setup-message="sandboxSetupDetail"
+      :sandbox-setup-visible="sandboxSetupVisible"
       :voice-busy="voiceBusy"
       :voice-recording="voiceRecording"
       @composition-change="composing = $event"
@@ -457,6 +463,9 @@
       @retry-attachment="retryAttachment"
       @set-busy-send-mode="busySendMode = $event"
       @set-elevated-mode="setComposerElevatedMode"
+      @dismiss-sandbox-setup="dismissSandboxSetupPrompt"
+      @ensure-sandbox-setup="ensureSandboxSetupOnly"
+      @set-run-mode="setComposerRunMode"
       @set-router-enabled="setComposerRouterEnabled"
       @set-visual-effects-enabled="setComposerVisualEffectsEnabled"
       @set-coding-mode-enabled="setComposerCodingModeEnabled"
@@ -552,6 +561,7 @@ import { useChatRouterDecisionRuntime } from '@/composables/chat/useChatRouterDe
 import { useChatAnswerReveal } from '@/composables/chat/useChatAnswerReveal'
 import { useChatRpcEventHandlers } from '@/composables/chat/useChatRpcEventHandlers'
 import { useChatRpcSubscriptions } from '@/composables/chat/useChatRpcSubscriptions'
+import { useChatRunMode } from '@/composables/chat/useChatRunMode'
 import { useChatSend } from '@/composables/chat/useChatSend'
 import { useMetaRuns } from '@/composables/chat/useMetaRuns'
 import { useAgentOptions } from '@/composables/useAgentOptions'
@@ -574,6 +584,7 @@ import type {
 } from '@/types/chat'
 import type {
   ArtifactPayload,
+  RunMode,
 } from '@/types/rpc'
 import type { InterruptViewState } from '@/types/parts'
 import { artifactDownloadUrl } from '@/utils/chat/artifacts'
@@ -676,6 +687,25 @@ const {
   setGlobalElevatedMode,
   normalizeElevatedMode,
 } = chatElevatedMode
+
+const chatRunMode = useChatRunMode({
+  rpc,
+  auth: computed(() => rpc.auth),
+  pushToast,
+})
+const {
+  allowedRunModes,
+  fullHostAccessDisabledReason,
+  runMode,
+  sandboxSetupBusy,
+  sandboxSetupDetail,
+  sandboxSetupVisible,
+  dismissSandboxSetupPrompt,
+  ensureSandboxSetupOnly,
+  loadSandboxSetupStatus,
+  normalizeRunMode,
+  setRunMode,
+} = chatRunMode
 
 // Run status
 const runStatus = ref<ChatRunStatus>({ status: 'idle', label: t('chat.status.idle'), task: null })
@@ -1178,6 +1208,7 @@ const chatSend = useChatSend({
   sessionKey,
   busySendMode,
   elevatedMode,
+  runMode,
   pendingAttachments,
   pendingSessionIntent,
   aborted,
@@ -1185,6 +1216,7 @@ const chatSend = useChatSend({
   autoScroll,
   stream: chatStream,
   normalizeElevatedMode,
+  normalizeRunMode,
   persistSession,
   isCompactInFlightForCurrentSession,
   hasPendingAttachmentWork,
@@ -1456,6 +1488,10 @@ function readAuthToken(): string {
 
 function setComposerElevatedMode(mode: string) {
   setElevatedMode(mode, { persist: true, sync: true })
+}
+
+function setComposerRunMode(mode: RunMode) {
+  void setRunMode(mode)
 }
 
 async function setComposerRouterEnabled(enabled: boolean) {
@@ -1979,6 +2015,7 @@ onMounted(async () => {
 
   // Load elevated mode
   loadElevatedMode()
+  void loadSandboxSetupStatus({ showPrompt: true })
 
   // Resolve agent display names for the in-draft switcher.
   void loadAgentOptions()

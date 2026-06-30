@@ -30,9 +30,16 @@
           :key="option.value"
           type="button"
           class="composer-run-mode__option"
-          :class="{ 'is-active': normalizedRunMode === option.value, 'is-danger': option.value === 'full' && normalizedRunMode === option.value }"
+          :class="{
+            'is-active': normalizedRunMode === option.value,
+            'is-danger': option.value === 'full' && normalizedRunMode === option.value,
+            'is-disabled': optionDisabled(option.value),
+          }"
+          :disabled="optionDisabled(option.value)"
           role="option"
           :aria-selected="normalizedRunMode === option.value ? 'true' : 'false'"
+          :aria-disabled="optionDisabled(option.value) ? 'true' : 'false'"
+          :title="optionDisabled(option.value) && option.value === 'full' ? nonOwnerFullHint : undefined"
           @click="selectMode(option.value)"
         >
           <span class="composer-run-mode__option-mark" aria-hidden="true">
@@ -44,6 +51,7 @@
           </span>
         </button>
       </div>
+      <p v-if="fullHostAccessDisabledReason" class="composer-run-mode__hint">{{ nonOwnerFullHint }}</p>
 
       <div v-if="sandboxSetupVisible" class="composer-run-mode__setup" role="status">
         <p>{{ sandboxSetupMessage || 'Limit tool access before switching to sandbox modes.' }}</p>
@@ -72,6 +80,8 @@ const runModeOptions: Array<{ value: RunMode; label: string; caption: string }> 
 
 const props = defineProps<{
   runMode: RunMode
+  allowedRunModes: RunMode[]
+  fullHostAccessDisabledReason?: string | null
   sandboxSetupBusy: boolean
   sandboxSetupMessage: string
   sandboxSetupVisible: boolean
@@ -86,17 +96,46 @@ const emit = defineEmits<{
 const open = ref(false)
 const rootEl = ref<HTMLElement | null>(null)
 
+const allowedRunModes = computed<RunMode[]>(() => {
+  const allowed = props.allowedRunModes.filter((mode, index, modes) => {
+    return runModeOptions.some(option => option.value === mode) && modes.indexOf(mode) === index
+  })
+  return allowed.length ? allowed : runModeOptions.map(option => option.value)
+})
+
+const defaultAllowedRunMode = computed<RunMode>(() => {
+  if (allowedRunModes.value.includes('full')) return 'full'
+  if (allowedRunModes.value.includes('trusted')) return 'trusted'
+  return allowedRunModes.value[0] || 'trusted'
+})
+
 const normalizedRunMode = computed<RunMode>(() => {
-  return runModeOptions.some(option => option.value === props.runMode) ? props.runMode : 'full'
+  return allowedRunModes.value.includes(props.runMode) ? props.runMode : defaultAllowedRunMode.value
 })
 
 const activeLabel = computed(() => {
-  return runModeOptions.find(option => option.value === normalizedRunMode.value)?.label || 'Full Host Access'
+  return runModeOptions.find(option => option.value === normalizedRunMode.value)?.label || 'Trusted-Sandbox'
+})
+
+const nonOwnerFullHint = computed(() => {
+  const language = [
+    document.documentElement.lang,
+    navigator.language,
+  ].find(Boolean)?.toLowerCase() || ''
+  if (language.startsWith('zh')) {
+    return '当前账号不是 owner，不能选择 Full Host Access。你可以使用 Standard-Sandbox 或 Trusted-Sandbox。'
+  }
+  return 'This account is not the owner, so Full Host Access is unavailable. You can use Standard-Sandbox or Trusted-Sandbox.'
 })
 
 function selectMode(mode: RunMode) {
+  if (optionDisabled(mode)) return
   open.value = false
   emit('setRunMode', mode)
+}
+
+function optionDisabled(mode: RunMode): boolean {
+  return !allowedRunModes.value.includes(mode)
 }
 
 useDocumentEvent('mousedown', (event: MouseEvent) => {
@@ -218,6 +257,16 @@ useDocumentEvent('keydown', (event: KeyboardEvent) => {
   background: var(--bg-hover);
 }
 
+.composer-run-mode__option.is-disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.composer-run-mode__option.is-disabled:hover {
+  background: transparent;
+}
+
 .composer-run-mode__option.is-active {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
@@ -249,6 +298,15 @@ useDocumentEvent('keydown', (event: KeyboardEvent) => {
 }
 
 .composer-run-mode__option-copy > small {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
+.composer-run-mode__hint {
+  margin: 0.125rem 0 0;
+  padding: 0.375rem 0.5rem 0;
+  border-top: 1px solid var(--border);
   color: var(--text-muted);
   font-size: 0.75rem;
   line-height: 1.35;

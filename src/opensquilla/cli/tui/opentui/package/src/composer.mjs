@@ -300,9 +300,10 @@ export function createComposer(deps) {
   // browsing history". With empty history this is 0, but the semantics are correct.
   let historyIndex = inputHistory.length;
   let draftBeforeHistory = "";
-  // Cursor blink state for the composer.
+  // Caret visibility flag, retained for the (now inert) wakeCursor() callers; the
+  // visible caret is the hardware terminal cursor, blinked natively, so there is
+  // no app-side blink timer (see startCursorBlink).
   let cursorVisible = true;
-  let cursorTimer;
   // Guard against install() binding the keypress/paste listeners more than once.
   let installed = false;
 
@@ -360,12 +361,14 @@ export function createComposer(deps) {
   }
 
   function startCursorBlink() {
-    if (cursorTimer) return;
-    cursorTimer = setInterval(() => {
-      cursorVisible = !cursorVisible;
-      rerenderInputRegion();
-    }, 530);
-    cursorTimer.unref?.();
+    // Intentionally a no-op. The caret is the real hardware terminal cursor now
+    // (caretGlyph renders a blank cell; syncTerminalCursorToCaret shows it via
+    // setCursorPosition), and the terminal blinks it natively. The old 530ms
+    // self-render re-asserted setCursorPosition on every tick — during macOS IME
+    // composition the app gets no keystrokes, so that timer was the ONLY thing
+    // re-rendering, and its repeated cursor re-assertion disrupted the terminal's
+    // marked-text handling and corrupted the router panel's first row while
+    // typing. Removing the timer fixes that; nothing else needs the 530ms redraw.
   }
 
   // Reset the cursor to solid-on after a keystroke so typing feels responsive

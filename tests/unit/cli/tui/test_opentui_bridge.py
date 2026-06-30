@@ -62,6 +62,31 @@ async def test_next_message_returns_none_on_clean_host_exit() -> None:
 
 
 @pytest.mark.asyncio
+async def test_next_message_tolerates_invalid_utf8_and_skips_garbage() -> None:
+    """A corrupted / non-JSON host line must not crash the session — it is skipped
+    and the next valid message is delivered."""
+    import os
+
+    from opensquilla.cli.tui.opentui.messages import HostInputSubmit
+
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, b"\xff\xfe invalid utf-8 bytes\n")  # would crash a strict reader
+    os.write(write_fd, b"plain text, not json\n")  # unparseable -> skipped
+    os.write(write_fd, b'{"type":"input.submit","text":"survived"}\n')  # valid
+    os.close(write_fd)
+
+    bridge = OpenTuiBridge()
+    # Mirror bridge.start()'s read-pipe configuration (errors="replace").
+    bridge._from_host_file = os.fdopen(read_fd, "r", encoding="utf-8", errors="replace")
+    try:
+        message = await bridge.next_message()
+        assert isinstance(message, HostInputSubmit)
+        assert message.text == "survived"
+    finally:
+        bridge._from_host_file.close()
+
+
+@pytest.mark.asyncio
 async def test_close_does_not_treat_intentional_shutdown_as_crash() -> None:
     bridge = OpenTuiBridge()
     await _attach_exited_process(bridge, code=7, stderr="ignored\n")

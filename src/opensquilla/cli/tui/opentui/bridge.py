@@ -21,6 +21,7 @@ from opensquilla.cli.tui.opentui.messages import (
     HostError,
     HostReady,
     HostToPythonMessage,
+    HostToPythonMessageError,
     ScrollbackWrite,
     host_message_from_json,
     python_message_to_json,
@@ -31,6 +32,9 @@ from opensquilla.cli.tui.renderers.selection import (
 
 DEFAULT_HOST_PACKAGE_DIR = Path(__file__).resolve().parent / "package"
 DEFAULT_READY_TIMEOUT_SECONDS = 5.0
+# Tolerate a burst of unparseable host lines (skip them) before giving up, so a
+# stray corrupted line never tears down the UI but a wedged sidecar still does.
+_MAX_CONSECUTIVE_MALFORMED_LINES = 64
 
 log = structlog.get_logger(__name__)
 
@@ -138,7 +142,12 @@ class OpenTuiBridge:
         os.close(to_host_read)
         os.close(from_host_write)
         self._to_host_file = os.fdopen(to_host_write, "w", encoding="utf-8", buffering=1)
-        self._from_host_file = os.fdopen(from_host_read, "r", encoding="utf-8")
+        # errors="replace" so a corrupted byte from the host never raises a hard
+        # UnicodeDecodeError mid-read; the line is still delivered (and skipped if
+        # it no longer parses) instead of tearing down the UI.
+        self._from_host_file = os.fdopen(
+            from_host_read, "r", encoding="utf-8", errors="replace"
+        )
         # Capture the host's stderr so a crash leaves a diagnosable reason instead
         # of corrupting the terminal or vanishing. Draining it also keeps the
         # child from blocking on a full stderr pipe.
@@ -200,6 +209,7 @@ class OpenTuiBridge:
     async def next_message(self) -> HostToPythonMessage | None:
         if self._from_host_file is None:
             raise OpenTuiBridgeError("OpenTUI bridge is not started")
+        malformed = 0
         while True:
             line = await asyncio.to_thread(self._from_host_file.readline)
             if line == "":
@@ -207,7 +217,17 @@ class OpenTuiBridge:
                 return None
             if not line.strip():
                 continue
-            return host_message_from_json(line)
+            try:
+                return host_message_from_json(line)
+            except HostToPythonMessageError as exc:
+                # A single corrupted/garbage line must not kill the session — skip
+                # it. Only give up if the host floods unparseable output, which
+                # signals a genuinely wedged sidecar.
+                malformed += 1
+                if malformed > _MAX_CONSECUTIVE_MALFORMED_LINES:
+                    raise
+                log.warning("opentui.host.malformed_line", error=str(exc))
+                continue
 
     async def _drain_stderr(self) -> None:
         process = self._process

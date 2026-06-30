@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 import opensquilla.gateway.rpc_config  # noqa: F401  ensures registration
@@ -163,6 +165,48 @@ async def test_config_apply_memory_retrieval_mode_reports_restart_required(tmp_p
 
     assert res.error is None, res.error
     assert res.payload["restartRequired"] is True
+
+
+@pytest.mark.asyncio
+async def test_config_patch_rag_enabled_reports_restart_required(tmp_path):
+    cfg = GatewayConfig(config_path=str(tmp_path / "c.toml"), rag={"enabled": False})
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "config.patch",
+        {"patches": {"rag.enabled": True}},
+        _admin_ctx(cfg),
+    )
+
+    assert res.error is None, res.error
+    assert res.payload["restartRequired"] is True
+
+
+@pytest.mark.asyncio
+async def test_config_patch_rag_retrieval_mode_syncs_runtime_without_restart(tmp_path):
+    cfg = GatewayConfig(
+        config_path=str(tmp_path / "c.toml"),
+        rag={"enabled": True, "retrieval_mode": "hybrid"},
+    )
+    manager = SimpleNamespace(
+        config=cfg,
+        enabled=True,
+        ingestion=SimpleNamespace(config=cfg.rag),
+        retrieval=SimpleNamespace(config=cfg.rag),
+    )
+    ctx = _admin_ctx(cfg)
+    ctx.rag_manager = manager
+
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "config.patch",
+        {"patches": {"rag.retrieval_mode": "fts"}},
+        ctx,
+    )
+
+    assert res.error is None, res.error
+    assert res.payload["restartRequired"] is False
+    assert cfg.rag.retrieval_mode == "fts"
+    assert manager.retrieval.config.retrieval_mode == "fts"
 
 
 @pytest.mark.asyncio

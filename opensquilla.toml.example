@@ -310,6 +310,35 @@ security_grading = false
 # with the sandbox section.
 default_mode = "bypass"                 # off | on | bypass | full
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Local Document RAG
+# ─────────────────────────────────────────────────────────────────────────────
+
+[rag]
+# Disabled by default. When enabled, RAG indexes only sources that you add with
+# `opensquilla rag add ...` or list under [[rag.sources]].
+enabled = false
+retrieval_mode = "hybrid"               # hybrid | fts | vector_only
+chunk_size = 900
+chunk_overlap = 120
+max_file_size_kb = 1024
+max_source_files = 5000
+max_source_size_mb = 512
+
+[rag.embedding]
+# Auto is local-first and does not use remote embedding APIs unless credentials
+# are explicitly configured.
+provider = "auto"                       # auto | none | local | openai | openai-compatible | ollama
+
+# Optional bootstrap source. Prefer `opensquilla rag add <directory>` for local
+# operator-managed paths so personal paths do not get committed accidentally.
+# [[rag.sources]]
+# path = "/path/to/docs"
+# collection_id = "default"
+# name = "Docs"
+# include = ["**/*.md", "**/*.txt"]
+# exclude = ["drafts/**"]
+
 # [auth]
 # mode = "none"         # none | token | password
 # token = ""

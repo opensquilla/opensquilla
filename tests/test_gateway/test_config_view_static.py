@@ -256,3 +256,19 @@ def test_config_router_visual_mode_renders_as_settings_select() -> None:
     assert "min-height: 40px" in css[
         css.index(".cfg-input-select {") : css.index("}", css.index(".cfg-input-select {"))
     ]
+
+
+def test_config_llm_model_keeps_editable_input_with_recommended_datalist() -> None:
+    source = CONFIG_JS.read_text(encoding="utf-8")
+
+    assert "const _DATALIST_OPTIONS = {" in source
+    assert "'llm.model': [" in source
+    assert "deepseek/deepseek-v4-pro" in source
+    assert "anthropic/claude-opus-4.8" in source
+    assert "openai/gpt-5.5" in source
+    assert "qwen/qwen3-coder-plus" in source
+    assert "function _datalistOptionsForKey(key) {" in source
+    assert "const datalistOptions = _datalistOptionsForKey(k);" in source
+    assert '<datalist id="${_esc(datalistId)}">' in source
+    assert 'list="${_esc(datalistId)}"' in source
+    assert '<input id="${inputId}" class="input cfg-input-text"' in source

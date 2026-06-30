@@ -66,12 +66,13 @@ def _resolve_context_window(model: str | None, ctx: RpcContext) -> tuple[int | N
         if window is not None:
             return window, "config"
     if model:
+        provider = str(getattr(getattr(config, "llm", None), "provider", "") or "")
         catalog = getattr(getattr(ctx, "turn_runner", None), "_model_catalog", None)
         if catalog is not None and hasattr(catalog, "resolve_context_window"):
-            window = _positive_int(catalog.resolve_context_window(model))
+            window = _positive_int(catalog.resolve_context_window(model, provider))
             if window is not None:
                 return window, "runtime_model_catalog"
-        window = _positive_int(_CONTEXT_WINDOW_CATALOG.resolve_context_window(model))
+        window = _positive_int(_CONTEXT_WINDOW_CATALOG.resolve_context_window(model, provider))
         if window is not None:
             return window, "static_model_catalog"
     return None, "unavailable"

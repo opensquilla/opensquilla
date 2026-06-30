@@ -1766,7 +1766,19 @@ async def build_services(
     resolved_base = llm_runtime.base_url
     proxy = llm_runtime.proxy
     if provider_selector is None:
-        if api_key:
+        # Local providers (Ollama, LM Studio, …) need no API key, so gating
+        # provider setup on a key would leave the gateway with "no provider".
+        provider_requires_key = True
+        if llm_runtime.provider:
+            try:
+                from opensquilla.provider.registry import get_provider_spec
+
+                provider_requires_key = get_provider_spec(
+                    llm_runtime.provider
+                ).requires_api_key()
+            except Exception:
+                provider_requires_key = True
+        if llm_runtime.provider and (api_key or not provider_requires_key):
             from opensquilla.provider.selector import (
                 ModelSelector,
                 ProviderConfig,

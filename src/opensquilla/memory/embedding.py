@@ -194,25 +194,29 @@ class OllamaEmbeddingProvider:
     def model(self) -> str:
         return self._model
 
-    async def embed_query(self, text: str) -> list[float]:
+    async def _embed(self, inputs: list[str], timeout: float) -> list[list[float]]:
         async def _call():
             async with httpx.AsyncClient(trust_env=_trust_env()) as client:
                 resp = await client.post(
-                    f"{self._base_url}/api/embeddings",
-                    json={"model": self._model, "prompt": text},
-                    timeout=self._timeout_query,
+                    f"{self._base_url}/api/embed",
+                    json={"model": self._model, "input": inputs},
+                    timeout=timeout,
                 )
                 resp.raise_for_status()
-                return resp.json()["embedding"]
+                return resp.json()["embeddings"]
 
         return await _retry_with_backoff(_call)  # type: ignore[no-any-return]
 
+    async def embed_query(self, text: str) -> list[float]:
+        vectors = await self._embed([text], self._timeout_query)
+        return vectors[0]
+
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        results = []
-        for text in texts:
-            vec = await self.embed_query(text)
-            results.append(vec)
-        return results
+        # /api/embed embeds the whole batch in one request (the legacy
+        # /api/embeddings endpoint only took a single prompt).
+        if not texts:
+            return []
+        return await self._embed(texts, self._timeout_batch)
 
     async def probe(self) -> tuple[bool, str | None]:
         try:

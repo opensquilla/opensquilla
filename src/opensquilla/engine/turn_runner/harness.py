@@ -405,12 +405,14 @@ class _TurnRunnerModelCatalogAdapter(ModelCatalogPort):
         llm_cfg = getattr(runner._config, "llm", None) if runner._config else None
         user_max_tokens = getattr(llm_cfg, "max_tokens", 0)
         if runner._model_catalog is not None:
-            max_tokens = runner._model_catalog.resolve_max_tokens(
-                model_id, user_override=user_max_tokens
-            )
-            context_window = runner._model_catalog.resolve_context_window(model_id)
             provider_name = getattr(llm_cfg, "provider", "openrouter")
             base_url = getattr(llm_cfg, "base_url", "")
+            max_tokens = runner._model_catalog.resolve_max_tokens(
+                model_id, user_override=user_max_tokens, provider=provider_name
+            )
+            context_window = runner._model_catalog.resolve_context_window(
+                model_id, provider=provider_name
+            )
             capabilities = runner._model_catalog.get_capabilities(
                 model_id, provider_name=provider_name, base_url=base_url
             )

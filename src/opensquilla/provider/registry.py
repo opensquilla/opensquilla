@@ -140,7 +140,11 @@ for _provider_spec in [
         "ollama",
         "ollama",
         "ollama",
+        "OLLAMA_API_KEY",
         default_base_url="http://localhost:11434",
+        # Local provider: the key is optional (only needed for Ollama Cloud or a
+        # secured remote host), so keep onboarding from demanding it.
+        required_fields=frozenset({"model"}),
         support_level="native",
         failure_family="ollama",
     ),

@@ -690,16 +690,26 @@ export function createComposer(deps) {
       left: COMPOSER_LEFT,
       right: COMPOSER_LEFT,
       height: 1,
+      paddingLeft: 2, // align the strip text with the composer's input text
       flexDirection: "row",
       backgroundColor: THEME.footerBg,
     });
-    const addChip = (suffix, content, fg) =>
+    const chip = (suffix, content, fg) =>
       routerStrip.add(new TextRenderable(renderer, { id: `router-${suffix}`, content, fg }));
-    addChip("label", "router  ", THEME.brandAccentSoft);
-    addChip("model", `model ${stripValue(routerModelValue())}  `, THEME.text);
-    addChip("route", `route ${stripValue(routerRouteValue())}  `, THEME.routeText);
-    addChip("saving", `save ${stripValue(routerState.saving)}  `, THEME.metricPositive);
-    addChip("context", `ctx ${stripValue(routerState.context)}`, THEME.warning);
+    // A quiet "router" label, dim field labels, and each VALUE in its semantic
+    // color, with fields separated by a dim middot — matching the usage footnote
+    // (value-forward hierarchy: data pops, labels recede).
+    let sepN = 0;
+    const field = (key, label, value, valueFg) => {
+      chip(`sep${sepN++}`, " · ", THEME.detailText);
+      chip(`${key}-label`, `${label} `, THEME.detailText);
+      chip(`${key}-value`, stripValue(value), valueFg);
+    };
+    chip("label", "router", THEME.muted);
+    field("model", "model", routerModelValue(), THEME.text);
+    field("route", "route", routerRouteValue(), THEME.routeText);
+    field("saving", "save", routerState.saving, THEME.metricPositive);
+    field("context", "ctx", routerState.context, THEME.warning);
     inputBox.add(routerStrip);
     renderCompletionMenu();
     // The theme picker shares the overlay layer, so a footer re-render (pulse

@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+import opensquilla.channels.wecom as wecom_module
 from opensquilla.channels.contract import (
     ChannelCapabilities,
     ChannelPlatformCapabilityStatus,
@@ -24,10 +25,13 @@ class _FakeWebSocket:
         self.sent: list[dict[str, Any]] = []
         self.closed = False
         self._subscribe_acked = False
-        self._queue: asyncio.Queue[str] = asyncio.Queue()
+        self._queue: asyncio.Queue[str | BaseException] = asyncio.Queue()
 
     def feed(self, payload: dict[str, Any]) -> None:
         self._queue.put_nowait(json.dumps(payload))
+
+    def fail(self, exc: BaseException) -> None:
+        self._queue.put_nowait(exc)
 
     async def send(self, raw: str) -> None:
         self.sent.append(json.loads(raw))
@@ -43,23 +47,50 @@ class _FakeWebSocket:
                     "errcode": 0,
                 }
             )
-        return await self._queue.get()
+        item = await self._queue.get()
+        if isinstance(item, BaseException):
+            raise item
+        return item
 
     async def close(self) -> None:
         self.closed = True
 
 
 def _install_fake_websockets(
-    monkeypatch: pytest.MonkeyPatch, ws: _FakeWebSocket
+    monkeypatch: pytest.MonkeyPatch, ws: _FakeWebSocket | list[_FakeWebSocket]
 ) -> list[dict[str, Any]]:
     calls: list[dict[str, Any]] = []
+    sockets = list(ws) if isinstance(ws, list) else [ws]
 
     async def connect(url: str, **kwargs: Any) -> _FakeWebSocket:
         calls.append({"url": url, "kwargs": kwargs})
-        return ws
+        return sockets[min(len(calls) - 1, len(sockets) - 1)]
 
     monkeypatch.setitem(sys.modules, "websockets", SimpleNamespace(connect=connect))
     return calls
+
+
+async def _wait_until(predicate: Any) -> None:
+    for _ in range(100):
+        if predicate():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("condition was not met")
+
+
+def _inbound_text(req_id: str = "inbound-1") -> dict[str, Any]:
+    return {
+        "cmd": "aibot_msg_callback",
+        "headers": {"req_id": req_id},
+        "body": {
+            "msgid": "msg-1",
+            "chatid": "chat-1",
+            "chattype": "group",
+            "msgtype": "text",
+            "from": {"userid": "user-1"},
+            "text": {"content": "hello"},
+        },
+    }
 
 
 @pytest.mark.asyncio
@@ -106,20 +137,7 @@ async def test_wecom_websocket_inbound_callback_can_reply(monkeypatch: pytest.Mo
 
     await channel.start()
     try:
-        ws.feed(
-            {
-                "cmd": "aibot_msg_callback",
-                "headers": {"req_id": "inbound-1"},
-                "body": {
-                    "msgid": "msg-1",
-                    "chatid": "chat-1",
-                    "chattype": "group",
-                    "msgtype": "text",
-                    "from": {"userid": "user-1"},
-                    "text": {"content": "hello"},
-                },
-            }
-        )
+        ws.feed(_inbound_text())
         incoming = await asyncio.wait_for(channel.receive(), timeout=1)
         assert incoming.content == "hello"
         assert incoming.channel_id == "chat-1"
@@ -136,6 +154,248 @@ async def test_wecom_websocket_inbound_callback_can_reply(monkeypatch: pytest.Mo
         }
         ws.feed({"cmd": "aibot_respond_msg", "headers": {"req_id": "inbound-1"}, "errcode": 0})
         await asyncio.wait_for(send_task, timeout=1)
+
+        send_task = asyncio.create_task(
+            channel.send(OutgoingMessage(content="later", reply_to="chat-1"))
+        )
+        await _wait_until(lambda: len(ws.sent) >= 3)
+        assert ws.sent[2]["cmd"] == "aibot_send_msg"
+        assert ws.sent[2]["body"]["chatid"] == "chat-1"
+        ws.feed(
+            {
+                "cmd": "aibot_send_msg",
+                "headers": {"req_id": ws.sent[2]["headers"]["req_id"]},
+                "errcode": 0,
+            }
+        )
+        await asyncio.wait_for(send_task, timeout=1)
+    finally:
+        await channel.stop()
+
+
+@pytest.mark.asyncio
+async def test_wecom_websocket_streaming_reply_preserves_callback_req_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ws = _FakeWebSocket()
+    _install_fake_websockets(monkeypatch, ws)
+    channel = WeComChannel(
+        WeComChannelConfig(
+            connection_mode="websocket",
+            bot_id="bot-id",
+            bot_secret="bot-secret",
+        )
+    )
+
+    async def chunks() -> Any:
+        yield "streamed"
+
+    await channel.start()
+    try:
+        ws.feed(_inbound_text())
+        incoming = await asyncio.wait_for(channel.receive(), timeout=1)
+        kwargs = channel.streaming_reply_kwargs(incoming)
+        send_task = asyncio.create_task(channel.send_streaming(chunks(), **kwargs))
+        await _wait_until(lambda: len(ws.sent) >= 2)
+        assert ws.sent[1] == {
+            "cmd": "aibot_respond_msg",
+            "headers": {"req_id": "inbound-1"},
+            "body": {"msgtype": "markdown", "markdown": {"content": "streamed"}},
+        }
+        ws.feed({"cmd": "aibot_respond_msg", "headers": {"req_id": "inbound-1"}, "errcode": 0})
+        await asyncio.wait_for(send_task, timeout=1)
+    finally:
+        await channel.stop()
+
+
+@pytest.mark.asyncio
+async def test_wecom_websocket_explicit_chat_target_uses_proactive_send(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ws = _FakeWebSocket()
+    _install_fake_websockets(monkeypatch, ws)
+    channel = WeComChannel(
+        WeComChannelConfig(
+            connection_mode="websocket",
+            bot_id="bot-id",
+            bot_secret="bot-secret",
+        )
+    )
+
+    await channel.start()
+    try:
+        ws.feed(_inbound_text())
+        await asyncio.wait_for(channel.receive(), timeout=1)
+        send_task = asyncio.create_task(
+            channel.send(OutgoingMessage(content="proactive", reply_to="chat-1"))
+        )
+        await _wait_until(lambda: len(ws.sent) >= 2)
+        assert ws.sent[1]["cmd"] == "aibot_send_msg"
+        assert ws.sent[1]["body"]["chatid"] == "chat-1"
+        ws.feed(
+            {
+                "cmd": "aibot_send_msg",
+                "headers": {"req_id": ws.sent[1]["headers"]["req_id"]},
+                "errcode": 0,
+            }
+        )
+        await asyncio.wait_for(send_task, timeout=1)
+    finally:
+        await channel.stop()
+
+
+@pytest.mark.asyncio
+async def test_wecom_websocket_expired_callback_req_id_uses_proactive_send(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(wecom_module, "_WEBSOCKET_REPLY_REQ_ID_TTL_S", 0.01)
+    ws = _FakeWebSocket()
+    _install_fake_websockets(monkeypatch, ws)
+    channel = WeComChannel(
+        WeComChannelConfig(
+            connection_mode="websocket",
+            bot_id="bot-id",
+            bot_secret="bot-secret",
+        )
+    )
+
+    await channel.start()
+    try:
+        ws.feed(_inbound_text())
+        await asyncio.wait_for(channel.receive(), timeout=1)
+        await asyncio.sleep(0.02)
+        send_task = asyncio.create_task(channel.send(OutgoingMessage(content="late")))
+        await _wait_until(lambda: len(ws.sent) >= 2)
+        assert ws.sent[1]["cmd"] == "aibot_send_msg"
+        assert ws.sent[1]["body"]["chatid"] == "chat-1"
+        ws.feed(
+            {
+                "cmd": "aibot_send_msg",
+                "headers": {"req_id": ws.sent[1]["headers"]["req_id"]},
+                "errcode": 0,
+            }
+        )
+        await asyncio.wait_for(send_task, timeout=1)
+    finally:
+        await channel.stop()
+
+
+@pytest.mark.asyncio
+async def test_wecom_websocket_event_callbacks_are_not_enqueued(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ws = _FakeWebSocket()
+    _install_fake_websockets(monkeypatch, ws)
+    channel = WeComChannel(
+        WeComChannelConfig(
+            connection_mode="websocket",
+            bot_id="bot-id",
+            bot_secret="bot-secret",
+        )
+    )
+
+    await channel.start()
+    try:
+        ws.feed(
+            {
+                "cmd": "aibot_event_callback",
+                "headers": {"req_id": "event-1"},
+                "body": {"event": "enter_chat", "chatid": "chat-1"},
+            }
+        )
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(channel.receive(), timeout=0.05)
+    finally:
+        await channel.stop()
+
+
+@pytest.mark.asyncio
+async def test_wecom_websocket_voice_callback_reads_transcribed_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ws = _FakeWebSocket()
+    _install_fake_websockets(monkeypatch, ws)
+    channel = WeComChannel(
+        WeComChannelConfig(
+            connection_mode="websocket",
+            bot_id="bot-id",
+            bot_secret="bot-secret",
+        )
+    )
+
+    await channel.start()
+    try:
+        ws.feed(
+            {
+                "cmd": "aibot_msg_callback",
+                "headers": {"req_id": "voice-1"},
+                "body": {
+                    "msgid": "msg-voice",
+                    "chatid": "chat-1",
+                    "msgtype": "voice",
+                    "from": {"userid": "user-1"},
+                    "voice": {"content": "spoken text"},
+                },
+            }
+        )
+        incoming = await asyncio.wait_for(channel.receive(), timeout=1)
+        assert incoming.content == "spoken text"
+    finally:
+        await channel.stop()
+
+
+@pytest.mark.asyncio
+async def test_wecom_websocket_sends_application_heartbeat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(wecom_module, "_WEBSOCKET_APP_PING_INTERVAL_S", 0.01)
+    ws = _FakeWebSocket()
+    _install_fake_websockets(monkeypatch, ws)
+    channel = WeComChannel(
+        WeComChannelConfig(
+            connection_mode="websocket",
+            bot_id="bot-id",
+            bot_secret="bot-secret",
+        )
+    )
+
+    await channel.start()
+    try:
+        await _wait_until(lambda: len(ws.sent) >= 2)
+        ping = ws.sent[1]
+        assert ping["cmd"] == "ping"
+        assert ping["body"] == {}
+        ws.feed({"cmd": "pong", "headers": {"req_id": ping["headers"]["req_id"]}, "errcode": 0})
+    finally:
+        await channel.stop()
+
+
+@pytest.mark.asyncio
+async def test_wecom_websocket_reconnects_after_receive_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(wecom_module, "_WEBSOCKET_RECONNECT_INITIAL_S", 0.01)
+    monkeypatch.setattr(wecom_module, "_WEBSOCKET_RECONNECT_MAX_S", 0.01)
+    first_ws = _FakeWebSocket()
+    second_ws = _FakeWebSocket()
+    calls = _install_fake_websockets(monkeypatch, [first_ws, second_ws])
+    channel = WeComChannel(
+        WeComChannelConfig(
+            connection_mode="websocket",
+            bot_id="bot-id",
+            bot_secret="bot-secret",
+        )
+    )
+
+    await channel.start()
+    try:
+        first_ws.fail(RuntimeError("connection dropped"))
+        await _wait_until(lambda: len(calls) >= 2)
+        assert first_ws.closed is True
+        second_ws.feed(_inbound_text("inbound-2"))
+        incoming = await asyncio.wait_for(channel.receive(), timeout=1)
+        assert incoming.content == "hello"
+        assert incoming.metadata["wecom_req_id"] == "inbound-2"
     finally:
         await channel.stop()
 

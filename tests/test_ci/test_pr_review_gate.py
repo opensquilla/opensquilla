@@ -72,38 +72,161 @@ def test_review_gate_does_not_require_review_for_small_low_risk_pr() -> None:
         assert reasons == []
 
 
-def test_review_gate_counts_latest_non_author_approval_only() -> None:
+def test_review_gate_counts_latest_non_author_organization_member_approval_only() -> None:
     gate = _load_gate_module()
 
     reviews = [
         {
             "state": "APPROVED",
             "submitted_at": "2026-06-30T01:00:00Z",
+            "author_association": "MEMBER",
             "user": {"login": "reviewer-a"},
         },
         {
             "state": "CHANGES_REQUESTED",
             "submitted_at": "2026-06-30T02:00:00Z",
+            "author_association": "MEMBER",
             "user": {"login": "reviewer-a"},
         },
         {
             "state": "APPROVED",
+            "submitted_at": "2026-06-30T02:30:00Z",
+            "author_association": "CONTRIBUTOR",
+            "user": {"login": "external-reviewer"},
+        },
+        {
+            "state": "APPROVED",
             "submitted_at": "2026-06-30T03:00:00Z",
+            "author_association": "OWNER",
             "user": {"login": "reviewer-b"},
         },
         {
             "state": "COMMENTED",
             "submitted_at": "2026-06-30T03:30:00Z",
+            "author_association": "OWNER",
             "user": {"login": "reviewer-b"},
         },
         {
             "state": "APPROVED",
             "submitted_at": "2026-06-30T04:00:00Z",
+            "author_association": "OWNER",
             "user": {"login": "author"},
         },
     ]
 
     assert gate.active_approvers(reviews, author_login="author") == ("reviewer-b",)
+
+
+def test_review_gate_rejects_external_approval_for_risky_pr(tmp_path: Path) -> None:
+    event_path = tmp_path / "event.json"
+    files_path = tmp_path / "files.txt"
+    reviews_path = tmp_path / "reviews.json"
+    event_path.write_text(
+        json.dumps(
+            {
+                "repository": {"full_name": "opensquilla/opensquilla"},
+                "pull_request": {
+                    "number": 127,
+                    "user": {"login": "external-dev"},
+                    "author_association": "FIRST_TIME_CONTRIBUTOR",
+                    "additions": 5,
+                    "deletions": 0,
+                    "changed_files": 1,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    files_path.write_text("src/opensquilla/provider/openai.py\n", encoding="utf-8")
+    reviews_path.write_text(
+        json.dumps(
+            [
+                {
+                    "state": "APPROVED",
+                    "submitted_at": "2026-06-30T01:00:00Z",
+                    "author_association": "CONTRIBUTOR",
+                    "user": {"login": "external-reviewer"},
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "GITHUB_EVENT_PATH": event_path.as_posix(),
+            "PR_CHANGED_FILES_PATH": files_path.as_posix(),
+            "PR_REVIEWS_PATH": reviews_path.as_posix(),
+        }
+    )
+    result = subprocess.run(
+        [sys.executable, ".github/scripts/validate_pr_review_gate.py"],
+        cwd=Path(__file__).resolve().parents[2],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "non-author organization member approval" in result.stdout
+
+
+def test_review_gate_accepts_organization_member_approval_for_risky_pr(tmp_path: Path) -> None:
+    event_path = tmp_path / "event.json"
+    files_path = tmp_path / "files.txt"
+    reviews_path = tmp_path / "reviews.json"
+    event_path.write_text(
+        json.dumps(
+            {
+                "repository": {"full_name": "opensquilla/opensquilla"},
+                "pull_request": {
+                    "number": 128,
+                    "user": {"login": "external-dev"},
+                    "author_association": "FIRST_TIME_CONTRIBUTOR",
+                    "additions": 5,
+                    "deletions": 0,
+                    "changed_files": 1,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    files_path.write_text("src/opensquilla/provider/openai.py\n", encoding="utf-8")
+    reviews_path.write_text(
+        json.dumps(
+            [
+                {
+                    "state": "APPROVED",
+                    "submitted_at": "2026-06-30T01:00:00Z",
+                    "author_association": "MEMBER",
+                    "user": {"login": "org-member"},
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "GITHUB_EVENT_PATH": event_path.as_posix(),
+            "PR_CHANGED_FILES_PATH": files_path.as_posix(),
+            "PR_REVIEWS_PATH": reviews_path.as_posix(),
+        }
+    )
+    result = subprocess.run(
+        [sys.executable, ".github/scripts/validate_pr_review_gate.py"],
+        cwd=Path(__file__).resolve().parents[2],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "satisfied by: org-member" in result.stdout
 
 
 def test_review_gate_allows_small_external_pr_from_local_event(tmp_path: Path) -> None:
@@ -192,4 +315,5 @@ def test_review_gate_fails_risky_unapproved_pr_from_local_event(tmp_path: Path) 
 
     assert result.returncode == 1
     assert "::error title=Review required::" in result.stdout
+    assert "non-author organization member approval" in result.stdout
     assert "provider surface changed (src/opensquilla/provider/openai.py)" in result.stdout

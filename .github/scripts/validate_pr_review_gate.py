@@ -13,6 +13,7 @@ from urllib.request import Request, urlopen
 
 MAX_UNREVIEWED_CHANGED_FILES = 30
 MAX_UNREVIEWED_LINE_DELTA = 1000
+TRUSTED_REVIEWER_ASSOCIATIONS = frozenset({"MEMBER", "OWNER"})
 
 RISK_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
@@ -245,6 +246,9 @@ def active_approvers(reviews: list[dict[str, Any]], *, author_login: str) -> tup
         login = str(user.get("login") or "")
         if not login or login == author_login:
             continue
+        association = str(review.get("author_association") or "").upper()
+        if association not in TRUSTED_REVIEWER_ASSOCIATIONS:
+            continue
         if str(review.get("state") or "").upper() not in decisive_states:
             continue
         review_with_index = dict(review)
@@ -314,7 +318,8 @@ def main() -> int:
 
         _error(
             "Review required",
-            "This pull request needs at least one non-author approval because: "
+            "This pull request needs at least one non-author organization member "
+            "approval because: "
             + "; ".join(reasons)
             + ".",
         )

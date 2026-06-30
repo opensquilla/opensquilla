@@ -17,6 +17,7 @@ from opensquilla.gateway.config import (
     MemoryEmbeddingConfig,
     SquillaRouterConfig,
     _router_tier_profile_defaults,
+    validate_multi_provider_config,
 )
 from opensquilla.onboarding.audio_specs import get_audio_provider_setup_spec
 from opensquilla.onboarding.image_generation_specs import (
@@ -29,6 +30,7 @@ from opensquilla.onboarding.redaction import (
     redact_image_generation_payload,
     redact_memory_embedding_payload,
     redact_provider_payload,
+    redact_router_tiers,
     redact_search_payload,
 )
 from opensquilla.onboarding.search_specs import get_search_provider_setup_spec
@@ -268,7 +270,7 @@ def upsert_llm_provider(
         # Preserve the multi-provider feature gate across a provider
         # reconfigure; onboarding doesn't manage it, so rebuilding the
         # config from scratch must not silently reset it to the default.
-        multi_provider=config.llm.multi_provider.model_dump(),
+        multi_provider=config.llm.multi_provider.model_copy(deep=True),
     )
     _reconcile_router_profile_for_provider(new_cfg, provider_id)
     if api_key:
@@ -286,6 +288,9 @@ def upsert_llm_provider(
         "proxy": proxy,
         "provider_routing": dict(provider_routing or {}),
     }
+    # Validate before the RPC applies/persists, so an uncredentialed
+    # cross-provider tier is rejected without touching the live runtime.
+    validate_multi_provider_config(new_cfg)
     return MutationResult(
         config=new_cfg,
         changed=True,
@@ -354,7 +359,10 @@ def upsert_router(
     new_cfg.squilla_router = SquillaRouterConfig(**router_payload)
     _sync_llm_model_to_router_default(new_cfg)
     public_payload["default_tier"] = new_cfg.squilla_router.default_tier
-    public_payload["tiers"] = new_cfg.squilla_router.tiers
+    public_payload["tiers"] = redact_router_tiers(new_cfg.squilla_router.tiers)
+    # Validate before the RPC applies/persists, so an uncredentialed
+    # cross-provider tier is rejected without touching the live runtime.
+    validate_multi_provider_config(new_cfg)
     return MutationResult(
         config=new_cfg,
         changed=True,

@@ -1677,6 +1677,47 @@ class TlsConfig(BaseSettings):
     certfile: str = ""
 
 
+def validate_multi_provider_config(config: GatewayConfig) -> None:
+    """Reject not-yet-supported multi-provider router config.
+
+    ``llm.multi_provider.enabled`` is a PREVIEW flag: per-tier cross-provider
+    routing is not wired into the runtime yet (a routed tier only changes the
+    model, not the active provider), so a tier whose provider differs from
+    ``llm.provider`` would silently run against the primary provider. Until the
+    routing is implemented, reject such a tier at config-load/save time with an
+    actionable error rather than letting a mis-routing config validate. No-op
+    unless the flag is on; a disabled router is skipped (its tiers never route).
+
+    When per-tier cross-provider routing lands, this becomes a credential-
+    resolution check (inline api_key / api_key_env / provider default env var /
+    keyless local providers) instead of an outright rejection.
+    """
+    if not config.llm.multi_provider.enabled:
+        return
+
+    router = config.squilla_router
+    if not getattr(router, "enabled", False):
+        return  # router disabled: its tiers never route
+
+    llm_provider = str(getattr(config.llm, "provider", "") or "").strip().lower()
+    tiers = getattr(router, "tiers", None)
+    if not isinstance(tiers, dict):
+        return
+
+    for tier_id, tier in tiers.items():
+        if not isinstance(tier, dict):
+            continue
+        tier_provider = str(tier.get("provider") or "").strip().lower()
+        if not tier_provider or tier_provider == llm_provider:
+            continue  # inherits / matches the primary provider
+        raise ValueError(
+            f"squilla_router tier {tier_id!r} sets provider {tier_provider!r} "
+            f"(!= llm.provider {llm_provider!r}), but per-tier cross-provider routing is "
+            f"not supported yet — llm.multi_provider is a preview flag with no runtime "
+            f"routing effect. Remove the tier's provider or set it to {llm_provider!r}."
+        )
+
+
 class GatewayConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="OPENSQUILLA_GATEWAY_",
@@ -1776,6 +1817,14 @@ class GatewayConfig(BaseSettings):
                 "squilla_router.tier_profile requires llm.provider to match "
                 f"({normalized_profile!r} != {provider!r})"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_multi_provider_config(self) -> GatewayConfig:
+        # Fires on every full validation (boot load + persist save), so a
+        # not-yet-supported cross-provider tier is rejected before it can be
+        # written or loaded. Inert unless the multi_provider flag is on.
+        validate_multi_provider_config(self)
         return self
 
     # --- Context overflow policy -----------------------------------------

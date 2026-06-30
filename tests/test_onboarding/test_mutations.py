@@ -784,3 +784,45 @@ def test_upsert_image_generation_rejects_bad_fallback_reference():
             cfg, provider_id="openrouter", primary=_IMG_PRIMARY, api_key="sk-img",
             fallbacks=["no-slash-ref"],
         )
+
+
+def test_upsert_router_rejects_cross_provider_tier_as_unsupported():
+    cfg = GatewayConfig()
+    cfg.llm.provider = "openrouter"
+    cfg.llm.multi_provider.enabled = True
+    # The c1 override routes to deepseek (!= primary); per-tier cross-provider
+    # routing is not wired yet, so the mutation must refuse before the RPC can
+    # apply/persist (validate-before-apply).
+    with pytest.raises(ValueError, match="not supported yet"):
+        upsert_router(
+            cfg,
+            mode="openrouter-mix",
+            tiers={"c1": {"provider": "deepseek", "model": "deepseek-chat"}},
+        )
+
+
+def test_upsert_router_redacts_tier_api_key_in_public_payload():
+    cfg = GatewayConfig()
+    cfg.llm.provider = "openrouter"
+    # A same-provider tier carrying an inline api_key is accepted; the secret
+    # must be redacted in the echoed public payload but kept in the real config.
+    res = upsert_router(
+        cfg,
+        mode="openrouter-mix",
+        tiers={"c1": {"provider": "openrouter", "model": "x", "api_key": "sk-secret"}},
+    )
+    assert res.public_payload["tiers"]["c1"]["api_key"] == REDACTED_PLACEHOLDER
+    assert res.config.squilla_router.tiers["c1"]["api_key"] == "sk-secret"
+
+
+def test_upsert_router_allows_cross_provider_tier_when_flag_off(monkeypatch):
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    cfg = GatewayConfig()
+    cfg.llm.provider = "openrouter"
+    # Flag off (default): cross-provider tiers are inert, not enforced.
+    res = upsert_router(
+        cfg,
+        mode="openrouter-mix",
+        tiers={"c1": {"provider": "deepseek", "model": "deepseek-chat"}},
+    )
+    assert res.config.squilla_router.tiers["c1"]["provider"] == "deepseek"

@@ -6,7 +6,12 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from opensquilla.gateway.config import ROUTER_TIER_PROFILE_IDS, LlmProviderConfig
+from opensquilla.gateway.config import (
+    ROUTER_TIER_PROFILE_IDS,
+    GatewayConfig,
+    LlmProviderConfig,
+    validate_multi_provider_config,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DIRECT_ROUTER_PROFILE_IDS = sorted(ROUTER_TIER_PROFILE_IDS - {"openrouter"})
@@ -390,3 +395,54 @@ def test_multi_provider_flag_round_trips_through_config_dump() -> None:
 def test_multi_provider_flag_rejects_unknown_key() -> None:
     with pytest.raises(ValidationError):
         LlmProviderConfig(multi_provider={"enabled": True, "bogus": 1})
+
+
+def _cross_provider_cfg(*, enabled: bool, tier: dict) -> GatewayConfig:
+    cfg = GatewayConfig()
+    cfg.llm.provider = "openrouter"
+    cfg.llm.multi_provider.enabled = enabled
+    cfg.squilla_router.tiers = {"c1": tier}
+    return cfg
+
+
+def test_cross_provider_tier_inert_when_flag_off() -> None:
+    cfg = _cross_provider_cfg(enabled=False, tier={"provider": "deepseek", "model": "x"})
+    validate_multi_provider_config(cfg)  # no raise
+
+
+def test_cross_provider_tier_rejected_as_unsupported_when_enabled() -> None:
+    cfg = _cross_provider_cfg(enabled=True, tier={"provider": "deepseek", "model": "x"})
+    with pytest.raises(ValueError, match="not supported yet"):
+        validate_multi_provider_config(cfg)
+
+
+def test_cross_provider_tier_rejected_even_with_inline_credential() -> None:
+    # The preview flag has no routing effect, so a credential does not make a
+    # cross-provider tier runnable — it is still rejected as unsupported.
+    cfg = _cross_provider_cfg(
+        enabled=True, tier={"provider": "deepseek", "model": "x", "api_key": "sk"}
+    )
+    with pytest.raises(ValueError, match="not supported yet"):
+        validate_multi_provider_config(cfg)
+
+
+def test_same_provider_tier_is_allowed() -> None:
+    cfg = _cross_provider_cfg(enabled=True, tier={"provider": "openrouter", "model": "x"})
+    validate_multi_provider_config(cfg)  # no raise
+
+
+def test_cross_provider_tier_rejected_by_full_validation() -> None:
+    with pytest.raises(ValidationError):
+        GatewayConfig.model_validate(
+            {
+                "llm": {"provider": "openrouter", "multi_provider": {"enabled": True}},
+                "squilla_router": {"tiers": {"c1": {"provider": "deepseek", "model": "x"}}},
+            }
+        )
+
+
+def test_cross_provider_tier_not_checked_when_router_disabled() -> None:
+    cfg = _cross_provider_cfg(enabled=True, tier={"provider": "deepseek", "model": "x"})
+    cfg.squilla_router.enabled = False
+    # Router disabled: its tiers never route, so nothing to reject.
+    validate_multi_provider_config(cfg)  # no raise

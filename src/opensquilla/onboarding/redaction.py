@@ -52,6 +52,21 @@ def redact_memory_embedding_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def redact_router_tiers(tiers: dict[str, Any]) -> dict[str, Any]:
+    """Redact per-tier ``api_key`` secrets before echoing router config back.
+
+    A router tier may carry an inline ``api_key`` for a cross-provider
+    provider; ``api_key_env`` is only an env-var name and is preserved.
+    """
+    out: dict[str, Any] = {}
+    for tier_id, tier in tiers.items():
+        if isinstance(tier, dict) and tier.get("api_key"):
+            tier = dict(tier)
+            tier["api_key"] = REDACTED_PLACEHOLDER
+        out[tier_id] = tier
+    return out
+
+
 def redact_channel_entry(type_name: str, payload: dict[str, Any]) -> dict[str, Any]:
     try:
         spec = get_channel_setup_spec(type_name)

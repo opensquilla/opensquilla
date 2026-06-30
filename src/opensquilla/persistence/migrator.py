@@ -21,6 +21,17 @@ from yoyo import exceptions, get_backend, read_migrations
 log = logging.getLogger(__name__)
 
 
+class SchemaAheadError(RuntimeError):
+    """The database records migrations the running code does not know about.
+
+    Signals that the data was created or upgraded by a NEWER OpenSquilla build
+    than the one now running — e.g. a desktop auto-update that was later rolled
+    back to an older app. Booting would run old code against a newer schema (no
+    yoyo down-migration is invoked at boot), so we refuse loudly instead of
+    risking silent corruption.
+    """
+
+
 def _adapt_sqlite_datetime(value: datetime) -> str:
     return value.isoformat(" ")
 
@@ -189,17 +200,97 @@ def _yoyo_utf8_open() -> Iterator[None]:
         builtins.open = real_open  # type: ignore[assignment]
 
 
+def _read_applied_migration_ids(db_path: Path) -> set[str] | None:
+    """Return the migration ids recorded as applied in *db_path*.
+
+    Returns an empty set when the yoyo ledger table does not exist yet (a fresh
+    database), or ``None`` when the database cannot be inspected.
+    """
+    try:
+        connection = sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True)
+    except sqlite3.Error as exc:
+        log.warning(
+            "migrator.applied_inspect_failed",
+            extra={"db_path": str(db_path), "error": str(exc)},
+        )
+        return None
+    try:
+        try:
+            table_rows = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name LIKE '%yoyo_migration'"
+            ).fetchall()
+        except sqlite3.Error:
+            return None
+        table = next(
+            (
+                name
+                for (name,) in table_rows
+                if isinstance(name, str) and name.endswith("yoyo_migration")
+            ),
+            None,
+        )
+        if table is None:
+            return set()
+        rows = connection.execute(f'SELECT migration_id FROM "{table}"').fetchall()
+    except sqlite3.OperationalError:
+        return set()
+    finally:
+        connection.close()
+    return {str(migration_id) for (migration_id,) in rows if migration_id}
+
+
+def assert_schema_not_ahead(db_url: str, migrations_dir: Path) -> None:
+    """Refuse to run when the database is ahead of the code's migration set.
+
+    Forward migrations are applied automatically at boot; the reverse — running
+    older code against a database a newer build already migrated — has no
+    guardrail in yoyo, so we add one here. This is a no-op for fresh, in-memory,
+    or non-inspectable databases; it only raises :class:`SchemaAheadError` on a
+    genuine mismatch.
+    """
+    path = Path(migrations_dir)
+    if not path.is_dir():
+        return
+    db_path = _sqlite_path_from_db_url(db_url)
+    if db_path is None or not db_path.exists():
+        return
+    applied = _read_applied_migration_ids(db_path)
+    if not applied:
+        return
+    with _yoyo_utf8_open():
+        known = {migration.id for migration in read_migrations(str(path))}
+    unknown = sorted(applied - known)
+    if not unknown:
+        return
+    log.error(
+        "migrator.schema_ahead",
+        extra={"db_path": str(db_path), "unknown_migrations": unknown},
+    )
+    raise SchemaAheadError(
+        f"The OpenSquilla database at {db_path} was created by a newer version "
+        f"and records {len(unknown)} migration(s) this build does not know about "
+        f"({', '.join(unknown)}). Update OpenSquilla to a matching or newer "
+        "version, or restore a backup taken with this version."
+    )
+
+
 def apply_pending(db_url: str, migrations_dir: Path) -> list[str]:
     """Apply every migration in *migrations_dir* not yet recorded in *db_url*.
 
     Returns the ordered list of migration ids that were applied in this call.
     If no migrations are pending, returns ``[]``. Callers running at boot
     should log the return value for audit.
+
+    Raises :class:`SchemaAheadError` first if the database records migrations
+    unknown to this build (i.e. a downgrade onto newer data).
     """
     path = Path(migrations_dir)
     if not path.is_dir():
         log.warning("migrator.missing_dir", extra={"migrations_dir": str(path)})
         return []
+
+    assert_schema_not_ahead(db_url, path)
 
     _ensure_sqlite_datetime_adapter()
     try:

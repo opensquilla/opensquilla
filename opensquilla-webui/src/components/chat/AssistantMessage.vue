@@ -375,7 +375,7 @@ function onMessageClick(event: MouseEvent) {
   box-sizing: border-box;
   padding: 0.5rem 1rem 0.5rem 2.5rem;
   border-radius: 0.875rem;
-  transition: background 0.16s ease, box-shadow 0.16s ease;
+  transition: background var(--dur-base) var(--ease-standard), box-shadow var(--dur-base) var(--ease-standard);
 }
 
 .msg-ai--share-mode:hover {
@@ -405,7 +405,7 @@ function onMessageClick(event: MouseEvent) {
   color: var(--text-muted);
   box-shadow: var(--shadow-md);
   cursor: pointer;
-  transition: transform 0.14s ease, border-color 0.14s ease, background 0.14s ease, color 0.14s ease;
+  transition: transform var(--dur-fast) var(--ease-standard), border-color var(--dur-fast) var(--ease-standard), background var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
 }
 
 .chat-share-picker:hover {
@@ -471,7 +471,7 @@ function onMessageClick(event: MouseEvent) {
   display: flex;
   gap: 0.125rem;
   opacity: 0;
-  transition: opacity 0.15s;
+  transition: opacity var(--dur-fast);
 }
 
 .msg-ai:hover .msg-ai-actions,
@@ -573,7 +573,7 @@ function onMessageClick(event: MouseEvent) {
 
 .msg-ai-meta > span:not(.savings-indicator):not(.msg-meta__more) {
   opacity: 0.72;
-  transition: opacity 0.16s ease, color 0.16s ease;
+  transition: opacity var(--dur-base) var(--ease-standard), color var(--dur-base) var(--ease-standard);
 }
 
 .msg-ai:hover .msg-ai-meta > span:not(.savings-indicator):not(.msg-meta__more) {

@@ -61,7 +61,7 @@ function gapText(i: number): string {
   box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
   border-radius: var(--radius-md);
 }
-.status-history__chevron { transition: transform 0.12s ease; flex-shrink: 0; color: var(--text-dim); }
+.status-history__chevron { transition: transform var(--dur-fast) var(--ease-standard); flex-shrink: 0; color: var(--text-dim); }
 .status-history[open] .status-history__chevron { transform: rotate(90deg); }
 .status-history__list {
   margin: 0;

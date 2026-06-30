@@ -391,7 +391,7 @@ function sourceTrustLabel(source: SourcePart): string {
 
 .sources-row__chevron {
   color: var(--text-dim);
-  transition: transform 0.12s ease;
+  transition: transform var(--dur-fast) var(--ease-standard);
 }
 
 .sources-row__toggle[aria-expanded='true'] .sources-row__chevron {
@@ -414,7 +414,7 @@ function sourceTrustLabel(source: SourcePart): string {
 
 .sources-row__item--pulse {
   border-radius: var(--radius-sm);
-  animation: sourcePulse 1.2s ease;
+  animation: sourcePulse 1.2s ease; /* motion-allow: long one-shot attention pulse, outside the transition scale */
 }
 
 @keyframes sourcePulse {

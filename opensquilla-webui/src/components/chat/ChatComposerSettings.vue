@@ -199,7 +199,7 @@ onMounted(() => rootRef.value?.focus())
   background: transparent;
   display: grid;
   place-content: center;
-  transition: border-color 0.14s ease;
+  transition: border-color var(--dur-fast) var(--ease-standard);
 }
 
 .composer-settings__radio input::before {
@@ -209,7 +209,7 @@ onMounted(() => rootRef.value?.focus())
   border-radius: 999px;
   background: var(--accent);
   transform: scale(0);
-  transition: transform 0.14s ease;
+  transition: transform var(--dur-fast) var(--ease-standard);
 }
 
 .composer-settings__radio input:checked {

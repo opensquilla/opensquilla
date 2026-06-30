@@ -101,7 +101,7 @@ useDialogA11y(modalRef, isOpen, onCancel, { initialFocus: cancelBtn })
 
 .modal-enter-active,
 .modal-leave-active {
-  transition: opacity 0.2s;
+  transition: opacity var(--dur-base);
 }
 
 .modal-enter-from,

@@ -167,9 +167,15 @@
      --queued is the new sixth). Used only to encode run state, never decor. */
   --ok: #39D7A2;
   --warn: #E8B23A;
+  /* Brighter amber for small non-text fills (status dots, badge fills) where the
+     text-tuned --warn would read muddy. Keep --warn for any warn *text*. */
+  --warn-fill: #E8B23A;
   --danger: #FF6B6B;
   --info: #56C2E6;
   --queued: #8C7DF2;
+  /* Data-viz only: a second series that separates from --accent by lightness
+     (not hue), so it never collides with the reserved run-state spectrum. */
+  --chart-2: color-mix(in srgb, var(--accent) 42%, var(--bg-surface));
 
   /* Syntax highlighting (chat code blocks) */
   --syntax-comment: #8B93A6;
@@ -226,9 +232,13 @@
   --accent-foreground: #FFFFFF;
   --ok: #0E7A52;
   --warn: #8A6410;
+  /* Light fills: a true amber that reads as "warn" at small sizes, where the
+     text-AA-tuned dark --warn looks like olive/brown. */
+  --warn-fill: #B8860B;
   --danger: #C2382E;
   --info: #1E6E8C;
   --queued: #5A48C0;
+  --chart-2: color-mix(in srgb, var(--accent) 42%, var(--bg-surface));
 
   /* Syntax highlighting (chat code blocks) */
   --syntax-comment: #5F6B7A;
@@ -271,7 +281,7 @@ html, body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
-  transition: background-color 200ms ease, color 150ms ease;
+  transition: background-color var(--dur-base) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
 }
 
 /* NOTE: deliberately NO locale-gated layout rules (e.g. `:lang(zh) { line-height }`).
@@ -288,8 +298,13 @@ body::before {
   pointer-events: none;
   background-image: var(--grain);
   background-size: 160px 160px;
+  /* Composited as a plain low-opacity layer. A `mix-blend-mode: overlay` here
+     forced the renderer to read + re-blend the backdrop on EVERY repaint beneath
+     this full-viewport layer (route fades, the sidebar slide, card reveals,
+     settings scroll), amplifying every other animation's paint cost. The grain
+     already carries its own alpha, so a normal composite reads identical at this
+     opacity without the per-repaint blend pass. */
   opacity: var(--grain-opacity);
-  mix-blend-mode: overlay;
   z-index: 0;
 }
 
@@ -378,28 +393,33 @@ pre {
   background: var(--bg-hover);
   color: var(--text);
 }
-.btn:hover { background: var(--bg-elevated); }
-.btn:active { transform: translateY(0.5px); }
+.btn:not(:disabled):hover { background: var(--bg-elevated); }
+.btn:not(:disabled):active { transform: translateY(0.5px); }
+/* Disabled buttons must read as inert: no hover feedback, no pointer cursor. */
+.btn:disabled, .btn[disabled] {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
 
 .btn--primary {
   background: var(--accent);
   color: var(--accent-foreground);
   border-color: var(--accent);
 }
-.btn--primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn--primary:not(:disabled):hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 .btn--danger {
   background: var(--danger);
   color: var(--bg);
   border-color: var(--danger);
 }
-.btn--danger:hover { opacity: 0.9; }
+.btn--danger:not(:disabled):hover { opacity: 0.9; }
 
 .btn--ghost {
   background: transparent;
   border-color: transparent;
   color: var(--text-muted);
 }
-.btn--ghost:hover { background: var(--bg-hover); color: var(--text); }
+.btn--ghost:not(:disabled):hover { background: var(--bg-hover); color: var(--text); }
 
 .btn--icon {
   width: 32px;
@@ -483,24 +503,46 @@ pre {
   padding: 8px 0 10px;
   overflow: hidden;
   transform: translateX(-100%);
-  transition: transform 280ms cubic-bezier(0.32, 0.72, 0, 1),
-              box-shadow 280ms ease;
-  box-shadow: none;
+  transition: transform var(--dur-enter) cubic-bezier(0.32, 0.72, 0, 1);
 }
 
 /* Docked: fixed in place, pushes main content */
 .sidebar.docked {
   transform: translateX(0);
-  box-shadow: none;
 }
 
-/* Hovered: floating overlay, does NOT push main content */
+/* Hovered: floating overlay, does NOT push main content. The drop shadow lives
+   on a separate compositor layer (.sidebar-shadow) so it fades via opacity
+   instead of repainting a multi-layer box-shadow on .sidebar every frame — and
+   since .sidebar is overflow:hidden, a child shadow would be clipped anyway. */
 .sidebar.hovered {
   transform: translateX(0);
+}
+
+/* Sidebar drop shadow as its own layer: a static box-shadow faded in/out via
+   opacity (compositor) and slid in lockstep with the sidebar (same duration +
+   easing as .sidebar's transform) so the slide and its shadow stay in sync. */
+.sidebar-shadow {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 260px;
+  z-index: 199;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(-100%);
   box-shadow:
     0 0 0 1px rgba(0, 0, 0, 0.03),
     4px 0 24px rgba(0, 0, 0, 0.08),
     8px 0 48px rgba(0, 0, 0, 0.04);
+  transition: opacity var(--dur-enter) cubic-bezier(0.32, 0.72, 0, 1),
+              transform var(--dur-enter) cubic-bezier(0.32, 0.72, 0, 1);
+  will-change: opacity, transform;
+}
+.sidebar-shadow.visible {
+  opacity: 1;
+  transform: translateX(0);
 }
 
 /* Hover trigger strip on left edge */
@@ -534,7 +576,7 @@ pre {
   border-radius: var(--radius-md);
   color: var(--sidebar-text);
   cursor: pointer;
-  transition: background 120ms, color 120ms, border-color 120ms;
+  transition: background var(--dur-fast), color var(--dur-fast), border-color var(--dur-fast);
   flex-shrink: 0;
 }
 .sidebar-dock-toggle:hover {
@@ -608,7 +650,7 @@ pre {
   font-size: var(--fs-sm);
   font-weight: 600;
   cursor: pointer;
-  transition: background 120ms, border-color 120ms;
+  transition: background var(--dur-fast), border-color var(--dur-fast);
 }
 .sidebar-new-session:hover {
   background: var(--sidebar-control-hover);
@@ -715,7 +757,7 @@ pre {
   border-radius: var(--radius-md);
   color: var(--sidebar-text-soft);
   cursor: pointer;
-  transition: background 120ms, border-color 120ms, color 120ms;
+  transition: background var(--dur-fast), border-color var(--dur-fast), color var(--dur-fast);
 }
 .sidebar-cmd-btn:hover {
   background: var(--sidebar-control-hover);
@@ -778,7 +820,7 @@ pre {
   color: var(--sidebar-text-soft);
   cursor: pointer;
   border-radius: var(--radius-sm);
-  transition: color 120ms, background 120ms;
+  transition: color var(--dur-fast), background var(--dur-fast);
 }
 .sidebar-refresh-btn:hover {
   color: var(--sidebar-text-strong);
@@ -811,7 +853,7 @@ pre {
   position: relative;
   text-align: left;
   text-decoration: none;
-  transition: background 120ms, color 120ms;
+  transition: background var(--dur-fast), color var(--dur-fast);
   cursor: pointer;
 }
 
@@ -895,7 +937,7 @@ pre {
   font-size: var(--fs-xs);
   font-weight: 600;
   cursor: pointer;
-  transition: background 120ms, color 120ms, border-color 120ms;
+  transition: background var(--dur-fast), color var(--dur-fast), border-color var(--dur-fast);
 }
 
 .sidebar-agent-chip:hover {
@@ -923,7 +965,7 @@ pre {
   font-size: 0.8125rem;
   font-family: var(--font-sans);
   cursor: pointer;
-  transition: background 120ms, color 120ms;
+  transition: background var(--dur-fast), color var(--dur-fast);
   text-align: left;
   width: calc(100% - var(--sp-2));
 }
@@ -949,7 +991,7 @@ pre {
 .sidebar-history-dot.status--idle { background: var(--sidebar-text-soft); }
 .sidebar-history-dot.status--running { background: var(--accent); animation: live-pulse var(--dur-pulse) var(--ease-standard) infinite; }
 .sidebar-history-dot.status--queued { background: var(--queued); }
-.sidebar-history-dot.status--interrupted { background: var(--warn); }
+.sidebar-history-dot.status--interrupted { background: var(--warn-fill); }
 .sidebar-history-dot.status--failed { background: var(--danger); }
 .sidebar-history-dot.status--timeout { background: var(--danger); }
 .sidebar-history-dot.status--cancelled { background: var(--sidebar-text-soft); }
@@ -1021,7 +1063,7 @@ pre {
   font-weight: 700;
   text-transform: uppercase;
   cursor: pointer;
-  transition: background 120ms, color 120ms, border-color 120ms;
+  transition: background var(--dur-fast), color var(--dur-fast), border-color var(--dur-fast);
 }
 .sidebar-agent-badge:hover {
   color: var(--sidebar-text-strong);
@@ -1116,7 +1158,7 @@ pre {
   background: transparent;
   color: var(--sidebar-text-soft);
   cursor: pointer;
-  transition: background 120ms, color 120ms;
+  transition: background var(--dur-fast), color var(--dur-fast);
 }
 .sidebar-setup-banner__dismiss:hover {
   background: var(--sidebar-item-hover);
@@ -1138,7 +1180,7 @@ pre {
   font-size: var(--fs-xs);
   font-weight: 700;
   cursor: pointer;
-  transition: background 120ms, border-color 120ms;
+  transition: background var(--dur-fast), border-color var(--dur-fast);
 }
 .sidebar-setup-banner__cta:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 .sidebar-setup-banner__link {
@@ -1150,7 +1192,7 @@ pre {
   font-size: var(--fs-xs);
   font-weight: 600;
   cursor: pointer;
-  transition: background 120ms, border-color 120ms;
+  transition: background var(--dur-fast), border-color var(--dur-fast);
 }
 .sidebar-setup-banner__link:hover { background: var(--sidebar-item-hover); }
 
@@ -1200,7 +1242,7 @@ pre {
   font-size: var(--fs-sm);
   font-weight: 500;
   text-decoration: none;
-  transition: background 120ms, color 120ms;
+  transition: background var(--dur-fast), color var(--dur-fast);
   cursor: pointer;
 }
 .nav-item:hover {
@@ -1221,7 +1263,13 @@ pre {
   position: relative;
   background: var(--sidebar-bg);
   margin-left: 0;
-  transition: margin-left var(--dur-enter) var(--ease-standard);
+  /* The content edge SNAPS between docked/undocked instead of transitioning
+     `margin-left`. Animating margin-left is a layout property: it reflowed the
+     entire in-flow content subtree (scroll container, the freshly-mounted view,
+     every card) ~17× over 280ms AND made the topbar ResizeObserver fire once per
+     frame (forced sync layout each time). The sidebar itself still animates via a
+     cheap compositor `transform: translateX`, so the dock gesture stays animated;
+     only the content gutter snaps, which is jank-free. */
 }
 
 .main--chat {
@@ -1324,6 +1372,11 @@ pre {
   background: var(--bg-hover);
   color: var(--text);
 }
+/* Branded focus ring for the theme/language popover items (reused by both). */
+.theme-menu__item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 
 .theme-menu__item[aria-checked='true'] {
   color: var(--text);
@@ -1347,6 +1400,10 @@ pre {
   padding: var(--sp-4);
   overflow-y: auto;
   min-width: 0;
+  /* Positioning context so the route cross-fade can park the LEAVING view
+     absolutely (see route-fx.css) — the entering view takes flow immediately
+     (mounting + fetching during the fade) instead of waiting out a serial gap. */
+  position: relative;
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -1383,7 +1440,7 @@ pre {
   font-size: var(--fs-sm);
   font-weight: 600;
   cursor: pointer;
-  transition: opacity 150ms;
+  transition: opacity var(--dur-fast);
 }
 .approval-inline:hover { opacity: 0.85; }
 
@@ -1533,7 +1590,7 @@ pre {
     line-height: 1.2;
     text-decoration: none;
     cursor: pointer;
-    transition: color 120ms;
+    transition: color var(--dur-fast);
   }
   .mobile-tab:hover {
     color: var(--text);
@@ -1616,10 +1673,10 @@ pre {
 /* ── Reduced Motion ──────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
-    animation-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important; /* motion-allow: reduced-motion kill-switch, not a token */
     /* Stop infinite loops from ticking forever — one iteration then rest. */
     animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important; /* motion-allow: reduced-motion kill-switch, not a token */
     scroll-behavior: auto !important;
   }
 }

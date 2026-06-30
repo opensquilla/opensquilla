@@ -120,11 +120,11 @@
   cursor: pointer;
   box-shadow: var(--shadow-xs);
   transition:
-    transform 0.14s ease,
-    border-color 0.14s ease,
-    background 0.14s ease,
-    color 0.14s ease,
-    box-shadow 0.14s ease;
+    transform var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    background var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard);
 }
 
 .chat-share-btn:hover:not(:disabled) {
@@ -277,10 +277,12 @@
   color: var(--danger);
 }
 
+/* Proactive context-window pressure chip (>=85%). Pairs with .chat-chip for the
+   pill shape; this adds the danger-tinted treatment. */
 .chat-ctx-warn {
-  font-size: 0.8125rem;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, var(--bg-surface));
 }
 
 .chat-body {
@@ -481,7 +483,7 @@
 
 /* Honest staleness note: shown when no gateway signal for a while. */
 .work-card--stale .work-card__dot {
-  background: var(--warn);
+  background: var(--warn-fill);
   animation: none;
   box-shadow: none;
 }
@@ -531,7 +533,7 @@
 
 .thinking-fold__chevron {
   flex-shrink: 0;
-  transition: transform 0.12s ease;
+  transition: transform var(--dur-fast) var(--ease-standard);
 }
 
 .thinking-fold[open] > .thinking-fold__summary .thinking-fold__chevron {
@@ -1309,7 +1311,7 @@
   font-size: var(--fs-sm);
   font-weight: 600;
   cursor: pointer;
-  transition: background 120ms, border-color 120ms;
+  transition: background var(--dur-fast), border-color var(--dur-fast);
 }
 .chat-landing-agent__btn:hover {
   background: var(--bg-hover);

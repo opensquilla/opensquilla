@@ -132,7 +132,7 @@ watch(() => props.open, open => {
   display: flex;
   flex-direction: column;
   box-shadow: var(--shadow-lg);
-  animation: toolSheetIn 0.18s ease;
+  animation: toolSheetIn var(--dur-base) var(--ease-out);
 }
 
 @keyframes toolSheetIn {

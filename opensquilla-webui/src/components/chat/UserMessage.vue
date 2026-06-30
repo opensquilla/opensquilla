@@ -143,7 +143,7 @@ function attachmentMeta(attachment: DisplayAttachment): string {
   box-sizing: border-box;
   padding: 0.5rem 2.5rem 0.5rem 1rem;
   border-radius: 0.875rem;
-  transition: background 0.16s ease, box-shadow 0.16s ease;
+  transition: background var(--dur-base) var(--ease-standard), box-shadow var(--dur-base) var(--ease-standard);
 }
 
 .msg-user--share-mode:hover {
@@ -173,7 +173,7 @@ function attachmentMeta(attachment: DisplayAttachment): string {
   color: var(--text-muted);
   box-shadow: var(--shadow-md);
   cursor: pointer;
-  transition: transform 0.14s ease, border-color 0.14s ease, background 0.14s ease, color 0.14s ease;
+  transition: transform var(--dur-fast) var(--ease-standard), border-color var(--dur-fast) var(--ease-standard), background var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
 }
 
 .chat-share-picker:hover {
@@ -216,7 +216,7 @@ function attachmentMeta(attachment: DisplayAttachment): string {
   gap: 0.125rem;
   margin-top: 0.125rem;
   opacity: 0;
-  transition: opacity 0.15s;
+  transition: opacity var(--dur-fast);
   justify-content: flex-end;
 }
 

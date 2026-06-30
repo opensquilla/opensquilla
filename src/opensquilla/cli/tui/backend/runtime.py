@@ -281,6 +281,15 @@ async def run_tui_runtime(
                             )
                         continue
                     runtime_state.enqueue(user_input)
+                    # The message was echoed like a normal submission, but it did
+                    # NOT start a turn — tell the user it is queued behind the
+                    # running one (it will run next, or steer the turn if it makes
+                    # a tool call) so "did my message send?" is never ambiguous.
+                    if hooks.notice is not None:
+                        position = runtime_state.pending_size
+                        hooks.notice(
+                            f"[dim]Queued (#{position}) behind the running turn.[/dim]"
+                        )
                     continue
 
                 if config.concurrent_input_during_turn:

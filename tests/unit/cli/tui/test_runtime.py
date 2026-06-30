@@ -595,6 +595,43 @@ async def test_runtime_cancel_without_queue_emits_no_discard_notice() -> None:
 
 
 @pytest.mark.asyncio
+async def test_runtime_notifies_when_input_is_queued_mid_turn() -> None:
+    inputs: asyncio.Queue[str | None] = asyncio.Queue()
+    surface = _FakeSurface(inputs)
+    state = TuiRuntimeState()
+    notices: list[str] = []
+    first_started = asyncio.Event()
+
+    async def _dispatch(user_input: str) -> bool:
+        if user_input == "first":
+            first_started.set()
+            await asyncio.sleep(5)
+        return True
+
+    task = asyncio.create_task(
+        run_tui_runtime(
+            dispatch=_dispatch,
+            surface_factory=_surface_factory(surface),
+            config=_runtime_config(state=state),
+            hooks=_runtime_hooks(notice=notices.append),
+        )
+    )
+
+    await inputs.put("first")
+    await asyncio.wait_for(first_started.wait(), timeout=2.0)
+    await inputs.put("second")
+    await _wait_until(lambda: state.pending_items == ("second",))
+    active_cb = next(cb for cb in reversed(surface.cancel_callbacks) if cb is not None)
+    active_cb()
+    await inputs.put(None)
+    await asyncio.wait_for(task, timeout=2.0)
+
+    # Typing mid-turn must surface a clear "queued" signal — the message was not
+    # silently dropped, nor did it start a turn.
+    assert any("Queued (#1) behind the running turn" in notice for notice in notices)
+
+
+@pytest.mark.asyncio
 async def test_runtime_cancel_suppresses_adapter_cancel_hook_errors() -> None:
     inputs: asyncio.Queue[str | None] = asyncio.Queue()
     surface = _FakeSurface(inputs)

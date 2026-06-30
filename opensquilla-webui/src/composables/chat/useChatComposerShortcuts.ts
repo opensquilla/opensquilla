@@ -22,18 +22,50 @@ export interface UseChatComposerShortcutsOptions {
   popPendingTail: () => boolean
   enqueuePendingInput: (text: string) => boolean
   sendCurrentInput: () => void
+  isSafariWebKit?: () => boolean
 }
+
+interface TextareaSnapshot {
+  value: string
+  selectionStart: number
+  selectionEnd: number
+  afterValue: string
+  afterSelectionStart: number
+  afterSelectionEnd: number
+}
+
+const DELETE_INPUT_TYPES = new Set([
+  'deleteByCut',
+  'deleteByDrag',
+  'deleteContent',
+  'deleteContentBackward',
+  'deleteContentForward',
+  'deleteHardLineBackward',
+  'deleteHardLineForward',
+  'deleteSoftLineBackward',
+  'deleteSoftLineForward',
+  'deleteWordBackward',
+  'deleteWordForward',
+])
 
 export function useChatComposerShortcuts(options: UseChatComposerShortcutsOptions) {
   const inputHistoryIdx = ref<number | null>(null)
   const inputHistoryDraft = ref('')
+  let deleteUndoSnapshot: TextareaSnapshot | null = null
+  let pendingUndoRepair: TextareaSnapshot | null = null
 
   function resetInputHistory() {
     inputHistoryIdx.value = null
     inputHistoryDraft.value = ''
+    clearTextareaUndoState()
   }
 
-  function onTextareaInput() {
+  function onTextareaBeforeInput(event: InputEvent) {
+    updateTextareaUndoStateBeforeInput(event)
+  }
+
+  function onTextareaInput(event?: Event) {
+    updateTextareaUndoStateAfterInput(event)
     options.autoResizeTextarea()
     options.handleSlashInput()
   }
@@ -67,6 +99,7 @@ export function useChatComposerShortcuts(options: UseChatComposerShortcutsOption
       if (e.key === 'Enter' || e.key === 'Tab') {
         if (options.filteredSlashCmds.value.length > 0) {
           e.preventDefault()
+          clearTextareaUndoState()
           options.selectSlashCmd(options.filteredSlashCmds.value[options.slashIdx.value])
           return
         }
@@ -80,6 +113,7 @@ export function useChatComposerShortcuts(options: UseChatComposerShortcutsOption
 
     if (e.key === 'Escape' && !options.isStreaming.value && options.pendingQueue.value.length === 0 && options.inputText.value) {
       e.preventDefault()
+      clearTextareaUndoState()
       options.inputText.value = ''
       options.autoResizeTextarea()
       return
@@ -87,12 +121,14 @@ export function useChatComposerShortcuts(options: UseChatComposerShortcutsOption
 
     if (e.key === 'ArrowUp' && e.altKey && caretAtStart && options.pendingQueue.value.length > 0) {
       e.preventDefault()
+      clearTextareaUndoState()
       options.popPendingTail()
       return
     }
 
     if (e.key === 'ArrowDown' && e.altKey && caretAtEnd && options.inputText.value && options.canQueueMore.value) {
       e.preventDefault()
+      clearTextareaUndoState()
       options.enqueuePendingInput(options.inputText.value)
       return
     }
@@ -106,8 +142,109 @@ export function useChatComposerShortcuts(options: UseChatComposerShortcutsOption
 
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
+      clearTextareaUndoState()
       options.sendCurrentInput()
     }
+  }
+
+  function updateTextareaUndoStateBeforeInput(event: InputEvent) {
+    if (!shouldUseSafariUndoGuard()) return
+    const inputType = inputTypeOf(event)
+    const field = textareaFromEvent(event)
+    if (!field) {
+      clearTextareaUndoState()
+      return
+    }
+
+    if (DELETE_INPUT_TYPES.has(inputType)) {
+      pendingUndoRepair = null
+      if (!deleteUndoSnapshot || field.value !== deleteUndoSnapshot.afterValue) {
+        deleteUndoSnapshot = snapshotTextarea(field)
+      }
+      return
+    }
+
+    if (inputType === 'historyUndo') {
+      pendingUndoRepair = deleteUndoSnapshot && field.value === deleteUndoSnapshot.afterValue
+        ? { ...deleteUndoSnapshot }
+        : null
+      if (!pendingUndoRepair) clearTextareaUndoState()
+      return
+    }
+
+    clearTextareaUndoState()
+  }
+
+  function updateTextareaUndoStateAfterInput(event?: Event) {
+    if (!shouldUseSafariUndoGuard()) return
+    const inputType = inputTypeOf(event)
+    const field = textareaFromEvent(event)
+
+    if (pendingUndoRepair && field && inputType === 'historyUndo') {
+      const snap = pendingUndoRepair
+      pendingUndoRepair = null
+      if (field.value === '' && snap.value !== '' && field.value !== snap.value) {
+        restoreTextarea(field, snap)
+        clearTextareaUndoState()
+        return
+      }
+      clearTextareaUndoState()
+      return
+    }
+
+    if (field && DELETE_INPUT_TYPES.has(inputType) && deleteUndoSnapshot) {
+      deleteUndoSnapshot.afterValue = field.value
+      deleteUndoSnapshot.afterSelectionStart = field.selectionStart
+      deleteUndoSnapshot.afterSelectionEnd = field.selectionEnd
+      return
+    }
+
+    if (inputType) clearTextareaUndoState()
+  }
+
+  function shouldUseSafariUndoGuard(): boolean {
+    if (options.isSafariWebKit) return options.isSafariWebKit()
+    if (typeof navigator === 'undefined') return false
+    const ua = navigator.userAgent || ''
+    const vendor = navigator.vendor || ''
+    const appleWebKit = /AppleWebKit/i.test(ua)
+    const safari = /Safari/i.test(ua)
+    const excluded = /Chrome|CriOS|FxiOS|Edg|OPR|DuckDuckGo/i.test(ua)
+    return appleWebKit && safari && !excluded && /Apple/i.test(vendor)
+  }
+
+  function inputTypeOf(event?: Event): string {
+    const inputType = (event as { inputType?: unknown } | undefined)?.inputType
+    return typeof inputType === 'string' ? inputType : ''
+  }
+
+  function textareaFromEvent(event?: Event): HTMLTextAreaElement | null {
+    const target = event?.target
+    return target instanceof HTMLTextAreaElement ? target : null
+  }
+
+  function snapshotTextarea(field: HTMLTextAreaElement): TextareaSnapshot {
+    return {
+      value: field.value,
+      selectionStart: field.selectionStart,
+      selectionEnd: field.selectionEnd,
+      afterValue: field.value,
+      afterSelectionStart: field.selectionStart,
+      afterSelectionEnd: field.selectionEnd,
+    }
+  }
+
+  function restoreTextarea(field: HTMLTextAreaElement, snap: TextareaSnapshot) {
+    field.value = snap.value
+    options.inputText.value = snap.value
+    if (typeof field.setSelectionRange === 'function') {
+      field.setSelectionRange(snap.selectionStart, snap.selectionEnd)
+    }
+  }
+
+  function clearTextareaUndoState() {
+    deleteUndoSnapshot = null
+    pendingUndoRepair = null
   }
 
   function cycleHistory(dir: number): boolean {
@@ -117,6 +254,7 @@ export function useChatComposerShortcuts(options: UseChatComposerShortcutsOption
     if (history.length === 0) return false
 
     if (dir < 0) {
+      clearTextareaUndoState()
       if (inputHistoryIdx.value === null) {
         inputHistoryDraft.value = options.inputText.value || ''
         inputHistoryIdx.value = history.length - 1
@@ -129,6 +267,7 @@ export function useChatComposerShortcuts(options: UseChatComposerShortcutsOption
     }
 
     if (inputHistoryIdx.value === null) return false
+    clearTextareaUndoState()
     const next = inputHistoryIdx.value + 1
     if (next >= history.length) {
       inputHistoryIdx.value = null
@@ -143,6 +282,7 @@ export function useChatComposerShortcuts(options: UseChatComposerShortcutsOption
   }
 
   return {
+    onTextareaBeforeInput,
     onTextareaInput,
     onTextareaKeydown,
     resetInputHistory,

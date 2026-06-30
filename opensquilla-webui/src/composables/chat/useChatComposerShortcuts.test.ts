@@ -10,6 +10,11 @@ class FakeTextArea {
   value = ''
   selectionStart = 0
   selectionEnd = 0
+
+  setSelectionRange(start: number, end: number) {
+    this.selectionStart = start
+    this.selectionEnd = end
+  }
 }
 
 beforeEach(() => {
@@ -19,16 +24,26 @@ afterEach(() => {
   delete (globalThis as unknown as { HTMLTextAreaElement?: unknown }).HTMLTextAreaElement
 })
 
-function field(value: string, caret: 'start' | 'end' | 'middle'): FakeTextArea {
+function field(value: string, caret: 'start' | 'end' | 'middle'): FakeTextArea
+function field(value: string, caret: number, end?: number): FakeTextArea
+function field(value: string, caret: 'start' | 'end' | 'middle' | number, end?: number): FakeTextArea {
   const ta = new FakeTextArea()
   ta.value = value
-  const pos = caret === 'start' ? 0 : caret === 'end' ? value.length : Math.floor(value.length / 2)
+  const pos = typeof caret === 'number'
+    ? caret
+    : caret === 'start' ? 0 : caret === 'end' ? value.length : Math.floor(value.length / 2)
   ta.selectionStart = pos
-  ta.selectionEnd = pos
+  ta.selectionEnd = typeof end === 'number' ? end : pos
   return ta
 }
 
-function harness(over: { inputText?: string; pendingQueue?: ChatPendingItem[]; canQueueMore?: boolean } = {}) {
+function harness(over: {
+  inputText?: string
+  pendingQueue?: ChatPendingItem[]
+  canQueueMore?: boolean
+  safari?: boolean
+} = {}) {
+  const inputText = ref(over.inputText ?? '')
   const spies = {
     popPendingTail: vi.fn(() => true),
     enqueuePendingInput: vi.fn(() => true),
@@ -39,7 +54,7 @@ function harness(over: { inputText?: string; pendingQueue?: ChatPendingItem[]; c
     selectSlashCmd: vi.fn(),
   }
   const api = useChatComposerShortcuts({
-    inputText: ref(over.inputText ?? ''),
+    inputText,
     composing: ref(false),
     messages: ref<ChatMessage[]>([]),
     pendingQueue: ref<ChatPendingItem[]>(over.pendingQueue ?? []),
@@ -48,9 +63,10 @@ function harness(over: { inputText?: string; pendingQueue?: ChatPendingItem[]; c
     slashIdx: ref(0),
     filteredSlashCmds: ref([]),
     isStreaming: ref(false),
+    isSafariWebKit: () => over.safari ?? false,
     ...spies,
   })
-  return { api, spies }
+  return { api, inputText, spies }
 }
 
 function keydown(opts: {
@@ -70,6 +86,13 @@ function keydown(opts: {
     target: opts.target,
     preventDefault: vi.fn(),
   } as unknown as KeyboardEvent
+}
+
+function inputEvent(inputType: string, target: unknown): InputEvent {
+  return {
+    inputType,
+    target,
+  } as unknown as InputEvent
 }
 
 const QUEUE = [{ id: 'q1', text: 'queued' }] as unknown as ChatPendingItem[]
@@ -126,6 +149,102 @@ describe('useChatComposerShortcuts', () => {
       api.onTextareaKeydown(midDraft)
       expect(spies.popPendingTail).not.toHaveBeenCalled()
       expect(midDraft.preventDefault).not.toHaveBeenCalled() // native Option+ArrowUp paragraph move survives
+    })
+  })
+
+  describe('Safari textarea undo guard', () => {
+    it('repairs Safari historyUndo when undoing a deletion clears the whole draft', () => {
+      const { api, inputText } = harness({ inputText: 'hello world', safari: true })
+      const ta = field('hello world', 6, 'hello world'.length)
+
+      api.onTextareaBeforeInput(inputEvent('deleteContentBackward', ta))
+      ta.value = 'hello '
+      ta.setSelectionRange(6, 6)
+      inputText.value = ta.value
+      api.onTextareaInput(inputEvent('deleteContentBackward', ta))
+
+      api.onTextareaBeforeInput(inputEvent('historyUndo', ta))
+      ta.value = ''
+      ta.setSelectionRange(0, 0)
+      inputText.value = ta.value
+      api.onTextareaInput(inputEvent('historyUndo', ta))
+
+      expect(ta.value).toBe('hello world')
+      expect(inputText.value).toBe('hello world')
+      expect(ta.selectionStart).toBe(6)
+      expect(ta.selectionEnd).toBe('hello world'.length)
+    })
+
+    it('keeps the first value in a repeated-delete group', () => {
+      const { api, inputText } = harness({ inputText: 'hello world', safari: true })
+      const ta = field('hello world', 'end')
+
+      api.onTextareaBeforeInput(inputEvent('deleteContentBackward', ta))
+      ta.value = 'hello worl'
+      ta.setSelectionRange(10, 10)
+      inputText.value = ta.value
+      api.onTextareaInput(inputEvent('deleteContentBackward', ta))
+
+      api.onTextareaBeforeInput(inputEvent('deleteContentBackward', ta))
+      ta.value = 'hello wor'
+      ta.setSelectionRange(9, 9)
+      inputText.value = ta.value
+      api.onTextareaInput(inputEvent('deleteContentBackward', ta))
+
+      api.onTextareaBeforeInput(inputEvent('historyUndo', ta))
+      ta.value = ''
+      ta.setSelectionRange(0, 0)
+      inputText.value = ta.value
+      api.onTextareaInput(inputEvent('historyUndo', ta))
+
+      expect(ta.value).toBe('hello world')
+      expect(inputText.value).toBe('hello world')
+      expect(ta.selectionStart).toBe('hello world'.length)
+      expect(ta.selectionEnd).toBe('hello world'.length)
+    })
+
+    it('does not resurrect a stale deletion snapshot after an unrelated draft change', () => {
+      const { api, inputText } = harness({ inputText: 'hello world', safari: true })
+      const ta = field('hello world', 'end')
+
+      api.onTextareaBeforeInput(inputEvent('deleteContentBackward', ta))
+      ta.value = 'hello worl'
+      ta.setSelectionRange(10, 10)
+      inputText.value = ta.value
+      api.onTextareaInput(inputEvent('deleteContentBackward', ta))
+
+      ta.value = 'new draft'
+      ta.setSelectionRange('new draft'.length, 'new draft'.length)
+      inputText.value = ta.value
+
+      api.onTextareaBeforeInput(inputEvent('historyUndo', ta))
+      ta.value = ''
+      ta.setSelectionRange(0, 0)
+      inputText.value = ta.value
+      api.onTextareaInput(inputEvent('historyUndo', ta))
+
+      expect(ta.value).toBe('')
+      expect(inputText.value).toBe('')
+    })
+
+    it('leaves non-Safari native undo untouched', () => {
+      const { api, inputText } = harness({ inputText: 'hello world', safari: false })
+      const ta = field('hello world', 6, 'hello world'.length)
+
+      api.onTextareaBeforeInput(inputEvent('deleteContentBackward', ta))
+      ta.value = 'hello '
+      ta.setSelectionRange(6, 6)
+      inputText.value = ta.value
+      api.onTextareaInput(inputEvent('deleteContentBackward', ta))
+
+      api.onTextareaBeforeInput(inputEvent('historyUndo', ta))
+      ta.value = ''
+      ta.setSelectionRange(0, 0)
+      inputText.value = ta.value
+      api.onTextareaInput(inputEvent('historyUndo', ta))
+
+      expect(ta.value).toBe('')
+      expect(inputText.value).toBe('')
     })
   })
 })

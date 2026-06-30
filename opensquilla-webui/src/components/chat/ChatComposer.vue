@@ -29,7 +29,8 @@
             :placeholder="placeholder"
             maxlength="100000"
             :aria-label="t('chat.messageToSend')"
-            @input="emit('input')"
+            @beforeinput="emit('beforeinput', $event)"
+            @input="emit('input', $event)"
             @keydown="emit('keydown', $event)"
             @compositionstart="emit('compositionChange', true)"
             @compositionend="emit('compositionChange', false)"
@@ -161,9 +162,10 @@ defineProps<{
 }>()
 
 const emit = defineEmits<{
+  beforeinput: [event: InputEvent]
   compositionChange: [value: boolean]
   fileChange: [event: Event]
-  input: []
+  input: [event: Event]
   keydown: [event: KeyboardEvent]
   removeAttachment: [index: number]
   send: []

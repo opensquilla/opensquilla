@@ -427,6 +427,7 @@
       :voice-busy="voiceBusy"
       :voice-recording="voiceRecording"
       @composition-change="composing = $event"
+      @beforeinput="onTextareaBeforeInput"
       @file-change="onFileInputChange"
       @input="onTextareaInput"
       @keydown="onTextareaKeydown"
@@ -1137,6 +1138,7 @@ const chatComposerShortcuts = useChatComposerShortcuts({
   sendCurrentInput: () => sendCurrentInput(),
 })
 const {
+  onTextareaBeforeInput,
   onTextareaInput,
   onTextareaKeydown,
 } = chatComposerShortcuts

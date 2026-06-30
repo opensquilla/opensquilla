@@ -207,29 +207,54 @@ def _wecom_spec() -> ChannelSetupSpec:
     return ChannelSetupSpec(
         type="wecom",
         label="WeCom",
-        description="Enterprise WeChat (WeCom) corp app via webhook.",
-        transport="webhook",
-        requires_public_url=True,
+        description="Enterprise WeChat AI Bot over websocket, or corp-app webhook callback.",
+        transport="mixed",
+        requires_public_url=False,
         dependency_extra=None,
         restart_required=True,
-        docs_hint="https://developer.work.weixin.qq.com/document/",
-        help="WeCom webhook mode requires a public URL reachable by WeCom.",
+        docs_hint="https://developer.work.weixin.qq.com/document/path/101463",
+        help=(
+            "connection_mode=websocket uses the WeCom AI Bot long connection "
+            "with Bot ID and Secret; no public URL is required. "
+            "connection_mode=webhook uses a corp app callback and requires a public URL."
+        ),
         fields=(
             *_common_fields(),
-            ChannelSetupField("corp_id", "Corp id", "text", required=True),
+            ChannelSetupField("connection_mode", "Connection mode", "select",
+                              required=False, default="websocket",
+                              choices=("websocket", "webhook")),
+            ChannelSetupField("bot_id", "Bot ID", "text", required=True,
+                              group="credentials",
+                              show_when={"connection_mode": "websocket"}),
+            ChannelSetupField("bot_secret", "Bot secret", "password",
+                              required=True, secret=True, group="credentials",
+                              show_when={"connection_mode": "websocket"}),
+            ChannelSetupField("websocket_url", "WebSocket URL", "text",
+                              required=False, default="wss://openws.work.weixin.qq.com",
+                              advanced=True,
+                              show_when={"connection_mode": "websocket"}),
+            ChannelSetupField("corp_id", "Corp id", "text", required=True,
+                              show_when={"connection_mode": "webhook"}),
             ChannelSetupField("corp_secret", "Corp secret", "password",
-                              required=True, secret=True),
+                              required=True, secret=True,
+                              show_when={"connection_mode": "webhook"}),
             ChannelSetupField("agent_id_int", "Agent id (int)", "int",
-                              required=True),
+                              required=True,
+                              show_when={"connection_mode": "webhook"}),
             ChannelSetupField("token", "Token", "password",
-                              required=True, secret=True),
+                              required=True, secret=True,
+                              show_when={"connection_mode": "webhook"}),
             ChannelSetupField("encoding_aes_key", "Encoding AES key", "password",
-                              required=True, secret=True),
+                              required=True, secret=True,
+                              show_when={"connection_mode": "webhook"}),
             ChannelSetupField("webhook_path", "Webhook path", "text",
-                              required=False, default="/wecom/events"),
+                              required=False, default="/wecom/events",
+                              show_when={"connection_mode": "webhook"}),
             ChannelSetupField("api_base", "API base", "text",
                               required=False,
-                              default="https://qyapi.weixin.qq.com"),
+                              default="https://qyapi.weixin.qq.com",
+                              advanced=True,
+                              show_when={"connection_mode": "webhook"}),
         ),
     )
 
@@ -418,10 +443,13 @@ def channel_catalog_payload() -> list[dict[str, Any]]:
 
 
 def _what_you_need(spec: ChannelSetupSpec) -> list[str]:
+    defaults = {field.name: field.default for field in spec.fields}
     needs = [
         f"{field.label}."
         for field in spec.fields
-        if field.required and field.name not in {"name", "enabled", "agent_id"}
+        if field.required
+        and field.name not in {"name", "enabled", "agent_id"}
+        and _field_visible_by_default(field, defaults)
     ]
     if spec.requires_public_url:
         needs.append("A public URL reachable by the channel provider.")
@@ -430,3 +458,12 @@ def _what_you_need(spec: ChannelSetupSpec) -> list[str]:
     if not needs:
         needs.append("A channel entry name and provider-side bot/app setup.")
     return needs
+
+
+def _field_visible_by_default(
+    field: ChannelSetupField,
+    defaults: dict[str, str | int | float | bool | None],
+) -> bool:
+    if not field.show_when:
+        return True
+    return all(str(defaults.get(key, "")) == expected for key, expected in field.show_when.items())

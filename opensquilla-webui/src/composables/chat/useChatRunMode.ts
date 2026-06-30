@@ -63,6 +63,7 @@ export function useChatRunMode(options: UseChatRunModeOptions) {
   const sandboxSetupPromptDismissed = ref(false)
   const pendingSandboxSetupMode = ref<RunMode | ''>('')
   let sandboxSetupRequestSeq = 0
+  let lastDefaultRunMode = defaultRunMode.value
 
   function modeAllowed(mode: RunMode): boolean {
     return allowedRunModes.value.includes(mode)
@@ -74,7 +75,11 @@ export function useChatRunMode(options: UseChatRunModeOptions) {
   }
 
   watch([allowedRunModes, defaultRunMode], () => {
-    runMode.value = clampRunMode(runMode.value)
+    const previousDefault = lastDefaultRunMode
+    lastDefaultRunMode = defaultRunMode.value
+    runMode.value = runMode.value === previousDefault
+      ? defaultRunMode.value
+      : clampRunMode(runMode.value)
     if (pendingSandboxSetupMode.value && !modeAllowed(pendingSandboxSetupMode.value)) {
       pendingSandboxSetupMode.value = ''
     }

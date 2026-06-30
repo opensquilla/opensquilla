@@ -66,5 +66,7 @@ def test_vue_run_mode_policy_fails_closed_without_valid_policy() -> None:
     assert "const SAFE_RUN_MODES: RunMode[] = ['standard', 'trusted']" in composable
     assert "if (!policyAllowed) return [...SAFE_RUN_MODES]" in composable
     assert "return allowed.length ? allowed : [...SAFE_RUN_MODES]" in composable
+    assert "let lastDefaultRunMode = defaultRunMode.value" in composable
+    assert "runMode.value = runMode.value === previousDefault" in composable
     assert "const safeRunModes: RunMode[] = ['standard', 'trusted']" in menu
     assert "return allowed.length ? allowed : [...safeRunModes]" in menu

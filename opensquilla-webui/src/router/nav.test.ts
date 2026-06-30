@@ -13,7 +13,7 @@ describe('getConsoleNavigationSections', () => {
     expect(sections.map((s) => s.label)).toEqual(['Manage', 'Monitor'])
 
     const [manage, monitor] = sections
-    expect(manage.items.map((i) => i.path)).toEqual(['/approvals', '/agents', '/channels'])
+    expect(manage.items.map((i) => i.path)).toEqual(['/approvals', '/agents', '/channels', '/rag'])
     expect(monitor.items.map((i) => i.path)).toEqual(['/overview', '/usage', '/logs'])
   })
 })
@@ -40,7 +40,7 @@ describe('navigation taxonomy de-dup invariant', () => {
       acc[p] = (acc[p] ?? 0) + 1
       return acc
     }, {})
-    for (const path of ['/sessions', '/cron', '/skills', '/approvals', '/agents', '/channels', '/overview', '/usage', '/logs']) {
+    for (const path of ['/sessions', '/cron', '/skills', '/approvals', '/agents', '/channels', '/rag', '/overview', '/usage', '/logs']) {
       expect(counts[path]).toBe(1)
     }
   })

@@ -7,6 +7,7 @@ const CronView = () => import('@/views/CronView.vue')
 const AgentsView = () => import('@/views/AgentsView.vue')
 const ApprovalsView = () => import('@/views/ApprovalsView.vue')
 const ChannelsView = () => import('@/views/ChannelsView.vue')
+const RagView = () => import('@/views/RagView.vue')
 const LogsView = () => import('@/views/LogsView.vue')
 const SessionsView = () => import('@/views/SessionsView.vue')
 const UsageView = () => import('@/views/UsageView.vue')
@@ -32,6 +33,7 @@ export const sharedRoutes: RouteRecordRaw[] = [
   { path: '/approvals', name: 'approvals', component: ApprovalsView, meta: { title: 'Approvals', group: 'Operate', icon: 'approvals', nav: 'primary', navOrder: 35, platforms: ['web', 'desktop'] } },
   { path: '/agents',    name: 'agents',    component: AgentsView,    meta: { title: 'Agents', group: 'Operate', icon: 'agents', nav: 'primary', navOrder: 40, platforms: ['web', 'desktop'] } },
   { path: '/channels',  name: 'channels',  component: ChannelsView,  meta: { title: 'Channels', group: 'Operate', icon: 'channels', nav: 'primary', navOrder: 50, platforms: ['web', 'desktop'] } },
+  { path: '/rag',       name: 'rag',       component: RagView,       meta: { title: 'RAG', group: 'Operate', icon: 'search', nav: 'primary', navOrder: 55, platforms: ['web', 'desktop'] } },
   { path: '/cron',      name: 'cron',      component: CronView,      meta: { title: 'Cron', group: 'Work', icon: 'cron', nav: 'primary', navOrder: 25, platforms: ['web', 'desktop'] } },
   { path: '/skills',    name: 'skills',    component: SkillsView,    meta: { title: 'Skills', group: 'Work', icon: 'skills', nav: 'primary', navOrder: 28, platforms: ['web', 'desktop'] } },
   { path: '/overview',  name: 'overview',  component: OverviewView,  meta: { title: 'Overview', group: 'Observe', icon: 'home', nav: 'primary', navOrder: 80, platforms: ['web', 'desktop'], keepAlive: true } },

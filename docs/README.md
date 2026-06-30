@@ -30,6 +30,8 @@ root release README with task-oriented guides.
 - [`authoring/meta-skills.md`](authoring/meta-skills.md) - MetaSkill authoring
   guide.
 - [`features/memory.md`](features/memory.md) - durable memory and recall.
+- [`features/local-rag.md`](features/local-rag.md) - local document RAG,
+  citations, and source indexing.
 - [`features/skills.md`](features/skills.md) - skill discovery, install, and
   authoring.
 - [`features/compaction-and-cache.md`](features/compaction-and-cache.md) -

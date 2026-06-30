@@ -1,6 +1,13 @@
 export const TOOL_INDENT = " ";
 export const CARD_RULE_SHORT = "─".repeat(8);
 export const TIMELINE_WRAP_GUARD_CELLS = 6;
+
+// Clamp the footer height to the terminal: never taller than the screen (a short
+// pane would otherwise overflow the fixed-height footer and corrupt the layout),
+// never less than one row.
+export function clampFooterHeight(footerHeight, terminalHeight) {
+  return Math.max(1, Math.min(footerHeight, Number(terminalHeight) || footerHeight));
+}
 // Turn boxes pad 1 cell each side; card headers/bodies start at content column 0.
 const CARD_CONTENT_INSET = 2;
 

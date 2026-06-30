@@ -3,7 +3,7 @@ import process from "node:process";
 import { THEME, applyTheme, onThemeApplied } from "./theme.mjs";
 import { registerThemeStyles } from "./syntaxTheme.mjs";
 import { parseNotice, isStructuredLine, NOTICE_LEVELS } from "./ansiNotice.mjs";
-import { TOOL_INDENT, copySelectionToClipboard, isPinnedToBottom, stripTerminalControls } from "./primitives.mjs";
+import { TOOL_INDENT, clampFooterHeight, copySelectionToClipboard, isPinnedToBottom, stripTerminalControls } from "./primitives.mjs";
 import { createComposer } from "./composer.mjs";
 import { createTurnView } from "./turnView.mjs";
 import { createIpc, createDispatcher } from "./ipc.mjs";
@@ -25,6 +25,8 @@ if (process.argv.includes("--help") || process.argv.includes("-h")) {
 const FROM_PYTHON_FD = Number(process.env.OPENSQUILLA_OPENTUI_FROM_PYTHON_FD ?? "3");
 const TO_PYTHON_FD = Number(process.env.OPENSQUILLA_OPENTUI_TO_PYTHON_FD ?? "4");
 const FOOTER_HEIGHT = 6;
+// Footer height clamped to the terminal so a very short pane never overflows it.
+const footerRows = (h) => clampFooterHeight(FOOTER_HEIGHT, h);
 
 async function main() {
   // Resolve the active theme before anything reads THEME (unknown names fall
@@ -61,7 +63,7 @@ async function main() {
     left: 0,
     top: 0,
     right: 0,
-    height: Math.max(1, (renderer.terminalHeight ?? 24) - FOOTER_HEIGHT),
+    height: Math.max(1, (renderer.terminalHeight ?? 24) - footerRows(renderer.terminalHeight ?? 24)),
     backgroundColor: THEME.appBg,
     stickyScroll: true,
     stickyStart: "bottom",
@@ -77,7 +79,7 @@ async function main() {
     left: 0,
     right: 0,
     bottom: 0,
-    height: FOOTER_HEIGHT,
+    height: footerRows(renderer.terminalHeight ?? 24),
     // Opaque so the footer fully repaints every frame; without it, cells vacated
     // when the composer/router boxes move on resize/reflow keep stale glyphs.
     backgroundColor: THEME.footerBg,
@@ -240,7 +242,9 @@ async function main() {
 
   renderer.on?.("resize", () => {
     const h = renderer.terminalHeight ?? 24;
-    conversationBox.height = Math.max(1, h - FOOTER_HEIGHT);
+    const fh = footerRows(h);
+    inputBox.height = fh; // clamp so a short terminal never overflows the footer
+    conversationBox.height = Math.max(1, h - fh);
     composer.onResize();
     const w = renderer.terminalWidth ?? 0;
     if (w && h) ipc.send({ type: "resize", width: w, height: h });

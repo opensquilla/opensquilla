@@ -9,7 +9,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { isPinnedToBottom, copySelectionToClipboard } from "./primitives.mjs";
+import { clampFooterHeight, isPinnedToBottom, copySelectionToClipboard } from "./primitives.mjs";
+
+test("clampFooterHeight keeps the footer within the terminal height", () => {
+  assert.equal(clampFooterHeight(6, 24), 6); // normal terminal: full footer
+  assert.equal(clampFooterHeight(6, 6), 6); // exact fit
+  assert.equal(clampFooterHeight(6, 4), 4); // short pane: clamp to terminal (no overflow)
+  assert.equal(clampFooterHeight(6, 2), 2);
+  assert.equal(clampFooterHeight(6, 1), 1); // never below one row
+  assert.equal(clampFooterHeight(6, 0), 6); // unknown/zero height -> fall back to full footer
+  assert.equal(clampFooterHeight(6, undefined), 6);
+});
 
 test("isPinnedToBottom only follows when at/near the bottom", () => {
   // viewport 30, content 100 => maxTop 70

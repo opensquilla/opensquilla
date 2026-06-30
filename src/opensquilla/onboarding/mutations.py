@@ -265,6 +265,10 @@ def upsert_llm_provider(
         base_url=effective_base_url,
         proxy=proxy,
         provider_routing=dict(provider_routing or {}),
+        # Preserve the multi-provider feature gate across a provider
+        # reconfigure; onboarding doesn't manage it, so rebuilding the
+        # config from scratch must not silently reset it to the default.
+        multi_provider=config.llm.multi_provider.model_dump(),
     )
     _reconcile_router_profile_for_provider(new_cfg, provider_id)
     if api_key:

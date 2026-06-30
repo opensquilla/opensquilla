@@ -38,6 +38,20 @@ def test_upsert_provider_persists_fields():
     assert res.changed is True
 
 
+def test_upsert_provider_preserves_multi_provider_flag():
+    cfg = GatewayConfig()
+    cfg.llm.multi_provider.enabled = True
+    res = upsert_llm_provider(
+        cfg,
+        provider_id="openrouter",
+        model="deepseek/deepseek-v4-flash",
+        api_key="sk-test",
+    )
+    # Reconfiguring a provider rebuilds llm from scratch; the multi-provider
+    # gate is not managed here and must survive instead of resetting to off.
+    assert res.config.llm.multi_provider.enabled is True
+
+
 def test_upsert_provider_strips_trailing_paste_punctuation_from_api_key():
     cfg = GatewayConfig()
     res = upsert_llm_provider(

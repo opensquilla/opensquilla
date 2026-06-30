@@ -257,6 +257,21 @@ class TaskRuntimeConfig(BaseModel):
         return value
 
 
+class MultiProviderConfig(BaseModel):
+    """Feature gate for cross-provider routing/fallback enforcement.
+
+    Default off: while disabled, multi-provider configuration (cross-provider
+    fallbacks, per-tier providers) is inert and existing single-provider
+    setups behave exactly as before. Enabling it activates the
+    credential-resolution invariant and cross-provider switching introduced
+    in later changes.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+
+
 class LlmProviderConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="OPENSQUILLA_LLM_")
 
@@ -274,6 +289,10 @@ class LlmProviderConfig(BaseSettings):
     # send provider.order=[name] so the provider is preferred without disabling
     # OpenRouter fallback.
     provider_routing: dict[str, str] = Field(default_factory=dict)
+    # Feature gate (default off) for cross-provider routing/fallback
+    # enforcement; see MultiProviderConfig. Inert until later changes consume
+    # it, so single-provider configs are unaffected.
+    multi_provider: MultiProviderConfig = Field(default_factory=MultiProviderConfig)
 
     @model_validator(mode="after")
     def _normalize_direct_deepseek_model(self) -> LlmProviderConfig:

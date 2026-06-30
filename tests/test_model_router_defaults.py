@@ -4,8 +4,9 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
-from opensquilla.gateway.config import ROUTER_TIER_PROFILE_IDS
+from opensquilla.gateway.config import ROUTER_TIER_PROFILE_IDS, LlmProviderConfig
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DIRECT_ROUTER_PROFILE_IDS = sorted(ROUTER_TIER_PROFILE_IDS - {"openrouter"})
@@ -374,3 +375,18 @@ def test_runtime_router_config_does_not_ship_unused_cost_fields() -> None:
     assert "cost_matrix:" not in text
     assert "under_routing_multiplier" not in text
     assert "over_routing_multiplier" not in text
+
+
+def test_multi_provider_flag_defaults_off() -> None:
+    assert LlmProviderConfig().multi_provider.enabled is False
+
+
+def test_multi_provider_flag_round_trips_through_config_dump() -> None:
+    enabled = LlmProviderConfig(multi_provider={"enabled": True})
+    reloaded = LlmProviderConfig(**enabled.model_dump(exclude_defaults=False))
+    assert reloaded.multi_provider.enabled is True
+
+
+def test_multi_provider_flag_rejects_unknown_key() -> None:
+    with pytest.raises(ValidationError):
+        LlmProviderConfig(multi_provider={"enabled": True, "bogus": 1})

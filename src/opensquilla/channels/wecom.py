@@ -414,7 +414,8 @@ class WeComChannel:
 
     @classmethod
     def _response_error(cls, payload: dict[str, Any]) -> tuple[int | None, str]:
-        body = payload.get("body") if isinstance(payload.get("body"), dict) else {}
+        body_raw = payload.get("body")
+        body: dict[str, Any] = body_raw if isinstance(body_raw, dict) else {}
         errcode_raw = payload.get("errcode", body.get("errcode", 0))
         try:
             errcode = int(errcode_raw) if errcode_raw is not None else None
@@ -679,7 +680,8 @@ class WeComChannel:
             return None
         req_id = self._payload_req_id(payload)
         msg_id = str(body.get("msgid") or req_id or uuid4().hex)
-        sender = body.get("from") if isinstance(body.get("from"), dict) else {}
+        sender_raw = body.get("from")
+        sender: dict[str, Any] = sender_raw if isinstance(sender_raw, dict) else {}
         from_user = str(sender.get("userid") or body.get("from_user") or "unknown")
         chat_id = str(body.get("chatid") or from_user or "unknown")
         chat_type = str(body.get("chattype") or body.get("chat_type") or "single").lower()

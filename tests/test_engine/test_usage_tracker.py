@@ -388,3 +388,29 @@ def test_model_usage_positional_construction_keeps_billed_cost_default() -> None
     assert mu.cache_read_tokens == 200
     assert mu.cache_write_tokens == 80
     assert mu.billed_cost == 0.0  # default at the tail
+
+
+def test_local_provider_estimates_as_free() -> None:
+    usage = SessionUsage()
+    usage.add(10_000, 500, "qwen3:4b", provider="ollama")
+    assert usage.cost == 0.0
+    assert usage._per_model is not None
+    assert usage._per_model["qwen3:4b"].cost == 0.0
+    breakdown = usage.model_breakdown[0]
+    assert breakdown["costUsd"] == 0.0
+    assert breakdown["billedCostUsd"] == 0.0
+
+
+def test_cloud_provider_cost_unchanged() -> None:
+    usage = SessionUsage()
+    usage.add(1_000_000, 0, "claude-sonnet-4", provider="anthropic")
+    assert usage.cost == pytest.approx(3.0)
+
+
+def test_usage_tracker_threads_provider_to_per_model() -> None:
+    tracker = UsageTracker()
+    tracker.add("s", 8000, 300, "gemma3:4b", provider="ollama")
+    sess = tracker._sessions["s"]
+    assert sess.cost == 0.0
+    assert sess._per_model is not None
+    assert sess._per_model["gemma3:4b"].provider == "ollama"

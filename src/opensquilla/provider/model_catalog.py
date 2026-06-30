@@ -8,6 +8,7 @@ import structlog
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.secrets import clean_header_secret
 
+from .ollama import _OLLAMA_DEFAULT_NUM_CTX
 from .openrouter_attribution import openrouter_app_headers
 from .registry import UnknownProviderError, get_provider_spec
 from .types import ModelCapabilities, ModelInfo
@@ -17,6 +18,13 @@ log = structlog.get_logger(__name__)
 DEFAULT_MAX_TOKENS = 16384
 SAFE_OPENROUTER_DEFAULT_MAX_TOKENS = 8192
 DEFAULT_CONTEXT_WINDOW = 200_000
+
+# Local runtimes (Ollama, …) have unqualified model ids that miss the catalog
+# and the static table, so the 200k cloud default would make the turn budget
+# over-estimate and skip trimming while the runtime silently truncates. Report
+# the runtime's own default window so budgeting matches what it actually allows.
+_LOCAL_CONTEXT_WINDOW = _OLLAMA_DEFAULT_NUM_CTX
+_LOCAL_PROVIDERS = frozenset({"ollama", "lm_studio", "ovms", "vllm", "local"})
 
 # Static fallback for squilla-router tier models + default model.
 # Used when OpenRouter API is unreachable at boot.
@@ -244,9 +252,11 @@ class ModelCatalog:
         """Look up model metadata by ID."""
         return self._models.get(model_id)
 
-    def resolve_max_tokens(self, model_id: str, user_override: int = 0) -> int:
+    def resolve_max_tokens(
+        self, model_id: str, user_override: int = 0, provider: str = ""
+    ) -> int:
         """Resolve max_tokens: user > catalog > static fallback > default, then clamp."""
-        context_window = self.resolve_context_window(model_id)
+        context_window = self.resolve_context_window(model_id, provider)
         info = self._models.get(model_id)
 
         using_user_override = user_override > 0
@@ -274,11 +284,13 @@ class ModelCatalog:
 
         return effective
 
-    def resolve_context_window(self, model_id: str) -> int:
-        """Resolve context window: catalog > static fallback > default."""
+    def resolve_context_window(self, model_id: str, provider: str = "") -> int:
+        """Resolve context window: catalog > static fallback > local/default."""
         info = self._models.get(model_id)
         if info and info.context_window > 0:
             return info.context_window
         if model_id in _STATIC_FALLBACK:
             return _STATIC_FALLBACK[model_id][1]
+        if provider and provider.strip().lower() in _LOCAL_PROVIDERS:
+            return _LOCAL_CONTEXT_WINDOW
         return DEFAULT_CONTEXT_WINDOW

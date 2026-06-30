@@ -2464,6 +2464,7 @@ class Agent:
                                         cache_read_tokens=raw_ev.cached_tokens,
                                         cache_write_tokens=raw_ev.cache_write_tokens,
                                         billed_cost=raw_ev.billed_cost,
+                                        provider=getattr(self.provider, "provider_name", ""),
                                     )
 
                             elif isinstance(raw_ev, ProviderErrorEvent):

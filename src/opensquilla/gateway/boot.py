@@ -2336,6 +2336,16 @@ async def start_gateway_server(
     except Exception:
         log.debug("gateway.install_telemetry_skipped", exc_info=True)
 
+    # Passive update-availability check is best-effort and runs in a background
+    # daemon thread: it must never block startup. It powers the "a newer version
+    # is available" notice in the Control UI (and `opensquilla version --check`).
+    try:
+        from opensquilla.observability.update_check import start_background_update_check
+
+        start_background_update_check(config=config)
+    except Exception:
+        log.debug("gateway.update_check_skipped", exc_info=True)
+
     # ── Reusable service initialization via build_services ───────────
     try:
         svc = await build_services(

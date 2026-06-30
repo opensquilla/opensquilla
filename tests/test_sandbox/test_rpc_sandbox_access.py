@@ -947,6 +947,7 @@ async def test_rpc_mount_remove_updates_resolved_overlay_for_current_tool_mounts
 @pytest.mark.asyncio
 async def test_rpc_mount_remove_chat_scope_leaves_user_scope_mount_visible() -> None:
     from opensquilla.gateway.rpc_sandbox import _handle_sandbox_mount_remove
+    from opensquilla.sandbox.path_validation import normalize_path
     from opensquilla.sandbox.run_context import MountGrant, RunContext, get_run_context
     from opensquilla.sandbox.run_mode import RunMode
     from opensquilla.sandbox.user_grants import upsert_mount_grant
@@ -954,6 +955,7 @@ async def test_rpc_mount_remove_chat_scope_leaves_user_scope_mount_visible() -> 
     manager = _SessionManager()
     ctx = _ctx(manager)
     path = "/tmp/shared-mount"
+    normalized_path = str(normalize_path(path))
     upsert_mount_grant({"path": path, "access": "ro", "scope": "workspace"})
     manager.node.origin = {
         "sandbox_run_context": RunContext(
@@ -969,7 +971,9 @@ async def test_rpc_mount_remove_chat_scope_leaves_user_scope_mount_visible() -> 
         ctx,
     )
 
-    assert result["mounts"] == [{"path": path, "access": "ro", "scope": "workspace"}]
+    assert result["mounts"] == [
+        {"path": normalized_path, "access": "ro", "scope": "workspace"}
+    ]
     context = await get_run_context(
         manager,
         manager.node.session_key,
@@ -977,7 +981,7 @@ async def test_rpc_mount_remove_chat_scope_leaves_user_scope_mount_visible() -> 
         workspace="/tmp/ws",
     )
     assert [(grant.path, grant.access, grant.scope) for grant in context.mounts] == [
-        (path, "ro", "workspace")
+        (normalized_path, "ro", "workspace")
     ]
 
 

@@ -1379,6 +1379,7 @@ async def test_rpc_search_query_allows_search_provider_endpoint_under_managed_ne
             "proxy": "http://127.0.0.1:28080",
             "use_env_proxy": False,
             "api_key": "test-key",
+            "diagnostics": False,
         },
         "search_called": True,
     }

@@ -32,8 +32,8 @@ from opensquilla.tools.types import current_tool_context
 
 _UNSET = object()
 _BWRAP_PROXY_BRIDGE_LINUX_ONLY = pytest.mark.skipif(
-    sys.platform.startswith("win"),
-    reason="bubblewrap proxy bridge uses Linux mount and Unix socket paths",
+    not sys.platform.startswith("linux"),
+    reason="bubblewrap proxy bridge uses Linux namespaces and mount paths",
 )
 
 
@@ -709,10 +709,7 @@ async def test_linux_helper_payload_times_out_outer_helper(
     assert terminated == [12345]
 
 
-@pytest.mark.skipif(
-    sys.platform.startswith("win"),
-    reason="asyncio Unix domain sockets are unavailable on Windows",
-)
+@_BWRAP_PROXY_BRIDGE_LINUX_ONLY
 @pytest.mark.asyncio
 async def test_linux_proxy_bridge_host_writes_and_removes_inner_script(
     tmp_path: Path,
@@ -743,7 +740,8 @@ def test_seatbelt_proxy_allowlist_with_proxy_renders_proxy_only_profile(
     profile = render_seatbelt_profile(_request(policy, tmp_path))
 
     assert "(allow network-outbound" in profile
-    assert "127.0.0.1:8080" in profile
+    assert "localhost:8080" in profile
+    assert "127.0.0.1:8080" not in profile
     assert "(allow network*)" not in profile
     assert "(deny network*)" not in profile
 

@@ -26,7 +26,7 @@ from opensquilla.sandbox.backend.linux_protected_create import (
 )
 
 pytestmark = pytest.mark.skipif(
-    sys.platform.startswith("win"),
+    not sys.platform.startswith("linux"),
     reason="Linux helper tests require POSIX process-group and seccomp semantics",
 )
 

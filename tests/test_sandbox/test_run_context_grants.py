@@ -1427,6 +1427,7 @@ async def test_set_workspace_same_normalized_path_is_noop(tmp_path):
         "/root/project",
         "/run/docker.sock",
         "/var/run/docker.sock",
+        "/private/var/run/docker.sock",
         "/root/.opensquilla/workspace/.env.local",
         None,
     ],
@@ -1501,6 +1502,7 @@ async def test_set_workspace_rejects_sensitive_root_paths():
     for workspace_path in (
         "/run/docker.sock",
         "/var/run/docker.sock",
+        "/private/var/run/docker.sock",
         "/root",
         "/root/project",
         "/root/.aws",
@@ -1811,6 +1813,7 @@ async def test_saved_root_nested_workspace_is_allowed():
     [
         "/run/docker.sock",
         "/var/run/docker.sock",
+        "/private/var/run/docker.sock",
         "/root",
         "/root/project",
         "/root/.aws",

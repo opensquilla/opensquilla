@@ -10,7 +10,7 @@ from opensquilla.sandbox.integration import run_in_process_network_action
 from opensquilla.sandbox.types import DenialResult
 from opensquilla.tools.builtin.web import (
     get_active_provider,
-    run_web_discover_payload,
+    run_web_search_payload,
     search_runtime_status,
 )
 from opensquilla.tools.registry import get_default_registry
@@ -225,10 +225,10 @@ async def _handle_search_query(params: dict | None, ctx: RpcContext) -> dict[str
     limit = _query_limit(params)
 
     async def _run_search() -> dict[str, Any]:
-        return await run_web_discover_payload(
+        return await run_web_search_payload(
             query,
             limit,
-            provider_name=provider_name,
+            provider=provider_name,
         )
 
     payload_or_denial = await run_in_process_network_action(

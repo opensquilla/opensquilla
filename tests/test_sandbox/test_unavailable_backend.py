@@ -74,3 +74,22 @@ def test_auto_backend_failure_includes_windows_setup_diagnostics(monkeypatch) ->
     assert "Windows sandbox setup diagnostics" in message
     assert "windows_default" in message
     assert "network boundary" in message
+
+
+def test_auto_backend_failure_includes_macos_seatbelt_diagnostics(monkeypatch) -> None:
+    from opensquilla.sandbox import backend as backend_mod
+    from opensquilla.sandbox.backend import seatbelt as seatbelt_mod
+    from opensquilla.sandbox.backend.seatbelt import SeatbeltBackend
+    from opensquilla.sandbox.config import SandboxSettings
+
+    monkeypatch.setattr(backend_mod.sys, "platform", "darwin")
+    monkeypatch.setattr(SeatbeltBackend, "available", lambda self: False)
+    monkeypatch.setattr(seatbelt_mod, "_sandbox_exec_binary", lambda binary=None: None)
+
+    with pytest.raises(SandboxBackendError) as exc_info:
+        backend_mod.select_backend(SandboxSettings(sandbox=True, backend="auto"))
+
+    message = str(exc_info.value)
+    assert "no real sandbox backend" in message
+    assert "macOS Seatbelt diagnostics" in message
+    assert "sandbox-exec=missing" in message

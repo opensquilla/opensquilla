@@ -37,6 +37,7 @@ def _apply_run_mode(config, run_mode: RunMode):
     config.sandbox.run_mode = patch.run_mode.value
     config.sandbox.sandbox = patch.sandbox
     config.sandbox.security_grading = patch.security_grading
+    config.sandbox.network_default = patch.network_default
     config.permissions.default_mode = patch.permissions_default_mode
     return config
 

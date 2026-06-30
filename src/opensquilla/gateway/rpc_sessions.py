@@ -197,7 +197,7 @@ def _trusted_run_mode_hint(ctx: RpcContext, source_hint: dict[str, Any]) -> Any 
     elevated = source_hint.get("elevated")
     if not isinstance(elevated, str):
         return None
-    if elevated in _TRUSTED_ELEVATED_ALIASES:
+    if elevated in _TRUSTED_ELEVATED_ALIASES and ctx.principal.is_owner:
         return RunMode.TRUSTED
     if elevated == "full" and ctx.principal.is_owner:
         return RunMode.FULL

@@ -40,6 +40,15 @@ def _auto_backend_failure_message() -> str:
 
         probe = probe_bwrap()
         return f"{message}; Linux sandbox diagnostics: {probe.message}"
+    if sys.platform == "darwin":
+        from opensquilla.sandbox.backend.seatbelt import _sandbox_exec_binary
+
+        sandbox_exec = _sandbox_exec_binary()
+        diagnostics = (
+            "macOS Seatbelt diagnostics: "
+            f"sandbox-exec={'ready' if sandbox_exec is not None else 'missing'}"
+        )
+        return f"{message}; {diagnostics}"
     if not sys.platform.startswith("win"):
         return message
 

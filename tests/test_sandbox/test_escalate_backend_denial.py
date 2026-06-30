@@ -8,6 +8,7 @@ from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.integration import (
     configure_runtime,
     escalate_backend_denial,
+    get_runtime,
     reset_runtime,
 )
 from opensquilla.sandbox.run_context import RunContext
@@ -225,6 +226,34 @@ async def test_escalate_returns_seatbelt_denied_on_rejection(tmp_path: Path) -> 
     assert isinstance(decision, DenialResult)
     assert decision.reason == DenialReason.SEATBELT_DENIED
     assert decision.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_backend_sandbox_denials_do_not_trip_autonomous_pause_threshold(
+    tmp_path: Path,
+) -> None:
+    configure_runtime(
+        SandboxSettings(
+            sandbox=True,
+            backend="noop",
+            security_grading=False,
+            denial_threshold=3,
+        ),
+        approval_queue=_ApproveQueue(approve=False),
+        workspace=tmp_path,
+    )
+    policy = _policy(tmp_path)
+    result = _result_with_notes(("tmp.denied: sandbox denied a tmp-directory operation",))
+
+    for _ in range(3):
+        decision = await escalate_backend_denial(result, _request(tmp_path, policy), policy)
+        assert isinstance(decision, DenialResult)
+        assert decision.reason == DenialReason.SEATBELT_DENIED
+
+    runtime = get_runtime()
+    assert runtime is not None
+    assert await runtime.ledger.count_session("default") == 3
+    assert await runtime.ledger.threshold_reached("default") is False
 
 
 @pytest.mark.asyncio

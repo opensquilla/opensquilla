@@ -91,6 +91,8 @@ async def current_sandbox_setup_status(config: Any) -> SetupResult:
     platform = _platform_name()
     if platform == "win32":
         return await _windows_setup_status(config)
+    if platform == "darwin":
+        return await _macos_setup_status(config)
     return await _portable_setup_status(config, platform=platform)
 
 
@@ -98,7 +100,38 @@ async def ensure_sandbox_setup(config: Any) -> SetupResult:
     platform = _platform_name()
     if platform == "win32":
         return await _ensure_windows_setup(config)
+    if platform == "darwin":
+        return await _ensure_macos_setup(config)
     return await _ensure_portable_setup(config, platform=platform)
+
+
+async def _macos_setup_status(config: Any) -> SetupResult:
+    _ = config
+    if _macos_seatbelt_available():
+        return SetupResult(
+            state=SandboxSetupState.READY,
+            platform="darwin",
+            message="macOS Seatbelt sandbox is ready.",
+            requires_admin=False,
+            detail="sandbox-exec=ready",
+        )
+    return SetupResult(
+        state=SandboxSetupState.UNAVAILABLE,
+        platform="darwin",
+        message="macOS Seatbelt sandbox is unavailable.",
+        requires_admin=False,
+        detail="sandbox-exec=missing",
+    )
+
+
+async def _ensure_macos_setup(config: Any) -> SetupResult:
+    return await _macos_setup_status(config)
+
+
+def _macos_seatbelt_available() -> bool:
+    from opensquilla.sandbox.backend.seatbelt import SeatbeltBackend
+
+    return SeatbeltBackend().available()
 
 
 async def _windows_setup_status(config: Any) -> SetupResult:

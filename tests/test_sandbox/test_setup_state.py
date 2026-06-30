@@ -50,6 +50,37 @@ async def test_platform_setup_dispatches_windows(monkeypatch) -> None:
     assert calls
 
 
+async def test_macos_setup_status_reports_seatbelt_ready(monkeypatch) -> None:
+    from opensquilla.sandbox import setup_state
+
+    monkeypatch.setattr(setup_state.sys, "platform", "darwin")
+    monkeypatch.setattr(setup_state, "_macos_seatbelt_available", lambda: True)
+
+    result = await setup_state.current_sandbox_setup_status(SimpleNamespace())
+    ensured = await setup_state.ensure_sandbox_setup(SimpleNamespace())
+
+    assert result.state is setup_state.SandboxSetupState.READY
+    assert result.platform == "darwin"
+    assert result.requires_admin is False
+    assert result.detail == "sandbox-exec=ready"
+    assert ensured.state is setup_state.SandboxSetupState.READY
+    assert ensured.detail == "sandbox-exec=ready"
+
+
+async def test_macos_setup_status_reports_missing_seatbelt(monkeypatch) -> None:
+    from opensquilla.sandbox import setup_state
+
+    monkeypatch.setattr(setup_state.sys, "platform", "darwin")
+    monkeypatch.setattr(setup_state, "_macos_seatbelt_available", lambda: False)
+
+    result = await setup_state.current_sandbox_setup_status(SimpleNamespace())
+
+    assert result.state is setup_state.SandboxSetupState.UNAVAILABLE
+    assert result.platform == "darwin"
+    assert result.requires_admin is False
+    assert result.detail == "sandbox-exec=missing"
+
+
 async def test_windows_setup_status_reports_windows_default_ready(monkeypatch) -> None:
     from opensquilla.sandbox import setup_state
 

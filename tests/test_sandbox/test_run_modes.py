@@ -21,12 +21,16 @@ def test_trusted_sandbox_is_sandboxed_and_skips_only_routine_prompts() -> None:
 
     assert patch.sandbox is True
     assert patch.security_grading is True
+    assert patch.network_default == "proxy_allowlist"
     assert patch.permissions_default_mode == "off"
     assert execution_target(RunMode.TRUSTED) == "sandbox"
     assert approval_behavior(RunMode.TRUSTED) == "trusted"
 
 
 def test_full_host_access_is_the_only_global_host_target() -> None:
+    patch = run_mode_config_patch(RunMode.FULL)
+
+    assert patch.network_default == "none"
     assert execution_target(RunMode.STANDARD) == "sandbox"
     assert execution_target(RunMode.TRUSTED) == "sandbox"
     assert execution_target(RunMode.FULL) == "host"

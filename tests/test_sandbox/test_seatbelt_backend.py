@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -125,8 +126,9 @@ def test_profile_denies_default_and_network_none(tmp_path: Path) -> None:
 
     assert "(deny default)" in profile
     assert "(deny network*)" in profile
-    assert f'(allow file-read* (subpath "{tmp_path}"))' in profile
-    assert f'(allow file-write* (subpath "{tmp_path}"))' in profile
+    assert "(allow file-read*)" in profile
+    assert "(allow file-write*" in profile
+    assert f'(subpath "{tmp_path}")' in profile
 
 
 def test_profile_allows_network_host(tmp_path: Path) -> None:
@@ -134,7 +136,8 @@ def test_profile_allows_network_host(tmp_path: Path) -> None:
         _request(_policy(tmp_path, network=NetworkMode.HOST), tmp_path)
     )
 
-    assert "(allow network*)" in profile
+    assert "(allow network-outbound)" in profile
+    assert "(allow network-inbound)" in profile
 
 
 def test_profile_rejects_proxy_allowlist_without_proxy(tmp_path: Path) -> None:
@@ -157,9 +160,50 @@ def test_profile_allows_only_proxy_endpoint_for_proxy_allowlist(tmp_path: Path) 
     )
 
     assert "(allow network-outbound" in profile
-    assert "127.0.0.1:18080" in profile
+    assert "localhost:18080" in profile
+    assert "127.0.0.1:18080" not in profile
     assert "(allow network*)" not in profile
     assert "(deny network*)" not in profile
+
+
+def test_profile_allows_full_disk_read_like_codex(tmp_path: Path) -> None:
+    profile = render_seatbelt_profile(_request(_policy(tmp_path), tmp_path))
+
+    assert "; allow read-only file operations" in profile
+    assert "\n(allow file-read*)\n" in profile
+
+
+def test_profile_tmp_writable_includes_host_tmp_roots(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    slash_tmp = tmp_path / "tmp"
+    private_tmp = tmp_path / "private" / "tmp"
+    slash_tmp.mkdir()
+    private_tmp.mkdir(parents=True)
+    monkeypatch.setattr(
+        seatbelt_mod,
+        "_TMP_RW_PATHS",
+        (slash_tmp, private_tmp),
+        raising=False,
+    )
+
+    profile = render_seatbelt_profile(_request(_policy(tmp_path), tmp_path))
+
+    assert f'(subpath "{slash_tmp}")' in profile
+    assert f'(subpath "{private_tmp}")' in profile
+    assert "(allow file-write*" in profile
+
+
+def test_profile_rejects_non_loopback_proxy_endpoint(tmp_path: Path) -> None:
+    policy = _policy(
+        tmp_path,
+        network=NetworkMode.PROXY_ALLOWLIST,
+        network_proxy=NetworkProxySpec(host="192.0.2.10", port=18080),
+    )
+
+    with pytest.raises(SandboxBackendError, match="loopback"):
+        render_seatbelt_profile(_request(policy, tmp_path))
 
 
 def test_profile_keeps_workspace_ro_when_policy_ro(tmp_path: Path) -> None:
@@ -167,8 +211,8 @@ def test_profile_keeps_workspace_ro_when_policy_ro(tmp_path: Path) -> None:
         _request(_policy(tmp_path, workspace_rw=False), tmp_path)
     )
 
-    assert f'(allow file-read* (subpath "{tmp_path}"))' in profile
-    assert f'(allow file-write* (subpath "{tmp_path}"))' not in profile
+    assert "(allow file-read*)" in profile
+    assert f'(subpath "{tmp_path}")' not in profile
 
 
 def test_profile_denies_writes_to_protected_metadata_under_workspace(tmp_path: Path) -> None:
@@ -178,7 +222,8 @@ def test_profile_denies_writes_to_protected_metadata_under_workspace(tmp_path: P
     profile = render_seatbelt_profile(_request(_policy(tmp_path), tmp_path))
 
     for name in (".git", ".codex", ".agents"):
-        assert f'(deny file-write* (subpath "{tmp_path / name}"))' in profile
+        assert name.replace(".", "\\.") in profile
+        assert "(require-not (regex" in profile
 
 
 def test_profile_escapes_paths(tmp_path: Path) -> None:
@@ -308,6 +353,11 @@ async def test_run_filters_env_and_returns_nonzero_without_raise(
     assert env["PATH"] == "/bin"
     assert "SECRET" not in env
     assert "TMPDIR" in env
+    tmpdir = Path(env["TMPDIR"])
+    assert env["XDG_CACHE_HOME"] == str(tmpdir / "cache" / "xdg")
+    assert env["npm_config_cache"] == str(tmpdir / "cache" / "npm")
+    assert env["PIP_CACHE_DIR"] == str(tmpdir / "cache" / "pip")
+    assert env["UV_CACHE_DIR"] == str(tmpdir / "cache" / "uv")
 
 
 @pytest.mark.asyncio
@@ -428,12 +478,43 @@ async def test_real_seatbelt_runs_python_when_available(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_real_seatbelt_shell_can_write_slash_tmp_when_available(
+    tmp_path: Path,
+) -> None:
+    if not SeatbeltBackend().available():
+        pytest.skip("requires macOS sandbox-exec")
+    target = Path("/tmp") / f"opensquilla_sandbox_shell_probe_{os.getpid()}.txt"
+    policy = _policy(tmp_path)
+    request = SandboxRequest(
+        argv=(
+            "sh",
+            "-lc",
+            f"printf '%s\\n' shell-temp-ok > {target} && cat {target} && rm {target}",
+        ),
+        cwd=tmp_path,
+        action_kind="shell.exec",
+        policy=policy,
+        env={"PATH": "/bin:/usr/bin"},
+    )
+
+    try:
+        result = await SeatbeltBackend().run(request)
+    finally:
+        target.unlink(missing_ok=True)
+
+    assert result.returncode == 0
+    assert result.stdout == "shell-temp-ok\n"
+    assert result.stderr == ""
+    assert result.backend_notes == ()
+
+
+@pytest.mark.asyncio
 async def test_real_seatbelt_blocks_write_outside_workspace_when_available(
     tmp_path: Path,
 ) -> None:
     if not SeatbeltBackend().available():
         pytest.skip("requires macOS sandbox-exec")
-    outside = tmp_path.parent / "seatbelt-outside.txt"
+    outside = Path.home() / f"opensquilla-seatbelt-outside-{os.getpid()}.txt"
     policy = _policy(tmp_path)
     request = SandboxRequest(
         argv=(
@@ -454,6 +535,94 @@ async def test_real_seatbelt_blocks_write_outside_workspace_when_available(
     assert not outside.exists()
 
 
+@pytest.mark.asyncio
+async def test_real_seatbelt_proxy_allowlist_allows_loopback_proxy_port_when_available(
+    tmp_path: Path,
+) -> None:
+    if not SeatbeltBackend().available():
+        pytest.skip("requires macOS sandbox-exec")
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        _ = await reader.read(16)
+        writer.write(b"ok\n")
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    try:
+        sock = server.sockets[0]
+        host, port = sock.getsockname()[:2]
+        policy = _policy(
+            tmp_path,
+            network=NetworkMode.PROXY_ALLOWLIST,
+            network_proxy=NetworkProxySpec(host=str(host), port=int(port)),
+        )
+        code = (
+            "import socket\n"
+            f"s = socket.create_connection(('127.0.0.1', {int(port)}), timeout=2)\n"
+            "s.sendall(b'hi')\n"
+            "print(s.recv(16).decode(), end='')\n"
+            "s.close()\n"
+        )
+        request = SandboxRequest(
+            argv=(sys.executable, "-c", code),
+            cwd=tmp_path,
+            action_kind="network.http",
+            policy=policy,
+            env={"PATH": "/bin:/usr/bin"},
+        )
+
+        result = await SeatbeltBackend().run(request)
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert result.returncode == 0
+    assert result.stdout == "ok\n"
+    assert result.stderr == ""
+
+
+@pytest.mark.asyncio
+async def test_real_seatbelt_blocks_loopback_tcp_when_network_none(
+    tmp_path: Path,
+) -> None:
+    if not SeatbeltBackend().available():
+        pytest.skip("requires macOS sandbox-exec")
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        _ = await reader.read(16)
+        writer.close()
+        await writer.wait_closed()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    try:
+        sock = server.sockets[0]
+        _host, port = sock.getsockname()[:2]
+        policy = _policy(tmp_path, network=NetworkMode.NONE, network_proxy=None)
+        code = (
+            "import socket\n"
+            f"socket.create_connection(('127.0.0.1', {int(port)}), timeout=2)\n"
+            "print('connected')\n"
+        )
+        request = SandboxRequest(
+            argv=(sys.executable, "-c", code),
+            cwd=tmp_path,
+            action_kind="network.http",
+            policy=policy,
+            env={"PATH": "/bin:/usr/bin"},
+        )
+
+        result = await SeatbeltBackend().run(request)
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert result.returncode != 0
+    assert "connected" not in result.stdout
+    assert "PermissionError" in result.stderr or "Operation not permitted" in result.stderr
+
+
 # ─── _classify_denial tests ───────────────────────────────────────────────
 
 
@@ -471,6 +640,48 @@ def test_classify_denial_filesystem_read_blocked() -> None:
     assert len(notes) == 1
     assert notes[0].category == "filesystem.read"
     assert "/etc/ssl/cert.pem" in notes[0].hint
+
+
+def test_classify_denial_ping_sendto_blocked() -> None:
+    stderr = "ping: sendto: Operation not permitted\n"
+
+    notes = _classify_denial(("sh", "-lc", "/sbin/ping -c 1 1.1.1.1"), stderr)
+
+    assert len(notes) == 1
+    assert notes[0].category == "network.denied"
+    assert "ICMP" in notes[0].hint
+
+
+def test_classify_denial_ping_packet_loss_under_restricted_network() -> None:
+    stdout = (
+        "PING 1.1.1.1 (1.1.1.1): 56 data bytes\n\n"
+        "--- 1.1.1.1 ping statistics ---\n"
+        "1 packets transmitted, 0 packets received, 100.0% packet loss\n"
+    )
+
+    notes = _classify_denial(
+        ("sh", "-lc", "ping -c 1 -W 3000 1.1.1.1"),
+        "",
+        stdout=stdout,
+        network=NetworkMode.PROXY_ALLOWLIST,
+    )
+
+    assert len(notes) == 1
+    assert notes[0].category == "network.denied"
+    assert "ICMP" in notes[0].hint
+
+
+def test_classify_denial_ping_packet_loss_ignored_on_host_network() -> None:
+    stdout = "1 packets transmitted, 0 packets received, 100.0% packet loss\n"
+
+    notes = _classify_denial(
+        ("sh", "-lc", "ping -c 1 1.1.1.1"),
+        "",
+        stdout=stdout,
+        network=NetworkMode.HOST,
+    )
+
+    assert notes == ()
 
 
 def test_classify_denial_dyld_library_not_loaded() -> None:
@@ -527,6 +738,51 @@ async def test_run_populates_backend_notes_on_denial(
 
     assert len(result.backend_notes) == 1
     assert result.backend_notes[0].startswith("execve.denied:")
+
+
+@pytest.mark.asyncio
+async def test_run_populates_backend_notes_for_zero_exit_ping_packet_loss(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ping_stdout = (
+        "PING 1.1.1.1 (1.1.1.1): 56 data bytes\n\n"
+        "--- 1.1.1.1 ping statistics ---\n"
+        "1 packets transmitted, 0 packets received, 100.0% packet loss\n"
+    )
+
+    class FakeProcess:
+        pid = 12345
+        returncode = 0
+
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+            return ping_stdout.encode(), b""
+
+    async def fake_create(*args: object, **kwargs: object) -> FakeProcess:
+        return FakeProcess()
+
+    monkeypatch.setattr(seatbelt_mod.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        seatbelt_mod, "_sandbox_exec_binary", lambda binary=None: "/usr/bin/sandbox-exec"
+    )
+    monkeypatch.setattr(seatbelt_mod.asyncio, "create_subprocess_exec", fake_create)
+    policy = _policy(
+        tmp_path,
+        network=NetworkMode.PROXY_ALLOWLIST,
+        network_proxy=NetworkProxySpec(host="127.0.0.1", port=18080),
+    )
+    request = SandboxRequest(
+        argv=("sh", "-lc", "ping -c 1 -W 3000 1.1.1.1"),
+        cwd=tmp_path,
+        action_kind="shell.exec",
+        policy=policy,
+    )
+
+    result = await SeatbeltBackend().run(request)
+
+    assert result.returncode == 0
+    assert len(result.backend_notes) == 1
+    assert result.backend_notes[0].startswith("network.denied:")
 
 
 @pytest.mark.asyncio

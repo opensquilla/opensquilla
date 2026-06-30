@@ -293,9 +293,9 @@ enabled = true
 sandbox = false
 security_grading = false
 # default_level = "STANDARD"            # DISABLED | STANDARD | STRICT | LOCKED
-# backend = "auto"                       # auto | bubblewrap | seatbelt | noop
+# backend = "auto"                       # auto | bubblewrap | seatbelt | windows_default | noop
 # allow_legacy_mode = false              # required for default_level = DISABLED
-# network_default = "none"               # none | proxy_allowlist
+# network_default = "proxy_allowlist"    # none | proxy_allowlist
 # denial_threshold = 3                   # pause autonomous runs after N denials
 # extra_ro_mounts = []
 # extra_rw_mounts = []

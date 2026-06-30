@@ -18,6 +18,7 @@ class RunModeConfigPatch:
     run_mode: RunMode
     sandbox: bool
     security_grading: bool
+    network_default: Literal["none", "proxy_allowlist"]
     permissions_default_mode: str
 
 
@@ -75,12 +76,14 @@ def run_mode_config_patch(mode: Any) -> RunModeConfigPatch:
             run_mode=normalized,
             sandbox=False,
             security_grading=False,
+            network_default="none",
             permissions_default_mode="full",
         )
     return RunModeConfigPatch(
         run_mode=normalized,
         sandbox=True,
         security_grading=True,
+        network_default="proxy_allowlist",
         permissions_default_mode="off",
     )
 

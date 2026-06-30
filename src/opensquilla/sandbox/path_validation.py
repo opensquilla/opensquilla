@@ -32,7 +32,10 @@ _POSIX_BLOCKED_PREFIXES: tuple[str, ...] = (
     "/root",
     "/var/run/docker.sock",
     "/run/docker.sock",
+    "/private/var/run/docker.sock",
 )
+
+
 def normalize_mount_access(value: Any, default: MountAccess = "ro") -> MountAccess:
     return "rw" if isinstance(value, str) and value.lower().strip() == "rw" else default
 

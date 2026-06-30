@@ -48,6 +48,9 @@ _SENSITIVE_PREFIXES: tuple[str, ...] = (
     "/dev",
     "/root",
     "/var/log",
+    "/var/run/docker.sock",
+    "/run/docker.sock",
+    "/private/var/run/docker.sock",
     "/lib/systemd",
     "/usr/lib/systemd",
 )
@@ -74,6 +77,8 @@ _LINUX_RUNTIME_SENSITIVE_PREFIXES: tuple[str, ...] = (
     "/proc",
     "/root",
     "/var/log",
+    "/var/run/docker.sock",
+    "/run/docker.sock",
     "/lib/systemd",
     "/usr/lib/systemd",
 )

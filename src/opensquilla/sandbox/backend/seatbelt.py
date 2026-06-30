@@ -56,18 +56,90 @@ _FILESYSTEM_WORKER_MODULE = "opensquilla.sandbox.filesystem_worker"
 _OUTPUT_BYTE_CAP = 1_048_576
 _TERMINATE_GRACE_S = 2.0
 
-# Broad but explicit runtime reads needed for ordinary macOS command
-# execution. Every path here widens the sandbox, so keep the list boring.
-_BASE_RO_PATHS: tuple[Path, ...] = (
-    Path("/bin"),
-    Path("/sbin"),
-    Path("/usr/bin"),
-    Path("/usr/lib"),
-    Path("/System/Library"),
-    Path("/Library/Developer/CommandLineTools"),
-)
-_BREW_PREFIXES: tuple[Path, ...] = (Path("/opt/homebrew"), Path("/usr/local"))
+# This mirrors Codex's macOS Seatbelt posture for workspace-write:
+# deny by default, allow ordinary macOS runtime services, allow full-disk reads,
+# and constrain writes to explicit writable roots.
+_SEATBELT_BASE_POLICY = """(version 1)
+
+; start with closed-by-default
+(deny default)
+
+; child processes inherit the policy of their parent
+(allow process-exec)
+(allow process-fork)
+(allow signal (target same-sandbox))
+
+; process-info
+(allow process-info* (target same-sandbox))
+
+(allow file-write-data
+  (require-all
+    (path "/dev/null")
+    (vnode-type CHARACTER-DEVICE)))
+
+; sysctls permitted.
+(allow sysctl-read)
+
+; IOKit and common macOS runtime services.
+(allow iokit-open
+  (iokit-registry-entry-class "RootDomainUserClient"))
+
+(allow mach-lookup
+  (global-name "com.apple.system.opendirectoryd.libinfo"))
+
+; Needed for python multiprocessing on macOS for SemLock.
+(allow ipc-posix-sem)
+
+; Needed for PyTorch/libomp on macOS to register OpenMP runtimes.
+(allow ipc-posix-shm-read-data
+  ipc-posix-shm-write-create
+  ipc-posix-shm-write-unlink
+  (ipc-posix-name-regex #"^/__KMP_REGISTERED_LIB_[0-9]+$"))
+
+(allow mach-lookup
+  (global-name "com.apple.PowerManagement.control"))
+
+; allow openpty()
+(allow pseudo-tty)
+(allow file-read* file-write* file-ioctl (literal "/dev/ptmx"))
+(allow file-read* file-write*
+  (require-all
+    (regex #"^/dev/ttys[0-9]+")
+    (extension "com.apple.sandbox.pty")))
+(allow file-ioctl (regex #"^/dev/ttys[0-9]+"))
+
+; allow readonly user preferences
+(allow ipc-posix-shm-read* (ipc-posix-name-prefix "apple.cfprefs."))
+(allow mach-lookup
+  (global-name "com.apple.cfprefsd.daemon")
+  (global-name "com.apple.cfprefsd.agent")
+  (local-name "com.apple.cfprefsd.agent"))
+(allow user-preference-read)
+"""
+
+_SEATBELT_NETWORK_POLICY = """; allow safe AF_SYSTEM sockets used for local platform services.
+(allow system-socket
+  (require-all
+    (socket-domain AF_SYSTEM)
+    (socket-protocol 2)))
+
+(allow mach-lookup
+  (global-name "com.apple.bsd.dirhelper")
+  (global-name "com.apple.system.opendirectoryd.membership")
+  (global-name "com.apple.SecurityServer")
+  (global-name "com.apple.networkd")
+  (global-name "com.apple.ocspd")
+  (global-name "com.apple.trustd.agent")
+  (global-name "com.apple.SystemConfiguration.DNSConfiguration")
+  (global-name "com.apple.SystemConfiguration.configd"))
+
+(allow sysctl-read
+  (sysctl-name-regex #"^net.routetable"))
+"""
+
+_TMP_RW_PATHS: tuple[Path, ...] = (Path("/tmp"),)
 _PROTECTED_SUBPATH_NAMES = (".git", ".codex", ".agents")
+_SEATBELT_LOOPBACK_PROXY_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
 
 def _sandbox_exec_binary(binary: str | None = None) -> str | None:
@@ -137,52 +209,6 @@ def _unique_existing(paths: Iterable[Path]) -> list[Path]:
     return result
 
 
-def _parents_for(path: Path) -> list[Path]:
-    parents: list[Path] = []
-    current = path
-    if path.is_file():
-        current = path.parent
-    for parent in (current, *current.parents):
-        if parent == parent.parent:
-            break
-        parents.append(parent)
-    return list(reversed(parents))
-
-
-def _resolve_executable(argv0: str) -> Path | None:
-    candidate = Path(argv0)
-    if candidate.is_absolute():
-        return candidate.resolve(strict=False)
-    resolved = shutil.which(argv0)
-    if resolved is None:
-        return None
-    return Path(resolved).resolve(strict=False)
-
-
-def _is_under(path: Path, parent: Path) -> bool:
-    try:
-        path.resolve(strict=False).relative_to(parent.resolve(strict=False))
-    except ValueError:
-        return False
-    return True
-
-
-def _extra_runtime_read_paths(request: SandboxRequest) -> list[Path]:
-    paths: list[Path] = [request.cwd]
-    argv0 = Path(request.argv[0])
-    if argv0.is_absolute():
-        paths.append(argv0)
-        paths.extend(_parents_for(argv0))
-    exe = _resolve_executable(request.argv[0])
-    if exe is not None:
-        paths.append(exe)
-        paths.extend(_parents_for(exe))
-        for prefix in _BREW_PREFIXES:
-            if _is_under(exe, prefix):
-                paths.append(prefix)
-    return paths
-
-
 def seatbelt_env_for_policy(
     policy: SandboxPolicy,
     override_env: dict[str, str],
@@ -202,6 +228,7 @@ def seatbelt_env_for_policy(
         resolved[key] = value
     if tmp_dir is not None:
         resolved["TMPDIR"] = str(tmp_dir)
+        resolved.update(_tool_cache_env(tmp_dir))
     if policy.network == NetworkMode.PROXY_ALLOWLIST:
         if policy.network_proxy is None:
             raise SandboxBackendError(
@@ -220,32 +247,75 @@ def seatbelt_env_for_policy(
 _env_for_policy = seatbelt_env_for_policy
 
 
-def _read_rules(paths: Iterable[Path]) -> list[str]:
-    rules: list[str] = []
-    for path in _unique_existing(paths):
-        selector = _literal(path) if path.is_file() else _subpath(path)
-        rules.append(f"(allow file-read* {selector})")
-    return rules
+def _tool_cache_env(tmp_dir: Path) -> dict[str, str]:
+    cache_root = tmp_dir / "cache"
+    return {
+        "XDG_CACHE_HOME": str(cache_root / "xdg"),
+        "npm_config_cache": str(cache_root / "npm"),
+        "NPM_CONFIG_CACHE": str(cache_root / "npm"),
+        "PIP_CACHE_DIR": str(cache_root / "pip"),
+        "UV_CACHE_DIR": str(cache_root / "uv"),
+    }
+
+
+def _regex_string(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _protected_metadata_regex(root: Path, name: str) -> str:
+    root_text = str(root).rstrip("/")
+    if not root_text:
+        root_text = "/"
+    escaped_root = re.escape(root_text)
+    escaped_name = re.escape(name)
+    if root_text == "/":
+        return f"^/{escaped_name}(/.*)?$"
+    return f"^{escaped_root}/{escaped_name}(/.*)?$"
 
 
 def _write_rules(paths: Iterable[Path]) -> list[str]:
-    return [f"(allow file-write* {_subpath(path)})" for path in _unique_existing(paths)]
-
-
-def _protected_write_deny_rules(paths: Iterable[Path]) -> list[str]:
     rules: list[str] = []
     for root in _unique_existing(paths):
         if root.is_file():
             continue
+        require_parts = [_subpath(root)]
         for name in _PROTECTED_SUBPATH_NAMES:
-            protected = root / name
-            if protected.exists():
-                rules.append(f"(deny file-write* {_subpath(protected)})")
+            regex = _regex_string(_protected_metadata_regex(root, name))
+            require_parts.append(f'(require-not (regex #"{regex}"))')
+        rules.append(f"(allow file-write* (require-all {' '.join(require_parts)}))")
     return rules
 
 
+def _seatbelt_proxy_endpoint(proxy: NetworkProxySpec) -> str:
+    host = proxy.host.strip().lower()
+    if host not in _SEATBELT_LOOPBACK_PROXY_HOSTS:
+        raise SandboxBackendError(
+            "seatbelt proxy allowlist requires a loopback network_proxy host "
+            f"(got {proxy.host!r})"
+        )
+    if not 1 <= proxy.port <= 65535:
+        raise SandboxBackendError(
+            f"seatbelt proxy allowlist requires a valid network_proxy port (got {proxy.port!r})"
+        )
+    return f"localhost:{proxy.port}"
+
+
 def _network_proxy_rule(proxy: NetworkProxySpec) -> str:
-    return f"(allow network-outbound (remote tcp {_scheme_string(f'{proxy.host}:{proxy.port}')}))"
+    endpoint = _seatbelt_proxy_endpoint(proxy)
+    return f"(allow network-outbound (remote ip {_scheme_string(endpoint)}))"
+
+
+def _tmp_write_paths(tmp_dir: Path | None) -> list[Path]:
+    paths: list[Path] = []
+    if tmp_dir is not None:
+        paths.append(tmp_dir)
+    paths.extend(_TMP_RW_PATHS)
+    env_tmp = os.environ.get("TMPDIR")
+    if env_tmp:
+        candidate = Path(env_tmp)
+        if candidate.is_absolute():
+            paths.append(candidate)
+    return paths
 
 
 def render_seatbelt_profile(
@@ -262,14 +332,12 @@ def render_seatbelt_profile(
                 "for the seatbelt backend"
             )
 
-    read_paths: list[Path] = []
     write_paths: list[Path] = []
     workspace = next(
         (m for m in policy.mounts if m.sandbox_path.as_posix() == "/workspace"),
         None,
     )
     if workspace is not None:
-        read_paths.append(workspace.host_path)
         if workspace.mode == "rw" or policy.workspace_rw:
             write_paths.append(workspace.host_path)
 
@@ -278,31 +346,28 @@ def render_seatbelt_profile(
             continue
         if not spec.host_path.exists():
             if spec.required:
-                raise SandboxBackendError(f"required mount missing on host: {spec.host_path!r}")
+                raise SandboxBackendError(
+                    f"required mount missing on host: {spec.host_path!r}"
+                )
             log.debug("sandbox.seatbelt_mount_skipped: %s (not present)", spec.host_path)
             continue
-        read_paths.append(spec.host_path)
         if spec.mode == "rw":
             write_paths.append(spec.host_path)
 
-    if tmp_dir is not None:
-        read_paths.append(tmp_dir)
-        write_paths.append(tmp_dir)
-
-    read_paths.extend(path for path in _BASE_RO_PATHS if path.exists())
-    read_paths.extend(_extra_runtime_read_paths(request))
+    if policy.tmp_writable:
+        write_paths.extend(_tmp_write_paths(tmp_dir))
 
     lines: list[str] = [
-        "(version 1)",
-        "(deny default)",
-        "(allow process*)",
-        "(allow sysctl-read)",
-        f"(allow file-read* {_literal(Path('/'))})",
+        _SEATBELT_BASE_POLICY.rstrip(),
+        "; allow read-only file operations",
+        "(allow file-read*)",
     ]
     if policy.network == NetworkMode.NONE:
         lines.append("(deny network*)")
     elif policy.network == NetworkMode.HOST:
-        lines.append("(allow network*)")
+        lines.append("(allow network-outbound)")
+        lines.append("(allow network-inbound)")
+        lines.append(_SEATBELT_NETWORK_POLICY.rstrip())
     elif policy.network == NetworkMode.PROXY_ALLOWLIST:
         if policy.network_proxy is None:  # pragma: no cover - guarded above
             raise SandboxBackendError(
@@ -310,12 +375,11 @@ def render_seatbelt_profile(
                 "for the seatbelt backend"
             )
         lines.append(_network_proxy_rule(policy.network_proxy))
+        lines.append(_SEATBELT_NETWORK_POLICY.rstrip())
     else:  # pragma: no cover - exhaustive guard for future enum values
         raise SandboxBackendError(f"unsupported seatbelt network mode: {policy.network!r}")
 
-    lines.extend(_read_rules(read_paths))
     lines.extend(_write_rules(write_paths))
-    lines.extend(_protected_write_deny_rules(write_paths))
     return "\n".join(lines) + "\n"
 
 
@@ -629,8 +693,15 @@ class SeatbeltBackend(Backend):
             stderr, trunc_err = _decode_capped(stderr_bytes)
             returncode = proc.returncode if proc.returncode is not None else -1
             notes: tuple[_SeatbeltNote, ...] = ()
-            if not timed_out and returncode != 0:
-                notes = _classify_denial(request.argv, stderr)
+            if not timed_out:
+                notes = _classify_denial(
+                    request.argv,
+                    stderr,
+                    stdout=stdout,
+                    network=request.policy.network,
+                )
+                if returncode == 0:
+                    notes = tuple(note for note in notes if note.category == "network.denied")
                 for note in notes:
                     log.info(
                         "sandbox.seatbelt_note: category=%s argv0=%s blocked_path=%s action=%s",
@@ -730,13 +801,39 @@ _OPNOTPERM_RE = re.compile(
     r"|(/[^\s:]+):\s*Operation not permitted"
 )
 _TMP_RE = re.compile(r"\b(mkstemp|mkdtemp|tmpfile)\b.*(?:permitted|denied|failed)")
+_PING_SENDTO_DENIED_RE = re.compile(
+    r"\bping6?:\s+sendto:\s+Operation not permitted\b",
+    re.IGNORECASE,
+)
+_PING_PACKET_LOSS_RE = re.compile(
+    r"\b100(?:\.0+)?%\s+packet loss\b",
+    re.IGNORECASE,
+)
+_PING_COMMAND_RE = re.compile(
+    r"(?:(?<=^)|(?<=[\s;&|]))(?:/[^\s;&|]*/)?ping6?(?=$|[\s;&|])"
+)
 
 
-def _classify_denial(argv: tuple[str, ...], stderr: str) -> tuple[_SeatbeltNote, ...]:
+def _looks_like_ping_invocation(argv: tuple[str, ...]) -> bool:
+    return bool(_PING_COMMAND_RE.search(" ".join(argv)))
+
+
+def _network_is_restricted(network: NetworkMode | None) -> bool:
+    return network is not NetworkMode.HOST
+
+
+def _classify_denial(
+    argv: tuple[str, ...],
+    stderr: str,
+    *,
+    stdout: str = "",
+    network: NetworkMode | None = None,
+) -> tuple[_SeatbeltNote, ...]:
     """Scan the tail of ``stderr`` for known Seatbelt denial signatures."""
-    if not stderr:
+    if not stderr and not stdout:
         return ()
     tail = stderr[-_STDERR_SCAN_BYTES:]
+    stdout_tail = stdout[-_STDERR_SCAN_BYTES:]
     notes: list[_SeatbeltNote] = []
     seen: set[tuple[str, str]] = set()
 
@@ -778,6 +875,18 @@ def _classify_denial(argv: tuple[str, ...], stderr: str) -> tuple[_SeatbeltNote,
 
     if _TMP_RE.search(tail):
         _add(_SeatbeltNote(category="tmp.denied", hint="sandbox denied a tmp-directory operation"))
+
+    if _looks_like_ping_invocation(argv):
+        if _PING_SENDTO_DENIED_RE.search(tail):
+            _add(_SeatbeltNote(
+                category="network.denied",
+                hint="sandbox blocked raw ICMP ping traffic",
+            ))
+        elif _network_is_restricted(network) and _PING_PACKET_LOSS_RE.search(stdout_tail):
+            _add(_SeatbeltNote(
+                category="network.denied",
+                hint="sandbox blocked raw ICMP ping traffic",
+            ))
 
     return tuple(notes)
 

@@ -7,7 +7,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from opensquilla.cli.main import app
-from opensquilla.onboarding.config_store import load_config
+from opensquilla.onboarding.config_store import load_config, persist_config
 
 runner = CliRunner()
 
@@ -46,13 +46,31 @@ def test_sandbox_trust_persists_trusted_run_mode(tmp_path: Path) -> None:
     assert cfg.sandbox.run_mode == "trusted"
     assert cfg.sandbox.sandbox is True
     assert cfg.sandbox.security_grading is True
+    assert cfg.sandbox.network_default == "proxy_allowlist"
     assert cfg.permissions.default_mode == "off"
     data = tomllib.loads(config_path.read_text(encoding="utf-8"))
     assert data["sandbox"]["run_mode"] == "trusted"
     assert data["sandbox"]["sandbox"] is True
     assert data["sandbox"]["security_grading"] is True
+    assert data["sandbox"]["network_default"] == "proxy_allowlist"
     assert data["permissions"]["default_mode"] == "off"
     assert "restart" in result.output.lower()
+
+
+def test_sandbox_trust_repairs_legacy_disabled_network_default(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    full = _invoke(config_path, "full")
+    assert full.exit_code == 0, full.output
+    cfg = load_config(config_path)
+    cfg.sandbox.network_default = "none"
+    persist_config(cfg, path=config_path)
+
+    result = _invoke(config_path, "trust")
+
+    assert result.exit_code == 0, result.output
+    cfg = load_config(config_path)
+    assert cfg.sandbox.run_mode == "trusted"
+    assert cfg.sandbox.network_default == "proxy_allowlist"
 
 
 def test_sandbox_bypass_fails_without_mutating_config(tmp_path: Path) -> None:
@@ -81,6 +99,7 @@ def test_sandbox_full_and_on_are_reversible(tmp_path: Path) -> None:
     assert cfg.sandbox.run_mode == "full"
     assert cfg.sandbox.sandbox is False
     assert cfg.sandbox.security_grading is False
+    assert cfg.sandbox.network_default == "none"
     assert cfg.permissions.default_mode == "full"
 
     on = _invoke(config_path, "on")
@@ -89,6 +108,7 @@ def test_sandbox_full_and_on_are_reversible(tmp_path: Path) -> None:
     assert cfg.sandbox.run_mode == "trusted"
     assert cfg.sandbox.sandbox is True
     assert cfg.sandbox.security_grading is True
+    assert cfg.sandbox.network_default == "proxy_allowlist"
     assert cfg.permissions.default_mode == "off"
 
 
@@ -104,4 +124,5 @@ def test_sandbox_reset_restores_full_host_access(tmp_path: Path) -> None:
     assert cfg.sandbox.run_mode == "full"
     assert cfg.sandbox.sandbox is False
     assert cfg.sandbox.security_grading is False
+    assert cfg.sandbox.network_default == "none"
     assert cfg.permissions.default_mode == "full"

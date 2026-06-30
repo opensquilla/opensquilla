@@ -89,7 +89,7 @@ async def test_run_context_initializes_from_global_default_and_persists_override
 
 @pytest.mark.asyncio
 async def test_set_run_mode_persists_first_workspace_and_preserves_origin_keys() -> None:
-    from opensquilla.sandbox.run_context import set_run_mode
+    from opensquilla.sandbox.run_context import normalize_workspace_path, set_run_mode
 
     manager = _SessionManager()
     manager.node.origin = {"other": {"kept": True}}
@@ -97,6 +97,7 @@ async def test_set_run_mode_persists_first_workspace_and_preserves_origin_keys()
         sandbox=SimpleNamespace(run_mode="standard", sandbox=True, security_grading=True),
         permissions=SimpleNamespace(default_mode="off"),
     )
+    expected_workspace = normalize_workspace_path("/tmp/ws")
 
     updated = await set_run_mode(
         manager,
@@ -106,14 +107,14 @@ async def test_set_run_mode_persists_first_workspace_and_preserves_origin_keys()
         workspace="/tmp/ws",
     )
 
-    assert updated.workspace == "/tmp/ws"
+    assert updated.workspace == expected_workspace
     assert manager.node.origin["other"] == {"kept": True}
-    assert manager.node.origin["sandbox_run_context"]["workspace"] == "/tmp/ws"
+    assert manager.node.origin["sandbox_run_context"]["workspace"] == expected_workspace
 
 
 @pytest.mark.asyncio
 async def test_saved_context_wins_over_later_global_default() -> None:
-    from opensquilla.sandbox.run_context import get_run_context
+    from opensquilla.sandbox.run_context import get_run_context, normalize_workspace_path
 
     manager = _SessionManager()
     manager.node.origin = {"sandbox_run_context": {"run_mode": "standard", "workspace": "/tmp/old"}}
@@ -121,6 +122,7 @@ async def test_saved_context_wins_over_later_global_default() -> None:
         sandbox=SimpleNamespace(run_mode="full", sandbox=False, security_grading=False),
         permissions=SimpleNamespace(default_mode="full"),
     )
+    expected_workspace = normalize_workspace_path("/tmp/old")
 
     ctx = await get_run_context(
         manager,
@@ -130,7 +132,7 @@ async def test_saved_context_wins_over_later_global_default() -> None:
     )
 
     assert ctx.run_mode == RunMode.STANDARD
-    assert ctx.workspace == "/tmp/old"
+    assert ctx.workspace == expected_workspace
     assert ctx.source == "saved"
 
 

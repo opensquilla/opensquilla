@@ -141,6 +141,14 @@ class SkillsConfig(BaseSettings):
     managed_dir: str | None = None
     allow_bundled: bool = True
     extra_dirs: list[str] = Field(default_factory=list)
+    # Names of skills the operator has turned off (e.g. via the control-UI
+    # plugin toggle). A disabled skill is gated out of the agent's view.
+    disabled: list[str] = Field(default_factory=list)
+    # Coding mode (control-UI toggle). When ON, the agent operates in a
+    # locked coding mode: the code-task plugin is available and a directive
+    # steers every turn through it. When OFF, code-task is unreachable through
+    # every skill API. Default OFF - coding mode is opt-in.
+    coding_mode: bool = False
     max_skills_prompt_chars: int = 8000
     filter_enabled: bool = False
     filter_top_k: int = 5
@@ -1076,6 +1084,20 @@ class CompactionLlmConfig(BaseSettings):
     protected_recent_messages: int = Field(default=0, ge=0)
 
 
+class SessionNamingConfig(BaseSettings):
+    """LLM-generated session titles (auto-naming)."""
+
+    model_config = SettingsConfigDict(env_prefix="OPENSQUILLA_NAMING_")
+
+    enabled: bool = True
+    surfaces: list[str] = Field(default_factory=lambda: ["webchat", "cli", "channel"])
+    tier: str | None = None
+    model: str | None = None
+    timeout_seconds: float = 30.0
+    max_chars: int = Field(default=48, ge=8)
+    language: str = "auto"
+
+
 class MCPServerEntry(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="OPENSQUILLA_MCP_SERVER_")
 
@@ -1581,6 +1603,9 @@ class MetaSkillConfig(BaseSettings):
         extra="forbid",
     )
     enabled: bool = True
+    auto_trigger: bool = False
+    """When False (default), meta-skills are manual-only and hidden from automatic
+    prompt/tool surfaces. They still run via the explicit /meta command."""
     persistence: MetaSkillPersistenceConfig = Field(
         default_factory=MetaSkillPersistenceConfig,
     )
@@ -1658,6 +1683,7 @@ class GatewayConfig(BaseSettings):
     squilla_router: SquillaRouterConfig = Field(default_factory=SquillaRouterConfig)
     agent_token_saving: AgentTokenSavingConfig = Field(default_factory=AgentTokenSavingConfig)
     compaction: CompactionLlmConfig = Field(default_factory=CompactionLlmConfig)
+    naming: SessionNamingConfig = Field(default_factory=SessionNamingConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
     image_generation: ImageGenerationConfig = Field(default_factory=ImageGenerationConfig)

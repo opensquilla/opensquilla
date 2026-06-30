@@ -1701,7 +1701,12 @@ async def escalate_backend_denial(
         message=message,
         retryable=False,
     )
-    await rt.ledger.record_denial(session_id, fp, denial.reason)
+    await rt.ledger.record_denial(
+        session_id,
+        fp,
+        denial.reason,
+        threshold_eligible=False,
+    )
     return denial
 
 

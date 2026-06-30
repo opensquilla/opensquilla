@@ -5,6 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 STATIC = ROOT / "src" / "opensquilla" / "gateway" / "static"
 APP_JS = STATIC / "js" / "app.js"
+RPC_JS = STATIC / "js" / "rpc.js"
 TEMPLATE = ROOT / "src" / "opensquilla" / "gateway" / "templates" / "index.html"
 APPROVAL_MONITOR_JS = STATIC / "js" / "approval_monitor.js"
 CHAT_JS = STATIC / "js" / "views" / "chat.js"
@@ -41,7 +42,10 @@ def test_chat_run_mode_control_remains_the_only_sandbox_frontend_control() -> No
     chat_js = _read(CHAT_JS)
     chat_css = _read(CHAT_CSS)
 
-    assert "const _RUN_MODE_DEFAULT = 'full';" in chat_js
+    assert "const _RUN_MODE_FALLBACK = 'trusted';" in chat_js
+    assert "_applyHelloRunModePolicy" in chat_js
+    assert "owner，不能选择 Full Host Access" in chat_js
+    assert "Full Host Access is unavailable" in chat_js
     assert 'id="chat-run-mode-trigger"' in chat_js
     assert 'id="chat-run-mode-menu"' in chat_js
     assert "sandbox.run_context.get" not in chat_js
@@ -60,6 +64,16 @@ def test_chat_run_mode_control_remains_the_only_sandbox_frontend_control() -> No
     assert "_sandboxSetupReadyForMode" in chat_js
     assert "_requestSandboxSetupForMode" in chat_js
     assert ".chat-sandbox-setup-banner" in chat_css
+
+
+def test_static_rpc_caches_hello_for_late_chat_mounts() -> None:
+    rpc_js = _read(RPC_JS)
+    chat_js = _read(CHAT_JS)
+
+    assert "this._hello = null;" in rpc_js
+    assert "get hello() { return this._hello; }" in rpc_js
+    assert "this._hello = data;" in rpc_js
+    assert "_applyHelloRunModePolicy(_rpc?.hello);" in chat_js
 
 
 def test_approval_monitor_inline_button_uses_modal_polling_path() -> None:

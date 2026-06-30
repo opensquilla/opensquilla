@@ -2182,11 +2182,16 @@
   color: var(--text-muted);
 }
 
-.chat-run-mode-option:hover,
-.chat-run-mode-option:focus-visible {
+.chat-run-mode-option:not(:disabled):hover,
+.chat-run-mode-option:not(:disabled):focus-visible {
   background: var(--bg-hover);
   color: var(--text);
   outline: none;
+}
+
+.chat-run-mode-option:disabled {
+  opacity: .52;
+  cursor: not-allowed;
 }
 
 .chat-run-mode-option.is-active {
@@ -2198,6 +2203,15 @@
 .chat-run-mode-option.is-danger {
   color: var(--danger);
 }
+
+.chat-run-mode-disabled-hint {
+  margin: 4px var(--sp-2) 2px;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.chat-run-mode-disabled-hint.hidden { display: none; }
 
 .chat-run-mode-tooltip {
   position: fixed;

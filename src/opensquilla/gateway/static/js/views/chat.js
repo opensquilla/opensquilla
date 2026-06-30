@@ -12,7 +12,7 @@ const ChatView = (() => {
   let _sessionKey = '';
   let _pendingSessionIntent = null;
 
-  const _RUN_MODE_DEFAULT = 'full';
+  const _RUN_MODE_FALLBACK = 'trusted';
   const _RUN_MODE_LABELS = {
     standard: 'Standard-Sandbox',
     trusted: 'Trusted-Sandbox',
@@ -23,7 +23,10 @@ const ChatView = (() => {
     trusted: 'Sandboxed execution with fewer routine prompts. Boundary changes still ask.',
     full: 'Host execution without per-command prompts. Use only for trusted workspaces.',
   };
-  let _runMode = _RUN_MODE_DEFAULT;
+  let _runModePolicyDefault = _RUN_MODE_FALLBACK;
+  let _allowedRunModes = new Set(['standard', 'trusted', 'full']);
+  let _fullHostAccessDisabledReason = null;
+  let _runMode = _runModePolicyDefault;
   let _sandboxSetupStatus = null;
   let _sandboxSetupRequestSeq = 0;
   let _sandboxSetupInFlight = false;
@@ -1387,6 +1390,7 @@ const ChatView = (() => {
       _bindRunModePicker();
       _updateRunModeControl();
     }
+    _applyHelloRunModePolicy(_rpc?.hello);
 
     // Squilla Router toggle switch
     const routerToggle = _el.querySelector('#toggle-router');
@@ -2101,12 +2105,12 @@ const ChatView = (() => {
   // Track non-default state on controls so the gear glows accent only when
   // at least one is set away from defaults: trusted/full run mode OR router off.
   let _toolbarState = {
-    runMode: _RUN_MODE_DEFAULT,
+    runMode: _runModePolicyDefault,
     router: true,         // false when router toggle is off
   };
 
   function _toolbarTriggerActive() {
-    if (_toolbarState.runMode !== _RUN_MODE_DEFAULT) return true;
+    if (_toolbarState.runMode !== _runModePolicyDefault) return true;
     if (_toolbarState.router === false) return true;
     return false;
   }
@@ -2118,7 +2122,7 @@ const ChatView = (() => {
     // Per-toggle status dots — each lights independently so a glance at the
     // composer reveals which mode is non-default, not just that something is.
     const runMode = _normalizeRunMode(_toolbarState.runMode);
-    const nonDefaultRunMode = runMode !== _RUN_MODE_DEFAULT;
+    const nonDefaultRunMode = runMode !== _runModePolicyDefault;
     const routerOff = _toolbarState.router === false;
     trigger.classList.toggle('has-dot-run-mode', nonDefaultRunMode);
     trigger.classList.toggle('has-dot-run-mode-full', runMode === 'full');
@@ -2254,9 +2258,9 @@ const ChatView = (() => {
     mode = _normalizeRunMode(mode);
     const setupKnown = _sandboxSetupStatus !== null;
     const setupReady = _isSandboxSetupReadyPayload(_sandboxSetupStatus);
-    const optionalPrompt = mode === 'full' && !_sandboxSetupPromptDismissed;
-    const pendingPrompt = mode !== 'full' || !!_pendingSandboxSetupMode;
-    const shouldShow = !setupReady && (pendingPrompt || (setupKnown && optionalPrompt));
+    const pendingPrompt = !!_pendingSandboxSetupMode;
+    const optionalPrompt = setupKnown && !_sandboxSetupPromptDismissed;
+    const shouldShow = !setupReady && (pendingPrompt || optionalPrompt);
     banner.classList.toggle('hidden', !shouldShow);
     banner.dataset.state = String(_sandboxSetupStatus && _sandboxSetupStatus.state || '');
     const detail = banner.querySelector('[data-sandbox-setup-detail]');
@@ -2316,6 +2320,7 @@ const ChatView = (() => {
 
   async function _requestSandboxSetupForMode(mode) {
     mode = _normalizeRunMode(mode);
+    if (!_runModeAllowed(mode)) return false;
     if (mode === 'full') return true;
     if (_sandboxSetupReadyForMode(mode)) return true;
     _sandboxSetupPromptDismissed = false;
@@ -2337,7 +2342,7 @@ const ChatView = (() => {
       dismiss.addEventListener('click', () => {
         _sandboxSetupPromptDismissed = true;
         _pendingSandboxSetupMode = '';
-        _setRunMode(_RUN_MODE_DEFAULT, { toast: false });
+        _setRunMode(_runModePolicyDefault, { toast: false });
         banner.classList.add('hidden');
       });
     }
@@ -2346,6 +2351,87 @@ const ChatView = (() => {
         _ensureSandboxSetupOnly();
       });
     }
+  }
+
+  function _runModePolicyValue(value) {
+    const normalized = String(value || '').trim().toLowerCase().replace(/_/g, '-');
+    if (normalized === 'standard' || normalized === 'standard-sandbox') return 'standard';
+    if (normalized === 'trusted' || normalized === 'trust' || normalized === 'trusted-sandbox') return 'trusted';
+    if (normalized === 'full' || normalized === 'full-host-access' || normalized === 'host') return 'full';
+    return '';
+  }
+
+  function _normalizeRunModePolicyValue(value, fallback) {
+    return _runModePolicyValue(value) || _runModePolicyValue(fallback) || _RUN_MODE_FALLBACK;
+  }
+
+  function _runModeAllowed(mode) {
+    const normalized = _runModePolicyValue(mode);
+    return !!normalized && _allowedRunModes.has(normalized);
+  }
+
+  function _firstAllowedRunMode() {
+    if (_allowedRunModes.has(_RUN_MODE_FALLBACK)) return _RUN_MODE_FALLBACK;
+    if (_allowedRunModes.has('standard')) return 'standard';
+    if (_allowedRunModes.has('trusted')) return 'trusted';
+    if (_allowedRunModes.has('full')) return 'full';
+    return _RUN_MODE_FALLBACK;
+  }
+
+  function _clampRunMode(mode) {
+    const normalized = _normalizeRunModePolicyValue(mode, _runModePolicyDefault);
+    if (_runModeAllowed(normalized)) return normalized;
+    if (_runModeAllowed(_runModePolicyDefault)) return _runModePolicyDefault;
+    return _firstAllowedRunMode();
+  }
+
+  function _fullHostAccessDisabledMessage() {
+    let lang = '';
+    if (typeof document !== 'undefined' && document.documentElement) {
+      lang = document.documentElement.lang || '';
+    }
+    if (!lang && typeof navigator !== 'undefined') lang = navigator.language || '';
+    if (String(lang).toLowerCase().startsWith('zh')) {
+      return '当前账号不是 owner，不能选择 Full Host Access。你可以使用 Standard-Sandbox 或 Trusted-Sandbox。';
+    }
+    return 'This account is not the owner, so Full Host Access is unavailable. You can use Standard-Sandbox or Trusted-Sandbox.';
+  }
+
+  function _applyHelloRunModePolicy(hello) {
+    const policy = hello && hello.auth && hello.auth.runModePolicy;
+    const previousPolicyDefault = _runModePolicyDefault;
+    const nextAllowed = new Set();
+    if (policy && Array.isArray(policy.allowedRunModes)) {
+      policy.allowedRunModes.forEach((mode) => {
+        const normalized = _runModePolicyValue(mode);
+        if (normalized) nextAllowed.add(normalized);
+      });
+    }
+    _allowedRunModes = nextAllowed.size > 0
+      ? nextAllowed
+      : new Set(['standard', 'trusted']);
+
+    const policyDefaultFallback = _allowedRunModes.has('full') ? 'full' : _RUN_MODE_FALLBACK;
+    const policyDefault = _normalizeRunModePolicyValue(
+      policy && policy.defaultRunMode,
+      policyDefaultFallback,
+    );
+    _runModePolicyDefault = _allowedRunModes.has(policyDefault)
+      ? policyDefault
+      : _firstAllowedRunMode();
+
+    const disabledReason = policy && policy.fullHostAccessDisabledReason;
+    _fullHostAccessDisabledReason = _allowedRunModes.has('full')
+      ? null
+      : (disabledReason ? String(disabledReason) : 'owner_required');
+
+    if (_runMode === previousPolicyDefault) {
+      _runMode = _runModePolicyDefault;
+    }
+    _runMode = _clampRunMode(_runMode);
+    _toolbarState.runMode = _runMode;
+    if (typeof _updateRunModeControl === 'function') _updateRunModeControl();
+    if (typeof _refreshToolbarTriggerGlow === 'function') _refreshToolbarTriggerGlow();
   }
 
   function _runModeHelp(mode) {
@@ -2434,6 +2520,10 @@ const ChatView = (() => {
       btn.addEventListener('click', async () => {
         const mode = _normalizeRunMode(btn.dataset.runMode);
         close();
+        if (btn.disabled || btn.getAttribute('aria-disabled') === 'true' || !_runModeAllowed(mode)) {
+          UI.toast(_fullHostAccessDisabledMessage(), mode === 'full' ? 'warn' : 'info', 2400);
+          return;
+        }
         if (mode === _runMode) return;
         if (!(await _requestSandboxSetupForMode(mode))) return;
         _setRunMode(mode, { toast: true });
@@ -2454,30 +2544,32 @@ const ChatView = (() => {
   }
 
   function _normalizeRunMode(mode) {
-    const value = String(mode || '').trim().toLowerCase().replace(/_/g, '-');
-    if (value === 'standard' || value === 'standard-sandbox') return 'standard';
-    if (value === 'trusted' || value === 'trust' || value === 'trusted-sandbox') return 'trusted';
-    if (value === 'full' || value === 'full-host-access' || value === 'host') return 'full';
-    return _RUN_MODE_DEFAULT;
+    return _normalizeRunModePolicyValue(mode, _runModePolicyDefault);
   }
 
   function _setRunMode(mode, options = {}) {
     const normalized = _normalizeRunMode(mode);
-    _runMode = normalized;
-    _toolbarState.runMode = normalized;
+    const clamped = _clampRunMode(normalized);
+    if (normalized !== clamped && !_runModeAllowed(normalized)) {
+      UI.toast(_fullHostAccessDisabledMessage(), normalized === 'full' ? 'warn' : 'info', 2400);
+      return false;
+    }
+    _runMode = clamped;
+    _toolbarState.runMode = clamped;
     _updateRunModeControl();
     _refreshToolbarTriggerGlow();
-    _refreshSandboxSetupBanner(normalized);
+    _refreshSandboxSetupBanner(clamped);
     if (options.toast) {
-      UI.toast(`Run Mode: ${_RUN_MODE_LABELS[normalized]}`, normalized === 'full' ? 'warn' : 'info', 1800);
+      UI.toast(`Run Mode: ${_RUN_MODE_LABELS[clamped]}`, clamped === 'full' ? 'warn' : 'info', 1800);
     }
+    return true;
   }
 
   function _updateRunModeControl() {
     const control = _runModeControl || (_el && _el.querySelector('#chat-run-mode-control'));
     if (!control) return;
     _runModeControl = control;
-    const active = _normalizeRunMode(_runMode);
+    const active = _clampRunMode(_runMode);
     const trigger = control.querySelector('#chat-run-mode-trigger');
     const current = control.querySelector('.chat-run-mode-current');
     if (trigger) {
@@ -2488,12 +2580,32 @@ const ChatView = (() => {
     if (current) current.textContent = _RUN_MODE_LABELS[active] || _RUN_MODE_LABELS.standard;
     control.querySelectorAll('.chat-run-mode-option').forEach((btn) => {
       const mode = _normalizeRunMode(btn.dataset.runMode);
+      const allowed = _runModeAllowed(mode);
       const selected = mode === active;
       btn.classList.toggle('is-active', selected);
       btn.classList.toggle('is-danger', mode === 'full' && selected);
       btn.setAttribute('aria-selected', selected ? 'true' : 'false');
-      btn.dataset.runModeHelp = _runModeHelp(mode);
+      btn.disabled = !allowed;
+      btn.setAttribute('aria-disabled', allowed ? 'false' : 'true');
+      const help = !allowed && mode === 'full'
+        ? _fullHostAccessDisabledMessage()
+        : _runModeHelp(mode);
+      btn.dataset.runModeHelp = help;
+      btn.title = help;
     });
+    const menu = control.querySelector('#chat-run-mode-menu');
+    if (menu) {
+      let hint = menu.querySelector('[data-run-mode-disabled-hint]');
+      if (!hint) {
+        hint = document.createElement('div');
+        hint.className = 'chat-run-mode-disabled-hint hidden';
+        hint.setAttribute('data-run-mode-disabled-hint', '');
+        menu.appendChild(hint);
+      }
+      const showHint = !!_fullHostAccessDisabledReason;
+      hint.textContent = showHint ? _fullHostAccessDisabledMessage() : '';
+      hint.classList.toggle('hidden', !showHint);
+    }
   }
 
   function _startNewChatSession(source) {
@@ -5536,6 +5648,7 @@ const ChatView = (() => {
     _unsubs.push(_rpc.on('_state', (state) => {
       if (state === 'connected' && _sessionKey) {
         _applyRpcPolicy(_rpc?.policy || {});
+        _applyHelloRunModePolicy(_rpc?.hello);
         _hideThinkingIndicator();
         _subscribeSession();
         _loadCurrentSessionUsage();
@@ -5549,6 +5662,7 @@ const ChatView = (() => {
 
     _unsubs.push(_rpc.on('_hello', (hello) => {
       _applyRpcPolicy(hello?.policy || {});
+      _applyHelloRunModePolicy(hello);
     }));
 
     _unsubs.push(_rpc.on('_gap', () => {
@@ -6637,8 +6751,11 @@ const ChatView = (() => {
       params.intent = sessionIntentForSend;
       if (textOverride === null) _pendingSessionIntent = null;
     }
+    const sendRunMode = _clampRunMode(_runMode);
+    _runMode = sendRunMode;
+    _toolbarState.runMode = sendRunMode;
     params._source = {};
-    params._source.runMode = _normalizeRunMode(_runMode);
+    params._source.runMode = sendRunMode;
     if (userText !== providerText || attachmentsForSend.length > 0) {
       params.displayText = userText;
     }

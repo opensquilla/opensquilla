@@ -9,7 +9,6 @@ type RpcClient = {
 
 export interface UseChatFeatureTogglesOptions {
   rpc: RpcClient
-  setGlobalElevatedMode: (mode: string) => void
   loadCurrentSessionUsage: () => void | Promise<void>
 }
 
@@ -24,9 +23,6 @@ interface ChatFeatureConfig {
       image_only?: boolean
       imageOnly?: boolean
     }>
-  }
-  permissions?: {
-    default_mode?: string
   }
 }
 
@@ -75,7 +71,6 @@ export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
       routerSlots.value = sortRouterTiers(tierKeys)
       routerModels.value = tierModels
       routerTierConfigs.value = tierConfigs
-      options.setGlobalElevatedMode(cfg?.permissions?.default_mode || '')
       await options.loadCurrentSessionUsage()
     } catch {
       // Feature toggles are optional for older gateways.

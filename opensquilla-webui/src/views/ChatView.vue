@@ -439,8 +439,6 @@
       :is-new-landing="isNewChatLanding"
       :placeholder="composerPlaceholder"
       :send-button-title="sendButtonTitle"
-      :elevated-mode="elevatedMode"
-      :elevated-unavailable="elevatedUnavailable"
       :router-enabled="routerEnabled"
       :router-visual-effects-enabled="routerVisualEffectsEnabled"
       :router-settings-busy="routerSettingsBusy"
@@ -462,7 +460,6 @@
       @remove-attachment="removeAttachment"
       @retry-attachment="retryAttachment"
       @set-busy-send-mode="busySendMode = $event"
-      @set-elevated-mode="setComposerElevatedMode"
       @dismiss-sandbox-setup="dismissSandboxSetupPrompt"
       @ensure-sandbox-setup="ensureSandboxSetupOnly"
       @set-run-mode="setComposerRunMode"
@@ -543,7 +540,6 @@ import { useChatApprovals } from '@/composables/chat/useChatApprovals'
 import { useChatAttachments } from '@/composables/chat/useChatAttachments'
 import { useChatCompaction } from '@/composables/chat/useChatCompaction'
 import { useChatComposerShortcuts } from '@/composables/chat/useChatComposerShortcuts'
-import { useChatElevatedMode } from '@/composables/chat/useChatElevatedMode'
 import { useChatFeatureToggles } from '@/composables/chat/useChatFeatureToggles'
 import { useChatHistory } from '@/composables/chat/useChatHistory'
 import { useChatMarkdownExport } from '@/composables/chat/useChatMarkdownExport'
@@ -675,18 +671,6 @@ const shareTheme = ref<ShareExportTheme>('light')
 // Whether the browser can copy an image to the clipboard. Resolved once: the
 // capability does not change within a session, and the modal hides Copy when false.
 const copySupported = shareCopyImageSupported()
-
-const chatElevatedMode = useChatElevatedMode({
-  sessionKey,
-})
-const {
-  elevatedMode,
-  elevatedUnavailable,
-  loadElevatedMode,
-  setElevatedMode,
-  setGlobalElevatedMode,
-  normalizeElevatedMode,
-} = chatElevatedMode
 
 const chatRunMode = useChatRunMode({
   rpc,
@@ -884,7 +868,6 @@ const {
 
 const chatFeatureToggles = useChatFeatureToggles({
   rpc,
-  setGlobalElevatedMode,
   loadCurrentSessionUsage,
 })
 const {
@@ -1207,7 +1190,6 @@ const chatSend = useChatSend({
   messages,
   sessionKey,
   busySendMode,
-  elevatedMode,
   runMode,
   pendingAttachments,
   pendingSessionIntent,
@@ -1215,7 +1197,6 @@ const chatSend = useChatSend({
   activeStreamTaskId,
   autoScroll,
   stream: chatStream,
-  normalizeElevatedMode,
   normalizeRunMode,
   persistSession,
   isCompactInFlightForCurrentSession,
@@ -1484,10 +1465,6 @@ function readAuthToken(): string {
   } catch {
     return ''
   }
-}
-
-function setComposerElevatedMode(mode: string) {
-  setElevatedMode(mode, { persist: true, sync: true })
 }
 
 function setComposerRunMode(mode: RunMode) {
@@ -2013,8 +1990,6 @@ onMounted(async () => {
     persistSession(sessionKey.value, { updateRoute: false, source: 'chatView.initialSession' })
   }
 
-  // Load elevated mode
-  loadElevatedMode()
   void loadSandboxSetupStatus({ showPrompt: true })
 
   // Resolve agent display names for the in-draft switcher.

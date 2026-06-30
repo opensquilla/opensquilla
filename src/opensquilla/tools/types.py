@@ -51,7 +51,6 @@ class ToolContext:
     run_mode: str | None = None
     sandbox_mounts: list[dict[str, Any]] = field(default_factory=list)
     sandbox_run_context: Any | None = None
-    host_once: bool = False
     session_key: str | None = None
     channel_kind: str | None = None
     channel_id: str | None = None

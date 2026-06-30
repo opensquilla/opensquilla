@@ -19,7 +19,6 @@ function createHarness(options: {
   const configGetResults = [...(options.configGetResults ?? [{}])]
   const patchResults = [...(options.patchResults ?? [])]
   const waitForConnection = vi.fn(async () => {})
-  const setGlobalElevatedMode = vi.fn()
   const loadCurrentSessionUsage = vi.fn()
   const call = vi.fn(async (method: string, _params?: Record<string, unknown>): Promise<unknown> => {
     if (method === 'config.get') {
@@ -41,10 +40,9 @@ function createHarness(options: {
   }
   const api = useChatFeatureToggles({
     rpc,
-    setGlobalElevatedMode,
     loadCurrentSessionUsage,
   })
-  return { api, rpc: { waitForConnection, call }, setGlobalElevatedMode, loadCurrentSessionUsage }
+  return { api, rpc: { waitForConnection, call }, loadCurrentSessionUsage }
 }
 
 function patchCalls(rpc: ReturnType<typeof createHarness>['rpc']) {
@@ -119,11 +117,10 @@ describe('useChatFeatureToggles coding mode', () => {
   })
 
   it('applies the strict post-patch config through the shared feature mapping', async () => {
-    const { api, setGlobalElevatedMode } = createHarness({
+    const { api } = createHarness({
       configGetResults: [{
         skills: { coding_mode: true },
         squilla_router: { enabled: true, rollout_phase: 'full' },
-        permissions: { default_mode: 'bypass' },
       }],
     })
 
@@ -131,7 +128,6 @@ describe('useChatFeatureToggles coding mode', () => {
 
     expect(api.codingModeEnabled.value).toBe(true)
     expect(api.routerEnabled.value).toBe(true)
-    expect(setGlobalElevatedMode).toHaveBeenCalledWith('bypass')
   })
 
   it('keeps coding mode backend-confirmed while a write is pending', async () => {

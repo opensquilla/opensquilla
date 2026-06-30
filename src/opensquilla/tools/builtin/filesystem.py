@@ -92,6 +92,24 @@ def _workspace_root() -> Path | None:
     return None
 
 
+def _scratch_root() -> Path | None:
+    ctx = current_tool_context.get()
+    if ctx is None or not ctx.scratch_dir:
+        return None
+    return Path(ctx.scratch_dir).expanduser().resolve(strict=False)
+
+
+def _is_inside_scratch(resolved: Path) -> bool:
+    root = _scratch_root()
+    if root is None:
+        return False
+    try:
+        resolved.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
 def _memory_source_root() -> Path | None:
     ctx = current_tool_context.get()
     if ctx is None or not ctx.memory_source_dir:
@@ -112,7 +130,7 @@ def _resolve_path(path: str) -> Path:
     """Resolve *path* against the active workspace when relative.
 
     Reads are always allowed; any workspace enforcement for writes happens in
-    :func:`_gate_out_of_workspace_write` via the approval queue, not here.
+    :func:`_gate_out_of_workspace_write`, not here.
 
     Sandbox-visible alias paths (``/workspace/...`` from ``execute_code``
     stdout, ``default_workspace_dir()/...`` from LLM training priors)
@@ -261,6 +279,30 @@ def _is_outside_workspace(resolved: Path) -> bool:
         return False
     except ValueError:
         return True
+
+
+def _outside_workspace_write_block(
+    tool_name: str,
+    resolved: Path,
+    original_path: str,
+) -> dict[str, object]:
+    workspace = _workspace_root()
+    message = (
+        f"{tool_name} blocked: {resolved} is outside the active workspace "
+        f"({workspace}) and no sandbox path grant is active."
+        if workspace is not None
+        else f"{tool_name} blocked: {resolved} is outside the active workspace."
+    )
+    return {
+        "status": "blocked",
+        "reason": "outside_workspace",
+        "tool": tool_name,
+        "path": original_path,
+        "resolved_path": str(resolved),
+        "workspace": str(workspace) if workspace is not None else None,
+        "message": message,
+        "retryable": False,
+    }
 
 
 def _sandbox_path_access_enabled() -> bool:
@@ -613,10 +655,10 @@ async def _gate_out_of_workspace_write(
     """Return an approval-required/denied/blocked dict, or None to proceed.
 
     Writes that stay inside the workspace pass through immediately. Writes
-    that target absolute paths outside the workspace get routed through the
-    same approval queue that shell warnlist hits use. Writes targeting
-    sensitive host paths (SSH keys, /etc, etc.) are hard-blocked regardless
-    of approval.
+    outside the current sandbox view are routed through the sandbox path grant
+    flow when the sandbox runtime is active. Without that unified path approval
+    path, outside-workspace writes fail closed instead of falling back to a
+    tool-local exec approval.
     """
     # Sensitive-path hard block — takes precedence over approval flow.
     from opensquilla.sandbox.sensitive_paths import build_block_envelope, sensitive_path_marker
@@ -648,34 +690,15 @@ async def _gate_out_of_workspace_write(
 
     if not _is_outside_workspace(resolved):
         return None
+    if _is_inside_scratch(resolved):
+        return None
     if _memory_source_rel_path(resolved) is not None:
         return None
     if _active_sandbox_mount_allows(resolved, write=True):
         return None
-    from opensquilla.tools.builtin.shell import (
-        _approval_elevation_state,
-        _check_exec_approval,
-        _restore_approval_elevation,
-    )
-
-    workspace = _workspace_root()
-    warning = (
-        f"writing outside active workspace ({workspace}): {resolved}"
-        if workspace is not None
-        else f"writing to absolute path: {resolved}"
-    )
-    prior_elevation = _approval_elevation_state()
-    try:
-        return await _check_exec_approval(
-            tool_name=tool_name,
-            command=f"{tool_name} {original_path}",
-            workdir=None,
-            warning=warning,
-            approval_id=approval_id,
-            background=False,
-        )
-    finally:
-        _restore_approval_elevation(prior_elevation)
+    if elevated_full:
+        return None
+    return _outside_workspace_write_block(tool_name, resolved, original_path)
 
 
 @tool(
@@ -989,7 +1012,7 @@ def _format_spreadsheet(
         "content": {"type": "string", "description": "File content to write."},
         "approval_id": {
             "type": "string",
-            "description": "Approval record to consume for writes outside the workspace.",
+            "description": "Sandbox path approval record for writes outside the workspace.",
         },
     },
     required=["path", "content"],
@@ -1048,7 +1071,7 @@ async def write_file(path: str, content: str, approval_id: str | None = None) ->
         "new_text": {"type": "string", "description": "Replacement text."},
         "approval_id": {
             "type": "string",
-            "description": "Approval record to consume for edits outside the workspace.",
+            "description": "Sandbox path approval record for edits outside the workspace.",
         },
     },
     required=["path", "old_text", "new_text"],

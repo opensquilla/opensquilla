@@ -30,10 +30,9 @@ from opensquilla.tools.registry import tool
 from opensquilla.tools.run_mode import full_host_access_active, trusted_sandbox_active
 from opensquilla.tools.types import ToolError, current_tool_context
 
-# Destructive Python patterns that must go through the same approval flow as
-# shell warnlist hits. Catches the "agent pivots from `rm` to `os.remove()`"
-# bypass. Matching is intentionally shallow (regex, not AST) — goal is to
-# force approval on obvious intent, not to prove safety.
+# Destructive Python patterns that must be surfaced to the unified sandbox gate.
+# Matching is intentionally shallow (regex, not AST): the goal is to classify
+# obvious high-impact intent, not to prove safety.
 _DESTRUCTIVE_PY_PATTERNS: list[tuple[str, str]] = [
     (r"\bos\.remove\s*\(", "os.remove()"),
     (r"\bos\.unlink\s*\(", "os.unlink()"),
@@ -341,7 +340,7 @@ def _resolve_python_bin(*, sandbox_enabled: bool) -> str:
         },
         "approval_id": {
             "type": "string",
-            "description": "Approval record to consume for destructive Python operations.",
+            "description": "Deprecated; sandbox approvals are handled by the runtime.",
         },
     },
     required=["code"],
@@ -357,6 +356,7 @@ async def execute_code(
     timeout: float = _DEFAULT_TIMEOUT,
     approval_id: str | None = None,
 ) -> str:
+    _ = approval_id
     if not code.strip():
         raise ToolError("Code must not be empty")
 
@@ -379,21 +379,7 @@ async def execute_code(
             ensure_ascii=False,
         )
 
-    # Destructive-Python gate — mirrors the shell warnlist approval flow.
-    warning = _check_code_destructive(code)
-    if warning is not None:
-        from opensquilla.tools.builtin.shell import _check_exec_approval
-
-        approval_response = await _check_exec_approval(
-            tool_name="execute_code",
-            command=code[:200],
-            workdir=None,
-            warning=warning,
-            approval_id=approval_id,
-            background=False,
-        )
-        if approval_response is not None:
-            return json.dumps(approval_response)
+    destructive_warning = _check_code_destructive(code)
 
     timeout = max(1.0, min(float(timeout), _MAX_TIMEOUT))
 
@@ -436,7 +422,10 @@ async def execute_code(
     )
     if sandbox_enabled and _windows_sandbox_backend_active(runtime):
         _apply_windows_session_tmp_env(safe_env)
-    hints = LevelHints(needs_network=_code_needs_network(code))
+    hints = LevelHints(
+        needs_network=_code_needs_network(code),
+        high_impact=destructive_warning is not None,
+    )
 
     if runtime is None or (runtime.effective.sandbox_enabled and not host_execution):
         decision, _policy, request = await gate_action(

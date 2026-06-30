@@ -5,6 +5,7 @@ import type { Attachment, ChatMessage } from '@/types/chat'
 import type {
   ChatSendParams,
   ChatSendResponse,
+  RunMode,
 } from '@/types/rpc'
 import type { ChatRpcStreamApi } from '@/composables/chat/useChatRpcEventHandlers'
 import type { BusySendMode } from '@/composables/chat/useChatPendingQueue'
@@ -47,7 +48,7 @@ export interface UseChatSendOptions {
   messages: Ref<ChatMessage[]>
   sessionKey: Ref<string>
   busySendMode: Ref<BusySendMode>
-  elevatedMode: Ref<string>
+  runMode: Ref<RunMode>
   pendingAttachments: Ref<Attachment[]>
   pendingSessionIntent: Ref<string | null>
   aborted: Ref<boolean>
@@ -56,7 +57,7 @@ export interface UseChatSendOptions {
   activeStreamTaskId: Ref<string>
   autoScroll: Ref<boolean>
   stream: ChatRpcStreamApi
-  normalizeElevatedMode: (mode: string) => string
+  normalizeRunMode: (mode: unknown) => RunMode
   persistSession: (key: string, options?: PersistSessionOptions) => void
   isCompactInFlightForCurrentSession: () => boolean
   hasPendingAttachmentWork: () => boolean
@@ -151,8 +152,8 @@ export function useChatSend(options: UseChatSendOptions) {
 
     const params: ChatSendParams = { message: text || 'Describe these attachments', sessionKey: requestSessionKey }
     if (sendOpts?.queueMode) params.queueMode = sendOpts.queueMode
-    const elevated = options.normalizeElevatedMode(options.elevatedMode.value)
-    if (elevated) params._source = { elevated }
+    const runMode = options.normalizeRunMode(options.runMode.value)
+    params._source = { ...params._source, runMode }
     if (options.pendingSessionIntent.value) {
       params.intent = options.pendingSessionIntent.value
       options.pendingSessionIntent.value = null
@@ -279,8 +280,8 @@ export function useChatSend(options: UseChatSendOptions) {
 
     const params: ChatSendParams = { message: providerText, sessionKey: requestSessionKey }
     if (displayText && displayText !== providerText) params.displayText = displayText
-    const elevated = options.normalizeElevatedMode(options.elevatedMode.value)
-    if (elevated) params._source = { elevated }
+    const runMode = options.normalizeRunMode(options.runMode.value)
+    params._source = { ...params._source, runMode }
 
     const wasStreaming = options.stream.isStreaming.value
     if (!wasStreaming) {

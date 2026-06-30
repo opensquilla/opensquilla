@@ -105,6 +105,12 @@ type ChatDoneUsagePayload = SessionEventPayload & ChatDoneUsageFields & {
   usage?: ChatDoneUsageFields
 }
 
+export function rpcEventMarksApprovalPending(rawEvent: string, normalizedStatus: string): boolean {
+  if (rawEvent.endsWith('.approval.resolved')) return false
+  if (normalizedStatus === 'approval_pending') return true
+  return rawEvent.endsWith('.approval.requested')
+}
+
 // A completed turn's measured thinking duration must survive the
 // chat.history sync that replaces the messages array ~50ms after done.
 // History rows carry the reasoning text but not the duration, so records
@@ -437,10 +443,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
     const payloadObj = (rawPayload && typeof rawPayload === 'object' ? rawPayload : {}) as SessionEventPayload
     const rawStatus = payloadObj.run_status || payloadObj.runStatus || payloadObj.status || ''
     const normalizedStatus = options.normalizeRunStatus(String(rawStatus))
-    if (
-      normalizedStatus === 'approval_pending' ||
-      (typeof rawEvent === 'string' && rawEvent.includes('approval') && isCurrentSessionPayload(payloadObj))
-    ) {
+    if (rpcEventMarksApprovalPending(rawEvent, normalizedStatus)) {
       if (!isCurrentSessionPayload(payloadObj)) return
       options.applySessionRunState({
         run_status: 'approval_pending',

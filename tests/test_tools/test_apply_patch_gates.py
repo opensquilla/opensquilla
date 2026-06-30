@@ -183,7 +183,7 @@ async def test_apply_patch_workspace_exception_keeps_leaf_secret_blocks(
 
 
 @pytest.mark.asyncio
-async def test_apply_patch_workspace_escape_requests_patch_level_approval(
+async def test_apply_patch_workspace_escape_blocks_without_sandbox_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -207,159 +207,10 @@ async def test_apply_patch_workspace_escape_requests_patch_level_approval(
         current_tool_context.reset(token)
 
     payload = json.loads(result)
-    assert payload["status"] == "approval_required"
-    assert payload["approval_id"]
-    assert payload["outside_paths"] == [str(outside.resolve())]
-    assert payload["ops"] == [
-        {"op": "update", "path": "outside.txt", "resolved_path": str(outside.resolve())}
-    ]
-    assert payload["workspace"] == str(workspace.resolve())
-    assert payload["patch_root"] == str(tmp_path.resolve())
-    pending = get_approval_queue().list_pending("exec")
-    assert len(pending) == 1
-    params = pending[0]["params"]
-    assert params["toolName"] == "apply_patch"
-    assert params["args"]["fingerprint"]
-    assert params["args"]["outside_paths"] == [str(outside.resolve())]
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "outside_workspace"
     assert outside.read_text(encoding="utf-8") == "old\n"
-
-
-@pytest.mark.asyncio
-async def test_apply_patch_approved_reentry_applies_and_consumes_once(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    outside = tmp_path / "outside.txt"
-    outside.write_text("old\n", encoding="utf-8")
-    monkeypatch.setattr(patch_tool, "_default_patch_root", lambda: tmp_path.resolve())
-    token = current_tool_context.set(
-        ToolContext(
-            workspace_dir=str(workspace),
-            session_key="agent:main:test",
-            agent_id="main",
-        )
-    )
-    patch = """*** Begin Patch
-*** Update File: outside.txt
-@@@ -1,1 +1,1 @@@
--old
-+new
-*** End Patch"""
-    apply_patch = _original_async(patch_tool.apply_patch)
-    try:
-        first = json.loads(await apply_patch(patch))
-        approval_id = first["approval_id"]
-        get_approval_queue().resolve(approval_id, True)
-        result = await apply_patch(patch, approval_id=approval_id)
-        with pytest.raises(ToolError, match="already consumed"):
-            await apply_patch(patch, approval_id=approval_id)
-    finally:
-        current_tool_context.reset(token)
-
-    assert result == "Applied patch: 1 file(s) modified"
-    assert outside.read_text(encoding="utf-8") == "new\n"
-    assert get_approval_queue().get(approval_id).consumed is True
-
-
-@pytest.mark.asyncio
-async def test_apply_patch_rejects_mismatched_approval_fingerprint(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    outside = tmp_path / "outside.txt"
-    outside.write_text("old\n", encoding="utf-8")
-    monkeypatch.setattr(patch_tool, "_default_patch_root", lambda: tmp_path.resolve())
-    token = current_tool_context.set(ToolContext(workspace_dir=str(workspace)))
-    patch = """*** Begin Patch
-*** Update File: outside.txt
-@@@ -1,1 +1,1 @@@
--old
-+new
-*** End Patch"""
-    changed_patch = """*** Begin Patch
-*** Update File: outside.txt
-@@@ -1,1 +1,1 @@@
--old
-+evil
-*** End Patch"""
-    apply_patch = _original_async(patch_tool.apply_patch)
-    try:
-        first = json.loads(await apply_patch(patch))
-        approval_id = first["approval_id"]
-        get_approval_queue().resolve(approval_id, True)
-        with pytest.raises(ToolError, match="does not match"):
-            await apply_patch(changed_patch, approval_id=approval_id)
-    finally:
-        current_tool_context.reset(token)
-
-    assert outside.read_text(encoding="utf-8") == "old\n"
-
-
-@pytest.mark.asyncio
-async def test_apply_patch_pending_and_denied_approval_do_not_write(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    outside = tmp_path / "outside.txt"
-    outside.write_text("old\n", encoding="utf-8")
-    monkeypatch.setattr(patch_tool, "_default_patch_root", lambda: tmp_path.resolve())
-    token = current_tool_context.set(ToolContext(workspace_dir=str(workspace)))
-    patch = """*** Begin Patch
-*** Update File: outside.txt
-@@@ -1,1 +1,1 @@@
--old
-+new
-*** End Patch"""
-    apply_patch = _original_async(patch_tool.apply_patch)
-    try:
-        first = json.loads(await apply_patch(patch))
-        approval_id = first["approval_id"]
-        pending = json.loads(await apply_patch(patch, approval_id=approval_id))
-        get_approval_queue().resolve(approval_id, False)
-        denied = json.loads(await apply_patch(patch, approval_id=approval_id))
-    finally:
-        current_tool_context.reset(token)
-
-    assert pending["status"] == "approval_pending"
-    assert denied["status"] == "approval_denied"
-    assert outside.read_text(encoding="utf-8") == "old\n"
-
-
-@pytest.mark.asyncio
-async def test_apply_patch_rejects_foreign_namespace_approval(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    outside = tmp_path / "outside.txt"
-    outside.write_text("old\n", encoding="utf-8")
-    monkeypatch.setattr(patch_tool, "_default_patch_root", lambda: tmp_path.resolve())
-    token = current_tool_context.set(ToolContext(workspace_dir=str(workspace)))
-    patch = """*** Begin Patch
-*** Update File: outside.txt
-@@@ -1,1 +1,1 @@@
--old
-+new
-*** End Patch"""
-    apply_patch = _original_async(patch_tool.apply_patch)
-    try:
-        first = json.loads(await apply_patch(patch))
-        params = get_approval_queue().get(first["approval_id"]).params
-        foreign_id = get_approval_queue().request("plugin", params=params)
-        get_approval_queue().resolve(foreign_id, True)
-        with pytest.raises(ToolError, match="exec namespace"):
-            await apply_patch(patch, approval_id=foreign_id)
-    finally:
-        current_tool_context.reset(token)
-
-    assert outside.read_text(encoding="utf-8") == "old\n"
+    assert get_approval_queue().list_pending("exec") == []
 
 
 @pytest.mark.asyncio
@@ -499,7 +350,7 @@ async def test_apply_patch_run_mode_full_skips_sandbox_wrapper_gate(
 
 
 @pytest.mark.asyncio
-async def test_apply_patch_unattended_bypass_requires_outside_workspace_approval(
+async def test_apply_patch_unattended_bypass_blocks_outside_workspace_without_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -529,11 +380,10 @@ async def test_apply_patch_unattended_bypass_requires_outside_workspace_approval
         current_tool_context.reset(token)
 
     payload = json.loads(result)
-    assert payload["status"] == "approval_required"
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "outside_workspace"
     assert outside.read_text(encoding="utf-8") == "old\n"
-    pending = get_approval_queue().list_pending("exec")
-    assert len(pending) == 1
-    assert pending[0]["params"]["toolName"] == "apply_patch"
+    assert get_approval_queue().list_pending("exec") == []
 
 
 @pytest.mark.asyncio

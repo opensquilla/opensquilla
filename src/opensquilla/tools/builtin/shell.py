@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import contextvars
 import dataclasses
 import json
 import ntpath
@@ -24,7 +23,6 @@ from typing import Any, cast
 
 import structlog
 
-from opensquilla.gateway.approval_queue import get_approval_queue
 from opensquilla.sandbox.backend.bubblewrap import (
     BubblewrapBackend,
     LinuxProxyBridgeHost,
@@ -54,10 +52,8 @@ from opensquilla.sandbox.escalation import (
     grant_temporary_mount_for_current_tool,
     request_sandbox_approval,
 )
-from opensquilla.sandbox.governance import action_fingerprint
 from opensquilla.sandbox.integration import (
     SandboxRuntime,
-    build_request,
     escalate_backend_denial,
     gate_action,
     get_runtime,
@@ -75,9 +71,8 @@ from opensquilla.sandbox.managed_proxy_env import (
 from opensquilla.sandbox.operation_profile import OperationProfile, classify_command
 from opensquilla.sandbox.operation_runtime import SandboxToolDescriptor
 from opensquilla.sandbox.path_validation import MountDecision, decide_path_access
-from opensquilla.sandbox.policy import LevelHints, build_policy, select_level
+from opensquilla.sandbox.policy import LevelHints
 from opensquilla.sandbox.types import (
-    DenialReason,
     DenialResult,
     MountMode,
     MountSpec,
@@ -97,9 +92,7 @@ from opensquilla.tools.run_mode import (
 )
 from opensquilla.tools.types import (
     CallerKind,
-    InteractionMode,
     ToolError,
-    UnsupportedSurfaceError,
     current_tool_context,
 )
 
@@ -238,16 +231,6 @@ class _SpawnedBackgroundProcess:
     async_cleanup_callbacks: list[Callable[[], Awaitable[None]]] = field(default_factory=list)
 
 
-# Task-local flag for a single host rerun after the sandbox backend itself
-# denied execution and the operator approved that host-once escalation.
-_host_once_current_call: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "_host_once_current_call", default=False
-)
-# Legacy private alias for tests/callers that reset the task-local grant.
-# Semantics are now host-once, not ordinary approval elevation.
-_elevate_current_call = _host_once_current_call
-
-
 def _audit_command(command: str) -> str:
     if len(command) <= _COMMAND_AUDIT_MAX_CHARS:
         return command
@@ -282,11 +265,12 @@ def _profile_shell_command(command: str) -> OperationProfile:
 def _level_hints_for_shell_profile(
     profile: OperationProfile,
     *,
-    warnlist_handled: bool = False,
+    warnlist_matched: bool = False,
 ) -> LevelHints:
+    trusted_warnlist_auto_handled = warnlist_matched and trusted_sandbox_active()
     return LevelHints(
         needs_network=profile.needs_network,
-        high_impact=profile.high_impact and not warnlist_handled,
+        high_impact=profile.high_impact and not trusted_warnlist_auto_handled,
     )
 
 
@@ -305,16 +289,7 @@ def _context_elevated_mode() -> str | None:
     return "full" if full_host_access_active() else None
 
 
-def _consume_host_once_current_call() -> bool:
-    if not _host_once_current_call.get():
-        return False
-    _host_once_current_call.set(False)
-    return True
-
-
 def _host_execution_allowed() -> bool:
-    if _consume_host_once_current_call():
-        return True
     return full_host_access_active()
 
 
@@ -2418,14 +2393,6 @@ def _workspace_write_deny_shell_block(
     return None
 
 
-def _approval_elevation_state() -> bool:
-    return _host_once_current_call.get()
-
-
-def _restore_approval_elevation(value: bool) -> None:
-    _host_once_current_call.set(value)
-
-
 def _resolve_exec_timeout(timeout: float | int | None) -> float:
     if timeout is None:
         return _DEFAULT_EXEC_TIMEOUT
@@ -2858,7 +2825,7 @@ async def _run_host_shell_command(
         },
         "approval_id": {
             "type": "string",
-            "description": "Approval record to consume for warned commands.",
+            "description": "Sandbox path approval record for shell path access.",
         },
     },
     required=["command"],
@@ -2955,24 +2922,6 @@ async def exec_command(
     if deny_block is not None:
         return json.dumps(deny_block, ensure_ascii=False)
 
-    # Warnlist: two-step approval flow
-    if result.needs_approval:
-        approval_response = await _check_exec_approval(
-            tool_name="exec_command",
-            command=command,
-            workdir=cwd,
-            warning=result.reason,
-            approval_id=approval_id,
-            background=False,
-        )
-        if approval_response is not None:
-            status = approval_response.get("status")
-            if status == "approval_denied":
-                await _record_shell_denial(
-                    "exec_command", command, workdir, DenialReason.HUMAN_REJECTED
-                )
-            return json.dumps(approval_response)
-
     merged_env = os.environ.copy()
     if env:
         merged_env.update(env)
@@ -2992,7 +2941,7 @@ async def exec_command(
             env=merged_env,
             hints=_level_hints_for_shell_profile(
                 profile,
-                warnlist_handled=result.needs_approval,
+                warnlist_matched=result.needs_approval,
             ),
         )
         if isinstance(decision, DenialResult):
@@ -3064,7 +3013,7 @@ async def exec_command(
         },
         "approval_id": {
             "type": "string",
-            "description": "Approval record to consume for warned commands.",
+            "description": "Sandbox path approval record for shell path access.",
         },
     },
     required=["command"],
@@ -3141,31 +3090,6 @@ async def background_process(
     deny_block = _workspace_write_deny_shell_block("background_process", command, cwd)
     if deny_block is not None:
         return json.dumps(deny_block, ensure_ascii=False)
-    if result.needs_approval:
-        prior_elevation = _approval_elevation_state()
-        approval_response: dict[str, object] | None = None
-        approval_granted = False
-        try:
-            approval_response = await _check_exec_approval(
-                tool_name="background_process",
-                command=command,
-                workdir=cwd,
-                warning=result.reason,
-                approval_id=approval_id,
-                background=True,
-            )
-            approval_granted = approval_response is None and _approval_elevation_state()
-        finally:
-            if not approval_granted:
-                _restore_approval_elevation(prior_elevation)
-        if approval_response is not None:
-            status = approval_response.get("status")
-            if status == "approval_denied":
-                await _record_shell_denial(
-                    "background_process", command, workdir, DenialReason.HUMAN_REJECTED
-                )
-            return json.dumps(approval_response)
-
     host_execution = _host_execution_allowed()
     effective_timeout = _resolve_background_timeout(timeout)
 
@@ -3180,7 +3104,7 @@ async def background_process(
             env=merged_env,
             hints=_level_hints_for_shell_profile(
                 profile,
-                warnlist_handled=result.needs_approval,
+                warnlist_matched=result.needs_approval,
             ),
         )
         if isinstance(decision, DenialResult):
@@ -3651,301 +3575,3 @@ async def process(
         )
 
     raise ToolError("Invalid action: list|poll|log|kill|remove|write|submit|eof")
-
-
-def _sandbox_request_for(
-    tool_name: str, command: str, workdir: str | None
-) -> tuple[SandboxRequest, SandboxPolicy, str] | None:
-    """Build a SandboxRequest for the current shell command.
-
-    Returns ``None`` when the sandbox runtime is not configured (tests that
-    don't boot the gateway) so callers skip the §8.3/§8.5 hooks cleanly.
-    """
-    runtime = get_runtime()
-    if runtime is None:
-        return None
-    action_kind = "shell.background" if tool_name == "background_process" else "shell.exec"
-    ctx = current_tool_context.get()
-    workspace = None
-    if workdir:
-        p = Path(workdir)
-        if p.is_absolute():
-            workspace = p
-    if workspace is None and ctx is not None and ctx.workspace_dir:
-        wp = Path(ctx.workspace_dir)
-        if wp.is_absolute():
-            workspace = wp
-    if workspace is None:
-        workspace = runtime.workspace if runtime.workspace.is_absolute() else Path.cwd()
-
-    level = (
-        select_level(action_kind)
-        if runtime.effective.grading_enabled
-        else runtime.effective.default_level
-    )
-    policy = build_policy(level, action_kind, workspace, runtime.settings, trusted=True)
-    request = build_request(
-        action_kind=action_kind,
-        argv=(tool_name, command),
-        cwd=workspace,
-        policy=policy,
-    )
-    session_id = str(ctx.session_key) if ctx and ctx.session_key else "default"
-    return request, policy, session_id
-
-
-async def _record_shell_denial(
-    tool_name: str, command: str, workdir: str | None, reason: DenialReason
-) -> None:
-    """Record a shell-layer denial into the sandbox ledger for §8.3/§8.5.
-
-    Silently no-ops when the runtime is not configured. Failure to record
-    is logged but never propagated — we prefer a missed bookkeeping entry
-    over a new failure mode in the shell tool.
-    """
-    runtime = get_runtime()
-    if runtime is None:
-        return
-    built = _sandbox_request_for(tool_name, command, workdir)
-    if built is None:
-        return
-    request, _, session_id = built
-    try:
-        await runtime.ledger.record_denial(session_id, action_fingerprint(request), reason)
-    except Exception:  # pragma: no cover - bookkeeping only
-        log.exception("shell.denial_record_failed", command=_audit_command(command))
-
-
-def _wait_for_inline_browser_approval(background: bool) -> bool:
-    """Return True when the caller has an out-of-band browser approval UI.
-
-    CLI/TUI approval prompts are driven by the ``approval_required`` tool result,
-    so the first call must return immediately there. The Web UI polls the shared
-    approval queue independently, which lets the tool call wait and continue as
-    soon as the operator clicks Approve.
-    """
-    if background:
-        return False
-    ctx = current_tool_context.get()
-    return ctx is not None and ctx.caller_kind is CallerKind.WEB
-
-
-async def _check_exec_approval(
-    tool_name: str,
-    command: str,
-    workdir: str | None,
-    warning: str,
-    approval_id: str | None,
-    background: bool,
-) -> dict[str, object] | None:
-    queue = get_approval_queue()
-    settings = queue.get_settings()
-    ctx = current_tool_context.get()
-    params = {
-        "toolName": tool_name,
-        "command": command,
-        "args": {"command": command, "workdir": workdir},
-        "sessionKey": ctx.session_key if ctx is not None and ctx.session_key else "",
-        "agent": ctx.agent_id if ctx is not None else "",
-        "mode": "background" if background else "foreground",
-    }
-
-    run_mode = _context_run_mode()
-    run_mode_full = run_mode == "full"
-    run_mode_trusted = run_mode == "trusted"
-    sandbox_off_requires_approval = _sandbox_effectively_off() and not run_mode_full
-
-    # Sensitive-path hard block. Only /elevated full bypasses; ordinary
-    # approval cannot override.
-    if not run_mode_full:
-        from opensquilla.sandbox.sensitive_paths import (
-            build_block_envelope,
-            sensitive_target_in_command,
-        )
-
-        sensitive = sensitive_target_in_command(
-            command,
-            workspace=ctx.workspace_dir if ctx is not None else None,
-            cwd=workdir,
-        )
-        if sensitive is not None:
-            log.warning(
-                "shell_sensitive_path_blocked",
-                command=_audit_command(command),
-                tool=tool_name,
-                sensitive=sensitive,
-            )
-            return build_block_envelope(command, sensitive, tool_name=tool_name)
-
-    lockdown_block = _workspace_lockdown_shell_block(tool_name, command, workdir)
-    if lockdown_block is not None:
-        log.warning(
-            "shell_workspace_lockdown_blocked",
-            command=_audit_command(command),
-            tool=tool_name,
-            resolved_path=lockdown_block.get("resolved_path"),
-        )
-        return lockdown_block
-
-    deny_block = _workspace_write_deny_shell_block(tool_name, command, workdir)
-    if deny_block is not None:
-        log.warning(
-            "shell_workspace_write_deny_blocked",
-            command=_audit_command(command),
-            tool=tool_name,
-            resolved_path=deny_block.get("resolved_path"),
-            matched_pattern=deny_block.get("matched_pattern"),
-        )
-        return deny_block
-
-    # Full Host Access — trusted operator has taken explicit responsibility.
-    # Approvals are skipped entirely and later execution is allowed on host.
-    if run_mode_full:
-        log.info(
-            "shell_approval_skipped_run_mode_full",
-            command=_audit_command(command),
-            tool=tool_name,
-        )
-        return None
-
-    # Trusted-Sandbox skips routine warnlist approval, while still executing
-    # through the sandbox when the runtime has a backend enabled.
-    if run_mode_trusted and not sandbox_off_requires_approval:
-        log.info(
-            "shell_approval_skipped_run_mode_trusted",
-            command=_audit_command(command),
-            tool=tool_name,
-        )
-        return None
-
-    if settings.mode == "auto-deny":
-        return {
-            "status": "approval_denied",
-            "approval_id": "",
-            "command": command,
-            "warning": warning,
-            "message": "This command was denied by the active approval policy.",
-        }
-
-    if sandbox_off_requires_approval:
-        log.warning(
-            "shell_approval_forced_sandbox_off",
-            command=_audit_command(command),
-            tool=tool_name,
-            mode=settings.mode,
-            run_mode=run_mode,
-        )
-
-    if settings.mode == "auto-approve" and not sandbox_off_requires_approval:
-        return None
-
-    if ctx is not None and ctx.interaction_mode is InteractionMode.UNATTENDED:
-        raise UnsupportedSurfaceError(
-            f"Tool '{tool_name}' requires human approval, but this run is unattended. "
-            "Use an interactive surface for approval-gated operations, or choose an "
-            "operation that does not require approval."
-        )
-
-    # Intent-level short-circuit: if the user already approved the same
-    # destructive intent recently (e.g. rm /x, and now os.remove("/x")),
-    # skip the queue entirely. Keeps paraphrased retries from re-prompting.
-    if approval_id is None and not sandbox_off_requires_approval:
-        from opensquilla.sandbox.intent_cache import get_intent_cache
-
-        if get_intent_cache().check(command):
-            log.info(
-                "shell_approval_intent_cached",
-                command=_audit_command(command),
-                tool=tool_name,
-            )
-            return None
-
-    if approval_id is None:
-        approval_id = queue.request(namespace="exec", params=params)
-        if _wait_for_inline_browser_approval(background):
-            try:
-                await queue.wait(approval_id, timeout=_APPROVAL_RETRY_WAIT_SECONDS)
-            except TimeoutError:
-                pass
-            entry = queue.get(approval_id)
-            if entry.approved:
-                try:
-                    queue.consume(approval_id)
-                except ValueError as exc:
-                    raise ToolError(str(exc)) from exc
-                log.info(
-                    "shell_approval_granted",
-                    approval_id=approval_id,
-                    command=_audit_command(command),
-                    inline=True,
-                )
-                return None
-            return {
-                "status": "approval_denied",
-                "approval_id": approval_id,
-                "command": command,
-                "warning": warning,
-                "message": "Approval was denied or timed out.",
-            }
-        status = "approval_required"
-        message = (
-            "Resolve this approval via exec.approval.resolve and retry with the returned "
-            "approval_id."
-        )
-        log.warning(
-            "shell_approval_required",
-            command=_audit_command(command),
-            pattern=warning,
-            approval_id=approval_id,
-            mode=settings.mode,
-        )
-        return {
-            "status": status,
-            "approval_id": approval_id,
-            "command": command,
-            "warning": warning,
-            "message": message,
-        }
-
-    try:
-        entry = queue.get(approval_id)
-    except KeyError as exc:
-        raise ToolError(str(exc)) from exc
-    if entry.namespace != "exec":
-        raise ToolError(f"Approval does not belong to exec namespace: {approval_id}")
-    if entry.params.get("toolName") != tool_name or entry.params.get("command") != command:
-        raise ToolError("Approval does not match the requested command")
-    if not entry.resolved:
-        # Block the retry waiting for the user's decision instead of bouncing
-        # back approval_pending — otherwise the model sees pending and pivots
-        # to a different tool before the human finishes clicking approve.
-        try:
-            await queue.wait(approval_id, timeout=_APPROVAL_RETRY_WAIT_SECONDS)
-        except TimeoutError:
-            pass
-        entry = queue.get(approval_id)
-        if not entry.resolved:
-            return {
-                "status": "approval_pending",
-                "approval_id": approval_id,
-                "command": command,
-                "warning": warning,
-                "message": (
-                    "Approval is still pending after waiting "
-                    f"{int(_APPROVAL_RETRY_WAIT_SECONDS)}s. Ask the user to approve."
-                ),
-            }
-    if not entry.approved:
-        return {
-            "status": "approval_denied",
-            "approval_id": approval_id,
-            "command": command,
-            "warning": warning,
-            "message": "Approval was denied.",
-        }
-    try:
-        queue.consume(approval_id)
-    except ValueError as exc:
-        raise ToolError(str(exc)) from exc
-    log.info("shell_approval_granted", approval_id=approval_id, command=_audit_command(command))
-    return None

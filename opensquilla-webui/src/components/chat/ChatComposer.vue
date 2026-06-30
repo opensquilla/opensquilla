@@ -54,21 +54,18 @@
                 :title="t('chat.composerSettings')"
                 :aria-label="t('chat.composerSettings')"
                 :aria-expanded="settingsOpen ? 'true' : 'false'"
-                @click="settingsOpen = !settingsOpen"
+                @click="toggleSettings"
               >
                 <Icon name="settings" :size="17" />
               </button>
               <ChatComposerSettings
                 v-if="settingsOpen"
-                :elevated-mode="elevatedMode"
-                :elevated-unavailable="elevatedUnavailable"
                 :router-enabled="routerEnabled"
                 :router-settings-busy="routerSettingsBusy"
                 :visual-effects-enabled="routerVisualEffectsEnabled"
                 :coding-mode-enabled="codingModeEnabled"
                 :coding-mode-settings-busy="codingModeSettingsBusy"
                 @close="settingsOpen = false"
-                @set-elevated-mode="emit('setElevatedMode', $event)"
                 @set-router-enabled="emit('setRouterEnabled', $event)"
                 @set-visual-effects-enabled="emit('setVisualEffectsEnabled', $event)"
                 @set-coding-mode-enabled="emit('setCodingModeEnabled', $event)"
@@ -78,11 +75,13 @@
               :run-mode="runMode"
               :allowed-run-modes="allowedRunModes"
               :full-host-access-disabled-reason="fullHostAccessDisabledReason"
+              :close-signal="runModeCloseSignal"
               :sandbox-setup-busy="sandboxSetupBusy"
               :sandbox-setup-message="sandboxSetupMessage"
               :sandbox-setup-visible="sandboxSetupVisible"
               @dismiss-sandbox-setup="emit('dismissSandboxSetup')"
               @ensure-sandbox-setup="emit('ensureSandboxSetup')"
+              @open="settingsOpen = false"
               @set-run-mode="emit('setRunMode', $event)"
             />
             <button
@@ -171,8 +170,6 @@ defineProps<{
   isNewLanding: boolean
   placeholder: string
   sendButtonTitle: string
-  elevatedMode: string
-  elevatedUnavailable: boolean
   routerEnabled: boolean
   routerVisualEffectsEnabled: boolean
   routerSettingsBusy: boolean
@@ -198,7 +195,6 @@ const emit = defineEmits<{
   retryAttachment: [index: number]
   send: []
   setBusySendMode: [mode: 'queue' | 'steer']
-  setElevatedMode: [mode: string]
   setRunMode: [mode: RunMode]
   setRouterEnabled: [enabled: boolean]
   setVisualEffectsEnabled: [enabled: boolean]
@@ -217,6 +213,12 @@ const composerEl = ref<HTMLElement | null>(null)
 const textareaEl = ref<HTMLTextAreaElement | null>(null)
 const fileInputEl = ref<HTMLInputElement | null>(null)
 const settingsOpen = ref(false)
+const runModeCloseSignal = ref(0)
+
+function toggleSettings() {
+  settingsOpen.value = !settingsOpen.value
+  if (settingsOpen.value) runModeCloseSignal.value += 1
+}
 
 function attachmentIcon(att: Attachment): IconName {
   return isImageDisplayAttachment(att) ? 'image' : 'fileText'

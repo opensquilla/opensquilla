@@ -117,6 +117,9 @@ def test_approval_monitor_renders_sandbox_path_approval_as_plain_language_card()
     components_css = _read(STATIC / "css" / "components.css")
 
     assert "function _renderSandboxPathApproval" in monitor
+    assert "host_once" not in monitor
+    assert "Sandbox fallback" not in monitor
+    assert "Run outside the sandbox?" not in monitor
     assert "Allow access outside the workspace?" in monitor
     assert "Current workspace" in monitor
     assert "Path requested" in monitor

@@ -242,7 +242,6 @@ const ApprovalMonitor = (() => {
     const labels = {
       sandbox_path: 'Workspace boundary',
       sandbox_network: 'Network boundary',
-      host_once: 'Sandbox fallback',
     };
     return labels[approvalKind] || raw || 'Tool execution';
   }
@@ -252,14 +251,13 @@ const ApprovalMonitor = (() => {
   }
 
   function _isSandboxApproval(item) {
-    return ['sandbox_path', 'sandbox_network', 'host_once'].includes(_approvalKind(item));
+    return ['sandbox_path', 'sandbox_network'].includes(_approvalKind(item));
   }
 
   function _approvalTitle(item) {
     const approvalKind = _approvalKind(item);
     if (approvalKind === 'sandbox_path') return 'Allow access outside the workspace?';
     if (approvalKind === 'sandbox_network') return 'Allow network access?';
-    if (approvalKind === 'host_once') return 'Run outside the sandbox?';
     return 'Approval Required';
   }
 

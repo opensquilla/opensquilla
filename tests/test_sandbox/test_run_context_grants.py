@@ -2644,72 +2644,11 @@ async def test_apply_path_choice_persists_requested_mount(tmp_path):
     ]
 
 
-@pytest.mark.asyncio
-async def test_apply_host_switch_chat_full_persists_full_run_mode(tmp_path):
-    from opensquilla.sandbox.escalation import (
-        apply_sandbox_approval_choice,
-        build_backend_failure_approval_params,
-    )
-    from opensquilla.sandbox.run_context import get_run_context
-    from opensquilla.sandbox.run_mode import RunMode
+def test_host_once_is_not_a_sandbox_approval_kind():
+    import opensquilla.sandbox.escalation as escalation
 
-    manager = _SessionManager()
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    params = build_backend_failure_approval_params(
-        session_key=manager.node.session_key,
-        workspace=str(workspace),
-    )
-
-    await apply_sandbox_approval_choice(
-        params,
-        choice="host_switch_chat_full",
-        approved=True,
-        session_manager=manager,
-        config=_config(),
-    )
-
-    ctx = await get_run_context(
-        manager,
-        manager.node.session_key,
-        config=_config(),
-        workspace=str(workspace),
-    )
-    assert ctx.run_mode is RunMode.FULL
-
-
-@pytest.mark.asyncio
-async def test_apply_host_once_choice_does_not_persist_run_mode(tmp_path):
-    from opensquilla.sandbox.escalation import (
-        apply_sandbox_approval_choice,
-        build_backend_failure_approval_params,
-    )
-    from opensquilla.sandbox.run_context import get_run_context
-    from opensquilla.sandbox.run_mode import RunMode
-
-    manager = _SessionManager()
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    params = build_backend_failure_approval_params(
-        session_key=manager.node.session_key,
-        workspace=str(workspace),
-    )
-
-    await apply_sandbox_approval_choice(
-        params,
-        choice="host_once",
-        approved=True,
-        session_manager=manager,
-        config=_config(),
-    )
-
-    ctx = await get_run_context(
-        manager,
-        manager.node.session_key,
-        config=_config(),
-        workspace=str(workspace),
-    )
-    assert ctx.run_mode is RunMode.STANDARD
+    assert escalation.is_sandbox_approval_kind("host_once") is False
+    assert not hasattr(escalation, "build_backend_failure_approval_params")
 
 
 @pytest.mark.asyncio

@@ -19,7 +19,6 @@ from opensquilla.sandbox.run_context import (
     TemporaryGrant,
     get_run_context,
     persist_run_context,
-    set_run_mode,
 )
 from opensquilla.sandbox.run_context_service import (
     add_domain_grant,
@@ -29,7 +28,7 @@ from opensquilla.sandbox.run_context_service import (
 )
 from opensquilla.sandbox.run_mode import RunMode
 
-SANDBOX_APPROVAL_KINDS = frozenset({"sandbox_network", "sandbox_path", "host_once"})
+SANDBOX_APPROVAL_KINDS = frozenset({"sandbox_network", "sandbox_path"})
 _RESOLVED_RUN_CONTEXT_OVERLAYS: dict[tuple[str, str | None], RunContext] = {}
 _RESOLVED_RUN_CONTEXT_PERSISTORS: dict[tuple[str, str | None], tuple[Any, Any]] = {}
 _DENIED_SANDBOX_APPROVALS: dict[str, str] = {}
@@ -153,26 +152,6 @@ def build_path_approval_params(
         "path": decision.normalized_path,
         "access": decision.access,
         "choices": choices,
-    }
-    if session_key:
-        params["sessionKey"] = session_key
-    if workspace:
-        params["workspace"] = workspace
-    return params
-
-
-def build_backend_failure_approval_params(
-    *,
-    session_key: str | None,
-    workspace: str | None,
-) -> dict[str, object]:
-    params: dict[str, object] = {
-        "approvalKind": "host_once",
-        "choices": [
-            _choice("host_once", "Run once with Full Host Access", style="primary"),
-            _choice("host_switch_chat_full", "Switch this chat to Full Host Access"),
-            _choice("deny", "Keep blocked", approved=False, style="danger"),
-        ],
     }
     if session_key:
         params["sessionKey"] = session_key
@@ -365,9 +344,6 @@ async def apply_sandbox_approval_choice(
         return
     if approval_kind == "sandbox_path":
         await _apply_path_choice(params, choice, session_manager=session_manager, config=config)
-        return
-    if approval_kind == "host_once":
-        await _apply_backend_choice(params, choice, session_manager=session_manager, config=config)
         return
 
 
@@ -914,35 +890,6 @@ async def _apply_path_choice(
     )
 
 
-async def _apply_backend_choice(
-    params: dict[str, Any],
-    choice: str,
-    *,
-    session_manager: Any,
-    config: Any,
-) -> None:
-    if choice == "host_once":
-        return
-    if choice != "host_switch_chat_full":
-        raise ValueError(f"unknown_backend_choice:{choice}")
-
-    session_key = _require_session_key(params)
-    updated = await set_run_mode(
-        session_manager,
-        session_key,
-        RunMode.FULL,
-        config=config,
-        workspace=_workspace_param(params),
-    )
-    remember_resolved_run_context(
-        session_key,
-        _workspace_param(params),
-        updated,
-        session_manager=session_manager,
-        config=config,
-    )
-
-
 def _require_session_key(params: dict[str, Any]) -> str:
     value = params.get("sessionKey") or params.get("session_id")
     text = str(value or "").strip()
@@ -984,8 +931,6 @@ def _sandbox_approval_key(params: dict[str, Any] | None) -> str | None:
         else:
             fields["host"] = str(params.get("host") or "").strip().casefold()
         fields["fingerprint"] = str(params.get("fingerprint") or "").strip()
-    elif approval_kind == "host_once":
-        fields["fallback"] = "host_once"
     return json.dumps(fields, ensure_ascii=False, sort_keys=True)
 
 
@@ -1006,8 +951,6 @@ def _pending_sandbox_approval_key(params: dict[str, Any] | None) -> str | None:
     elif approval_kind == "sandbox_network":
         bundle_id = str(params.get("bundle_id") or params.get("bundleId") or "").strip()
         fields["network"] = f"bundle:{bundle_id}" if bundle_id else "public"
-    elif approval_kind == "host_once":
-        fields["fallback"] = "host_once"
     return json.dumps(fields, ensure_ascii=False, sort_keys=True)
 
 
@@ -1063,7 +1006,6 @@ def _without_matching_temporary_network_grants(
 
 __all__ = [
     "apply_sandbox_approval_choice",
-    "build_backend_failure_approval_params",
     "build_network_approval_params",
     "build_package_bundle_approval_params",
     "build_path_approval_params",

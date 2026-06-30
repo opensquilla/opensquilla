@@ -71,7 +71,7 @@ async def test_ordinary_approval_result_does_not_carry_elevated_mode(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_resolved_warnlist_approval_still_runs_shell_in_sandbox(monkeypatch) -> None:
+async def test_warnlist_shell_uses_sandbox_gate_without_exec_approval(monkeypatch) -> None:
     from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
     from opensquilla.tools.builtin import shell
 
@@ -113,17 +113,84 @@ async def test_resolved_warnlist_approval_still_runs_shell_in_sandbox(monkeypatc
         ToolContext(is_owner=True, caller_kind=CallerKind.CLI, session_key="s1")
     )
     try:
-        first = await shell.exec_command("rm x")
-        approval_id = get_approval_queue().list_pending("exec")[0]["id"]
-        get_approval_queue().resolve(approval_id, True)
-        second = await shell.exec_command("rm x", approval_id=approval_id)
+        result = await shell.exec_command("rm x")
     finally:
         current_tool_context.reset(token)
         reset_approval_queue()
 
-    assert "approval_required" in first
-    assert "sandboxed after approval" in second
+    assert "sandboxed after approval" in result
+    assert get_approval_queue().list_pending("exec") == []
     assert [name for name, _ in calls] == ["gate", "backend"]
+    hints = calls[0][1]["hints"]  # type: ignore[index]
+    assert hints.high_impact is True
+
+
+@pytest.mark.asyncio
+async def test_trusted_workspace_shell_cleanup_stays_out_of_locked_approval(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
+    from opensquilla.tools.builtin import shell
+
+    calls: list[tuple[str, object]] = []
+    reset_approval_queue()
+
+    class _Runtime:
+        effective = SimpleNamespace(sandbox_enabled=True)
+
+    async def _fake_gate_action(**kwargs):
+        calls.append(("gate", kwargs))
+        policy = SimpleNamespace()
+        request = SimpleNamespace(cwd=tmp_path, action_kind="shell.exec", policy=policy)
+        return object(), policy, request
+
+    async def _fake_run_under_backend(request, *, runtime=None):
+        calls.append(("backend", request))
+        return SimpleNamespace(
+            returncode=0,
+            stdout="shell-workspace-ok\n",
+            stderr="",
+            backend_notes=(),
+        )
+
+    monkeypatch.setattr(shell, "get_runtime", lambda: _Runtime())
+    monkeypatch.setattr(shell, "gate_action", _fake_gate_action)
+    monkeypatch.setattr(shell, "run_under_backend", _fake_run_under_backend)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(
+            allowed=True,
+            needs_approval=True,
+            reason="command requires approval",
+        ),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.WEB,
+            session_key="s1",
+            run_mode="trusted",
+            workspace_dir=str(tmp_path),
+        )
+    )
+    try:
+        result = await shell.exec_command(
+            'printf "%s\\n" shell-workspace-ok > sandbox_probe_shell.txt '
+            "&& cat sandbox_probe_shell.txt && rm sandbox_probe_shell.txt",
+            workdir=str(tmp_path),
+        )
+    finally:
+        current_tool_context.reset(token)
+        reset_approval_queue()
+
+    assert "shell-workspace-ok" in result
+    assert get_approval_queue().list_pending("exec") == []
+    assert [name for name, _ in calls] == ["gate", "backend"]
+    hints = calls[0][1]["hints"]  # type: ignore[index]
+    assert hints.high_impact is False
 
 
 @pytest.mark.asyncio

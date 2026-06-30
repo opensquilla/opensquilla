@@ -7,7 +7,7 @@
       :title="`Run Mode: ${activeLabel}`"
       aria-label="Run Mode"
       :aria-expanded="open ? 'true' : 'false'"
-      @click="open = !open"
+      @click="toggleOpen"
     >
       <Icon name="shield" :size="17" />
     </button>
@@ -67,7 +67,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import Icon from '@/components/Icon.vue'
 import type { RunMode } from '@/types/rpc'
 import { useDocumentEvent } from '@/composables/useDocumentEvent'
@@ -83,6 +83,7 @@ const props = defineProps<{
   runMode: RunMode
   allowedRunModes: RunMode[]
   fullHostAccessDisabledReason?: string | null
+  closeSignal?: number
   sandboxSetupBusy: boolean
   sandboxSetupMessage: string
   sandboxSetupVisible: boolean
@@ -91,6 +92,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   dismissSandboxSetup: []
   ensureSandboxSetup: []
+  open: []
   setRunMode: [mode: RunMode]
 }>()
 
@@ -129,6 +131,11 @@ const nonOwnerFullHint = computed(() => {
   return 'This account is not the owner, so Full Host Access is unavailable. You can use Standard-Sandbox or Trusted-Sandbox.'
 })
 
+function toggleOpen() {
+  open.value = !open.value
+  if (open.value) emit('open')
+}
+
 function selectMode(mode: RunMode) {
   if (optionDisabled(mode)) return
   open.value = false
@@ -138,6 +145,10 @@ function selectMode(mode: RunMode) {
 function optionDisabled(mode: RunMode): boolean {
   return !allowedRunModes.value.includes(mode)
 }
+
+watch(() => props.closeSignal, () => {
+  open.value = false
+})
 
 useDocumentEvent('mousedown', (event: MouseEvent) => {
   if (!open.value) return

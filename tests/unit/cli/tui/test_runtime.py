@@ -632,6 +632,55 @@ async def test_runtime_notifies_when_input_is_queued_mid_turn() -> None:
 
 
 @pytest.mark.asyncio
+async def test_runtime_full_queue_rejects_message_without_echoing_it() -> None:
+    inputs: asyncio.Queue[str | None] = asyncio.Queue()
+    surface = _FakeSurface(inputs)
+    state = TuiRuntimeState()
+    echoed: list[str] = []
+    notices: list[str] = []
+    first_started = asyncio.Event()
+
+    async def _record_echo(_surface: Any, text: str) -> None:
+        echoed.append(text)
+
+    async def _dispatch(user_input: str) -> bool:
+        if user_input == "first":
+            first_started.set()
+            await asyncio.sleep(5)
+        return True
+
+    task = asyncio.create_task(
+        run_tui_runtime(
+            dispatch=_dispatch,
+            surface_factory=_surface_factory(surface),
+            config=_runtime_config(state=state, queue_max_size=1),
+            hooks=TuiRuntimeHooks(
+                on_user_input_echo=_record_echo,
+                on_queued_turn_start=_queued_echo,
+                notice=notices.append,
+            ),
+        )
+    )
+
+    await inputs.put("first")
+    await asyncio.wait_for(first_started.wait(), timeout=2.0)
+    await inputs.put("second")  # fills the single queue slot
+    await _wait_until(lambda: state.pending_items == ("second",))
+    await inputs.put("third")  # queue is full -> must be rejected
+    await _wait_until(lambda: any("Queue full" in notice for notice in notices))
+    active_cb = next(cb for cb in reversed(surface.cancel_callbacks) if cb is not None)
+    active_cb()
+    await inputs.put(None)
+    await asyncio.wait_for(task, timeout=2.0)
+
+    # The rejected message must NOT appear accepted in the transcript; the one that
+    # fit was echoed normally.
+    assert "second" in echoed
+    assert "third" not in echoed
+    assert state.pending_items == ()
+
+
+@pytest.mark.asyncio
 async def test_runtime_cancel_suppresses_adapter_cancel_hook_errors() -> None:
     inputs: asyncio.Queue[str | None] = asyncio.Queue()
     surface = _FakeSurface(inputs)

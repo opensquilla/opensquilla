@@ -1432,6 +1432,80 @@ class TestSessionsSend:
         assert manager.updates == []
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("requested_run_mode", "expected_run_mode"),
+        [
+            ("full", "trusted"),
+            ("trusted", "trusted"),
+            ("standard", "standard"),
+        ],
+    )
+    async def test_send_non_owner_source_run_mode_is_principal_scoped_without_persisting(
+        self,
+        dispatcher,
+        requested_run_mode: str,
+        expected_run_mode: str,
+    ):
+        class RecordingTaskRuntime:
+            def __init__(self) -> None:
+                self.enqueue_calls: list[dict[str, Any]] = []
+
+            async def enqueue(self, envelope, message: str, **kwargs: Any):
+                self.enqueue_calls.append(
+                    {"envelope": envelope, "message": message, **kwargs}
+                )
+                return SimpleNamespace(
+                    task_id="task-1",
+                    session_key=envelope.session_key,
+                    status="queued",
+                )
+
+        session = FakeSession(
+            session_key=f"agent:main:webchat:non-owner-{requested_run_mode}",
+            origin={
+                "sandbox_run_context": {
+                    "run_mode": "standard",
+                    "workspace": "/workspace",
+                }
+            },
+        )
+        runtime = RecordingTaskRuntime()
+        manager = FakeSessionManager([session])
+        principal = Principal(
+            role="operator",
+            scopes=frozenset(["operator.write", "operator.read"]),
+            is_owner=False,
+            authenticated=True,
+        )
+        ctx = make_ctx(
+            session_manager=manager,
+            task_runtime=runtime,
+            principal=principal,
+        )
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.send",
+            {
+                "key": session.session_key,
+                "message": "hello",
+                "_source": {
+                    "caller_kind": "web",
+                    "channel_kind": "web",
+                    "runMode": requested_run_mode,
+                },
+            },
+            ctx,
+        )
+
+        assert res.ok is True
+        envelope = runtime.enqueue_calls[0]["envelope"]
+        assert envelope.metadata["run_mode"] == expected_run_mode
+        assert envelope.metadata["sandbox_run_context"]["run_mode"] == expected_run_mode
+        assert envelope.metadata.get("elevated") != "full"
+        assert session.origin["sandbox_run_context"]["run_mode"] == "standard"
+
+    @pytest.mark.asyncio
     async def test_chat_send_forwards_source_run_mode_to_sessions_send(
         self, dispatcher
     ):
@@ -1466,6 +1540,53 @@ class TestSessionsSend:
             await chat_task
         assert chat_runner.run_calls[0]["tool_context"].run_mode == "full"
         assert chat_runner.run_calls[0]["tool_context"].elevated == "full"
+        assert chat_session.origin["sandbox_run_context"]["run_mode"] == "standard"
+
+    @pytest.mark.asyncio
+    async def test_chat_send_non_owner_full_source_run_mode_downgrades_to_trusted(
+        self, dispatcher
+    ):
+        chat_session = FakeSession(
+            session_key="agent:main:webchat:chat-non-owner-full-source",
+            session_id="chat-non-owner-full-source",
+            origin={
+                "sandbox_run_context": {
+                    "run_mode": "standard",
+                    "workspace": "/workspace",
+                }
+            },
+        )
+        chat_manager = FakeSessionManager([chat_session])
+        chat_runner = _RecordingTurnRunner()
+        principal = Principal(
+            role="operator",
+            scopes=frozenset(["operator.write", "operator.read"]),
+            is_owner=False,
+            authenticated=True,
+        )
+        chat_ctx = make_ctx(
+            session_manager=chat_manager,
+            turn_runner=chat_runner,
+            principal=principal,
+        )
+
+        res = await dispatcher.dispatch(
+            "r-chat-non-owner-run-mode",
+            "chat.send",
+            {
+                "sessionKey": chat_session.session_key,
+                "message": "hello",
+                "_source": {"runMode": "full"},
+            },
+            chat_ctx,
+        )
+
+        assert res.ok is True
+        chat_task = get_agent_task_registry().get(chat_session.session_key)
+        if chat_task is not None:
+            await chat_task
+        assert chat_runner.run_calls[0]["tool_context"].run_mode == "trusted"
+        assert chat_runner.run_calls[0]["tool_context"].elevated != "full"
         assert chat_session.origin["sandbox_run_context"]["run_mode"] == "standard"
 
     @pytest.mark.asyncio
@@ -2510,7 +2631,7 @@ class TestSessionsSend:
                 "key": session.session_key,
                 "message": "hi",
                 "attachments": [
-                    {"type": "application/x-shellscript", "data": "QQ=="}
+                    {"type": "application/x-shellscript", "data": "AA=="}
                 ],
             },
             ctx_with_sessions,

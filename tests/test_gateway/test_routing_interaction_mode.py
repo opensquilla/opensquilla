@@ -152,7 +152,7 @@ def test_route_run_mode_metadata_reaches_tool_context() -> None:
     assert ctx.elevated is None
 
 
-def test_non_owner_full_run_mode_metadata_does_not_reach_tool_context() -> None:
+def test_non_owner_full_run_mode_metadata_coerces_to_trusted() -> None:
     envelope = build_cli_route_envelope(
         session_key="agent:main:cli",
         run_mode="full",
@@ -160,7 +160,7 @@ def test_non_owner_full_run_mode_metadata_does_not_reach_tool_context() -> None:
 
     ctx = tool_context_from_envelope(envelope, is_owner=False)
 
-    assert ctx.run_mode is None
+    assert ctx.run_mode == "trusted"
     assert ctx.elevated is None
 
 

@@ -1299,3 +1299,47 @@ async def test_rpc_sandbox_semantic_validation_does_not_create_missing_session(
 
     assert missing_session_key not in manager.sessions
     assert manager.created == []
+
+
+def test_non_owner_route_full_hint_coerces_to_trusted() -> None:
+    from opensquilla.gateway.routing import build_web_route_envelope, tool_context_from_envelope
+    from opensquilla.sandbox.run_context import RunContext
+    from opensquilla.sandbox.run_mode import RunMode
+
+    envelope = build_web_route_envelope(
+        session_key="agent:main:webchat:abc",
+        principal_is_owner=False,
+    )
+    envelope.metadata["run_mode"] = "full"
+    envelope.metadata["sandbox_run_context"] = RunContext(
+        run_mode=RunMode.FULL,
+        source="route_metadata",
+    ).to_origin_payload()
+
+    ctx = tool_context_from_envelope(envelope, is_owner=False)
+
+    assert ctx.run_mode == "trusted"
+    assert ctx.sandbox_run_context is not None
+    assert ctx.sandbox_run_context.run_mode is RunMode.TRUSTED
+
+
+def test_non_owner_route_trusted_hint_is_preserved() -> None:
+    from opensquilla.gateway.routing import build_web_route_envelope, tool_context_from_envelope
+    from opensquilla.sandbox.run_context import RunContext
+    from opensquilla.sandbox.run_mode import RunMode
+
+    envelope = build_web_route_envelope(
+        session_key="agent:main:webchat:abc",
+        principal_is_owner=False,
+    )
+    envelope.metadata["run_mode"] = "trusted"
+    envelope.metadata["sandbox_run_context"] = RunContext(
+        run_mode=RunMode.TRUSTED,
+        source="route_metadata",
+    ).to_origin_payload()
+
+    ctx = tool_context_from_envelope(envelope, is_owner=False)
+
+    assert ctx.run_mode == "trusted"
+    assert ctx.sandbox_run_context is not None
+    assert ctx.sandbox_run_context.run_mode is RunMode.TRUSTED

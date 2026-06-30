@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any
 
@@ -395,7 +395,7 @@ def tool_context_from_envelope(
         except ValueError:
             run_mode = None
         if run_mode == RunMode.FULL and not is_owner:
-            run_mode = None
+            run_mode = RunMode.TRUSTED
     elif legacy_elevated in ("on", "bypass") and is_owner:
         run_mode = RunMode.TRUSTED
     elif legacy_elevated == "full" and is_owner:
@@ -416,6 +416,12 @@ def tool_context_from_envelope(
         source="route_metadata",
         preserve_materialized_user_grants=sandbox_run_context_fresh,
     )
+    if (
+        sandbox_run_context is not None
+        and sandbox_run_context.run_mode == RunMode.FULL
+        and not is_owner
+    ):
+        sandbox_run_context = replace(sandbox_run_context, run_mode=RunMode.TRUSTED)
     if sandbox_run_context_fresh and sandbox_run_context is not None:
         sandbox_mounts = sandbox_run_context.to_origin_payload()["mounts"]
     else:

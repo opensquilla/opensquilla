@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from opensquilla.agents.scope import resolve_agent_workspace_dir
@@ -25,6 +26,10 @@ from opensquilla.sandbox.run_context import (
     get_run_context,
     normalize_workspace_path,
     set_run_mode,
+)
+from opensquilla.sandbox.run_mode_policy import (
+    coerce_run_mode_for_principal,
+    run_mode_allowed_for_principal,
 )
 from opensquilla.sandbox.run_context_service import (
     add_domain_grant,
@@ -168,6 +173,15 @@ def _require_session_manager(ctx: RpcContext) -> Any:
 def _require_owner(ctx: RpcContext, method: str) -> None:
     if not getattr(ctx.principal, "is_owner", False):
         raise RpcHandlerError("UNAUTHORIZED", f"{method} requires owner principal.")
+
+
+def _context_for_principal(context: RunContext, principal: Any) -> RunContext:
+    if run_mode_allowed_for_principal(context.run_mode, principal):
+        return context
+    return replace(
+        context,
+        run_mode=coerce_run_mode_for_principal(context.run_mode, principal),
+    )
 
 
 async def _session_for_key(session_manager: Any, session_key: str) -> Any | None:
@@ -365,6 +379,7 @@ async def _handle_sandbox_run_context_get(params: dict | None, ctx: RpcContext) 
         config=ctx.config,
         workspace=workspace,
     )
+    context = _context_for_principal(context, ctx.principal)
     return _payload(context)
 
 
@@ -372,8 +387,9 @@ async def _handle_sandbox_run_context_get(params: dict | None, ctx: RpcContext) 
 async def _handle_sandbox_run_context_set(params: dict | None, ctx: RpcContext) -> dict:
     params = _require_params(params)
     session_key = _require_session_key(params)
-    _require_owner(ctx, "sandbox.run_context.set")
     run_mode = normalize_run_mode(params.get("runMode"))
+    if not run_mode_allowed_for_principal(run_mode, ctx.principal):
+        _require_owner(ctx, "sandbox.run_context.set")
     await _require_sandbox_setup_ready_for_mode(ctx, run_mode)
     manager = _require_session_manager(ctx)
     session = await _ensure_session_for_set(manager, session_key)

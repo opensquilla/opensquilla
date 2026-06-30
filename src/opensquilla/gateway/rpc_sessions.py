@@ -37,6 +37,10 @@ from opensquilla.sandbox.run_context import (
     run_context_from_origin_payload,
 )
 from opensquilla.sandbox.run_mode import RunMode, normalize_run_mode
+from opensquilla.sandbox.run_mode_policy import (
+    coerce_run_mode_for_principal,
+    run_mode_allowed_for_principal,
+)
 from opensquilla.session.compaction import (
     build_compaction_config_from_provider,
     call_compact_with_optional_config,
@@ -179,15 +183,23 @@ def _trusted_elevated_hint(ctx: RpcContext, source_hint: dict[str, Any]) -> str 
 
 def _trusted_run_mode_hint(ctx: RpcContext, source_hint: dict[str, Any]) -> Any | None:
     value = source_hint.get("runMode") or source_hint.get("run_mode")
-    if isinstance(value, str) and ctx.principal.is_owner:
-        return normalize_run_mode(value)
+    if isinstance(value, str):
+        try:
+            run_mode = normalize_run_mode(value)
+        except ValueError:
+            return None
+        if run_mode_allowed_for_principal(run_mode, ctx.principal):
+            return run_mode
+        if run_mode == RunMode.FULL and not ctx.principal.is_owner:
+            return RunMode.TRUSTED
+        return None
 
     elevated = source_hint.get("elevated")
-    if not isinstance(elevated, str) or not ctx.principal.is_owner:
+    if not isinstance(elevated, str):
         return None
     if elevated in _TRUSTED_ELEVATED_ALIASES:
         return RunMode.TRUSTED
-    if elevated == "full":
+    if elevated == "full" and ctx.principal.is_owner:
         return RunMode.FULL
     return None
 
@@ -1152,6 +1164,10 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
         key,
         config=ctx.config,
         workspace=workspace_dir,
+    )
+    run_context = replace(
+        run_context,
+        run_mode=coerce_run_mode_for_principal(run_context.run_mode, ctx.principal),
     )
     if run_mode_hint is not None:
         run_context = replace(

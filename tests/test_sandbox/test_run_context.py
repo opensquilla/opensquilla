@@ -235,6 +235,89 @@ async def test_rpc_run_context_set_allows_owner_full_mode() -> None:
 
 
 @pytest.mark.asyncio
+async def test_rpc_run_context_set_allows_non_owner_trusted_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.gateway import rpc_sandbox
+    from opensquilla.gateway.auth import Principal
+    from opensquilla.gateway.rpc import RpcContext
+    from opensquilla.gateway.rpc_sandbox import _handle_sandbox_run_context_set
+    from opensquilla.sandbox.setup_state import SandboxSetupState, SetupResult
+
+    manager = _SessionManager()
+    config = SimpleNamespace(
+        workspace_dir="/tmp/ws",
+        agents=[],
+        sandbox=SimpleNamespace(run_mode="standard", sandbox=True, security_grading=True),
+        permissions=SimpleNamespace(default_mode="off"),
+    )
+    ctx = RpcContext(
+        conn_id="c",
+        principal=Principal(
+            role="operator",
+            scopes=frozenset(["operator.write", "operator.read"]),
+            is_owner=False,
+            authenticated=True,
+        ),
+        session_manager=manager,
+        config=config,
+    )
+
+    async def ready_status(config):
+        return SetupResult(
+            state=SandboxSetupState.READY,
+            platform="win32",
+            message="ready",
+            requires_admin=True,
+        )
+
+    monkeypatch.setattr(rpc_sandbox, "current_sandbox_setup_status", ready_status)
+
+    result = await _handle_sandbox_run_context_set(
+        {"sessionKey": manager.node.session_key, "runMode": "trusted"},
+        ctx,
+    )
+
+    assert result["runMode"] == "trusted"
+    assert manager.node.origin["sandbox_run_context"]["run_mode"] == "trusted"
+
+
+@pytest.mark.asyncio
+async def test_rpc_run_context_get_coerces_non_owner_default_full_to_trusted() -> None:
+    from opensquilla.gateway.auth import Principal
+    from opensquilla.gateway.rpc import RpcContext
+    from opensquilla.gateway.rpc_sandbox import _handle_sandbox_run_context_get
+
+    manager = _SessionManager()
+    config = SimpleNamespace(
+        workspace_dir="/tmp/ws",
+        agents=[],
+        sandbox=SimpleNamespace(run_mode="full", sandbox=False, security_grading=False),
+        permissions=SimpleNamespace(default_mode="full"),
+    )
+    ctx = RpcContext(
+        conn_id="c",
+        principal=Principal(
+            role="operator",
+            scopes=frozenset(["operator.read"]),
+            is_owner=False,
+            authenticated=False,
+        ),
+        session_manager=manager,
+        config=config,
+    )
+
+    result = await _handle_sandbox_run_context_get(
+        {"sessionKey": manager.node.session_key},
+        ctx,
+    )
+
+    assert result["runMode"] == "trusted"
+    assert result["source"] == "default"
+    assert manager.node.origin is None
+
+
+@pytest.mark.asyncio
 async def test_rpc_run_context_set_creates_owner_new_webchat_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

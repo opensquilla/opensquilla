@@ -64,6 +64,11 @@ from opensquilla.session.compaction_lifecycle import (
 )
 from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id, parse_agent_id
 from opensquilla.session.models import SessionStatus
+from opensquilla.session.naming import (
+    generate_session_title,
+    is_naming_eligible,
+    title_slot_is_empty,
+)
 from opensquilla.session.terminal_reply import build_terminal_reply, sanitize_agent_error
 
 _d = get_dispatcher()
@@ -1182,6 +1187,47 @@ async def _handle_sessions_fork(params: dict | None, ctx: RpcContext) -> dict:
     return {"key": child.session_key, "parentKey": key}
 
 
+async def _should_auto_title(
+    ctx: RpcContext,
+    storage: Any,
+    session: Any,
+    key: str,
+    session_id: str,
+) -> bool:
+    try:
+        naming_cfg = getattr(getattr(ctx, "config", None), "naming", None)
+        if naming_cfg is None or not getattr(naming_cfg, "enabled", False):
+            return False
+        if not title_slot_is_empty(session):
+            return False
+        from opensquilla.gateway.session_view import _session_kind, _surface
+
+        origin = getattr(session, "origin", None)
+        origin_map = origin if isinstance(origin, dict) else {}
+        surface = _surface(session, key, origin_map)
+        session_kind = _session_kind(session, key, surface, origin_map)
+        if not is_naming_eligible(naming_cfg, surface, session_kind):
+            return False
+        return bool(await storage.count_transcript_entries(session_id) == 0)
+    except Exception:  # noqa: BLE001 - naming is best-effort
+        return False
+
+
+def _schedule_auto_title(
+    ctx: RpcContext,
+    key: str,
+    first_message: str,
+    *,
+    enabled: bool,
+) -> None:
+    if not enabled:
+        return
+    asyncio.create_task(
+        generate_session_title(ctx, key, first_message),
+        name=f"session-title:{key}",
+    )
+
+
 @_d.method("sessions.send", scope="operator.write")
 async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
     key = _require_key(params)
@@ -1238,6 +1284,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
         if isinstance(canonical_session_id, str) and canonical_session_id
         else key.split(":")[-1] or key
     )
+    generate_title = await _should_auto_title(ctx, storage, session, key, session_id)
     disk_budget = getattr(attachments_cfg, "transcript_disk_budget_bytes", None)
     ingested_attachments = await _attachment_ingest.ingest_attachments(
         message_text,
@@ -1530,6 +1577,12 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                     await _store.evict(_u)
                 except Exception:  # noqa: BLE001 — eviction is best-effort
                     log.warning("uploads.evict_failed_post_turn uuid=%s", _u[:8])
+        _schedule_auto_title(
+            ctx,
+            key,
+            semantic_message_text or message_text,
+            enabled=generate_title,
+        )
         return {"status": "accepted", "key": key, "task_id": handle.task_id}
 
     # 2. Run agent turn in background via TurnRunner
@@ -1708,6 +1761,12 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                 await _store.evict(_u)
             except Exception:  # noqa: BLE001 — eviction is best-effort
                 log.warning("uploads.evict_failed_post_turn uuid=%s", _u[:8])
+    _schedule_auto_title(
+        ctx,
+        key,
+        semantic_message_text or message_text,
+        enabled=generate_title,
+    )
     return {"status": "accepted", "key": key}
 
 

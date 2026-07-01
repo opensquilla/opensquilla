@@ -812,6 +812,7 @@ def test_gateway_run_drains_via_close_on_shutdown_signal(tmp_path, monkeypatch) 
 
     monkeypatch.setattr(gateway_cmd, "_install_shutdown_handlers", capturing_install)
     _install_fake_start(server, holder, monkeypatch)
+    monkeypatch.setattr(gateway_cmd, "_gateway_bind_available", lambda *_args: True)
 
     gateway_cmd.run_gateway(
         port=None, bind=None, listen="", debug=False, config_path=str(config)
@@ -843,6 +844,7 @@ def test_gateway_run_drains_when_server_task_exits_on_its_own(
 
     holder: dict = {}
     _install_fake_start(_SelfExitingServer(), holder, monkeypatch)
+    monkeypatch.setattr(gateway_cmd, "_gateway_bind_available", lambda *_args: True)
 
     gateway_cmd.run_gateway(
         port=None, bind=None, listen="", debug=False, config_path=str(config)
@@ -905,6 +907,7 @@ def test_gateway_run_drains_via_http_shutdown_trigger(tmp_path, monkeypatch) -> 
     # which _run wires to the same graceful-drain trigger as the signal handlers.
     server = _ShutdownProbeServer(fire="api_shutdown", via="http")
     _install_fake_start(server, holder, monkeypatch)
+    monkeypatch.setattr(gateway_cmd, "_gateway_bind_available", lambda *_args: True)
 
     gateway_cmd.run_gateway(
         port=None, bind=None, listen="", debug=False, config_path=str(config)

@@ -54,6 +54,8 @@ class AttachmentMessageBuilderPort(Protocol):
         self,
         message: str,
         attachments: list[dict],
+        *,
+        session_id: str | None = None,
     ) -> list[Any] | None: ...
 
 @dataclass(frozen=True)
@@ -70,6 +72,7 @@ class AttachmentStageInput:
 
     effective_runtime_message: str
     attachments: list[dict] | None
+    session_id: str | None = None
 
 @dataclass(frozen=True)
 class AttachmentStageOutput:
@@ -120,6 +123,7 @@ class AttachmentStage:
         extra_messages = self._builder.build(
             inp.effective_runtime_message,
             inp.attachments or [],
+            session_id=inp.session_id,
         )
         turn_input = (
             inp.effective_runtime_message if extra_messages is None else ""

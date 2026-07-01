@@ -37,6 +37,11 @@ from opensquilla.attachment_refs import (
     read_attachment_ref_bytes,
     transcript_material_path,
 )
+from opensquilla.attachment_workspace import (
+    AttachmentWorkspaceMaterializer,
+    is_materializable_attachment_mime,
+    render_attachment_material_marker,
+)
 from opensquilla.bootstrap_types import BootstrapFileReport
 from opensquilla.contracts.attachments import (
     ALLOWED_MEDIA_TYPES as _ALLOWED_ENGINE_MEDIA_TYPES,
@@ -1311,11 +1316,13 @@ def _xml_escape_attr(value: str) -> str:
 
 
 def _sanitize_attachment_filename(value: Any, fallback: str = "attachment") -> str:
-    """Strip newlines/tabs and trim; fall back if the result is empty."""
+    """Strip path separators, newlines/tabs, and trim; fall back if empty."""
 
     if not isinstance(value, str):
         return fallback
-    cleaned = value.replace("\r", " ").replace("\n", " ").replace("\t", " ").strip()
+    cleaned = value.replace("\x00", "")
+    cleaned = cleaned.replace("\\", "/").split("/")[-1]
+    cleaned = cleaned.replace("\r", " ").replace("\n", " ").replace("\t", " ").strip()
     return cleaned or fallback
 
 
@@ -2727,10 +2734,18 @@ class TurnRunner:
 
             # 8. Build extra messages for attachments + turn_input rebind.
             # AttachmentStage owns the slice.
+            attachment_materialization_session_id = None
+            if attachments:
+                attachment_materialization_session_id = await self._resolve_session_id_for_log(
+                    session_key
+                )
+                if attachment_materialization_session_id is None:
+                    attachment_materialization_session_id = session_key
             att_outcome = await self._attachment_stage.run(
                 AttachmentStageInput(
                     effective_runtime_message=effective_runtime_message,
                     attachments=attachments,
+                    session_id=attachment_materialization_session_id,
                 )
             )
             att_out = att_outcome.require_output()
@@ -6163,6 +6178,15 @@ class TurnRunner:
             getattr(getattr(agent, "config", None), "preserve_historical_images", False)
             and getattr(model_caps, "supports_vision", False)
         )
+        workspace_dir = getattr(getattr(agent, "config", None), "workspace_dir", None)
+        materialize_historical_attachments = bool(
+            getattr(
+                getattr(agent, "config", None),
+                "materialize_historical_attachments",
+                True,
+            )
+            and workspace_dir
+        )
         lookback = int(
             getattr(
                 getattr(self._config, "squilla_router", None),
@@ -6193,6 +6217,11 @@ class TurnRunner:
             image_replay_session_id = await self._resolve_session_id_for_log(session_key)
             if image_replay_session_id is None:
                 image_replay_session_id = session_key
+        attachment_replay_session_id = image_replay_session_id
+        if attachment_replay_session_id is None and materialize_historical_attachments:
+            attachment_replay_session_id = await self._resolve_session_id_for_log(session_key)
+            if attachment_replay_session_id is None:
+                attachment_replay_session_id = session_key
         last_entry_was_user = False
         for entry_index, entry in enumerate(transcript):
             if (
@@ -6212,8 +6241,10 @@ class TurnRunner:
                 content: Any = self._maybe_unpack_attachments(
                     raw_content,
                     preserve_image_attachments=entry_index in image_replay_entry_indexes,
+                    materialize_historical_attachments=materialize_historical_attachments,
                     media_root=self._attachment_media_root(),
-                    session_id=image_replay_session_id,
+                    session_id=attachment_replay_session_id,
+                    workspace_dir=workspace_dir,
                 )
             elif raw_content and entry.role == "assistant":
                 content = self._maybe_unpack_assistant_artifacts(raw_content)
@@ -6363,8 +6394,10 @@ class TurnRunner:
         content: str,
         *,
         preserve_image_attachments: bool = False,
+        materialize_historical_attachments: bool = False,
         media_root: Path | None = None,
         session_id: str | None = None,
+        workspace_dir: str | Path | None = None,
     ) -> Any:
         """Reduce persisted attachment envelopes to text-only history.
 
@@ -6462,6 +6495,50 @@ class TurnRunner:
                         )
                         preserved_image = True
                     continue
+            if (
+                materialize_historical_attachments
+                and session_id
+                and workspace_dir
+                and is_materializable_attachment_mime(media_type)
+            ):
+                materializer = AttachmentWorkspaceMaterializer(
+                    media_root=media_root or Path("."),
+                    workspace_dir=workspace_dir,
+                )
+                result = None
+                if isinstance(sha_ref, str) and sha_ref and media_root is not None:
+                    ref = make_attachment_ref(
+                        sha256=sha_ref,
+                        name=label,
+                        mime=media_type,
+                        size=att.get("size") if isinstance(att.get("size"), int) else -1,
+                        session_id=session_id,
+                        source="transcript",
+                    )
+                    result = materializer.materialize(ref, session_id=session_id)
+                elif isinstance(data, str) and data:
+                    try:
+                        payload = base64.b64decode(data, validate=True)
+                    except (binascii.Error, ValueError):
+                        omitted.append(
+                            "[historical attachment unavailable: "
+                            f"{label} ({media_type}): attachment data is not valid base64]"
+                        )
+                        continue
+                    result = materializer.materialize_bytes(
+                        payload,
+                        name=label,
+                        mime=media_type,
+                        session_id=session_id,
+                    )
+                if result is not None:
+                    prefix = (
+                        "historical attachment available"
+                        if result.available
+                        else "historical attachment unavailable"
+                    )
+                    omitted.append(render_attachment_material_marker(result, prefix=prefix))
+                    continue
             omitted.append(f"[historical attachment omitted: {label} ({media_type})]")
         if preserved_image:
             if omitted:
@@ -6507,6 +6584,8 @@ class TurnRunner:
         attachments: list[dict],
         *,
         media_root: Path | None = None,
+        workspace_dir: str | Path | None = None,
+        session_id: str | None = None,
     ) -> list | None:
         """Build a multimodal user message that carries the attachments.
 
@@ -6575,8 +6654,37 @@ class TurnRunner:
 
             name_raw = att.get("name")
             filename = _sanitize_attachment_filename(name_raw)
+            material_marker = ""
+            if (
+                workspace_dir
+                and is_materializable_attachment_mime(media_type)
+            ):
+                materializer = AttachmentWorkspaceMaterializer(
+                    media_root=media_root or Path("."),
+                    workspace_dir=workspace_dir,
+                )
+                if is_attachment_ref(att):
+                    result = materializer.materialize(att, session_id=session_id)
+                else:
+                    result = materializer.materialize_bytes(
+                        raw_bytes,
+                        name=filename,
+                        mime=media_type,
+                        session_id=session_id,
+                    )
+                prefix = (
+                    "attachment available"
+                    if result.available
+                    else "attachment unavailable"
+                )
+                material_marker = render_attachment_material_marker(result, prefix=prefix)
             if missing_ref_marker:
-                wrapped = _render_file_context_block(filename, media_type, missing_ref_marker)
+                missing_text = (
+                    "\n\n".join([missing_ref_marker, material_marker])
+                    if material_marker
+                    else missing_ref_marker
+                )
+                wrapped = _render_file_context_block(filename, media_type, missing_text)
                 attachment_blocks.append(ContentBlockText(text=wrapped))
                 continue
 
@@ -6588,6 +6696,18 @@ class TurnRunner:
                 except ValueError as exc:
                     extracted_pdf_text = (
                         f"[attachment unavailable: PDF text could not be extracted: {exc}]"
+                    )
+                if material_marker:
+                    extracted_pdf_text = "\n\n".join(
+                        [
+                            extracted_pdf_text,
+                            material_marker,
+                            (
+                                "[attachment note: use the workspace path for PDF "
+                                "layout, images, colors, or edits; extracted text is "
+                                "only a preview.]"
+                            ),
+                        ]
                     )
                 wrapped = _render_file_context_block(filename, media_type, extracted_pdf_text)
                 attachment_blocks.append(ContentBlockText(text=wrapped))
@@ -6613,6 +6733,8 @@ class TurnRunner:
                         decoded_text = (
                             "[attachment unavailable: declared text content is not valid UTF-8]"
                         )
+                if material_marker:
+                    decoded_text = "\n\n".join([decoded_text, material_marker])
                 wrapped = _render_file_context_block(filename, media_type, decoded_text)
                 attachment_blocks.append(ContentBlockText(text=wrapped))
             elif media_type in _OFFICE_ATTACHMENT_MIMES:
@@ -6624,6 +6746,10 @@ class TurnRunner:
                     extracted_office_text = (
                         "[attachment unavailable: document text could not be "
                         f"extracted: {exc}]"
+                    )
+                if material_marker:
+                    extracted_office_text = "\n\n".join(
+                        [extracted_office_text, material_marker]
                     )
                 wrapped = _render_file_context_block(
                     filename, media_type, extracted_office_text
@@ -6638,6 +6764,10 @@ class TurnRunner:
                     extracted_email_text = (
                         "[attachment unavailable: email could not be "
                         f"extracted: {exc}]"
+                    )
+                if material_marker:
+                    extracted_email_text = "\n\n".join(
+                        [extracted_email_text, material_marker]
                     )
                 wrapped = _render_file_context_block(
                     filename, media_type, extracted_email_text

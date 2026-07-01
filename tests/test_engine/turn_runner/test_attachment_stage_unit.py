@@ -30,8 +30,12 @@ class _RecordingBuilder:
         self,
         message: str,
         attachments: list[dict],
+        *,
+        session_id: str | None = None,
     ) -> list[Any] | None:
-        self.calls.append({"message": message, "attachments": attachments})
+        self.calls.append(
+            {"message": message, "attachments": attachments, "session_id": session_id}
+        )
         if self.raises is not None:
             raise self.raises("recording builder boom")
         return self.return_value
@@ -68,7 +72,7 @@ async def test_no_attachments_returns_runtime_message_as_turn_input(
     assert outcome.output is not None
     assert outcome.output.extra_messages is None
     assert outcome.output.turn_input == "hello"
-    assert builder.calls == [{"message": "hello", "attachments": []}]
+    assert builder.calls == [{"message": "hello", "attachments": [], "session_id": None}]
 
 
 @pytest.mark.asyncio
@@ -93,6 +97,7 @@ async def test_builder_returns_messages_clears_turn_input() -> None:
         {
             "message": "what is this?",
             "attachments": [{"type": "image/png", "data": "AA=="}],
+            "session_id": None,
         }
     ]
 

@@ -214,6 +214,57 @@ def test_pdf_ref_hydrates_for_current_provider_call(tmp_path: Path) -> None:
     assert "Hello PDF Text" in wrapped.text
 
 
+def test_inline_pdf_materializes_to_workspace_path(tmp_path: Path) -> None:
+    pdf_bytes = _sample_pdf_bytes()
+    workspace = tmp_path / "workspace"
+    out = TurnRunner._build_attachment_messages(
+        "summarise",
+        [{"type": "application/pdf", "data": _b64(pdf_bytes), "name": "report.pdf"}],
+        workspace_dir=workspace,
+        session_id="s-inline",
+    )
+
+    assert out is not None
+    text_blocks = [b for b in out[0].content if isinstance(b, ContentBlockText)]
+    wrapped = next(b for b in text_blocks if b.text.startswith("<file "))
+    assert "Hello PDF Text" in wrapped.text
+    assert "attachment available: report.pdf (application/pdf" in wrapped.text
+    workspace_paths = list((workspace / ".opensquilla" / "attachments").glob("**/*.pdf"))
+    assert len(workspace_paths) == 1
+    assert workspace_paths[0].read_bytes() == pdf_bytes
+
+
+def test_historical_inline_pdf_materializes_to_workspace_path(tmp_path: Path) -> None:
+    pdf_bytes = _sample_pdf_bytes()
+    workspace = tmp_path / "workspace"
+    content = json.dumps(
+        {
+            "text": "use previous PDF",
+            "attachments": [
+                {
+                    "type": "application/pdf",
+                    "data": _b64(pdf_bytes),
+                    "name": "report.pdf",
+                }
+            ],
+        }
+    )
+
+    out = TurnRunner._maybe_unpack_attachments(
+        content,
+        materialize_historical_attachments=True,
+        workspace_dir=workspace,
+        session_id="s-history",
+    )
+
+    assert isinstance(out, str)
+    assert "use previous PDF" in out
+    assert "historical attachment available: report.pdf (application/pdf" in out
+    workspace_paths = list((workspace / ".opensquilla" / "attachments").glob("**/*.pdf"))
+    assert len(workspace_paths) == 1
+    assert workspace_paths[0].read_bytes() == pdf_bytes
+
+
 def test_unreadable_pdf_emits_marker_instead_of_failing_turn() -> None:
     out = _build(
         "summarise",

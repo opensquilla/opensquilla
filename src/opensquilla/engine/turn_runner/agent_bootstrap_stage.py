@@ -426,6 +426,9 @@ class AgentBootstrapStage:
             context_window_tokens=catalog.context_window,
             max_history_turns=_route_max_history_turns(inp.turn.metadata),
             preserve_historical_images=_preserve_historical_images(inp.turn.metadata),
+            materialize_historical_attachments=bool(
+                inp.turn.metadata.get("bootstrap_workspace_dir")
+            ),
             flush_enabled=aux.flush_enabled,
             flush_triggers=aux.flush_triggers,
             flush_pre_compaction=aux.flush_pre_compaction,

@@ -925,11 +925,15 @@ class _TurnRunnerAttachmentMessageBuilderAdapter(AttachmentMessageBuilderPort):
         self,
         message: str,
         attachments: list[dict],
+        *,
+        session_id: str | None = None,
     ) -> list[Any] | None:
         return self._runner._build_attachment_messages(
             message,
             attachments,
             media_root=self._runner._attachment_media_root(),
+            workspace_dir=getattr(self._runner._config, "workspace_dir", None),
+            session_id=session_id,
         )
 
 

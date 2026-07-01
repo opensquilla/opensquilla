@@ -85,6 +85,16 @@ def _gateway_bind_available(host: str, port: int) -> bool:
     last_error: OSError | None = None
     for family, socktype, proto, _canonname, sockaddr in infos:
         with socket.socket(family, socktype, proto) as sock:
+            # Mirror how uvicorn/asyncio binds the real listener so the probe
+            # never reports a false "in use": asyncio.create_server sets
+            # SO_REUSEADDR on POSIX (letting it bind a port still in TIME_WAIT
+            # after a restart) but deliberately does not on Windows, where the
+            # option allows two live sockets on one port.
+            if os.name != "nt":
+                try:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                except OSError:
+                    pass
             try:
                 sock.bind(sockaddr)
             except OSError as exc:
@@ -129,9 +139,11 @@ def run_gateway(
         console.print(
             f"[red]Gateway could not start:[/red] {host}:{resolved_port} is already in use."
         )
-        console.print(
-            f"[dim]Find the listener with: netstat -ano | findstr :{resolved_port}[/dim]"
-        )
+        if os.name == "nt":
+            find_hint = f"netstat -ano | findstr :{resolved_port}"
+        else:
+            find_hint = f"lsof -iTCP:{resolved_port} -sTCP:LISTEN -n -P"
+        console.print(f"[dim]Find the listener with: {find_hint}[/dim]")
         raise typer.Exit(code=1)
 
     banner_host = f"[red]{host}[/red]" if is_public_bind(host) else f"[{ACCENT_MARKUP}]{host}[/]"

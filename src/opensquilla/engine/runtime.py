@@ -319,6 +319,7 @@ _SAFE_TOOL_NAMES: frozenset[str] = frozenset(
         "skill_search_community",
         "skill_view",
         "tts",
+        "web_discover",
         "web_fetch",
         "web_search",
     }

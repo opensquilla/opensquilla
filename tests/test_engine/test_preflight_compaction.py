@@ -1322,9 +1322,8 @@ async def test_run_forwards_routed_provider_and_model_to_preflight() -> None:
         pass
 
     assert seen["session_key"] == "agent:main:abc123"
-    # Conservative-min static fallback for glm-5.1 (formerly 202_752 under the
-    # z-ai/ spelling; merged with the bare glm-5.1 entry's 200_000 window).
-    assert seen["context_window_tokens"] == 200_000
+    # Real glm-5.1 context window (verified against OpenRouter's /v1/models).
+    assert seen["context_window_tokens"] == 202_752
     assert seen["compaction_model"] == "z-ai/glm-5.1"
     assert getattr(seen["compaction_provider"], "model") == "z-ai/glm-5.1"
     assert selector.override_calls == []

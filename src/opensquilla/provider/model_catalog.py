@@ -30,13 +30,14 @@ _LOCAL_PROVIDERS = frozenset({"ollama", "lm_studio", "ovms", "vllm", "local"})
 # Used when the OpenRouter API is unreachable at boot.
 # Format: model_id → (max_output_tokens, context_window)
 #
-# Keys are provider-agnostic basenames (no "vendor/" prefix); a model that
-# was previously listed under both spellings is merged to ONE conservative
-# (per-dimension min) tuple. Conservative because over-estimating the
-# context window causes silent server-side truncation, while
-# under-estimating only triggers compaction earlier. Lookups normalize the
-# requested id via ``_static_fallback_entry`` so either spelling resolves
-# to the same entry. When offline, the live catalog still overrides this.
+# Keys are provider-agnostic basenames (no "vendor/" prefix), one entry per
+# physical model; lookups normalize the requested id via
+# ``_static_fallback_entry`` so either spelling ("glm-5" / "z-ai/glm-5")
+# resolves to the same entry. Values track the provider's real limits
+# (verified against OpenRouter's /v1/models); where a provider reports its
+# max output as the whole context window (a non-requestable ceiling), we keep
+# a smaller requestable max_output instead. This is only an offline bootstrap
+# — the live catalog overrides it whenever it is reachable.
 _STATIC_FALLBACK: dict[str, tuple[int, int]] = {
     "claude-opus-4.8": (128_000, 1_000_000),
     "claude-sonnet-4.6": (128_000, 1_000_000),
@@ -49,14 +50,14 @@ _STATIC_FALLBACK: dict[str, tuple[int, int]] = {
     "glm-4.5-air": (98_304, 131_072),
     "glm-4.6": (131_072, 202_752),
     "glm-4.7-flashx": (128_000, 200_000),
-    "glm-5": (80_000, 80_000),
-    "glm-5.1": (128_000, 200_000),
-    "glm-5.2": (262_144, 1_048_576),
+    "glm-5": (80_000, 202_752),
+    "glm-5.1": (128_000, 202_752),
+    "glm-5.2": (32_768, 1_048_576),
     "minimax-m2.5": (65_536, 196_608),
     "minimax-m2.7": (8192, 196_608),
     "step-3.5-flash": (16_384, 256_000),
-    "deepseek-v4-flash": (16_384, 1_048_576),
-    "deepseek-v4-pro": (16_384, 1_048_576),
+    "deepseek-v4-flash": (131_072, 1_048_576),
+    "deepseek-v4-pro": (384_000, 1_048_576),
     "deepseek-v3.2": (16_384, 163_840),
     "moonshot-v1-8k": (8192, 8192),
     "moonshot-v1-32k": (32_768, 32_768),

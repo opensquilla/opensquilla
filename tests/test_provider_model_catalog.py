@@ -7,13 +7,15 @@ import pytest
 from opensquilla.provider.model_catalog import _STATIC_FALLBACK, ModelCatalog
 
 
-def test_deepseek_v4_direct_models_use_conservative_output_window() -> None:
+def test_deepseek_v4_direct_models_use_real_output_windows() -> None:
     catalog = ModelCatalog()
 
+    # Real OpenRouter max-output (pro 384k; flash's per direct-provider data is
+    # lower), both on the 1M context window.
+    expected_max = {"deepseek-v4-flash": 131_072, "deepseek-v4-pro": 384_000}
     for model in ("deepseek-v4-flash", "deepseek-v4-pro"):
         assert catalog.resolve_context_window(model) == 1_048_576
-        # Conservative-min of the former qualified (16k) vs bare (393k) entries.
-        assert catalog.resolve_max_tokens(model) == 16_384
+        assert catalog.resolve_max_tokens(model) == expected_max[model]
         caps = catalog.get_capabilities(model, provider_name="deepseek")
         assert caps.supports_reasoning is True
         assert caps.supports_tools is True
@@ -28,8 +30,8 @@ def test_direct_profile_static_fallbacks_cover_context_windows() -> None:
         "gpt-5.4-mini": 400_000,
         "gpt-5.5": 1_000_000,
         "glm-4.7-flashx": 200_000,
-        "glm-5": 80_000,
-        "glm-5.1": 200_000,
+        "glm-5": 202_752,
+        "glm-5.1": 202_752,
         "z-ai/glm-5.2": 1_048_576,
         "moonshot-v1-8k": 8_192,
         "moonshot-v1-128k": 131_072,
@@ -44,13 +46,16 @@ def test_direct_profile_static_fallbacks_cover_context_windows() -> None:
         assert max_tokens <= context_window
 
 
-def test_static_fallback_keys_are_provider_agnostic_and_conservative() -> None:
+def test_static_fallback_keys_are_provider_agnostic() -> None:
     # No provider-qualified spellings remain, so one physical model cannot
     # carry two divergent budget tuples.
     assert all("/" not in key for key in _STATIC_FALLBACK)
-    # Conservative-min merges of formerly divergent pairs.
-    assert _STATIC_FALLBACK["glm-5"] == (80_000, 80_000)
-    assert _STATIC_FALLBACK["deepseek-v4-flash"] == (16_384, 1_048_576)
+    # Real per-model budgets (verified against OpenRouter's /v1/models).
+    assert _STATIC_FALLBACK["glm-5"] == (80_000, 202_752)
+    assert _STATIC_FALLBACK["deepseek-v4-pro"] == (384_000, 1_048_576)
+    assert _STATIC_FALLBACK["deepseek-v4-flash"] == (131_072, 1_048_576)
+    # kimi-k2.6's OpenRouter max_out equals its context (a non-requestable
+    # ceiling); keep a smaller requestable value instead.
     assert _STATIC_FALLBACK["kimi-k2.6"] == (32_768, 262_144)
 
 

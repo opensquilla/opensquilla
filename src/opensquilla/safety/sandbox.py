@@ -97,8 +97,16 @@ def _filtered_env(
     whitelist: Sequence[str],
     env: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    parent = os.environ if env is None else env
-    return {key: parent[key] for key in whitelist if key in parent}
+    # Base the child environment on the allowlisted parent environment (PATH,
+    # HOME, LANG, ...) and overlay any allowlisted caller-supplied overrides.
+    # A caller-supplied ``env`` must not *replace* the parent env: an empty or
+    # partial dict (e.g. git tools request ``env={}``) would otherwise spawn the
+    # subprocess with no PATH/HOME at all.
+    child = {key: os.environ[key] for key in whitelist if key in os.environ}
+    if env:
+        allow = set(whitelist)
+        child.update({key: value for key, value in env.items() if key in allow})
+    return child
 
 
 def _decode_stream(value: bytes | str | None) -> str:

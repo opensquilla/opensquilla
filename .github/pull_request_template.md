@@ -8,7 +8,7 @@ Non-goals:
 
 Base branch: main | staging/collaboration
 
-Main exception: N/A | release | hotfix | staging/collaboration | maintainer-approved
+Target exception: N/A | release | hotfix | staging/collaboration | maintainer-approved
 
 ## Issue
 

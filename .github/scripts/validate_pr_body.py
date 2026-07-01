@@ -18,7 +18,10 @@ class RequiredField(NamedTuple):
 REQUIRED_FIELDS = (
     RequiredField("Scope boundary", re.compile(r"(?im)^\s*Scope boundary\s*:")),
     RequiredField("Base branch", re.compile(r"(?im)^\s*Base branch\s*:")),
-    RequiredField("Main exception", re.compile(r"(?im)^\s*Main exception\s*:")),
+    RequiredField(
+        "Target exception",
+        re.compile(r"(?im)^\s*(?:Target exception|Main exception)\s*:"),
+    ),
     RequiredField("Linked issue", re.compile(r"(?im)^\s*Linked issue\s*:")),
     RequiredField("Release note", re.compile(r"(?im)^\s*Release note\s*:")),
     RequiredField("Tests", re.compile(r"(?im)^\s*(?:#+\s*)?Tests\s*:?\s*$")),

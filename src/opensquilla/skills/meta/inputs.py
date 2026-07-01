@@ -200,6 +200,32 @@ def _preferred_language_bucket(language: str) -> str | None:
     return None
 
 
+def apply_clarify_language_preference(
+    inputs: dict[str, Any],
+    filled_fields: Mapping[str, Any],
+) -> None:
+    """Update meta language guards from structured clarify answers."""
+
+    text_values = " ".join(
+        str(value)
+        for key, value in filled_fields.items()
+        if key != "language" and value not in ("", None)
+    )
+    detected = detect_user_language(text_values)
+    bucket: str | None
+    if detected == "zh":
+        bucket = "zh"
+    else:
+        raw_language = _clean_optional_text(filled_fields.get("language"))
+        bucket = _preferred_language_bucket(raw_language) if raw_language else None
+        if bucket is None and detected == "en":
+            bucket = "en"
+    if bucket is None:
+        return
+    inputs["user_language"] = bucket
+    inputs["language_instruction"] = language_instruction_for_detected_language(bucket)
+
+
 def make_meta_inputs(
     *,
     user_message: str,

@@ -38,14 +38,10 @@ entrypoint:
     - "{{ with.input_reference | default('') }}"
     - --input-reference
     - "{{ with.input_reference_2 | default('') }}"
-    - --timeout-total
-    - "{{ with.timeout_total | default(600) }}"
-    - --poll-interval
-    - "{{ with.poll_interval | default(8) }}"
     - --max-retries
     - "{{ with.max_retries | default(0) }}"
   parse: text
-  timeout: 2000
+  timeout: 1500
 ---
 
 # seedance-2-prompt — Seedance 2.0 video clip generator (dual backend)

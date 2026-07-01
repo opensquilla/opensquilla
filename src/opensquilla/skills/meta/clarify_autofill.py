@@ -80,18 +80,24 @@ async def autofill_required_clarify_fields(
     clarify_reply: str,
     llm_chat: LLMChat | None,
     prior_step_outputs: Mapping[str, Any] | None = None,
+    infer_optional_fields: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Fill missing or uninformative required fields.
+    """Fill missing or delegated clarify fields.
 
     Returns ``(merged_fields, completed_fields)``. ``completed_fields`` only
     contains values inferred by this helper.
+
+    By default this remains conservative and only fills required fields.
+    ``infer_optional_fields`` is reserved for an empty structured form
+    submission, where the user has delegated the whole form to the model.
     """
 
     merged = dict(filled_fields or {})
-    targets = [
-        field for field in schema.fields
-        if field.required and _is_uninformative_value(merged.get(field.name))
-    ]
+    targets = _target_fields(
+        schema=schema,
+        filled_fields=merged,
+        infer_optional_fields=infer_optional_fields,
+    )
     if not targets:
         return merged, {}
 
@@ -116,12 +122,50 @@ async def autofill_required_clarify_fields(
     for field in targets:
         if field.name in completed:
             continue
-        fallback = _fallback_value(field, user_message=user_message)
+        fallback = _fallback_for_target(
+            field,
+            merged_fields=merged,
+            user_message=user_message,
+        )
         if fallback is not None:
             completed[field.name] = fallback
 
     merged.update(completed)
     return merged, completed
+
+
+def is_empty_clarify_submission(filled_fields: Mapping[str, Any] | None) -> bool:
+    """Return True when a structured clarify reply carries no real values."""
+
+    if not filled_fields:
+        return True
+    for value in filled_fields.values():
+        if value is None:
+            continue
+        if isinstance(value, str):
+            if value.strip():
+                return False
+            continue
+        if isinstance(value, (list, tuple, set, dict)):
+            if value:
+                return False
+            continue
+        return False
+    return True
+
+
+def _target_fields(
+    *,
+    schema: ClarifyStepConfig,
+    filled_fields: Mapping[str, Any],
+    infer_optional_fields: bool,
+) -> list[ClarifyField]:
+    if infer_optional_fields:
+        return list(schema.fields)
+    return [
+        field for field in schema.fields
+        if field.required and _is_uninformative_value(filled_fields.get(field.name))
+    ]
 
 
 def _is_uninformative_value(value: Any) -> bool:
@@ -143,8 +187,8 @@ async def _ask_llm_for_required_fields(
     llm_chat: LLMChat,
 ) -> dict[str, Any]:
     system = (
-        "You complete missing required fields for an OpenSquilla meta-skill "
-        "clarify form. Infer practical values from the available context. "
+        "You complete fields for an OpenSquilla meta-skill clarify form. "
+        "Infer practical values from the available context. "
         "Do not ask the user another question. Preserve already-specific "
         "user answers. Return only one JSON object whose keys are field names."
     )
@@ -152,6 +196,7 @@ async def _ask_llm_for_required_fields(
         {
             "name": field.name,
             "type": field.type,
+            "required": field.required,
             "prompt": field.prompt,
             "choices": list(field.choices),
             "default": field.default,
@@ -171,7 +216,7 @@ async def _ask_llm_for_required_fields(
             "original_user_request": user_message[:4000],
             "user_clarify_reply": clarify_reply[:1200],
             "existing_fields": dict(filled_fields),
-            "missing_or_delegated_required_fields": field_specs,
+            "fields_to_infer": field_specs,
             "prior_step_outputs": prior,
             "instructions": [
                 "For enum fields, choose exactly one value from choices.",
@@ -243,6 +288,22 @@ def _coerce_candidate(field: ClarifyField, value: Any) -> Any | None:
             return False
         return None
     return value
+
+
+def _fallback_for_target(
+    field: ClarifyField,
+    *,
+    merged_fields: Mapping[str, Any],
+    user_message: str,
+) -> Any | None:
+    if field.required:
+        return _fallback_value(field, user_message=user_message)
+    existing = merged_fields.get(field.name)
+    if not _is_uninformative_value(existing):
+        return None
+    if field.default is not None:
+        return _fallback_value(field, user_message=user_message)
+    return None
 
 
 def _fallback_value(field: ClarifyField, *, user_message: str = "") -> Any | None:

@@ -37,7 +37,10 @@ import structlog
 
 from opensquilla.engine.types import AgentConfig, AgentEvent
 from opensquilla.provider.protocol import LLMProvider
-from opensquilla.skills.meta.clarify_autofill import autofill_required_clarify_fields
+from opensquilla.skills.meta.clarify_autofill import (
+    autofill_required_clarify_fields,
+    is_empty_clarify_submission,
+)
 from opensquilla.skills.meta.events import _StepDone, yield_skill_view_preface
 from opensquilla.skills.meta.executors.agent import (
     run_step_with_skill_stream,
@@ -49,7 +52,10 @@ from opensquilla.skills.meta.executors.llm_classify import (
 )
 from opensquilla.skills.meta.executors.skill_exec import run_skill_exec_step
 from opensquilla.skills.meta.executors.tool_call import run_tool_call_step
-from opensquilla.skills.meta.inputs import language_instruction_for_user_message
+from opensquilla.skills.meta.inputs import (
+    apply_clarify_language_preference,
+    language_instruction_for_user_message,
+)
 from opensquilla.skills.meta.scheduler import run_dag
 from opensquilla.skills.meta.templating import (
     _coerce_to_choice,  # noqa: F401 — re-exported for tests/back-compat
@@ -1188,6 +1194,7 @@ class MetaOrchestrator:
 
         schema_dict = json.loads(payload.awaiting_schema_json or "{}")
         cfg = clarify_config_from_jsonable(schema_dict)
+        infer_optional_fields = is_empty_clarify_submission(filled_fields)
         filled_clean = _merge_clarify_defaults(schema_dict, filled_fields)
         filled_clean, _completed = await autofill_required_clarify_fields(
             schema=cfg,
@@ -1196,6 +1203,7 @@ class MetaOrchestrator:
             clarify_reply=_format_clarify_reply_for_autofill(filled_fields),
             prior_step_outputs=outputs,
             llm_chat=self._llm_chat,
+            infer_optional_fields=infer_optional_fields,
         )
 
         inputs.setdefault("collected", {})
@@ -1205,6 +1213,7 @@ class MetaOrchestrator:
             step_id=payload.awaiting_step_id,
             filled_fields=filled_clean,
         )
+        apply_clarify_language_preference(inputs, filled_clean)
         if "language_instruction" not in inputs:
             inputs["language_instruction"] = language_instruction_for_user_message(
                 str(inputs.get("user_message") or ""),
@@ -1306,6 +1315,7 @@ class MetaOrchestrator:
 
         schema_dict = json.loads(payload.awaiting_schema_json or "{}")
         cfg = clarify_config_from_jsonable(schema_dict)
+        infer_optional_fields = is_empty_clarify_submission(filled_fields)
         filled_clean = _merge_clarify_defaults(schema_dict, filled_fields)
         filled_clean, _completed = await autofill_required_clarify_fields(
             schema=cfg,
@@ -1314,6 +1324,7 @@ class MetaOrchestrator:
             clarify_reply=_format_clarify_reply_for_autofill(filled_fields),
             prior_step_outputs=outputs,
             llm_chat=self._llm_chat,
+            infer_optional_fields=infer_optional_fields,
         )
 
         inputs.setdefault("collected", {})
@@ -1323,6 +1334,7 @@ class MetaOrchestrator:
             step_id=payload.awaiting_step_id,
             filled_fields=filled_clean,
         )
+        apply_clarify_language_preference(inputs, filled_clean)
 
         outputs[payload.awaiting_step_id] = render_clarify_summary(
             schema=cfg, filled=filled_clean,

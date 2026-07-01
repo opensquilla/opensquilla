@@ -17,6 +17,7 @@ from opensquilla.tools.types import (
     InteractionMode,
     ToolContext,
     ToolError,
+    UnsupportedSurfaceError,
     current_tool_context,
 )
 
@@ -73,6 +74,132 @@ async def test_exec_approval_deny_pattern_does_not_depend_on_warnlist(
 
     assert payload["status"] == "approval_denied"
     assert payload["command"] == "git status"
+
+
+@pytest.mark.asyncio
+async def test_warnlisted_exec_auto_deny_blocks_before_host_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.run_mode = "full"
+    get_approval_queue().set_settings("auto-deny")
+    calls: list[str] = []
+
+    async def fake_host_execution(*args: object, **kwargs: object) -> str:
+        calls.append("host")
+        return "exit_code=0\nhost\n"
+
+    monkeypatch.setattr(shell, "_run_host_shell_command", fake_host_execution)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: PolicyResult(
+            allowed=True,
+            reason=f"command requires approval: {command}",
+            needs_approval=True,
+        ),
+    )
+
+    result = await shell.exec_command("pip install requests", workdir=str(tmp_path))
+    payload = json.loads(result)
+
+    assert payload["status"] == "approval_denied"
+    assert payload["command"] == "pip install requests"
+    assert calls == []
+    assert get_approval_queue().list_pending("exec") == []
+
+
+@pytest.mark.asyncio
+async def test_warnlisted_exec_allow_pattern_skips_prompt_when_sandbox_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.workspace_dir = str(tmp_path)
+    get_approval_queue().set_settings(
+        "prompt",
+        allow_patterns=["pip install requests"],
+    )
+    configure_runtime(
+        SandboxSettings(
+            sandbox=True,
+            security_grading=True,
+            backend="noop",
+            allow_legacy_mode=True,
+        ),
+        workspace=tmp_path,
+    )
+    calls: list[tuple[str, object]] = []
+
+    async def fake_gate_action(**kwargs: object) -> tuple[object, object, object]:
+        calls.append(("gate", kwargs))
+        policy = SimpleNamespace(network=None)
+        request = SimpleNamespace(cwd=tmp_path, action_kind="shell.exec", policy=policy)
+        return object(), policy, request
+
+    async def fake_sandbox(request: object, *, runtime: object = None) -> object:
+        calls.append(("backend", request))
+        return SimpleNamespace(
+            returncode=0,
+            stdout="sandboxed\n",
+            stderr="",
+            timed_out=False,
+            backend_notes=(),
+        )
+
+    monkeypatch.setattr(shell, "gate_action", fake_gate_action)
+    monkeypatch.setattr(shell, "run_under_backend", fake_sandbox)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: PolicyResult(
+            allowed=True,
+            reason=f"command requires approval: {command}",
+            needs_approval=True,
+        ),
+    )
+
+    result = await shell.exec_command("pip install requests", workdir=str(tmp_path))
+
+    assert "sandboxed" in result
+    assert [name for name, _ in calls] == ["gate", "backend"]
+    assert get_approval_queue().list_pending("exec") == []
+
+
+@pytest.mark.asyncio
+async def test_warnlisted_exec_unattended_prompt_fails_without_queue_leak(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.interaction_mode = InteractionMode.UNATTENDED
+    get_approval_queue().set_settings("prompt")
+    calls: list[str] = []
+
+    async def fake_host_execution(*args: object, **kwargs: object) -> str:
+        calls.append("host")
+        return "exit_code=0\nhost\n"
+
+    monkeypatch.setattr(shell, "_run_host_shell_command", fake_host_execution)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: PolicyResult(
+            allowed=True,
+            reason=f"command requires approval: {command}",
+            needs_approval=True,
+        ),
+    )
+
+    with pytest.raises(UnsupportedSurfaceError):
+        await shell.exec_command("pip install requests", workdir=str(tmp_path))
+
+    assert calls == []
+    assert get_approval_queue().list_pending("exec") == []
 
 
 @pytest.mark.asyncio

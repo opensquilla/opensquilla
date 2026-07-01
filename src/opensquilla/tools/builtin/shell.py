@@ -383,6 +383,27 @@ def _sandbox_shell_gate_will_handle_execution() -> bool:
     return not _sandbox_effectively_off() and not _host_execution_allowed()
 
 
+def _channel_approver_origin() -> str | None:
+    """Return the originating channel ``sender_id`` when one can be reached.
+
+    A channel-originated turn runs UNATTENDED, but if the originating user is
+    reachable on the channel (the run carries a channel caller and the
+    ``sender_id``/``channel_kind`` of whoever started the turn) that user can be
+    asked to approve out of band, exactly like the Web UI poll path. Returns the
+    ``sender_id`` to record as the approval owner, or ``None`` when no approver
+    channel is reachable (cron, subagent, or a channel run that lost its
+    sender).
+    """
+    ctx = current_tool_context.get()
+    if ctx is None or ctx.caller_kind is not CallerKind.CHANNEL:
+        return None
+    sender_id = (ctx.sender_id or "").strip()
+    channel_kind = (ctx.channel_kind or "").strip()
+    if not sender_id or not channel_kind:
+        return None
+    return sender_id
+
+
 async def _check_exec_approval(
     tool_name: str,
     command: str,
@@ -428,7 +449,18 @@ async def _check_exec_approval(
         return None
 
     ctx = current_tool_context.get()
-    if ctx is not None and ctx.interaction_mode is InteractionMode.UNATTENDED:
+    channel_owner_sender_id = _channel_approver_origin()
+    if (
+        ctx is not None
+        and ctx.interaction_mode is InteractionMode.UNATTENDED
+        and channel_owner_sender_id is None
+    ):
+        # Unattended runs without a reachable approver (cron, subagent, or a
+        # channel run that lost its sender) cannot prompt anyone, so fail fast
+        # before enqueuing an orphaned approval. A channel run WITH a reachable
+        # owner falls through to enqueue below; the interaction mode stays
+        # UNATTENDED so the UNATTENDED-gated tool-surface denials elsewhere are
+        # untouched.
         raise UnsupportedSurfaceError(
             f"Tool '{tool_name}' requires human approval, but this run is unattended. "
             "Use an interactive surface for approval-gated operations, or choose an "
@@ -447,6 +479,12 @@ async def _check_exec_approval(
         "agent": ctx.agent_id if ctx is not None else "",
         "mode": "background" if background else "foreground",
     }
+    if channel_owner_sender_id is not None:
+        # Record who started the channel turn so only that user can resolve this
+        # approval from the channel (owner-only, default-deny on mismatch), and
+        # mark the origin channel so approval_notify can route the prompt.
+        params["senderId"] = channel_owner_sender_id
+        params["channelKind"] = (ctx.channel_kind or "").strip() if ctx is not None else ""
 
     if approval_id is None:
         approval_id = queue.request(namespace="exec", params=params)

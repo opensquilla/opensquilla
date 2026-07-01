@@ -11,9 +11,13 @@ import opensquilla.engine.tokenjuice_adapter as tokenjuice_adapter_mod
 from opensquilla.engine import Agent, AgentConfig, ToolCall, ToolResult
 from opensquilla.engine.types import ToolResultEvent, ToolUseDeltaEvent
 from opensquilla.plugins.tokenjuice import reduce_tool_result as backend_reduce_tool_result
-from opensquilla.provider import ContentBlockThinking
+from opensquilla.provider import (
+    ContentBlockThinking,
+    TextDeltaEvent,
+    ToolDefinition,
+    ToolInputSchema,
+)
 from opensquilla.provider import DoneEvent as ProviderDoneEvent
-from opensquilla.provider import TextDeltaEvent, ToolDefinition, ToolInputSchema
 from opensquilla.provider import ToolUseDeltaEvent as ProviderToolUseDeltaEvent
 from opensquilla.provider import ToolUseEndEvent as ProviderToolUseEndEvent
 from opensquilla.provider import ToolUseStartEvent as ProviderToolUseStartEvent

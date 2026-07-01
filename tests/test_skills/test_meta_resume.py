@@ -40,6 +40,12 @@ def _plan_with_collect_then_summary() -> MetaPlan:
             ClarifyField(name="destination", type="string", required=True),
             ClarifyField(name="days", type="int", required=True, min=1, max=14),
             ClarifyField(
+                name="language",
+                type="enum",
+                required=False,
+                choices=("en", "zh", "mixed"),
+            ),
+            ClarifyField(
                 name="additional_notes",
                 type="string",
                 required=False,
@@ -94,6 +100,192 @@ def _seed_running_run(writer, plan, run_id="r1", session_key="S1"):
 async def _sv(*_a):
     return
     yield  # type: ignore[unreachable]
+
+
+@pytest.mark.asyncio
+async def test_resume_updates_language_instruction_from_clarify_language(writer):
+    plan = _plan_with_collect_then_summary()
+    inputs = _seed_running_run(writer, plan)
+    inputs["language_instruction"] = (
+        "Output language rule: write final user-facing prose, headings, "
+        "labels, and summaries in English only unless the user explicitly "
+        "asks for another language."
+    )
+
+    dispatched_context: dict[str, dict] = {}
+    orch = MetaOrchestrator(
+        agent_runner=None,  # type: ignore[arg-type]
+        skill_loader=None,
+        dao=writer,
+    )
+
+    async def _dispatch(step, effective_skill, match_inputs, outputs):
+        if step.kind == "user_input":
+            async for ev in orch._dispatch_one_step(
+                step, effective_skill, match_inputs, outputs,
+                run_id="r1", session_id="S1",
+            ):
+                yield ev
+            return
+        if step.id == "summary":
+            dispatched_context["summary"] = {
+                "user_language": match_inputs.get("user_language"),
+                "language_instruction": match_inputs.get("language_instruction"),
+                "inputs_collected": match_inputs.get("collected"),
+            }
+            yield _StepDone(text="summary-done", status="ok")
+
+    paused = await orch.run_once(
+        MetaMatch(plan=plan, inputs=inputs),
+        run_id="r1",
+        session_id="S1",
+        dispatch_step_stream=_dispatch,
+        yield_skill_view_preface=_sv,
+    )
+    assert paused.paused is True
+
+    await orch.resume(
+        run_id="r1",
+        session_id="S1",
+        filled_fields={"destination": "纸盘动物", "days": 14, "language": "mixed"},
+        dispatch_step_stream=_dispatch,
+        yield_skill_view_preface=_sv,
+    )
+
+    summary = dispatched_context["summary"]
+    assert summary["inputs_collected"]["collect"]["language"] == "mixed"
+    assert summary["user_language"] == "zh"
+    assert "English only" not in summary["language_instruction"]
+    assert "Simplified Chinese" in summary["language_instruction"]
+
+
+@pytest.mark.asyncio
+async def test_resume_prefers_chinese_when_any_clarify_field_contains_chinese(writer):
+    plan = _plan_with_collect_then_summary()
+    inputs = _seed_running_run(writer, plan)
+    inputs["language_instruction"] = (
+        "Output language rule: write final user-facing prose, headings, "
+        "labels, and summaries in English only unless the user explicitly "
+        "asks for another language."
+    )
+
+    dispatched_context: dict[str, dict] = {}
+    orch = MetaOrchestrator(
+        agent_runner=None,  # type: ignore[arg-type]
+        skill_loader=None,
+        dao=writer,
+    )
+
+    async def _dispatch(step, effective_skill, match_inputs, outputs):
+        if step.kind == "user_input":
+            async for ev in orch._dispatch_one_step(
+                step, effective_skill, match_inputs, outputs,
+                run_id="r1", session_id="S1",
+            ):
+                yield ev
+            return
+        if step.id == "summary":
+            dispatched_context["summary"] = {
+                "user_language": match_inputs.get("user_language"),
+                "language_instruction": match_inputs.get("language_instruction"),
+            }
+            yield _StepDone(text="summary-done", status="ok")
+
+    paused = await orch.run_once(
+        MetaMatch(plan=plan, inputs=inputs),
+        run_id="r1",
+        session_id="S1",
+        dispatch_step_stream=_dispatch,
+        yield_skill_view_preface=_sv,
+    )
+    assert paused.paused is True
+
+    await orch.resume(
+        run_id="r1",
+        session_id="S1",
+        filled_fields={"destination": "纸盘动物", "days": 14, "language": "en"},
+        dispatch_step_stream=_dispatch,
+        yield_skill_view_preface=_sv,
+    )
+
+    summary = dispatched_context["summary"]
+    assert summary["user_language"] == "zh"
+    assert "English only" not in summary["language_instruction"]
+    assert "Simplified Chinese" in summary["language_instruction"]
+
+
+@pytest.mark.asyncio
+async def test_empty_form_resume_lets_llm_infer_all_clarify_fields(writer):
+    plan = _plan_with_collect_then_summary()
+    inputs = _seed_running_run(writer, plan)
+    inputs["user_message"] = "帮我给孩子安排一个北京三日游。"
+
+    async def fake_chat(_system: str, user: str) -> str:
+        payload = json.loads(user)
+        target_names = {
+            field["name"] for field in payload["fields_to_infer"]
+        }
+        assert target_names == {
+            "destination", "days", "language", "additional_notes",
+        }
+        return json.dumps(
+            {
+                "destination": "北京",
+                "days": 3,
+                "language": "zh",
+                "additional_notes": "按亲子节奏安排，不要太赶。",
+            },
+            ensure_ascii=False,
+        )
+
+    dispatched_context: dict[str, dict] = {}
+    orch = MetaOrchestrator(
+        agent_runner=None,  # type: ignore[arg-type]
+        skill_loader=None,
+        dao=writer,
+        llm_chat=fake_chat,
+    )
+
+    async def _dispatch(step, effective_skill, match_inputs, outputs):
+        if step.kind == "user_input":
+            async for ev in orch._dispatch_one_step(
+                step, effective_skill, match_inputs, outputs,
+                run_id="r1", session_id="S1",
+            ):
+                yield ev
+            return
+        if step.id == "summary":
+            dispatched_context["summary"] = {
+                "inputs_user_message": match_inputs.get("user_message"),
+                "inputs_collected": match_inputs.get("collected"),
+            }
+            yield _StepDone(text="summary-done", status="ok")
+
+    paused = await orch.run_once(
+        MetaMatch(plan=plan, inputs=inputs),
+        run_id="r1",
+        session_id="S1",
+        dispatch_step_stream=_dispatch,
+        yield_skill_view_preface=_sv,
+    )
+    assert paused.paused is True
+
+    await orch.resume(
+        run_id="r1",
+        session_id="S1",
+        filled_fields={},
+        dispatch_step_stream=_dispatch,
+        yield_skill_view_preface=_sv,
+    )
+
+    collected = dispatched_context["summary"]["inputs_collected"]["collect"]
+    assert collected == {
+        "destination": "北京",
+        "days": 3,
+        "language": "zh",
+        "additional_notes": "按亲子节奏安排，不要太赶。",
+    }
+    assert "按亲子节奏安排" in dispatched_context["summary"]["inputs_user_message"]
 
 
 @pytest.mark.asyncio

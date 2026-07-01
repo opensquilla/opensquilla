@@ -132,6 +132,43 @@ async def test_linear_success_writes_run_and_steps(writer_db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_manual_command_trigger_writes_run(writer_db) -> None:
+    from opensquilla.skills.meta.orchestrator import MetaOrchestrator
+
+    plan = MetaPlan(
+        name="manual-linear",
+        triggers=("t",),
+        priority=10,
+        steps=(MetaStep(id="s1", skill="alpha", kind="agent"),),
+    )
+    orch = MetaOrchestrator(
+        agent_runner=lambda *a, **kw: None,
+        skill_loader=lambda: None,
+        run_writer=writer_db,
+        triggered_by="manual_command",
+        session_key="sess-test",
+        turn_id="turn-test",
+    )
+    orch._dispatch_step_stream = _stub_runner_for({"s1": "A"})  # type: ignore[assignment]
+
+    async def empty_preface(step_id, effective_skill):
+        if False:
+            yield None
+        return
+
+    orch._yield_skill_view_preface = empty_preface  # type: ignore[assignment]
+
+    async for _ in orch.iter_events(MetaMatch(plan=plan, inputs={"user_message": "/meta"})):
+        pass
+
+    [row] = writer_db.list_runs(name="manual-linear")
+    run = writer_db.get_run(row.run_id)
+    assert run is not None
+    assert run.status == "ok"
+    assert run.triggered_by == "manual_command"
+
+
+@pytest.mark.asyncio
 async def test_live_run_persists_scoped_step_usage(writer_db) -> None:
     plan = MetaPlan(
         name="usage-linear",

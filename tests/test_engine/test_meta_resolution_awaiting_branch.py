@@ -882,6 +882,124 @@ async def test_deterministic_uninformative_required_answer_is_autofilled(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_empty_structured_form_autofills_all_fields_and_resumes(tmp_path):
+    """An empty WebUI form submission means "let the model decide", not
+    "reprompt for every blank required field"."""
+    writer = _writer(tmp_path)
+    _seed_awaiting_multi_field(
+        writer,
+        fields=(
+            ClarifyField(name="topic", type="string", required=True),
+            ClarifyField(
+                name="age_band",
+                type="enum",
+                required=True,
+                choices=("PRE_K", "EARLY_GRADE", "TWEEN", "TEEN"),
+            ),
+            ClarifyField(
+                name="language",
+                type="enum",
+                choices=("en", "zh", "mixed"),
+                default="mixed",
+            ),
+        ),
+    )
+    ctx = _ctx(writer, message="", session_id="S1")
+
+    async def fake_chat(_system: str, user: str) -> str:
+        payload = json.loads(user)
+        target_names = {
+            field["name"] for field in payload["fields_to_infer"]
+        }
+        assert target_names == {"topic", "age_band", "language"}
+        return json.dumps(
+            {
+                "topic": "磁力迷宫",
+                "age_band": "EARLY_GRADE",
+                "language": "zh",
+            },
+            ensure_ascii=False,
+        )
+
+    ctx.metadata["meta_llm_chat"] = fake_chat
+    ctx.metadata["input_provenance"] = {
+        "kind": "clarify_form",
+        "source": "webui",
+    }
+
+    out = await meta_resolution(ctx)
+
+    assert "meta_resume" in out.metadata
+    _, parsed = out.metadata["meta_resume"]
+    assert parsed == {
+        "topic": "磁力迷宫",
+        "age_band": "EARLY_GRADE",
+        "language": "zh",
+    }
+    assert out.metadata["meta_clarify_autofilled_fields"] == [
+        "age_band", "language", "topic",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_structured_form_presets_are_kept_while_missing_required_fields_autofill(
+    tmp_path,
+):
+    """WebUI presets are valid answers; omitted required fields are still
+    inferred by the model instead of reprompting."""
+    writer = _writer(tmp_path)
+    _seed_awaiting_multi_field(
+        writer,
+        fields=(
+            ClarifyField(name="topic", type="string", required=True),
+            ClarifyField(
+                name="age_band",
+                type="enum",
+                required=True,
+                choices=("PRE_K", "EARLY_GRADE", "TWEEN", "TEEN"),
+            ),
+            ClarifyField(
+                name="language",
+                type="enum",
+                choices=("en", "zh", "mixed"),
+                default="mixed",
+            ),
+        ),
+    )
+    ctx = _ctx(writer, message="language: mixed", session_id="S1")
+
+    async def fake_chat(_system: str, user: str) -> str:
+        payload = json.loads(user)
+        target_names = {
+            field["name"] for field in payload["fields_to_infer"]
+        }
+        assert target_names == {"topic", "age_band"}
+        return json.dumps(
+            {"topic": "磁力迷宫", "age_band": "EARLY_GRADE"},
+            ensure_ascii=False,
+        )
+
+    ctx.metadata["meta_llm_chat"] = fake_chat
+    ctx.metadata["input_provenance"] = {
+        "kind": "clarify_form",
+        "source": "webui",
+    }
+
+    out = await meta_resolution(ctx)
+
+    assert "meta_resume" in out.metadata
+    _, parsed = out.metadata["meta_resume"]
+    assert parsed == {
+        "language": "mixed",
+        "topic": "磁力迷宫",
+        "age_band": "EARLY_GRADE",
+    }
+    assert out.metadata["meta_clarify_autofilled_fields"] == [
+        "age_band", "topic",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_nl_success_merges_previously_filled(tmp_path):
     """Bug-Y NL branch: the NL extractor returning the LAST missing
     required field must resume with the cumulative state, not just the

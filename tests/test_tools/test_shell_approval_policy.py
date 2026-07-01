@@ -170,6 +170,77 @@ async def test_warnlisted_exec_allow_pattern_skips_prompt_when_sandbox_enabled(
 
 
 @pytest.mark.asyncio
+async def test_warnlisted_exec_allow_pattern_requires_approval_when_sandbox_off(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    get_approval_queue().set_settings(
+        "prompt",
+        allow_patterns=["pip install requests"],
+    )
+    calls: list[str] = []
+
+    async def fake_host_execution(*args: object, **kwargs: object) -> str:
+        calls.append("host")
+        return "exit_code=0\nhost\n"
+
+    monkeypatch.setattr(shell, "_run_host_shell_command", fake_host_execution)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: PolicyResult(
+            allowed=True,
+            reason=f"command requires approval: {command}",
+            needs_approval=True,
+        ),
+    )
+
+    result = await shell.exec_command("pip install requests", workdir=str(tmp_path))
+    payload = json.loads(result)
+
+    assert payload["status"] == "approval_required"
+    assert payload["command"] == "pip install requests"
+    pending = get_approval_queue().list_pending("exec")
+    assert len(pending) == 1
+    assert pending[0]["params"]["command"] == "pip install requests"
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_warnlisted_exec_auto_approve_requires_approval_when_sandbox_off(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    get_approval_queue().set_settings("auto-approve")
+    calls: list[str] = []
+
+    async def fake_host_execution(*args: object, **kwargs: object) -> str:
+        calls.append("host")
+        return "exit_code=0\nhost\n"
+
+    monkeypatch.setattr(shell, "_run_host_shell_command", fake_host_execution)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: PolicyResult(
+            allowed=True,
+            reason=f"command requires approval: {command}",
+            needs_approval=True,
+        ),
+    )
+
+    result = await shell.exec_command("pip install requests", workdir=str(tmp_path))
+    payload = json.loads(result)
+
+    assert payload["status"] == "approval_required"
+    assert payload["command"] == "pip install requests"
+    pending = get_approval_queue().list_pending("exec")
+    assert len(pending) == 1
+    assert pending[0]["params"]["command"] == "pip install requests"
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_warnlisted_exec_unattended_prompt_fails_without_queue_leak(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

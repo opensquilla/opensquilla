@@ -414,7 +414,10 @@ async def _check_exec_approval(
         )
         return _approval_denied_payload(command, warning)
 
-    if settings.mode == "auto-approve" or pattern_class == "allow":
+    sandbox_off_requires_approval = _sandbox_effectively_off() and not _host_execution_allowed()
+    if (
+        settings.mode == "auto-approve" or pattern_class == "allow"
+    ) and not sandbox_off_requires_approval:
         log.info(
             "shell_approval_skipped_policy",
             command=_audit_command(command),

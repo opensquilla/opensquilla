@@ -9,6 +9,33 @@ from opensquilla.session.context_view import (
 from opensquilla.session.models import SessionContextState, SessionSummary
 
 
+def test_provider_compaction_context_dropped_for_non_anthropic_provider() -> None:
+    # An Anthropic-native state must not replay when a different provider is
+    # active (the live-provider gate). A fork or mid-session switch can leave
+    # such state in the session; replaying it cross-provider corrupts the
+    # request, so the builder returns empty for non-anthropic providers.
+    anthropic_state = SessionContextState(
+        session_id="session",
+        session_key="agent:main:ctx",
+        provider="anthropic",
+        model="claude-opus-4-7",
+        state_kind="anthropic_compaction_block",
+        payload={"content": "native state"},
+        covered_through_id=9,
+        created_at=3000,
+        portable=False,
+        cacheable=True,
+    )
+    for provider_kind in ("openai", "gemini", "openai_responses"):
+        context = build_provider_compaction_context(
+            context_states=[anthropic_state],
+            provider_kind=provider_kind,
+            now_ms=4000,
+        )
+        assert context.messages == []
+        assert context.covered_through_ids == set()
+
+
 def test_provider_compaction_context_prefers_latest_state_independent_of_input_order() -> None:
     newer = SessionContextState(
         session_id="session",

@@ -118,11 +118,17 @@ import SessionsLedger from '@/components/sessions/SessionsLedger.vue'
 import SessionInspectDrawer from '@/components/sessions/SessionInspectDrawer.vue'
 import {
   arrangeSessionLedger,
+  itemKey,
   sessionMatches,
   sessionParentKey,
   useSessions,
   type SessionItem,
 } from '@/composables/useSessions'
+import {
+  dispatchLocalSessionsDeleted,
+  localSessionsDeletedDetail,
+  LOCAL_SESSIONS_DELETED_EVENT,
+} from '@/utils/sessionSync'
 
 type FilterId = 'all' | 'chats' | 'automations' | 'channels'
 
@@ -154,12 +160,13 @@ const FILTER_KINDS: Record<Exclude<FilterId, 'all'>, string> = {
 
 const REFRESH_DEBOUNCE_MS = 150
 const FALLBACK_POLL_MS = 30000
+const SESSIONS_VIEW_SYNC_SOURCE = 'sessions-view'
 
 const { t } = useI18n()
 const router = useRouter()
 const rpc = useRpcStore()
 const { confirm } = useConfirm()
-const { allSessions, isLoading, sessionListError, loadSessions } = useSessions()
+const { sessionsList, allSessions, isLoading, sessionListError, loadSessions } = useSessions()
 
 const filter = ref<FilterId>('all')
 const search = ref('')
@@ -299,6 +306,19 @@ function scheduleSessionRefresh() {
   }, REFRESH_DEBOUNCE_MS)
 }
 
+function applyLocalDeletedSessions(keys: Set<string>) {
+  if (keys.size === 0) return
+  sessionsList.value = sessionsList.value.filter(item => !keys.has(itemKey(item)))
+  if (inspectKey.value && keys.has(inspectKey.value)) closeInspect()
+}
+
+function handleLocalSessionsDeleted(event: Event) {
+  const detail = localSessionsDeletedDetail(event)
+  if (!detail || detail.source === SESSIONS_VIEW_SYNC_SOURCE) return
+  applyLocalDeletedSessions(new Set(detail.keys))
+  scheduleSessionRefresh()
+}
+
 function handleApprovalPush() {
   void refreshApprovals()
 }
@@ -361,11 +381,21 @@ async function removeSession(item: SessionItem) {
   if (!ok) {
     return
   }
+  let result: DeleteResponse | null = null
   try {
-    await rpc.call<DeleteResponse>('sessions.delete', { keys: [item.key] })
+    result = await rpc.call<DeleteResponse>('sessions.delete', { keys: [item.key] })
   } catch (err) {
     console.warn('Delete failed: ' + (err instanceof Error ? err.message : String(err)))
+    return
   }
+  const deleted = new Set(result?.deleted || [])
+  if (!deleted.has(item.key)) {
+    console.warn('Delete failed: session was not reported deleted', result?.errors)
+    void loadSessions()
+    return
+  }
+  applyLocalDeletedSessions(deleted)
+  dispatchLocalSessionsDeleted(deleted, SESSIONS_VIEW_SYNC_SOURCE)
   void loadSessions()
 }
 
@@ -383,10 +413,13 @@ function teardownLive() {
   unsubs = []
   if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null }
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+  window.removeEventListener(LOCAL_SESSIONS_DELETED_EVENT, handleLocalSessionsDeleted)
 }
 
 onActivated(() => {
   loadAll()
+  window.removeEventListener(LOCAL_SESSIONS_DELETED_EVENT, handleLocalSessionsDeleted)
+  window.addEventListener(LOCAL_SESSIONS_DELETED_EVENT, handleLocalSessionsDeleted)
   unsubs = [
     rpc.on('sessions.changed', scheduleSessionRefresh),
     rpc.on('exec.approval.requested', handleApprovalPush),

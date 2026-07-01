@@ -9,6 +9,7 @@ from opensquilla.provider.failures import (
     classify_provider_error,
     decide_recovery_action,
 )
+from opensquilla.provider.registry import list_provider_specs
 
 
 @pytest.mark.parametrize(
@@ -49,6 +50,37 @@ def test_openai_compatible_providers_share_common_failure_classification(provide
     assert (
         classify_provider_error(provider, 400, message="unsupported parameter")
         is ProviderFailureKind.UNSUPPORTED_FEATURE
+    )
+
+
+def test_every_registry_spec_has_a_handled_failure_family() -> None:
+    handled = {"openai_compat", "anthropic", "ollama"}
+    for spec in list_provider_specs():
+        assert spec.failure_family in handled, (
+            f"{spec.provider_id} declares failure_family "
+            f"{spec.failure_family!r} with no branch in classify_provider_error"
+        )
+
+
+def test_openai_responses_uses_openai_compat_classification() -> None:
+    # openai_responses (failure_family 'openai_compat') now routes through the
+    # shared block rather than the generic tail.
+    assert (
+        classify_provider_error("openai_responses", 401, message="invalid api key")
+        is ProviderFailureKind.AUTH_INVALID
+    )
+
+
+def test_unknown_provider_falls_through_to_generic_tail() -> None:
+    # Unknown provider id -> no family -> generic tail still handles 429, but a
+    # bare 401 is not promoted to AUTH_INVALID.
+    assert (
+        classify_provider_error("totally-unknown", 429, message="rate limit")
+        is ProviderFailureKind.RATE_LIMITED
+    )
+    assert (
+        classify_provider_error("totally-unknown", 401, message="")
+        is ProviderFailureKind.UNKNOWN
     )
 
 

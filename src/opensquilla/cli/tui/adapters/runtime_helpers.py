@@ -47,6 +47,16 @@ class TuiPluginOutputHandle:
         if send is not None:
             await send(message_type, payload)
 
+    @property
+    def supports_send_message(self) -> bool:
+        """Whether the wrapped handle can actually deliver host IPC.
+
+        This wrapper always exposes a callable ``send_message`` (it no-ops when
+        the underlying handle can't send), so callers can't use ``callable(...)``
+        to tell an IPC-capable OpenTUI surface from a native terminal. Check this
+        instead before routing a host-only command (e.g. ``/theme``)."""
+        return callable(getattr(self._output_handle, "send_message", None))
+
     def stream_output(self) -> AbstractAsyncContextManager[Callable[[str], None]]:
         return self._output_handle.stream_output()
 
@@ -81,6 +91,8 @@ def clear_current_cancel() -> None:
 
 def map_slash_category(category: SlashCategory) -> TuiInputKind:
     """Map REPL slash policy into runtime-owned input kinds."""
+    if category is SlashCategory.LOCAL:
+        return TuiInputKind.LOCAL
     if category is SlashCategory.DESTRUCTIVE:
         return TuiInputKind.DESTRUCTIVE
     if category is SlashCategory.EXIT:

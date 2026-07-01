@@ -17,6 +17,7 @@ class RpcClient {
     this._pingTimer = null;
     this._pingInterval = 55000; // 55s — safely under server's 120s keepalive
     this._policy = null;
+    this._hello = null;
     this._lastSeq = 0;
     this._lastFrameAt = 0;
     this._tickWatchTimer = null;
@@ -35,6 +36,8 @@ class RpcClient {
     clearTimeout(this._reconnectTimer);
     this._stopPing();
     this._stopTickWatch();
+    this._hello = null;
+    this._policy = null;
     if (this._ws) {
       this._ws.close();
       this._ws = null;
@@ -61,6 +64,7 @@ class RpcClient {
   }
 
   get state() { return this._state; }
+  get hello() { return this._hello; }
   get policy() { return this._policy || {}; }
 
   waitForConnection() {
@@ -74,6 +78,8 @@ class RpcClient {
 
   _doConnect() {
     this._setState('connecting');
+    this._hello = null;
+    this._policy = null;
     this._lastSeq = 0;
     this._lastFrameAt = Date.now();
     this._stopTickWatch();
@@ -111,6 +117,7 @@ class RpcClient {
 
       // Handshake: HelloOk frame (has "protocol" field, no "type":"res")
       if (data.protocol !== undefined && this._state === 'connecting') {
+        this._hello = data;
         this._policy = data.policy || null;
         // Resolve any pending connect request
         for (const [id, p] of this._pending) {

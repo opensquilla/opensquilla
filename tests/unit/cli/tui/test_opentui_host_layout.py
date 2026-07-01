@@ -58,34 +58,43 @@ def test_registry_covers_six_kinds() -> None:
     assert "createBlock" in reg
 
 
-def test_rails_share_one_colour() -> None:
-    # The single rail colour (detailText) is used across tool + thinking +
-    # answer-gap so the timeline trunk reads as one continuous bar.
+def test_turn_card_owns_one_continuous_gutter() -> None:
+    # The assistant turn renders as ONE card: a single left-border gutter runs
+    # unbroken through narration + tool calls, so the timeline reads as one
+    # assistant block (opencode/codex style). That gutter is the turn card's
+    # border (answerFrame) owned by turnView — in-card blocks no longer redraw
+    # their own "│" rail nodes.
+    tv = _read("turnView.mjs")
     tool = _read("blocks/toolBlock.mjs")
     thinking = _read("blocks/thinkingBlock.mjs")
-    answer = _read("blocks/answerBlock.mjs")
-    assert "THEME.detailText" in tool and "│" in tool
-    assert "THEME.detailText" in thinking
-    assert "THEME.detailText" in answer
+    assert 'border: ["left"]' in tv
+    assert "borderColor: THEME.answerFrame" in tv
+    assert 'cardHeaderRule("squilla"' in tv
+    # the card opens once and closes once per turn (header + footer drawn once)
+    assert "openCard" in tv and "closeCard" in tv
+    # in-card blocks defer the gutter to the turn card — no per-block rail node
+    assert "-rail" not in tool
+    assert "-gt" not in thinking
 
 
-def test_answer_block_is_streaming_left_border_markdown_card() -> None:
+def test_answer_block_is_streaming_markdown_in_the_turn_card() -> None:
     answer = _read("blocks/answerBlock.mjs")
     assert "MarkdownRenderable" in answer
     assert "streaming: true" in answer
-    assert 'border: ["left"]' in answer
-    assert "borderColor: THEME.toolAccent" in answer
-    assert "╭─ answer ─ squilla" in answer
     # streaming stops on end()
     assert "md.streaming = false" in answer
+    # the card chrome (left border, header rule, footer) now belongs to the TURN,
+    # not the answer block — the answer is purely the streamed markdown body.
+    assert 'border: ["left"]' not in answer
+    assert "cardHeaderRule" not in answer
     # the retype mechanism is gone: no teardown contract with turnView
     assert "teardown" not in answer
 
 
 def test_thinking_block_is_purple_glyph_timeline() -> None:
     thinking = _read("blocks/thinkingBlock.mjs")
-    assert "✱" in thinking
-    assert "THEME.modelText" in thinking
+    assert "✻" in thinking
+    assert "THEME.thinkingAccent" in thinking
     # reasoning renders incrementally as it streams (render called from append)
     assert "append(delta)" in thinking
     assert "render()" in thinking
@@ -98,22 +107,31 @@ def test_tool_block_groups_detail_and_pulses() -> None:
     tool = _read("blocks/toolBlock.mjs")
     assert "✓" in tool and "✗" in tool
     assert "setGlyph" in tool
-    # detail clipped to viewport (no rail-breaking wrap)
+    # result preview clipped to viewport (no rail-breaking wrap)
     assert "clipToCells" in tool
     assert "timelineAvailCells" in tool
-    assert "THEME.toolAccent" in tool
+    # Run-state colors come from the shared STATUS vocabulary (opencode/codex
+    # alignment): soft-orange while running, green/red on resolution, dim result.
+    assert "STATUS.running" in tool
+    assert "STATUS.ok" in tool and "STATUS.error" in tool
+    assert "STATUS.detail" in tool
+    # codex-style: ONE "└ " result corner (cap), a " · {duration}" suffix on
+    # completion, and args inline after the name (no separate args node).
+    assert "RESULT_CORNER" in tool and "DURATION_SEP" in tool
+    assert "resultAdded" in tool  # the single-result-corner guard
+    assert "duration" in tool
 
 
 def test_prompt_and_usage_and_error_blocks() -> None:
     prompt = _read("blocks/promptBlock.mjs")
     usage = _read("blocks/usageBlock.mjs")
     error = _read("blocks/errorBlock.mjs")
-    assert "╭─ prompt" in prompt
+    assert 'cardHeaderRule("prompt"' in prompt
     assert "THEME.promptAccent" in prompt
     assert "·" in usage
     assert "THEME.muted" in usage
     assert "✗" in error
-    assert "THEME.routerError" in error
+    assert "THEME.error" in error
 
 
 def test_turnview_routes_block_messages() -> None:
@@ -215,6 +233,23 @@ def test_main_is_thin_entry_with_mouse_and_alt_screen() -> None:
     assert "class TurnView" not in main
     assert "OPENTUI_DAILY_THEME" not in main
     assert "answer.demote" not in main
+
+
+def test_resize_reflows_existing_card_headers() -> None:
+    # Baked full-width header rules ("╭─ squilla ─…" / "╭─ prompt ─…") must
+    # re-rule to the new width on resize instead of wrapping (shrink) or
+    # stranding (grow). main tracks every turn and reflows them; turnView and
+    # promptBlock expose relayout() that recomputes their header rule.
+    main = _read("main.mjs")
+    turn = _read("turnView.mjs")
+    prompt = _read("blocks/promptBlock.mjs")
+    assert "turns" in main and "relayout" in main
+    assert "relayout()" in turn and 'cardHeaderRule("squilla"' in turn
+    assert "relayout()" in prompt and 'cardHeaderRule("prompt"' in prompt
+    # A resize must force a FULL repaint, else OpenTUI's diff-render leaves the old
+    # (wider) layout's cells uncleared — the router box bleeds through as stale
+    # glyphs when the window shrinks.
+    assert "forceFullRepaintRequested" in main
 
 
 def test_no_legacy_optimistic_demote_in_host() -> None:

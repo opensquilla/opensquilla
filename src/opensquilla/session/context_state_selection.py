@@ -39,7 +39,20 @@ def ordered_context_states(
 
 def latest_context_state(
     context_states: Sequence[SessionContextState],
+    *,
+    provider: str | None = None,
 ) -> SessionContextState | None:
+    """Return the most recent context state, optionally provider-scoped.
+
+    When ``provider`` is given, only states produced by that provider are
+    considered, so provider-native state is never replayed against a
+    different provider after a switch. ``None`` (default) preserves the
+    previous global-newest behavior.
+    """
+    if provider is not None:
+        context_states = [
+            state for state in context_states if getattr(state, "provider", None) == provider
+        ]
     ordered = ordered_context_states(context_states)
     return ordered[-1] if ordered else None
 

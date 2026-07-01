@@ -166,3 +166,23 @@ def test_cli_brand_surfaces_do_not_use_cyan() -> None:
                 offenders.append(f"{path}:{needle}")
 
     assert offenders == []
+
+
+def test_opentui_theme_accents_are_not_cyan() -> None:
+    # The brand's no-cyan rule is about the ACCENT, not secondary semantics: every
+    # OpenTUI theme's brand accent must be warm/orange, never cyan. (OpenSquilla's
+    # own --info token is cyan-ish #56C2E6 and is allowed for the route/info role.)
+    theme_mjs = Path("src/opensquilla/cli/tui/opentui/package/src/theme.mjs").read_text(
+        encoding="utf-8"
+    )
+    block = theme_mjs.split("PALETTES = Object.freeze({", 1)[1].split("});", 1)[0]
+    accents = re.findall(r"\baccent(?:Secondary)?:\s*\"(#[0-9a-fA-F]{6})\"", block)
+
+    def is_cyan(hex_value: str) -> bool:
+        h = hex_value.lstrip("#")
+        r, g, b = (int(h[i : i + 2], 16) for i in (0, 2, 4))
+        return r < 0x80 and g > 0xB0 and b > 0xB0 and abs(g - b) < 0x40
+
+    assert accents, "could not parse theme accents from theme.mjs"
+    offenders = [hex_value for hex_value in accents if is_cyan(hex_value)]
+    assert offenders == [], f"theme brand accent must not be cyan: {offenders}"

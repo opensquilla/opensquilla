@@ -501,6 +501,23 @@ opensquilla chat                       # interactive REPL
 opensquilla agent -m "your prompt"     # one-shot, automation-friendly
 ```
 
+> **Preview — the OpenTUI terminal UI.** `opensquilla chat` runs the stable,
+> Python-native chat by default. A richer OpenTUI frontend (themes, one-card
+> turns, a live router HUD, drag-select copy) is an opt-in preview that runs
+> **only from a [Develop from source](#develop-from-source) checkout**: the host
+> is loaded from the OpenTUI package next to the running code, and that package
+> (plus its [Bun](https://bun.sh) dependencies) is not shipped in the release
+> wheel or the `Install from source` install. From the checkout, install the Bun
+> deps once, then launch with `uv run` so it runs against that same tree:
+>
+> ```sh
+> bun install --frozen-lockfile --cwd=src/opensquilla/cli/tui/opentui/package
+> OPENSQUILLA_TUI_BACKEND=opentui uv run opensquilla chat
+> ```
+>
+> Leave `OPENSQUILLA_TUI_BACKEND` unset for the stable chat. See
+> [docs/features/tui-frontend.md](docs/features/tui-frontend.md) for details.
+
 Open the Web UI at <http://127.0.0.1:18791/control/>. The **Health**
 view shows whether OpenSquilla is ready, what is not ready, and the
 next recovery steps. From the CLI, run:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import csv
 import fnmatch
 import json
@@ -1203,7 +1204,10 @@ async def list_dir(path: str, approval_id: str | None = None) -> str:
                 files.append(f"[file] {entry.name} ({size} bytes)")
         return dirs + files + blocked_entries
 
-    entries = await loop.run_in_executor(None, _list)
+    # _list reads the current tool context (run mode / full-host access) via
+    # _is_sensitive_access_path; copy the context into the worker thread so it
+    # is not lost (run_in_executor does not propagate contextvars).
+    entries = await loop.run_in_executor(None, contextvars.copy_context().run, _list)
     if not entries:
         return f"{path}: (empty directory)"
     return "\n".join(entries)
@@ -1276,7 +1280,9 @@ async def glob_search(pattern: str, path: str | None = None) -> str:
             matches.append(str(candidate))
         return matches
 
-    matches = await loop.run_in_executor(None, _glob)
+    # Preserve the tool context (run mode / full-host access) inside the worker
+    # thread; _glob classifies entries via _is_sensitive_access_path.
+    matches = await loop.run_in_executor(None, contextvars.copy_context().run, _glob)
     if not matches:
         return f"No files matched pattern '{pattern}' in {base}"
     return "\n".join(matches)
@@ -1392,7 +1398,12 @@ async def grep_search(
 
         return results
 
-    matches = await loop.run_in_executor(None, _search)
+    # search_file classifies each file via _sandbox_path_access_marker and
+    # _is_sensitive_access_path, both of which read the current run mode from
+    # the tool-context contextvar. run_in_executor runs on a worker thread that
+    # does not inherit contextvars, so copy the context in; otherwise every file
+    # is judged as if full-host access were off and gets falsely marked blocked.
+    matches = await loop.run_in_executor(None, contextvars.copy_context().run, _search)
     if not matches:
         return f"No matches for '{pattern}'"
     return "\n".join(matches)

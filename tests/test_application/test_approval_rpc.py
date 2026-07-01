@@ -6,6 +6,7 @@ import pytest
 
 from opensquilla.application.approval_queue import ApprovalQueue
 from opensquilla.application.approval_rpc import (
+    approval_extend_rpc_payload,
     approval_forget_rpc_payload,
     approval_request_rpc_payload,
     approval_resolve_rpc_payload,
@@ -76,14 +77,35 @@ async def test_wait_and_resolve_rpc_payloads_preserve_status_shape() -> None:
         waited = await approval_wait_decision_rpc_payload(queue, approval_id)
 
         assert resolved == waited
+        assert isinstance(waited.pop("deadline"), float)
         assert waited == {
             "id": approval_id,
             "mode": "prompt",
             "approved": True,
             "resolved": True,
+            "resolution": "approved",
             "consumed": False,
             "pending": False,
         }
+    finally:
+        queue.close()
+
+
+def test_approval_extend_rpc_payload_pushes_deadline() -> None:
+    queue = ApprovalQueue(db_path=":memory:", default_timeout=10.0)
+    try:
+        approval_id = queue.request(
+            "exec",
+            {"toolName": "exec_command", "command": "rm x", "sessionKey": "agent:main:demo"},
+        )
+        before = queue.get(approval_id).deadline
+
+        payload = approval_extend_rpc_payload(queue, approval_id, 120.0)
+
+        assert payload["pending"] is True
+        assert payload["resolution"] == ""
+        assert payload["deadline"] == before + 120.0
+        assert queue.get(approval_id).deadline == before + 120.0
     finally:
         queue.close()
 

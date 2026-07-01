@@ -192,9 +192,11 @@ METHOD_SCOPES: dict[str, str] = {
     "exec.approval.snapshot": APPROVALS_SCOPE,
     "exec.approval.forget": APPROVALS_SCOPE,
     "exec.approval.resolve": APPROVALS_SCOPE,
+    "exec.approval.extend": APPROVALS_SCOPE,
     "plugin.approval.request": APPROVALS_SCOPE,
     "plugin.approval.waitDecision": APPROVALS_SCOPE,
     "plugin.approval.resolve": APPROVALS_SCOPE,
+    "plugin.approval.extend": APPROVALS_SCOPE,
     # ----- proposals (auto-propose UI: list/show) -----
     # ``exec.proposals.*`` prefix sits OUTSIDE the ``exec.approvals.``
     # admin prefix so that proposal browsing can remain operator-visible.

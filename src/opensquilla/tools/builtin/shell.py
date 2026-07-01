@@ -23,6 +23,12 @@ from typing import Any, cast
 
 import structlog
 
+from opensquilla.application.approval_queue import (
+    classify_command as classify_approval_command,
+)
+from opensquilla.application.approval_queue import (
+    get_approval_queue,
+)
 from opensquilla.sandbox.backend.bubblewrap import (
     BubblewrapBackend,
     LinuxProxyBridgeHost,
@@ -291,6 +297,33 @@ def _context_elevated_mode() -> str | None:
 
 def _host_execution_allowed() -> bool:
     return full_host_access_active()
+
+
+def _approval_policy_denial(
+    tool_name: str,
+    command: str,
+    warning: str,
+) -> dict[str, object] | None:
+    settings = get_approval_queue().get_settings()
+    pattern_class = classify_approval_command(
+        command,
+        settings.allow_patterns,
+        settings.deny_patterns,
+    )
+    if pattern_class != "deny":
+        return None
+    log.warning(
+        "shell_approval_denied_pattern",
+        command=_audit_command(command),
+        tool=tool_name,
+    )
+    return {
+        "status": "approval_denied",
+        "approval_id": "",
+        "command": command,
+        "warning": warning,
+        "message": "This command was denied by the active approval policy.",
+    }
 
 
 def _without_shell_null_redirections(command: str) -> str:
@@ -3096,6 +3129,14 @@ async def exec_command(
     )
     if sensitive_block is not None:
         return sensitive_block
+    if result.needs_approval:
+        approval_denial = _approval_policy_denial(
+            "exec_command",
+            command,
+            result.reason or "Command requires approval.",
+        )
+        if approval_denial is not None:
+            return json.dumps(approval_denial, ensure_ascii=False)
     path_access = _sandbox_workdir_access_envelope(
         cwd,
         write=_shell_workdir_requires_write(command, profile, stdin=stdin),
@@ -3270,6 +3311,14 @@ async def background_process(
     sensitive_block = _sensitive_shell_block("background_process", command, workdir=cwd)
     if sensitive_block is not None:
         return sensitive_block
+    if result.needs_approval:
+        approval_denial = _approval_policy_denial(
+            "background_process",
+            command,
+            result.reason or "Command requires approval.",
+        )
+        if approval_denial is not None:
+            return json.dumps(approval_denial, ensure_ascii=False)
     path_access = _sandbox_workdir_access_envelope(
         cwd,
         write=_shell_workdir_requires_write(command, profile),

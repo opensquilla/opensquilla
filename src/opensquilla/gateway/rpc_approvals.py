@@ -6,6 +6,7 @@ from typing import Any
 
 from opensquilla.application.approval_queue import get_approval_queue
 from opensquilla.application.approval_rpc import (
+    approval_extend_rpc_payload,
     approval_forget_rpc_payload,
     approval_request_rpc_payload,
     approval_resolve_rpc_payload,
@@ -266,6 +267,40 @@ async def _handle_exec_approval_resolve(params: dict | None, ctx: RpcContext) ->
         )
 
     return approval_status_rpc_payload(queue, params["id"], queue.get_settings().mode)
+
+
+_EXTEND_DEFAULT_SECONDS = 300.0
+_EXTEND_MAX_SECONDS = 3600.0
+
+
+def _coerce_extend_seconds(raw: Any) -> float:
+    if raw is None:
+        return _EXTEND_DEFAULT_SECONDS
+    try:
+        seconds = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("params.seconds must be a number") from exc
+    if seconds <= 0:
+        raise ValueError("params.seconds must be positive")
+    return min(seconds, _EXTEND_MAX_SECONDS)
+
+
+@_d.method("exec.approval.extend", scope="operator.approvals")
+async def _handle_exec_approval_extend(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
+    if not isinstance(params, dict) or "id" not in params:
+        raise ValueError("params.id is required")
+    seconds = _coerce_extend_seconds(params.get("seconds"))
+    queue = get_approval_queue()
+    return approval_extend_rpc_payload(queue, params["id"], seconds)
+
+
+@_d.method("plugin.approval.extend", scope="operator.approvals")
+async def _handle_plugin_approval_extend(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
+    if not isinstance(params, dict) or "id" not in params:
+        raise ValueError("params.id is required")
+    seconds = _coerce_extend_seconds(params.get("seconds"))
+    queue = get_approval_queue()
+    return approval_extend_rpc_payload(queue, params["id"], seconds)
 
 
 @_d.method("plugin.approval.request", scope="operator.approvals")

@@ -45,6 +45,18 @@ def test_audit_command_preserves_long_commands_until_cap() -> None:
 
 
 @pytest.mark.asyncio
+async def test_exec_approval_deny_pattern_blocks_shell_command(tmp_path: Path) -> None:
+    get_approval_queue().set_settings("prompt", deny_patterns=["rm *"])
+
+    result = await shell.exec_command("rm target.txt", workdir=str(tmp_path))
+    payload = json.loads(result)
+
+    assert payload["status"] == "approval_denied"
+    assert payload["command"] == "rm target.txt"
+    assert get_approval_queue().list_pending("exec") == []
+
+
+@pytest.mark.asyncio
 async def test_destructive_code_exec_uses_sandbox_gate_when_runtime_enabled(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

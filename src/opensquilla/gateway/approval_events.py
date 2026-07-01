@@ -49,9 +49,13 @@ def build_approval_event_payload(info: dict[str, Any]) -> dict[str, Any]:
         "command": command,
         "agent": str(params.get("agent") or ""),
         "created_at": info.get("created_at"),
+        "deadline": info.get("deadline"),
     }
     if info.get("resolved"):
         payload["approved"] = bool(info.get("approved"))
+        resolution = info.get("resolution")
+        if resolution:
+            payload["resolution"] = str(resolution)
     return payload
 
 

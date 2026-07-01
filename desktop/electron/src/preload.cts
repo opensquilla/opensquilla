@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('opensquillaDesktop', {
   getDesktopSettings: () => ipcRenderer.invoke('desktop:settings:get'),
   saveDesktopSettings: (payload: unknown) => ipcRenderer.invoke('desktop:settings:save', payload),
   resetDesktopSettings: () => ipcRenderer.invoke('desktop:settings:reset'),
+  openArtifact: (payload: unknown) => ipcRenderer.invoke('desktop:artifact:open', payload),
   getOnboardingDefaults: () => ipcRenderer.invoke('desktop:onboarding:defaults'),
   saveOnboarding: (payload: unknown) => ipcRenderer.invoke('desktop:onboarding:save', payload),
   cancelOnboarding: () => ipcRenderer.invoke('desktop:onboarding:cancel'),

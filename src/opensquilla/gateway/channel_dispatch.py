@@ -364,16 +364,10 @@ async def run_channel_dispatch(
             session_key=session_key,
             session_prefix=session_prefix,
         )
-        approval_reply = _maybe_resolve_channel_approval(
-            msg=msg,
-            session_key=session_key,
-        )
+        approval_reply = _maybe_resolve_channel_approval(msg=msg, session_key=session_key)
         if approval_reply is not None:
-            await channel.send(
-                _preserve_route_channel_metadata(approval_reply, route_envelope)
-            )
+            await channel.send(_preserve_route_channel_metadata(approval_reply, route_envelope))
             continue
-
         # fmt: off
         if getattr(channel, "supports_slash_commands", False) and rpc_dispatcher is not None and channel_rpc_context_factory is not None:  # noqa: E501
             command_reply = await _dispatch_channel_slash_command(
@@ -641,11 +635,20 @@ def _maybe_resolve_channel_approval(
     msg: IncomingMessage,
     session_key: str,
 ) -> OutgoingMessage | None:
-    """Resolve a channel approval action without starting an agent turn."""
-    from opensquilla.channels.approval_prompt import (
-        parse_approval_action,
-        resolve_short_code,
-    )
+    """Resolve a channel approval action without starting an agent turn.
+
+    Recognises a Feishu ``approval_resolve`` card action or the universal
+    ``/approve <code>`` / ``/deny <code>`` text command, then resolves the
+    bound approval directly so the suspended tool call's ``wait()`` unblocks.
+
+    Security: only the session owner (the ``sender_id`` that started the
+    originating turn, recorded on the approval at request time) may resolve.
+    Any other sender is rejected without resolving. A channel approval forces
+    ``elevated_mode=None`` so it permits one gated command, never session-wide
+    elevation. Returns the reply to send, or ``None`` when the message is not
+    an approval action.
+    """
+    from opensquilla.channels.approval_prompt import parse_approval_action, resolve_short_code
 
     parsed = parse_approval_action(msg)
     if parsed is None:
@@ -675,12 +678,14 @@ def _maybe_resolve_channel_approval(
 
     queue = get_approval_queue()
     try:
-        # Channel approval grants the one gated command, not session-wide elevation.
+        # Force elevated_mode=None: a channel approval permits exactly the one
+        # gated command, never a session-wide bypass regardless of payload.
         queue.resolve(binding.approval_id, approved, elevated_mode=None)
     except KeyError:
         log.info("channel.approval_expired", code=code, session_key=session_key)
         return OutgoingMessage(content=f"No pending approval {code}.")
     except ValueError:
+        # Already resolved (race) — report idempotently rather than erroring.
         log.info("channel.approval_already_resolved", code=code, session_key=session_key)
         return OutgoingMessage(content=f"Approval {code} was already resolved.")
 
@@ -692,7 +697,7 @@ def _maybe_resolve_channel_approval(
         sender_id=sender_id,
     )
     if approved:
-        return OutgoingMessage(content=f"Approved {code} - running ...")
+        return OutgoingMessage(content=f"Approved {code} — running …")
     return OutgoingMessage(content=f"Denied {code}.")
 
 
@@ -802,6 +807,10 @@ async def _dispatch_combined_message_after_debounce(channel: Any, combined: Any,
 
     msg = combined.message
     route_envelope = build_channel_route_envelope(msg, session_key=session_key, session_prefix=session_prefix)  # noqa: E501
+    approval_reply = _maybe_resolve_channel_approval(msg=msg, session_key=session_key)
+    if approval_reply is not None:
+        await channel.send(_preserve_route_channel_metadata(approval_reply, route_envelope))
+        return
     _get_lock = getattr(turn_runner, "_get_session_lock", None)
     session_lock = _get_lock(session_key) if callable(_get_lock) else None
     async with _maybe_lock(session_lock):
@@ -1627,6 +1636,7 @@ def _router_decision_payload(event: RouterDecisionEvent) -> dict[str, Any]:
         "prompt_policy": event.prompt_policy,
         "routing_applied": event.routing_applied,
         "rollout_phase": event.rollout_phase,
+        "context_window": event.context_window,
     }
 
 
@@ -2198,7 +2208,10 @@ async def _run_turn_batch_path(
                     await event_bridge.emit(
                         session_key,
                         "session.event.text_delta",
-                        {"text": event.text},
+                        {
+                            "text": event.text,
+                            "presentation": getattr(event, "presentation", "answer"),
+                        },
                     )
             elif artifact := _artifact_event_payload(event):
                 artifacts.append(artifact)
@@ -2362,7 +2375,10 @@ async def _run_turn_streaming_path(
                     await event_bridge.emit(
                         session_key,
                         "session.event.text_delta",
-                        {"text": event.text},
+                        {
+                            "text": event.text,
+                            "presentation": getattr(event, "presentation", "answer"),
+                        },
                     )
             elif artifact := _artifact_event_payload(event):
                 artifacts.append(artifact)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+from opensquilla.engine.steps.meta_command import pending_meta_launch_put
 from opensquilla.gateway.protocol import (
     ERROR_INVALID_REQUEST,
     ERROR_NOT_FOUND,
@@ -23,6 +24,7 @@ from opensquilla.persistence.meta_run_writer import (
     summarize_run_record,
 )
 from opensquilla.skills.meta.author_seed import draft_meta_skill_seed
+from opensquilla.skills.meta.enabled import is_meta_skill_enabled
 from opensquilla.skills.meta.run_reports import (
     build_cost_summary,
     build_eval_baseline,
@@ -134,9 +136,11 @@ def _session_key_for_history(params: dict[str, Any], ctx: RpcContext) -> str | N
         if session_key:
             return str(session_key)
         return None
+    if session_key:
+        return str(session_key)
     raise RpcHandlerError(
         ERROR_UNAUTHORIZED,
-        "meta run history requires owner/admin scope.",
+        "meta run history requires a sessionKey for read-only access.",
     )
 
 
@@ -317,3 +321,71 @@ async def _handle_meta_runs_eval_baseline(params: Any, ctx: RpcContext) -> dict[
     p = params if isinstance(params, dict) else {}
     record = _record_or_404(writer, _run_id_param(p))
     return {"baseline": build_eval_baseline(record)}
+
+
+@_d.method("meta.list", scope="operator.read")
+async def _handle_meta_list(params: Any, ctx: RpcContext) -> dict[str, Any]:
+    """Enumerate invokable meta-skills for manual-invocation surfaces.
+
+    Gated by the master ``meta_skill.enabled`` flag: when disabled the surface
+    receives an explicit empty list rather than a partial enumeration. Skills
+    are filtered to launchable ``kind == "meta"`` entries and sorted by name
+    for stable ordering across calls.
+    """
+    if not is_meta_skill_enabled(ctx.config):
+        return {"skills": [], "disabled": True}
+    skills = []
+    for spec in _existing_specs(ctx):
+        if getattr(spec, "kind", "skill") != "meta":
+            continue
+        if getattr(spec, "disable_model_invocation", False):
+            continue
+        skills.append(
+            {
+                "name": spec.name,
+                "description": getattr(spec, "description", ""),
+            }
+        )
+    skills.sort(key=lambda s: s["name"])
+    return {"skills": skills}
+
+
+@_d.method("meta.run", scope="operator.write")
+async def _handle_meta_run(params: Any, ctx: RpcContext) -> dict[str, Any]:
+    """Stamp a pending meta-skill launch for the ``/meta`` command surface.
+
+    This RPC does NOT start a turn. It validates that ``name`` is an
+    invokable meta-skill, records a one-shot pending launch keyed by the
+    caller's session, and returns. The surface then sends a normal turn;
+    the ``meta_command_launch`` pipeline step pops the pending launch and
+    seeds ``ctx.metadata["meta_launch"]`` so the agent dispatches it.
+
+    Gated by the master ``meta_skill.enabled`` flag: when disabled the
+    surface receives an explicit refusal rather than a stamped launch.
+    """
+    p = params if isinstance(params, dict) else {}
+    name = str(p.get("name") or "")
+    session_key = str(p.get("sessionKey") or p.get("key") or "")
+    if not name:
+        raise RpcHandlerError(ERROR_INVALID_REQUEST, "name is required")
+    if not session_key:
+        raise RpcHandlerError(ERROR_INVALID_REQUEST, "sessionKey is required")
+
+    if not is_meta_skill_enabled(ctx.config):
+        return {"ok": False, "error": "meta-skills are disabled", "disabled": True}
+
+    invokable = False
+    for spec in _existing_specs(ctx):
+        if getattr(spec, "name", None) != name:
+            continue
+        if getattr(spec, "kind", "skill") != "meta":
+            continue
+        if getattr(spec, "disable_model_invocation", False):
+            continue
+        invokable = True
+        break
+    if not invokable:
+        return {"ok": False, "error": f"{name!r} is not an available meta-skill"}
+
+    pending_meta_launch_put(session_key, name)
+    return {"ok": True, "name": name, "sessionKey": session_key}

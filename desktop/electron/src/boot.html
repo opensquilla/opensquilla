@@ -7,7 +7,7 @@
   <title>Starting OpenSquilla</title>
   <style>
     :root {
-      color-scheme: light;
+      color-scheme: light dark;
       --bg: #f8f7f3;
       --surface: #fffefa;
       --ink: #1d1f1d;
@@ -16,6 +16,20 @@
       --line: rgba(34, 31, 27, 0.12);
       --accent: #c5480b;
       --danger: #a23a22;
+    }
+
+    /* The app theme defaults to "system", so match the OS here — a dark-OS user
+       gets a dark splash that hands off to the dark app with no luminance flash.
+       These mirror the app's base.css dark tokens. */
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #08080a;
+        --surface: #101013;
+        --ink: #e8e8ea;
+        --muted: #9a9aa0;
+        --dim: #6b6b72;
+        --line: rgba(255, 255, 255, 0.12);
+      }
     }
 
     * { box-sizing: border-box; }

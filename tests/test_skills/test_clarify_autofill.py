@@ -44,6 +44,72 @@ async def test_autofill_fills_missing_required_fields_with_llm() -> None:
 
 
 @pytest.mark.asyncio
+async def test_autofill_can_infer_optional_fields_for_empty_form_submission() -> None:
+    schema = ClarifyStepConfig(
+        mode="form",
+        fields=(
+            ClarifyField(name="topic", type="string", required=True),
+            ClarifyField(
+                name="age_band",
+                type="enum",
+                required=True,
+                choices=("PRE_K", "EARLY_GRADE", "TWEEN", "TEEN"),
+            ),
+            ClarifyField(
+                name="deadline_days",
+                type="int",
+                required=False,
+                min=0,
+                max=365,
+                default=14,
+            ),
+            ClarifyField(
+                name="language",
+                type="enum",
+                required=False,
+                choices=("en", "zh", "mixed"),
+                default="mixed",
+            ),
+        ),
+    )
+
+    async def fake_chat(_system: str, user: str) -> str:
+        payload = json.loads(user)
+        target_names = {
+            field["name"] for field in payload["fields_to_infer"]
+        }
+        assert target_names == {
+            "topic", "age_band", "deadline_days", "language",
+        }
+        return json.dumps(
+            {
+                "topic": "磁力迷宫",
+                "age_band": "EARLY_GRADE",
+                "deadline_days": 7,
+                "language": "zh",
+            },
+            ensure_ascii=False,
+        )
+
+    filled, completed = await autofill_required_clarify_fields(
+        schema=schema,
+        filled_fields={"deadline_days": 14, "language": "mixed"},
+        user_message="给 8 岁孩子做一个磁力迷宫项目。",
+        clarify_reply="",
+        llm_chat=fake_chat,
+        infer_optional_fields=True,
+    )
+
+    assert completed == {
+        "topic": "磁力迷宫",
+        "age_band": "EARLY_GRADE",
+        "deadline_days": 7,
+        "language": "zh",
+    }
+    assert filled == completed
+
+
+@pytest.mark.asyncio
 async def test_autofill_replaces_uninformative_required_answers() -> None:
     schema = ClarifyStepConfig(
         mode="form",

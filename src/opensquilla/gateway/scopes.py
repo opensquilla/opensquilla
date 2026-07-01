@@ -135,6 +135,7 @@ METHOD_SCOPES: dict[str, str] = {
     "cron.unsubscribe": READ_SCOPE,  # OpenSquilla-only; classified read.
     "usage.status": READ_SCOPE,
     "usage.cost": READ_SCOPE,
+    "meta.list": READ_SCOPE,  # OpenSquilla-only; invokable meta-skill catalog.
     "meta.runs.list": READ_SCOPE,
     "meta.runs.failures": READ_SCOPE,
     "meta.runs.cost": READ_SCOPE,
@@ -178,6 +179,8 @@ METHOD_SCOPES: dict[str, str] = {
     "sandbox.path.pick": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded host directory picker.
     # OpenSquilla-only; explicit override of `config.` admin prefix.
     "config.patch.safe": WRITE_SCOPE,
+    # OpenSquilla-only; manual ``/meta`` command launch stamp.
+    "meta.run": WRITE_SCOPE,
     # ----- approvals -----
     # Policy getters/setters explicitly override the ``exec.approvals.`` prefix
     # so that approval workers (which hold operator.approvals) can read/set the

@@ -43,6 +43,9 @@ class SlashCategory(Enum):
     PURE_INFO = "pure_info"
     EXIT = "exit"
     NON_SLASH = "non_slash"
+    # Host-only UI command (e.g. /theme): side-effect-free, runs immediately and
+    # out-of-band — it is never echoed as a prompt and never queued behind a turn.
+    LOCAL = "local"
 
 
 # Destructive commands clear pending work AND cancel the active turn before
@@ -55,6 +58,13 @@ DESTRUCTIVE_SLASH_WORDS: frozenset[str] = frozenset(
 # Exit commands drain the pending queue and then terminate the loop, mirroring
 # the Ctrl-D / EOF path. They MUST NOT discard queued user work.
 EXIT_SLASH_WORDS: frozenset[str] = frozenset({"/exit", "/quit"})
+
+# Local host-UI commands: pure host-side IPC, no model/session/scrollback effect,
+# so they run immediately and out-of-band (not echoed, not queued). Keep this set
+# NARROW — only genuinely side-effect-free commands belong here. /help is excluded
+# (it writes to the shared scrollback); /model, /new, /clear are excluded (they
+# mutate session state under a live stream).
+LOCAL_SLASH_WORDS: frozenset[str] = frozenset({"/theme"})
 
 # Pure-info commands. Both pure-info and state-mutation enqueue identically;
 # this set exists so the classifier can return a more specific category for
@@ -123,6 +133,8 @@ def classify(input_text: str) -> SlashCategory:
     head = _head_word(input_text)
     if not head or not head.startswith("/"):
         return SlashCategory.NON_SLASH
+    if head in LOCAL_SLASH_WORDS:
+        return SlashCategory.LOCAL
     if head in DESTRUCTIVE_SLASH_WORDS:
         return SlashCategory.DESTRUCTIVE
     if head in EXIT_SLASH_WORDS:
@@ -139,6 +151,7 @@ def classify(input_text: str) -> SlashCategory:
 __all__ = [
     "DESTRUCTIVE_SLASH_WORDS",
     "EXIT_SLASH_WORDS",
+    "LOCAL_SLASH_WORDS",
     "PURE_INFO_SLASH_WORDS",
     "STATE_MUTATION_SLASH_WORDS",
     "SlashCategory",

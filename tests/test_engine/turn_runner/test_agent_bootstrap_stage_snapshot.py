@@ -72,10 +72,10 @@ class _StubModelCatalog:
     context_window_value: int = 200_000
     capabilities_value: Any = None
 
-    def resolve_max_tokens(self, model_id, user_override=0):  # noqa: ARG002
+    def resolve_max_tokens(self, model_id, user_override=0, provider=""):  # noqa: ARG002
         return self.max_tokens_value
 
-    def resolve_context_window(self, model_id):  # noqa: ARG002
+    def resolve_context_window(self, model_id, provider=""):  # noqa: ARG002
         return self.context_window_value
 
     def get_capabilities(self, model_id, provider_name="", base_url=""):  # noqa: ARG002

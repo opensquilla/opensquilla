@@ -54,6 +54,7 @@ GATEWAY_SLASH_HANDLER_WORDS = frozenset(
         "/sessions",
         "/save",
         "/status",
+        "/theme",
         "/usage",
     }
 )
@@ -173,6 +174,12 @@ async def handle_gateway_slash_command(
 
     if cmd == "/help":
         console.print(render_help_table(Surface.CLI_GATEWAY))
+        return True
+
+    if _slash_parts(cmd, "/theme"):
+        from opensquilla.cli.tui.opentui.themes import handle_theme_command  # noqa: PLC0415
+
+        await handle_theme_command(cmd, tui_output)
         return True
 
     if parts := _slash_parts(cmd, "/new"):

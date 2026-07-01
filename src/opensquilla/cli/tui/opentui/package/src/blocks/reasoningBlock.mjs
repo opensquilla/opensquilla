@@ -21,8 +21,8 @@ export function createReasoningBlock(ctx) {
     begin() {
       node = new TextRenderable(renderer, {
         id: markerId,
-        content: `${TOOL_INDENT}✱ Thinking…`,
-        fg: THEME.modelText,
+        content: `${TOOL_INDENT}✻ Thinking…`,
+        fg: THEME.thinkingAccent,
       });
       box.add(node);
       renderer.requestRender?.();

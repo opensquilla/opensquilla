@@ -201,8 +201,8 @@ def test_usage_status_reports_context_pressure_from_session_context_not_lifetime
     assert context_status == row["context_status"]
     assert context_status["contextTokens"] == 36_809
     assert context_status["context_tokens"] == 36_809
-    assert context_status["contextWindowTokens"] == 202_752
-    assert context_status["context_window_tokens"] == 202_752
+    assert context_status["contextWindowTokens"] == 200_000
+    assert context_status["context_window_tokens"] == 200_000
     assert context_status["compactionCount"] == 0
     assert context_status["pressure"] < 0.25
     assert context_status["pressure"] < row["inputTokens"] / context_status["contextWindowTokens"]

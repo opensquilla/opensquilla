@@ -141,7 +141,7 @@ class ModelCatalogPort(Protocol):
     ``base_url`` off the runner's ``_config.llm`` chain.
     """
 
-    def lookup(self, model_id: str) -> _ResolvedCatalog: ...
+    def lookup(self, model_id: str, provider: str = "") -> _ResolvedCatalog: ...
 
 @runtime_checkable
 class AgentConfigBuilderPort(Protocol):
@@ -276,6 +276,7 @@ class AgentBootstrapStageInput:
     request_timeout: float | None
     max_provider_retries: int | None
     length_capped_continuations: int | None
+    active_provider_id: str = ""
 
 @dataclass(frozen=True)
 class AgentBootstrapStageOutput:
@@ -378,7 +379,7 @@ class AgentBootstrapStage:
         )
 
         # 2. Resolve max_tokens, context_window, capabilities from catalog
-        catalog = self._model_catalog.lookup(inp.resolved_model)
+        catalog = self._model_catalog.lookup(inp.resolved_model, inp.active_provider_id)
 
         # 3. Build AgentConfig auxiliaries (thinking, projection, store, mem cfg)
         aux = self._agent_config_builder.build_auxiliaries(

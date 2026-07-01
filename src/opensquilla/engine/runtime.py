@@ -2678,6 +2678,9 @@ class TurnRunner:
                     request_timeout=request_timeout,
                     max_provider_retries=max_provider_retries,
                     length_capped_continuations=length_capped_continuations,
+                    active_provider_id=(
+                        getattr(cloned_selector, "active_provider_id", "") or provider_name
+                    ),
                 )
             )
             ab_out = ab_outcome.require_output()

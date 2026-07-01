@@ -13,14 +13,6 @@ ProviderBackend = Literal[
     "unsupported_oauth",
     "unsupported_responses",
 ]
-ProviderSupportLevel = Literal[
-    "native",
-    "compat_mock_verified",
-    "compat_configured",
-    "metadata_only",
-    "unsupported_for_A",
-    "live_verified",
-]
 
 
 @dataclass(frozen=True)
@@ -32,10 +24,8 @@ class ProviderSpec:
     provider_kind: str
     env_key: str = ""
     default_base_url: str = ""
-    support_level: ProviderSupportLevel = "compat_mock_verified"
     required_fields: frozenset[str] = field(default_factory=lambda: frozenset({"api_key", "model"}))
     reasoning_shape: str = "none"
-    usage_shape: str = "openai_compat"
     failure_family: str = "openai_compat"
     metadata_supported: bool = True
     runtime_supported: bool = True
@@ -74,10 +64,8 @@ def _spec(
     env_key: str = "",
     default_base_url: str = "",
     *,
-    support_level: ProviderSupportLevel = "compat_mock_verified",
     required_fields: frozenset[str] | None = None,
     reasoning_shape: str = "none",
-    usage_shape: str = "openai_compat",
     failure_family: str = "openai_compat",
     runtime_supported: bool = True,
     capabilities: frozenset[str] | None = None,
@@ -90,10 +78,8 @@ def _spec(
         provider_kind=provider_kind,
         env_key=env_key,
         default_base_url=default_base_url,
-        support_level=support_level,
         required_fields=required_fields,
         reasoning_shape=reasoning_shape,
-        usage_shape=usage_shape,
         failure_family=failure_family,
         runtime_supported=runtime_supported,
         capabilities=capabilities or frozenset({"chat"}),
@@ -115,8 +101,6 @@ for _provider_spec in [
         "openai_responses",
         "OPENAI_API_KEY",
         "https://api.openai.com/v1",
-        support_level="native",
-        usage_shape="openai_responses",
         capabilities=frozenset({"chat", "responses"}),
     ),
     _spec(
@@ -124,7 +108,6 @@ for _provider_spec in [
         "openai_compat",
         "azure",
         "AZURE_OPENAI_API_KEY",
-        support_level="unsupported_for_A",
     ),
     _spec(
         "anthropic",
@@ -132,8 +115,6 @@ for _provider_spec in [
         "anthropic",
         "ANTHROPIC_API_KEY",
         "https://api.anthropic.com",
-        support_level="native",
-        usage_shape="anthropic",
         failure_family="anthropic",
     ),
     _spec(
@@ -145,7 +126,6 @@ for _provider_spec in [
         # Local provider: the key is optional (only needed for Ollama Cloud or a
         # secured remote host), so keep onboarding from demanding it.
         required_fields=frozenset({"model"}),
-        support_level="native",
         failure_family="ollama",
     ),
     _spec(
@@ -155,7 +135,6 @@ for _provider_spec in [
         "DEEPSEEK_API_KEY",
         "https://api.deepseek.com",
         reasoning_shape="deepseek",
-        usage_shape="deepseek",
     ),
     _spec(
         "gemini",
@@ -178,7 +157,6 @@ for _provider_spec in [
         "bailian_coding",
         "BAILIAN_API_KEY",
         "https://coding-intl.dashscope.aliyuncs.com/v1",
-        support_level="compat_configured",
     ),
     _spec(
         "moonshot",
@@ -193,8 +171,6 @@ for _provider_spec in [
         "minimax",
         "MINIMAX_API_KEY",
         "https://api.minimaxi.com/anthropic",
-        support_level="compat_configured",
-        usage_shape="anthropic",
         failure_family="anthropic",
     ),
     _spec(
@@ -203,7 +179,6 @@ for _provider_spec in [
         "minimax",
         "MINIMAX_API_KEY",
         "https://api.minimaxi.com/v1",
-        support_level="compat_configured",
     ),
     _spec(
         "minimax_cn",
@@ -211,8 +186,6 @@ for _provider_spec in [
         "minimax",
         "MINIMAX_CN_API_KEY",
         "https://api.minimaxi.com/anthropic",
-        support_level="compat_configured",
-        usage_shape="anthropic",
         failure_family="anthropic",
     ),
     _spec(
@@ -221,8 +194,6 @@ for _provider_spec in [
         "minimax",
         "MINIMAX_API_KEY",
         "https://api.minimax.io/anthropic",
-        support_level="compat_configured",
-        usage_shape="anthropic",
         failure_family="anthropic",
     ),
     _spec("mistral", "openai_compat", "mistral", "MISTRAL_API_KEY", "https://api.mistral.ai/v1"),
@@ -241,7 +212,6 @@ for _provider_spec in [
         "qianfan",
         "QIANFAN_API_KEY",
         "https://qianfan.baidubce.com/v2",
-        support_level="compat_configured",
     ),
     _spec(
         "siliconflow",
@@ -256,7 +226,6 @@ for _provider_spec in [
         "aihubmix",
         "AIHUBMIX_API_KEY",
         "https://aihubmix.com/v1",
-        support_level="compat_configured",
     ),
     _spec(
         "volcengine",

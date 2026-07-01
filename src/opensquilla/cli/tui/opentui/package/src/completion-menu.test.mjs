@@ -4,10 +4,15 @@ import test from "node:test";
 import {
   acceptCompletionText,
   filterCatalog,
+  lineEndIndex,
+  lineStartIndex,
   menuKeyAction,
   shouldDropResponse,
   shouldTriggerMenu,
+  spliceOut,
   tokenUnderCaret,
+  wordEndIndex,
+  wordStartIndex,
 } from "./composer.mjs";
 import { createDispatcher } from "./ipc.mjs";
 
@@ -125,6 +130,42 @@ test("menuKeyAction handles menu navigation before submit and cancel keys", () =
   assert.equal(menuKeyAction(menu, "backspace").handled, false);
 });
 
+test("Enter runs a highlighted slash command in one keystroke; Tab only completes", () => {
+  const menu = {
+    active: true,
+    kind: "slash",
+    selected: 0,
+    filtered: [{ label: "/theme", insert_text: "/theme " }],
+  };
+  // Enter accepts AND submits (runs it) — no second Enter needed.
+  assert.equal(menuKeyAction(menu, "return").action, "accept_submit");
+  // Tab just completes so you can still type arguments (e.g. `/theme dark`).
+  assert.equal(menuKeyAction(menu, "tab").action, "accept");
+});
+
+test("Enter on a file completion inserts the path without submitting the message", () => {
+  const menu = {
+    active: true,
+    kind: "file",
+    selected: 0,
+    filtered: [{ label: "src/a.ts", insert_text: "@src/a.ts " }],
+  };
+  // File completions are part of a message being composed: never auto-submit.
+  assert.equal(menuKeyAction(menu, "return").action, "accept");
+  assert.equal(menuKeyAction(menu, "tab").action, "accept");
+});
+
+test("menuKeyAction lets Enter submit when the menu has no matches", () => {
+  const empty = { active: true, kind: "command", filtered: [], selected: 0 };
+  // With nothing to accept, Enter must NOT be swallowed — it falls through so the
+  // message is submitted instead of silently lost.
+  assert.equal(menuKeyAction(empty, "return").handled, false);
+  // Tab just closes the menu (no stray insert), without submitting.
+  const tab = menuKeyAction(empty, "tab");
+  assert.equal(tab.handled, true);
+  assert.equal(tab.action, "close");
+});
+
 test("ipc dispatcher routes completion responses", () => {
   let seen = null;
   const dispatch = createDispatcher({
@@ -142,4 +183,24 @@ test("ipc dispatcher routes completion responses", () => {
     kind: "file",
     items: [],
   });
+});
+
+test("line-edit index helpers compute line and word boundaries", () => {
+  // line start: just after the previous newline (or 0)
+  assert.equal(lineStartIndex("abc", 2), 0);
+  assert.equal(lineStartIndex("ab\ncd", 5), 3);
+  // line end: the next newline (or end of text)
+  assert.equal(lineEndIndex("abc", 1), 3);
+  assert.equal(lineEndIndex("ab\ncd", 0), 2);
+  // word start: skip trailing whitespace, then the word
+  assert.equal(wordStartIndex("hello world", 11), 6);
+  assert.equal(wordStartIndex("hello world  ", 13), 6);
+  assert.equal(wordStartIndex("solo", 4), 0);
+  // word end: skip leading whitespace, then the word
+  assert.equal(wordEndIndex("hello world", 0), 5);
+  assert.equal(wordEndIndex("  hello", 0), 7);
+  assert.equal(wordEndIndex("hello world", 5), 11);
+  // splice removes the [from,to) range and collapses the caret to the cut start
+  assert.deepEqual(spliceOut("hello world", 6, 11), { text: "hello ", cursor: 6 });
+  assert.deepEqual(spliceOut("hello world", 11, 6), { text: "hello ", cursor: 6 }); // order-agnostic
 });

@@ -379,6 +379,51 @@ async def test_case04_squilla_router_fires_overrides_model() -> None:
 
 
 @pytest.mark.asyncio
+async def test_explicit_model_override_reconciles_routed_model_and_clears_savings() -> None:
+    selector = _StubSelector("sel", current_model="claude-opus-4.5")
+    selector.resolve_returns = _StubProvider("routed")
+    turn = _make_turn(
+        metadata={
+            "routed_model": "claude-sonnet-4.5",
+            "savings_pct": 50.0,
+            "savings_max_price_per_m": 9.0,
+            "savings_routed_price_per_m": 3.0,
+        },
+        model="claude-sonnet-4.5",
+    )
+    executor = _RecordingPipelineExecutor(turn=turn, provider=_StubProvider("post"))
+    stage = _make_stage(executor=executor)
+    inp = _make_input(cloned_selector=selector, model="claude-haiku-4.5")
+
+    await stage.run(inp)
+
+    # routed_model realigned to the model that actually ran; savings dropped.
+    assert turn.metadata["routed_model"] == "claude-haiku-4.5"
+    assert turn.metadata["savings_pct"] == 0.0
+    assert turn.metadata["savings_max_price_per_m"] == 0.0
+    assert turn.metadata["savings_routed_price_per_m"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_explicit_model_equal_to_routed_keeps_savings() -> None:
+    selector = _StubSelector("sel", current_model="claude-haiku-4.5")
+    selector.resolve_returns = _StubProvider("routed")
+    turn = _make_turn(
+        metadata={"routed_model": "claude-haiku-4.5", "savings_pct": 42.0},
+        model="claude-haiku-4.5",
+    )
+    executor = _RecordingPipelineExecutor(turn=turn, provider=_StubProvider("post"))
+    stage = _make_stage(executor=executor)
+    inp = _make_input(cloned_selector=selector, model="claude-haiku-4.5")
+
+    await stage.run(inp)
+
+    # Explicit model matches the routed choice: no mismatch, savings preserved.
+    assert turn.metadata["routed_model"] == "claude-haiku-4.5"
+    assert turn.metadata["savings_pct"] == 42.0
+
+
+@pytest.mark.asyncio
 async def test_case05_pipeline_filter_skills_metadata_merge() -> None:
     assembler = _RecordingPromptAssembler(metadata_to_emit={"skill_count": 2})
     executor = _RecordingPipelineExecutor(

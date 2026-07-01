@@ -124,6 +124,18 @@ class ScrollbackWrite:
 
 
 @dataclass(frozen=True)
+class NoticeWrite:
+    """One captured console line forwarded to the host as a styled notice.
+
+    Carries the raw Rich-rendered text (still ANSI-styled); the host strips the
+    control bytes and recolors the line from the active theme so command notices
+    render inside the conversation instead of bleeding onto the terminal.
+    """
+
+    text: str
+
+
+@dataclass(frozen=True)
 class HostReady:
     pass
 

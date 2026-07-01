@@ -4,15 +4,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from opensquilla.provider.model_catalog import ModelCatalog
+from opensquilla.provider.model_catalog import _STATIC_FALLBACK, ModelCatalog
 
 
-def test_deepseek_v4_direct_models_use_official_context_and_output_windows() -> None:
+def test_deepseek_v4_direct_models_use_conservative_output_window() -> None:
     catalog = ModelCatalog()
 
     for model in ("deepseek-v4-flash", "deepseek-v4-pro"):
         assert catalog.resolve_context_window(model) == 1_048_576
-        assert catalog.resolve_max_tokens(model) == 393_216
+        # Conservative-min of the former qualified (16k) vs bare (393k) entries.
+        assert catalog.resolve_max_tokens(model) == 16_384
         caps = catalog.get_capabilities(model, provider_name="deepseek")
         assert caps.supports_reasoning is True
         assert caps.supports_tools is True
@@ -27,7 +28,7 @@ def test_direct_profile_static_fallbacks_cover_context_windows() -> None:
         "gpt-5.4-mini": 400_000,
         "gpt-5.5": 1_000_000,
         "glm-4.7-flashx": 200_000,
-        "glm-5": 200_000,
+        "glm-5": 80_000,
         "glm-5.1": 200_000,
         "z-ai/glm-5.2": 1_048_576,
         "moonshot-v1-8k": 8_192,
@@ -41,6 +42,52 @@ def test_direct_profile_static_fallbacks_cover_context_windows() -> None:
         max_tokens = catalog.resolve_max_tokens(model_id)
         assert max_tokens > 0
         assert max_tokens <= context_window
+
+
+def test_static_fallback_keys_are_provider_agnostic_and_conservative() -> None:
+    # No provider-qualified spellings remain, so one physical model cannot
+    # carry two divergent budget tuples.
+    assert all("/" not in key for key in _STATIC_FALLBACK)
+    # Conservative-min merges of formerly divergent pairs.
+    assert _STATIC_FALLBACK["glm-5"] == (80_000, 80_000)
+    assert _STATIC_FALLBACK["deepseek-v4-flash"] == (16_384, 1_048_576)
+    assert _STATIC_FALLBACK["kimi-k2.6"] == (32_768, 262_144)
+
+
+def test_static_fallback_qualified_and_unqualified_resolve_identically() -> None:
+    catalog = ModelCatalog()
+    for qualified, bare in (
+        ("z-ai/glm-5", "glm-5"),
+        ("deepseek/deepseek-v4-pro", "deepseek-v4-pro"),
+    ):
+        assert catalog.resolve_context_window(qualified) == catalog.resolve_context_window(bare)
+        assert catalog.resolve_max_tokens(qualified) == catalog.resolve_max_tokens(bare)
+
+
+def test_populate_from_data_parses_openrouter_pricing() -> None:
+    catalog = ModelCatalog()
+    catalog._populate_from_data(
+        [
+            {
+                "id": "vendor/priced-model",
+                "context_length": 100_000,
+                "pricing": {"prompt": "0.0000025", "completion": "0.00001"},
+            },
+            {"id": "vendor/free-model", "context_length": 8_192},
+            {"id": "vendor/bad-pricing", "pricing": {"prompt": "n/a", "completion": None}},
+        ]
+    )
+
+    priced = catalog.get("vendor/priced-model")
+    assert priced is not None
+    assert priced.input_cost_per_1k == pytest.approx(0.0025)
+    assert priced.output_cost_per_1k == pytest.approx(0.01)
+    # Missing pricing block → 0.0
+    assert catalog.get("vendor/free-model").input_cost_per_1k == 0.0
+    # Non-numeric / None → 0.0 (no crash)
+    bad = catalog.get("vendor/bad-pricing")
+    assert bad.input_cost_per_1k == 0.0
+    assert bad.output_cost_per_1k == 0.0
 
 
 def test_openrouter_near_context_completion_window_uses_safe_default() -> None:

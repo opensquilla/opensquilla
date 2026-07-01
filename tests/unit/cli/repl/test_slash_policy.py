@@ -224,3 +224,37 @@ def test_classify_unknown_slash_is_enqueue() -> None:
     assert category is not SlashCategory.NON_SLASH
     # Documented choice: route through the enqueue path.
     assert category in {SlashCategory.PURE_INFO, SlashCategory.STATE_MUTATION}
+
+
+# --------------------------------------------------------------------------- #
+# Local (host-only UI) set                                                    #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("command", ["/theme", "/theme midnight", "/theme   ", "/THEME"])
+def test_classify_local_theme(command: str) -> None:
+    """/theme is a host-only UI command -> LOCAL.
+
+    LOCAL commands run immediately (inline on the runtime loop), are never echoed
+    as a prompt block, and are never queued behind an in-flight turn.
+    """
+    assert classify(command) is SlashCategory.LOCAL
+
+
+def test_local_set_is_narrow_and_disjoint() -> None:
+    from opensquilla.cli.repl.slash_policy import (
+        LOCAL_SLASH_WORDS,
+        PURE_INFO_SLASH_WORDS,
+        STATE_MUTATION_SLASH_WORDS,
+    )
+
+    # Keep LOCAL narrow: only side-effect-free host commands belong here today.
+    assert LOCAL_SLASH_WORDS == {"/theme"}
+    # LOCAL must not overlap any queue/cancel/exit category.
+    for other in (
+        DESTRUCTIVE_SLASH_WORDS,
+        EXIT_SLASH_WORDS,
+        PURE_INFO_SLASH_WORDS,
+        STATE_MUTATION_SLASH_WORDS,
+    ):
+        assert not (LOCAL_SLASH_WORDS & other)

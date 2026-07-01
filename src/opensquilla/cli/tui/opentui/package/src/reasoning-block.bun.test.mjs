@@ -3,7 +3,7 @@
 // The original bug: a streaming thinking block briefly flashed the cyan answer
 // CARD (╭─ answer ─ … ╰─) because the renderer opened text as an answer block
 // and only later retyped it to thinking. With reasoning now a first-class
-// stream, a thinking block must render as plain purple ✱ lines with NO card
+// stream, a thinking block must render as plain purple ✻ lines with NO card
 // border, while an answer block keeps its card. A text-snapshot harness could
 // miss colour, but the card is made of border glyphs, so we assert on the
 // captured glyphs directly.
@@ -15,7 +15,7 @@ import { BoxRenderable, TextRenderable, MarkdownRenderable } from "@opentui/core
 
 import { createThinkingBlock } from "./blocks/thinkingBlock.mjs";
 import { createReasoningBlock } from "./blocks/reasoningBlock.mjs";
-import { createAnswerBlock } from "./blocks/answerBlock.mjs";
+import { createTurnView } from "./turnView.mjs";
 
 const WIDTH = 60;
 const HEIGHT = 12;
@@ -60,30 +60,55 @@ function flatText(frame) {
     .join("\n");
 }
 
-test("a streaming thinking block shows purple ✱ text with no answer card", async () => {
+test("a streaming thinking block shows purple ✻ text with no answer card", async () => {
   const text = flatText(await renderBlock(createThinkingBlock));
   // reasoning is visible while still streaming (incremental render)
   expect(text).toContain("partial reasoning");
-  expect(text).toContain("✱");
+  expect(text).toContain("✻");
   // the decisive check: NO answer card border leaks around the thinking stream
   expect(text).not.toContain("answer");
   expect(text).not.toContain("╭");
   expect(text).not.toContain("╰");
 });
 
-test("a streaming answer block does render its card border", async () => {
-  const text = flatText(await renderBlock(createAnswerBlock));
-  // contrast case proving the assertion above discriminates: the answer block
-  // paints its card top rail immediately.
-  expect(text).toContain("answer");
+test("an assistant turn wraps its answer in a single squilla card", async () => {
+  // Contrast case proving the assertion above discriminates. The card chrome now
+  // belongs to the TURN (one card per turn), not the answer block, so drive a
+  // turn view: an answer renders inside a labelled squilla card with top and
+  // bottom rules.
+  const { renderer, renderOnce, captureSpans } = await createTestRenderer({ width: WIDTH, height: HEIGHT });
+  const conversationBox = new BoxRenderable(renderer, {
+    id: "conversation",
+    position: "absolute",
+    left: 0,
+    top: 0,
+    right: 0,
+    bottom: 0,
+    flexDirection: "column",
+  });
+  renderer.root.add(conversationBox);
+  const turn = createTurnView(
+    { renderer, BoxRenderable, TextRenderable, MarkdownRenderable, syntaxStyle: undefined, conversationBox },
+    "ans",
+  );
+  turn.begin("a1", "answer", {});
+  turn.append("a1", "the final answer text");
+  turn.end("a1");
+  turn.finish();
+  await renderOnce();
+  const text = flatText(captureSpans());
+  renderer.destroy?.();
+
+  expect(text).toContain("squilla");
   expect(text).toContain("╭");
+  expect(text).toContain("╰");
 });
 
 test("a reasoning block shows only a collapsed Thinking… marker, never the process text", async () => {
   // The reasoning block is fed the same deltas via renderBlock (which calls
   // append), but it must NOT surface the verbatim reasoning — only the marker.
   const text = flatText(await renderBlock(createReasoningBlock));
-  expect(text).toContain("✱");
+  expect(text).toContain("✻");
   expect(text).toContain("Thinking");
   // the decisive checks: the reasoning PROCESS text is never shown, and no card
   expect(text).not.toContain("partial reasoning");

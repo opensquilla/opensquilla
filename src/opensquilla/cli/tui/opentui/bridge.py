@@ -6,6 +6,7 @@ import asyncio
 import os
 import shutil
 import signal
+from collections import deque
 from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -20,6 +21,7 @@ from opensquilla.cli.tui.opentui.messages import (
     HostError,
     HostReady,
     HostToPythonMessage,
+    HostToPythonMessageError,
     ScrollbackWrite,
     host_message_from_json,
     python_message_to_json,
@@ -30,6 +32,9 @@ from opensquilla.cli.tui.renderers.selection import (
 
 DEFAULT_HOST_PACKAGE_DIR = Path(__file__).resolve().parent / "package"
 DEFAULT_READY_TIMEOUT_SECONDS = 5.0
+# Tolerate a burst of unparseable host lines (skip them) before giving up, so a
+# stray corrupted line never tears down the UI but a wedged sidecar still does.
+_MAX_CONSECUTIVE_MALFORMED_LINES = 64
 
 log = structlog.get_logger(__name__)
 
@@ -52,11 +57,10 @@ def check_opentui_host_available(
     *,
     package_dir: Path = DEFAULT_HOST_PACKAGE_DIR,
     runtime_bin: str | None = None,
-    node_bin: str | None = None,
 ) -> RendererBackendAvailability:
     """Check whether the local Bun/OpenTUI host can be launched."""
 
-    resolved_runtime = runtime_bin or node_bin or shutil.which("bun")
+    resolved_runtime = runtime_bin or shutil.which("bun")
     if not resolved_runtime:
         return RendererBackendAvailability(
             available=False,
@@ -69,7 +73,7 @@ def check_opentui_host_available(
             available=False,
             reason=(
                 "OpenTUI host dependency @opentui/core is not installed. "
-                f"Run: npm install --prefix {package_dir}"
+                f"Run: bun install --cwd {package_dir}"
             ),
         )
     if not paths.main_script.exists():
@@ -98,6 +102,9 @@ class OpenTuiBridge:
         self._process: asyncio.subprocess.Process | None = None
         self._to_host_file: Any | None = None
         self._from_host_file: Any | None = None
+        self._stderr_lines: deque[str] = deque(maxlen=50)
+        self._stderr_task: asyncio.Task[None] | None = None
+        self._closing = False
 
     async def start(self) -> None:
         availability = check_opentui_host_available(
@@ -126,6 +133,7 @@ class OpenTuiBridge:
                 cwd=str(self.paths.package_dir),
                 env=env,
                 pass_fds=(to_host_read, from_host_write),
+                stderr=asyncio.subprocess.PIPE,
             )
         except Exception:
             _close_fds(to_host_read, to_host_write, from_host_read, from_host_write)
@@ -134,7 +142,16 @@ class OpenTuiBridge:
         os.close(to_host_read)
         os.close(from_host_write)
         self._to_host_file = os.fdopen(to_host_write, "w", encoding="utf-8", buffering=1)
-        self._from_host_file = os.fdopen(from_host_read, "r", encoding="utf-8")
+        # errors="replace" so a corrupted byte from the host never raises a hard
+        # UnicodeDecodeError mid-read; the line is still delivered (and skipped if
+        # it no longer parses) instead of tearing down the UI.
+        self._from_host_file = os.fdopen(
+            from_host_read, "r", encoding="utf-8", errors="replace"
+        )
+        # Capture the host's stderr so a crash leaves a diagnosable reason instead
+        # of corrupting the terminal or vanishing. Draining it also keeps the
+        # child from blocking on a full stderr pipe.
+        self._stderr_task = asyncio.create_task(self._drain_stderr())
 
         # Record which main.mjs this Bun host actually loaded. A stale, still-running
         # host keeps serving the JS it spawned with, so a "fixed" frontend can look
@@ -143,7 +160,18 @@ class OpenTuiBridge:
         # the logged mtime against the source file's current mtime.
         self._log_host_version()
 
-        message = await asyncio.wait_for(self.next_message(), timeout=self.ready_timeout)
+        try:
+            message = await asyncio.wait_for(self.next_message(), timeout=self.ready_timeout)
+        except TimeoutError:
+            detail = await self._stderr_tail()
+            await self.close()
+            reason = f"OpenTUI host did not become ready within {self.ready_timeout:.1f}s"
+            raise OpenTuiBridgeError(f"{reason} ({detail})" if detail else reason) from None
+        except BaseException:
+            # next_message already surfaces a crash reason (incl. captured stderr);
+            # make sure we never leak the child process or stderr drain task.
+            await self.close()
+            raise
         if isinstance(message, HostReady):
             return
         await self.close()
@@ -181,15 +209,70 @@ class OpenTuiBridge:
     async def next_message(self) -> HostToPythonMessage | None:
         if self._from_host_file is None:
             raise OpenTuiBridgeError("OpenTUI bridge is not started")
+        malformed = 0
         while True:
             line = await asyncio.to_thread(self._from_host_file.readline)
             if line == "":
+                await self._raise_if_host_crashed()
                 return None
             if not line.strip():
                 continue
-            return host_message_from_json(line)
+            try:
+                return host_message_from_json(line)
+            except HostToPythonMessageError as exc:
+                # A single corrupted/garbage line must not kill the session — skip
+                # it. Only give up if the host floods unparseable output, which
+                # signals a genuinely wedged sidecar.
+                malformed += 1
+                if malformed > _MAX_CONSECUTIVE_MALFORMED_LINES:
+                    raise
+                log.warning("opentui.host.malformed_line", error=str(exc))
+                continue
+
+    async def _drain_stderr(self) -> None:
+        process = self._process
+        if process is None or process.stderr is None:
+            return
+        try:
+            while True:
+                raw = await process.stderr.readline()
+                if not raw:
+                    break
+                text = raw.decode("utf-8", errors="replace").rstrip("\n")
+                if text:
+                    self._stderr_lines.append(text)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # pragma: no cover - defensive: never let drain crash
+            return
+
+    async def _stderr_tail(self) -> str:
+        task = self._stderr_task
+        if task is not None and not task.done():
+            with suppress(asyncio.TimeoutError, asyncio.CancelledError):
+                await asyncio.wait_for(asyncio.shield(task), timeout=0.5)
+        return " | ".join(self._stderr_lines)
+
+    async def _raise_if_host_crashed(self) -> None:
+        """Distinguish a host crash from a clean EOF when the read pipe closes."""
+        if self._closing:
+            return
+        process = self._process
+        if process is None:
+            return
+        with suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(process.wait(), timeout=1.0)
+        returncode = process.returncode
+        if returncode is None or returncode == 0:
+            return
+        detail = await self._stderr_tail()
+        message = f"OpenTUI host exited with code {returncode}"
+        if detail:
+            message = f"{message}: {detail}"
+        raise OpenTuiBridgeError(message)
 
     async def close(self) -> None:
+        self._closing = True
         process = self._process
         if self._to_host_file is not None:
             with suppress(Exception):
@@ -209,6 +292,12 @@ class OpenTuiBridge:
             if process.returncode is None:
                 process.kill()
                 await process.wait()
+        stderr_task = self._stderr_task
+        if stderr_task is not None:
+            stderr_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await stderr_task
+            self._stderr_task = None
         self._process = None
 
     async def write_scrollback(self, payload: str) -> None:
@@ -268,6 +357,9 @@ class OpenTuiReplayRenderer:
 
     async def aerror(self, message: str) -> None:
         self.statuses.append((message, "error"))
+
+    def pulse(self) -> None:
+        return None
 
     async def afinalize(self, usage: Any | None = None, *, cancelled: bool = False) -> None:
         del usage

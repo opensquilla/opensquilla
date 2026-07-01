@@ -100,10 +100,10 @@ class _RecordingTimeoutBudget:
 @dataclass
 class _RecordingModelCatalog:
     catalog: _ResolvedCatalog = field(default_factory=_default_catalog)
-    calls: list[str] = field(default_factory=list)
+    calls: list[tuple[str, str]] = field(default_factory=list)
 
-    def lookup(self, model_id: str) -> _ResolvedCatalog:
-        self.calls.append(model_id)
+    def lookup(self, model_id: str, provider: str = "") -> _ResolvedCatalog:
+        self.calls.append((model_id, provider))
         return self.catalog
 
 
@@ -187,6 +187,7 @@ def _make_input(
     request_timeout=None,
     max_provider_retries=None,
     length_capped_continuations=None,
+    active_provider_id="",
 ):
     return AgentBootstrapStageInput(
         provider=provider if provider is not None else object(),
@@ -209,6 +210,7 @@ def _make_input(
         request_timeout=request_timeout,
         max_provider_retries=max_provider_retries,
         length_capped_continuations=length_capped_continuations,
+        active_provider_id=active_provider_id,
     )
 
 
@@ -285,6 +287,15 @@ async def test_image_route_metadata_allows_historical_image_replay() -> None:
     inp = _make_input(turn=_make_turn(metadata={"image_route_reason": "gate_history"}))
     out = await stage.run(inp)
     assert out.output.agent_config.preserve_historical_images is True
+
+
+@pytest.mark.asyncio
+async def test_lookup_receives_active_provider_name() -> None:
+    catalog = _RecordingModelCatalog()
+    stage = _make_stage(catalog=catalog)
+    inp = _make_input(active_provider_id="ollama", resolved_model="qwen3:4b")
+    await stage.run(inp)
+    assert catalog.calls[-1] == ("qwen3:4b", "ollama")
 
 
 @pytest.mark.asyncio

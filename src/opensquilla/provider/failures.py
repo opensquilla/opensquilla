@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from enum import StrEnum
 
+from .registry import UnknownProviderError, get_provider_spec
+
 
 class ProviderFailureKind(StrEnum):
     RATE_LIMITED = "rate_limited"
@@ -31,28 +33,17 @@ class ProviderRecoveryAction(StrEnum):
     SURFACE = "surface"
 
 
-_OPENAI_COMPAT_PROVIDERS = {
-    "openrouter",
-    "openai",
-    "azure",
-    "deepseek",
-    "gemini",
-    "dashscope",
-    "bailian_coding",
-    "moonshot",
-    "mistral",
-    "groq",
-    "zhipu",
-    "qianfan",
-    "siliconflow",
-    "aihubmix",
-    "minimax_openai",
-    "volcengine",
-    "byteplus",
-    "vllm",
-    "lm_studio",
-    "ovms",
-}
+def _failure_family(provider: str) -> str:
+    """Return the provider's registry failure family, or '' if unknown.
+
+    Keeps error classification in sync with the registry instead of a
+    hand-maintained provider set: a new provider classifies correctly the
+    moment its ProviderSpec declares a failure_family.
+    """
+    try:
+        return get_provider_spec(provider).failure_family
+    except UnknownProviderError:
+        return ""
 
 _GATEWAY_TRANSIENT_STATUS_CODES = {499, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529}
 _GATEWAY_CODES = r"(?:499|500|502|503|504|520|521|522|523|524|529)"
@@ -142,6 +133,7 @@ def classify_provider_error(
 
     provider = (provider_name or "").lower()
     text = _joined(status_code, raw_code, message)
+    family = _failure_family(provider)
 
     if _is_context_overflow(text):
         return ProviderFailureKind.CONTEXT_OVERFLOW
@@ -150,7 +142,7 @@ def classify_provider_error(
     if _is_empty_response(raw_code, message):
         return ProviderFailureKind.EMPTY_RESPONSE
 
-    if provider in _OPENAI_COMPAT_PROVIDERS:
+    if family == "openai_compat":
         if _is_model_unavailable(text):
             return ProviderFailureKind.MODEL_NOT_FOUND
         if status_code in {401, 403} or "invalid api key" in text or "unauthorized" in text:
@@ -170,7 +162,7 @@ def classify_provider_error(
         if status_code == 400 or "invalid_request" in text:
             return ProviderFailureKind.BAD_REQUEST
 
-    if provider in {"anthropic", "minimax", "minimax_cn", "minimax_global"}:
+    if family == "anthropic":
         if status_code in {401, 403} or "authentication_error" in text:
             return ProviderFailureKind.AUTH_INVALID
         if status_code == 429 or "rate_limit_error" in text:
@@ -180,7 +172,7 @@ def classify_provider_error(
         if "invalid_request_error" in text:
             return ProviderFailureKind.BAD_REQUEST
 
-    if provider == "ollama":
+    if family == "ollama":
         if "model not found" in text or "pull" in text and "model" in text:
             return ProviderFailureKind.MODEL_NOT_FOUND
         if (

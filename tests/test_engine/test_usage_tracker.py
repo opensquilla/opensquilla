@@ -30,6 +30,25 @@ def test_session_usage_per_model_breakdown_isolates_cache_tokens() -> None:
     assert deepseek.cache_write_tokens == 40
 
 
+def test_usage_tracker_session_total_equals_sum_across_providers() -> None:
+    # R9c guard: add() is synchronous, so a session's totals are the exact
+    # arithmetic sum of every accumulation, including turns billed to
+    # different providers/models (no interleaving / lost-update race).
+    tracker = UsageTracker()
+    sk = "agent:main:s1"
+    tracker.add(sk, 1000, 100, model_id="anthropic/m1", provider="anthropic")
+    tracker.add(sk, 2000, 200, model_id="deepseek/m2", provider="deepseek")
+    tracker.add(sk, 500, 50, model_id="anthropic/m1", provider="anthropic")
+
+    usage = tracker.get(sk)
+    assert usage is not None
+    assert usage.input_tokens == 3500
+    assert usage.output_tokens == 350
+    assert usage._per_model is not None
+    assert usage._per_model["anthropic/m1"].input_tokens == 1500
+    assert usage._per_model["deepseek/m2"].input_tokens == 2000
+
+
 def test_session_usage_add_default_cache_zero() -> None:
     """Existing positional callers (no cache kwargs) still work; cache fields stay at 0."""
     usage = SessionUsage(model_id="claude-opus-4-7")

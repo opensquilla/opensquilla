@@ -23,7 +23,6 @@ from .protocol import (
 )
 from .registry import (
     ProviderSpec,
-    ProviderSupportLevel,
     UnknownProviderError,
     get_provider_spec,
     list_provider_names,
@@ -83,7 +82,6 @@ __all__ = [
     "OllamaProvider",
     # Registry
     "ProviderSpec",
-    "ProviderSupportLevel",
     "UnknownProviderError",
     "get_provider_spec",
     "list_provider_names",

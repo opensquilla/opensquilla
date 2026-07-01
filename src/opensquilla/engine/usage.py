@@ -328,6 +328,10 @@ class UsageTracker:
         the per-model breakdown can report real provider-billed figures
         instead of the cache-blind pricing-table estimate. ``provider`` lets
         local runtimes (Ollama, …) estimate as free.
+
+        Invariant: keep this method synchronous (no await/yield). On the
+        single event loop a sync ``add`` is atomic, so concurrent turns in
+        one session accumulate without interleaving or a lock.
         """
         usage = self._sessions.get(session_key)
         if usage is None:

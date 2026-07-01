@@ -254,6 +254,12 @@ _COMMANDS: tuple[CommandDef, ...] = (
         execution={_T: _local("help.show"), _S: _local("help.show"), _C: _rpc("status", _empty)},
     ),
     CommandDef(
+        name="/theme",
+        usage="/theme [name]",
+        description="List or switch the OpenTUI color theme.",
+        execution={_T: _local("theme.set"), _S: _local("theme.set")},
+    ),
+    CommandDef(
         name="/status",
         usage="/status",
         description="Show current session, model, and mode.",

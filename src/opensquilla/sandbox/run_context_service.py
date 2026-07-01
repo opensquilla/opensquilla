@@ -13,6 +13,7 @@ from opensquilla.sandbox.package_bundles import expand_package_bundle
 from opensquilla.sandbox.path_validation import (
     decide_path_access,
     normalize_mount_access,
+    normalize_path,
 )
 from opensquilla.sandbox.run_context import (
     DomainGrant,
@@ -36,6 +37,10 @@ def _upsert_user_mount_grant(grant: MountGrant) -> None:
     user_grants.upsert_mount_grant(
         {"path": grant.path, "access": grant.access, "scope": grant.scope}
     )
+
+
+def _mount_grant_storage_path(path: str) -> str:
+    return str(normalize_path(path))
 
 
 def _upsert_user_domain_grant(grant: DomainGrant) -> None:
@@ -141,8 +146,9 @@ async def add_mount_grant(
     )
     if decision.status == "blocked":
         raise ValueError(decision.reason or "mount_blocked")
+    storage_path = _mount_grant_storage_path(path)
     grant = MountGrant(
-        path=decision.normalized_path,
+        path=storage_path,
         access=mount_access,
         scope=normalize_scope(scope),
     )
@@ -192,7 +198,8 @@ async def remove_mount_grant(
     if decision.status == "blocked":
         raise ValueError(decision.reason or "mount_blocked")
     normalized_path = decision.normalized_path
-    removal_paths = {normalized_path, path}
+    storage_path = _mount_grant_storage_path(path)
+    removal_paths = {normalized_path, storage_path, path}
     target_scope = str(scope or "").strip().lower()
 
     session_existing = await get_run_context(
@@ -221,7 +228,8 @@ async def remove_mount_grant(
             replace(session_existing, mounts=mounts, source="saved"),
         )
     if remove_user:
-        user_grants.remove_mount_grant(normalized_path)
+        for removal_path in removal_paths:
+            user_grants.remove_mount_grant(removal_path)
     return await get_run_context(
         session_manager,
         session_key,

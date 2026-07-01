@@ -7,6 +7,9 @@ STATIC = ROOT / "src" / "opensquilla" / "gateway" / "static"
 APP_JS = STATIC / "js" / "app.js"
 RPC_JS = STATIC / "js" / "rpc.js"
 TEMPLATE = ROOT / "src" / "opensquilla" / "gateway" / "templates" / "index.html"
+LEGACY_TEMPLATE = (
+    ROOT / "src" / "opensquilla" / "gateway" / "templates" / "legacy_index.html"
+)
 APPROVAL_MONITOR_JS = STATIC / "js" / "approval_monitor.js"
 CHAT_JS = STATIC / "js" / "views" / "chat.js"
 CHAT_CSS = STATIC / "css" / "views" / "chat.css"
@@ -23,6 +26,7 @@ def _read(path: Path) -> str:
 def test_standalone_sandbox_and_approvals_pages_are_removed() -> None:
     app = _read(APP_JS)
     template = _read(TEMPLATE)
+    legacy_template = _read(LEGACY_TEMPLATE)
 
     assert not SANDBOX_JS.exists()
     assert not SANDBOX_CSS.exists()
@@ -36,6 +40,8 @@ def test_standalone_sandbox_and_approvals_pages_are_removed() -> None:
     assert "/static/js/views/sandbox.js" not in template
     assert "/static/css/views/approvals.css" not in template
     assert "/static/js/views/approvals.js" not in template
+    assert "/static/css/views/approvals.css" not in legacy_template
+    assert "/static/js/views/approvals.js" not in legacy_template
 
 
 def test_chat_run_mode_control_remains_the_only_sandbox_frontend_control() -> None:

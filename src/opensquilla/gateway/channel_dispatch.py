@@ -364,6 +364,16 @@ async def run_channel_dispatch(
             session_key=session_key,
             session_prefix=session_prefix,
         )
+        approval_reply = _maybe_resolve_channel_approval(
+            msg=msg,
+            session_key=session_key,
+        )
+        if approval_reply is not None:
+            await channel.send(
+                _preserve_route_channel_metadata(approval_reply, route_envelope)
+            )
+            continue
+
         # fmt: off
         if getattr(channel, "supports_slash_commands", False) and rpc_dispatcher is not None and channel_rpc_context_factory is not None:  # noqa: E501
             command_reply = await _dispatch_channel_slash_command(
@@ -624,6 +634,66 @@ def _slash_command_head(content: str) -> str | None:
     if stripped.startswith("//"):
         return None
     return stripped.split(maxsplit=1)[0]
+
+
+def _maybe_resolve_channel_approval(
+    *,
+    msg: IncomingMessage,
+    session_key: str,
+) -> OutgoingMessage | None:
+    """Resolve a channel approval action without starting an agent turn."""
+    from opensquilla.channels.approval_prompt import (
+        parse_approval_action,
+        resolve_short_code,
+    )
+
+    parsed = parse_approval_action(msg)
+    if parsed is None:
+        return None
+    code, approved = parsed
+    binding = resolve_short_code(code)
+    if binding is None:
+        log.info("channel.approval_unknown_code", code=code, session_key=session_key)
+        return OutgoingMessage(content=f"No pending approval {code}.")
+
+    sender_id = (msg.sender_id or "").strip()
+    if not sender_id or sender_id != binding.owner_sender_id:
+        log.warning(
+            "channel.approval_owner_mismatch",
+            code=code,
+            session_key=session_key,
+            sender_id=sender_id,
+        )
+        return OutgoingMessage(
+            content=(
+                "Only the session owner can resolve this. "
+                f"Ask them to reply /approve {code}."
+            )
+        )
+
+    from opensquilla.gateway.approval_queue import get_approval_queue
+
+    queue = get_approval_queue()
+    try:
+        # Channel approval grants the one gated command, not session-wide elevation.
+        queue.resolve(binding.approval_id, approved, elevated_mode=None)
+    except KeyError:
+        log.info("channel.approval_expired", code=code, session_key=session_key)
+        return OutgoingMessage(content=f"No pending approval {code}.")
+    except ValueError:
+        log.info("channel.approval_already_resolved", code=code, session_key=session_key)
+        return OutgoingMessage(content=f"Approval {code} was already resolved.")
+
+    log.info(
+        "channel.approval_resolved",
+        code=code,
+        approved=approved,
+        session_key=session_key,
+        sender_id=sender_id,
+    )
+    if approved:
+        return OutgoingMessage(content=f"Approved {code} - running ...")
+    return OutgoingMessage(content=f"Denied {code}.")
 
 
 async def _dispatch_channel_slash_command(

@@ -537,6 +537,7 @@ class ServiceContainer:
     deferred_warmups: list[Callable[[], Any]] = field(default_factory=list)
     _compaction_listener_remove: Callable[[], None] | None = None
     _approval_listener_remove: Callable[[], None] | None = None
+    _approval_channel_notifier_remove: Callable[[], None] | None = None
 
     # Backward-compat alias — returns the "main" store (or None).
     @property
@@ -566,6 +567,18 @@ class ServiceContainer:
             except Exception:
                 pass
             self._approval_listener_remove = None
+
+        remove_approval_channel_notifier = getattr(
+            self,
+            "_approval_channel_notifier_remove",
+            None,
+        )
+        if callable(remove_approval_channel_notifier):
+            try:
+                remove_approval_channel_notifier()
+            except Exception:
+                pass
+            self._approval_channel_notifier_remove = None
 
         # ── 1. Stop scheduled producers (no further writes after this) ──
         if self.heartbeat_watcher is not None:
@@ -2441,10 +2454,17 @@ async def start_gateway_server(
 
     from opensquilla.application.approval_queue import get_approval_queue
     from opensquilla.gateway.approval_events import register_approval_event_bridge
+    from opensquilla.gateway.approval_notify import register_approval_channel_notifier
 
     svc._approval_listener_remove = register_approval_event_bridge(
         get_approval_queue(),
         runtime_event_bridge,
+        schedule=create_background_task,
+    )
+    svc._approval_channel_notifier_remove = register_approval_channel_notifier(
+        get_approval_queue(),
+        session_manager=svc.session_manager,
+        channel_manager_ref=lambda: _cm_holder[0],
         schedule=create_background_task,
     )
 

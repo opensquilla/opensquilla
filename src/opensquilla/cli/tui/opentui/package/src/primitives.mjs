@@ -34,16 +34,40 @@ export function isPinnedToBottom(scrollTop, scrollHeight, viewportHeight, slack 
   return scrollTop >= maxTop - slack;
 }
 
+// Emit an OSC 52 clipboard-write sequence directly to the terminal. This is the
+// fallback for when OpenTUI's native path declines (see copySelectionToClipboard).
+// OSC 52 is write-only: a terminal that doesn't understand it ignores the bytes,
+// so emitting unconditionally here is safe. tmux only forwards escape sequences
+// wrapped in its passthrough envelope (and needs `set -g set-clipboard on` +
+// `set -g allow-passthrough on`).
+export function writeOsc52Clipboard(text, { env = process.env, out = process.stdout } = {}) {
+  try {
+    const b64 = Buffer.from(String(text), "utf8").toString("base64");
+    let seq = `\x1b]52;c;${b64}\x07`;
+    if (env?.TMUX) seq = `\x1bPtmux;\x1b${seq}\x1b\\`;
+    out.write(seq);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Mirror an OpenTUI selection into the system clipboard via OSC 52. A
 // mouse-capturing TUI never receives the terminal's Cmd/Ctrl+C, so the renderer's
 // "selection" event (fired on a completed drag-select) is the copy trigger.
-// Guarded by isOsc52Supported so unsupported terminals are a silent no-op rather
-// than emitting stray escape bytes. Returns whether bytes were written.
+//
+// OpenTUI's own copyToClipboardOSC52 (and isOsc52Supported) gate on a terminal
+// capability PROBE — getTerminalCapabilities().osc52 — which many terminals that
+// actually accept OSC 52 (and tmux / embedded terminals) don't advertise, so the
+// native path silently no-ops and copy looks broken. Try the native, managed
+// path first; if the probe declined it, emit OSC 52 ourselves. Returns whether
+// bytes were written.
 export function copySelectionToClipboard(renderer, selection) {
   const text =
     selection?.getSelectedText?.() ?? renderer?.getSelection?.()?.getSelectedText?.() ?? "";
-  if (!text || !renderer?.isOsc52Supported?.()) return false;
-  return renderer.copyToClipboardOSC52?.(text) ?? false;
+  if (!text) return false;
+  if (renderer?.isOsc52Supported?.() && renderer.copyToClipboardOSC52?.(text)) return true;
+  return writeOsc52Clipboard(text);
 }
 
 export function cellWidth(char) {

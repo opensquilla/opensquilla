@@ -45,23 +45,40 @@ test("copySelectionToClipboard copies selected text via OSC 52 when supported", 
   assert.deepEqual(copied, ["hello world"]);
 });
 
-test("copySelectionToClipboard is a no-op for empty selection or unsupported terminal", () => {
+test("copySelectionToClipboard is a no-op for an empty selection", () => {
   let copyCalls = 0;
-  const base = {
+  const renderer = {
+    isOsc52Supported: () => true,
     copyToClipboardOSC52: () => {
       copyCalls += 1;
       return true;
     },
   };
-  // empty selection -> nothing copied
-  assert.equal(
-    copySelectionToClipboard({ ...base, isOsc52Supported: () => true }, { getSelectedText: () => "" }),
-    false,
-  );
-  // OSC 52 unsupported terminal -> nothing copied (no stray escape bytes)
-  assert.equal(
-    copySelectionToClipboard({ ...base, isOsc52Supported: () => false }, { getSelectedText: () => "x" }),
-    false,
-  );
+  assert.equal(copySelectionToClipboard(renderer, { getSelectedText: () => "" }), false);
   assert.equal(copyCalls, 0);
+});
+
+test("copySelectionToClipboard falls back to direct OSC 52 on an unsupported terminal", () => {
+  // The capability probe reports false even on many terminals that DO accept
+  // OSC 52, so an unsupported result must fall back to emitting the sequence
+  // directly rather than silently copying nothing. Capture stdout so the escape
+  // bytes don't leak into the test runner's output.
+  const restore = process.stdout.write.bind(process.stdout);
+  const writes = [];
+  process.stdout.write = (s) => {
+    writes.push(s);
+    return true;
+  };
+  let result;
+  try {
+    result = copySelectionToClipboard(
+      { isOsc52Supported: () => false, copyToClipboardOSC52: () => true },
+      { getSelectedText: () => "x" },
+    );
+  } finally {
+    process.stdout.write = restore;
+  }
+  assert.equal(result, true);
+  assert.equal(writes.length, 1);
+  assert.ok(writes[0].includes("]52;c;"));
 });

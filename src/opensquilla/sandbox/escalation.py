@@ -175,7 +175,6 @@ def request_sandbox_approval(
 
     if not isinstance(params, dict):
         raise ValueError("sandbox_approval_params_required")
-    params = _with_channel_origin_metadata(params)
 
     queue = get_approval_queue()
     if approval_id is None:
@@ -217,31 +216,6 @@ def request_sandbox_approval(
     if status == "approval_denied":
         message = denied_message or _default_denied_sandbox_approval_message()
     return _approval_payload(status, approval_id, params, message=message)
-
-
-def _with_channel_origin_metadata(params: dict[str, object]) -> dict[str, object]:
-    try:
-        from opensquilla.tools.types import current_tool_context
-
-        ctx = current_tool_context.get()
-    except Exception:  # pragma: no cover - defensive best effort.
-        return params
-    if ctx is None or str(getattr(ctx, "caller_kind", "")) != "channel":
-        return params
-
-    sender_id = str(getattr(ctx, "sender_id", None) or "").strip()
-    if not sender_id:
-        return params
-
-    enriched = dict(params)
-    enriched.setdefault("senderId", sender_id)
-    channel_kind = str(getattr(ctx, "channel_kind", None) or "").strip()
-    channel_id = str(getattr(ctx, "channel_id", None) or "").strip()
-    if channel_kind:
-        enriched.setdefault("channelKind", channel_kind)
-    if channel_id:
-        enriched.setdefault("channelId", channel_id)
-    return enriched
 
 
 def _default_denied_sandbox_approval_message() -> str:

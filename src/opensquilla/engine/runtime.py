@@ -3321,6 +3321,8 @@ class TurnRunner:
             metadata["meta_skill_enabled"] = meta_skill_enabled
 
         if ctx is not None:
+            skills_cfg = getattr(self._config, "skills", None)
+            ctx.coding_mode = bool(getattr(skills_cfg, "coding_mode", False))
             ctx = apply_tool_policy_from_config(
                 ctx,
                 available_tools=self._tool_registry.list_names(),

@@ -149,7 +149,7 @@ def test_router_hud_formats_full_route_label_and_snapshot_fields() -> None:
     assert snapshot.baseline_model == "anthropic/claude-opus-4.7"
     assert snapshot.confidence == 0.71
     assert snapshot.savings_pct == 64.0
-    assert snapshot.label == "route t2 -> claude-sonnet-4.6 71% save 64%"
+    assert snapshot.label == "route t2 -> claude-sonnet-4.6 save 64%"
     assert snapshot.style == "normal"
 
 
@@ -165,7 +165,7 @@ def test_router_hud_uses_natural_tier_indexes_and_observe_style() -> None:
     snapshot = _snapshot_for(payload)
 
     assert snapshot.tier_index == 1
-    assert snapshot.label == "observe t1 -> claude-sonnet-4.6 71%"
+    assert snapshot.label == "observe t1 -> claude-sonnet-4.6"
     assert snapshot.style == "dim"
 
 
@@ -197,7 +197,7 @@ def test_router_hud_formats_forced_and_no_baseline_without_savings() -> None:
     )
 
     assert snapshot.tier_index == 0
-    assert snapshot.label == "forced t0 -> claude-sonnet-4.6 71%"
+    assert snapshot.label == "forced t0 -> claude-sonnet-4.6"
     assert "save" not in snapshot.label
 
 
@@ -242,7 +242,7 @@ def test_opentui_router_sink_updates_toolbar_only_for_router_events() -> None:
         )
     )
 
-    assert ("router_hud", "route t2 -> claude-sonnet-4.6 71% save 64%") in after_router
+    assert ("router_hud", "route t2 -> claude-sonnet-4.6 save 64%") in after_router
     assert ("router_hud_style", "normal") in after_router
     assert output.updates == after_router
     assert output.invalidations == 1
@@ -287,5 +287,5 @@ def test_opentui_router_sink_reuses_launch_scoped_plugin_manager() -> None:
 
     snapshot = manager.snapshot(ROUTER_HUD_SLOT)
     assert isinstance(snapshot, RouterHudSnapshot)
-    assert snapshot.label == "route t2 -> claude-sonnet-4.6 71% save 64%"
+    assert snapshot.label == "route t2 -> claude-sonnet-4.6 save 64%"
     assert ("router_hud", snapshot.label) in output.updates

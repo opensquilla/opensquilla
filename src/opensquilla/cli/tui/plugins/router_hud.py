@@ -138,9 +138,11 @@ def _join_label(
     *,
     savings_pct: float | None,
 ) -> str:
+    # Confidence is intentionally NOT surfaced in the HUD: the classifier's raw
+    # probability is noisy (often 0 when unset) and reads as a broken "0%" in the
+    # status strip. It stays in the decision log for diagnostics.
+    del confidence
     parts = [f"{prefix} -> {model_label}"]
-    if confidence is not None:
-        parts.append(f"{round(confidence * 100):.0f}%")
     if savings_pct is not None:
         parts.append(f"save {round(savings_pct):.0f}%")
     return " ".join(parts)

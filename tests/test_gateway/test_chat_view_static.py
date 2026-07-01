@@ -2,105 +2,11 @@ from pathlib import Path
 
 CHAT_JS = Path("src/opensquilla/gateway/static/js/views/chat.js")
 CHAT_CSS = Path("src/opensquilla/gateway/static/css/views/chat.css")
+CHAT_ROUTER_FX_VUE = Path("opensquilla-webui/src/components/chat/RouterFxStrip.vue")
 APP_JS = Path("src/opensquilla/gateway/static/js/app.js")
 RPC_JS = Path("src/opensquilla/gateway/static/js/rpc.js")
 SAVINGS_FX_JS = Path("src/opensquilla/gateway/static/js/components/savings-fx.js")
 TASK_RUNTIME_PY = Path("src/opensquilla/gateway/task_runtime.py")
-
-
-def test_chat_view_defaults_to_full_host_access() -> None:
-    source = CHAT_JS.read_text(encoding="utf-8")
-
-    assert "const _RUN_MODE_DEFAULT = 'full';" in source
-    trigger_start = source.index('id="chat-run-mode-trigger"')
-    trigger_end = source.index("</button>", trigger_start)
-    trigger_markup = source[trigger_start:trigger_end]
-    assert 'data-run-mode="full"' in trigger_markup
-    assert '<span class="chat-run-mode-current">Full Host Access</span>' in trigger_markup
-
-
-def test_chat_view_exposes_sandbox_setup_entry_for_sandbox_modes() -> None:
-    source = CHAT_JS.read_text(encoding="utf-8")
-
-    assert 'id="chat-sandbox-setup-banner"' in source
-    assert "Establish sandbox" in source
-    assert "Not now" in source
-    assert "sandbox.setup.status" in source
-    assert "sandbox.setup.ensure" in source
-    assert "_sandboxSetupReadyForMode" in source
-    assert "_requestSandboxSetupForMode" in source
-    assert "if (mode === 'full') return true;" in source
-
-
-def test_chat_sandbox_setup_banner_styles_are_present() -> None:
-    css = CHAT_CSS.read_text(encoding="utf-8")
-
-    assert ".chat-sandbox-setup-banner" in css
-    assert ".chat-sandbox-setup-copy" in css
-    assert ".chat-sandbox-setup-actions" in css
-
-
-def test_chat_sandbox_setup_banner_prefers_human_message_over_detail() -> None:
-    source = CHAT_JS.read_text(encoding="utf-8")
-    start = source.index("function _sandboxSetupMessage")
-    body = source[start : source.index("  function _refreshSandboxSetupBanner", start)]
-
-    assert "payload.state === 'failed'" in body
-    assert "return `${payload.message}: ${payload.detail}`;" in body
-    assert "return payload.message || payload.detail || '';" in body
-
-
-def test_chat_sandbox_setup_prompt_is_inline_and_reopens_after_not_now() -> None:
-    source = CHAT_JS.read_text(encoding="utf-8")
-
-    render = source[
-        source.index("function render(el)")
-        : source.index("  function _shouldAutofocusComposer", source.index("function render(el)"))
-    ]
-    assert "_loadSandboxSetupStatus({ showPrompt: true });" in render
-    assert "_ensureSandboxSetupOnly();" not in render
-
-    refresh = source[
-        source.index("function _refreshSandboxSetupBanner")
-        : source.index("  async function _loadSandboxSetupStatus")
-    ]
-    assert "const setupKnown = _sandboxSetupStatus !== null;" in refresh
-    assert "const setupReady = _isSandboxSetupReadyPayload(_sandboxSetupStatus);" in refresh
-    assert "const optionalPrompt = mode === 'full' && !_sandboxSetupPromptDismissed;" in refresh
-    assert (
-        "const shouldShow = !setupReady && (pendingPrompt || (setupKnown && optionalPrompt));"
-        in refresh
-    )
-
-    bind = source[
-        source.index("function _bindSandboxSetupBanner")
-        : source.index("  function _runModeHelp")
-    ]
-    assert "_sandboxSetupPromptDismissed = true;" in bind
-    assert "_setRunMode(_RUN_MODE_DEFAULT, { toast: false });" in bind
-
-    request = source[
-        source.index("async function _requestSandboxSetupForMode")
-        : source.index("  function _bindSandboxSetupBanner")
-    ]
-    assert "_sandboxSetupPromptDismissed = false;" in request
-    assert "_pendingSandboxSetupMode = mode;" in request
-
-
-def test_chat_run_mode_does_not_initialize_from_gateway_status() -> None:
-    source = CHAT_JS.read_text(encoding="utf-8")
-    render = source[
-        source.index("function render(el)")
-        : source.index("  function _shouldAutofocusComposer", source.index("function render(el)"))
-    ]
-
-    assert "_loadRunModeStatusFallback" not in source
-    assert "sandbox.status" not in source
-    assert "_loadRunContext" not in source
-    assert "_syncRunMode" not in source
-    assert "sandbox.run_context.get" not in source
-    assert "sandbox.run_context.set" not in source
-    assert "_loadSandboxSetupStatus({ showPrompt: true });" in render
 
 
 def test_global_topbar_does_not_render_duplicate_chat_title() -> None:
@@ -811,12 +717,9 @@ def test_chat_stream_seq_drops_only_seen_duplicates_not_late_unique_events() -> 
 
 def test_chat_new_session_uses_current_agent_namespace() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
-    click_start = source.index("newBtn.addEventListener('click'")
+    click_start = source.index("newBtn.addEventListener('click', () => {")
     click_end = source.index("    // Export", click_start)
     click_body = source[click_start:click_end]
-    helper_start = source.index("function _startNewChatSession(source)")
-    helper_end = source.index("  /* ── Event Bindings", helper_start)
-    helper_body = source[helper_start:helper_end]
     slash_start = source.index("      case 'new_chat':")
     slash_end = source.index("      case 'reset_session':", slash_start)
     slash_body = source[slash_start:slash_end]
@@ -825,10 +728,6 @@ def test_chat_new_session_uses_current_agent_namespace() -> None:
     assert "return _webchatSessionKey(_agentIdFromSessionKey(_sessionKey)," in source
     assert 'title="New chat session in the current agent"' in source
     assert "New chat session in the current agent: " in source
-    assert "_startNewChatSession('new_chat')" in click_body
-    assert "const key = _genKey();" in helper_body
-    assert "_updateSessionChip(key);" in helper_body
-    assert "_persistSession(key);" in helper_body
     assert "_loadHistory(" not in click_body
     assert "_loadHistory(" not in slash_body
 
@@ -996,14 +895,12 @@ def test_chat_switching_existing_session_does_not_mark_new_chat_intent() -> None
     switch_body = source[switch_start:switch_end]
 
     assert "_pendingSessionIntent = 'new_chat'" not in switch_body
-    assert source.count("_pendingSessionIntent = 'new_chat'") == 1
-    assert "_startNewChatSession('new_chat')" in source
+    assert source.count("_pendingSessionIntent = 'new_chat'") == 2
     assert (
         "const sessionIntentForSend = textOverride !== null ? null : _pendingSessionIntent;"
         in source
     )
     assert "params.intent = sessionIntentForSend;" in source
-    assert "params._source.runMode = _normalizeRunMode(_runMode);" in source
 
 
 def test_chat_regenerate_targets_clicked_assistant_bubble() -> None:
@@ -2099,13 +1996,12 @@ def test_router_fx_history_reanchors_stranded_strip() -> None:
 
 def test_router_fx_uses_only_effective_real_candidates() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
-    builder_start = source.index("function _routerFxBuildGridCells(realEntries, seedKey) {")
-    builder_end = source.index("  function _buildRouterFxElement", builder_start)
+    builder_start = source.index(
+        "function _routerFxBuildCandidateGridCells(realEntries, seedKey) {",
+    )
+    builder_end = source.index("  function _routerFxBuildLegacyGridCells", builder_start)
     builder_body = source[builder_start:builder_end]
 
-    assert "const _ROUTER_FX_DECOY_POOL" not in source
-    assert "_ROUTER_FX_REAL_ANCHOR_CELLS" not in source
-    assert "_ROUTER_FX_GRID_CELLS" not in source
     assert "function _routerFxResolveLayoutSeed(sessionKey, hintTimestamp)" in source
     assert "function _routerFxVisualEntries(requestKind, decision) {" in source
     assert "const cachedSeed = _routerFxResolveLayoutSeed(_sessionKey, hint);" in source
@@ -2116,16 +2012,94 @@ def test_router_fx_uses_only_effective_real_candidates() -> None:
     assert "return _routerFxShuffle(cells, seedKey);" not in builder_body
 
 
-def test_router_fx_cells_render_plain_model_names_only() -> None:
-    # The panel intentionally shows the real candidates for this request. Cells
-    # show only the user-facing model name: no S/M/L/XL, no provider labels, no
-    # thinking badges, and no DOM roster metadata beyond the cell index needed
-    # for the selector.
+def test_router_fx_legacy_grid_is_config_driven_visual_only() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     css = CHAT_CSS.read_text(encoding="utf-8")
 
+    assert "Router panel" not in source
+    assert "data-router-panel" not in source
+    assert "const _ROUTER_FX_DECOY_POOL = [" in source
+    for model in (
+        "gpt-5.5",
+        "claude-opus-4.8",
+        "gemini-3.5-flash",
+        "qwen3-coder-plus",
+        "grok-4.3",
+        "deepseek-v3.2",
+        "kimi-k2.6",
+        "mistral-medium-3.5",
+        "command-a-plus",
+        "glm-4.6",
+    ):
+        assert model in source
+    for stale_model in (
+        "gpt-4.1-mini",
+        "gpt-4o-mini",
+        "o4-mini",
+        "deepseek-chat",
+        "mistral-medium',",
+        "grok-code-fast",
+        "deepseek-v4-pro",
+        "glm-5.2",
+        "qwen3-coder',",
+    ):
+        assert stale_model not in source
+    assert "const _ROUTER_FX_GRID_COLS = 5;" in source
+    assert "const _ROUTER_FX_GRID_ROWS = 3;" in source
+    assert "const _ROUTER_FX_REAL_ANCHOR_CELLS" in source
+    assert "function _routerFxNormalizeVisualMode(mode) {" in source
+    assert "function _routerFxShuffle(items, seedKey) {" in source
+    assert "return 'legacy_grid';" in source
+    assert "_routerFxApplyConfigVisualMode(cfg?.squilla_router?.visual_mode);" in source
+    assert "saved.visualMode" not in source
+    assert "saved.panel" not in source
+    save_start = source.index("function _routerFxSavePref() {")
+    save_end = source.index("function _routerFxSortTiers(", save_start)
+    assert "visualMode:" not in source[save_start:save_end]
+
+    legacy_start = source.index("function _routerFxBuildLegacyGridCells(realEntries, seedKey) {")
+    legacy_end = source.index("  function _routerFxBuildGridCells", legacy_start)
+    legacy_body = source[legacy_start:legacy_end]
+    assert "Array.from({ length: _ROUTER_FX_GRID_CELLS }" in legacy_body
+    assert "cells[idx] = {" in legacy_body
+    assert "kind: 'real'," in legacy_body
+    assert "kind: 'decoy'," in legacy_body
+    assert "realNames.add(entry.displayName);" in legacy_body
+
+    builder_start = source.index(
+        "function _routerFxBuildGridCells(realEntries, seedKey, visualMode) {",
+    )
+    builder_end = source.index("  function _buildRouterFxElement", builder_start)
+    builder_body = source[builder_start:builder_end]
+    assert "_routerFxNormalizeVisualMode(visualMode) === 'legacy_grid'" in builder_body
+    assert "_routerFxBuildLegacyGridCells(realEntries, seedKey)" in builder_body
+    assert "_routerFxBuildCandidateGridCells(realEntries, seedKey)" in builder_body
+    assert "wrap.dataset.panel = _routerFxPanelDataset(visualMode);" in source
+    assert "_routerFxBuildGridCells(realEntries, seedKey || undefined, visualMode);" in source
+    assert "const isLegacyGrid = visualMode === 'legacy_grid';" in source
+    assert "const cols = isLegacyGrid ? _ROUTER_FX_GRID_COLS" in source
+    assert "const rows = isLegacyGrid ? _ROUTER_FX_GRID_ROWS : 1;" in source
+    assert "cells[i].kind === 'real' && cells[i].entry.tiers.indexOf(norm) >= 0" in source
+    assert '.router-fx[data-panel="legacy-grid"] .router-fx-grid' in css
+    assert "repeat(var(--router-fx-cols, 5), minmax(0, 1fr));" in css
+    assert "repeat(var(--router-fx-rows, 3), 30px);" in css
+    assert "max-width: min(100%, 820px);" not in css
+
+
+def test_router_fx_cells_render_plain_model_names_only() -> None:
+    # Cells show only the user-facing model name: no S/M/L/XL, no provider
+    # labels, no thinking badges, and no DOM roster metadata beyond the cell
+    # index needed for the selector.
+    source = CHAT_JS.read_text(encoding="utf-8")
+    css = CHAT_CSS.read_text(encoding="utf-8")
+    vue = CHAT_ROUTER_FX_VUE.read_text(encoding="utf-8")
+
     assert "cell.dataset.kind" not in source
     assert "cell.dataset.tiers" not in source
+    assert ":data-kind" not in vue
+    assert ":data-tiers" not in vue
+    assert '[data-kind="real"]' not in vue
+    assert '[data-kind="decoy"]' not in vue
     assert '[data-kind="real"]' not in css
     assert '[data-kind="decoy"]' not in css
     assert "router-fx-dot-idle" not in css
@@ -2824,7 +2798,10 @@ def test_router_fx_visualisation_pref_is_client_side_localstorage() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
 
     assert "const _ROUTER_FX_PREF_KEY = 'opensquilla-router-fx';" in source
-    assert "const _routerFx = { enabled: true, variant: 'default' };" in source
+    assert (
+        "const _routerFx = { enabled: true, visualMode: 'real_candidates', "
+        "variant: 'default' };"
+    ) in source
     assert "function _routerFxLoadPref() {" in source
     assert "function _routerFxSavePref() {" in source
     assert "localStorage.getItem(_ROUTER_FX_PREF_KEY)" in source
@@ -2841,6 +2818,8 @@ def test_router_fx_visualisation_pref_is_client_side_localstorage() -> None:
     load_body = source[load_start:load_end]
     assert "const saved = JSON.parse(raw);" in load_body
     assert "if (typeof saved.enabled === 'boolean') _routerFx.enabled = saved.enabled;" in load_body
+    assert "saved.visualMode" not in load_body
+    assert "saved.panel" not in load_body
     assert "saved.variant" not in load_body
     assert "_routerFx.variant = 'default';" in load_body
     assert "} catch { /* keep defaults */ }" in load_body
@@ -2851,6 +2830,8 @@ def test_router_fx_visualisation_pref_is_client_side_localstorage() -> None:
     save_body = source[save_start:save_end]
     assert "localStorage.setItem(_ROUTER_FX_PREF_KEY, JSON.stringify({" in save_body
     assert "enabled: _routerFx.enabled," in save_body
+    assert "visualMode:" not in save_body
+    assert "panel:" not in save_body
     assert "variant:" not in save_body
     assert "} catch { /* preference is best-effort */ }" in save_body
 
@@ -2875,7 +2856,10 @@ def test_router_effects_default_on_and_cloud_choice_hidden() -> None:
         .read_text(encoding="utf-8")
     )
 
-    assert "const _routerFx = { enabled: true, variant: 'default' };" in chat_source
+    assert (
+        "const _routerFx = { enabled: true, visualMode: 'real_candidates', "
+        "variant: 'default' };"
+    ) in chat_source
     assert (
         "try { return window.localStorage.getItem(_PREF_KEY) !== '0'; } catch { return true; }"
         in savings_source
@@ -3385,17 +3369,16 @@ def test_approval_monitor_sends_auth_headers() -> None:
     assert "headers: _authHeaders({ 'Content-Type': 'application/json' })" in source
 
 
-def test_approval_monitor_inline_button_opens_existing_modal_instead_of_page() -> None:
-    source = Path("src/opensquilla/gateway/static/js/approval_monitor.js").read_text(
+def test_approvals_view_sends_auth_headers() -> None:
+    source = Path("src/opensquilla/gateway/static/js/views/approvals.js").read_text(
         encoding="utf-8"
     )
-    start = source.index("inline.addEventListener('click'")
-    handler = source[start : source.index("});", start) + 3]
 
-    assert "Router.navigate('/approvals')" not in source
-    assert "_openModal(pending[0], data.mode || 'prompt');" in source
-    assert "_resetPollBackoff();" in handler
-    assert "_poll();" in handler
+    assert "function _authHeaders(extra)" in source
+    assert "App.getAuthToken" in source
+    assert "headers['Authorization'] = `Bearer ${token}`;" in source
+    assert "fetch('/api/approvals', { headers: _authHeaders() })" in source
+    assert "headers: _authHeaders({ 'Content-Type': 'application/json' })" in source
 
 
 def test_session_api_token_totals_load_independently_of_token_widget() -> None:

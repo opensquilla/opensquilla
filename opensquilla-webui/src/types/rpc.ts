@@ -1,30 +1,3 @@
-export type RunMode = 'standard' | 'trusted' | 'full'
-
-export interface PrincipalInfo {
-  role?: string
-  isOwner?: boolean
-  authenticated?: boolean
-  scopes?: string[]
-}
-
-export interface RunModePolicyInfo {
-  allowedRunModes?: RunMode[]
-  defaultRunMode?: RunMode
-  fullHostAccessDisabledReason?: string | null
-}
-
-export interface HelloAuthInfo {
-  principal?: PrincipalInfo
-  runModePolicy?: RunModePolicyInfo
-}
-
-export interface HelloOkFrame {
-  type?: 'hello-ok'
-  protocol?: number
-  policy?: Record<string, unknown>
-  auth?: HelloAuthInfo
-}
-
 export interface AgentOption {
   id: string
   name: string
@@ -264,7 +237,7 @@ export interface ChatSendAttachmentPayload {
 export interface ChatSendParams {
   message: string
   sessionKey: string
-  _source?: { runMode?: RunMode }
+  _source?: { elevated?: string }
   intent?: string
   displayText?: string
   attachments?: ChatSendAttachmentPayload[]

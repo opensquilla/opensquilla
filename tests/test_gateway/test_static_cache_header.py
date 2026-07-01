@@ -63,10 +63,34 @@ def test_control_ui_vite_asset_urls_use_configured_base_path(
     )
     monkeypatch.setattr(control_ui, "_DIST_DIR", tmp_path)
 
-    js_url, css_url = control_ui._read_vite_assets("/ops")
+    js_url, css_urls = control_ui._read_vite_assets("/ops")
 
     assert js_url == "/ops/static/dist/assets/index.js"
-    assert css_url == "/ops/static/dist/assets/index.css"
+    assert css_urls == ["/ops/static/dist/assets/index.css"]
+
+
+def test_read_vite_assets_extracts_every_stylesheet(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Vite can emit more than one entry stylesheet (e.g. a shared Icon chunk
+    # before the main bundle); all must be returned in document order, else the
+    # page renders unstyled.
+    (tmp_path / "index.html").write_text(
+        '<script type="module" crossorigin src="./assets/index.js"></script>'
+        '<link rel="stylesheet" crossorigin href="./assets/Icon-abc.css">'
+        '<link rel="stylesheet" crossorigin href="./assets/index-def.css">',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(control_ui, "_DIST_DIR", tmp_path)
+
+    js_url, css_urls = control_ui._read_vite_assets("/ops")
+
+    assert js_url == "/ops/static/dist/assets/index.js"
+    assert css_urls == [
+        "/ops/static/dist/assets/Icon-abc.css",
+        "/ops/static/dist/assets/index-def.css",
+    ]
 
 
 def test_control_ui_rebases_hard_coded_vite_base_path(
@@ -80,10 +104,10 @@ def test_control_ui_rebases_hard_coded_vite_base_path(
     )
     monkeypatch.setattr(control_ui, "_DIST_DIR", tmp_path)
 
-    js_url, css_url = control_ui._read_vite_assets("/custom")
+    js_url, css_urls = control_ui._read_vite_assets("/custom")
 
     assert js_url == "/custom/static/dist/assets/index.js"
-    assert css_url == "/custom/static/dist/assets/index.css"
+    assert css_urls == ["/custom/static/dist/assets/index.css"]
 
 
 def test_control_ui_defaults_to_vue_bootstrap(

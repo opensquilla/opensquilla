@@ -1,7 +1,6 @@
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
 import { RpcClient, type RpcEventHandler } from '@/lib/rpc'
-import type { HelloAuthInfo, HelloOkFrame } from '@/types/rpc'
 
 const WS_URL_KEY = 'opensquilla.wsUrl'
 const WS_TOKEN_KEY = 'opensquilla.wsToken'
@@ -31,7 +30,6 @@ export const useRpcStore = defineStore('rpc', () => {
   const client = ref<RpcClient | null>(null)
   const state = ref<'disconnected' | 'connecting' | 'connected'>('disconnected')
   const policy = ref<Record<string, unknown> | null>(null)
-  const auth = ref<HelloAuthInfo | null>(null)
   const error = ref<string | null>(null)
 
   const isConnected = computed(() => state.value === 'connected')
@@ -43,15 +41,10 @@ export const useRpcStore = defineStore('rpc', () => {
 
     rpc.on('_state', (s: 'disconnected' | 'connecting' | 'connected') => {
       state.value = s
-      if (s === 'disconnected') {
-        policy.value = null
-        auth.value = null
-      }
     })
 
-    rpc.on('_hello', (data: HelloOkFrame) => {
+    rpc.on('_hello', (data: { policy?: Record<string, unknown> }) => {
       policy.value = data.policy || null
-      auth.value = data.auth || null
     })
 
     rpc.on('_gap', (detail: unknown) => {
@@ -76,7 +69,6 @@ export const useRpcStore = defineStore('rpc', () => {
     client.value?.disconnect()
     state.value = 'disconnected'
     policy.value = null
-    auth.value = null
   }
 
   async function call<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
@@ -105,7 +97,6 @@ export const useRpcStore = defineStore('rpc', () => {
     client,
     state,
     policy,
-    auth,
     error,
     isConnected,
     isConnecting,

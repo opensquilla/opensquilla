@@ -29,7 +29,8 @@
       })();
     </script>
     <!-- Vite build output (hashed filenames, read dynamically from dist/) -->
-    {% if vite_css_url %}<link rel="stylesheet" crossorigin href="{{ vite_css_url }}">{% endif %}
+    {% for css in vite_css_urls %}<link rel="stylesheet" crossorigin href="{{ css }}">
+    {% endfor %}
     {% if vite_js_url %}<script type="module" crossorigin src="{{ vite_js_url }}"></script>{% endif %}
 </head>
 <body>

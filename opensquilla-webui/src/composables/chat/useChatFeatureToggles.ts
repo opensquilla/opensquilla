@@ -14,7 +14,7 @@ type RpcClient = {
 
 export interface UseChatFeatureTogglesOptions {
   rpc: RpcClient
-  setGlobalElevatedMode?: (mode: string) => void
+  setGlobalElevatedMode: (mode: string) => void
   loadCurrentSessionUsage: () => void | Promise<void>
 }
 
@@ -92,7 +92,7 @@ export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
     routerModels.value = tierModels
     routerTierConfigs.value = tierConfigs
     persistRouterShape()
-    options.setGlobalElevatedMode?.(cfg?.permissions?.default_mode || '')
+    options.setGlobalElevatedMode(cfg?.permissions?.default_mode || '')
     if (applyOptions.refreshUsage) {
       await options.loadCurrentSessionUsage()
     }

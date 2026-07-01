@@ -112,6 +112,14 @@
               {{ t('console.approvals.alwaysAllow') }}
             </button>
             <button
+              class="btn btn--warn"
+              :title="t('console.approvals.bypassHint')"
+              :disabled="resolvingId === item.id"
+              @click="resolveApproval(item, 'bypass')"
+            >
+              {{ t('console.approvals.bypass') }}
+            </button>
+            <button
               class="btn btn--danger"
               :disabled="resolvingId === item.id"
               @click="resolveApproval(item, 'deny')"
@@ -165,6 +173,14 @@ interface ModeOption {
   label: string
   desc: string
 }
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const ELEVATED_MODE_KEY = 'opensquilla.elevatedMode'
+const ELEVATED_MODE_VERSION_KEY = 'opensquilla.elevatedMode.version'
+const ELEVATED_MODE_STORAGE_VERSION = '2'
 
 // ---------------------------------------------------------------------------
 // State
@@ -302,10 +318,12 @@ async function resolveApproval(item: ApprovalItem, decision: string) {
   if (resolvingId.value === id) return
   resolvingId.value = id
   const namespace = item.namespace || 'exec'
-  const approved = decision === 'approve' || decision === 'always'
+  const approved = decision === 'approve' || decision === 'always' || decision === 'bypass'
   const allowAlways = decision === 'always'
   const rememberIntent = decision === 'always'
+  const elevatedMode = decision === 'bypass' ? 'bypass' : ''
   const body: Record<string, unknown> = { id, namespace, approved, allowAlways, rememberIntent }
+  if (elevatedMode) body.elevatedMode = elevatedMode
 
   try {
     const res = await fetch('/api/approvals/resolve', {
@@ -314,7 +332,10 @@ async function resolveApproval(item: ApprovalItem, decision: string) {
       body: JSON.stringify(body),
     })
     if (!res.ok) throw new Error('HTTP ' + res.status)
-    const msg = approved ? t('console.approvals.approved') : t('console.approvals.denied')
+    if (elevatedMode) setBrowserElevated(elevatedMode)
+    const msg = elevatedMode
+      ? t('console.approvals.bypassEnabled')
+      : (approved ? t('console.approvals.approved') : t('console.approvals.denied'))
     pushToast(msg + ': ' + id, { tone: 'ok' })
     await loadData()
   } catch (err) {
@@ -338,6 +359,22 @@ async function onModeChange() {
   } catch (err) {
     pushToast(t('console.approvals.toastStrategyFailed', { msg: err instanceof Error ? err.message : String(err) }), { tone: 'danger' })
   }
+}
+
+function setBrowserElevated(m: string) {
+  const normalized = m === 'full' || m === 'bypass' || m === 'on' ? m : ''
+  try {
+    if (normalized) {
+      localStorage.setItem(ELEVATED_MODE_KEY, normalized)
+      localStorage.setItem(ELEVATED_MODE_VERSION_KEY, ELEVATED_MODE_STORAGE_VERSION)
+    } else {
+      localStorage.removeItem(ELEVATED_MODE_KEY)
+      localStorage.removeItem(ELEVATED_MODE_VERSION_KEY)
+    }
+  } catch {
+    // ignore
+  }
+  window.dispatchEvent(new CustomEvent('opensquilla:elevated-mode', { detail: { mode: normalized } }))
 }
 </script>
 

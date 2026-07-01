@@ -54,36 +54,26 @@
                 :title="t('chat.composerSettings')"
                 :aria-label="t('chat.composerSettings')"
                 :aria-expanded="settingsOpen ? 'true' : 'false'"
-                @click="toggleSettings"
+                @click="settingsOpen = !settingsOpen"
               >
                 <Icon name="settings" :size="17" />
               </button>
               <ChatComposerSettings
                 v-if="settingsOpen"
+                :elevated-mode="elevatedMode"
+                :elevated-unavailable="elevatedUnavailable"
                 :router-enabled="routerEnabled"
                 :router-settings-busy="routerSettingsBusy"
                 :visual-effects-enabled="routerVisualEffectsEnabled"
                 :coding-mode-enabled="codingModeEnabled"
                 :coding-mode-settings-busy="codingModeSettingsBusy"
                 @close="settingsOpen = false"
+                @set-elevated-mode="emit('setElevatedMode', $event)"
                 @set-router-enabled="emit('setRouterEnabled', $event)"
                 @set-visual-effects-enabled="emit('setVisualEffectsEnabled', $event)"
                 @set-coding-mode-enabled="emit('setCodingModeEnabled', $event)"
               />
             </div>
-            <ChatRunModeMenu
-              :run-mode="runMode"
-              :allowed-run-modes="allowedRunModes"
-              :full-host-access-disabled-reason="fullHostAccessDisabledReason"
-              :close-signal="runModeCloseSignal"
-              :sandbox-setup-busy="sandboxSetupBusy"
-              :sandbox-setup-message="sandboxSetupMessage"
-              :sandbox-setup-visible="sandboxSetupVisible"
-              @dismiss-sandbox-setup="emit('dismissSandboxSetup')"
-              @ensure-sandbox-setup="emit('ensureSandboxSetup')"
-              @open="settingsOpen = false"
-              @set-run-mode="emit('setRunMode', $event)"
-            />
             <button
               class="btn btn--icon btn--ghost"
               :class="{ 'is-active': voiceRecording }"
@@ -136,7 +126,7 @@
     <input
       ref="fileInputEl"
       type="file"
-      accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain,text/markdown,text/html,text/csv,application/json,.md,.markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation,.docx,.xlsx,.pptx,message/rfc822,application/mbox,application/vnd.ms-outlook,.eml,.mbox,.msg"
+      accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain,text/markdown,text/html,text/csv,application/json,.md,.markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation,.docx,.xlsx,.pptx,message/rfc822,application/vnd.ms-outlook,.eml,.mbox,.msg"
       multiple
       class="hidden"
       @change="emit('fileChange', $event)"
@@ -150,9 +140,7 @@ import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import type { IconName } from '@/utils/icons'
 import ChatComposerSettings from '@/components/chat/ChatComposerSettings.vue'
-import ChatRunModeMenu from '@/components/chat/ChatRunModeMenu.vue'
 import type { Attachment } from '@/types/chat'
-import type { RunMode } from '@/types/rpc'
 import { isAttachmentBusy, isImageDisplayAttachment } from '@/utils/chat/attachments'
 
 interface ChatComposerExpose {
@@ -170,17 +158,13 @@ defineProps<{
   isNewLanding: boolean
   placeholder: string
   sendButtonTitle: string
+  elevatedMode: string
+  elevatedUnavailable: boolean
   routerEnabled: boolean
   routerVisualEffectsEnabled: boolean
   routerSettingsBusy: boolean
   codingModeEnabled: boolean
   codingModeSettingsBusy: boolean
-  runMode: RunMode
-  allowedRunModes: RunMode[]
-  fullHostAccessDisabledReason?: string | null
-  sandboxSetupBusy: boolean
-  sandboxSetupMessage: string
-  sandboxSetupVisible: boolean
   voiceBusy: boolean
   voiceRecording: boolean
 }>()
@@ -195,12 +179,10 @@ const emit = defineEmits<{
   retryAttachment: [index: number]
   send: []
   setBusySendMode: [mode: 'queue' | 'steer']
-  setRunMode: [mode: RunMode]
+  setElevatedMode: [mode: string]
   setRouterEnabled: [enabled: boolean]
   setVisualEffectsEnabled: [enabled: boolean]
   setCodingModeEnabled: [enabled: boolean]
-  dismissSandboxSetup: []
-  ensureSandboxSetup: []
   voiceInput: []
   exportMarkdown: []
   stop: []
@@ -213,12 +195,6 @@ const composerEl = ref<HTMLElement | null>(null)
 const textareaEl = ref<HTMLTextAreaElement | null>(null)
 const fileInputEl = ref<HTMLInputElement | null>(null)
 const settingsOpen = ref(false)
-const runModeCloseSignal = ref(0)
-
-function toggleSettings() {
-  settingsOpen.value = !settingsOpen.value
-  if (settingsOpen.value) runModeCloseSignal.value += 1
-}
 
 function attachmentIcon(att: Attachment): IconName {
   return isImageDisplayAttachment(att) ? 'image' : 'fileText'

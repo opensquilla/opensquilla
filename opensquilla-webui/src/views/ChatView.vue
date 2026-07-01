@@ -439,17 +439,13 @@
       :is-new-landing="isNewChatLanding"
       :placeholder="composerPlaceholder"
       :send-button-title="sendButtonTitle"
+      :elevated-mode="elevatedMode"
+      :elevated-unavailable="elevatedUnavailable"
       :router-enabled="routerEnabled"
       :router-visual-effects-enabled="routerVisualEffectsEnabled"
       :router-settings-busy="routerSettingsBusy"
       :coding-mode-enabled="codingModeEnabled"
       :coding-mode-settings-busy="codingModeSettingsBusy"
-      :run-mode="runMode"
-      :allowed-run-modes="allowedRunModes"
-      :full-host-access-disabled-reason="fullHostAccessDisabledReason"
-      :sandbox-setup-busy="sandboxSetupBusy"
-      :sandbox-setup-message="sandboxSetupDetail"
-      :sandbox-setup-visible="sandboxSetupVisible"
       :voice-busy="voiceBusy"
       :voice-recording="voiceRecording"
       @composition-change="composing = $event"
@@ -460,9 +456,7 @@
       @remove-attachment="removeAttachment"
       @retry-attachment="retryAttachment"
       @set-busy-send-mode="busySendMode = $event"
-      @dismiss-sandbox-setup="dismissSandboxSetupPrompt"
-      @ensure-sandbox-setup="ensureSandboxSetupOnly"
-      @set-run-mode="setComposerRunMode"
+      @set-elevated-mode="setComposerElevatedMode"
       @set-router-enabled="setComposerRouterEnabled"
       @set-visual-effects-enabled="setComposerVisualEffectsEnabled"
       @set-coding-mode-enabled="setComposerCodingModeEnabled"
@@ -540,6 +534,7 @@ import { useChatApprovals } from '@/composables/chat/useChatApprovals'
 import { useChatAttachments } from '@/composables/chat/useChatAttachments'
 import { useChatCompaction } from '@/composables/chat/useChatCompaction'
 import { useChatComposerShortcuts } from '@/composables/chat/useChatComposerShortcuts'
+import { useChatElevatedMode } from '@/composables/chat/useChatElevatedMode'
 import { useChatFeatureToggles } from '@/composables/chat/useChatFeatureToggles'
 import { useChatHistory } from '@/composables/chat/useChatHistory'
 import { useChatMarkdownExport } from '@/composables/chat/useChatMarkdownExport'
@@ -557,7 +552,6 @@ import { useChatRouterDecisionRuntime } from '@/composables/chat/useChatRouterDe
 import { useChatAnswerReveal } from '@/composables/chat/useChatAnswerReveal'
 import { useChatRpcEventHandlers } from '@/composables/chat/useChatRpcEventHandlers'
 import { useChatRpcSubscriptions } from '@/composables/chat/useChatRpcSubscriptions'
-import { useChatRunMode } from '@/composables/chat/useChatRunMode'
 import { useChatSend } from '@/composables/chat/useChatSend'
 import { useMetaRuns } from '@/composables/chat/useMetaRuns'
 import { useAgentOptions } from '@/composables/useAgentOptions'
@@ -580,7 +574,6 @@ import type {
 } from '@/types/chat'
 import type {
   ArtifactPayload,
-  RunMode,
 } from '@/types/rpc'
 import type { InterruptViewState } from '@/types/parts'
 import { artifactDownloadUrl } from '@/utils/chat/artifacts'
@@ -672,24 +665,17 @@ const shareTheme = ref<ShareExportTheme>('light')
 // capability does not change within a session, and the modal hides Copy when false.
 const copySupported = shareCopyImageSupported()
 
-const chatRunMode = useChatRunMode({
-  rpc,
-  auth: computed(() => rpc.auth),
-  pushToast,
+const chatElevatedMode = useChatElevatedMode({
+  sessionKey,
 })
 const {
-  allowedRunModes,
-  fullHostAccessDisabledReason,
-  runMode,
-  sandboxSetupBusy,
-  sandboxSetupDetail,
-  sandboxSetupVisible,
-  dismissSandboxSetupPrompt,
-  ensureSandboxSetupOnly,
-  loadSandboxSetupStatus,
-  normalizeRunMode,
-  setRunMode,
-} = chatRunMode
+  elevatedMode,
+  elevatedUnavailable,
+  loadElevatedMode,
+  setElevatedMode,
+  setGlobalElevatedMode,
+  normalizeElevatedMode,
+} = chatElevatedMode
 
 // Run status
 const runStatus = ref<ChatRunStatus>({ status: 'idle', label: t('chat.status.idle'), task: null })
@@ -868,6 +854,7 @@ const {
 
 const chatFeatureToggles = useChatFeatureToggles({
   rpc,
+  setGlobalElevatedMode,
   loadCurrentSessionUsage,
 })
 const {
@@ -1190,14 +1177,14 @@ const chatSend = useChatSend({
   messages,
   sessionKey,
   busySendMode,
-  runMode,
+  elevatedMode,
   pendingAttachments,
   pendingSessionIntent,
   aborted,
   activeStreamTaskId,
   autoScroll,
   stream: chatStream,
-  normalizeRunMode,
+  normalizeElevatedMode,
   persistSession,
   isCompactInFlightForCurrentSession,
   hasPendingAttachmentWork,
@@ -1467,8 +1454,8 @@ function readAuthToken(): string {
   }
 }
 
-function setComposerRunMode(mode: RunMode) {
-  void setRunMode(mode)
+function setComposerElevatedMode(mode: string) {
+  setElevatedMode(mode, { persist: true, sync: true })
 }
 
 async function setComposerRouterEnabled(enabled: boolean) {
@@ -1990,7 +1977,8 @@ onMounted(async () => {
     persistSession(sessionKey.value, { updateRoute: false, source: 'chatView.initialSession' })
   }
 
-  void loadSandboxSetupStatus({ showPrompt: true })
+  // Load elevated mode
+  loadElevatedMode()
 
   // Resolve agent display names for the in-draft switcher.
   void loadAgentOptions()

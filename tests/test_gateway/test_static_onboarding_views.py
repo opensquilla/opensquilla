@@ -7,7 +7,7 @@ VIEWS = ROOT / "static/js/views"
 TEMPLATE = ROOT / "templates/index.html"
 APP = ROOT / "static/js/app.js"
 VUE_WEB_ROUTES = Path("opensquilla-webui/src/router/webRoutes.ts")
-VUE_SETUP_VIEW = Path("opensquilla-webui/src/views/web/SetupView.vue")
+VUE_SETTINGS_VIEW = Path("opensquilla-webui/src/views/web/SettingsView.vue")
 
 
 def test_channels_view_is_read_only_status_surface():
@@ -574,15 +574,18 @@ def test_setup_view_is_loaded_and_registered_but_not_sidebar_primary():
     app = APP.read_text(encoding="utf-8")
     web_routes = VUE_WEB_ROUTES.read_text(encoding="utf-8")
 
+    # Legacy static onboarding UI still registers the Setup view at /setup.
     assert "_renderStandardView(SetupView, el)" in app
     assert "Router.register('/setup'" in app
     assert 'data-path="/setup"' not in app
-    assert "SetupView.vue" in web_routes
-    assert "path: '/setup'" in web_routes
-    assert "name: 'setup'" in web_routes
-    assert "group: 'Configure'" in web_routes
-    assert "group: 'Control'" not in web_routes.split("path: '/setup'", 1)[1].split("}", 1)[0]
-    assert VUE_SETUP_VIEW.exists()
+    # The Vue console consolidated setup into SettingsView: /settings renders it,
+    # and the legacy /setup deep link redirects into the settings overlay rather
+    # than registering a primary sidebar destination.
+    assert "SettingsView.vue" in web_routes
+    assert "path: '/settings'" in web_routes
+    assert "name: 'settings'" in web_routes
+    assert "redirect: '/settings/auto'" in web_routes
+    assert VUE_SETTINGS_VIEW.exists()
 
 
 def test_setup_view_marks_unsupported_providers_disabled():

@@ -12,27 +12,18 @@ const ChatView = (() => {
   let _sessionKey = '';
   let _pendingSessionIntent = null;
 
-  const _RUN_MODE_DEFAULT = 'full';
-  const _RUN_MODE_FALLBACK = 'trusted';
-  const _RUN_MODE_LABELS = {
-    standard: 'Standard-Sandbox',
-    trusted: 'Trusted-Sandbox',
-    full: 'Full Host Access',
-  };
-  const _RUN_MODE_TITLES = {
-    standard: 'Sandboxed execution. Risky actions ask before running.',
-    trusted: 'Sandboxed execution with fewer routine prompts. Boundary changes still ask.',
-    full: 'Host execution without per-command prompts. Use only for trusted workspaces.',
-  };
-  let _runModePolicyDefault = _RUN_MODE_DEFAULT;
-  let _allowedRunModes = new Set(['standard', 'trusted', 'full']);
-  let _fullHostAccessDisabledReason = null;
-  let _runMode = _runModePolicyDefault;
-  let _sandboxSetupStatus = null;
-  let _sandboxSetupRequestSeq = 0;
-  let _sandboxSetupInFlight = false;
-  let _pendingSandboxSetupMode = '';
-  let _sandboxSetupPromptDismissed = false;
+  // Browser-scoped elevated mode. "bypass" skips approval prompts while
+  // keeping sensitive-path checks; "full" also bypasses sensitive-path gates.
+  const _ELEVATED_MODE_KEY = 'opensquilla.elevatedMode';
+  const _ELEVATED_MODE_VERSION_KEY = 'opensquilla.elevatedMode.version';
+  const _ELEVATED_MODE_STORAGE_VERSION = '2';
+  let _elevatedMode = '';
+  let _globalElevatedMode = '';
+  // The /api/elevated-mode endpoint is owner-only. When the gateway is bound
+  // to a wildcard address (LAN deploy), no peer is treated as owner and the
+  // endpoint always returns 403. We latch this state on the first failed
+  // sync so the pill can disable itself instead of toasting on every click.
+  let _elevatedUnavailable = false;
 
   // Streaming
   let _isStreaming = false;
@@ -521,6 +512,7 @@ const ChatView = (() => {
     write_file: '\u270F\uFE0F',   // ✏️
     edit_file: '\u270F\uFE0F',    // ✏️
     web_search: '\uD83D\uDD0D',   // 🔍
+    web_discover: '\uD83D\uDD0E', // 🔎
     search: '\uD83D\uDD0D',       // 🔍
     http_request: '\uD83C\uDF10', // 🌐
     web_fetch: '\uD83C\uDF10',    // 🌐
@@ -651,8 +643,7 @@ const ChatView = (() => {
   let _ctxWarn = null;
   let _fileInput = null;
   let _toolbar = null;
-  let _runModeControl = null;
-  let _sandboxSetupBanner = null;
+  let _elevatedPill = null;
   let _composer = null;
   let _composerObserver = null;
   let _mediaRecorder = null;
@@ -1244,48 +1235,23 @@ const ChatView = (() => {
         </div>
         <div class="chat-pending hidden" id="chat-pending"></div>
         <div class="chat-composer" id="chat-composer">
-          <div class="chat-sandbox-setup-banner hidden" id="chat-sandbox-setup-banner" role="status" aria-live="polite">
-            <div class="chat-sandbox-setup-copy">
-              <strong>Establish sandboxing?</strong>
-              <span data-sandbox-setup-detail>Limit tool access before switching to sandbox modes. Administrator approval may be required.</span>
-            </div>
-            <div class="chat-sandbox-setup-actions">
-              <button type="button" class="btn btn--ghost" id="chat-sandbox-setup-dismiss">Not now</button>
-              <button type="button" class="btn btn--primary" id="chat-sandbox-setup-ensure">Establish sandbox</button>
-            </div>
-          </div>
           <div class="chat-attachments hidden" id="chat-attach-preview"></div>
           <div class="chat-slash hidden" id="chat-slash"></div>
           <div class="chat-input-bar">
             <button class="btn btn--icon btn--ghost" id="chat-btn-attach" title="Attach files: PNG, JPEG, GIF, WEBP, PDF, TXT, MD, HTML, CSV, JSON" aria-label="Attach files">${icons.paperclip()}</button>
             <div class="chat-toolbar-wrap">
               <button type="button" class="btn btn--icon btn--ghost chat-toolbar-trigger" id="chat-toolbar-trigger"
-                      title="Run Mode, Squilla Router, Visual effects"
-                      aria-label="Composer settings"
+                      title="Run modes — execution, router"
+                      aria-label="Run modes"
                       aria-haspopup="dialog"
-                      aria-expanded="false">${_iconGear()}<span class="chat-toolbar-trigger-dots" aria-hidden="true"><i data-dot="run-mode"></i><i data-dot="router"></i></span></button>
+                      aria-expanded="false">${_iconGear()}<span class="chat-toolbar-trigger-dots" aria-hidden="true"><i data-dot="bypass"></i><i data-dot="router"></i></span></button>
               <div class="chat-toolbar-popover hidden" id="chat-toolbar-popover" role="dialog" aria-label="Composer settings">
                 <div class="chat-toolbar-popover-arrow" aria-hidden="true"></div>
                 <div class="chat-toolbar-popover-inner" id="chat-toolbar">
                   <div class="chat-toolbar-row">
-                    <span class="chat-toolbar-row-label">Run Mode</span>
-                    <div class="chat-run-mode-control" id="chat-run-mode-control">
-                      <button type="button" class="chat-run-mode-trigger" id="chat-run-mode-trigger"
-                              aria-haspopup="listbox" aria-expanded="false" aria-controls="chat-run-mode-menu"
-                              data-run-mode="full" data-run-mode-help="Host execution without per-command prompts. Use only for trusted workspaces.">
-                        <span class="chat-run-mode-current">Full Host Access</span>
-                        <span class="chat-run-mode-chevron" aria-hidden="true"></span>
-                      </button>
-                      <div class="chat-run-mode-menu hidden" id="chat-run-mode-menu" role="listbox" aria-label="Run Mode choices">
-                        <button type="button" class="chat-run-mode-option" role="option" data-run-mode="standard"
-                                data-run-mode-help="Sandboxed execution. Risky actions ask before running.">Standard-Sandbox</button>
-                        <button type="button" class="chat-run-mode-option" role="option" data-run-mode="trusted"
-                                data-run-mode-help="Sandboxed execution with fewer routine prompts. Boundary changes still ask.">Trusted-Sandbox</button>
-                        <button type="button" class="chat-run-mode-option" role="option" data-run-mode="full"
-                                data-run-mode-help="Host execution without per-command prompts. Use only for trusted workspaces.">Full Host Access</button>
-                      </div>
-                      <div class="chat-run-mode-tooltip hidden" id="chat-run-mode-tooltip" role="tooltip"></div>
-                    </div>
+                    <span class="chat-toolbar-row-label">Execution mode</span>
+                    <button class="chat-pill chat-pill--danger" id="pill-elevated"
+                            title="Approval prompts are active. Click to enable approval bypass for this browser session.">Approval prompts</button>
                   </div>
                   <div class="chat-toolbar-row">
                     <span class="chat-toolbar-row-label">Squilla Router</span>
@@ -1301,6 +1267,15 @@ const ChatView = (() => {
                     <div class="toggle-switch-wrap" id="pill-router-fx-group" title="Show router and savings effects">
                       <label class="toggle-switch" aria-label="Visual effects">
                         <input type="checkbox" id="toggle-router-fx" />
+                        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                      </label>
+                    </div>
+                  </div>
+                  <div class="chat-toolbar-row">
+                    <span class="chat-toolbar-row-label">Coding mode</span>
+                    <div class="toggle-switch-wrap" id="pill-codetask-group" title="Lock this session into coding mode: code changes go through code-task. Off makes code-task unavailable.">
+                      <label class="toggle-switch" aria-label="Coding mode">
+                        <input type="checkbox" id="toggle-codetask" />
                         <span class="toggle-track"><span class="toggle-thumb"></span></span>
                       </label>
                     </div>
@@ -1339,8 +1314,7 @@ const ChatView = (() => {
     _runStatusEl  = document.getElementById('chat-run-status');
     _fileInput    = _el.querySelector('#chat-file-input');
     _toolbar      = _el.querySelector('#chat-toolbar');
-    _runModeControl = _el.querySelector('#chat-run-mode-control');
-    _sandboxSetupBanner = _el.querySelector('#chat-sandbox-setup-banner');
+    _elevatedPill = _el.querySelector('#pill-elevated');
     _composer     = _el.querySelector('#chat-composer');
 
     _messages = [];
@@ -1350,11 +1324,10 @@ const ChatView = (() => {
     _lastHeaderDay = '';
     _applySessionRunState({ run_status: 'idle' });
 
+    _loadElevatedMode();
     _bindEvents();
-    _bindSandboxSetupBanner();
     _bindToolbarPills();
     _bindToolbarTrigger();
-    _loadSandboxSetupStatus({ showPrompt: true });
     _bindSessionChip();
     _bindComposerResize();
     _bindHoverActions();
@@ -1387,11 +1360,35 @@ const ChatView = (() => {
   }
 
   function _bindToolbarPills() {
-    if (_runModeControl) {
-      _bindRunModePicker();
-      _updateRunModeControl();
+    if (_elevatedPill) {
+      _elevatedPill.addEventListener('click', async () => {
+        if (_elevatedUnavailable) {
+          UI.toast(
+            'Bypass requires a local owner session (loopback only).',
+            'warn',
+            4000,
+          );
+          return;
+        }
+        if (_elevatedMode) {
+          _setElevatedMode('', { toast: true, sync: true });
+          return;
+        }
+        const ok = await UI.confirm({
+          title: 'Enable approval bypass?',
+          message: '<p>This allows host execution without approval prompts in this browser session. This maps to /elevated bypass.</p><p>Sensitive-path checks remain active.</p>',
+          confirmLabel: 'Enable bypass',
+          danger: true,
+        });
+        if (ok) _setElevatedMode('bypass', { toast: true, sync: true });
+      });
     }
-    _applyHelloRunModePolicy(_rpc?.hello);
+
+    const elevatedListener = (event) => {
+      _setElevatedMode(event?.detail?.mode || '', { toast: false, sync: false });
+    };
+    window.addEventListener('opensquilla:elevated-mode', elevatedListener);
+    _unsubs.push(() => window.removeEventListener('opensquilla:elevated-mode', elevatedListener));
 
     // Squilla Router toggle switch
     const routerToggle = _el.querySelector('#toggle-router');
@@ -1416,6 +1413,23 @@ const ChatView = (() => {
           routerToggle.checked = !enabled;
           if (!previousRouterFeatureEnabled) _clearRouterFxVisuals('router_patch_reverted');
           else _scheduleHistorySync();
+          UI.toast('Failed: ' + e.message, 'err');
+        }
+      });
+    }
+
+    // Coding-mode toggle — operator-level (persists to config). ON locks the
+    // session into coding mode (code changes go through code-task); OFF makes
+    // code-task unavailable across every skill API.
+    const codetaskToggle = _el.querySelector('#toggle-codetask');
+    if (codetaskToggle) {
+      codetaskToggle.addEventListener('change', async () => {
+        const enabled = codetaskToggle.checked;
+        try {
+          await _rpc.call('config.patch.safe', { patches: { 'skills.coding_mode': enabled } });
+          UI.toast('Coding mode: ' + (enabled ? 'ON' : 'OFF'), 'info');
+        } catch (e) {
+          codetaskToggle.checked = !enabled;  // revert on failure
           UI.toast('Failed: ' + e.message, 'err');
         }
       });
@@ -1485,9 +1499,18 @@ const ChatView = (() => {
       // per browser, so it survives view re-render / navigation. Inherits the
       // visibility/focus refresh that re-runs this function for free.
       _routerFxLoadPref();
+      _routerFxApplyConfigVisualMode(cfg?.squilla_router?.visual_mode);
       const routerFxToggle = _el?.querySelector('#toggle-router-fx');
       if (routerFxToggle) routerFxToggle.checked = _routerFx.enabled;
       if (window.SavingsFX) window.SavingsFX.setEnabled(_routerFx.enabled);
+      // Coding mode: ON reflects skills.coding_mode.
+      const codetaskToggle = _el?.querySelector('#toggle-codetask');
+      if (codetaskToggle) {
+        codetaskToggle.checked = !!(cfg?.skills?.coding_mode);
+      }
+      _globalElevatedMode = _normalizeElevatedMode(cfg?.permissions?.default_mode);
+      _toolbarState.bypass = _isApprovalBypassMode(_effectiveElevatedMode());
+      _updateElevatedPill();
       _refreshToolbarTriggerGlow();
 
       // Pre-populate the router visualisation from the operator's actual
@@ -2104,14 +2127,14 @@ const ChatView = (() => {
   /* ── Composer Toolbar Popover (gear button) ────────────────────────── */
 
   // Track non-default state on controls so the gear glows accent only when
-  // at least one is set away from defaults: trusted/full run mode OR router off.
+  // at least one is set away from defaults: bypass on OR router off.
   let _toolbarState = {
-    runMode: _runModePolicyDefault,
+    bypass: false,        // true when elevated mode is on
     router: true,         // false when router toggle is off
   };
 
   function _toolbarTriggerActive() {
-    if (_toolbarState.runMode !== _runModePolicyDefault) return true;
+    if (_toolbarState.bypass) return true;
     if (_toolbarState.router === false) return true;
     return false;
   }
@@ -2122,17 +2145,10 @@ const ChatView = (() => {
     trigger.classList.toggle('is-glowing', _toolbarTriggerActive());
     // Per-toggle status dots — each lights independently so a glance at the
     // composer reveals which mode is non-default, not just that something is.
-    const runMode = _normalizeRunMode(_toolbarState.runMode);
-    const nonDefaultRunMode = runMode !== _runModePolicyDefault;
+    const bypass = !!_toolbarState.bypass;
     const routerOff = _toolbarState.router === false;
-    trigger.classList.toggle('has-dot-run-mode', nonDefaultRunMode);
-    trigger.classList.toggle('has-dot-run-mode-full', runMode === 'full');
+    trigger.classList.toggle('has-dot-bypass', bypass);
     trigger.classList.toggle('has-dot-router', routerOff);
-    trigger.title = [
-      `Run Mode: ${_RUN_MODE_LABELS[runMode] || _RUN_MODE_LABELS.standard}`,
-      `Squilla Router: ${routerOff ? 'Off' : 'On'}`,
-      'Visual effects',
-    ].join(' · ');
   }
 
   function _bindToolbarTrigger() {
@@ -2234,408 +2250,132 @@ const ChatView = (() => {
     });
   }
 
-  function _isSandboxSetupReadyPayload(payload) {
-    return String(payload && payload.state || '').toLowerCase() === 'ready';
+  function _normalizeElevatedMode(mode) {
+    return mode === 'on' || mode === 'bypass' || mode === 'full' ? mode : '';
   }
 
-  function _sandboxSetupReadyForMode(mode) {
-    mode = _normalizeRunMode(mode);
-    if (mode === 'full') return true;
-    return _isSandboxSetupReadyPayload(_sandboxSetupStatus);
+  function _effectiveElevatedMode() {
+    return _normalizeElevatedMode(_elevatedMode || _globalElevatedMode);
   }
 
-  function _sandboxSetupMessage(payload) {
-    if (!payload || typeof payload !== 'object') return '';
-    if (payload.state === 'failed' && payload.message && payload.detail) {
-      return `${payload.message}: ${payload.detail}`;
-    }
-    return payload.message || payload.detail || '';
+  function _isApprovalBypassMode(mode) {
+    return mode === 'bypass' || mode === 'full';
   }
 
-  function _refreshSandboxSetupBanner(mode = _runMode) {
-    const banner = _sandboxSetupBanner || (_el && _el.querySelector('#chat-sandbox-setup-banner'));
-    if (!banner) return;
-    _sandboxSetupBanner = banner;
-    mode = _normalizeRunMode(mode);
-    const setupKnown = _sandboxSetupStatus !== null;
-    const setupReady = _isSandboxSetupReadyPayload(_sandboxSetupStatus);
-    const pendingPrompt = !!_pendingSandboxSetupMode;
-    const optionalPrompt = setupKnown && !_sandboxSetupPromptDismissed;
-    const shouldShow = !setupReady && (pendingPrompt || optionalPrompt);
-    banner.classList.toggle('hidden', !shouldShow);
-    banner.dataset.state = String(_sandboxSetupStatus && _sandboxSetupStatus.state || '');
-    const detail = banner.querySelector('[data-sandbox-setup-detail]');
-    if (detail) {
-      const msg = _sandboxSetupMessage(_sandboxSetupStatus);
-      detail.textContent = msg || 'Limit tool access before switching to sandbox modes. Administrator approval may be required.';
-    }
-    const ensureBtn = banner.querySelector('#chat-sandbox-setup-ensure');
-    if (ensureBtn) ensureBtn.disabled = _sandboxSetupInFlight;
-  }
-
-  async function _loadSandboxSetupStatus(options = {}) {
-    if (!_rpc) return null;
-    const mode = _normalizeRunMode(
-      typeof options === 'string' ? options : (options && options.mode) || _runMode,
-    );
-    const requestSeq = ++_sandboxSetupRequestSeq;
+  function _loadElevatedMode() {
+    let mode = '';
+    let version = '';
     try {
-      if (_rpc.waitForConnection) await _rpc.waitForConnection();
-      const payload = await _rpc.call('sandbox.setup.status', {});
-      if (requestSeq !== _sandboxSetupRequestSeq) return _sandboxSetupStatus;
-      _sandboxSetupStatus = payload || null;
-      _refreshSandboxSetupBanner(mode);
-      return _sandboxSetupStatus;
-    } catch {
-      return _sandboxSetupStatus;
+      mode = localStorage.getItem(_ELEVATED_MODE_KEY) || '';
+      version = localStorage.getItem(_ELEVATED_MODE_VERSION_KEY) || '';
+    } catch {}
+    if (mode === 'full' && version !== _ELEVATED_MODE_STORAGE_VERSION) {
+      mode = 'bypass';
+      try {
+        localStorage.setItem(_ELEVATED_MODE_KEY, mode);
+        localStorage.setItem(_ELEVATED_MODE_VERSION_KEY, _ELEVATED_MODE_STORAGE_VERSION);
+      } catch {}
     }
+    _setElevatedMode(mode, { persist: false, toast: false, sync: true });
   }
 
-  async function _ensureSandboxSetupOnly() {
-    if (!_rpc) return false;
-    if (_sandboxSetupReadyForMode('standard')) return true;
-    _sandboxSetupInFlight = true;
-    _refreshSandboxSetupBanner(_pendingSandboxSetupMode || _runMode);
-    try {
-      if (_rpc.waitForConnection) await _rpc.waitForConnection();
-      const payload = await _rpc.call('sandbox.setup.ensure', {});
-      _sandboxSetupStatus = payload || null;
-      const ready = _isSandboxSetupReadyPayload(_sandboxSetupStatus);
-      _sandboxSetupInFlight = false;
-      _refreshSandboxSetupBanner(_pendingSandboxSetupMode || _runMode);
-      UI.toast(ready ? 'Sandbox established' : 'Sandbox setup is not ready', ready ? 'ok' : 'warn', 2200);
-      if (ready && _pendingSandboxSetupMode) {
-        const pendingMode = _pendingSandboxSetupMode;
-        _pendingSandboxSetupMode = '';
-        _setRunMode(pendingMode, { toast: true });
-      }
-      return ready;
-    } catch (err) {
-      _sandboxSetupInFlight = false;
-      if (err && err.details) _sandboxSetupStatus = err.details;
-      _refreshSandboxSetupBanner(_pendingSandboxSetupMode || _runMode);
-      UI.toast('Sandbox setup failed: ' + (err && err.message ? err.message : 'unknown error'), 'err', 3500);
-      return false;
-    }
-  }
-
-  async function _requestSandboxSetupForMode(mode) {
-    mode = _normalizeRunMode(mode);
-    if (!_runModeAllowed(mode)) return false;
-    if (mode === 'full') return true;
-    if (_sandboxSetupReadyForMode(mode)) return true;
-    _sandboxSetupPromptDismissed = false;
-    const status = await _loadSandboxSetupStatus(mode);
-    if (_isSandboxSetupReadyPayload(status)) return true;
-    _pendingSandboxSetupMode = mode;
-    _refreshSandboxSetupBanner(mode);
-    UI.toast('Sandbox setup is required before switching modes.', 'warn', 2400);
-    return false;
-  }
-
-  function _bindSandboxSetupBanner() {
-    const banner = _sandboxSetupBanner || (_el && _el.querySelector('#chat-sandbox-setup-banner'));
-    if (!banner) return;
-    _sandboxSetupBanner = banner;
-    const dismiss = banner.querySelector('#chat-sandbox-setup-dismiss');
-    const ensure = banner.querySelector('#chat-sandbox-setup-ensure');
-    if (dismiss) {
-      dismiss.addEventListener('click', () => {
-        _sandboxSetupPromptDismissed = true;
-        _pendingSandboxSetupMode = '';
-        _setRunMode(_runModePolicyDefault, { toast: false });
-        banner.classList.add('hidden');
-      });
-    }
-    if (ensure) {
-      ensure.addEventListener('click', () => {
-        _ensureSandboxSetupOnly();
-      });
-    }
-  }
-
-  function _runModePolicyValue(value) {
-    const normalized = String(value || '').trim().toLowerCase().replace(/_/g, '-');
-    if (normalized === 'standard' || normalized === 'standard-sandbox') return 'standard';
-    if (normalized === 'trusted' || normalized === 'trust' || normalized === 'trusted-sandbox') return 'trusted';
-    if (normalized === 'full' || normalized === 'full-host-access' || normalized === 'host') return 'full';
-    return '';
-  }
-
-  function _normalizeRunModePolicyValue(value, fallback) {
-    return _runModePolicyValue(value) || _runModePolicyValue(fallback) || _RUN_MODE_FALLBACK;
-  }
-
-  function _runModeAllowed(mode) {
-    const normalized = _runModePolicyValue(mode);
-    return !!normalized && _allowedRunModes.has(normalized);
-  }
-
-  function _firstAllowedRunMode() {
-    if (_allowedRunModes.has(_RUN_MODE_FALLBACK)) return _RUN_MODE_FALLBACK;
-    if (_allowedRunModes.has('standard')) return 'standard';
-    if (_allowedRunModes.has('trusted')) return 'trusted';
-    if (_allowedRunModes.has('full')) return 'full';
-    return _RUN_MODE_FALLBACK;
-  }
-
-  function _clampRunMode(mode) {
-    const normalized = _normalizeRunModePolicyValue(mode, _runModePolicyDefault);
-    if (_runModeAllowed(normalized)) return normalized;
-    if (_runModeAllowed(_runModePolicyDefault)) return _runModePolicyDefault;
-    return _firstAllowedRunMode();
-  }
-
-  function _fullHostAccessDisabledMessage() {
-    let lang = '';
-    if (typeof document !== 'undefined' && document.documentElement) {
-      lang = document.documentElement.lang || '';
-    }
-    if (!lang && typeof navigator !== 'undefined') lang = navigator.language || '';
-    if (String(lang).toLowerCase().startsWith('zh')) {
-      return '当前账号不是 owner，不能选择 Full Host Access。你可以使用 Standard-Sandbox 或 Trusted-Sandbox。';
-    }
-    return 'This account is not the owner, so Full Host Access is unavailable. You can use Standard-Sandbox or Trusted-Sandbox.';
-  }
-
-  function _applyHelloRunModePolicy(hello) {
-    const policy = hello && hello.auth && hello.auth.runModePolicy;
-    const previousPolicyDefault = _runModePolicyDefault;
-    const nextAllowed = new Set();
-    if (policy && Array.isArray(policy.allowedRunModes)) {
-      policy.allowedRunModes.forEach((mode) => {
-        const normalized = _runModePolicyValue(mode);
-        if (normalized) nextAllowed.add(normalized);
-      });
-    }
-    _allowedRunModes = nextAllowed.size > 0
-      ? nextAllowed
-      : new Set(['standard', 'trusted']);
-
-    const policyDefaultFallback = _allowedRunModes.has('full') ? 'full' : _RUN_MODE_FALLBACK;
-    const policyDefault = _normalizeRunModePolicyValue(
-      policy && policy.defaultRunMode,
-      policyDefaultFallback,
-    );
-    _runModePolicyDefault = _allowedRunModes.has(policyDefault)
-      ? policyDefault
-      : _firstAllowedRunMode();
-
-    const disabledReason = policy && policy.fullHostAccessDisabledReason;
-    _fullHostAccessDisabledReason = _allowedRunModes.has('full')
-      ? null
-      : (disabledReason ? String(disabledReason) : 'owner_required');
-
-    if (_runMode === previousPolicyDefault) {
-      _runMode = _runModePolicyDefault;
-    }
-    _runMode = _clampRunMode(_runMode);
-    _toolbarState.runMode = _runMode;
-    if (typeof _updateRunModeControl === 'function') _updateRunModeControl();
-    if (typeof _refreshToolbarTriggerGlow === 'function') _refreshToolbarTriggerGlow();
-  }
-
-  function _runModeHelp(mode) {
-    const normalized = _normalizeRunMode(mode);
-    return _RUN_MODE_TITLES[normalized] || _RUN_MODE_TITLES.standard;
-  }
-
-  function _showRunModeTooltip(anchor) {
-    if (!_el || !anchor) return;
-    const tip = _el.querySelector('#chat-run-mode-tooltip');
-    if (!tip) return;
-    const mode = _normalizeRunMode(anchor.dataset.runMode || _runMode);
-    tip.textContent = anchor.dataset.runModeHelp || _runModeHelp(mode);
-    tip.classList.remove('hidden');
-    const rect = anchor.getBoundingClientRect();
-    const tipRect = tip.getBoundingClientRect();
-    const margin = 10;
-    let left = rect.left + rect.width / 2 - tipRect.width / 2;
-    left = Math.max(margin, Math.min(left, window.innerWidth - tipRect.width - margin));
-    let top = rect.top - tipRect.height - 8;
-    tip.dataset.placement = 'top';
-    if (top < margin) {
-      top = rect.bottom + 8;
-      tip.dataset.placement = 'bottom';
-    }
-    tip.style.left = `${Math.round(left)}px`;
-    tip.style.top = `${Math.round(top)}px`;
-  }
-
-  function _hideRunModeTooltip() {
-    const tip = _el && _el.querySelector('#chat-run-mode-tooltip');
-    if (!tip) return;
-    tip.classList.add('hidden');
-  }
-
-  function _bindRunModePicker() {
-    const control = _runModeControl;
-    const trigger = control && control.querySelector('#chat-run-mode-trigger');
-    const menu = control && control.querySelector('#chat-run-mode-menu');
-    if (!control || !trigger || !menu) return;
-
-    let open = false;
-    let docHandlers = null;
-
-    const close = () => {
-      if (!open) return;
-      open = false;
-      menu.classList.add('hidden');
-      trigger.classList.remove('is-open');
-      trigger.setAttribute('aria-expanded', 'false');
-      if (docHandlers) {
-        document.removeEventListener('mousedown', docHandlers.click, true);
-        document.removeEventListener('keydown', docHandlers.key);
-        docHandlers = null;
-      }
-    };
-
-    const show = () => {
-      if (open) return;
-      open = true;
-      menu.classList.remove('hidden');
-      trigger.classList.add('is-open');
-      trigger.setAttribute('aria-expanded', 'true');
-      docHandlers = {
-        click: (e) => {
-          if (control.contains(e.target)) return;
-          close();
-        },
-        key: (e) => {
-          if (e.key === 'Escape') { e.stopPropagation(); close(); }
-        },
-      };
-      setTimeout(() => {
-        if (!open) return;
-        document.addEventListener('mousedown', docHandlers.click, true);
-        document.addEventListener('keydown', docHandlers.key);
-      }, 0);
-    };
-
-    trigger.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      if (open) close(); else show();
-    });
-
-    control.querySelectorAll('.chat-run-mode-option').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        const mode = _normalizeRunMode(btn.dataset.runMode);
-        close();
-        if (btn.disabled || btn.getAttribute('aria-disabled') === 'true' || !_runModeAllowed(mode)) {
-          UI.toast(_fullHostAccessDisabledMessage(), mode === 'full' ? 'warn' : 'info', 2400);
-          return;
+  function _setElevatedMode(mode, options = {}) {
+    const normalized = _normalizeElevatedMode(mode);
+    _elevatedMode = normalized;
+    if (options.persist !== false) {
+      try {
+        if (normalized) {
+          localStorage.setItem(_ELEVATED_MODE_KEY, normalized);
+          localStorage.setItem(_ELEVATED_MODE_VERSION_KEY, _ELEVATED_MODE_STORAGE_VERSION);
+        } else {
+          localStorage.removeItem(_ELEVATED_MODE_KEY);
+          localStorage.removeItem(_ELEVATED_MODE_VERSION_KEY);
         }
-        if (mode === _runMode) return;
-        if (!(await _requestSandboxSetupForMode(mode))) return;
-        _setRunMode(mode, { toast: true });
-      });
-    });
-
-    control.querySelectorAll('[data-run-mode]').forEach((node) => {
-      node.addEventListener('mouseenter', () => _showRunModeTooltip(node));
-      node.addEventListener('focus', () => _showRunModeTooltip(node));
-      node.addEventListener('mouseleave', _hideRunModeTooltip);
-      node.addEventListener('blur', _hideRunModeTooltip);
-    });
-
-    _unsubs.push(() => {
-      close();
-      _hideRunModeTooltip();
-    });
-  }
-
-  function _normalizeRunMode(mode) {
-    const value = String(mode || '').trim().toLowerCase().replace(/_/g, '-');
-    if (value === 'standard' || value === 'standard-sandbox') return 'standard';
-    if (value === 'trusted' || value === 'trust' || value === 'trusted-sandbox') return 'trusted';
-    if (value === 'full' || value === 'full-host-access' || value === 'host') return 'full';
-    return _normalizeRunModePolicyValue(mode, _runModePolicyDefault);
-  }
-
-  function _setRunMode(mode, options = {}) {
-    const normalized = _normalizeRunMode(mode);
-    const clamped = _clampRunMode(normalized);
-    if (normalized !== clamped && !_runModeAllowed(normalized)) {
-      UI.toast(_fullHostAccessDisabledMessage(), normalized === 'full' ? 'warn' : 'info', 2400);
-      return false;
+      } catch {}
     }
-    _runMode = clamped;
-    _toolbarState.runMode = clamped;
-    _updateRunModeControl();
+    _toolbarState.bypass = _isApprovalBypassMode(_effectiveElevatedMode());
     _refreshToolbarTriggerGlow();
-    _refreshSandboxSetupBanner(clamped);
+    _updateElevatedPill();
     if (options.toast) {
-      UI.toast(`Run Mode: ${_RUN_MODE_LABELS[clamped]}`, clamped === 'full' ? 'warn' : 'info', 1800);
+      UI.toast(
+        normalized
+          ? `Session permission mode: ${normalized}`
+          : (_globalElevatedMode
+              ? `Session override cleared; global mode: ${_globalElevatedMode}`
+              : 'Session permission override cleared'),
+        normalized ? 'warn' : 'info',
+        2500
+      );
     }
-    return true;
+    if (options.sync) _syncElevatedMode(normalized);
   }
 
-  function _updateRunModeControl() {
-    const control = _runModeControl || (_el && _el.querySelector('#chat-run-mode-control'));
-    if (!control) return;
-    _runModeControl = control;
-    const active = _clampRunMode(_runMode);
-    const trigger = control.querySelector('#chat-run-mode-trigger');
-    const current = control.querySelector('.chat-run-mode-current');
-    if (trigger) {
-      trigger.dataset.runMode = active;
-      trigger.dataset.runModeHelp = _runModeHelp(active);
-      trigger.classList.toggle('is-danger', active === 'full');
-    }
-    if (current) current.textContent = _RUN_MODE_LABELS[active] || _RUN_MODE_LABELS.standard;
-    control.querySelectorAll('.chat-run-mode-option').forEach((btn) => {
-      const mode = _normalizeRunMode(btn.dataset.runMode);
-      const allowed = _runModeAllowed(mode);
-      const selected = mode === active;
-      btn.classList.toggle('is-active', selected);
-      btn.classList.toggle('is-danger', mode === 'full' && selected);
-      btn.setAttribute('aria-selected', selected ? 'true' : 'false');
-      btn.disabled = !allowed;
-      btn.setAttribute('aria-disabled', allowed ? 'false' : 'true');
-      const help = !allowed && mode === 'full'
-        ? _fullHostAccessDisabledMessage()
-        : _runModeHelp(mode);
-      btn.dataset.runModeHelp = help;
-      btn.title = help;
-    });
-    const menu = control.querySelector('#chat-run-mode-menu');
-    if (menu) {
-      let hint = menu.querySelector('[data-run-mode-disabled-hint]');
-      if (!hint) {
-        hint = document.createElement('div');
-        hint.className = 'chat-run-mode-disabled-hint hidden';
-        hint.setAttribute('data-run-mode-disabled-hint', '');
-        menu.appendChild(hint);
+  async function _syncElevatedMode(mode) {
+    if (!_sessionKey || _elevatedUnavailable) return;
+    try {
+      const resp = await fetch('/api/elevated-mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionKey: _sessionKey, mode: mode || 'off' }),
+      });
+      if (resp.status === 403) {
+        // Owner-only endpoint, but the current connection isn't a local-owner
+        // session (typically: gateway bound to 0.0.0.0). Latch the disabled
+        // state, clear any cached elevated mode, refresh the pill UI, and let
+        // the user know once instead of toasting on every click.
+        _elevatedUnavailable = true;
+        try {
+          localStorage.removeItem(_ELEVATED_MODE_KEY);
+          localStorage.removeItem(_ELEVATED_MODE_VERSION_KEY);
+        } catch {}
+        _elevatedMode = '';
+        _updateElevatedPill();
+        UI.toast(
+          'Bypass requires a local owner session (loopback only).',
+          'warn',
+          4000,
+        );
+        return;
       }
-      const showHint = !!_fullHostAccessDisabledReason;
-      hint.textContent = showHint ? _fullHostAccessDisabledMessage() : '';
-      hint.classList.toggle('hidden', !showHint);
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const payload = await resp.json().catch(() => ({}));
+      if (payload?.resolvedPending && window.ApprovalMonitor) {
+        ApprovalMonitor.pollNow();
+      }
+    } catch (err) {
+      UI.toast('Failed to sync bypass mode: ' + err.message, 'err', 3500);
     }
   }
 
-  function _startNewChatSession(source) {
-    _unsubscribeSession();
-    _parkCurrentSessionStreamState(source || 'new_chat');
-    const inheritedRunMode = _normalizeRunMode(_runMode);
-    const key = _genKey();
-    _updateSessionChip(key);
-    _persistSession(key);
-    _setRunMode(inheritedRunMode, { toast: false });
-    _clearPendingDrainAfterTerminalTimer();
-    _setCompactInFlight(false);
-    _hideCompactionSeparator();
-    _pendingSessionIntent = 'new_chat'; _pendingQueue = []; if (_pendingArea) _renderPendingQueue();
-    _messages = [];
-    _clearContextStatus();
-    _resetHistoryPagingState();
-    _lastHeaderRole = '';
-    _lastHeaderDay = '';
-    _usageAccum = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null, routedTurns: 0, sessionSaved: 0 };
-    _usageModel = '';
-    _viz.reset(); _resetSavingsPopupCooldown();
-    _thread.innerHTML = _emptyStateHTML(); // safe: static string, no user data
-    _subscribeSession();
-    UI.toast('New chat session in the current agent: ' + key, 'info');
+  function _updateElevatedPill() {
+    if (!_elevatedPill) return;
+    if (_elevatedUnavailable) {
+      _elevatedPill.classList.remove('is-active');
+      _elevatedPill.classList.add('chat-pill--disabled');
+      _elevatedPill.textContent = 'Bypass N/A';
+      _elevatedPill.title =
+        'Bypass requires a local owner session. The gateway is bound to a non-loopback address, so this client cannot toggle elevated mode.';
+      _elevatedPill.setAttribute('aria-disabled', 'true');
+      return;
+    }
+    const effective = _effectiveElevatedMode();
+    const active = !!effective;
+    _elevatedPill.classList.remove('chat-pill--disabled');
+    _elevatedPill.removeAttribute('aria-disabled');
+    _elevatedPill.classList.toggle('is-active', active);
+    if (_elevatedMode) {
+      _elevatedPill.textContent = `Session ${_elevatedMode.toUpperCase()}`;
+      _elevatedPill.title =
+        'Session permission override is active. Approval prompts are bypassed for this browser chat session. Click to clear the override.';
+    } else if (_globalElevatedMode) {
+      _elevatedPill.textContent = `Global ${_globalElevatedMode.toUpperCase()}`;
+      _elevatedPill.title =
+        'Global permission default controls execution mode and is configured by opensquilla sandbox on|bypass|full|reset.';
+    } else {
+      _elevatedPill.textContent = 'Approval prompts';
+      _elevatedPill.title =
+        'Approval prompts are active. Click to enable approval bypass for this browser session.';
+    }
   }
 
   /* ── Event Bindings ─────────────────────────────────────────────────── */
@@ -2655,7 +2395,28 @@ const ChatView = (() => {
     // _sessionInput is null; no listener needed here.
 
     // New session button
-    newBtn.addEventListener('click', () => _startNewChatSession('new_chat'));
+    newBtn.addEventListener('click', () => {
+      _unsubscribeSession();
+      _parkCurrentSessionStreamState('new_chat');
+      const key = _genKey();
+      _updateSessionChip(key);
+      _persistSession(key);
+      _clearPendingDrainAfterTerminalTimer();
+      _setCompactInFlight(false);
+      _hideCompactionSeparator();
+      _pendingSessionIntent = 'new_chat'; _pendingQueue = []; if (_pendingArea) _renderPendingQueue();
+      _messages = [];
+      _clearContextStatus();
+      _resetHistoryPagingState();
+      _lastHeaderRole = '';
+      _lastHeaderDay = '';
+      _usageAccum = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null, routedTurns: 0, sessionSaved: 0 };
+      _usageModel = '';
+      _viz.reset(); _resetSavingsPopupCooldown();
+      _thread.innerHTML = _emptyStateHTML(); // safe: static string, no user data
+      _subscribeSession();
+      UI.toast('New chat session in the current agent: ' + key, 'info');
+    });
 
     // Export
     exportBtn.addEventListener('click', _exportMarkdown);
@@ -2966,7 +2727,26 @@ const ChatView = (() => {
     switch (action) {
       case 'new_chat':
       case '/new': {
-        _startNewChatSession('new_chat');
+        _unsubscribeSession();
+        _parkCurrentSessionStreamState('new_chat');
+        const key = _genKey();
+        _updateSessionChip(key);
+        _persistSession(key);
+        _clearPendingDrainAfterTerminalTimer();
+        _setCompactInFlight(false);
+        _hideCompactionSeparator();
+        _pendingSessionIntent = 'new_chat'; _pendingQueue = []; if (_pendingArea) _renderPendingQueue();
+        _messages = [];
+        _clearContextStatus();
+        _resetHistoryPagingState();
+        _lastHeaderRole = '';
+        _lastHeaderDay = '';
+        _usageAccum = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null, routedTurns: 0, sessionSaved: 0 };
+        _usageModel = '';
+        _viz.reset(); _resetSavingsPopupCooldown();
+        _thread.innerHTML = _emptyStateHTML(); // safe: static string, no user data
+        _subscribeSession();
+        UI.toast('New chat session in the current agent: ' + key, 'info');
         break;
       }
       case 'reset_session':
@@ -3041,6 +2821,42 @@ const ChatView = (() => {
             );
           })
           .catch((err) => UI.toast('Usage failed: ' + err.message, 'err'));
+        break;
+      }
+      case 'meta.menu': {
+        const skillName = args.trim();
+        if (!skillName) {
+          // No arg → list available meta-skills.
+          _rpc.call('meta.list')
+            .then((result) => {
+              const skills = Array.isArray(result?.skills) ? result.skills : [];
+              if (result?.disabled || skills.length === 0) {
+                _addMessage('system', 'No meta-skills available.');
+                return;
+              }
+              const lines = skills.map((s) => {
+                const name = s?.name || '';
+                const desc = s?.description ? ` — ${s.description}` : '';
+                return `- ${name}${desc}`;
+              });
+              _addMessage('system', 'Available meta-skills:\n' + lines.join('\n'));
+            })
+            .catch((err) => UI.toast('meta.list failed: ' + err.message, 'err'));
+          break;
+        }
+        // With <name> → stamp the run, then send a normal turn so the
+        // pipeline seed auto-launches the skill on the next turn.
+        _rpc.call('meta.run', { name: skillName, sessionKey: _sessionKey })
+          .then((result) => {
+            if (result && result.ok) {
+              _sendTextOverride = `/meta ${skillName}`;
+              _onSend();
+              return;
+            }
+            const error = (result && result.error) || 'meta.run failed';
+            _addMessage('error', `meta.run failed: ${error}`);
+          })
+          .catch((err) => UI.toast('meta.run failed: ' + err.message, 'err'));
         break;
       }
     }
@@ -3605,10 +3421,49 @@ const ChatView = (() => {
   // the whole animation (scan + ~360ms settle transition) stays under ~1s.
   const _ROUTER_FX_SCAN_MS = 600;
   const _ROUTER_FX_START_DELAY_MS = 280;
-  const _routerFx = { enabled: true, variant: 'default' };
+  const _ROUTER_FX_GRID_COLS = 5;
+  const _ROUTER_FX_GRID_ROWS = 3;
+  const _ROUTER_FX_GRID_CELLS = _ROUTER_FX_GRID_COLS * _ROUTER_FX_GRID_ROWS;
+  const _ROUTER_FX_REAL_ANCHOR_CELLS = [1, 6, 8, 13, 11, 3, 5, 9, 12, 14, 0, 4, 7, 10, 2];
+  const _ROUTER_FX_DECOY_POOL = [
+    'gpt-5.5',
+    'claude-opus-4.8',
+    'gemini-3.5-flash',
+    'qwen3-coder-plus',
+    'grok-4.3',
+    'gpt-5.4-mini',
+    'claude-sonnet-4.6',
+    'gemini-3.1-pro',
+    'deepseek-v3.2',
+    'kimi-k2.6',
+    'command-a-plus',
+    'grok-build-0.1',
+    'glm-4.6',
+    'mistral-medium-3.5',
+    'claude-haiku-4.5',
+  ];
+  const _routerFx = { enabled: true, visualMode: 'real_candidates', variant: 'default' };
+  function _routerFxNormalizeVisualMode(mode) {
+    const normalized = typeof mode === 'string'
+      ? mode.trim().toLowerCase().replace(/-/g, '_')
+      : '';
+    if (normalized === 'legacy_grid' || normalized === 'model_space' || normalized === 'modelspace') {
+      return 'legacy_grid';
+    }
+    return 'real_candidates';
+  }
+  function _routerFxPanelDataset(mode) {
+    return _routerFxNormalizeVisualMode(mode) === 'legacy_grid'
+      ? 'legacy-grid'
+      : 'real-candidates';
+  }
+  function _routerFxApplyConfigVisualMode(mode) {
+    _routerFx.visualMode = _routerFxNormalizeVisualMode(mode);
+  }
   function _routerFxLoadPref() {
     // Defaults stand (enabled ON, default variant) unless a stored pref
     // overrides them. localStorage may throw (private mode / quota) — swallow.
+    _routerFx.visualMode = 'real_candidates';
     _routerFx.variant = 'default';
     try {
       const raw = localStorage.getItem(_ROUTER_FX_PREF_KEY);
@@ -3839,6 +3694,36 @@ const ChatView = (() => {
   function _routerFxResolveLayoutSeed(sessionKey, hintTimestamp) {
     return _routerFxResolveSeed(sessionKey, 0, 'layout', hintTimestamp);
   }
+  function _routerFxSeedHash(seedKey) {
+    const text = seedKey == null ? '' : String(seedKey);
+    let hash = 2166136261;
+    for (let i = 0; i < text.length; i++) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return hash >>> 0;
+  }
+  function _routerFxSeededRandom(seedKey) {
+    let state = _routerFxSeedHash(seedKey) || 0x9e3779b9;
+    return () => {
+      state += 0x6d2b79f5;
+      let t = state;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function _routerFxShuffle(items, seedKey) {
+    const out = items.slice();
+    const random = seedKey ? _routerFxSeededRandom(seedKey) : Math.random;
+    for (let i = out.length - 1; i > 0; i--) {
+      const j = Math.floor(random() * (i + 1));
+      const tmp = out[i];
+      out[i] = out[j];
+      out[j] = tmp;
+    }
+    return out;
+  }
   function _routerFxIdentity(model, tier) {
     const modelPart = typeof model === 'string' ? model.trim().toLowerCase() : '';
     const tierPart = _routerFxNormalizeTier(tier);
@@ -3903,9 +3788,9 @@ const ChatView = (() => {
     return _routerFxVisualEntries(requestKind, decision);
   }
 
-  // Assemble the grid from real candidates only. No filler/decoy wall: every
-  // visible model name is a candidate that could actually be called this turn.
-  function _routerFxBuildGridCells(realEntries, seedKey) {
+  // Assemble the default panel from real candidates only. No filler/decoy
+  // wall: every visible model name is callable for this turn.
+  function _routerFxBuildCandidateGridCells(realEntries, seedKey) {
     const orderedRealEntries = realEntries.slice().sort((a, b) => (
       (a.displayName || a.key || '').localeCompare(b.displayName || b.key || '')
     ));
@@ -3914,6 +3799,63 @@ const ChatView = (() => {
       entry,
       displayName: entry.displayName,
     }));
+  }
+
+  // Legacy grid is a visual wall only: real candidates keep their in-memory
+  // entries for winner lookup, while decoys are labels with no tier metadata.
+  function _routerFxBuildLegacyGridCells(realEntries, seedKey) {
+    const cells = Array.from({ length: _ROUTER_FX_GRID_CELLS }, () => null);
+    const realNames = new Set();
+    const orderedRealEntries = realEntries.slice().sort((a, b) => (
+      (a.label || a.displayName || a.key || '').localeCompare(b.label || b.displayName || b.key || '')
+    ));
+    orderedRealEntries.forEach((entry, i) => {
+      const anchor = _ROUTER_FX_REAL_ANCHOR_CELLS[i];
+      const idx = typeof anchor === 'number' ? anchor : cells.findIndex((cell) => cell == null);
+      if (idx < 0 || idx >= cells.length) return;
+      cells[idx] = {
+        kind: 'real',
+        entry,
+        displayName: entry.displayName,
+        label: entry.label || entry.displayName,
+        title: entry.title || entry.label || entry.displayName,
+      };
+      if (entry.displayName) realNames.add(entry.displayName);
+      if (entry.label) realNames.add(entry.label);
+    });
+
+    const decoys = [];
+    for (let i = 0; i < _ROUTER_FX_DECOY_POOL.length && decoys.length < _ROUTER_FX_GRID_CELLS; i++) {
+      const name = _ROUTER_FX_DECOY_POOL[i];
+      if (realNames.has(name)) continue;
+      decoys.push({
+        kind: 'decoy',
+        displayName: name,
+        label: name,
+        title: name,
+      });
+    }
+    while (decoys.length < _ROUTER_FX_GRID_CELLS) {
+      decoys.push({
+        kind: 'decoy',
+        displayName: '-',
+        label: '-',
+        title: '-',
+      });
+    }
+    const orderedDecoys = _routerFxShuffle(decoys, seedKey ? seedKey + ':decoy' : undefined);
+    let decoyIdx = 0;
+    for (let i = 0; i < cells.length; i++) {
+      if (cells[i] == null) cells[i] = orderedDecoys[decoyIdx++];
+    }
+    return cells;
+  }
+
+  function _routerFxBuildGridCells(realEntries, seedKey, visualMode) {
+    if (_routerFxNormalizeVisualMode(visualMode) === 'legacy_grid') {
+      return _routerFxBuildLegacyGridCells(realEntries, seedKey);
+    }
+    return _routerFxBuildCandidateGridCells(realEntries, seedKey);
   }
 
   function _buildRouterFxElement(decision, opts) {
@@ -3954,17 +3896,24 @@ const ChatView = (() => {
     // layout on every rebuild, so the field never reshuffles after lock.
     const seedKey = opts && opts.seedKey ? String(opts.seedKey) : '';
     if (seedKey) wrap.dataset.seed = seedKey;
+    const visualMode = _routerFxNormalizeVisualMode(
+      opts.visualMode != null ? opts.visualMode : _routerFx.visualMode,
+    );
+    wrap.dataset.panel = _routerFxPanelDataset(visualMode);
 
     const requestKind = _routerFxRequestKindFromDecision(decision, opts.requestKind);
     const realEntries = _routerFxRealEntries(decision, requestKind);
     if (realEntries.length <= 1) return null;
-    const gridCells = _routerFxBuildGridCells(realEntries, seedKey || undefined);
+    const gridCells = _routerFxBuildGridCells(realEntries, seedKey || undefined, visualMode);
 
     const grid = document.createElement('div');
     grid.className = 'router-fx-grid';
-    const cols = Math.min(4, Math.max(2, gridCells.length));
-    const mobileCols = gridCells.length > 2 ? 2 : gridCells.length;
+    const isLegacyGrid = visualMode === 'legacy_grid';
+    const cols = isLegacyGrid ? _ROUTER_FX_GRID_COLS : Math.min(4, Math.max(2, gridCells.length));
+    const rows = isLegacyGrid ? _ROUTER_FX_GRID_ROWS : 1;
+    const mobileCols = isLegacyGrid ? 3 : (gridCells.length > 2 ? 2 : gridCells.length);
     grid.style.setProperty('--router-fx-cols', String(cols));
+    grid.style.setProperty('--router-fx-rows', String(rows));
     grid.style.setProperty('--router-fx-mobile-cols', String(Math.max(1, mobileCols)));
     gridCells.forEach((cellInfo, i) => {
       const cell = document.createElement('div');
@@ -5653,7 +5602,6 @@ const ChatView = (() => {
     _unsubs.push(_rpc.on('_state', (state) => {
       if (state === 'connected' && _sessionKey) {
         _applyRpcPolicy(_rpc?.policy || {});
-        _applyHelloRunModePolicy(_rpc?.hello);
         _hideThinkingIndicator();
         _subscribeSession();
         _loadCurrentSessionUsage();
@@ -5667,7 +5615,6 @@ const ChatView = (() => {
 
     _unsubs.push(_rpc.on('_hello', (hello) => {
       _applyRpcPolicy(hello?.policy || {});
-      _applyHelloRunModePolicy(hello);
     }));
 
     _unsubs.push(_rpc.on('_gap', () => {
@@ -6200,6 +6147,7 @@ const ChatView = (() => {
                 if (identityChanged) savedUsage.__savings_ui_suppressed = true;
               }
               if (window.SavingsFX) window.SavingsFX.noteTurn(savedUsage);
+              const routerPanel = _routerFxPanelDataset(_routerFx.visualMode);
               // Place a pre-settled router slider directly beneath the
               // user message that triggered this turn — never above
               // it, never with anything wedged in between.
@@ -6223,7 +6171,8 @@ const ChatView = (() => {
               if (userMsg && userMsg.parentNode === _thread) {
                 const ownStrips = Array.from(_thread.querySelectorAll('.router-fx')).filter(
                   (el) => el.dataset.sessionKey === (_sessionKey || '')
-                    && el.dataset.turnIndex === String(_histUserIdx),
+                    && el.dataset.turnIndex === String(_histUserIdx)
+                    && _routerFxPanelDataset(el.dataset.panel) === routerPanel,
                 );
                 const keep = ownStrips.find((el) => el.dataset.routerIdentity === routerIdentity)
                   || null;
@@ -6244,7 +6193,8 @@ const ChatView = (() => {
               const existingStrip = (placed && placed.classList
                   && placed.classList.contains('router-fx')) ? placed : null;
               const alreadyInPlace = existingStrip
-                && existingStrip.dataset.routerIdentity === routerIdentity;
+                && existingStrip.dataset.routerIdentity === routerIdentity
+                && _routerFxPanelDataset(existingStrip.dataset.panel) === routerPanel;
               if (!alreadyInPlace) {
                 if (existingStrip) _routerFxRemoveStrip(existingStrip);
                 const hint = msg.timestamp || msg.ts || msg.message_id || '';
@@ -6752,15 +6702,12 @@ const ChatView = (() => {
 
     // Build RPC params
     const params = { message: providerText, sessionKey: _sessionKey };
+    const elevatedMode = _normalizeElevatedMode(_elevatedMode);
+    if (elevatedMode) params._source = { elevated: elevatedMode };
     if (sessionIntentForSend) {
       params.intent = sessionIntentForSend;
       if (textOverride === null) _pendingSessionIntent = null;
     }
-    const sendRunMode = _clampRunMode(_runMode);
-    _runMode = sendRunMode;
-    _toolbarState.runMode = sendRunMode;
-    params._source = {};
-    params._source.runMode = sendRunMode;
     if (userText !== providerText || attachmentsForSend.length > 0) {
       params.displayText = userText;
     }
@@ -10176,10 +10123,6 @@ const ChatView = (() => {
     _pendingAttachments = [];
     _pendingQueue = [];
     _stopRequestedByUser = false;
-    _sandboxSetupStatus = null;
-    _sandboxSetupInFlight = false;
-    _pendingSandboxSetupMode = '';
-    _sandboxSetupPromptDismissed = false;
     _messages = [];
     _clearContextStatus();
     _lastHeaderRole = '';
@@ -10198,8 +10141,7 @@ const ChatView = (() => {
     _runStatusEl = null;
     _fileInput = null;
     _toolbar = null;
-    _runModeControl = null;
-    _sandboxSetupBanner = null;
+    _elevatedPill = null;
     _composer = null;
     _streamBubble = null;
     _streamSessionKey = '';

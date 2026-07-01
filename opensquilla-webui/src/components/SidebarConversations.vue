@@ -39,7 +39,7 @@ export type { SidebarSection as SidebarSectionType }
 </script>
 
 <script setup lang="ts">
-import { computed, nextTick, ref, type ComponentPublicInstance } from 'vue'
+import { computed, nextTick, ref, watch, type ComponentPublicInstance } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from './Icon.vue'
 import { useConfirm } from '@/composables/useConfirm'
@@ -59,6 +59,7 @@ const emit = defineEmits<{
   (e: 'refresh'): void
   (e: 'rename', payload: { key: string; title: string }): void
   (e: 'delete', key: string): void
+  (e: 'bulk-delete', keys: string[]): void
   (e: 'new-chat'): void
 }>()
 
@@ -127,6 +128,77 @@ const totalRows = computed(() =>
 const hasFilterMatches = computed(() =>
   visibleSections.value.some(section => section.rows.length > 0),
 )
+
+/* ── Bulk selection ───────────────────────────────────────────────── */
+
+const selectedKeys = ref<Set<string>>(new Set())
+const selectionMode = ref(false)
+
+const visibleSelectableRows = computed(() =>
+  visibleSections.value.flatMap(section => isCollapsed(section.family) ? [] : section.rows),
+)
+
+const visibleSelectableKeySet = computed(() =>
+  new Set(visibleSelectableRows.value.map(row => row.key)),
+)
+
+const selectedCount = computed(() => selectedKeys.value.size)
+const visibleSelectableCount = computed(() => visibleSelectableRows.value.length)
+
+const allVisibleSelected = computed(() =>
+  visibleSelectableCount.value > 0
+  && visibleSelectableRows.value.every(row => selectedKeys.value.has(row.key)),
+)
+
+watch(visibleSelectableKeySet, (keys) => {
+  const next = new Set([...selectedKeys.value].filter(key => keys.has(key)))
+  if (next.size !== selectedKeys.value.size) selectedKeys.value = next
+})
+
+function isRowSelected(key: string): boolean {
+  return selectedKeys.value.has(key)
+}
+
+function setRowSelected(key: string, checked: boolean) {
+  const next = new Set(selectedKeys.value)
+  if (checked) next.add(key)
+  else next.delete(key)
+  selectedKeys.value = next
+}
+
+function toggleVisibleSelection() {
+  const checked = !allVisibleSelected.value
+  const next = new Set(selectedKeys.value)
+  for (const row of visibleSelectableRows.value) {
+    if (checked) next.add(row.key)
+    else next.delete(row.key)
+  }
+  selectedKeys.value = next
+}
+
+function clearSelection() {
+  selectedKeys.value = new Set()
+}
+
+function toggleSelectionMode() {
+  selectionMode.value = !selectionMode.value
+  if (!selectionMode.value) clearSelection()
+}
+
+async function requestBulkDelete() {
+  closeMenu()
+  const keys = [...selectedKeys.value].filter(key => visibleSelectableKeySet.value.has(key))
+  if (keys.length === 0) return
+  const ok = await confirm({
+    title: t('shared.sidebar.bulkDeleteTitle'),
+    body: t('shared.sidebar.bulkDeleteBody', { count: keys.length }),
+    primaryLabel: t('shared.sidebar.bulkDeleteConfirm'),
+  })
+  if (!ok) return
+  clearSelection()
+  selectionMode.value = false
+  emit('bulk-delete', keys)
+}
 
 /* ── Per-row ⋯ menu + inline rename ────────────────────────────────── */
 
@@ -269,14 +341,63 @@ async function requestDelete(row: SidebarConversationItem) {
 
 function onSelectRow(row: SidebarConversationItem) {
   if (renamingKey.value === row.key) return
+  if (selectionMode.value) {
+    setRowSelected(row.key, !isRowSelected(row.key))
+    return
+  }
   emit('select', row.key)
 }
 </script>
 
 <template>
-  <div class="sidebar-section sidebar-history" :aria-label="t('shared.sidebar.recentConversations')">
+  <div
+    class="sidebar-section sidebar-history"
+    :class="{ 'is-selecting': selectionMode }"
+    :aria-label="t('shared.sidebar.recentConversations')"
+  >
     <div class="sidebar-recents-header">
-      <span class="sidebar-recents-eyebrow">{{ t('shared.sidebar.recents') }}</span>
+      <span class="sidebar-recents-eyebrow">
+        {{
+          selectionMode
+            ? selectedCount > 0
+              ? t('shared.sidebar.selectedCountLabel', { count: selectedCount })
+              : t('shared.sidebar.selectionModeLabel')
+            : t('shared.sidebar.recents')
+        }}
+      </span>
+      <button
+        v-if="selectionMode"
+        type="button"
+        class="sidebar-select-all-btn"
+        :disabled="visibleSelectableCount === 0"
+        :aria-label="allVisibleSelected ? t('shared.sidebar.clearVisibleSelection') : t('shared.sidebar.selectVisible')"
+        :title="allVisibleSelected ? t('shared.sidebar.clearVisibleSelection') : t('shared.sidebar.selectVisible')"
+        @click="toggleVisibleSelection"
+      >
+        {{ allVisibleSelected ? t('shared.sidebar.clearAllShort') : t('shared.sidebar.selectAllShort') }}
+      </button>
+      <button
+        v-if="selectionMode && selectedCount > 0"
+        type="button"
+        class="sidebar-bulk-delete-btn"
+        :aria-label="t('shared.sidebar.deleteSelectedAria', { count: selectedCount })"
+        :title="t('shared.sidebar.deleteSelectedAria', { count: selectedCount })"
+        @click="requestBulkDelete"
+      >
+        <Icon name="trash" :size="12" />
+      </button>
+      <button
+        v-if="totalRows > 0"
+        type="button"
+        class="sidebar-bulk-mode-btn"
+        :class="{ 'is-active': selectionMode }"
+        :aria-pressed="selectionMode"
+        :aria-label="selectionMode ? t('shared.sidebar.exitSelectionMode') : t('shared.sidebar.enterSelectionMode')"
+        :title="selectionMode ? t('shared.sidebar.exitSelectionMode') : t('shared.sidebar.enterSelectionMode')"
+        @click="toggleSelectionMode"
+      >
+        <Icon :name="selectionMode ? 'x' : 'listChecks'" :size="13" />
+      </button>
       <button
         class="sidebar-refresh-btn"
         :title="t('shared.sidebar.refresh')"
@@ -349,6 +470,7 @@ function onSelectRow(row: SidebarConversationItem) {
             v-for="row in section.rows"
             :key="row.key"
             class="sidebar-history-row"
+            :class="{ 'is-selected': isRowSelected(row.key) }"
             :data-family="section.family"
             :data-depth="row.depth"
             :style="{ '--row-depth': row.depth }"
@@ -373,9 +495,19 @@ function onSelectRow(row: SidebarConversationItem) {
               class="sidebar-history-item"
               :class="{ 'is-current': row.key === currentKey }"
               :title="row.title"
+              :aria-pressed="selectionMode ? isRowSelected(row.key) : undefined"
               @click="onSelectRow(row)"
             >
               <span
+                v-if="selectionMode"
+                class="sidebar-selection-box"
+                :class="{ 'is-checked': isRowSelected(row.key) }"
+                aria-hidden="true"
+              >
+                <Icon v-if="isRowSelected(row.key)" name="check" :size="11" />
+              </span>
+              <span
+                v-else
                 class="sidebar-history-dot"
                 :class="`status--${row.runStatus}`"
                 role="img"
@@ -393,7 +525,7 @@ function onSelectRow(row: SidebarConversationItem) {
 
             <!-- Chat-only ⋯ menu: rename + delete -->
             <div
-              v-if="row.sessionKind === 'chat' && renamingKey !== row.key"
+              v-if="row.sessionKind === 'chat' && renamingKey !== row.key && !selectionMode"
               class="sidebar-row-menu-wrap"
             >
               <button
@@ -441,7 +573,7 @@ function onSelectRow(row: SidebarConversationItem) {
 
             <!-- Agent-initial badge: indicator + click-to-filter (Chats only) -->
             <button
-              v-else-if="shouldShowAgentFilterBadge(section.family, row) && renamingKey !== row.key"
+              v-else-if="shouldShowAgentFilterBadge(section.family, row) && renamingKey !== row.key && !selectionMode"
               type="button"
               class="sidebar-agent-badge"
               :class="{ 'is-active': agentFilter === row.effectiveAgentId }"

@@ -344,7 +344,9 @@ async def test_process_owner_context_can_list_all_sessions() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("action", ["poll", "log", "kill", "remove", "write", "submit", "eof"])
+@pytest.mark.parametrize(
+    "action", ["poll", "wait", "log", "kill", "remove", "write", "submit", "eof"]
+)
 async def test_process_cross_context_operations_are_denied(action: str) -> None:
     shell._bg_sessions["owned-by-other"] = _session(
         "owned-by-other",
@@ -442,7 +444,25 @@ def test_process_tool_declares_wait_timeout_metadata() -> None:
     from opensquilla.tools.registry import get_default_registry
 
     spec = get_default_registry().get("process").spec
+    assert (
+        spec.execution_timeout_seconds
+        >= shell._MAX_PROCESS_WAIT_TIMEOUT + shell._PROCESS_WAIT_TIMEOUT_PADDING
+    )
     assert spec.execution_timeout_argument == "timeout"
+
+
+def test_process_wait_uses_coding_mode_default_timeout() -> None:
+    ctx = ToolContext(coding_mode=True)
+
+    assert ctx.coding_mode is True
+    token = current_tool_context.set(ctx)
+    try:
+        assert (
+            shell._resolve_process_wait_timeout(None)
+            == shell._CODING_PROCESS_WAIT_TIMEOUT
+        )
+    finally:
+        current_tool_context.reset(token)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="uses POSIX sleep/true")

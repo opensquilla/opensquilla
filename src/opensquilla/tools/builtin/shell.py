@@ -3731,7 +3731,7 @@ def get_bg_session(session_id: str) -> _BgSession | None:
         },
     },
     required=["action"],
-    execution_timeout_seconds=_DEFAULT_PROCESS_WAIT_TIMEOUT + _PROCESS_WAIT_TIMEOUT_PADDING,
+    execution_timeout_seconds=_MAX_PROCESS_WAIT_TIMEOUT + _PROCESS_WAIT_TIMEOUT_PADDING,
     execution_timeout_argument="timeout",
     execution_timeout_padding=_PROCESS_WAIT_TIMEOUT_PADDING,
     sandbox=SandboxToolDescriptor.custom(kind="process", enforce=False),

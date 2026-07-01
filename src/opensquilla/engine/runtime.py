@@ -1583,7 +1583,10 @@ def _strip_html_to_text(html: str) -> str:
     import html as _html_mod
     import re
 
-    cleaned = re.sub(r"(?is)<(script|style|head)\b.*?</\1>", " ", html)
+    hidden_block_re = re.compile(
+        r"(?is)<(script|style|head)\b(?:[^>]*>.*?(?:</\s*\1\s*>|$)|[^>]*$)"
+    )
+    cleaned = hidden_block_re.sub(" ", html)
     cleaned = re.sub(r"(?i)<\s*(br|/p|/div|/tr|/li|/h[1-6])\s*>", "\n", cleaned)
     cleaned = re.sub(r"(?s)<[^>]+>", " ", cleaned)
     cleaned = _html_mod.unescape(cleaned)

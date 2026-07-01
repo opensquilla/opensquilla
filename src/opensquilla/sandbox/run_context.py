@@ -285,8 +285,12 @@ def _mounts_from_payload(
             continue
         if decision.status == "blocked":
             continue
+        try:
+            normalized_path = str(normalize_path(path))
+        except (OSError, RuntimeError, ValueError):
+            continue
         grant = MountGrant(
-            path=decision.normalized_path,
+            path=normalized_path,
             access=access,
             scope=normalize_scope(item.get("scope"), "chat"),
         )

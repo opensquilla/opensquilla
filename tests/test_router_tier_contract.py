@@ -201,3 +201,31 @@ def test_upsert_router_redacts_secret_like_tier_fields() -> None:
     assert echoed["model"] == "z-ai/glm-5.1"
     # The stored config keeps the real value; only the echo is redacted.
     assert res.config.squilla_router.tiers["c2"]["api_key"] == "sk-leak"
+
+
+def test_upsert_router_redacts_camel_and_kebab_tier_secrets() -> None:
+    # Only three known display aliases are canonicalized on write, so an
+    # apiKey/accessToken passes into the stored tier verbatim — the echo
+    # redaction must match secret-shaped keys in any spelling.
+    cfg = GatewayConfig()
+    res = upsert_router(
+        cfg,
+        mode="recommended",
+        tiers={
+            "c2": {
+                "provider": "openrouter",
+                "model": "z-ai/glm-5.1",
+                "apiKey": "sk-camel",
+                "accessToken": "tok-camel",
+                "api-key": "sk-kebab",
+                "clientSecret": "sec-camel",
+            }
+        },
+    )
+    echoed = res.public_payload["tiers"]["c2"]
+    assert echoed["apiKey"] == "***"
+    assert echoed["accessToken"] == "***"
+    assert echoed["api-key"] == "***"
+    assert echoed["clientSecret"] == "***"
+    assert echoed["model"] == "z-ai/glm-5.1"
+    assert echoed["provider"] == "openrouter"

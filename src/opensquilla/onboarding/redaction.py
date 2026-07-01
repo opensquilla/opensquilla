@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from opensquilla.onboarding.channel_specs import get_channel_setup_spec
@@ -19,7 +20,21 @@ def redact_provider_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-_TIER_SECRET_FIELDS = frozenset({"api_key", "token", "secret"})
+_TIER_SECRET_EXACT_KEYS = frozenset({"api_key", "token", "secret", "password", "authorization"})
+_TIER_SECRET_SUFFIXES = ("_key", "_token", "_secret", "_password")
+_CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])([A-Z])")
+
+
+def _is_secret_like_tier_key(key: str) -> bool:
+    """Match secret-shaped keys in any spelling (api_key, apiKey, api-key).
+
+    Tier dicts are untyped RPC payloads, so only the three known display
+    aliases get canonicalized to snake_case on write — an ``apiKey`` passes
+    through verbatim. Normalize case boundaries before matching so the
+    redaction cannot be dodged by spelling.
+    """
+    normalized = _CAMEL_BOUNDARY_RE.sub(r"_\1", str(key)).replace("-", "_").lower()
+    return normalized in _TIER_SECRET_EXACT_KEYS or normalized.endswith(_TIER_SECRET_SUFFIXES)
 
 
 def redact_router_tiers_payload(tiers: dict[str, Any]) -> dict[str, Any]:
@@ -35,11 +50,10 @@ def redact_router_tiers_payload(tiers: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(tier, dict):
             out[tier_name] = tier
             continue
-        redacted = dict(tier)
-        for key in _TIER_SECRET_FIELDS:
-            if key in redacted and redacted[key]:
-                redacted[key] = REDACTED_PLACEHOLDER
-        out[tier_name] = redacted
+        out[tier_name] = {
+            key: (REDACTED_PLACEHOLDER if _is_secret_like_tier_key(key) and value else value)
+            for key, value in tier.items()
+        }
     return out
 
 

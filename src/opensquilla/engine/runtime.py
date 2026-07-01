@@ -4551,24 +4551,14 @@ class TurnRunner:
 
         # Apply routed model back to cloned selector (local, not shared)
         if turn.model and cloned_selector is not None:
-            router_fallback_chain = (
-                turn.metadata.get("router_fallback_chain")
-                if turn.metadata.get("routing_applied") is True
-                else None
-            )
-            override_with_fallback_chain = getattr(
+            from opensquilla.engine.selector_override import apply_model_override
+
+            provider = apply_model_override(
                 cloned_selector,
-                "override_model_with_fallback_chain",
-                None,
+                turn.model,
+                turn_metadata=turn.metadata,
+                realign_routed_model=False,
             )
-            if callable(override_with_fallback_chain) and isinstance(
-                router_fallback_chain,
-                list,
-            ):
-                override_with_fallback_chain(turn.model, router_fallback_chain)
-            else:
-                cloned_selector.override_model(turn.model)
-            provider = cloned_selector.resolve()
 
         return turn, provider
 

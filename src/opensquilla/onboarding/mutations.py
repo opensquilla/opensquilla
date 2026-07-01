@@ -188,6 +188,32 @@ def _validate_router_tiers(tiers: dict[str, Any], default_tier: str) -> None:
             raise ValueError(f"router tier {tier_name!r} requires model")
 
 
+def _cross_provider_tier_warnings(tiers: dict[str, Any], active_provider: str) -> list[str]:
+    """Warn about tiers naming a provider other than the active LLM provider.
+
+    Cross-provider tier execution does not exist yet: at runtime such a
+    tier's model id is requested from the active provider with the active
+    credentials. The config still saves (it may be forward-looking), but
+    silently accepting it hid real misroutes.
+    """
+    if not active_provider:
+        return []
+    warnings: list[str] = []
+    for tier_name in sorted(tiers):
+        tier = tiers.get(tier_name)
+        if not isinstance(tier, dict):
+            continue
+        tier_provider = str(tier.get("provider") or "").strip().lower()
+        if tier_provider and tier_provider != active_provider:
+            warnings.append(
+                f"Router tier '{tier_name}' names provider '{tier_provider}', but the "
+                f"active LLM provider is '{active_provider}'. Cross-provider routing is "
+                f"not supported yet, so this tier's model will be requested from "
+                f"'{active_provider}'."
+            )
+    return warnings
+
+
 def _sync_llm_model_to_router_default(cfg: GatewayConfig) -> None:
     router = cfg.squilla_router
     if not getattr(router, "enabled", True):
@@ -340,10 +366,15 @@ def upsert_router(
                 tiers,
             )
             public_payload.update({"enabled": True, "tier_profile": provider})
+    warnings: list[str] = []
     if router_payload.get("enabled"):
         _validate_router_tiers(
             cast(dict[str, Any], router_payload.get("tiers") or {}),
             default_tier_clean,
+        )
+        warnings = _cross_provider_tier_warnings(
+            cast(dict[str, Any], router_payload.get("tiers") or {}),
+            provider,
         )
 
     new_cfg = _clone(config)
@@ -355,7 +386,7 @@ def upsert_router(
         config=new_cfg,
         changed=True,
         restart_required=False,
-        warnings=[],
+        warnings=warnings,
         public_payload=public_payload,
     )
 

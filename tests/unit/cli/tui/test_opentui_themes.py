@@ -86,3 +86,47 @@ async def test_theme_command_explains_opentui_only_on_native() -> None:
     with console.capture() as capture:
         await handle_theme_command("/theme ember", _NativeOutput())
     assert "OpenTUI backend" in capture.get()
+
+
+@pytest.mark.asyncio
+async def test_theme_command_explains_when_wrapped_native_handle_cannot_send() -> None:
+    # The plugin wrapper ALWAYS exposes a callable send_message that silently
+    # no-ops on the native backend. callable() alone would misclassify /theme as
+    # sendable and do nothing; the command must consult supports_send_message and
+    # fall back to the OpenTUI-only explanation instead.
+    from opensquilla.cli.tui.adapters.runtime_helpers import TuiPluginOutputHandle
+
+    class _NativeOutput:
+        approval_surface = object()
+
+        async def write_through(self, payload: str) -> None:
+            return None
+
+    wrapper = TuiPluginOutputHandle(_NativeOutput(), plugin_manager=object())
+    assert wrapper.supports_send_message is False
+    with console.capture() as capture:
+        await handle_theme_command("/theme ember", wrapper)
+    assert "OpenTUI backend" in capture.get()
+
+
+@pytest.mark.asyncio
+async def test_theme_command_sends_through_wrapped_ipc_capable_handle() -> None:
+    from opensquilla.cli.tui.adapters.runtime_helpers import TuiPluginOutputHandle
+
+    class _OpenTuiOutput:
+        approval_surface = object()
+
+        def __init__(self) -> None:
+            self.sent: list[tuple[str, dict[str, object]]] = []
+
+        async def write_through(self, payload: str) -> None:
+            return None
+
+        async def send_message(self, message_type: str, payload: dict[str, object]) -> None:
+            self.sent.append((message_type, payload))
+
+    inner = _OpenTuiOutput()
+    wrapper = TuiPluginOutputHandle(inner, plugin_manager=object())
+    assert wrapper.supports_send_message is True
+    await handle_theme_command("/theme", wrapper)
+    assert inner.sent == [("theme.pick", {})]

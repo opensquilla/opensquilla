@@ -35,7 +35,14 @@ async def handle_theme_command(cmd: str, tui_output: object | None) -> None:
     ``send_message``) it explains that themes apply to the OpenTUI backend.
     """
     send_message = getattr(tui_output, "send_message", None)
-    if not callable(send_message):
+    # The plugin wrapper always exposes a callable send_message that silently
+    # no-ops on the native backend, so callable() alone can't distinguish an
+    # IPC-capable OpenTUI surface from a native terminal. Prefer the wrapper's
+    # explicit capability flag; fall back to callable() for an unwrapped handle.
+    supports = getattr(tui_output, "supports_send_message", None)
+    if supports is None:
+        supports = callable(send_message)
+    if not supports or not callable(send_message):
         from opensquilla.cli.ui import console  # noqa: PLC0415 - keep module import-light
 
         console.print(

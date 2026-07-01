@@ -147,6 +147,7 @@
       @refresh="loadSessions"
       @rename="onRenameSession"
       @delete="onDeleteSession"
+      @bulk-delete="onBulkDeleteSessions"
       @new-chat="startNewChatInstant"
     />
 
@@ -415,12 +416,24 @@ import type { RpcEventHandler } from '@/lib/rpc'
 import { isMacPlatform } from './utils/browser'
 import { useShortcutsStore } from './stores/shortcuts'
 import { bindingMatches, formatBinding } from './utils/keychord'
+import {
+  dispatchLocalSessionsDeleted,
+  localSessionsDeletedDetail,
+  LOCAL_SESSIONS_DELETED_EVENT,
+} from './utils/sessionSync'
 
 const appStore = useAppStore()
 const rpcStore = useRpcStore()
 const shortcutsStore = useShortcutsStore()
 const { t } = useI18n()
 const $route = useRoute()
+
+interface DeleteSessionsResponse {
+  deleted?: string[]
+  errors?: string[]
+}
+
+const APP_SESSION_SYNC_SOURCE = 'app-sidebar'
 
 // Localized connection-state label for the topbar pill and its tooltip. The
 // store state ('connected' | 'connecting' | 'disconnected') is a stable key, not
@@ -456,8 +469,9 @@ const localChatSessions = ref<Record<string, { effectiveAgentId: string; title: 
 const renameOverrides = ref<Record<string, string>>({})
 
 const brandMarkUrl = computed(() => {
+  if (import.meta.env.DEV) return '/opensquilla-mark.png'
   const base = document.getElementById('opensquilla-data')?.dataset.basePath || '/control'
-  return `${base}/static/img/opensquilla-mark.png`
+  return `${base.replace(/\/$/, '')}/static/dist/opensquilla-mark.png`
 })
 
 // Display chords track the configurable bindings so the rail hint, the New chat
@@ -878,37 +892,78 @@ async function onRenameSession({ key, title }: { key: string; title: string }) {
   }
 }
 
-// Delete a session, then refresh the list. If the deleted session is the one
-// open in the chat view, drop into a fresh draft so the view does not linger on
-// a session that no longer exists.
+function removeLocalSessions(keys: Set<string>) {
+  if (keys.size === 0) return
+  let next = localChatSessions.value
+  let changed = false
+  for (const key of keys) {
+    if (!next[key]) continue
+    const { [key]: _dropped, ...rest } = next
+    next = rest
+    changed = true
+  }
+  if (changed) localChatSessions.value = next
+}
+
+function handleLocalSessionsDeleted(event: Event) {
+  const detail = localSessionsDeletedDetail(event)
+  if (!detail || detail.source === APP_SESSION_SYNC_SOURCE) return
+  removeLocalSessions(new Set(detail.keys))
+  void loadSessions()
+}
+
+async function deleteSessions(keys: string[]): Promise<DeleteSessionsResponse | null> {
+  const uniqueKeys = [...new Set(keys.map(key => key.trim()).filter(Boolean))]
+  if (uniqueKeys.length === 0) return null
+  try {
+    return await rpcStore.call<DeleteSessionsResponse>('sessions.delete', { keys: uniqueKeys })
+  } catch (err: unknown) {
+    console.warn('[App] sessions.delete error:', errorMessage(err))
+    return null
+  }
+}
+
+// Delete sessions, then refresh the list. If the open session was deleted, drop
+// into a fresh draft so the view does not linger on a session that no longer exists.
+async function onBulkDeleteSessions(keys: string[]) {
+  const uniqueKeys = [...new Set(keys.map(key => key.trim()).filter(Boolean))]
+  if (uniqueKeys.length === 0) return
+  const currentKey = currentSessionKey.value
+  const wasCurrentDeleted = !!currentKey && uniqueKeys.includes(currentKey)
+  const result = await deleteSessions(uniqueKeys)
+  const deleted = new Set(result?.deleted || [])
+  if (!result || deleted.size === 0) {
+    console.warn('[App] sessions.delete reported failure:', result?.errors)
+    pushToast(t('shared.sidebar.bulkDeleteFailed'), { tone: 'danger' })
+    return
+  }
+  removeLocalSessions(deleted)
+  dispatchLocalSessionsDeleted(deleted, APP_SESSION_SYNC_SOURCE)
+  const failedCount = Math.max(0, uniqueKeys.length - deleted.size)
+  pushToast(t('shared.sidebar.bulkDeleteDone', { count: deleted.size }), { tone: 'ok' })
+  if (failedCount > 0 || (result.errors?.length || 0) > 0) {
+    console.warn('[App] sessions.delete partial failure:', result.errors)
+    pushToast(t('shared.sidebar.bulkDeletePartial', { count: failedCount || result.errors?.length || 0 }), { tone: 'danger' })
+  }
+  await loadSessions()
+  if (wasCurrentDeleted && deleted.has(currentKey)) {
+    router.push({ path: '/chat/new', query: { agent: preferredAgentId() } })
+  }
+}
+
 async function onDeleteSession(key: string) {
   if (!key) return
   const wasCurrent = key === currentSessionKey.value
-  let result: { deleted?: string[]; errors?: string[] } | undefined
-  try {
-    result = await rpcStore.call<{ deleted?: string[]; errors?: string[] }>('sessions.delete', { keys: [key] })
-  } catch (err: unknown) {
-    // A rejected call must not look like success: surface the error and bail
-    // before dropping the row, reloading, or navigating away from a session
-    // that still exists on the backend.
-    console.warn('[App] sessions.delete error:', errorMessage(err))
-    pushToast('Failed to delete session', { tone: 'danger' })
-    return
-  }
-  // The backend resolves even when a key fails to delete — it collects per-key
-  // errors into the response instead of throwing — so a non-throwing call is
-  // not proof of success. Only proceed when the key is actually reported
-  // deleted; otherwise surface the failure and bail.
+  const result = await deleteSessions([key])
   if (!result?.deleted?.includes(key)) {
     console.warn('[App] sessions.delete reported failure:', result?.errors)
     pushToast('Failed to delete session', { tone: 'danger' })
     return
   }
   pushToast('Session deleted', { tone: 'ok' })
-  if (localChatSessions.value[key]) {
-    const { [key]: _dropped, ...rest } = localChatSessions.value
-    localChatSessions.value = rest
-  }
+  const deleted = new Set([key])
+  removeLocalSessions(deleted)
+  dispatchLocalSessionsDeleted(deleted, APP_SESSION_SYNC_SOURCE)
   await loadSessions()
   if (wasCurrent) {
     router.push({ path: '/chat/new', query: { agent: preferredAgentId() } })
@@ -1189,6 +1244,7 @@ onMounted(() => {
     if (topbarRightRef.value) topbarReserveObserver.observe(topbarRightRef.value)
   }
   window.addEventListener('resize', scheduleTopbarReserve)
+  window.addEventListener(LOCAL_SESSIONS_DELETED_EVENT, handleLocalSessionsDeleted)
   syncTopbarReserve()
   loadAgents()
   loadSessions()
@@ -1210,6 +1266,7 @@ onUnmounted(() => {
     topbarReserveRaf = 0
   }
   window.removeEventListener('resize', scheduleTopbarReserve)
+  window.removeEventListener(LOCAL_SESSIONS_DELETED_EVENT, handleLocalSessionsDeleted)
   if (hoverLeaveTimer) clearTimeout(hoverLeaveTimer)
   if (sessionRefreshTimer) clearTimeout(sessionRefreshTimer)
   if (rpcUnsubSessionsChanged) rpcUnsubSessionsChanged()

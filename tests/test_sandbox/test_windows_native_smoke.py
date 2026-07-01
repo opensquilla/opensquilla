@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -29,7 +30,7 @@ def _policy() -> SandboxPolicy:
         mounts=(),
         workspace_rw=True,
         tmp_writable=True,
-        limits=ResourceLimits(wall_timeout_s=20),
+        limits=ResourceLimits(wall_timeout_s=90),
         env_allowlist=(
             "PATH",
             "TEMP",
@@ -95,11 +96,66 @@ async def test_windows_default_workspace_venv_creation_succeeds(tmp_path: Path) 
     backend = WindowsDefaultBackend()
 
     result = await backend.run(
-        _request(tmp_path, (sys.executable, "-m", "venv", str(tmp_path / ".venv")))
+        _request(
+            tmp_path,
+            (sys.executable, "-m", "venv", "--without-pip", str(tmp_path / ".venv")),
+        )
     )
 
     assert result.returncode == 0
     assert (tmp_path / ".venv").exists()
+
+
+@pytest.mark.asyncio
+async def test_windows_default_runtime_readonly_blocks_nested_powershell_set_content(
+    tmp_path: Path,
+) -> None:
+    backend = WindowsDefaultBackend()
+    powershell = (
+        Path(os.environ["SystemRoot"])
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    target = Path(sys.executable).resolve().parent / (
+        f"_opensquilla_runtime_denied_{uuid.uuid4().hex}.txt"
+    )
+    quoted_target = str(target).replace("'", "''")
+    command = (
+        "try { "
+        f"Set-Content -LiteralPath '{quoted_target}' -Value blocked -ErrorAction Stop; "
+        "Write-Output 'UNEXPECTED_WRITE_SUCCEEDED' "
+        "} catch { "
+        "Write-Output ('ERROR: ' + $_.Exception.GetType().Name + ': ' + "
+        "$_.Exception.Message) "
+        "}"
+    )
+
+    try:
+        result = await backend.run(
+            _request(
+                tmp_path,
+                (
+                    str(powershell),
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    command,
+                ),
+            )
+        )
+    finally:
+        target.unlink(missing_ok=True)
+
+    assert "CreateProcessWithLogonW" not in result.stderr
+    assert "windows_default process launch failed" not in result.stderr
+    assert "UNEXPECTED_WRITE_SUCCEEDED" not in result.stdout
+    assert not target.exists()
+    assert result.returncode != 0 or "ERROR:" in result.stdout
 
 
 @pytest.mark.asyncio

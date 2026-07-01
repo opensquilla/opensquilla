@@ -17,8 +17,12 @@ def test_firewall_rule_specs_scope_to_offline_user_sid() -> None:
 
     assert {spec.name for spec in specs} == {
         "opensquilla_sandbox_offline_block_non_loopback",
+        "opensquilla_sandbox_offline_block_non_loopback_icmp_v4",
+        "opensquilla_sandbox_offline_block_non_loopback_icmp_v6",
         "opensquilla_sandbox_offline_block_dns_tcp",
         "opensquilla_sandbox_offline_block_dns_udp",
+        "opensquilla_sandbox_offline_block_loopback_icmp_v4",
+        "opensquilla_sandbox_offline_block_loopback_icmp_v6",
         "opensquilla_sandbox_offline_block_loopback_udp",
         "opensquilla_sandbox_offline_block_loopback_tcp_except_proxy",
     }
@@ -41,7 +45,14 @@ def test_firewall_rule_specs_scope_to_offline_user_sid() -> None:
         if spec.name == "opensquilla_sandbox_offline_block_loopback_tcp_except_proxy"
     )
     assert loopback_tcp.remote_ports == ("1-43127", "43129-65535")
-    assert all(not spec.protocol.upper().startswith("ICMP") for spec in specs)
+    icmp_specs = {spec.name: spec for spec in specs if spec.protocol.upper().startswith("ICMP")}
+    assert icmp_specs["opensquilla_sandbox_offline_block_non_loopback_icmp_v4"].protocol == (
+        "ICMPv4"
+    )
+    assert icmp_specs["opensquilla_sandbox_offline_block_non_loopback_icmp_v6"].protocol == (
+        "ICMPv6"
+    )
+    assert all(spec.icmp_types == ("Any",) for spec in icmp_specs.values())
 
 
 def test_firewall_rule_specs_allow_local_binding_removes_loopback_blocks() -> None:
@@ -53,6 +64,8 @@ def test_firewall_rule_specs_allow_local_binding_removes_loopback_blocks() -> No
 
     assert [spec.name for spec in specs] == [
         "opensquilla_sandbox_offline_block_non_loopback",
+        "opensquilla_sandbox_offline_block_non_loopback_icmp_v4",
+        "opensquilla_sandbox_offline_block_non_loopback_icmp_v6",
         "opensquilla_sandbox_offline_block_dns_tcp",
         "opensquilla_sandbox_offline_block_dns_udp",
     ]
@@ -67,8 +80,9 @@ def test_powershell_firewall_commands_include_local_user_scope() -> None:
     commands = powershell_firewall_commands(specs)
     joined = "\n".join(commands)
 
-    assert "-LocalUser 'O:LSD:(A;;CC;;;S-1-5-21-100-200-300-400)'" in joined
+    assert "-LocalUser 'D:(A;;CC;;;S-1-5-21-100-200-300-400)'" in joined
     assert "-LocalUser 'S-1-5-21-100-200-300-400'" not in joined
+    assert "O:LSD:" not in joined
     assert "-Direction Outbound" in joined
     assert "-Action Block" in joined
     assert "43129-65535" in joined
@@ -98,6 +112,20 @@ def test_powershell_firewall_commands_pass_remote_ports_as_arrays() -> None:
 
     assert "-RemotePort '1-48122','48124-65535'" in joined
     assert "-RemotePort '1-48122,48124-65535'" not in joined
+
+
+def test_powershell_firewall_commands_use_icmp_type_without_remote_port() -> None:
+    specs = firewall_rule_specs(
+        offline_sid="S-1-5-21-100-200-300-400",
+        allowed_proxy_ports=(48123,),
+        allow_local_binding=False,
+    )
+    commands = powershell_firewall_commands(specs)
+    icmp_commands = [command for command in commands if "_icmp_" in command]
+
+    assert icmp_commands
+    assert all("-IcmpType 'Any'" in command for command in icmp_commands)
+    assert all("-RemotePort" not in command for command in icmp_commands)
 
 
 def test_loopback_remote_addresses_use_firewall_accepted_ipv6_range() -> None:

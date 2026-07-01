@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import ipaddress
+import os
 import socket
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
@@ -63,6 +65,13 @@ class _ParsedRequest:
     port: int
     origin_form: str | None
     content_length: int
+
+
+@dataclass(frozen=True)
+class _UpstreamProxy:
+    host: str
+    port: int
+    authorization: str | None = None
 
 
 class _ProxyDeniedError(ValueError):
@@ -249,6 +258,14 @@ class SandboxProxyServer:
         self,
         request: _ParsedRequest,
     ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        if request.method == "CONNECT":
+            proxy = _upstream_proxy_for_connect(self.host, self.port)
+            if proxy is not None:
+                return await _open_upstream_proxy_tunnel(
+                    request,
+                    proxy,
+                    timeout_seconds=self._header_read_timeout_seconds,
+                )
         try:
             connect_host, connect_port = self._resolver(request.host, request.port)
             connect_host, connect_port = _validate_resolver_destination(
@@ -666,6 +683,119 @@ def _normalize_nonempty_host(host: str) -> str:
 
 def _identity_resolver(host: str, port: int) -> tuple[str, int]:
     return host, port
+
+
+def _upstream_proxy_for_connect(
+    managed_proxy_host: str,
+    managed_proxy_port: int,
+) -> _UpstreamProxy | None:
+    for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        raw = os.environ.get(key, "").strip()
+        if not raw:
+            continue
+        proxy = _parse_upstream_proxy(raw)
+        if proxy is None:
+            continue
+        if _same_loopback_endpoint(
+            proxy.host,
+            proxy.port,
+            managed_proxy_host,
+            managed_proxy_port,
+        ):
+            continue
+        return proxy
+    return None
+
+
+def _parse_upstream_proxy(raw: str) -> _UpstreamProxy | None:
+    value = raw if "://" in raw else f"http://{raw}"
+    try:
+        parsed = urlsplit(value)
+        host = parsed.hostname or ""
+        port = parsed.port
+    except ValueError:
+        return None
+    if parsed.scheme.lower() != "http" or not host:
+        return None
+    normalized_host = host.strip("[]")
+    normalized_port = int(port or 80)
+    authorization = None
+    if parsed.username is not None:
+        password = parsed.password or ""
+        token = f"{parsed.username}:{password}".encode()
+        authorization = "Basic " + base64.b64encode(token).decode("ascii")
+    return _UpstreamProxy(normalized_host, normalized_port, authorization)
+
+
+def _same_loopback_endpoint(
+    left_host: str,
+    left_port: int,
+    right_host: str,
+    right_port: int,
+) -> bool:
+    if int(left_port) != int(right_port):
+        return False
+    return _is_loopback_name(left_host) and _is_loopback_name(right_host)
+
+
+def _is_loopback_name(host: str) -> bool:
+    raw = str(host or "").strip().strip("[]").lower()
+    if raw == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(raw).is_loopback
+    except ValueError:
+        return False
+
+
+async def _open_upstream_proxy_tunnel(
+    request: _ParsedRequest,
+    proxy: _UpstreamProxy,
+    *,
+    timeout_seconds: float,
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    upstream_reader, upstream_writer = await asyncio.open_connection(proxy.host, proxy.port)
+    target = _connect_authority_for_request(request)
+    header_lines = [
+        f"CONNECT {target} HTTP/1.1",
+        f"Host: {target}",
+    ]
+    if proxy.authorization:
+        header_lines.append(f"Proxy-Authorization: {proxy.authorization}")
+    upstream_writer.write(("\r\n".join(header_lines) + "\r\n\r\n").encode("iso-8859-1"))
+    await upstream_writer.drain()
+    try:
+        response = await asyncio.wait_for(
+            upstream_reader.readuntil(b"\r\n\r\n"),
+            timeout=timeout_seconds,
+        )
+    except Exception:
+        upstream_writer.close()
+        with suppress(ConnectionError, RuntimeError):
+            await upstream_writer.wait_closed()
+        raise
+    if not _proxy_connect_response_allows_tunnel(response):
+        upstream_writer.close()
+        with suppress(ConnectionError, RuntimeError):
+            await upstream_writer.wait_closed()
+        raise ConnectionError("upstream proxy refused CONNECT tunnel")
+    return upstream_reader, upstream_writer
+
+
+def _proxy_connect_response_allows_tunnel(response: bytes) -> bool:
+    status_line = response.split(b"\r\n", 1)[0].decode("iso-8859-1", errors="replace")
+    parts = status_line.split()
+    if len(parts) < 2:
+        return False
+    try:
+        status = int(parts[1])
+    except ValueError:
+        return False
+    return 200 <= status < 300
+
+
+def _connect_authority_for_request(request: _ParsedRequest) -> str:
+    return f"{request.host}:{request.port}"
 
 
 def _resolve_validated_upstream(host: str, port: int) -> tuple[str, int]:

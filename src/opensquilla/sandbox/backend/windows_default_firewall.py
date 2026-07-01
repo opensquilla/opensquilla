@@ -26,6 +26,7 @@ class FirewallRuleSpec:
     local_user_sid: str
     remote_addresses: str
     remote_ports: tuple[str, ...] = ()
+    icmp_types: tuple[str, ...] = ()
 
 
 def firewall_rule_specs(
@@ -43,6 +44,26 @@ def firewall_rule_specs(
             remote_addresses=NON_LOOPBACK_REMOTE_ADDRESSES,
         )
     ]
+    specs.extend(
+        (
+            FirewallRuleSpec(
+                name="opensquilla_sandbox_offline_block_non_loopback_icmp_v4",
+                display_name="OpenSquilla Sandbox Offline - Block Non-Loopback ICMPv4",
+                protocol="ICMPv4",
+                local_user_sid=offline_sid,
+                remote_addresses=NON_LOOPBACK_REMOTE_ADDRESSES,
+                icmp_types=("Any",),
+            ),
+            FirewallRuleSpec(
+                name="opensquilla_sandbox_offline_block_non_loopback_icmp_v6",
+                display_name="OpenSquilla Sandbox Offline - Block Non-Loopback ICMPv6",
+                protocol="ICMPv6",
+                local_user_sid=offline_sid,
+                remote_addresses=NON_LOOPBACK_REMOTE_ADDRESSES,
+                icmp_types=("Any",),
+            ),
+        )
+    )
     specs.append(
         FirewallRuleSpec(
             name="opensquilla_sandbox_offline_block_dns_tcp",
@@ -65,6 +86,26 @@ def firewall_rule_specs(
     )
     if allow_local_binding:
         return tuple(specs)
+    specs.append(
+        FirewallRuleSpec(
+            name="opensquilla_sandbox_offline_block_loopback_icmp_v4",
+            display_name="OpenSquilla Sandbox Offline - Block Loopback ICMPv4",
+            protocol="ICMPv4",
+            local_user_sid=offline_sid,
+            remote_addresses=LOOPBACK_REMOTE_ADDRESSES,
+            icmp_types=("Any",),
+        )
+    )
+    specs.append(
+        FirewallRuleSpec(
+            name="opensquilla_sandbox_offline_block_loopback_icmp_v6",
+            display_name="OpenSquilla Sandbox Offline - Block Loopback ICMPv6",
+            protocol="ICMPv6",
+            local_user_sid=offline_sid,
+            remote_addresses=LOOPBACK_REMOTE_ADDRESSES,
+            icmp_types=("Any",),
+        )
+    )
     specs.append(
         FirewallRuleSpec(
             name="opensquilla_sandbox_offline_block_loopback_udp",
@@ -105,12 +146,19 @@ def powershell_firewall_commands(specs: tuple[FirewallRuleSpec, ...]) -> tuple[s
 
 
 def _powershell_firewall_port_clause(spec: FirewallRuleSpec) -> str:
+    if _is_icmp_protocol(spec.protocol):
+        icmp_types = _powershell_array_literal(list(spec.icmp_types or ("Any",)))
+        return f"-IcmpType {icmp_types}"
     remote_ports = (
         _powershell_array_literal(list(spec.remote_ports))
         if spec.remote_ports
         else _powershell_single_quote("Any")
     )
     return f"-RemotePort {remote_ports}"
+
+
+def _is_icmp_protocol(protocol: str) -> bool:
+    return protocol.upper() in {"ICMPV4", "ICMPV6"}
 
 
 def _powershell_array_literal(values: list[str]) -> str:
@@ -122,7 +170,7 @@ def _powershell_single_quote(value: str) -> str:
 
 
 def _local_user_authorized_list(sid: str) -> str:
-    return f"O:LSD:(A;;CC;;;{sid})"
+    return f"D:(A;;CC;;;{sid})"
 
 
 def install_firewall_rules(specs: tuple[FirewallRuleSpec, ...]) -> None:

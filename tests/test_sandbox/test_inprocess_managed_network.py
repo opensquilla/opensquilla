@@ -554,7 +554,7 @@ def test_windows_unavailable_message_reports_outdated_network_marker(
     message = integration_mod._windows_managed_network_unavailable_message(runtime)
 
     assert "network marker is out of date" in message
-    assert "firewall=1 required=3" in message
+    assert "firewall=1 required=5" in message
     assert "wfp=1 required=2" in message
 
 
@@ -1196,6 +1196,101 @@ async def test_run_with_managed_network_proxy_honors_temporary_domain_grant(
     assert isinstance(decision, NetworkDecision)
     assert decision.status == "allow"
     assert decision.reason == "domain_grant"
+
+
+@pytest.mark.asyncio
+async def test_windows_fixed_proxy_port_subprocesses_are_serialized(
+    monkeypatch: pytest.MonkeyPatch,
+    managed_context: ToolContext,
+    tmp_path: Path,
+) -> None:
+    runtime = integration_mod.get_runtime()
+    assert runtime is not None
+    runtime.backend = SimpleNamespace(name="windows_default")
+    managed_context.sandbox_run_context = RunContext(
+        run_mode=RunMode.STANDARD,
+        domains=(DomainGrant(domain="example.com"),),
+    )
+    monkeypatch.setattr(integration_mod, "_windows_allowed_proxy_ports", lambda _rt: (48123,))
+    monkeypatch.setattr(
+        integration_mod,
+        "_windows_proxy_allowlist_enforced",
+        lambda _rt, *, proxy_ports=(): True,
+    )
+
+    events: list[str] = []
+    active = 0
+
+    class FakeProxy:
+        host = "127.0.0.1"
+
+        def __init__(self, _service: object, *, port: int = 0, **_kwargs: object) -> None:
+            self.port = port
+
+        async def start(self) -> None:
+            nonlocal active
+            if active:
+                raise AssertionError("fixed Windows proxy port was started concurrently")
+            active += 1
+            events.append(f"start:{self.port}")
+
+        async def stop(self) -> None:
+            nonlocal active
+            active -= 1
+            events.append("stop")
+
+    monkeypatch.setattr(integration_mod, "SandboxProxyServer", FakeProxy)
+    first_ready = asyncio.Event()
+    release_first = asyncio.Event()
+    policy = SandboxPolicy(
+        level=SecurityLevel.STANDARD,
+        network=NetworkMode.PROXY_ALLOWLIST,
+        mounts=(),
+        workspace_rw=True,
+        tmp_writable=True,
+        limits=ResourceLimits(),
+        env_allowlist=("PATH",),
+        require_approval=False,
+    )
+
+    async def run_managed(name: str) -> None:
+        request = integration_mod.build_request(
+            action_kind="shell.exec",
+            argv=("curl", f"https://example.com/{name}"),
+            cwd=tmp_path,
+            policy=policy,
+        )
+        managed = await integration_mod.prepare_subprocess_managed_network_proxy(
+            request,
+            runtime=runtime,
+        )
+        events.append(f"ready:{name}")
+        try:
+            if name == "first":
+                first_ready.set()
+                await release_first.wait()
+        finally:
+            await managed.cleanup()
+
+    first = asyncio.create_task(run_managed("first"))
+    await first_ready.wait()
+    second = asyncio.create_task(run_managed("second"))
+    await asyncio.sleep(0)
+
+    assert events == ["start:48123", "ready:first"]
+
+    release_first.set()
+    await asyncio.gather(first, second)
+
+    assert events == [
+        "start:48123",
+        "ready:first",
+        "stop",
+        "start:48123",
+        "ready:second",
+        "stop",
+    ]
+    assert active == 0
 
 
 @pytest.mark.asyncio

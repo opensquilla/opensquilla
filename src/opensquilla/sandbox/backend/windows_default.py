@@ -9,6 +9,7 @@ import os
 import sys
 import time
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +30,10 @@ from opensquilla.sandbox.backend.windows_default_roots import (
     workspace_cache_root,
     workspace_write_roots,
 )
-from opensquilla.sandbox.backend.windows_default_setup import default_setup_marker_path
+from opensquilla.sandbox.backend.windows_default_setup import (
+    default_setup_marker_path,
+    read_setup_marker,
+)
 from opensquilla.sandbox.backend.windows_default_support import probe_windows_default_support
 from opensquilla.sandbox.operation_runtime import (
     SANDBOX_FILESYSTEM_WRITE_KINDS,
@@ -51,6 +55,14 @@ _WINDOWS_PROCESS_BASE_ENV_KEYS = (
     "WINDIR",
     "ComSpec",
 )
+_WINDOWS_TOOL_PATH_EXECUTABLES = (
+    "git.exe",
+    "node.exe",
+    "npm.cmd",
+    "npm.exe",
+    "uv.exe",
+)
+_WINDOWS_APPS_ALIAS_DIR_MARKER = "\\microsoft\\windowsapps"
 
 
 class WindowsDefaultBackend(Backend):
@@ -95,8 +107,7 @@ class WindowsDefaultBackend(Backend):
             except FileNotFoundError:
                 pass
         if result.returncode != 0:
-            detail = result.stderr.strip() or result.stdout.strip() or "filesystem worker failed"
-            raise SandboxBackendError(f"windows_default filesystem worker failed: {detail}")
+            _raise_filesystem_worker_failure(result)
         return SandboxOperationResult.from_worker_stdout(result.stdout)
 
     async def run(self, request: SandboxRequest) -> SandboxResult:
@@ -199,15 +210,6 @@ def _payload_for_request(request: SandboxRequest) -> dict[str, Any]:
 
 
 def _windows_network_boundary_payload(request: SandboxRequest) -> dict[str, object] | None:
-    if request.policy.network.value != "proxy_allowlist":
-        return None
-    if request.policy.network_proxy is None:
-        return None
-    from opensquilla.sandbox.backend.windows_default_setup import (
-        default_setup_marker_path,
-        read_setup_marker,
-    )
-
     marker = read_setup_marker(default_setup_marker_path())
     if marker is None or marker.network is None:
         return None
@@ -350,15 +352,31 @@ def _nearest_existing_acl_root(path: Path) -> Path:
     while not candidate.exists():
         parent = candidate.parent
         if parent == candidate:
-            break
+            raise FileNotFoundError(f"Path not found: {path}")
         candidate = parent
+    if _is_filesystem_root(candidate) and not path.exists():
+        raise FileNotFoundError(f"Path not found: {path}")
     return candidate
 
 
 def _validate_filesystem_operation_targets(operation: SandboxOperation) -> None:
+    request = _filesystem_request(operation)
+    if operation.kind == "read_file" and request.path is not None:
+        display = request.display_path or str(request.path)
+        if not request.path.exists():
+            raise FileNotFoundError(f"File not found: {display}")
+        if not request.path.is_file():
+            raise IsADirectoryError(f"Path is a directory: {display}")
+        return
+    if operation.kind == "list_dir" and request.path is not None:
+        display = request.display_path or str(request.path)
+        if not request.path.exists():
+            raise FileNotFoundError(f"Path not found: {display}")
+        if not request.path.is_dir():
+            raise NotADirectoryError(f"Not a directory: {display}")
+        return
     if operation.kind not in SANDBOX_FILESYSTEM_WRITE_KINDS:
         return
-    request = _filesystem_request(operation)
     readonly_roots = _runtime_readonly_roots()
     for path in request.paths:
         for root in readonly_roots:
@@ -405,10 +423,70 @@ def _is_relative_to_casefold(candidate: Path, root: Path) -> bool:
     return c == r or c.startswith(r + "/")
 
 
+def _is_filesystem_root(path: Path) -> bool:
+    try:
+        return bool(path.anchor) and path == type(path)(path.anchor)
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _raise_filesystem_worker_failure(result: SandboxResult) -> None:
+    detail = result.stderr.strip() or result.stdout.strip() or "filesystem worker failed"
+    payload = _filesystem_worker_error_payload(result.stderr) or _filesystem_worker_error_payload(
+        result.stdout
+    )
+    if payload is not None:
+        message = payload["error"]
+        exc_type = payload["type"]
+        if exc_type == "FileNotFoundError":
+            raise FileNotFoundError(message)
+        if exc_type == "IsADirectoryError":
+            raise IsADirectoryError(message)
+        if exc_type == "NotADirectoryError":
+            raise NotADirectoryError(message)
+        if exc_type == "PermissionError":
+            raise PermissionError(message)
+        if exc_type == "ValueError":
+            raise ValueError(message)
+        if exc_type == "ToolError":
+            from opensquilla.tools.types import ToolError
+
+            raise ToolError(message)
+    raise SandboxBackendError(f"windows_default filesystem worker failed: {detail}")
+
+
+def _filesystem_worker_error_payload(raw: str) -> dict[str, str] | None:
+    if not raw.strip():
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    error = payload.get("error")
+    exc_type = payload.get("type")
+    if isinstance(error, str) and isinstance(exc_type, str):
+        return {"error": error, "type": exc_type}
+    return None
+
+
 def _acl_plan_payload(request: SandboxRequest) -> dict[str, object]:
     write_roots = workspace_write_roots(request.cwd)
     process_rx_roots = tuple(
         root for root in process_executable_rx_roots(request.argv, request.env) if root.exists()
+    )
+    tool_rx_roots = tuple(
+        root
+        for root in _windows_tool_path_roots(
+            _process_base_env(request),
+            host_env=_host_tool_env(request),
+        )
+        if _acl_sensitive_marker(root) is None
+    )
+    tool_traversal_roots = _windows_tool_traversal_roots(
+        tool_rx_roots,
+        host_env=_host_tool_env(request),
     )
     runtime_acl_roots = tuple(
         root
@@ -424,7 +502,9 @@ def _acl_plan_payload(request: SandboxRequest) -> dict[str, object]:
             AclGrant(root, AclAccess.RX, AclGrantKind.REQUIRED)
             for root in _workspace_traversal_roots(request.cwd)
         ),
+        *(AclGrant(root, AclAccess.RX, AclGrantKind.REQUIRED) for root in tool_traversal_roots),
         *(AclGrant(root, AclAccess.RX, AclGrantKind.REQUIRED) for root in runtime_acl_roots),
+        *(AclGrant(root, AclAccess.RX, AclGrantKind.REQUIRED) for root in tool_rx_roots),
         *(AclGrant(root, AclAccess.RX, AclGrantKind.REQUIRED) for root in process_acl_roots),
     ]
     policy_grants = [
@@ -454,6 +534,7 @@ def _acl_plan_payload(request: SandboxRequest) -> dict[str, object]:
             f"windows_default ACL approval is required before granting {grant.path}"
         )
 
+    deny_write_paths = _deny_write_paths_for_request(request)
     roots = tuple(grant.path for grant in plan.auto_grants)
     sids = capability_sids_for_command(_capability_store_path(), roots)
     sid_by_root = {str(root): sid for root, sid in zip(roots, sids, strict=False)}
@@ -472,7 +553,28 @@ def _acl_plan_payload(request: SandboxRequest) -> dict[str, object]:
         "approvalRequired": [],
         "denied": [],
         "capabilitySids": list(dict.fromkeys(item["capabilitySid"] for item in grants)),
+        "denyWritePaths": [str(path) for path in deny_write_paths],
+        "grantCurrentUserAccess": True,
     }
+
+
+def _deny_write_paths_for_request(request: SandboxRequest) -> tuple[Path, ...]:
+    paths: list[Path] = [
+        root
+        for root in _runtime_readonly_roots()
+        if root.exists()
+        and not _is_filesystem_root(root)
+        and _acl_sensitive_marker(root) is None
+    ]
+    paths.extend(
+        mount.host_path
+        for mount in request.policy.mounts
+        if mount.mode == "ro"
+        and mount.host_path.exists()
+        and not _is_filesystem_root(mount.host_path)
+        and _acl_sensitive_marker(mount.host_path) is None
+    )
+    return _dedupe_covering_paths(paths)
 
 
 def _rx_root_needs_acl_grant(path: Path, env: dict[str, str]) -> bool:
@@ -498,6 +600,7 @@ def _expansion_grants_from_env(request: SandboxRequest) -> tuple[AclGrant, ...]:
     return tuple(
         AclGrant(Path(root), AclAccess.RWX, AclGrantKind.EXPANSION)
         for root in roots
+        if Path(root).exists()
     )
 
 
@@ -515,7 +618,237 @@ def _process_base_env(request: SandboxRequest) -> dict[str, str]:
         value = request.env.get(key) or os.environ.get(key)
         if isinstance(value, str) and value:
             env[key] = value
+    _prepend_windows_tool_paths(env, host_env=_host_tool_env(request))
     return env
+
+
+def _host_tool_env(request: SandboxRequest) -> dict[str, str]:
+    env = dict(os.environ)
+    env.update(request.env)
+    return env
+
+
+def _prepend_windows_tool_paths(
+    env: dict[str, str],
+    *,
+    host_env: Mapping[str, str] | None = None,
+) -> None:
+    if "PATH" not in env:
+        return
+    roots = _windows_tool_path_roots(env, host_env=host_env)
+    if not roots:
+        return
+    existing = _split_windows_path(env.get("PATH", ""))
+    merged = [str(root) for root in roots]
+    merged.extend(part for part in existing if part)
+    env["PATH"] = os.pathsep.join(_dedupe_path_texts(merged))
+
+
+def _windows_tool_path_roots(
+    env: Mapping[str, str],
+    *,
+    host_env: Mapping[str, str] | None = None,
+) -> tuple[Path, ...]:
+    source = host_env or os.environ
+    candidates: list[Path] = []
+    candidates.extend(_common_windows_tool_dirs(source))
+    for value in (env.get("PATH"), source.get("PATH")):
+        for entry in _split_windows_path(value or ""):
+            path = Path(entry).expanduser()
+            if _windows_path_is_apps_alias_dir(path):
+                continue
+            candidates.append(path)
+    return tuple(_dedupe_paths(path for path in candidates if _directory_has_windows_tool(path)))
+
+
+def _common_windows_tool_dirs(env: Mapping[str, str]) -> tuple[Path, ...]:
+    candidates: list[Path] = []
+    for root in _program_files_roots(env):
+        candidates.extend(
+            (
+                root / "Git" / "cmd",
+                root / "Git" / "bin",
+                root / "nodejs",
+            )
+        )
+    local_appdata = _env_path(env, "LOCALAPPDATA")
+    if local_appdata is not None:
+        candidates.extend(
+            (
+                local_appdata / "Programs" / "nodejs",
+                local_appdata / "OpenAI" / "Codex" / "bin",
+            )
+        )
+        candidates.extend(
+            sorted(
+                local_appdata.glob("OpenAI/Codex/runtimes/cua_node/*/bin"),
+                key=lambda path: str(path).casefold(),
+            )
+        )
+    appdata = _env_path(env, "APPDATA")
+    if appdata is not None:
+        candidates.append(appdata / "npm")
+    userprofile = _env_path(env, "USERPROFILE")
+    if userprofile is not None:
+        candidates.extend(
+            (
+                userprofile / ".local" / "bin",
+                userprofile
+                / ".cache"
+                / "codex-runtimes"
+                / "codex-primary-runtime"
+                / "dependencies"
+                / "native"
+                / "git"
+                / "cmd",
+                userprofile
+                / ".cache"
+                / "codex-runtimes"
+                / "codex-primary-runtime"
+                / "dependencies"
+                / "native"
+                / "git"
+                / "bin",
+                userprofile
+                / ".cache"
+                / "codex-runtimes"
+                / "codex-primary-runtime"
+                / "dependencies"
+                / "node"
+                / "bin",
+                userprofile
+                / ".cache"
+                / "codex-runtimes"
+                / "codex-primary-runtime"
+                / "dependencies"
+                / "bin",
+            )
+        )
+        for pattern in (
+            ".cache/codex-runtimes/*/dependencies/native/git/cmd",
+            ".cache/codex-runtimes/*/dependencies/native/git/bin",
+            ".cache/codex-runtimes/*/dependencies/node/bin",
+            ".cache/codex-runtimes/*/dependencies/bin",
+        ):
+            candidates.extend(
+                sorted(
+                    userprofile.glob(pattern),
+                    key=lambda path: str(path).casefold(),
+                )
+            )
+    return tuple(candidates)
+
+
+def _windows_tool_traversal_roots(
+    tool_roots: tuple[Path, ...],
+    *,
+    host_env: Mapping[str, str],
+) -> tuple[Path, ...]:
+    anchors: list[Path] = []
+    for key in ("LOCALAPPDATA", "APPDATA"):
+        value = _env_path(host_env, key)
+        if value is not None and value.parent != value:
+            anchors.append(value.parent)
+    userprofile = _env_path(host_env, "USERPROFILE")
+    if userprofile is not None:
+        anchors.append(userprofile / ".local")
+        anchors.append(userprofile / ".cache")
+
+    roots: list[Path] = []
+    for tool_root in tool_roots:
+        resolved_tool = tool_root.resolve(strict=False)
+        for anchor in anchors:
+            resolved_anchor = anchor.resolve(strict=False)
+            if not _is_relative_to_casefold(resolved_tool, resolved_anchor):
+                continue
+            roots.extend(_path_chain(resolved_anchor, resolved_tool.parent))
+            break
+    return tuple(_dedupe_paths(path for path in roots if _acl_sensitive_marker(path) is None))
+
+
+def _path_chain(start: Path, stop: Path) -> tuple[Path, ...]:
+    start = start.resolve(strict=False)
+    stop = stop.resolve(strict=False)
+    if not _is_relative_to_casefold(stop, start):
+        return ()
+    roots: list[Path] = []
+    current = stop
+    while True:
+        roots.append(current)
+        if current == start:
+            break
+        parent = current.parent
+        if parent == current:
+            return ()
+        current = parent
+    roots.reverse()
+    return tuple(roots)
+
+
+def _program_files_roots(env: Mapping[str, str]) -> tuple[Path, ...]:
+    roots = []
+    for key, fallback in (
+        ("ProgramFiles", r"C:\Program Files"),
+        ("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+    ):
+        roots.append(Path(env.get(key) or fallback))
+    return tuple(_dedupe_paths(root for root in roots if str(root)))
+
+
+def _env_path(env: Mapping[str, str], key: str) -> Path | None:
+    raw = env.get(key) or os.environ.get(key)
+    if not raw:
+        return None
+    return Path(raw)
+
+
+def _split_windows_path(value: str) -> list[str]:
+    return [part.strip() for part in value.split(os.pathsep) if part.strip()]
+
+
+def _directory_has_windows_tool(path: Path) -> bool:
+    if not path.exists() or not path.is_dir():
+        return False
+    return any((path / name).exists() for name in _WINDOWS_TOOL_PATH_EXECUTABLES)
+
+
+def _windows_path_is_apps_alias_dir(path: Path) -> bool:
+    return _WINDOWS_APPS_ALIAS_DIR_MARKER in str(path).replace("/", "\\").casefold()
+
+
+def _dedupe_paths(paths: object) -> tuple[Path, ...]:
+    seen: set[str] = set()
+    result: list[Path] = []
+    for raw in paths:
+        path = Path(raw).expanduser().resolve(strict=False)
+        key = str(path).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(path)
+    return tuple(result)
+
+
+def _dedupe_covering_paths(paths: object) -> tuple[Path, ...]:
+    ordered = sorted(_dedupe_paths(paths), key=lambda item: len(str(item)))
+    result: list[Path] = []
+    for path in ordered:
+        if any(_is_relative_to_casefold(path, existing) for existing in result):
+            continue
+        result.append(path)
+    return tuple(result)
+
+
+def _dedupe_path_texts(paths: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for path in paths:
+        key = path.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(path)
+    return result
 
 
 def _decode_capped(raw: bytes | None) -> tuple[str, bool]:

@@ -937,6 +937,57 @@ async def test_shell_write_to_protected_metadata_is_blocked_before_backend(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("metadata_dir", [".git", ".codex"])
+async def test_full_host_access_shell_write_to_protected_metadata_uses_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    metadata_dir: str,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    repo = tmp_path / "repo"
+    (repo / metadata_dir).mkdir(parents=True)
+    target = repo / metadata_dir / "_full_host_write_probe.txt"
+    host_calls: list[str] = []
+    backend_calls: list[SandboxRequest] = []
+
+    async def fail_backend(request: SandboxRequest, *, runtime: object = None) -> object:
+        backend_calls.append(request)
+        raise AssertionError("full host access should not use the sandbox backend")
+
+    async def fake_host(
+        command: str,
+        *,
+        cwd: str | None,
+        env: dict[str, str],
+        stdin_bytes: bytes | None,
+        effective_timeout: float,
+    ) -> str:
+        host_calls.append(command)
+        return "host-ran"
+
+    monkeypatch.setattr(shell, "run_under_backend", fail_backend)
+    monkeypatch.setattr(shell, "_run_host_shell_command", fake_host)
+    monkeypatch.setattr(shell, "_windows_sandbox_backend_active", lambda runtime=None: True)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    command = (
+        "powershell -NoProfile -Command "
+        f"\"Set-Content -LiteralPath '{target}' -Value full-host\""
+    )
+    with tool_context(workspace, run_mode="full"):
+        result = await shell.exec_command(command)
+
+    assert result == "host-ran"
+    assert host_calls == [command]
+    assert backend_calls == []
+
+
+@pytest.mark.asyncio
 async def test_trusted_shell_delete_existing_file_under_rw_mount_adds_file_mount(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

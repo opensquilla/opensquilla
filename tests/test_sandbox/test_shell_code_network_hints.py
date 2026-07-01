@@ -493,6 +493,122 @@ def test_windows_shell_host_handles_invoke_webrequest_status_via_managed_proxy(
     assert result.stdout.strip() == "200"
 
 
+def test_windows_shell_host_handles_try_wrapped_invoke_webrequest_status_via_managed_proxy(
+    tmp_path: Path,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    with _SingleResponseHttpProxy(
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nexample"
+    ) as proxy_port:
+        env = {
+            **os.environ,
+            "HTTP_PROXY": f"http://127.0.0.1:{proxy_port}",
+            "HTTPS_PROXY": f"http://127.0.0.1:{proxy_port}",
+            "NO_PROXY": "",
+        }
+        result = subprocess.run(
+            (
+                sys.executable,
+                "-c",
+                shell._WINDOWS_SANDBOX_SHELL_HOST_CODE,
+                "missing-powershell.exe",
+                (
+                    "try { Invoke-WebRequest -UseBasicParsing http://example.test "
+                    "-TimeoutSec 15 | Select-Object -ExpandProperty StatusCode } "
+                    "catch { Write-Output ($_.Exception.GetType().Name + ': ' + "
+                    "$_.Exception.Message) }"
+                ),
+                str(tmp_path),
+                str(tmp_path),
+            ),
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "200"
+
+
+def test_windows_shell_host_handles_assigned_invoke_webrequest_status_via_managed_proxy(
+    tmp_path: Path,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    with _SingleResponseHttpProxy(
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nexample"
+    ) as proxy_port:
+        env = {
+            **os.environ,
+            "HTTP_PROXY": f"http://127.0.0.1:{proxy_port}",
+            "HTTPS_PROXY": f"http://127.0.0.1:{proxy_port}",
+            "NO_PROXY": "",
+        }
+        result = subprocess.run(
+            (
+                sys.executable,
+                "-c",
+                shell._WINDOWS_SANDBOX_SHELL_HOST_CODE,
+                "missing-powershell.exe",
+                (
+                    "try { $r = Invoke-WebRequest -UseBasicParsing http://example.test "
+                    "-TimeoutSec 15; Write-Output ('StatusCode=' + $r.StatusCode) } "
+                    "catch { Write-Output ($_.Exception.GetType().Name + ': ' + "
+                    "$_.Exception.Message) }"
+                ),
+                str(tmp_path),
+                str(tmp_path),
+            ),
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "StatusCode=200"
+
+
+def test_windows_shell_host_handles_assigned_curl_head_status_via_managed_proxy(
+    tmp_path: Path,
+) -> None:
+    from opensquilla.tools.builtin import shell
+
+    with _SingleResponseHttpProxy(
+        b"HTTP/1.1 200 OK\r\nX-Test: yes\r\n\r\n"
+    ) as proxy_port:
+        env = {
+            **os.environ,
+            "HTTP_PROXY": f"http://127.0.0.1:{proxy_port}",
+            "HTTPS_PROXY": f"http://127.0.0.1:{proxy_port}",
+            "NO_PROXY": "",
+        }
+        result = subprocess.run(
+            (
+                sys.executable,
+                "-c",
+                shell._WINDOWS_SANDBOX_SHELL_HOST_CODE,
+                "missing-powershell.exe",
+                (
+                    "try { $r = curl.exe -I http://example.test 2>&1 | "
+                    "Select-String 'HTTP/'; Write-Output $r } "
+                    "catch { Write-Output ('ERROR: ' + $_.Exception.Message) }"
+                ),
+                str(tmp_path),
+                str(tmp_path),
+            ),
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "HTTP/1.1 200 OK"
+
+
 def test_windows_shell_host_handles_curl_head_via_managed_proxy(
     tmp_path: Path,
 ) -> None:

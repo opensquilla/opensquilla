@@ -733,6 +733,10 @@ async def read_file(path: str, offset: int | None = None, limit: int | None = No
     if path_access is not None:
         return json.dumps(path_access)
     _gate_workspace_strict_read("read_file", p, path)
+    if not p.exists():
+        raise FileNotFoundError(f"File not found: {path}")
+    if not p.is_file():
+        raise IsADirectoryError(f"Path is a directory: {path}")
     workspace = _filesystem_operation_workspace()
     if workspace is not None:
         sandbox_result = await _run_sandbox_operation_if_required(
@@ -749,10 +753,6 @@ async def read_file(path: str, offset: int | None = None, limit: int | None = No
         )
         if sandbox_result is not None:
             return str(getattr(sandbox_result, "message"))
-    if not p.exists():
-        raise FileNotFoundError(f"File not found: {path}")
-    if not p.is_file():
-        raise IsADirectoryError(f"Path is a directory: {path}")
 
     loop = asyncio.get_event_loop()
     sample: bytes = await loop.run_in_executor(None, _read_binary_sample, p)
@@ -1158,6 +1158,10 @@ async def list_dir(path: str, approval_id: str | None = None) -> str:
     if path_access is not None:
         return json.dumps(path_access)
     _gate_workspace_strict_read("list_dir", p, path)
+    if not p.exists():
+        raise FileNotFoundError(f"Path not found: {path}")
+    if not p.is_dir():
+        raise NotADirectoryError(f"Not a directory: {path}")
     workspace = _filesystem_operation_workspace()
     if workspace is not None:
         sandbox_result = await _run_sandbox_operation_if_required(
@@ -1172,10 +1176,6 @@ async def list_dir(path: str, approval_id: str | None = None) -> str:
         )
         if sandbox_result is not None:
             return str(getattr(sandbox_result, "message"))
-    if not p.exists():
-        raise FileNotFoundError(f"Path not found: {path}")
-    if not p.is_dir():
-        raise NotADirectoryError(f"Not a directory: {path}")
 
     loop = asyncio.get_event_loop()
     strict_roots = _strict_read_roots()
@@ -1238,6 +1238,8 @@ async def glob_search(pattern: str, path: str | None = None) -> str:
     if path_access is not None:
         return json.dumps(path_access)
     _gate_workspace_strict_read("glob_search", base, path or str(base))
+    if not base.exists():
+        return f"No files matched pattern '{pattern}' in {base}"
     workspace = _filesystem_operation_workspace()
     if workspace is not None:
         sandbox_result = await _run_sandbox_operation_if_required(
@@ -1319,6 +1321,8 @@ async def grep_search(
     if path_access is not None:
         return json.dumps(path_access)
     _gate_workspace_strict_read("grep_search", base, path or str(base))
+    if not base.exists():
+        return f"No matches for '{pattern}'"
     workspace = _filesystem_operation_workspace()
     if workspace is not None:
         sandbox_result = await _run_sandbox_operation_if_required(

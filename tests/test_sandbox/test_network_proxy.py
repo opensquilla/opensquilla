@@ -442,6 +442,63 @@ async def test_proxy_tunnels_allowed_connect_after_validated_upstream(
     assert upstream_opened == [_allow_decision("allowed.test")]
 
 
+async def test_proxy_tunnels_connect_via_https_proxy_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    upstream_proxy_requests: list[bytes] = []
+    upstream_proxy_payloads: list[bytes] = []
+
+    async def handle_upstream_proxy(
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        upstream_proxy_requests.append(await reader.readuntil(b"\r\n\r\n"))
+        writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+        await writer.drain()
+        upstream_proxy_payloads.append(await reader.readexactly(4))
+        writer.write(b"pong")
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    upstream_proxy = await asyncio.start_server(handle_upstream_proxy, "127.0.0.1", 0)
+    upstream_socket = next(iter(upstream_proxy.sockets or ()), None)
+    assert upstream_socket is not None
+    upstream_host, upstream_port = upstream_socket.getsockname()[:2]
+    monkeypatch.setenv("HTTPS_PROXY", f"http://{upstream_host}:{upstream_port}")
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
+    monkeypatch.delenv("ALL_PROXY", raising=False)
+
+    def resolver(_host: str, _port: int) -> tuple[str, int]:
+        raise AssertionError("CONNECT should be routed through upstream proxy env")
+
+    server = SandboxProxyServer(_allow_decision, resolver=resolver)
+    await server.start()
+    reader, writer = await asyncio.open_connection(server.host, server.port)
+    try:
+        writer.write(b"CONNECT Allowed.test:443 HTTP/1.1\r\n\r\n")
+        await writer.drain()
+        response = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=1.0)
+        writer.write(b"ping")
+        await writer.drain()
+        tunneled = await asyncio.wait_for(reader.readexactly(4), timeout=1.0)
+    finally:
+        writer.close()
+        await writer.wait_closed()
+        await server.stop()
+        upstream_proxy.close()
+        await upstream_proxy.wait_closed()
+
+    assert response.startswith(b"HTTP/1.1 200 Connection Established")
+    assert tunneled == b"pong"
+    assert upstream_proxy_requests == [
+        b"CONNECT allowed.test:443 HTTP/1.1\r\n"
+        b"Host: allowed.test:443\r\n"
+        b"\r\n"
+    ]
+    assert upstream_proxy_payloads == [b"ping"]
+
+
 async def test_proxy_connect_opens_plain_tcp_upstream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

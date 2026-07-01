@@ -708,9 +708,38 @@ _SELECT_STATUS_CODE_RE = re.compile(
     r"\bSelect(?:-Object)?\s+-ExpandProperty\s+StatusCode\b",
     re.IGNORECASE,
 )
+_STATUS_CODE_WRITE_OUTPUT_RE = re.compile(
+    r"\b(?:Write-Output|echo)\s+\(\s*"
+    r"(?P<quote>['\"])(?P<prefix>.*?)(?P=quote)\s*\+\s*"
+    r"\$\w+\.StatusCode\s*\)",
+    re.IGNORECASE | re.DOTALL,
+)
+_WRITE_OUTPUT_STATUS_CODE_RE = re.compile(
+    r"\b(?:Write-Output|echo)\s+\$\w+\.StatusCode\b",
+    re.IGNORECASE,
+)
+_SELECT_HTTP_LINE_RE = re.compile(
+    r"\bSelect-String\b.*(?P<quote>['\"])HTTP/(?P=quote)",
+    re.IGNORECASE | re.DOTALL,
+)
+_ICMP_SHELL_COMMAND_RE = re.compile(
+    r"(?<![\w.-])(?:pathping|tracert|ping)(?:\.exe)?(?![\w.-])",
+    re.IGNORECASE,
+)
 _IF_REMOVE_RE = re.compile(
     r"^if\s*\(.*?Test-Path.+?\)\s*\{\s*(?P<remove>Remove-Item\b.+?)\s*\}$",
     re.IGNORECASE | re.DOTALL,
+)
+_TRY_CATCH_RE = re.compile(
+    r"^\s*try\s*\{\s*(?P<body>.*?)\s*\}\s*catch\s*\{.*\}\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+_ICMP_TOOL_NAMES = {"pathping", "ping", "tracert"}
+_ICMP_POWERSHELL_PATTERNS = (
+    "test-connection",
+    "test-netconnection",
+    "system.net.networkinformation.ping",
+    "networkinformation.ping",
 )
 _VALUE_FLAGS = {
     "-credential",
@@ -1105,7 +1134,10 @@ def _handle_python_process_script(script, cwd, site_dir):
 
 def _host_command_name(token):
     name = os.path.basename(token).lower()
-    return name.removesuffix(".exe")
+    for suffix in (".exe", ".cmd", ".bat", ".ps1"):
+        if name.endswith(suffix):
+            return name.removesuffix(suffix)
+    return name
 
 
 def _host_tokens(script):
@@ -1114,6 +1146,106 @@ def _host_tokens(script):
 
 def _host_executable_index(tokens):
     return 1 if tokens and tokens[0] == "&" and len(tokens) > 1 else 0
+
+
+def _strip_assignment_tokens(tokens):
+    if len(tokens) >= 3 and tokens[0].startswith("$") and tokens[1] == "=":
+        return tokens[2:]
+    return tokens
+
+
+def _proxy_allowlist_active():
+    return (
+        os.environ.get("OPENSQUILLA_SANDBOX_NETWORK", "").lower() == "proxy_allowlist"
+        or os.environ.get("CODEX_NETWORK_PROXY_ACTIVE") == "1"
+    )
+
+
+def _proxy_allowlist_icmp_block_reason(script):
+    if not _proxy_allowlist_active():
+        return None
+    lowered_script = script.lower()
+    if any(pattern in lowered_script for pattern in _ICMP_POWERSHELL_PATTERNS):
+        return "windows_default PROXY_ALLOWLIST blocks PowerShell ICMP diagnostics"
+    for statement in _split_statements(script):
+        tokens = _host_tokens(statement)
+        if not tokens:
+            continue
+        executable_index = _host_executable_index(tokens)
+        if executable_index >= len(tokens):
+            continue
+        command = _host_command_name(tokens[executable_index])
+        if command in _ICMP_TOOL_NAMES:
+            return "windows_default PROXY_ALLOWLIST blocks ICMP diagnostic tools"
+        if command in {"cmd", "powershell", "pwsh"} and _ICMP_SHELL_COMMAND_RE.search(
+            " ".join(tokens[executable_index + 1 :])
+        ):
+            return "windows_default PROXY_ALLOWLIST blocks ICMP diagnostic tools"
+    return None
+
+
+def _windowsapps_alias_path(path):
+    return "\\microsoft\\windowsapps" in os.path.normpath(path).lower()
+
+
+def _direct_tool_candidates(command):
+    if command in {"npm", "npx", "pnpm", "yarn"}:
+        return (f"{command}.cmd", f"{command}.exe")
+    if command == "git":
+        return ("git.exe", "git.cmd")
+    if command == "node":
+        return ("node.exe",)
+    return ()
+
+
+def _which_exact(candidate):
+    if os.path.dirname(candidate):
+        if os.path.isfile(candidate):
+            yield candidate
+        return
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if not directory:
+            continue
+        path = os.path.join(directory.strip('"'), candidate)
+        if os.path.isfile(path):
+            yield path
+
+
+def _resolve_direct_tool(command):
+    for candidate in _direct_tool_candidates(command):
+        for path in _which_exact(candidate):
+            if _windowsapps_alias_path(path):
+                continue
+            return path
+    return None
+
+
+def _handle_direct_tool_script(script, cwd, site_dir):
+    statements = _split_statements(script)
+    if len(statements) != 1:
+        return None
+    tokens = _host_tokens(statements[0])
+    if not tokens:
+        return None
+    executable_index = _host_executable_index(tokens)
+    if executable_index >= len(tokens):
+        return None
+    command = _host_command_name(tokens[executable_index])
+    executable = _resolve_direct_tool(command)
+    if executable is None:
+        return None
+    result = subprocess.run(
+        [executable, *tokens[executable_index + 1 :]],
+        cwd=cwd or None,
+        env=_env_with_python_sitecustomize(site_dir),
+        text=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    sys.stdout.buffer.write(result.stdout)
+    sys.stderr.buffer.write(result.stderr)
+    return result.returncode
 
 
 def _http_proxy_for_url(url):
@@ -1162,9 +1294,21 @@ def _http_url_from_tokens(tokens):
     return None
 
 
-def _handle_managed_invoke_webrequest(script):
+def _status_code_output_prefix(script):
+    match = _STATUS_CODE_WRITE_OUTPUT_RE.search(script)
+    if match is not None:
+        return match.group("prefix")
+    return None
+
+
+def _writes_plain_status_code(script):
+    return bool(_WRITE_OUTPUT_STATUS_CODE_RE.search(script))
+
+
+def _handle_managed_invoke_webrequest(script, output_script=""):
     command, _pipe, pipeline = script.partition("|")
     tokens = _host_tokens(command)
+    tokens = _strip_assignment_tokens(tokens)
     if not tokens or _host_command_name(tokens[0]) not in {"invoke-webrequest", "iwr", "wget"}:
         return None
     url = _http_url_from_tokens(tokens)
@@ -1180,15 +1324,19 @@ def _handle_managed_invoke_webrequest(script):
     if result is None:
         return None
     status, _reason, _headers, body = result
-    if _SELECT_STATUS_CODE_RE.search(pipeline):
+    output_prefix = _status_code_output_prefix(output_script)
+    if output_prefix is not None:
+        sys.stdout.write(f"{output_prefix}{status}\n")
+    elif _SELECT_STATUS_CODE_RE.search(pipeline) or _writes_plain_status_code(output_script):
         sys.stdout.write(f"{status}\n")
     else:
         sys.stdout.write(body.decode("utf-8", "replace"))
     return 0
 
 
-def _handle_managed_curl(script):
+def _handle_managed_curl(script, output_script=""):
     tokens = _host_tokens(script)
+    tokens = _strip_assignment_tokens(tokens)
     if not tokens or _host_command_name(tokens[0]) != "curl":
         return None
     url = _http_url_from_tokens(tokens)
@@ -1199,7 +1347,15 @@ def _handle_managed_curl(script):
     if result is None:
         return None
     status, reason, headers, body = result
-    sys.stdout.write(f"HTTP/1.1 {status} {reason}".rstrip() + "\r\n")
+    status_line = f"HTTP/1.1 {status} {reason}".rstrip()
+    if _SELECT_HTTP_LINE_RE.search(script) and re.search(
+        r"\b(?:Write-Output|echo)\s+\$\w+\b",
+        output_script,
+        re.IGNORECASE,
+    ):
+        sys.stdout.write(status_line + "\n")
+        return 0
+    sys.stdout.write(status_line + "\r\n")
     for name, value in headers:
         sys.stdout.write(f"{name}: {value}\r\n")
     sys.stdout.write("\r\n")
@@ -1208,16 +1364,36 @@ def _handle_managed_curl(script):
     return 0
 
 
+def _unwrap_try_catch_script(script):
+    match = _TRY_CATCH_RE.match(script)
+    if match is None:
+        return None
+    return match.group("body").strip()
+
+
 def _handle_managed_http_script(script):
-    for handler in (_handle_managed_invoke_webrequest, _handle_managed_curl):
-        result = handler(script)
-        if result is not None:
-            return result
+    candidates = [script]
+    try_body = _unwrap_try_catch_script(script)
+    if try_body:
+        candidates.append(try_body)
+    for candidate in candidates:
+        statements = _split_statements(candidate)
+        if len(statements) > 1:
+            command_statement = statements[0]
+            output_script = "; ".join(statements[1:])
+            for handler in (_handle_managed_invoke_webrequest, _handle_managed_curl):
+                result = handler(command_statement, output_script)
+                if result is not None:
+                    return result
+        for handler in (_handle_managed_invoke_webrequest, _handle_managed_curl):
+            result = handler(candidate)
+            if result is not None:
+                return result
     return None
 
 
 def _with_sandbox_environment(command, cwd, tmp, python_site_dir):
-    prelude = ""
+    prelude = _powershell_proxy_prelude()
     if tmp:
         quoted_tmp = _ps_single_quote(tmp)
         prelude += (
@@ -1244,6 +1420,29 @@ def _with_sandbox_environment(command, cwd, tmp, python_site_dir):
     )
 
 
+def _powershell_proxy_prelude():
+    proxy = (
+        os.environ.get("HTTPS_PROXY")
+        or os.environ.get("https_proxy")
+        or os.environ.get("HTTP_PROXY")
+        or os.environ.get("http_proxy")
+    )
+    if not proxy:
+        return ""
+    quoted_proxy = _ps_single_quote(proxy)
+    return (
+        f"$__opensquillaProxy = {quoted_proxy}; "
+        "if (-not [string]::IsNullOrWhiteSpace($__opensquillaProxy)) { "
+        "$PSDefaultParameterValues['Invoke-WebRequest:Proxy'] = $__opensquillaProxy; "
+        "$PSDefaultParameterValues['Invoke-RestMethod:Proxy'] = $__opensquillaProxy; "
+        "[System.Net.WebRequest]::DefaultWebProxy = "
+        "[System.Net.WebProxy]::new($__opensquillaProxy); "
+        "[System.Net.WebRequest]::DefaultWebProxy.Credentials = "
+        "[System.Net.CredentialCache]::DefaultCredentials "
+        "}; "
+    )
+
+
 def _with_final_exit_code(command):
     return (
         f"{command}; "
@@ -1264,6 +1463,13 @@ def main():
     python_site_dir = _prepare_python_sitecustomize(tmp)
     nested_command = _nested_powershell_command(command)
     effective_command = nested_command if nested_command is not None else command
+    icmp_block_reason = _proxy_allowlist_icmp_block_reason(effective_command)
+    if icmp_block_reason is not None:
+        sys.stderr.write(icmp_block_reason + "\n")
+        return 2
+    direct_tool_result = _handle_direct_tool_script(effective_command, cwd, python_site_dir)
+    if direct_tool_result is not None:
+        return direct_tool_result
     managed_http_result = _handle_managed_http_script(effective_command)
     if managed_http_result is not None:
         return managed_http_result
@@ -1897,6 +2103,8 @@ def _protected_metadata_write_block(
     *,
     stdin: str | None = None,
 ) -> dict[str, object] | None:
+    if full_host_access_active():
+        return None
     for raw_path in _shell_write_access_targets(command, profile, stdin=stdin):
         resolved = _resolve_shell_write_target(raw_path, workdir)
         protected_name = next(

@@ -207,6 +207,40 @@ async def test_read_file_uses_backend_filesystem_operation_when_supported(
 
 
 @pytest.mark.asyncio
+async def test_missing_read_paths_do_not_enter_windows_filesystem_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside_missing = tmp_path / "outside-missing"
+
+    class _Backend:
+        name = "windows_default"
+
+        def operation_domains_supported(self) -> frozenset[str]:
+            return frozenset({"filesystem"})
+
+        async def run_operation(self, operation: object) -> object:
+            raise AssertionError("missing read/search paths should be handled before worker")
+
+    _configure_with_backend(workspace, _Backend())
+    monkeypatch.setattr(fs.asyncio, "get_event_loop", lambda: _InlineExecutorLoop())
+
+    with _tool_context(workspace):
+        with pytest.raises(FileNotFoundError, match="File not found"):
+            await fs.read_file(str(outside_missing / "notes.txt"))
+        with pytest.raises(FileNotFoundError, match="Path not found"):
+            await fs.list_dir(str(outside_missing))
+        assert await fs.glob_search("*.py", path=str(outside_missing)) == (
+            f"No files matched pattern '*.py' in {outside_missing}"
+        )
+        assert await fs.grep_search("needle", path=str(outside_missing)) == (
+            "No matches for 'needle'"
+        )
+
+
+@pytest.mark.asyncio
 async def test_read_file_refuses_host_fallback_for_windows_sandbox_backend(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

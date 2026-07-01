@@ -9,6 +9,7 @@ import base64
 import contextlib
 import json
 import os
+import re
 import subprocess
 import sys
 import uuid
@@ -23,6 +24,14 @@ LUA_TOKEN = 0x04
 WRITE_RESTRICTED = 0x08
 RESTRICTED_TOKEN_FLAGS = DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED
 GENERIC_ALL = 0x10000000
+GENERIC_WRITE = 0x40000000
+DELETE = 0x00010000
+FILE_DELETE_CHILD = 0x00000040
+FILE_APPEND_DATA = 0x00000004
+FILE_GENERIC_WRITE = 0x00120116
+FILE_WRITE_ATTRIBUTES = 0x00000100
+FILE_WRITE_DATA = 0x00000002
+FILE_WRITE_EA = 0x00000010
 TOKEN_ASSIGN_PRIMARY = 0x0001
 TOKEN_DUPLICATE = 0x0002
 TOKEN_QUERY = 0x0008
@@ -40,6 +49,28 @@ SEM_NOGPFAULTERRORBOX = 0x0002
 SEM_NOOPENFILEERRORBOX = 0x8000
 OFFLINE_PAYLOAD_ENV = "OPENSQUILLA_WINDOWS_DEFAULT_PAYLOAD"
 OFFLINE_PAYLOAD_FILE_ARG = "--payload-file"
+_ICMP_TOOL_NAMES = frozenset(
+    {
+        "ping",
+        "ping.exe",
+        "tracert",
+        "tracert.exe",
+        "pathping",
+        "pathping.exe",
+    }
+)
+_POWERSHELL_NAMES = frozenset({"powershell", "powershell.exe", "pwsh", "pwsh.exe"})
+_SHELL_NAMES = _POWERSHELL_NAMES | frozenset({"cmd", "cmd.exe"})
+_ICMP_SHELL_COMMAND_RE = re.compile(
+    r"(?<![\w.-])(?:pathping|tracert|ping)(?:\.exe)?(?![\w.-])",
+    re.IGNORECASE,
+)
+_ICMP_POWERSHELL_PATTERNS = (
+    "test-connection",
+    "test-netconnection",
+    "system.net.networkinformation.ping",
+    "networkinformation.ping",
+)
 
 
 def _base_restricting_sid_specs() -> tuple[tuple[str, str], ...]:
@@ -54,11 +85,10 @@ def _ordered_restricting_sids(
     base_sids: Sequence[object],
 ) -> tuple[object, ...]:
     ordered = list(capability_sids)
-    if user_sid is not None:
-        ordered.append(user_sid)
     if logon_sid is not None:
         ordered.append(logon_sid)
     ordered.extend(base_sids)
+    _ = user_sid
     return tuple(ordered)
 
 
@@ -224,14 +254,68 @@ def _validate_windows_network_boundary(policy: dict[str, Any]) -> None:
 
 
 def _run_windows_default(payload: HelperPayload) -> int:
+    _reject_proxy_allowlist_icmp_commands(payload)
     acl_plan = _windows_acl_plan(payload.policy)
     capability_sids = _capability_sids(acl_plan)
     if _should_reexec_as_offline_identity(payload):
-        _apply_acl_refresh(acl_plan)
+        _apply_acl_refresh(acl_plan, apply_deny_write=False)
         return _run_payload_as_offline_identity(payload)
     if not payload.offline_child:
         _apply_acl_refresh(acl_plan)
     return _run_restricted_process_native(payload, capability_sids)
+
+
+def _reject_proxy_allowlist_icmp_commands(payload: HelperPayload) -> None:
+    if payload.policy.get("network") != "proxy_allowlist":
+        return
+    reason = _proxy_allowlist_icmp_block_reason(payload.argv)
+    if reason is not None:
+        raise SystemExit(reason)
+
+
+def _proxy_allowlist_icmp_block_reason(argv: Sequence[str]) -> str | None:
+    if not argv:
+        return None
+    executable = PureWindowsPath(str(argv[0])).name.lower()
+    if executable in _ICMP_TOOL_NAMES:
+        return "windows_default PROXY_ALLOWLIST blocks ICMP diagnostic tools"
+    if executable not in _SHELL_NAMES:
+        embedded_command = _shell_host_embedded_command(argv)
+        if embedded_command is not None:
+            return _proxy_allowlist_shell_icmp_block_reason(
+                embedded_command,
+                powershell=True,
+            )
+        return None
+    command_text = " ".join(str(item) for item in argv[1:]).lower()
+    return _proxy_allowlist_shell_icmp_block_reason(
+        command_text,
+        powershell=executable in _POWERSHELL_NAMES,
+    )
+
+
+def _shell_host_embedded_command(argv: Sequence[str]) -> str | None:
+    if len(argv) < 5:
+        return None
+    if str(argv[1]).lower() != "-c":
+        return None
+    host_source = str(argv[2])
+    if "windows sandbox shell host expects powershell path and command" not in host_source:
+        return None
+    return str(argv[4])
+
+
+def _proxy_allowlist_shell_icmp_block_reason(
+    command_text: str,
+    *,
+    powershell: bool,
+) -> str | None:
+    lowered = command_text.lower()
+    if _ICMP_SHELL_COMMAND_RE.search(lowered):
+        return "windows_default PROXY_ALLOWLIST blocks ICMP diagnostic tools"
+    if powershell and any(pattern in lowered for pattern in _ICMP_POWERSHELL_PATTERNS):
+        return "windows_default PROXY_ALLOWLIST blocks PowerShell ICMP diagnostics"
+    return None
 
 
 def _windows_acl_plan(policy: dict[str, Any]) -> dict[str, Any]:
@@ -246,14 +330,30 @@ def _windows_acl_plan(policy: dict[str, Any]) -> dict[str, Any]:
         isinstance(sid, str) for sid in capability_sids
     ):
         raise SystemExit("invalid windows_default policy: capabilitySids must be a string list")
-    return plan
+    deny_write_paths = plan.get("denyWritePaths", [])
+    if not isinstance(deny_write_paths, list) or not all(
+        isinstance(path, str) for path in deny_write_paths
+    ):
+        raise SystemExit("invalid windows_default policy: denyWritePaths must be a string list")
+    grant_current_user_access = plan.get("grantCurrentUserAccess", False)
+    if not isinstance(grant_current_user_access, bool):
+        raise SystemExit("invalid windows_default policy: grantCurrentUserAccess must be boolean")
+    return {
+        **plan,
+        "denyWritePaths": deny_write_paths,
+        "grantCurrentUserAccess": grant_current_user_access,
+    }
 
 
 def _capability_sids(plan: dict[str, Any]) -> tuple[str, ...]:
     return tuple(str(sid) for sid in plan["capabilitySids"])
 
 
-def _apply_acl_refresh(plan: dict[str, Any]) -> None:
+def _apply_acl_refresh(plan: dict[str, Any], *, apply_deny_write: bool = True) -> None:
+    normal_access_sid = (
+        _current_token_user_sid_string() if plan.get("grantCurrentUserAccess") else None
+    )
+    normal_access_seen: set[tuple[str, str]] = set()
     for grant in plan["autoGrants"]:
         if not isinstance(grant, dict):
             raise SystemExit("invalid windows_default ACL grant: grant must be an object")
@@ -262,7 +362,63 @@ def _apply_acl_refresh(plan: dict[str, Any]) -> None:
         sid = grant.get("capabilitySid")
         if not isinstance(path, str) or access not in {"RX", "RWX"} or not isinstance(sid, str):
             raise SystemExit("invalid windows_default ACL grant shape")
-        _grant_path_to_sid(Path(path), access, sid)
+        grant_path = Path(path)
+        if grant.get("kind") == "expansion" and not grant_path.exists():
+            continue
+        _grant_path_to_sid(grant_path, access, sid)
+        if normal_access_sid is not None and access == "RWX":
+            key = (str(grant_path.resolve(strict=False)).casefold(), access)
+            if key in normal_access_seen:
+                continue
+            normal_access_seen.add(key)
+            _grant_path_to_sid(grant_path, access, normal_access_sid)
+    deny_write_paths = plan.get("denyWritePaths", []) if apply_deny_write else []
+    if deny_write_paths and not plan.get("capabilitySids"):
+        raise SystemExit("invalid windows_default ACL plan: denyWritePaths require capabilitySids")
+    seen: set[tuple[str, str]] = set()
+    for raw_path in deny_write_paths:
+        if not isinstance(raw_path, str):
+            raise SystemExit("invalid windows_default ACL deny-write path")
+        deny_path = Path(raw_path)
+        if not deny_path.exists():
+            raise SystemExit(f"windows_default ACL deny-write target does not exist: {deny_path}")
+        path_key = str(deny_path.resolve(strict=False)).casefold()
+        for sid in _deny_write_capability_sids_for_path(plan, deny_path):
+            key = (path_key, sid)
+            if key in seen:
+                continue
+            seen.add(key)
+            _deny_write_path_to_sid(deny_path, sid)
+
+
+def _deny_write_capability_sids_for_path(plan: dict[str, Any], deny_path: Path) -> tuple[str, ...]:
+    write_grants: list[tuple[Path, str]] = []
+    for grant in plan.get("autoGrants", []):
+        if not isinstance(grant, dict) or grant.get("access") != "RWX":
+            continue
+        path = grant.get("path")
+        sid = grant.get("capabilitySid")
+        if isinstance(path, str) and isinstance(sid, str):
+            write_grants.append((Path(path), sid))
+    matching = [
+        sid
+        for root, sid in write_grants
+        if _paths_overlap_casefold(root.resolve(strict=False), deny_path.resolve(strict=False))
+    ]
+    selected = matching or [sid for _root, sid in write_grants]
+    if not selected:
+        selected = [str(sid) for sid in plan.get("capabilitySids", [])[:1]]
+    return tuple(dict.fromkeys(selected))
+
+
+def _paths_overlap_casefold(left: Path, right: Path) -> bool:
+    return _path_contains_casefold(left, right) or _path_contains_casefold(right, left)
+
+
+def _path_contains_casefold(root: Path, candidate: Path) -> bool:
+    root_text = str(root).replace("\\", "/").rstrip("/").casefold()
+    candidate_text = str(candidate).replace("\\", "/").rstrip("/").casefold()
+    return candidate_text == root_text or candidate_text.startswith(root_text + "/")
 
 
 def _network_boundary(policy: dict[str, Any]) -> dict[str, object] | None:
@@ -273,7 +429,7 @@ def _network_boundary(policy: dict[str, Any]) -> dict[str, object] | None:
 def _should_reexec_as_offline_identity(payload: HelperPayload) -> bool:
     return (
         not payload.offline_child
-        and payload.policy.get("network") == "proxy_allowlist"
+        and str(payload.run_mode).strip().lower() != "full"
         and _network_boundary(payload.policy) is not None
     )
 
@@ -288,8 +444,11 @@ def _run_payload_as_offline_identity(payload: HelperPayload) -> int:
     )
 
     identity = offline_identity_from_boundary(boundary)
+    acl_plan = _windows_acl_plan(payload.policy)
+    _cleanup_offline_identity_launch_acl(identity.sid, acl_plan)
     _grant_offline_helper_runtime_access(identity.sid)
-    _grant_acl_plan_to_sid(_windows_acl_plan(payload.policy), identity.sid)
+    _grant_acl_plan_to_sid(acl_plan, identity.sid)
+    _apply_offline_identity_runtime_write_denies(identity.sid, acl_plan)
     password = unprotect_password(identity.protected_password)
     return _run_payload_as_offline_identity_native(
         replace(payload, offline_child=True),
@@ -345,6 +504,65 @@ def _open_current_process_token() -> int:
     return int(source_token.value)
 
 
+def _current_token_user_sid_string() -> str:
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    HANDLE = wintypes.HANDLE
+    DWORD = wintypes.DWORD
+    LPVOID = wintypes.LPVOID
+
+    class SID_AND_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [
+            ("Sid", LPVOID),
+            ("Attributes", DWORD),
+        ]
+
+    advapi32.GetTokenInformation.argtypes = [HANDLE, DWORD, LPVOID, DWORD, ctypes.POINTER(DWORD)]
+    advapi32.GetTokenInformation.restype = wintypes.BOOL
+    advapi32.ConvertSidToStringSidW.argtypes = [LPVOID, ctypes.POINTER(wintypes.LPWSTR)]
+    advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
+    kernel32.LocalFree.argtypes = [LPVOID]
+    kernel32.LocalFree.restype = LPVOID
+    kernel32.CloseHandle.argtypes = [HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    TOKEN_USER_CLASS = 1
+    token = HANDLE(_open_current_process_token())
+    string_sid = wintypes.LPWSTR()
+    try:
+        needed = DWORD()
+        advapi32.GetTokenInformation(token, TOKEN_USER_CLASS, None, 0, ctypes.byref(needed))
+        if not needed.value:
+            raise OSError(0, "GetTokenInformation(TokenUser) returned no size")
+        buffer = ctypes.create_string_buffer(needed.value)
+        if not advapi32.GetTokenInformation(
+            token,
+            TOKEN_USER_CLASS,
+            buffer,
+            needed,
+            ctypes.byref(needed),
+        ):
+            code = ctypes.get_last_error()
+            raise OSError(
+                code,
+                f"GetTokenInformation(TokenUser) failed: {ctypes.FormatError(code)}",
+            )
+        user = SID_AND_ATTRIBUTES.from_buffer(buffer)
+        if not advapi32.ConvertSidToStringSidW(user.Sid, ctypes.byref(string_sid)):
+            code = ctypes.get_last_error()
+            raise OSError(code, f"ConvertSidToStringSidW failed: {ctypes.FormatError(code)}")
+        return string_sid.value
+    finally:
+        if string_sid:
+            kernel32.LocalFree(string_sid)
+        if token:
+            kernel32.CloseHandle(token)
+
+
 def _grant_path_to_sid(path: Path, access: str, sid: str) -> None:
     if not path.exists():
         raise SystemExit(f"windows_default ACL grant target does not exist: {path}")
@@ -383,6 +601,27 @@ def _grant_path_to_sid_native(path: Path, access: str, sid: str) -> None:
             ("Trustee", TRUSTEE_W),
         ]
 
+    class ACL_SIZE_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("AceCount", DWORD),
+            ("AclBytesInUse", DWORD),
+            ("AclBytesFree", DWORD),
+        ]
+
+    class ACE_HEADER(ctypes.Structure):
+        _fields_ = [
+            ("AceType", wintypes.BYTE),
+            ("AceFlags", wintypes.BYTE),
+            ("AceSize", wintypes.WORD),
+        ]
+
+    class ACCESS_ALLOWED_ACE(ctypes.Structure):
+        _fields_ = [
+            ("Header", ACE_HEADER),
+            ("Mask", DWORD),
+            ("SidStart", DWORD),
+        ]
+
     advapi32.ConvertStringSidToSidW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(LPVOID)]
     advapi32.ConvertStringSidToSidW.restype = wintypes.BOOL
     advapi32.GetNamedSecurityInfoW.argtypes = [
@@ -413,15 +652,24 @@ def _grant_path_to_sid_native(path: Path, access: str, sid: str) -> None:
         LPVOID,
     ]
     advapi32.SetNamedSecurityInfoW.restype = DWORD
+    advapi32.GetAclInformation.argtypes = [LPVOID, LPVOID, DWORD, DWORD]
+    advapi32.GetAclInformation.restype = wintypes.BOOL
+    advapi32.GetAce.argtypes = [LPVOID, DWORD, ctypes.POINTER(LPVOID)]
+    advapi32.GetAce.restype = wintypes.BOOL
+    advapi32.EqualSid.argtypes = [LPVOID, LPVOID]
+    advapi32.EqualSid.restype = wintypes.BOOL
     kernel32.LocalFree.argtypes = [LPVOID]
     kernel32.LocalFree.restype = LPVOID
 
     ERROR_SUCCESS = 0
     SE_FILE_OBJECT = 1
     DACL_SECURITY_INFORMATION = 0x00000004
+    ACL_SIZE_INFORMATION_CLASS = 2
     GRANT_ACCESS = 1
     TRUSTEE_IS_SID = 0
     TRUSTEE_IS_UNKNOWN = 0
+    ACCESS_ALLOWED_ACE_TYPE = 0
+    INHERIT_ONLY_ACE = 0x08
     NO_INHERITANCE = 0
     OBJECT_INHERIT_ACE = 0x1
     CONTAINER_INHERIT_ACE = 0x2
@@ -435,6 +683,33 @@ def _grant_path_to_sid_native(path: Path, access: str, sid: str) -> None:
     def win32_error(label: str, code: int | None = None) -> OSError:
         error_code = ctypes.get_last_error() if code is None else code
         return OSError(error_code, f"{label} failed: {ctypes.FormatError(error_code)}")
+
+    def dacl_allows_mask_for_sid(dacl: object, sid_to_check: object, mask: int) -> bool:
+        if not dacl:
+            return False
+        info = ACL_SIZE_INFORMATION()
+        if not advapi32.GetAclInformation(
+            dacl,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+            ACL_SIZE_INFORMATION_CLASS,
+        ):
+            return False
+        for index in range(int(info.AceCount)):
+            ace_ptr = LPVOID()
+            if not advapi32.GetAce(dacl, index, ctypes.byref(ace_ptr)) or not ace_ptr:
+                continue
+            header = ctypes.cast(ace_ptr, ctypes.POINTER(ACE_HEADER)).contents
+            if header.AceType != ACCESS_ALLOWED_ACE_TYPE:
+                continue
+            if header.AceFlags & INHERIT_ONLY_ACE:
+                continue
+            ace = ctypes.cast(ace_ptr, ctypes.POINTER(ACCESS_ALLOWED_ACE)).contents
+            sid_ptr_value = int(ace_ptr.value) + ctypes.sizeof(ACE_HEADER) + ctypes.sizeof(DWORD)
+            ace_sid = LPVOID(sid_ptr_value)
+            if advapi32.EqualSid(ace_sid, sid_to_check) and (ace.Mask & mask) == mask:
+                return True
+        return False
 
     if access == "RX":
         allow_mask = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE
@@ -473,11 +748,393 @@ def _grant_path_to_sid_native(path: Path, access: str, sid: str) -> None:
         )
         if code != ERROR_SUCCESS:
             raise win32_error("GetNamedSecurityInfoW", code)
+        if dacl_allows_mask_for_sid(old_dacl, sid_ptr, allow_mask):
+            return
 
         explicit = EXPLICIT_ACCESS_W()
         explicit.grfAccessPermissions = allow_mask
         explicit.grfAccessMode = GRANT_ACCESS
         explicit.grfInheritance = inheritance
+        explicit.Trustee.pMultipleTrustee = None
+        explicit.Trustee.MultipleTrusteeOperation = 0
+        explicit.Trustee.TrusteeForm = TRUSTEE_IS_SID
+        explicit.Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN
+        explicit.Trustee.ptstrName = sid_ptr
+
+        code = advapi32.SetEntriesInAclW(
+            1,
+            ctypes.byref(explicit),
+            old_dacl,
+            ctypes.byref(new_dacl),
+        )
+        if code != ERROR_SUCCESS:
+            raise win32_error("SetEntriesInAclW", code)
+        code = advapi32.SetNamedSecurityInfoW(
+            path_buffer,
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            new_dacl,
+            None,
+        )
+        if code != ERROR_SUCCESS:
+            raise win32_error("SetNamedSecurityInfoW", code)
+    finally:
+        for pointer in (new_dacl, security_descriptor, sid_ptr):
+            if pointer:
+                kernel32.LocalFree(pointer)
+
+
+def _revoke_path_for_sid(path: Path, sid: str) -> None:
+    if not path.exists():
+        return
+    try:
+        _revoke_path_for_sid_native(path, sid)
+    except OSError as exc:
+        raise SystemExit(
+            f"windows_default ACL revoke failed for {path}: {exc}"
+        ) from exc
+
+
+def _revoke_path_for_sid_native(path: Path, sid: str) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    DWORD = wintypes.DWORD
+    LPVOID = wintypes.LPVOID
+
+    class ACL_SIZE_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("AceCount", DWORD),
+            ("AclBytesInUse", DWORD),
+            ("AclBytesFree", DWORD),
+        ]
+
+    class ACE_HEADER(ctypes.Structure):
+        _fields_ = [
+            ("AceType", wintypes.BYTE),
+            ("AceFlags", wintypes.BYTE),
+            ("AceSize", wintypes.WORD),
+        ]
+
+    class ACCESS_DENIED_ACE(ctypes.Structure):
+        _fields_ = [
+            ("Header", ACE_HEADER),
+            ("Mask", DWORD),
+            ("SidStart", DWORD),
+        ]
+
+    advapi32.ConvertStringSidToSidW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(LPVOID)]
+    advapi32.ConvertStringSidToSidW.restype = wintypes.BOOL
+    advapi32.GetNamedSecurityInfoW.argtypes = [
+        wintypes.LPWSTR,
+        DWORD,
+        DWORD,
+        ctypes.POINTER(LPVOID),
+        ctypes.POINTER(LPVOID),
+        ctypes.POINTER(LPVOID),
+        ctypes.POINTER(LPVOID),
+        ctypes.POINTER(LPVOID),
+    ]
+    advapi32.GetNamedSecurityInfoW.restype = DWORD
+    advapi32.SetNamedSecurityInfoW.argtypes = [
+        wintypes.LPWSTR,
+        DWORD,
+        DWORD,
+        LPVOID,
+        LPVOID,
+        LPVOID,
+        LPVOID,
+    ]
+    advapi32.SetNamedSecurityInfoW.restype = DWORD
+    advapi32.GetAclInformation.argtypes = [LPVOID, LPVOID, DWORD, DWORD]
+    advapi32.GetAclInformation.restype = wintypes.BOOL
+    advapi32.GetAce.argtypes = [LPVOID, DWORD, ctypes.POINTER(LPVOID)]
+    advapi32.GetAce.restype = wintypes.BOOL
+    advapi32.DeleteAce.argtypes = [LPVOID, DWORD]
+    advapi32.DeleteAce.restype = wintypes.BOOL
+    advapi32.EqualSid.argtypes = [LPVOID, LPVOID]
+    advapi32.EqualSid.restype = wintypes.BOOL
+    kernel32.LocalFree.argtypes = [LPVOID]
+    kernel32.LocalFree.restype = LPVOID
+
+    ERROR_SUCCESS = 0
+    SE_FILE_OBJECT = 1
+    DACL_SECURITY_INFORMATION = 0x00000004
+    ACL_SIZE_INFORMATION_CLASS = 2
+    ACCESS_DENIED_ACE_TYPE = 1
+    blocking_deny_mask = FILE_GENERIC_WRITE | GENERIC_WRITE
+
+    def win32_error(label: str, code: int | None = None) -> OSError:
+        error_code = ctypes.get_last_error() if code is None else code
+        return OSError(error_code, f"{label} failed: {ctypes.FormatError(error_code)}")
+
+    sid_ptr = LPVOID()
+    security_descriptor = LPVOID()
+    old_dacl = LPVOID()
+    path_buffer = ctypes.create_unicode_buffer(str(path))
+
+    try:
+        if not advapi32.ConvertStringSidToSidW(sid, ctypes.byref(sid_ptr)):
+            raise win32_error("ConvertStringSidToSidW")
+        code = advapi32.GetNamedSecurityInfoW(
+            path_buffer,
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            ctypes.byref(old_dacl),
+            None,
+            ctypes.byref(security_descriptor),
+        )
+        if code != ERROR_SUCCESS:
+            raise win32_error("GetNamedSecurityInfoW", code)
+        if not old_dacl:
+            return
+        info = ACL_SIZE_INFORMATION()
+        if not advapi32.GetAclInformation(
+            old_dacl,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+            ACL_SIZE_INFORMATION_CLASS,
+        ):
+            raise win32_error("GetAclInformation")
+        removed = False
+        for index in range(int(info.AceCount) - 1, -1, -1):
+            ace_ptr = LPVOID()
+            if not advapi32.GetAce(old_dacl, index, ctypes.byref(ace_ptr)) or not ace_ptr:
+                continue
+            header = ctypes.cast(ace_ptr, ctypes.POINTER(ACE_HEADER)).contents
+            if header.AceType != ACCESS_DENIED_ACE_TYPE:
+                continue
+            ace = ctypes.cast(ace_ptr, ctypes.POINTER(ACCESS_DENIED_ACE)).contents
+            sid_ptr_value = int(ace_ptr.value) + ctypes.sizeof(ACE_HEADER) + ctypes.sizeof(DWORD)
+            ace_sid = LPVOID(sid_ptr_value)
+            if not (
+                advapi32.EqualSid(ace_sid, sid_ptr) and (ace.Mask & blocking_deny_mask)
+            ):
+                continue
+            if not advapi32.DeleteAce(old_dacl, index):
+                raise win32_error("DeleteAce")
+            removed = True
+        if not removed:
+            return
+        code = advapi32.SetNamedSecurityInfoW(
+            path_buffer,
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            old_dacl,
+            None,
+        )
+        if code != ERROR_SUCCESS:
+            raise win32_error("SetNamedSecurityInfoW", code)
+    finally:
+        for pointer in (security_descriptor, sid_ptr):
+            if pointer:
+                kernel32.LocalFree(pointer)
+
+
+def _deny_write_path_to_sid(path: Path, sid: str) -> None:
+    if not path.exists():
+        raise SystemExit(f"windows_default ACL deny-write target does not exist: {path}")
+    try:
+        _deny_write_path_to_sid_native(path, sid)
+    except OSError as exc:
+        raise SystemExit(
+            f"windows_default ACL deny-write failed for {path}: {exc}"
+        ) from exc
+
+
+def _deny_file_mutation_path_to_sid(path: Path, sid: str) -> None:
+    if not path.exists():
+        raise SystemExit(f"windows_default ACL deny-write target does not exist: {path}")
+    try:
+        _deny_write_path_to_sid_native(path, sid, include_read_control=False)
+    except OSError as exc:
+        raise SystemExit(
+            f"windows_default ACL deny-write failed for {path}: {exc}"
+        ) from exc
+
+
+def _deny_write_path_to_sid_native(
+    path: Path,
+    sid: str,
+    *,
+    include_read_control: bool = True,
+) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    DWORD = wintypes.DWORD
+    LPVOID = wintypes.LPVOID
+
+    class TRUSTEE_W(ctypes.Structure):
+        _fields_ = [
+            ("pMultipleTrustee", LPVOID),
+            ("MultipleTrusteeOperation", DWORD),
+            ("TrusteeForm", DWORD),
+            ("TrusteeType", DWORD),
+            ("ptstrName", LPVOID),
+        ]
+
+    class EXPLICIT_ACCESS_W(ctypes.Structure):
+        _fields_ = [
+            ("grfAccessPermissions", DWORD),
+            ("grfAccessMode", DWORD),
+            ("grfInheritance", DWORD),
+            ("Trustee", TRUSTEE_W),
+        ]
+
+    class ACL_SIZE_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("AceCount", DWORD),
+            ("AclBytesInUse", DWORD),
+            ("AclBytesFree", DWORD),
+        ]
+
+    class ACE_HEADER(ctypes.Structure):
+        _fields_ = [
+            ("AceType", wintypes.BYTE),
+            ("AceFlags", wintypes.BYTE),
+            ("AceSize", wintypes.WORD),
+        ]
+
+    class ACCESS_DENIED_ACE(ctypes.Structure):
+        _fields_ = [
+            ("Header", ACE_HEADER),
+            ("Mask", DWORD),
+            ("SidStart", DWORD),
+        ]
+
+    advapi32.ConvertStringSidToSidW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(LPVOID)]
+    advapi32.ConvertStringSidToSidW.restype = wintypes.BOOL
+    advapi32.GetNamedSecurityInfoW.argtypes = [
+        wintypes.LPWSTR,
+        DWORD,
+        DWORD,
+        ctypes.POINTER(LPVOID),
+        ctypes.POINTER(LPVOID),
+        ctypes.POINTER(LPVOID),
+        ctypes.POINTER(LPVOID),
+        ctypes.POINTER(LPVOID),
+    ]
+    advapi32.GetNamedSecurityInfoW.restype = DWORD
+    advapi32.SetEntriesInAclW.argtypes = [
+        DWORD,
+        ctypes.POINTER(EXPLICIT_ACCESS_W),
+        LPVOID,
+        ctypes.POINTER(LPVOID),
+    ]
+    advapi32.SetEntriesInAclW.restype = DWORD
+    advapi32.SetNamedSecurityInfoW.argtypes = [
+        wintypes.LPWSTR,
+        DWORD,
+        DWORD,
+        LPVOID,
+        LPVOID,
+        LPVOID,
+        LPVOID,
+    ]
+    advapi32.SetNamedSecurityInfoW.restype = DWORD
+    advapi32.GetAclInformation.argtypes = [LPVOID, LPVOID, DWORD, DWORD]
+    advapi32.GetAclInformation.restype = wintypes.BOOL
+    advapi32.GetAce.argtypes = [LPVOID, DWORD, ctypes.POINTER(LPVOID)]
+    advapi32.GetAce.restype = wintypes.BOOL
+    advapi32.EqualSid.argtypes = [LPVOID, LPVOID]
+    advapi32.EqualSid.restype = wintypes.BOOL
+    kernel32.LocalFree.argtypes = [LPVOID]
+    kernel32.LocalFree.restype = LPVOID
+
+    ERROR_SUCCESS = 0
+    SE_FILE_OBJECT = 1
+    DACL_SECURITY_INFORMATION = 0x00000004
+    ACL_SIZE_INFORMATION_CLASS = 2
+    DENY_ACCESS = 3
+    TRUSTEE_IS_SID = 0
+    TRUSTEE_IS_UNKNOWN = 0
+    ACCESS_DENIED_ACE_TYPE = 1
+    INHERIT_ONLY_ACE = 0x08
+    OBJECT_INHERIT_ACE = 0x1
+    CONTAINER_INHERIT_ACE = 0x2
+    deny_mask = (
+        FILE_WRITE_DATA
+        | FILE_APPEND_DATA
+        | FILE_WRITE_EA
+        | FILE_WRITE_ATTRIBUTES
+        | DELETE
+        | FILE_DELETE_CHILD
+    )
+    if include_read_control:
+        deny_mask |= FILE_GENERIC_WRITE | GENERIC_WRITE
+
+    def win32_error(label: str, code: int | None = None) -> OSError:
+        error_code = ctypes.get_last_error() if code is None else code
+        return OSError(error_code, f"{label} failed: {ctypes.FormatError(error_code)}")
+
+    def dacl_has_write_deny_for_sid(dacl: object, sid_to_check: object) -> bool:
+        if not dacl:
+            return False
+        info = ACL_SIZE_INFORMATION()
+        if not advapi32.GetAclInformation(
+            dacl,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+            ACL_SIZE_INFORMATION_CLASS,
+        ):
+            return False
+        for index in range(int(info.AceCount)):
+            ace_ptr = LPVOID()
+            if not advapi32.GetAce(dacl, index, ctypes.byref(ace_ptr)) or not ace_ptr:
+                continue
+            header = ctypes.cast(ace_ptr, ctypes.POINTER(ACE_HEADER)).contents
+            if header.AceType != ACCESS_DENIED_ACE_TYPE:
+                continue
+            if header.AceFlags & INHERIT_ONLY_ACE:
+                continue
+            ace = ctypes.cast(ace_ptr, ctypes.POINTER(ACCESS_DENIED_ACE)).contents
+            sid_ptr_value = int(ace_ptr.value) + ctypes.sizeof(ACE_HEADER) + ctypes.sizeof(DWORD)
+            ace_sid = LPVOID(sid_ptr_value)
+            if advapi32.EqualSid(ace_sid, sid_to_check) and (ace.Mask & deny_mask):
+                return True
+        return False
+
+    sid_ptr = LPVOID()
+    security_descriptor = LPVOID()
+    old_dacl = LPVOID()
+    new_dacl = LPVOID()
+    path_buffer = ctypes.create_unicode_buffer(str(path))
+
+    try:
+        if not advapi32.ConvertStringSidToSidW(sid, ctypes.byref(sid_ptr)):
+            raise win32_error("ConvertStringSidToSidW")
+        code = advapi32.GetNamedSecurityInfoW(
+            path_buffer,
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            ctypes.byref(old_dacl),
+            None,
+            ctypes.byref(security_descriptor),
+        )
+        if code != ERROR_SUCCESS:
+            raise win32_error("GetNamedSecurityInfoW", code)
+        if dacl_has_write_deny_for_sid(old_dacl, sid_ptr):
+            return
+
+        explicit = EXPLICIT_ACCESS_W()
+        explicit.grfAccessPermissions = deny_mask
+        explicit.grfAccessMode = DENY_ACCESS
+        explicit.grfInheritance = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE
         explicit.Trustee.pMultipleTrustee = None
         explicit.Trustee.MultipleTrusteeOperation = 0
         explicit.Trustee.TrusteeForm = TRUSTEE_IS_SID
@@ -607,6 +1264,59 @@ def _write_offline_payload_file(payload: HelperPayload) -> Path:
 def _grant_offline_helper_runtime_access(sid: str) -> None:
     for root in _offline_helper_runtime_roots():
         _grant_path_to_sid(root, "RX", sid)
+
+
+def _cleanup_offline_identity_launch_acl(sid: str, plan: dict[str, Any]) -> None:
+    paths: list[Path] = []
+    for root in _offline_helper_runtime_roots():
+        paths.extend(_path_and_parents(root))
+    for raw_path in plan.get("denyWritePaths", []):
+        if isinstance(raw_path, str):
+            paths.extend(_path_and_parents(Path(raw_path)))
+
+    seen: set[str] = set()
+    for path in paths:
+        if not path.exists():
+            continue
+        key = str(path.resolve(strict=False)).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        _revoke_path_for_sid(path, sid)
+
+
+def _apply_offline_identity_runtime_write_denies(sid: str, plan: dict[str, Any]) -> None:
+    seen: set[str] = set()
+    for raw_path in plan.get("denyWritePaths", []):
+        if not isinstance(raw_path, str):
+            continue
+        path = Path(raw_path)
+        if not path.exists():
+            continue
+        key = str(path.resolve(strict=False)).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        _deny_file_mutation_path_to_sid(path, sid)
+
+
+def _path_and_parents(path: Path) -> tuple[Path, ...]:
+    paths = [path]
+    current = path
+    while True:
+        parent = current.parent
+        if parent == current or _is_drive_root(parent):
+            break
+        paths.append(parent)
+        current = parent
+    return tuple(paths)
+
+
+def _is_drive_root(path: Path) -> bool:
+    try:
+        return bool(path.anchor) and path == type(path)(path.anchor)
+    except (OSError, RuntimeError, ValueError):
+        return False
 
 
 def _grant_acl_plan_to_sid(plan: dict[str, Any], sid: str) -> None:
@@ -744,7 +1454,7 @@ def _run_payload_as_offline_identity_native(
     kernel32.SetErrorMode.restype = DWORD
 
     HANDLE_FLAG_INHERIT = 0x00000001
-    LOGON_WITH_PROFILE = 0x00000001
+    LOGON_WITHOUT_PROFILE = 0
     WAIT_TIMEOUT = 0x00000102
     WAIT_FAILED = 0xFFFFFFFF
 
@@ -825,7 +1535,7 @@ def _run_payload_as_offline_identity_native(
                 username,
                 ".",
                 password,
-                LOGON_WITH_PROFILE,
+                LOGON_WITHOUT_PROFILE,
                 sys.executable,
                 command_line,
                 _offline_helper_creation_flags(),
@@ -1308,7 +2018,6 @@ def _run_restricted_process_native_impl(
     kernel32.SetErrorMode.argtypes = [DWORD]
     kernel32.SetErrorMode.restype = DWORD
 
-    TOKEN_USER_CLASS = 1
     TOKEN_GROUPS_CLASS = 2
     SE_GROUP_LOGON_ID = 0xC0000000
     HANDLE_FLAG_INHERIT = 0x00000001
@@ -1330,23 +2039,6 @@ def _run_restricted_process_native_impl(
         if not advapi32.ConvertStringSidToSidW(value, ctypes.byref(sid)):
             raise win_error(f"ConvertStringSidToSidW({label})")
         return sid
-
-    def user_sid_from_token(token: int) -> tuple[object | None, object | None]:
-        needed = DWORD()
-        advapi32.GetTokenInformation(token, TOKEN_USER_CLASS, None, 0, ctypes.byref(needed))
-        if not needed.value:
-            return None, None
-        buffer = ctypes.create_string_buffer(needed.value)
-        if not advapi32.GetTokenInformation(
-            token,
-            TOKEN_USER_CLASS,
-            buffer,
-            needed,
-            ctypes.byref(needed),
-        ):
-            return None, None
-        user = SID_AND_ATTRIBUTES.from_buffer(buffer)
-        return user.Sid, buffer
 
     def logon_sid_from_token(token: int) -> tuple[object | None, object | None]:
         needed = DWORD()
@@ -1380,7 +2072,6 @@ def _run_restricted_process_native_impl(
     source_token = HANDLE()
     restricted_token = HANDLE()
     allocated_sids: list[object] = []
-    user_sid_buffer: object | None = None
     logon_sid_buffer: object | None = None
     stdin_read = HANDLE()
     stdin_write = HANDLE()
@@ -1402,7 +2093,6 @@ def _run_restricted_process_native_impl(
             allocated_sids.append(sid)
             capability_sid_ptrs.append(sid)
 
-        user_sid, user_sid_buffer = user_sid_from_token(source_token)
         logon_sid, logon_sid_buffer = logon_sid_from_token(source_token)
         base_sid_ptrs = []
         for sid_value, sid_label in _base_restricting_sid_specs():
@@ -1411,7 +2101,7 @@ def _run_restricted_process_native_impl(
             base_sid_ptrs.append(sid)
         restricting_sids = _ordered_restricting_sids(
             capability_sids=tuple(capability_sid_ptrs),
-            user_sid=user_sid,
+            user_sid=None,
             logon_sid=logon_sid,
             base_sids=tuple(base_sid_ptrs),
         )
@@ -1435,7 +2125,8 @@ def _run_restricted_process_native_impl(
         dacl_sids = []
         if logon_sid:
             dacl_sids.append(logon_sid)
-        dacl_sids.extend(restricting_sids)
+        dacl_sids.extend(base_sid_ptrs)
+        dacl_sids.extend(capability_sid_ptrs)
         _finalize_restricted_token(restricted_token, dacl_sids)
 
         sa = SECURITY_ATTRIBUTES()
@@ -1615,7 +2306,6 @@ def _run_restricted_process_native_impl(
         for sid in allocated_sids:
             if sid:
                 local_free(sid)
-        _ = user_sid_buffer
         _ = logon_sid_buffer
 
 

@@ -49,19 +49,23 @@ def _policy(tmp_path: Path):
     )
 
 
-async def _run_python(tmp_path: Path, code: str):
+async def _run_argv(tmp_path: Path, argv: tuple[str, ...]):
     from opensquilla.sandbox.backend.windows_default import WindowsDefaultBackend
     from opensquilla.sandbox.types import SandboxRequest
 
     _ = tmp_path
     request = SandboxRequest(
-        argv=(sys.executable, "-c", code),
+        argv=argv,
         cwd=Path.cwd(),
         action_kind="shell.exec",
         policy=_policy(tmp_path),
         run_mode="trusted",
     )
     return await WindowsDefaultBackend().run(request)
+
+
+async def _run_python(tmp_path: Path, code: str):
+    return await _run_argv(tmp_path, (sys.executable, "-c", code))
 
 
 @WINDOWS_ADMIN_NETWORK
@@ -73,6 +77,18 @@ async def test_sandbox_blocks_direct_public_connect(tmp_path: Path) -> None:
     )
 
     assert result.returncode != 0
+
+
+@WINDOWS_ADMIN_NETWORK
+@pytest.mark.asyncio
+async def test_sandbox_blocks_icmp_ping(tmp_path: Path) -> None:
+    result = await _run_argv(
+        tmp_path,
+        ("ping.exe", "-n", "1", "-w", "1000", "1.1.1.1"),
+    )
+
+    assert result.returncode != 0
+    assert "Reply from " not in result.stdout
 
 
 @WINDOWS_ADMIN_NETWORK

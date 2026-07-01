@@ -12,7 +12,7 @@ from opensquilla.sandbox.managed_proxy_env import (
     managed_proxy_env,
 )
 
-FIREWALL_RULE_VERSION = 3
+FIREWALL_RULE_VERSION = 5
 WFP_RULE_VERSION = 2
 NETWORK_SETUP_VERSION = 1
 

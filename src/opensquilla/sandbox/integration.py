@@ -29,6 +29,7 @@ host.
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import dataclasses
 import functools
@@ -156,6 +157,7 @@ class ManagedNetworkSubprocess:
 
 
 _runtime: SandboxRuntime | None = None
+_WINDOWS_FIXED_PROXY_PORT_LOCK: asyncio.Lock | None = None
 
 
 def configure_runtime(
@@ -972,25 +974,44 @@ async def prepare_subprocess_managed_network_proxy(
     )
     allowed_ports = _windows_allowed_proxy_ports(rt)
     proxy_port = allowed_ports[0] if allowed_ports else 0
-    if on_upstream_opened is None:
-        proxy = SandboxProxyServer(service, port=proxy_port)
-    else:
-        proxy = SandboxProxyServer(
-            service,
-            port=proxy_port,
-            on_upstream_opened=on_upstream_opened,
-        )
-    await proxy.start()
-    if _backend_name(rt).lower().startswith("windows_"):
-        if not _windows_proxy_allowlist_enforced(rt, proxy_ports=(proxy.port,)):
-            await proxy.stop()
-            raise SandboxBackendError(
-                "Windows sandbox managed network is unavailable: proxy port is not "
-                "covered by the enforced Windows network boundary."
+    proxy_lock = _windows_fixed_proxy_port_lock(rt, allowed_ports)
+    lock_acquired = False
+    if proxy_lock is not None:
+        await proxy_lock.acquire()
+        lock_acquired = True
+    try:
+        if on_upstream_opened is None:
+            proxy = SandboxProxyServer(service, port=proxy_port)
+        else:
+            proxy = SandboxProxyServer(
+                service,
+                port=proxy_port,
+                on_upstream_opened=on_upstream_opened,
             )
+        await proxy.start()
+        if _backend_name(rt).lower().startswith("windows_"):
+            if not _windows_proxy_allowlist_enforced(rt, proxy_ports=(proxy.port,)):
+                raise SandboxBackendError(
+                    "Windows sandbox managed network is unavailable: proxy port is not "
+                    "covered by the enforced Windows network boundary."
+                )
+    except Exception:
+        if "proxy" in locals():
+            await proxy.stop()
+        if lock_acquired and proxy_lock is not None:
+            proxy_lock.release()
+        raise
+
+    lock_released = False
 
     async def _cleanup() -> None:
-        await proxy.stop()
+        nonlocal lock_released
+        try:
+            await proxy.stop()
+        finally:
+            if lock_acquired and proxy_lock is not None and not lock_released:
+                proxy_lock.release()
+                lock_released = True
 
     policy = dataclasses.replace(
         request.policy,
@@ -1003,6 +1024,20 @@ async def prepare_subprocess_managed_network_proxy(
         ),
         cleanup=_cleanup,
     )
+
+
+def _windows_fixed_proxy_port_lock(
+    runtime: SandboxRuntime | object | None,
+    allowed_ports: tuple[int, ...],
+) -> asyncio.Lock | None:
+    if not _backend_name(runtime).lower().startswith("windows_"):
+        return None
+    if len(allowed_ports) != 1:
+        return None
+    global _WINDOWS_FIXED_PROXY_PORT_LOCK
+    if _WINDOWS_FIXED_PROXY_PORT_LOCK is None:
+        _WINDOWS_FIXED_PROXY_PORT_LOCK = asyncio.Lock()
+    return _WINDOWS_FIXED_PROXY_PORT_LOCK
 
 
 def current_managed_network_proxy_url() -> str | None:

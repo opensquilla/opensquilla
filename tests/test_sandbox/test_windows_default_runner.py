@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -231,6 +232,88 @@ def test_runner_accepts_proxy_allowlist_with_matching_network_boundary(tmp_path)
     _validate_policy_is_enforceable(parsed.policy)
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("ping.exe", "-n", "1", "1.1.1.1"),
+        ("tracert.exe", "-d", "1.1.1.1"),
+        ("pathping.exe", "-n", "1.1.1.1"),
+        ("powershell.exe", "-NoProfile", "-Command", "ping -n 1 1.1.1.1"),
+        ("powershell.exe", "-NoProfile", "-Command", "Test-Connection -Count 1 1.1.1.1"),
+        (
+            "powershell.exe",
+            "-NoProfile",
+            "-Command",
+            "[System.Net.NetworkInformation.Ping]::new().Send('1.1.1.1')",
+        ),
+        ("cmd.exe", "/c", "ping -n 1 1.1.1.1"),
+    ],
+)
+def test_proxy_allowlist_blocks_icmp_diagnostics(argv) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    assert mod._proxy_allowlist_icmp_block_reason(argv) is not None
+
+
+def test_proxy_allowlist_blocks_shell_host_wrapped_icmp_diagnostics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+    from opensquilla.tools.builtin import shell
+
+    runtime = SimpleNamespace(backend=SimpleNamespace(name="windows_default"))
+    monkeypatch.setattr(
+        shell,
+        "_trusted_windows_powershell_path",
+        lambda: r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+    )
+
+    argv = shell._sandbox_shell_backend_argv(
+        "ping -n 1 1.1.1.1",
+        runtime,
+        cwd=tmp_path,
+    )
+
+    assert mod._proxy_allowlist_icmp_block_reason(argv) is not None
+
+
+def test_proxy_allowlist_icmp_guard_allows_regular_http_commands() -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    assert (
+        mod._proxy_allowlist_icmp_block_reason(
+            ("powershell.exe", "-NoProfile", "-Command", "Invoke-WebRequest https://example.com")
+        )
+        is None
+    )
+
+
+def test_proxy_allowlist_icmp_guard_is_enforced_before_acl_refresh(tmp_path) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    payload = mod.HelperPayload(
+        argv=("ping.exe", "-n", "1", "1.1.1.1"),
+        cwd=tmp_path,
+        env={},
+        policy={
+            "network": "proxy_allowlist",
+            "network_proxy": {"host": "127.0.0.1", "port": 48123},
+            "windowsNetworkBoundary": {
+                "offlineUserSid": "S-1-5-21-100-200-300-400",
+                "allowedProxyPorts": [48123],
+                "allowLocalBinding": False,
+            },
+            "windowsAclPlan": {"autoGrants": [], "capabilitySids": []},
+        },
+        run_mode="trusted",
+        timeout=5,
+    )
+
+    with pytest.raises(SystemExit, match="blocks ICMP"):
+        mod._run_windows_default(payload)
+
+
 def test_runner_applies_acl_refresh_before_process_launch(tmp_path, monkeypatch) -> None:
     from opensquilla.sandbox.backend import windows_default_runner as mod
 
@@ -287,6 +370,347 @@ def test_grant_path_to_sid_uses_native_acl_writer(tmp_path, monkeypatch) -> None
     mod._grant_path_to_sid(tmp_path, "RWX", "S-1-5-21-100-101-102-103")
 
     assert calls == [(tmp_path, "RWX", "S-1-5-21-100-101-102-103")]
+
+
+def test_deny_write_path_to_sid_uses_native_acl_writer(tmp_path, monkeypatch) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    calls = []
+
+    def fail_subprocess(*args, **kwargs):  # pragma: no cover - only reached on regression
+        raise AssertionError("icacls must not be used for random restricting SIDs")
+
+    monkeypatch.setattr(mod.subprocess, "run", fail_subprocess)
+    monkeypatch.setattr(
+        mod,
+        "_deny_write_path_to_sid_native",
+        lambda path, sid: calls.append((path, sid)),
+    )
+
+    mod._deny_write_path_to_sid(tmp_path, "S-1-5-21-100-101-102-103")
+
+    assert calls == [(tmp_path, "S-1-5-21-100-101-102-103")]
+
+
+def test_acl_refresh_skips_missing_expansion_grants(tmp_path, monkeypatch) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    existing = tmp_path / "existing"
+    missing = tmp_path / "deleted-probe.txt"
+    existing.mkdir()
+    calls = []
+
+    monkeypatch.setattr(
+        mod,
+        "_grant_path_to_sid",
+        lambda path, access, sid: calls.append((path, access, sid)),
+    )
+
+    mod._apply_acl_refresh(
+        {
+            "autoGrants": [
+                {
+                    "path": str(missing),
+                    "access": "RWX",
+                    "kind": "expansion",
+                    "capabilitySid": "S-1-5-21-100-101-102-103",
+                },
+                {
+                    "path": str(existing),
+                    "access": "RWX",
+                    "kind": "required",
+                    "capabilitySid": "S-1-5-21-100-101-102-104",
+                },
+            ]
+        }
+    )
+
+    assert calls == [(existing, "RWX", "S-1-5-21-100-101-102-104")]
+
+
+def test_acl_refresh_grants_current_user_normal_access_when_requested(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    calls = []
+
+    monkeypatch.setattr(
+        mod,
+        "_current_token_user_sid_string",
+        lambda: "S-1-5-21-user",
+    )
+    monkeypatch.setattr(
+        mod,
+        "_grant_path_to_sid",
+        lambda path, access, sid: calls.append((path, access, sid)),
+    )
+
+    mod._apply_acl_refresh(
+        {
+            "autoGrants": [
+                {
+                    "path": str(workspace),
+                    "access": "RWX",
+                    "kind": "required",
+                    "capabilitySid": "S-1-5-21-capability",
+                }
+            ],
+            "capabilitySids": ["S-1-5-21-capability"],
+            "grantCurrentUserAccess": True,
+        }
+    )
+
+    assert calls == [
+        (workspace, "RWX", "S-1-5-21-capability"),
+        (workspace, "RWX", "S-1-5-21-user"),
+    ]
+
+
+def test_acl_refresh_applies_deny_write_paths_to_write_root_capability_sids(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    runtime = tmp_path / "runtime" / "Scripts"
+    workspace = tmp_path / "workspace"
+    runtime_rx = tmp_path / "runtime-rx"
+    runtime.mkdir(parents=True)
+    workspace.mkdir()
+    runtime_rx.mkdir()
+    grants = []
+    denies = []
+
+    monkeypatch.setattr(
+        mod,
+        "_grant_path_to_sid",
+        lambda path, access, sid: grants.append((path, access, sid)),
+    )
+    monkeypatch.setattr(
+        mod,
+        "_deny_write_path_to_sid",
+        lambda path, sid: denies.append((path, sid)),
+        raising=False,
+    )
+
+    mod._apply_acl_refresh(
+        {
+            "autoGrants": [
+                {
+                    "path": str(workspace),
+                    "access": "RWX",
+                    "kind": "required",
+                    "capabilitySid": "S-1-5-21-100-101-102-103",
+                },
+                {
+                    "path": str(runtime_rx),
+                    "access": "RX",
+                    "kind": "required",
+                    "capabilitySid": "S-1-5-21-100-101-102-104",
+                }
+            ],
+            "denyWritePaths": [str(runtime)],
+            "capabilitySids": [
+                "S-1-5-21-100-101-102-103",
+                "S-1-5-21-100-101-102-104",
+            ],
+        }
+    )
+
+    assert grants == [
+        (workspace, "RWX", "S-1-5-21-100-101-102-103"),
+        (runtime_rx, "RX", "S-1-5-21-100-101-102-104"),
+    ]
+    assert denies == [(runtime, "S-1-5-21-100-101-102-103")]
+
+
+def test_deny_write_capability_sids_prefer_overlapping_write_roots(tmp_path) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    workspace = tmp_path / "workspace"
+    nested = workspace / "nested"
+    protected = nested / ".codex"
+
+    assert mod._deny_write_capability_sids_for_path(
+        {
+            "autoGrants": [
+                {
+                    "path": str(workspace),
+                    "access": "RWX",
+                    "capabilitySid": "workspace-sid",
+                },
+                {
+                    "path": str(nested),
+                    "access": "RWX",
+                    "capabilitySid": "nested-sid",
+                },
+                {
+                    "path": str(tmp_path / "runtime"),
+                    "access": "RX",
+                    "capabilitySid": "runtime-sid",
+                },
+            ],
+            "capabilitySids": ["workspace-sid", "nested-sid", "runtime-sid"],
+        },
+        protected,
+    ) == ("workspace-sid", "nested-sid")
+
+
+def test_grant_acl_plan_to_sid_does_not_apply_deny_write_paths_to_offline_user(
+    tmp_path, monkeypatch
+) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    workspace = tmp_path / "workspace"
+    runtime = tmp_path / "runtime"
+    workspace.mkdir()
+    runtime.mkdir()
+    grants = []
+    denies = []
+
+    monkeypatch.setattr(
+        mod,
+        "_grant_path_to_sid",
+        lambda path, access, sid: grants.append((path, access, sid)),
+    )
+    monkeypatch.setattr(
+        mod,
+        "_deny_write_path_to_sid",
+        lambda path, sid: denies.append((path, sid)),
+    )
+
+    mod._grant_acl_plan_to_sid(
+        {
+            "autoGrants": [
+                {
+                    "path": str(workspace),
+                    "access": "RWX",
+                    "kind": "required",
+                    "capabilitySid": "S-1-15-3-100-200-300",
+                }
+            ],
+            "denyWritePaths": [str(runtime)],
+            "capabilitySids": ["S-1-15-3-100-200-300"],
+        },
+        "S-1-5-21-100-200-300-400",
+    )
+
+    assert grants == [(workspace, "RWX", "S-1-5-21-100-200-300-400")]
+    assert denies == []
+
+
+def test_offline_identity_launch_cleans_stale_offline_user_denies(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    runtime_root = tmp_path / "runtime"
+    readonly_mount = tmp_path / "readonly"
+    runtime_root.mkdir()
+    readonly_mount.mkdir()
+    payload = mod.HelperPayload(
+        argv=("cmd",),
+        cwd=tmp_path,
+        env={},
+        policy={
+            "network": "none",
+            "windowsAclPlan": {
+                "autoGrants": [],
+                "denyWritePaths": [str(readonly_mount)],
+                "capabilitySids": [],
+            },
+            "windowsNetworkBoundary": {
+                "offlineUserSid": "S-1-5-21-100-200-300-400",
+                "offlineUsername": "OpenSquillaSandbox",
+                "protectedPassword": "base64-dpapi-payload",
+                "allowedProxyPorts": [48123],
+                "allowLocalBinding": False,
+            },
+        },
+        run_mode="trusted",
+        timeout=5,
+    )
+    revokes: list[tuple[Path, str]] = []
+
+    monkeypatch.setattr(mod, "_offline_helper_runtime_roots", lambda: (runtime_root,))
+    monkeypatch.setattr(
+        mod,
+        "_revoke_path_for_sid",
+        lambda path, sid: revokes.append((path, sid)),
+    )
+    monkeypatch.setattr(mod, "_grant_path_to_sid", lambda *_args: None)
+    import opensquilla.sandbox.backend.windows_default_identity as identity_mod
+
+    monkeypatch.setattr(identity_mod, "unprotect_password", lambda _value: "plain")
+    monkeypatch.setattr(
+        mod,
+        "_run_payload_as_offline_identity_native",
+        lambda request, *, username, password: 9,
+    )
+
+    assert mod._run_payload_as_offline_identity(payload) == 9
+
+    assert (runtime_root, "S-1-5-21-100-200-300-400") in revokes
+    assert (readonly_mount, "S-1-5-21-100-200-300-400") in revokes
+
+
+def test_offline_identity_launch_applies_runtime_write_denies_to_offline_user(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from opensquilla.sandbox.backend import windows_default_runner as mod
+
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    denies: list[tuple[Path, str]] = []
+
+    monkeypatch.setattr(
+        mod,
+        "_deny_file_mutation_path_to_sid",
+        lambda path, sid: denies.append((path, sid)),
+    )
+
+    payload = mod.HelperPayload(
+        argv=("cmd",),
+        cwd=tmp_path,
+        env={},
+        policy={
+            "network": "none",
+            "windowsAclPlan": {
+                "autoGrants": [],
+                "denyWritePaths": [str(runtime)],
+                "capabilitySids": [],
+            },
+            "windowsNetworkBoundary": {
+                "offlineUserSid": "S-1-5-21-100-200-300-400",
+                "offlineUsername": "OpenSquillaSandbox",
+                "protectedPassword": "base64-dpapi-payload",
+                "allowedProxyPorts": [48123],
+                "allowLocalBinding": False,
+            },
+        },
+        run_mode="trusted",
+        timeout=5,
+    )
+
+    monkeypatch.setattr(mod, "_offline_helper_runtime_roots", lambda: (), raising=False)
+    monkeypatch.setattr(mod, "_revoke_path_for_sid", lambda *_args: None)
+    monkeypatch.setattr(mod, "_grant_path_to_sid", lambda *_args: None)
+    import opensquilla.sandbox.backend.windows_default_identity as identity_mod
+
+    monkeypatch.setattr(identity_mod, "unprotect_password", lambda _value: "plain")
+    monkeypatch.setattr(
+        mod,
+        "_run_payload_as_offline_identity_native",
+        lambda request, *, username, password: 9,
+    )
+
+    assert mod._run_payload_as_offline_identity(payload) == 9
+
+    assert denies == [(runtime, "S-1-5-21-100-200-300-400")]
 
 
 def test_runner_rejects_missing_acl_plan(tmp_path) -> None:
@@ -439,7 +863,7 @@ def test_proxy_allowlist_reexecs_helper_under_offline_identity(
     )
     calls: list[mod.HelperPayload] = []
 
-    monkeypatch.setattr(mod, "_apply_acl_refresh", lambda _plan: None)
+    monkeypatch.setattr(mod, "_apply_acl_refresh", lambda _plan, **_kwargs: None)
     monkeypatch.setattr(
         mod,
         "_run_payload_as_offline_identity",
@@ -760,7 +1184,7 @@ def test_restricted_process_application_name_uses_absolute_executable() -> None:
     assert mod._restricted_process_application_name(("powershell.exe", "-NoProfile")) is None
 
 
-def test_restricted_token_includes_source_user_sid_in_restricting_sids() -> None:
+def test_restricted_token_omits_source_user_sid_for_write_capability_token() -> None:
     from opensquilla.sandbox.backend import windows_default_runner as mod
 
     assert mod._ordered_restricting_sids(
@@ -768,7 +1192,7 @@ def test_restricted_token_includes_source_user_sid_in_restricting_sids() -> None
         user_sid="user",
         logon_sid="logon",
         base_sids=("everyone",),
-    ) == ("cap", "user", "logon", "everyone")
+    ) == ("cap", "logon", "everyone")
 
 
 def test_runner_overrides_proxy_env_for_proxy_allowlist(tmp_path) -> None:

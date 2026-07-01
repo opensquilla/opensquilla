@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -96,6 +97,113 @@ def test_windows_exec_command_prefers_cmd_package_manager_shims(
     argv = shell._sandbox_shell_backend_argv("npm view lodash version", runtime, cwd=tmp_path)
 
     assert argv[4] == "& 'npm.cmd' 'view' 'lodash' 'version'"
+
+
+def test_windows_shell_host_skips_windowsapps_git_alias(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows command shims are Windows-only")
+
+    from opensquilla.tools.builtin import shell
+
+    alias_dir = tmp_path / "Microsoft" / "WindowsApps"
+    real_dir = tmp_path / "Git" / "cmd"
+    alias_dir.mkdir(parents=True)
+    real_dir.mkdir(parents=True)
+    (alias_dir / "git.cmd").write_text("@echo off\r\necho alias-git\r\n", encoding="utf-8")
+    (real_dir / "git.cmd").write_text("@echo off\r\necho real-git %1\r\n", encoding="utf-8")
+    monkeypatch.setenv("PATH", os.pathsep.join((str(alias_dir), str(real_dir))))
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            shell._WINDOWS_SANDBOX_SHELL_HOST_CODE,
+            "powershell.exe",
+            "git --version",
+            str(tmp_path),
+            str(tmp_path / ".opensquilla-cache" / "shell-host"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert "real-git --version" in completed.stdout
+    assert "alias-git" not in completed.stdout
+
+
+def test_windows_shell_host_blocks_icmp_diagnostics_when_proxy_allowlist(
+    tmp_path: Path,
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows command shims are Windows-only")
+
+    from opensquilla.tools.builtin import shell
+
+    env = os.environ.copy()
+    env["OPENSQUILLA_SANDBOX_NETWORK"] = "proxy_allowlist"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            shell._WINDOWS_SANDBOX_SHELL_HOST_CODE,
+            "powershell.exe",
+            "ping",
+            str(tmp_path),
+            str(tmp_path / ".opensquilla-cache" / "shell-host"),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "blocks ICMP" in completed.stderr
+
+
+def test_windows_shell_host_fallback_sets_powershell_proxy_defaults(
+    tmp_path: Path,
+) -> None:
+    if os.name != "nt":
+        pytest.skip("PowerShell proxy defaults are Windows-only")
+
+    from opensquilla.tools.builtin import shell
+
+    proxy_url = "http://127.0.0.1:48123"
+    env = os.environ.copy()
+    env["HTTP_PROXY"] = proxy_url
+    env["HTTPS_PROXY"] = proxy_url
+    command = (
+        "try { "
+        "if ([System.Net.WebRequest]::DefaultWebProxy -and "
+        "[System.Net.WebRequest]::DefaultWebProxy.Address) { "
+        "Write-Output ([System.Net.WebRequest]::DefaultWebProxy.Address.AbsoluteUri) "
+        "} else { Write-Output 'NO_PROXY' } "
+        "} catch { Write-Output ('ERR:' + $_.Exception.Message) }"
+    )
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            shell._WINDOWS_SANDBOX_SHELL_HOST_CODE,
+            "powershell.exe",
+            command,
+            str(tmp_path),
+            str(tmp_path / ".opensquilla-cache" / "shell-host"),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert proxy_url in completed.stdout
 
 
 @pytest.mark.asyncio

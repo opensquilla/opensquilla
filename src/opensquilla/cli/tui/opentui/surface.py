@@ -294,12 +294,16 @@ def _router_plugin_state_from_toolbar(toolbar: dict[str, object]) -> RouterPlugi
     source = str(toolbar.get("router_source") or "")
     routing_applied = bool(toolbar.get("router_routing_applied", True))
     rollout_phase = str(toolbar.get("router_rollout_phase") or "full")
+    # The model that actually served the turn (full, provider-qualified, e.g.
+    # "deepseek/deepseek-v4-pro-20260423"). Prefer it over the router's dateless
+    # tier id so the strip shows the complete name.
+    applied_model = str(toolbar.get("router_applied_model") or "")
     match = _ROUTER_LABEL_RE.match(label)
     if match:
         tier = match.group("tier")
         confidence = match.group("confidence")
         return RouterPluginState(
-            model=match.group("model"),
+            model=applied_model or match.group("model"),
             route=f"{tier} {confidence}" if confidence else tier,
             saving=match.group("saving") or "-",
             context=context,
@@ -313,7 +317,7 @@ def _router_plugin_state_from_toolbar(toolbar: dict[str, object]) -> RouterPlugi
     fallback = _FALLBACK_LABEL_RE.match(label)
     if fallback:
         return RouterPluginState(
-            model=fallback.group("model"),
+            model=applied_model or fallback.group("model"),
             route="fallback",
             saving="-",
             context=context,
@@ -325,7 +329,7 @@ def _router_plugin_state_from_toolbar(toolbar: dict[str, object]) -> RouterPlugi
         )
 
     return RouterPluginState(
-        model="pending",
+        model=applied_model or "pending",
         route="pending",
         saving="-",
         context=context,

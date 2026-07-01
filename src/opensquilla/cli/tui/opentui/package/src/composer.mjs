@@ -31,30 +31,21 @@ export function shortModel(m) {
   return m ? m.split("/").pop() : m;
 }
 
-// Router model row value. On downgrade, keep the resolved target model visible;
-// the source/baseline model is already represented by the down marker.
-export function formatRouterModelValue(model, baselineModel) {
-  const modelShort = shortModel(model);
-  const baselineShort = shortModel(baselineModel);
-  if (baselineShort && modelShort && baselineShort !== modelShort) {
-    return `↓ ${modelShort}`;
-  }
-  return modelShort || model;
+// Model identity for downgrade comparison: ignore the provider prefix AND a
+// trailing -YYYYMMDD(D) date, so the applied dated id ("…-v4-pro-20260423") is
+// NOT flagged as a downgrade from the router's dateless baseline of the same model.
+function modelIdentity(m) {
+  return (shortModel(m) || "").replace(/-\d{6,8}$/, "");
 }
 
-export function fixedRouterRow(label, value) {
-  const safeValue = String(value).replace(/\s+/gu, " ").trim() || "-";
-  const maxValueCells = 20;
-  let clipped = "";
-  let cells = 0;
-  for (const char of Array.from(safeValue)) {
-    const next = cells + cellWidth(char);
-    if (next > maxValueCells) break;
-    clipped += char;
-    cells = next;
-  }
-  const padding = " ".repeat(Math.max(0, maxValueCells - cells));
-  return `${label.padEnd(5)} ${clipped}${padding}`;
+// Router model row value. Show the FULL model id (provider-qualified, with any
+// version/date) so the strip carries the complete name. On a genuine downgrade
+// (a different model from the baseline), prefix a down marker.
+export function formatRouterModelValue(model, baselineModel) {
+  if (!model) return baselineModel || "";
+  const downgraded =
+    Boolean(baselineModel) && modelIdentity(baselineModel) !== modelIdentity(model);
+  return downgraded ? `↓ ${model}` : model;
 }
 
 function clamp(value, min, max) {
@@ -689,7 +680,6 @@ export function createComposer(deps) {
     // terminal's wide-char accounting to desync. (opencode, on the same
     // @opentui/core engine + alt-screen, is immune for exactly this reason — its
     // status sits below the input and its sidebar is a disjoint column.)
-    const stripValue = (v) => clipToCells(String(v ?? "").replace(/\s+/gu, " ").trim() || "-", 18);
     const routerStrip = new BoxRenderable(renderer, {
       id: "router-strip",
       position: "absolute",
@@ -701,22 +691,39 @@ export function createComposer(deps) {
       flexDirection: "row",
       backgroundColor: THEME.footerBg,
     });
-    const chip = (suffix, content, fg) =>
-      routerStrip.add(new TextRenderable(renderer, { id: `router-${suffix}`, content, fg }));
-    // A quiet "router" label, dim field labels, and each VALUE in its semantic
-    // color, with fields separated by a dim middot — matching the usage footnote
-    // (value-forward hierarchy: data pops, labels recede).
+    // Build the strip as an ordered segment list, then emit only what fits the
+    // strip's inner width. An unbounded flex row overflowed the box on a full
+    // model name and left stale glyphs past the composer's right border; budgeting
+    // the total width keeps every render inside the box. The model gets a generous
+    // cap so its complete provider-qualified id shows; the short metrics keep a
+    // small cap. THEME colors: value-forward (data pops, labels recede).
+    const clean = (v) => String(v ?? "").replace(/\s+/gu, " ").trim() || "-";
+    const segs = [["label", "router", THEME.muted]];
     let sepN = 0;
-    const field = (key, label, value, valueFg) => {
-      chip(`sep${sepN++}`, " · ", THEME.detailText);
-      chip(`${key}-label`, `${label} `, THEME.detailText);
-      chip(`${key}-value`, stripValue(value), valueFg);
+    const field = (key, label, value, valueFg, cap) => {
+      segs.push([`sep${sepN++}`, " · ", THEME.detailText]);
+      segs.push([`${key}-label`, `${label} `, THEME.detailText]);
+      segs.push([`${key}-value`, clipToCells(clean(value), cap), valueFg]);
     };
-    chip("label", "router", THEME.muted);
-    field("model", "model", routerModelValue(), THEME.text);
-    field("route", "route", routerRouteValue(), THEME.routeText);
-    field("saving", "save", routerState.saving, THEME.metricPositive);
-    field("context", "ctx", routerState.context, THEME.warning);
+    field("model", "model", routerModelValue(), THEME.text, 40);
+    field("route", "route", routerRouteValue(), THEME.routeText, 18);
+    field("saving", "save", routerState.saving, THEME.metricPositive, 18);
+    field("context", "ctx", routerState.context, THEME.warning, 18);
+
+    const stripInnerWidth = Math.max(
+      0,
+      (renderer.terminalWidth ?? 80) - COMPOSER_LEFT * 2 - 2 /* paddingLeft */ - 1 /* safety */,
+    );
+    let used = 0;
+    for (const [suffix, content, fg] of segs) {
+      if (used >= stripInnerWidth) break;
+      const remaining = stripInnerWidth - used;
+      const fits = textWidth(content) <= remaining;
+      const shown = fits ? content : clipToCells(content, remaining);
+      routerStrip.add(new TextRenderable(renderer, { id: `router-${suffix}`, content: shown, fg }));
+      used += textWidth(shown);
+      if (!fits) break; // ran out of room; the clipped segment is the last one
+    }
     inputBox.add(routerStrip);
     renderCompletionMenu();
     // The theme picker shares the overlay layer, so a footer re-render (pulse

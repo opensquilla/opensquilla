@@ -17,6 +17,7 @@ import { createTestRenderer } from "@opentui/core/testing";
 import { BoxRenderable, TextRenderable } from "@opentui/core";
 
 import { createComposer } from "./composer.mjs";
+import { textWidth } from "./primitives.mjs";
 import { THEME } from "./theme.mjs";
 
 const FOOTER_HEIGHT = 6;
@@ -150,6 +151,19 @@ test("composer is one full-width box with the router strip on its own row above"
     expect(close).toBeGreaterThan(open);
     expect(boxTopRow.lastIndexOf("╮")).toBe(close); // only one closing corner
   }
+});
+
+test("a wide terminal shows the FULL model id, and the strip never overflows", async () => {
+  // #1: the complete provider-qualified model name (not a shortened tier id).
+  const wide = await renderFooter({ width: 160 });
+  expect(rowText(wide, HEIGHT - FOOTER_HEIGHT)).toContain(LONG_MODEL);
+
+  // #3: on a narrow terminal the strip is width-budgeted — the rendered row fits
+  // the terminal and never spills past the composer's right border.
+  const narrow = await renderFooter({ width: 48 });
+  const stripRow = rowText(narrow, HEIGHT - FOOTER_HEIGHT);
+  expect(textWidth(stripRow)).toBeLessThanOrEqual(48);
+  expect(stripRow).toContain("router"); // label still present
 });
 
 test("the router model renders on the strip, never on the composer/caret rows", async () => {

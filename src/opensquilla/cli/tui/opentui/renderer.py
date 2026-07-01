@@ -70,6 +70,7 @@ class OpenTuiStreamRenderer:
         # occupancy until this turn finalizes.
         self._set_router_session_input(None)
         self._set_router_input_tokens(None)
+        self._set_router_applied_model(None)
         self._set_router_usage(None)
         await self._emit("turn.begin", TurnBegin(id=self._turn_id))
         await self._emit(
@@ -273,6 +274,9 @@ class OpenTuiStreamRenderer:
         # + message), i.e. how much of the context window is occupied right now.
         # The ctx field renders this against the window as "used/window".
         self._set_router_input_tokens(in_tok)
+        # The model that ACTUALLY served the turn (full, provider-qualified id) so
+        # the strip shows the complete name rather than the router's dateless tier id.
+        self._set_router_applied_model(getattr(usage, "model", None))
         self._set_router_usage(f"{_format_tokens(in_tok)}/{_format_tokens(out_tok)}")
 
     def _set_router_session_input(self, value: object | None) -> None:
@@ -284,6 +288,11 @@ class OpenTuiStreamRenderer:
         set_toolbar = getattr(self.output_handle, "set_toolbar", None)
         if callable(set_toolbar):
             set_toolbar("router_input_tokens", value)
+
+    def _set_router_applied_model(self, value: object | None) -> None:
+        set_toolbar = getattr(self.output_handle, "set_toolbar", None)
+        if callable(set_toolbar):
+            set_toolbar("router_applied_model", value)
 
     def _set_router_usage(self, value: object | None) -> None:
         set_toolbar = getattr(self.output_handle, "set_toolbar", None)

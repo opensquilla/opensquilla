@@ -321,6 +321,29 @@ def test_router_plugin_state_carries_observe_source_and_usage() -> None:
     assert payload["context"] == "1.2k/856"
 
 
+def test_router_plugin_state_prefers_the_applied_model_name() -> None:
+    bridge = FakeOpenTuiBridge()
+    output = OpenTuiOutputHandle(bridge, approval_surface=Surface.CLI_GATEWAY)
+    # The router's tier id is dateless; the applied model (from usage) is the full
+    # provider-qualified, dated id. The strip must show the complete applied name.
+    output.set_toolbar("router_hud", "route c1 -> deepseek/deepseek-v4-pro save 65%")
+    output.set_toolbar("router_applied_model", "deepseek/deepseek-v4-pro-20260423")
+    output.invalidate()
+
+    (_, payload) = bridge.sent[0]
+    assert payload["model"] == "deepseek/deepseek-v4-pro-20260423"
+
+
+def test_router_plugin_state_falls_back_to_label_model_without_applied() -> None:
+    bridge = FakeOpenTuiBridge()
+    output = OpenTuiOutputHandle(bridge, approval_surface=Surface.CLI_GATEWAY)
+    output.set_toolbar("router_hud", "route c1 -> deepseek/deepseek-v4-pro save 65%")
+    output.invalidate()
+
+    (_, payload) = bridge.sent[0]
+    assert payload["model"] == "deepseek/deepseek-v4-pro"
+
+
 def test_router_plugin_state_formats_context_as_used_over_window() -> None:
     bridge = FakeOpenTuiBridge()
     output = OpenTuiOutputHandle(bridge, approval_surface=Surface.CLI_GATEWAY)

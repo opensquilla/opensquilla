@@ -196,27 +196,27 @@ def test_composer_router_state_carries_structured_fields() -> None:
     assert "setCompletionContext" in composer
 
 
-def test_composer_router_model_downgrade_keeps_target_model_visible() -> None:
-    module_path = (
-        "./src/opensquilla/cli/tui/opentui/package/src/"
-        "composer.mjs"
-    )
+def test_composer_router_model_value_shows_full_name_and_marks_downgrade() -> None:
+    module_path = "./src/opensquilla/cli/tui/opentui/package/src/composer.mjs"
     data = _node_json(
         f"""
         const mod = await import("{module_path}");
-        const {{ fixedRouterRow, formatRouterModelValue }} = mod;
-        const target = "anthropic/claude-sonnet-4.6";
+        const {{ formatRouterModelValue }} = mod;
+        const target = "deepseek/deepseek-v4-pro-20260423";
         const baseline = "anthropic/claude-opus-4.7";
-        const downgrade = formatRouterModelValue(target, baseline);
-        const unchanged = formatRouterModelValue(target, target);
-        const row = fixedRouterRow("model", downgrade);
-        console.log(JSON.stringify({{ downgrade, unchanged, row }}));
+        console.log(JSON.stringify({{
+          // a real downgrade -> marker + the FULL applied id (not a shortened one)
+          downgrade: formatRouterModelValue(target, baseline),
+          // same model, dated applied id vs dateless baseline -> NOT a downgrade
+          sameDated: formatRouterModelValue(target, "deepseek/deepseek-v4-pro"),
+          // no baseline -> plain full name
+          plain: formatRouterModelValue(target, ""),
+        }}));
         """
     )
-    assert data["downgrade"] == "↓ claude-sonnet-4.6"
-    assert data["unchanged"] == "claude-sonnet-4.6"
-    assert "claude-sonnet-4.6" in data["row"]
-    assert "claude-opus-4.7" not in data["row"]
+    assert data["downgrade"] == "↓ deepseek/deepseek-v4-pro-20260423"
+    assert data["sameDated"] == "deepseek/deepseek-v4-pro-20260423"
+    assert data["plain"] == "deepseek/deepseek-v4-pro-20260423"
 
 
 def test_main_is_thin_entry_with_mouse_and_alt_screen() -> None:

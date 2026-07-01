@@ -28,12 +28,12 @@ class FakeNode {
   }
 }
 
-function makeHarness({ terminalWidth = 100 } = {}) {
+function makeHarness({ terminalWidth = 100, terminalHeight = 24 } = {}) {
   const keypressHandlers = [];
   const cursorPositions = [];
   const renderer = {
     terminalWidth,
-    terminalHeight: 24,
+    terminalHeight,
     keyInput: {
       on(event, handler) {
         if (event === "keypress") keypressHandlers.push(handler);
@@ -172,6 +172,19 @@ test("completion menu clips long rows to the menu body width", () => {
     rowContents.every((content) => textWidth(content) <= 33),
     "row content must fit the 72-column menu body",
   );
+});
+
+test("composer clamps its box to a short terminal so the footer never overflows", () => {
+  // main.mjs clamps inputBox.height with clampFooterHeight on short panes; the
+  // composer must lay out against the SAME clamped height, not the fixed 6, or a
+  // 3–5 row terminal overflows. composer height = clampFooterHeight(6, H) - 1.
+  const tall = makeHarness({ terminalHeight: 24 });
+  assert.equal(findDeep(tall.inputBox, "composer-box").options.height, 5);
+
+  const short = makeHarness({ terminalHeight: 4 });
+  const shortHeight = findDeep(short.inputBox, "composer-box").options.height;
+  assert.equal(shortHeight, 3); // clamp(6,4)=4 → 4-1, not the unclamped 5
+  assert.ok(shortHeight < 5);
 });
 
 test("composer shows the terminal cursor at the visual caret for IME popovers", () => {

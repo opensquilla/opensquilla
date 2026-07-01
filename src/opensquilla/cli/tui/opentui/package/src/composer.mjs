@@ -1,5 +1,5 @@
 import { THEME, THEME_NAMES, STATUS_PULSE_FRAMES, applyTheme, activeThemeName } from "./theme.mjs";
-import { cellWidth, clipToCells, stripTerminalControls, textWidth } from "./primitives.mjs";
+import { cellWidth, clampFooterHeight, clipToCells, stripTerminalControls, textWidth } from "./primitives.mjs";
 
 const COMPLETION_MENU_LEFT = 1;
 const COMPLETION_MENU_RIGHT = 34;
@@ -283,6 +283,13 @@ function fileCompletionItems(paths) {
 export function createComposer(deps) {
   const { renderer, BoxRenderable, TextRenderable, conversationBox, inputBox, overlayLayer, footerHeight, sendHostMessage } = deps;
 
+  // `footerHeight` is the DESIRED footer height (e.g. 6). On a very short
+  // terminal main.mjs clamps the actual inputBox height with clampFooterHeight,
+  // so the composer must lay out (and place the caret / overlays) against the
+  // same clamped value or it overflows a 3–5 row pane. Recomputed each use so it
+  // tracks live resizes.
+  const effFooterHeight = () => clampFooterHeight(footerHeight, renderer.terminalHeight ?? 24);
+
   let inputText = "";
   // Caret position as a grapheme index into Array.from(inputText), range [0, len].
   let cursorPos = 0;
@@ -515,7 +522,7 @@ export function createComposer(deps) {
       position: "absolute",
       left: COMPLETION_MENU_LEFT,
       right: COMPLETION_MENU_RIGHT,
-      bottom: footerHeight,
+      bottom: effFooterHeight(),
       height: Math.min(8, rows.length + 2),
       borderStyle: "rounded",
       borderColor: THEME.composerBorder,
@@ -564,13 +571,13 @@ export function createComposer(deps) {
     if (!themePicker?.active) return;
     overlayLayer?.remove?.("theme-picker");
     const names = themePicker.names;
-    const maxRows = Math.max(1, (renderer.terminalHeight ?? 24) - footerHeight - 1);
+    const maxRows = Math.max(1, (renderer.terminalHeight ?? 24) - effFooterHeight() - 1);
     const node = new BoxRenderable(renderer, {
       id: "theme-picker",
       position: "absolute",
       left: COMPLETION_MENU_LEFT,
       width: THEME_PICKER_WIDTH,
-      bottom: footerHeight,
+      bottom: effFooterHeight(),
       height: Math.min(names.length + 3, maxRows),
       borderStyle: "rounded",
       borderColor: THEME.brandAccent,
@@ -656,7 +663,7 @@ export function createComposer(deps) {
       left: COMPOSER_LEFT,
       right: COMPOSER_LEFT, // full width: nothing shares the caret's rows
       bottom: 0,
-      height: Math.max(1, footerHeight - 1), // the router strip takes the top row
+      height: Math.max(1, effFooterHeight() - 1), // the router strip takes the top row
       borderStyle: "rounded",
       borderColor: composer.disabled ? THEME.composerDisabledBorder : THEME.composerBorder,
       bottomTitle: `${statusIcon()} ${turnStatus.label}`,
@@ -780,10 +787,11 @@ export function createComposer(deps) {
     if (typeof setCursorPosition !== "function") return;
     const terminalWidth = Number(renderer?.terminalWidth ?? renderer?.width) || 80;
     const terminalHeight = Number(renderer?.terminalHeight ?? renderer?.height) || 24;
-    const footerTop = Math.max(0, terminalHeight - footerHeight);
+    const fh = effFooterHeight();
+    const footerTop = Math.max(0, terminalHeight - fh);
     const { line, col } = caretVisualLineCol();
     const maxX = Math.max(COMPOSER_CONTENT_LEFT, terminalWidth - COMPOSER_CONTENT_LEFT - 1);
-    const maxY = Math.max(footerTop, footerTop + footerHeight - 2);
+    const maxY = Math.max(footerTop, footerTop + fh - 2);
     const x = clamp(COMPOSER_CONTENT_LEFT + col, COMPOSER_CONTENT_LEFT, maxX);
     const y = clamp(
       footerTop + COMPOSER_CONTENT_TOP_OFFSET + line,

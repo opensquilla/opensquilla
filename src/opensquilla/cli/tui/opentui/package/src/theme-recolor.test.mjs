@@ -5,6 +5,7 @@ import { applyTheme, STATUS, THEME } from "./theme.mjs";
 import { createTurnView } from "./turnView.mjs";
 import { createPromptBlock } from "./blocks/promptBlock.mjs";
 import { createToolBlock } from "./blocks/toolBlock.mjs";
+import { createThinkingBlock } from "./blocks/thinkingBlock.mjs";
 
 // A live /theme switch mutates THEME/STATUS in place. Renderables captured their
 // fg at creation, so a dark→light switch would leave prior transcript unreadable
@@ -72,6 +73,55 @@ test("tool block recolor re-derives the run-state color for its current state", 
   block.recolor();
   // Still the OK color, but from the new palette (not the stale dark one).
   assert.equal(node.fg, STATUS.ok);
+});
+
+test("thinking block recolors in place without recreating its nodes", () => {
+  applyTheme("opensquilla-dark");
+  const box = new FakeNode();
+  const block = createThinkingBlock({ renderer, TextRenderable: FakeNode, box, idPrefix: "th" });
+  block.append("line one\nline two");
+  const before = box.children.map((n) => n.id);
+  const dark = THEME.thinkingAccent;
+  assert.ok(box.children.length >= 2);
+  assert.ok(box.children.every((n) => n.fg === dark));
+
+  applyTheme("opensquilla-light");
+  block.recolor();
+  // Same node objects, same order — recolor must not remove/re-add (which would
+  // re-append the lines after later blocks in a shared card body).
+  assert.deepEqual(box.children.map((n) => n.id), before);
+  assert.ok(box.children.every((n) => n.fg === THEME.thinkingAccent));
+});
+
+test("recolor preserves block order in the shared card body", () => {
+  applyTheme("opensquilla-dark");
+  const conversationBox = new FakeNode();
+  const turn = createTurnView(
+    {
+      renderer,
+      BoxRenderable: FakeNode,
+      TextRenderable: FakeNode,
+      MarkdownRenderable: FakeNode,
+      syntaxStyle: {},
+      conversationBox,
+    },
+    "y",
+  );
+  turn.begin("th", "thinking", {});
+  turn.append("th", "reasoning one\nreasoning two");
+  turn.begin("tl", "tool", { name: "grep" });
+
+  const cardBody = findById(conversationBox.children[0], "turn-y-cardbody");
+  const before = cardBody.children.map((c) => c.id);
+  assert.ok(before.indexOf("turn-y-th-l0") < before.indexOf("turn-y-tl-node"));
+
+  applyTheme("opensquilla-light");
+  turn.recolor();
+  // Thinking lines must still precede the tool row — order unchanged.
+  assert.deepEqual(
+    cardBody.children.map((c) => c.id),
+    before,
+  );
 });
 
 test("turn card chrome recolors on a theme switch", () => {

@@ -8,6 +8,7 @@ export function createThinkingBlock(ctx) {
   const { renderer, TextRenderable, box, idPrefix } = ctx;
   let text = "";
   let lineCount = 0;
+  const nodes = new Map(); // id -> line node, for in-place recolor (no reordering)
 
   function render() {
     const trimmed = stripTerminalControls(text).replace(/^\n+/, "");
@@ -25,6 +26,7 @@ export function createThinkingBlock(ctx) {
       box.remove?.(id);
       const n = new TextRenderable(renderer, { id, content, fg: THEME.thinkingAccent });
       box.add(n);
+      nodes.set(id, n);
     });
     lineCount = lines.length;
     renderer.requestRender?.();
@@ -38,8 +40,10 @@ export function createThinkingBlock(ctx) {
     append(delta) { text += String(delta); render(); },
     update() {},
     end() {},
-    // Live /theme switch: re-run render(), which recreates the lines reading the
-    // (in-place updated) THEME.thinkingAccent.
-    recolor() { render(); },
+    // Live /theme switch: re-point the existing line nodes at the updated accent
+    // IN PLACE. Re-running render() would box.remove()+box.add() each line, which
+    // re-appends them after any later blocks in the shared card body — reordering
+    // the transcript. Setting fg directly avoids that.
+    recolor() { for (const n of nodes.values()) n.fg = THEME.thinkingAccent; },
   };
 }

@@ -21,6 +21,7 @@ from opensquilla.env import trust_env as _trust_env
 from opensquilla.execution_status import compact_provider_status, derive_is_error
 from opensquilla.secrets import clean_header_secret
 
+from .compat_policy import OpenAICompatPolicy, compat_policy_for_kind
 from .context_capabilities import supports_openrouter_explicit_prompt_cache
 from .minimax_compat import contains_minimax_protocol, parse_minimax_tool_calls
 from .openrouter_attribution import openrouter_app_headers
@@ -56,20 +57,7 @@ _PLAIN_JSON_TOOL_PREFIX_RE = re.compile(
 )
 
 _OPENAI_TOOL_STATUS_OUTPUT_MAX_CHARS = 4000
-# Text-to-tool-call synthesis exists for MiniMax's plain-text protocol and for
-# OpenRouter upstreams that leak it. A model on any other provider that ends
-# its prose with `identifier{...json...}` must NOT get a synthetic tool call.
-_TEXT_TOOL_SYNTHESIS_PROVIDER_KINDS = frozenset({"minimax", "openrouter"})
-_VOLCENGINE_UNSUPPORTED_TOOL_SCHEMA_KEYWORDS = frozenset(
-    {
-        "minLength",
-        "maxLength",
-        "minItems",
-        "maxItems",
-        "minContains",
-        "maxContains",
-    }
-)
+_VERSIONED_BASE_URL_RE = re.compile(r"/v\d+$")
 
 
 def _openai_tool_result_content(block: Any) -> str:
@@ -87,21 +75,6 @@ def _openai_tool_result_content(block: Any) -> str:
         },
         ensure_ascii=False,
     )
-
-
-def _provider_display_name(provider_kind: str) -> str:
-    return {
-        "openai": "OpenAI",
-        "openrouter": "OpenRouter",
-        "deepseek": "DeepSeek",
-        "moonshot": "Moonshot",
-        "dashscope": "DashScope",
-        "gemini": "Gemini",
-        "zhipu": "Zhipu",
-        "qianfan": "Qianfan",
-        "volcengine": "Volcengine",
-        "byteplus": "BytePlus",
-    }.get(provider_kind, "Provider")
 
 
 def _http_error_body_text(body: bytes | str) -> str:
@@ -124,18 +97,9 @@ def _http_error_body_text(body: bytes | str) -> str:
     return text
 
 
-def _format_chat_http_error(provider_kind: str, status_code: int, body: bytes | str) -> str:
+def _format_chat_http_error(display_name: str, status_code: int, body: bytes | str) -> str:
     body_text = _http_error_body_text(body) or "empty response body"
-    return (
-        f"{_provider_display_name(provider_kind)} chat request failed "
-        f"(HTTP {status_code}): {body_text}"
-    )
-
-
-def _provider_unsupported_tool_schema_keywords(provider_kind: str) -> frozenset[str]:
-    if provider_kind in {"volcengine", "byteplus"}:
-        return _VOLCENGINE_UNSUPPORTED_TOOL_SCHEMA_KEYWORDS
-    return frozenset()
+    return f"{display_name} chat request failed (HTTP {status_code}): {body_text}"
 
 
 def _strip_tool_schema_keywords(value: Any, unsupported: frozenset[str]) -> Any:
@@ -205,42 +169,28 @@ def _strip_think_tags(text: str) -> str:
     return result.strip()
 
 
-def _should_disable_openrouter_reasoning_by_default(model: str) -> bool:
-    """Return True for OpenRouter models known to default into reasoning streams.
-
-    OpenRouter's reasoning controls are model/provider-specific: GLM 4.5 can be
-    stabilized by explicitly disabling reasoning when OpenSquilla has not requested
-    thinking, while MiniMax reasoning endpoints reject that same payload.
-    """
-    return model.strip().lower() in {
-        "z-ai/glm-4.5",
-        "z-ai/glm-4.5-air",
-        "z-ai/glm-5",
-        "z-ai/glm-5.1",
-        "z-ai/glm-5.2",
-    }
+def _model_basename(model: str) -> str:
+    return model.rsplit("/", 1)[-1].strip().lower()
 
 
-def _direct_openai_uses_max_completion_tokens(
-    provider_kind: str,
+def _on_official_host(policy: OpenAICompatPolicy, base_url: str) -> bool:
+    return bool(policy.official_host) and policy.official_host in base_url.lower()
+
+
+def _uses_max_completion_tokens(
+    policy: OpenAICompatPolicy,
     base_url: str,
     model: str,
 ) -> bool:
-    if provider_kind != "openai" or "api.openai.com" not in base_url.lower():
+    if not policy.max_completion_tokens_model_prefixes:
         return False
-    model_name = model.rsplit("/", 1)[-1].strip().lower()
-    return model_name.startswith(("gpt-5", "o1", "o3", "o4"))
-
-
-def _is_kimi_fixed_sampling_model(provider_kind: str, model: str) -> bool:
-    if provider_kind != "moonshot":
+    if not _on_official_host(policy, base_url):
         return False
-    model_name = model.rsplit("/", 1)[-1].strip().lower()
-    return model_name.startswith(("kimi-k2.5", "kimi-k2.6"))
+    return _model_basename(model).startswith(policy.max_completion_tokens_model_prefixes)
 
 
 def _should_send_temperature(
-    provider_kind: str,
+    policy: OpenAICompatPolicy,
     base_url: str,
     model: str,
     cfg: ChatConfig,
@@ -248,17 +198,21 @@ def _should_send_temperature(
 ) -> bool:
     if cfg.temperature is None:
         return False
-    if _is_kimi_fixed_sampling_model(provider_kind, model) and cfg.temperature != 1.0:
+    model_name = _model_basename(model)
+    if (
+        policy.fixed_sampling_model_prefixes
+        and model_name.startswith(policy.fixed_sampling_model_prefixes)
+        and cfg.temperature != 1.0
+    ):
         return False
     if (
-        provider_kind == "openai"
-        and "api.openai.com" in base_url.lower()
+        policy.omit_temperature_when_thinking_model_prefixes
+        and _on_official_host(policy, base_url)
         and cfg.thinking
         and bool(caps and caps.supports_reasoning)
+        and model_name.startswith(policy.omit_temperature_when_thinking_model_prefixes)
     ):
-        model_name = model.rsplit("/", 1)[-1].strip().lower()
-        if model_name.startswith(("gpt-5.4", "gpt-5.5")):
-            return False
+        return False
     return True
 
 
@@ -393,7 +347,7 @@ def _usage_fields(usage: Mapping[str, Any] | None) -> tuple[int, int, int, int, 
 
 def _provider_billed_cost(provider_kind: str, raw_billed_cost: float) -> tuple[float, str]:
     """Return trusted provider-billed cost and its source marker."""
-    if provider_kind == "openrouter" and raw_billed_cost > 0.0:
+    if compat_policy_for_kind(provider_kind).trust_billed_cost and raw_billed_cost > 0.0:
         return raw_billed_cost, "provider_billed"
     return 0.0, "none"
 
@@ -487,12 +441,13 @@ def _synthesize_text_tool_events(
     return events
 
 
-def _build_openai_tool(tool: ToolDefinition, *, provider_kind: str = "") -> dict[str, Any]:
+def _build_openai_tool(
+    tool: ToolDefinition,
+    *,
+    unsupported_keywords: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
     schema = tool.input_schema.model_dump(exclude_none=True)
-    schema = _strip_tool_schema_keywords(
-        schema,
-        _provider_unsupported_tool_schema_keywords(provider_kind),
-    )
+    schema = _strip_tool_schema_keywords(schema, unsupported_keywords)
     return {
         "type": "function",
         "function": {
@@ -509,19 +464,6 @@ def _openrouter_model_likely_supports_explicit_prompt_cache(model: str) -> bool:
 
 def _openrouter_model_is_anthropic(model: str) -> bool:
     return model.strip().lower().startswith("anthropic/")
-
-
-def _openrouter_anthropic_should_use_top_level_cache(
-    *,
-    provider_kind: str,
-    model: str,
-    cfg: ChatConfig,
-) -> bool:
-    return (
-        provider_kind == "openrouter"
-        and cfg.cache_mode in {"auto", "on"}
-        and _openrouter_model_is_anthropic(model)
-    )
 
 
 def _stable_json_hash(value: Any) -> str:
@@ -560,32 +502,22 @@ def _attach_reasoning_content(
     return payload
 
 
-def _is_direct_deepseek_v4_model_id(model: str) -> bool:
-    return model.strip().lower() in {"deepseek-v4-flash", "deepseek-v4-pro"}
-
-
-def _is_direct_deepseek_v4_request(provider_kind: str, model: str) -> bool:
-    return provider_kind == "deepseek" and _is_direct_deepseek_v4_model_id(model)
+def _requires_assistant_reasoning_content(policy: OpenAICompatPolicy, model: str) -> bool:
+    return model.strip().lower() in policy.require_reasoning_content_model_ids
 
 
 def _should_replay_reasoning_content(
     *,
-    provider_kind: str,
+    policy: OpenAICompatPolicy,
     model: str,
     caps: ModelCapabilities | None,
 ) -> bool:
-    if provider_kind == "openrouter":
-        if not caps or not caps.supports_reasoning:
-            return False
-        return caps.reasoning_format == "openrouter"
-    if _is_direct_deepseek_v4_request(provider_kind, model):
+    if _requires_assistant_reasoning_content(policy, model):
         return True
     if not caps or not caps.supports_reasoning:
         return False
-    return (
-        provider_kind == "deepseek"
-        and caps.reasoning_format == "deepseek"
-        and _is_direct_deepseek_v4_model_id(model)
+    return bool(policy.replay_reasoning_format) and (
+        caps.reasoning_format == policy.replay_reasoning_format
     )
 
 
@@ -717,6 +649,7 @@ class OpenAIProvider:
         proxy: str | None = None,
         provider_kind: str | None = None,
         provider_routing: Mapping[str, str] | None = None,
+        compat: OpenAICompatPolicy | None = None,
     ) -> None:
         self._api_key = clean_header_secret(api_key, label="LLM API key")
         self._model = model
@@ -725,6 +658,7 @@ class OpenAIProvider:
         self._org_id = org_id
         inferred_kind = "openrouter" if "openrouter.ai" in self._base_url else "openai"
         self._provider_kind = provider_kind or inferred_kind
+        self._compat = compat or compat_policy_for_kind(self._provider_kind)
         self._provider_routing: Mapping[str, str] = provider_routing or {}
 
     @property
@@ -755,14 +689,13 @@ class OpenAIProvider:
         )
 
     def _api_url(self, path: str) -> str:
-        """Build an API URL without duplicating the version prefix."""
-        if self._base_url.endswith("/v1") and path.startswith("/v1/"):
-            return f"{self._base_url}{path[3:]}"
-        if self._base_url.endswith("/v2") and path.startswith("/v1/"):
-            return f"{self._base_url}{path[3:]}"
-        if self._base_url.endswith("/v3") and path.startswith("/v1/"):
-            return f"{self._base_url}{path[3:]}"
-        if self._base_url.endswith("/v4") and path.startswith("/v1/"):
+        """Build an API URL without duplicating the version prefix.
+
+        A base URL already carrying a version segment (``/v1``…``/vN``, e.g.
+        Qianfan's ``/v2``, Volcengine's ``/api/v3``, Zhipu's ``/paas/v4``)
+        absorbs the canonical ``/v1`` path prefix.
+        """
+        if path.startswith("/v1/") and _VERSIONED_BASE_URL_RE.search(self._base_url):
             return f"{self._base_url}{path[3:]}"
         return f"{self._base_url}{path}"
 
@@ -784,12 +717,12 @@ class OpenAIProvider:
         openai_messages: list[dict[str, Any]] = []
         caps = cfg.model_capabilities
         include_reasoning_content = _should_replay_reasoning_content(
-            provider_kind=self._provider_kind,
+            policy=self._compat,
             model=self._model,
             caps=caps,
         )
         if cfg.system:
-            explicit_cache_supported = self._provider_kind == "openrouter" and (
+            explicit_cache_supported = self._compat.supports_explicit_prompt_cache and (
                 cfg.cache_mode == "on"
                 or (
                     cfg.cache_mode == "auto"
@@ -813,7 +746,7 @@ class OpenAIProvider:
                     m,
                     include_reasoning_content=include_reasoning_content,
                     require_assistant_reasoning_content=(
-                        _is_direct_deepseek_v4_request(self._provider_kind, self._model)
+                        _requires_assistant_reasoning_content(self._compat, self._model)
                     ),
                 )
             )
@@ -824,24 +757,20 @@ class OpenAIProvider:
             "stream": True,
             "stream_options": {"include_usage": True},
         }
-        if _direct_openai_uses_max_completion_tokens(
-            self._provider_kind,
-            self._base_url,
-            self._model,
-        ):
+        if _uses_max_completion_tokens(self._compat, self._base_url, self._model):
             payload["max_completion_tokens"] = cfg.max_tokens
         else:
             payload["max_tokens"] = cfg.max_tokens
-        if self._provider_kind == "openrouter":
+        if self._compat.sends_usage_include:
             payload["usage"] = {"include": True}
-            if _openrouter_anthropic_should_use_top_level_cache(
-                provider_kind=self._provider_kind,
-                model=self._model,
-                cfg=cfg,
-            ):
-                payload["cache_control"] = {"type": "ephemeral"}
+        if (
+            self._compat.anthropic_top_level_cache
+            and cfg.cache_mode in {"auto", "on"}
+            and _openrouter_model_is_anthropic(self._model)
+        ):
+            payload["cache_control"] = {"type": "ephemeral"}
         if _should_send_temperature(
-            self._provider_kind,
+            self._compat,
             self._base_url,
             self._model,
             cfg,
@@ -852,11 +781,15 @@ class OpenAIProvider:
             payload["stop"] = cfg.stop_sequences
         if tools:
             payload["tools"] = [
-                _build_openai_tool(t, provider_kind=self._provider_kind) for t in tools
+                _build_openai_tool(
+                    t,
+                    unsupported_keywords=self._compat.tool_schema_unsupported_keywords,
+                )
+                for t in tools
             ]
             if cfg.tool_choice is not None:
                 payload["tool_choice"] = cfg.tool_choice
-        if self._provider_kind == "openrouter":
+        if self._compat.supports_provider_routing_pin:
             pinned_provider = self._provider_routing.get(self._model)
             if pinned_provider:
                 payload["provider"] = {
@@ -865,12 +798,18 @@ class OpenAIProvider:
                 }
 
         # Reasoning injection (gated on thinking being enabled)
-        direct_deepseek_v4 = _is_direct_deepseek_v4_request(self._provider_kind, self._model)
+        thinking_toggle_model = (
+            self._model.strip().lower() in self._compat.thinking_toggle_model_ids
+        )
         if (caps and caps.supports_reasoning and cfg.thinking) or (
-            direct_deepseek_v4 and cfg.thinking
+            thinking_toggle_model and cfg.thinking
         ):
             effort = _resolve_reasoning_effort(cfg.thinking_level, cfg.thinking_budget_tokens)
-            reasoning_format = caps.reasoning_format if caps is not None else "deepseek"
+            reasoning_format = (
+                caps.reasoning_format
+                if caps is not None
+                else self._compat.default_reasoning_format
+            )
             if reasoning_format == "openrouter":
                 payload["reasoning"] = {"effort": effort}
             elif reasoning_format == "openai":
@@ -887,7 +826,7 @@ class OpenAIProvider:
                 payload["thinking_budget"] = cfg.thinking_budget_tokens
             elif reasoning_format in {"moonshot", "volcengine"}:
                 payload["thinking"] = {"type": "enabled"}
-        elif direct_deepseek_v4 or (
+        elif thinking_toggle_model or (
             caps and caps.supports_reasoning and caps.reasoning_format == "deepseek"
         ):
             payload["thinking"] = {"type": "disabled"}
@@ -913,11 +852,10 @@ class OpenAIProvider:
         ):
             payload["thinking"] = {"type": "disabled"}
         elif (
-            self._provider_kind == "openrouter"
-            and caps
+            caps
             and caps.supports_reasoning
             and caps.reasoning_format == "openrouter"
-            and _should_disable_openrouter_reasoning_by_default(self._model)
+            and self._model.strip().lower() in self._compat.disable_reasoning_by_default_models
         ):
             payload["reasoning"] = {"enabled": False}
 
@@ -996,7 +934,7 @@ class OpenAIProvider:
                 file=sys.stderr,
                 flush=True,
             )
-        if self._provider_kind == "openrouter":
+        if self._compat.log_payload_cache_shape:
             system_payload = (
                 openai_messages[0]
                 if openai_messages and openai_messages[0].get("role") == "system"
@@ -1023,7 +961,7 @@ class OpenAIProvider:
             async with httpx.AsyncClient(
                 timeout=(
                     _stream_timeout(cfg.timeout)
-                    if self._provider_kind == "openrouter"
+                    if self._compat.stream_timeout_fallback
                     else cfg.timeout
                 ),
                 trust_env=_trust_env(),
@@ -1038,7 +976,7 @@ class OpenAIProvider:
                     if response.status_code != 200:
                         body = await response.aread()
                         message = _format_chat_http_error(
-                            self._provider_kind,
+                            self._compat.display_name,
                             response.status_code,
                             body,
                         )
@@ -1177,7 +1115,7 @@ class OpenAIProvider:
                         not tools_acc.has_calls
                         and tools
                         and assistant_text_parts
-                        and self._provider_kind in _TEXT_TOOL_SYNTHESIS_PROVIDER_KINDS
+                        and self._compat.text_tool_synthesis
                     ):
                         full_text = "".join(assistant_text_parts)
                         for event in _synthesize_text_tool_events(full_text, tools):
@@ -1223,7 +1161,7 @@ class OpenAIProvider:
                     )
 
         except httpx.TimeoutException as exc:
-            if self._provider_kind == "openrouter" and not emitted_stream_event:
+            if self._compat.stream_timeout_fallback and not emitted_stream_event:
                 log.warning(
                     "openrouter.stream_timeout_fallback_started",
                     model=self._model,
@@ -1311,7 +1249,7 @@ class OpenAIProvider:
         if response.status_code != 200:
             yield ErrorEvent(
                 message=_format_chat_http_error(
-                    self._provider_kind,
+                    self._compat.display_name,
                     response.status_code,
                     response.text,
                 ),
@@ -1388,7 +1326,7 @@ class OpenAIProvider:
             not tools_acc.has_calls
             and tools
             and assistant_text_parts
-            and self._provider_kind in _TEXT_TOOL_SYNTHESIS_PROVIDER_KINDS
+            and self._compat.text_tool_synthesis
         ):
             for event in _synthesize_text_tool_events("".join(assistant_text_parts), tools):
                 yield event

@@ -76,7 +76,7 @@ def _build_provider(cfg: ProviderConfig) -> LLMProvider:
 
     base_url = cfg.base_url or spec.default_base_url
 
-    if not base_url and spec.provider_id in {"azure", "vllm"}:
+    if not base_url and spec.requires_base_url():
         raise ProviderBuildError(_missing_base_url_message(cfg.provider))
 
     match spec.backend:
@@ -93,6 +93,7 @@ def _build_provider(cfg: ProviderConfig) -> LLMProvider:
                 "api_key": cfg.api_key,
                 "model": cfg.model,
                 "provider_kind": spec.provider_kind,
+                "compat": spec.compat,
             }
             if base_url:
                 kwargs["base_url"] = base_url

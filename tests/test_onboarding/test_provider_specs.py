@@ -57,15 +57,21 @@ from opensquilla.onboarding.provider_specs import (  # noqa: E402
     provider_catalog_payload,
 )
 
-EXPECTED_SUPPORTED = {
+# Verified: the full agent stack has been exercised against these providers.
+EXPECTED_VERIFIED = {
     "openrouter", "openai", "openai_responses", "anthropic", "ollama", "deepseek",
     "gemini", "dashscope", "moonshot", "zhipu", "qianfan",
     "volcengine", "byteplus",
 }
-EXPECTED_DISABLED = {
+# Experimental: registry-runnable, offered with a visible caveat.
+EXPECTED_EXPERIMENTAL = {
     "azure", "bailian_coding", "minimax", "minimax_openai", "minimax_cn",
     "minimax_global", "mistral", "groq", "aihubmix", "vllm",
     "lm_studio", "siliconflow", "ovms",
+}
+EXPECTED_SUPPORTED = EXPECTED_VERIFIED | EXPECTED_EXPERIMENTAL
+# No runtime support at all (coding-plan/OAuth stubs): never configurable.
+EXPECTED_DISABLED = {
     "volcengine_coding_plan", "byteplus_coding_plan",
     "openai_codex", "github_copilot",
 }
@@ -76,7 +82,17 @@ def test_catalog_includes_all_supported_providers():
     assert ids == EXPECTED_SUPPORTED
 
 
-def test_catalog_marks_unverified_and_unsupported_providers_disabled():
+def test_catalog_verification_tiers_match_expected_sets():
+    specs = {s.provider_id: s for s in list_provider_setup_specs()}
+    for pid in EXPECTED_VERIFIED:
+        assert specs[pid].verification == "verified"
+        assert "(experimental)" not in specs[pid].label
+    for pid in EXPECTED_EXPERIMENTAL:
+        assert specs[pid].verification == "experimental"
+        assert specs[pid].label.endswith("(experimental)")
+
+
+def test_catalog_marks_unsupported_providers_disabled():
     specs = {s.provider_id: s for s in list_provider_setup_specs()}
     for pid in EXPECTED_DISABLED:
         assert pid in specs

@@ -10,6 +10,10 @@ from opensquilla.provider.registry import ProviderSpec, list_provider_specs
 
 FieldType = Literal["text", "password", "select", "bool"]
 Deployment = Literal["cloud", "local", "custom", "oauth"]
+# "verified": the full agent stack (tools, reasoning, replay) has been
+# exercised against this provider. "experimental": registered and
+# runtime-capable, offered with a visible caveat instead of being hidden.
+Verification = Literal["verified", "experimental"]
 
 
 @dataclass(frozen=True)
@@ -30,6 +34,7 @@ class ProviderSetupSpec:
     backend: str
     provider_kind: str
     runtime_supported: bool
+    verification: Verification
     env_key: str
     default_base_url: str
     requires_api_key: bool
@@ -211,16 +216,26 @@ def _fields_for(spec: ProviderSpec) -> tuple[ProviderSetupField, ...]:
 
 
 def _to_setup_spec(spec: ProviderSpec) -> ProviderSetupSpec:
-    runtime_supported = (
-        spec.runtime_supported
-        and spec.provider_id in _ONBOARDING_VERIFIED_PROVIDER_IDS
+    # Registry runtime support decides availability; the verified set only
+    # decides the tier badge. Hiding runtime-capable providers behind an
+    # invisible gate produced unexplainable blank dropdowns for operators who
+    # configured them via TOML.
+    runtime_supported = spec.runtime_supported
+    verification: Verification = (
+        "verified"
+        if spec.provider_id in _ONBOARDING_VERIFIED_PROVIDER_IDS
+        else "experimental"
     )
+    label = _PROVIDER_LABELS.get(spec.provider_id, spec.provider_id)
+    if runtime_supported and verification == "experimental":
+        label = f"{label} (experimental)"
     return ProviderSetupSpec(
         provider_id=spec.provider_id,
-        label=_PROVIDER_LABELS.get(spec.provider_id, spec.provider_id),
+        label=label,
         backend=spec.backend,
         provider_kind=spec.provider_kind,
         runtime_supported=runtime_supported,
+        verification=verification,
         env_key=spec.env_key,
         default_base_url=spec.default_base_url,
         requires_api_key=spec.requires_api_key(),
@@ -266,6 +281,7 @@ def provider_catalog_payload() -> list[dict[str, Any]]:
             "backend": s.backend,
             "providerKind": s.provider_kind,
             "runtimeSupported": s.runtime_supported,
+            "verification": s.verification,
             "envKey": s.env_key,
             "defaultBaseUrl": s.default_base_url,
             "requiresApiKey": s.requires_api_key,

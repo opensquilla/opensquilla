@@ -162,6 +162,12 @@ def test_gateway_help_lists_lifecycle_commands() -> None:
     assert "restart" in result.stdout
 
 
+def test_gateway_subapp_disables_pretty_exceptions() -> None:
+    from opensquilla.cli.main import gateway_app
+
+    assert gateway_app.pretty_exceptions_enable is False
+
+
 def test_gateway_start_help_explains_config_backed_target_defaults() -> None:
     result = runner.invoke(app, ["gateway", "start", "--help"])
 

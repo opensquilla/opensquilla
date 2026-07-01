@@ -69,6 +69,9 @@ from opensquilla.provider import (
     ErrorEvent as ProviderErrorEvent,
 )
 from opensquilla.provider import (
+    ReasoningDeltaEvent as ProviderReasoningDelta,
+)
+from opensquilla.provider import (
     TextDeltaEvent as ProviderTextDelta,
 )
 from opensquilla.provider import (
@@ -120,6 +123,7 @@ from .types import (
     RunHeartbeatEvent,
     StateChangeEvent,
     TextDeltaEvent,
+    ThinkingEvent,
     ThinkingLevel,
     ToolCall,
     ToolResult,

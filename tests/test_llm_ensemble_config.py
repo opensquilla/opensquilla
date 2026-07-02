@@ -14,6 +14,7 @@ def test_llm_ensemble_defaults_to_disabled_g8_profile() -> None:
     assert ensemble.enabled is False
     assert ensemble.active_profile == "default"
     assert ensemble.mode == "b5_fusion"
+    assert ensemble.selection_strategy == "static_profile"
     assert ensemble.proposer_tools is False
     assert ensemble.min_successful_proposers == 1
     assert ensemble.model_options == [
@@ -221,3 +222,79 @@ def test_build_ensemble_provider_inherits_current_openrouter_credentials() -> No
     )
     assert all(member.provider_config.proxy == "http://proxy.local:7890" for member in members)
     assert provider.aggregator.provider_config.provider_routing == {"z-ai/glm-5.2": "z-ai"}
+
+
+def test_router_dynamic_ensemble_uses_small_c0_slot_template() -> None:
+    cfg = GatewayConfig(
+        llm_ensemble={
+            "enabled": True,
+            "selection_strategy": "router_dynamic",
+            "min_successful_proposers": 4,
+        }
+    )
+    inherited = ProviderConfig(
+        provider="openrouter",
+        model="deepseek/deepseek-v4-flash",
+        api_key="runtime-secret",
+        base_url="https://openrouter.example/api/v1",
+    )
+
+    provider = build_ensemble_provider_from_config(
+        config=cfg,
+        inherited_provider_config=inherited,
+        fallback_provider=None,
+        turn_metadata={"routed_tier": "c0", "routing_confidence": 0.93},
+    )
+
+    assert provider.profile_name == "router_dynamic/c0"
+    assert [member.label for member in provider.proposers] == ["anchor", "cheap_contrast"]
+    assert [member.provider_config.model for member in provider.proposers][0] == (
+        "deepseek/deepseek-v4-flash"
+    )
+    assert len(provider.proposers) == 2
+    assert provider.min_successful_proposers == 2
+    assert provider.selection_plan["slot_template"] == ["anchor", "cheap_contrast"]
+    assert provider.selection_plan["aggregator_slot"] == "aggregator_fast"
+    assert provider.selection_plan["duplicate_policy"] == "selected_penalty"
+
+
+def test_router_dynamic_ensemble_uses_slot_specific_c2_selection() -> None:
+    cfg = GatewayConfig(
+        llm_ensemble={
+            "enabled": True,
+            "selection_strategy": "router_dynamic",
+            "model_options": [
+                "deepseek/deepseek-v4-pro",
+                "z-ai/glm-5.2",
+                "google/gemini-3-flash-preview",
+                "qwen/qwen3.7-plus",
+                "anthropic/claude-opus-4.8",
+            ],
+        }
+    )
+    inherited = ProviderConfig(
+        provider="openrouter",
+        model="z-ai/glm-5.2",
+        api_key="runtime-secret",
+        base_url="https://openrouter.example/api/v1",
+    )
+
+    provider = build_ensemble_provider_from_config(
+        config=cfg,
+        inherited_provider_config=inherited,
+        fallback_provider=None,
+        turn_metadata={"routed_tier": "c2", "routing_confidence": 0.82},
+    )
+
+    assert provider.profile_name == "router_dynamic/c2"
+    assert [member.label for member in provider.proposers] == [
+        "anchor",
+        "adjacent_tier_check",
+        "orthogonal_family",
+    ]
+    assert provider.proposers[0].provider_config.model == "z-ai/glm-5.2"
+    assert provider.selection_plan["aggregator_slot"] == "aggregator_strong"
+    assert provider.selection_plan["slots"][1]["slot"] == "adjacent_tier_check"
+    assert provider.selection_plan["slots"][2]["slot"] == "orthogonal_family"
+    assert provider.selection_plan["aggregator"]["slot"] == "aggregator_strong"
+    assert provider.selection_plan["candidate_pool_size"] >= 5

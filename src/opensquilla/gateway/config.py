@@ -416,6 +416,7 @@ class LlmEnsembleConfig(BaseSettings):
     enabled: bool = False
     active_profile: str = DEFAULT_LLM_ENSEMBLE_PROFILE_ID
     mode: Literal["b5_fusion"] = "b5_fusion"
+    selection_strategy: Literal["static_profile", "router_dynamic"] = "static_profile"
     proposer_tools: bool = False
     min_successful_proposers: int = Field(default=1, ge=1)
     all_failed_policy: Literal["fallback_single", "error"] = "fallback_single"

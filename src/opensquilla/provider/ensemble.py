@@ -6,7 +6,7 @@ import asyncio
 import os
 import random
 import time
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
@@ -317,6 +317,7 @@ class EnsembleProvider:
         shuffle_candidates: bool = True,
         record_candidates: bool = False,
         proposer_tools: bool = False,
+        selection_plan: Mapping[str, Any] | None = None,
     ) -> None:
         self.profile_name = profile_name
         self.proposers = list(proposers)
@@ -330,6 +331,7 @@ class EnsembleProvider:
         self.shuffle_candidates = bool(shuffle_candidates)
         self.record_candidates = bool(record_candidates)
         self.proposer_tools = bool(proposer_tools)
+        self.selection_plan = dict(selection_plan or {})
 
     def provider_metadata(self) -> ProviderMetadata:
         return ProviderMetadata(
@@ -606,6 +608,7 @@ class EnsembleProvider:
         trace = {
             "mode": "b5_fusion",
             "profile": self.profile_name,
+            "selection_strategy": self.selection_plan.get("strategy", "static_profile"),
             "successful_proposers": successful_count,
             "total_candidates": len(candidates),
             "fallback_used": fallback_used,
@@ -626,6 +629,8 @@ class EnsembleProvider:
                 for candidate in candidates
             ],
         }
+        if self.selection_plan:
+            trace["selection_plan"] = _json_safe(self.selection_plan)
         final_request: dict[str, Any] = {"role": final_request_role}
         if final_request_member is not None:
             final_request["execution"] = _member_execution_trace(
@@ -966,6 +971,774 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
+_TEXT_TIER_INDEX = {"c0": 0, "c1": 1, "c2": 2, "c3": 3}
+_TEXT_TIER_BY_INDEX = {value: key for key, value in _TEXT_TIER_INDEX.items()}
+
+_DYNAMIC_TIER_SLOTS = {
+    "c0": ("anchor", "cheap_contrast"),
+    "c1": ("anchor", "balanced_contrast"),
+    "c2": ("anchor", "adjacent_tier_check", "orthogonal_family"),
+    "c3": ("anchor", "strong_critic", "orthogonal_family", "fast_sanity"),
+}
+
+_DYNAMIC_AGGREGATOR_SLOT = {
+    "c0": "aggregator_fast",
+    "c1": "aggregator_balanced",
+    "c2": "aggregator_strong",
+    "c3": "aggregator_strong",
+}
+
+_DYNAMIC_SLOT_WEIGHTS = {
+    "cheap_contrast": {
+        "quality": 0.16,
+        "affinity": 0.12,
+        "diversity": 0.22,
+        "cost": 0.24,
+        "role": 0.26,
+    },
+    "balanced_contrast": {
+        "quality": 0.22,
+        "affinity": 0.18,
+        "diversity": 0.24,
+        "cost": 0.12,
+        "role": 0.24,
+    },
+    "adjacent_tier_check": {
+        "quality": 0.22,
+        "affinity": 0.24,
+        "diversity": 0.12,
+        "cost": 0.08,
+        "role": 0.34,
+    },
+    "orthogonal_family": {
+        "quality": 0.22,
+        "affinity": 0.12,
+        "diversity": 0.34,
+        "cost": 0.08,
+        "role": 0.24,
+    },
+    "strong_critic": {
+        "quality": 0.34,
+        "affinity": 0.12,
+        "diversity": 0.12,
+        "cost": 0.02,
+        "role": 0.40,
+    },
+    "fast_sanity": {
+        "quality": 0.12,
+        "affinity": 0.16,
+        "diversity": 0.14,
+        "cost": 0.32,
+        "role": 0.26,
+    },
+    "aggregator_fast": {
+        "quality": 0.24,
+        "affinity": 0.18,
+        "diversity": 0.12,
+        "cost": 0.24,
+        "role": 0.22,
+    },
+    "aggregator_balanced": {
+        "quality": 0.30,
+        "affinity": 0.20,
+        "diversity": 0.14,
+        "cost": 0.10,
+        "role": 0.26,
+    },
+    "aggregator_strong": {
+        "quality": 0.38,
+        "affinity": 0.16,
+        "diversity": 0.10,
+        "cost": 0.04,
+        "role": 0.32,
+    },
+}
+
+_DYNAMIC_SELECTED_PENALTY = {
+    "cheap_contrast": 0.34,
+    "balanced_contrast": 0.30,
+    "adjacent_tier_check": 0.26,
+    "orthogonal_family": 0.32,
+    "strong_critic": 0.22,
+    "fast_sanity": 0.24,
+    "aggregator_fast": 0.16,
+    "aggregator_balanced": 0.14,
+    "aggregator_strong": 0.12,
+}
+
+_DYNAMIC_MODEL_CATALOG: dict[str, dict[str, Any]] = {
+    "deepseek/deepseek-v4-flash": {
+        "tier": "c0",
+        "quality": 0.58,
+        "cost_latency": 0.95,
+        "family": "deepseek-v4",
+        "vendor": "deepseek",
+        "architecture": "reasoning-transformer",
+    },
+    "deepseek/deepseek-v4-pro": {
+        "tier": "c1",
+        "quality": 0.75,
+        "cost_latency": 0.75,
+        "family": "deepseek-v4",
+        "vendor": "deepseek",
+        "architecture": "reasoning-transformer",
+    },
+    "google/gemini-3-flash-preview": {
+        "tier": "c1",
+        "quality": 0.73,
+        "cost_latency": 0.78,
+        "family": "gemini-3",
+        "vendor": "google",
+        "architecture": "gemini",
+        "supports_vision": True,
+    },
+    "openai/gpt-5.4-mini": {
+        "tier": "c1",
+        "quality": 0.78,
+        "cost_latency": 0.72,
+        "family": "gpt-5",
+        "vendor": "openai",
+        "architecture": "gpt",
+    },
+    "z-ai/glm-5.2": {
+        "tier": "c2",
+        "quality": 0.82,
+        "cost_latency": 0.64,
+        "family": "glm-5",
+        "vendor": "z-ai",
+        "architecture": "glm",
+    },
+    "qwen/qwen3.7-plus": {
+        "tier": "c2",
+        "quality": 0.80,
+        "cost_latency": 0.67,
+        "family": "qwen3",
+        "vendor": "qwen",
+        "architecture": "qwen",
+    },
+    "anthropic/claude-sonnet-4.6": {
+        "tier": "c2",
+        "quality": 0.88,
+        "cost_latency": 0.49,
+        "family": "claude-4",
+        "vendor": "anthropic",
+        "architecture": "claude",
+    },
+    "moonshotai/kimi-k2.6": {
+        "tier": "c2",
+        "quality": 0.84,
+        "cost_latency": 0.58,
+        "family": "kimi-k2",
+        "vendor": "moonshotai",
+        "architecture": "kimi",
+        "supports_vision": True,
+    },
+    "mistralai/mistral-large-2512": {
+        "tier": "c2",
+        "quality": 0.80,
+        "cost_latency": 0.60,
+        "family": "mistral-large",
+        "vendor": "mistralai",
+        "architecture": "mistral",
+    },
+    "meta-llama/llama-4-maverick": {
+        "tier": "c2",
+        "quality": 0.78,
+        "cost_latency": 0.62,
+        "family": "llama-4",
+        "vendor": "meta-llama",
+        "architecture": "llama",
+        "supports_vision": True,
+    },
+    "anthropic/claude-opus-4.8": {
+        "tier": "c3",
+        "quality": 0.94,
+        "cost_latency": 0.30,
+        "family": "claude-4",
+        "vendor": "anthropic",
+        "architecture": "claude",
+    },
+    "qwen/qwen3.7-max": {
+        "tier": "c3",
+        "quality": 0.86,
+        "cost_latency": 0.52,
+        "family": "qwen3",
+        "vendor": "qwen",
+        "architecture": "qwen",
+    },
+    "openai/gpt-5.5": {
+        "tier": "c3",
+        "quality": 0.93,
+        "cost_latency": 0.35,
+        "family": "gpt-5",
+        "vendor": "openai",
+        "architecture": "gpt",
+    },
+    "x-ai/grok-4.3": {
+        "tier": "c3",
+        "quality": 0.88,
+        "cost_latency": 0.45,
+        "family": "grok-4",
+        "vendor": "x-ai",
+        "architecture": "grok",
+    },
+}
+
+
+@dataclass(frozen=True)
+class _DynamicModelRef:
+    provider: str
+    model: str
+    api_key_env: str = ""
+    base_url: str = ""
+    proxy: str = ""
+    temperature: float | None = None
+    max_tokens: int = 0
+    thinking: str | None = "high"
+    k: int = 1
+
+
+@dataclass(frozen=True)
+class _DynamicCandidate:
+    provider: str
+    model: str
+    tier_prior: str
+    quality_prior: float
+    cost_latency_prior: float
+    family: str
+    vendor: str
+    architecture: str
+    thinking: str | None = "high"
+    supports_vision: bool = False
+    source: str = "catalog"
+    pool_index: int = 0
+
+    @property
+    def identity(self) -> tuple[str, str]:
+        return (self.provider, self.model)
+
+
+def _normalize_dynamic_tier(value: Any) -> str | None:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return None
+    if raw in _TEXT_TIER_INDEX:
+        return raw
+    if raw.startswith("t") and raw[1:].isdigit():
+        converted = f"c{raw[1:]}"
+        if converted in _TEXT_TIER_INDEX:
+            return converted
+    return None
+
+
+def _tier_index(value: str | None, default: int = 1) -> int:
+    tier = _normalize_dynamic_tier(value)
+    if tier is None:
+        return default
+    return _TEXT_TIER_INDEX[tier]
+
+
+def _tier_from_index(index: int) -> str:
+    return _TEXT_TIER_BY_INDEX[max(0, min(3, int(index)))]
+
+
+def _tier_target_score(tier: str, targets: Sequence[int]) -> float:
+    if not targets:
+        return 0.0
+    idx = _tier_index(tier)
+    distance = min(abs(idx - target) for target in targets)
+    return max(0.0, 1.0 - (distance / 3.0))
+
+
+def _tier_quality_prior(tier: str) -> float:
+    return {"c0": 0.56, "c1": 0.72, "c2": 0.82, "c3": 0.91}.get(tier, 0.72)
+
+
+def _tier_cost_latency_prior(tier: str) -> float:
+    return {"c0": 0.92, "c1": 0.74, "c2": 0.58, "c3": 0.36}.get(tier, 0.70)
+
+
+def _coerce_thinking_level(value: Any) -> str | None:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return "high"
+    if raw in {"none", "false", "0"}:
+        return "off"
+    return raw
+
+
+def _split_model_identity(provider: str, model: str) -> tuple[str, str, str]:
+    model_l = str(model or "").strip().lower()
+    if "/" in model_l:
+        vendor, name = model_l.split("/", 1)
+    else:
+        vendor, name = str(provider or "unknown").strip().lower(), model_l
+    pieces = name.replace("_", "-").split("-")
+    family = "-".join(pieces[:2]) if len(pieces) >= 2 else name or vendor
+    architecture = pieces[0] if pieces and pieces[0] else family
+    return vendor or "unknown", family or vendor or "unknown", architecture or "unknown"
+
+
+def _dynamic_candidate(
+    *,
+    provider: str,
+    model: str,
+    tier_hint: str | None = None,
+    thinking: str | None = "high",
+    source: str,
+    pool_index: int,
+) -> _DynamicCandidate:
+    provider_n = str(provider or "openrouter").strip().lower()
+    model_n = str(model or "").strip()
+    model_key = model_n.lower()
+    meta = dict(_DYNAMIC_MODEL_CATALOG.get(model_key, {}))
+    tier = _normalize_dynamic_tier(tier_hint) or _normalize_dynamic_tier(meta.get("tier")) or "c1"
+    vendor, family, architecture = _split_model_identity(provider_n, model_n)
+    return _DynamicCandidate(
+        provider=provider_n,
+        model=model_n,
+        tier_prior=tier,
+        quality_prior=float(meta.get("quality", _tier_quality_prior(tier))),
+        cost_latency_prior=float(meta.get("cost_latency", _tier_cost_latency_prior(tier))),
+        family=str(meta.get("family") or family),
+        vendor=str(meta.get("vendor") or vendor),
+        architecture=str(meta.get("architecture") or architecture),
+        thinking=_coerce_thinking_level(thinking),
+        supports_vision=bool(meta.get("supports_vision", False)),
+        source=source,
+        pool_index=pool_index,
+    )
+
+
+def _candidate_trace(candidate: _DynamicCandidate) -> dict[str, Any]:
+    return {
+        "provider": candidate.provider,
+        "model": candidate.model,
+        "tier_prior": candidate.tier_prior,
+        "quality_prior": round(candidate.quality_prior, 4),
+        "cost_latency_prior": round(candidate.cost_latency_prior, 4),
+        "family": candidate.family,
+        "vendor": candidate.vendor,
+        "architecture": candidate.architecture,
+        "source": candidate.source,
+    }
+
+
+def _candidate_pool(
+    config: Any,
+    *,
+    inherited_provider_config: ProviderConfig,
+    routed_tier: str,
+) -> list[_DynamicCandidate]:
+    pool: list[_DynamicCandidate] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(candidate: _DynamicCandidate) -> None:
+        if not candidate.model:
+            return
+        identity = candidate.identity
+        if identity in seen:
+            return
+        seen.add(identity)
+        pool.append(candidate)
+
+    add(
+        _dynamic_candidate(
+            provider=inherited_provider_config.provider,
+            model=inherited_provider_config.model,
+            tier_hint=routed_tier,
+            thinking=None,
+            source="router_anchor",
+            pool_index=len(pool),
+        )
+    )
+
+    ensemble_cfg = getattr(config, "llm_ensemble", None)
+    for model in getattr(ensemble_cfg, "model_options", []) or []:
+        model_s = str(model or "").strip()
+        if not model_s:
+            continue
+        provider = "openrouter" if "/" in model_s else inherited_provider_config.provider
+        add(
+            _dynamic_candidate(
+                provider=provider,
+                model=model_s,
+                source="model_options",
+                pool_index=len(pool),
+            )
+        )
+
+    router_cfg = getattr(config, "squilla_router", None)
+    tiers = getattr(router_cfg, "tiers", {}) or {}
+    if isinstance(tiers, dict):
+        for tier_name, tier_cfg in tiers.items():
+            if not isinstance(tier_cfg, dict):
+                continue
+            model = str(tier_cfg.get("model") or "").strip()
+            if not model:
+                continue
+            add(
+                _dynamic_candidate(
+                    provider=str(
+                        tier_cfg.get("provider") or inherited_provider_config.provider
+                    ),
+                    model=model,
+                    tier_hint=str(tier_name),
+                    thinking=_coerce_thinking_level(tier_cfg.get("thinking_level")),
+                    source=f"router_tier:{tier_name}",
+                    pool_index=len(pool),
+                )
+            )
+    return pool
+
+
+def _router_affinity_score(
+    candidate: _DynamicCandidate,
+    *,
+    routed_tier: str,
+    routing_confidence: float,
+) -> float:
+    routed_idx = _tier_index(routed_tier)
+    distance = abs(_tier_index(candidate.tier_prior) - routed_idx)
+    confidence = max(0.0, min(1.0, routing_confidence))
+    # Low confidence relaxes tier matching instead of forcing a brittle tier lock.
+    penalty_scale = 0.45 + (0.55 * confidence)
+    return max(0.0, 1.0 - ((distance / 3.0) * penalty_scale))
+
+
+def _contrast_score(candidate: _DynamicCandidate, anchor: _DynamicCandidate) -> float:
+    family = 1.0 if candidate.family != anchor.family else 0.2
+    vendor = 1.0 if candidate.vendor != anchor.vendor else 0.3
+    provider = 1.0 if candidate.provider != anchor.provider else 0.5
+    return (0.55 * family) + (0.30 * vendor) + (0.15 * provider)
+
+
+def _diversity_score(
+    candidate: _DynamicCandidate,
+    selected: Sequence[_DynamicCandidate],
+) -> float:
+    if not selected:
+        return 1.0
+    families = {item.family for item in selected}
+    vendors = {item.vendor for item in selected}
+    providers = {item.provider for item in selected}
+    tiers = {item.tier_prior for item in selected}
+    architectures = {item.architecture for item in selected}
+    return (
+        (0.35 if candidate.family not in families else 0.04)
+        + (0.25 if candidate.vendor not in vendors else 0.03)
+        + (0.15 if candidate.provider not in providers else 0.04)
+        + (0.15 if candidate.tier_prior not in tiers else 0.03)
+        + (0.10 if candidate.architecture not in architectures else 0.02)
+    )
+
+
+def _role_match_score(
+    slot: str,
+    candidate: _DynamicCandidate,
+    *,
+    routed_tier: str,
+    anchor: _DynamicCandidate,
+    selected: Sequence[_DynamicCandidate],
+) -> float:
+    routed_idx = _tier_index(routed_tier)
+    candidate_idx = _tier_index(candidate.tier_prior)
+    contrast = _contrast_score(candidate, anchor)
+    diversity = _diversity_score(candidate, selected)
+    adjacent_distance = abs(candidate_idx - routed_idx)
+    adjacent = 1.0 if adjacent_distance == 1 else 0.55 if adjacent_distance == 0 else 0.25
+
+    if slot == "cheap_contrast":
+        return (
+            0.45 * _tier_target_score(candidate.tier_prior, [0, 1])
+            + 0.35 * contrast
+            + 0.20 * candidate.cost_latency_prior
+        )
+    if slot == "balanced_contrast":
+        return (
+            0.40 * _tier_target_score(candidate.tier_prior, [1, 2])
+            + 0.35 * contrast
+            + 0.25 * candidate.quality_prior
+        )
+    if slot == "adjacent_tier_check":
+        return (
+            0.50 * adjacent
+            + 0.25 * candidate.quality_prior
+            + 0.15 * _tier_target_score(candidate.tier_prior, [max(0, routed_idx - 1), min(3, routed_idx + 1)])
+            + 0.10 * contrast
+        )
+    if slot == "orthogonal_family":
+        return (
+            0.55 * contrast
+            + 0.25 * diversity
+            + 0.20 * _tier_target_score(candidate.tier_prior, [routed_idx, min(3, routed_idx + 1)])
+        )
+    if slot == "strong_critic":
+        return (
+            0.55 * _tier_target_score(candidate.tier_prior, [3])
+            + 0.35 * candidate.quality_prior
+            + 0.10 * contrast
+        )
+    if slot == "fast_sanity":
+        return (
+            0.50 * _tier_target_score(candidate.tier_prior, [0, 1])
+            + 0.35 * candidate.cost_latency_prior
+            + 0.15 * contrast
+        )
+    if slot == "aggregator_fast":
+        return (
+            0.40 * _tier_target_score(candidate.tier_prior, [0, 1])
+            + 0.30 * candidate.quality_prior
+            + 0.20 * candidate.cost_latency_prior
+            + 0.10 * contrast
+        )
+    if slot == "aggregator_balanced":
+        return (
+            0.40 * _tier_target_score(candidate.tier_prior, [1, 2])
+            + 0.35 * candidate.quality_prior
+            + 0.15 * diversity
+            + 0.10 * candidate.cost_latency_prior
+        )
+    if slot == "aggregator_strong":
+        return (
+            0.45 * _tier_target_score(candidate.tier_prior, [2, 3])
+            + 0.40 * candidate.quality_prior
+            + 0.10 * diversity
+            + 0.05 * candidate.cost_latency_prior
+        )
+    return candidate.quality_prior
+
+
+def _score_dynamic_candidate(
+    candidate: _DynamicCandidate,
+    *,
+    slot: str,
+    routed_tier: str,
+    routing_confidence: float,
+    anchor: _DynamicCandidate,
+    selected: Sequence[_DynamicCandidate],
+    selected_counts: Mapping[tuple[str, str], int],
+) -> dict[str, Any]:
+    weights = _DYNAMIC_SLOT_WEIGHTS[slot]
+    affinity = _router_affinity_score(
+        candidate,
+        routed_tier=routed_tier,
+        routing_confidence=routing_confidence,
+    )
+    diversity = _diversity_score(candidate, selected)
+    role_match = _role_match_score(
+        slot,
+        candidate,
+        routed_tier=routed_tier,
+        anchor=anchor,
+        selected=selected,
+    )
+    duplicate_count = int(selected_counts.get(candidate.identity, 0))
+    duplicate_penalty = _DYNAMIC_SELECTED_PENALTY.get(slot, 0.25) * duplicate_count
+    score = (
+        weights["quality"] * candidate.quality_prior
+        + weights["affinity"] * affinity
+        + weights["diversity"] * diversity
+        + weights["cost"] * candidate.cost_latency_prior
+        + weights["role"] * role_match
+        - duplicate_penalty
+    )
+    return {
+        "candidate": candidate,
+        "score": score,
+        "duplicate_count": duplicate_count,
+        "duplicate_penalty": duplicate_penalty,
+        "components": {
+            "quality": candidate.quality_prior,
+            "router_affinity": affinity,
+            "diversity": diversity,
+            "cost_latency": candidate.cost_latency_prior,
+            "role_match": role_match,
+        },
+        "weights": dict(weights),
+    }
+
+
+def _score_trace(row: Mapping[str, Any]) -> dict[str, Any]:
+    candidate = row["candidate"]
+    return {
+        "selected": _candidate_trace(candidate),
+        "score": round(float(row["score"]), 5),
+        "duplicate_count": int(row.get("duplicate_count") or 0),
+        "duplicate_penalty": round(float(row.get("duplicate_penalty") or 0.0), 5),
+        "components": {
+            key: round(float(value), 5)
+            for key, value in dict(row.get("components") or {}).items()
+        },
+        "weights": {
+            key: round(float(value), 5)
+            for key, value in dict(row.get("weights") or {}).items()
+        },
+    }
+
+
+def _select_dynamic_candidate(
+    *,
+    slot: str,
+    pool: Sequence[_DynamicCandidate],
+    routed_tier: str,
+    routing_confidence: float,
+    anchor: _DynamicCandidate,
+    selected: Sequence[_DynamicCandidate],
+    selected_counts: Mapping[tuple[str, str], int],
+) -> tuple[_DynamicCandidate, dict[str, Any]]:
+    scored = [
+        _score_dynamic_candidate(
+            candidate,
+            slot=slot,
+            routed_tier=routed_tier,
+            routing_confidence=routing_confidence,
+            anchor=anchor,
+            selected=selected,
+            selected_counts=selected_counts,
+        )
+        for candidate in pool
+    ]
+    if not scored:
+        raise ValueError("llm_ensemble router_dynamic candidate pool is empty")
+    scored.sort(
+        key=lambda row: (
+            float(row["score"]),
+            row["candidate"].quality_prior,
+            row["candidate"].cost_latency_prior,
+            -row["candidate"].pool_index,
+        ),
+        reverse=True,
+    )
+    best = scored[0]
+    trace = _score_trace(best)
+    trace["slot"] = slot
+    trace["top_candidates"] = [_score_trace(row) for row in scored[:3]]
+    return best["candidate"], trace
+
+
+def _dynamic_member_from_candidate(
+    candidate: _DynamicCandidate,
+    *,
+    inherited: ProviderConfig,
+    label: str,
+) -> EnsembleMemberConfig:
+    return _member_from_ref(
+        _DynamicModelRef(
+            provider=candidate.provider,
+            model=candidate.model,
+            thinking=candidate.thinking,
+        ),
+        inherited=inherited,
+        label=label,
+    )
+
+
+def _build_router_dynamic_members(
+    *,
+    config: Any,
+    inherited_provider_config: ProviderConfig,
+    turn_metadata: Mapping[str, Any] | None,
+) -> tuple[str, list[EnsembleMemberConfig], EnsembleMemberConfig, dict[str, Any]]:
+    metadata = dict(turn_metadata or {})
+    extra = metadata.get("routing_extra")
+    extra_map = extra if isinstance(extra, Mapping) else {}
+    routed_tier = (
+        _normalize_dynamic_tier(metadata.get("routed_tier"))
+        or _normalize_dynamic_tier(extra_map.get("final_tier"))
+        or _normalize_dynamic_tier(extra_map.get("base_tier"))
+        or "c1"
+    )
+    try:
+        routing_confidence = float(metadata.get("routing_confidence") or 0.0)
+    except (TypeError, ValueError):
+        routing_confidence = 0.0
+
+    pool = _candidate_pool(
+        config,
+        inherited_provider_config=inherited_provider_config,
+        routed_tier=routed_tier,
+    )
+    if not pool:
+        raise ValueError("llm_ensemble router_dynamic candidate pool is empty")
+
+    anchor = pool[0]
+    slots = _DYNAMIC_TIER_SLOTS.get(routed_tier, _DYNAMIC_TIER_SLOTS["c1"])
+    selected: list[_DynamicCandidate] = [anchor]
+    selected_counts: dict[tuple[str, str], int] = {anchor.identity: 1}
+    proposers = [
+        _dynamic_member_from_candidate(
+            anchor,
+            inherited=inherited_provider_config,
+            label="anchor",
+        )
+    ]
+    slot_traces: list[dict[str, Any]] = [
+        {
+            "slot": "anchor",
+            "selected": _candidate_trace(anchor),
+            "reason": "tree_router_selected_model",
+        }
+    ]
+
+    for slot in slots[1:]:
+        candidate, trace = _select_dynamic_candidate(
+            slot=slot,
+            pool=pool,
+            routed_tier=routed_tier,
+            routing_confidence=routing_confidence,
+            anchor=anchor,
+            selected=selected,
+            selected_counts=selected_counts,
+        )
+        selected.append(candidate)
+        selected_counts[candidate.identity] = selected_counts.get(candidate.identity, 0) + 1
+        proposers.append(
+            _dynamic_member_from_candidate(
+                candidate,
+                inherited=inherited_provider_config,
+                label=slot,
+            )
+        )
+        slot_traces.append(trace)
+
+    aggregator_slot = _DYNAMIC_AGGREGATOR_SLOT.get(routed_tier, "aggregator_balanced")
+    aggregator_candidate, aggregator_trace = _select_dynamic_candidate(
+        slot=aggregator_slot,
+        pool=pool,
+        routed_tier=routed_tier,
+        routing_confidence=routing_confidence,
+        anchor=anchor,
+        selected=selected,
+        selected_counts=selected_counts,
+    )
+    aggregator = _dynamic_member_from_candidate(
+        aggregator_candidate,
+        inherited=inherited_provider_config,
+        label="aggregator",
+    )
+    plan = {
+        "strategy": "router_dynamic",
+        "routed_tier": routed_tier,
+        "routing_confidence": routing_confidence,
+        "anchor": _candidate_trace(anchor),
+        "slot_template": list(slots),
+        "slots": slot_traces,
+        "aggregator_slot": aggregator_slot,
+        "aggregator": aggregator_trace,
+        "candidate_pool_size": len(pool),
+        "candidate_pool": [_candidate_trace(candidate) for candidate in pool],
+        "proposer_count": len(proposers),
+        "profile_runtime_options": str(
+            getattr(getattr(config, "llm_ensemble", None), "active_profile", "")
+            or "default"
+        ),
+        "duplicate_policy": "selected_penalty",
+        "tier_index": _tier_index(routed_tier),
+    }
+    return f"router_dynamic/{routed_tier}", proposers, aggregator, plan
+
+
 def _secret_from_env(env_name: str) -> str:
     return os.environ.get(env_name, "").strip() if env_name else ""
 
@@ -1025,29 +1798,50 @@ def build_ensemble_provider_from_config(
     config: Any,
     inherited_provider_config: ProviderConfig,
     fallback_provider: LLMProvider | None,
+    turn_metadata: Mapping[str, Any] | None = None,
 ) -> EnsembleProvider:
     ensemble_cfg = getattr(config, "llm_ensemble", None)
     if ensemble_cfg is None:
         raise ValueError("config.llm_ensemble is required")
+    selection_strategy = str(
+        getattr(ensemble_cfg, "selection_strategy", "static_profile") or "static_profile"
+    )
     profile_name = str(getattr(ensemble_cfg, "active_profile", "") or "").strip()
     profile = getattr(ensemble_cfg, "profiles", {}).get(profile_name)
     if profile is None:
         raise ValueError(f"llm_ensemble profile {profile_name!r} is not configured")
-    proposers = [
-        _member_from_ref(ref, inherited=inherited_provider_config, label=f"proposer_{index + 1}")
-        for index, ref in enumerate(getattr(profile, "proposers", []) or [])
-    ]
-    aggregator = _member_from_ref(
-        getattr(profile, "aggregator"),
-        inherited=inherited_provider_config,
-        label="aggregator",
-    )
+    selection_plan: dict[str, Any] = {}
+    if selection_strategy == "router_dynamic":
+        profile_name, proposers, aggregator, selection_plan = _build_router_dynamic_members(
+            config=config,
+            inherited_provider_config=inherited_provider_config,
+            turn_metadata=turn_metadata,
+        )
+    else:
+        proposers = [
+            _member_from_ref(
+                ref,
+                inherited=inherited_provider_config,
+                label=f"proposer_{index + 1}",
+            )
+            for index, ref in enumerate(getattr(profile, "proposers", []) or [])
+        ]
+        aggregator = _member_from_ref(
+            getattr(profile, "aggregator"),
+            inherited=inherited_provider_config,
+            label="aggregator",
+        )
+    configured_min_success = int(getattr(ensemble_cfg, "min_successful_proposers", 1) or 1)
+    min_successful_proposers = min(configured_min_success, max(1, len(proposers)))
+    if selection_plan:
+        selection_plan["configured_min_successful_proposers"] = configured_min_success
+        selection_plan["effective_min_successful_proposers"] = min_successful_proposers
     return EnsembleProvider(
         profile_name=profile_name,
         proposers=proposers,
         aggregator=aggregator,
         fallback_provider=fallback_provider,
-        min_successful_proposers=int(getattr(ensemble_cfg, "min_successful_proposers", 1) or 1),
+        min_successful_proposers=min_successful_proposers,
         all_failed_policy=getattr(ensemble_cfg, "all_failed_policy", "fallback_single"),
         proposer_timeout_seconds=float(getattr(profile, "proposer_timeout_seconds", 120.0)),
         aggregator_timeout_seconds=float(getattr(profile, "aggregator_timeout_seconds", 120.0)),
@@ -1055,4 +1849,5 @@ def build_ensemble_provider_from_config(
         shuffle_candidates=bool(getattr(profile, "shuffle_candidates", True)),
         record_candidates=bool(getattr(profile, "record_candidates", False)),
         proposer_tools=bool(getattr(ensemble_cfg, "proposer_tools", False)),
+        selection_plan=selection_plan,
     )

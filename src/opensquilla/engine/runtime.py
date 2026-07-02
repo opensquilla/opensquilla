@@ -4649,6 +4649,11 @@ class TurnRunner:
                 from opensquilla.provider.ensemble import build_ensemble_provider_from_config
 
                 turn.metadata["ensemble_enabled"] = True
+                turn.metadata["ensemble_selection_strategy"] = getattr(
+                    ensemble_cfg,
+                    "selection_strategy",
+                    "static_profile",
+                )
                 turn.metadata["ensemble_profile"] = getattr(
                     ensemble_cfg,
                     "active_profile",
@@ -4661,6 +4666,7 @@ class TurnRunner:
                     config=self._config,
                     inherited_provider_config=current_provider_config,
                     fallback_provider=provider,
+                    turn_metadata=turn.metadata,
                 )
 
         return turn, provider

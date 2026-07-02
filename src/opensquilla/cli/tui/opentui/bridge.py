@@ -60,6 +60,12 @@ def check_opentui_host_available(
 ) -> RendererBackendAvailability:
     """Check whether the local Bun/OpenTUI host can be launched."""
 
+    if os.name == "nt":
+        return RendererBackendAvailability(
+            available=False,
+            reason="OpenTUI file-descriptor bridge is not supported on Windows yet",
+        )
+
     resolved_runtime = runtime_bin or shutil.which("bun")
     if not resolved_runtime:
         return RendererBackendAvailability(
@@ -145,9 +151,7 @@ class OpenTuiBridge:
         # errors="replace" so a corrupted byte from the host never raises a hard
         # UnicodeDecodeError mid-read; the line is still delivered (and skipped if
         # it no longer parses) instead of tearing down the UI.
-        self._from_host_file = os.fdopen(
-            from_host_read, "r", encoding="utf-8", errors="replace"
-        )
+        self._from_host_file = os.fdopen(from_host_read, "r", encoding="utf-8", errors="replace")
         # Capture the host's stderr so a crash leaves a diagnosable reason instead
         # of corrupting the terminal or vanishing. Draining it also keeps the
         # child from blocking on a full stderr pipe.

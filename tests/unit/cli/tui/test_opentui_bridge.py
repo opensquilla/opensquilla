@@ -29,6 +29,21 @@ def test_missing_opentui_host_dependencies_report_install_command(tmp_path) -> N
     assert f"bun install --cwd {package_dir}" in availability.reason
 
 
+def test_opentui_host_reports_fd_bridge_unsupported_on_windows(tmp_path, monkeypatch) -> None:
+    package_dir = tmp_path / "package"
+    (package_dir / "node_modules" / "@opentui" / "core").mkdir(parents=True)
+    (package_dir / "src").mkdir()
+    (package_dir / "src" / "main.mjs").write_text("", encoding="utf-8")
+    monkeypatch.setattr(bridge_module.os, "name", "nt")
+
+    availability = check_opentui_host_available(package_dir=package_dir, runtime_bin="bun")
+
+    assert availability.available is False
+    assert availability.reason is not None
+    assert "Windows" in availability.reason
+    assert "file-descriptor" in availability.reason
+
+
 async def _attach_exited_process(bridge: OpenTuiBridge, *, code: int, stderr: str) -> None:
     """Attach a real, already-spawned child that exits with ``code`` to the bridge."""
     script = f"import sys; sys.stderr.write({stderr!r}); sys.exit({code})"
@@ -122,6 +137,10 @@ async def test_close_does_not_treat_intentional_shutdown_as_crash() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(
+    sys.platform.startswith("win"),
+    reason="OpenTUI bridge currently uses POSIX fd inheritance via pass_fds",
+)
 async def test_start_surfaces_reason_and_cleans_up_when_host_crashes_on_launch(
     tmp_path, monkeypatch
 ) -> None:

@@ -281,9 +281,6 @@ _SAFE_WRITE_PATCH_PATHS = frozenset(
         "skills.disabled",
         "skills.coding_mode",
         "llm_ensemble.enabled",
-        "llm_ensemble.active_profile",
-        "llm_ensemble.profiles.default.proposers",
-        "llm_ensemble.profiles.default.aggregator",
         "naming.enabled",
         "privacy.disable_network_observability",
         "prompt_cache.mode",
@@ -295,51 +292,6 @@ _SAFE_WRITE_PATCH_PATHS = frozenset(
         "squilla_router.confidence_threshold",
     }
 )
-
-
-def _validate_safe_llm_ensemble_patch_values(dot_patches: dict[str, Any], config: Any) -> None:
-    from opensquilla.gateway.config import DEFAULT_LLM_ENSEMBLE_PROFILE_ID
-
-    active_profile = dot_patches.get("llm_ensemble.active_profile")
-    if active_profile is not None and active_profile != DEFAULT_LLM_ENSEMBLE_PROFILE_ID:
-        raise ValueError("llm_ensemble.active_profile safe patch must be 'default'")
-
-    ensemble = getattr(config, "llm_ensemble", None)
-    allowed_models = {
-        str(model or "").strip()
-        for model in getattr(ensemble, "model_options", [])
-        if str(model or "").strip()
-    }
-    allowed_member_keys = {"provider", "model", "thinking"}
-
-    def _validate_member(member: Any, path: str) -> None:
-        if not isinstance(member, dict):
-            raise ValueError(f"{path} must be an object")
-        extra = set(member) - allowed_member_keys
-        if extra:
-            raise ValueError(f"{path} contains unsafe field: {sorted(extra)[0]}")
-        provider = str(member.get("provider") or "").strip().lower()
-        if provider != "openrouter":
-            raise ValueError(f"{path}.provider safe patch must be 'openrouter'")
-        model = str(member.get("model") or "").strip()
-        if not model:
-            raise ValueError(f"{path}.model is required")
-        if allowed_models and model not in allowed_models:
-            raise ValueError(f"{path}.model is not listed in llm_ensemble.model_options")
-        thinking = str(member.get("thinking") or "high").strip().lower()
-        if thinking != "high":
-            raise ValueError(f"{path}.thinking safe patch must be 'high'")
-
-    proposers = dot_patches.get("llm_ensemble.profiles.default.proposers")
-    if proposers is not None:
-        if not isinstance(proposers, list) or not proposers:
-            raise ValueError("llm_ensemble.profiles.default.proposers must contain at least one member")
-        for index, member in enumerate(proposers, start=1):
-            _validate_member(member, f"llm_ensemble.profiles.default.proposers[{index}]")
-
-    aggregator = dot_patches.get("llm_ensemble.profiles.default.aggregator")
-    if aggregator is not None:
-        _validate_member(aggregator, "llm_ensemble.profiles.default.aggregator")
 
 
 def _resolve_path(obj: dict, path: str) -> Any:
@@ -520,7 +472,6 @@ async def _handle_config_patch_safe(params: dict | None, ctx: RpcContext) -> dic
     unsafe_paths = sorted(set(dot_patches) - _SAFE_WRITE_PATCH_PATHS)
     if unsafe_paths:
         raise ValueError(f"Path is not safe for operator.write: {unsafe_paths[0]}")
-    _validate_safe_llm_ensemble_patch_values(dot_patches, ctx.config)
 
     return cast(dict[str, Any], await _handle_config_patch(params, ctx))
 

@@ -111,16 +111,7 @@ def _config_with_router_timeout() -> GatewayConfig:
 async def test_run_pipeline_wraps_provider_when_llm_ensemble_enabled() -> None:
     config = GatewayConfig(
         squilla_router=SquillaRouterConfig(enabled=False),
-        llm_ensemble={
-            "enabled": True,
-            "active_profile": "custom",
-            "profiles": {
-                "custom": {
-                    "proposers": [{"model": "p1"}],
-                    "aggregator": {"model": "agg"},
-                }
-            },
-        },
+        llm_ensemble={"enabled": True},
     )
     runner = TurnRunner(provider_selector=None, config=config)
     selector = _FakeSelector()
@@ -137,7 +128,6 @@ async def test_run_pipeline_wraps_provider_when_llm_ensemble_enabled() -> None:
 
     assert isinstance(provider, EnsembleProvider)
     assert turn.metadata["ensemble_enabled"] is True
-    assert turn.metadata["ensemble_profile"] == "custom"
     assert turn.metadata["routed_model_before_ensemble"]
 
 

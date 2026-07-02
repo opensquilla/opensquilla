@@ -15,7 +15,6 @@ export const SETTINGS_SECTIONS = [
   { id: 'behavior', label: 'Behavior', icon: 'chat', client: false, desktopOnly: false },
   { id: 'privacy', label: 'Privacy', icon: 'shield', client: false, desktopOnly: false },
   { id: 'router', label: 'Router', icon: 'cron', client: false, desktopOnly: false },
-  { id: 'ensemble', label: 'Ensemble', icon: 'fork', client: false, desktopOnly: false },
   { id: 'channels', label: 'Channels', icon: 'channels', client: false, desktopOnly: false },
   { id: 'capabilities', label: 'Capabilities', icon: 'skills', client: false, desktopOnly: false },
   // Client-only sections carry no readiness/RPC state: they edit local browser

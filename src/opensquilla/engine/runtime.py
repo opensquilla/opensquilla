@@ -4643,22 +4643,11 @@ class TurnRunner:
                 log.warning(
                     "llm_ensemble.wrap_skipped",
                     reason="missing_provider_selector_current_config",
-                    profile=getattr(ensemble_cfg, "active_profile", ""),
                 )
             else:
                 from opensquilla.provider.ensemble import build_ensemble_provider_from_config
 
                 turn.metadata["ensemble_enabled"] = True
-                turn.metadata["ensemble_selection_strategy"] = getattr(
-                    ensemble_cfg,
-                    "selection_strategy",
-                    "static_profile",
-                )
-                turn.metadata["ensemble_profile"] = getattr(
-                    ensemble_cfg,
-                    "active_profile",
-                    "",
-                )
                 turn.metadata["routed_model_before_ensemble"] = (
                     turn.model or getattr(current_provider_config, "model", "")
                 )

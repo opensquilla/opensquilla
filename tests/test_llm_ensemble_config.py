@@ -7,104 +7,29 @@ from opensquilla.provider.ensemble import build_ensemble_provider_from_config
 from opensquilla.provider.selector import ProviderConfig
 
 
-def test_llm_ensemble_defaults_to_disabled_g8_profile() -> None:
+def test_llm_ensemble_defaults_to_disabled() -> None:
     cfg = GatewayConfig()
 
     ensemble = cfg.llm_ensemble
     assert ensemble.enabled is False
-    assert ensemble.active_profile == "default"
     assert ensemble.mode == "b5_fusion"
-    assert ensemble.selection_strategy == "static_profile"
     assert ensemble.proposer_tools is False
     assert ensemble.min_successful_proposers == 1
     assert ensemble.model_options == [
         "deepseek/deepseek-v4-pro",
         "z-ai/glm-5.2",
-        "google/gemini-3-flash-preview",
         "qwen/qwen3.7-plus",
         "deepseek/deepseek-v4-flash",
         "qwen/qwen3.7-max",
-        "anthropic/claude-sonnet-4.6",
-        "anthropic/claude-opus-4.8",
-        "openai/gpt-5.5",
-        "openai/gpt-5.4-mini",
-        "x-ai/grok-4.3",
         "moonshotai/kimi-k2.6",
-        "mistralai/mistral-large-2512",
-        "meta-llama/llama-4-maverick",
+        "moonshotai/kimi-k2.7-code",
+        "minimax/minimax-m3",
     ]
-
-    profile = ensemble.profiles["default"]
-    assert [member.model for member in profile.proposers] == [
-        "deepseek/deepseek-v4-pro",
-        "z-ai/glm-5.2",
-        "google/gemini-3-flash-preview",
-        "qwen/qwen3.7-plus",
-    ]
-    assert all(member.provider == "openrouter" for member in profile.proposers)
-    assert all(member.thinking == "high" for member in profile.proposers)
-    assert profile.aggregator.provider == "openrouter"
-    assert profile.aggregator.model == "z-ai/glm-5.2"
-    assert profile.aggregator.thinking == "high"
-    assert profile.proposer_timeout_seconds == 120.0
-    assert profile.aggregator_timeout_seconds == 120.0
-
-
-def test_llm_ensemble_validates_active_profile_when_enabled() -> None:
-    with pytest.raises(ValueError, match="active_profile"):
-        GatewayConfig(llm_ensemble={"enabled": True, "active_profile": "missing"})
-
-
-def test_llm_ensemble_migrates_legacy_g8_profile_name() -> None:
-    cfg = GatewayConfig(
-        llm_ensemble={
-            "enabled": True,
-            "active_profile": "g8_four_proposers",
-            "profiles": {
-                "g8_four_proposers": {
-                    "proposers": [{"provider": "openrouter", "model": "legacy/proposer"}],
-                    "aggregator": {"provider": "openrouter", "model": "legacy/aggregator"},
-                }
-            },
-        }
-    )
-
-    assert cfg.llm_ensemble.active_profile == "default"
-    assert cfg.llm_ensemble.profiles["default"].proposers[0].model == "legacy/proposer"
-    assert cfg.llm_ensemble.profiles["default"].aggregator.model == "legacy/aggregator"
-
-
-def test_llm_ensemble_migrates_legacy_g8_profile_without_active_profile() -> None:
-    cfg = GatewayConfig(
-        llm_ensemble={
-            "enabled": True,
-            "profiles": {
-                "g8_four_proposers": {
-                    "proposers": [{"provider": "openrouter", "model": "legacy/proposer"}],
-                    "aggregator": {"provider": "openrouter", "model": "legacy/aggregator"},
-                }
-            },
-        }
-    )
-
-    assert cfg.llm_ensemble.active_profile == "default"
-    assert cfg.llm_ensemble.profiles["default"].proposers[0].model == "legacy/proposer"
-    assert cfg.llm_ensemble.profiles["default"].aggregator.model == "legacy/aggregator"
-
-
-def test_llm_ensemble_validates_enabled_profile_has_proposers() -> None:
-    with pytest.raises(ValueError, match="at least one proposer"):
-        GatewayConfig(
-            llm_ensemble={
-                "enabled": True,
-                "profiles": {
-                    "default": {
-                        "proposers": [],
-                        "aggregator": {"provider": "openrouter", "model": "z-ai/glm-5.2"},
-                    }
-                },
-            }
-        )
+    assert ensemble.candidate_max_chars == 24_000
+    assert ensemble.proposer_timeout_seconds == 120.0
+    assert ensemble.aggregator_timeout_seconds == 120.0
+    assert ensemble.shuffle_candidates is True
+    assert ensemble.record_candidates is False
 
 
 def test_llm_ensemble_validates_model_options_not_empty() -> None:
@@ -116,79 +41,10 @@ def test_llm_ensemble_model_options_are_operator_configurable() -> None:
     cfg = GatewayConfig(
         llm_ensemble={
             "model_options": [" custom/model ", "custom/model", "other/model"],
-            "profiles": {
-                "default": {
-                    "proposers": [{"provider": "openrouter", "model": "custom/model"}],
-                    "aggregator": {"provider": "openrouter", "model": "other/model"},
-                }
-            },
         }
     )
 
     assert cfg.llm_ensemble.model_options == ["custom/model", "other/model"]
-    assert [member.model for member in cfg.llm_ensemble.profiles["default"].proposers] == [
-        "custom/model"
-    ]
-
-
-def test_llm_ensemble_validates_enabled_profile_has_aggregator_model() -> None:
-    with pytest.raises(ValueError, match="aggregator model"):
-        GatewayConfig(
-            llm_ensemble={
-                "enabled": True,
-                "profiles": {
-                    "default": {
-                        "proposers": [{"provider": "openrouter", "model": "a/model"}],
-                        "aggregator": {"provider": "openrouter", "model": ""},
-                    }
-                },
-            }
-        )
-
-
-def test_llm_ensemble_validates_enabled_profile_proposer_models() -> None:
-    with pytest.raises(ValueError, match="proposer 1 must define a model"):
-        GatewayConfig(
-            llm_ensemble={
-                "enabled": True,
-                "profiles": {
-                    "default": {
-                        "proposers": [{"provider": "openrouter", "model": ""}],
-                        "aggregator": {"provider": "openrouter", "model": "z-ai/glm-5.2"},
-                    }
-                },
-            }
-        )
-
-
-def test_llm_ensemble_validates_profile_shape_even_when_disabled() -> None:
-    with pytest.raises(ValueError, match="aggregator model"):
-        GatewayConfig(
-            llm_ensemble={
-                "enabled": False,
-                "profiles": {
-                    "default": {
-                        "proposers": [{"provider": "openrouter", "model": "a/model"}],
-                        "aggregator": {"provider": "openrouter", "model": ""},
-                    }
-                },
-            }
-        )
-
-
-def test_llm_ensemble_rejects_whitespace_aggregator_model() -> None:
-    with pytest.raises(ValueError, match="aggregator model"):
-        GatewayConfig(
-            llm_ensemble={
-                "enabled": True,
-                "profiles": {
-                    "default": {
-                        "proposers": [{"provider": "openrouter", "model": "a/model"}],
-                        "aggregator": {"provider": "openrouter", "model": "   "},
-                    }
-                },
-            }
-        )
 
 
 def test_build_ensemble_provider_inherits_current_openrouter_credentials() -> None:
@@ -209,12 +65,6 @@ def test_build_ensemble_provider_inherits_current_openrouter_credentials() -> No
     )
 
     members = [*provider.proposers, provider.aggregator]
-    assert [member.provider_config.model for member in provider.proposers] == [
-        "deepseek/deepseek-v4-pro",
-        "z-ai/glm-5.2",
-        "google/gemini-3-flash-preview",
-        "qwen/qwen3.7-plus",
-    ]
     assert all(member.provider_config.api_key == "runtime-secret" for member in members)
     assert all(
         member.provider_config.base_url == "https://openrouter.example/api/v1"
@@ -228,7 +78,6 @@ def test_router_dynamic_ensemble_uses_small_c0_slot_template() -> None:
     cfg = GatewayConfig(
         llm_ensemble={
             "enabled": True,
-            "selection_strategy": "router_dynamic",
             "min_successful_proposers": 4,
         }
     )
@@ -262,7 +111,6 @@ def test_router_dynamic_ensemble_uses_slot_specific_c2_selection() -> None:
     cfg = GatewayConfig(
         llm_ensemble={
             "enabled": True,
-            "selection_strategy": "router_dynamic",
             "model_options": [
                 "deepseek/deepseek-v4-pro",
                 "z-ai/glm-5.2",

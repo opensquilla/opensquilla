@@ -5,7 +5,6 @@ import { useSetupCapabilitiesForm } from '@/composables/setup/useSetupCapabiliti
 import { useSetupBehaviorForm } from '@/composables/setup/useSetupBehaviorForm'
 import { hasEffectiveProvider, useSetupProviderForm } from '@/composables/setup/useSetupProviderForm'
 import { useSetupRouterForm } from '@/composables/setup/useSetupRouterForm'
-import { useSetupEnsembleForm, type EnsembleConfig, type EnsembleMemberValue } from '@/composables/setup/useSetupEnsembleForm'
 import { useSettingsPromotedForm, DEFAULT_LLM_TIMEOUT_SECONDS } from '@/composables/setup/useSettingsPromotedForm'
 import { useSettingsSection } from '@/composables/setup/useSettingsSection'
 import { SETTINGS_SECTIONS, type SettingsSectionId } from '@/composables/setup/settingsSections'
@@ -147,7 +146,6 @@ interface ConfigData {
     [key: string]: unknown
   }
   llm_request_timeout_seconds?: number
-  llm_ensemble?: EnsembleConfig
   squilla_router?: {
     enabled?: boolean
     default_tier?: string
@@ -218,7 +216,6 @@ const disableNetworkObservability = ref(false)
 const providerForm = useSetupProviderForm()
 const behaviorForm = useSetupBehaviorForm()
 const routerForm = useSetupRouterForm()
-const ensembleForm = useSetupEnsembleForm()
 const channelsForm = useSetupChannelsForm()
 const capabilitiesForm = useSetupCapabilitiesForm()
 const promotedForm = useSettingsPromotedForm()
@@ -261,7 +258,6 @@ async function loadData() {
     providerForm.initFromConfig(config.value.llm || {}, status.value, runtimeProviders.value)
     behaviorForm.initFromConfig(config.value)
     routerForm.initFromConfig(config.value.squilla_router || {}, currentRouterProfile.value?.tiers || {}, currentProvider.value)
-    ensembleForm.initFromConfig(config.value.llm_ensemble || {})
     capabilitiesForm.initSearchFromConfig(config.value, searchProviders.value)
     capabilitiesForm.initMemoryFromConfig(config.value)
     capabilitiesForm.initImageFromConfig(config.value, status.value, imageProviders.value)
@@ -463,8 +459,6 @@ const routerPanel = routerForm.createPanel({
   tierLabel,
 })
 
-const ensemblePanel = ensembleForm.createPanel()
-
 const channelsPanel = channelsForm.createPanel({
   channelRuntimeRows,
   catalogChannels,
@@ -650,11 +644,6 @@ function sectionStatus(sectionId: string): { label: string; tone: string } {
     return { label: t('setup.status.providerFirst'), tone: 'is-muted' }
   }
   if (sectionId === 'router') return detailStepStatus((status.value.sectionDetails || {}).router)
-  if (sectionId === 'ensemble') {
-    return ensembleForm.enabled.value
-      ? { label: 'Enabled', tone: 'is-ok' }
-      : { label: 'Disabled', tone: 'is-muted' }
-  }
   if (sectionId === 'channels') return detailStepStatus((status.value.sectionDetails || {}).channels)
   if (sectionId === 'capabilities') {
     return aggregateStepStatus(['search', 'image_generation', 'memory_embedding', 'audio'])
@@ -711,7 +700,6 @@ const providerDirty = computed(() => providerForm.isDirty.value || promotedForm.
 const behaviorDirty = computed(() => behaviorForm.isDirty.value)
 const privacySectionDirty = computed(() => privacyDirty.value)
 const routerDirty = computed(() => routerForm.isDirty.value)
-const ensembleDirty = computed(() => ensembleForm.isDirty.value)
 const channelsDirty = computed(() => channelsForm.isDirty.value)
 const capabilitiesDirty = computed(() => (
   capabilitiesForm.searchDirty.value
@@ -726,7 +714,6 @@ function sectionDirty(sectionId: string): boolean {
   if (sectionId === 'behavior') return behaviorDirty.value
   if (sectionId === 'privacy') return privacySectionDirty.value
   if (sectionId === 'router') return routerDirty.value
-  if (sectionId === 'ensemble') return ensembleDirty.value
   if (sectionId === 'channels') return channelsDirty.value
   if (sectionId === 'capabilities') return capabilitiesDirty.value
   return false
@@ -754,7 +741,6 @@ async function saveDirtySections() {
   if (providerDirty.value) await saveProvider()
   if (behaviorDirty.value) await saveBehavior()
   if (routerDirty.value) await saveRouter()
-  if (ensembleDirty.value) await saveEnsemble()
   if (channelsDirty.value) await saveChannel()
   if (capabilitiesForm.searchDirty.value) await saveSearch()
   if (capabilitiesForm.memoryDirty.value || promotedForm.captureDirty.value) await saveMemory()
@@ -842,30 +828,6 @@ function updateTierField(
   value: string | boolean,
 ) {
   routerForm.updateTierField(name, key, value)
-}
-
-function updateEnsembleProposerField(
-  index: number,
-  key: keyof EnsembleMemberValue,
-  value: string,
-) {
-  ensembleForm.updateProposerField(index, key, value)
-}
-
-function updateEnsembleAggregatorField(key: keyof EnsembleMemberValue, value: string) {
-  ensembleForm.updateAggregatorField(key, value)
-}
-
-function addEnsembleProposer() {
-  ensembleForm.addProposer()
-}
-
-function removeEnsembleProposer(index: number) {
-  ensembleForm.removeProposer(index)
-}
-
-function resetEnsembleDefaults() {
-  ensembleForm.resetToDefaults()
 }
 
 // ---------------------------------------------------------------------------
@@ -1101,18 +1063,6 @@ async function saveRouter() {
   }
 }
 
-async function saveEnsemble() {
-  try {
-    const res = await rpc.call<{ restartRequired?: boolean }>('config.patch.safe', {
-      patches: ensembleForm.patches(),
-    })
-    pushToast(res?.restartRequired ? 'Ensemble saved. Restart required.' : 'Ensemble saved.')
-    await loadData()
-  } catch (err) {
-    pushToast('Save failed: ' + (err instanceof Error ? err.message : String(err)), { tone: 'danger' })
-  }
-}
-
 async function saveChannel() {
   const entry = channelsForm.payload()
   try {
@@ -1285,7 +1235,6 @@ async function copyConfigPath() {
     behaviorPanel,
     privacyPanel,
     routerPanel,
-    ensemblePanel,
     channelsPanel,
     capabilitiesPanel,
     loadData,
@@ -1312,11 +1261,6 @@ async function copyConfigPath() {
     setRouterMode,
     setRouterDefaultTier,
     setRouterVisualMode,
-    updateEnsembleProposerField,
-    updateEnsembleAggregatorField,
-    addEnsembleProposer,
-    removeEnsembleProposer,
-    resetEnsembleDefaults,
     selectChannelType,
     updateProviderField,
     updateLlmTimeout,
@@ -1332,7 +1276,6 @@ async function copyConfigPath() {
     saveBehavior,
     savePrivacy,
     saveRouter,
-    saveEnsemble,
     saveChannel,
     enableChannel,
     disableChannel,

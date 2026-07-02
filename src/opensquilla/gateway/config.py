@@ -295,115 +295,21 @@ class LlmProviderConfig(BaseSettings):
         return self
 
 
-def _ensemble_ref(
-    model: str,
-    *,
-    provider: str = "openrouter",
-    temperature: float | None = None,
-    max_tokens: int = 0,
-    thinking: str | None = None,
-    k: int = 1,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "provider": provider,
-        "model": model,
-        "k": k,
-    }
-    if temperature is not None:
-        payload["temperature"] = temperature
-    if max_tokens > 0:
-        payload["max_tokens"] = max_tokens
-    if thinking:
-        payload["thinking"] = thinking
-    return payload
-
-
-def _ensemble_profile(
-    proposers: list[dict[str, Any]],
-    aggregator: dict[str, Any],
-    *,
-    proposer_timeout_seconds: float | None = None,
-    aggregator_timeout_seconds: float | None = None,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "proposers": proposers,
-        "aggregator": aggregator,
-    }
-    if proposer_timeout_seconds is not None:
-        payload["proposer_timeout_seconds"] = proposer_timeout_seconds
-    if aggregator_timeout_seconds is not None:
-        payload["aggregator_timeout_seconds"] = aggregator_timeout_seconds
-    return payload
-
-
-DEFAULT_LLM_ENSEMBLE_PROFILE_ID = "default"
-LEGACY_G8_LLM_ENSEMBLE_PROFILE_ID = "g8_four_proposers"
 DEFAULT_LLM_ENSEMBLE_MODEL_OPTIONS = [
     "deepseek/deepseek-v4-pro",
     "z-ai/glm-5.2",
-    "google/gemini-3-flash-preview",
     "qwen/qwen3.7-plus",
     "deepseek/deepseek-v4-flash",
     "qwen/qwen3.7-max",
-    "anthropic/claude-sonnet-4.6",
-    "anthropic/claude-opus-4.8",
-    "openai/gpt-5.5",
-    "openai/gpt-5.4-mini",
-    "x-ai/grok-4.3",
     "moonshotai/kimi-k2.6",
-    "mistralai/mistral-large-2512",
-    "meta-llama/llama-4-maverick",
+    "moonshotai/kimi-k2.7-code",
+    "minimax/minimax-m3",
 ]
 
 
-def _default_llm_ensemble_profiles() -> dict[str, dict[str, Any]]:
-    """Built-in G8 LLM ensemble profile with operator-overridable model IDs."""
-    return {
-        DEFAULT_LLM_ENSEMBLE_PROFILE_ID: _ensemble_profile(
-            [
-                _ensemble_ref(DEFAULT_LLM_ENSEMBLE_MODEL_OPTIONS[0], thinking="high"),
-                _ensemble_ref(DEFAULT_LLM_ENSEMBLE_MODEL_OPTIONS[1], thinking="high"),
-                _ensemble_ref(DEFAULT_LLM_ENSEMBLE_MODEL_OPTIONS[2], thinking="high"),
-                _ensemble_ref(DEFAULT_LLM_ENSEMBLE_MODEL_OPTIONS[3], thinking="high"),
-            ],
-            _ensemble_ref(DEFAULT_LLM_ENSEMBLE_MODEL_OPTIONS[1], thinking="high"),
-        )
-    }
-
-
 def _default_llm_ensemble_model_options() -> list[str]:
-    """Models operators may select for the built-in ensemble Settings UI."""
+    """Models operators may select for the router_dynamic ensemble candidate pool."""
     return list(DEFAULT_LLM_ENSEMBLE_MODEL_OPTIONS)
-
-
-class EnsembleModelRef(BaseModel):
-    """Provider/model generation settings for one G8 ensemble member."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    provider: str = ""
-    model: str = ""
-    api_key_env: str = ""
-    base_url: str = ""
-    proxy: str = ""
-    temperature: float | None = None
-    max_tokens: int = Field(default=0, ge=0)
-    thinking: str | None = None
-    k: int = Field(default=1, ge=1)
-
-
-class EnsembleProfile(BaseModel):
-    """G8 B5 profile: parallel proposers and one aggregator."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    proposers: list[EnsembleModelRef] = Field(default_factory=list)
-    aggregator: EnsembleModelRef = Field(default_factory=EnsembleModelRef)
-    candidate_max_chars: int = Field(default=24_000, ge=0)
-    proposer_timeout_seconds: float = Field(default=120.0, gt=0.0)
-    aggregator_timeout_seconds: float = Field(default=120.0, gt=0.0)
-    shuffle_candidates: bool = True
-    record_candidates: bool = False
 
 
 class LlmEnsembleConfig(BaseSettings):
@@ -414,17 +320,19 @@ class LlmEnsembleConfig(BaseSettings):
     )
 
     enabled: bool = False
-    active_profile: str = DEFAULT_LLM_ENSEMBLE_PROFILE_ID
     mode: Literal["b5_fusion"] = "b5_fusion"
-    selection_strategy: Literal["static_profile", "router_dynamic"] = "static_profile"
     proposer_tools: bool = False
     min_successful_proposers: int = Field(default=1, ge=1)
     all_failed_policy: Literal["fallback_single", "error"] = "fallback_single"
     model_options: list[str] = Field(default_factory=_default_llm_ensemble_model_options)
-    profiles: dict[str, EnsembleProfile] = Field(default_factory=_default_llm_ensemble_profiles)
+    candidate_max_chars: int = Field(default=24_000, ge=0)
+    proposer_timeout_seconds: float = Field(default=120.0, gt=0.0)
+    aggregator_timeout_seconds: float = Field(default=120.0, gt=0.0)
+    shuffle_candidates: bool = True
+    record_candidates: bool = False
 
     @model_validator(mode="after")
-    def _merge_default_profiles_and_validate_active(self) -> LlmEnsembleConfig:
+    def _validate_model_options(self) -> LlmEnsembleConfig:
         model_options: list[str] = []
         seen_options: set[str] = set()
         for model in self.model_options:
@@ -436,33 +344,6 @@ class LlmEnsembleConfig(BaseSettings):
         if not model_options:
             raise ValueError("llm_ensemble.model_options must define at least one model")
         self.model_options = model_options
-
-        legacy_profile = self.profiles.get(LEGACY_G8_LLM_ENSEMBLE_PROFILE_ID)
-        if self.active_profile == LEGACY_G8_LLM_ENSEMBLE_PROFILE_ID:
-            self.active_profile = DEFAULT_LLM_ENSEMBLE_PROFILE_ID
-        if legacy_profile is not None and DEFAULT_LLM_ENSEMBLE_PROFILE_ID not in self.profiles:
-            self.profiles[DEFAULT_LLM_ENSEMBLE_PROFILE_ID] = legacy_profile
-        default_profiles = {
-            name: EnsembleProfile.model_validate(profile)
-            for name, profile in _default_llm_ensemble_profiles().items()
-        }
-        default_profiles.update(self.profiles)
-        self.profiles = default_profiles
-        profile = self.profiles.get(self.active_profile)
-        if profile is None:
-            raise ValueError(
-                f"llm_ensemble.active_profile {self.active_profile!r} is not configured"
-            )
-        if not profile.proposers:
-            raise ValueError("llm_ensemble active profile must define at least one proposer")
-        for index, proposer in enumerate(profile.proposers, start=1):
-            if not str(proposer.model or "").strip():
-                raise ValueError(
-                    "llm_ensemble active profile proposer "
-                    f"{index} must define a model"
-                )
-        if not str(profile.aggregator.model or "").strip():
-            raise ValueError("llm_ensemble active profile must define an aggregator model")
         return self
 
 

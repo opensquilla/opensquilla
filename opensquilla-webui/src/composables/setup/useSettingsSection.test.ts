@@ -21,10 +21,6 @@ describe('sectionFromRouteParam — /settings/:section mapping', () => {
     expect(sectionFromRouteParam('privacy')).toBe('privacy')
   })
 
-  it('maps the Ensemble section for G8 settings', () => {
-    expect(sectionFromRouteParam('ensemble')).toBe('ensemble')
-  })
-
   it('falls back to the default first section for unknown, missing, or sentinel params', () => {
     // `auto` is a routing sentinel (/setup → /settings/auto), not a real
     // section, so the param mapper treats it as unknown and defaults.
@@ -42,7 +38,6 @@ describe('isKnownSectionParam', () => {
     expect(isKnownSectionParam('connection')).toBe(true)
     expect(isKnownSectionParam('behavior')).toBe(true)
     expect(isKnownSectionParam('privacy')).toBe(true)
-    expect(isKnownSectionParam('ensemble')).toBe(true)
     expect(isKnownSectionParam('capabilities')).toBe(true)
     expect(isKnownSectionParam('auto')).toBe(false)
     expect(isKnownSectionParam('nope')).toBe(false)

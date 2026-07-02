@@ -608,7 +608,7 @@ class EnsembleProvider:
         trace = {
             "mode": "b5_fusion",
             "profile": self.profile_name,
-            "selection_strategy": self.selection_plan.get("strategy", "static_profile"),
+            "selection_strategy": self.selection_plan.get("strategy", "router_dynamic"),
             "successful_proposers": successful_count,
             "total_candidates": len(candidates),
             "fallback_used": fallback_used,
@@ -1066,27 +1066,43 @@ _DYNAMIC_SELECTED_PENALTY = {
     "aggregator_strong": 0.12,
 }
 
+# quality/cost_latency are a manually-refreshed static snapshot (same pattern as
+# _STATIC_FALLBACK in model_catalog.py), not live-fetched. Refresh both columns together
+# so they stay apples-to-apples with the formulas below when models are added/renamed.
+#
+# quality = Artificial Analysis Intelligence Index / 100, v4.1 methodology, single leaderboard
+#   snapshot fetched 2026-07-03 from https://artificialanalysis.ai/leaderboards/models (reasoning
+#   variant used where AA reports one). mistral-large-2512 has no confirmed published AA score;
+#   its value is interpolated between meta-llama/llama-4-maverick (0.14) and Mistral's own
+#   top-ranked model Medium 3.5 (0.30 on AA) per AA's Mistral provider page, and is an estimate,
+#   not a citation.
+# cost_latency = OpenRouter /api/v1/models pricing (pricing.prompt / pricing.completion, $/token),
+#   fetched 2026-07-03, blended 30% prompt + 70% completion (ensemble proposer calls are
+#   output-heavy), log10-scaled, then min-max normalized across this whole catalog (higher =
+#   cheaper). Log scale because raw blended price spans ~150x across the catalog; a linear
+#   min-max would flatten same-tier peers into a narrow band near 1.0 and lose the resolution
+#   the scoring formula needs when comparing candidates within a tier.
 _DYNAMIC_MODEL_CATALOG: dict[str, dict[str, Any]] = {
     "deepseek/deepseek-v4-flash": {
         "tier": "c0",
-        "quality": 0.58,
-        "cost_latency": 0.95,
+        "quality": 0.40,
+        "cost_latency": 1.00,
         "family": "deepseek-v4",
         "vendor": "deepseek",
         "architecture": "reasoning-transformer",
     },
     "deepseek/deepseek-v4-pro": {
         "tier": "c1",
-        "quality": 0.75,
-        "cost_latency": 0.75,
+        "quality": 0.44,
+        "cost_latency": 0.68,
         "family": "deepseek-v4",
         "vendor": "deepseek",
         "architecture": "reasoning-transformer",
     },
     "google/gemini-3-flash-preview": {
         "tier": "c1",
-        "quality": 0.73,
-        "cost_latency": 0.78,
+        "quality": 0.38,
+        "cost_latency": 0.46,
         "family": "gemini-3",
         "vendor": "google",
         "architecture": "gemini",
@@ -1094,57 +1110,75 @@ _DYNAMIC_MODEL_CATALOG: dict[str, dict[str, Any]] = {
     },
     "openai/gpt-5.4-mini": {
         "tier": "c1",
-        "quality": 0.78,
-        "cost_latency": 0.72,
+        "quality": 0.40,
+        "cost_latency": 0.38,
         "family": "gpt-5",
         "vendor": "openai",
         "architecture": "gpt",
     },
     "z-ai/glm-5.2": {
         "tier": "c2",
-        "quality": 0.82,
-        "cost_latency": 0.64,
+        "quality": 0.51,
+        "cost_latency": 0.45,
         "family": "glm-5",
         "vendor": "z-ai",
         "architecture": "glm",
     },
     "qwen/qwen3.7-plus": {
         "tier": "c2",
-        "quality": 0.80,
-        "cost_latency": 0.67,
+        "quality": 0.39,
+        "cost_latency": 0.63,
         "family": "qwen3",
         "vendor": "qwen",
         "architecture": "qwen",
     },
     "anthropic/claude-sonnet-4.6": {
         "tier": "c2",
-        "quality": 0.88,
-        "cost_latency": 0.49,
+        "quality": 0.34,
+        "cost_latency": 0.14,
         "family": "claude-4",
         "vendor": "anthropic",
         "architecture": "claude",
     },
     "moonshotai/kimi-k2.6": {
         "tier": "c2",
-        "quality": 0.84,
-        "cost_latency": 0.58,
+        "quality": 0.43,
+        "cost_latency": 0.43,
         "family": "kimi-k2",
         "vendor": "moonshotai",
         "architecture": "kimi",
         "supports_vision": True,
     },
+    "moonshotai/kimi-k2.7-code": {
+        "tier": "c2",
+        "quality": 0.42,
+        "cost_latency": 0.43,
+        "family": "kimi-k2-code",
+        "vendor": "moonshotai",
+        "architecture": "kimi",
+        "supports_vision": True,
+    },
+    "minimax/minimax-m3": {
+        "tier": "c2",
+        "quality": 0.44,
+        "cost_latency": 0.64,
+        "family": "minimax-m3",
+        "vendor": "minimax",
+        "architecture": "minimax",
+        "supports_vision": True,
+    },
     "mistralai/mistral-large-2512": {
         "tier": "c2",
-        "quality": 0.80,
-        "cost_latency": 0.60,
+        "quality": 0.22,  # estimated, see module comment above — no confirmed AA score
+        "cost_latency": 0.59,
         "family": "mistral-large",
         "vendor": "mistralai",
         "architecture": "mistral",
     },
     "meta-llama/llama-4-maverick": {
         "tier": "c2",
-        "quality": 0.78,
-        "cost_latency": 0.62,
+        "quality": 0.14,
+        "cost_latency": 0.78,
         "family": "llama-4",
         "vendor": "meta-llama",
         "architecture": "llama",
@@ -1152,32 +1186,32 @@ _DYNAMIC_MODEL_CATALOG: dict[str, dict[str, Any]] = {
     },
     "anthropic/claude-opus-4.8": {
         "tier": "c3",
-        "quality": 0.94,
-        "cost_latency": 0.30,
+        "quality": 0.56,
+        "cost_latency": 0.03,
         "family": "claude-4",
         "vendor": "anthropic",
         "architecture": "claude",
     },
     "qwen/qwen3.7-max": {
         "tier": "c3",
-        "quality": 0.86,
-        "cost_latency": 0.52,
+        "quality": 0.46,
+        "cost_latency": 0.40,
         "family": "qwen3",
         "vendor": "qwen",
         "architecture": "qwen",
     },
     "openai/gpt-5.5": {
         "tier": "c3",
-        "quality": 0.93,
-        "cost_latency": 0.35,
+        "quality": 0.55,
+        "cost_latency": 0.00,
         "family": "gpt-5",
         "vendor": "openai",
         "architecture": "gpt",
     },
     "x-ai/grok-4.3": {
         "tier": "c3",
-        "quality": 0.88,
-        "cost_latency": 0.45,
+        "quality": 0.38,
+        "cost_latency": 0.47,
         "family": "grok-4",
         "vendor": "x-ai",
         "architecture": "grok",
@@ -1729,10 +1763,6 @@ def _build_router_dynamic_members(
         "candidate_pool_size": len(pool),
         "candidate_pool": [_candidate_trace(candidate) for candidate in pool],
         "proposer_count": len(proposers),
-        "profile_runtime_options": str(
-            getattr(getattr(config, "llm_ensemble", None), "active_profile", "")
-            or "default"
-        ),
         "duplicate_policy": "selected_penalty",
         "tier_index": _tier_index(routed_tier),
     }
@@ -1803,39 +1833,15 @@ def build_ensemble_provider_from_config(
     ensemble_cfg = getattr(config, "llm_ensemble", None)
     if ensemble_cfg is None:
         raise ValueError("config.llm_ensemble is required")
-    selection_strategy = str(
-        getattr(ensemble_cfg, "selection_strategy", "static_profile") or "static_profile"
+    profile_name, proposers, aggregator, selection_plan = _build_router_dynamic_members(
+        config=config,
+        inherited_provider_config=inherited_provider_config,
+        turn_metadata=turn_metadata,
     )
-    profile_name = str(getattr(ensemble_cfg, "active_profile", "") or "").strip()
-    profile = getattr(ensemble_cfg, "profiles", {}).get(profile_name)
-    if profile is None:
-        raise ValueError(f"llm_ensemble profile {profile_name!r} is not configured")
-    selection_plan: dict[str, Any] = {}
-    if selection_strategy == "router_dynamic":
-        profile_name, proposers, aggregator, selection_plan = _build_router_dynamic_members(
-            config=config,
-            inherited_provider_config=inherited_provider_config,
-            turn_metadata=turn_metadata,
-        )
-    else:
-        proposers = [
-            _member_from_ref(
-                ref,
-                inherited=inherited_provider_config,
-                label=f"proposer_{index + 1}",
-            )
-            for index, ref in enumerate(getattr(profile, "proposers", []) or [])
-        ]
-        aggregator = _member_from_ref(
-            getattr(profile, "aggregator"),
-            inherited=inherited_provider_config,
-            label="aggregator",
-        )
     configured_min_success = int(getattr(ensemble_cfg, "min_successful_proposers", 1) or 1)
     min_successful_proposers = min(configured_min_success, max(1, len(proposers)))
-    if selection_plan:
-        selection_plan["configured_min_successful_proposers"] = configured_min_success
-        selection_plan["effective_min_successful_proposers"] = min_successful_proposers
+    selection_plan["configured_min_successful_proposers"] = configured_min_success
+    selection_plan["effective_min_successful_proposers"] = min_successful_proposers
     return EnsembleProvider(
         profile_name=profile_name,
         proposers=proposers,
@@ -1843,11 +1849,13 @@ def build_ensemble_provider_from_config(
         fallback_provider=fallback_provider,
         min_successful_proposers=min_successful_proposers,
         all_failed_policy=getattr(ensemble_cfg, "all_failed_policy", "fallback_single"),
-        proposer_timeout_seconds=float(getattr(profile, "proposer_timeout_seconds", 120.0)),
-        aggregator_timeout_seconds=float(getattr(profile, "aggregator_timeout_seconds", 120.0)),
-        candidate_max_chars=int(getattr(profile, "candidate_max_chars", 24_000) or 0),
-        shuffle_candidates=bool(getattr(profile, "shuffle_candidates", True)),
-        record_candidates=bool(getattr(profile, "record_candidates", False)),
+        proposer_timeout_seconds=float(getattr(ensemble_cfg, "proposer_timeout_seconds", 120.0)),
+        aggregator_timeout_seconds=float(
+            getattr(ensemble_cfg, "aggregator_timeout_seconds", 120.0)
+        ),
+        candidate_max_chars=int(getattr(ensemble_cfg, "candidate_max_chars", 24_000) or 0),
+        shuffle_candidates=bool(getattr(ensemble_cfg, "shuffle_candidates", True)),
+        record_candidates=bool(getattr(ensemble_cfg, "record_candidates", False)),
         proposer_tools=bool(getattr(ensemble_cfg, "proposer_tools", False)),
         selection_plan=selection_plan,
     )

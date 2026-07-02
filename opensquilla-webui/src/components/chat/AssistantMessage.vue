@@ -410,7 +410,7 @@ function fmtUsd(value: number): string {
 
 function ensembleRole(role: string, label: string): string {
   const normalized = String(role || '').replace(/_/g, ' ')
-  if (normalized === 'proposer') return label || 'proposer'
+  if (normalized === 'proposer') return 'proposer'
   if (normalized === 'aggregator') return 'aggregator'
   if (normalized === 'fallback single') return 'fallback'
   return label || normalized || 'member'

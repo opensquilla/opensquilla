@@ -3,7 +3,7 @@ import i18n from '@/i18n'
 import { useSetupChannelsForm } from '@/composables/setup/useSetupChannelsForm'
 import { useSetupCapabilitiesForm } from '@/composables/setup/useSetupCapabilitiesForm'
 import { useSetupBehaviorForm } from '@/composables/setup/useSetupBehaviorForm'
-import { useSetupProviderForm } from '@/composables/setup/useSetupProviderForm'
+import { hasEffectiveProvider, useSetupProviderForm } from '@/composables/setup/useSetupProviderForm'
 import { useSetupRouterForm } from '@/composables/setup/useSetupRouterForm'
 import { useSettingsPromotedForm, DEFAULT_LLM_TIMEOUT_SECONDS } from '@/composables/setup/useSettingsPromotedForm'
 import { useSettingsSection } from '@/composables/setup/useSettingsSection'
@@ -102,6 +102,7 @@ interface SectionDetail {
 interface OnboardingStatus {
   needsOnboarding?: boolean
   hasConfig?: boolean
+  llmConfigured?: boolean
   llmSource?: string
   sectionDetails?: Record<string, SectionDetail>
   envRecoveryCommands?: Array<{ section?: string; command?: string; label?: string }>
@@ -284,7 +285,7 @@ function startChannelPolling() {
 
 const currentProvider = computed(() => (config.value.llm || {}).provider || '')
 const currentProviderConfig = computed(() => config.value.llm || {})
-const hasSavedProvider = computed(() => Boolean(currentProvider.value) && status.value.hasConfig !== false)
+const hasSavedProvider = computed(() => hasEffectiveProvider(currentProviderConfig.value, status.value))
 
 const runtimeProviders = computed(() => (catalog.value.providers || []).filter(p => p.runtimeSupported))
 const catalogChannels = computed(() => catalog.value.channels || [])

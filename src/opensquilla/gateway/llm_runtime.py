@@ -6,6 +6,10 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+import structlog
+
+log = structlog.get_logger(__name__)
+
 OPENROUTER_DEFAULT_PROVIDER_ROUTING = {
     "anthropic/claude-opus-4.8": "anthropic",
     "anthropic/claude-sonnet-4.6": "anthropic",
@@ -52,20 +56,33 @@ def _resolve_provider_routing(provider: str, configured: Any) -> dict[str, str]:
 
 
 def resolve_llm_runtime_config(config: Any) -> LlmRuntimeConfig:
-    """Resolve provider credentials from provider-specific env before config."""
-    from opensquilla.provider.registry import get_provider_spec
+    """Resolve provider credentials from provider-specific env before config.
+
+    An unset or unregistered provider id must not crash the boot: the gateway
+    starts degraded (no spec-derived env key or default base URL) and the
+    onboarding readiness surface reports the misconfiguration, leaving the
+    control UI available to fix it.
+    """
+    from opensquilla.provider.registry import UnknownProviderError, get_provider_spec
 
     llm = config.llm
     provider = str(llm.provider or "").strip().lower()
-    spec = get_provider_spec(provider)
+    try:
+        spec = get_provider_spec(provider)
+    except UnknownProviderError as exc:
+        log.warning("llm_runtime.unknown_provider", provider=provider, error=str(exc))
+        spec = None
     runtime_secret_paths: set[str] = getattr(config, "_runtime_secret_paths", set())
     explicit_api_key = llm.api_key if "llm.api_key" not in runtime_secret_paths else ""
-    api_key_env_name = "" if explicit_api_key else (getattr(llm, "api_key_env", "") or spec.env_key)
-    base_url_env_name = provider_base_url_env_name(provider)
+    spec_env_key = spec.env_key if spec is not None else ""
+    api_key_env_name = (
+        "" if explicit_api_key else (getattr(llm, "api_key_env", "") or spec_env_key)
+    )
+    base_url_env_name = provider_base_url_env_name(provider) if spec is not None else ""
     env_api_key = os.environ.get(api_key_env_name, "") if api_key_env_name else ""
-    env_base_url = os.environ.get(base_url_env_name, "")
+    env_base_url = os.environ.get(base_url_env_name, "") if base_url_env_name else ""
     api_key = explicit_api_key or env_api_key or llm.api_key
-    base_url = env_base_url or llm.base_url or spec.default_base_url
+    base_url = env_base_url or llm.base_url or (spec.default_base_url if spec else "")
     proxy = os.environ.get("OPENSQUILLA_LLM_PROXY", "") or getattr(llm, "proxy", "")
 
     llm.provider = provider

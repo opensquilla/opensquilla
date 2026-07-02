@@ -6,10 +6,12 @@ import asyncio
 import os
 from pathlib import Path
 
-from opensquilla.sandbox.integration import get_runtime, run_under_backend, sandboxed
+from opensquilla.sandbox.integration import get_runtime, run_under_backend
+from opensquilla.sandbox.operation_runtime import SandboxToolDescriptor
 from opensquilla.sandbox.policy import build_policy, select_level
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
+from opensquilla.tools.run_mode import full_host_access_active
 from opensquilla.tools.types import current_tool_context
 
 
@@ -40,7 +42,11 @@ def _reject_foreign_git_path(path: str) -> None:
 
 async def _run_git(*args: str, cwd: str | None = None) -> str:
     runtime = get_runtime()
-    if runtime is not None and runtime.effective.sandbox_enabled:
+    if (
+        runtime is not None
+        and runtime.effective.sandbox_enabled
+        and not full_host_access_active()
+    ):
         ctx = current_tool_context.get()
         if cwd:
             workspace = Path(cwd).expanduser().resolve()
@@ -104,11 +110,11 @@ def build_request_for_git(args: tuple[str, ...], cwd: Path, action_kind: str, po
         "workdir": {"type": "string", "description": "Git repository directory (default: cwd)."},
     },
     required=[],
-)
-@sandboxed(
-    kind="git.read",
-    argv_factory=lambda a: ("git", "status", "--short", "--branch"),
-    record_payload=False,
+    sandbox=SandboxToolDescriptor.process(
+        kind="git.read",
+        argv_factory=lambda a: ("git", "status", "--short", "--branch"),
+        record_payload=False,
+    ),
 )
 async def git_status(workdir: str | None = None) -> str:
     return await _run_git("status", "--short", "--branch", cwd=_effective_workdir(workdir))
@@ -123,16 +129,16 @@ async def git_status(workdir: str | None = None) -> str:
         "workdir": {"type": "string", "description": "Git repository directory (default: cwd)."},
     },
     required=[],
-)
-@sandboxed(
-    kind="git.read",
-    argv_factory=lambda a: (
-        "git",
-        "diff",
-        "--cached" if a.get("staged") else "--unstaged",
-        str(a.get("path", "")),
+    sandbox=SandboxToolDescriptor.process(
+        kind="git.read",
+        argv_factory=lambda a: (
+            "git",
+            "diff",
+            "--cached" if a.get("staged") else "--unstaged",
+            str(a.get("path", "")),
+        ),
+        record_payload=False,
     ),
-    record_payload=False,
 )
 async def git_diff(
     path: str | None = None,
@@ -162,16 +168,16 @@ async def git_diff(
     },
     required=["message"],
     owner_only=True,
-)
-@sandboxed(
-    kind="git.write",
-    argv_factory=lambda a: (
-        "git",
-        "commit",
-        str(a.get("message", "")),
-        str(len(a.get("files") or [])),
+    sandbox=SandboxToolDescriptor.process(
+        kind="git.write",
+        argv_factory=lambda a: (
+            "git",
+            "commit",
+            str(a.get("message", "")),
+            str(len(a.get("files") or [])),
+        ),
+        record_payload=False,
     ),
-    record_payload=False,
 )
 async def git_commit(
     message: str,
@@ -196,11 +202,11 @@ async def git_commit(
         "workdir": {"type": "string", "description": "Git repository directory (default: cwd)."},
     },
     required=[],
-)
-@sandboxed(
-    kind="git.read",
-    argv_factory=lambda a: ("git", "log", str(a.get("count", 10))),
-    record_payload=False,
+    sandbox=SandboxToolDescriptor.process(
+        kind="git.read",
+        argv_factory=lambda a: ("git", "log", str(a.get("count", 10))),
+        record_payload=False,
+    ),
 )
 async def git_log(count: int = 10, workdir: str | None = None) -> str:
     return await _run_git(

@@ -7,6 +7,8 @@ import contextlib
 from collections.abc import Awaitable
 from typing import Any
 
+from rich.markup import escape as _escape
+
 from opensquilla.cli.tui.backend.contracts import (
     TuiDispatch,
     TuiInputKind,
@@ -42,11 +44,19 @@ async def run_tui_runtime(
             with contextlib.suppress(Exception):
                 await abort_turn
 
+        def _notice_queue_discarded(dropped: tuple[str, ...]) -> None:
+            """Tell the user when queued messages are dropped, so a cancel or a
+            destructive command never silently swallows their typed-ahead input."""
+            count = len(dropped)
+            if count and hooks.notice is not None:
+                suffix = "" if count == 1 else "s"
+                hooks.notice(f"[yellow]Discarded {count} queued message{suffix}.[/yellow]")
+
         def _cancel_inflight_turn() -> asyncio.Task[None] | None:
             task = turn_task
             if task is not None and not task.done():
                 abort_task: asyncio.Task[None] | None = None
-                runtime_state.clear_pending()
+                _notice_queue_discarded(runtime_state.clear_pending())
                 with contextlib.suppress(Exception):
                     abort_turn = hooks.on_cancel_active_turn()
                     abort_task = asyncio.create_task(_schedule_abort(abort_turn))
@@ -148,9 +158,7 @@ async def run_tui_runtime(
         try:
             while True:
                 can_read_input = (
-                    config.concurrent_input_during_turn
-                    or turn_task is None
-                    or turn_task.done()
+                    config.concurrent_input_during_turn or turn_task is None or turn_task.done()
                 )
                 if next_line_task is None and can_read_input:
                     await _ensure_next_line_task()
@@ -183,7 +191,24 @@ async def run_tui_runtime(
 
                 if next_line_task is None or not next_line_task.done():
                     continue
-                user_input = next_line_task.result()
+                try:
+                    user_input = next_line_task.result()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    # A surface/host read failure (e.g. the OpenTUI sidecar
+                    # crashed or sent an error frame) must degrade to a clean
+                    # shutdown with a notice rather than tearing the chat
+                    # process down with an unhandled traceback.
+                    next_line_task = None
+                    if turn_task is not None and not turn_task.done():
+                        turn_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await turn_task
+                        turn_task = None
+                    if hooks.notice is not None:
+                        hooks.notice(f"[red]Input surface error: {_escape(str(exc))}[/red]")
+                    return runtime_state
                 next_line_task = None
 
                 if user_input is None:
@@ -199,16 +224,44 @@ async def run_tui_runtime(
                         hooks.notice("[yellow]Goodbye.[/yellow]")
                     return runtime_state
 
+                category = config.classify_input(user_input)
+
+                if category is TuiInputKind.LOCAL:
+                    # Host-only UI command (e.g. /theme): act now, inline on the
+                    # loop, with no prompt echo and no queue — the in-flight turn
+                    # keeps streaming. A single host IPC frame is atomic, so it
+                    # cannot interleave with the streaming turn.
+                    keep_going = await dispatch(user_input)
+                    if not keep_going:
+                        return runtime_state
+                    continue
+
+                # A full queue rejects new typed-ahead BEFORE it is echoed —
+                # otherwise the message appears accepted in the transcript yet
+                # never runs. Destructive/exit commands are exempt: they purge or
+                # drain the queue rather than enqueue, so fullness must not block
+                # them.
+                if (
+                    category not in (TuiInputKind.DESTRUCTIVE, TuiInputKind.EXIT)
+                    and turn_task is not None
+                    and not turn_task.done()
+                    and runtime_state.pending_size >= config.queue_max_size
+                ):
+                    if hooks.notice is not None:
+                        hooks.notice(
+                            f"[yellow]Queue full ({config.queue_max_size} items)."
+                            " Wait for the current turn to complete.[/yellow]"
+                        )
+                    continue
+
                 await hooks.on_user_input_echo(tui_surface, user_input)
                 _emit(
                     config.event_sink,
                     TuiEvent(TuiEventKind.USER_INPUT_ACCEPTED, input_text=user_input),
                 )
 
-                category = config.classify_input(user_input)
-
                 if category is TuiInputKind.DESTRUCTIVE:
-                    runtime_state.clear_pending()
+                    _notice_queue_discarded(runtime_state.clear_pending())
                     if turn_task is not None and not turn_task.done():
                         abort_task = _cancel_inflight_turn()
                         try:
@@ -238,14 +291,18 @@ async def run_tui_runtime(
                     continue
 
                 if turn_task is not None and not turn_task.done():
-                    if runtime_state.pending_size >= config.queue_max_size:
-                        if hooks.notice is not None:
-                            hooks.notice(
-                                f"[yellow]Queue full ({config.queue_max_size} items)."
-                                " Wait for the current turn to complete.[/yellow]"
-                            )
-                        continue
+                    # Fullness was already rejected before the echo above, so the
+                    # queue has room here.
                     runtime_state.enqueue(user_input)
+                    # The message was echoed like a normal submission, but it did
+                    # NOT start a turn — tell the user it is queued behind the
+                    # running one (it will run next, or steer the turn if it makes
+                    # a tool call) so "did my message send?" is never ambiguous.
+                    if hooks.notice is not None:
+                        position = runtime_state.pending_size
+                        hooks.notice(
+                            f"[dim]Queued (#{position}) behind the running turn.[/dim]"
+                        )
                     continue
 
                 if config.concurrent_input_during_turn:

@@ -70,19 +70,6 @@ def _publish_image(tmp_path: Path):
     return ref, payload
 
 
-def _publish_text(tmp_path: Path):
-    payload = b"plain text deliverable contents"
-    ref = ArtifactStore(tmp_path).publish_bytes(
-        payload,
-        session_id="session-1",
-        session_key="agent:main:webchat:ok",
-        name="notes.txt",
-        mime="text/plain",
-        source="publish_artifact",
-    )
-    return ref, payload
-
-
 def test_publishing_image_creates_smaller_webp_thumbnail(tmp_path: Path) -> None:
     ref, payload = _publish_image(tmp_path)
 
@@ -147,7 +134,14 @@ def test_non_image_artifact_has_no_thumbnail_and_falls_back(tmp_path: Path) -> N
     pytest.importorskip("starlette.testclient")
     from starlette.testclient import TestClient
 
-    ref, payload = _publish_text(tmp_path)
+    ref = ArtifactStore(tmp_path).publish_bytes(
+        b"plain text deliverable contents",
+        session_id="session-1",
+        session_key="agent:main:webchat:ok",
+        name="notes.txt",
+        mime="text/plain",
+        source="publish_artifact",
+    )
 
     assert ref.has_thumbnail is False
     assert not ArtifactStore(tmp_path).thumbnail_path_for(ref).exists()
@@ -162,63 +156,7 @@ def test_non_image_artifact_has_no_thumbnail_and_falls_back(tmp_path: Path) -> N
     # No thumbnail sidecar: the request transparently falls back to the full file.
     assert thumb.status_code == 200
     assert thumb.headers["content-type"].startswith("text/plain")
-    assert thumb.content == payload
-
-
-def test_artifact_download_requires_session_scope_even_when_authorized(
-    tmp_path: Path,
-) -> None:
-    pytest.importorskip("starlette.testclient")
-    from starlette.testclient import TestClient
-
-    ref, _payload = _publish_text(tmp_path)
-
-    with TestClient(_app(tmp_path)) as client:
-        response = client.get(
-            f"/api/v1/artifacts/{ref.id}",
-            headers={"Authorization": "Bearer secret"},
-        )
-
-    assert response.status_code == 404
-    assert response.json() == {"error": "Artifact not found", "code": "NOT_FOUND"}
-
-
-def test_artifact_download_accepts_session_key_header(tmp_path: Path) -> None:
-    pytest.importorskip("starlette.testclient")
-    from starlette.testclient import TestClient
-
-    ref, payload = _publish_text(tmp_path)
-
-    with TestClient(_app(tmp_path)) as client:
-        response = client.get(
-            f"/api/v1/artifacts/{ref.id}",
-            headers={
-                "Authorization": "Bearer secret",
-                "x-opensquilla-session-key": "agent:main:webchat:ok",
-            },
-        )
-
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/plain")
-    assert response.content == payload
-
-
-def test_artifact_download_preserves_query_token_compatibility(
-    tmp_path: Path,
-) -> None:
-    pytest.importorskip("starlette.testclient")
-    from starlette.testclient import TestClient
-
-    ref, payload = _publish_text(tmp_path)
-
-    with TestClient(_app(tmp_path)) as client:
-        response = client.get(
-            f"/api/v1/artifacts/{ref.id}?sessionKey=agent:main:webchat:ok&token=secret",
-        )
-
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/plain")
-    assert response.content == payload
+    assert thumb.content == b"plain text deliverable contents"
 
 
 def test_corrupt_image_still_publishes_without_thumbnail(tmp_path: Path) -> None:

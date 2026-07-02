@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from opensquilla.session.models import AgentTaskRecord, AgentTaskStatus
+from opensquilla.session.models import AgentTaskRecord, AgentTaskStatus, SessionNode, SessionStatus
 from opensquilla.session.storage import SessionStorage
 
 
@@ -138,3 +138,56 @@ async def test_list_agent_tasks_for_sessions_groups_visible_session_tasks(tmp_pa
     assert set(grouped) == {"agent:main:webchat:one", "agent:main:webchat:two"}
     assert [row.task_id for row in grouped["agent:main:webchat:one"]] == ["one-new"]
     assert [row.task_id for row in grouped["agent:main:webchat:two"]] == ["two-task"]
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_keeps_active_task_session_before_limit(tmp_path) -> None:
+    storage = SessionStorage(str(tmp_path / "sessions.db"))
+    await storage.connect()
+    old_key = "agent:main:webchat:old-running"
+    try:
+        await storage.upsert_session(
+            SessionNode(
+                session_key=old_key,
+                session_id="old-session",
+                agent_id="main",
+                created_at=1,
+                updated_at=1,
+                started_at=1,
+                status=SessionStatus.RUNNING,
+            )
+        )
+        for index in range(200):
+            await storage.upsert_session(
+                SessionNode(
+                    session_key=f"agent:main:webchat:new-{index:03d}",
+                    session_id=f"new-session-{index:03d}",
+                    agent_id="main",
+                    created_at=1000 + index,
+                    updated_at=1000 + index,
+                    started_at=1000 + index,
+                    ended_at=2000 + index,
+                    status=SessionStatus.DONE,
+                )
+            )
+        await storage.create_agent_task(
+            AgentTaskRecord(
+                task_id="task-running",
+                session_key=old_key,
+                source_kind="webui",
+                queue_mode="followup",
+                run_kind="web_turn",
+                status=AgentTaskStatus.RUNNING,
+                created_at=9999,
+                updated_at=9999,
+                started_at=9999,
+            )
+        )
+
+        rows = await storage.list_sessions(limit=200)
+    finally:
+        await storage.close()
+
+    keys = [row.session_key for row in rows]
+    assert old_key in keys
+    assert keys[0] == old_key

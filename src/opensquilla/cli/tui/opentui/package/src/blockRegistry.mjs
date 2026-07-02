@@ -9,7 +9,7 @@ import { createErrorBlock } from "./blocks/errorBlock.mjs";
 const FACTORIES = {
   prompt: createPromptBlock,
   // intermediate narration the model speaks between tool calls (a result the
-  // user should see) — verbatim purple ✱ text
+  // user should see) — verbatim purple ✻ text
   thinking: createThinkingBlock,
   // the model's internal extended-thinking PROCESS — collapsed to a single
   // "Thinking…" marker, text never shown

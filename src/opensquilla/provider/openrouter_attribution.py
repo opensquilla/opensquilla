@@ -6,7 +6,6 @@ from urllib.parse import urlparse
 
 OPENROUTER_APP_REFERER = "https://opensquilla.ai"
 OPENROUTER_APP_TITLE = "OpenSquilla"
-OPENROUTER_APP_CATEGORIES = "cli-agent,personal-agent"
 
 
 def is_openrouter_url(url: str | None) -> bool:
@@ -25,8 +24,10 @@ def openrouter_app_headers(url: str | None) -> dict[str, str]:
     """Return attribution headers only for real OpenRouter API URLs."""
     if not is_openrouter_url(url):
         return {}
+    # OpenRouter's documented app-attribution headers are HTTP-Referer and
+    # X-Title; the previously sent X-OpenRouter-* variants were silently
+    # ignored upstream, so attribution never actually applied.
     return {
         "HTTP-Referer": OPENROUTER_APP_REFERER,
-        "X-OpenRouter-Title": OPENROUTER_APP_TITLE,
-        "X-OpenRouter-Categories": OPENROUTER_APP_CATEGORIES,
+        "X-Title": OPENROUTER_APP_TITLE,
     }

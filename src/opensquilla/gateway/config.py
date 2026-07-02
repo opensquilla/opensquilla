@@ -188,7 +188,7 @@ class PermissionsConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    default_mode: Literal["off", "on", "bypass", "full"] = "bypass"
+    default_mode: Literal["off", "on", "bypass", "full"] = "off"
 
 
 class TaskRuntimeConfig(BaseModel):
@@ -1000,6 +1000,11 @@ class SquillaRouterConfig(BaseSettings):
     strategy: str = "v4_phase3"
     tier_profile: str | None = None
     visual_mode: str = "real_candidates"
+    # Preview: execute router tiers whose provider differs from llm.provider,
+    # resolving credentials from [llm_profiles.<id>] or the provider's env
+    # key. Off: such tiers run on the active provider (with a logged
+    # mismatch warning), preserving the historical behavior.
+    cross_provider_tiers: bool = False
     tiers: dict = Field(default_factory=_default_tiers)
     default_tier: str = DEFAULT_TEXT_TIER
     confidence_threshold: float = 0.5
@@ -1658,6 +1663,24 @@ class TlsConfig(BaseSettings):
     certfile: str = ""
 
 
+class LlmProviderProfile(BaseSettings):
+    """Named credential profile for a non-primary LLM provider.
+
+    Written as ``[llm_profiles.<provider_id>]`` in the config TOML and
+    referenced by router tiers through their existing ``provider`` field.
+    Resolution order per field matches the primary provider: explicit value,
+    then ``api_key_env`` (or the registry env key), then the registry
+    default base URL.
+    """
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    api_key: str = ""
+    api_key_env: str = ""
+    base_url: str = ""
+    proxy: str = ""
+
+
 class GatewayConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="OPENSQUILLA_GATEWAY_",
@@ -1699,6 +1722,9 @@ class GatewayConfig(BaseSettings):
     task_runtime: TaskRuntimeConfig = Field(default_factory=TaskRuntimeConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     llm: LlmProviderConfig = Field(default_factory=LlmProviderConfig)
+    # Credential profiles for non-primary providers, keyed by registry
+    # provider id; consumed by cross-provider router tiers.
+    llm_profiles: dict[str, LlmProviderProfile] = Field(default_factory=dict)
     prompt_cache: PromptCacheConfig = Field(default_factory=PromptCacheConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     prompt: PromptConfig = Field(default_factory=PromptConfig)

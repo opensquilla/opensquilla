@@ -82,6 +82,36 @@ def test_desktop_activation_retry_and_second_instance_share_resume_helper() -> N
     assert "void openOrResumeDesktopApp()" in retry
 
 
+def test_desktop_onboarding_is_owned_modal_child_of_main_window() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    onboarding = _section(
+        main_ts,
+        "async function runOnboarding",
+        "async function pathExists",
+    )
+
+    assert "const parentWindow = currentMainWindow()" in onboarding
+    assert "parent: parentWindow ?? undefined" in onboarding
+    assert "modal: Boolean(parentWindow)" in onboarding
+    assert "onboardingWindow?.focus()" in onboarding
+
+
+def test_desktop_focus_prefers_open_onboarding_window() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    focus = _section(
+        main_ts,
+        "function focusMainWindow",
+        "function installEditingContextMenu",
+    )
+
+    assert "function currentOnboardingWindow(): BrowserWindow | null" in main_ts
+    assert "function focusOnboardingWindow(): boolean" in main_ts
+    assert "if (focusOnboardingWindow()) return true" in focus
+    onboarding_index = focus.index("if (focusOnboardingWindow()) return true")
+    main_index = focus.index("if (!mainWindow || mainWindow.isDestroyed()) return false")
+    assert onboarding_index < main_index
+
+
 def test_start_gateway_reuses_healthy_gateway_before_spawn() -> None:
     main_ts = _read("desktop/electron/src/main.ts")
     reuse = _section(
@@ -137,6 +167,8 @@ def test_package_verifier_hard_fails_stale_runtime_and_boot_contract() -> None:
         "gatewayStartPromise",
         "openOrResumeDesktopApp",
         "create the desktop window before gateway startup",
+        "first-run onboarding an owned modal child window",
+        "does not prefer the onboarding window when focusing",
         "process.exit(1)",
     ]:
         assert expected in verifier
@@ -183,7 +215,7 @@ def test_windows_release_workflow_fails_fast_after_gateway_build_failure() -> No
     workflow = _read(".github/workflows/wheelhouse-release.yml")
     windows_build = _section(
         workflow,
-        "      - name: Build Windows installer",
+        "      - name: Build unsigned Windows installer",
         "      - name: Verify Electron package",
     )
 

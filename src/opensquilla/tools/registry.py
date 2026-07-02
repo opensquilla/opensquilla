@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import copy
 import functools
+import inspect
 from collections.abc import Mapping
 from dataclasses import replace
-from typing import Any
+from pathlib import Path
+from typing import Any, cast
 
 import structlog
 
 from opensquilla.provider.types import ToolDefinition, ToolInputSchema
+from opensquilla.sandbox.operation_runtime import SandboxToolDescriptor
 from opensquilla.tools import visibility as visibility_policy
 from opensquilla.tools.policy_runtime import ToolSurfaceCapabilities
 from opensquilla.tools.types import (
@@ -350,6 +353,7 @@ def tool(
     execution_timeout_argument: str | None = None,
     execution_timeout_padding: float = 0.0,
     result_budget_class: str | None = None,
+    sandbox: SandboxToolDescriptor | None = None,
     registry: ToolRegistry | None = None,
 ) -> Any:
     """Decorator to register an async function as a tool.
@@ -372,13 +376,55 @@ def tool(
             execution_timeout_argument=execution_timeout_argument,
             execution_timeout_padding=execution_timeout_padding,
             result_budget_class=result_budget_class,
+            sandbox=sandbox or SandboxToolDescriptor.custom(kind=name),
         )
         target = registry if registry is not None else _default_registry
         target.register(spec, fn)
+        sig = inspect.signature(fn)
 
         @functools.wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> str:
-            return await fn(*args, **kwargs)
+            if not spec.sandbox.enforce:
+                return await fn(*args, **kwargs)
+
+            from opensquilla.sandbox.operation_runtime import (
+                prepare_tool_operation_guard,
+                record_tool_operation_success,
+                run_tool_handler_with_operation_guard,
+            )
+            from opensquilla.tools.types import current_tool_context
+
+            try:
+                bound = sig.bind_partial(*args, **kwargs)
+                bound.apply_defaults()
+                arguments = dict(bound.arguments)
+            except TypeError:
+                arguments = dict(kwargs)
+            ctx = current_tool_context.get()
+            workspace = (
+                Path(ctx.workspace_dir)
+                if ctx is not None and ctx.workspace_dir
+                else None
+            )
+            run_mode = getattr(ctx, "run_mode", None)
+            guard = await prepare_tool_operation_guard(
+                spec.sandbox,
+                tool_name=name,
+                arguments=arguments,
+                workspace=workspace,
+                run_mode=run_mode if isinstance(run_mode, str) else None,
+            )
+            result = await run_tool_handler_with_operation_guard(fn, arguments, guard)
+            if guard.denial_payload is None and guard.record_payload:
+                await record_tool_operation_success(guard, result)
+            return cast(str, result)
+
+        if spec.sandbox.enforce:
+            @functools.wraps(fn)
+            async def _descriptor_unwrap_compat(*args: Any, **kwargs: Any) -> str:
+                return await fn(*args, **kwargs)
+
+            wrapper.__wrapped__ = _descriptor_unwrap_compat  # type: ignore[attr-defined]
 
         return wrapper
 

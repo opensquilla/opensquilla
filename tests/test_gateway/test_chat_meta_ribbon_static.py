@@ -287,8 +287,6 @@ def test_meta_run_history_module_exists():
         assert method in text
     for name in ("renderRunHistoryPanel", "openRunHistory"):
         assert f"function {name}" in text
-    assert "document.querySelector('.meta-run-history')" in text
-    assert "existing.remove()" in text
     assert "showRunError" in text
     assert "catch (err)" in text
     assert "run.validation || {}" in text

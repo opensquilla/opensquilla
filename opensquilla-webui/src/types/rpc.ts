@@ -54,6 +54,8 @@ export interface RawSessionItem {
   groupLabel?: string
   updatedAt?: number | string
   updated_at?: number | string
+  lastActivityAt?: number | string
+  last_activity_at?: number | string
   messageCount?: number
   message_count?: number
   entry_count?: number
@@ -237,7 +239,7 @@ export interface ChatSendAttachmentPayload {
 export interface ChatSendParams {
   message: string
   sessionKey: string
-  _source?: { elevated?: string }
+  _source?: { elevated?: string; runMode?: 'standard' | 'trusted' | 'full' }
   intent?: string
   displayText?: string
   attachments?: ChatSendAttachmentPayload[]

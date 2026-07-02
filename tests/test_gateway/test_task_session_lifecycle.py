@@ -152,7 +152,9 @@ async def test_task_timeout_terminalizes_running_session_and_broadcasts_change()
     assert session.status == SessionStatus.TIMEOUT
     assert [event_name for _, event_name, _ in events] == [
         "task.queued",
+        "sessions.changed",
         "task.running",
+        "sessions.changed",
         "task.timeout",
         "sessions.changed",
     ]
@@ -168,10 +170,32 @@ async def test_task_timeout_terminalizes_running_session_and_broadcasts_change()
     )
     assert events[1] == (
         session.session_key,
+        "sessions.changed",
+        {
+            "schema_version": 1,
+            "key": session.session_key,
+            "reason": "task_queued",
+            "run_status": "queued",
+            "active_task": {"task_id": handle.task_id, "status": "queued"},
+        },
+    )
+    assert events[2] == (
+        session.session_key,
         "task.running",
         {"task_id": handle.task_id, "session_key": session.session_key},
     )
-    assert events[2] == (
+    assert events[3] == (
+        session.session_key,
+        "sessions.changed",
+        {
+            "schema_version": 1,
+            "key": session.session_key,
+            "reason": "task_running",
+            "run_status": "running",
+            "active_task": {"task_id": handle.task_id, "status": "running"},
+        },
+    )
+    assert events[4] == (
         session.session_key,
         "task.timeout",
         {
@@ -199,9 +223,11 @@ async def test_task_timeout_terminalizes_running_session_and_broadcasts_change()
         },
     )
     assert manager.finish_calls == []
-    assert manager.update_calls[0][1]["status"] == SessionStatus.TIMEOUT
-    assert manager.update_calls[0][1]["ended_at"] > 0
-    assert manager.update_calls[0][1]["runtime_ms"] >= 0
+    assert manager.update_calls[0] == (session.session_key, {})
+    assert manager.update_calls[1] == (session.session_key, {})
+    assert manager.update_calls[2][1]["status"] == SessionStatus.TIMEOUT
+    assert manager.update_calls[2][1]["ended_at"] > 0
+    assert manager.update_calls[2][1]["runtime_ms"] >= 0
 
 
 def test_task_terminal_status_mapping_matches_session_lifecycle() -> None:
@@ -266,6 +292,86 @@ async def test_boot_lifecycle_listener_skips_subagent_tasks() -> None:
 
 
 @pytest.mark.asyncio
+async def test_task_running_broadcasts_change_for_already_running_session() -> None:
+    session = _make_session(status=SessionStatus.RUNNING)
+    manager = _SessionManager(session)
+    events: list[tuple[str, str, dict[str, Any]]] = []
+
+    async def _emit(session_key: str, event_name: str, payload: dict[str, Any]) -> None:
+        events.append((session_key, event_name, payload))
+
+    listener = _make_task_session_lifecycle_listener(
+        session_manager=manager,
+        event_emitter=_emit,
+    )
+
+    await listener(
+        TaskLifecycleEvent(
+            phase="running",
+            session_key=session.session_key,
+            task_id="task-active",
+            task_status=AgentTaskStatus.RUNNING,
+            run_kind="default",
+        )
+    )
+
+    assert manager.update_calls == [(session.session_key, {})]
+    assert events == [
+        (
+            session.session_key,
+            "sessions.changed",
+            {
+                "schema_version": 1,
+                "key": session.session_key,
+                "reason": "task_running",
+                "run_status": "running",
+                "active_task": {"task_id": "task-active", "status": "running"},
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_task_queued_broadcasts_change_for_waiting_session() -> None:
+    session = _make_session(status=SessionStatus.RUNNING)
+    manager = _SessionManager(session)
+    events: list[tuple[str, str, dict[str, Any]]] = []
+
+    async def _emit(session_key: str, event_name: str, payload: dict[str, Any]) -> None:
+        events.append((session_key, event_name, payload))
+
+    listener = _make_task_session_lifecycle_listener(
+        session_manager=manager,
+        event_emitter=_emit,
+    )
+
+    await listener(
+        TaskLifecycleEvent(
+            phase="queued",
+            session_key=session.session_key,
+            task_id="task-waiting",
+            task_status=AgentTaskStatus.QUEUED,
+            run_kind="default",
+        )
+    )
+
+    assert manager.update_calls == [(session.session_key, {})]
+    assert events == [
+        (
+            session.session_key,
+            "sessions.changed",
+            {
+                "schema_version": 1,
+                "key": session.session_key,
+                "reason": "task_queued",
+                "run_status": "queued",
+                "active_task": {"task_id": "task-waiting", "status": "queued"},
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_task_running_reactivates_terminal_session_before_next_turn() -> None:
     session = _make_session(status=SessionStatus.TIMEOUT)
     session.ended_at = 2000
@@ -284,6 +390,7 @@ async def test_task_running_reactivates_terminal_session_before_next_turn() -> N
     assert session.status == SessionStatus.DONE
     assert [event_name for _, event_name, _ in events] == [
         "task.queued",
+        "sessions.changed",
         "task.running",
         "sessions.changed",
         "task.succeeded",
@@ -301,10 +408,21 @@ async def test_task_running_reactivates_terminal_session_before_next_turn() -> N
     )
     assert events[1] == (
         session.session_key,
+        "sessions.changed",
+        {
+            "schema_version": 1,
+            "key": session.session_key,
+            "reason": "task_queued",
+            "run_status": "queued",
+            "active_task": {"task_id": handle.task_id, "status": "queued"},
+        },
+    )
+    assert events[2] == (
+        session.session_key,
         "task.running",
         {"task_id": handle.task_id, "session_key": session.session_key},
     )
-    assert events[2] == (
+    assert events[3] == (
         session.session_key,
         "sessions.changed",
         {
@@ -331,7 +449,7 @@ async def test_task_running_reactivates_terminal_session_before_next_turn() -> N
             },
         },
     )
-    assert events[3] == (
+    assert events[4] == (
         session.session_key,
         "task.succeeded",
         {
@@ -341,8 +459,9 @@ async def test_task_running_reactivates_terminal_session_before_next_turn() -> N
         },
     )
     assert manager.finish_calls == []
-    assert manager.update_calls[0][1]["status"] == SessionStatus.RUNNING
-    assert manager.update_calls[0][1]["started_at"] > 0
+    assert manager.update_calls[0] == (session.session_key, {})
+    assert manager.update_calls[1][1]["status"] == SessionStatus.RUNNING
+    assert manager.update_calls[1][1]["started_at"] > 0
     assert manager.update_calls[-1][1]["status"] == SessionStatus.DONE
 
 

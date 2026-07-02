@@ -16,6 +16,9 @@ export function createWebPlatform(): Platform {
     async getOsLocale() {
       return undefined
     },
+    async nativeAutoUpdateEnabled() {
+      return false
+    },
     gateway: {
       async getStatus() {
         return { ...unavailableGateway }

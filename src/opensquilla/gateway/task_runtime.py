@@ -479,6 +479,15 @@ class TaskRuntime:
                 "queue_position": _queue_position,
             },
         )
+        await self._notify_task_lifecycle(
+            TaskLifecycleEvent(
+                phase="queued",
+                session_key=envelope.session_key,
+                task_id=record.task_id,
+                task_status=AgentTaskStatus.QUEUED,
+                run_kind=run_kind,
+            )
+        )
         return TaskHandle(
             task_id=record.task_id,
             session_key=envelope.session_key,

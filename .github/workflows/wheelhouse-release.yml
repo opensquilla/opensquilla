@@ -320,7 +320,7 @@ jobs:
             dist/desktop-electron/latest-mac.yml
 
   build-desktop-windows:
-    name: Build Windows Electron installer
+    name: Build unsigned Windows Electron installer
     runs-on: windows-latest
     timeout-minutes: 120
     steps:
@@ -362,7 +362,7 @@ jobs:
         working-directory: desktop/electron
         run: npm ci
 
-      - name: Build Windows installer
+      - name: Build unsigned Windows installer
         working-directory: desktop/electron
         shell: bash
         env:

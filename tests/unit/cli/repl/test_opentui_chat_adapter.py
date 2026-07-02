@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -197,26 +196,16 @@ async def test_opentui_chat_runtime_uses_footer_native_echo_hooks(
     assert "running queued input" in joined_writes
 
 
-@pytest.mark.asyncio
-async def test_opentui_notice_writes_to_active_output_handle() -> None:
-    from opensquilla.cli.tui.backend.output_binding import TuiOutputBinding
+def test_opentui_notice_renders_through_captured_console() -> None:
+    from opensquilla.cli.tui.opentui.notice_capture import capture_stdout_as_notices
     from opensquilla.cli.tui.opentui.runtime import opentui_notice
 
-    writes: list[str] = []
+    lines: list[str] = []
+    # Runtime notices must render as clean styled host notices, never as raw Rich
+    # markup. With the capture installed, console.print is forwarded line-by-line.
+    with capture_stdout_as_notices(lines.append):
+        opentui_notice({}, "[yellow]Hello[/yellow]")
 
-    class Output:
-        approval_surface = Surface.CLI_GATEWAY
-
-        async def write_through(self, payload: str) -> None:
-            writes.append(payload)
-
-        def stream_output(self):
-            raise AssertionError("stream_output should not be called")
-
-    scope: dict[str, Any] = {}
-    TuiOutputBinding(scope).expose(Output())
-
-    opentui_notice(scope, "[yellow]Hello[/yellow]")
-    await asyncio.sleep(0)
-
-    assert writes == ["[yellow]Hello[/yellow]"]
+    joined = "".join(lines)
+    assert "Hello" in joined
+    assert "[yellow]" not in joined  # markup must be rendered out, not leaked verbatim

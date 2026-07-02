@@ -539,7 +539,10 @@ memory_app.command("flush-session")(memory_flush_session_cmd)
 
 # ── gateway sub-app ───────────────────────────────────────────────────────────
 
-gateway_app = typer.Typer(help="Gateway server commands.")
+gateway_app = typer.Typer(
+    help="Gateway server commands.",
+    pretty_exceptions_enable=False,
+)
 app.add_typer(gateway_app, name="gateway")
 
 
@@ -964,6 +967,68 @@ def reset_cmd(
         typer.echo("  Flush mode: skipped (empty transcript)")
     else:
         typer.echo(f"  Flush mode: {mode}")
+
+@app.command("version")
+def version_cmd(
+    check: bool = typer.Option(
+        False, "--check", help="Check GitHub for a newer published release."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Show the installed OpenSquilla version, optionally checking for updates.
+
+    ``--check`` performs one network call to the public GitHub Releases API. It
+    never downloads or installs anything. A failed check is reported but does not
+    return a non-zero exit code.
+    """
+    from opensquilla import __version__
+
+    if not check:
+        if json_output:
+            from opensquilla.cli.output import print_json
+
+            print_json({"version": __version__})
+        else:
+            typer.echo(__version__)
+        return
+
+    from opensquilla.observability.update_check import refresh_update_check
+
+    info = refresh_update_check(version=__version__, force=True)
+
+    if json_output:
+        from opensquilla.cli.output import print_json
+
+        print_json(
+            {
+                "current": info.current_version,
+                "latest": info.latest_version,
+                "updateAvailable": info.update_available,
+                "releaseUrl": info.release_url,
+                "error": info.error,
+            }
+        )
+        return
+
+    typer.echo(f"OpenSquilla {info.current_version}")
+    if info.error:
+        typer.secho(
+            f"Could not check for updates: {info.error}",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+        return
+    if info.update_available and info.latest_version:
+        typer.secho(
+            f"A newer version is available: {info.latest_version}",
+            fg=typer.colors.GREEN,
+        )
+        typer.echo(f"  Release notes: {info.release_url}")
+    elif info.latest_version:
+        typer.secho("You're on the latest version.", fg=typer.colors.GREEN)
+    else:
+        typer.echo("Latest version is unknown.")
+
 
 if __name__ == "__main__":
     app()

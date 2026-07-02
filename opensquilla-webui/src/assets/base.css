@@ -809,7 +809,6 @@ pre {
 }
 
 .sidebar-refresh-btn {
-  margin-left: auto;
   width: 20px;
   height: 20px;
   display: flex;
@@ -893,22 +892,122 @@ pre {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  --sidebar-selection-bg: color-mix(in srgb, var(--sidebar-text-soft) 8%, transparent);
+  --sidebar-selection-bg-hover: color-mix(in srgb, var(--sidebar-text-soft) 12%, transparent);
+  --sidebar-selection-rail: color-mix(in srgb, var(--accent) 72%, transparent);
 }
 
 .sidebar-recents-header {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  padding: var(--sp-2) 14px 2px;
+  min-height: 28px;
+  padding: 4px 14px 2px;
   flex-shrink: 0;
 }
 
 .sidebar-recents-eyebrow {
+  flex: 1;
+  min-width: 0;
   font-size: var(--fs-xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--sidebar-text-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-history.is-selecting .sidebar-recents-eyebrow {
+  color: var(--sidebar-text);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.sidebar-bulk-delete-btn {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--danger) 26%, var(--sidebar-border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--danger) 7%, transparent);
+  color: var(--danger);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background var(--dur-fast), border-color var(--dur-fast), color var(--dur-fast);
+}
+
+.sidebar-bulk-delete-btn:hover {
+  border-color: color-mix(in srgb, var(--danger) 62%, var(--sidebar-border));
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.sidebar-select-all-btn {
+  min-width: 34px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 7px;
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-sm);
+  background: var(--sidebar-control-bg);
+  color: var(--sidebar-text);
+  font-family: var(--font-sans);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--dur-fast), border-color var(--dur-fast), color var(--dur-fast);
+}
+
+.sidebar-select-all-btn:hover {
+  background: var(--sidebar-control-hover);
+  color: var(--sidebar-text-strong);
+}
+
+.sidebar-select-all-btn:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.sidebar-bulk-mode-btn {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--sidebar-text-soft);
+  cursor: pointer;
+  transition: background var(--dur-fast), border-color var(--dur-fast), color var(--dur-fast);
+}
+
+.sidebar-bulk-mode-btn:hover {
+  background: var(--sidebar-item-hover);
+  color: var(--sidebar-text-strong);
+}
+
+.sidebar-bulk-mode-btn:focus {
+  outline: none;
+}
+
+.sidebar-bulk-mode-btn:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 42%, transparent);
+}
+
+.sidebar-bulk-mode-btn.is-active {
+  border-color: var(--sidebar-border);
+  background: var(--sidebar-control-bg);
+  color: var(--sidebar-text-strong);
 }
 
 .sidebar-history-list {
@@ -1039,6 +1138,57 @@ pre {
   align-items: center;
   gap: 2px;
   margin: 1px var(--sp-1);
+}
+
+.sidebar-history-row.is-selected .sidebar-history-item {
+  background: var(--sidebar-selection-bg);
+  color: var(--sidebar-text-strong);
+  box-shadow: inset 2px 0 0 var(--sidebar-selection-rail);
+}
+
+.sidebar-history-row.is-selected .sidebar-history-item:hover {
+  background: var(--sidebar-selection-bg-hover);
+}
+
+.sidebar-selection-box {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid color-mix(in srgb, var(--sidebar-text-soft) 74%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--sidebar-bg) 72%, transparent);
+  color: transparent;
+  transition: background var(--dur-fast), border-color var(--dur-fast), color var(--dur-fast);
+}
+
+.sidebar-history-item:hover .sidebar-selection-box {
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--sidebar-text-soft));
+}
+
+.sidebar-selection-box.is-checked {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.sidebar-history-row.is-selected .sidebar-selection-box.is-checked {
+  color: var(--accent-foreground);
+}
+
+.sidebar-history.is-selecting .sidebar-history-item {
+  color: var(--sidebar-text-strong);
+}
+
+.sidebar-history.is-selecting .sidebar-history-title {
+  font-weight: 500;
+}
+
+.sidebar-history.is-selecting .sidebar-history-run,
+.sidebar-history.is-selecting .sidebar-history-gap {
+  display: none;
 }
 
 .sidebar-history-row .sidebar-history-item {

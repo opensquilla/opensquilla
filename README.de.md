@@ -69,7 +69,7 @@ Python-Wheel-Installationen verwenden versionsbehaftete Wheel-Dateinamen,
 weil die Installationsprogramme die im Wheel-Dateinamen eingebettete
 Version prüfen.
 
-Für den Desktop-Einsatz von 0.4.1 bevorzugst du die signierten
+Für den Desktop-Einsatz von 0.4.1 bevorzugst du die gepackten
 Desktop-Installationsprogramme aus dem GitHub-Release:
 `OpenSquilla-0.4.1-mac-arm64.dmg` unter macOS und
 `OpenSquilla-0.4.1-win-x64.exe` unter Windows. Das Windows-Portable-ZIP
@@ -78,7 +78,7 @@ weiterhin verfügbar.
 
 | Weg | Zielgruppe | Wann verwenden |
 | --- | --- | --- |
-| [Desktop-Installationsprogramme](#desktop-installers) **(empfohlen für Desktop)** | macOS- und Windows-Nutzer | Signierte, gepackte Desktop-App |
+| [Desktop-Installationsprogramme](#desktop-installers) **(empfohlen für Desktop)** | macOS- und Windows-Nutzer | Gepackte Desktop-App |
 | [Windows Portable](#windows-portable-no-python) | Windows-Nutzer | Kompatibilität; keine Python-Toolchain; Start aus einem ZIP |
 | [Schnelle Terminal-Installation](#quick-terminal-install) **(empfohlen)** | Endnutzer auf jedem Betriebssystem | Release-Wheel aus dem Terminal |
 | [Aus Quellcode installieren](#install-from-source) | Nutzer, die `main` verfolgen | Aus einem Checkout ausführen, nicht bearbeiten |
@@ -110,7 +110,7 @@ installiert ist.
 
 Bei Terminal-Installationen unter macOS benötigt die LightGBM-Runtime
 von SquillaRouter möglicherweise zusätzlich die OpenMP-Systembibliothek.
-Die signierte Desktop-App bringt die benötigte Runtime mit, aber die
+Die Desktop-App bringt die benötigte Runtime mit, aber die
 **schnelle Terminal-Installation** installiert keine
 Homebrew-/Systembibliotheken. Falls beim Start `Library not loaded:
 @rpath/libomp.dylib` protokolliert wird, führe `brew install libomp` aus
@@ -151,7 +151,7 @@ CPython-Runtime mit, sodass keine separate Python-Installation nötig ist.
    <http://127.0.0.1:18791/control/>.
 
 > [!NOTE]
-> Vorschau-Builds sind unsigniert; der Start als Administrator ist der
+> Windows-Builds sind derzeit unsigniert; der Start als Administrator ist der
 > unterstützte Weg. Erscheint SmartScreen, wähle **Weitere Informationen**
 > → **Trotzdem ausführen**. Blockiert Smart App Control oder eine
 > Unternehmensrichtlinie die unsignierte App, nutze stattdessen die
@@ -768,7 +768,7 @@ mit direktem Single-Model-Routing weiter, aber die gebündelte
 `SquillaRouter`-Runtime bleibt inaktiv, bis die macOS-OpenMP-Runtime
 installiert ist.
 
-Die signierte Desktop-App bringt die benötigte native Runtime mit. Wenn
+Die Desktop-App bringt die benötigte native Runtime mit. Wenn
 du die schnelle Terminal-Installation oder eine Quellcode-Installation
 aus einer Shell verwendet hast, installiere `libomp` mit Homebrew und
 starte das Gateway neu:

@@ -7,7 +7,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from opensquilla.cli.main import app
-from opensquilla.onboarding.config_store import load_config
+from opensquilla.onboarding.config_store import load_config, persist_config
 
 runner = CliRunner()
 
@@ -16,7 +16,7 @@ def _invoke(config_path: Path, *args: str):
     return runner.invoke(app, ["sandbox", *args, "--config", str(config_path)])
 
 
-def test_sandbox_status_preserves_default_bypass_posture(tmp_path: Path) -> None:
+def test_sandbox_status_reports_default_full_host_access(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
 
     result = runner.invoke(
@@ -26,53 +26,103 @@ def test_sandbox_status_preserves_default_bypass_posture(tmp_path: Path) -> None
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert payload["posture"] == "bypass"
+    assert payload["run_mode"] == "full"
+    assert payload["run_mode_label"] == "Full Host Access"
+    assert payload["execution_target"] == "host"
+    assert payload["posture"] == "full"
     assert payload["sandbox"]["sandbox"] is False
     assert payload["sandbox"]["security_grading"] is False
-    assert payload["permissions"]["default_mode"] == "bypass"
+    assert payload["permissions"]["default_mode"] == "full"
     assert payload["restart_required"] is False
 
 
-def test_sandbox_bypass_persists_global_bypass_posture(tmp_path: Path) -> None:
+def test_sandbox_trust_persists_trusted_run_mode(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
 
-    result = _invoke(config_path, "bypass")
+    result = _invoke(config_path, "trust")
 
     assert result.exit_code == 0, result.output
     cfg = load_config(config_path)
-    assert cfg.sandbox.sandbox is False
-    assert cfg.sandbox.security_grading is False
-    assert cfg.permissions.default_mode == "bypass"
+    assert cfg.sandbox.run_mode == "trusted"
+    assert cfg.sandbox.sandbox is True
+    assert cfg.sandbox.security_grading is True
+    assert cfg.sandbox.network_default == "proxy_allowlist"
+    assert cfg.permissions.default_mode == "off"
     data = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    assert data["sandbox"]["sandbox"] is False
-    assert data["sandbox"]["security_grading"] is False
-    assert data["permissions"]["default_mode"] == "bypass"
+    assert data["sandbox"]["run_mode"] == "trusted"
+    assert data["sandbox"]["sandbox"] is True
+    assert data["sandbox"]["security_grading"] is True
+    assert data["sandbox"]["network_default"] == "proxy_allowlist"
+    assert data["permissions"]["default_mode"] == "off"
     assert "restart" in result.output.lower()
+
+
+def test_sandbox_trust_repairs_legacy_disabled_network_default(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    full = _invoke(config_path, "full")
+    assert full.exit_code == 0, full.output
+    cfg = load_config(config_path)
+    cfg.sandbox.network_default = "none"
+    persist_config(cfg, path=config_path)
+
+    result = _invoke(config_path, "trust")
+
+    assert result.exit_code == 0, result.output
+    cfg = load_config(config_path)
+    assert cfg.sandbox.run_mode == "trusted"
+    assert cfg.sandbox.network_default == "proxy_allowlist"
+
+
+def test_sandbox_bypass_fails_without_mutating_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    before = _invoke(config_path, "on")
+    assert before.exit_code == 0, before.output
+
+    result = _invoke(config_path, "bypass")
+
+    assert result.exit_code != 0
+    assert "removed" in result.output.lower()
+    assert "sandbox trust" in result.output
+    cfg = load_config(config_path)
+    assert cfg.sandbox.run_mode == "trusted"
+    assert cfg.sandbox.sandbox is True
+    assert cfg.sandbox.security_grading is True
+    assert cfg.permissions.default_mode == "off"
 
 
 def test_sandbox_full_and_on_are_reversible(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
 
     full = _invoke(config_path, "full")
-    on = _invoke(config_path, "on")
-
     assert full.exit_code == 0, full.output
+    cfg = load_config(config_path)
+    assert cfg.sandbox.run_mode == "full"
+    assert cfg.sandbox.sandbox is False
+    assert cfg.sandbox.security_grading is False
+    assert cfg.sandbox.network_default == "none"
+    assert cfg.permissions.default_mode == "full"
+
+    on = _invoke(config_path, "on")
     assert on.exit_code == 0, on.output
     cfg = load_config(config_path)
+    assert cfg.sandbox.run_mode == "trusted"
     assert cfg.sandbox.sandbox is True
     assert cfg.sandbox.security_grading is True
+    assert cfg.sandbox.network_default == "proxy_allowlist"
     assert cfg.permissions.default_mode == "off"
 
 
-def test_sandbox_reset_restores_default_bypass_posture(tmp_path: Path) -> None:
+def test_sandbox_reset_restores_full_host_access(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
 
-    on = _invoke(config_path, "on")
+    full = _invoke(config_path, "full")
     reset = _invoke(config_path, "reset")
 
-    assert on.exit_code == 0, on.output
+    assert full.exit_code == 0, full.output
     assert reset.exit_code == 0, reset.output
     cfg = load_config(config_path)
+    assert cfg.sandbox.run_mode == "full"
     assert cfg.sandbox.sandbox is False
     assert cfg.sandbox.security_grading is False
-    assert cfg.permissions.default_mode == "bypass"
+    assert cfg.sandbox.network_default == "none"
+    assert cfg.permissions.default_mode == "full"

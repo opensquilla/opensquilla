@@ -28,12 +28,12 @@ class FakeNode {
   }
 }
 
-function makeHarness({ terminalWidth = 100 } = {}) {
+function makeHarness({ terminalWidth = 100, terminalHeight = 24 } = {}) {
   const keypressHandlers = [];
   const cursorPositions = [];
   const renderer = {
     terminalWidth,
-    terminalHeight: 24,
+    terminalHeight,
     keyInput: {
       on(event, handler) {
         if (event === "keypress") keypressHandlers.push(handler);
@@ -174,22 +174,40 @@ test("completion menu clips long rows to the menu body width", () => {
   );
 });
 
-test("composer anchors the terminal cursor at the visual caret for IME popovers", () => {
+test("composer clamps its box to a short terminal so the footer never overflows", () => {
+  // main.mjs clamps inputBox.height with clampFooterHeight on short panes; the
+  // composer must lay out against the SAME clamped height, not the fixed 6, or a
+  // 3–5 row terminal overflows. composer height = clampFooterHeight(6, H) - 1.
+  const tall = makeHarness({ terminalHeight: 24 });
+  assert.equal(findDeep(tall.inputBox, "composer-box").options.height, 5);
+
+  const short = makeHarness({ terminalHeight: 4 });
+  const shortHeight = findDeep(short.inputBox, "composer-box").options.height;
+  assert.equal(shortHeight, 3); // clamp(6,4)=4 → 4-1, not the unclamped 5
+  assert.ok(shortHeight < 5);
+});
+
+test("composer shows the terminal cursor at the visual caret for IME popovers", () => {
+  // visible MUST be true: macOS IME anchors the candidate popover to the VISIBLE
+  // hardware cursor. With visible:false OpenTUI keeps the cursor hidden at home
+  // and the popover drifts to a corner. x advances by display cells (CJK = 2).
+  // Coordinates are 1-based (0-based cell + 1) to match OpenTUI's native cursor
+  // convention (TextEditor.renderCursor passes screenX/Y + visual + 1).
   const { press, lastCursor } = makeHarness();
 
-  assert.deepEqual(lastCursor(), { x: 3, y: 19, visible: false });
+  assert.deepEqual(lastCursor(), { x: 4, y: 21, visible: true });
 
   press({ name: "h", sequence: "h" });
   press({ name: "i", sequence: "i" });
-  assert.deepEqual(lastCursor(), { x: 5, y: 19, visible: false });
+  assert.deepEqual(lastCursor(), { x: 6, y: 21, visible: true });
 
   press({ name: "backspace" });
   press({ name: "backspace" });
   press({ name: "你", sequence: "你" });
   press({ name: "好", sequence: "好" });
-  assert.deepEqual(lastCursor(), { x: 7, y: 19, visible: false });
+  assert.deepEqual(lastCursor(), { x: 8, y: 21, visible: true });
 
   press({ name: "return", option: true });
   press({ name: "a", sequence: "a" });
-  assert.deepEqual(lastCursor(), { x: 4, y: 20, visible: false });
+  assert.deepEqual(lastCursor(), { x: 5, y: 22, visible: true });
 });

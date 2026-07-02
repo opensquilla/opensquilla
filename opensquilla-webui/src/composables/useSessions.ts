@@ -216,6 +216,8 @@ function fallbackSessionTitle(row: RawSessionItem, key: string, sessionKind: str
 }
 
 function normalizeUpdatedAt(row: RawSessionItem, gaps: string[]): number {
+  const activityValue = numberValue(row.lastActivityAt) ?? numberValue(row.last_activity_at)
+  if (activityValue != null) return activityValue
   const contractValue = numberValue(row.updatedAt)
   if (contractValue != null) return contractValue
   gaps.push('updatedAt')

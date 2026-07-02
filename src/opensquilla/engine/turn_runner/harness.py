@@ -13,6 +13,7 @@ the stage boundaries are ready to sequence.
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from opensquilla.engine.turn_runner.agent_bootstrap_stage import (
@@ -400,12 +401,12 @@ class _TurnRunnerModelCatalogAdapter(ModelCatalogPort):
     def __init__(self, runner: TurnRunner) -> None:
         self._runner = runner
 
-    def lookup(self, model_id: str) -> _ResolvedCatalog:
+    def lookup(self, model_id: str, provider: str = "") -> _ResolvedCatalog:
         runner = self._runner
         llm_cfg = getattr(runner._config, "llm", None) if runner._config else None
         user_max_tokens = getattr(llm_cfg, "max_tokens", 0)
         if runner._model_catalog is not None:
-            provider_name = getattr(llm_cfg, "provider", "openrouter")
+            provider_name = provider or getattr(llm_cfg, "provider", "openrouter")
             base_url = getattr(llm_cfg, "base_url", "")
             max_tokens = runner._model_catalog.resolve_max_tokens(
                 model_id, user_override=user_max_tokens, provider=provider_name
@@ -925,11 +926,17 @@ class _TurnRunnerAttachmentMessageBuilderAdapter(AttachmentMessageBuilderPort):
         self,
         message: str,
         attachments: list[dict],
+        *,
+        workspace_dir: str | Path | None = None,
+        session_id: str | None = None,
     ) -> list[Any] | None:
         return self._runner._build_attachment_messages(
             message,
             attachments,
             media_root=self._runner._attachment_media_root(),
+            workspace_dir=workspace_dir
+            or getattr(self._runner._config, "workspace_dir", None),
+            session_id=session_id,
         )
 
 

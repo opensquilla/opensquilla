@@ -15,6 +15,7 @@ so the pure-pass-through-of-port-exceptions contract is exercised.
 from __future__ import annotations
 
 import base64
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -410,7 +411,14 @@ async def test_attachment_stage_snapshot(
         )
 
         class _RaisingBuilder:
-            def build(self, message: str, attachments: list[dict]) -> list[Any] | None:  # noqa: ARG002
+            def build(  # noqa: ARG002
+                self,
+                message: str,
+                attachments: list[dict],
+                *,
+                workspace_dir: str | Path | None = None,
+                session_id: str | None = None,
+            ) -> list[Any] | None:
                 raise RuntimeError("raising builder fake")
 
         runner._attachment_stage = AttachmentStage(builder=_RaisingBuilder())

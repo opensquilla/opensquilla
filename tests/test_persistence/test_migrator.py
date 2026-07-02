@@ -257,3 +257,64 @@ def test_sqlite_path_from_db_url_rejects_unsupported_database_urls() -> None:
     assert migrator._sqlite_path_from_db_url(":memory:") is None
     assert migrator._sqlite_path_from_db_url("sqlite:///:memory:") is None
     assert migrator._sqlite_path_from_db_url("postgresql://example/db") is None
+
+
+def _write_demo_migration(migrations_dir: Path, name: str = "V001__demo") -> None:
+    migrations_dir.mkdir(exist_ok=True)
+    (migrations_dir / f"{name}.py").write_text(
+        "from yoyo import step\n"
+        "__depends__ = set()\n"
+        f"steps = [step('CREATE TABLE {name.lower()} (id INTEGER PRIMARY KEY)')]\n",
+        encoding="utf-8",
+    )
+
+
+def _record_applied_migration(db_path: Path, migration_id: str) -> None:
+    """Simulate a newer build having applied an extra migration."""
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "INSERT INTO _yoyo_migration (migration_hash, migration_id, applied_at_utc) "
+            "VALUES (?, ?, CURRENT_TIMESTAMP)",
+            (f"hash-{migration_id}", migration_id),
+        )
+
+
+def test_assert_schema_not_ahead_noop_for_fresh_and_memory_db(tmp_path: Path) -> None:
+    migrations_dir = tmp_path / "migrations"
+    _write_demo_migration(migrations_dir)
+    # Non-existent file, in-memory, and never-migrated DBs must all pass quietly.
+    migrator.assert_schema_not_ahead(str(tmp_path / "missing.db"), migrations_dir)
+    migrator.assert_schema_not_ahead(":memory:", migrations_dir)
+
+
+def test_apply_pending_is_idempotent_when_db_matches_code(tmp_path: Path) -> None:
+    migrations_dir = tmp_path / "migrations"
+    _write_demo_migration(migrations_dir)
+    db_path = tmp_path / "sessions.db"
+
+    first = apply_pending(str(db_path), migrations_dir)
+    second = apply_pending(str(db_path), migrations_dir)
+
+    assert first == ["V001__demo"]
+    assert second == []  # no SchemaAheadError — every applied id is known
+
+
+def test_apply_pending_raises_when_database_is_ahead_of_code(tmp_path: Path) -> None:
+    migrations_dir = tmp_path / "migrations"
+    _write_demo_migration(migrations_dir)
+    db_path = tmp_path / "sessions.db"
+
+    apply_pending(str(db_path), migrations_dir)
+    # A newer build applied V999 that this code's migration set does not contain.
+    _record_applied_migration(db_path, "V999__from_the_future")
+
+    with pytest.raises(migrator.SchemaAheadError, match="V999__from_the_future"):
+        apply_pending(str(db_path), migrations_dir)
+
+
+def test_read_applied_migration_ids_handles_missing_ledger(tmp_path: Path) -> None:
+    db_path = tmp_path / "empty.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("CREATE TABLE unrelated (id INTEGER PRIMARY KEY)")
+    # No yoyo ledger table → empty set (not None, not an error).
+    assert migrator._read_applied_migration_ids(db_path) == set()

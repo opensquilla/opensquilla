@@ -7,10 +7,12 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
+import structlog
 
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.secrets import clean_header_secret
 
+from .stream_assembly import ToolStreamAccumulator
 from .types import (
     ChatConfig,
     DoneEvent,
@@ -20,10 +22,9 @@ from .types import (
     StreamEvent,
     TextDeltaEvent,
     ToolDefinition,
-    ToolUseDeltaEvent,
-    ToolUseEndEvent,
-    ToolUseStartEvent,
 )
+
+log = structlog.get_logger(__name__)
 
 _OLLAMA_DEFAULT_BASE = "http://localhost:11434"
 # Ollama's server default num_ctx is 2048, which silently truncates the front of
@@ -204,7 +205,10 @@ class OllamaProvider:
                     if response.status_code != 200:
                         body = await response.aread()
                         yield ErrorEvent(
-                            message=f"HTTP {response.status_code}: {body.decode()}",
+                            message=(
+                                f"HTTP {response.status_code}: "
+                                f"{body.decode('utf-8', errors='replace')}"
+                            ),
                             code=str(response.status_code),
                         )
                         return
@@ -241,15 +245,23 @@ class OllamaProvider:
                             output_tokens = chunk.get("eval_count", 0)
 
                     # Emit tool events after streaming completes
-                    for call in pending_tool_calls:
-                        yield ToolUseStartEvent(tool_use_id=call["id"], tool_name=call["name"])
-                        args_json = json.dumps(call["arguments"])
-                        yield ToolUseDeltaEvent(tool_use_id=call["id"], json_fragment=args_json)
-                        yield ToolUseEndEvent(
+                    tools_acc = ToolStreamAccumulator()
+                    for key, call in enumerate(pending_tool_calls):
+                        for tool_event in tools_acc.start(
+                            key,
                             tool_use_id=call["id"],
                             tool_name=call["name"],
-                            arguments=call["arguments"],
-                        )
+                        ):
+                            yield tool_event
+                        for tool_event in tools_acc.append(key, json.dumps(call["arguments"])):
+                            yield tool_event
+                        # Ollama already delivers parsed arguments — they are
+                        # authoritative, not reassembled from fragments.
+                        for tool_event in tools_acc.finish_with_arguments(
+                            key,
+                            call["arguments"],
+                        ):
+                            yield tool_event
 
                     yield DoneEvent(
                         stop_reason="stop",
@@ -261,6 +273,16 @@ class OllamaProvider:
             yield ErrorEvent(message=f"Request timed out: {exc}", code="timeout")
         except httpx.RequestError as exc:
             yield ErrorEvent(message=f"Request error: {exc}", code="request_error")
+        except Exception as exc:  # noqa: BLE001 - chat() contract: ErrorEvent instead of raising
+            log.exception(
+                "provider.stream_internal_error",
+                provider=self.provider_name,
+                model=self._model,
+            )
+            yield ErrorEvent(
+                message=f"Provider response handling failed: {exc}",
+                code="provider_internal",
+            )
 
     async def list_models(self) -> list[ModelInfo]:
         try:

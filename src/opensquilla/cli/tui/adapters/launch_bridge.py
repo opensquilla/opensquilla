@@ -19,6 +19,9 @@ from opensquilla.cli.chat.launch import ChatCommandLaunchOverrides, ChatCommandR
 from opensquilla.cli.ui import ACCENT, console
 
 ChatRunner = Callable[..., Coroutine[Any, Any, None]]
+# Backend id whose host renders its own full-screen UI, so the native launch
+# banner is suppressed to avoid a pre-launch flash. Mirrors OpenTuiRendererBackend.
+_OPENTUI_BACKEND_ID = "opentui"
 _INTERACTIVE_STRUCTLOG_FILE: Any | None = None
 _INTERACTIVE_STDLIB_LOG_HANDLER: Any | None = None
 _INTERACTIVE_LOG_HANDLER_ATTR = "_opensquilla_interactive_log_handler"
@@ -157,7 +160,7 @@ def launch_chat(
     input_stream: Any | None = None,
 ) -> None:
     active_console = console if output_console is None else output_console
-    validate_tui_backend_or_exit()
+    backend_id = validate_tui_backend_or_exit()
     prepare_interactive_chat(
         input_stream=input_stream,
         output_console=active_console,
@@ -165,20 +168,26 @@ def launch_chat(
     if standalone:
         if standalone_runner is None:
             raise RuntimeError("standalone chat runner was not configured")
-        active_console.print(
-            Panel(
-                f"[bold {ACCENT}]OpenSquilla Chat[/bold {ACCENT}]\n"
-                "[dim]Enter sends. Ctrl+C clears input or cancels the current turn. "
-                "Ctrl+D exits. /help lists commands.[/dim]",
-                title="OpenSquilla",
-                border_style=ACCENT,
-                expand=False,
+        # The OpenTUI backend draws its own full-screen footer host (with the
+        # model in the router HUD), and it enters the alternate screen a beat
+        # after launch. Printing this banner on the main screen first just makes
+        # the native chrome flash for ~1s before OpenTUI takes over, so skip it
+        # and let OpenTUI come up clean. The native backend keeps the banner.
+        if backend_id != _OPENTUI_BACKEND_ID:
+            active_console.print(
+                Panel(
+                    f"[bold {ACCENT}]OpenSquilla Chat[/bold {ACCENT}]\n"
+                    "[dim]Enter sends. Ctrl+C clears input or cancels the current turn. "
+                    "Ctrl+D exits. /help lists commands.[/dim]",
+                    title="OpenSquilla",
+                    border_style=ACCENT,
+                    expand=False,
+                )
             )
-        )
-        if model:
-            active_console.print(f"[dim]Model: {model}[/dim]")
-        if session_id:
-            active_console.print(f"[dim]Session: {session_id}[/dim]")
+            if model:
+                active_console.print(f"[dim]Model: {model}[/dim]")
+            if session_id:
+                active_console.print(f"[dim]Session: {session_id}[/dim]")
         asyncio.run(
             standalone_runner(
                 model=model or None,
@@ -222,9 +231,7 @@ def launch_chat_command(
     else:
         active_overrides = overrides
     active_launch_chat = (
-        launch_chat
-        if active_overrides.launch_chat is None
-        else active_overrides.launch_chat
+        launch_chat if active_overrides.launch_chat is None else active_overrides.launch_chat
     )
 
     standalone_runner = active_overrides.standalone_runner

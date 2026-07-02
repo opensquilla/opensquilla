@@ -3,13 +3,16 @@ import { stripTerminalControls } from "../primitives.mjs";
 
 export function createUsageBlock(ctx) {
   const { renderer, TextRenderable, box, idPrefix } = ctx;
+  let node = null;
   return {
     begin(meta) {
-      const n = new TextRenderable(renderer, {
+      node = new TextRenderable(renderer, {
         id: `${idPrefix}-usage`, content: `  · ${stripTerminalControls(String(meta?.text ?? ""))}`, fg: THEME.muted,
       });
-      box.add(n); renderer.requestRender?.();
+      box.add(node); renderer.requestRender?.();
     },
     append() {}, update() {}, end() {},
+    // Live /theme switch: re-point the summary at the updated muted token.
+    recolor() { if (node) node.fg = THEME.muted; },
   };
 }

@@ -16,7 +16,7 @@ from .request_proof import (
     ProviderRequestBudgetExceededError,
     prove_provider_payload_from_env,
 )
-from .stream_assembly import ReasoningAccumulator
+from .stream_assembly import ReasoningAccumulator, ToolStreamAccumulator
 from .types import (
     ChatConfig,
     DoneEvent,
@@ -26,9 +26,6 @@ from .types import (
     StreamEvent,
     TextDeltaEvent,
     ToolDefinition,
-    ToolUseDeltaEvent,
-    ToolUseEndEvent,
-    ToolUseStartEvent,
 )
 
 log = structlog.get_logger(__name__)
@@ -123,7 +120,12 @@ def _has_document_block(messages: list[Message]) -> bool:
     return False
 
 
-def _build_message_payload(msg: Message, model: str | None = None) -> dict[str, Any]:
+def _build_message_payload(
+    msg: Message,
+    model: str | None = None,
+    *,
+    replay_provider_state: bool = True,
+) -> dict[str, Any]:
     if isinstance(msg.content, str):
         return {"role": msg.role, "content": msg.content}
     parts: list[dict[str, Any]] = []
@@ -176,6 +178,12 @@ def _build_message_payload(msg: Message, model: str | None = None) -> dict[str, 
                 doc_block["title"] = block.title
             parts.append(doc_block)
         elif block.type == "thinking":
+            if not replay_provider_state:
+                # Cross-provider execution: signatures are validated against
+                # the exact minting turn; a foreign signature is a hard 400.
+                # Unsigned thinking replay is likewise rejected with tools,
+                # so the whole block is dropped rather than degraded.
+                continue
             thinking_block: dict[str, Any] = {
                 "type": "thinking",
                 "thinking": block.thinking,
@@ -284,11 +292,13 @@ class AnthropicProvider:
         model: str = "claude-sonnet-4-6",
         base_url: str = _ANTHROPIC_API_BASE,
         proxy: str | None = None,
+        replay_provider_state: bool = True,
     ) -> None:
         self._api_key = api_key
         self._model = model
         self._base_url = base_url.rstrip("/")
         self._proxy = proxy or None
+        self._replay_provider_state = replay_provider_state
 
     @property
     def model(self) -> str:
@@ -334,7 +344,14 @@ class AnthropicProvider:
                     "budget_tokens": budget_tokens,
                 }
 
-        built_messages = [_build_message_payload(m, model=self._model) for m in messages]
+        built_messages = [
+            _build_message_payload(
+                m,
+                model=self._model,
+                replay_provider_state=self._replay_provider_state,
+            )
+            for m in messages
+        ]
         request_has_document = any(
             isinstance(m.get("content"), list)
             and any(isinstance(p, dict) and p.get("type") == "document" for p in m["content"])
@@ -401,11 +418,8 @@ class AnthropicProvider:
         else:
             headers["x-api-key"] = self._api_key
 
-        # Per-tool state: id -> accumulated_json fragments
-        tool_buffers: dict[str, list[str]] = {}
-        tool_names: dict[str, str] = {}
-        # Maps Anthropic's global content block index → tool_use_id
-        index_to_tid: dict[int, str] = {}
+        # Tool calls keyed by Anthropic's global content-block index.
+        tools_acc = ToolStreamAccumulator()
         base_input_tokens = 0
         input_tokens = 0
         output_tokens = 0
@@ -472,12 +486,12 @@ class AnthropicProvider:
                             block = event.get("content_block", {})
                             btype = block.get("type")
                             if btype == "tool_use":
-                                tid = block["id"]
-                                tname = block["name"]
-                                tool_buffers[tid] = []
-                                tool_names[tid] = tname
-                                index_to_tid[index] = tid
-                                yield ToolUseStartEvent(tool_use_id=tid, tool_name=tname)
+                                for tool_event in tools_acc.start(
+                                    index,
+                                    tool_use_id=block["id"],
+                                    tool_name=block["name"],
+                                ):
+                                    yield tool_event
 
                         elif etype == "content_block_delta":
                             delta = event.get("delta", {})
@@ -487,12 +501,13 @@ class AnthropicProvider:
                             elif dtype == "input_json_delta":
                                 index = event.get("index", 0)
                                 fragment = delta.get("partial_json", "")
-                                tid = index_to_tid.get(index)
-                                if tid is not None:
-                                    tool_buffers[tid].append(fragment)
-                                    yield ToolUseDeltaEvent(tool_use_id=tid, json_fragment=fragment)
-                                else:
+                                tool_events = tools_acc.append(index, fragment)
+                                if not tool_events:
+                                    # Not a tool block at this index (e.g. a
+                                    # server-tool result) — never a tool call.
                                     log.debug("anthropic.unknown_delta_index", index=index)
+                                for tool_event in tool_events:
+                                    yield tool_event
                             elif dtype == "thinking_delta":
                                 reasoning_event = reasoning.emit(delta.get("thinking", ""))
                                 if reasoning_event is not None:
@@ -502,18 +517,8 @@ class AnthropicProvider:
 
                         elif etype == "content_block_stop":
                             index = event.get("index", -1)
-                            tid = index_to_tid.get(index)
-                            if tid is not None:
-                                full_json = "".join(tool_buffers[tid])
-                                try:
-                                    args = json.loads(full_json) if full_json else {}
-                                except json.JSONDecodeError:
-                                    args = {"_raw": full_json}
-                                yield ToolUseEndEvent(
-                                    tool_use_id=tid,
-                                    tool_name=tool_names.get(tid, ""),
-                                    arguments=args,
-                                )
+                            for tool_event in tools_acc.finish(index):
+                                yield tool_event
 
                         elif etype == "message_delta":
                             usage = event.get("usage", {})
@@ -541,21 +546,39 @@ class AnthropicProvider:
                             stop_reason = event.get("delta", {}).get("stop_reason", "end_turn")
 
                         elif etype == "message_stop":
-                            reasoning_content = reasoning.finalize()
-                            yield DoneEvent(
-                                stop_reason=stop_reason,
-                                input_tokens=input_tokens,
-                                output_tokens=output_tokens,
-                                reasoning_content=reasoning_content,
-                                thinking_signature=thinking_signature,
-                                cached_tokens=cached_tokens,
-                                cache_write_tokens=cache_creation_tokens,
-                            )
+                            break
+
+                    # Termination contract: a stream that ends without
+                    # message_stop (upstream close, gateway drop) must still
+                    # close open tool calls and yield DoneEvent — the
+                    # generator never falls off the end silently.
+                    for tool_event in tools_acc.finish_all():
+                        yield tool_event
+                    reasoning_content = reasoning.finalize()
+                    yield DoneEvent(
+                        stop_reason=stop_reason,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        reasoning_content=reasoning_content,
+                        thinking_signature=thinking_signature,
+                        cached_tokens=cached_tokens,
+                        cache_write_tokens=cache_creation_tokens,
+                    )
 
         except httpx.TimeoutException as exc:
             yield ErrorEvent(message=f"Request timed out: {exc}", code="timeout")
         except httpx.RequestError as exc:
             yield ErrorEvent(message=f"Request error: {exc}", code="request_error")
+        except Exception as exc:  # noqa: BLE001 - chat() contract: ErrorEvent instead of raising
+            log.exception(
+                "provider.stream_internal_error",
+                provider=self.provider_name,
+                model=self._model,
+            )
+            yield ErrorEvent(
+                message=f"Provider response handling failed: {exc}",
+                code="provider_internal",
+            )
 
     async def list_models(self) -> list[ModelInfo]:
         return [ModelInfo(provider=self.provider_name, **m) for m in _KNOWN_MODELS]

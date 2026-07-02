@@ -2,7 +2,21 @@ import fs from "node:fs";
 import readline from "node:readline";
 
 export function createIpc({ fromFd, toFd }) {
-  function send(message) { fs.writeSync(toFd, `${JSON.stringify(message)}\n`, "utf8"); }
+  function send(message) {
+    // send() is called from unguarded hot paths (resize/SIGWINCH, the dispatch
+    // error handler, ready). Once Python closes its read end of this pipe —
+    // which it does mid-shutdown, before SIGTERM'ing us, or whenever the Python
+    // process dies — a bare writeSync throws EPIPE/EBADF *synchronously*. That
+    // throw would escape as an uncaughtException and kill the host without
+    // running renderer.destroy(), leaving the terminal in alternate-screen +
+    // mouse-tracking mode. Swallow write failures (a dropped status/error line
+    // during teardown is harmless) so a broken pipe never crashes the host.
+    try {
+      fs.writeSync(toFd, `${JSON.stringify(message)}\n`, "utf8");
+    } catch {
+      // Broken pipe / closed fd / unserializable payload: nothing actionable.
+    }
+  }
   function start(onMessage, onClose) {
     const input = fs.createReadStream(null, { fd: fromFd, encoding: "utf8", autoClose: false });
     const lines = readline.createInterface({ input, crlfDelay: Infinity });
@@ -30,6 +44,9 @@ export function createDispatcher(h) {
       case "prompt.echo": return h.promptEcho?.(m);
       case "model.text": return h.modelText?.(m);
       case "scrollback.write": return h.scrollback?.(m);
+      case "notice.write": return h.notice?.(m);
+      case "theme.set": return h.themeSet?.(m);
+      case "theme.pick": return h.themePick?.(m);
       case "shutdown": return h.shutdown(m);
       default: return h.unknown(m);
     }

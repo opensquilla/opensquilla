@@ -49,6 +49,80 @@ class TestConfig:
         assert "skills.coding_mode" in _SAFE_WRITE_PATCH_PATHS
 
 
+class TestRuntimeToolContextCodingMode:
+    @pytest.mark.asyncio
+    async def test_build_tools_threads_config_coding_mode_into_tool_context(self):
+        import json
+
+        from opensquilla.engine.runtime import TurnRunner
+        from opensquilla.tool_boundary import ToolCall
+        from opensquilla.tools.registry import ToolRegistry
+        from opensquilla.tools.types import ToolContext, ToolSpec, current_tool_context
+
+        async def capture_coding_mode() -> str:
+            ctx = current_tool_context.get()
+            return json.dumps(
+                {"coding_mode": ctx.coding_mode if ctx is not None else None}
+            )
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolSpec(
+                name="capture_coding_mode",
+                description="capture coding mode",
+                parameters={},
+            ),
+            capture_coding_mode,
+        )
+        config = GatewayConfig()
+        config.skills.coding_mode = True
+        runner = TurnRunner(provider_selector=None, tool_registry=registry, config=config)
+        ctx = ToolContext(is_owner=True)
+
+        tool_defs, handler = runner._build_tools(ctx)
+
+        assert ctx.coding_mode is True
+        assert {tool.name for tool in tool_defs} == {"capture_coding_mode"}
+        assert handler is not None
+        result = await handler(
+            ToolCall(
+                tool_use_id="tc-coding-mode",
+                tool_name="capture_coding_mode",
+                arguments={},
+            )
+        )
+        assert result.is_error is False
+        assert json.loads(result.content) == {"coding_mode": True}
+
+    def test_build_tools_applies_coding_mode_denies_to_live_surface(self):
+        import opensquilla.tools.builtin  # noqa: F401  (registers builtins)
+        from opensquilla.engine.runtime import TurnRunner
+        from opensquilla.tools.registry import get_default_registry
+        from opensquilla.tools.types import CallerKind, ToolContext
+
+        config = GatewayConfig()
+        config.skills.coding_mode = True
+        runner = TurnRunner(
+            provider_selector=None,
+            tool_registry=get_default_registry(),
+            config=config,
+        )
+        ctx = ToolContext(is_owner=True, caller_kind=CallerKind.AGENT)
+
+        tool_defs, _handler = runner._build_tools(ctx)
+        names = {getattr(td, "name", "") for td in tool_defs}
+
+        assert ctx.coding_mode is True
+        assert coding_mode_denied_tools(True) <= ctx.denied_tools
+        assert {
+            "write_file",
+            "edit_file",
+            "apply_patch",
+            "execute_code",
+            "git_commit",
+        }.isdisjoint(names)
+
+
 class TestSkillsFilterGate:
     def test_off_gates_codetask(self):
         ctx = _eligibility_ctx(SimpleNamespace(disabled=[], coding_mode=False))

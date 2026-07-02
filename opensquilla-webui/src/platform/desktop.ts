@@ -12,6 +12,17 @@ export function createDesktopPlatform(): Platform {
     id: 'desktop',
     capabilities: desktopCapabilities,
     getOsLocale: () => requireDesktopApi().getOsLocale(),
+    async nativeAutoUpdateEnabled() {
+      const api = requireDesktopApi()
+      // Older shells without this bridge are macOS-only with native update on;
+      // default to true there so the web banner never double-notifies.
+      if (typeof api.isAutoUpdateEnabled !== 'function') return true
+      try {
+        return await api.isAutoUpdateEnabled()
+      } catch {
+        return true
+      }
+    },
     gateway: {
       getStatus: () => requireDesktopApi().getGatewayStatus(),
       revealLog: () => requireDesktopApi().revealGatewayLog(),

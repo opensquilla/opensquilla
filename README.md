@@ -59,7 +59,7 @@ Windows portable zip also has a `/releases/latest/download/` alias for
 the current release. Python wheel installs use versioned wheel filenames
 because installers validate the version embedded in the wheel filename.
 
-For 0.4.1 desktop use, prefer the signed desktop installers from the GitHub
+For 0.4.1 desktop use, prefer the packaged desktop installers from the GitHub
 Release: `OpenSquilla-0.4.1-mac-arm64.dmg` on macOS and
 `OpenSquilla-0.4.1-win-x64.exe` on Windows. The Windows portable zip remains
 available as a legacy compatibility package for scripts and portable-folder
@@ -67,7 +67,7 @@ workflows.
 
 | Path | Audience | When to use |
 | --- | --- | --- |
-| [Desktop installers](#desktop-installers) **(recommended desktop)** | macOS and Windows users | Signed packaged desktop app |
+| [Desktop installers](#desktop-installers) **(recommended desktop)** | macOS and Windows users | Packaged desktop app |
 | [Windows portable](#windows-portable-no-python) | Windows users | Legacy compatibility; no Python toolchain; one-zip launch |
 | [Quick terminal install](#quick-terminal-install) **(recommended)** | End users on any OS | Release wheel from a terminal |
 | [Install from source](#install-from-source) | Users tracking `main` | Run from a checkout, not edit it |
@@ -96,7 +96,7 @@ startup logs a `DLL load failed` error, install it manually (see
 direct single-model routing until it is installed.
 
 On macOS terminal installs, SquillaRouter's LightGBM runtime may also
-need the system OpenMP library. The signed desktop app bundles the
+need the system OpenMP library. The desktop app bundles the
 runtime it needs, but **Quick terminal install** does not install
 Homebrew/system libraries. If startup logs `Library not loaded:
 @rpath/libomp.dylib`, run `brew install libomp`, then restart the
@@ -118,6 +118,8 @@ runtime in an Electron shell.
 Quit any running OpenSquilla desktop app before upgrading. Existing
 `~/.opensquilla/config.toml` and session data are reused.
 
+Code signing policy: [`docs/code-signing-policy.md`](docs/code-signing-policy.md).
+
 ### Windows portable (no Python)
 
 The legacy compatibility path on Windows — the zip ships a bundled CPython
@@ -131,7 +133,7 @@ runtime, so no separate Python install is required.
 3. Complete the first-run setup, then open <http://127.0.0.1:18791/control/>.
 
 > [!NOTE]
-> Preview builds are unsigned; administrator launch is the supported
+> Windows builds are currently unsigned; administrator launch is the supported
 > path. If SmartScreen appears, choose **More info** → **Run anyway**.
 > If Smart App Control or enterprise policy blocks the unsigned app,
 > use [Quick terminal install](#quick-terminal-install) instead.
@@ -378,6 +380,9 @@ version adoption, and runtime compatibility. Data is sent on first gateway
 startup and once per OpenSquilla version. Uploads use a short timeout and never
 block startup.
 
+See [`PRIVACY.md`](PRIVACY.md) for the full privacy policy covering local data,
+provider requests, telemetry, logs, and deletion.
+
 What is sent:
 
 - schema version
@@ -500,6 +505,23 @@ opensquilla gateway start --json       # background + health wait
 opensquilla chat                       # interactive REPL
 opensquilla agent -m "your prompt"     # one-shot, automation-friendly
 ```
+
+> **Preview — the OpenTUI terminal UI.** `opensquilla chat` runs the stable,
+> Python-native chat by default. A richer OpenTUI frontend (themes, one-card
+> turns, a live router HUD, drag-select copy) is an opt-in preview that runs
+> **only from a [Develop from source](#develop-from-source) checkout**: the host
+> is loaded from the OpenTUI package next to the running code, and that package
+> (plus its [Bun](https://bun.sh) dependencies) is not shipped in the release
+> wheel or the `Install from source` install. From the checkout, install the Bun
+> deps once, then launch with `uv run` so it runs against that same tree:
+>
+> ```sh
+> bun install --frozen-lockfile --cwd=src/opensquilla/cli/tui/opentui/package
+> OPENSQUILLA_TUI_BACKEND=opentui uv run opensquilla chat
+> ```
+>
+> Leave `OPENSQUILLA_TUI_BACKEND` unset for the stable chat. See
+> [docs/features/tui-frontend.md](docs/features/tui-frontend.md) for details.
 
 Open the Web UI at <http://127.0.0.1:18791/control/>. The **Health**
 view shows whether OpenSquilla is ready, what is not ready, and the
@@ -660,7 +682,7 @@ Full notes: [`CHANGELOG.md`](CHANGELOG.md) ·
 | **20+ LLM providers** | The provider registry targets 20+ LLM backends — OpenRouter, OpenAI, Anthropic, Ollama, DeepSeek, Gemini, DashScope/Qwen, Moonshot, Mistral, Groq, Zhipu, SiliconFlow, vLLM, LM Studio, and more, with primary-plus-fallback selection; first-run onboarding exposes the verified subset. |
 | **On-demand skills and MCP** | 15 bundled skills (coding, GitHub, cron, pptx/docx/xlsx/pdf, summarization, tmux, weather, and more) load only when the task needs them. OpenSquilla is an MCP client, and can also run as an MCP server — `opensquilla mcp-server run` needs the `mcp` extra (install `opensquilla[recommended,mcp]`). Skills can be authored, installed, and published from the CLI. |
 | **Persistent local memory** | A curated `MEMORY.md` plus dated Markdown notes, searched with SQLite full-text keyword search and `sqlite-vec` semantic recall. Embeddings run on-device via bundled ONNX, or swap to OpenAI/Ollama. Optional exponential decay and opt-in "dream" consolidation are available. |
-| **Layered security sandbox** | Three policy tiers (Standard / Strict / Locked) on a permission matrix. Bubblewrap isolates code execution on Linux; the macOS Seatbelt backend currently renders profiles only (execution pending), and there is no sandbox backend on Windows yet. A denial ledger auto-pauses autonomous runs after repeated denials, rejected outputs are purged, and skill metadata and tool results are XML-escaped against prompt injection. |
+| **Layered security sandbox** | Three policy tiers (Standard / Strict / Locked) on a permission matrix. Bubblewrap isolates code execution on Linux; macOS runs commands through Seatbelt (`sandbox-exec`) with generated SBPL profiles; Windows uses the native `windows_default` backend after setup readiness checks. A denial ledger auto-pauses autonomous runs after repeated denials, rejected outputs are purged, and skill metadata and tool results are XML-escaped against prompt injection. |
 | **Built-in tools** | File read/write/edit, shell and background processes, git, web search (DuckDuckGo, Bocha, Brave, Tavily, or Exa) and fetch behind an SSRF guard, spreadsheet/PPTX/PDF authoring, image generation, and text-to-speech. |
 | **Unified gateway** | A Starlette ASGI server on `127.0.0.1:18791` with WebSocket RPC and an embedded control console (`/control/`). Web UI, CLI, and channels for Terminal, WebSocket, Slack, Telegram, Discord, Feishu, DingTalk, WeCom, Matrix, and QQ all share one `TurnRunner`. |
 | **Durable sessions, subagents, and scheduling** | SQLite-backed session, transcript, and replay storage with per-agent workspaces. Agents spawn depth-bounded subagents, and a `SchedulerEngine` with an in-tree cron parser runs recurring jobs via `opensquilla cron`. |
@@ -696,7 +718,7 @@ If startup logs `Library not loaded: @rpath/libomp.dylib` from
 direct single-model routing, but the bundled `SquillaRouter` runtime
 stays inactive until the macOS OpenMP runtime is installed.
 
-The signed desktop app bundles the native runtime it needs. If you used
+The desktop app bundles the native runtime it needs. If you used
 Quick terminal install or source install from a shell, install `libomp`
 with Homebrew and restart the gateway:
 
@@ -753,4 +775,6 @@ issue or pull request on
 [GitHub](https://github.com/opensquilla/opensquilla).
 
 [Code of Conduct](CODE_OF_CONDUCT.md) · [Security](SECURITY.md) ·
-[Support](SUPPORT.md) · [License](LICENSE) (Apache-2.0)
+[Privacy](PRIVACY.md) · [Code signing policy](docs/code-signing-policy.md) ·
+[Third-party notices](THIRD_PARTY_NOTICES.md) · [Support](SUPPORT.md) ·
+[License](LICENSE) (Apache-2.0)

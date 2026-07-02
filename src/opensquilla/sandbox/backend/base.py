@@ -13,8 +13,16 @@ backend readiness (e.g. during gateway boot) without spawning a process.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
 from opensquilla.sandbox.types import SandboxRequest, SandboxResult
+
+if TYPE_CHECKING:
+    from opensquilla.sandbox.operation_runtime import (
+        SandboxOperation,
+        SandboxOperationDomain,
+        SandboxOperationResult,
+    )
 
 
 class Backend(ABC):
@@ -40,6 +48,21 @@ class Backend(ABC):
         failures raise :class:`SandboxBackendError`; non-zero exit codes do
         not.
         """
+
+    def operation_domains_supported(self) -> frozenset[SandboxOperationDomain]:
+        """Return operation domains this backend can run through the sandbox."""
+
+        return frozenset()
+
+    async def run_operation(
+        self,
+        operation: SandboxOperation,
+    ) -> SandboxOperationResult:
+        """Run a non-process operation under this backend."""
+
+        raise NotImplementedError(
+            f"{operation.domain} operations are not supported by this backend"
+        )
 
 
 __all__ = ["Backend"]

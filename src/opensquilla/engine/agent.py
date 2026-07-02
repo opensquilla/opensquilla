@@ -1737,6 +1737,10 @@ class Agent:
         Explicit state machine — no recursion. Tool loop iterates until
         the model finishes, unless config.max_iterations is a positive cap.
         """
+        if self._session_key:
+            from opensquilla.sandbox.escalation import clear_sandbox_approval_denials
+
+            clear_sandbox_approval_denials(self._session_key)
         async for event in self._turn_generator(
             message,
             extra_messages,
@@ -2579,7 +2583,7 @@ class Agent:
                         if response_text:
                             assistant_text_parts.append(response_text)
                             attempt_user_visible_emitted = True
-                            yield TextDeltaEvent(text=response_text, presentation="answer")
+                            yield TextDeltaEvent(text=response_text)
                     last_request_msg = request_messages[-1] if request_messages else None
                     post_tool_turn = _message_has_tool_result(last_request_msg)
                     stop_reason = (
@@ -3666,6 +3670,8 @@ class Agent:
                         replay_event = router_control_replay_event_from_payload(result.content)
                         if replay_event is not None:
                             yield replay_event
+                        if _pending_approval_payload(result.content) is not None:
+                            turn_yielded = True
                     executed_results.append(result)
                     while self._pending_warnings:
                         yield self._pending_warnings.pop(0)
@@ -5205,14 +5211,8 @@ class Agent:
     ) -> tuple[Any, Any, Any]:
         """Construct a MetaOrchestrator wired to this agent's provider/tools.
 
-        Shared by the model-tool path (``_run_one_streaming``), resume
-        (``_run_meta_resume``), and the manual ``/meta`` path
-        (``_run_meta_launch``). Only ``triggered_by`` differs between callers.
-
-        Returns ``(orchestrator, llm_chat, tool_invoker)``. The latter two are
-        returned (not just consumed internally) because ``_run_one_streaming``
-        and ``_run_meta_launch`` reuse them to build the runtime-e2e context
-        around ``iter_events``. Callers that don't need them unpack into ``_``.
+        Shared by meta launch paths that need the orchestrator plus its runtime
+        context dependencies. Only ``triggered_by`` differs between callers.
         """
         from opensquilla.skills.meta.orchestrator import (
             MetaOrchestrator,
@@ -5277,6 +5277,12 @@ class Agent:
         from opensquilla.skills.meta.inputs import (
             make_meta_inputs,
             meta_input_overrides_from_metadata,
+        )
+        from opensquilla.skills.meta.orchestrator import (
+            MetaOrchestrator,
+            make_agent_runner_from_parent,
+            make_llm_chat_from_provider,
+            make_tool_invoker_from_handler,
         )
         from opensquilla.skills.meta.parser import MetaPlanError, parse_meta_plan
         from opensquilla.skills.meta.types import MetaMatch, MetaResult
@@ -5449,10 +5455,48 @@ class Agent:
                 )
                 return
 
-            orch, llm_chat, tool_invoker = self._build_meta_orchestrator(
-                workspace_dir=workspace_dir,
-                triggered_by="soft_meta_invoke",
+            runner = make_agent_runner_from_parent(
+                provider=self.provider,
+                base_config=self.config,
+                tool_definitions=self.tool_definitions,
+                tool_handler=self.tool_handler,
+                agent_factory=type(self),
+                workspace_dir=str(workspace_dir) if workspace_dir else None,
+                usage_tracker=self._usage_tracker,
+                session_key=self._session_key,
+            )
+            llm_chat = (
+                getattr(self, "_test_llm_chat_override", None)
+                or (
+                    make_llm_chat_from_provider(
+                        provider=self.provider,
+                        base_config=self.config,
+                        usage_tracker=self._usage_tracker,
+                        session_key=self._session_key,
+                    )
+                    if self.provider is not None
+                    else None
+                )
+            )
+            tool_invoker = (
+                make_tool_invoker_from_handler(tool_handler=self.tool_handler)
+                if self.tool_handler is not None
+                else None
+            )
+
+            memory_persist_enabled = True
+            orch = MetaOrchestrator(
+                agent_runner=runner,
                 skill_loader=skill_loader,
+                llm_chat=llm_chat,
+                tool_invoker=tool_invoker,
+                workspace_dir=str(workspace_dir) if workspace_dir else None,
+                run_writer=self._meta_run_writer,
+                triggered_by="soft_meta_invoke",
+                session_key=getattr(self, "_session_key", None),
+                turn_id=getattr(self, "_turn_id", None),
+                memory_persist_enabled=memory_persist_enabled,
+                usage_tracker=self._usage_tracker,
             )
 
             system_prompt = (
@@ -5606,6 +5650,12 @@ class Agent:
         outer stream pipeline can finalize the turn.
         """
         from opensquilla.engine.types import DoneEvent
+        from opensquilla.skills.meta.orchestrator import (
+            MetaOrchestrator,
+            make_agent_runner_from_parent,
+            make_llm_chat_from_provider,
+            make_tool_invoker_from_handler,
+        )
         from opensquilla.skills.meta.types import MetaResult
         from opensquilla.tools.types import current_tool_context
 
@@ -5638,10 +5688,47 @@ class Agent:
             or getattr(self.config, "workspace_dir", None)
         )
 
-        orch, _llm_chat, _tool_invoker = self._build_meta_orchestrator(
-            workspace_dir=workspace_dir,
-            triggered_by="resume",
+        runner = make_agent_runner_from_parent(
+            provider=self.provider,
+            base_config=self.config,
+            tool_definitions=self.tool_definitions,
+            tool_handler=self.tool_handler,
+            agent_factory=type(self),
+            workspace_dir=str(workspace_dir) if workspace_dir else None,
+            usage_tracker=self._usage_tracker,
+            session_key=self._session_key,
+        )
+        llm_chat = (
+            getattr(self, "_test_llm_chat_override", None)
+            or (
+                make_llm_chat_from_provider(
+                    provider=self.provider,
+                    base_config=self.config,
+                    usage_tracker=self._usage_tracker,
+                    session_key=self._session_key,
+                )
+                if self.provider is not None
+                else None
+            )
+        )
+        tool_invoker = (
+            make_tool_invoker_from_handler(tool_handler=self.tool_handler)
+            if self.tool_handler is not None
+            else None
+        )
+
+        orch = MetaOrchestrator(
+            agent_runner=runner,
             skill_loader=skill_loader,
+            llm_chat=llm_chat,
+            tool_invoker=tool_invoker,
+            workspace_dir=str(workspace_dir) if workspace_dir else None,
+            run_writer=self._meta_run_writer,
+            triggered_by="resume",
+            session_key=getattr(self, "_session_key", None),
+            turn_id=getattr(self, "_turn_id", None),
+            memory_persist_enabled=True,
+            usage_tracker=self._usage_tracker,
         )
 
         result: Any = None

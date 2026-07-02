@@ -1,5 +1,7 @@
 """Control UI first-paint locale resolution + template injection (i18n v1)."""
 
+import json
+from html.parser import HTMLParser
 from types import SimpleNamespace
 
 from opensquilla.gateway import control_ui
@@ -55,7 +57,16 @@ def test_config_clamps_arbitrary_locale_values():
     assert ControlUiConfig().default_locale == "en"
 
 
-def _render(locale: str) -> str:
+class _OpenSquillaDataParser(HTMLParser):
+    data_update: str | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr_map = dict(attrs)
+        if tag == "div" and attr_map.get("id") == "opensquilla-data":
+            self.data_update = attr_map.get("data-update")
+
+
+def _render(locale: str, update: dict | None = None) -> str:
     tpl = control_ui._get_jinja_env().get_template("index.html")
     return tpl.render(
         version="0.0.0",
@@ -64,6 +75,7 @@ def _render(locale: str) -> str:
         base_path="/control",
         config_path="",
         locale=locale,
+        update=update,
         features={},
         vite_js_url="",
         vite_css_urls=[],
@@ -80,3 +92,23 @@ def test_template_injects_en():
     html = _render("en")
     assert '<html lang="en">' in html
     assert 'data-locale="en"' in html
+
+
+def test_template_escapes_update_json_for_data_attribute():
+    html = _render(
+        "en",
+        update={
+            "available": True,
+            "latest": '0.5.0-"quoted"',
+            "url": 'https://example.test/releases?note="quoted"&ok=1',
+        },
+    )
+    parser = _OpenSquillaDataParser()
+    parser.feed(html)
+
+    assert parser.data_update is not None
+    assert json.loads(parser.data_update) == {
+        "available": True,
+        "latest": '0.5.0-"quoted"',
+        "url": 'https://example.test/releases?note="quoted"&ok=1',
+    }

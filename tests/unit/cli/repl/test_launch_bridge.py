@@ -133,6 +133,7 @@ def test_launch_bridge_prints_standalone_banner_and_runs_standalone(
         calls.append(kwargs)
 
     monkeypatch.setattr(launch_bridge, "prepare_interactive_chat", lambda **_kwargs: None)
+    monkeypatch.setattr(launch_bridge, "validate_tui_backend_or_exit", lambda: "native")
 
     launch_bridge.launch_chat(
         model="openai/test",
@@ -159,6 +160,40 @@ def test_launch_bridge_prints_standalone_banner_and_runs_standalone(
             "timeout": 7.25,
         }
     ]
+
+
+def test_launch_bridge_suppresses_native_banner_for_opentui_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The OpenTUI host draws its own full-screen footer; printing the native
+    # banner first only makes it flash for ~1s before OpenTUI takes the screen.
+    from opensquilla.cli.tui.adapters import launch_bridge
+
+    calls: list[dict[str, Any]] = []
+    console = FakeConsole(is_terminal=True)
+
+    async def fake_standalone(**kwargs: Any) -> None:
+        calls.append(kwargs)
+
+    monkeypatch.setattr(launch_bridge, "prepare_interactive_chat", lambda **_kwargs: None)
+    monkeypatch.setattr(launch_bridge, "validate_tui_backend_or_exit", lambda: "opentui")
+
+    launch_bridge.launch_chat(
+        model="openai/test",
+        session_id="agent:main:test",
+        standalone=True,
+        workspace="repo",
+        workspace_strict=True,
+        timeout=7.25,
+        standalone_runner=fake_standalone,
+        gateway_runner=None,
+        output_console=console,
+    )
+
+    # No native chrome printed to the main screen, but the runner still launches.
+    assert console.prints == []
+    assert len(calls) == 1
+    assert calls[0]["model"] == "openai/test"
 
 
 def test_launch_bridge_warns_gateway_workspace_options_without_forwarding(

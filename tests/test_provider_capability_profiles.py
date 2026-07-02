@@ -110,8 +110,16 @@ def test_volcengine_doubao_thinking_models_use_volcengine_reasoning_format() -> 
         provider_name="volcengine",
         base_url="https://ark.cn-beijing.volces.com/api/v3",
     )
-    plain_caps = catalog.get_capabilities(
+    # doubao-seed-1-6 (non-"thinking" suffix) is still a reasoning model —
+    # verified live: it streams reasoning tokens and honors thinking:disabled
+    # only when the caps mark it reasoning-capable.
+    plain_16_caps = catalog.get_capabilities(
         "doubao-seed-1-6-251015",
+        provider_name="volcengine",
+        base_url="https://ark.cn-beijing.volces.com/api/v3",
+    )
+    non_reasoning_caps = catalog.get_capabilities(
+        "doubao-pro-32k",
         provider_name="volcengine",
         base_url="https://ark.cn-beijing.volces.com/api/v3",
     )
@@ -120,8 +128,10 @@ def test_volcengine_doubao_thinking_models_use_volcengine_reasoning_format() -> 
     assert thinking_caps.reasoning_format == "volcengine"
     assert seed_2_caps.supports_reasoning is True
     assert seed_2_caps.reasoning_format == "volcengine"
-    assert plain_caps.supports_reasoning is False
-    assert plain_caps.reasoning_format == "none"
+    assert plain_16_caps.supports_reasoning is True
+    assert plain_16_caps.reasoning_format == "volcengine"
+    assert non_reasoning_caps.supports_reasoning is False
+    assert non_reasoning_caps.reasoning_format == "none"
 
 
 def test_byteplus_seed_and_kimi_models_use_modelark_reasoning_format() -> None:

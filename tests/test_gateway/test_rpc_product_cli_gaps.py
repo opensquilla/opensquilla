@@ -1303,6 +1303,21 @@ class FailingSearchProvider:
         )
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_sandbox_runtime():
+    """These tests assume the unconfigured (sandbox-off) runtime state.
+
+    Any earlier test that boots gateway services configures the process-wide
+    SandboxRuntime; a leaked runtime with a managed network mode makes the
+    search RPCs fail with SandboxDenied. Reset to the neutral state so this
+    module's behavior does not depend on test ordering.
+    """
+    from opensquilla.sandbox.integration import reset_runtime
+
+    reset_runtime()
+    yield
+
+
 @pytest.mark.asyncio
 async def test_search_status_and_query_return_structured_payloads():
     register_provider(

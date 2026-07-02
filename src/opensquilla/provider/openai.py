@@ -21,6 +21,7 @@ from opensquilla.env import trust_env as _trust_env
 from opensquilla.execution_status import compact_provider_status, derive_is_error
 from opensquilla.secrets import clean_header_secret
 
+from .compat_policy import OpenAICompatPolicy, compat_policy_for_kind
 from .context_capabilities import supports_openrouter_explicit_prompt_cache
 from .minimax_compat import contains_minimax_protocol, parse_minimax_tool_calls
 from .openrouter_attribution import openrouter_app_headers
@@ -29,7 +30,7 @@ from .request_proof import (
     ProviderRequestBudgetExceededError,
     prove_provider_payload_from_env,
 )
-from .stream_assembly import ReasoningAccumulator
+from .stream_assembly import ReasoningAccumulator, ToolStreamAccumulator
 from .types import (
     ChatConfig,
     DoneEvent,
@@ -41,7 +42,6 @@ from .types import (
     StreamEvent,
     TextDeltaEvent,
     ToolDefinition,
-    ToolUseDeltaEvent,
     ToolUseEndEvent,
     ToolUseStartEvent,
 )
@@ -57,16 +57,7 @@ _PLAIN_JSON_TOOL_PREFIX_RE = re.compile(
 )
 
 _OPENAI_TOOL_STATUS_OUTPUT_MAX_CHARS = 4000
-_VOLCENGINE_UNSUPPORTED_TOOL_SCHEMA_KEYWORDS = frozenset(
-    {
-        "minLength",
-        "maxLength",
-        "minItems",
-        "maxItems",
-        "minContains",
-        "maxContains",
-    }
-)
+_VERSIONED_BASE_URL_RE = re.compile(r"/v\d+$")
 
 
 def _openai_tool_result_content(block: Any) -> str:
@@ -84,21 +75,6 @@ def _openai_tool_result_content(block: Any) -> str:
         },
         ensure_ascii=False,
     )
-
-
-def _provider_display_name(provider_kind: str) -> str:
-    return {
-        "openai": "OpenAI",
-        "openrouter": "OpenRouter",
-        "deepseek": "DeepSeek",
-        "moonshot": "Moonshot",
-        "dashscope": "DashScope",
-        "gemini": "Gemini",
-        "zhipu": "Zhipu",
-        "qianfan": "Qianfan",
-        "volcengine": "Volcengine",
-        "byteplus": "BytePlus",
-    }.get(provider_kind, "Provider")
 
 
 def _http_error_body_text(body: bytes | str) -> str:
@@ -121,18 +97,9 @@ def _http_error_body_text(body: bytes | str) -> str:
     return text
 
 
-def _format_chat_http_error(provider_kind: str, status_code: int, body: bytes | str) -> str:
+def _format_chat_http_error(display_name: str, status_code: int, body: bytes | str) -> str:
     body_text = _http_error_body_text(body) or "empty response body"
-    return (
-        f"{_provider_display_name(provider_kind)} chat request failed "
-        f"(HTTP {status_code}): {body_text}"
-    )
-
-
-def _provider_unsupported_tool_schema_keywords(provider_kind: str) -> frozenset[str]:
-    if provider_kind in {"volcengine", "byteplus"}:
-        return _VOLCENGINE_UNSUPPORTED_TOOL_SCHEMA_KEYWORDS
-    return frozenset()
+    return f"{display_name} chat request failed (HTTP {status_code}): {body_text}"
 
 
 def _strip_tool_schema_keywords(value: Any, unsupported: frozenset[str]) -> Any:
@@ -202,42 +169,28 @@ def _strip_think_tags(text: str) -> str:
     return result.strip()
 
 
-def _should_disable_openrouter_reasoning_by_default(model: str) -> bool:
-    """Return True for OpenRouter models known to default into reasoning streams.
-
-    OpenRouter's reasoning controls are model/provider-specific: GLM 4.5 can be
-    stabilized by explicitly disabling reasoning when OpenSquilla has not requested
-    thinking, while MiniMax reasoning endpoints reject that same payload.
-    """
-    return model.strip().lower() in {
-        "z-ai/glm-4.5",
-        "z-ai/glm-4.5-air",
-        "z-ai/glm-5",
-        "z-ai/glm-5.1",
-        "z-ai/glm-5.2",
-    }
+def _model_basename(model: str) -> str:
+    return model.rsplit("/", 1)[-1].strip().lower()
 
 
-def _direct_openai_uses_max_completion_tokens(
-    provider_kind: str,
+def _on_official_host(policy: OpenAICompatPolicy, base_url: str) -> bool:
+    return bool(policy.official_host) and policy.official_host in base_url.lower()
+
+
+def _uses_max_completion_tokens(
+    policy: OpenAICompatPolicy,
     base_url: str,
     model: str,
 ) -> bool:
-    if provider_kind != "openai" or "api.openai.com" not in base_url.lower():
+    if not policy.max_completion_tokens_model_prefixes:
         return False
-    model_name = model.rsplit("/", 1)[-1].strip().lower()
-    return model_name.startswith(("gpt-5", "o1", "o3", "o4"))
-
-
-def _is_kimi_fixed_sampling_model(provider_kind: str, model: str) -> bool:
-    if provider_kind != "moonshot":
+    if not _on_official_host(policy, base_url):
         return False
-    model_name = model.rsplit("/", 1)[-1].strip().lower()
-    return model_name.startswith(("kimi-k2.5", "kimi-k2.6"))
+    return _model_basename(model).startswith(policy.max_completion_tokens_model_prefixes)
 
 
 def _should_send_temperature(
-    provider_kind: str,
+    policy: OpenAICompatPolicy,
     base_url: str,
     model: str,
     cfg: ChatConfig,
@@ -245,17 +198,21 @@ def _should_send_temperature(
 ) -> bool:
     if cfg.temperature is None:
         return False
-    if _is_kimi_fixed_sampling_model(provider_kind, model) and cfg.temperature != 1.0:
+    model_name = _model_basename(model)
+    if (
+        policy.fixed_sampling_model_prefixes
+        and model_name.startswith(policy.fixed_sampling_model_prefixes)
+        and cfg.temperature != 1.0
+    ):
         return False
     if (
-        provider_kind == "openai"
-        and "api.openai.com" in base_url.lower()
+        policy.omit_temperature_when_thinking_model_prefixes
+        and _on_official_host(policy, base_url)
         and cfg.thinking
         and bool(caps and caps.supports_reasoning)
+        and model_name.startswith(policy.omit_temperature_when_thinking_model_prefixes)
     ):
-        model_name = model.rsplit("/", 1)[-1].strip().lower()
-        if model_name.startswith(("gpt-5.4", "gpt-5.5")):
-            return False
+        return False
     return True
 
 
@@ -390,30 +347,34 @@ def _usage_fields(usage: Mapping[str, Any] | None) -> tuple[int, int, int, int, 
 
 def _provider_billed_cost(provider_kind: str, raw_billed_cost: float) -> tuple[float, str]:
     """Return trusted provider-billed cost and its source marker."""
-    if provider_kind == "openrouter" and raw_billed_cost > 0.0:
+    if compat_policy_for_kind(provider_kind).trust_billed_cost and raw_billed_cost > 0.0:
         return raw_billed_cost, "provider_billed"
     return 0.0, "none"
 
 
 def _resolve_tool_call_index(
     tc: Mapping[str, Any],
-    pending_calls: Mapping[int, dict[str, Any]],
-    *,
-    provider_kind: str,
+    tools_acc: ToolStreamAccumulator,
 ) -> int:
+    """Resolve the accumulator slot for a streamed tool-call delta.
+
+    Most upstreams send an explicit ``index``, but some (Gemini's
+    OpenAI-compat endpoint, assorted local gateways) omit it: fall back to
+    matching the provider-supplied id against known calls, then to opening a
+    new slot — a missing index must never fail the stream.
+    """
     if "index" in tc:
         return _coerce_int(tc["index"])
-    if provider_kind != "gemini":
-        raise KeyError("index")
     tool_call_id = tc.get("id")
     if isinstance(tool_call_id, str) and tool_call_id:
-        for idx, call in pending_calls.items():
-            if call.get("id") == tool_call_id:
-                return idx
-        return max(pending_calls.keys(), default=-1) + 1
-    if len(pending_calls) == 1:
-        return cast(int, next(iter(pending_calls)))
-    return max(pending_calls.keys(), default=-1) + 1
+        key = tools_acc.find_key_for_tool_call_id(tool_call_id)
+        if key is not None:
+            return cast(int, key)
+        return tools_acc.next_int_key()
+    single = tools_acc.single_key()
+    if single is not None:
+        return cast(int, single)
+    return tools_acc.next_int_key()
 
 
 def _stream_timeout(timeout: float) -> httpx.Timeout:
@@ -480,12 +441,13 @@ def _synthesize_text_tool_events(
     return events
 
 
-def _build_openai_tool(tool: ToolDefinition, *, provider_kind: str = "") -> dict[str, Any]:
+def _build_openai_tool(
+    tool: ToolDefinition,
+    *,
+    unsupported_keywords: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
     schema = tool.input_schema.model_dump(exclude_none=True)
-    schema = _strip_tool_schema_keywords(
-        schema,
-        _provider_unsupported_tool_schema_keywords(provider_kind),
-    )
+    schema = _strip_tool_schema_keywords(schema, unsupported_keywords)
     return {
         "type": "function",
         "function": {
@@ -502,19 +464,6 @@ def _openrouter_model_likely_supports_explicit_prompt_cache(model: str) -> bool:
 
 def _openrouter_model_is_anthropic(model: str) -> bool:
     return model.strip().lower().startswith("anthropic/")
-
-
-def _openrouter_anthropic_should_use_top_level_cache(
-    *,
-    provider_kind: str,
-    model: str,
-    cfg: ChatConfig,
-) -> bool:
-    return (
-        provider_kind == "openrouter"
-        and cfg.cache_mode in {"auto", "on"}
-        and _openrouter_model_is_anthropic(model)
-    )
 
 
 def _stable_json_hash(value: Any) -> str:
@@ -553,32 +502,22 @@ def _attach_reasoning_content(
     return payload
 
 
-def _is_direct_deepseek_v4_model_id(model: str) -> bool:
-    return model.strip().lower() in {"deepseek-v4-flash", "deepseek-v4-pro"}
-
-
-def _is_direct_deepseek_v4_request(provider_kind: str, model: str) -> bool:
-    return provider_kind == "deepseek" and _is_direct_deepseek_v4_model_id(model)
+def _requires_assistant_reasoning_content(policy: OpenAICompatPolicy, model: str) -> bool:
+    return model.strip().lower() in policy.require_reasoning_content_model_ids
 
 
 def _should_replay_reasoning_content(
     *,
-    provider_kind: str,
+    policy: OpenAICompatPolicy,
     model: str,
     caps: ModelCapabilities | None,
 ) -> bool:
-    if provider_kind == "openrouter":
-        if not caps or not caps.supports_reasoning:
-            return False
-        return caps.reasoning_format == "openrouter"
-    if _is_direct_deepseek_v4_request(provider_kind, model):
+    if _requires_assistant_reasoning_content(policy, model):
         return True
     if not caps or not caps.supports_reasoning:
         return False
-    return (
-        provider_kind == "deepseek"
-        and caps.reasoning_format == "deepseek"
-        and _is_direct_deepseek_v4_model_id(model)
+    return bool(policy.replay_reasoning_format) and (
+        caps.reasoning_format == policy.replay_reasoning_format
     )
 
 
@@ -587,6 +526,7 @@ def _build_openai_messages(
     *,
     include_reasoning_content: bool = True,
     require_assistant_reasoning_content: bool = False,
+    replay_provider_state: bool = True,
 ) -> list[dict[str, Any]]:
     """Convert a opensquilla Message into one or more OpenAI-format message dicts.
 
@@ -656,8 +596,9 @@ def _build_openai_messages(
     if tool_calls:
         # Gemini requires thought_signature on the first tool_call in each
         # step of the current turn. Attach it if a ContentBlockThinking with
-        # a signature preceded the tool_use blocks.
-        if thinking_signature and tool_calls:
+        # a signature preceded the tool_use blocks — but never replay a
+        # signature to a provider that did not mint it.
+        if thinking_signature and tool_calls and replay_provider_state:
             tool_calls[0]["extra_content"] = {
                 "google": {"thought_signature": thinking_signature},
             }
@@ -710,6 +651,8 @@ class OpenAIProvider:
         proxy: str | None = None,
         provider_kind: str | None = None,
         provider_routing: Mapping[str, str] | None = None,
+        compat: OpenAICompatPolicy | None = None,
+        replay_provider_state: bool = True,
     ) -> None:
         self._api_key = clean_header_secret(api_key, label="LLM API key")
         self._model = model
@@ -718,6 +661,8 @@ class OpenAIProvider:
         self._org_id = org_id
         inferred_kind = "openrouter" if "openrouter.ai" in self._base_url else "openai"
         self._provider_kind = provider_kind or inferred_kind
+        self._compat = compat or compat_policy_for_kind(self._provider_kind)
+        self._replay_provider_state = replay_provider_state
         self._provider_routing: Mapping[str, str] = provider_routing or {}
 
     @property
@@ -748,14 +693,13 @@ class OpenAIProvider:
         )
 
     def _api_url(self, path: str) -> str:
-        """Build an API URL without duplicating the version prefix."""
-        if self._base_url.endswith("/v1") and path.startswith("/v1/"):
-            return f"{self._base_url}{path[3:]}"
-        if self._base_url.endswith("/v2") and path.startswith("/v1/"):
-            return f"{self._base_url}{path[3:]}"
-        if self._base_url.endswith("/v3") and path.startswith("/v1/"):
-            return f"{self._base_url}{path[3:]}"
-        if self._base_url.endswith("/v4") and path.startswith("/v1/"):
+        """Build an API URL without duplicating the version prefix.
+
+        A base URL already carrying a version segment (``/v1``…``/vN``, e.g.
+        Qianfan's ``/v2``, Volcengine's ``/api/v3``, Zhipu's ``/paas/v4``)
+        absorbs the canonical ``/v1`` path prefix.
+        """
+        if path.startswith("/v1/") and _VERSIONED_BASE_URL_RE.search(self._base_url):
             return f"{self._base_url}{path[3:]}"
         return f"{self._base_url}{path}"
 
@@ -777,12 +721,12 @@ class OpenAIProvider:
         openai_messages: list[dict[str, Any]] = []
         caps = cfg.model_capabilities
         include_reasoning_content = _should_replay_reasoning_content(
-            provider_kind=self._provider_kind,
+            policy=self._compat,
             model=self._model,
             caps=caps,
         )
         if cfg.system:
-            explicit_cache_supported = self._provider_kind == "openrouter" and (
+            explicit_cache_supported = self._compat.supports_explicit_prompt_cache and (
                 cfg.cache_mode == "on"
                 or (
                     cfg.cache_mode == "auto"
@@ -806,8 +750,9 @@ class OpenAIProvider:
                     m,
                     include_reasoning_content=include_reasoning_content,
                     require_assistant_reasoning_content=(
-                        _is_direct_deepseek_v4_request(self._provider_kind, self._model)
+                        _requires_assistant_reasoning_content(self._compat, self._model)
                     ),
+                    replay_provider_state=self._replay_provider_state,
                 )
             )
 
@@ -817,24 +762,24 @@ class OpenAIProvider:
             "stream": True,
             "stream_options": {"include_usage": True},
         }
-        if _direct_openai_uses_max_completion_tokens(
-            self._provider_kind,
-            self._base_url,
-            self._model,
-        ):
+        if _uses_max_completion_tokens(self._compat, self._base_url, self._model):
             payload["max_completion_tokens"] = cfg.max_tokens
         else:
             payload["max_tokens"] = cfg.max_tokens
-        if self._provider_kind == "openrouter":
+        if self._compat.sends_usage_include:
             payload["usage"] = {"include": True}
-            if _openrouter_anthropic_should_use_top_level_cache(
-                provider_kind=self._provider_kind,
-                model=self._model,
-                cfg=cfg,
-            ):
-                payload["cache_control"] = {"type": "ephemeral"}
+        if self._compat.sends_disable_fallbacks:
+            # Gateway proxies must not silently substitute another model:
+            # SquillaRouter is the single routing authority.
+            payload["disable_fallbacks"] = True
+        if (
+            self._compat.anthropic_top_level_cache
+            and cfg.cache_mode in {"auto", "on"}
+            and _openrouter_model_is_anthropic(self._model)
+        ):
+            payload["cache_control"] = {"type": "ephemeral"}
         if _should_send_temperature(
-            self._provider_kind,
+            self._compat,
             self._base_url,
             self._model,
             cfg,
@@ -845,11 +790,15 @@ class OpenAIProvider:
             payload["stop"] = cfg.stop_sequences
         if tools:
             payload["tools"] = [
-                _build_openai_tool(t, provider_kind=self._provider_kind) for t in tools
+                _build_openai_tool(
+                    t,
+                    unsupported_keywords=self._compat.tool_schema_unsupported_keywords,
+                )
+                for t in tools
             ]
             if cfg.tool_choice is not None:
                 payload["tool_choice"] = cfg.tool_choice
-        if self._provider_kind == "openrouter":
+        if self._compat.supports_provider_routing_pin:
             pinned_provider = self._provider_routing.get(self._model)
             if pinned_provider:
                 payload["provider"] = {
@@ -858,12 +807,18 @@ class OpenAIProvider:
                 }
 
         # Reasoning injection (gated on thinking being enabled)
-        direct_deepseek_v4 = _is_direct_deepseek_v4_request(self._provider_kind, self._model)
+        thinking_toggle_model = (
+            self._model.strip().lower() in self._compat.thinking_toggle_model_ids
+        )
         if (caps and caps.supports_reasoning and cfg.thinking) or (
-            direct_deepseek_v4 and cfg.thinking
+            thinking_toggle_model and cfg.thinking
         ):
             effort = _resolve_reasoning_effort(cfg.thinking_level, cfg.thinking_budget_tokens)
-            reasoning_format = caps.reasoning_format if caps is not None else "deepseek"
+            reasoning_format = (
+                caps.reasoning_format
+                if caps is not None
+                else self._compat.default_reasoning_format
+            )
             if reasoning_format == "openrouter":
                 payload["reasoning"] = {"effort": effort}
             elif reasoning_format == "openai":
@@ -880,7 +835,7 @@ class OpenAIProvider:
                 payload["thinking_budget"] = cfg.thinking_budget_tokens
             elif reasoning_format in {"moonshot", "volcengine"}:
                 payload["thinking"] = {"type": "enabled"}
-        elif direct_deepseek_v4 or (
+        elif thinking_toggle_model or (
             caps and caps.supports_reasoning and caps.reasoning_format == "deepseek"
         ):
             payload["thinking"] = {"type": "disabled"}
@@ -906,11 +861,10 @@ class OpenAIProvider:
         ):
             payload["thinking"] = {"type": "disabled"}
         elif (
-            self._provider_kind == "openrouter"
-            and caps
+            caps
             and caps.supports_reasoning
             and caps.reasoning_format == "openrouter"
-            and _should_disable_openrouter_reasoning_by_default(self._model)
+            and self._model.strip().lower() in self._compat.disable_reasoning_by_default_models
         ):
             payload["reasoning"] = {"enabled": False}
 
@@ -963,11 +917,10 @@ class OpenAIProvider:
         if self._org_id:
             headers["OpenAI-Organization"] = self._org_id
 
-        # tool_call accumulator: index -> {id, name, json_parts}
-        pending_calls: dict[int, dict[str, Any]] = {}
+        tools_acc = ToolStreamAccumulator()
         # Gemini thought_signature streamed on a non-FC text delta. Kept
-        # separate from pending_calls (whose keys MUST stay int — see
-        # _resolve_tool_call_index's max(keys)+1) so a str key can never
+        # separate from the tool accumulator (whose keys MUST stay int — see
+        # _resolve_tool_call_index's next_int_key) so a str key can never
         # poison the next-index computation with a TypeError.
         streamed_thought_signature: str | None = None
         reasoning = ReasoningAccumulator()
@@ -990,7 +943,7 @@ class OpenAIProvider:
                 file=sys.stderr,
                 flush=True,
             )
-        if self._provider_kind == "openrouter":
+        if self._compat.log_payload_cache_shape:
             system_payload = (
                 openai_messages[0]
                 if openai_messages and openai_messages[0].get("role") == "system"
@@ -1017,7 +970,7 @@ class OpenAIProvider:
             async with httpx.AsyncClient(
                 timeout=(
                     _stream_timeout(cfg.timeout)
-                    if self._provider_kind == "openrouter"
+                    if self._compat.stream_timeout_fallback
                     else cfg.timeout
                 ),
                 trust_env=_trust_env(),
@@ -1029,10 +982,27 @@ class OpenAIProvider:
                     headers=headers,
                     json=payload,
                 ) as response:
+                    if self._compat.attribution_response_headers:
+                        attribution = {
+                            name: response.headers[name]
+                            for name in self._compat.attribution_response_headers
+                            if name in response.headers
+                        }
+                        if attribution:
+                            fallbacks_taken = _coerce_int(
+                                attribution.get("x-litellm-attempted-fallbacks")
+                            )
+                            log_fn = log.warning if fallbacks_taken > 0 else log.info
+                            log_fn(
+                                "provider.gateway_attribution",
+                                provider=self._provider_kind,
+                                requested_model=self._model,
+                                **{k.replace("-", "_"): v for k, v in attribution.items()},
+                            )
                     if response.status_code != 200:
                         body = await response.aread()
                         message = _format_chat_http_error(
-                            self._provider_kind,
+                            self._compat.display_name,
                             response.status_code,
                             body,
                         )
@@ -1127,37 +1097,23 @@ class OpenAIProvider:
                             # Gemini thought_signature on non-FC deltas
                             # (streamed thinking path): Gemini sends it on
                             # the top-level delta instead of attaching it to
-                            # a tool_call. Keep it out of pending_calls.
+                            # a tool_call. Keep it out of the tool accumulator.
                             ts_delta = delta.get("thought_signature")
                             if isinstance(ts_delta, str) and ts_delta:
                                 streamed_thought_signature = ts_delta
 
                             # Tool calls (may stream over multiple chunks)
                             for tc in delta.get("tool_calls", []):
-                                idx = _resolve_tool_call_index(
-                                    tc,
-                                    pending_calls,
-                                    provider_kind=self._provider_kind,
-                                )
-                                if idx not in pending_calls:
-                                    pending_calls[idx] = {
-                                        "id": tc.get("id", f"call_{uuid4().hex[:12]}"),
-                                        "name": tc.get("function", {}).get("name", ""),
-                                        "parts": [],
-                                        "thought_signature": None,
-                                    }
+                                idx = _resolve_tool_call_index(tc, tools_acc)
+                                function = tc.get("function", {}) or {}
+                                for tool_event in tools_acc.append_or_start(
+                                    idx,
+                                    tool_call_id=tc.get("id"),
+                                    tool_name=function.get("name", ""),
+                                    fragment=function.get("arguments", ""),
+                                ):
                                     emitted_stream_event = True
-                                    yield ToolUseStartEvent(
-                                        tool_use_id=pending_calls[idx]["id"],
-                                        tool_name=pending_calls[idx]["name"],
-                                    )
-                                else:
-                                    # id/name may arrive in later chunks
-                                    if tc.get("id"):
-                                        pending_calls[idx]["id"] = tc["id"]
-                                    fname = tc.get("function", {}).get("name", "")
-                                    if fname:
-                                        pending_calls[idx]["name"] = fname
+                                    yield tool_event
 
                                 # Gemini thought_signature (OpenAI compat format):
                                 # tool_calls[].extra_content.google.thought_signature
@@ -1167,37 +1123,26 @@ class OpenAIProvider:
                                     .get("thought_signature")
                                 )
                                 if isinstance(sig, str) and sig:
-                                    pending_calls[idx]["thought_signature"] = sig
+                                    tools_acc.set_metadata(idx, "thought_signature", sig)
 
-                                fragment = tc.get("function", {}).get("arguments", "")
-                                if fragment:
-                                    pending_calls[idx]["parts"].append(fragment)
-                                    emitted_stream_event = True
-                                    yield ToolUseDeltaEvent(
-                                        tool_use_id=pending_calls[idx]["id"],
-                                        json_fragment=fragment,
-                                    )
-
-                    # Emit ToolUseEnd for each completed call
-                    for call in pending_calls.values():
-                        full_json = "".join(call["parts"])
-                        try:
-                            args = json.loads(full_json) if full_json else {}
-                        except json.JSONDecodeError:
-                            args = {"_raw": full_json}
+                    # Chat Completions has no per-call stop event: close every
+                    # assembled call once the stream ends.
+                    for tool_event in tools_acc.finish_all():
                         emitted_stream_event = True
-                        yield ToolUseEndEvent(
-                            tool_use_id=call["id"],
-                            tool_name=call["name"],
-                            arguments=args,
-                        )
+                        yield tool_event
 
                     # Last-resort MiniMax compatibility: some OpenRouter
                     # upstreams leak native MiniMax XML tool calls as text
                     # instead of structured tool_calls. Only synthesize calls
-                    # when no structured calls arrived, tools were offered, and
-                    # the parsed tool name is explicitly allowed by this turn.
-                    if not pending_calls and tools and assistant_text_parts:
+                    # for provider kinds known to leak the text protocol, when
+                    # no structured calls arrived, tools were offered, and the
+                    # parsed tool name is explicitly allowed by this turn.
+                    if (
+                        not tools_acc.has_calls
+                        and tools
+                        and assistant_text_parts
+                        and self._compat.text_tool_synthesis
+                    ):
                         full_text = "".join(assistant_text_parts)
                         for event in _synthesize_text_tool_events(full_text, tools):
                             emitted_stream_event = True
@@ -1218,14 +1163,12 @@ class OpenAIProvider:
 
                     # Gemini thought_signature: extract from the first tool call
                     # that carries one (Gemini attaches it to the first FC only).
-                    gemini_thought_sig: str | None = None
-                    for _call in pending_calls.values():
-                        sig = _call.get("thought_signature")
-                        if isinstance(sig, str) and sig:
-                            gemini_thought_sig = sig
-                            break
                     # Fallback: when Gemini streams the signature on a non-FC
                     # text delta (no tool_call carries it), use the streamed one.
+                    gemini_thought_sig = cast(
+                        "str | None",
+                        tools_acc.first_metadata("thought_signature"),
+                    )
                     if gemini_thought_sig is None:
                         gemini_thought_sig = streamed_thought_signature
 
@@ -1244,7 +1187,7 @@ class OpenAIProvider:
                     )
 
         except httpx.TimeoutException as exc:
-            if self._provider_kind == "openrouter" and not emitted_stream_event:
+            if self._compat.stream_timeout_fallback and not emitted_stream_event:
                 log.warning(
                     "openrouter.stream_timeout_fallback_started",
                     model=self._model,
@@ -1256,18 +1199,39 @@ class OpenAIProvider:
                     phase="llm_fallback",
                     message="OpenRouter stream timed out; retrying without streaming.",
                 )
-                async for fallback_event in self._complete_non_stream(
-                    payload=payload,
-                    headers=headers,
-                    cfg=cfg,
-                    tools=tools,
-                    timeout_exc=exc,
-                ):
-                    yield fallback_event
+                try:
+                    async for fallback_event in self._complete_non_stream(
+                        payload=payload,
+                        headers=headers,
+                        cfg=cfg,
+                        tools=tools,
+                        timeout_exc=exc,
+                    ):
+                        yield fallback_event
+                except Exception as fallback_exc:  # noqa: BLE001 - see contract note below
+                    log.exception(
+                        "provider.stream_internal_error",
+                        provider=self._provider_kind,
+                        model=self._model,
+                    )
+                    yield ErrorEvent(
+                        message=f"Provider response handling failed: {fallback_exc}",
+                        code="provider_internal",
+                    )
                 return
             yield ErrorEvent(message=f"Request timed out: {exc}", code="timeout")
         except httpx.RequestError as exc:
             yield ErrorEvent(message=f"Request error: {exc}", code="request_error")
+        except Exception as exc:  # noqa: BLE001 - chat() contract: ErrorEvent instead of raising
+            log.exception(
+                "provider.stream_internal_error",
+                provider=self._provider_kind,
+                model=self._model,
+            )
+            yield ErrorEvent(
+                message=f"Provider response handling failed: {exc}",
+                code="provider_internal",
+            )
 
     async def _complete_non_stream(
         self,
@@ -1311,7 +1275,7 @@ class OpenAIProvider:
         if response.status_code != 200:
             yield ErrorEvent(
                 message=_format_chat_http_error(
-                    self._provider_kind,
+                    self._compat.display_name,
                     response.status_code,
                     response.text,
                 ),
@@ -1338,8 +1302,7 @@ class OpenAIProvider:
         stop_reason = "stop"
         assistant_text_parts: list[str] = []
         reasoning = ReasoningAccumulator()
-        emitted_structured_tool = False
-        non_stream_thought_sig: str | None = None
+        tools_acc = ToolStreamAccumulator()
 
         for choice in data.get("choices", []):
             if choice.get("finish_reason"):
@@ -1368,31 +1331,29 @@ class OpenAIProvider:
             for tc in message.get("tool_calls") or []:
                 function = tc.get("function") or {}
                 tool_use_id = tc.get("id") or f"call_{uuid4().hex[:12]}"
-                tool_name = function.get("name") or ""
-                arguments_text = function.get("arguments") or ""
-                emitted_structured_tool = True
-                yield ToolUseStartEvent(tool_use_id=tool_use_id, tool_name=tool_name)
-                if arguments_text:
-                    yield ToolUseDeltaEvent(
-                        tool_use_id=tool_use_id,
-                        json_fragment=arguments_text,
-                    )
-                try:
-                    arguments = json.loads(arguments_text) if arguments_text else {}
-                except json.JSONDecodeError:
-                    arguments = {"_raw": arguments_text}
-                yield ToolUseEndEvent(
+                call_key = tools_acc.next_int_key()
+                for tool_event in tools_acc.start(
+                    call_key,
                     tool_use_id=tool_use_id,
-                    tool_name=tool_name,
-                    arguments=arguments,
-                )
-                # Collect Gemini thought_signature from first FC that has one.
-                if non_stream_thought_sig is None:
-                    sig = (tc.get("extra_content") or {}).get("google", {}).get("thought_signature")
-                    if isinstance(sig, str) and sig:
-                        non_stream_thought_sig = sig
+                    tool_name=function.get("name") or "",
+                ):
+                    yield tool_event
+                arguments_text = function.get("arguments") or ""
+                if arguments_text:
+                    for tool_event in tools_acc.append(call_key, arguments_text):
+                        yield tool_event
+                sig = (tc.get("extra_content") or {}).get("google", {}).get("thought_signature")
+                if isinstance(sig, str) and sig:
+                    tools_acc.set_metadata(call_key, "thought_signature", sig)
+                for tool_event in tools_acc.finish(call_key):
+                    yield tool_event
 
-        if not emitted_structured_tool and tools and assistant_text_parts:
+        if (
+            not tools_acc.has_calls
+            and tools
+            and assistant_text_parts
+            and self._compat.text_tool_synthesis
+        ):
             for event in _synthesize_text_tool_events("".join(assistant_text_parts), tools):
                 yield event
 
@@ -1409,7 +1370,10 @@ class OpenAIProvider:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             reasoning_content=reasoning_text or None,
-            thinking_signature=non_stream_thought_sig,
+            thinking_signature=cast(
+                "str | None",
+                tools_acc.first_metadata("thought_signature"),
+            ),
             reasoning_tokens=reasoning_tokens,
             cached_tokens=cached_tokens,
             cache_write_tokens=cache_write_tokens,

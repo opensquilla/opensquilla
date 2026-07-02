@@ -60,8 +60,6 @@ def test_approval_queue_ignores_corrupt_json_payload(tmp_path) -> None:
 
 def test_approval_queue_migrates_legacy_table_and_backfills_resolution(tmp_path) -> None:
     db_path = tmp_path / "approval_queue.sqlite"
-    # Build a pre-migration table (no deadline / resolution columns) holding one
-    # approved and one denied resolved row, plus an unresolved row.
     conn = sqlite3.connect(str(db_path))
     conn.execute(
         """
@@ -145,7 +143,6 @@ async def test_approval_queue_wait_records_timeout_as_expired_not_denied(tmp_pat
         entry = queue.get(approval_id)
         assert entry.resolved is True
         assert entry.approved is False
-        # A lapsed deadline is recorded as expired, distinct from a human deny.
         assert entry.resolution == "expired"
     finally:
         queue.close()
@@ -189,8 +186,6 @@ async def test_approval_queue_extend_pushes_deadline_so_late_decision_wins(tmp_p
     queue = ApprovalQueue(db_path=str(db_path), default_timeout=10.0, poll_interval=0.01)
     approval_id = queue.request("exec", {"toolName": "exec_command", "command": "rm x"})
     try:
-        # A short wait that would expire at ~0.05s; an extend at ~0.02s pushes
-        # the deadline far enough out that an approve at ~0.08s lands first.
         waiter = asyncio.create_task(queue.wait(approval_id, timeout=0.05))
         await asyncio.sleep(0.02)
         queue.extend(approval_id, 5.0)
@@ -219,19 +214,14 @@ async def test_approval_queue_extend_is_noop_once_resolved(tmp_path) -> None:
 
 
 def test_expire_declines_when_extend_pushed_deadline_past_now(tmp_path) -> None:
-    """An extend that lands in the gap after the wait loop saw the deadline
-    lapse but before the expire write must NOT expire the request."""
     import time
 
     db_path = tmp_path / "approval_queue.sqlite"
     queue = ApprovalQueue(db_path=str(db_path), default_timeout=10.0, poll_interval=0.01)
     approval_id = queue.request("exec", {"toolName": "exec_command", "command": "rm x"})
     try:
-        # Simulate the wait loop having observed a lapsed deadline...
         queue._rearm_deadline(approval_id, time.time() - 1.0)
-        # ...then an extend lands before the expire write lock.
         queue.extend(approval_id, 60.0)
-        # The expiry path must re-check the deadline and decline to expire.
         assert queue._expire_if_unresolved(approval_id) is None
         entry = queue.get(approval_id)
         assert entry.resolved is False
@@ -307,5 +297,35 @@ def test_approval_queue_consume_is_one_shot_with_stale_unconsumed_read(
             queue.consume(approval_id)
 
         assert queue.get(approval_id).consumed is True
+    finally:
+        queue.close()
+
+
+@pytest.mark.asyncio
+async def test_approval_queue_keeps_stale_resolved_claim_not_ready(tmp_path) -> None:
+    db_path = tmp_path / "approval_queue.sqlite"
+    queue = ApprovalQueue(db_path=str(db_path), default_timeout=1.0, poll_interval=0.01)
+    approval_id = queue.request("exec", {"toolName": "exec_command", "command": "rm x"})
+    token = queue.claim_resolution(approval_id)
+    try:
+        queue.finalize_claimed_resolution(approval_id, token, True)
+        queue._conn.execute(
+            "UPDATE approval_queue SET claim_token = ?, claim_started_at = 0 "
+            "WHERE approval_id = ?",
+            ("stale-token", approval_id),
+        )
+        queue._conn.commit()
+
+        entry = queue.get(approval_id)
+
+        assert entry.claim_token == "stale-token"
+        assert entry.resolved is True
+        assert entry.approved is True
+        assert queue.status(approval_id)["resolved"] is False
+        assert queue.status(approval_id)["approved"] is False
+        with pytest.raises(ValueError, match="in progress"):
+            queue.consume(approval_id)
+        with pytest.raises(ValueError, match="in progress"):
+            await queue.wait(approval_id, timeout=0.02)
     finally:
         queue.close()

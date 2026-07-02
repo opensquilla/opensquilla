@@ -27,7 +27,6 @@ class _RecordingQueue:
         return "approval-1"
 
     async def wait(self, approval_id: str, timeout: float | None = None) -> bool:
-        # The gate should never reach here when the intent is cached.
         raise AssertionError("approval should not be awaited for a cached intent")
 
     def resolve(self, approval_id: str, approved: bool) -> None:  # pragma: no cover
@@ -55,7 +54,7 @@ def _reset_cache():
 
 
 @pytest.mark.asyncio
-async def test_gate_short_circuits_on_always_allowed_intent(tmp_path: Path) -> None:
+async def test_gate_ignores_legacy_always_allowed_intent(tmp_path: Path) -> None:
     target = tmp_path / "x"
     get_intent_cache().record_always(f"rm {target}")
 
@@ -65,13 +64,17 @@ async def test_gate_short_circuits_on_always_allowed_intent(tmp_path: Path) -> N
         action_kind="shell.exec",
         policy=_policy(tmp_path),
     )
-    queue = _RecordingQueue()
+    class _ResolvingQueue(_RecordingQueue):
+        async def wait(self, approval_id: str, timeout: float | None = None) -> bool:
+            return True
+
+    queue = _ResolvingQueue()
     gate = ApprovalGate(queue)
 
     decision = await gate.gate(request, request.policy, session_id="s1")
 
     assert decision is ALLOW
-    assert queue.requested is False
+    assert queue.requested is True
 
 
 @pytest.mark.asyncio

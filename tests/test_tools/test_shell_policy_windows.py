@@ -24,12 +24,12 @@ def _windows_policy_env(monkeypatch: pytest.MonkeyPatch):
         r"dEl C:\Windows\System32\config\SAM",
     ],
 )
-def test_windows_del_variants_are_denied(command: str) -> None:
+def test_windows_del_variants_warn(command: str) -> None:
     result = shell_policy.SafeBinPolicy.from_env().check(command)
 
-    assert result.allowed is False
-    assert result.needs_approval is False
-    assert "blocked by policy" in result.reason
+    assert result.allowed is True
+    assert result.needs_approval is True
+    assert "requires approval" in result.reason
 
 
 @pytest.mark.parametrize(
@@ -42,6 +42,14 @@ def test_windows_del_variants_are_denied(command: str) -> None:
 )
 def test_windows_remove_item_variants_warn(command: str) -> None:
     result = shell_policy.SafeBinPolicy.from_env().check(command)
+
+    assert result.allowed is True
+    assert result.needs_approval is True
+    assert "requires approval" in result.reason
+
+
+def test_windows_rmdir_warns() -> None:
+    result = shell_policy.SafeBinPolicy.from_env().check(r"rmdir C:\tmp\stale /S /Q")
 
     assert result.allowed is True
     assert result.needs_approval is True
@@ -76,10 +84,18 @@ def test_windows_empty_warn_env_preserves_default_denylist(
 ) -> None:
     monkeypatch.setenv("OPENSQUILLA_SAFE_BIN_WARN", "")
 
-    result = shell_policy.SafeBinPolicy.from_env().check(r"del C:\Windows\System32\config\SAM")
+    result = shell_policy.SafeBinPolicy.from_env().check(r"Format-Volume -DriveLetter D")
 
     assert result.allowed is False
     assert result.needs_approval is False
+
+
+def test_windows_disk_wipe_commands_stay_denied() -> None:
+    result = shell_policy.SafeBinPolicy.from_env().check(r"Clear-Disk -Number 0")
+
+    assert result.allowed is False
+    assert result.needs_approval is False
+    assert "blocked by policy" in result.reason
 
 
 def test_legacy_shell_denylist_warns_once(monkeypatch: pytest.MonkeyPatch) -> None:

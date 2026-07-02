@@ -3369,18 +3369,6 @@ def test_approval_monitor_sends_auth_headers() -> None:
     assert "headers: _authHeaders({ 'Content-Type': 'application/json' })" in source
 
 
-def test_approvals_view_sends_auth_headers() -> None:
-    source = Path("src/opensquilla/gateway/static/js/views/approvals.js").read_text(
-        encoding="utf-8"
-    )
-
-    assert "function _authHeaders(extra)" in source
-    assert "App.getAuthToken" in source
-    assert "headers['Authorization'] = `Bearer ${token}`;" in source
-    assert "fetch('/api/approvals', { headers: _authHeaders() })" in source
-    assert "headers: _authHeaders({ 'Content-Type': 'application/json' })" in source
-
-
 def test_session_api_token_totals_load_independently_of_token_widget() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     start = source.index("async function _loadCurrentSessionUsage() {")

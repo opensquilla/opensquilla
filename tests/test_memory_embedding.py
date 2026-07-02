@@ -50,6 +50,8 @@ def _patch_embedding_client(monkeypatch, captured: dict[str, object]) -> None:
 
 
 def test_local_embedding_tokenizes_for_onnx_inputs() -> None:
+    pytest.importorskip("numpy", reason="local ONNX embedding tokenization needs numpy")
+
     class _Encoding:
         ids = [101, 102]
         attention_mask = [1, 1]
@@ -89,8 +91,7 @@ async def test_openai_embedding_provider_adds_openrouter_app_attribution_for_que
     assert captured["headers"] == {
         "Authorization": "Bearer or-test",
         "HTTP-Referer": "https://opensquilla.ai",
-        "X-OpenRouter-Title": "OpenSquilla",
-        "X-OpenRouter-Categories": "cli-agent,personal-agent",
+        "X-Title": "OpenSquilla",
     }
 
 

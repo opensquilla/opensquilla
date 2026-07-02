@@ -1,5 +1,4 @@
 from opensquilla.provider.openrouter_attribution import (
-    OPENROUTER_APP_CATEGORIES,
     OPENROUTER_APP_REFERER,
     OPENROUTER_APP_TITLE,
     is_openrouter_url,
@@ -8,14 +7,13 @@ from opensquilla.provider.openrouter_attribution import (
 
 
 def test_openrouter_app_headers_match_app_attribution_contract() -> None:
+    # OpenRouter's documented app-attribution contract: HTTP-Referer + X-Title.
     assert openrouter_app_headers("https://openrouter.ai/api/v1") == {
         "HTTP-Referer": "https://opensquilla.ai",
-        "X-OpenRouter-Title": "OpenSquilla",
-        "X-OpenRouter-Categories": "cli-agent,personal-agent",
+        "X-Title": "OpenSquilla",
     }
     assert OPENROUTER_APP_REFERER == "https://opensquilla.ai"
     assert OPENROUTER_APP_TITLE == "OpenSquilla"
-    assert OPENROUTER_APP_CATEGORIES == "cli-agent,personal-agent"
 
 
 def test_openrouter_url_detection_accepts_openrouter_hosts_only() -> None:

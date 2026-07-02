@@ -44,6 +44,7 @@ function makeOptions(overrides: Partial<UseChatSendOptions> = {}) {
     sessionKey: ref('agent:main:webchat:test'),
     busySendMode: ref<BusySendMode>('queue'),
     elevatedMode: ref(''),
+    runMode: ref('trusted'),
     pendingAttachments: ref<Attachment[]>([]),
     pendingSessionIntent: ref(null),
     aborted: ref(false),
@@ -66,6 +67,18 @@ function makeOptions(overrides: Partial<UseChatSendOptions> = {}) {
 }
 
 describe('useChatSend attachment payloads', () => {
+  it('sends the selected sandbox run mode as trusted source metadata', async () => {
+    const { api, rpc } = makeOptions({
+      runMode: ref('standard'),
+    } as Partial<UseChatSendOptions>)
+
+    await api.onSend()
+
+    expect(rpc.call).toHaveBeenCalledWith('chat.send', expect.objectContaining({
+      _source: { runMode: 'standard' },
+    }))
+  })
+
   it('serializes only sendable attachments and leaves failed attachments in the composer', async () => {
     const failed: Attachment = {
       kind: 'failed',

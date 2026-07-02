@@ -62,7 +62,6 @@ SUCCESS_STATES = {"completed", "succeeded"}
 # headers (the predicate gates by host).
 _OPENROUTER_APP_REFERER = "https://opensquilla.ai"
 _OPENROUTER_APP_TITLE = "OpenSquilla"
-_OPENROUTER_APP_CATEGORIES = "cli-agent,personal-agent"
 
 
 def _is_openrouter_url(url: str | None) -> bool:
@@ -81,8 +80,7 @@ def _openrouter_attribution_headers(url: str | None) -> dict[str, str]:
         return {}
     return {
         "HTTP-Referer": _OPENROUTER_APP_REFERER,
-        "X-OpenRouter-Title": _OPENROUTER_APP_TITLE,
-        "X-OpenRouter-Categories": _OPENROUTER_APP_CATEGORIES,
+        "X-Title": _OPENROUTER_APP_TITLE,
     }
 
 

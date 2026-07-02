@@ -609,6 +609,8 @@ async def handle_ws_connection(
         await conn.close()
         return
 
+    from opensquilla.sandbox.run_mode_policy import hello_auth_payload
+
     # Step 5: Negotiate protocol version
     min_proto = params_raw.get("minProtocol", 1)
     max_proto = params_raw.get("maxProtocol", PROTOCOL_VERSION)
@@ -652,6 +654,7 @@ async def handle_ws_connection(
                 * 1000
             ),
         ),
+        auth=hello_auth_payload(principal),
     )
     await ws.send_text(hello.model_dump_json())
 

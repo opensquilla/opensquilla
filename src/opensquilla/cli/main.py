@@ -539,7 +539,10 @@ memory_app.command("flush-session")(memory_flush_session_cmd)
 
 # ── gateway sub-app ───────────────────────────────────────────────────────────
 
-gateway_app = typer.Typer(help="Gateway server commands.")
+gateway_app = typer.Typer(
+    help="Gateway server commands.",
+    pretty_exceptions_enable=False,
+)
 app.add_typer(gateway_app, name="gateway")
 
 

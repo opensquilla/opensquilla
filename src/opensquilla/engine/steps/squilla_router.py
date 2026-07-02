@@ -27,6 +27,7 @@ from opensquilla.router_tiers import (
     ROUTE_CLASS_TO_TIER,
     TEXT_TIERS,
     TIER_TO_ROUTE_CLASS,
+    TierConfig,
     normalize_text_tier,
 )
 from opensquilla.squilla_router.controller import (
@@ -585,6 +586,55 @@ def _tier_config_value(tier_cfg: object, key: str, default: object = None) -> ob
     return getattr(tier_cfg, key, default)
 
 
+def _flag_tier_provider_mismatch(
+    ctx: TurnContext,
+    tiers: dict,
+    tier_name: str,
+    *,
+    routing_applied: bool,
+) -> None:
+    """Record the routed tier's provider; warn on unexecutable mismatches.
+
+    The tier's provider is always published as ``routed_provider`` so the
+    selector-apply site can execute it when ``cross_provider_tiers`` is
+    enabled. With the flag off, a tier naming another provider is a silent
+    misroute (the routed model runs on the active provider's credentials) —
+    surface it loudly in logs and telemetry.
+    """
+    if not routing_applied:
+        return
+    tier = TierConfig.from_value(tiers.get(tier_name))
+    if tier.provider:
+        ctx.metadata["routed_provider"] = tier.provider.lower()
+    active_provider = str(
+        getattr(getattr(ctx.config, "llm", None), "provider", "") or ""
+    ).strip().lower()
+    if not tier.provider or not active_provider:
+        return
+    if tier.provider.lower() == active_provider:
+        return
+    router_cfg = getattr(ctx.config, "squilla_router", None)
+    if bool(getattr(router_cfg, "cross_provider_tiers", False)):
+        log.info(
+            "squilla_router.cross_provider_tier_routed",
+            tier=tier_name,
+            tier_provider=tier.provider,
+            active_provider=active_provider,
+            model=tier.model,
+            session=ctx.session_key,
+        )
+        return
+    ctx.metadata["router_tier_provider_mismatch"] = tier.provider
+    log.warning(
+        "squilla_router.tier_provider_mismatch",
+        tier=tier_name,
+        tier_provider=tier.provider,
+        active_provider=active_provider,
+        model=tier.model,
+        session=ctx.session_key,
+    )
+
+
 def _upgrade_tier(tier: str, valid_tiers: list[str], steps: int) -> str:
     idx = _tier_index(tier, valid_tiers)
     if idx < 0:
@@ -1033,6 +1083,7 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
             ctx.metadata["router_control_target_provider"] = hold.provider
             ctx.metadata["router_control_evidence"] = hold.evidence
             ctx.metadata.update(_compute_savings(decision.model, tiers))
+            _flag_tier_provider_mismatch(ctx, tiers, decision.tier, routing_applied=True)
             _record_thinking_metadata(ctx, router_cfg, tiers[decision.tier])
             log.debug(
                 "squilla_router.router_control_hold_applied",
@@ -1191,6 +1242,7 @@ async def apply_squilla_router(ctx: TurnContext) -> TurnContext:
         tiers,
     )
     ctx.metadata.update(_compute_savings(decision.model, tiers))
+    _flag_tier_provider_mismatch(ctx, tiers, decision.tier, routing_applied=routing_applied)
 
     context_states = ctx.metadata.get("session_context_states") or ctx.metadata.get(
         "active_context_states"

@@ -275,6 +275,24 @@ async def _provider_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
     }
 
 
+@_d.method("onboarding.provider.probe", scope="operator.admin")
+async def _provider_probe(params: Any, ctx: RpcContext) -> dict[str, Any]:
+    """Live one-token probe of a candidate provider config (nothing is saved)."""
+    from opensquilla.onboarding.probe import probe_llm_provider
+
+    provider_id = _require(params, "providerId")
+    with _validation_error("onboarding.provider.invalid"):
+        result = await probe_llm_provider(
+            provider_id=provider_id,
+            model=params.get("model", "") if isinstance(params, dict) else "",
+            api_key=params.get("apiKey", "") if isinstance(params, dict) else "",
+            api_key_env=params.get("apiKeyEnv", "") if isinstance(params, dict) else "",
+            base_url=params.get("baseUrl", "") if isinstance(params, dict) else "",
+            proxy=params.get("proxy", "") if isinstance(params, dict) else "",
+        )
+    return result.to_payload()
+
+
 @_d.method("onboarding.router.catalog", scope="operator.read")
 async def _router_catalog(params: Any, ctx: RpcContext) -> dict[str, Any]:
     from opensquilla.onboarding.router_specs import router_catalog_payload

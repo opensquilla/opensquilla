@@ -85,7 +85,7 @@ def _post_once(
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "HTTP-Referer": "https://opensquilla.ai",
-            "X-OpenRouter-Title": "OpenSquilla cache smoke",
+            "X-Title": "OpenSquilla cache smoke",
         },
         json=_cache_request_payload(model, system_text),
     )

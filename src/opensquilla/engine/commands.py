@@ -186,6 +186,10 @@ def _session_key(envelope: Any) -> dict[str, str]:
     return {"sessionKey": envelope.session_key}
 
 
+def _sandbox_session_key(envelope: Any) -> dict[str, str]:
+    return {"sessionKey": envelope.session_key}
+
+
 def _empty(_envelope: Any) -> dict[str, Any]:
     return {}
 
@@ -356,7 +360,7 @@ _COMMANDS: tuple[CommandDef, ...] = (
     CommandDef(
         name="/forget",
         usage="/forget [target]",
-        description="Clear cached approval decisions.",
+        description="Compatibility no-op for removed approval cache.",
         execution={_T: _local("approvals.forget")},
     ),
     CommandDef(
@@ -402,6 +406,17 @@ _COMMANDS: tuple[CommandDef, ...] = (
         usage="/memory",
         description="Show memory subsystem status.",
         execution={_C: _rpc("doctor.memory.status", _empty)},
+    ),
+    CommandDef(
+        name="/sandbox",
+        usage="/sandbox <standard|trusted|full>",
+        description="Set the channel session sandbox mode.",
+        execution={_C: _rpc("sandbox.run_context.set", _sandbox_session_key)},
+        argument_choices=(
+            ArgumentChoice("standard", "Use Standard-Sandbox for this channel session."),
+            ArgumentChoice("trusted", "Use Trusted-Sandbox for this channel session."),
+            ArgumentChoice("full", "Use Full Host Access; channel admin only."),
+        ),
     ),
     CommandDef(
         name="/meta",

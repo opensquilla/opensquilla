@@ -8,6 +8,8 @@ import structlog
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.secrets import clean_header_secret
 
+from .models_dev import lookup_limits as _models_dev_limits
+from .models_dev import lookup_model as _models_dev_model
 from .ollama import _OLLAMA_DEFAULT_NUM_CTX
 from .openrouter_attribution import openrouter_app_headers
 from .registry import UnknownProviderError, get_provider_spec
@@ -227,15 +229,22 @@ class ModelCatalog:
                 reasoning_format="moonshot" if supports_reasoning else "none",
             )
         if provider_id == "volcengine":
+            # doubao-seed-1-6 and -1-8 and the seed-2 line are reasoning
+            # models; without 1-6 here the stream path emits no thinking
+            # toggle, so reasoning leaks into thinking-disabled requests
+            # (verified live 2026-07-02 against doubao-seed-1-6-251015).
             supports_reasoning = (
                 "thinking" in model_l
                 or model_l.startswith("doubao-seed-2")
                 or model_l.startswith("doubao-seed-1-8")
+                or model_l.startswith("doubao-seed-1-6")
             )
             return ModelCapabilities(
                 supports_reasoning=supports_reasoning,
                 supports_tools=True,
-                supports_vision=model_l.startswith(("doubao-seed-1-8", "doubao-seed-2")),
+                supports_vision=model_l.startswith(
+                    ("doubao-seed-1-6", "doubao-seed-1-8", "doubao-seed-2")
+                ),
                 reasoning_format="volcengine" if supports_reasoning else "none",
             )
         if provider_id == "byteplus":
@@ -243,16 +252,29 @@ class ModelCatalog:
                 "thinking" in model_l
                 or model_l.startswith("seed-2")
                 or model_l.startswith("seed-1-8")
+                or model_l.startswith("seed-1-6")
                 or model_l.startswith(("kimi-k2-", "kimi-k2."))
             )
             return ModelCapabilities(
                 supports_reasoning=supports_reasoning,
                 supports_tools=True,
                 supports_vision=model_l.startswith(
-                    ("seed-1-8", "seed-2", "kimi-k2-", "kimi-k2.")
+                    ("seed-1-6", "seed-1-8", "seed-2", "kimi-k2-", "kimi-k2.")
                 ),
                 reasoning_format="volcengine" if supports_reasoning else "none",
             )
+        # Unknown to every provider-specific branch: fill tools/vision from
+        # the vendored models.dev snapshot when the live catalog has nothing.
+        # Reasoning stays off here on purpose — enabling it requires knowing
+        # the provider's reasoning *format*, which is dialect knowledge the
+        # snapshot does not carry.
+        if info is None:
+            snapshot_entry = _models_dev_model(provider_id, model_id)
+            if snapshot_entry is not None:
+                return ModelCapabilities(
+                    supports_tools=bool(snapshot_entry.get("tools", True)),
+                    supports_vision=bool(snapshot_entry.get("vision", False)),
+                )
         return ModelCapabilities(
             supports_tools=info.supports_tools if info else True,
             supports_vision=info.supports_vision if info else False,
@@ -291,10 +313,13 @@ class ModelCatalog:
         info = self._models.get(model_id)
 
         using_user_override = user_override > 0
+        snapshot_limits = _models_dev_limits(provider, model_id)
         if using_user_override:
             effective = user_override
         elif info and info.max_output_tokens > 0:
             effective = info.max_output_tokens
+        elif snapshot_limits is not None and snapshot_limits[0] > 0:
+            effective = snapshot_limits[0]
         elif (static := _static_fallback_entry(model_id)) is not None:
             effective = static[0]
         else:
@@ -316,10 +341,13 @@ class ModelCatalog:
         return effective
 
     def resolve_context_window(self, model_id: str, provider: str = "") -> int:
-        """Resolve context window: catalog > static fallback > local/default."""
+        """Resolve context window: catalog > models.dev > static fallback > local/default."""
         info = self._models.get(model_id)
         if info and info.context_window > 0:
             return info.context_window
+        snapshot_limits = _models_dev_limits(provider, model_id)
+        if snapshot_limits is not None and snapshot_limits[1] > 0:
+            return snapshot_limits[1]
         static = _static_fallback_entry(model_id)
         if static is not None:
             return static[1]

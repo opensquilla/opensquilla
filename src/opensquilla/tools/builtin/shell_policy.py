@@ -24,8 +24,6 @@ DEFAULT_DENYLIST: list[str] = [
 ]
 
 DEFAULT_DENYLIST_WIN: list[str] = [
-    r"\bdel\b",
-    r"\brmdir\b",
     r"\bFormat-Volume\b",
     r"\bStop-Computer\b",
     r"\bRestart-Computer\b",

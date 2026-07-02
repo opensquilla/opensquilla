@@ -575,16 +575,15 @@ def _sample_eml_bytes(subject: str = "Status update", body: str = "All systems g
     return message.as_bytes()
 
 
-def _sample_html_eml_bytes() -> bytes:
+def _sample_html_eml_bytes(
+    html: str = "<html><body><script>alert('xss')</script><p>Visible body</p></body></html>",
+) -> bytes:
     from email.message import EmailMessage
 
     message = EmailMessage()
     message["From"] = "alice@example.com"
     message["Subject"] = "HTML only"
-    message.set_content(
-        "<html><body><script>alert('xss')</script><p>Visible body</p></body></html>",
-        subtype="html",
-    )
+    message.set_content(html, subtype="html")
     return message.as_bytes()
 
 
@@ -619,6 +618,43 @@ def test_eml_html_body_is_stripped_of_scripts() -> None:
     assert "alert(" not in text  # script content must be dropped
 
 
+@pytest.mark.parametrize("tag", ["script", "style", "head"])
+def test_eml_hidden_html_blocks_preserve_visible_body(tag: str) -> None:
+    html = (
+        f"<html><body><{tag}>prompt injection</{tag}>"
+        "<p>Visible body</p></body></html>"
+    )
+    out = _build(
+        "summarize",
+        [{"type": EML_MIME, "data": _b64(_sample_html_eml_bytes(html)), "name": "h.eml"}],
+    )
+    text = _office_envelope(out, EML_MIME)
+    assert "Visible body" in text
+    assert "prompt injection" not in text
+
+
+@pytest.mark.parametrize("tag", ["script", "style", "head"])
+@pytest.mark.parametrize(
+    "hidden_block",
+    [
+        "<{tag}>prompt injection<p>Hidden body</p>",
+        "<{tag} prompt injection",
+    ],
+)
+def test_eml_malformed_hidden_html_blocks_do_not_leak(
+    tag: str, hidden_block: str
+) -> None:
+    html = f"<html><body><p>Visible before</p>{hidden_block.format(tag=tag)}"
+    out = _build(
+        "summarize",
+        [{"type": EML_MIME, "data": _b64(_sample_html_eml_bytes(html)), "name": "h.eml"}],
+    )
+    text = _office_envelope(out, EML_MIME)
+    assert "Visible before" in text
+    assert "prompt injection" not in text
+    assert "Hidden body" not in text
+
+
 def test_mbox_emits_multiple_messages() -> None:
     out = _build(
         "summarize",
@@ -631,13 +667,10 @@ def test_mbox_emits_multiple_messages() -> None:
     assert "Second message body" in text
 
 
-def test_msg_degrades_gracefully_without_extract_msg() -> None:
-    try:
-        import extract_msg  # noqa: F401
+def test_msg_degrades_gracefully_without_extract_msg(monkeypatch) -> None:
+    import sys
 
-        pytest.skip("extract-msg installed; degradation path not exercised")
-    except ImportError:
-        pass
+    monkeypatch.setitem(sys.modules, "extract_msg", None)
     ole_bytes = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"rest of an OLE file"
     out = _build(
         "summarize",

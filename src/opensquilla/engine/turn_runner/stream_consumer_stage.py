@@ -405,7 +405,17 @@ class _ToolResultHandler:
                         event.arguments,
                     )
                     break
-        state.turn_segments.append(_persisted_tool_result_segment(event))
+        result_segment = _persisted_tool_result_segment(event)
+        for index in range(len(state.turn_segments) - 1, -1, -1):
+            segment = state.turn_segments[index]
+            if (
+                segment.get("type") == "tool_result"
+                and segment.get("tool_use_id") == event.tool_use_id
+            ):
+                state.turn_segments[index] = result_segment
+                break
+        else:
+            state.turn_segments.append(result_segment)
         return event
 
 class _ArtifactHandler:

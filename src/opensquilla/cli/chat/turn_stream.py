@@ -63,6 +63,7 @@ class GatewayStreamingClient(Protocol):
         approved: bool,
         *,
         allow_always: bool = False,
+        choice: str | None = None,
     ) -> Any: ...
 
     async def abort_session(self, key: str) -> Any: ...
@@ -994,13 +995,41 @@ async def stream_response_gateway(
     )
 
 
-def local_approval_resolver() -> Callable[..., Awaitable[None]]:
+def local_approval_resolver(
+    *,
+    session_manager: object | None = None,
+    config: object | None = None,
+) -> Callable[..., Awaitable[None]]:
     """Return a resolver that talks directly to the in-process approval queue."""
 
-    async def _resolve(approval_id: str, approved: bool, *, allow_always: bool = False) -> None:
-        from opensquilla.gateway.approval_queue import get_approval_queue
+    async def _resolve(
+        approval_id: str,
+        approved: bool,
+        *,
+        allow_always: bool = False,
+        choice: str | None = None,
+    ) -> None:
+        from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 
-        get_approval_queue().resolve(approval_id, approved, allow_always=allow_always)
+        params: dict[str, Any] = {
+            "id": approval_id,
+            "approved": approved,
+            "allowAlways": allow_always,
+        }
+        if choice:
+            params["choice"] = choice
+        result = await get_dispatcher().dispatch(
+            "cli-local-approval-resolve",
+            "exec.approval.resolve",
+            params,
+            RpcContext(
+                conn_id="cli-local-approval",
+                session_manager=session_manager,
+                config=config,
+            ),
+        )
+        if result.error is not None:
+            raise RuntimeError(result.error.message)
 
     return _resolve
 
@@ -1040,12 +1069,13 @@ async def stream_response_turnrunner(
     stream_deps = _resolve_deps(deps)
     stream_deps = _resolve_tui_event_sink_for_output(stream_deps, tui_output)
     session_manager = getattr(svc, "session_manager", None) if svc is not None else None
+    config = getattr(svc, "config", None) if svc is not None else None
     if session_manager is not None:
         _persisted = await session_manager.append_message(session_key, role="user", content=message)
         if _persisted is not None and isinstance(_persisted.content, str):
             message = _persisted.content
 
-    resolver = local_approval_resolver()
+    resolver = local_approval_resolver(session_manager=session_manager, config=config)
     usage: UsageSummary | None = None
     cancelled = False
     artifacts: list[dict[str, Any]] = []

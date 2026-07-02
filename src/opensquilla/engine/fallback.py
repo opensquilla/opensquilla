@@ -1,32 +1,26 @@
-"""Fallback policy for provider retry and model failover."""
+"""Fallback policy for provider retry and model failover.
+
+Retry decisions consume ``ProviderFailureKind`` directly — the single
+classification vocabulary shared with ``decide_recovery_action`` — instead of
+down-mapping through a second, lossier enum that collapsed
+MODEL_NOT_FOUND / UNSUPPORTED_FEATURE / INSUFFICIENT_CREDITS into UNKNOWN.
+"""
 
 from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
-from enum import StrEnum
 
 from opensquilla.provider.failures import ProviderFailureKind, classify_provider_error
 
-
-class ProviderErrorKind(StrEnum):
-    RATE_LIMIT = "rate_limit"
-    AUTH_FAILURE = "auth_failure"
-    OVERLOADED = "overloaded"
-    CONTEXT_OVERFLOW = "context_overflow"
-    TRANSPORT_TRANSIENT = "transport_transient"
-    EMPTY_RESPONSE = "empty_response"
-    UNKNOWN = "unknown"
-
-
-_FAILURE_KIND_MAP: dict[ProviderFailureKind, ProviderErrorKind] = {
-    ProviderFailureKind.PROVIDER_OVERLOADED: ProviderErrorKind.TRANSPORT_TRANSIENT,
-    ProviderFailureKind.TRANSPORT_TRANSIENT: ProviderErrorKind.TRANSPORT_TRANSIENT,
-    ProviderFailureKind.RATE_LIMITED: ProviderErrorKind.RATE_LIMIT,
-    ProviderFailureKind.AUTH_INVALID: ProviderErrorKind.AUTH_FAILURE,
-    ProviderFailureKind.CONTEXT_OVERFLOW: ProviderErrorKind.CONTEXT_OVERFLOW,
-    ProviderFailureKind.EMPTY_RESPONSE: ProviderErrorKind.EMPTY_RESPONSE,
-}
+_RETRYABLE_FAILURE_KINDS = frozenset(
+    {
+        ProviderFailureKind.RATE_LIMITED,
+        ProviderFailureKind.PROVIDER_OVERLOADED,
+        ProviderFailureKind.TRANSPORT_TRANSIENT,
+        ProviderFailureKind.CONTEXT_OVERFLOW,
+    }
+)
 
 
 @dataclass
@@ -45,31 +39,25 @@ class FallbackPolicy:
         provider_name: str = "openrouter",
         status_code: int | None = None,
         raw_code: str = "",
-    ) -> ProviderErrorKind:
-        """Classify a provider error message into a retry category."""
-        kind = classify_provider_error(
+    ) -> ProviderFailureKind:
+        """Classify a provider error message into a failure kind."""
+        return classify_provider_error(
             provider_name,
             status_code,
             raw_code=raw_code,
             message=message,
         )
-        return _FAILURE_KIND_MAP.get(kind, ProviderErrorKind.UNKNOWN)
 
-    def should_retry(self, kind: ProviderErrorKind, attempt: int) -> bool:
+    def should_retry(self, kind: ProviderFailureKind, attempt: int) -> bool:
         """Whether to retry after this error kind at this attempt number."""
         if attempt >= self.max_retries:
             return False
-        if kind == ProviderErrorKind.AUTH_FAILURE:
-            return False  # Don't retry auth errors
-        retryable = (
-            ProviderErrorKind.RATE_LIMIT,
-            ProviderErrorKind.OVERLOADED,
-            ProviderErrorKind.CONTEXT_OVERFLOW,
-            ProviderErrorKind.TRANSPORT_TRANSIENT,
-        )
-        if kind in retryable:
-            return True
-        return False  # Unknown errors: don't retry by default
+        # AUTH_INVALID is a config error; MODEL_NOT_FOUND, UNSUPPORTED_FEATURE,
+        # INSUFFICIENT_CREDITS, BAD_REQUEST, POLICY_REFUSAL and the response-
+        # shape kinds don't get better on retry — they surface (or trigger
+        # provider fallback via decide_recovery_action on the pre-content
+        # path).
+        return kind in _RETRYABLE_FAILURE_KINDS
 
     def get_fallback_model(self, current_model: str) -> str | None:
         """Return the next fallback model after current_model, or None if exhausted."""

@@ -69,7 +69,7 @@ def test_flush_stdin_typeahead_uses_termios_on_unix_tty(monkeypatch):
     assert calls == [fake_stdin, 123]
 
 
-def test_interactive_provider_choice_offers_only_verified_supported_providers():
+def test_interactive_provider_choice_offers_all_runtime_supported_providers():
     from opensquilla.onboarding.flow import OnboardOptions, _ask_provider_choice
 
     captured: dict[str, list[str]] = {}
@@ -89,21 +89,11 @@ def test_interactive_provider_choice_offers_only_verified_supported_providers():
     assert captured["choices"][0] == "openrouter (OpenRouter)"
     assert captured["default"] == "openrouter (OpenRouter)"
     offered = {choice.split(" ")[0] for choice in captured["choices"]}
-    assert offered == {
-        "openrouter",
-        "openai",
-        "openai_responses",
-        "anthropic",
-        "ollama",
-        "deepseek",
-        "gemini",
-        "dashscope",
-        "moonshot",
-        "zhipu",
-        "qianfan",
-        "volcengine",
-        "byteplus",
-    }
+    from tests.test_onboarding.test_provider_specs import EXPECTED_SUPPORTED
+
+    assert offered == EXPECTED_SUPPORTED
+    # Experimental providers are offered, but with a visible caveat.
+    assert any("(experimental)" in choice for choice in captured["choices"])
 
 
 def test_interactive_router_supported_provider_does_not_prompt_for_model():

@@ -439,8 +439,8 @@
       :is-new-landing="isNewChatLanding"
       :placeholder="composerPlaceholder"
       :send-button-title="sendButtonTitle"
-      :elevated-mode="elevatedMode"
-      :elevated-unavailable="elevatedUnavailable"
+      :run-mode="runMode"
+      :allowed-run-modes="allowedRunModes"
       :router-enabled="routerEnabled"
       :router-visual-effects-enabled="routerVisualEffectsEnabled"
       :router-settings-busy="routerSettingsBusy"
@@ -456,7 +456,7 @@
       @remove-attachment="removeAttachment"
       @retry-attachment="retryAttachment"
       @set-busy-send-mode="busySendMode = $event"
-      @set-elevated-mode="setComposerElevatedMode"
+      @set-run-mode="setComposerRunMode"
       @set-router-enabled="setComposerRouterEnabled"
       @set-visual-effects-enabled="setComposerVisualEffectsEnabled"
       @set-coding-mode-enabled="setComposerCodingModeEnabled"
@@ -575,6 +575,8 @@ import type {
 import type {
   ArtifactPayload,
 } from '@/types/rpc'
+import type { SandboxRunMode } from '@/types/sandbox'
+import { isSandboxRunMode } from '@/types/sandbox'
 import type { InterruptViewState } from '@/types/parts'
 import { artifactDownloadUrl } from '@/utils/chat/artifacts'
 import { copyTextWithFallback, copyImageToClipboard, downloadBlob, shareCopyImageSupported } from '@/utils/browser'
@@ -600,6 +602,16 @@ interface ChatComposerHandle {
 }
 
 type Message = ChatMessage
+
+interface RunModePolicy {
+  allowedRunModes?: unknown
+  defaultRunMode?: unknown
+  fullHostAccessDisabledReason?: unknown
+}
+
+interface RpcAuthPayload {
+  runModePolicy?: RunModePolicy
+}
 
 /* ── Constants ─────────────────────────────────────────────────────── */
 
@@ -670,12 +682,45 @@ const chatElevatedMode = useChatElevatedMode({
 })
 const {
   elevatedMode,
-  elevatedUnavailable,
   loadElevatedMode,
-  setElevatedMode,
   setGlobalElevatedMode,
   normalizeElevatedMode,
 } = chatElevatedMode
+
+const runMode = ref<SandboxRunMode>('trusted')
+const runModeUserSelected = ref(false)
+
+function currentRunModePolicy(): RunModePolicy | null {
+  const auth = rpc.auth as RpcAuthPayload | null
+  const policy = auth?.runModePolicy
+  return policy && typeof policy === 'object' ? policy : null
+}
+
+const runModePolicyDefault = computed<SandboxRunMode>(() => {
+  const raw = currentRunModePolicy()?.defaultRunMode
+  return isSandboxRunMode(raw) ? raw : 'trusted'
+})
+
+const allowedRunModes = computed<SandboxRunMode[]>(() => {
+  const raw = currentRunModePolicy()?.allowedRunModes
+  if (!Array.isArray(raw)) return ['standard', 'trusted', 'full']
+  const allowed = raw.filter(isSandboxRunMode)
+  return allowed.length > 0 ? allowed : ['standard', 'trusted', 'full']
+})
+
+function preferredRunMode(
+  modes: SandboxRunMode[],
+  preferred: SandboxRunMode,
+): SandboxRunMode {
+  if (modes.includes(preferred)) return preferred
+  if (modes.includes('trusted')) return 'trusted'
+  return modes[0] ?? 'trusted'
+}
+
+watch([allowedRunModes, runModePolicyDefault], ([modes, defaultMode]) => {
+  if (runModeUserSelected.value && modes.includes(runMode.value)) return
+  runMode.value = preferredRunMode(modes, defaultMode)
+}, { immediate: true })
 
 // Run status
 const runStatus = ref<ChatRunStatus>({ status: 'idle', label: t('chat.status.idle'), task: null })
@@ -1178,6 +1223,7 @@ const chatSend = useChatSend({
   sessionKey,
   busySendMode,
   elevatedMode,
+  runMode,
   pendingAttachments,
   pendingSessionIntent,
   aborted,
@@ -1454,8 +1500,9 @@ function readAuthToken(): string {
   }
 }
 
-function setComposerElevatedMode(mode: string) {
-  setElevatedMode(mode, { persist: true, sync: true })
+function setComposerRunMode(mode: SandboxRunMode) {
+  runModeUserSelected.value = true
+  runMode.value = mode
 }
 
 async function setComposerRouterEnabled(enabled: boolean) {

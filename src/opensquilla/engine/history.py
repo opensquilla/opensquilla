@@ -92,6 +92,35 @@ def _extract_tool_result_ids(content: Any) -> set[str]:
     return ids
 
 
+def _is_tool_result_block(block: Any) -> bool:
+    return hasattr(block, "tool_use_id") and hasattr(block, "is_error")
+
+
+def _dedupe_tool_result_blocks(content: Any) -> tuple[Any, bool]:
+    if not isinstance(content, list):
+        return content, False
+
+    last_index_by_id: dict[str, int] = {}
+    result_count = 0
+    for index, block in enumerate(content):
+        if not _is_tool_result_block(block):
+            continue
+        result_count += 1
+        last_index_by_id[block.tool_use_id] = index
+
+    if result_count == len(last_index_by_id):
+        return content, False
+
+    next_content: list[Any] = []
+    changed = False
+    for index, block in enumerate(content):
+        if _is_tool_result_block(block) and last_index_by_id.get(block.tool_use_id) != index:
+            changed = True
+            continue
+        next_content.append(block)
+    return next_content, changed
+
+
 def repair_tool_pairing(messages: list[Message]) -> list[Message]:
     """Remove messages with malformed tool_use/tool_result adjacency.
 
@@ -134,18 +163,31 @@ def repair_tool_pairing(messages: list[Message]) -> list[Message]:
             valid_tool_result_indices.update(result_indices)
 
     repaired: list[Message] = []
+    changed = False
     for index, message in enumerate(messages):
         use_ids = _extract_tool_use_ids(message.content)
         result_ids = _extract_tool_result_ids(message.content)
 
         if use_ids and index not in valid_tool_call_indices:
+            changed = True
             continue
         if result_ids and index not in valid_tool_result_indices:
+            changed = True
             continue
+
+        if result_ids:
+            content, deduped = _dedupe_tool_result_blocks(message.content)
+            if deduped:
+                message = Message(
+                    role=message.role,
+                    content=content,
+                    reasoning_content=message.reasoning_content,
+                )
+                changed = True
 
         repaired.append(message)
 
-    return messages if len(repaired) == len(messages) else repaired
+    return messages if not changed else repaired
 
 
 def _coerce_tool_input(raw: Any) -> dict[str, Any]:

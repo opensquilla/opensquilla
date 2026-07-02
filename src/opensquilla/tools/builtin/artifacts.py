@@ -17,6 +17,7 @@ from opensquilla.artifacts import (
     artifact_payload,
     artifact_publish_max_bytes_for_name,
 )
+from opensquilla.sandbox.operation_runtime import SandboxToolDescriptor
 from opensquilla.tools.path_aliases import resolve_workspace_alias
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
@@ -177,6 +178,7 @@ def _publish_artifact_metadata(
         },
     },
     required=["path"],
+    sandbox=SandboxToolDescriptor.artifact(kind="artifact.publish"),
 )
 async def publish_artifact(
     path: str,

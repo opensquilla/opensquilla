@@ -68,8 +68,7 @@ async def test_pricing_cache_refresh_adds_openrouter_app_attribution() -> None:
         "Authorization": "Bearer test-key",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://opensquilla.ai",
-        "X-OpenRouter-Title": "OpenSquilla",
-        "X-OpenRouter-Categories": "cli-agent,personal-agent",
+        "X-Title": "OpenSquilla",
     }
     price = cache.get_price_sync("openai/gpt-4o")
     assert price is not None

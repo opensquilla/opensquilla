@@ -233,8 +233,7 @@ def is_denial_payload(content: Any) -> bool:
     * ``status=denied`` — :class:`opensquilla.sandbox.DenialResult.to_dict`
     * ``status=blocked`` — sensitive-path hard block from
       :func:`opensquilla.sandbox.sensitive_paths.build_block_envelope`
-    * ``status=approval_denied`` — shell warnlist approval rejected by the
-      user (:func:`opensquilla.tools.builtin.shell._check_exec_approval`)
+    * ``status=approval_denied`` — a queued approval was rejected by the user
 
     ``approval_required`` / ``approval_pending`` are explicitly *not* denials
     — those are retry signals for the model.

@@ -109,15 +109,7 @@
               :disabled="resolvingId === item.id"
               @click="resolveApproval(item, 'always')"
             >
-              {{ t('console.approvals.alwaysAllow') }}
-            </button>
-            <button
-              class="btn btn--warn"
-              :title="t('console.approvals.bypassHint')"
-              :disabled="resolvingId === item.id"
-              @click="resolveApproval(item, 'bypass')"
-            >
-              {{ t('console.approvals.bypass') }}
+              {{ secondaryApprovalLabel(item) }}
             </button>
             <button
               class="btn btn--danger"
@@ -177,10 +169,6 @@ interface ModeOption {
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-const ELEVATED_MODE_KEY = 'opensquilla.elevatedMode'
-const ELEVATED_MODE_VERSION_KEY = 'opensquilla.elevatedMode.version'
-const ELEVATED_MODE_STORAGE_VERSION = '2'
 
 // ---------------------------------------------------------------------------
 // State
@@ -310,7 +298,15 @@ function approvalDetail(item: ApprovalItem): string {
 }
 
 function canAlways(item: ApprovalItem): boolean {
-  return item.namespace === 'exec' && !!approvalCommand(item)
+  return isSandboxApproval(item) || (item.namespace === 'exec' && !!approvalCommand(item))
+}
+
+function isSandboxApproval(item: ApprovalItem): boolean {
+  return String(item.params?.approvalKind || item.args?.approvalKind || '').trim().startsWith('sandbox_')
+}
+
+function secondaryApprovalLabel(item: ApprovalItem): string {
+  return isSandboxApproval(item) ? t('console.approvals.allowSameType') : t('console.approvals.alwaysAllow')
 }
 
 async function resolveApproval(item: ApprovalItem, decision: string) {
@@ -318,12 +314,18 @@ async function resolveApproval(item: ApprovalItem, decision: string) {
   if (resolvingId.value === id) return
   resolvingId.value = id
   const namespace = item.namespace || 'exec'
-  const approved = decision === 'approve' || decision === 'always' || decision === 'bypass'
-  const allowAlways = decision === 'always'
-  const rememberIntent = decision === 'always'
-  const elevatedMode = decision === 'bypass' ? 'bypass' : ''
-  const body: Record<string, unknown> = { id, namespace, approved, allowAlways, rememberIntent }
-  if (elevatedMode) body.elevatedMode = elevatedMode
+  const approved = decision === 'approve' || decision === 'always'
+  const sandboxApproval = isSandboxApproval(item)
+  const allowAlways = decision === 'always' && !sandboxApproval
+  const rememberIntent = decision === 'always' && !sandboxApproval
+  const body: Record<string, unknown> = {
+    id,
+    namespace,
+    approved,
+    allowAlways,
+    rememberIntent,
+    choice: decision === 'always' ? 'allow_same_type' : decision === 'deny' ? 'deny' : 'allow_once',
+  }
 
   try {
     const res = await fetch('/api/approvals/resolve', {
@@ -332,10 +334,7 @@ async function resolveApproval(item: ApprovalItem, decision: string) {
       body: JSON.stringify(body),
     })
     if (!res.ok) throw new Error('HTTP ' + res.status)
-    if (elevatedMode) setBrowserElevated(elevatedMode)
-    const msg = elevatedMode
-      ? t('console.approvals.bypassEnabled')
-      : (approved ? t('console.approvals.approved') : t('console.approvals.denied'))
+    const msg = approved ? t('console.approvals.approved') : t('console.approvals.denied')
     pushToast(msg + ': ' + id, { tone: 'ok' })
     await loadData()
   } catch (err) {
@@ -361,21 +360,6 @@ async function onModeChange() {
   }
 }
 
-function setBrowserElevated(m: string) {
-  const normalized = m === 'full' || m === 'bypass' || m === 'on' ? m : ''
-  try {
-    if (normalized) {
-      localStorage.setItem(ELEVATED_MODE_KEY, normalized)
-      localStorage.setItem(ELEVATED_MODE_VERSION_KEY, ELEVATED_MODE_STORAGE_VERSION)
-    } else {
-      localStorage.removeItem(ELEVATED_MODE_KEY)
-      localStorage.removeItem(ELEVATED_MODE_VERSION_KEY)
-    }
-  } catch {
-    // ignore
-  }
-  window.dispatchEvent(new CustomEvent('opensquilla:elevated-mode', { detail: { mode: normalized } }))
-}
 </script>
 
 <style scoped>

@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from opensquilla.identity.workspace import BOOTSTRAP_FILENAMES
-from opensquilla.sandbox.integration import sandboxed
+from opensquilla.sandbox.operation_runtime import (
+    FilesystemOperationRequest,
+    SandboxOperation,
+    SandboxToolDescriptor,
+)
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
-from opensquilla.tools.types import ToolError, current_tool_context
+from opensquilla.tools.run_mode import full_host_access_active
+from opensquilla.tools.types import current_tool_context
 from opensquilla.tools.write_tracking import record_workspace_file_write
 
 # ---------------------------------------------------------------------------
@@ -49,8 +55,10 @@ class DeleteFile:
 
 PatchOp = AddFile | UpdateFile | DeleteFile
 _BOOTSTRAP_SOURCE_FILENAMES = frozenset(BOOTSTRAP_FILENAMES)
-_APPLY_PATCH_APPROVAL_TOOL = "apply_patch"
-_APPLY_PATCH_APPROVAL_NAMESPACE = "exec"
+
+
+def _patch_request(args: Mapping[str, Any]) -> FilesystemOperationRequest:
+    return FilesystemOperationRequest(patch=str(args.get("patch", "") or ""))
 
 
 # ---------------------------------------------------------------------------
@@ -221,72 +229,32 @@ def _record_workspace_file_writes(ops: list[PatchOp], root: Path) -> None:
             record_workspace_file_write(_validate_path(op.path, root))
 
 
-@dataclass(frozen=True)
-class _PatchApprovalPlan:
-    command: str
-    args: dict[str, object]
-    params: dict[str, object]
-    warning: str
-
-
-def _normalize_patch_text(patch: str) -> str:
-    return patch.replace("\r\n", "\n").replace("\r", "\n")
-
-
-def _patch_fingerprint(patch: str) -> str:
-    normalized = _normalize_patch_text(patch)
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-
-
-def _op_name(op: PatchOp) -> str:
-    if isinstance(op, AddFile):
-        return "add"
-    if isinstance(op, UpdateFile):
-        return "update"
-    return "delete"
-
-
-def _patch_approval_plan(
-    patch: str,
+def _gate_patch_ops(
     ops: list[PatchOp],
     root: Path,
-) -> tuple[dict[str, object] | None, _PatchApprovalPlan | None]:
-    """Return a hard block or a patch-level approval plan when one is needed."""
+    approval_id: str | None,
+) -> dict[str, object] | None:
+    """Return a hard block / sandbox approval payload, or None to proceed."""
 
     from opensquilla.sandbox.sensitive_paths import build_block_envelope, sensitive_path_marker
     from opensquilla.tools.builtin import filesystem
-    from opensquilla.tools.builtin.shell import _context_elevated_mode
     from opensquilla.tools.write_policy import (
         match_workspace_write_deny,
         workspace_write_deny_block,
     )
 
-    elevated_mode = _context_elevated_mode()
-    elevated_full = elevated_mode == "full"
-    elevated_bypass = elevated_mode == "bypass"
-    op_summary: list[dict[str, str]] = []
-    outside_paths: list[str] = []
+    elevated_full = full_host_access_active()
     workspace = filesystem._workspace_root()
 
     for op in ops:
         resolved = _validate_path(op.path, root)
-        op_summary.append(
-            {
-                "op": _op_name(op),
-                "path": op.path,
-                "resolved_path": str(resolved),
-            }
-        )
         if not elevated_full:
             sensitive = sensitive_path_marker(str(resolved), workspace=workspace)
             if sensitive is not None:
-                return (
-                    build_block_envelope(
-                        f"apply_patch {op.path}",
-                        sensitive,
-                        tool_name="apply_patch",
-                    ),
-                    None,
+                return build_block_envelope(
+                    f"apply_patch {op.path}",
+                    sensitive,
+                    tool_name="apply_patch",
                 )
 
         deny_match = match_workspace_write_deny(
@@ -295,160 +263,30 @@ def _patch_approval_plan(
             workspace=workspace,
         )
         if deny_match is not None:
-            return workspace_write_deny_block("apply_patch", deny_match), None
+            return workspace_write_deny_block("apply_patch", deny_match)
 
-        outside_workspace = filesystem._is_outside_workspace(resolved)
-        memory_source_path = filesystem._memory_source_rel_path(resolved)
-        if (
-            not (elevated_full or elevated_bypass)
-            and outside_workspace
-            and memory_source_path is None
-        ):
-            outside_paths.append(str(resolved))
-
-    if not outside_paths:
-        return None, None
-
-    fingerprint = _patch_fingerprint(patch)
-    command = f"apply_patch {fingerprint}"
-    warning = (
-        f"apply_patch writes outside active workspace ({workspace})"
-        if workspace is not None
-        else "apply_patch writes to absolute paths outside the active workspace"
-    )
-    args: dict[str, object] = {
-        "fingerprint": fingerprint,
-        "ops": op_summary,
-        "outside_paths": outside_paths,
-        "workspace": str(workspace) if workspace is not None else None,
-        "patch_root": str(root),
-        "patch_length": len(patch),
-    }
-    ctx = current_tool_context.get()
-    params: dict[str, object] = {
-        "toolName": _APPLY_PATCH_APPROVAL_TOOL,
-        "command": command,
-        "args": args,
-        "warning": warning,
-        "sessionKey": ctx.session_key if ctx is not None and ctx.session_key else "",
-        "agent": ctx.agent_id if ctx is not None else "",
-        "mode": "patch",
-    }
-    return None, _PatchApprovalPlan(command=command, args=args, params=params, warning=warning)
-
-
-def _approval_payload(
-    status: str,
-    approval_id: str,
-    plan: _PatchApprovalPlan,
-    message: str,
-) -> dict[str, object]:
-    return {
-        "status": status,
-        "approval_id": approval_id,
-        "command": plan.command,
-        "warning": plan.warning,
-        "outside_paths": plan.args.get("outside_paths", []),
-        "ops": plan.args.get("ops", []),
-        "workspace": plan.args.get("workspace"),
-        "patch_root": plan.args.get("patch_root"),
-        "message": message,
-    }
-
-
-def _validate_patch_approval(
-    approval_id: str,
-    plan: _PatchApprovalPlan,
-) -> dict[str, object] | None:
-    from opensquilla.gateway.approval_queue import RESOLUTION_EXPIRED, get_approval_queue
-
-    queue = get_approval_queue()
-    try:
-        entry = queue.get(approval_id)
-    except KeyError as exc:
-        raise ToolError(str(exc)) from exc
-    if entry.namespace != _APPLY_PATCH_APPROVAL_NAMESPACE:
-        raise ToolError(f"Approval does not belong to exec namespace: {approval_id}")
-    if entry.params.get("toolName") != _APPLY_PATCH_APPROVAL_TOOL:
-        raise ToolError(f"Approval does not belong to apply_patch: {approval_id}")
-    if entry.params.get("command") != plan.command or entry.params.get("args") != plan.args:
-        raise ToolError("Approval does not match the requested patch")
-    if entry.consumed:
-        raise ToolError(f"Approval already consumed: {approval_id}")
-    if not entry.resolved:
-        return _approval_payload(
-            "approval_pending",
-            approval_id,
-            plan,
-            "Approval is still pending. Ask the user to approve.",
+        path_access = filesystem._sandbox_path_access_envelope(
+            resolved,
+            write=True,
+            approval_id=approval_id,
         )
-    if not entry.approved:
-        # An expiry (deadline lapse with no response) reads distinctly from a
-        # human deny so the agent does not infer a deliberate refusal.
-        if entry.resolution == RESOLUTION_EXPIRED:
-            return _approval_payload(
-                "approval_denied",
-                approval_id,
-                plan,
-                "This action expired without a response and was not run; "
-                "ask again if it's still needed.",
+        if path_access is not None:
+            return path_access
+
+        if filesystem._is_outside_workspace(resolved):
+            if filesystem._memory_source_rel_path(resolved) is not None:
+                continue
+            if filesystem._active_sandbox_mount_allows(resolved, write=True):
+                continue
+            if elevated_full:
+                continue
+            return filesystem._outside_workspace_write_block(
+                "apply_patch",
+                resolved,
+                op.path,
             )
-        return _approval_payload(
-            "approval_denied",
-            approval_id,
-            plan,
-            "Approval was denied.",
-        )
-    try:
-        queue.consume(approval_id)
-    except ValueError as exc:
-        raise ToolError(str(exc)) from exc
+
     return None
-
-
-def _request_patch_approval(plan: _PatchApprovalPlan) -> dict[str, object] | None:
-    from opensquilla.gateway.approval_queue import get_approval_queue
-
-    queue = get_approval_queue()
-    settings = queue.get_settings()
-    approval_id = queue.request(
-        namespace=_APPLY_PATCH_APPROVAL_NAMESPACE,
-        params=plan.params,
-    )
-    if settings.mode == "auto-approve":
-        queue.resolve(approval_id, True)
-        queue.consume(approval_id)
-        return None
-    if settings.mode == "auto-deny":
-        queue.resolve(approval_id, False)
-        return _approval_payload(
-            "approval_denied",
-            approval_id,
-            plan,
-            "This patch was denied by the active approval policy.",
-        )
-    return _approval_payload(
-        "approval_required",
-        approval_id,
-        plan,
-        "Resolve this approval via exec.approval.resolve and retry with the returned approval_id.",
-    )
-
-
-def _gate_patch_ops(
-    patch: str,
-    ops: list[PatchOp],
-    root: Path,
-    approval_id: str | None,
-) -> dict[str, object] | None:
-    blocked, approval_plan = _patch_approval_plan(patch, ops, root)
-    if blocked is not None:
-        return blocked
-    if approval_plan is None:
-        return None
-    if approval_id is not None:
-        return _validate_patch_approval(approval_id, approval_plan)
-    return _request_patch_approval(approval_plan)
 
 
 # ---------------------------------------------------------------------------
@@ -577,23 +415,42 @@ def _apply_ops(ops: list[PatchOp], root: Path | None = None) -> tuple[int, int, 
         },
         "approval_id": {
             "type": "string",
-            "description": "Approval record to consume for patch writes outside the workspace.",
+            "description": "Sandbox path approval record for patch writes outside the workspace.",
         },
     },
     required=["patch"],
-)
-@sandboxed(
-    kind="patch.apply",
-    argv_factory=lambda a: ("patch.apply", str(len(a.get("patch", "") or ""))),
-    record_payload=False,
+    sandbox=SandboxToolDescriptor.filesystem(
+        kind="patch.apply",
+        argv_factory=lambda a: ("patch.apply", str(len(a.get("patch", "") or ""))),
+        request_factory=_patch_request,
+        record_payload=False,
+    ),
 )
 async def apply_patch(patch: str, approval_id: str | None = None) -> str:
     loop = asyncio.get_event_loop()
     root = _default_patch_root()
     ops = _parse_patch(patch)
-    blocked = _gate_patch_ops(patch, ops, root, approval_id)
+    blocked = _gate_patch_ops(ops, root, approval_id)
     if blocked is not None:
         return json.dumps(blocked, ensure_ascii=False)
+    from opensquilla.tools.builtin import filesystem
+
+    paths = tuple(_validate_path(op.path, root) for op in ops)
+    sandbox_result = await filesystem._run_sandbox_operation_if_required(
+        SandboxOperation.filesystem(
+            kind="apply_patch",
+            workspace=filesystem._filesystem_operation_workspace() or root,
+            run_mode=filesystem._active_filesystem_run_mode(),
+            root=root,
+            paths=paths,
+            patch=patch,
+        )
+    )
+    if sandbox_result is not None:
+        _record_workspace_file_writes(ops, root)
+        _notify_memory_source_writes(ops, root)
+        _notify_bootstrap_source_writes(ops, root)
+        return str(getattr(sandbox_result, "message"))
 
     def _run() -> tuple[int, int, int]:
         return _apply_ops(ops, root)

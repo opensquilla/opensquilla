@@ -229,15 +229,22 @@ class ModelCatalog:
                 reasoning_format="moonshot" if supports_reasoning else "none",
             )
         if provider_id == "volcengine":
+            # doubao-seed-1-6 and -1-8 and the seed-2 line are reasoning
+            # models; without 1-6 here the stream path emits no thinking
+            # toggle, so reasoning leaks into thinking-disabled requests
+            # (verified live 2026-07-02 against doubao-seed-1-6-251015).
             supports_reasoning = (
                 "thinking" in model_l
                 or model_l.startswith("doubao-seed-2")
                 or model_l.startswith("doubao-seed-1-8")
+                or model_l.startswith("doubao-seed-1-6")
             )
             return ModelCapabilities(
                 supports_reasoning=supports_reasoning,
                 supports_tools=True,
-                supports_vision=model_l.startswith(("doubao-seed-1-8", "doubao-seed-2")),
+                supports_vision=model_l.startswith(
+                    ("doubao-seed-1-6", "doubao-seed-1-8", "doubao-seed-2")
+                ),
                 reasoning_format="volcengine" if supports_reasoning else "none",
             )
         if provider_id == "byteplus":
@@ -245,13 +252,14 @@ class ModelCatalog:
                 "thinking" in model_l
                 or model_l.startswith("seed-2")
                 or model_l.startswith("seed-1-8")
+                or model_l.startswith("seed-1-6")
                 or model_l.startswith(("kimi-k2-", "kimi-k2."))
             )
             return ModelCapabilities(
                 supports_reasoning=supports_reasoning,
                 supports_tools=True,
                 supports_vision=model_l.startswith(
-                    ("seed-1-8", "seed-2", "kimi-k2-", "kimi-k2.")
+                    ("seed-1-6", "seed-1-8", "seed-2", "kimi-k2-", "kimi-k2.")
                 ),
                 reasoning_format="volcengine" if supports_reasoning else "none",
             )

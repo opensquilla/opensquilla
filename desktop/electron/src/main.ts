@@ -1653,7 +1653,21 @@ function createApplicationMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
+function currentOnboardingWindow(): BrowserWindow | null {
+  return onboardingWindow && !onboardingWindow.isDestroyed() ? onboardingWindow : null
+}
+
+function focusOnboardingWindow(): boolean {
+  const window = currentOnboardingWindow()
+  if (!window) return false
+  if (window.isMinimized()) window.restore()
+  window.show()
+  window.focus()
+  return true
+}
+
 function focusMainWindow(): boolean {
+  if (focusOnboardingWindow()) return true
   if (!mainWindow || mainWindow.isDestroyed()) return false
   if (mainWindow.isMinimized()) mainWindow.restore()
   mainWindow.show()
@@ -2820,6 +2834,7 @@ async function runOnboarding(): Promise<DesktopConnection> {
   return new Promise((resolveCredential, rejectCredential) => {
     resolveOnboarding = resolveCredential
     rejectOnboarding = rejectCredential
+    const parentWindow = currentMainWindow()
     onboardingWindow = new BrowserWindow({
       width: 1040,
       height: 820,
@@ -2828,6 +2843,8 @@ async function runOnboarding(): Promise<DesktopConnection> {
       title: desktopT('window.onboarding'),
       icon: appIconPath(),
       resizable: true,
+      parent: parentWindow ?? undefined,
+      modal: Boolean(parentWindow),
       show: false,
       // Match the onboarding page's base so the first frame is not white.
       backgroundColor: '#f5f2eb',
@@ -2840,7 +2857,11 @@ async function runOnboarding(): Promise<DesktopConnection> {
     })
     installEditingContextMenu(onboardingWindow)
 
-    onboardingWindow.once('ready-to-show', () => onboardingWindow?.show())
+    onboardingWindow.once('ready-to-show', () => {
+      if (!onboardingWindow || onboardingWindow.isDestroyed()) return
+      onboardingWindow.show()
+      onboardingWindow?.focus()
+    })
     onboardingWindow.on('closed', () => {
       onboardingWindow = null
       if (rejectOnboarding) {

@@ -38,7 +38,6 @@ const App = (() => {
     Router.register('/config', (el) => _renderStandardView(ConfigView, el), () => ConfigView.destroy(), { title: 'Config' });
     Router.register('/setup', (el) => _renderStandardView(SetupView, el), () => SetupView.destroy(), { title: 'Setup' });
     Router.register('/channels', (el) => _renderStandardView(ChannelsView, el), () => ChannelsView.destroy(), { title: 'Channels' });
-    Router.register('/approvals', (el) => _renderStandardView(ApprovalsView, el), () => ApprovalsView.destroy(), { title: 'Approvals' });
     Router.register('/skills', (el) => _renderStandardView(SkillsView, el), () => SkillsView.destroy(), { title: 'Skills' });
     Router.register('/logs', (el) => _renderStandardView(LogsView, el), () => LogsView.destroy(), { title: 'Logs' });
 
@@ -83,7 +82,6 @@ const App = (() => {
         <div class="nav-group-label">Settings</div>
         <a class="nav-item" href="#" data-path="/config">${icons.config()} Config</a>
         <a class="nav-item" href="#" data-path="/logs">${icons.logs()} Logs</a>
-        <a class="nav-item" href="#" data-path="/approvals">${icons.approvals()} Approvals <span class="nav-badge hidden" id="approval-count">0</span></a>
         ${navFootHTML}
       </nav>
       <div class="main">

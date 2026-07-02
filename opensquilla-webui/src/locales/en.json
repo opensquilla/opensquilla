@@ -1,4 +1,9 @@
 {
+  "updates": {
+    "available": "OpenSquilla {version} is available",
+    "viewRelease": "View release",
+    "dismiss": "Dismiss"
+  },
   "common": {
     "close": "Close",
     "save": "Save",
@@ -806,12 +811,10 @@
       "details": "Details",
       "unknownTool": "Unknown",
       "approveOnce": "Approve once",
-      "alwaysAllow": "Always allow this type",
-      "bypassHint": "Bypass approval prompts while keeping sensitive-path checks",
-      "bypass": "Bypass approvals",
+      "alwaysAllow": "Always allow this",
+      "allowSameType": "Allow same type",
       "deny": "Deny",
       "loadFailed": "Failed to load approvals: {msg}",
-      "bypassEnabled": "Approval bypass enabled",
       "approved": "Approved",
       "denied": "Denied",
       "toastFailed": "Failed: {msg}",
@@ -1533,6 +1536,7 @@
       "denyReasonLabel": "Deny reason, optional, sent to the agent",
       "allowOnce": "Allow once",
       "allowAlways": "Always allow this",
+      "allowSameType": "Allow same type",
       "deny": "Deny",
       "expiresIn": "Expires in {time}",
       "outcomeExpired": "Expired — not run",
@@ -1562,10 +1566,14 @@
       "disabled": "Disabled",
       "routerAnimationOn": "Router animation on",
       "routerAnimationOff": "Router animation off",
-      "execOff": "Off",
-      "execPrompt": "Prompt for approvals",
-      "execBypass": "Bypass approvals",
-      "execFull": "Full access"
+      "runMode": "Execution mode",
+      "runModeStandard": "Standard-Sandbox",
+      "runModeStandardDesc": "Ask before risky tool actions.",
+      "runModeTrusted": "Trusted-Sandbox",
+      "runModeTrustedDesc": "Auto-approve trusted sandbox actions.",
+      "runModeFull": "Full Host Access",
+      "runModeFullDesc": "Run without sandbox isolation.",
+      "runModeFullUnavailable": "Full Host Access requires an owner session."
     },
     "pending": {
       "label": "Pending {count}/{max}",

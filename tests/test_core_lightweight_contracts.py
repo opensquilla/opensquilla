@@ -224,6 +224,6 @@ def test_usage_fields_treat_explicit_canonical_zero_as_real_value() -> None:
 
 def test_openrouter_attribution_headers_are_scoped_to_openrouter_hosts() -> None:
     assert openrouter_app_headers("https://api.openrouter.ai/v1")[
-        "X-OpenRouter-Title"
+        "X-Title"
     ] == "OpenSquilla"
     assert openrouter_app_headers("https://api.openai.com/v1") == {}

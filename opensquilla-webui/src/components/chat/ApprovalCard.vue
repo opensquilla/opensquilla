@@ -86,7 +86,7 @@
           :disabled="busy"
           @click="$emit('allow-always')"
         >
-          {{ t('chat.approval.allowAlways') }}
+          {{ allowAlwaysLabel }}
         </button>
         <button
           class="btn approval-card__deny"
@@ -168,8 +168,14 @@ const timeIsLow = computed(() =>
 const countdownText = computed(() =>
   remainingSeconds.value === null ? '' : t('chat.approval.expiresIn', { time: formatCountdown(remainingSeconds.value) }))
 
+const isSandboxApproval = computed(() =>
+  String(props.approval.approvalKind || props.approval.args?.approvalKind || '').startsWith('sandbox_'))
+
 const canAllowAlways = computed(() =>
-  props.approval.namespace === 'exec' && !!props.approval.command)
+  isSandboxApproval.value || (props.approval.namespace === 'exec' && !!props.approval.command))
+
+const allowAlwaysLabel = computed(() =>
+  isSandboxApproval.value ? t('chat.approval.allowSameType') : t('chat.approval.allowAlways'))
 
 const formattedArgs = computed(() => {
   if (!props.approval.args) return ''

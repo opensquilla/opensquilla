@@ -18,6 +18,7 @@ from opensquilla.paths import state_dir
 
 VALID_APPROVAL_MODES = frozenset({"auto-approve", "auto-deny", "prompt"})
 VALID_ELEVATED_MODES = frozenset({"on", "bypass", "full"})
+VALID_RUN_MODES = frozenset({"standard", "trusted", "full"})
 
 
 @dataclass
@@ -28,14 +29,7 @@ class ApprovalSettings:
 
 
 def _command_matches(command: str, pattern: str) -> bool:
-    """Match a command string against a single allow/deny pattern.
-
-    A pattern matches when it is a shell-style glob hit
-    (``fnmatchcase("uv build", "uv *")``) or a plain substring of the
-    command. The substring fallback keeps unsophisticated entries like
-    ``rm -rf`` working even when the user omits ``*`` wildcards. Matching is
-    case-sensitive to match shell semantics; empty patterns never match.
-    """
+    """Match shell-style globs or plain substrings, case-sensitively."""
     pattern = pattern.strip()
     if not pattern:
         return False
@@ -47,18 +41,7 @@ def classify_command(
     allow_patterns: list[str],
     deny_patterns: list[str],
 ) -> str | None:
-    """Classify a command against allow/deny patterns (deny takes precedence).
-
-    Returns ``"deny"`` when any deny pattern matches, ``"allow"`` when no deny
-    pattern matches but an allow pattern does, or ``None`` when neither side
-    matches (the caller should fall through to its normal decision path).
-
-    Deny precedence is intentional and conservative: a command that matches
-    both an allow and a deny pattern is denied. This helper is pure so the
-    matching rules can be unit-tested in isolation; it has no view of the
-    hard safety guards, so callers must apply allow-results only as a
-    prompt-skip, never as an override of a hard block.
-    """
+    """Classify a command against allow/deny patterns; deny wins."""
     if not command:
         return None
     for pattern in deny_patterns:
@@ -70,11 +53,6 @@ def classify_command(
     return None
 
 
-# Terminal resolution reasons. ``approved``/``denied`` are explicit human
-# decisions; ``expired`` is a deadline lapse with no response. The legacy
-# ``approved`` boolean stays the back-compat source of truth (expired and
-# denied both read ``approved=False``); ``resolution`` is the additive field
-# that lets callers tell an expiry apart from a deliberate refusal.
 RESOLUTION_APPROVED = "approved"
 RESOLUTION_DENIED = "denied"
 RESOLUTION_EXPIRED = "expired"
@@ -89,11 +67,10 @@ class PendingApproval:
     resolved: bool = False
     approved: bool = False
     consumed: bool = False
-    # Wall-clock deadline after which an unresolved request expires. ``wait()``
-    # re-reads this every poll, so ``extend()`` re-arms a pending request live.
     deadline: float = 0.0
-    # One of RESOLUTION_* once resolved, else "".
     resolution: str = ""
+    claim_token: str | None = None
+    claim_started_at: float | None = None
     _event: asyncio.Event = field(default_factory=asyncio.Event)
 
 
@@ -111,13 +88,15 @@ class ApprovalQueue:
         *,
         db_path: str | None = None,
         poll_interval: float = 0.25,
+        claim_ttl_seconds: float = 60.0,
     ):
         self._pending: dict[str, PendingApproval] = {}
         self._timeout = default_timeout
         self._poll_interval = max(0.01, float(poll_interval))
+        self._claim_ttl_seconds = max(0.0, float(claim_ttl_seconds))
         self._global_settings = ApprovalSettings()
         self._node_settings: dict[str, ApprovalSettings] = {}
-        self._session_elevated_modes: dict[str, str] = {}
+        self._session_run_modes: dict[str, str] = {}
         self._event_listeners: list[ApprovalEventListener] = []
 
         self._db_path = Path(db_path or os.fspath(_DEFAULT_APPROVAL_QUEUE_PATH))
@@ -143,16 +122,16 @@ class ApprovalQueue:
                 created_at    REAL NOT NULL,
                 resolved      INTEGER NOT NULL DEFAULT 0,
                 approved      INTEGER NOT NULL DEFAULT 0,
-                consumed      INTEGER NOT NULL DEFAULT 0
+                consumed      INTEGER NOT NULL DEFAULT 0,
+                deadline      REAL NOT NULL DEFAULT 0,
+                resolution    TEXT NOT NULL DEFAULT '',
+                claim_token   TEXT,
+                claim_started_at REAL
             );
             CREATE INDEX IF NOT EXISTS idx_approval_namespace_status
             ON approval_queue(namespace, resolved);
             """
         )
-        # Migration-on-open for the columns added after the table shipped.
-        # Existing rows backfill to a 0 deadline (treated as "no row-level
-        # deadline" by wait()) and an inferred resolution from the legacy
-        # ``approved`` flag, so persisted approvals survive an upgrade.
         existing = {
             str(row["name"])
             for row in self._conn.execute("PRAGMA table_info(approval_queue)")
@@ -165,8 +144,6 @@ class ApprovalQueue:
             self._conn.execute(
                 "ALTER TABLE approval_queue ADD COLUMN resolution TEXT NOT NULL DEFAULT ''"
             )
-            # Backfill resolved-but-unlabelled rows so an upgraded queue still
-            # answers "was this approved or denied" for history reads.
             self._conn.execute(
                 "UPDATE approval_queue SET resolution = ? "
                 "WHERE resolved = 1 AND resolution = '' AND approved = 1",
@@ -177,6 +154,23 @@ class ApprovalQueue:
                 "WHERE resolved = 1 AND resolution = '' AND approved = 0",
                 (RESOLUTION_DENIED,),
             )
+        if "claim_token" not in existing:
+            self._conn.execute("ALTER TABLE approval_queue ADD COLUMN claim_token TEXT")
+        if "claim_started_at" not in existing:
+            self._conn.execute("ALTER TABLE approval_queue ADD COLUMN claim_started_at REAL")
+        self._conn.commit()
+
+    def _release_stale_claims(self) -> None:
+        threshold = time.time() - self._claim_ttl_seconds
+        self._conn.execute("BEGIN IMMEDIATE")
+        self._conn.execute(
+            "UPDATE approval_queue "
+            "SET claim_token = NULL, claim_started_at = NULL "
+            "WHERE resolved = 0 "
+            "AND claim_token IS NOT NULL "
+            "AND (claim_started_at IS NULL OR claim_started_at <= ?)",
+            (threshold,),
+        )
         self._conn.commit()
 
     def _serialize_params(self, params: dict | None) -> str:
@@ -204,14 +198,21 @@ class ApprovalQueue:
             consumed=bool(row["consumed"]),
             deadline=float(row["deadline"] or 0.0),
             resolution=str(row["resolution"] or ""),
+            claim_token=str(row["claim_token"] or "") or None,
+            claim_started_at=(
+                float(row["claim_started_at"])
+                if row["claim_started_at"] is not None
+                else None
+            ),
             _event=existing._event if existing is not None else asyncio.Event(),
         )
 
     def _load_pending(self) -> None:
         self._pending = {}
+        self._release_stale_claims()
         for row in self._conn.execute(
             "SELECT approval_id, namespace, params, created_at, resolved, approved, "
-            "consumed, deadline, resolution "
+            "consumed, deadline, resolution, claim_token, claim_started_at "
             "FROM approval_queue WHERE resolved = 0"
         ):
             entry = self._row_to_entry(row)
@@ -222,7 +223,7 @@ class ApprovalQueue:
             sqlite3.Row | None,
             self._conn.execute(
                 "SELECT approval_id, namespace, params, created_at, resolved, approved, "
-                "consumed, deadline, resolution "
+                "consumed, deadline, resolution, claim_token, claim_started_at "
                 "FROM approval_queue WHERE approval_id = ?",
                 (approval_id,),
             ).fetchone(),
@@ -276,8 +277,8 @@ class ApprovalQueue:
                 self._conn.execute(
                     "INSERT INTO approval_queue "
                     "(approval_id, namespace, params, created_at, resolved, approved, "
-                    "consumed, deadline, resolution) "
-                    "VALUES (?, ?, ?, ?, 0, 0, 0, ?, '')",
+                    "consumed, deadline, resolution, claim_token, claim_started_at) "
+                    "VALUES (?, ?, ?, ?, 0, 0, 0, ?, '', NULL, NULL)",
                     (approval_id, namespace, payload, now, deadline),
                 )
                 self._conn.commit()
@@ -298,6 +299,7 @@ class ApprovalQueue:
         return approval_id
 
     def get(self, approval_id: str) -> PendingApproval:
+        self._release_stale_claims()
         row = self._get_row(approval_id)
         if row is None:
             raise KeyError(f"Approval not found: {approval_id}")
@@ -307,24 +309,16 @@ class ApprovalQueue:
 
     async def wait(self, approval_id: str, timeout: float | None = None) -> bool:
         entry = self.get(approval_id)
-        if entry.resolved:
+        if entry.resolved and entry.claim_token is None:
             return entry.approved
-        # An explicit timeout re-arms the row's wall-clock deadline for this
-        # wait; otherwise the request keeps the deadline stamped at request()
-        # time. Either way the loop drives off the *row* deadline, re-read every
-        # poll, so an extend() that pushes the deadline takes effect live.
         if timeout is not None:
             self._rearm_deadline(approval_id, time.time() + timeout)
         while True:
             entry = self.get(approval_id)
-            if entry.resolved:
+            if entry.resolved and entry.claim_token is None:
                 return entry.approved
             remaining = entry.deadline - time.time()
             if remaining <= 0:
-                # Deadline lapsed: try to expire. The expiry path re-checks the
-                # deadline under the write lock and returns None if an extend()
-                # pushed it into the future in the gap — then we re-wait on the
-                # new deadline instead of expiring a just-extended request.
                 outcome = self._expire_if_unresolved(approval_id)
                 if outcome is not None:
                     return outcome
@@ -337,16 +331,17 @@ class ApprovalQueue:
             except TimeoutError:
                 pass
             entry = self.get(approval_id)
-            if entry.resolved:
+            if entry.resolved and entry.claim_token is None:
                 return entry.approved
 
     def _rearm_deadline(self, approval_id: str, deadline: float) -> None:
-        """Set a pending request's wall-clock deadline (no-op once resolved)."""
+        """Set a pending request's wall-clock deadline; no-op once resolved."""
+        self._release_stale_claims()
         self._conn.execute("BEGIN IMMEDIATE")
         try:
             self._conn.execute(
                 "UPDATE approval_queue SET deadline = ? "
-                "WHERE approval_id = ? AND resolved = 0",
+                "WHERE approval_id = ? AND resolved = 0 AND claim_token IS NULL",
                 (deadline, approval_id),
             )
             self._conn.commit()
@@ -354,25 +349,24 @@ class ApprovalQueue:
             self._conn.rollback()
             raise
         cached = self._pending.get(approval_id)
-        if cached is not None and not cached.resolved:
+        if cached is not None and not cached.resolved and cached.claim_token is None:
             cached.deadline = deadline
 
     def extend(self, approval_id: str, seconds: float) -> float:
-        """Push a pending request's deadline out by ``seconds`` and return it.
-
-        Reads the current row deadline and adds ``seconds`` (re-arming relative
-        to the live deadline, so repeated extends stack). A resolved request is
-        left untouched and its existing deadline is returned. ``wait()`` re-reads
-        the row each poll, so an extend lands live on an in-flight wait.
-        """
+        """Push a pending request's deadline out by ``seconds`` and return it."""
         if seconds <= 0:
             raise ValueError("seconds must be positive")
+        self._release_stale_claims()
         self._conn.execute("BEGIN IMMEDIATE")
         row = self._get_row(approval_id)
         if row is None:
             self._conn.rollback()
             raise KeyError(f"Approval not found: {approval_id}")
         entry = self._row_to_entry(row)
+        if entry.claim_token:
+            self._conn.rollback()
+            self._pending[approval_id] = entry
+            raise ValueError(f"Approval resolution in progress: {approval_id}")
         if entry.resolved:
             self._conn.rollback()
             self._pending[approval_id] = entry
@@ -380,7 +374,7 @@ class ApprovalQueue:
         new_deadline = float(entry.deadline or time.time()) + float(seconds)
         self._conn.execute(
             "UPDATE approval_queue SET deadline = ? "
-            "WHERE approval_id = ? AND resolved = 0",
+            "WHERE approval_id = ? AND resolved = 0 AND claim_token IS NULL",
             (new_deadline, approval_id),
         )
         self._conn.commit()
@@ -388,38 +382,31 @@ class ApprovalQueue:
         return entry.deadline
 
     def _expire_if_unresolved(self, approval_id: str) -> bool | None:
-        """Mark a lapsed-deadline request expired (distinct from an explicit deny).
-
-        Returns the terminal ``approved`` flag once the request is resolved
-        (expired → False; or whatever an explicit decision set). Returns
-        ``None`` when the deadline was pushed into the future by an extend()
-        that landed in the gap between the wait loop observing the lapse and
-        this write lock — the request is no longer expired and the caller must
-        re-wait on the new deadline. The deadline re-check and the expire write
-        share one ``BEGIN IMMEDIATE`` transaction, so they are atomic against
-        ``_rearm_deadline``'s own immediate transaction.
-        """
+        """Resolve a lapsed request as expired, unless it was extended."""
+        self._release_stale_claims()
         self._conn.execute("BEGIN IMMEDIATE")
         row = self._get_row(approval_id)
         if row is None:
             self._conn.rollback()
             raise KeyError(f"Approval not found: {approval_id}")
         entry = self._row_to_entry(row)
+        if entry.claim_token:
+            self._conn.rollback()
+            self._pending[approval_id] = entry
+            raise ValueError(f"Approval resolution in progress: {approval_id}")
         if entry.resolved:
             self._conn.rollback()
             self._pending[approval_id] = entry
             entry._event.set()
             return entry.approved
         if entry.deadline > time.time():
-            # Extended past now after the wait loop saw it lapse — not expired.
-            # Refresh the cache and tell the caller to re-wait (None).
             self._conn.rollback()
             self._pending[approval_id] = entry
             return None
         self._conn.execute(
             "UPDATE approval_queue "
             "SET resolved = 1, approved = 0, resolution = ? "
-            "WHERE approval_id = ? AND resolved = 0",
+            "WHERE approval_id = ? AND resolved = 0 AND claim_token IS NULL",
             (RESOLUTION_EXPIRED, approval_id),
         )
         self._conn.commit()
@@ -437,25 +424,31 @@ class ApprovalQueue:
         allow_always: bool = False,
         remember_intent: bool = False,
         elevated_mode: str | None = None,
+        allow_idempotent: bool = True,
     ) -> None:
+        self._release_stale_claims()
         self._conn.execute("BEGIN IMMEDIATE")
         row = self._get_row(approval_id)
         if row is None:
             self._conn.rollback()
             raise KeyError(f"Approval not found: {approval_id}")
         entry = self._row_to_entry(row)
+        if entry.claim_token:
+            self._conn.rollback()
+            self._pending[approval_id] = entry
+            raise ValueError(f"Approval resolution in progress: {approval_id}")
         if entry.resolved:
             self._conn.rollback()
             self._pending[approval_id] = entry
             entry._event.set()
-            if entry.approved == approved:
+            if allow_idempotent and entry.approved == approved:
                 return
             raise ValueError(f"Approval already resolved: {approval_id}")
 
         cursor = self._conn.execute(
             "UPDATE approval_queue "
             "SET resolved = 1, approved = ?, resolution = ? "
-            "WHERE approval_id = ? AND resolved = 0",
+            "WHERE approval_id = ? AND resolved = 0 AND claim_token IS NULL",
             (
                 1 if approved else 0,
                 RESOLUTION_APPROVED if approved else RESOLUTION_DENIED,
@@ -467,9 +460,11 @@ class ApprovalQueue:
             entry = self.get(approval_id)
             if entry.resolved:
                 entry._event.set()
-                if entry.approved == approved:
+                if allow_idempotent and entry.approved == approved:
                     return
                 raise ValueError(f"Approval already resolved: {approval_id}")
+            if entry.claim_token:
+                raise ValueError(f"Approval resolution in progress: {approval_id}")
             raise ValueError(f"Approval could not be resolved: {approval_id}")
         self._conn.commit()
 
@@ -480,39 +475,211 @@ class ApprovalQueue:
         self._pending[approval_id] = entry
         self._notify_event("resolved", entry)
 
-        if approved and elevated_mode in VALID_ELEVATED_MODES:
-            entry.params["elevatedMode"] = elevated_mode
-            session_key = str(entry.params.get("sessionKey") or "").strip()
-            if session_key:
-                self.set_elevated_mode(session_key, elevated_mode)
+        del elevated_mode
 
-        if approved and entry.namespace == "exec" and (allow_always or remember_intent):
-            self._persist_command_intent(entry.params, allow_always=allow_always)
-
-    def _persist_command_intent(self, params: dict, allow_always: bool = False) -> None:
-        if not isinstance(params, dict):
-            return
-        command = str(params.get("command") or "")
-        if not command:
-            return
-        try:
-            from opensquilla.application.intent_cache import get_intent_cache
-
-            cache = get_intent_cache()
-            if allow_always:
-                cache.record_always(command)
-            else:
-                cache.record(command)
-        except Exception:  # pragma: no cover — cache path is best-effort
-            return
-
-    def consume(self, approval_id: str) -> None:
+    def claim_resolution(self, approval_id: str) -> str:
+        self._release_stale_claims()
+        token = uuid.uuid4().hex
+        now = time.time()
         self._conn.execute("BEGIN IMMEDIATE")
         row = self._get_row(approval_id)
         if row is None:
             self._conn.rollback()
             raise KeyError(f"Approval not found: {approval_id}")
         entry = self._row_to_entry(row)
+        if entry.claim_token:
+            self._conn.rollback()
+            self._pending[approval_id] = entry
+            raise ValueError(f"Approval resolution in progress: {approval_id}")
+        if entry.resolved:
+            self._conn.rollback()
+            self._pending[approval_id] = entry
+            entry._event.set()
+            raise ValueError(f"Approval already resolved: {approval_id}")
+        cursor = self._conn.execute(
+            "UPDATE approval_queue "
+            "SET claim_token = ?, claim_started_at = ? "
+            "WHERE approval_id = ? AND resolved = 0 AND claim_token IS NULL",
+            (token, now, approval_id),
+        )
+        if cursor.rowcount != 1:
+            self._conn.rollback()
+            entry = self.get(approval_id)
+            if entry.resolved:
+                raise ValueError(f"Approval already resolved: {approval_id}")
+            if entry.claim_token:
+                raise ValueError(f"Approval resolution in progress: {approval_id}")
+            raise ValueError(f"Approval could not be claimed: {approval_id}")
+        self._conn.commit()
+        self._pending[approval_id] = self.get(approval_id)
+        return token
+
+    def finalize_claimed_resolution(
+        self,
+        approval_id: str,
+        claim_token: str,
+        approved: bool,
+        *,
+        allow_always: bool = False,
+        remember_intent: bool = False,
+        elevated_mode: str | None = None,
+    ) -> None:
+        self._conn.execute("BEGIN IMMEDIATE")
+        row = self._get_row(approval_id)
+        if row is None:
+            self._conn.rollback()
+            raise KeyError(f"Approval not found: {approval_id}")
+        entry = self._row_to_entry(row)
+        if entry.resolved:
+            self._conn.rollback()
+            self._pending[approval_id] = entry
+            entry._event.set()
+            raise ValueError(f"Approval already resolved: {approval_id}")
+        if entry.claim_token != claim_token:
+            self._conn.rollback()
+            self._pending[approval_id] = entry
+            raise ValueError(f"Approval resolution claim mismatch: {approval_id}")
+        cursor = self._conn.execute(
+            "UPDATE approval_queue "
+            "SET resolved = 1, approved = ?, resolution = ? "
+            "WHERE approval_id = ? AND resolved = 0 AND claim_token = ?",
+            (
+                1 if approved else 0,
+                RESOLUTION_APPROVED if approved else RESOLUTION_DENIED,
+                approval_id,
+                claim_token,
+            ),
+        )
+        if cursor.rowcount != 1:
+            self._conn.rollback()
+            raise ValueError(f"Approval could not be finalized: {approval_id}")
+        self._conn.commit()
+
+        row = self._get_row(approval_id)
+        if row is None:
+            raise KeyError(f"Approval not found: {approval_id}")
+        entry = self._row_to_entry(row)
+        entry.approved = bool(approved)
+        entry.resolved = True
+        self._pending[approval_id] = entry
+
+        del elevated_mode
+
+    def complete_claimed_resolution(
+        self,
+        approval_id: str,
+        claim_token: str,
+        *,
+        allow_always: bool = False,
+        remember_intent: bool = False,
+        elevated_mode: str | None = None,
+    ) -> None:
+        self._conn.execute("BEGIN IMMEDIATE")
+        row = self._get_row(approval_id)
+        if row is None:
+            self._conn.rollback()
+            raise KeyError(f"Approval not found: {approval_id}")
+        entry = self._row_to_entry(row)
+        if entry.resolved and entry.approved and entry.claim_token is None:
+            self._conn.rollback()
+            entry._event.set()
+            self._pending[approval_id] = entry
+            return
+        if not entry.resolved or not entry.approved:
+            self._conn.rollback()
+            self._pending[approval_id] = entry
+            raise ValueError(f"Approval is not approved: {approval_id}")
+        if entry.claim_token != claim_token:
+            self._conn.rollback()
+            self._pending[approval_id] = entry
+            raise ValueError(f"Approval resolution claim mismatch: {approval_id}")
+        cursor = self._conn.execute(
+            "UPDATE approval_queue "
+            "SET claim_token = NULL, claim_started_at = NULL "
+            "WHERE approval_id = ? AND resolved = 1 AND approved = 1 "
+            "AND claim_token = ?",
+            (approval_id, claim_token),
+        )
+        if cursor.rowcount != 1:
+            self._conn.rollback()
+            raise ValueError(f"Approval could not be completed: {approval_id}")
+        self._conn.commit()
+
+        entry = self.get(approval_id)
+        entry._event.set()
+        self._pending[approval_id] = entry
+        self._notify_event("resolved", entry)
+
+        del elevated_mode
+
+    def release_resolution_claim(self, approval_id: str, claim_token: str) -> None:
+        self._conn.execute("BEGIN IMMEDIATE")
+        row = self._get_row(approval_id)
+        if row is None:
+            self._conn.rollback()
+            raise KeyError(f"Approval not found: {approval_id}")
+        entry = self._row_to_entry(row)
+        if entry.resolved:
+            self._conn.rollback()
+            self._pending[approval_id] = entry
+            return
+        if entry.claim_token != claim_token:
+            self._conn.rollback()
+            self._pending[approval_id] = entry
+            return
+        self._conn.execute(
+            "UPDATE approval_queue "
+            "SET claim_token = NULL, claim_started_at = NULL "
+            "WHERE approval_id = ? AND resolved = 0 AND claim_token = ?",
+            (approval_id, claim_token),
+        )
+        self._conn.commit()
+        self._pending[approval_id] = self.get(approval_id)
+
+    def reopen_resolved_approval(
+        self,
+        approval_id: str,
+        *,
+        expected_approved: bool = True,
+    ) -> None:
+        self._conn.execute("BEGIN IMMEDIATE")
+        row = self._get_row(approval_id)
+        if row is None:
+            self._conn.rollback()
+            raise KeyError(f"Approval not found: {approval_id}")
+        entry = self._row_to_entry(row)
+        if not entry.resolved:
+            self._conn.rollback()
+            self._pending[approval_id] = entry
+            return
+        if entry.approved != expected_approved:
+            self._conn.rollback()
+            self._pending[approval_id] = entry
+            raise ValueError(f"Approval resolved state mismatch: {approval_id}")
+        self._conn.execute(
+            "UPDATE approval_queue "
+            "SET resolved = 0, approved = 0, consumed = 0, "
+            "resolution = '', claim_token = NULL, claim_started_at = NULL "
+            "WHERE approval_id = ? AND resolved = 1 AND approved = ?",
+            (approval_id, 1 if expected_approved else 0),
+        )
+        self._conn.commit()
+        reopened = self.get(approval_id)
+        reopened._event.clear()
+        self._pending[approval_id] = reopened
+
+    def consume(self, approval_id: str) -> None:
+        self._release_stale_claims()
+        self._conn.execute("BEGIN IMMEDIATE")
+        row = self._get_row(approval_id)
+        if row is None:
+            self._conn.rollback()
+            raise KeyError(f"Approval not found: {approval_id}")
+        entry = self._row_to_entry(row)
+        if entry.claim_token:
+            self._conn.rollback()
+            self._pending[approval_id] = entry
+            raise ValueError(f"Approval resolution in progress: {approval_id}")
         if not entry.resolved or not entry.approved:
             self._conn.rollback()
             raise ValueError(f"Approval is not approved: {approval_id}")
@@ -522,7 +689,8 @@ class ApprovalQueue:
         cursor = self._conn.execute(
             "UPDATE approval_queue "
             "SET consumed = 1 "
-            "WHERE approval_id = ? AND resolved = 1 AND approved = 1 AND consumed = 0",
+            "WHERE approval_id = ? AND resolved = 1 AND approved = 1 "
+            "AND consumed = 0 AND claim_token IS NULL",
             (approval_id,),
         )
         if cursor.rowcount != 1:
@@ -537,31 +705,35 @@ class ApprovalQueue:
 
     def status(self, approval_id: str) -> dict:
         entry = self.get(approval_id)
+        ready = entry.resolved and entry.claim_token is None
         return {
             "id": entry.approval_id,
             "namespace": entry.namespace,
             "params": entry.params,
             "created_at": entry.created_at,
             "deadline": entry.deadline,
-            "resolved": entry.resolved,
-            "approved": entry.approved,
-            "resolution": entry.resolution,
-            "consumed": entry.consumed,
+            "resolved": ready,
+            "approved": entry.approved if ready else False,
+            "resolution": entry.resolution if ready else "",
+            "consumed": entry.consumed if ready else False,
         }
 
     def list_pending(self, namespace: str | None = None) -> list[dict]:
+        self._release_stale_claims()
         if namespace:
             rows = self._conn.execute(
-                "SELECT approval_id, namespace, params, created_at, deadline "
+                "SELECT approval_id, namespace, params, created_at "
+                ", deadline, resolution "
                 "FROM approval_queue "
-                "WHERE resolved = 0 AND namespace = ?",
+                "WHERE resolved = 0 AND claim_token IS NULL AND namespace = ?",
                 (namespace,),
             )
         else:
             rows = self._conn.execute(
-                "SELECT approval_id, namespace, params, created_at, deadline "
+                "SELECT approval_id, namespace, params, created_at "
+                ", deadline, resolution "
                 "FROM approval_queue "
-                "WHERE resolved = 0",
+                "WHERE resolved = 0 AND claim_token IS NULL",
             )
         return [
             {
@@ -570,26 +742,44 @@ class ApprovalQueue:
                 "params": self._deserialize_params(row["params"]),
                 "created_at": float(row["created_at"]),
                 "deadline": float(row["deadline"] or 0.0),
+                "resolution": str(row["resolution"] or ""),
             }
             for row in rows
         ]
 
     def set_elevated_mode(self, session_key: str, mode: str | None) -> None:
+        """Legacy compatibility wrapper for session run mode."""
         key = session_key.strip()
         if not key:
             raise ValueError("session_key is required")
         if mode in (None, "", "off"):
-            self._session_elevated_modes.pop(key, None)
+            self._session_run_modes.pop(key, None)
             return
         if mode not in VALID_ELEVATED_MODES:
             raise ValueError("mode must be one of: on, bypass, full, off")
-        self._session_elevated_modes[key] = mode
+        self.set_run_mode(key, "full" if mode == "full" else "trusted")
 
     def get_elevated_mode(self, session_key: str | None) -> str | None:
+        """Legacy compatibility wrapper returning only full host access."""
+        mode = self.get_run_mode(session_key)
+        return "full" if mode == "full" else None
+
+    def set_run_mode(self, session_key: str, mode: str | None) -> None:
+        key = session_key.strip()
+        if not key:
+            raise ValueError("session_key is required")
+        if mode in (None, "", "off"):
+            self._session_run_modes.pop(key, None)
+            return
+        if mode not in VALID_RUN_MODES:
+            raise ValueError("mode must be one of: full, standard, trusted, off")
+        self._session_run_modes[key] = mode
+
+    def get_run_mode(self, session_key: str | None) -> str | None:
         key = (session_key or "").strip()
         if not key:
             return None
-        return self._session_elevated_modes.get(key)
+        return self._session_run_modes.get(key)
 
     def resolve_pending_for_session(
         self,
@@ -601,12 +791,13 @@ class ApprovalQueue:
         key = session_key.strip()
         if not key:
             return 0
+        self._release_stale_claims()
         count = 0
         for row in self._conn.execute(
             "SELECT approval_id, namespace, params, created_at, resolved, approved, "
-            "consumed, deadline, resolution "
+            "consumed, deadline, resolution, claim_token, claim_started_at "
             "FROM approval_queue "
-            "WHERE resolved = 0 AND namespace = 'exec'",
+            "WHERE resolved = 0 AND claim_token IS NULL AND namespace = 'exec'",
         ).fetchall():
             entry = self._row_to_entry(row)
             if str(entry.params.get("sessionKey") or "").strip() != key:

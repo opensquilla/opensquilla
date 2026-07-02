@@ -13,7 +13,13 @@ from types import SimpleNamespace
 import pytest
 import structlog.testing
 
-from opensquilla.sandbox.types import SandboxResult
+from opensquilla.sandbox.types import (
+    DenialReason,
+    DenialResult,
+    SandboxResult,
+    SecurityLevel,
+    SuggestedNextStep,
+)
 from opensquilla.tools.builtin import shell
 from opensquilla.tools.types import CallerKind, ToolContext, ToolError, current_tool_context
 
@@ -279,8 +285,15 @@ async def test_exec_command_sandbox_escalation_stdin_returns_when_shell_exits(
             backend_notes=("sandbox denied",),
         )
 
-    async def fake_escalate_backend_denial(*args: object, **kwargs: object) -> object:
-        return object()
+    async def fake_escalate_backend_denial(*args: object, **kwargs: object) -> DenialResult:
+        return DenialResult(
+            reason=DenialReason.SEATBELT_DENIED,
+            suggested_next_step=SuggestedNextStep.ASK_USER,
+            level=SecurityLevel.STANDARD,
+            action_fingerprint="fp",
+            message="sandbox denied",
+            retryable=False,
+        )
 
     monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
     monkeypatch.setattr(shell, "gate_action", fake_gate_action)
@@ -291,7 +304,9 @@ async def test_exec_command_sandbox_escalation_stdin_returns_when_shell_exits(
     result = await shell.exec_command(command, stdin="payload", timeout=0.5)
     elapsed = time.monotonic() - started
 
-    assert result.startswith("exit_code=0\n")
+    payload = json.loads(result)
+    assert payload["status"] == "denied"
+    assert payload["reason"] == "seatbelt_denied"
     assert elapsed < 0.5
 
 
@@ -329,7 +344,9 @@ async def test_process_owner_context_can_list_all_sessions() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("action", ["poll", "log", "kill", "remove", "write", "submit", "eof"])
+@pytest.mark.parametrize(
+    "action", ["poll", "wait", "log", "kill", "remove", "write", "submit", "eof"]
+)
 async def test_process_cross_context_operations_are_denied(action: str) -> None:
     shell._bg_sessions["owned-by-other"] = _session(
         "owned-by-other",
@@ -398,7 +415,7 @@ async def test_process_subagent_owner_context_is_not_admin_bypass() -> None:
     assert [session["session_id"] for session in payload["sessions"]] == ["own"]
 
 
-# --- process(action="wait") — blocking await replaces poll loops (codex) ---
+# --- process(action="wait") - blocking await replaces poll loops (codex) ---
 
 
 async def _real_bg_session(session_id: str, session_key: str, argv: list[str]):
@@ -427,7 +444,25 @@ def test_process_tool_declares_wait_timeout_metadata() -> None:
     from opensquilla.tools.registry import get_default_registry
 
     spec = get_default_registry().get("process").spec
+    assert (
+        spec.execution_timeout_seconds
+        >= shell._MAX_PROCESS_WAIT_TIMEOUT + shell._PROCESS_WAIT_TIMEOUT_PADDING
+    )
     assert spec.execution_timeout_argument == "timeout"
+
+
+def test_process_wait_uses_coding_mode_default_timeout() -> None:
+    ctx = ToolContext(coding_mode=True)
+
+    assert ctx.coding_mode is True
+    token = current_tool_context.set(ctx)
+    try:
+        assert (
+            shell._resolve_process_wait_timeout(None)
+            == shell._CODING_PROCESS_WAIT_TIMEOUT
+        )
+    finally:
+        current_tool_context.reset(token)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="uses POSIX sleep/true")
@@ -489,7 +524,7 @@ async def test_process_wait_finalizes_when_exit_races_timeout(monkeypatch) -> No
 
     async def _wait_then_report_timeout(session, timeout):
         await proc.wait()  # the process actually exits...
-        return False       # ...but we report a timeout (the boundary race)
+        return False  # ...but we report a timeout (the boundary race)
 
     monkeypatch.setattr(shell, "_wait_bg_process", _wait_then_report_timeout)
     token = current_tool_context.set(_ctx("agent:main:one"))

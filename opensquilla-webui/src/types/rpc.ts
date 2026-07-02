@@ -237,7 +237,7 @@ export interface ChatSendAttachmentPayload {
 export interface ChatSendParams {
   message: string
   sessionKey: string
-  _source?: { elevated?: string }
+  _source?: { elevated?: string; runMode?: 'standard' | 'trusted' | 'full' }
   intent?: string
   displayText?: string
   attachments?: ChatSendAttachmentPayload[]

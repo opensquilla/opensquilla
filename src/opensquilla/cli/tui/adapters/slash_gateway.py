@@ -11,7 +11,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 
 from rich.table import Table
 
@@ -106,6 +106,7 @@ class GatewayClientLike(Protocol):
         approved: bool,
         *,
         allow_always: bool = False,
+        choice: str | None = None,
     ) -> Any: ...
 
     async def abort_session(self, key: str) -> dict[str, Any]: ...
@@ -617,7 +618,7 @@ async def _async_file_prompt_and_attachments(
 
 
 async def _forget_server_approvals(client: object | None, target: str | None = None) -> bool:
-    """Clear intent cache. Returns True when the right cache actually changed."""
+    """Compatibility no-op for the removed intent approval cache."""
     if client is not None:
         from opensquilla.cli.gateway_client import GatewayClient
 
@@ -636,14 +637,7 @@ async def _forget_server_approvals(client: object | None, target: str | None = N
             )
             return False
 
-    from opensquilla.sandbox.intent_cache import get_intent_cache
-
-    cache = get_intent_cache()
-    if target:
-        cache.forget(f"rm {target}")
-        cache.forget(target)
-    else:
-        cache.clear()
+    _ = target
     return True
 
 
@@ -654,23 +648,13 @@ async def _handle_approvals_command(cmd: str, client: object | None = None) -> N
 
     if client is None:
         from opensquilla.gateway.approval_queue import get_approval_queue
-        from opensquilla.sandbox.intent_cache import get_intent_cache
 
         queue = get_approval_queue()
-        cache = get_intent_cache()
         if arg == "reset":
             queue.set_settings(mode="prompt")
-            cache.clear()
-            console.print(f"[{ACCENT}]Approval mode reset to prompt; cache cleared.[/]")
+            console.print(f"[{ACCENT}]Approval mode reset to prompt.[/]")
             return
-        entries = [
-            f"  [dim]{scope}[/dim] {k}:{t}"
-            for (k, t), (_exp, scope) in cache._entries.items()  # noqa: SLF001
-        ]
         console.print(f"[{ACCENT}]mode:[/] {queue.get_settings().mode}")
-        console.print(f"[{ACCENT}]cached intents ({len(entries)}):[/]")
-        for line in entries or ["  [dim](none)[/dim]"]:
-            console.print(line)
         return
 
     from opensquilla.cli.gateway_client import GatewayClient
@@ -681,7 +665,7 @@ async def _handle_approvals_command(cmd: str, client: object | None = None) -> N
         try:
             await client.set_approval_mode("prompt")
             await client.forget_approvals()
-            console.print(f"[{ACCENT}]Approval mode reset to prompt; server cache cleared.[/]")
+            console.print(f"[{ACCENT}]Approval mode reset to prompt.[/]")
         except Exception as exc:
             console.print(f"[red]Failed to reset approvals:[/red] {type(exc).__name__}: {exc}")
             console.print("[red]Restart the gateway if this is an older build.[/red]")
@@ -694,32 +678,18 @@ async def _handle_approvals_command(cmd: str, client: object | None = None) -> N
         console.print("[red]Older gateway? Restart it.[/red]")
         return
     console.print(f"[{ACCENT}]mode:[/] {snap.get('mode')}")
-    raw_entries = snap.get("intent_cache_entries")
-    approval_entries = (
-        cast(list[dict[str, Any]], raw_entries) if isinstance(raw_entries, list) else []
-    )
-    console.print(f"[{ACCENT}]cached intents ({len(approval_entries)}):[/]")
-    if not approval_entries:
-        console.print("  [dim](none)[/dim]")
-    for e in approval_entries:
-        console.print(f"  [dim]{e.get('scope')}[/dim] {e.get('kind')}:{e.get('target')}")
 
 
 async def _handle_forget_command(cmd: str, client: object | None = None) -> None:
-    """Clear cached approvals. ``/forget`` wipes all; ``/forget <path>`` wipes one."""
+    """Compatibility no-op for removed approval cache."""
     parts = cmd.split(maxsplit=1)
     if len(parts) < 2:
         if await _forget_server_approvals(client):
-            console.print(
-                f"[{ACCENT}]All cached approvals cleared.[/] Future destructive "
-                "ops will prompt again."
-            )
+            console.print(f"[{ACCENT}]Approval cache is inactive.[/]")
         return
     target = parts[1].strip()
     if await _forget_server_approvals(client, target):
-        console.print(
-            f"[{ACCENT}]Cached approval for[/] {target} [{ACCENT}]cleared[/] (if one existed)."
-        )
+        console.print(f"[{ACCENT}]Approval cache is inactive for[/] {target}.")
 
 
 async def _handle_elevated_command(
@@ -760,29 +730,31 @@ async def _handle_elevated_command(
             from opensquilla.gateway.approval_queue import get_approval_queue
 
             get_approval_queue().set_settings(mode="prompt")
-    revoked_suffix = (
-        "Cached approvals revoked."
+    cache_suffix = (
+        ""
         if cleared
-        else "[bold red]WARNING: cached approvals NOT revoked (see error above).[/bold red]"
+        else " [bold red]WARNING: legacy approval cache status not confirmed "
+        "(see error above).[/bold red]"
     )
 
     if arg == "off":
         console.print(
             f"[{ACCENT}]permissions: off[/] - exec runs inside the sandbox. "
-            f"Queue mode reset to prompt. {revoked_suffix}{queue_mode_reset_warning}"
+            f"Queue mode reset to prompt.{cache_suffix}{queue_mode_reset_warning}"
         )
     elif arg == "on":
         console.print(
-            f"[yellow]permissions: on[/yellow] - exec on host, approvals required. "
-            f"{revoked_suffix}"
+            f"[yellow]permissions: on[/yellow] - legacy alias for Trusted-Sandbox; "
+            f"approvals still apply. "
+            f"{cache_suffix}"
         )
     elif arg == "bypass":
         console.print(
-            f"[red]permissions: bypass[/red] - exec on host, approvals auto-granted. "
-            f"Sensitive paths (~/.ssh, /etc, ...) still hard-blocked. {revoked_suffix}"
+            f"[red]permissions: bypass[/red] - legacy alias for Trusted-Sandbox "
+            f"with fewer prompts; host access is not granted.{cache_suffix}"
         )
     else:
         console.print(
             f"[red]permissions: full[/red] - exec on host, approvals skipped, "
-            f"sensitive paths bypassed. Trusted operators only. {revoked_suffix}"
+            f"sensitive paths bypassed. Trusted operators only.{cache_suffix}"
         )

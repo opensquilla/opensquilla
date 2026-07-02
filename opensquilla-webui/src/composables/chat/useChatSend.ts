@@ -2,6 +2,8 @@ import type { Ref } from 'vue'
 import i18n from '@/i18n'
 import { useToasts } from '@/composables/useToasts'
 import type { Attachment, ChatMessage } from '@/types/chat'
+import type { SandboxRunMode } from '@/types/sandbox'
+import { normalizeSandboxRunMode } from '@/types/sandbox'
 import type {
   ChatSendParams,
   ChatSendResponse,
@@ -41,6 +43,14 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
+function chatSourceMetadata(options: UseChatSendOptions): ChatSendParams['_source'] {
+  const elevated = options.normalizeElevatedMode(options.elevatedMode.value)
+  return {
+    ...(elevated ? { elevated } : {}),
+    runMode: normalizeSandboxRunMode(options.runMode.value),
+  }
+}
+
 export interface UseChatSendOptions {
   rpc: RpcClient
   inputText: Ref<string>
@@ -48,6 +58,7 @@ export interface UseChatSendOptions {
   sessionKey: Ref<string>
   busySendMode: Ref<BusySendMode>
   elevatedMode: Ref<string>
+  runMode: Ref<SandboxRunMode>
   pendingAttachments: Ref<Attachment[]>
   pendingSessionIntent: Ref<string | null>
   aborted: Ref<boolean>
@@ -151,8 +162,7 @@ export function useChatSend(options: UseChatSendOptions) {
 
     const params: ChatSendParams = { message: text || 'Describe these attachments', sessionKey: requestSessionKey }
     if (sendOpts?.queueMode) params.queueMode = sendOpts.queueMode
-    const elevated = options.normalizeElevatedMode(options.elevatedMode.value)
-    if (elevated) params._source = { elevated }
+    params._source = chatSourceMetadata(options)
     if (options.pendingSessionIntent.value) {
       params.intent = options.pendingSessionIntent.value
       options.pendingSessionIntent.value = null
@@ -279,8 +289,7 @@ export function useChatSend(options: UseChatSendOptions) {
 
     const params: ChatSendParams = { message: providerText, sessionKey: requestSessionKey }
     if (displayText && displayText !== providerText) params.displayText = displayText
-    const elevated = options.normalizeElevatedMode(options.elevatedMode.value)
-    if (elevated) params._source = { elevated }
+    params._source = chatSourceMetadata(options)
 
     const wasStreaming = options.stream.isStreaming.value
     if (!wasStreaming) {

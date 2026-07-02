@@ -54,24 +54,40 @@
                 :title="t('chat.composerSettings')"
                 :aria-label="t('chat.composerSettings')"
                 :aria-expanded="settingsOpen ? 'true' : 'false'"
-                @click="settingsOpen = !settingsOpen"
+                @click="toggleSettings"
               >
                 <Icon name="settings" :size="17" />
               </button>
               <ChatComposerSettings
                 v-if="settingsOpen"
-                :elevated-mode="elevatedMode"
-                :elevated-unavailable="elevatedUnavailable"
                 :router-enabled="routerEnabled"
                 :router-settings-busy="routerSettingsBusy"
                 :visual-effects-enabled="routerVisualEffectsEnabled"
                 :coding-mode-enabled="codingModeEnabled"
                 :coding-mode-settings-busy="codingModeSettingsBusy"
                 @close="settingsOpen = false"
-                @set-elevated-mode="emit('setElevatedMode', $event)"
                 @set-router-enabled="emit('setRouterEnabled', $event)"
                 @set-visual-effects-enabled="emit('setVisualEffectsEnabled', $event)"
                 @set-coding-mode-enabled="emit('setCodingModeEnabled', $event)"
+              />
+            </div>
+            <div class="chat-settings-anchor">
+              <button
+                class="btn btn--icon btn--ghost"
+                :class="{ 'is-active': runModeOpen }"
+                :title="t('chat.composer.runMode')"
+                :aria-label="t('chat.composer.runMode')"
+                :aria-expanded="runModeOpen ? 'true' : 'false'"
+                @click="toggleRunMode"
+              >
+                <Icon name="shield" :size="17" />
+              </button>
+              <ChatComposerRunMode
+                v-if="runModeOpen"
+                :run-mode="runMode"
+                :allowed-run-modes="allowedRunModes"
+                @close="runModeOpen = false"
+                @set-run-mode="emit('setRunMode', $event)"
               />
             </div>
             <button
@@ -140,7 +156,9 @@ import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import type { IconName } from '@/utils/icons'
 import ChatComposerSettings from '@/components/chat/ChatComposerSettings.vue'
+import ChatComposerRunMode from '@/components/chat/ChatComposerRunMode.vue'
 import type { Attachment } from '@/types/chat'
+import type { SandboxRunMode } from '@/types/sandbox'
 import { isAttachmentBusy, isImageDisplayAttachment } from '@/utils/chat/attachments'
 
 interface ChatComposerExpose {
@@ -158,8 +176,8 @@ defineProps<{
   isNewLanding: boolean
   placeholder: string
   sendButtonTitle: string
-  elevatedMode: string
-  elevatedUnavailable: boolean
+  runMode: SandboxRunMode
+  allowedRunModes: SandboxRunMode[]
   routerEnabled: boolean
   routerVisualEffectsEnabled: boolean
   routerSettingsBusy: boolean
@@ -179,7 +197,7 @@ const emit = defineEmits<{
   retryAttachment: [index: number]
   send: []
   setBusySendMode: [mode: 'queue' | 'steer']
-  setElevatedMode: [mode: string]
+  setRunMode: [mode: 'standard' | 'trusted' | 'full']
   setRouterEnabled: [enabled: boolean]
   setVisualEffectsEnabled: [enabled: boolean]
   setCodingModeEnabled: [enabled: boolean]
@@ -195,6 +213,17 @@ const composerEl = ref<HTMLElement | null>(null)
 const textareaEl = ref<HTMLTextAreaElement | null>(null)
 const fileInputEl = ref<HTMLInputElement | null>(null)
 const settingsOpen = ref(false)
+const runModeOpen = ref(false)
+
+function toggleSettings() {
+  settingsOpen.value = !settingsOpen.value
+  if (settingsOpen.value) runModeOpen.value = false
+}
+
+function toggleRunMode() {
+  runModeOpen.value = !runModeOpen.value
+  if (runModeOpen.value) settingsOpen.value = false
+}
 
 function attachmentIcon(att: Attachment): IconName {
   return isImageDisplayAttachment(att) ? 'image' : 'fileText'

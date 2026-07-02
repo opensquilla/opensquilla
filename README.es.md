@@ -48,11 +48,11 @@ Los instaladores de escritorio, la versión portable de Windows y la instalació
 
 Los comandos de instalación de versiones usan los recursos de release publicados en GitHub. El zip portable de Windows también dispone de un alias `/releases/latest/download/` que apunta a la versión actual. Las instalaciones del wheel de Python usan nombres de archivo de wheel con versión, porque los instaladores validan la versión incrustada en el nombre del archivo del wheel.
 
-Para el uso de escritorio de 0.4.1, opta por los instaladores de escritorio firmados de la Release de GitHub: `OpenSquilla-0.4.1-mac-arm64.dmg` en macOS y `OpenSquilla-0.4.1-win-x64.exe` en Windows. El zip portable de Windows se mantiene como paquete de compatibilidad heredada para scripts y flujos de trabajo basados en carpetas portables.
+Para el uso de escritorio de 0.4.1, opta por los instaladores de escritorio empaquetados de la Release de GitHub: `OpenSquilla-0.4.1-mac-arm64.dmg` en macOS y `OpenSquilla-0.4.1-win-x64.exe` en Windows. El zip portable de Windows se mantiene como paquete de compatibilidad heredada para scripts y flujos de trabajo basados en carpetas portables.
 
 | Ruta | Público | Cuándo usarla |
 | --- | --- | --- |
-| [Instaladores de escritorio](#desktop-installers) **(recomendado para escritorio)** | Usuarios de macOS y Windows | Aplicación de escritorio empaquetada y firmada |
+| [Instaladores de escritorio](#desktop-installers) **(recomendado para escritorio)** | Usuarios de macOS y Windows | Aplicación de escritorio empaquetada |
 | [Versión portable de Windows](#windows-portable-no-python) | Usuarios de Windows | Compatibilidad heredada; sin cadena de herramientas de Python; arranque desde un solo zip |
 | [Instalación rápida desde terminal](#quick-terminal-install) **(recomendado)** | Usuarios finales en cualquier SO | Wheel de release desde una terminal |
 | [Instalar desde el código fuente](#install-from-source) | Usuarios que siguen `main` | Ejecutar desde un checkout, no editarlo |
@@ -70,7 +70,7 @@ El perfil predeterminado `recommended` instala **SquillaRouter** —el enrutador
 
 En Windows, el runtime ONNX que incluye SquillaRouter también necesita el runtime de Visual C++. El lanzador portable de Windows y el instalador de PowerShell desde el código fuente lo instalan automáticamente mediante `winget`; la ruta de **instalación rápida desde terminal** (`uv tool install`) no lo hace: si el arranque registra un error `DLL load failed`, instálalo manualmente (consulta [Solución de problemas](#troubleshooting)). OpenSquilla sigue funcionando con enrutamiento directo a un único modelo hasta que se instale.
 
-En las instalaciones desde terminal de macOS, el runtime LightGBM de SquillaRouter también puede necesitar la biblioteca OpenMP del sistema. La aplicación de escritorio firmada incluye el runtime que necesita, pero la **instalación rápida desde terminal** no instala bibliotecas de Homebrew ni del sistema. Si el arranque registra `Library not loaded: @rpath/libomp.dylib`, ejecuta `brew install libomp` y luego reinicia el gateway. OpenSquilla sigue funcionando con enrutamiento directo a un único modelo hasta que se instale.
+En las instalaciones desde terminal de macOS, el runtime LightGBM de SquillaRouter también puede necesitar la biblioteca OpenMP del sistema. La aplicación de escritorio incluye el runtime que necesita, pero la **instalación rápida desde terminal** no instala bibliotecas de Homebrew ni del sistema. Si el arranque registra `Library not loaded: @rpath/libomp.dylib`, ejecuta `brew install libomp` y luego reinicia el gateway. OpenSquilla sigue funcionando con enrutamiento directo a un único modelo hasta que se instale.
 
 Enlaces de instalación: [Git](https://git-scm.com/downloads) ·
 [Git LFS](https://git-lfs.com/) ·
@@ -99,7 +99,7 @@ La ruta de compatibilidad heredada en Windows: el zip incluye un runtime de CPyt
 3. Completa la configuración inicial y luego abre <http://127.0.0.1:18791/control/>.
 
 > [!NOTE]
-> Las compilaciones de vista previa no están firmadas; el arranque como administrador es la ruta admitida. Si aparece SmartScreen, elige **Más información** → **Ejecutar de todas formas**. Si Smart App Control o una política empresarial bloquea la aplicación sin firmar, usa en su lugar la [instalación rápida desde terminal](#quick-terminal-install).
+> Las builds Windows no están firmadas actualmente; el arranque como administrador es la ruta admitida. Si aparece SmartScreen, elige **Más información** → **Ejecutar de todas formas**. Si Smart App Control o una política empresarial bloquea la aplicación sin firmar, usa en su lugar la [instalación rápida desde terminal](#quick-terminal-install).
 
 <details>
 <summary>Uso avanzado de la versión portable</summary>
@@ -536,7 +536,7 @@ La puntuación es la media de las 25 tareas; los recuentos de tokens y el coste 
 
 Si el arranque registra `Library not loaded: @rpath/libomp.dylib` desde `lightgbm/lib/lib_lightgbm.dylib`, OpenSquilla sigue funcionando con enrutamiento directo a un único modelo, pero el runtime `SquillaRouter` incluido permanece inactivo hasta que se instale el runtime OpenMP de macOS.
 
-La aplicación de escritorio firmada incluye el runtime nativo que necesita. Si usaste la instalación rápida desde terminal o la instalación desde el código fuente en un shell, instala `libomp` con Homebrew y reinicia el gateway:
+La aplicación de escritorio incluye el runtime nativo que necesita. Si usaste la instalación rápida desde terminal o la instalación desde el código fuente en un shell, instala `libomp` con Homebrew y reinicia el gateway:
 
 ```sh
 brew install libomp

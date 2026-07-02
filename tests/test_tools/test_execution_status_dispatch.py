@@ -168,6 +168,7 @@ async def test_approval_denial_preserves_approval_denied_reason() -> None:
     result = await handler(ToolCall("call_approval_denied", "exec_command", {}))
 
     assert result.is_error is True
+    assert result.terminates_turn is False
     assert result.execution_status is not None
     assert result.execution_status["status"] == "error"
     assert result.execution_status["reason"] == "approval_denied"

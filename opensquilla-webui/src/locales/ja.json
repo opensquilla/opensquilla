@@ -1,4 +1,9 @@
 {
+  "updates": {
+    "available": "OpenSquilla {version} が利用可能です",
+    "viewRelease": "リリースを表示",
+    "dismiss": "閉じる"
+  },
   "common": {
     "close": "閉じる",
     "save": "保存",
@@ -806,12 +811,10 @@
       "details": "詳細",
       "unknownTool": "不明",
       "approveOnce": "1 回だけ承認",
-      "alwaysAllow": "この種類を常に許可",
-      "bypassHint": "機微なパスのチェックは維持しつつ、承認プロンプトをバイパスします",
-      "bypass": "承認をバイパス",
+      "alwaysAllow": "これを常に許可",
+      "allowSameType": "同じ種類を許可",
       "deny": "拒否",
       "loadFailed": "承認の読み込みに失敗しました: {msg}",
-      "bypassEnabled": "承認のバイパスを有効にしました",
       "approved": "承認済み",
       "denied": "拒否済み",
       "toastFailed": "失敗しました: {msg}",
@@ -1533,6 +1536,7 @@
       "denyReasonLabel": "拒否の理由（任意、エージェントに送信）",
       "allowOnce": "1 回だけ許可",
       "allowAlways": "これを常に許可",
+      "allowSameType": "同じ種類を許可",
       "deny": "拒否",
       "expiresIn": "{time} で期限切れ",
       "outcomeExpired": "期限切れ — 未実行",
@@ -1562,10 +1566,14 @@
       "disabled": "無効",
       "routerAnimationOn": "ルーターアニメーション オン",
       "routerAnimationOff": "ルーターアニメーション オフ",
-      "execOff": "オフ",
-      "execPrompt": "承認を確認",
-      "execBypass": "承認をバイパス",
-      "execFull": "フルアクセス"
+      "runMode": "実行モード",
+      "runModeStandard": "標準サンドボックス",
+      "runModeStandardDesc": "リスクのあるツール操作の前に確認します。",
+      "runModeTrusted": "信頼済みサンドボックス",
+      "runModeTrustedDesc": "信頼済みサンドボックス操作を自動承認します。",
+      "runModeFull": "完全なホストアクセス",
+      "runModeFullDesc": "サンドボックス分離なしで実行します。",
+      "runModeFullUnavailable": "完全なホストアクセスには owner セッションが必要です。"
     },
     "pending": {
       "label": "保留中 {count}/{max}",

@@ -143,7 +143,7 @@ def classify_provider_error(
         return ProviderFailureKind.EMPTY_RESPONSE
 
     if family == "openai_compat":
-        if _is_model_unavailable(text):
+        if status_code == 404 or _is_model_unavailable(text):
             return ProviderFailureKind.MODEL_NOT_FOUND
         if status_code in {401, 403} or "invalid api key" in text or "unauthorized" in text:
             return ProviderFailureKind.AUTH_INVALID
@@ -163,8 +163,12 @@ def classify_provider_error(
             return ProviderFailureKind.BAD_REQUEST
 
     if family == "anthropic":
+        if status_code == 404 or "not_found_error" in text or _is_model_unavailable(text):
+            return ProviderFailureKind.MODEL_NOT_FOUND
         if status_code in {401, 403} or "authentication_error" in text:
             return ProviderFailureKind.AUTH_INVALID
+        if status_code == 402 or "credit balance" in text:
+            return ProviderFailureKind.INSUFFICIENT_CREDITS
         if status_code == 429 or "rate_limit_error" in text:
             return ProviderFailureKind.RATE_LIMITED
         if status_code in _GATEWAY_TRANSIENT_STATUS_CODES or "overloaded_error" in text:
@@ -175,6 +179,10 @@ def classify_provider_error(
     if family == "ollama":
         if "model not found" in text or "pull" in text and "model" in text:
             return ProviderFailureKind.MODEL_NOT_FOUND
+        # Ollama Cloud / secured remote hosts return standard auth statuses;
+        # without this branch a 401 fell through to UNKNOWN.
+        if status_code in {401, 403} or "unauthorized" in text:
+            return ProviderFailureKind.AUTH_INVALID
         if (
             "connection refused" in text
             or "connection error" in text

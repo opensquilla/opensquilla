@@ -421,39 +421,6 @@ async def test_run_turn_feeds_tokenjuice_reduced_tool_result_to_next_provider_ca
 
 
 @pytest.mark.asyncio
-async def test_agent_preserves_signature_only_thinking_block_for_next_provider_call() -> None:
-    async def handler(tool_call: ToolCall) -> ToolResult:
-        return ToolResult(
-            tool_use_id=tool_call.tool_use_id,
-            tool_name=tool_call.tool_name,
-            content="ok",
-        )
-
-    provider = _SignatureOnlyToolCallingProvider()
-    agent = Agent(
-        provider=provider,
-        config=AgentConfig(context_window_tokens=1_000_000, max_iterations=2),
-        tool_definitions=[_tool_def("exec_command")],
-        tool_handler=handler,
-    )
-
-    _events = [event async for event in agent.run_turn("run tests")]
-
-    assert len(provider.calls) == 2
-    assistant_messages = [message for message in provider.calls[1] if message.role == "assistant"]
-    assert assistant_messages
-    thinking_blocks = [
-        block
-        for message in assistant_messages
-        for block in message.content
-        if isinstance(block, ContentBlockThinking)
-    ]
-    assert thinking_blocks
-    assert thinking_blocks[0].thinking == ""
-    assert thinking_blocks[0].signature == "gemini-signature-only"
-
-
-@pytest.mark.asyncio
 async def test_approval_retry_clears_stale_tool_result_projection() -> None:
     approval_payload = json.dumps(
         {
@@ -554,3 +521,36 @@ def test_typescript_runtime_directory_is_not_present() -> None:
     from pathlib import Path
 
     assert not (Path(__file__).resolve().parents[2] / "src/opensquilla/tokenjuice_runtime").exists()
+
+
+@pytest.mark.asyncio
+async def test_agent_preserves_signature_only_thinking_block_for_next_provider_call() -> None:
+    async def handler(tool_call: ToolCall) -> ToolResult:
+        return ToolResult(
+            tool_use_id=tool_call.tool_use_id,
+            tool_name=tool_call.tool_name,
+            content="ok",
+        )
+
+    provider = _SignatureOnlyToolCallingProvider()
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(context_window_tokens=1_000_000, max_iterations=2),
+        tool_definitions=[_tool_def("exec_command")],
+        tool_handler=handler,
+    )
+
+    _events = [event async for event in agent.run_turn("run tests")]
+
+    assert len(provider.calls) == 2
+    assistant_messages = [message for message in provider.calls[1] if message.role == "assistant"]
+    assert assistant_messages
+    thinking_blocks = [
+        block
+        for message in assistant_messages
+        for block in message.content
+        if isinstance(block, ContentBlockThinking)
+    ]
+    assert thinking_blocks
+    assert thinking_blocks[0].thinking == ""
+    assert thinking_blocks[0].signature == "gemini-signature-only"

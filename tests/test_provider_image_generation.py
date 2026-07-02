@@ -89,8 +89,7 @@ async def test_openrouter_image_provider_adds_app_attribution_headers(monkeypatc
         "Authorization": "Bearer or-test",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://opensquilla.ai",
-        "X-OpenRouter-Title": "OpenSquilla",
-        "X-OpenRouter-Categories": "cli-agent,personal-agent",
+        "X-Title": "OpenSquilla",
     }
     assert result.image_bytes == b"opensquilla"
 

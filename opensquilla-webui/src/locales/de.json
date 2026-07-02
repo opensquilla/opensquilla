@@ -1,4 +1,9 @@
 {
+  "updates": {
+    "available": "OpenSquilla {version} ist verfügbar",
+    "viewRelease": "Version anzeigen",
+    "dismiss": "Schließen"
+  },
   "common": {
     "close": "Schließen",
     "save": "Speichern",
@@ -806,12 +811,10 @@
       "details": "Details",
       "unknownTool": "Unbekannt",
       "approveOnce": "Einmal genehmigen",
-      "alwaysAllow": "Diesen Typ immer zulassen",
-      "bypassHint": "Genehmigungsabfragen umgehen und dabei Prüfungen für sensible Pfade beibehalten",
-      "bypass": "Genehmigungen umgehen",
+      "alwaysAllow": "Dies immer zulassen",
+      "allowSameType": "Gleichen Typ zulassen",
       "deny": "Ablehnen",
       "loadFailed": "Genehmigungen konnten nicht geladen werden: {msg}",
-      "bypassEnabled": "Genehmigungsumgehung aktiviert",
       "approved": "Genehmigt",
       "denied": "Abgelehnt",
       "toastFailed": "Fehlgeschlagen: {msg}",
@@ -1533,6 +1536,7 @@
       "denyReasonLabel": "Ablehnungsgrund, optional, an den Agenten gesendet",
       "allowOnce": "Einmal zulassen",
       "allowAlways": "Dies immer zulassen",
+      "allowSameType": "Gleichen Typ zulassen",
       "deny": "Ablehnen",
       "expiresIn": "Läuft ab in {time}",
       "outcomeExpired": "Abgelaufen — nicht ausgeführt",
@@ -1562,10 +1566,14 @@
       "disabled": "Deaktiviert",
       "routerAnimationOn": "Router-Animation ein",
       "routerAnimationOff": "Router-Animation aus",
-      "execOff": "Aus",
-      "execPrompt": "Bei Genehmigungen nachfragen",
-      "execBypass": "Genehmigungen umgehen",
-      "execFull": "Voller Zugriff"
+      "runMode": "Ausführungsmodus",
+      "runModeStandard": "Standard-Sandbox",
+      "runModeStandardDesc": "Fragt vor riskanten Tool-Aktionen nach.",
+      "runModeTrusted": "Trusted-Sandbox",
+      "runModeTrustedDesc": "Genehmigt vertrauenswürdige Sandbox-Aktionen automatisch.",
+      "runModeFull": "Voller Hostzugriff",
+      "runModeFullDesc": "Ohne Sandbox-Isolierung ausführen.",
+      "runModeFullUnavailable": "Voller Hostzugriff erfordert eine owner-Sitzung."
     },
     "pending": {
       "label": "Ausstehend {count}/{max}",

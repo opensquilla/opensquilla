@@ -258,7 +258,7 @@ async def test_call_naming_llm_payload_and_sanitization(monkeypatch):
     assert captured["json"]["stream"] is False
     # OpenRouter attribution headers are present (mirrors compaction path).
     assert captured["headers"]["Authorization"] == "Bearer test-key"
-    assert "X-OpenRouter-Title" in captured["headers"]
+    assert "X-Title" in captured["headers"]
 
 
 @pytest.mark.asyncio

@@ -7,30 +7,33 @@ import pytest
 from opensquilla.provider.model_catalog import _STATIC_FALLBACK, ModelCatalog
 
 
-def test_deepseek_v4_direct_models_use_conservative_output_window() -> None:
+def test_deepseek_v4_direct_models_use_models_dev_limits() -> None:
+    # The vendored models.dev snapshot supplies the real per-(provider, model)
+    # budgets offline (PR #406 roadmap item 4); the conservative static table
+    # remains only the emergency floor beneath it.
     catalog = ModelCatalog()
 
     for model in ("deepseek-v4-flash", "deepseek-v4-pro"):
-        assert catalog.resolve_context_window(model) == 1_048_576
-        # Conservative-min of the former qualified (16k) vs bare (393k) entries.
-        assert catalog.resolve_max_tokens(model) == 16_384
+        assert catalog.resolve_context_window(model, "deepseek") == 1_000_000
+        assert catalog.resolve_max_tokens(model, provider="deepseek") == 384_000
         caps = catalog.get_capabilities(model, provider_name="deepseek")
         assert caps.supports_reasoning is True
         assert caps.supports_tools is True
         assert caps.reasoning_format == "deepseek"
 
 
-def test_direct_profile_static_fallbacks_cover_context_windows() -> None:
+def test_direct_profile_windows_resolve_from_models_dev_snapshot() -> None:
     catalog = ModelCatalog()
 
     expected_windows = {
         "gpt-5.4-nano": 400_000,
         "gpt-5.4-mini": 400_000,
-        "gpt-5.5": 1_000_000,
+        "gpt-5.5": 1_050_000,
         "glm-4.7-flashx": 200_000,
-        "glm-5": 80_000,
+        # Real budget (202k) instead of the former 80k conservative placeholder.
+        "glm-5": 202_752,
         "glm-5.1": 200_000,
-        "z-ai/glm-5.2": 1_048_576,
+        "z-ai/glm-5.2": 1_000_000,
         "moonshot-v1-8k": 8_192,
         "moonshot-v1-128k": 131_072,
         "kimi-k2.5": 262_144,
@@ -158,8 +161,7 @@ async def test_fetch_openrouter_adds_app_attribution_headers() -> None:
     assert captured["headers"] == {
         "Authorization": "Bearer test-key",
         "HTTP-Referer": "https://opensquilla.ai",
-        "X-OpenRouter-Title": "OpenSquilla",
-        "X-OpenRouter-Categories": "cli-agent,personal-agent",
+        "X-Title": "OpenSquilla",
     }
     model = catalog.get("openai/gpt-4o")
     assert model is not None

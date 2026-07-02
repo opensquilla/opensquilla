@@ -1,4 +1,9 @@
 {
+  "updates": {
+    "available": "OpenSquilla {version} 已发布",
+    "viewRelease": "查看发布说明",
+    "dismiss": "忽略"
+  },
   "common": {
     "close": "关闭",
     "save": "保存",
@@ -806,12 +811,10 @@
       "details": "详情",
       "unknownTool": "未知",
       "approveOnce": "批准一次",
-      "alwaysAllow": "始终允许此类型",
-      "bypassHint": "绕过审批提示，同时保留敏感路径检查",
-      "bypass": "绕过审批",
+      "alwaysAllow": "始终允许此项",
+      "allowSameType": "允许同类型",
       "deny": "拒绝",
       "loadFailed": "加载审批失败：{msg}",
-      "bypassEnabled": "已启用审批绕过",
       "approved": "已批准",
       "denied": "已拒绝",
       "toastFailed": "失败：{msg}",
@@ -1533,6 +1536,7 @@
       "denyReasonLabel": "拒绝原因，可选，将发送给智能体",
       "allowOnce": "允许一次",
       "allowAlways": "始终允许此项",
+      "allowSameType": "允许同类型",
       "deny": "拒绝",
       "expiresIn": "{time} 后过期",
       "outcomeExpired": "已过期 — 未运行",
@@ -1562,10 +1566,14 @@
       "disabled": "已禁用",
       "routerAnimationOn": "路由动画已开启",
       "routerAnimationOff": "路由动画已关闭",
-      "execOff": "关闭",
-      "execPrompt": "提示审批",
-      "execBypass": "跳过审批",
-      "execFull": "完全访问"
+      "runMode": "执行模式",
+      "runModeStandard": "标准沙箱",
+      "runModeStandardDesc": "高风险工具操作前请求确认。",
+      "runModeTrusted": "可信沙箱",
+      "runModeTrustedDesc": "自动批准可信沙箱操作。",
+      "runModeFull": "完全主机访问",
+      "runModeFullDesc": "不使用沙箱隔离运行。",
+      "runModeFullUnavailable": "完全主机访问需要 owner 会话。"
     },
     "pending": {
       "label": "待发送 {count}/{max}",

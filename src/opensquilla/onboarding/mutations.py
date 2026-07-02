@@ -29,10 +29,10 @@ from opensquilla.onboarding.redaction import (
     redact_image_generation_payload,
     redact_memory_embedding_payload,
     redact_provider_payload,
+    redact_router_tiers_payload,
     redact_search_payload,
 )
 from opensquilla.onboarding.search_specs import get_search_provider_setup_spec
-from opensquilla.provider.registry import get_provider_spec as get_registry_provider_spec
 from opensquilla.router_tiers import (
     DEFAULT_TEXT_TIER,
     TEXT_TIERS,
@@ -188,6 +188,68 @@ def _validate_router_tiers(tiers: dict[str, Any], default_tier: str) -> None:
             raise ValueError(f"router tier {tier_name!r} requires model")
 
 
+def _tier_provider_credentials_resolvable(
+    provider_id: str,
+    llm_profiles: dict[str, Any] | None,
+) -> bool:
+    from opensquilla.provider.registry import UnknownProviderError, get_provider_spec
+
+    try:
+        spec = get_provider_spec(provider_id)
+    except UnknownProviderError:
+        return False
+    if not spec.runtime_supported:
+        return False
+    profile = (llm_profiles or {}).get(provider_id)
+    if str(getattr(profile, "api_key", "") or "").strip():
+        return True
+    if not spec.requires_api_key():
+        return True
+    env_name = str(getattr(profile, "api_key_env", "") or "").strip() or spec.env_key
+    return bool(env_name and env_name != "OAuth" and os.environ.get(env_name))
+
+
+def _cross_provider_tier_warnings(
+    tiers: dict[str, Any],
+    active_provider: str,
+    *,
+    cross_provider_enabled: bool = False,
+    llm_profiles: dict[str, Any] | None = None,
+) -> list[str]:
+    """Warn about tiers naming a provider other than the active LLM provider.
+
+    Flag off: such a tier's model id is silently requested from the active
+    provider with the active credentials — warn about the misroute. Flag on:
+    the tier executes on its own provider, so the check flips to credential
+    resolvability (profile or env; secrets are never guessed).
+    """
+    if not active_provider:
+        return []
+    warnings: list[str] = []
+    for tier_name in sorted(tiers):
+        tier = tiers.get(tier_name)
+        if not isinstance(tier, dict):
+            continue
+        tier_provider = str(tier.get("provider") or "").strip().lower()
+        if not tier_provider or tier_provider == active_provider:
+            continue
+        if not cross_provider_enabled:
+            warnings.append(
+                f"Router tier '{tier_name}' names provider '{tier_provider}', but the "
+                f"active LLM provider is '{active_provider}'. Cross-provider routing is "
+                f"not enabled (squilla_router.cross_provider_tiers), so this tier's "
+                f"model will be requested from '{active_provider}'."
+            )
+        elif not _tier_provider_credentials_resolvable(tier_provider, llm_profiles):
+            warnings.append(
+                f"Router tier '{tier_name}' routes to provider '{tier_provider}' but no "
+                f"credentials resolve for it. Add [llm_profiles.{tier_provider}] with "
+                f"api_key or api_key_env, or export the provider's default env key; "
+                f"until then the tier falls back to '{active_provider}'."
+            )
+    return warnings
+
+
 def _sync_llm_model_to_router_default(cfg: GatewayConfig) -> None:
     router = cfg.squilla_router
     if not getattr(router, "enabled", True):
@@ -213,14 +275,6 @@ def upsert_llm_provider(
 ) -> MutationResult:
     spec = get_provider_setup_spec(provider_id)
     if not spec.runtime_supported:
-        # get_provider_setup_spec already resolved provider_id against the registry,
-        # so this lookup cannot raise. A registry-runnable provider that is merely
-        # absent from the verified onboarding set gets a distinct, accurate message.
-        if get_registry_provider_spec(provider_id).runtime_supported:
-            raise ValueError(
-                f"provider {provider_id!r} is not a verified onboarding provider yet "
-                "and is not runtime-supported for onboarding; pick a verified provider"
-            )
         raise ValueError(
             f"provider {provider_id!r} is not runtime-supported and cannot be configured"
         )
@@ -340,22 +394,29 @@ def upsert_router(
                 tiers,
             )
             public_payload.update({"enabled": True, "tier_profile": provider})
+    warnings: list[str] = []
     if router_payload.get("enabled"):
         _validate_router_tiers(
             cast(dict[str, Any], router_payload.get("tiers") or {}),
             default_tier_clean,
+        )
+        warnings = _cross_provider_tier_warnings(
+            cast(dict[str, Any], router_payload.get("tiers") or {}),
+            provider,
+            cross_provider_enabled=bool(router_payload.get("cross_provider_tiers")),
+            llm_profiles=getattr(config, "llm_profiles", None),
         )
 
     new_cfg = _clone(config)
     new_cfg.squilla_router = SquillaRouterConfig(**router_payload)
     _sync_llm_model_to_router_default(new_cfg)
     public_payload["default_tier"] = new_cfg.squilla_router.default_tier
-    public_payload["tiers"] = new_cfg.squilla_router.tiers
+    public_payload["tiers"] = redact_router_tiers_payload(new_cfg.squilla_router.tiers)
     return MutationResult(
         config=new_cfg,
         changed=True,
         restart_required=False,
-        warnings=[],
+        warnings=warnings,
         public_payload=public_payload,
     )
 

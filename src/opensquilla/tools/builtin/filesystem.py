@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import csv
 import fnmatch
 import json
@@ -10,13 +11,34 @@ import os
 import posixpath
 import re
 import zipfile
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 from xml.etree import ElementTree as ET
 
 from opensquilla.identity.workspace import BOOTSTRAP_FILENAMES
-from opensquilla.sandbox.integration import get_runtime, sandboxed
+from opensquilla.sandbox.escalation import (
+    build_path_approval_params,
+    current_tool_mounts,
+    current_tool_run_context,
+    grant_temporary_mount_for_current_tool,
+    request_sandbox_approval,
+)
+from opensquilla.sandbox.integration import get_runtime
+from opensquilla.sandbox.operation_runtime import (
+    FilesystemOperationRequest,
+    SandboxOperation,
+    SandboxOperationRuntime,
+    SandboxToolDescriptor,
+)
+from opensquilla.sandbox.path_validation import MountDecision, decide_path_access
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
+from opensquilla.tools.run_mode import (
+    current_run_mode,
+    full_host_access_active,
+    trusted_sandbox_active,
+)
 from opensquilla.tools.types import ToolError, WorkspaceAccessError, current_tool_context
 from opensquilla.tools.write_tracking import record_workspace_file_write
 
@@ -40,6 +62,27 @@ _XLSX_OFFICE_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/rel
 _BOOTSTRAP_SOURCE_FILENAMES = frozenset(BOOTSTRAP_FILENAMES)
 
 
+def _tool_path_request(args: Mapping[str, Any]) -> FilesystemOperationRequest:
+    raw_path = args.get("path")
+    path = Path(str(raw_path)) if raw_path else None
+    return FilesystemOperationRequest(
+        path=path,
+        paths=(path,) if path is not None else (),
+    )
+
+
+def _tool_search_request(args: Mapping[str, Any]) -> FilesystemOperationRequest:
+    raw_path = args.get("path")
+    path = Path(str(raw_path)) if raw_path else None
+    return FilesystemOperationRequest(
+        path=path,
+        paths=(path,) if path is not None else (),
+        pattern=str(args.get("pattern", "") or ""),
+        include=str(args["include"]) if args.get("include") is not None else None,
+        max_results=int(args["max_results"]) if args.get("max_results") is not None else None,
+    )
+
+
 def _workspace_root() -> Path | None:
     ctx = current_tool_context.get()
     if ctx is not None and ctx.workspace_dir:
@@ -48,6 +91,24 @@ def _workspace_root() -> Path | None:
     if runtime is not None and runtime.effective.sandbox_enabled:
         return runtime.workspace.expanduser().resolve()
     return None
+
+
+def _scratch_root() -> Path | None:
+    ctx = current_tool_context.get()
+    if ctx is None or not ctx.scratch_dir:
+        return None
+    return Path(ctx.scratch_dir).expanduser().resolve(strict=False)
+
+
+def _is_inside_scratch(resolved: Path) -> bool:
+    root = _scratch_root()
+    if root is None:
+        return False
+    try:
+        resolved.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 def _memory_source_root() -> Path | None:
@@ -70,7 +131,7 @@ def _resolve_path(path: str) -> Path:
     """Resolve *path* against the active workspace when relative.
 
     Reads are always allowed; any workspace enforcement for writes happens in
-    :func:`_gate_out_of_workspace_write` via the approval queue, not here.
+    :func:`_gate_out_of_workspace_write`, not here.
 
     Sandbox-visible alias paths (``/workspace/...`` from ``execute_code``
     stdout, ``default_workspace_dir()/...`` from LLM training priors)
@@ -221,6 +282,174 @@ def _is_outside_workspace(resolved: Path) -> bool:
         return True
 
 
+def _outside_workspace_write_block(
+    tool_name: str,
+    resolved: Path,
+    original_path: str,
+) -> dict[str, object]:
+    workspace = _workspace_root()
+    message = (
+        f"{tool_name} blocked: {resolved} is outside the active workspace "
+        f"({workspace}) and no sandbox path grant is active."
+        if workspace is not None
+        else f"{tool_name} blocked: {resolved} is outside the active workspace."
+    )
+    return {
+        "status": "blocked",
+        "reason": "outside_workspace",
+        "tool": tool_name,
+        "path": original_path,
+        "resolved_path": str(resolved),
+        "workspace": str(workspace) if workspace is not None else None,
+        "message": message,
+        "retryable": False,
+    }
+
+
+def _sandbox_path_access_enabled() -> bool:
+    runtime = get_runtime()
+    if runtime is None or not runtime.effective.sandbox_enabled:
+        return False
+    if full_host_access_active():
+        return False
+    return True
+
+
+def _active_sandbox_mounts() -> list[dict[str, object]]:
+    return current_tool_mounts()
+
+
+def _path_access_required_envelope(
+    decision: MountDecision,
+    *,
+    approval_id: str | None = None,
+) -> dict[str, object]:
+    ctx = current_tool_context.get()
+    workspace_root = _workspace_root()
+    approval = build_path_approval_params(
+        decision,
+        session_key=getattr(ctx, "session_key", None) if ctx is not None else None,
+        workspace=str(workspace_root) if workspace_root is not None else None,
+    )
+    if approval is None:
+        return {
+            "status": "path_access_required",
+            "path": decision.normalized_path,
+            "access": decision.access,
+            "message": _path_access_message(workspace_root),
+        }
+    return request_sandbox_approval(
+        approval,
+        approval_id=approval_id,
+        message=_path_access_message(workspace_root),
+        denied_message=_path_access_denied_message(workspace_root),
+    )
+
+
+def _path_access_message(workspace_root: Path | None) -> str:
+    workspace = str(workspace_root) if workspace_root is not None else "the configured workspace"
+    return (
+        f"The requested path is outside the current workspace ({workspace}). "
+        "Ask the user whether to add this path as read-only or read/write access."
+    )
+
+
+def _path_access_denied_message(workspace_root: Path | None) -> str:
+    workspace = str(workspace_root) if workspace_root is not None else "the configured workspace"
+    return (
+        "The user denied access outside the current workspace. "
+        "Do not ask for the same access again in this turn. "
+        "Explain that the requested path cannot be inspected from the current "
+        f"workspace ({workspace}) unless the user approves access or changes run mode. "
+        "Do not substitute details from other repositories or prior comparison context."
+    )
+
+
+def _path_access_blocked_envelope(decision: MountDecision) -> dict[str, object]:
+    return {
+        "status": "blocked",
+        "reason": "sensitive_path",
+        "path": decision.normalized_path,
+        "message": decision.reason,
+    }
+
+
+def _sandbox_path_access_envelope(
+    resolved: Path,
+    *,
+    write: bool,
+    approval_id: str | None = None,
+) -> dict[str, object] | None:
+    if not _sandbox_path_access_enabled():
+        return None
+    if _memory_source_rel_path(resolved) is not None:
+        return None
+    decision = decide_path_access(
+        resolved,
+        workspace=_workspace_root(),
+        mounts=_active_sandbox_mounts(),
+        write=write,
+    )
+    if decision.status == "allowed":
+        return None
+    if decision.status == "blocked":
+        return _path_access_blocked_envelope(decision)
+    if trusted_sandbox_active():
+        if grant_temporary_mount_for_current_tool(decision):
+            return None
+    return _path_access_required_envelope(decision, approval_id=approval_id)
+
+
+def _sandbox_path_access_marker(candidate: Path, *, write: bool) -> str | None:
+    envelope = _sandbox_path_access_envelope(
+        candidate.resolve(strict=False),
+        write=write,
+    )
+    if envelope is None:
+        return None
+    if envelope.get("status") == "blocked":
+        return f"[blocked] {candidate}: {envelope.get('message') or 'sensitive path'}"
+    return f"[blocked] {candidate}: outside current sandbox view"
+
+
+def _active_sandbox_mount_allows(resolved: Path, *, write: bool) -> bool:
+    if not _sandbox_path_access_enabled():
+        return False
+    decision = decide_path_access(
+        resolved,
+        workspace=_workspace_root(),
+        mounts=_active_sandbox_mounts(),
+        write=write,
+    )
+    return decision.status == "allowed"
+
+
+def _active_filesystem_run_mode() -> str:
+    context = current_tool_run_context()
+    if context is not None:
+        return context.run_mode.value
+    return current_run_mode() or "standard"
+
+
+async def _run_sandbox_operation_if_required(
+    operation: SandboxOperation,
+) -> object | None:
+    return await SandboxOperationRuntime(
+        get_runtime(),
+        host_execution_active=full_host_access_active(),
+    ).run(operation)
+
+
+def _filesystem_operation_workspace() -> Path | None:
+    root = _workspace_root()
+    if root is not None:
+        return root
+    runtime = get_runtime()
+    if runtime is not None and runtime.effective.sandbox_enabled:
+        return runtime.workspace.expanduser().resolve(strict=False)
+    return None
+
+
 def _strict_read_workspace_root() -> Path | None:
     """Return the read-containment root when workspace-strict mode is active.
 
@@ -254,7 +483,29 @@ def _strict_read_material_root() -> Path | None:
     ).resolve(strict=False)
 
 
+def _strict_read_mount_roots() -> tuple[Path, ...]:
+    ctx = current_tool_context.get()
+    if ctx is None or not ctx.workspace_strict:
+        return tuple()
+    roots: list[Path] = []
+    for mount in _active_sandbox_mounts():
+        if not isinstance(mount, dict):
+            continue
+        raw_path = mount.get("path")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            continue
+        try:
+            root = Path(raw_path).expanduser().resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if root not in roots:
+            roots.append(root)
+    return tuple(roots)
+
+
 def _strict_read_roots() -> tuple[Path, ...]:
+    if full_host_access_active():
+        return tuple()
     roots: list[Path] = []
     workspace_root = _strict_read_workspace_root()
     if workspace_root is not None:
@@ -262,6 +513,9 @@ def _strict_read_roots() -> tuple[Path, ...]:
     material_root = _strict_read_material_root()
     if material_root is not None:
         roots.append(material_root)
+    for mount_root in _strict_read_mount_roots():
+        if mount_root not in roots:
+            roots.append(mount_root)
     return tuple(roots)
 
 
@@ -340,9 +594,8 @@ def _workspace_strict_candidate_marker(
 def _sensitive_access_block(tool_name: str, resolved: Path, original_path: str) -> dict | None:
     """Return a hard-block envelope for sensitive host paths, unless fully elevated."""
     from opensquilla.sandbox.sensitive_paths import build_block_envelope, sensitive_path_marker
-    from opensquilla.tools.builtin.shell import _context_elevated_mode
 
-    if _context_elevated_mode() == "full":
+    if full_host_access_active():
         return None
     sensitive = sensitive_path_marker(str(resolved), workspace=_workspace_root())
     if sensitive is None:
@@ -352,11 +605,10 @@ def _sensitive_access_block(tool_name: str, resolved: Path, original_path: str) 
 
 def _is_sensitive_access_path(resolved: Path, workspace: Path | None = None) -> bool:
     from opensquilla.sandbox.sensitive_paths import sensitive_path_marker
-    from opensquilla.tools.builtin.shell import _context_elevated_mode
 
     root = workspace if workspace is not None else _workspace_root()
     return (
-        _context_elevated_mode() != "full"
+        not full_host_access_active()
         and sensitive_path_marker(str(resolved), workspace=root) is not None
     )
 
@@ -404,22 +656,28 @@ async def _gate_out_of_workspace_write(
     """Return an approval-required/denied/blocked dict, or None to proceed.
 
     Writes that stay inside the workspace pass through immediately. Writes
-    that target absolute paths outside the workspace get routed through the
-    same approval queue that shell warnlist hits use. Writes targeting
-    sensitive host paths (SSH keys, /etc, etc.) are hard-blocked regardless
-    of approval.
+    outside the current sandbox view are routed through the sandbox path grant
+    flow when the sandbox runtime is active. Without that unified path approval
+    path, outside-workspace writes fail closed instead of falling back to a
+    tool-local exec approval.
     """
     # Sensitive-path hard block — takes precedence over approval flow.
     from opensquilla.sandbox.sensitive_paths import build_block_envelope, sensitive_path_marker
-    from opensquilla.tools.builtin.shell import _context_elevated_mode
 
-    elevated_full = _context_elevated_mode() == "full"
+    elevated_full = full_host_access_active()
     if not elevated_full:
         sensitive = sensitive_path_marker(str(resolved), workspace=_workspace_root())
         if sensitive is not None:
             return build_block_envelope(
                 f"{tool_name} {original_path}", sensitive, tool_name=tool_name
             )
+    path_access = _sandbox_path_access_envelope(
+        resolved,
+        write=True,
+        approval_id=approval_id,
+    )
+    if path_access is not None:
+        return path_access
 
     _gate_workspace_lockdown_write(tool_name, resolved, original_path)
     from opensquilla.tools.write_policy import gate_workspace_write_deny
@@ -433,32 +691,15 @@ async def _gate_out_of_workspace_write(
 
     if not _is_outside_workspace(resolved):
         return None
+    if _is_inside_scratch(resolved):
+        return None
     if _memory_source_rel_path(resolved) is not None:
         return None
-    from opensquilla.tools.builtin.shell import (
-        _approval_elevation_state,
-        _check_exec_approval,
-        _restore_approval_elevation,
-    )
-
-    workspace = _workspace_root()
-    warning = (
-        f"writing outside active workspace ({workspace}): {resolved}"
-        if workspace is not None
-        else f"writing to absolute path: {resolved}"
-    )
-    prior_elevation = _approval_elevation_state()
-    try:
-        return await _check_exec_approval(
-            tool_name=tool_name,
-            command=f"{tool_name} {original_path}",
-            workdir=None,
-            warning=warning,
-            approval_id=approval_id,
-            background=False,
-        )
-    finally:
-        _restore_approval_elevation(prior_elevation)
+    if _active_sandbox_mount_allows(resolved, write=True):
+        return None
+    if elevated_full:
+        return None
+    return _outside_workspace_write_block(tool_name, resolved, original_path)
 
 
 @tool(
@@ -476,17 +717,43 @@ async def _gate_out_of_workspace_write(
         "limit": {"type": "integer", "description": "Maximum number of lines to read."},
     },
     required=["path"],
+    sandbox=SandboxToolDescriptor.filesystem(
+        kind="read_file",
+        argv_factory=lambda a: ("read_file", str(a.get("path", ""))),
+        request_factory=_tool_path_request,
+        enforce=False,
+        record_payload=False,
+    ),
 )
 async def read_file(path: str, offset: int | None = None, limit: int | None = None) -> str:
     p = _resolve_path(path)
     blocked = _sensitive_access_block("read_file", p, path)
     if blocked is not None:
         return json.dumps(blocked)
+    path_access = _sandbox_path_access_envelope(p, write=False)
+    if path_access is not None:
+        return json.dumps(path_access)
     _gate_workspace_strict_read("read_file", p, path)
     if not p.exists():
         raise FileNotFoundError(f"File not found: {path}")
     if not p.is_file():
         raise IsADirectoryError(f"Path is a directory: {path}")
+    workspace = _filesystem_operation_workspace()
+    if workspace is not None:
+        sandbox_result = await _run_sandbox_operation_if_required(
+            SandboxOperation.filesystem(
+                kind="read_file",
+                workspace=workspace,
+                run_mode=_active_filesystem_run_mode(),
+                path=p,
+                paths=(p,),
+                display_path=path,
+                offset=offset,
+                limit=limit,
+            )
+        )
+        if sandbox_result is not None:
+            return str(getattr(sandbox_result, "message"))
 
     loop = asyncio.get_event_loop()
     sample: bytes = await loop.run_in_executor(None, _read_binary_sample, p)
@@ -526,6 +793,13 @@ async def read_file(path: str, offset: int | None = None, limit: int | None = No
         },
     },
     required=["path"],
+    sandbox=SandboxToolDescriptor.filesystem(
+        kind="read_spreadsheet",
+        argv_factory=lambda a: ("read_spreadsheet", str(a.get("path", ""))),
+        request_factory=_tool_path_request,
+        enforce=False,
+        record_payload=False,
+    ),
 )
 async def read_spreadsheet(
     path: str,
@@ -537,6 +811,9 @@ async def read_spreadsheet(
     blocked = _sensitive_access_block("read_spreadsheet", p, path)
     if blocked is not None:
         return json.dumps(blocked)
+    path_access = _sandbox_path_access_envelope(p, write=False)
+    if path_access is not None:
+        return json.dumps(path_access)
     _gate_workspace_strict_read("read_spreadsheet", p, path)
     if not p.exists():
         raise FileNotFoundError(f"File not found: {path}")
@@ -736,21 +1013,40 @@ def _format_spreadsheet(
         "content": {"type": "string", "description": "File content to write."},
         "approval_id": {
             "type": "string",
-            "description": "Approval record to consume for writes outside the workspace.",
+            "description": "Sandbox path approval record for writes outside the workspace.",
         },
     },
     required=["path", "content"],
-)
-@sandboxed(
-    kind="fs.write",
-    argv_factory=lambda a: ("fs.write", str(a.get("path", ""))),
-    record_payload=False,
+    sandbox=SandboxToolDescriptor.filesystem(
+        kind="fs.write",
+        argv_factory=lambda a: ("fs.write", str(a.get("path", ""))),
+        request_factory=_tool_path_request,
+        record_payload=False,
+    ),
 )
 async def write_file(path: str, content: str, approval_id: str | None = None) -> str:
     p = _resolve_path(path)
     approval = await _gate_out_of_workspace_write("write_file", p, path, approval_id)
     if approval is not None:
         return json.dumps(approval)
+    workspace = _filesystem_operation_workspace()
+    if workspace is not None:
+        sandbox_result = await _run_sandbox_operation_if_required(
+            SandboxOperation.filesystem(
+                kind="write_text",
+                workspace=workspace,
+                run_mode=_active_filesystem_run_mode(),
+                path=p,
+                paths=(p,),
+                content=content,
+            )
+        )
+        if sandbox_result is not None:
+            if getattr(sandbox_result, "created", False):
+                record_workspace_file_write(p)
+            _notify_memory_source_write(p)
+            _notify_bootstrap_source_write(p)
+            return str(getattr(sandbox_result, "message"))
 
     loop = asyncio.get_event_loop()
     created = not p.exists()
@@ -776,15 +1072,16 @@ async def write_file(path: str, content: str, approval_id: str | None = None) ->
         "new_text": {"type": "string", "description": "Replacement text."},
         "approval_id": {
             "type": "string",
-            "description": "Approval record to consume for edits outside the workspace.",
+            "description": "Sandbox path approval record for edits outside the workspace.",
         },
     },
     required=["path", "old_text", "new_text"],
-)
-@sandboxed(
-    kind="fs.edit",
-    argv_factory=lambda a: ("fs.edit", str(a.get("path", ""))),
-    record_payload=False,
+    sandbox=SandboxToolDescriptor.filesystem(
+        kind="fs.edit",
+        argv_factory=lambda a: ("fs.edit", str(a.get("path", ""))),
+        request_factory=_tool_path_request,
+        record_payload=False,
+    ),
 )
 async def edit_file(
     path: str, old_text: str, new_text: str, approval_id: str | None = None
@@ -793,6 +1090,23 @@ async def edit_file(
     approval = await _gate_out_of_workspace_write("edit_file", p, path, approval_id)
     if approval is not None:
         return json.dumps(approval)
+    workspace = _filesystem_operation_workspace()
+    if workspace is not None:
+        sandbox_result = await _run_sandbox_operation_if_required(
+            SandboxOperation.filesystem(
+                kind="edit_text",
+                workspace=workspace,
+                run_mode=_active_filesystem_run_mode(),
+                path=p,
+                paths=(p,),
+                old_text=old_text,
+                new_text=new_text,
+            )
+        )
+        if sandbox_result is not None:
+            _notify_memory_source_write(p)
+            _notify_bootstrap_source_write(p)
+            return str(getattr(sandbox_result, "message"))
     if not p.exists():
         raise FileNotFoundError(f"File not found: {path}")
 
@@ -822,19 +1136,47 @@ async def edit_file(
     description="List directory contents with type and size.",
     params={
         "path": {"type": "string", "description": "Directory path to list."},
+        "approval_id": {
+            "type": "string",
+            "description": "Approval record to consume after granting sandbox path access.",
+        },
     },
     required=["path"],
+    sandbox=SandboxToolDescriptor.filesystem(
+        kind="list_dir",
+        argv_factory=lambda a: ("list_dir", str(a.get("path", ""))),
+        request_factory=_tool_path_request,
+        enforce=False,
+        record_payload=False,
+    ),
 )
-async def list_dir(path: str) -> str:
+async def list_dir(path: str, approval_id: str | None = None) -> str:
     p = _resolve_path(path)
     blocked = _sensitive_access_block("list_dir", p, path)
     if blocked is not None:
         return json.dumps(blocked)
+    path_access = _sandbox_path_access_envelope(p, write=False, approval_id=approval_id)
+    if path_access is not None:
+        return json.dumps(path_access)
     _gate_workspace_strict_read("list_dir", p, path)
     if not p.exists():
         raise FileNotFoundError(f"Path not found: {path}")
     if not p.is_dir():
         raise NotADirectoryError(f"Not a directory: {path}")
+    workspace = _filesystem_operation_workspace()
+    if workspace is not None:
+        sandbox_result = await _run_sandbox_operation_if_required(
+            SandboxOperation.filesystem(
+                kind="list_dir",
+                workspace=workspace,
+                run_mode=_active_filesystem_run_mode(),
+                path=p,
+                paths=(p,),
+                display_path=path,
+            )
+        )
+        if sandbox_result is not None:
+            return str(getattr(sandbox_result, "message"))
 
     loop = asyncio.get_event_loop()
     strict_roots = _strict_read_roots()
@@ -862,7 +1204,10 @@ async def list_dir(path: str) -> str:
                 files.append(f"[file] {entry.name} ({size} bytes)")
         return dirs + files + blocked_entries
 
-    entries = await loop.run_in_executor(None, _list)
+    # _list reads the current tool context (run mode / full-host access) via
+    # _is_sensitive_access_path; copy the context into the worker thread so it
+    # is not lost (run_in_executor does not propagate contextvars).
+    entries = await loop.run_in_executor(None, contextvars.copy_context().run, _list)
     if not entries:
         return f"{path}: (empty directory)"
     return "\n".join(entries)
@@ -876,13 +1221,44 @@ async def list_dir(path: str) -> str:
         "path": {"type": "string", "description": "Base directory to search from (default: cwd)."},
     },
     required=["pattern"],
+    sandbox=SandboxToolDescriptor.filesystem(
+        kind="glob_search",
+        argv_factory=lambda a: (
+            "glob_search",
+            str(a.get("pattern", "")),
+            str(a.get("path", "")),
+        ),
+        request_factory=_tool_search_request,
+        enforce=False,
+        record_payload=False,
+    ),
 )
 async def glob_search(pattern: str, path: str | None = None) -> str:
     base = _resolve_base(path)
     blocked = _sensitive_access_block("glob_search", base, path or str(base))
     if blocked is not None:
         return json.dumps(blocked)
+    path_access = _sandbox_path_access_envelope(base, write=False)
+    if path_access is not None:
+        return json.dumps(path_access)
     _gate_workspace_strict_read("glob_search", base, path or str(base))
+    if not base.exists():
+        return f"No files matched pattern '{pattern}' in {base}"
+    workspace = _filesystem_operation_workspace()
+    if workspace is not None:
+        sandbox_result = await _run_sandbox_operation_if_required(
+            SandboxOperation.filesystem(
+                kind="glob_search",
+                workspace=workspace,
+                run_mode=_active_filesystem_run_mode(),
+                path=base,
+                paths=(base,),
+                display_path=path or str(base),
+                pattern=pattern,
+            )
+        )
+        if sandbox_result is not None:
+            return str(getattr(sandbox_result, "message"))
 
     loop = asyncio.get_event_loop()
     strict_roots = _strict_read_roots()
@@ -904,7 +1280,9 @@ async def glob_search(pattern: str, path: str | None = None) -> str:
             matches.append(str(candidate))
         return matches
 
-    matches = await loop.run_in_executor(None, _glob)
+    # Preserve the tool context (run mode / full-host access) inside the worker
+    # thread; _glob classifies entries via _is_sensitive_access_path.
+    matches = await loop.run_in_executor(None, contextvars.copy_context().run, _glob)
     if not matches:
         return f"No files matched pattern '{pattern}' in {base}"
     return "\n".join(matches)
@@ -923,6 +1301,17 @@ async def glob_search(pattern: str, path: str | None = None) -> str:
         },
     },
     required=["pattern"],
+    sandbox=SandboxToolDescriptor.filesystem(
+        kind="grep_search",
+        argv_factory=lambda a: (
+            "grep_search",
+            str(a.get("pattern", "")),
+            str(a.get("path", "")),
+        ),
+        request_factory=_tool_search_request,
+        enforce=False,
+        record_payload=False,
+    ),
 )
 async def grep_search(
     pattern: str,
@@ -934,7 +1323,29 @@ async def grep_search(
     blocked = _sensitive_access_block("grep_search", base, path or str(base))
     if blocked is not None:
         return json.dumps(blocked)
+    path_access = _sandbox_path_access_envelope(base, write=False)
+    if path_access is not None:
+        return json.dumps(path_access)
     _gate_workspace_strict_read("grep_search", base, path or str(base))
+    if not base.exists():
+        return f"No matches for '{pattern}'"
+    workspace = _filesystem_operation_workspace()
+    if workspace is not None:
+        sandbox_result = await _run_sandbox_operation_if_required(
+            SandboxOperation.filesystem(
+                kind="grep_search",
+                workspace=workspace,
+                run_mode=_active_filesystem_run_mode(),
+                path=base,
+                paths=(base,),
+                display_path=path or str(base),
+                pattern=pattern,
+                include=include,
+                max_results=max_results,
+            )
+        )
+        if sandbox_result is not None:
+            return str(getattr(sandbox_result, "message"))
 
     loop = asyncio.get_event_loop()
     strict_roots = _strict_read_roots()
@@ -949,6 +1360,10 @@ async def grep_search(
         results: list[str] = []
 
         def search_file(fp: Path) -> None:
+            marker = _sandbox_path_access_marker(fp, write=False)
+            if marker is not None:
+                results.append(marker)
+                return
             if _is_sensitive_access_path(fp.resolve(strict=False), workspace=workspace_root):
                 return
             try:
@@ -983,7 +1398,12 @@ async def grep_search(
 
         return results
 
-    matches = await loop.run_in_executor(None, _search)
+    # search_file classifies each file via _sandbox_path_access_marker and
+    # _is_sensitive_access_path, both of which read the current run mode from
+    # the tool-context contextvar. run_in_executor runs on a worker thread that
+    # does not inherit contextvars, so copy the context in; otherwise every file
+    # is judged as if full-host access were off and gets falsely marked blocked.
+    matches = await loop.run_in_executor(None, contextvars.copy_context().run, _search)
     if not matches:
         return f"No matches for '{pattern}'"
     return "\n".join(matches)

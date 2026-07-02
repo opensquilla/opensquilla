@@ -24,6 +24,9 @@
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder"
   },
+  "dependencies": {
+    "electron-updater": "^6.6.2"
+  },
   "devDependencies": {
     "@types/node": "^25.9.1",
     "electron": "^42.3.3",
@@ -35,6 +38,13 @@
     "appId": "ai.opensquilla.desktop",
     "productName": "OpenSquilla",
     "artifactName": "OpenSquilla-${version}-${os}-${arch}.${ext}",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "opensquilla",
+        "repo": "opensquilla"
+      }
+    ],
     "directories": {
       "output": "../../dist/desktop-electron"
     },

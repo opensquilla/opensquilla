@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, Menu, ipcMain, nativeTheme, safeStorage, shell } from 'electron'
+import electronUpdater from 'electron-updater'
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { createWriteStream, existsSync, mkdirSync } from 'node:fs'
@@ -907,6 +908,18 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.edit': 'Edit',
     'menu.view': 'View',
     'menu.window': 'Window',
+    'menu.checkForUpdates': 'Check for Updates…',
+    'update.newVersionTitle': 'A new version is available',
+    'update.newVersionDetail': 'OpenSquilla {version} is available. Download it now?',
+    'update.download': 'Download',
+    'update.later': 'Later',
+    'update.readyTitle': 'Update ready to install',
+    'update.readyDetail': 'OpenSquilla {version} has been downloaded. Restart to finish updating?',
+    'update.restartNow': 'Restart now',
+    'update.upToDateTitle': "You're up to date",
+    'update.upToDateDetail': 'OpenSquilla {version} is the latest version.',
+    'update.errorTitle': 'Update check failed',
+    'update.moveToApplications': 'Move OpenSquilla to your Applications folder to enable automatic updates, then try again.',
     'window.onboarding': 'Set up OpenSquilla',
     'boot.profile': 'Preparing desktop profile',
     'boot.gateway-start': 'Starting local runtime',
@@ -974,6 +987,18 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.edit': '编辑',
     'menu.view': '视图',
     'menu.window': '窗口',
+    'menu.checkForUpdates': '检查更新…',
+    'update.newVersionTitle': '有新版本可用',
+    'update.newVersionDetail': 'OpenSquilla {version} 已发布，现在下载吗？',
+    'update.download': '下载',
+    'update.later': '稍后',
+    'update.readyTitle': '更新已就绪',
+    'update.readyDetail': 'OpenSquilla {version} 已下载完成。是否重启以完成更新？',
+    'update.restartNow': '立即重启',
+    'update.upToDateTitle': '已是最新版本',
+    'update.upToDateDetail': 'OpenSquilla {version} 已是最新版本。',
+    'update.errorTitle': '检查更新失败',
+    'update.moveToApplications': '请先将 OpenSquilla 移动到"应用程序"文件夹以启用自动更新，然后重试。',
     'window.onboarding': '设置 OpenSquilla',
     'boot.profile': '正在准备桌面配置',
     'boot.gateway-start': '正在启动本地运行时',
@@ -1041,6 +1066,18 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.edit': '編集',
     'menu.view': '表示',
     'menu.window': 'ウインドウ',
+    'menu.checkForUpdates': 'アップデートを確認…',
+    'update.newVersionTitle': '新しいバージョンが利用可能です',
+    'update.newVersionDetail': 'OpenSquilla {version} が利用可能です。今すぐダウンロードしますか？',
+    'update.download': 'ダウンロード',
+    'update.later': '後で',
+    'update.readyTitle': 'アップデートの準備が完了しました',
+    'update.readyDetail': 'OpenSquilla {version} をダウンロードしました。再起動して更新を完了しますか？',
+    'update.restartNow': '今すぐ再起動',
+    'update.upToDateTitle': '最新の状態です',
+    'update.upToDateDetail': 'OpenSquilla {version} が最新バージョンです。',
+    'update.errorTitle': 'アップデートの確認に失敗しました',
+    'update.moveToApplications': '自動アップデートを有効にするには、OpenSquilla を「アプリケーション」フォルダに移動してから再試行してください。',
     'window.onboarding': 'OpenSquilla をセットアップ',
     'boot.profile': 'デスクトッププロファイルを準備しています',
     'boot.gateway-start': 'ローカルランタイムを起動しています',
@@ -1108,6 +1145,18 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.edit': 'Édition',
     'menu.view': 'Affichage',
     'menu.window': 'Fenêtre',
+    'menu.checkForUpdates': 'Rechercher les mises à jour…',
+    'update.newVersionTitle': 'Une nouvelle version est disponible',
+    'update.newVersionDetail': 'OpenSquilla {version} est disponible. Télécharger maintenant ?',
+    'update.download': 'Télécharger',
+    'update.later': 'Plus tard',
+    'update.readyTitle': 'Mise à jour prête à installer',
+    'update.readyDetail': 'OpenSquilla {version} a été téléchargée. Redémarrer pour terminer la mise à jour ?',
+    'update.restartNow': 'Redémarrer maintenant',
+    'update.upToDateTitle': 'Vous êtes à jour',
+    'update.upToDateDetail': 'OpenSquilla {version} est la dernière version.',
+    'update.errorTitle': 'Échec de la recherche de mises à jour',
+    'update.moveToApplications': 'Déplacez OpenSquilla dans votre dossier Applications pour activer les mises à jour automatiques, puis réessayez.',
     'window.onboarding': 'Configurer OpenSquilla',
     'boot.profile': 'Préparation du profil de bureau',
     'boot.gateway-start': 'Démarrage du runtime local',
@@ -1175,6 +1224,18 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.edit': 'Bearbeiten',
     'menu.view': 'Ansicht',
     'menu.window': 'Fenster',
+    'menu.checkForUpdates': 'Nach Updates suchen…',
+    'update.newVersionTitle': 'Eine neue Version ist verfügbar',
+    'update.newVersionDetail': 'OpenSquilla {version} ist verfügbar. Jetzt herunterladen?',
+    'update.download': 'Herunterladen',
+    'update.later': 'Später',
+    'update.readyTitle': 'Update bereit zur Installation',
+    'update.readyDetail': 'OpenSquilla {version} wurde heruntergeladen. Neu starten, um das Update abzuschließen?',
+    'update.restartNow': 'Jetzt neu starten',
+    'update.upToDateTitle': 'Sie sind auf dem neuesten Stand',
+    'update.upToDateDetail': 'OpenSquilla {version} ist die neueste Version.',
+    'update.errorTitle': 'Update-Prüfung fehlgeschlagen',
+    'update.moveToApplications': 'Verschieben Sie OpenSquilla in Ihren Programme-Ordner, um automatische Updates zu aktivieren, und versuchen Sie es erneut.',
     'window.onboarding': 'OpenSquilla einrichten',
     'boot.profile': 'Desktop-Profil wird vorbereitet',
     'boot.gateway-start': 'Lokale Laufzeitumgebung wird gestartet',
@@ -1242,6 +1303,18 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.edit': 'Edición',
     'menu.view': 'Ver',
     'menu.window': 'Ventana',
+    'menu.checkForUpdates': 'Buscar actualizaciones…',
+    'update.newVersionTitle': 'Hay una nueva versión disponible',
+    'update.newVersionDetail': 'OpenSquilla {version} está disponible. ¿Descargar ahora?',
+    'update.download': 'Descargar',
+    'update.later': 'Más tarde',
+    'update.readyTitle': 'Actualización lista para instalar',
+    'update.readyDetail': 'OpenSquilla {version} se ha descargado. ¿Reiniciar para finalizar la actualización?',
+    'update.restartNow': 'Reiniciar ahora',
+    'update.upToDateTitle': 'Estás al día',
+    'update.upToDateDetail': 'OpenSquilla {version} es la última versión.',
+    'update.errorTitle': 'Error al buscar actualizaciones',
+    'update.moveToApplications': 'Mueve OpenSquilla a tu carpeta de Aplicaciones para habilitar las actualizaciones automáticas e inténtalo de nuevo.',
     'window.onboarding': 'Configurar OpenSquilla',
     'boot.profile': 'Preparando el perfil de escritorio',
     'boot.gateway-start': 'Iniciando el runtime local',
@@ -1522,14 +1595,24 @@ function desktopT(key: string): string {
 }
 
 function createApplicationMenu(): void {
+  const appSubmenu: Electron.MenuItemConstructorOptions[] = [{ role: 'about' }]
+  if (autoUpdateSupported()) {
+    appSubmenu.push(
+      { type: 'separator' },
+      {
+        label: desktopT('menu.checkForUpdates'),
+        click: () => {
+          void checkForUpdates(true)
+        },
+      },
+    )
+  }
+  appSubmenu.push({ type: 'separator' }, { role: 'quit' })
+
   const template: Electron.MenuItemConstructorOptions[] = [
     {
       label: app.name,
-      submenu: [
-        { role: 'about' },
-        { type: 'separator' },
-        { role: 'quit' },
-      ],
+      submenu: appSubmenu,
     },
     {
       label: desktopT('menu.edit'),
@@ -3279,6 +3362,201 @@ function stopGateway(): void {
   }, GATEWAY_SHUTDOWN_KILL_AFTER_MS).unref()
 }
 
+// ── Auto-update (electron-updater) ──────────────────────────────────────────
+// Phase 1 scope is macOS only. macOS release builds are Developer-ID signed +
+// notarized and ship the zip + latest-mac.yml feed that Squirrel.Mac consumes,
+// so in-place auto-update is safe. Windows builds are currently UNSIGNED, which
+// would make silent NSIS updates trip SmartScreen/UAC — so Windows stays on the
+// manual-download path (the in-app web notice) until a code-signing certificate
+// is in place. OPENSQUILLA_DESKTOP_ENABLE_WIN_UPDATE=1 opts in for local testing
+// only; OPENSQUILLA_DESKTOP_DISABLE_AUTO_UPDATE=1 turns the feature off entirely.
+const { autoUpdater } = electronUpdater
+
+let autoUpdaterReady = false
+let manualUpdateCheck = false
+let updateDownloadInProgress = false
+let updateApplying = false
+
+function autoUpdateSupported(): boolean {
+  if (!app.isPackaged) return false
+  if (process.env.OPENSQUILLA_DESKTOP_DISABLE_AUTO_UPDATE === '1') return false
+  if (process.platform === 'darwin') return true
+  if (process.platform === 'win32' && process.env.OPENSQUILLA_DESKTOP_ENABLE_WIN_UPDATE === '1') {
+    return true
+  }
+  return false
+}
+
+function nativeAutoUpdateEnabled(): boolean {
+  return autoUpdateSupported() && macUpdateLocationOk()
+}
+
+// macOS Squirrel cannot swap an app that runs from a read-only/translocated
+// location (a mounted DMG, ~/Downloads). The app must live in /Applications.
+function macUpdateLocationOk(): boolean {
+  if (process.platform !== 'darwin') return true
+  try {
+    return app.isInApplicationsFolder()
+  } catch {
+    return true
+  }
+}
+
+function desktopTv(key: string, version: string): string {
+  return desktopT(key).replace('{version}', version)
+}
+
+function showUpdateDialog(
+  options: Electron.MessageBoxOptions,
+): Promise<Electron.MessageBoxReturnValue> {
+  const win = currentMainWindow()
+  return win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options)
+}
+
+function showUpdateError(err: unknown): void {
+  const shouldReport = manualUpdateCheck || updateDownloadInProgress
+  manualUpdateCheck = false
+  updateDownloadInProgress = false
+  if (!shouldReport) return
+  void showUpdateDialog({
+    type: 'error',
+    buttons: ['OK'],
+    title: desktopT('update.errorTitle'),
+    message: desktopT('update.errorTitle'),
+    detail: String(err instanceof Error ? err.message : err ?? ''),
+  })
+}
+
+function initAutoUpdater(): void {
+  if (autoUpdaterReady || !autoUpdateSupported()) return
+  autoUpdaterReady = true
+
+  // Consent-based: the bundled gateway + ML runtime make updates large, so we
+  // never download without asking. We also keep installation on the explicit
+  // restart path so applyDownloadedUpdate() can drain the owned gateway first.
+  autoUpdater.autoDownload = false
+  autoUpdater.autoInstallOnAppQuit = false
+  autoUpdater.logger = {
+    info: (m: unknown) => console.log('[updater]', m),
+    warn: (m: unknown) => console.warn('[updater]', m),
+    error: (m: unknown) => console.error('[updater]', m),
+    debug: () => {},
+  }
+
+  autoUpdater.on('update-available', (info) => {
+    const version = String(info?.version ?? '')
+    void showUpdateDialog({
+      type: 'info',
+      buttons: [desktopT('update.download'), desktopT('update.later')],
+      defaultId: 0,
+      cancelId: 1,
+      title: desktopT('update.newVersionTitle'),
+      message: desktopT('update.newVersionTitle'),
+      detail: desktopTv('update.newVersionDetail', version),
+    }).then(({ response }) => {
+      if (response !== 0) {
+        manualUpdateCheck = false
+        return
+      }
+      updateDownloadInProgress = true
+      autoUpdater.downloadUpdate().catch((err) => {
+        console.error('[updater] download failed', err)
+        showUpdateError(err)
+      })
+    })
+  })
+
+  autoUpdater.on('update-not-available', () => {
+    updateDownloadInProgress = false
+    if (!manualUpdateCheck) return
+    manualUpdateCheck = false
+    void showUpdateDialog({
+      type: 'info',
+      buttons: ['OK'],
+      title: desktopT('update.upToDateTitle'),
+      message: desktopT('update.upToDateTitle'),
+      detail: desktopTv('update.upToDateDetail', app.getVersion()),
+    })
+  })
+
+  autoUpdater.on('update-downloaded', (info) => {
+    manualUpdateCheck = false
+    updateDownloadInProgress = false
+    const version = String(info?.version ?? '')
+    void showUpdateDialog({
+      type: 'info',
+      buttons: [desktopT('update.restartNow'), desktopT('update.later')],
+      defaultId: 0,
+      cancelId: 1,
+      title: desktopT('update.readyTitle'),
+      message: desktopT('update.readyTitle'),
+      detail: desktopTv('update.readyDetail', version),
+    }).then(({ response }) => {
+      if (response === 0) void applyDownloadedUpdate()
+    })
+  })
+
+  autoUpdater.on('error', (err) => {
+    console.error('[updater] error', err)
+    showUpdateError(err)
+  })
+}
+
+async function checkForUpdates(manual: boolean): Promise<void> {
+  if (!autoUpdateSupported()) return
+
+  // Guide the user to /Applications first, otherwise the in-place swap fails.
+  if (!macUpdateLocationOk()) {
+    if (manual) {
+      void showUpdateDialog({
+        type: 'warning',
+        buttons: ['OK'],
+        title: desktopT('update.errorTitle'),
+        message: desktopT('update.errorTitle'),
+        detail: desktopT('update.moveToApplications'),
+      })
+    }
+    return
+  }
+
+  initAutoUpdater()
+  manualUpdateCheck = manual
+  try {
+    await autoUpdater.checkForUpdates()
+  } catch (err) {
+    console.error('[updater] checkForUpdates failed', err)
+    showUpdateError(err)
+  }
+}
+
+// Stop the owned gateway child and WAIT for it to exit before handing control to
+// the installer. The gateway holds the listen port + a PID lock and (on Windows)
+// open file handles under resources/runtime that the installer must overwrite —
+// orphaning it breaks the next launch. Mirrors the uninstall quiesce path.
+async function applyDownloadedUpdate(): Promise<void> {
+  if (updateApplying) return
+  updateApplying = true
+  isQuitting = true
+  if (gatewayProcess && gatewayState.owned) {
+    const child = gatewayProcess
+    stopGateway()
+    await new Promise<void>((resolve) => {
+      if (child.exitCode !== null || child.signalCode !== null) return resolve()
+      child.once('exit', () => resolve())
+      setTimeout(resolve, GATEWAY_SHUTDOWN_KILL_AFTER_MS).unref()
+    })
+  }
+  // isSilent=false (show the platform installer UI where applicable),
+  // isForceRunAfter=true (relaunch after install).
+  autoUpdater.quitAndInstall(false, true)
+}
+
+// Lets the gateway-served Control UI know whether THIS desktop runtime can
+// apply updates natively right now. The web "a newer version is available"
+// banner suppresses itself only when this is true, so unsupported platforms
+// (e.g. unsigned Windows, or macOS running outside /Applications) still show
+// the passive notice.
+ipcMain.handle('desktop:update:supported', () => nativeAutoUpdateEnabled())
 ipcMain.handle('desktop:os-locale', () => desktopLocale)
 ipcMain.handle('gateway:status', () => ({ ...gatewayState }))
 ipcMain.handle('gateway:reveal-log', async () => {
@@ -3499,5 +3777,12 @@ if (!gotSingleInstanceLock) {
     desktopLocale = resolveDesktopLocale()
     createApplicationMenu()
     void openOrResumeDesktopApp()
+    initAutoUpdater()
+    if (autoUpdateSupported()) {
+      // Delay the silent startup check so it doesn't compete with gateway boot.
+      setTimeout(() => {
+        void checkForUpdates(false)
+      }, 12_000).unref()
+    }
   })
 }

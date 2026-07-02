@@ -183,7 +183,7 @@ def test_windows_release_workflow_fails_fast_after_gateway_build_failure() -> No
     workflow = _read(".github/workflows/wheelhouse-release.yml")
     windows_build = _section(
         workflow,
-        "      - name: Build Windows installer",
+        "      - name: Build unsigned Windows installer",
         "      - name: Verify Electron package",
     )
 

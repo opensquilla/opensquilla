@@ -13,6 +13,7 @@ the stage boundaries are ready to sequence.
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from opensquilla.engine.turn_runner.agent_bootstrap_stage import (
@@ -925,11 +926,17 @@ class _TurnRunnerAttachmentMessageBuilderAdapter(AttachmentMessageBuilderPort):
         self,
         message: str,
         attachments: list[dict],
+        *,
+        workspace_dir: str | Path | None = None,
+        session_id: str | None = None,
     ) -> list[Any] | None:
         return self._runner._build_attachment_messages(
             message,
             attachments,
             media_root=self._runner._attachment_media_root(),
+            workspace_dir=workspace_dir
+            or getattr(self._runner._config, "workspace_dir", None),
+            session_id=session_id,
         )
 
 

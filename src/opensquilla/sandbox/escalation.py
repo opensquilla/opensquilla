@@ -15,6 +15,7 @@ from opensquilla.sandbox.path_validation import MountDecision
 from opensquilla.sandbox.run_context import (
     DomainGrant,
     MountGrant,
+    PackageBundleGrant,
     RunContext,
     TemporaryGrant,
     get_run_context,
@@ -23,7 +24,6 @@ from opensquilla.sandbox.run_context import (
 from opensquilla.sandbox.run_context_service import (
     add_domain_grant,
     add_mount_grant,
-    add_public_network_grant,
     enable_bundle_grant,
 )
 from opensquilla.sandbox.run_mode import RunMode
@@ -33,9 +33,6 @@ _RESOLVED_RUN_CONTEXT_OVERLAYS: dict[tuple[str, str | None], RunContext] = {}
 _RESOLVED_RUN_CONTEXT_PERSISTORS: dict[tuple[str, str | None], tuple[Any, Any]] = {}
 _DENIED_SANDBOX_APPROVALS: dict[str, str] = {}
 _DURABLE_TEMPORARY_GRANT_SOURCES = frozenset({"saved", "route_metadata", "metadata"})
-_LEGACY_APPROVED_SANDBOX_CHOICES = frozenset(
-    {"allow_user", "allow_public_user", "mount_ro_user"}
-)
 
 
 def _choice(
@@ -57,6 +54,14 @@ def _choice(
     return payload
 
 
+def _standard_approval_choices() -> list[dict[str, object]]:
+    return [
+        _choice("allow_once", "Allow once", style="primary"),
+        _choice("allow_same_type", "Allow same type"),
+        _choice("deny", "Deny", approved=False, style="danger"),
+    ]
+
+
 def build_network_approval_params(
     decision: NetworkDecision,
     *,
@@ -70,12 +75,7 @@ def build_network_approval_params(
         "approvalKind": "sandbox_network",
         "host": decision.normalized_host,
         "fingerprint": fingerprint,
-        "choices": [
-            _choice("allow_once", "Allow once", style="primary"),
-            _choice("allow_chat", "Allow this network target"),
-            _choice("allow_public_chat", "Allow network access"),
-            _choice("deny", "Deny", approved=False, style="danger"),
-        ],
+        "choices": _standard_approval_choices(),
     }
     if session_key:
         params["sessionKey"] = session_key
@@ -98,11 +98,7 @@ def build_package_bundle_approval_params(
         "approvalKind": "sandbox_network",
         "bundle_id": normalized_bundle_id,
         "fingerprint": fingerprint,
-        "choices": [
-            _choice("allow_bundle_chat", "Allow package install", style="primary"),
-            _choice("allow_bundle_user", "Always allow package installs"),
-            _choice("deny", "Deny", approved=False, style="danger"),
-        ],
+        "choices": _standard_approval_choices(),
     }
     if session_key:
         params["sessionKey"] = session_key
@@ -119,39 +115,11 @@ def build_path_approval_params(
 ) -> dict[str, object] | None:
     if decision.status != "request":
         return None
-    if decision.access == "rw":
-        choices = [
-            _choice(
-                "mount_rw_chat",
-                "Allow read/write",
-                style="primary",
-                description="OpenSquilla can read and modify files under this path.",
-            ),
-            _choice("deny", "Deny", approved=False, style="danger"),
-        ]
-    else:
-        choices = [
-            _choice(
-                "mount_ro_chat",
-                "Allow read",
-                style="primary",
-                description=(
-                    "OpenSquilla can read/list this path and copy files into "
-                    "the workspace, but cannot modify the original files."
-                ),
-            ),
-            _choice(
-                "mount_rw_chat",
-                "Allow read/write",
-                description="OpenSquilla can read and modify files under this path.",
-            ),
-            _choice("deny", "Deny", approved=False, style="danger"),
-        ]
     params: dict[str, object] = {
         "approvalKind": "sandbox_path",
         "path": decision.normalized_path,
         "access": decision.access,
-        "choices": choices,
+        "choices": _standard_approval_choices(),
     }
     if session_key:
         params["sessionKey"] = session_key
@@ -175,6 +143,14 @@ def request_sandbox_approval(
 
     if not isinstance(params, dict):
         raise ValueError("sandbox_approval_params_required")
+
+    if _current_tool_context_is_channel():
+        return _approval_payload(
+            "approval_denied",
+            "",
+            params,
+            message=_channel_sandbox_approval_disabled_message(),
+        )
 
     queue = get_approval_queue()
     if approval_id is None:
@@ -225,6 +201,27 @@ def _default_denied_sandbox_approval_message() -> str:
         "continue from the current sandbox unless the user changes sandbox "
         "settings."
     )
+
+
+def _channel_sandbox_approval_disabled_message() -> str:
+    return (
+        "Channel sandbox approvals are disabled. Ask a channel admin to run "
+        "/sandbox full for this session, or retry from WebUI/CLI where sandbox "
+        "approvals can be resolved."
+    )
+
+
+def _current_tool_context_is_channel() -> bool:
+    try:
+        from opensquilla.tools.types import CallerKind, current_tool_context
+
+        ctx = current_tool_context.get()
+    except Exception:  # pragma: no cover - defensive
+        return False
+    if ctx is None:
+        return False
+    caller_kind = getattr(ctx, "caller_kind", None)
+    return caller_kind is CallerKind.CHANNEL or str(caller_kind) == CallerKind.CHANNEL.value
 
 
 def remember_sandbox_approval_denial(
@@ -317,8 +314,6 @@ def validate_sandbox_approval_choice(
             if bool(choice_payload.get("approved", True)) != approved:
                 raise ValueError("choice_approved_mismatch")
             return choice_payload
-    if approved and choice_id in _LEGACY_APPROVED_SANDBOX_CHOICES:
-        return {"id": choice_id, "approved": True, "legacy": True}
     raise ValueError(f"unknown_sandbox_choice:{choice_id}")
 
 
@@ -352,29 +347,40 @@ def context_with_temporary_network_grants(context: Any, *, fingerprint: str) -> 
         return context
 
     domains = list(getattr(context, "domains", ()))
+    bundles = list(getattr(context, "bundles", ()))
     seen = {grant.domain for grant in domains}
+    seen_bundles = {grant.bundle_id for grant in bundles}
     changed = False
     for grant in context.temporary_grants:
-        if (
-            grant.kind != "domain"
-            or grant.expires_after != "once"
-            or grant.fingerprint != fingerprint
-        ):
+        if grant.expires_after != "once" or grant.fingerprint != fingerprint:
             continue
-        if grant.value in seen:
-            continue
-        domains.append(
-            DomainGrant(
-                domain=grant.value,
-                scope="once",
-                source="temporary",
+        if grant.kind == "domain":
+            if grant.value in seen:
+                continue
+            domains.append(
+                DomainGrant(
+                    domain=grant.value,
+                    scope="once",
+                    source="temporary",
+                )
             )
-        )
-        seen.add(grant.value)
-        changed = True
+            seen.add(grant.value)
+            changed = True
+        elif grant.kind == "bundle":
+            if grant.value in seen_bundles or not expand_package_bundle(grant.value):
+                continue
+            bundles.append(
+                PackageBundleGrant(
+                    bundle_id=grant.value,
+                    scope="once",
+                    source="temporary",
+                )
+            )
+            seen_bundles.add(grant.value)
+            changed = True
     if not changed:
         return context
-    return replace(context, domains=tuple(domains))
+    return replace(context, domains=tuple(domains), bundles=tuple(bundles))
 
 
 def current_tool_run_context() -> RunContext | None:
@@ -619,10 +625,18 @@ def has_temporary_network_grant(context: RunContext | None, *, host: str, finger
     if context is None or not fingerprint:
         return False
     return any(
-        grant.kind == "domain"
-        and grant.expires_after == "once"
+        grant.expires_after == "once"
         and grant.fingerprint == fingerprint
-        and domain_matches(grant.value, host)
+        and (
+            (grant.kind == "domain" and domain_matches(grant.value, host))
+            or (
+                grant.kind == "bundle"
+                and any(
+                    domain_matches(domain, host)
+                    for domain in expand_package_bundle(grant.value)
+                )
+            )
+        )
         for grant in context.temporary_grants
     )
 
@@ -709,132 +723,66 @@ async def _apply_network_choice(
     workspace = _workspace_param(params)
     bundle_id = str(params.get("bundle_id") or params.get("bundleId") or "").strip()
 
-    if bundle_id:
-        if choice == "allow_bundle_chat":
-            updated = await enable_bundle_grant(
-                session_manager,
-                session_key,
-                bundle_id=bundle_id,
-                scope="chat",
-                config=config,
-                workspace=workspace,
-            )
-            remember_resolved_run_context(
-                session_key,
-                workspace,
-                updated,
-                session_manager=session_manager,
-                config=config,
-            )
-            return
-        if choice == "allow_bundle_user":
-            updated = await enable_bundle_grant(
-                session_manager,
-                session_key,
-                bundle_id=bundle_id,
-                scope="workspace",
-                config=config,
-                workspace=workspace,
-            )
-            remember_resolved_run_context(
-                session_key,
-                workspace,
-                updated,
-                session_manager=session_manager,
-                config=config,
-            )
-            return
+    if choice not in {"allow_once", "allow_same_type"}:
         raise ValueError(f"unknown_network_choice:{choice}")
+
+    if choice == "allow_once":
+        fingerprint = _require_text(params, "fingerprint")
+        value = bundle_id or _require_text(params, "host")
+        kind = "bundle" if bundle_id else "domain"
+        existing = await get_run_context(
+            session_manager,
+            session_key,
+            config=config,
+            workspace=workspace,
+        )
+        grant = TemporaryGrant(
+            kind=kind,
+            value=value,
+            fingerprint=fingerprint,
+        )
+        if grant in existing.temporary_grants:
+            return
+        updated = replace(
+            existing,
+            temporary_grants=existing.temporary_grants + (grant,),
+            source="resolved_overlay",
+        )
+        remember_resolved_run_context(
+            session_key,
+            workspace,
+            updated,
+            session_manager=session_manager,
+            config=config,
+        )
+        return
+
+    if bundle_id:
+        updated = await enable_bundle_grant(
+            session_manager,
+            session_key,
+            bundle_id=bundle_id,
+            scope="chat",
+            config=config,
+            workspace=workspace,
+        )
+        remember_resolved_run_context(
+            session_key,
+            workspace,
+            updated,
+            session_manager=session_manager,
+            config=config,
+        )
+        return
 
     host = _require_text(params, "host")
-
-    if choice == "allow_chat":
-        updated = await add_domain_grant(
-            session_manager,
-            session_key,
-            domain=host,
-            scope="chat",
-            config=config,
-            workspace=workspace,
-        )
-        remember_resolved_run_context(
-            session_key,
-            workspace,
-            updated,
-            session_manager=session_manager,
-            config=config,
-        )
-        return
-    if choice == "allow_user":
-        updated = await add_domain_grant(
-            session_manager,
-            session_key,
-            domain=host,
-            scope="workspace",
-            config=config,
-            workspace=workspace,
-        )
-        remember_resolved_run_context(
-            session_key,
-            workspace,
-            updated,
-            session_manager=session_manager,
-            config=config,
-        )
-        return
-    if choice == "allow_public_chat":
-        updated = await add_public_network_grant(
-            session_manager,
-            session_key,
-            scope="chat",
-            config=config,
-            workspace=workspace,
-        )
-        remember_resolved_run_context(
-            session_key,
-            workspace,
-            updated,
-            session_manager=session_manager,
-            config=config,
-        )
-        return
-    if choice == "allow_public_user":
-        updated = await add_public_network_grant(
-            session_manager,
-            session_key,
-            scope="workspace",
-            config=config,
-            workspace=workspace,
-        )
-        remember_resolved_run_context(
-            session_key,
-            workspace,
-            updated,
-            session_manager=session_manager,
-            config=config,
-        )
-        return
-    if choice != "allow_once":
-        raise ValueError(f"unknown_network_choice:{choice}")
-
-    fingerprint = _require_text(params, "fingerprint")
-    existing = await get_run_context(
+    updated = await add_domain_grant(
         session_manager,
         session_key,
+        domain=host,
+        scope="chat",
         config=config,
         workspace=workspace,
-    )
-    grant = TemporaryGrant(
-        kind="domain",
-        value=host,
-        fingerprint=fingerprint,
-    )
-    if grant in existing.temporary_grants:
-        return
-    updated = replace(
-        existing,
-        temporary_grants=existing.temporary_grants + (grant,),
-        source="resolved_overlay",
     )
     remember_resolved_run_context(
         session_key,
@@ -857,27 +805,17 @@ async def _apply_path_choice(
     path = _require_text(params, "path")
     requested_access = str(params.get("access") or "").strip()
 
-    if choice == "mount_ro_chat":
-        access = "ro"
-        scope = "chat"
-    elif choice == "mount_rw_chat":
-        access = "rw"
-        scope = "chat"
-    elif choice == "mount_ro_user":
-        access = "ro"
-        scope = "workspace"
-    else:
+    if choice not in {"allow_once", "allow_same_type"}:
         raise ValueError(f"unknown_path_choice:{choice}")
-
-    if requested_access == "rw" and access != "rw":
-        raise ValueError("path_choice_requires_write_access")
+    if requested_access not in {"ro", "rw"}:
+        raise ValueError("path_access_required")
 
     updated = await add_mount_grant(
         session_manager,
         session_key,
         path=path,
-        access=access,
-        scope=scope,
+        access=requested_access,
+        scope="once" if choice == "allow_once" else "chat",
         config=config,
         workspace=workspace,
     )
@@ -993,10 +931,18 @@ def _without_matching_temporary_network_grants(
         grant
         for grant in context.temporary_grants
         if not (
-            grant.kind == "domain"
-            and grant.expires_after == "once"
+            grant.expires_after == "once"
             and grant.fingerprint == fingerprint
-            and domain_matches(grant.value, host)
+            and (
+                (grant.kind == "domain" and domain_matches(grant.value, host))
+                or (
+                    grant.kind == "bundle"
+                    and any(
+                        domain_matches(domain, host)
+                        for domain in expand_package_bundle(grant.value)
+                    )
+                )
+            )
         )
     )
     if grants == context.temporary_grants:

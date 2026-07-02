@@ -491,28 +491,6 @@ async def execute_code(
             elapsed_ms=elapsed_ms,
         )
 
-    # Host fall-through: the sandbox is disabled and this is not a Full Host
-    # Access run, so the sandbox gate above never ran. A destructive-Python
-    # operation must still be approved before it touches the host, mirroring the
-    # shell warnlist gate that eafcd824 restored for the sandbox-off case.
-    if destructive_warning is not None and not host_execution:
-        from opensquilla.tools.builtin.shell import (
-            _check_exec_approval,
-            _sandbox_effectively_off,
-        )
-
-        if _sandbox_effectively_off():
-            approval_response = await _check_exec_approval(
-                tool_name="execute_code",
-                command=code[:200],
-                workdir=None,
-                warning=destructive_warning,
-                approval_id=approval_id,
-                background=False,
-            )
-            if approval_response is not None:
-                return json.dumps(approval_response)
-
     try:
         proc = await asyncio.create_subprocess_exec(
             python_bin,

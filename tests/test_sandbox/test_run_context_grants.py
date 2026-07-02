@@ -2226,7 +2226,7 @@ async def test_apply_network_choice_persists_chat_domain_grant(tmp_path):
 
     await apply_sandbox_approval_choice(
         params,
-        choice="allow_chat",
+        choice="allow_same_type",
         approved=True,
         session_manager=manager,
         config=_config(),
@@ -2261,7 +2261,7 @@ async def test_apply_network_choice_persists_chat_package_bundle_grant(tmp_path)
 
     await apply_sandbox_approval_choice(
         params,
-        choice="allow_bundle_chat",
+        choice="allow_same_type",
         approved=True,
         session_manager=manager,
         config=_config(),
@@ -2317,6 +2317,52 @@ def test_request_sandbox_approval_reissues_matching_approved_approval() -> None:
     assert second["status"] == "approval_required"
     assert new_approval_id != old_approval_id
     assert queue.get(new_approval_id).resolved is False
+
+    reset_approval_queue()
+
+
+def test_channel_sandbox_approval_request_denies_without_queue() -> None:
+    from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
+    from opensquilla.sandbox.escalation import (
+        build_path_approval_params,
+        request_sandbox_approval,
+    )
+    from opensquilla.sandbox.path_validation import MountDecision
+    from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
+
+    reset_approval_queue()
+    params = build_path_approval_params(
+        MountDecision(
+            status="request",
+            normalized_path="/tmp/outside",
+            access="rw",
+            reason="outside_sandbox_mounts",
+        ),
+        session_key="agent:main:feishu:user-1",
+        workspace="/tmp/ws",
+    )
+    assert params is not None
+    token = current_tool_context.set(
+        ToolContext(
+            caller_kind=CallerKind.CHANNEL,
+            session_key="agent:main:feishu:user-1",
+            channel_kind="feishu",
+            sender_id="user-1",
+        )
+    )
+    try:
+        payload = request_sandbox_approval(
+            params,
+            message="Resolve this approval and retry.",
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert payload["status"] == "approval_denied"
+    assert payload["approval_id"] == ""
+    assert "channel sandbox approvals are disabled" in str(payload["message"]).lower()
+    assert "/sandbox full" in str(payload["message"])
+    assert get_approval_queue().list_pending("exec") == []
 
     reset_approval_queue()
 
@@ -2420,13 +2466,12 @@ def test_reused_network_approval_reissues_after_narrow_approval_mismatch() -> No
 
 
 @pytest.mark.asyncio
-async def test_apply_network_choice_persists_user_domain_grant_with_workspace_scope(tmp_path):
+async def test_apply_network_choice_rejects_removed_public_choice(tmp_path):
     from opensquilla.sandbox.escalation import (
         apply_sandbox_approval_choice,
         build_network_approval_params,
     )
     from opensquilla.sandbox.network_guard import NetworkDecision
-    from opensquilla.sandbox.run_context import get_run_context
 
     manager = _SessionManager()
     workspace = tmp_path / "workspace"
@@ -2443,117 +2488,14 @@ async def test_apply_network_choice_persists_user_domain_grant_with_workspace_sc
         fingerprint="fp123",
     )
 
-    await apply_sandbox_approval_choice(
-        params,
-        choice="allow_user",
-        approved=True,
-        session_manager=manager,
-        config=_config(),
-    )
-
-    ctx = await get_run_context(
-        manager,
-        manager.node.session_key,
-        config=_config(),
-        workspace=str(workspace),
-    )
-    assert ("example.com", "workspace") in [(grant.domain, grant.scope) for grant in ctx.domains]
-
-
-@pytest.mark.asyncio
-async def test_apply_network_choice_persists_chat_public_network_grant(tmp_path):
-    from opensquilla.sandbox.escalation import (
-        apply_sandbox_approval_choice,
-        build_network_approval_params,
-        resolved_run_context_overlay,
-    )
-    from opensquilla.sandbox.network_guard import NetworkDecision
-    from opensquilla.sandbox.run_context import PublicNetworkGrant, get_run_context
-
-    manager = _SessionManager()
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    params = build_network_approval_params(
-        NetworkDecision(
-            status="ask",
-            normalized_host="example.com",
-            reason="unknown_domain",
-            source=None,
-        ),
-        session_key=manager.node.session_key,
-        workspace=str(workspace),
-        fingerprint="fp123",
-    )
-
-    await apply_sandbox_approval_choice(
-        params,
-        choice="allow_public_chat",
-        approved=True,
-        session_manager=manager,
-        config=_config(),
-    )
-
-    expected = PublicNetworkGrant(scope="chat", source="manual")
-    ctx = await get_run_context(
-        manager,
-        manager.node.session_key,
-        config=_config(),
-        workspace=str(workspace),
-    )
-    assert expected in ctx.public_network
-    overlay = resolved_run_context_overlay(manager.node.session_key, str(workspace))
-    assert overlay is not None
-    assert expected in overlay.public_network
-
-
-@pytest.mark.asyncio
-async def test_apply_network_choice_persists_user_public_network_grant(tmp_path):
-    from opensquilla.sandbox.escalation import (
-        apply_sandbox_approval_choice,
-        build_network_approval_params,
-    )
-    from opensquilla.sandbox.network_guard import NetworkDecision
-    from opensquilla.sandbox.run_context import PublicNetworkGrant, get_run_context
-
-    manager = _SessionManager()
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    params = build_network_approval_params(
-        NetworkDecision(
-            status="ask",
-            normalized_host="example.com",
-            reason="unknown_domain",
-            source=None,
-        ),
-        session_key=manager.node.session_key,
-        workspace=str(workspace),
-        fingerprint="fp123",
-    )
-
-    await apply_sandbox_approval_choice(
-        params,
-        choice="allow_public_user",
-        approved=True,
-        session_manager=manager,
-        config=_config(),
-    )
-
-    ctx = await get_run_context(
-        manager,
-        manager.node.session_key,
-        config=_config(),
-        workspace=str(workspace),
-    )
-    assert PublicNetworkGrant(scope="workspace", source="manual") in ctx.public_network
-
-    fresh = _manager_with_session_key("agent:main:webchat:fresh")
-    fresh_ctx = await get_run_context(
-        fresh,
-        fresh.node.session_key,
-        config=_config(),
-        workspace=str(workspace),
-    )
-    assert PublicNetworkGrant(scope="workspace", source="manual") in fresh_ctx.public_network
+    with pytest.raises(ValueError, match="unknown_sandbox_choice"):
+        await apply_sandbox_approval_choice(
+            params,
+            choice="allow_public_user",
+            approved=True,
+            session_manager=manager,
+            config=_config(),
+        )
 
 
 @pytest.mark.asyncio
@@ -2630,7 +2572,7 @@ async def test_apply_path_choice_persists_requested_mount(tmp_path):
 
     await apply_sandbox_approval_choice(
         params,
-        choice="mount_rw_chat",
+        choice="allow_same_type",
         approved=True,
         session_manager=manager,
         config=_config(),

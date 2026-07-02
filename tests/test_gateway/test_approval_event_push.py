@@ -174,3 +174,22 @@ def test_build_approval_event_payload_falls_back_to_argv_command() -> None:
     assert payload["tool_name"] == "exec"
     assert payload["session_key"] == ""
     assert payload["deadline"] == 2.0
+
+
+def test_build_approval_event_payload_includes_sandbox_kind() -> None:
+    payload = build_approval_event_payload(
+        {
+            "id": "sandbox123",
+            "namespace": "exec",
+            "params": {
+                "approvalKind": "sandbox_network",
+                "sessionKey": "agent:main:webchat:demo",
+            },
+            "created_at": 1.0,
+            "deadline": 2.0,
+            "resolved": False,
+            "approved": False,
+        }
+    )
+
+    assert payload["approval_kind"] == "sandbox_network"

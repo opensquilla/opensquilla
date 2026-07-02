@@ -17,7 +17,6 @@ from opensquilla.tools.types import (
     InteractionMode,
     ToolContext,
     ToolError,
-    UnsupportedSurfaceError,
     current_tool_context,
 )
 
@@ -77,7 +76,7 @@ async def test_exec_approval_deny_pattern_does_not_depend_on_warnlist(
 
 
 @pytest.mark.asyncio
-async def test_warnlisted_exec_auto_deny_blocks_before_host_execution(
+async def test_full_host_access_warnlisted_exec_skips_approval_and_uses_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -103,11 +102,47 @@ async def test_warnlisted_exec_auto_deny_blocks_before_host_execution(
     )
 
     result = await shell.exec_command("pip install requests", workdir=str(tmp_path))
-    payload = json.loads(result)
 
-    assert payload["status"] == "approval_denied"
-    assert payload["command"] == "pip install requests"
-    assert calls == []
+    assert result == "exit_code=0\nhost\n"
+    assert calls == ["host"]
+    assert get_approval_queue().list_pending("exec") == []
+
+
+@pytest.mark.asyncio
+async def test_sandbox_disabled_warnlisted_exec_skips_approval_and_uses_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.run_mode = "standard"
+    ctx.workspace_dir = str(tmp_path)
+    configure_runtime(
+        SandboxSettings(sandbox=False, security_grading=False),
+        workspace=tmp_path,
+    )
+    get_approval_queue().set_settings("auto-deny")
+    calls: list[str] = []
+
+    async def fake_host_execution(*args: object, **kwargs: object) -> str:
+        calls.append("host")
+        return "exit_code=0\nhost\n"
+
+    monkeypatch.setattr(shell, "_run_host_shell_command", fake_host_execution)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: PolicyResult(
+            allowed=True,
+            reason=f"command requires approval: {command}",
+            needs_approval=True,
+        ),
+    )
+
+    result = await shell.exec_command("pip install requests", workdir=str(tmp_path))
+
+    assert result == "exit_code=0\nhost\n"
+    assert calls == ["host"]
     assert get_approval_queue().list_pending("exec") == []
 
 
@@ -170,7 +205,7 @@ async def test_warnlisted_exec_allow_pattern_skips_prompt_when_sandbox_enabled(
 
 
 @pytest.mark.asyncio
-async def test_warnlisted_exec_allow_pattern_requires_approval_when_sandbox_off(
+async def test_warnlisted_exec_allow_pattern_runs_without_approval_when_no_sandbox_gate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -196,18 +231,44 @@ async def test_warnlisted_exec_allow_pattern_requires_approval_when_sandbox_off(
     )
 
     result = await shell.exec_command("pip install requests", workdir=str(tmp_path))
-    payload = json.loads(result)
 
-    assert payload["status"] == "approval_required"
-    assert payload["command"] == "pip install requests"
-    pending = get_approval_queue().list_pending("exec")
-    assert len(pending) == 1
-    assert pending[0]["params"]["command"] == "pip install requests"
-    assert calls == []
+    assert result == "exit_code=0\nhost\n"
+    assert get_approval_queue().list_pending("exec") == []
+    assert calls == ["host"]
 
 
 @pytest.mark.asyncio
-async def test_warnlisted_exec_auto_approve_requires_approval_when_sandbox_off(
+async def test_warnlisted_exec_prompt_runs_without_approval_when_no_sandbox_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    get_approval_queue().set_settings("prompt")
+    calls: list[str] = []
+
+    async def fake_host_execution(*args: object, **kwargs: object) -> str:
+        calls.append("host")
+        return "exit_code=0\nhost\n"
+
+    monkeypatch.setattr(shell, "_run_host_shell_command", fake_host_execution)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: PolicyResult(
+            allowed=True,
+            reason=f"command requires approval: {command}",
+            needs_approval=True,
+        ),
+    )
+
+    result = await shell.exec_command("pip install requests", workdir=str(tmp_path))
+
+    assert result == "exit_code=0\nhost\n"
+    assert get_approval_queue().list_pending("exec") == []
+    assert calls == ["host"]
+
+
+@pytest.mark.asyncio
+async def test_warnlisted_exec_auto_approve_runs_without_approval_when_no_sandbox_gate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -230,18 +291,14 @@ async def test_warnlisted_exec_auto_approve_requires_approval_when_sandbox_off(
     )
 
     result = await shell.exec_command("pip install requests", workdir=str(tmp_path))
-    payload = json.loads(result)
 
-    assert payload["status"] == "approval_required"
-    assert payload["command"] == "pip install requests"
-    pending = get_approval_queue().list_pending("exec")
-    assert len(pending) == 1
-    assert pending[0]["params"]["command"] == "pip install requests"
-    assert calls == []
+    assert result == "exit_code=0\nhost\n"
+    assert get_approval_queue().list_pending("exec") == []
+    assert calls == ["host"]
 
 
 @pytest.mark.asyncio
-async def test_warnlisted_exec_unattended_prompt_fails_without_queue_leak(
+async def test_warnlisted_exec_unattended_runs_without_approval_when_no_sandbox_gate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -266,10 +323,10 @@ async def test_warnlisted_exec_unattended_prompt_fails_without_queue_leak(
         ),
     )
 
-    with pytest.raises(UnsupportedSurfaceError):
-        await shell.exec_command("pip install requests", workdir=str(tmp_path))
+    result = await shell.exec_command("pip install requests", workdir=str(tmp_path))
 
-    assert calls == []
+    assert result == "exit_code=0\nhost\n"
+    assert calls == ["host"]
     assert get_approval_queue().list_pending("exec") == []
 
 

@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+from opensquilla.channels.types import IncomingMessage
 from opensquilla.gateway.auth import Principal
-from opensquilla.gateway.routing import build_cli_route_envelope, tool_context_from_envelope
+from opensquilla.gateway.routing import (
+    build_channel_route_envelope,
+    build_cli_route_envelope,
+    tool_context_from_envelope,
+)
 from opensquilla.gateway.rpc import RpcContext
 from opensquilla.gateway.rpc_sessions import (
     _apply_run_context_route_metadata,
@@ -43,6 +48,45 @@ def test_saved_route_run_mode_wins_over_later_global_full_default() -> None:
 
     assert ctx.run_mode == "standard"
     assert ctx.elevated is None
+
+
+def test_channel_route_defaults_to_trusted_even_for_owner_full_default() -> None:
+    envelope = build_channel_route_envelope(
+        IncomingMessage(sender_id="u1", channel_id="c1", content="hello"),
+        session_key="agent:main:feishu:u1",
+        session_prefix="feishu",
+        agent_id="main",
+    )
+
+    user_ctx = tool_context_from_envelope(envelope, is_owner=False)
+    admin_ctx = tool_context_from_envelope(
+        envelope,
+        is_owner=True,
+        default_elevated="full",
+    )
+
+    assert user_ctx.run_mode == "trusted"
+    assert user_ctx.elevated is None
+    assert admin_ctx.run_mode == "trusted"
+    assert admin_ctx.elevated is None
+
+
+def test_channel_owner_can_use_explicit_full_route_metadata() -> None:
+    envelope = build_channel_route_envelope(
+        IncomingMessage(sender_id="u1", channel_id="c1", content="hello"),
+        session_key="agent:main:feishu:u1",
+        session_prefix="feishu",
+        agent_id="main",
+    )
+    envelope.metadata["run_mode"] = "full"
+
+    user_ctx = tool_context_from_envelope(envelope, is_owner=False)
+    admin_ctx = tool_context_from_envelope(envelope, is_owner=True)
+
+    assert user_ctx.run_mode == "trusted"
+    assert user_ctx.elevated is None
+    assert admin_ctx.run_mode == "full"
+    assert admin_ctx.elevated == "full"
 
 
 def test_route_metadata_hydrates_full_sandbox_run_context() -> None:

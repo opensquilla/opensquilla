@@ -1613,15 +1613,6 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
 
         try:
             _mark_started()
-            # A new user turn invalidates any "once" intent approvals from the
-            # previous turn. "always" entries survive per IntentApprovalCache
-            # scope semantics.
-            try:
-                from opensquilla.sandbox.intent_cache import get_intent_cache
-
-                get_intent_cache().clear_scope("once")
-            except Exception:  # pragma: no cover — never block turn start
-                pass
             if ctx.turn_runner is None:
                 log.error("sessions.send.no_turn_runner", session_key=key)
                 await ctx.session_manager.append_message(

@@ -108,6 +108,7 @@ def build_channel_route_envelope(
 ) -> RouteEnvelope:
     """Build a route for a normalized inbound channel message."""
     metadata = dict(msg.metadata or {})
+    metadata.setdefault("run_mode", RunMode.TRUSTED.value)
     resolved_agent_id = _agent_id(agent_id, session_key)
     resolved_channel_type = channel_type or session_prefix
     account_id = metadata.get("account_id")

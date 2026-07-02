@@ -222,11 +222,13 @@ def test_request_path_builds_structured_mount_escalation_choices(tmp_path: Path)
     assert proposal["path"] == str(sibling.resolve(strict=False))
     assert proposal["access"] == "rw"
     assert [choice["id"] for choice in proposal["choices"]] == [
-        "mount_rw_chat",
+        "allow_once",
+        "allow_same_type",
         "deny",
     ]
     assert [choice["label"] for choice in proposal["choices"]] == [
-        "Allow read/write",
+        "Allow once",
+        "Allow same type",
         "Deny",
     ]
     assert proposal["choices"][0]["style"] == "primary"
@@ -344,8 +346,8 @@ async def test_filesystem_read_outside_workspace_requests_ro_mount(tmp_path: Pat
     assert payload["access"] == "ro"
     assert payload["approvalKind"] == "sandbox_path"
     assert [choice["id"] for choice in payload["choices"]] == [
-        "mount_ro_chat",
-        "mount_rw_chat",
+        "allow_once",
+        "allow_same_type",
         "deny",
     ]
     assert "outside the current workspace" in payload["message"]
@@ -484,7 +486,11 @@ async def test_filesystem_write_outside_workspace_requests_rw_mount(tmp_path: Pa
     assert payload["path"] == str(outside.resolve(strict=False))
     assert payload["access"] == "rw"
     assert payload["approvalKind"] == "sandbox_path"
-    assert [choice["id"] for choice in payload["choices"]] == ["mount_rw_chat", "deny"]
+    assert [choice["id"] for choice in payload["choices"]] == [
+        "allow_once",
+        "allow_same_type",
+        "deny",
+    ]
     assert not outside.exists()
 
 
@@ -1369,7 +1375,7 @@ async def test_path_request_approval_does_not_mutate_until_choice_is_resolved(
     result = await get_dispatcher().dispatch(
         "r1",
         "exec.approval.resolve",
-        {"id": approval_id, "approved": True, "choice": "mount_rw_chat"},
+        {"id": approval_id, "approved": True, "choice": "allow_same_type"},
         RpcContext(conn_id="test", session_manager=manager, config=config),
     )
     assert result.error is None, result.error
@@ -1416,7 +1422,7 @@ async def test_write_retry_uses_resolved_rw_mount_even_with_stale_tool_context(
         result = await get_dispatcher().dispatch(
             "r1",
             "exec.approval.resolve",
-            {"id": approval_id, "approved": True, "choice": "mount_rw_chat"},
+            {"id": approval_id, "approved": True, "choice": "allow_same_type"},
             RpcContext(conn_id="test", session_manager=manager, config=config),
         )
         assert result.error is None, result.error
@@ -1428,7 +1434,7 @@ async def test_write_retry_uses_resolved_rw_mount_even_with_stale_tool_context(
 
 
 @pytest.mark.asyncio
-async def test_write_request_rejects_ro_mount_choice(
+async def test_write_request_rejects_removed_mount_choice(
     tmp_path: Path,
 ) -> None:
     from opensquilla.gateway.rpc import RpcContext, get_dispatcher

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from opensquilla.application.approval_queue import ApprovalQueue
@@ -14,7 +12,6 @@ from opensquilla.application.approval_rpc import (
     approval_snapshot_rpc_payload,
     approval_wait_decision_rpc_payload,
 )
-from opensquilla.application.intent_cache import IntentApprovalCache
 
 
 def test_approval_settings_rpc_payload_includes_node_inheritance() -> None:
@@ -112,33 +109,14 @@ def test_approval_extend_rpc_payload_pushes_deadline() -> None:
 
 def test_approval_snapshot_and_forget_payloads_own_wire_shapes() -> None:
     queue = ApprovalQueue(db_path=":memory:")
-    intent_cache = IntentApprovalCache()
     try:
         queue.set_settings("prompt")
-        intent_cache.record_always("rm /tmp/approval-demo")
-        normalized_target = str(Path("/tmp/approval-demo").resolve(strict=False))
 
-        snapshot = approval_snapshot_rpc_payload(queue, intent_cache)
-        assert snapshot == {
-            "mode": "prompt",
-            "intent_cache_size": 1,
-            "intent_cache_entries": [
-                {
-                    "kind": "delete",
-                    "target": normalized_target,
-                    "scope": "always",
-                }
-            ],
-        }
-
-        assert approval_forget_rpc_payload(intent_cache, " /tmp/approval-demo ") == {
-            "scope": "target",
+        assert approval_snapshot_rpc_payload(queue) == {"mode": "prompt"}
+        assert approval_forget_rpc_payload(" /tmp/approval-demo ") == {
+            "scope": "noop",
             "target": "/tmp/approval-demo",
         }
-        assert intent_cache.check("rm /tmp/approval-demo") is False
-
-        intent_cache.record_always("rm /tmp/approval-demo")
-        assert approval_forget_rpc_payload(intent_cache) == {"scope": "all"}
-        assert intent_cache.check("rm /tmp/approval-demo") is False
+        assert approval_forget_rpc_payload() == {"scope": "noop"}
     finally:
         queue.close()

@@ -271,13 +271,13 @@ async def test_local_approval_resolver_threads_sandbox_choice(
         config=_sandbox_config(),
     )
 
-    await resolver(approval_id, True, choice="mount_ro_chat")
+    await resolver(approval_id, True, choice="allow_same_type")
 
     pending = get_approval_queue().get(approval_id)
     assert pending.resolved is True
     assert pending.approved is True
     assert pending.claim_token is None
-    assert captured["choice"] == "mount_ro_chat"
+    assert captured["choice"] == "allow_same_type"
     assert captured["approved"] is True
     assert captured["params"] == params
     assert captured["session_manager"] is manager

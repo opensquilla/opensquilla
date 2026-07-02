@@ -270,7 +270,6 @@ class ApprovalGate:
                 session_id=session_id,
             )
             return ALLOW
-
         params: dict[str, object] = {
             "action_kind": request.action_kind,
             "argv": list(request.argv),

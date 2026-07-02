@@ -209,14 +209,12 @@ def test_unknown_domain_builds_structured_network_escalation_choices() -> None:
     assert proposal["workspace"] == "/tmp/ws"
     assert [choice["id"] for choice in proposal["choices"]] == [
         "allow_once",
-        "allow_chat",
-        "allow_public_chat",
+        "allow_same_type",
         "deny",
     ]
     assert [choice["label"] for choice in proposal["choices"]] == [
         "Allow once",
-        "Allow this network target",
-        "Allow network access",
+        "Allow same type",
         "Deny",
     ]
 

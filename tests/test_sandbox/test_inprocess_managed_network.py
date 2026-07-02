@@ -637,7 +637,7 @@ async def test_allow_once_resolve_allows_one_retry_then_expires_for_explicit_tar
 
 
 @pytest.mark.asyncio
-async def test_allow_public_chat_choice_allows_later_unknown_public_targets(
+async def test_allow_same_type_choice_keeps_later_unknown_public_targets_scoped(
     managed_context: ToolContext,
 ) -> None:
     @sandboxed(

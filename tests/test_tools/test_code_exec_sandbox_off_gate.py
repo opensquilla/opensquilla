@@ -1,12 +1,4 @@
-"""Regression test: destructive execute_code must be gated when sandbox is off.
-
-main routed destructive-Python operations through the shell warnlist approval
-gate unconditionally. The sandbox refactor only runs the sandbox gate when the
-runtime has the sandbox enabled, so with a configured-but-disabled sandbox and a
-non Full-Host-Access run, destructive code (os.remove / shutil.rmtree) fell
-straight through to host execution with no approval. eafcd824 restored this
-guard for the shell tool; this test pins the equivalent guard for execute_code.
-"""
+"""Regression test: configured sandbox-off execution is Full Host Access."""
 
 from __future__ import annotations
 
@@ -23,15 +15,13 @@ from opensquilla.tools.types import CallerKind, ToolContext, current_tool_contex
 
 
 @pytest.mark.asyncio
-async def test_destructive_code_exec_requires_approval_when_sandbox_disabled(
+async def test_destructive_code_exec_runs_without_approval_when_sandbox_disabled(
     tmp_path: Path,
 ) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "target.txt").write_text("keep me\n", encoding="utf-8")
 
-    # Runtime present but sandbox disabled, and the session is not in Full Host
-    # Access mode -> the sandbox gate never runs.
     configure_runtime(
         SandboxSettings(sandbox=False, security_grading=False),
         workspace=workspace,
@@ -53,11 +43,8 @@ async def test_destructive_code_exec_requires_approval_when_sandbox_disabled(
 
     try:
         payload = json.loads(result)
-        assert payload["status"] == "approval_required"
-        # The destructive op must not have run while approval is pending.
-        assert (workspace / "target.txt").exists()
-        pending = get_approval_queue().list_pending("exec")
-        assert len(pending) == 1
+        assert payload["exit_code"] == 0
+        assert not (workspace / "target.txt").exists()
+        assert get_approval_queue().list_pending("exec") == []
     finally:
-        # Do not leak the enqueued approval into the shared queue.
         reset_approval_queue()

@@ -262,7 +262,7 @@ async def test_exec_approval_resolve_allows_non_owner_chat_scoped_sandbox_grant(
     approval_id = queue.request(namespace="exec", params=params)
 
     result = await _handle_exec_approval_resolve(
-        {"id": approval_id, "approved": True, "choice": "allow_chat"},
+        {"id": approval_id, "approved": True, "choice": "allow_same_type"},
         _ctx(
             manager,
             is_owner=False,
@@ -284,12 +284,12 @@ async def test_exec_approval_resolve_allows_non_owner_chat_scoped_sandbox_grant(
 
 
 @pytest.mark.asyncio
-async def test_exec_approval_resolve_rejects_non_owner_persistent_sandbox_grant() -> None:
+async def test_exec_approval_resolve_ignores_legacy_intent_flags_for_sandbox_choice() -> None:
     from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
-    from opensquilla.gateway.rpc import RpcHandlerError
     from opensquilla.gateway.rpc_approvals import _handle_exec_approval_resolve
     from opensquilla.sandbox.escalation import build_network_approval_params
     from opensquilla.sandbox.network_guard import NetworkDecision
+    from opensquilla.sandbox.run_context import get_run_context
 
     reset_approval_queue()
     manager = _SessionManager()
@@ -308,81 +308,29 @@ async def test_exec_approval_resolve_rejects_non_owner_persistent_sandbox_grant(
     queue = get_approval_queue()
     approval_id = queue.request(namespace="exec", params=params)
 
-    with pytest.raises(RpcHandlerError, match="requires owner principal"):
-        await _handle_exec_approval_resolve(
-            {
-                "id": approval_id,
-                "approved": True,
-                "choice": "allow_chat",
-                "allowAlways": True,
-            },
-            _ctx(
-                manager,
-                is_owner=False,
-                scopes=frozenset(["operator.approvals"]),
-            ),
-        )
-
-    pending = queue.get(approval_id)
-    assert pending.resolved is False
-
-    with pytest.raises(RpcHandlerError, match="requires owner principal"):
-        await _handle_exec_approval_resolve(
-            {
-                "id": approval_id,
-                "approved": True,
-                "choice": "allow_chat",
-                "rememberIntent": True,
-            },
-            _ctx(
-                manager,
-                is_owner=False,
-                scopes=frozenset(["operator.approvals"]),
-            ),
-        )
-
-    pending = queue.get(approval_id)
-    assert pending.resolved is False
-
-    reset_approval_queue()
-
-
-@pytest.mark.asyncio
-async def test_exec_approval_resolve_rejects_non_owner_workspace_sandbox_grant() -> None:
-    from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
-    from opensquilla.gateway.rpc import RpcHandlerError
-    from opensquilla.gateway.rpc_approvals import _handle_exec_approval_resolve
-
-    reset_approval_queue()
-    manager = _SessionManager()
-    queue = get_approval_queue()
-    approval_id = queue.request(
-        namespace="exec",
-        params={
-            "approvalKind": "sandbox_network",
-            "host": "example.com",
-            "fingerprint": "fp123",
-            "sessionKey": manager.node.session_key,
-            "workspace": "/tmp/ws",
-            "choices": [
-                {"id": "allow_user", "label": "Allow always", "approved": True},
-                {"id": "deny", "label": "Deny", "approved": False},
-            ],
+    result = await _handle_exec_approval_resolve(
+        {
+            "id": approval_id,
+            "approved": True,
+            "choice": "allow_same_type",
+            "allowAlways": True,
+            "rememberIntent": True,
         },
+        _ctx(
+            manager,
+            is_owner=False,
+            scopes=frozenset(["operator.approvals"]),
+        ),
     )
 
-    with pytest.raises(RpcHandlerError, match="requires owner principal"):
-        await _handle_exec_approval_resolve(
-            {"id": approval_id, "approved": True, "choice": "allow_user"},
-            _ctx(
-                manager,
-                is_owner=False,
-                scopes=frozenset(["operator.approvals"]),
-            ),
-        )
-
-    pending = queue.get(approval_id)
-    assert pending.resolved is False
+    assert result["resolved"] is True
+    context = await get_run_context(
+        manager,
+        manager.node.session_key,
+        config=_ctx(manager).config,
+        workspace="/tmp/ws",
+    )
+    assert ("example.com", "chat") in [(grant.domain, grant.scope) for grant in context.domains]
 
     reset_approval_queue()
 
@@ -457,7 +405,7 @@ async def test_exec_approval_resolve_allows_non_owner_chat_scoped_path_mount(tmp
     approval_id = queue.request(namespace="exec", params=params)
 
     result = await _handle_exec_approval_resolve(
-        {"id": approval_id, "approved": True, "choice": "mount_ro_chat"},
+        {"id": approval_id, "approved": True, "choice": "allow_same_type"},
         _ctx(
             manager,
             is_owner=False,
@@ -565,7 +513,7 @@ async def test_exec_approval_resolve_leaves_sandbox_approval_pending_when_mutati
     result = await get_dispatcher().dispatch(
         "r1",
         "exec.approval.resolve",
-        {"id": approval_id, "approved": True, "choice": "allow_chat"},
+        {"id": approval_id, "approved": True, "choice": "allow_same_type"},
         _ctx(manager, scopes=frozenset(["operator.approvals"])),
     )
 
@@ -631,7 +579,7 @@ async def test_exec_approval_resolve_claim_prevents_deny_race_from_landing_grant
         get_dispatcher().dispatch(
             "approve",
             "exec.approval.resolve",
-            {"id": approval_id, "approved": True, "choice": "allow_chat"},
+            {"id": approval_id, "approved": True, "choice": "allow_same_type"},
             ctx,
         )
     )
@@ -707,7 +655,7 @@ async def test_exec_approval_wait_and_consume_wait_for_sandbox_grant_apply(
         get_dispatcher().dispatch(
             "approve",
             "exec.approval.resolve",
-            {"id": approval_id, "approved": True, "choice": "allow_chat"},
+            {"id": approval_id, "approved": True, "choice": "allow_same_type"},
             ctx,
         )
     )
@@ -786,7 +734,7 @@ async def test_exec_approval_resolve_recovers_complete_failure_after_grant_apply
     result = await get_dispatcher().dispatch(
         "approve",
         "exec.approval.resolve",
-        {"id": approval_id, "approved": True, "choice": "allow_chat"},
+        {"id": approval_id, "approved": True, "choice": "allow_same_type"},
         ctx,
     )
 
@@ -841,7 +789,7 @@ async def test_exec_approval_resolve_finalize_failure_does_not_land_grant(
     result = await get_dispatcher().dispatch(
         "r1",
         "exec.approval.resolve",
-        {"id": approval_id, "approved": True, "choice": "allow_chat"},
+        {"id": approval_id, "approved": True, "choice": "allow_same_type"},
         ctx,
     )
 

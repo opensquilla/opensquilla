@@ -29,11 +29,8 @@ _d = get_dispatcher()
 _NON_OWNER_SANDBOX_APPROVAL_CHOICES = frozenset(
     {
         "allow_once",
-        "allow_chat",
-        "allow_public_chat",
-        "allow_bundle_chat",
-        "mount_ro_chat",
-        "mount_rw_chat",
+        "allow_same_type",
+        "deny",
     }
 )
 
@@ -166,29 +163,19 @@ async def _handle_exec_approval_wait_decision(
 
 @_d.method("exec.approval.snapshot", scope="operator.approvals")
 async def _handle_exec_approval_snapshot(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
-    """Return a diagnostic snapshot: current mode + cached intent count."""
-    from opensquilla.application.intent_cache import get_intent_cache
-
+    """Return a diagnostic snapshot for approval state."""
     queue = get_approval_queue()
-    cache = get_intent_cache()
-    return approval_snapshot_rpc_payload(queue, cache)
+    return approval_snapshot_rpc_payload(queue)
 
 
 @_d.method("exec.approval.forget", scope="operator.approvals")
 async def _handle_exec_approval_forget(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
-    """Drop cached intent approvals.
-
-    ``params.target`` (optional) — clear entries matching a single command/path.
-    Omit to wipe the whole intent cache.
-    """
-    from opensquilla.application.intent_cache import get_intent_cache
-
-    cache = get_intent_cache()
+    """Compatibility no-op for removed cached intent approvals."""
     if isinstance(params, dict):
         target = params.get("target")
     else:
         target = None
-    return approval_forget_rpc_payload(cache, target)
+    return approval_forget_rpc_payload(target)
 
 
 @_d.method("exec.approval.resolve", scope="operator.approvals")
@@ -205,10 +192,11 @@ async def _handle_exec_approval_resolve(params: dict | None, ctx: RpcContext) ->
     pending = queue.get(params["id"])
     normalized_choice = str(choice).strip() if isinstance(choice, str) and choice.strip() else None
     sandbox_approval = is_sandbox_approval_kind(pending.params.get("approvalKind"))
+    if sandbox_approval:
+        allow_always = False
+        remember_intent = False
     if sandbox_approval and approved:
         _require_owner_for_sandbox_approval_resolution(ctx, choice=normalized_choice)
-        if allow_always or remember_intent:
-            _require_owner_for_approval_resolution(ctx)
 
     validate_sandbox_approval_choice(
         pending.params,

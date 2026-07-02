@@ -1417,12 +1417,16 @@ async def _preflight_request_package_bundle(
     bundle_id = _package_bundle_id_for_request(request)
     if bundle_id is None:
         return None
-    if _context_has_enabled_package_bundle(context, bundle_id):
-        return None
     if context.run_mode == RunMode.TRUSTED:
         return None
 
     fingerprint = action_fingerprint(request)
+    effective_context = context_with_temporary_network_grants(
+        context,
+        fingerprint=fingerprint,
+    )
+    if _context_has_enabled_package_bundle(effective_context, bundle_id):
+        return None
     params = build_package_bundle_approval_params(
         bundle_id,
         session_key=_resolve_session_id(runtime, None),

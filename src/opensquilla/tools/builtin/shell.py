@@ -98,9 +98,7 @@ from opensquilla.tools.run_mode import (
 )
 from opensquilla.tools.types import (
     CallerKind,
-    InteractionMode,
     ToolError,
-    UnsupportedSurfaceError,
     current_tool_context,
 )
 
@@ -302,7 +300,11 @@ def _context_elevated_mode() -> str | None:
 
 
 def _host_execution_allowed() -> bool:
-    return full_host_access_active()
+    if full_host_access_active():
+        return True
+    runtime = get_runtime()
+    effective = getattr(runtime, "effective", None) if runtime is not None else None
+    return runtime is not None and not bool(getattr(effective, "sandbox_enabled", False))
 
 
 def _approval_policy_denial(
@@ -330,210 +332,6 @@ def _approval_policy_denial(
         "warning": warning,
         "message": "This command was denied by the active approval policy.",
     }
-
-
-def _approval_denied_payload(
-    command: str,
-    warning: str,
-    *,
-    approval_id: str = "",
-    message: str = "This command was denied by the active approval policy.",
-) -> dict[str, object]:
-    return {
-        "status": "approval_denied",
-        "approval_id": approval_id,
-        "command": command,
-        "warning": warning,
-        "message": message,
-    }
-
-
-def _approval_required_payload(
-    command: str,
-    warning: str,
-    approval_id: str,
-) -> dict[str, object]:
-    return {
-        "status": "approval_required",
-        "approval_id": approval_id,
-        "command": command,
-        "warning": warning,
-        "message": (
-            "Resolve this approval via exec.approval.resolve and retry with the "
-            "returned approval_id."
-        ),
-    }
-
-
-def _approval_pending_payload(
-    command: str,
-    warning: str,
-    approval_id: str,
-) -> dict[str, object]:
-    return {
-        "status": "approval_pending",
-        "approval_id": approval_id,
-        "command": command,
-        "warning": warning,
-        "message": "Approval is still pending. Ask the user to approve or deny it.",
-    }
-
-
-def _sandbox_shell_gate_will_handle_execution() -> bool:
-    return not _sandbox_effectively_off() and not _host_execution_allowed()
-
-
-def _channel_approver_origin() -> str | None:
-    """Return the originating channel ``sender_id`` when one can be reached.
-
-    A channel-originated turn runs UNATTENDED, but if the originating user is
-    reachable on the channel (the run carries a channel caller and the
-    ``sender_id``/``channel_kind`` of whoever started the turn) that user can be
-    asked to approve out of band, exactly like the Web UI poll path. Returns the
-    ``sender_id`` to record as the approval owner, or ``None`` when no approver
-    channel is reachable (cron, subagent, or a channel run that lost its
-    sender).
-    """
-    ctx = current_tool_context.get()
-    if ctx is None or ctx.caller_kind is not CallerKind.CHANNEL:
-        return None
-    sender_id = (ctx.sender_id or "").strip()
-    channel_kind = (ctx.channel_kind or "").strip()
-    if not sender_id or not channel_kind:
-        return None
-    return sender_id
-
-
-async def _check_exec_approval(
-    tool_name: str,
-    command: str,
-    workdir: str | None,
-    warning: str,
-    approval_id: str | None,
-    background: bool,
-) -> dict[str, object] | None:
-    queue = get_approval_queue()
-    settings = queue.get_settings()
-    pattern_class = classify_approval_command(
-        command,
-        settings.allow_patterns,
-        settings.deny_patterns,
-    )
-    if pattern_class == "deny":
-        log.warning(
-            "shell_approval_denied_pattern",
-            command=_audit_command(command),
-            tool=tool_name,
-        )
-        return _approval_denied_payload(command, warning)
-
-    if settings.mode == "auto-deny":
-        log.warning(
-            "shell_approval_auto_denied",
-            command=_audit_command(command),
-            tool=tool_name,
-        )
-        return _approval_denied_payload(command, warning)
-
-    sandbox_off_requires_approval = _sandbox_effectively_off() and not _host_execution_allowed()
-    if (
-        settings.mode == "auto-approve" or pattern_class == "allow"
-    ) and not sandbox_off_requires_approval:
-        log.info(
-            "shell_approval_skipped_policy",
-            command=_audit_command(command),
-            tool=tool_name,
-            mode=settings.mode,
-            pattern=pattern_class,
-        )
-        return None
-
-    ctx = current_tool_context.get()
-    channel_owner_sender_id = _channel_approver_origin()
-    if (
-        ctx is not None
-        and ctx.interaction_mode is InteractionMode.UNATTENDED
-        and channel_owner_sender_id is None
-    ):
-        # Unattended runs without a reachable approver (cron, subagent, or a
-        # channel run that lost its sender) cannot prompt anyone, so fail fast
-        # before enqueuing an orphaned approval. A channel run WITH a reachable
-        # owner falls through to enqueue below; the interaction mode stays
-        # UNATTENDED so the UNATTENDED-gated tool-surface denials elsewhere are
-        # untouched.
-        raise UnsupportedSurfaceError(
-            f"Tool '{tool_name}' requires human approval, but this run is unattended. "
-            "Use an interactive surface for approval-gated operations, or choose an "
-            "operation that does not require approval."
-        )
-
-    sandbox_gate_active = _sandbox_shell_gate_will_handle_execution()
-    if sandbox_gate_active and approval_id is None:
-        return None
-
-    params = {
-        "toolName": tool_name,
-        "command": command,
-        "args": {"command": command, "workdir": workdir},
-        "sessionKey": ctx.session_key if ctx is not None and ctx.session_key else "",
-        "agent": ctx.agent_id if ctx is not None else "",
-        "mode": "background" if background else "foreground",
-    }
-    if channel_owner_sender_id is not None:
-        # Record who started the channel turn so only that user can resolve this
-        # approval from the channel (owner-only, default-deny on mismatch), and
-        # mark the origin channel so approval_notify can route the prompt.
-        params["senderId"] = channel_owner_sender_id
-        params["channelKind"] = (ctx.channel_kind or "").strip() if ctx is not None else ""
-
-    if approval_id is None:
-        approval_id = queue.request(namespace="exec", params=params)
-        log.warning(
-            "shell_approval_required",
-            command=_audit_command(command),
-            pattern=warning,
-            approval_id=approval_id,
-            mode=settings.mode,
-        )
-        return _approval_required_payload(command, warning, approval_id)
-
-    try:
-        entry = queue.get(approval_id)
-    except KeyError as exc:
-        if sandbox_gate_active:
-            return None
-        raise ToolError(str(exc)) from exc
-
-    params = entry.params
-    matches_warnlist_approval = (
-        entry.namespace == "exec"
-        and params.get("toolName") == tool_name
-        and params.get("command") == command
-    )
-    if not matches_warnlist_approval:
-        if sandbox_gate_active:
-            return None
-        if entry.namespace != "exec":
-            raise ToolError(f"Approval does not belong to exec namespace: {approval_id}")
-        raise ToolError("Approval does not match the requested command")
-
-    if not entry.resolved:
-        return _approval_pending_payload(command, warning, approval_id)
-
-    if not entry.approved:
-        return _approval_denied_payload(
-            command,
-            warning,
-            approval_id=approval_id,
-            message="Approval was denied.",
-        )
-
-    try:
-        queue.consume(approval_id)
-    except ValueError as exc:
-        raise ToolError(str(exc)) from exc
-    log.info("shell_approval_granted", approval_id=approval_id, command=_audit_command(command))
-    return None
 
 
 def _without_shell_null_redirections(command: str) -> str:
@@ -3364,17 +3162,6 @@ async def exec_command(
     )
     if approval_denial is not None:
         return json.dumps(approval_denial, ensure_ascii=False)
-    if result.needs_approval:
-        approval_response = await _check_exec_approval(
-            tool_name="exec_command",
-            command=command,
-            workdir=cwd,
-            warning=result.reason,
-            approval_id=approval_id,
-            background=False,
-        )
-        if approval_response is not None:
-            return json.dumps(approval_response, ensure_ascii=False)
     path_access = _sandbox_workdir_access_envelope(
         cwd,
         write=_shell_workdir_requires_write(command, profile, stdin=stdin),
@@ -3554,17 +3341,6 @@ async def background_process(
     )
     if approval_denial is not None:
         return json.dumps(approval_denial, ensure_ascii=False)
-    if result.needs_approval:
-        approval_response = await _check_exec_approval(
-            tool_name="background_process",
-            command=command,
-            workdir=cwd,
-            warning=result.reason,
-            approval_id=approval_id,
-            background=True,
-        )
-        if approval_response is not None:
-            return json.dumps(approval_response, ensure_ascii=False)
     path_access = _sandbox_workdir_access_envelope(
         cwd,
         write=_shell_workdir_requires_write(command, profile),

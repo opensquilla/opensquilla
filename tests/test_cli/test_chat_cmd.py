@@ -1596,7 +1596,7 @@ async def test_gateway_client_resolve_approval_forwards_choice() -> None:
         "approval-1",
         True,
         allow_always=True,
-        choice="mount_ro_chat",
+        choice="allow_same_type",
     )
 
     assert result == {"status": "resolved"}
@@ -1607,7 +1607,7 @@ async def test_gateway_client_resolve_approval_forwards_choice() -> None:
                 "id": "approval-1",
                 "approved": True,
                 "allowAlways": True,
-                "choice": "mount_ro_chat",
+                "choice": "allow_same_type",
             },
         )
     ]

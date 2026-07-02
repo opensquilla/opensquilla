@@ -477,9 +477,6 @@ class ApprovalQueue:
 
         del elevated_mode
 
-        if approved and entry.namespace == "exec" and (allow_always or remember_intent):
-            self._persist_command_intent(entry.params, allow_always=allow_always)
-
     def claim_resolution(self, approval_id: str) -> str:
         self._release_stale_claims()
         token = uuid.uuid4().hex
@@ -587,8 +584,6 @@ class ApprovalQueue:
             self._conn.rollback()
             entry._event.set()
             self._pending[approval_id] = entry
-            if entry.namespace == "exec" and (allow_always or remember_intent):
-                self._persist_command_intent(entry.params, allow_always=allow_always)
             return
         if not entry.resolved or not entry.approved:
             self._conn.rollback()
@@ -616,9 +611,6 @@ class ApprovalQueue:
         self._notify_event("resolved", entry)
 
         del elevated_mode
-
-        if entry.namespace == "exec" and (allow_always or remember_intent):
-            self._persist_command_intent(entry.params, allow_always=allow_always)
 
     def release_resolution_claim(self, approval_id: str, claim_token: str) -> None:
         self._conn.execute("BEGIN IMMEDIATE")
@@ -675,23 +667,6 @@ class ApprovalQueue:
         reopened = self.get(approval_id)
         reopened._event.clear()
         self._pending[approval_id] = reopened
-
-    def _persist_command_intent(self, params: dict, allow_always: bool = False) -> None:
-        if not isinstance(params, dict):
-            return
-        command = str(params.get("command") or "")
-        if not command:
-            return
-        try:
-            from opensquilla.application.intent_cache import get_intent_cache
-
-            cache = get_intent_cache()
-            if allow_always:
-                cache.record_always(command)
-            else:
-                cache.record(command)
-        except Exception:  # pragma: no cover — cache path is best-effort
-            return
 
     def consume(self, approval_id: str) -> None:
         self._release_stale_claims()

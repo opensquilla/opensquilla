@@ -46,6 +46,7 @@ export interface ChatApprovalItem {
   namespace: string
   toolName: string
   command: string
+  approvalKind: string
   args: Record<string, unknown> | null
   warning: string
   agent: string
@@ -62,6 +63,20 @@ export interface ChatApprovalEntry {
 }
 
 export type ChatApprovalDecision = 'allow-once' | 'allow-always' | 'deny'
+
+export function approvalChoiceForDecision(decision: ChatApprovalDecision): string {
+  if (decision === 'allow-once') return 'allow_once'
+  if (decision === 'allow-always') return 'allow_same_type'
+  return 'deny'
+}
+
+function isSandboxApprovalKind(kind: string): boolean {
+  return kind.trim().startsWith('sandbox_')
+}
+
+function isSandboxApprovalItem(approval: Pick<ChatApprovalItem, 'approvalKind'>): boolean {
+  return isSandboxApprovalKind(approval.approvalKind || '')
+}
 
 export interface ChatClarifyField {
   name: string
@@ -114,6 +129,8 @@ interface ApprovalPushPayload {
   tool_name?: string
   toolName?: string
   command?: string
+  approval_kind?: string
+  approvalKind?: string
   agent?: string
   approved?: boolean
   resolution?: string
@@ -173,12 +190,15 @@ function snapshotItemToApproval(item: ApprovalsSnapshotItem): ChatApprovalItem |
     command = item.argv.map(String).join(' ')
   }
   const args = item.args && typeof item.args === 'object' ? item.args : null
+  const params = item.params && typeof item.params === 'object' ? item.params : null
+  const approvalKind = String(params?.approvalKind || args?.approvalKind || '').trim()
   if (!command && args && typeof args.command === 'string') command = args.command
   return {
     id,
     namespace: String(item.namespace || 'exec'),
     toolName: String(item.toolName || item.pluginId || item.actionKind || 'Unknown tool'),
     command,
+    approvalKind,
     args,
     warning: String(item.warning || ''),
     agent: String(item.agent || ''),
@@ -196,6 +216,7 @@ function approvalItemToInterruptData(item: ChatApprovalItem): InterruptApprovalD
     namespace: item.namespace,
     toolName: item.toolName,
     command: item.command,
+    approvalKind: item.approvalKind,
     args: item.args,
     warning: item.warning,
     agent: item.agent,
@@ -215,6 +236,7 @@ function pushPayloadToInterruptData(payload: ApprovalPushPayload): InterruptAppr
     namespace: String(payload.namespace || 'exec'),
     toolName: String(payload.tool_name || payload.toolName || 'Unknown tool'),
     command: String(payload.command || ''),
+    approvalKind: String(payload.approval_kind || payload.approvalKind || ''),
     args: null,
     warning: '',
     agent: String(payload.agent || ''),
@@ -415,13 +437,14 @@ export function useChatApprovals(options: UseChatApprovalsOptions) {
     approvalBusyIds.value = new Set([...approvalBusyIds.value, id])
     entry.error = ''
     const approved = decision !== 'deny'
-    const allowAlways = decision === 'allow-always'
+    const allowAlways = decision === 'allow-always' && !isSandboxApprovalItem(entry.approval)
     const body = {
       id,
       namespace: entry.approval.namespace || 'exec',
       approved,
       allowAlways,
       rememberIntent: allowAlways,
+      choice: approvalChoiceForDecision(decision),
     }
     try {
       const res = await fetch('/api/approvals/resolve', {
@@ -454,13 +477,17 @@ export function useChatApprovals(options: UseChatApprovalsOptions) {
     approvalBusyIds.value = new Set([...approvalBusyIds.value, id])
     setInterruptState(id, { busy: true, error: '' })
     const approved = decision !== 'deny'
-    const allowAlways = decision === 'allow-always'
+    const approval = interruptApprovals.get(id)
+    const allowAlways = decision === 'allow-always' && !(
+      approval ? isSandboxApprovalKind(approval.approvalKind || '') : false
+    )
     const body = {
       id,
       namespace: namespaceForInterrupt(id),
       approved,
       allowAlways,
       rememberIntent: allowAlways,
+      choice: approvalChoiceForDecision(decision),
     }
     try {
       const res = await fetch('/api/approvals/resolve', {

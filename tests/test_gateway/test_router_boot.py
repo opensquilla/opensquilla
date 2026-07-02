@@ -1502,6 +1502,16 @@ async def test_build_services_registers_session_search_tool(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    def fail_background_sandbox_setup(coro: Any) -> None:
+        close = getattr(coro, "close", None)
+        if callable(close):
+            close()
+        raise AssertionError("unit tests must not schedule real sandbox setup")
+
+    monkeypatch.setattr(
+        "opensquilla.gateway.boot.create_background_task",
+        fail_background_sandbox_setup,
+    )
     monkeypatch.setattr(
         "opensquilla.sandbox.integration.configure_runtime",
         lambda *args, **kwargs: SimpleNamespace(
@@ -1527,6 +1537,7 @@ async def test_build_services_registers_session_search_tool(
         channels={"channels": []},
         mcp={"enabled": False},
         memory={"flush_enabled": False},
+        sandbox={"auto_setup": False},
     )
 
     services = await build_services(
@@ -1652,6 +1663,7 @@ async def test_build_services_fails_fast_for_explicit_remote_memory_without_key(
         state_dir=str(tmp_path / "state"),
         workspace_dir=str(tmp_path / "workspace"),
         memory={"embedding": {"provider": "openai"}},
+        sandbox={"auto_setup": False},
     )
 
     with pytest.raises(ValueError, match="memory.embedding.remote.api_key"):

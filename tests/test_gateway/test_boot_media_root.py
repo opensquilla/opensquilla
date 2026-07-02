@@ -36,10 +36,23 @@ async def test_build_services_wires_media_root_into_session_manager(
 ) -> None:
     # Keep the build hermetic: redirect all state off the real user home.
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "state"))
+
+    def fail_background_sandbox_setup(coro):
+        close = getattr(coro, "close", None)
+        if callable(close):
+            close()
+        raise AssertionError("unit tests must not schedule real sandbox setup")
+
+    monkeypatch.setattr(
+        "opensquilla.gateway.boot.create_background_task",
+        fail_background_sandbox_setup,
+    )
+
     media = tmp_path / "media"
     config = GatewayConfig(
         memory={"flush_enabled": False},
         attachments={"media_root": str(media)},
+        sandbox={"auto_setup": False},
     )
 
     services = await build_services(

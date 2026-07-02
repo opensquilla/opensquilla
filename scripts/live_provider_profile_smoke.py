@@ -253,6 +253,8 @@ async def _stream_opensquilla(
             "cache_write_tokens": done.cache_write_tokens,
             "reasoning_tokens": done.reasoning_tokens,
             "model": done.model,
+            "billed_cost": done.billed_cost,
+            "cost_source": done.cost_source,
         }
         status = "passed" if expected in content else "content_mismatch"
         return status, content, usage, latency
@@ -287,16 +289,23 @@ def _cost_estimate(model: str, usage: dict[str, Any]) -> dict[str, Any]:
     estimate = (
         prompt_tokens * price.input_per_m + completion_tokens * price.output_per_m
     ) / 1_000_000
+    # The stream DoneEvent carries the provider-billed cost when the upstream
+    # reports one (OpenRouter usage.cost); surface it instead of pretending
+    # only static estimates exist.
+    billed = stream_usage.get("billed_cost") or 0.0
+    billed_source = str(stream_usage.get("cost_source") or "")
+    provider_billed = billed if billed > 0 and billed_source == "provider_billed" else None
+    cost_source = billed_source if provider_billed is not None else "opensquilla_static_estimate"
     return {
-        "provider_billed_cost_usd": None,
+        "provider_billed_cost_usd": provider_billed,
         "opensquilla_estimated_cost_usd": estimate,
-        "cost_source": "opensquilla_static_estimate",
-        "billing_scope": "static_estimate",
-        "provider_billed": None,
+        "cost_source": cost_source,
+        "billing_scope": "provider_billed" if provider_billed is not None else "static_estimate",
+        "provider_billed": provider_billed,
         "opensquilla_estimate": estimate,
         "input_per_m": price.input_per_m,
         "output_per_m": price.output_per_m,
-        "source": "opensquilla_static_estimate",
+        "source": cost_source,
     }
 
 

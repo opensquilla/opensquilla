@@ -32,6 +32,8 @@
     {% for css in vite_css_urls %}<link rel="stylesheet" crossorigin href="{{ css }}">
     {% endfor %}
     {% if vite_js_url %}<script type="module" crossorigin src="{{ vite_js_url }}"></script>{% endif %}
+    <!-- KaTeX: math/LaTeX rendering -->
+    <link rel="stylesheet" href="{{ base_path }}/static/vendor/katex.min.css?v={{ version }}">
 </head>
 <body>
     <noscript>
@@ -53,6 +55,10 @@
          data-update="{{ update | tojson | forceescape }}"
          style="display:none"></div>
 
+    <!-- Vendor libs (loaded before app code) -->
+    <script src="{{ base_path }}/static/vendor/marked.min.js"></script>
+    <script src="{{ base_path }}/static/vendor/katex.min.js"></script>
+    <script src="{{ base_path }}/static/vendor/purify.min.js"></script>
     <!-- Prism syntax highlighting (used by ChatView for code blocks) -->
     <script src="{{ base_path }}/static/vendor/prism-core.min.js"></script>
     <script src="{{ base_path }}/static/vendor/prism-autoloader.min.js"></script>

@@ -1,6 +1,8 @@
 ---
 name: paper-section-author
 description: "Write one publication-style research-paper section as a bounded, citation-grounded LaTeX fragment from a writing plan, outline, citation plan, and optional figure/table context."
+user-invocable: false
+disable-model-invocation: true
 provenance:
   origin: opensquilla-original
   license: Apache-2.0

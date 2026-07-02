@@ -1,6 +1,8 @@
 ---
 name: paper-refbib-stub
 description: "Convert multi-search-engine JSON to a minimal BibTeX file (@misc{} entries). Demo-only."
+user-invocable: false
+disable-model-invocation: true
 provenance:
   origin: opensquilla-original
   license: Apache-2.0

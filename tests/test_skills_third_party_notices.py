@@ -158,6 +158,55 @@ def test_filesystem_skill_records_mit_notice_provenance(tmp_path: Path) -> None:
     assert "Copyright (c) 2026 Clawdbot Community" in text
 
 
+def test_frontend_static_assets_are_covered_by_third_party_notices() -> None:
+    text = NOTICES.read_text(encoding="utf-8")
+
+    for expected in [
+        "## Static frontend vendor assets and fonts",
+        "KaTeX",
+        "PrismJS",
+        "marked",
+        "DOMPurify",
+        "IBM Plex Sans",
+        "IBM Plex Mono",
+        "Space Grotesk",
+        "Inter",
+        "JetBrains Mono",
+        "SIL OPEN FONT LICENSE Version 1.1",
+        "## npm and Python dependency packaging strategy",
+    ]:
+        assert expected in text
+
+    for path in [
+        ROOT / "src" / "opensquilla" / "gateway" / "static" / "vendor" / "katex.min.js",
+        ROOT / "src" / "opensquilla" / "gateway" / "static" / "vendor" / "katex.min.css",
+        ROOT / "src" / "opensquilla" / "gateway" / "static" / "vendor" / "marked.min.js",
+        ROOT / "src" / "opensquilla" / "gateway" / "static" / "vendor" / "purify.min.js",
+        ROOT / "src" / "opensquilla" / "gateway" / "static" / "vendor" / "prism-core.min.js",
+        ROOT / "src" / "opensquilla" / "gateway" / "static" / "fonts" / "Inter-Variable.woff2",
+        ROOT
+        / "src"
+        / "opensquilla"
+        / "gateway"
+        / "static"
+        / "fonts"
+        / "JetBrainsMono-Variable.woff2",
+        ROOT
+        / "opensquilla-webui"
+        / "src"
+        / "assets"
+        / "fonts"
+        / "ibm-plex-sans-400.woff2",
+        ROOT
+        / "opensquilla-webui"
+        / "src"
+        / "assets"
+        / "fonts"
+        / "space-grotesk-400.woff2",
+    ]:
+        assert path.is_file(), path
+
+
 def test_tokenjuice_backend_has_third_party_provenance() -> None:
     text = NOTICES.read_text(encoding="utf-8")
     package_dir = ROOT / "src" / "opensquilla" / "plugins" / "tokenjuice"

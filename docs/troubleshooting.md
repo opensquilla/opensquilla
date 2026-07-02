@@ -131,7 +131,7 @@ brew install libomp
 opensquilla gateway restart
 ```
 
-The signed desktop app bundles the native runtime it needs; this recovery step
+The desktop app bundles the native runtime it needs; this recovery step
 is for terminal or source installs.
 
 ## Search Does Not Work

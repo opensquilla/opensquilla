@@ -67,7 +67,7 @@ GitHub publiées. Le zip portable Windows dispose aussi d'un alias
 wheel Python utilisent des noms de fichier de wheel versionnés, car les installateurs
 valident la version intégrée au nom de fichier du wheel.
 
-Pour un usage bureau en 0.4.1, préférez les installateurs de bureau signés issus de la
+Pour un usage bureau en 0.4.1, préférez les installateurs de bureau empaquetés issus de la
 Release GitHub : `OpenSquilla-0.4.1-mac-arm64.dmg` sous macOS et
 `OpenSquilla-0.4.1-win-x64.exe` sous Windows. Le zip portable Windows reste disponible
 en tant que paquet de compatibilité héritée pour les scripts et les workflows en
@@ -75,7 +75,7 @@ dossier portable.
 
 | Voie | Public | Quand l'utiliser |
 | --- | --- | --- |
-| [Installateurs de bureau](#desktop-installers) **(recommandé pour le bureau)** | Utilisateurs macOS et Windows | Application de bureau empaquetée et signée |
+| [Installateurs de bureau](#desktop-installers) **(recommandé pour le bureau)** | Utilisateurs macOS et Windows | Application de bureau empaquetée |
 | [Version portable Windows](#windows-portable-no-python) | Utilisateurs Windows | Compatibilité héritée ; pas de chaîne d'outils Python ; lancement en un seul zip |
 | [Installation rapide en terminal](#quick-terminal-install) **(recommandé)** | Utilisateurs finaux sur tout OS | Wheel de la version publiée depuis un terminal |
 | [Installation depuis les sources](#install-from-source) | Utilisateurs suivant `main` | Exécuter depuis un dépôt, sans le modifier |
@@ -105,7 +105,7 @@ avec un routage direct vers un modèle unique jusqu'à ce qu'il soit installé.
 
 Lors des installations en terminal sous macOS, l'environnement d'exécution LightGBM de
 SquillaRouter peut aussi avoir besoin de la bibliothèque OpenMP du système.
-L'application de bureau signée embarque l'environnement d'exécution dont elle a besoin,
+L'application de bureau embarque l'environnement d'exécution dont elle a besoin,
 mais l'**Installation rapide en terminal** n'installe pas les bibliothèques
 Homebrew/système. Si le démarrage journalise `Library not loaded:
 @rpath/libomp.dylib`, exécutez `brew install libomp`, puis redémarrez la passerelle.
@@ -146,7 +146,7 @@ d'exécution CPython, si bien qu'aucune installation Python distincte n'est requ
    <http://127.0.0.1:18791/control/>.
 
 > [!NOTE]
-> Les builds de préversion ne sont pas signés ; le lancement en administrateur est la
+> Les builds Windows ne sont actuellement pas signés ; le lancement en administrateur est la
 > voie prise en charge. Si SmartScreen apparaît, choisissez **Informations
 > complémentaires** → **Exécuter quand même**. Si Smart App Control ou une stratégie
 > d'entreprise bloque l'application non signée, utilisez plutôt l'[Installation rapide
@@ -734,7 +734,7 @@ Si le démarrage journalise `Library not loaded: @rpath/libomp.dylib` depuis
 direct vers un modèle unique, mais l'environnement d'exécution `SquillaRouter` intégré
 reste inactif jusqu'à ce que l'environnement d'exécution OpenMP de macOS soit installé.
 
-L'application de bureau signée embarque l'environnement d'exécution natif dont elle a
+L'application de bureau embarque l'environnement d'exécution natif dont elle a
 besoin. Si vous avez utilisé l'installation rapide en terminal ou l'installation depuis
 les sources via un shell, installez `libomp` avec Homebrew et redémarrez la passerelle :
 

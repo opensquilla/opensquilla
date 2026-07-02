@@ -93,6 +93,79 @@ def test_release_workflow_keeps_macos_signing_identity_auto_selected() -> None:
     assert "GH_TOKEN" not in mac_step
 
 
+def test_release_workflow_keeps_windows_build_unsigned_until_signing_is_available() -> None:
+    workflow = Path(".github/workflows/wheelhouse-release.yml").read_text(encoding="utf-8")
+    windows_step = workflow.split("- name: Build unsigned Windows installer", 1)[1].split(
+        "- name: Verify Electron package", 1
+    )[0]
+
+    assert "npx electron-builder --win --publish never" in windows_step
+    assert 'CSC_IDENTITY_AUTO_DISCOVERY: "false"' in windows_step
+    assert not Path("desktop/electron/electron-builder.release.cjs").exists()
+
+    for env_name in [
+        "OPENSQUILLA_WINDOWS_AZURE_SIGNING",
+        "AZURE_TENANT_ID",
+        "AZURE_CLIENT_ID",
+        "AZURE_CLIENT_SECRET",
+        "AZURE_TRUSTED_SIGNING_PUBLISHER_NAME",
+        "AZURE_TRUSTED_SIGNING_ENDPOINT",
+        "AZURE_TRUSTED_SIGNING_ACCOUNT_NAME",
+        "AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME",
+    ]:
+        assert env_name not in windows_step
+
+    assert "azureSignOptions" not in workflow
+    assert "forceCodeSigning: true" not in workflow
+    assert "timestampRfc3161: 'http://timestamp.acs.microsoft.com'" not in workflow
+
+
+def test_release_docs_describe_unsigned_windows_policy() -> None:
+    readme = Path("README.md").read_text(encoding="utf-8")
+    localized_readmes = {
+        "zh-Hans": Path("README.zh-Hans.md").read_text(encoding="utf-8"),
+        "ja": Path("README.ja.md").read_text(encoding="utf-8"),
+        "fr": Path("README.fr.md").read_text(encoding="utf-8"),
+        "de": Path("README.de.md").read_text(encoding="utf-8"),
+        "es": Path("README.es.md").read_text(encoding="utf-8"),
+    }
+    releases = Path("RELEASES.md").read_text(encoding="utf-8")
+    release_notes = Path(f"docs/releases/{CURRENT_VERSION}.md").read_text(encoding="utf-8")
+    signing_policy = Path("docs/code-signing-policy.md").read_text(encoding="utf-8")
+    privacy_policy = Path("PRIVACY.md").read_text(encoding="utf-8")
+
+    assert "Code signing policy:" in readme
+    assert "Windows builds are currently unsigned" in readme
+    assert "Windows desktop installer is currently unsigned" in releases
+    assert "Windows release builds are currently unsigned" in signing_policy
+    assert "claim Windows code signing" in signing_policy
+    assert "[`PRIVACY.md`](../PRIVACY.md)" in signing_policy
+    assert "[@Open-Squilla](https://github.com/Open-Squilla)" in signing_policy
+    assert "Initial SignPath approvers" in signing_policy
+    assert "installation-time option to disable" in signing_policy
+
+    for text in [readme, releases, release_notes]:
+        assert "code-signing-policy.md" in text
+
+    assert "PRIVACY.md" in readme
+    assert "THIRD_PARTY_NOTICES.md" in readme
+    assert "Installation Telemetry" in privacy_policy
+    assert "OPENSQUILLA_TELEMETRY_DISABLED=true" in privacy_policy
+    assert "future signing plan" not in readme
+
+    for text in [readme, releases]:
+        assert "signed desktop installers" not in text
+
+    for locale, phrase in {
+        "zh-Hans": "已签名的桌面",
+        "ja": "署名済みのデスクトップ",
+        "fr": "installateurs de bureau signés",
+        "de": "signierten Desktop",
+        "es": "instaladores de escritorio firmados",
+    }.items():
+        assert phrase not in localized_readmes[locale]
+
+
 def _dep_names(specs: list[str]) -> set[str]:
     names: set[str] = set()
     for spec in specs:

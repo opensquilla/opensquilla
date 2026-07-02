@@ -59,7 +59,7 @@ Windows portable zip also has a `/releases/latest/download/` alias for
 the current release. Python wheel installs use versioned wheel filenames
 because installers validate the version embedded in the wheel filename.
 
-For 0.4.1 desktop use, prefer the signed desktop installers from the GitHub
+For 0.4.1 desktop use, prefer the packaged desktop installers from the GitHub
 Release: `OpenSquilla-0.4.1-mac-arm64.dmg` on macOS and
 `OpenSquilla-0.4.1-win-x64.exe` on Windows. The Windows portable zip remains
 available as a legacy compatibility package for scripts and portable-folder
@@ -67,7 +67,7 @@ workflows.
 
 | Path | Audience | When to use |
 | --- | --- | --- |
-| [Desktop installers](#desktop-installers) **(recommended desktop)** | macOS and Windows users | Signed packaged desktop app |
+| [Desktop installers](#desktop-installers) **(recommended desktop)** | macOS and Windows users | Packaged desktop app |
 | [Windows portable](#windows-portable-no-python) | Windows users | Legacy compatibility; no Python toolchain; one-zip launch |
 | [Quick terminal install](#quick-terminal-install) **(recommended)** | End users on any OS | Release wheel from a terminal |
 | [Install from source](#install-from-source) | Users tracking `main` | Run from a checkout, not edit it |
@@ -96,7 +96,7 @@ startup logs a `DLL load failed` error, install it manually (see
 direct single-model routing until it is installed.
 
 On macOS terminal installs, SquillaRouter's LightGBM runtime may also
-need the system OpenMP library. The signed desktop app bundles the
+need the system OpenMP library. The desktop app bundles the
 runtime it needs, but **Quick terminal install** does not install
 Homebrew/system libraries. If startup logs `Library not loaded:
 @rpath/libomp.dylib`, run `brew install libomp`, then restart the
@@ -118,6 +118,8 @@ runtime in an Electron shell.
 Quit any running OpenSquilla desktop app before upgrading. Existing
 `~/.opensquilla/config.toml` and session data are reused.
 
+Code signing policy: [`docs/code-signing-policy.md`](docs/code-signing-policy.md).
+
 ### Windows portable (no Python)
 
 The legacy compatibility path on Windows — the zip ships a bundled CPython
@@ -131,7 +133,7 @@ runtime, so no separate Python install is required.
 3. Complete the first-run setup, then open <http://127.0.0.1:18791/control/>.
 
 > [!NOTE]
-> Preview builds are unsigned; administrator launch is the supported
+> Windows builds are currently unsigned; administrator launch is the supported
 > path. If SmartScreen appears, choose **More info** → **Run anyway**.
 > If Smart App Control or enterprise policy blocks the unsigned app,
 > use [Quick terminal install](#quick-terminal-install) instead.
@@ -377,6 +379,9 @@ OpenSquilla uses anonymous installation telemetry to estimate install counts,
 version adoption, and runtime compatibility. Data is sent on first gateway
 startup and once per OpenSquilla version. Uploads use a short timeout and never
 block startup.
+
+See [`PRIVACY.md`](PRIVACY.md) for the full privacy policy covering local data,
+provider requests, telemetry, logs, and deletion.
 
 What is sent:
 
@@ -713,7 +718,7 @@ If startup logs `Library not loaded: @rpath/libomp.dylib` from
 direct single-model routing, but the bundled `SquillaRouter` runtime
 stays inactive until the macOS OpenMP runtime is installed.
 
-The signed desktop app bundles the native runtime it needs. If you used
+The desktop app bundles the native runtime it needs. If you used
 Quick terminal install or source install from a shell, install `libomp`
 with Homebrew and restart the gateway:
 
@@ -770,4 +775,6 @@ issue or pull request on
 [GitHub](https://github.com/opensquilla/opensquilla).
 
 [Code of Conduct](CODE_OF_CONDUCT.md) · [Security](SECURITY.md) ·
-[Support](SUPPORT.md) · [License](LICENSE) (Apache-2.0)
+[Privacy](PRIVACY.md) · [Code signing policy](docs/code-signing-policy.md) ·
+[Third-party notices](THIRD_PARTY_NOTICES.md) · [Support](SUPPORT.md) ·
+[License](LICENSE) (Apache-2.0)

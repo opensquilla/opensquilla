@@ -16,11 +16,13 @@ Preview releases publish only versioned assets:
 - `opensquilla-<version>-py3-none-any.whl`
 - `SHA256SUMS`
 
-0.4.x non-preview releases publish signed desktop installers plus the Python
-wheel. The Windows portable zip is still published as a legacy compatibility
-asset for existing scripts and portable-folder workflows. Non-preview releases
-also publish a version-independent alias for the legacy Windows portable zip
-`/releases/latest/download/` URL:
+0.4.x non-preview releases publish desktop installers plus the Python wheel.
+The Windows desktop installer is currently unsigned; release notes and download
+sections must link to `docs/code-signing-policy.md` until a signing workflow is
+approved and enabled. The Windows portable zip is still published as a legacy
+compatibility asset for existing scripts and portable-folder workflows.
+Non-preview releases also publish a version-independent alias for the legacy
+Windows portable zip `/releases/latest/download/` URL:
 
 - `OpenSquilla-<version>-mac-arm64.dmg`
 - `OpenSquilla-<version>-mac-arm64.zip`
@@ -58,15 +60,18 @@ exists. Fully pinned URLs remain available for every primary asset:
 
 1. Verify `git status` is clean.
 2. Update `CHANGELOG.md`: move entries from `[Unreleased]` to the release section; reopen empty `[Unreleased]`.
-3. Bump `pyproject.toml` and `uv.lock` to the release version.
-4. `git tag -a v0.4.1 -m "OpenSquilla 0.4.1"`
-5. `git push origin v0.4.1` (this triggers `.github/workflows/wheelhouse-release.yml`)
-6. Wait for the Release Assets workflow → review the draft GitHub Release.
+3. Confirm the release notes and README download sections link to `PRIVACY.md`,
+   `THIRD_PARTY_NOTICES.md`, and `docs/code-signing-policy.md`, and do not
+   claim Windows code signing before it is enabled.
+4. Bump `pyproject.toml` and `uv.lock` to the release version.
+5. `git tag -a v0.4.1 -m "OpenSquilla 0.4.1"`
+6. `git push origin v0.4.1` (this triggers `.github/workflows/wheelhouse-release.yml`)
+7. Wait for the Release Assets workflow → review the draft GitHub Release.
    For non-preview releases, confirm it contains desktop installers, the
    versioned wheel, the legacy Windows portable assets, `SHA256SUMS`, plus
    GitHub's generated source archives before publishing.
-7. Confirm the draft GitHub Release is not marked as a pre-release.
-8. Publish the GitHub Release, then run the post-publish tag URL checks:
+8. Confirm the draft GitHub Release is not marked as a pre-release.
+9. Publish the GitHub Release, then run the post-publish tag URL checks:
 
    ```sh
    curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.4.1/OpenSquilla-0.4.1-mac-arm64.dmg
@@ -75,13 +80,13 @@ exists. Fully pinned URLs remain available for every primary asset:
    curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.4.1/opensquilla-0.4.1-py3-none-any.whl
    ```
 
-9. Run the post-publish latest URL check:
+10. Run the post-publish latest URL check:
 
    ```sh
    curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/latest/download/OpenSquilla-windows-x64-portable.zip
    ```
 
-10. For subsequent previews: bump `pyproject.toml`, `uv.lock`, `CHANGELOG.md`, and the tag to the next preview version, for example `0.3.2rc1` / `v0.3.2rc1`. Preview GitHub Releases must be marked as pre-releases and should use tag-pinned README URLs until the next non-preview release exists.
+11. For subsequent previews: bump `pyproject.toml`, `uv.lock`, `CHANGELOG.md`, and the tag to the next preview version, for example `0.3.2rc1` / `v0.3.2rc1`. Preview GitHub Releases must be marked as pre-releases and should use tag-pinned README URLs until the next non-preview release exists.
 
 ## GitHub-only release checks
 

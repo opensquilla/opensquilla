@@ -26,6 +26,8 @@ interface ProviderConfig {
 
 interface SetupStatus {
   hasConfig?: boolean
+  llmConfigured?: boolean
+  llmSource?: string
 }
 
 interface ProviderPanelContext {
@@ -56,6 +58,14 @@ export function buildProviderPayload(providerId: string, values: Record<string, 
   return payload
 }
 
+export function hasEffectiveProvider(config: ProviderConfig, status: SetupStatus): boolean {
+  if (!config.provider) return false
+  if (status.hasConfig !== false) return true
+  if (status.llmConfigured === true) return true
+  if (status.llmConfigured === false) return false
+  return ['explicit', 'env', 'not_required'].includes(String(status.llmSource || ''))
+}
+
 export function useSetupProviderForm() {
   const providerSelected = ref('')
   const providerFieldValues = ref<Record<string, unknown>>({})
@@ -67,8 +77,7 @@ export function useSetupProviderForm() {
   const isDirty = computed(() => serialized.value !== baseline.value)
 
   function initFromConfig(config: ProviderConfig, status: SetupStatus, providers: ProviderSpec[]) {
-    const hasSaved = Boolean(config.provider) && status.hasConfig !== false
-    if (hasSaved && config.provider) {
+    if (hasEffectiveProvider(config, status) && config.provider) {
       providerSelected.value = config.provider
       const spec = providers.find(p => p.providerId === config.provider)
       spec?.fields?.forEach(field => {

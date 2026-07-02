@@ -9,6 +9,8 @@ from opensquilla.attachment_workspace import (
     is_materializable_attachment_mime,
 )
 
+_MATERIALIZABLE_MIMES = frozenset({"application/pdf", "text/plain"})
+
 
 def test_unsupported_mime_is_not_materialized(tmp_path: Path) -> None:
     media_root = tmp_path / "media"
@@ -16,6 +18,7 @@ def test_unsupported_mime_is_not_materialized(tmp_path: Path) -> None:
     materializer = AttachmentWorkspaceMaterializer(
         media_root=media_root,
         workspace_dir=workspace,
+        materializable_mimes=_MATERIALIZABLE_MIMES,
     )
 
     result = materializer.materialize_bytes(
@@ -28,7 +31,7 @@ def test_unsupported_mime_is_not_materialized(tmp_path: Path) -> None:
     assert result.available is False
     assert result.error == "attachment type is not materializable"
     assert not (workspace / ".opensquilla").exists()
-    assert not is_materializable_attachment_mime("image/png")
+    assert not is_materializable_attachment_mime("image/png", _MATERIALIZABLE_MIMES)
 
 
 def test_materializes_transcript_ref_inside_workspace(tmp_path: Path) -> None:
@@ -52,6 +55,7 @@ def test_materializes_transcript_ref_inside_workspace(tmp_path: Path) -> None:
     result = AttachmentWorkspaceMaterializer(
         media_root=media_root,
         workspace_dir=workspace,
+        materializable_mimes=_MATERIALIZABLE_MIMES,
     ).materialize(ref)
 
     assert result.available is True
@@ -77,6 +81,7 @@ def test_existing_materialized_file_is_reused_when_hash_matches(tmp_path: Path) 
     result = AttachmentWorkspaceMaterializer(
         media_root=tmp_path / "media",
         workspace_dir=workspace,
+        materializable_mimes=_MATERIALIZABLE_MIMES,
     ).materialize_bytes(
         payload,
         name="notes.txt",

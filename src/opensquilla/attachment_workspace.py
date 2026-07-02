@@ -6,6 +6,7 @@ import hashlib
 import os
 import re
 import secrets
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,20 +16,7 @@ from opensquilla.attachment_refs import (
     make_attachment_ref,
     read_attachment_ref_bytes,
 )
-from opensquilla.contracts.attachments import (
-    EMAIL_ATTACHMENT_MIMES,
-    OFFICE_ATTACHMENT_MIMES,
-    TEXT_ATTACHMENT_MIMES,
-)
 
-_MATERIALIZABLE_MIMES: frozenset[str] = frozenset(
-    {
-        "application/pdf",
-        *TEXT_ATTACHMENT_MIMES,
-        *OFFICE_ATTACHMENT_MIMES,
-        *EMAIL_ATTACHMENT_MIMES,
-    }
-)
 _UNSAFE_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9._@+=, -]+")
 _WHITESPACE = re.compile(r"\s+")
 
@@ -45,8 +33,11 @@ class AttachmentWorkspaceMaterialization:
     error: str | None = None
 
 
-def is_materializable_attachment_mime(mime: Any) -> bool:
-    return isinstance(mime, str) and mime in _MATERIALIZABLE_MIMES
+def is_materializable_attachment_mime(
+    mime: Any,
+    materializable_mimes: Collection[str],
+) -> bool:
+    return isinstance(mime, str) and mime in materializable_mimes
 
 
 def render_attachment_material_marker(
@@ -66,9 +57,16 @@ def render_attachment_material_marker(
 class AttachmentWorkspaceMaterializer:
     """Materialize attachment bytes into a controlled workspace path."""
 
-    def __init__(self, *, media_root: Path, workspace_dir: str | Path) -> None:
+    def __init__(
+        self,
+        *,
+        media_root: Path,
+        workspace_dir: str | Path,
+        materializable_mimes: Collection[str],
+    ) -> None:
         self._media_root = Path(media_root)
         self._workspace_root = Path(workspace_dir)
+        self._materializable_mimes = frozenset(materializable_mimes)
 
     def materialize(
         self,
@@ -79,7 +77,7 @@ class AttachmentWorkspaceMaterializer:
         name = _safe_filename(_attachment_name(attachment))
         mime = _attachment_mime(attachment)
         size = _attachment_size(attachment)
-        if not is_materializable_attachment_mime(mime):
+        if not is_materializable_attachment_mime(mime, self._materializable_mimes):
             return AttachmentWorkspaceMaterialization(
                 available=False,
                 name=name,
@@ -118,7 +116,7 @@ class AttachmentWorkspaceMaterializer:
         safe_name = _safe_filename(name)
         safe_mime = mime.strip() if isinstance(mime, str) else "application/octet-stream"
         size = len(payload)
-        if not is_materializable_attachment_mime(safe_mime):
+        if not is_materializable_attachment_mime(safe_mime, self._materializable_mimes):
             return AttachmentWorkspaceMaterialization(
                 available=False,
                 name=safe_name,

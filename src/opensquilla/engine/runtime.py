@@ -39,8 +39,10 @@ from opensquilla.attachment_refs import (
 )
 from opensquilla.attachment_workspace import (
     AttachmentWorkspaceMaterializer,
-    is_materializable_attachment_mime,
     render_attachment_material_marker,
+)
+from opensquilla.attachment_workspace import (
+    is_materializable_attachment_mime as _attachment_workspace_is_materializable_attachment_mime,
 )
 from opensquilla.bootstrap_types import BootstrapFileReport
 from opensquilla.contracts.attachments import (
@@ -249,8 +251,23 @@ _IMAGE_GENERATION_TOOL_NAMES: Final[frozenset[str]] = frozenset({"image_generate
 _ARTIFACT_DELIVERY_FAILURE_MARKER: Final[str] = "File delivery failed:"
 _ARTIFACT_DELIVERY_TOOL_NAME: Final[str] = "publish_artifact"
 _ARTIFACT_DELIVERY_FAILURE_MAX_CHARS: Final[int] = 360
+_MATERIALIZABLE_ATTACHMENT_MIMES: Final[frozenset[str]] = frozenset(
+    {
+        "application/pdf",
+        *_ENGINE_TEXT_FAMILY_MIMES,
+        *_OFFICE_ATTACHMENT_MIMES,
+        *_EMAIL_ATTACHMENT_MIMES,
+    }
+)
 
 _HOOKS_FEATURE_ENV: Final[str] = "OPENSQUILLA_HOOKS"
+
+
+def _is_materializable_attachment_mime(mime: Any) -> bool:
+    return _attachment_workspace_is_materializable_attachment_mime(
+        mime,
+        _MATERIALIZABLE_ATTACHMENT_MIMES,
+    )
 
 
 def collect_invoked_skills(
@@ -6562,11 +6579,12 @@ class TurnRunner:
                 materialize_historical_attachments
                 and session_id
                 and workspace_dir
-                and is_materializable_attachment_mime(media_type)
+                and _is_materializable_attachment_mime(media_type)
             ):
                 materializer = AttachmentWorkspaceMaterializer(
                     media_root=media_root or Path("."),
                     workspace_dir=workspace_dir,
+                    materializable_mimes=_MATERIALIZABLE_ATTACHMENT_MIMES,
                 )
                 result = None
                 if isinstance(sha_ref, str) and sha_ref and media_root is not None:
@@ -6722,11 +6740,12 @@ class TurnRunner:
             material_marker = ""
             if (
                 workspace_dir
-                and is_materializable_attachment_mime(media_type)
+                and _is_materializable_attachment_mime(media_type)
             ):
                 materializer = AttachmentWorkspaceMaterializer(
                     media_root=media_root or Path("."),
                     workspace_dir=workspace_dir,
+                    materializable_mimes=_MATERIALIZABLE_ATTACHMENT_MIMES,
                 )
                 if is_attachment_ref(att):
                     result = materializer.materialize(att, session_id=session_id)

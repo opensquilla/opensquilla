@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from opensquilla.sandbox.run_mode import RunMode, config_run_mode
+
 ELEVATED_PERMISSION_MODES = frozenset({"on", "bypass", "full"})
 PERMISSION_MODES = frozenset({"off", *ELEVATED_PERMISSION_MODES})
 
@@ -18,10 +20,9 @@ def normalize_permission_mode(value: Any, *, default: str = "off") -> str:
     raise ValueError(f"permissions must be one of: {allowed}")
 
 
+def configured_default_run_mode(config: Any) -> RunMode:
+    return config_run_mode(config)
+
+
 def configured_default_elevated(config: Any) -> str | None:
-    permissions = getattr(config, "permissions", None)
-    mode = normalize_permission_mode(
-        getattr(permissions, "default_mode", None),
-        default="off",
-    )
-    return mode if mode in ELEVATED_PERMISSION_MODES else None
+    return "full" if configured_default_run_mode(config) == RunMode.FULL else None

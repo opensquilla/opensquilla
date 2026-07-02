@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { getConsoleNavigationSections, getWorkNavigationSection } from './nav'
+import { getConsoleNavigationSections, getMoreNavigationSections, getWorkNavigationSection } from './nav'
 
 // Guards the route nav taxonomy that the sidebar rail, the mobile drawer, and
 // the command palette all read. Before this, the rail rows and the palette Work
@@ -15,6 +15,19 @@ describe('getConsoleNavigationSections', () => {
     const [manage, monitor] = sections
     expect(manage.items.map((i) => i.path)).toEqual(['/approvals', '/agents', '/channels'])
     expect(monitor.items.map((i) => i.path)).toEqual(['/overview', '/usage', '/logs'])
+  })
+})
+
+describe('getMoreNavigationSections', () => {
+  it('omits Approvals from the More destinations without removing the route from console navigation', () => {
+    const sections = getMoreNavigationSections()
+    expect(sections.map((s) => s.label)).toEqual(['Manage', 'Monitor'])
+
+    const [manage, monitor] = sections
+    expect(manage.items.map((i) => i.path)).toEqual(['/agents', '/channels'])
+    expect(monitor.items.map((i) => i.path)).toEqual(['/overview', '/usage', '/logs'])
+    expect(sections.flatMap((s) => s.items.map((i) => i.path))).not.toContain('/approvals')
+    expect(getConsoleNavigationSections().flatMap((s) => s.items.map((i) => i.path))).toContain('/approvals')
   })
 })
 

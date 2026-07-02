@@ -380,6 +380,7 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
             incoming_source = {}
 
         elevated_hint = incoming_source.get("elevated")
+        run_mode_hint = incoming_source.get("runMode") or incoming_source.get("run_mode")
         attachments = params.get("attachments")
         extra: dict = {}
         for source_key, target_key in (
@@ -412,6 +413,7 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
                 source_kind="webui",
                 source_name="WebChat",
                 elevated=elevated_hint if isinstance(elevated_hint, str) else None,
+                run_mode=run_mode_hint if isinstance(run_mode_hint, str) else None,
             ),
         )
         result = await _handle_sessions_send(send_params, ctx)

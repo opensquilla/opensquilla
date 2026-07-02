@@ -124,6 +124,8 @@ async def run_agent_once(
     from opensquilla.gateway.config import GatewayConfig
     from opensquilla.gateway.routing import build_cli_route_envelope, tool_context_from_envelope
     from opensquilla.paths import media_root_from_config
+    from opensquilla.permissions import configured_default_run_mode
+    from opensquilla.sandbox.run_mode import normalize_run_mode
     from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id
     from opensquilla.tools.types import InteractionMode
 
@@ -133,6 +135,17 @@ async def run_agent_once(
     cfg = config or GatewayConfig.load(os.environ.get("OPENSQUILLA_GATEWAY_CONFIG_PATH"))
     permissions_profile = _resolve_permissions_profile(permissions, cfg)
     elevated = permissions_profile if permissions_profile in {"on", "bypass", "full"} else None
+    permissions_override = (
+        permissions is not None or os.environ.get("OPENSQUILLA_AGENT_PERMISSIONS") is not None
+    )
+    sandbox_settings = getattr(cfg, "sandbox", None)
+    explicit_run_mode = getattr(sandbox_settings, "run_mode", None)
+    run_mode = None
+    if not permissions_override:
+        if explicit_run_mode:
+            run_mode = normalize_run_mode(explicit_run_mode).value
+        elif permissions_profile == "restricted":
+            run_mode = configured_default_run_mode(cfg).value
     run_attachments: list[dict[str, Any]] = list(attachments or [])
     if attachment_paths:
         run_attachments.extend(attachments_from_paths(tuple(attachment_paths)))
@@ -243,6 +256,7 @@ async def run_agent_once(
                 InteractionMode.UNATTENDED if unattended else InteractionMode.INTERACTIVE
             ),
             elevated=elevated,
+            run_mode=run_mode,
         )
         tool_ctx = tool_context_from_envelope(
             route_envelope,

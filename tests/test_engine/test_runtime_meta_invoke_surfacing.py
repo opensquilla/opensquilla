@@ -237,6 +237,51 @@ async def test_runtime_pipeline_runs_meta_resolution_before_skill_filter(
 
 
 @pytest.mark.asyncio
+async def test_runtime_pipeline_restores_mainline_meta_and_coding_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def noop_router(ctx: TurnContext) -> TurnContext:
+        return ctx
+
+    noop_router.__name__ = "apply_squilla_router"
+    monkeypatch.setattr("opensquilla.engine.steps.apply_squilla_router", noop_router)
+
+    runner = TurnRunner(provider_selector=None, config=_meta_cfg(auto_trigger=False))
+    runner._skill_loader = _make_loader_without_meta(tmp_path)
+
+    turn, _provider = await runner._run_pipeline(
+        "hello",
+        "agent:main:test-mainline-pipeline-order",
+        None,
+        None,
+        [
+            ToolDefinition(
+                name="web_search",
+                description="search the web",
+                input_schema=ToolInputSchema(),
+            ),
+        ],
+        "base prompt",
+        [],
+    )
+
+    assert [record.step_name for record in turn.metadata["pipeline_steps"]] == [
+        "resolve_model",
+        "apply_vision_followup_gate",
+        "apply_squilla_router",
+        "observe_reasoning_hint",
+        "meta_resolution",
+        "enforce_coding_mode",
+        "meta_command_launch",
+        "filter_skills",
+        "inject_subagent_grounding",
+        "inject_platform_hint",
+        "apply_prompt_cache",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_runtime_pipeline_pins_meta_skill_when_skill_filter_enabled(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

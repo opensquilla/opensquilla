@@ -136,6 +136,38 @@ def test_load_sets_config_path_for_existing_config(tmp_path):
     assert cfg.config_path == str(target)
 
 
+def test_load_accepts_existing_operator_toggle_config(tmp_path):
+    target = tmp_path / "config.toml"
+    target.write_text(
+        "\n".join(
+            [
+                "[skills]",
+                "disabled = []",
+                "coding_mode = false",
+                "",
+                "[meta_skill]",
+                "auto_trigger = false",
+                "",
+                "[naming]",
+                "enabled = true",
+                'surfaces = ["webchat", "cli", "channel"]',
+                "max_chars = 48",
+                'language = "auto"',
+                "",
+            ]
+        )
+    )
+
+    cfg = load_config(target)
+
+    assert cfg.skills.disabled == []
+    assert cfg.skills.coding_mode is False
+    assert cfg.meta_skill.auto_trigger is False
+    assert cfg.naming.enabled is True
+    assert cfg.naming.max_chars == 48
+    assert cfg.config_path == str(target)
+
+
 def test_load_migrates_legacy_memory_config_before_validation(tmp_path):
     target = tmp_path / "config.toml"
     target.write_text(

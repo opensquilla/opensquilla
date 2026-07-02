@@ -93,9 +93,20 @@ def _preexec(limits: SandboxLimits):  # pragma: no cover — runs in child
     return _apply
 
 
-def _filtered_env(whitelist: Sequence[str]) -> dict[str, str]:
-    parent = os.environ
-    return {key: parent[key] for key in whitelist if key in parent}
+def _filtered_env(
+    whitelist: Sequence[str],
+    env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    # Base the child environment on the allowlisted parent environment (PATH,
+    # HOME, LANG, ...) and overlay any allowlisted caller-supplied overrides.
+    # A caller-supplied ``env`` must not *replace* the parent env: an empty or
+    # partial dict (e.g. git tools request ``env={}``) would otherwise spawn the
+    # subprocess with no PATH/HOME at all.
+    child = {key: os.environ[key] for key in whitelist if key in os.environ}
+    if env:
+        allow = set(whitelist)
+        child.update({key: value for key, value in env.items() if key in allow})
+    return child
 
 
 def _decode_stream(value: bytes | str | None) -> str:
@@ -137,12 +148,7 @@ def run_sandboxed(
             limits=effective,
         )
 
-    child_env = _filtered_env(effective.env_whitelist)
-    if env:
-        allowlist = set(effective.env_whitelist)
-        child_env.update(
-            {key: value for key, value in env.items() if key in allowlist}
-        )
+    child_env = _filtered_env(effective.env_whitelist, env)
 
     try:
         proc = subprocess.Popen(  # noqa: S603 — cmd is caller-controlled

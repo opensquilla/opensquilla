@@ -567,6 +567,51 @@ def test_tool_result_handler_updates_tool_use_name_after_runtime_coercion() -> N
     assert state.turn_segments[1]["name"] == "meta_invoke"
 
 
+def test_tool_result_handler_replaces_intermediate_approval_result() -> None:
+    state = _make_state()
+    state.turn_segments.append(
+        {
+            "type": "tool_use",
+            "tool_use_id": "call-approval",
+            "name": "write_file",
+            "input": "",
+        }
+    )
+    handler = _ToolResultHandler()
+
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="call-approval",
+            tool_name="write_file",
+            result='{"status":"approval_required","approval_id":"approval-1"}',
+            arguments={"path": "outside.txt", "content": "hello"},
+            execution_status={"status": "unknown", "reason": "approval_pending"},
+        ),
+        state,
+    )
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="call-approval",
+            tool_name="write_file",
+            result='{"status":"approval_denied","approval_id":"approval-1"}',
+            is_error=True,
+            arguments={"path": "outside.txt", "content": "hello", "approval_id": "approval-1"},
+            execution_status={"status": "error", "reason": "approval_denied"},
+        ),
+        state,
+    )
+
+    tool_results = [
+        segment for segment in state.turn_segments if segment.get("type") == "tool_result"
+    ]
+    assert len(tool_results) == 1
+    assert tool_results[0]["tool_use_id"] == "call-approval"
+    assert tool_results[0]["result"] == '{"status":"approval_denied","approval_id":"approval-1"}'
+    assert tool_results[0]["is_error"] is True
+    assert tool_results[0]["execution_status"]["reason"] == "approval_denied"
+    assert state.turn_segments[0]["input"]["approval_id"] == "approval-1"
+
+
 def test_artifact_handler_appends_payload() -> None:
     state = _make_state()
     handler = _ArtifactHandler()

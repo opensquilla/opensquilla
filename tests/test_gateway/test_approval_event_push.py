@@ -85,6 +85,7 @@ async def test_exec_approval_request_pushes_event_to_approvals_scoped_client() -
         assert payload["command"] == "rm -rf ./scratch dir"
         assert payload["agent"] == "main"
         assert payload["created_at"] > 0
+        assert payload["deadline"] > 0
         assert "approved" not in payload
         # The approvals surface stays scoped: read-only and node-role
         # connections must not receive approval pushes.
@@ -119,6 +120,7 @@ async def test_exec_approval_resolution_mirrors_resolved_event() -> None:
         assert payload["approval_id"] == approval_id
         assert payload["session_key"] == "agent:main:webchat:demo"
         assert payload["approved"] is True
+        assert payload["resolution"] == "approved"
 
         # Idempotent re-resolution must not emit a second resolved event.
         queue.resolve(approval_id, True)
@@ -149,6 +151,7 @@ async def test_plugin_approval_events_use_plugin_namespace() -> None:
         assert requested_payload["tool_name"] == "demo-plugin"
         resolved_payload = approvals_conn.events[1][1]
         assert resolved_payload["approved"] is False
+        assert resolved_payload["resolution"] == "denied"
     finally:
         remove()
         queue.close()
@@ -161,6 +164,7 @@ def test_build_approval_event_payload_falls_back_to_argv_command() -> None:
             "namespace": "exec",
             "params": {"argv": ["git", "status"], "action_kind": "exec"},
             "created_at": 1.0,
+            "deadline": 2.0,
             "resolved": False,
             "approved": False,
         }
@@ -169,3 +173,23 @@ def test_build_approval_event_payload_falls_back_to_argv_command() -> None:
     assert payload["command"] == "git status"
     assert payload["tool_name"] == "exec"
     assert payload["session_key"] == ""
+    assert payload["deadline"] == 2.0
+
+
+def test_build_approval_event_payload_includes_sandbox_kind() -> None:
+    payload = build_approval_event_payload(
+        {
+            "id": "sandbox123",
+            "namespace": "exec",
+            "params": {
+                "approvalKind": "sandbox_network",
+                "sessionKey": "agent:main:webchat:demo",
+            },
+            "created_at": 1.0,
+            "deadline": 2.0,
+            "resolved": False,
+            "approved": False,
+        }
+    )
+
+    assert payload["approval_kind"] == "sandbox_network"

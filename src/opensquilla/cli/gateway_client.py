@@ -412,21 +412,25 @@ class GatewayClient:
         approved: bool,
         *,
         allow_always: bool = False,
+        choice: str | None = None,
     ) -> dict[str, Any]:
         """Approve or deny a pending approval by id.
 
         ``allow_always`` populates the session-lifetime intent cache so the
         same destructive intent doesn't prompt again.
         """
+        params: dict[str, Any] = {
+            "id": approval_id,
+            "approved": approved,
+            "allowAlways": allow_always,
+        }
+        if choice:
+            params["choice"] = choice
         return cast(
             dict[str, Any],
             await self._call(
                 "exec.approval.resolve",
-                {
-                    "id": approval_id,
-                    "approved": approved,
-                    "allowAlways": allow_always,
-                },
+                params,
             ),
         )
 
@@ -439,10 +443,9 @@ class GatewayClient:
     ) -> AsyncIterator[dict]:
         """Send message and yield session events until done.
 
-        ``elevated`` — None (use configured default), "off" (sandboxed),
-        "on" (host exec with approval), "bypass" (host exec, auto-approve,
-        sensitive paths still blocked), or "full" (host exec, auto-approve,
-        sensitive paths bypassed).
+        ``elevated`` is a legacy surface kept for older clients. ``off``
+        clears the override, ``on``/``bypass`` map to Trusted-Sandbox, and
+        ``full`` maps to Full Host Access.
         """
         # Subscribe to message events for this session
         await self._call("sessions.messages.subscribe", {"key": session_key})

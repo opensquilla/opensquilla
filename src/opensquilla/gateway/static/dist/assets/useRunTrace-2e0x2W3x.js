@@ -1,0 +1,2 @@
+import{et as e}from"./Icon-to2SvQ0-.js";function t(){let t=e(new Set),n=e(new Set);return{isToolGroupOpen:e=>t.has(e),isToolItemOpen:e=>n.has(e),toggleGroup:e=>{t.has(e)?t.delete(e):t.add(e)},toggleItem:e=>{n.has(e)?n.delete(e):n.add(e)}}}export{t};
+//# sourceMappingURL=useRunTrace-2e0x2W3x.js.map

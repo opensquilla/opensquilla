@@ -1524,6 +1524,57 @@ async def test_agent_provider_view_prunes_non_adjacent_tool_results() -> None:
 
 
 @pytest.mark.asyncio
+async def test_agent_provider_view_keeps_latest_duplicate_tool_result() -> None:
+    provider = CapturingProvider()
+    agent = Agent(provider=provider, config=AgentConfig(max_iterations=1))
+    agent.set_history(
+        [
+            Message(role="user", content="old task"),
+            Message(
+                role="assistant",
+                content=[
+                    ContentBlockToolUse(
+                        id="call_lookup",
+                        name="lookup",
+                        input={"q": "old"},
+                    )
+                ],
+            ),
+            Message(
+                role="user",
+                content=[
+                    ContentBlockToolResult(
+                        tool_use_id="call_lookup",
+                        content='{"status":"approval_required"}',
+                        is_error=False,
+                    ),
+                    ContentBlockToolResult(
+                        tool_use_id="call_lookup",
+                        content='{"status":"approval_denied"}',
+                        is_error=True,
+                    ),
+                ],
+            ),
+        ]
+    )
+
+    events = [event async for event in agent.run_turn("continue")]
+
+    assert any(event.kind == "done" for event in events)
+    tool_results = [
+        block
+        for message in provider.calls[0]["messages"]
+        if isinstance(message.content, list)
+        for block in message.content
+        if isinstance(block, ContentBlockToolResult)
+    ]
+    assert len(tool_results) == 1
+    assert tool_results[0].tool_use_id == "call_lookup"
+    assert tool_results[0].content == '{"status":"approval_denied"}'
+    assert tool_results[0].is_error is True
+
+
+@pytest.mark.asyncio
 async def test_agent_provider_view_preserves_split_adjacent_tool_results() -> None:
     provider = CapturingProvider()
     agent = Agent(provider=provider, config=AgentConfig(max_iterations=1))

@@ -17,15 +17,23 @@ import logging
 from dataclasses import dataclass, field
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from opensquilla.sandbox.run_mode import RunMode, normalize_run_mode
 from opensquilla.sandbox.types import SecurityLevel
 
 log = logging.getLogger(__name__)
 
-BackendName = Literal["auto", "bubblewrap", "seatbelt", "noop"]
+BackendName = Literal[
+    "auto",
+    "bubblewrap",
+    "seatbelt",
+    "noop",
+    "windows_default",
+]
 NetworkDefault = Literal["none", "proxy_allowlist"]
+RunModeName = Literal["standard", "trusted", "full"]
 
 
 @dataclass(frozen=True)
@@ -64,21 +72,23 @@ class SandboxSettings(BaseSettings):
       active. When false, the system uses a fixed ``STANDARD`` policy with no
       dynamic escalation.
 
-    Both default to ``False`` so fresh local/operator installs start in the
-    bypass posture. Invalid combinations are coerced with an explicit warning
-    via :meth:`validate_combination`; the coercion is deliberate so upgrades
-    of existing deployments do not hard-fail.
+    Both default to ``True`` so fresh local/operator installs start in the
+    Trusted-Sandbox posture. Invalid combinations are coerced with an explicit
+    warning via :meth:`validate_combination`; the coercion is deliberate so
+    upgrades of existing deployments do not hard-fail.
     """
 
     model_config = SettingsConfigDict(env_prefix="OPENSQUILLA_SANDBOX_")
 
-    sandbox: bool = False
-    security_grading: bool = False
+    sandbox: bool = True
+    security_grading: bool = True
     default_level: SecurityLevel = SecurityLevel.STANDARD
     backend: BackendName = "auto"
     allow_legacy_mode: bool = False
+    run_mode: RunModeName | None = None
+    auto_setup: bool = True
 
-    network_default: NetworkDefault = "none"
+    network_default: NetworkDefault = "proxy_allowlist"
     denial_threshold: int = 3
 
     extra_ro_mounts: list[str] = Field(default_factory=list)
@@ -87,6 +97,16 @@ class SandboxSettings(BaseSettings):
     cpu_seconds: int = 30
     memory_mb: int = 1024
     wall_seconds: int = 60
+
+    @field_validator("backend", mode="before")
+    @classmethod
+    def _reject_removed_windows_backend(cls, value: object) -> object:
+        if str(value).strip().lower() == "windows_restricted_token":
+            raise ValueError(
+                "windows_restricted_token was removed; use backend='windows_default' "
+                "or backend='auto'"
+            )
+        return value
 
     @model_validator(mode="after")
     def _check_legacy_level(self) -> SandboxSettings:
@@ -102,6 +122,14 @@ class SandboxSettings(BaseSettings):
                 "default_level=DISABLED requires allow_legacy_mode=True; "
                 "legacy mode must be opted into explicitly"
             )
+        if self.run_mode is not None:
+            mode = normalize_run_mode(self.run_mode)
+            if mode in {RunMode.STANDARD, RunMode.TRUSTED}:
+                self.sandbox = True
+                self.security_grading = True
+            elif mode == RunMode.FULL:
+                self.sandbox = False
+                self.security_grading = False
         return self
 
     def validate_combination(self) -> EffectiveMode:
@@ -158,5 +186,6 @@ __all__ = [
     "BackendName",
     "EffectiveMode",
     "NetworkDefault",
+    "RunModeName",
     "SandboxSettings",
 ]

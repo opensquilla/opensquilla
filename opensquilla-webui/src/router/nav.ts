@@ -88,6 +88,15 @@ export function getConsoleNavigationSections(): NavGroupSection[] {
     .filter((section) => section.items.length > 0)
 }
 
+export function getMoreNavigationSections(): NavGroupSection[] {
+  return getConsoleNavigationSections()
+    .map((section) => ({
+      ...section,
+      items: section.items.filter((item) => item.path !== '/approvals'),
+    }))
+    .filter((section) => section.items.length > 0)
+}
+
 // The Work band: the always-visible level-1 destinations that pin to the rail
 // (and to the mobile drawer). Same platform-filtered, navOrder-sorted primary
 // source as the console fold, so the rail, the drawer, and the command palette

@@ -178,6 +178,7 @@ from opensquilla.router_control import (
 )
 from opensquilla.router_tiers import HIGHEST_TEXT_TIER, normalize_text_tier, tier_index
 from opensquilla.safety import injection_guard, permission_matrix, sandbox, tool_tiers
+from opensquilla.sandbox.run_mode import RunMode, display_name, execution_target, normalize_run_mode
 from opensquilla.session.compaction_lifecycle import (
     COMPACTION_CHUNK_SUMMARIZED_EVENT,
     COMPACTION_PERSISTED_EVENT,
@@ -1666,7 +1667,10 @@ def _strip_html_to_text(html: str) -> str:
     import html as _html_mod
     import re
 
-    cleaned = re.sub(r"(?is)<(script|style|head)\b.*?</\1>", " ", html)
+    hidden_block_re = re.compile(
+        r"(?is)<(script|style|head)\b(?:[^>]*>.*?(?:</\s*\1\s*>|$)|[^>]*$)"
+    )
+    cleaned = hidden_block_re.sub(" ", html)
     cleaned = re.sub(r"(?i)<\s*(br|/p|/div|/tr|/li|/h[1-6])\s*>", "\n", cleaned)
     cleaned = re.sub(r"(?s)<[^>]+>", " ", cleaned)
     cleaned = _html_mod.unescape(cleaned)
@@ -3762,6 +3766,7 @@ class TurnRunner:
             metadata["meta_skill_enabled"] = meta_skill_enabled
 
         if ctx is not None:
+            caller_ctx = ctx
             ctx = apply_tool_policy_from_config(
                 ctx,
                 available_tools=self._tool_registry.list_names(),
@@ -3777,17 +3782,20 @@ class TurnRunner:
                     hard_denied=None,
                 )
             ctx = self._apply_runtime_capability_denies(ctx)
-            # Coding mode (operator toggle ON): deny in-session write tools
-            # so all code changes are forced through the code-task plugin
-            # rather than the agent hand-editing files. Enforced at tool
-            # build + dispatch (ctx.denied_tools is honored by dispatch).
             from opensquilla.tools.policy_config import coding_mode_denied_tools
 
-            _skills_cfg = getattr(self._config, "skills", None)
-            ctx.denied_tools.update(
-                coding_mode_denied_tools(bool(getattr(_skills_cfg, "coding_mode", False)))
-            )
-            ctx.coding_mode = bool(getattr(_skills_cfg, "coding_mode", False))
+            skills_cfg = getattr(self._config, "skills", None)
+            coding_mode = bool(getattr(skills_cfg, "coding_mode", False))
+            ctx.denied_tools.update(coding_mode_denied_tools(coding_mode))
+            ctx.coding_mode = coding_mode
+            if ctx is not caller_ctx:
+                caller_ctx.allowed_tools = (
+                    set(ctx.allowed_tools) if ctx.allowed_tools is not None else None
+                )
+                caller_ctx.denied_tools.clear()
+                caller_ctx.denied_tools.update(ctx.denied_tools)
+                caller_ctx.workspace_write_deny_globs[:] = ctx.workspace_write_deny_globs
+                caller_ctx.coding_mode = ctx.coding_mode
             log.debug(
                 "tool_policy.policy_pre",
                 allowed_tool_count=len(self._tool_registry.to_tool_definitions(ctx)),
@@ -3816,7 +3824,7 @@ class TurnRunner:
             for skill in loaded_skills
             if not getattr(skill, "disable_model_invocation", False)
             and (
-                (meta_skill_enabled and meta_auto_trigger)
+                meta_skill_enabled
                 or getattr(skill, "kind", "skill") != "meta"
             )
         }
@@ -3855,9 +3863,31 @@ class TurnRunner:
 
     @staticmethod
     def _extra_context_for_tool_context(ctx: ToolContext | None) -> dict[str, str]:
-        if ctx is None or ctx.caller_kind is not CallerKind.SUBAGENT:
+        if ctx is None:
             return {}
-        return {"Subagent Task Protocol": _SUBAGENT_TASK_PROTOCOL}
+        extra: dict[str, str] = {}
+        run_mode = getattr(ctx, "run_mode", None)
+        if run_mode:
+            try:
+                normalized_run_mode = normalize_run_mode(run_mode)
+            except ValueError:
+                normalized_run_mode = None
+            if normalized_run_mode is not None:
+                sandbox_line = (
+                    "Sandbox: disabled for tool execution"
+                    if normalized_run_mode is RunMode.FULL
+                    else "Sandbox: enabled for tool execution"
+                )
+                extra["Execution Context"] = "\n".join(
+                    [
+                        f"Run mode: {display_name(normalized_run_mode)}",
+                        f"Execution target: {execution_target(normalized_run_mode)}",
+                        sandbox_line,
+                    ]
+                )
+        if ctx.caller_kind is CallerKind.SUBAGENT:
+            extra["Subagent Task Protocol"] = _SUBAGENT_TASK_PROTOCOL
+        return extra
 
     @staticmethod
     def _merge_extra_prompt_context(
@@ -6623,30 +6653,6 @@ class TurnRunner:
                     )
                 wrapped = _render_file_context_block(filename, media_type, extracted_pdf_text)
                 attachment_blocks.append(ContentBlockText(text=wrapped))
-            elif media_type in _ENGINE_TEXT_FAMILY_MIMES:
-                if (
-                    is_attachment_ref(att)
-                    and att.get("_provider_inline_policy") == "preview_only"
-                ):
-                    decoded_text = _render_preview_only_attachment_text(
-                        att,
-                        filename=filename,
-                        mime=media_type,
-                        raw_bytes=raw_bytes,
-                        media_root=media_root,
-                    )
-                else:
-                    try:
-                        decoded_text = _truncate_attachment_text(
-                            raw_bytes.decode("utf-8"),
-                            limit=_TEXT_ATTACHMENT_TEXT_LIMIT,
-                        )
-                    except UnicodeDecodeError:
-                        decoded_text = (
-                            "[attachment unavailable: declared text content is not valid UTF-8]"
-                        )
-                wrapped = _render_file_context_block(filename, media_type, decoded_text)
-                attachment_blocks.append(ContentBlockText(text=wrapped))
             elif media_type in _OFFICE_ATTACHMENT_MIMES:
                 try:
                     extracted_office_text = _extract_office_attachment_text(
@@ -6674,6 +6680,30 @@ class TurnRunner:
                 wrapped = _render_file_context_block(
                     filename, media_type, extracted_email_text
                 )
+                attachment_blocks.append(ContentBlockText(text=wrapped))
+            elif media_type in _ENGINE_TEXT_FAMILY_MIMES:
+                if (
+                    is_attachment_ref(att)
+                    and att.get("_provider_inline_policy") == "preview_only"
+                ):
+                    decoded_text = _render_preview_only_attachment_text(
+                        att,
+                        filename=filename,
+                        mime=media_type,
+                        raw_bytes=raw_bytes,
+                        media_root=media_root,
+                    )
+                else:
+                    try:
+                        decoded_text = _truncate_attachment_text(
+                            raw_bytes.decode("utf-8"),
+                            limit=_TEXT_ATTACHMENT_TEXT_LIMIT,
+                        )
+                    except UnicodeDecodeError:
+                        decoded_text = (
+                            "[attachment unavailable: declared text content is not valid UTF-8]"
+                        )
+                wrapped = _render_file_context_block(filename, media_type, decoded_text)
                 attachment_blocks.append(ContentBlockText(text=wrapped))
             else:  # pragma: no cover - guarded by allow-list above
                 raise ValueError(f"attachments[{index}] media type {media_type!r} is not handled")

@@ -99,9 +99,6 @@ class FakeStorage:
             rows = rows[:limit]
         return rows
 
-    async def count_transcript_entries(self, session_id: str) -> int:
-        return len(self._transcripts.get(session_id, []))
-
     async def list_user_transcript_content_batch(
         self,
         session_ids: list[str],
@@ -359,49 +356,6 @@ def _capture_compaction_emits(
     return emitted
 
 
-def test_emit_to_subscribers_logs_send_failure_without_structlog_event_collision(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    warning_logs: list[tuple[str, dict[str, Any]]] = []
-
-    class FakeLog:
-        def warning(self, event: str, **kwargs: Any) -> None:
-            warning_logs.append((event, kwargs))
-
-    key = "agent:main:emit-failure"
-    conn_id = "emit-failure-conn"
-    conn = _FailingReplayConn(conn_id)
-    registry = get_registry()
-    subscription_manager = SubscriptionManager()
-    subscription_manager.subscribe_messages(conn_id, key)
-    ctx = make_ctx(
-        session_manager=FakeSessionManager([FakeSession(session_key=key)]),
-        subscription_manager=subscription_manager,
-    )
-
-    monkeypatch.setattr(rpc_sessions, "log", FakeLog())
-    async def run_case() -> None:
-        registry.register(conn)
-        try:
-            await rpc_sessions._emit_to_subscribers(
-                ctx,
-                key,
-                "session.event.done",
-                {"reason": "stop"},
-            )
-        finally:
-            registry.unregister(conn_id)
-
-    asyncio.run(run_case())
-
-    assert warning_logs == [
-        (
-            "emit.send_failed",
-            {"conn_id": conn_id, "ws_event": "session.event.done"},
-        )
-    ]
-
-
 def _checkpoint_receipt(
     session: FakeSession,
     *,
@@ -495,19 +449,6 @@ class _ReplayConn:
         meta: dict | None = None,
     ) -> None:
         self.events.append((event, payload or {}, meta))
-
-
-class _FailingReplayConn:
-    def __init__(self, conn_id: str) -> None:
-        self.conn_id = conn_id
-
-    async def send_event(
-        self,
-        event: str,
-        payload: dict | None = None,
-        meta: dict | None = None,
-    ) -> None:
-        raise RuntimeError("send failed")
 
 
 class _RecordingTurnRunner:
@@ -1423,6 +1364,232 @@ class TestSessionsSend:
         assert runtime.enqueue_calls[0]["fresh_user_session"] is False
 
     @pytest.mark.asyncio
+    async def test_send_uses_source_run_mode_without_persisting_to_session(
+        self, dispatcher
+    ):
+        class RecordingTaskRuntime:
+            def __init__(self) -> None:
+                self.enqueue_calls: list[dict[str, Any]] = []
+
+            async def enqueue(self, envelope, message: str, **kwargs: Any):
+                self.enqueue_calls.append(
+                    {"envelope": envelope, "message": message, **kwargs}
+                )
+                return SimpleNamespace(
+                    task_id="task-1",
+                    session_key=envelope.session_key,
+                    status="queued",
+                )
+
+        class UpdatingFakeSessionManager(FakeSessionManager):
+            def __init__(self, sessions: list[FakeSession]) -> None:
+                super().__init__(sessions)
+                self.updates: list[tuple[str, dict[str, Any]]] = []
+
+            async def update(self, session_key: str, **fields: Any):
+                self.updates.append((session_key, fields))
+                session = await self._storage.get_session(session_key)
+                if session is None:
+                    raise KeyError(f"Session not found: {session_key}")
+                for key, value in fields.items():
+                    setattr(session, key, value)
+                return session
+
+        session = FakeSession(
+            session_key="agent:main:webchat:run-mode-source",
+            origin={
+                "sandbox_run_context": {
+                    "run_mode": "standard",
+                    "workspace": "/workspace",
+                }
+            },
+        )
+        runtime = RecordingTaskRuntime()
+        manager = UpdatingFakeSessionManager([session])
+        ctx = make_ctx(session_manager=manager, task_runtime=runtime)
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.send",
+            {
+                "key": session.session_key,
+                "message": "hello",
+                "_source": {
+                    "caller_kind": "web",
+                    "channel_kind": "web",
+                    "runMode": "full",
+                },
+            },
+            ctx,
+        )
+
+        assert res.ok is True
+        envelope = runtime.enqueue_calls[0]["envelope"]
+        assert envelope.metadata["run_mode"] == "full"
+        assert envelope.metadata["sandbox_run_context"]["run_mode"] == "full"
+        assert envelope.metadata["elevated"] == "full"
+        assert session.origin["sandbox_run_context"]["run_mode"] == "standard"
+        assert manager.updates == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("requested_run_mode", "expected_run_mode"),
+        [
+            ("full", "trusted"),
+            ("trusted", "trusted"),
+            ("standard", "standard"),
+        ],
+    )
+    async def test_send_non_owner_source_run_mode_is_principal_scoped_without_persisting(
+        self,
+        dispatcher,
+        requested_run_mode: str,
+        expected_run_mode: str,
+    ):
+        class RecordingTaskRuntime:
+            def __init__(self) -> None:
+                self.enqueue_calls: list[dict[str, Any]] = []
+
+            async def enqueue(self, envelope, message: str, **kwargs: Any):
+                self.enqueue_calls.append(
+                    {"envelope": envelope, "message": message, **kwargs}
+                )
+                return SimpleNamespace(
+                    task_id="task-1",
+                    session_key=envelope.session_key,
+                    status="queued",
+                )
+
+        session = FakeSession(
+            session_key=f"agent:main:webchat:non-owner-{requested_run_mode}",
+            origin={
+                "sandbox_run_context": {
+                    "run_mode": "standard",
+                    "workspace": "/workspace",
+                }
+            },
+        )
+        runtime = RecordingTaskRuntime()
+        manager = FakeSessionManager([session])
+        principal = Principal(
+            role="operator",
+            scopes=frozenset(["operator.write", "operator.read"]),
+            is_owner=False,
+            authenticated=True,
+        )
+        ctx = make_ctx(
+            session_manager=manager,
+            task_runtime=runtime,
+            principal=principal,
+        )
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.send",
+            {
+                "key": session.session_key,
+                "message": "hello",
+                "_source": {
+                    "caller_kind": "web",
+                    "channel_kind": "web",
+                    "runMode": requested_run_mode,
+                },
+            },
+            ctx,
+        )
+
+        assert res.ok is True
+        envelope = runtime.enqueue_calls[0]["envelope"]
+        assert envelope.metadata["run_mode"] == expected_run_mode
+        assert envelope.metadata["sandbox_run_context"]["run_mode"] == expected_run_mode
+        assert envelope.metadata.get("elevated") != "full"
+        assert session.origin["sandbox_run_context"]["run_mode"] == "standard"
+
+    @pytest.mark.asyncio
+    async def test_chat_send_forwards_source_run_mode_to_sessions_send(
+        self, dispatcher
+    ):
+        chat_session = FakeSession(
+            session_key="agent:main:webchat:chat-run-mode-source",
+            session_id="chat-run-mode-source",
+            origin={
+                "sandbox_run_context": {
+                    "run_mode": "standard",
+                    "workspace": "/workspace",
+                }
+            },
+        )
+        chat_manager = FakeSessionManager([chat_session])
+        chat_runner = _RecordingTurnRunner()
+        chat_ctx = make_ctx(session_manager=chat_manager, turn_runner=chat_runner)
+
+        res = await dispatcher.dispatch(
+            "r-chat-run-mode",
+            "chat.send",
+            {
+                "sessionKey": chat_session.session_key,
+                "message": "hello",
+                "_source": {"runMode": "full"},
+            },
+            chat_ctx,
+        )
+
+        assert res.ok is True
+        chat_task = get_agent_task_registry().get(chat_session.session_key)
+        if chat_task is not None:
+            await chat_task
+        assert chat_runner.run_calls[0]["tool_context"].run_mode == "full"
+        assert chat_runner.run_calls[0]["tool_context"].elevated == "full"
+        assert chat_session.origin["sandbox_run_context"]["run_mode"] == "standard"
+
+    @pytest.mark.asyncio
+    async def test_chat_send_non_owner_full_source_run_mode_downgrades_to_trusted(
+        self, dispatcher
+    ):
+        chat_session = FakeSession(
+            session_key="agent:main:webchat:chat-non-owner-full-source",
+            session_id="chat-non-owner-full-source",
+            origin={
+                "sandbox_run_context": {
+                    "run_mode": "standard",
+                    "workspace": "/workspace",
+                }
+            },
+        )
+        chat_manager = FakeSessionManager([chat_session])
+        chat_runner = _RecordingTurnRunner()
+        principal = Principal(
+            role="operator",
+            scopes=frozenset(["operator.write", "operator.read"]),
+            is_owner=False,
+            authenticated=True,
+        )
+        chat_ctx = make_ctx(
+            session_manager=chat_manager,
+            turn_runner=chat_runner,
+            principal=principal,
+        )
+
+        res = await dispatcher.dispatch(
+            "r-chat-non-owner-run-mode",
+            "chat.send",
+            {
+                "sessionKey": chat_session.session_key,
+                "message": "hello",
+                "_source": {"runMode": "full"},
+            },
+            chat_ctx,
+        )
+
+        assert res.ok is True
+        chat_task = get_agent_task_registry().get(chat_session.session_key)
+        if chat_task is not None:
+            await chat_task
+        assert chat_runner.run_calls[0]["tool_context"].run_mode == "trusted"
+        assert chat_runner.run_calls[0]["tool_context"].elevated != "full"
+        assert chat_session.origin["sandbox_run_context"]["run_mode"] == "standard"
+
+    @pytest.mark.asyncio
     async def test_send_strips_hidden_preflight_payload_before_task_runtime(
         self, dispatcher, session
     ):
@@ -1465,64 +1632,6 @@ class TestSessionsSend:
         assert res.ok is True
         assert runtime.enqueue_calls[0]["message"] == "Original visible request"
         assert runtime.enqueue_calls[0]["semantic_message"] == hidden_message
-
-    @pytest.mark.asyncio
-    async def test_send_schedules_auto_title_on_task_runtime_first_message(
-        self, dispatcher, monkeypatch
-    ):
-        class RecordingTaskRuntime:
-            def __init__(self) -> None:
-                self.enqueue_calls: list[dict[str, Any]] = []
-
-            async def enqueue(self, envelope, message: str, **kwargs: Any):
-                self.enqueue_calls.append(
-                    {"envelope": envelope, "message": message, **kwargs}
-                )
-                return SimpleNamespace(
-                    task_id="task-title-1",
-                    session_key=envelope.session_key,
-                    status="queued",
-                )
-
-        session = FakeSession(
-            session_key="agent:main:webchat:title-runtime",
-            session_id="title-runtime",
-            display_name=None,
-            derived_title=None,
-        )
-        runtime = RecordingTaskRuntime()
-        manager = FakeSessionManager([session])
-        ctx = make_ctx(session_manager=manager, task_runtime=runtime)
-        called = asyncio.Event()
-        calls: list[tuple[Any, str, str]] = []
-
-        async def fake_generate_session_title(
-            title_ctx: Any, key: str, first_message: str
-        ) -> None:
-            calls.append((title_ctx, key, first_message))
-            called.set()
-
-        monkeypatch.setattr(
-            rpc_sessions,
-            "generate_session_title",
-            fake_generate_session_title,
-        )
-
-        res = await dispatcher.dispatch(
-            "r1",
-            "sessions.send",
-            {
-                "key": session.session_key,
-                "message": "北京天气怎么样",
-                "_source": {"caller_kind": "web", "channel_kind": "webchat"},
-            },
-            ctx,
-        )
-
-        assert res.ok is True
-        assert res.payload["task_id"] == "task-title-1"
-        await asyncio.wait_for(called.wait(), timeout=1.0)
-        assert calls == [(ctx, session.session_key, "北京天气怎么样")]
 
     @pytest.mark.asyncio
     async def test_send_marks_direct_runner_empty_transcript_as_fresh_user_session(
@@ -2513,9 +2622,8 @@ class TestSessionsSend:
     async def test_send_rejects_invalid_attachment_media_type(
         self, dispatcher, ctx_with_sessions, session
     ):
-        # An out-of-allow-list MIME with BINARY content stays fail-closed. (A
-        # textual payload would now degrade to text/plain via the UTF-8 fallback,
-        # so use NUL-bearing binary bytes to keep this rejection regression honest.)
+        # text/plain is in the allow-list. Use a MIME that is genuinely
+        # outside the allow-list to keep this regression honest.
         res = await dispatcher.dispatch(
             "r1",
             "sessions.send",
@@ -2523,7 +2631,7 @@ class TestSessionsSend:
                 "key": session.session_key,
                 "message": "hi",
                 "attachments": [
-                    {"type": "application/x-shellscript", "data": "AAECAw=="}
+                    {"type": "application/x-shellscript", "data": "AA=="}
                 ],
             },
             ctx_with_sessions,
@@ -4041,113 +4149,6 @@ class TestSessionsMessagesSubscribe:
         assert res.ok is True
 
 
-class TestSessionsPreview:
-    @pytest.mark.asyncio
-    async def test_preview_all(self, dispatcher, ctx_with_sessions):
-        res = await dispatcher.dispatch("r1", "sessions.preview", None, ctx_with_sessions)
-        assert res.ok is True
-        assert "ts" in res.payload
-        assert "previews" in res.payload
-        assert len(res.payload["previews"]) == 1
-
-    @pytest.mark.asyncio
-    async def test_preview_by_keys(self, dispatcher, ctx_with_sessions, session):
-        res = await dispatcher.dispatch(
-            "r1",
-            "sessions.preview",
-            {"keys": [session.session_key]},
-            ctx_with_sessions,
-        )
-        assert res.ok is True
-        assert len(res.payload["previews"]) == 1
-
-    @pytest.mark.asyncio
-    async def test_preview_no_manager(self, dispatcher, ctx_no_manager):
-        res = await dispatcher.dispatch("r1", "sessions.preview", None, ctx_no_manager)
-        assert res.ok is True
-        assert res.payload["previews"] == []
-
-
-class TestSessionsResolve:
-    @pytest.mark.asyncio
-    async def test_resolve_valid(self, dispatcher, ctx_with_sessions, session):
-        res = await dispatcher.dispatch(
-            "r1",
-            "sessions.resolve",
-            {"key": session.session_key},
-            ctx_with_sessions,
-        )
-        assert res.ok is True
-        assert res.payload["session_key"] == session.session_key
-
-    @pytest.mark.asyncio
-    async def test_resolve_by_session_id(self, dispatcher):
-        session = FakeSession(session_key="agent:default:abc123", session_id="abc123")
-        ctx = make_ctx(session_manager=FakeSessionManager([session]))
-
-        res = await dispatcher.dispatch(
-            "r1",
-            "sessions.resolve",
-            {"key": "abc123"},
-            ctx,
-        )
-
-        assert res.ok is True
-        assert res.payload["session_key"] == "agent:default:abc123"
-
-    @pytest.mark.asyncio
-    async def test_resolve_by_unique_short_prefix(self, dispatcher):
-        session = FakeSession(session_key="agent:default:abc123", session_id="abc123")
-        other = FakeSession(session_key="agent:default:def456", session_id="def456")
-        ctx = make_ctx(session_manager=FakeSessionManager([session, other]))
-
-        res = await dispatcher.dispatch(
-            "r1",
-            "sessions.resolve",
-            {"key": "abc"},
-            ctx,
-        )
-
-        assert res.ok is True
-        assert res.payload["session_key"] == "agent:default:abc123"
-
-    @pytest.mark.asyncio
-    async def test_resolve_rejects_ambiguous_prefix(self, dispatcher):
-        one = FakeSession(session_key="agent:default:abc123", session_id="abc123")
-        two = FakeSession(session_key="agent:bench:abc999", session_id="abc999")
-        ctx = make_ctx(session_manager=FakeSessionManager([one, two]))
-
-        res = await dispatcher.dispatch(
-            "r1",
-            "sessions.resolve",
-            {"key": "abc"},
-            ctx,
-        )
-
-        assert res.ok is False
-        assert res.error.code == "INVALID_REQUEST"
-        assert "Ambiguous session id" in res.error.message
-
-    @pytest.mark.asyncio
-    async def test_resolve_not_found(self, dispatcher, ctx_with_sessions):
-        res = await dispatcher.dispatch(
-            "r1", "sessions.resolve", {"key": "nonexistent"}, ctx_with_sessions
-        )
-        assert res.ok is False
-        assert res.error.code == "NOT_FOUND"
-
-    @pytest.mark.asyncio
-    async def test_scope_enforcement(self, dispatcher, session):
-        """sessions.create requires operator.write."""
-        ctx = make_ctx(
-            scopes=["operator.read"],
-            session_manager=FakeSessionManager([session]),
-        )
-        res = await dispatcher.dispatch("r1", "sessions.create", {"agentId": "test"}, ctx)
-        assert res.ok is False
-        assert res.error.code == "UNAUTHORIZED"
-
-
 class _SearchStorage(FakeStorage):
     """FakeStorage plus the FTS hook that sessions.search wraps."""
 
@@ -4167,7 +4168,7 @@ class _SearchManager(FakeSessionManager):
         self._storage = _SearchStorage(sessions, transcript_rows)
 
 
-class TestSessionsSearch:
+class TestSessionsSearchRpc:
     @staticmethod
     def _sessions():
         return [
@@ -4210,7 +4211,7 @@ class TestSessionsSearch:
         keys = [row["key"] for row in res.payload["sessions"]]
         assert keys == ["agent:main:s1"]
         assert res.payload["sessions"][0]["title"] == "Deploy planning"
-        # No transcript rows configured → no content hits.
+        # No transcript rows configured -> no content hits.
         assert res.payload["messages"] == []
 
     @pytest.mark.asyncio
@@ -4266,6 +4267,7 @@ class TestSessionsSearch:
             store = SessionStorage(str(Path(tmpdir) / "s.db"))
             await store.connect()
             try:
+
                 async def seed(sid: str, name: str, text: str) -> None:
                     await store.upsert_session(
                         SessionNode(
@@ -4361,7 +4363,7 @@ class TestSessionsSearch:
 
     @pytest.mark.asyncio
     async def test_title_search_scans_beyond_200_sessions(self, dispatcher):
-        """Title search is global — an old conversation past any recent window
+        """Title search is global -- an old conversation past any recent window
         is still findable by name (no silent 200-session cap)."""
         import tempfile
         from pathlib import Path
@@ -4482,7 +4484,7 @@ class TestSessionsSearch:
     async def test_mixed_ascii_cjk_query_ands_terms(self, dispatcher):
         """A mixed query ("deploy 部署") must match a transcript containing both
         terms even when they are not adjacent, and must NOT match when a term is
-        absent — i.e. terms are AND-ed, not matched as one contiguous substring."""
+        absent -- i.e. terms are AND-ed, not matched as one contiguous substring."""
         import tempfile
         from pathlib import Path
         from types import SimpleNamespace
@@ -4535,7 +4537,7 @@ class TestSessionsSearch:
 
     @pytest.mark.asyncio
     async def test_non_ascii_title_search_is_case_insensitive(self, dispatcher):
-        """Cased non-Latin scripts (e.g. Cyrillic) fold case in title search —
+        """Cased non-Latin scripts (e.g. Cyrillic) fold case in title search --
         a lowercase query finds an upper-cased title."""
         import tempfile
         from pathlib import Path
@@ -4565,3 +4567,110 @@ class TestSessionsSearch:
                 assert [s["key"] for s in res.payload["sessions"]] == ["agent:main:ru"]
             finally:
                 await store.close()
+
+
+class TestSessionsPreview:
+    @pytest.mark.asyncio
+    async def test_preview_all(self, dispatcher, ctx_with_sessions):
+        res = await dispatcher.dispatch("r1", "sessions.preview", None, ctx_with_sessions)
+        assert res.ok is True
+        assert "ts" in res.payload
+        assert "previews" in res.payload
+        assert len(res.payload["previews"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_preview_by_keys(self, dispatcher, ctx_with_sessions, session):
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.preview",
+            {"keys": [session.session_key]},
+            ctx_with_sessions,
+        )
+        assert res.ok is True
+        assert len(res.payload["previews"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_preview_no_manager(self, dispatcher, ctx_no_manager):
+        res = await dispatcher.dispatch("r1", "sessions.preview", None, ctx_no_manager)
+        assert res.ok is True
+        assert res.payload["previews"] == []
+
+
+class TestSessionsResolve:
+    @pytest.mark.asyncio
+    async def test_resolve_valid(self, dispatcher, ctx_with_sessions, session):
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.resolve",
+            {"key": session.session_key},
+            ctx_with_sessions,
+        )
+        assert res.ok is True
+        assert res.payload["session_key"] == session.session_key
+
+    @pytest.mark.asyncio
+    async def test_resolve_by_session_id(self, dispatcher):
+        session = FakeSession(session_key="agent:default:abc123", session_id="abc123")
+        ctx = make_ctx(session_manager=FakeSessionManager([session]))
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.resolve",
+            {"key": "abc123"},
+            ctx,
+        )
+
+        assert res.ok is True
+        assert res.payload["session_key"] == "agent:default:abc123"
+
+    @pytest.mark.asyncio
+    async def test_resolve_by_unique_short_prefix(self, dispatcher):
+        session = FakeSession(session_key="agent:default:abc123", session_id="abc123")
+        other = FakeSession(session_key="agent:default:def456", session_id="def456")
+        ctx = make_ctx(session_manager=FakeSessionManager([session, other]))
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.resolve",
+            {"key": "abc"},
+            ctx,
+        )
+
+        assert res.ok is True
+        assert res.payload["session_key"] == "agent:default:abc123"
+
+    @pytest.mark.asyncio
+    async def test_resolve_rejects_ambiguous_prefix(self, dispatcher):
+        one = FakeSession(session_key="agent:default:abc123", session_id="abc123")
+        two = FakeSession(session_key="agent:bench:abc999", session_id="abc999")
+        ctx = make_ctx(session_manager=FakeSessionManager([one, two]))
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.resolve",
+            {"key": "abc"},
+            ctx,
+        )
+
+        assert res.ok is False
+        assert res.error.code == "INVALID_REQUEST"
+        assert "Ambiguous session id" in res.error.message
+
+    @pytest.mark.asyncio
+    async def test_resolve_not_found(self, dispatcher, ctx_with_sessions):
+        res = await dispatcher.dispatch(
+            "r1", "sessions.resolve", {"key": "nonexistent"}, ctx_with_sessions
+        )
+        assert res.ok is False
+        assert res.error.code == "NOT_FOUND"
+
+    @pytest.mark.asyncio
+    async def test_scope_enforcement(self, dispatcher, session):
+        """sessions.create requires operator.write."""
+        ctx = make_ctx(
+            scopes=["operator.read"],
+            session_manager=FakeSessionManager([session]),
+        )
+        res = await dispatcher.dispatch("r1", "sessions.create", {"agentId": "test"}, ctx)
+        assert res.ok is False
+        assert res.error.code == "UNAUTHORIZED"

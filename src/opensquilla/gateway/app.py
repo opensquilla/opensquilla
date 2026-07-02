@@ -306,7 +306,7 @@ def create_gateway_app(
                 "toolName",
                 params.get("pluginId", params.get("action_kind", "Unknown")),
             )
-            item["sessionKey"] = params.get("sessionKey", "")
+            item["sessionKey"] = params.get("sessionKey", params.get("session_id", ""))
             item["agent"] = params.get("agent", "")
             item["args"] = params.get("args", params.get("permissions"))
             item["command"] = command or ""
@@ -380,8 +380,9 @@ def create_gateway_app(
             "allowAlways": bool(body.get("allowAlways", False)),
             "rememberIntent": bool(body.get("rememberIntent", False)),
         }
-        if namespace != "plugin" and body.get("elevatedMode") in ("on", "bypass", "full"):
-            resolve_params["elevatedMode"] = body.get("elevatedMode")
+        choice = body.get("choice") or body.get("decision")
+        if isinstance(choice, str) and choice.strip():
+            resolve_params["choice"] = choice.strip()
         result = await dispatcher.dispatch(
             "_http",
             method,

@@ -89,10 +89,10 @@
       <!-- Manage / Monitor bands. Option B leans the DESKTOP rail to the
            command-palette-led essentials, so these are hidden on desktop
            (docked + hover) via CSS and reached through the palette / deep links.
-           They stay rendered for the <=768px drawer ("More") so every
-           destination is still a tap away on mobile; routes are unchanged. -->
+           They stay rendered for the <=768px drawer ("More") so the secondary
+           destinations are still a tap away on mobile; routes are unchanged. -->
       <div class="sidebar-core__managed">
-        <template v-for="section in consoleSections" :key="section.group">
+        <template v-for="section in moreSections" :key="section.group">
           <p class="sidebar-nav-group-label" aria-hidden="true">{{ section.label }}</p>
           <router-link
             v-for="route in section.items"
@@ -108,10 +108,8 @@
           </router-link>
         </template>
       </div>
-      <!-- "More": the secondary destinations (Approvals / Agents / Channels /
-           Overview / Usage / Logs). Desktop-only trigger; it carries the pending
-           approval count so the urgency signal stays visible at level-1 without
-           opening the popover. Hidden on mobile, where the bands render inline. -->
+      <!-- "More": the secondary destinations (Agents / Channels / Overview /
+           Usage / Logs). Hidden on mobile, where the bands render inline. -->
       <button
         ref="moreTriggerRef"
         type="button"
@@ -119,18 +117,12 @@
         :class="{ 'is-open': moreOpen }"
         aria-haspopup="dialog"
         :aria-expanded="moreOpen"
-        :aria-label="appStore.approvalCount > 0
-          ? `More — ${appStore.approvalCount} approvals pending`
-          : 'More'"
+        aria-label="More"
         @click="toggleMore"
       >
         <Icon name="menu" :size="16" />
         <span class="sidebar-fn-label">{{ t('chrome.more') }}</span>
-        <span
-          v-if="appStore.approvalCount > 0"
-          class="sidebar-count-badge"
-        >{{ appStore.approvalCount }}</span>
-        <Icon v-else name="chevronDown" :size="14" class="sidebar-more-chevron" />
+        <Icon name="chevronDown" :size="14" class="sidebar-more-chevron" />
       </button>
     </div>
 
@@ -189,8 +181,7 @@
   />
 
   <!-- "More" popover: teleported to <body> so it escapes the rail's
-       overflow:hidden and dock/hover transform. Approvals keeps its bespoke
-       deep-link handler + count badge; the rest are plain destinations. -->
+       overflow:hidden and dock/hover transform. -->
   <Teleport to="body">
     <div
       v-if="moreOpen"
@@ -200,37 +191,20 @@
       role="dialog"
       :aria-label="t('chrome.moreDestinations')"
     >
-      <template v-for="section in consoleSections" :key="section.group">
+      <template v-for="section in moreSections" :key="section.group">
         <p class="sidebar-nav-group-label">{{ section.label }}</p>
-        <template v-for="route in section.items" :key="route.path">
-          <button
-            v-if="route.path === '/approvals'"
-            type="button"
-            class="sidebar-fn-item"
-            :class="{ 'is-active': isNavActive('/approvals') }"
-            :aria-current="isNavActive('/approvals') ? 'page' : undefined"
-            @click="onMoreApprovals"
-          >
-            <Icon name="approvals" :size="16" />
-            <span class="sidebar-fn-label">{{ t('nav.approvals') }}</span>
-            <span
-              v-if="appStore.approvalCount > 0"
-              class="sidebar-count-badge"
-              :aria-label="`${appStore.approvalCount} pending`"
-            >{{ appStore.approvalCount }}</span>
-          </button>
-          <router-link
-            v-else
-            :to="route.path"
-            class="sidebar-fn-item"
-            :class="{ 'is-active': isNavActive(route.path) }"
-            :aria-current="isNavActive(route.path) ? 'page' : undefined"
-            @click="onMoreNavigate"
-          >
-            <Icon :name="route.icon" :size="16" />
-            <span class="sidebar-fn-label">{{ route.title }}</span>
-          </router-link>
-        </template>
+        <router-link
+          v-for="route in section.items"
+          :key="route.path"
+          :to="route.path"
+          class="sidebar-fn-item"
+          :class="{ 'is-active': isNavActive(route.path) }"
+          :aria-current="isNavActive(route.path) ? 'page' : undefined"
+          @click="onMoreNavigate"
+        >
+          <Icon :name="route.icon" :size="16" />
+          <span class="sidebar-fn-label">{{ route.title }}</span>
+        </router-link>
       </template>
     </div>
   </Teleport>
@@ -452,7 +426,7 @@ watch(() => appStore.locale, () => {
   void nextTick(syncTopbarReserve)
 })
 const { allSessions, sessionListError, isLoading, loadSessions } = useSessions()
-const { consoleSections, bottomRoutes, workNav } = useNavigation()
+const { moreSections, bottomRoutes, workNav } = useNavigation()
 const { pushToast } = useToasts()
 const webConfigEnabled = getPlatform().capabilities.hasWebConfig
 
@@ -631,12 +605,6 @@ function toggleMore() {
 function onMoreNavigate() {
   moreOpen.value = false
   handleNavClick()
-}
-
-function onMoreApprovals() {
-  moreOpen.value = false
-  // Preserve the blocked-session deep-link + selection behavior of the row.
-  onApprovalsRowClick()
 }
 
 // Pointer dismissal scoped to the popover + its trigger (mirrors the theme menu);
@@ -983,18 +951,6 @@ function openBlockedApprovalSession() {
     return
   }
   router.push('/approvals')
-}
-
-// Sidebar Approvals row: a persistent destination. While requests are pending
-// it shares the topbar pill's deep-link to the blocked session; when idle it is
-// the proactive way into the Approvals page (queue + strategy), with no fetch.
-function onApprovalsRowClick() {
-  handleNavClick()
-  if (appStore.approvalCount > 0) {
-    openBlockedApprovalSession()
-  } else {
-    router.push('/approvals')
-  }
 }
 
 // Footer settings row. Both platforms mount the same `/settings` overlay now, so

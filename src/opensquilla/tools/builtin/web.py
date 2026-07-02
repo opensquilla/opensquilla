@@ -7,14 +7,21 @@ import hashlib
 import json
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import parse_qsl, urlparse
 
 import httpx
 
-from opensquilla.env import trust_env as _trust_env
-from opensquilla.sandbox.integration import sandboxed
+from opensquilla.sandbox.integration import (
+    current_managed_network_proxy_url,
+    managed_network_httpx_kwargs,
+)
+from opensquilla.sandbox.operation_runtime import (
+    NetworkOperationRequest,
+    SandboxToolDescriptor,
+)
 from opensquilla.search.canonical import run_canonical_web_search
 from opensquilla.search.normalize import canonicalize_url, extract_domain
 from opensquilla.search.types import (
@@ -64,6 +71,35 @@ _VALID_SEARCH_RECENCIES: frozenset[str] = frozenset({"day", "week", "month", "ye
 _VALID_SEARCH_PROVIDERS: frozenset[str] = frozenset(
     {"auto", "bocha", "tavily", "brave", "duckduckgo", "exa"}
 )
+
+
+def _network_http_request(args: Mapping[str, Any]) -> NetworkOperationRequest:
+    url = str(args.get("url", "") or "")
+    parsed = urlparse(url)
+    raw_headers = args.get("headers")
+    headers = (
+        {str(key): str(value) for key, value in raw_headers.items()}
+        if isinstance(raw_headers, Mapping)
+        else {}
+    )
+    return NetworkOperationRequest(
+        url=url,
+        method=str(args.get("method", "GET") or "GET").upper(),
+        host=parsed.hostname or "",
+        headers=headers,
+        body=str(args.get("body")) if args.get("body") is not None else None,
+        output_path=Path(str(args["output_path"]))
+        if args.get("output_path") is not None
+        else None,
+    )
+
+
+def _network_search_request(args: Mapping[str, Any]) -> NetworkOperationRequest:
+    return NetworkOperationRequest(
+        method="SEARCH",
+        host="",
+        body=str(args.get("query", "") or ""),
+    )
 
 
 def _sensitive_body_marker(body: str | None) -> str | None:
@@ -206,16 +242,17 @@ def _save_http_response_body(raw_body: bytes, output_path: str | None) -> tuple[
     required=["url"],
     owner_only=True,
     result_budget_class="external",
-)
-@sandboxed(
-    kind="network.http",
-    argv_factory=lambda a: (
-        "http_request",
-        str(a.get("method", "GET")).upper(),
-        str(a.get("url", "")),
-        str(a.get("output_path", "")),
+    sandbox=SandboxToolDescriptor.network(
+        kind="network.http",
+        argv_factory=lambda a: (
+            "http_request",
+            str(a.get("method", "GET")).upper(),
+            str(a.get("url", "")),
+            str(a.get("output_path", "")),
+        ),
+        request_factory=_network_http_request,
+        record_payload=False,
     ),
-    record_payload=False,
 )
 async def http_request(
     url: str,
@@ -245,7 +282,10 @@ async def http_request(
 
     content: bytes | None = body.encode() if body else None
 
-    async with httpx.AsyncClient(timeout=timeout, trust_env=_trust_env()) as client:
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        **managed_network_httpx_kwargs(),
+    ) as client:
         response = await client.request(
             method=method_upper,
             url=url,
@@ -407,7 +447,12 @@ def _format_search_error(provider_name: str, exc: Exception) -> tuple[str, str]:
 def _search_provider_kwargs(provider_name: str) -> dict[str, object]:
     from opensquilla.search.runtime_config import get_resolved_search_runtime
 
-    return get_resolved_search_runtime().provider_kwargs(provider_name)
+    kwargs = dict(get_resolved_search_runtime().provider_kwargs(provider_name))
+    managed_proxy = current_managed_network_proxy_url()
+    if managed_proxy:
+        kwargs["proxy"] = managed_proxy
+        kwargs["use_env_proxy"] = False
+    return kwargs
 
 
 def _ensure_builtin_search_providers() -> None:
@@ -847,15 +892,16 @@ def _search_error_payload(
     },
     required=["query"],
     result_budget_class="external",
-)
-@sandboxed(
-    kind="web.search",
-    argv_factory=lambda a: (
-        "web_search",
-        str(a.get("query", "")),
-        str(a.get("fetch_top_k", "")),
+    sandbox=SandboxToolDescriptor.network(
+        kind="web.fetch",
+        argv_factory=lambda a: (
+            "web_search",
+            str(a.get("query", "")),
+            str(a.get("fetch_top_k", "")),
+        ),
+        request_factory=_network_search_request,
+        record_payload=False,
     ),
-    record_payload=False,
 )
 async def web_search(
     query: str,
@@ -894,15 +940,16 @@ async def web_search(
     },
     required=["query"],
     result_budget_class="external",
-)
-@sandboxed(
-    kind="web.discover",
-    argv_factory=lambda a: (
-        "web_discover",
-        str(a.get("query", "")),
-        str(a.get("max_results", "")),
+    sandbox=SandboxToolDescriptor.network(
+        kind="web.fetch",
+        argv_factory=lambda a: (
+            "web_discover",
+            str(a.get("query", "")),
+            str(a.get("max_results", "")),
+        ),
+        request_factory=_network_search_request,
+        record_payload=False,
     ),
-    record_payload=False,
 )
 async def web_discover(query: str, max_results: int | None = None) -> str:
     payload = await run_web_discover_payload(query, max_results)

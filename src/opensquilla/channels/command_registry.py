@@ -62,13 +62,33 @@ class CommandRegistry:
         if match is None:
             return None
         name, method, params_factory = match
+        params = _channel_command_params(
+            name=name,
+            params_factory=params_factory,
+            envelope=envelope,
+            message_content=message_content,
+        )
+        if params is None:
+            return OutgoingMessage(
+                content="Usage: /sandbox standard | trusted | full",
+                reply_to=envelope.thread_id or envelope.channel_id,
+                metadata={"command": name, "method": method, "denied": False},
+            )
         res = await rpc_dispatcher.dispatch(
             f"channel-command:{name}",
             method,
-            params_factory(envelope),
+            params,
             context_factory(envelope),
         )
         reply_to = envelope.thread_id or envelope.channel_id
+        sandbox_reply = _format_channel_sandbox_reply(
+            name=name,
+            method=method,
+            res=res,
+            reply_to=reply_to,
+        )
+        if sandbox_reply is not None:
+            return sandbox_reply
         compact_reply = _format_channel_compact_reply(
             name=name,
             method=method,
@@ -93,6 +113,58 @@ class CommandRegistry:
             reply_to=envelope.thread_id or envelope.channel_id,
             metadata={"command": name, "method": method, "denied": denied},
         )
+
+
+def _channel_command_params(
+    *,
+    name: str,
+    params_factory: ParamsFactory,
+    envelope: RouteEnvelope,
+    message_content: str,
+) -> dict[str, Any] | None:
+    params = params_factory(envelope)
+    if name != "sandbox":
+        return params
+    parts = message_content.strip().split()
+    if len(parts) < 2:
+        return None
+    run_mode = parts[1].strip().lower()
+    if run_mode not in {"standard", "trusted", "full"}:
+        return None
+    return {**params, "runMode": run_mode}
+
+
+def _format_channel_sandbox_reply(
+    *,
+    name: str,
+    method: str,
+    res: Any,
+    reply_to: str | None,
+) -> OutgoingMessage | None:
+    if name != "sandbox" or method != "sandbox.run_context.set":
+        return None
+    denied = bool(not res.ok and getattr(res.error, "code", "") == "UNAUTHORIZED")
+    metadata = {"command": name, "method": method, "denied": denied}
+    if not res.ok:
+        error_message = getattr(res.error, "message", "command failed")
+        state = "denied" if denied else "failed"
+        return OutgoingMessage(
+            content=f"Sandbox mode {state}: {error_message}",
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+    payload = res.payload if isinstance(res.payload, dict) else {}
+    run_mode = str(payload.get("runMode") or "").strip()
+    label = {
+        "standard": "Standard-Sandbox",
+        "trusted": "Trusted-Sandbox",
+        "full": "Full Host Access",
+    }.get(run_mode, run_mode or "updated")
+    return OutgoingMessage(
+        content=f"Sandbox mode set to {label}.",
+        reply_to=reply_to,
+        metadata=metadata,
+    )
 
 
 def _format_channel_compact_reply(
@@ -186,11 +258,14 @@ def build_channel_rpc_context(
 ) -> RpcContext:
     admin_senders = getattr(gateway_config, "channel_admin_senders", {})
     sender_id = envelope.sender_id
-    is_operator = bool(sender_id and sender_id in admin_senders.get(envelope.source_name, []))
+    is_operator = _sender_is_channel_admin(
+        sender_id,
+        configured=admin_senders.get(envelope.source_name, []),
+    )
     principal = Principal(
         role="operator" if is_operator else "viewer",
         scopes=frozenset({READ_SCOPE, WRITE_SCOPE}) if is_operator else frozenset(),
-        is_owner=False,
+        is_owner=is_operator,
         authenticated=True,
     )
     return RpcContext(
@@ -200,6 +275,16 @@ def build_channel_rpc_context(
         originating_envelope=envelope,
         **handles,
     )
+
+
+def _sender_is_channel_admin(sender_id: str | None, *, configured: Any) -> bool:
+    if not isinstance(sender_id, str) or not sender_id:
+        return False
+    if isinstance(configured, str):
+        return sender_id == configured
+    if not isinstance(configured, list | tuple | set | frozenset):
+        return False
+    return sender_id in {str(item) for item in configured}
 
 
 def _build_default_command_table() -> dict[str, tuple[str, ParamsFactory]]:

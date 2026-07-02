@@ -367,8 +367,8 @@ async def stream_response_gateway(
     )
 
 
-def local_approval_resolver() -> Callable[..., Awaitable[None]]:
-    return _turn_bridge.local_approval_resolver()
+def local_approval_resolver(**kwargs: object) -> Callable[..., Awaitable[None]]:
+    return _turn_bridge.local_approval_resolver(**kwargs)
 
 
 async def stream_response_turnrunner(

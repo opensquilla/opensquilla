@@ -110,10 +110,12 @@ def _load_env_quietly(path: Path = Path(".env")) -> None:
 
 
 def _headers_for_openai(api_key: str) -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+    # Keyless local providers must not send an empty Bearer value (httpx
+    # rejects it as an illegal header).
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
 
 
 def _headers_for_anthropic(api_key: str) -> dict[str, str]:
@@ -345,7 +347,9 @@ async def smoke_provider(
     )
     expected = f"opensquilla {provider} smoke ok"
 
-    if not api_key:
+    # Local providers (ollama, lm_studio, ovms) declare their key optional in
+    # the registry; only skip when the spec actually requires one.
+    if not api_key and spec.requires_api_key():
         return SmokeResult(
             provider=provider,
             model=model,

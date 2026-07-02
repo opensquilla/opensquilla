@@ -226,7 +226,8 @@ class OpenTuiBridge:
                 malformed += 1
                 if malformed > _MAX_CONSECUTIVE_MALFORMED_LINES:
                     raise
-                log.warning("opentui.host.malformed_line", error=str(exc))
+                with suppress(Exception):
+                    log.warning("opentui.host.malformed_line", error=str(exc))
                 continue
 
     async def _drain_stderr(self) -> None:

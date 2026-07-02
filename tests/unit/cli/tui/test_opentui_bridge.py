@@ -87,6 +87,28 @@ async def test_next_message_tolerates_invalid_utf8_and_skips_garbage() -> None:
 
 
 @pytest.mark.asyncio
+async def test_next_message_tolerates_malformed_line_logging_failure(monkeypatch) -> None:
+    """Diagnostic logging failures must not turn skipped garbage into a crash."""
+
+    from opensquilla.cli.tui.opentui.messages import HostInputSubmit
+
+    def raise_closed_file(*_args: object, **_kwargs: object) -> None:
+        raise ValueError("I/O operation on closed file")
+
+    monkeypatch.setattr(bridge_module.log, "warning", raise_closed_file)
+
+    bridge = OpenTuiBridge()
+    bridge._from_host_file = io.StringIO(
+        'plain text, not json\n{"type":"input.submit","text":"survived"}\n'
+    )
+
+    message = await bridge.next_message()
+
+    assert isinstance(message, HostInputSubmit)
+    assert message.text == "survived"
+
+
+@pytest.mark.asyncio
 async def test_close_does_not_treat_intentional_shutdown_as_crash() -> None:
     bridge = OpenTuiBridge()
     await _attach_exited_process(bridge, code=7, stderr="ignored\n")

@@ -167,6 +167,8 @@ def test_package_verifier_hard_fails_stale_runtime_and_boot_contract() -> None:
         "gatewayStartPromise",
         "openOrResumeDesktopApp",
         "create the desktop window before gateway startup",
+        "first-run onboarding an owned modal child window",
+        "does not prefer the onboarding window when focusing",
         "process.exit(1)",
     ]:
         assert expected in verifier

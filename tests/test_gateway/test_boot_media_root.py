@@ -15,6 +15,19 @@ import pytest
 from opensquilla.gateway.boot import build_services
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.paths import media_root_from_config
+from opensquilla.sandbox.integration import reset_runtime
+
+
+@pytest.fixture(autouse=True)
+def _drop_sandbox_runtime():
+    """build_services configures the process-wide SandboxRuntime; drop it.
+
+    Without this, the runtime (with the config's network mode) leaks into
+    every later test in the session — e.g. the search RPC tests in
+    test_rpc_product_cli_gaps.py got SandboxDenied under PROXY_ALLOWLIST.
+    """
+    yield
+    reset_runtime()
 
 
 @pytest.mark.asyncio

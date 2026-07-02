@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, replace
 from .anthropic import AnthropicProvider
 from .ollama import OllamaProvider
 from .openai import OpenAIProvider
+from .openai_codex import OpenAICodexProvider
 from .openai_responses import OpenAIResponsesProvider
 from .protocol import LLMProvider, ProviderPlugin, resolve_failover_chain
 from .registry import UnknownProviderError, get_provider_spec
@@ -140,6 +141,14 @@ def _build_provider(cfg: ProviderConfig) -> LLMProvider:
             if cfg.api_key:
                 kwargs["api_key"] = cfg.api_key
             return OllamaProvider(**kwargs)
+
+        case "openai_codex":
+            kwargs = {"model": cfg.model}
+            if base_url:
+                kwargs["base_url"] = base_url
+            if cfg.proxy:
+                kwargs["proxy"] = cfg.proxy
+            return OpenAICodexProvider(**kwargs)
 
         case _:
             raise ProviderBuildError(_unsupported_runtime_message(cfg.provider))

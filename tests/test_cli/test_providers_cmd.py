@@ -49,7 +49,7 @@ def test_providers_configure_writes_config(tmp_path, monkeypatch):
 def test_providers_configure_unsupported_fails(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
     result = runner.invoke(
-        app, ["providers", "configure", "openai_codex", "--model", "x"]
+        app, ["providers", "configure", "github_copilot", "--model", "x"]
     )
     assert result.exit_code != 0
     assert (

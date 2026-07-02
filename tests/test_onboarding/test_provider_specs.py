@@ -67,13 +67,13 @@ EXPECTED_VERIFIED = {
 EXPECTED_EXPERIMENTAL = {
     "azure", "bailian_coding", "minimax", "minimax_openai", "minimax_cn",
     "minimax_global", "mistral", "groq", "aihubmix", "vllm",
-    "lm_studio", "siliconflow", "ovms", "litellm_proxy",
+    "lm_studio", "siliconflow", "ovms", "litellm_proxy", "openai_codex",
 }
 EXPECTED_SUPPORTED = EXPECTED_VERIFIED | EXPECTED_EXPERIMENTAL
 # No runtime support at all (coding-plan/OAuth stubs): never configurable.
 EXPECTED_DISABLED = {
     "volcengine_coding_plan", "byteplus_coding_plan",
-    "openai_codex", "github_copilot",
+    "github_copilot",
 }
 
 

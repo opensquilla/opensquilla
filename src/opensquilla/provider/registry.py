@@ -12,6 +12,7 @@ ProviderBackend = Literal[
     "openai_responses",
     "anthropic",
     "ollama",
+    "openai_codex",
     "unsupported_oauth",
     "unsupported_responses",
 ]
@@ -278,12 +279,14 @@ for _provider_spec in [
     ),
     _spec(
         "openai_codex",
-        "unsupported_oauth",
+        "openai_codex",
         "openai_codex",
         "OAuth",
         "https://chatgpt.com/backend-api",
-        runtime_supported=False,
-        capabilities=frozenset({"coding_plan"}),
+        # OAuth via the Codex CLI's stored ChatGPT credentials — no API key
+        # field; `codex login` owns credential creation.
+        required_fields=frozenset({"model"}),
+        capabilities=frozenset({"chat", "coding_plan"}),
     ),
     _spec(
         "github_copilot",

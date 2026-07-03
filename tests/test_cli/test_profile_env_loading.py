@@ -98,8 +98,8 @@ def test_env_load_uses_provided_home(monkeypatch, tmp_path: Path) -> None:
 def test_cli_profile_env_wins_over_legacy_home_for_same_key(
     monkeypatch, tmp_path: Path
 ) -> None:
-    profiles_root = tmp_path / "profiles"
     legacy_home = tmp_path / ".opensquilla"
+    profiles_root = legacy_home / "profiles"
     legacy_home.mkdir()
     (legacy_home / ".env").write_text("PROFILE_SHARED_MARK=legacy\n", encoding="utf-8")
     _write_profile(profiles_root, "coder", ["PROFILE_SHARED_MARK=coder"])
@@ -112,7 +112,9 @@ def test_cli_profile_env_wins_over_legacy_home_for_same_key(
     ):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("OPENSQUILLA_HOME", str(profiles_root))
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
 
     result = runner.invoke(app, ["--profile", "coder", "providers", "list", "--json"])
 
@@ -126,13 +128,14 @@ def test_cli_profile_env_wins_on_cold_start_import(tmp_path: Path) -> None:
     cwd = tmp_path / "cwd"
     cwd.mkdir()
     legacy_home = tmp_path / ".opensquilla"
+    profiles_root = legacy_home / "profiles"
     legacy_home.mkdir()
     (legacy_home / ".env").write_text("PROFILE_SHARED_MARK=legacy\n", encoding="utf-8")
-    profiles_root = tmp_path / "profiles"
     _write_profile(profiles_root, "coder", ["PROFILE_SHARED_MARK=coder"])
 
     env = os.environ.copy()
-    env.update({"HOME": str(tmp_path), "OPENSQUILLA_HOME": str(profiles_root)})
+    env.update({"HOME": str(tmp_path)})
+    env.pop("OPENSQUILLA_HOME", None)
     env.pop("OPENSQUILLA_PROFILE", None)
     env.pop("OPENSQUILLA_STATE_DIR", None)
     env.pop("PROFILE_SHARED_MARK", None)

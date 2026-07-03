@@ -18,8 +18,112 @@ _PYTHON_ENV_COMMANDS = frozenset({"virtualenv"})
 _PYTHON_PROJECT_INSTALL_COMMANDS = frozenset({"poetry", "rye", "pixi"})
 _JAVA_BUILD_COMMANDS = frozenset({"mvn", "mvnw", "gradle", "gradlew"})
 _SHELL_WRAPPERS = frozenset({"bash", "dash", "fish", "ksh", "powershell", "pwsh", "sh", "zsh"})
+_PRIVILEGE_WRAPPERS = frozenset({"doas", "runas", "sudo"})
 _DESTRUCTIVE_COMMANDS = frozenset({"del", "erase", "format", "mkfs", "remove-item", "rm"})
 _SHELL_SEPARATORS = frozenset({"&&", "||", ";", "|"})
+_HOST_SOFTWARE_MANAGERS = frozenset(
+    {
+        "apt",
+        "apt-get",
+        "brew",
+        "choco",
+        "dnf",
+        "flatpak",
+        "mas",
+        "msiexec",
+        "pacman",
+        "scoop",
+        "snap",
+        "winget",
+        "yum",
+        "zypper",
+    }
+)
+_SERVICE_MANAGERS = frozenset(
+    {
+        "launchctl",
+        "new-service",
+        "remove-service",
+        "restart-service",
+        "sc",
+        "service",
+        "set-service",
+        "start-service",
+        "stop-service",
+        "systemctl",
+    }
+)
+_SOFTWARE_MANAGEMENT_COMMANDS = frozenset(
+    {
+        "add-appxpackage",
+        "install-package",
+        "remove-appxpackage",
+        "uninstall-package",
+    }
+)
+_REGISTRY_COMMANDS = frozenset(
+    {
+        "clear-item",
+        "get-childitem",
+        "get-item",
+        "get-itemproperty",
+        "gci",
+        "gp",
+        "new-item",
+        "new-itemproperty",
+        "reg",
+        "remove-item",
+        "remove-itemproperty",
+        "set-item",
+        "set-itemproperty",
+    }
+)
+_SYSTEM_SETTING_COMMANDS = frozenset(
+    {
+        "netsh",
+        "new-netfirewallrule",
+        "remove-netfirewallrule",
+        "set-executionpolicy",
+        "set-netfirewallprofile",
+        "setx",
+    }
+)
+_DRIVER_FEATURE_COMMANDS = frozenset({"bcdedit", "dism", "pnputil", "wsl"})
+_INSTALLER_EXTENSIONS = (
+    ".appinstaller",
+    ".deb",
+    ".dmg",
+    ".msi",
+    ".msix",
+    ".msixbundle",
+    ".pkg",
+    ".rpm",
+)
+_INSTALLER_EXE_RE = re.compile(
+    r"(install|installer|setup|update|uninstall|uninstaller|unins|uninst|remove)",
+    re.IGNORECASE,
+)
+_HOST_PROBE_COMMANDS = frozenset(
+    {
+        "get-appxpackage",
+        "get-ciminstance",
+        "get-command",
+        "get-package",
+        "get-process",
+        "get-wmiobject",
+        "tasklist",
+        "test-path",
+        "where",
+    }
+)
+_PROCESS_MANAGEMENT_COMMANDS = frozenset(
+    {
+        "killall",
+        "pkill",
+        "stop-process",
+        "taskkill",
+    }
+)
 _URL_NETWORK_COMMANDS = frozenset(
     {
         "aria2",
@@ -61,6 +165,7 @@ class OperationProfile:
     requested_paths: tuple[str, ...] = ()
     requested_write_paths: tuple[str, ...] = ()
     high_impact: bool = False
+    host_effect: str | None = None
 
 
 def classify_command(argv: tuple[str, ...] | list[str]) -> OperationProfile:
@@ -75,8 +180,22 @@ def classify_command(argv: tuple[str, ...] | list[str]) -> OperationProfile:
     unwrapped = _strip_command_wrapper(lowered)
     if unwrapped != lowered:
         return classify_command(unwrapped)
+    privilege_unwrapped = _strip_privilege_wrapper(lowered)
+    if privilege_unwrapped != lowered:
+        return classify_command(privilege_unwrapped)
+    windows_cmd_script = _windows_cmd_wrapper_script(parts)
+    if windows_cmd_script is not None:
+        return classify_command(("sh", "-lc", windows_cmd_script))
+    host_effect = _host_effect(lowered)
+    if host_effect is not None and host_effect != "global_tool_install":
+        return OperationProfile("host_effect_shell", host_effect=host_effect)
     if _is_python_install(lowered):
-        return OperationProfile("package_install", True, "python")
+        return OperationProfile(
+            "package_install",
+            True,
+            "python",
+            host_effect=host_effect,
+        )
     if _is_python_package_query(lowered):
         return OperationProfile("package_query", True, "python")
     if _is_python_env_create(lowered):
@@ -92,13 +211,30 @@ def classify_command(argv: tuple[str, ...] | list[str]) -> OperationProfile:
     if _is_java_package_install(lowered):
         return OperationProfile("package_install", True, "java")
     if _is_node_install(lowered):
-        return OperationProfile("package_install", True, "node")
+        return OperationProfile(
+            "package_install",
+            True,
+            "node",
+            host_effect=host_effect,
+        )
     if _is_node_package_query(lowered):
         return OperationProfile("package_query", True, "node")
     if _is_rust_package_install(lowered):
-        return OperationProfile("package_install", True, "rust")
+        return OperationProfile(
+            "package_install",
+            True,
+            "rust",
+            host_effect=host_effect,
+        )
     if _is_go_package_install(lowered):
-        return OperationProfile("package_install", True, "go")
+        return OperationProfile(
+            "package_install",
+            True,
+            "go",
+            host_effect=host_effect,
+        )
+    if host_effect is not None:
+        return OperationProfile("host_effect_shell", host_effect=host_effect)
     if _is_shell_wrapper(lowered):
         script_profile = _classify_shell_script(parts)
         if _shell_script_is_destructive(lowered):
@@ -115,6 +251,7 @@ def classify_command(argv: tuple[str, ...] | list[str]) -> OperationProfile:
             script_profile.needs_network
             or script_profile.requested_paths
             or script_profile.requested_write_paths
+            or script_profile.host_effect
         ):
             return script_profile
         return OperationProfile("unknown_shell")
@@ -126,7 +263,12 @@ def classify_command(argv: tuple[str, ...] | list[str]) -> OperationProfile:
         )
     domains = _domains_from_argv(parts)
     if domains and _command_uses_http_url(lowered):
-        return OperationProfile("url_fetch", True, requested_domains=domains)
+        return OperationProfile(
+            "url_fetch",
+            True,
+            requested_domains=domains,
+            host_effect=_installer_download_host_effect(lowered),
+        )
     if lowered and _command_name(lowered[0]) in _READ_PATH_COMMANDS:
         return OperationProfile("workspace_read", requested_paths=_path_args_from_argv(parts))
     if lowered and _command_name(lowered[0]) in _COPY_PATH_COMMANDS:
@@ -153,6 +295,45 @@ def package_bundle_for_manager(package_manager: str | None) -> str | None:
         "java": "java-package-install",
         "php": "php-package-install",
     }.get(package_manager or "")
+
+
+def shell_command_approval_variants(command: str) -> tuple[str, ...]:
+    variants: list[str] = []
+
+    def add_text(text: str) -> None:
+        cleaned = text.strip()
+        if cleaned and cleaned not in variants:
+            variants.append(cleaned)
+
+    def visit(parts: tuple[str, ...]) -> None:
+        if not parts:
+            return
+        joined = " ".join(parts)
+        add_text(joined)
+        quoted = shlex.join(parts)
+        if quoted != joined:
+            add_text(quoted)
+
+        lowered = tuple(p.lower() for p in parts)
+        unwrapped = _strip_command_wrapper(lowered)
+        if unwrapped != lowered:
+            visit(unwrapped)
+            return
+        privilege_unwrapped = _strip_privilege_wrapper(lowered)
+        if privilege_unwrapped != lowered:
+            visit(privilege_unwrapped)
+            return
+        windows_cmd_script = _windows_cmd_wrapper_script(parts)
+        if windows_cmd_script is not None:
+            visit(("sh", "-lc", windows_cmd_script))
+            return
+        if _is_shell_wrapper(lowered):
+            for command_parts in _shell_commands(parts):
+                visit(command_parts)
+
+    add_text(command)
+    visit(("sh", "-lc", command))
+    return tuple(variants)
 
 
 def _is_python_install(lowered: tuple[str, ...]) -> bool:
@@ -329,6 +510,23 @@ def _command_uses_http_url(lowered: tuple[str, ...]) -> bool:
     return False
 
 
+def _installer_download_host_effect(lowered: tuple[str, ...]) -> str | None:
+    if not _command_uses_http_url(lowered):
+        return None
+    if any(_looks_like_downloaded_installer_artifact(part) for part in lowered[1:]):
+        return "software_management"
+    return None
+
+
+def _looks_like_downloaded_installer_artifact(value: str) -> bool:
+    cleaned = _strip_outer_quotes(value).rstrip(_TRAILING_URL_PUNCTUATION)
+    cleaned = cleaned.split("?", 1)[0].split("#", 1)[0]
+    lowered = cleaned.lower()
+    if lowered.endswith(_INSTALLER_EXTENSIONS):
+        return True
+    return lowered.endswith(".exe")
+
+
 def _domains_from_argv(parts: tuple[str, ...]) -> tuple[str, ...]:
     domains: list[str] = []
     for part in parts:
@@ -384,8 +582,11 @@ def _classify_shell_script(parts: tuple[str, ...]) -> OperationProfile:
     requested_write_paths: list[str] = []
     requested_domains: list[str] = []
     network_profile: OperationProfile | None = None
+    host_effect: str | None = None
     for command_parts in _shell_commands(parts):
         profile = classify_command(command_parts)
+        if profile.host_effect is not None and host_effect is None:
+            host_effect = profile.host_effect
         if profile.needs_network:
             if network_profile is None:
                 network_profile = profile
@@ -407,6 +608,7 @@ def _classify_shell_script(parts: tuple[str, ...]) -> OperationProfile:
             requested_paths=tuple(requested_paths),
             requested_write_paths=tuple(requested_write_paths),
             high_impact=network_profile.high_impact,
+            host_effect=host_effect,
         )
     script = _shell_script(parts)
     script_domains = _domains_from_argv((script,))
@@ -415,6 +617,14 @@ def _classify_shell_script(parts: tuple[str, ...]) -> OperationProfile:
             "url_fetch",
             needs_network=True,
             requested_domains=script_domains,
+            host_effect=host_effect,
+        )
+    if host_effect is not None:
+        return OperationProfile(
+            "host_effect_shell",
+            requested_paths=tuple(requested_paths),
+            requested_write_paths=tuple(requested_write_paths),
+            host_effect=host_effect,
         )
     if requested_paths or requested_write_paths:
         return OperationProfile(
@@ -557,6 +767,36 @@ def _strip_outer_quotes(value: str) -> str:
     return value
 
 
+def _strip_privilege_wrapper(lowered: tuple[str, ...]) -> tuple[str, ...]:
+    if not lowered or _command_name(lowered[0]) not in _PRIVILEGE_WRAPPERS:
+        return lowered
+    index = 1
+    while index < len(lowered):
+        token = lowered[index]
+        if token == "--":
+            index += 1
+            break
+        if not token.startswith("-"):
+            break
+        index += 1
+        if token in {"-g", "--group", "-h", "--host", "-p", "--prompt", "-u", "--user"}:
+            index += 1
+    return lowered[index:] if index < len(lowered) else lowered
+
+
+def _windows_cmd_wrapper_script(parts: tuple[str, ...]) -> str | None:
+    if not parts or _command_name(parts[0]).lower() != "cmd":
+        return None
+    for index, part in enumerate(parts[1:], start=1):
+        lowered = part.lower()
+        if lowered in {"/c", "/k"}:
+            script = " ".join(parts[index + 1 :]).strip()
+            return _strip_outer_quotes(script) or None
+        if not lowered.startswith("/"):
+            return None
+    return None
+
+
 def _strip_command_wrapper(lowered: tuple[str, ...]) -> tuple[str, ...]:
     if not lowered or _command_name(lowered[0]) != "timeout":
         return lowered
@@ -580,6 +820,231 @@ def _strip_command_wrapper(lowered: tuple[str, ...]) -> tuple[str, ...]:
     if index >= len(lowered):
         return lowered
     return lowered[index:]
+
+
+def _host_effect(lowered: tuple[str, ...]) -> str | None:
+    if not lowered:
+        return None
+    command = _command_name(lowered[0])
+    if _invokes_windows_uninstall(lowered):
+        return "software_management"
+    if _is_host_probe(lowered):
+        return "host_probe"
+    if (
+        command in _HOST_SOFTWARE_MANAGERS
+        or command in _SOFTWARE_MANAGEMENT_COMMANDS
+        or _uses_installer_artifact(lowered)
+        or _opens_software_management_ui(lowered)
+        or _touches_installed_software_path(lowered)
+    ):
+        return "software_management"
+    if command in _PROCESS_MANAGEMENT_COMMANDS:
+        return "process_management"
+    if command in _SERVICE_MANAGERS:
+        return "service_management"
+    if _is_registry_write(lowered):
+        return "registry_write"
+    if command in _SYSTEM_SETTING_COMMANDS:
+        return "system_settings"
+    if command in _DRIVER_FEATURE_COMMANDS:
+        return "driver_management"
+    if _is_global_tool_install(lowered):
+        return "global_tool_install"
+    return None
+
+
+def _is_host_probe(lowered: tuple[str, ...]) -> bool:
+    command = _command_name(lowered[0])
+    if command in {"get-process", "tasklist"}:
+        return True
+    if command in {"get-wmiobject", "get-ciminstance"}:
+        return _is_windows_installed_app_query(lowered)
+    if command in {"get-package", "get-appxpackage"}:
+        return True
+    if command in {"get-item", "get-itemproperty", "get-childitem", "gp", "gci"}:
+        return _contains_registry_path(lowered)
+    if command == "get-command":
+        return True
+    if command not in _HOST_PROBE_COMMANDS and not (
+        command == "reg" and len(lowered) >= 2 and lowered[1] == "query"
+    ):
+        return False
+    body = " ".join(lowered[1:])
+    if any(manager in lowered[1:] for manager in _HOST_SOFTWARE_MANAGERS):
+        return True
+    return any(
+        marker in body
+        for marker in (
+            "program files",
+            "windowsapps",
+            "hklm\\",
+            "hkcu\\",
+            "hkcr\\",
+            "hku\\",
+            "hkcc\\",
+            "hkey_local_machine",
+            "hkey_current_user",
+            "hkey_classes_root",
+            "hkey_users",
+            "hkey_current_config",
+            "win32_product",
+            "installedwin32program",
+            "uninstall",
+        )
+    )
+
+
+def _is_windows_installed_app_query(lowered: tuple[str, ...]) -> bool:
+    body = " ".join(lowered[1:])
+    return any(
+        marker in body
+        for marker in (
+            "win32_product",
+            "installedwin32program",
+            "win32reg_addremoveprograms",
+            "cim_installedwin32program",
+        )
+    )
+
+
+def _contains_registry_path(lowered: tuple[str, ...]) -> bool:
+    body = " ".join(lowered[1:])
+    return any(
+        marker in body
+        for marker in (
+            "hklm:",
+            "hkcu:",
+            "hkcr:",
+            "hku:",
+            "hkcc:",
+            "hklm\\",
+            "hkcu\\",
+            "hkcr\\",
+            "hku\\",
+            "hkcc\\",
+            "registry::",
+            "hkey_local_machine",
+            "hkey_current_user",
+            "hkey_classes_root",
+            "hkey_users",
+            "hkey_current_config",
+        )
+    )
+
+
+def _is_registry_write(lowered: tuple[str, ...]) -> bool:
+    command = _command_name(lowered[0])
+    if command in {
+        "clear-item",
+        "new-item",
+        "new-itemproperty",
+        "remove-item",
+        "remove-itemproperty",
+        "set-item",
+        "set-itemproperty",
+    }:
+        return _contains_registry_path(lowered)
+    return command == "reg" and len(lowered) >= 2 and lowered[1] in {
+        "add",
+        "delete",
+        "import",
+        "load",
+        "restore",
+        "save",
+        "unload",
+    }
+
+
+def _invokes_windows_uninstall(lowered: tuple[str, ...]) -> bool:
+    body = " ".join(lowered)
+    if ".uninstall(" in body or ".uninstall()" in body:
+        markers = ("win32_product", "get-wmiobject", "get-ciminstance")
+        return any(marker in body for marker in markers)
+    return False
+
+
+def _is_global_tool_install(lowered: tuple[str, ...]) -> bool:
+    command = _command_name(lowered[0])
+    if command in {"bun", "npm", "pnpm", "yarn"} and _is_node_install(lowered):
+        return _has_global_flag(lowered)
+    if _is_python_install(lowered):
+        return "--user" in lowered or any(part.startswith("--user=") for part in lowered)
+    if command == "pipx" and len(lowered) >= 2 and lowered[1] == "install":
+        return True
+    if command == "gem" and len(lowered) >= 2 and lowered[1] == "install":
+        return True
+    if command == "cargo" and len(lowered) >= 2 and lowered[1] == "install":
+        return True
+    if command == "go" and len(lowered) >= 2 and lowered[1] == "install":
+        return True
+    return (
+        command == "dotnet"
+        and len(lowered) >= 4
+        and lowered[1:3] == ("tool", "install")
+        and _has_global_flag(lowered)
+    )
+
+
+def _has_global_flag(lowered: tuple[str, ...]) -> bool:
+    return any(part in {"-g", "--global"} or part.startswith("--global=") for part in lowered)
+
+
+def _uses_installer_artifact(lowered: tuple[str, ...]) -> bool:
+    command = _command_name(lowered[0])
+    if command in {"open", "start-process"}:
+        return any(_looks_like_installer_artifact(part) for part in lowered[1:])
+    return _looks_like_installer_artifact(lowered[0]) or _contains_windows_installer_path_fragment(
+        lowered
+    )
+
+
+def _contains_windows_installer_path_fragment(lowered: tuple[str, ...]) -> bool:
+    if not lowered or not any(separator in lowered[0] for separator in (":", "\\")):
+        return False
+    first_basename = _strip_outer_quotes(lowered[0]).rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    if first_basename.endswith((".exe", ".cmd", ".bat", ".ps1")):
+        return False
+    return any(_looks_like_installer_artifact(part) for part in lowered[1:])
+
+
+def _opens_software_management_ui(lowered: tuple[str, ...]) -> bool:
+    command = _command_name(lowered[0])
+    if command == "appwiz.cpl":
+        return True
+    if command == "control":
+        return any(_strip_outer_quotes(part).lower() == "appwiz.cpl" for part in lowered[1:])
+    if command in {"open", "start-process", "start"}:
+        return any(_strip_outer_quotes(part).lower() == "appwiz.cpl" for part in lowered[1:])
+    return False
+
+
+def _touches_installed_software_path(lowered: tuple[str, ...]) -> bool:
+    command = _command_name(lowered[0])
+    if command not in {"del", "erase", "remove-item", "rm", "rmdir"}:
+        return False
+    body = " ".join(lowered[1:])
+    return any(
+        marker in body
+        for marker in (
+            "program files",
+            "\\appdata\\local\\programs\\",
+            "/applications/",
+            "/library/application support/",
+            "/opt/",
+            "/usr/local/",
+        )
+    )
+
+
+def _looks_like_installer_artifact(value: str) -> bool:
+    cleaned = _strip_outer_quotes(value).rstrip(".,;")
+    lowered = cleaned.lower()
+    if lowered.endswith(_INSTALLER_EXTENSIONS):
+        return True
+    if not lowered.endswith(".exe"):
+        return False
+    basename = lowered.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    return _INSTALLER_EXE_RE.search(basename) is not None
 
 
 def _shell_script(parts: tuple[str, ...]) -> str:
@@ -639,4 +1104,9 @@ def _looks_like_path_arg(part: str) -> bool:
     )
 
 
-__all__ = ["OperationProfile", "classify_command", "package_bundle_for_manager"]
+__all__ = [
+    "OperationProfile",
+    "classify_command",
+    "package_bundle_for_manager",
+    "shell_command_approval_variants",
+]

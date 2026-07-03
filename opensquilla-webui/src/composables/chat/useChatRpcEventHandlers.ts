@@ -124,6 +124,7 @@ type ChatDoneUsagePayload = SessionEventPayload & ChatDoneUsageFields & {
 // never by timestamp proximity, which mis-bound reasoning to a
 // neighbouring turn whenever a turn ran longer than the gap after it.
 const REASONING_LOG_LIMIT = 20
+const PENDING_STREAM_TASK_ID = '__opensquilla_pending_stream_task__'
 
 interface TurnReasoningRecord {
   sessionKey: string
@@ -433,6 +434,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
   function handleRpcSessionsChanged(payload: SessionEventPayload) {
     if (isStaleEpoch(payload)) return
     if (!isCurrentSessionPayload(payload)) return
+    if (!isCurrentTaskPayload(payload)) return
     if (sessionChangeIsTerminal(payload)) {
       syncTerminalSessionChange(payload)
       return
@@ -442,6 +444,10 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
 
   function handleRpcTaskQueued(payload: SessionEventPayload) {
     if (!isCurrentSessionPayload(payload)) return
+    const taskId = payloadTaskId(payload)
+    if (stream.isStreaming.value && taskId && activeStreamTaskId.value === PENDING_STREAM_TASK_ID) {
+      activeStreamTaskId.value = taskId
+    }
     options.applySessionRunState({ run_status: 'queued', active_task: { ...(payload || {}), status: 'queued' } })
   }
 

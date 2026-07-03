@@ -57,7 +57,7 @@ class TestPaths:
         monkeypatch.delenv("OPENSQUILLA_CODETASK_PROMPT_TEMPLATE", raising=False)
         path = config.prompt_template_path()
         assert path.exists()
-        body = path.read_text()
+        body = path.read_text(encoding="utf-8")
         for slot in ("{task}", "{env_hints}", "{scratch_dir}", "{manifest_name}"):
             assert slot in body
 

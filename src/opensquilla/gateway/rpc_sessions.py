@@ -113,11 +113,16 @@ async def _cancel_task_runtime(
     task_runtime: Any,
     *,
     session_key: str,
+    task_id: str | None = None,
     source: str,
     reason: str,
 ) -> int:
     cancel = getattr(task_runtime, "cancel")
-    kwargs: dict[str, Any] = {"session_key": session_key}
+    kwargs: dict[str, Any] = {}
+    if task_id and _accepts_keyword_arg(cancel, "task_id"):
+        kwargs["task_id"] = task_id
+    else:
+        kwargs["session_key"] = session_key
     if _accepts_keyword_arg(cancel, "source"):
         kwargs["source"] = source
     if _accepts_keyword_arg(cancel, "reason"):
@@ -259,11 +264,58 @@ _STREAM_IDLE_TIMEOUT_CODE = "stream_idle_timeout"
 _STREAM_IDLE_TIMEOUT_MESSAGE = "Session event stream idle before terminal event"
 _RESET_RUNTIME_SETTLE_SECONDS = 0.25
 _RESET_RUNTIME_CANCEL_DRAIN_SECONDS = 2.0
+_ABORT_RUNTIME_CANCEL_DRAIN_SECONDS = 2.0
 _ACTIVE_TASK_STATUSES = frozenset({"queued", "running"})
 
 
 def _task_status_value(status: Any) -> str:
     return str(getattr(status, "value", status) or "")
+
+
+async def _active_task_runtime_ids(task_runtime: Any, session_key: str) -> tuple[str, ...]:
+    if not hasattr(task_runtime, "list"):
+        return ()
+    try:
+        rows = await task_runtime.list(session_key=session_key)
+    except Exception:
+        log.warning("sessions.abort.task_runtime_list_failed", session_key=session_key)
+        return ()
+    task_ids: list[str] = []
+    for row in rows:
+        if _task_status_value(getattr(row, "status", None)) not in _ACTIVE_TASK_STATUSES:
+            continue
+        task_id = getattr(row, "task_id", "")
+        if isinstance(task_id, str) and task_id and task_id not in task_ids:
+            task_ids.append(task_id)
+    return tuple(task_ids)
+
+
+async def _drain_cancelled_task_runtime(
+    task_runtime: Any,
+    *,
+    session_key: str,
+    task_ids: tuple[str, ...],
+) -> None:
+    if not task_ids or not hasattr(task_runtime, "wait"):
+        return
+    for task_id in task_ids:
+        try:
+            await asyncio.wait_for(
+                task_runtime.wait(task_id),
+                timeout=_ABORT_RUNTIME_CANCEL_DRAIN_SECONDS,
+            )
+        except TimeoutError:
+            log.warning(
+                "sessions.abort.task_runtime_drain_timeout",
+                session_key=session_key,
+                task_id=task_id,
+            )
+        except Exception:
+            log.warning(
+                "sessions.abort.task_runtime_drain_failed",
+                session_key=session_key,
+                task_id=task_id,
+            )
 
 
 async def _drain_task_runtime_for_reset(task_runtime: Any, session_key: str) -> None:
@@ -1878,12 +1930,25 @@ async def _handle_sessions_abort(params: dict | None, ctx: RpcContext) -> dict:
 
     task_runtime = getattr(ctx, "task_runtime", None)
     if task_runtime is not None:
+        requested_task_id = _optional_string_param(params, "task_id", "taskId")
+        active_task_ids = await _active_task_runtime_ids(task_runtime, key)
+        if requested_task_id is not None:
+            if active_task_ids and requested_task_id not in active_task_ids:
+                return {"aborted": False, "key": key}
+            active_task_ids = (requested_task_id,)
         cancelled_count = await _cancel_task_runtime(
             task_runtime,
             session_key=key,
+            task_id=requested_task_id,
             source=_cancel_source_from_params(params, "sessions_abort"),
             reason="user_abort",
         )
+        if cancelled_count > 0:
+            await _drain_cancelled_task_runtime(
+                task_runtime,
+                session_key=key,
+                task_ids=active_task_ids,
+            )
         return {"aborted": cancelled_count > 0, "key": key}
 
     # Cancel running agent task via registry

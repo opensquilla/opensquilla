@@ -47,7 +47,7 @@ def full_host_access_active() -> bool:
 
 
 def trusted_sandbox_active() -> bool:
-    """True when the current tool call is in Trusted-Sandbox mode."""
+    """True when the current tool call is in Managed Execution mode."""
 
     return current_run_mode() == "trusted"
 

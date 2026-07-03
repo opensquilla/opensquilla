@@ -440,11 +440,15 @@ async def _handle_chat_abort(params: dict | None, ctx: RpcContext) -> dict:
     _require_chat_session_manager(ctx)
     from opensquilla.gateway.rpc_sessions import _handle_sessions_abort
 
+    abort_params = {
+        "key": session_key,
+        "source": raw_params.get("source") or "webui_abort",
+    }
+    task_id = raw_params.get("taskId") or raw_params.get("task_id")
+    if isinstance(task_id, str) and task_id.strip():
+        abort_params["task_id"] = task_id.strip()
     result = await _handle_sessions_abort(
-        {
-            "key": session_key,
-            "source": raw_params.get("source") or "webui_abort",
-        },
+        abort_params,
         ctx,
     )
     return {"sessionKey": session_key, **result}

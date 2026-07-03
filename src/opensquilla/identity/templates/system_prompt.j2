@@ -305,6 +305,19 @@ greetings like "hi". Always respond to direct user messages.
 
 - OS: {{ runtime_info.os }}
 - Shell: {{ runtime_info.shell }}
+{% set run_mode_label = runtime_info.get("run_mode_label") -%}
+{% set run_mode = runtime_info.get("run_mode") -%}
+{% if run_mode_label -%}
+- Run mode: {{ run_mode_label }}
+{% if run_mode == "trusted" -%}
+- Execution policy: default sandbox; explicit host-affecting actions can run on the host when policy allows.
+- Do not refuse a user-requested installation merely because the default path starts sandboxed; use available shell, package, or download tools and let the runtime enforce policy.
+{% elif run_mode == "full" -%}
+- Execution policy: host execution without sandbox isolation.
+{% elif run_mode == "standard" -%}
+- Execution policy: standard sandbox execution.
+{% endif -%}
+{% endif -%}
 
 {% endif -%}
 

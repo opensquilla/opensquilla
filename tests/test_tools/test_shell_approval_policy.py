@@ -57,6 +57,33 @@ async def test_exec_approval_deny_pattern_blocks_shell_command(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+async def test_exec_approval_deny_pattern_blocks_wrapped_shell_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    get_approval_queue().set_settings("prompt", deny_patterns=["rm *"])
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda _command: PolicyResult(allowed=True, reason="", needs_approval=False),
+    )
+
+    async def fail_host_execution(*args: object, **kwargs: object) -> str:
+        raise AssertionError("denied wrapped command should not run")
+
+    monkeypatch.setattr(shell, "_run_host_shell_command", fail_host_execution)
+
+    result = await shell.exec_command(
+        'powershell -NoProfile -Command "rm target.txt"',
+        workdir=str(tmp_path),
+    )
+    payload = json.loads(result)
+
+    assert payload["status"] == "approval_denied"
+    assert get_approval_queue().list_pending("exec") == []
+
+
+@pytest.mark.asyncio
 async def test_exec_approval_deny_pattern_does_not_depend_on_warnlist(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -551,6 +578,18 @@ def test_tool_definitions_include_scratch_guidance_when_configured(tmp_path: Pat
 
     assert str(scratch) in descriptions["exec_command"]
     assert str(scratch) in descriptions["write_file"]
+
+
+def test_exec_command_description_names_windows_powershell_shell() -> None:
+    from opensquilla.tools.registry import get_default_registry
+
+    ctx = ToolContext(is_owner=True)
+
+    tools = get_default_registry().to_tool_definitions(ctx)
+    descriptions = {tool.name: tool.description for tool in tools}
+
+    assert "PowerShell" in descriptions["exec_command"]
+    assert "cmd /c" in descriptions["exec_command"]
 
 
 @pytest.mark.asyncio

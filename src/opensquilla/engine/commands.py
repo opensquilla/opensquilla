@@ -414,7 +414,7 @@ _COMMANDS: tuple[CommandDef, ...] = (
         execution={_C: _rpc("sandbox.run_context.set", _sandbox_session_key)},
         argument_choices=(
             ArgumentChoice("standard", "Use Standard-Sandbox for this channel session."),
-            ArgumentChoice("trusted", "Use Trusted-Sandbox for this channel session."),
+            ArgumentChoice("trusted", "Use Managed Execution for this channel session."),
             ArgumentChoice("full", "Use Full Host Access; channel admin only."),
         ),
     ),

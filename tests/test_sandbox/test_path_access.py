@@ -631,6 +631,21 @@ async def test_grep_search_does_not_follow_workspace_symlink_to_unmounted_path(
     assert "outside current sandbox view" in result or "No matches" in result
 
 
+def test_shell_windows_null_redirection_does_not_request_write_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.operation_profile import OperationProfile
+
+    monkeypatch.setattr(shell, "_windows_sandbox_backend_active", lambda: True)
+    profile = OperationProfile("unknown_shell")
+
+    assert shell._shell_write_access_targets("chcp 65001 >nul && echo ok", profile) == ()
+    assert shell._shell_write_access_targets("where winget 2>NUL || echo missing", profile) == ()
+    assert shell._shell_write_access_targets("echo ok > output.txt", profile) == (
+        "output.txt",
+    )
+
+
 @pytest.mark.asyncio
 async def test_shell_read_only_workdir_outside_workspace_requests_ro_mount(
     tmp_path: Path,

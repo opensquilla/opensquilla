@@ -14,20 +14,22 @@ const ChatView = (() => {
   let _pendingForkBeforeMessageId = null;
 
   const _RUN_MODE_FALLBACK = 'trusted';
+  const _RUN_MODE_PREF_KEY = 'opensquilla.chat.runMode';
   const _RUN_MODE_LABELS = {
     standard: 'Standard-Sandbox',
-    trusted: 'Trusted-Sandbox',
+    trusted: 'Managed Execution',
     full: 'Full Host Access',
   };
   const _RUN_MODE_TITLES = {
     standard: 'Sandboxed execution. Risky actions ask before running.',
-    trusted: 'Sandboxed execution with fewer routine prompts. Boundary changes still ask.',
+    trusted: 'Sandbox by default; explicit host-affecting actions can run on the host when policy allows.',
     full: 'Host execution without per-command prompts. Use only for trusted workspaces.',
   };
   let _runModePolicyDefault = _RUN_MODE_FALLBACK;
   let _allowedRunModes = new Set(['standard', 'trusted', 'full']);
   let _fullHostAccessDisabledReason = null;
   let _runMode = _runModePolicyDefault;
+  let _runModeUserSelected = false;
   let _sandboxSetupStatus = null;
   let _sandboxSetupRequestSeq = 0;
   let _sandboxSetupInFlight = false;
@@ -1254,7 +1256,7 @@ const ChatView = (() => {
           <div class="chat-sandbox-setup-banner hidden" id="chat-sandbox-setup-banner">
             <div class="chat-sandbox-setup-copy">
               <strong>Establish sandbox</strong>
-              <span data-sandbox-setup-detail>Standard-Sandbox and Trusted-Sandbox need a ready sandbox backend.</span>
+              <span data-sandbox-setup-detail>Standard-Sandbox and Managed Execution need a ready sandbox backend.</span>
             </div>
             <div class="chat-sandbox-setup-actions">
               <button type="button" class="btn btn--sm btn--primary" data-sandbox-setup-action="ensure">Set up</button>
@@ -1277,15 +1279,15 @@ const ChatView = (() => {
                     <div class="chat-run-mode-control" id="chat-run-mode-control">
                       <button type="button" class="chat-run-mode-trigger" id="chat-run-mode-trigger"
                               aria-haspopup="listbox" aria-expanded="false" aria-controls="chat-run-mode-menu"
-                              data-run-mode="trusted" data-run-mode-help="Sandboxed execution with fewer routine prompts. Boundary changes still ask.">
-                        <span class="chat-run-mode-current">Trusted-Sandbox</span>
+                              data-run-mode="trusted" data-run-mode-help="Sandbox by default; explicit host-affecting actions can run on the host when policy allows.">
+                        <span class="chat-run-mode-current">Managed Execution</span>
                         <span class="chat-run-mode-chevron" aria-hidden="true"></span>
                       </button>
                       <div class="chat-run-mode-menu hidden" id="chat-run-mode-menu" role="listbox" aria-label="Run Mode choices">
                         <button type="button" class="chat-run-mode-option" role="option" data-run-mode="standard"
                                 data-run-mode-help="Sandboxed execution. Risky actions ask before running.">Standard-Sandbox</button>
                         <button type="button" class="chat-run-mode-option" role="option" data-run-mode="trusted"
-                                data-run-mode-help="Sandboxed execution with fewer routine prompts. Boundary changes still ask.">Trusted-Sandbox</button>
+                                data-run-mode-help="Sandbox by default; explicit host-affecting actions can run on the host when policy allows.">Managed Execution</button>
                         <button type="button" class="chat-run-mode-option" role="option" data-run-mode="full"
                                 data-run-mode-help="Host execution without per-command prompts. Use only for trusted workspaces.">Full Host Access</button>
                       </div>
@@ -2266,6 +2268,31 @@ const ChatView = (() => {
     return _firstAllowedRunMode();
   }
 
+  function _readStoredRunModePreference() {
+    try {
+      const raw = localStorage.getItem(_RUN_MODE_PREF_KEY);
+      return _runModePolicyValue(raw);
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function _writeStoredRunModePreference(mode) {
+    try {
+      localStorage.setItem(_RUN_MODE_PREF_KEY, mode);
+    } catch (_) {
+      // Storage can be unavailable in restricted browser contexts.
+    }
+  }
+
+  function _clearStoredRunModePreference() {
+    try {
+      localStorage.removeItem(_RUN_MODE_PREF_KEY);
+    } catch (_) {
+      // Ignore unavailable storage.
+    }
+  }
+
   function _fullHostAccessDisabledMessage() {
     let lang = '';
     if (typeof document !== 'undefined' && document.documentElement) {
@@ -2273,9 +2300,9 @@ const ChatView = (() => {
     }
     if (!lang && typeof navigator !== 'undefined') lang = navigator.language || '';
     if (String(lang).toLowerCase().startsWith('zh')) {
-      return '当前账号不是 owner，不能选择 Full Host Access。你可以使用 Standard-Sandbox 或 Trusted-Sandbox。';
+      return '当前账号不是 owner，不能选择 Full Host Access。你可以使用 Standard-Sandbox 或 Managed Execution。';
     }
-    return 'This account is not the owner, so Full Host Access is unavailable. You can use Standard-Sandbox or Trusted-Sandbox.';
+    return 'This account is not the owner, so Full Host Access is unavailable. You can use Standard-Sandbox or Managed Execution.';
   }
 
   function _applyHelloRunModePolicy(hello) {
@@ -2306,7 +2333,14 @@ const ChatView = (() => {
       ? null
       : (disabledReason ? String(disabledReason) : 'owner_required');
 
-    if (_runMode === previousPolicyDefault) {
+    const storedRunMode = _readStoredRunModePreference();
+    if (storedRunMode && _allowedRunModes.has(storedRunMode)) {
+      _runMode = storedRunMode;
+      _runModeUserSelected = true;
+    } else if (storedRunMode) {
+      _clearStoredRunModePreference();
+      _runModeUserSelected = false;
+    } else if (!_runModeUserSelected && _runMode === previousPolicyDefault) {
       _runMode = _runModePolicyDefault;
     }
     _runMode = _clampRunMode(_runMode);
@@ -2396,6 +2430,8 @@ const ChatView = (() => {
       return false;
     }
     _runMode = clamped;
+    _runModeUserSelected = true;
+    _writeStoredRunModePreference(clamped);
     _toolbarState.runMode = clamped;
     _updateRunModeControl();
     _refreshToolbarTriggerGlow();
@@ -9975,7 +10011,11 @@ const ChatView = (() => {
     if (typeof source !== 'string' || !source) source = 'webui_stop_button';
     _stopRequestedByUser = true;
     _aborted = true;
-    _rpc.call('chat.abort', { sessionKey: _sessionKey, source }).catch(() => {});
+    const abortParams = { sessionKey: _sessionKey, source };
+    if (_activeStreamTaskId && !String(_activeStreamTaskId).startsWith('__opensquilla_')) {
+      abortParams.taskId = _activeStreamTaskId;
+    }
+    _rpc.call('chat.abort', abortParams).catch(() => {});
     _endStreaming({ reason: 'aborted' });
     // Recover queued messages back into the composer so the user can edit
     // and resend rather than losing them. Idempotent on empty queue.

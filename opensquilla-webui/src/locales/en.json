@@ -1655,8 +1655,8 @@
       "runMode": "Execution mode",
       "runModeStandard": "Standard-Sandbox",
       "runModeStandardDesc": "Ask before risky tool actions.",
-      "runModeTrusted": "Trusted-Sandbox",
-      "runModeTrustedDesc": "Auto-approve trusted sandbox actions.",
+      "runModeTrusted": "Managed Execution",
+      "runModeTrustedDesc": "Use the sandbox by default; explicit host-affecting actions can run on the host when policy allows.",
       "runModeFull": "Full Host Access",
       "runModeFullDesc": "Run without sandbox isolation.",
       "runModeFullUnavailable": "Full Host Access requires an owner session."

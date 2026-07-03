@@ -3906,18 +3906,39 @@ class TurnRunner:
             except ValueError:
                 normalized_run_mode = None
             if normalized_run_mode is not None:
-                sandbox_line = (
-                    "Sandbox: disabled for tool execution"
-                    if normalized_run_mode is RunMode.FULL
-                    else "Sandbox: enabled for tool execution"
-                )
-                extra["Execution Context"] = "\n".join(
-                    [
-                        f"Run mode: {display_name(normalized_run_mode)}",
-                        f"Execution target: {execution_target(normalized_run_mode)}",
-                        sandbox_line,
-                    ]
-                )
+                lines = [f"Run mode: {display_name(normalized_run_mode)}"]
+                if normalized_run_mode is RunMode.TRUSTED:
+                    lines.extend(
+                        [
+                            "Default execution target: sandbox",
+                            (
+                                "Host escalation: explicit host-affecting actions can run "
+                                "on the host when policy allows."
+                            ),
+                            (
+                                "Sandbox: enabled by default; do not treat it as a "
+                                "prohibition on requested host work."
+                            ),
+                            (
+                                "Do not refuse a user-requested installation merely because "
+                                "the default path starts sandboxed; use available shell, "
+                                "package, or download tools and let the runtime enforce policy."
+                            ),
+                        ]
+                    )
+                else:
+                    sandbox_line = (
+                        "Sandbox: disabled for tool execution"
+                        if normalized_run_mode is RunMode.FULL
+                        else "Sandbox: enabled for tool execution"
+                    )
+                    lines.extend(
+                        [
+                            f"Execution target: {execution_target(normalized_run_mode)}",
+                            sandbox_line,
+                        ]
+                    )
+                extra["Execution Context"] = "\n".join(lines)
         if ctx.caller_kind is CallerKind.SUBAGENT:
             extra["Subagent Task Protocol"] = _SUBAGENT_TASK_PROTOCOL
         return extra

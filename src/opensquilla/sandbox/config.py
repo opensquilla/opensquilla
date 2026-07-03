@@ -73,7 +73,7 @@ class SandboxSettings(BaseSettings):
       dynamic escalation.
 
     Both default to ``True`` so fresh local/operator installs start in the
-    Trusted-Sandbox posture. Invalid combinations are coerced with an explicit
+    Managed Execution posture. Invalid combinations are coerced with an explicit
     warning via :meth:`validate_combination`; the coercion is deliberate so
     upgrades of existing deployments do not hard-fail.
     """

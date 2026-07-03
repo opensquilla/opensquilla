@@ -128,6 +128,8 @@ function smokeEnv(tempHome, stateDir, config) {
     OPENSQUILLA_STATE_DIR: stateDir,
     OPENSQUILLA_GATEWAY_CONFIG_PATH: config,
     PYTHONUNBUFFERED: '1',
+    PYTHONUTF8: '1',
+    PYTHONIOENCODING: 'utf-8:replace',
   }
 }
 

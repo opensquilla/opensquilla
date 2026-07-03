@@ -49,7 +49,11 @@ function verificationEnv() {
     'LANG',
     'LC_ALL',
   ]
-  const env = { PYTHONUNBUFFERED: '1' }
+  const env = {
+    PYTHONUNBUFFERED: '1',
+    PYTHONUTF8: '1',
+    PYTHONIOENCODING: 'utf-8:replace',
+  }
 
   for (const key of keys) {
     if (process.env[key] !== undefined) env[key] = process.env[key]

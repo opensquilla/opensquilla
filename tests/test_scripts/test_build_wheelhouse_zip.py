@@ -718,6 +718,8 @@ def test_prepare_windows_portable_release_tree_includes_double_click_launcher(
     assert "safe router fallback" in start_ps1
     assert "If automatic installation fails, install it manually" in start_ps1
     assert "After installing, reopen PowerShell and restart OpenSquilla" in start_ps1
+    assert "$env:PYTHONUTF8 = '1'" in start_ps1
+    assert "$env:PYTHONIOENCODING = 'utf-8:replace'" in start_ps1
 
 
 def test_install_portable_wheelhouse_preinstalls_into_bundled_python(

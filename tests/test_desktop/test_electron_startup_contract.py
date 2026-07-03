@@ -164,6 +164,25 @@ def test_start_gateway_enriches_child_path_for_code_task_builds() -> None:
     assert "PATH: childPath" in start
 
 
+def test_desktop_python_children_force_utf8_stdio() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    start = _section(
+        main_ts,
+        "async function startGateway",
+        "async function loadControlUi",
+    )
+    uninstall = _section(
+        main_ts,
+        "async function runUninstallCli",
+        "ipcMain.handle('desktop:uninstall:summary'",
+    )
+
+    for section in (start, uninstall):
+        assert "PYTHONUNBUFFERED: '1'" in section
+        assert "PYTHONUTF8: '1'" in section
+        assert "PYTHONIOENCODING: 'utf-8:replace'" in section
+
+
 def test_stop_gateway_sigkill_fallback_uses_real_child_exit_state() -> None:
     main_ts = _read("desktop/electron/src/main.ts")
     stop = _section(

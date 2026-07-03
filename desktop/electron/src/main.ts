@@ -3188,6 +3188,8 @@ async function startGateway(): Promise<GatewayState> {
     OPENSQUILLA_STATE_DIR: desktopStateDir(),
     ...(connection.disableNetworkObservability ? { OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY: '1' } : {}),
     PYTHONUNBUFFERED: '1',
+    PYTHONUTF8: '1',
+    PYTHONIOENCODING: 'utf-8:replace',
   }
 
   const child = spawn(
@@ -4136,6 +4138,9 @@ async function runUninstallCli(
       OPENSQUILLA_INSTALL_METHOD: 'desktop',
       OPENSQUILLA_GATEWAY_CONFIG_PATH: desktopConfigPath(),
       OPENSQUILLA_STATE_DIR: desktopHome(),
+      PYTHONUNBUFFERED: '1',
+      PYTHONUTF8: '1',
+      PYTHONIOENCODING: 'utf-8:replace',
     },
   })
   let stdout = ''

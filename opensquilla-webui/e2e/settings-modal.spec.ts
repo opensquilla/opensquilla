@@ -110,7 +110,7 @@ test.describe('Settings modal', () => {
     await visualMode().selectOption(next)
     await expect(dirtybar).toBeVisible()
     await expect(dirtybar).toContainText('Unsaved changes in Router')
-    await dialog(page).getByRole('button', { name: 'Save Router' }).click()
+    await dirtybar.getByRole('button', { name: 'Save' }).click()
     await expect(page.locator('.toast', { hasText: /Router saved/ }).first()).toBeVisible()
     await expect(dirtybar).toBeHidden({ timeout: 10000 })
 
@@ -121,7 +121,7 @@ test.describe('Settings modal', () => {
     await expect(visualMode()).toHaveValue(next)
 
     await visualMode().selectOption(initial)
-    await dialog(page).getByRole('button', { name: 'Save Router' }).click()
+    await dirtybar.getByRole('button', { name: 'Save' }).click()
     await expect(dirtybar).toBeHidden({ timeout: 10000 })
   })
 

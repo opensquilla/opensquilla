@@ -35,7 +35,7 @@ const emit = defineEmits<{
   updateRouterDefaultTier: [value: string]
   updateRouterVisualMode: [value: string]
   updateTierField: [name: string, key: keyof Omit<TierRow, 'name'>, value: string | boolean]
-  save: []
+  goToSection: [value: string]
 }>()
 </script>
 
@@ -79,7 +79,7 @@ const emit = defineEmits<{
         <span>{{ t('setup.router.colTier') }}</span><span>{{ t('setup.router.colProvider') }}</span><span>{{ t('setup.router.colModel') }}</span><span>{{ t('setup.router.colThinking') }}</span><span>{{ t('setup.router.colImage') }}</span>
       </div>
       <div v-for="tier in panel.tierRows" :key="tier.name" class="setup-tier-table__row" role="row">
-        <span><code>{{ tier.name }}</code></span>
+        <span class="setup-tier-table__tier">{{ panel.tierLabel(tier.name) }}</span>
         <span class="setup-tier-table__readonly" :aria-label="t('setup.router.tierProviderAria', { tier: tier.name })" :title="t('setup.router.tierProviderAria', { tier: tier.name })">{{ tier.provider || '-' }}</span>
         <input :value="tier.model" :aria-label="t('setup.router.tierModelAria', { tier: tier.name })" :placeholder="t('setup.router.tierModelAria', { tier: tier.name })" @input="emit('updateTierField', tier.name, 'model', ($event.target as HTMLInputElement).value)">
         <select :value="tier.thinkingLevel" :aria-label="t('setup.router.tierThinkingAria', { tier: tier.name })" @change="emit('updateTierField', tier.name, 'thinkingLevel', ($event.target as HTMLSelectElement).value)">
@@ -88,9 +88,31 @@ const emit = defineEmits<{
         <ControlSwitch :checked="tier.supportsImage" :aria-label="t('setup.router.tierImageAria', { tier: tier.name })" @change="(v) => emit('updateTierField', tier.name, 'supportsImage', v)" />
       </div>
     </div>
-    <div v-else class="setup-warning">{{ t('setup.router.providerFirst') }}</div>
-    <div class="control-section__actions">
-      <button class="btn btn--primary" :disabled="!panel.hasSavedProvider && !panel.routerVisualModeDirty" @click="emit('save')">{{ t('setup.router.save') }}</button>
+    <div v-else class="setup-warning">
+      <span>{{ t('setup.router.providerFirst') }}</span>
+      <button type="button" class="setup-warning__action" @click="emit('goToSection', 'provider')">
+        {{ t('setup.provider.title') }} &rarr;
+      </button>
     </div>
   </section>
 </template>
+
+<style scoped>
+/* Turns the "provider first" dead-end into wayfinding: a link-styled action that
+   navigates to the Provider section. Presentation only — no config change. */
+.setup-warning__action {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  display: block;
+  font: inherit;
+  font-weight: 600;
+  margin-top: var(--sp-1);
+  padding: 0;
+}
+
+.setup-warning__action:hover {
+  text-decoration: underline;
+}
+</style>

@@ -88,6 +88,7 @@ from opensquilla.sandbox.types import (
     SandboxResult,
     sandbox_path_text,
 )
+from opensquilla.subprocess_encoding import apply_utf8_child_env, decode_subprocess_output
 from opensquilla.tools.builtin.shell_policy import check_safe_bin
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
@@ -222,6 +223,7 @@ class _BgSession:
     agent_id: str | None = None
     is_owner_run: bool = False
     local_urls: list[str] = field(default_factory=list)
+    output_bytes: bytearray = field(default_factory=bytearray)
     output_lines: list[str] = field(default_factory=list)
     done: bool = False
     timed_out: bool = False
@@ -2730,7 +2732,7 @@ def _bg_session_payload(session: _BgSession) -> dict[str, object]:
 def _code_task_status_payload(session: _BgSession) -> dict[str, object] | None:
     if "code-task" not in session.command:
         return None
-    output = "".join(session.output_lines)
+    output = _bg_rendered_output(session)
     marker = _parse_code_task_marker(output)
     if marker is None:
         return None
@@ -2863,7 +2865,17 @@ async def _read_bg_output(session: _BgSession) -> None:
     if stdout is None:
         return
     while chunk := await stdout.read(4096):
-        session.output_lines.append(chunk.decode("utf-8", errors="replace"))
+        # Accumulate raw bytes and decode the whole buffer at render time so a
+        # multibyte character split across a 4 KB chunk boundary is not garbled,
+        # and so Windows legacy-code-page output is decoded correctly (issue #336).
+        session.output_bytes.extend(chunk)
+
+
+def _bg_rendered_output(session: _BgSession) -> str:
+    """Decode the collected process output and append any synthetic markers."""
+    return decode_subprocess_output(bytes(session.output_bytes)) + "".join(
+        session.output_lines
+    )
 
 
 def _finalize_bg_session(session: _BgSession) -> None:
@@ -3068,7 +3080,7 @@ async def _run_host_shell_command(
 
             output_file.flush()
             output_file.seek(0)
-            output = output_file.read().decode("utf-8", errors="replace")
+            output = decode_subprocess_output(output_file.read())
             return f"exit_code={proc.returncode}\n{output}"
     except Exception as e:
         return f"[error] {e}"
@@ -3200,6 +3212,7 @@ async def exec_command(
     merged_env = os.environ.copy()
     if env:
         merged_env.update(env)
+    apply_utf8_child_env(merged_env)
     effective_timeout = _resolve_exec_timeout(timeout)
     stdin_bytes = stdin.encode("utf-8") if stdin is not None else None
 
@@ -3374,6 +3387,7 @@ async def background_process(
 
     if runtime is not None and runtime.effective.sandbox_enabled and not host_execution:
         merged_env = dict(os.environ)
+        apply_utf8_child_env(merged_env)
         if windows_process_sandbox:
             _apply_windows_session_tmp_env(merged_env)
         decision, policy, request = await gate_action(
@@ -3460,7 +3474,7 @@ async def background_process(
         )
 
     session_id = str(uuid.uuid4())[:8]
-    host_env = _host_shell_env(os.environ.copy())
+    host_env = apply_utf8_child_env(_host_shell_env(os.environ.copy()))
 
     if os.name == "posix":
         proc = await asyncio.create_subprocess_shell(
@@ -3786,7 +3800,7 @@ async def process(
         )
 
     if action == "log":
-        output = "".join(session.output_lines)
+        output = _bg_rendered_output(session)
         start = max(0, int(offset or 0))
         requested_limit = 20000 if limit is None else int(limit)
         max_chars = max(0, min(requested_limit, 100000))

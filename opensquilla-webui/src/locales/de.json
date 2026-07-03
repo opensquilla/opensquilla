@@ -123,7 +123,13 @@
       "capabilities": "Fähigkeiten",
       "appearance": "Darstellung",
       "keyboard": "Tastatur",
-      "advanced": "Erweitert"
+      "advanced": "Erweitert",
+      "groups": {
+        "gateway": "Gateway",
+        "ai": "KI-Konfiguration",
+        "delivery": "Zustellung",
+        "preferences": "Einstellungen"
+      }
     }
   },
   "errorBoundary": {
@@ -164,7 +170,8 @@
       "live": "Live",
       "providerFirst": "Zuerst Anbieter",
       "review": "Überprüfen",
-      "envNotVisible": "{capability} ist ausgewählt, aber ${envKey} ist für das Gateway nicht sichtbar."
+      "envNotVisible": "{capability} ist ausgewählt, aber ${envKey} ist für das Gateway nicht sichtbar.",
+      "appliesOnSave": "Wird beim Speichern übernommen"
     },
     "summary": {
       "notConfigured": "nicht konfiguriert",
@@ -208,7 +215,8 @@
       "envMissing": "{envKey} ist für diesen Gateway-Prozess nicht sichtbar. Setzen Sie ihn vor dem Starten oder Neustarten des Gateways oder fügen Sie stattdessen einen API-Schlüssel ein.",
       "envKeyFallback": "die ausgewählte Umgebungsvariable für den API-Schlüssel",
       "copyKeyCommand": "Befehl zum Setzen des Anbieterschlüssels kopieren",
-      "save": "Anbieter speichern"
+      "save": "Anbieter speichern",
+      "configureRouter": "Router konfigurieren →"
     },
     "behavior": {
       "title": "Sitzungsverhalten",

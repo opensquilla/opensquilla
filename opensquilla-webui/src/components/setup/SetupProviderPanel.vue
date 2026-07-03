@@ -25,6 +25,7 @@ interface ProviderPanelContract {
   runtimeProviders: ProviderOption[]
   routerSupportTone: string
   routerSupportText: string
+  canConfigureRouter: boolean
   providerNeeds: string[]
   providerCoreFields: FieldSpec[]
   providerAdvancedFields: FieldSpec[]
@@ -46,7 +47,7 @@ const emit = defineEmits<{
   updateProviderField: [name: string, value: unknown]
   updateLlmTimeout: [value: number]
   copy: [command: string]
-  save: []
+  goToSection: [value: string]
 }>()
 
 function onProviderSelect(event: Event) {
@@ -73,8 +74,14 @@ function onProviderSelect(event: Event) {
     </label>
     <div class="control-row">
       <div class="control-row__label-block"><span class="control-row__label">{{ t('setup.provider.routerTiers') }}</span></div>
-      <div class="control-row__control">
+      <div class="control-row__control control-row__control--stack">
         <strong class="control-pill" :class="panel.routerSupportTone">{{ panel.routerSupportText }}</strong>
+        <button
+          v-if="panel.canConfigureRouter"
+          type="button"
+          class="setup-inline-link"
+          @click="emit('goToSection', 'router')"
+        >{{ t('setup.provider.configureRouter') }}</button>
       </div>
     </div>
     <SetupField
@@ -125,8 +132,30 @@ function onProviderSelect(event: Event) {
         @copy="emit('copy', $event)"
       />
     </div>
-    <div class="control-section__actions">
-      <button class="btn btn--primary" :disabled="!panel.providerSelected" @click="emit('save')">{{ t('setup.provider.save') }}</button>
-    </div>
   </section>
 </template>
+
+<style scoped>
+/* Stack the router-support pill above a wayfinding link into the Router section
+   (shown only when this provider actually supports router tiers). */
+.control-row__control--stack {
+  align-items: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.setup-inline-link {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  padding: 0;
+}
+
+.setup-inline-link:hover {
+  text-decoration: underline;
+}
+</style>

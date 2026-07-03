@@ -26,6 +26,7 @@ from opensquilla.sandbox.integration import (
 from opensquilla.sandbox.operation_runtime import SandboxToolDescriptor
 from opensquilla.sandbox.policy import LevelHints
 from opensquilla.sandbox.types import DenialResult, NetworkMode, SandboxRequest
+from opensquilla.subprocess_encoding import apply_utf8_child_env, decode_subprocess_output
 from opensquilla.tools.registry import tool
 from opensquilla.tools.run_mode import full_host_access_active, trusted_sandbox_active
 from opensquilla.tools.types import ToolError, current_tool_context
@@ -420,6 +421,7 @@ async def execute_code(
         if host_execution
         else {k: v for k, v in os.environ.items() if k in _SAFE_ENV_KEYS}
     )
+    apply_utf8_child_env(safe_env)
     if sandbox_enabled and _windows_sandbox_backend_active(runtime):
         _apply_windows_session_tmp_env(safe_env)
     hints = LevelHints(
@@ -516,8 +518,8 @@ async def execute_code(
             )
 
         elapsed_ms = (time.monotonic_ns() - start_ns) // 1_000_000
-        stdout = stdout_bytes.decode("utf-8", errors="replace")
-        stderr = stderr_bytes.decode("utf-8", errors="replace")
+        stdout = decode_subprocess_output(stdout_bytes)
+        stderr = decode_subprocess_output(stderr_bytes)
 
         return _execution_result_json(
             returncode=proc.returncode if proc.returncode is not None else -1,

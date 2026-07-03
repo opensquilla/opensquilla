@@ -36,6 +36,7 @@ interface ProviderPanelContext {
   runtimeProviders: ComputedRef<Array<{ providerId: string; label: string }>>
   routerSupportTone: ComputedRef<string>
   routerSupportText: ComputedRef<string>
+  canConfigureRouter: ComputedRef<boolean>
   providerNeeds: ComputedRef<string[]>
   providerCoreFields: ComputedRef<ProviderField[]>
   providerAdvancedFields: ComputedRef<ProviderField[]>
@@ -150,6 +151,7 @@ export function useSetupProviderForm() {
       runtimeProviders: context.runtimeProviders.value,
       routerSupportTone: context.routerSupportTone.value,
       routerSupportText: context.routerSupportText.value,
+      canConfigureRouter: context.canConfigureRouter.value,
       providerNeeds: context.providerNeeds.value,
       providerCoreFields: context.providerCoreFields.value,
       providerAdvancedFields: context.providerAdvancedFields.value,

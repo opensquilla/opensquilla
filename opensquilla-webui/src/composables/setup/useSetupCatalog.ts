@@ -321,6 +321,19 @@ const routerSupportTone = computed(() => {
   return providerSpec.value.routerSupported === true ? 'is-ready' : 'is-direct'
 })
 
+// The "Configure the router →" affordance must only appear when jumping to the
+// Router section shows a consistent, ready view. routerSupportTone tracks the
+// *selected* provider (so the pill updates live as you browse providers), but the
+// Router panel reflects the *saved* config — so gating the link on the tone alone
+// could land on the previously-saved provider's tiers or the "provider first"
+// empty state. Require a router-capable provider to actually be saved AND the
+// selection to be clean, so selected == saved and the Router view is not stale.
+const canConfigureRouter = computed(() =>
+  hasSavedProvider.value
+  && !providerForm.isDirty.value
+  && routerSupportTone.value === 'is-ready',
+)
+
 const providerNeeds = computed(() => {
   if (!providerSpec.value) return [t('setup.provider.chooseToSeeFields')]
   return providerSpec.value.whatYouNeed || []
@@ -430,6 +443,7 @@ const providerPanel = providerForm.createPanel({
   runtimeProviders,
   routerSupportTone,
   routerSupportText,
+  canConfigureRouter,
   providerNeeds,
   providerCoreFields,
   providerAdvancedFields,
@@ -610,14 +624,17 @@ function selectInitialSection(target: string | null) {
 
 function firstActionSection(): SettingsSectionId {
   const details = status.value.sectionDetails || {}
+  // Kept in sync with the SETTINGS_SECTIONS rail order so `/settings/auto` lands
+  // on the first not-ready section in the same top-to-bottom order the rail reads
+  // (Provider → Router → Capabilities → Channels).
   const sectionOrder: Array<[string, SettingsSectionId]> = [
     ['llm', 'provider'],
     ['router', 'router'],
-    ['channels', 'channels'],
     ['search', 'capabilities'],
     ['image_generation', 'capabilities'],
     ['memory_embedding', 'capabilities'],
     ['audio', 'capabilities'],
+    ['channels', 'channels'],
   ]
   const entry = sectionOrder.find(([name]) => {
     const detail = details[name] || {}
@@ -638,8 +655,12 @@ function sectionStatus(sectionId: string): { label: string; tone: string } {
     if (providerEnvMissing.value) return { label: t('setup.readiness.needsAction'), tone: 'is-warn' }
     return detailStepStatus((status.value.sectionDetails || {}).llm || (status.value.sectionDetails || {}).provider)
   }
-  if (sectionId === 'behavior') return { label: t('setup.status.live'), tone: 'is-ok' }
-  if (sectionId === 'privacy') return { label: t('setup.status.live'), tone: 'is-ok' }
+  // Behavior/Privacy are always-valid preference toggles, not readiness
+  // milestones — a neutral dot (rather than a green "Live" that overstates
+  // earned readiness) is honest; the dirty pip already signals unsaved edits.
+  if (sectionId === 'behavior' || sectionId === 'privacy') {
+    return { label: t('setup.status.appliesOnSave'), tone: 'is-muted' }
+  }
   if (sectionId === 'router' && !hasSavedProvider.value) {
     return { label: t('setup.status.providerFirst'), tone: 'is-muted' }
   }

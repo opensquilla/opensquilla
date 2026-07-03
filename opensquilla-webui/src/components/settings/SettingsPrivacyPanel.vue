@@ -16,7 +16,6 @@ defineProps<{
 
 const emit = defineEmits<{
   updateDisableNetworkObservability: [enabled: boolean]
-  save: []
 }>()
 </script>
 
@@ -41,9 +40,5 @@ const emit = defineEmits<{
         />
       </div>
     </label>
-
-    <div class="control-section__actions">
-      <button class="btn btn--primary" :disabled="!panel.disableNetworkObservabilityDirty" @click="emit('save')">{{ t('setup.privacy.save') }}</button>
-    </div>
   </section>
 </template>

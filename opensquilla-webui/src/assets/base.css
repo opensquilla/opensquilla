@@ -153,8 +153,12 @@
   --label-track: 0.12em;
 
   /* One canonical focus ring + one disabled opacity, replacing the ad-hoc
-     per-component variants. --focus-ring reads the active-theme --accent. */
+     per-component variants. --focus-ring reads the active-theme --accent.
+     Use --focus-ring for standalone controls, --focus-ring-inset for controls
+     inside an overflow:hidden/clipped container (segmented, table cells, rows)
+     where an outer glow would be clipped. */
   --focus-ring: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent);
+  --focus-ring-inset: inset 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
   --focus-ring-offset: 2px;
   --state-disabled-opacity: 0.5;
 

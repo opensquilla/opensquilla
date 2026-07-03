@@ -649,7 +649,7 @@ function rpcErrorCode(err: unknown): string {
 .ag-card__id-btn:focus-visible {
   border-radius: var(--radius-sm);
   outline: none;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
 }
 
 .ag-card__actions {

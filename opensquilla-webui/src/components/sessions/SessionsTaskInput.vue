@@ -59,7 +59,7 @@ function submit() {
 
 .hub-task:focus-within {
   border-color: var(--border-focus);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
 }
 
 .hub-task__input {

@@ -336,7 +336,7 @@ function sourceTrustLabel(source: SourcePart): string {
 
 .sources-row__toggle:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
 }
 
 .sources-row__label {
@@ -445,7 +445,7 @@ function sourceTrustLabel(source: SourcePart): string {
 
 .sources-row__link:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
 }
 
 .sources-row__index {

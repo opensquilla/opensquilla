@@ -416,7 +416,7 @@ function onMessageClick(event: MouseEvent) {
 .chat-share-picker:focus-visible {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
 }
 
 .chat-share-picker.is-selected {
@@ -528,7 +528,7 @@ function onMessageClick(event: MouseEvent) {
 
 .msg-action:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
 }
 
 /* Fork creates something new — its hover signal is the accent, not text-muted. */
@@ -614,7 +614,7 @@ function onMessageClick(event: MouseEvent) {
 
 .msg-meta__more-btn:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
 }
 
 .msg-meta-popover {

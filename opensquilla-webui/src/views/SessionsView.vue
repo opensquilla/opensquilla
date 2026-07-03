@@ -450,7 +450,7 @@ onUnmounted(teardownLive)
 }
 
 .hub-filter:focus-visible {
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
   outline: none;
 }
 

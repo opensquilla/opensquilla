@@ -211,7 +211,7 @@ function rowAccessibleName(verb: 'inspect' | 'delete', entry: SessionLedgerEntry
 }
 
 .hub-row__main:focus-visible {
-  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 50%, transparent);
+  box-shadow: var(--focus-ring-inset);
   outline: none;
 }
 
@@ -386,7 +386,7 @@ function rowAccessibleName(verb: 'inspect' | 'delete', entry: SessionLedgerEntry
 }
 
 .hub-row__delete:focus-visible {
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
   outline: none;
 }
 

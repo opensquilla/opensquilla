@@ -58,7 +58,7 @@ function gapText(i: number): string {
 .status-history__summary::-webkit-details-marker { display: none; }
 .status-history__summary:focus-visible {
   outline: none;
-  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+  box-shadow: var(--focus-ring-inset);
   border-radius: var(--radius-md);
 }
 .status-history__chevron { transition: transform var(--dur-fast) var(--ease-standard); flex-shrink: 0; color: var(--text-dim); }

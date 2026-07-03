@@ -358,7 +358,7 @@ async function uninstallSkillAndClose(name: string) {
 }
 .sk-search-input:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: var(--focus-ring);
 }
 .sk-search-wrap--lg .sk-search-input {
   min-width: 320px;

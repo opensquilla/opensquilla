@@ -184,7 +184,7 @@ function attachmentMeta(attachment: DisplayAttachment): string {
 .chat-share-picker:focus-visible {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
 }
 
 .chat-share-picker.is-selected {

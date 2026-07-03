@@ -612,7 +612,7 @@ function fmtTok(n?: number | null): string {
 .tool-overflow-note:focus-visible {
   outline: none;
   border-radius: var(--radius-sm);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+  box-shadow: var(--focus-ring);
 }
 
 .tool-row {
@@ -638,7 +638,7 @@ function fmtTok(n?: number | null): string {
 
 .tool-row:focus-visible {
   outline: none;
-  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+  box-shadow: var(--focus-ring-inset);
 }
 
 .tool-row.is-open,
@@ -1021,6 +1021,6 @@ function fmtTok(n?: number | null): string {
 
 .step-view-btn:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+  box-shadow: var(--focus-ring);
 }
 </style>

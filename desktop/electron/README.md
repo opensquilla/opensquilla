@@ -29,6 +29,13 @@ checkout:
 OPENSQUILLA_DESKTOP_REPO_ROOT=/path/to/opensquilla npm run dev
 ```
 
+During development, the shell starts a gateway from the selected checkout by
+default. To force a specific local port:
+
+```bash
+OPENSQUILLA_DESKTOP_GATEWAY_PORT=18793 npm run dev
+```
+
 To attach to an already-running gateway instead of spawning one:
 
 ```bash

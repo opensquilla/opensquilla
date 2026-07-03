@@ -154,7 +154,7 @@ const isIdle = computed(() => props.approvalsCount === 0 && activeCount.value ==
 
 .hub-attention__dot {
   background: var(--ok);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   display: inline-block;
   height: 8px;
   width: 8px;

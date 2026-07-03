@@ -184,6 +184,10 @@ interface ConfigData {
     enabled?: boolean
     providers?: Record<string, { api_key?: string; api_key_env?: string }>
   }
+  privacy?: {
+    disable_network_observability?: boolean
+    network_observability_disabled_effective?: boolean
+  }
 }
 
 export interface SettingsActionItem {
@@ -207,6 +211,7 @@ const config = ref<ConfigData>({})
 const channelStatus = ref<{ channels: ChannelStatusRow[] }>({ channels: [] })
 const loaded = ref(false)
 const { section, setSection } = useSettingsSection('provider')
+const disableNetworkObservability = ref(false)
 
 const providerForm = useSetupProviderForm()
 const behaviorForm = useSetupBehaviorForm()
@@ -258,6 +263,7 @@ async function loadData() {
     capabilitiesForm.initImageFromConfig(config.value, status.value, imageProviders.value)
     channelsForm.initFromCatalog(catalog.value.channels || [])
     promotedForm.initFromConfig(config.value)
+    disableNetworkObservability.value = currentDisableNetworkObservability.value
   } catch (err) {
     pushToast(t('setup.toast.loadFailed', { error: err instanceof Error ? err.message : String(err) }), { tone: 'danger' })
   }
@@ -351,6 +357,22 @@ const behaviorStatusText = computed(() => {
     ? t('setup.behavior.statusOn')
     : t('setup.behavior.statusOff')
 })
+const currentDisableNetworkObservability = computed(() => config.value.privacy?.disable_network_observability === true)
+const currentEffectiveNetworkObservabilityDisabled = computed(() => (
+  config.value.privacy?.network_observability_disabled_effective === true
+))
+const networkObservabilityDisabledByEnvironment = computed(() => (
+  currentEffectiveNetworkObservabilityDisabled.value && !currentDisableNetworkObservability.value
+))
+const privacyDirty = computed(() => disableNetworkObservability.value !== currentDisableNetworkObservability.value)
+const privacyStatusText = computed(() => {
+  if (networkObservabilityDisabledByEnvironment.value && !disableNetworkObservability.value) {
+    return t('setup.privacy.statusDisabledByEnv')
+  }
+  return disableNetworkObservability.value
+    ? t('setup.privacy.statusDisabled')
+    : t('setup.privacy.statusEnabled')
+})
 
 const channelSpec = computed(() => catalogChannels.value.find(c => c.type === channelsForm.selectedChannelType.value) || null)
 const channelSpecFields = computed(() => channelSpec.value?.fields || [])
@@ -422,6 +444,12 @@ const providerPanel = providerForm.createPanel({
 const behaviorPanel = behaviorForm.createPanel({
   statusText: behaviorStatusText,
 })
+
+const privacyPanel = computed(() => ({
+  disableNetworkObservability: disableNetworkObservability.value,
+  disableNetworkObservabilityDirty: privacyDirty.value,
+  statusText: privacyStatusText.value,
+}))
 
 const isOpenrouterProvider = computed(() => currentProvider.value.toLowerCase() === 'openrouter')
 const routerPanel = routerForm.createPanel({
@@ -612,6 +640,7 @@ function sectionStatus(sectionId: string): { label: string; tone: string } {
     return detailStepStatus((status.value.sectionDetails || {}).llm || (status.value.sectionDetails || {}).provider)
   }
   if (sectionId === 'behavior') return { label: t('setup.status.live'), tone: 'is-ok' }
+  if (sectionId === 'privacy') return { label: t('setup.status.live'), tone: 'is-ok' }
   if (sectionId === 'router' && !hasSavedProvider.value) {
     return { label: t('setup.status.providerFirst'), tone: 'is-muted' }
   }
@@ -670,6 +699,7 @@ function sectionForDetailName(name: string): SettingsSectionId | null {
 
 const providerDirty = computed(() => providerForm.isDirty.value || promotedForm.timeoutDirty.value)
 const behaviorDirty = computed(() => behaviorForm.isDirty.value)
+const privacySectionDirty = computed(() => privacyDirty.value)
 const routerDirty = computed(() => routerForm.isDirty.value)
 const channelsDirty = computed(() => channelsForm.isDirty.value)
 const capabilitiesDirty = computed(() => (
@@ -683,6 +713,7 @@ const capabilitiesDirty = computed(() => (
 function sectionDirty(sectionId: string): boolean {
   if (sectionId === 'provider') return providerDirty.value
   if (sectionId === 'behavior') return behaviorDirty.value
+  if (sectionId === 'privacy') return privacySectionDirty.value
   if (sectionId === 'router') return routerDirty.value
   if (sectionId === 'channels') return channelsDirty.value
   if (sectionId === 'capabilities') return capabilitiesDirty.value
@@ -693,6 +724,21 @@ const dirtySections = computed(() => SETTINGS_SECTIONS.filter(s => sectionDirty(
 const hasUnsavedChanges = computed(() => dirtySections.value.length > 0)
 
 async function saveDirtySections() {
+  const otherSectionsDirty = (
+    providerDirty.value
+    || behaviorDirty.value
+    || routerDirty.value
+    || channelsDirty.value
+    || capabilitiesForm.searchDirty.value
+    || capabilitiesForm.memoryDirty.value
+    || promotedForm.captureDirty.value
+    || capabilitiesForm.imageDirty.value
+    || promotedForm.audioDirty.value
+  )
+  if (privacySectionDirty.value) {
+    const saved = await savePrivacy(disableNetworkObservability.value, { reload: !otherSectionsDirty })
+    if (!saved) return
+  }
   if (providerDirty.value) await saveProvider()
   if (behaviorDirty.value) await saveBehavior()
   if (routerDirty.value) await saveRouter()
@@ -725,6 +771,10 @@ function selectProvider(value: string) {
 
 function setAutoSessionTitles(enabled: boolean) {
   behaviorForm.setAutoSessionTitles(enabled)
+}
+
+function setDisableNetworkObservability(enabled: boolean) {
+  disableNetworkObservability.value = enabled
 }
 
 function onProviderChange() {
@@ -968,6 +1018,35 @@ async function saveBehavior() {
   }
 }
 
+async function savePrivacy(
+  value = disableNetworkObservability.value,
+  options: { reload?: boolean } = {},
+): Promise<boolean> {
+  try {
+    const restart = await safePatchConfig({
+      'privacy.disable_network_observability': value,
+    })
+    if (options.reload === false) {
+      config.value = {
+        ...config.value,
+        privacy: {
+          ...(config.value.privacy || {}),
+          disable_network_observability: value,
+          network_observability_disabled_effective: value || networkObservabilityDisabledByEnvironment.value,
+        },
+      }
+      disableNetworkObservability.value = value
+    } else {
+      await loadData()
+    }
+    pushToast(restart ? t('setup.toast.privacySavedRestart') : t('setup.toast.privacySaved'))
+    return true
+  } catch (err) {
+    pushToast(saveFailedMessage(err), { tone: 'danger' })
+    return false
+  }
+}
+
 async function saveRouter() {
   if (!hasSavedProvider.value && routerForm.routingDirty.value) {
     pushToast(t('setup.toast.chooseProviderRouter'), { tone: 'danger' })
@@ -1155,6 +1234,7 @@ async function copyConfigPath() {
     loaded,
     providerPanel,
     behaviorPanel,
+    privacyPanel,
     routerPanel,
     channelsPanel,
     capabilitiesPanel,
@@ -1178,6 +1258,7 @@ async function copyConfigPath() {
     discardChanges,
     selectProvider,
     setAutoSessionTitles,
+    setDisableNetworkObservability,
     setRouterMode,
     setRouterDefaultTier,
     setRouterVisualMode,
@@ -1194,6 +1275,7 @@ async function copyConfigPath() {
     onImageProviderChange,
     saveProvider,
     saveBehavior,
+    savePrivacy,
     saveRouter,
     saveChannel,
     enableChannel,

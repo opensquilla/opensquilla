@@ -40,6 +40,21 @@ not published. Linux users install the same wheel through the versioned
 Python wheel filenames must remain versioned because installers validate the
 version segment inside the wheel filename.
 
+Release docs must describe the unified non-user-initiated network observability
+switch. `OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY=true` or:
+
+```toml
+[privacy]
+disable_network_observability = true
+```
+
+disables automatic install telemetry, passive update checks, and desktop
+startup auto-update checks. The legacy compatibility environment variables
+`OPENSQUILLA_TELEMETRY_DISABLED=true` and
+`OPENSQUILLA_UPDATE_CHECK_DISABLED=true` remain honored. Manual
+user-initiated release, download, or update checks may still contact GitHub
+after user intent.
+
 Preview releases are GitHub pre-releases. Their README install commands must
 use tag-pinned URLs such as:
 
@@ -62,7 +77,9 @@ exists. Fully pinned URLs remain available for every primary asset:
 2. Update `CHANGELOG.md`: move entries from `[Unreleased]` to the release section; reopen empty `[Unreleased]`.
 3. Confirm the release notes and README download sections link to `PRIVACY.md`,
    `THIRD_PARTY_NOTICES.md`, and `docs/code-signing-policy.md`, and do not
-   claim Windows code signing before it is enabled.
+   claim Windows code signing before it is enabled. Confirm privacy wording
+   documents the unified network observability switch and legacy opt-out
+   environment variables.
 4. Bump `pyproject.toml` and `uv.lock` to the release version.
 5. `git tag -a v0.4.1 -m "OpenSquilla 0.4.1"`
 6. `git push origin v0.4.1` (this triggers `.github/workflows/wheelhouse-release.yml`)

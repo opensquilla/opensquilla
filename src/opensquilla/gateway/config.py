@@ -134,6 +134,12 @@ class ControlUiConfig(BaseSettings):
         return v
 
 
+class PrivacyConfig(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="OPENSQUILLA_PRIVACY_")
+
+    disable_network_observability: bool = False
+
+
 class SkillsConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="OPENSQUILLA_SKILLS_")
 
@@ -1746,6 +1752,7 @@ class GatewayConfig(BaseSettings):
 
     # Component enable flags
     control_ui: ControlUiConfig = Field(default_factory=ControlUiConfig)
+    privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
     diagnostics_enabled: bool = False
     channel_admin_senders: dict[str, list[str]] = Field(default_factory=dict)
 
@@ -2016,7 +2023,17 @@ class GatewayConfig(BaseSettings):
 
     def to_public_dict(self) -> dict[str, Any]:
         """Return a redacted config view safe for public control surfaces."""
-        return cast(dict[str, Any], redact_public_config(self.model_dump()))
+        data = cast(dict[str, Any], redact_public_config(self.model_dump()))
+        privacy = data.get("privacy")
+        if isinstance(privacy, dict):
+            from opensquilla.observability.network_policy import (
+                network_observability_disabled,
+            )
+
+            privacy["network_observability_disabled_effective"] = (
+                network_observability_disabled(config=self)
+            )
+        return data
 
     def mark_runtime_secret(self, path: str) -> None:
         self._runtime_secret_paths.add(path)

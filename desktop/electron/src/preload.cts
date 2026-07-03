@@ -3,6 +3,11 @@ import { contextBridge, ipcRenderer } from 'electron'
 contextBridge.exposeInMainWorld('opensquillaDesktop', {
   getOsLocale: () => ipcRenderer.invoke('desktop:os-locale'),
   isAutoUpdateEnabled: () => ipcRenderer.invoke('desktop:update:supported'),
+  getUpdateState: () => ipcRenderer.invoke('desktop:update:state'),
+  checkForUpdates: () => ipcRenderer.invoke('desktop:update:check'),
+  downloadUpdate: () => ipcRenderer.invoke('desktop:update:download'),
+  relaunchToUpdate: () => ipcRenderer.invoke('desktop:update:relaunch'),
+  dismissUpdate: () => ipcRenderer.invoke('desktop:update:dismiss'),
   getGatewayStatus: () => ipcRenderer.invoke('gateway:status'),
   revealGatewayLog: () => ipcRenderer.invoke('gateway:reveal-log'),
   getDesktopSettings: () => ipcRenderer.invoke('desktop:settings:get'),
@@ -26,5 +31,10 @@ contextBridge.exposeInMainWorld('opensquillaDesktop', {
     const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => callback(payload)
     ipcRenderer.on('desktop:boot:error', listener)
     return () => ipcRenderer.removeListener('desktop:boot:error', listener)
+  },
+  onUpdateState: (callback: (payload: unknown) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => callback(payload)
+    ipcRenderer.on('desktop:update:state-changed', listener)
+    return () => ipcRenderer.removeListener('desktop:update:state-changed', listener)
   },
 })

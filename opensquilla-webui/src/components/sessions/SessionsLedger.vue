@@ -285,7 +285,7 @@ function rowAccessibleName(verb: 'inspect' | 'delete', entry: SessionLedgerEntry
 .hub-row__agent {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   color: var(--text-muted);
   flex-shrink: 0;
   font-size: var(--fs-xs);
@@ -299,7 +299,7 @@ function rowAccessibleName(verb: 'inspect' | 'delete', entry: SessionLedgerEntry
 
 .hub-row__status {
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   flex-shrink: 0;
   font-size: var(--fs-xs);
   font-weight: 650;

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from opensquilla.observability import update_check
+from opensquilla.observability import network_policy, update_check
 
 
 @pytest.fixture(autouse=True)
@@ -17,6 +18,7 @@ def _reset_module_cache(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _enable(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
+        network_policy.NETWORK_OBSERVABILITY_DISABLED_ENV,
         update_check.UPDATE_CHECK_DISABLED_ENV,
         update_check.TELEMETRY_DISABLED_ENV,
         "GITHUB_ACTIONS",
@@ -163,6 +165,42 @@ def test_telemetry_disable_also_silences_update_check(tmp_path: Path, monkeypatc
     )
 
     assert info.disabled is True
+    assert fetch.calls == []
+
+
+def test_privacy_config_disable_skips_refresh_cached_and_background(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _enable(monkeypatch)
+    fetch = _fake_fetch("0.5.0")
+    monkeypatch.setattr(update_check, "_fetch_latest_release", fetch)
+    state_path = tmp_path / "update_check.json"
+    config = SimpleNamespace(
+        privacy=SimpleNamespace(disable_network_observability=True),
+    )
+
+    refreshed = update_check.refresh_update_check(
+        config=config,
+        state_path=state_path,
+        version="0.4.1",
+        force=True,
+    )
+    cached = update_check.get_cached_update_info(
+        config=config,
+        state_path=state_path,
+        version="0.4.1",
+    )
+    thread = update_check.start_background_update_check(
+        config=config,
+        state_path=state_path,
+        version="0.4.1",
+    )
+
+    assert refreshed.disabled is True
+    assert refreshed.update_available is False
+    assert cached is None
+    assert thread is None
     assert fetch.calls == []
 
 

@@ -142,7 +142,7 @@ def test_release_docs_describe_unsigned_windows_policy() -> None:
     assert "[`PRIVACY.md`](../PRIVACY.md)" in signing_policy
     assert "[@Open-Squilla](https://github.com/Open-Squilla)" in signing_policy
     assert "Initial SignPath approvers" in signing_policy
-    assert "installation-time option to disable" in signing_policy
+    assert "network observability" in signing_policy
 
     for text in [readme, releases, release_notes]:
         assert "code-signing-policy.md" in text
@@ -164,6 +164,33 @@ def test_release_docs_describe_unsigned_windows_policy() -> None:
         "es": "instaladores de escritorio firmados",
     }.items():
         assert phrase not in localized_readmes[locale]
+
+
+def test_privacy_docs_describe_network_observability_controls() -> None:
+    docs = {
+        "README.md": Path("README.md").read_text(encoding="utf-8"),
+        "README.zh-Hans.md": Path("README.zh-Hans.md").read_text(encoding="utf-8"),
+        "PRIVACY.md": Path("PRIVACY.md").read_text(encoding="utf-8"),
+        "RELEASES.md": Path("RELEASES.md").read_text(encoding="utf-8"),
+        f"docs/releases/{CURRENT_VERSION}.md": Path(
+            f"docs/releases/{CURRENT_VERSION}.md"
+        ).read_text(encoding="utf-8"),
+        "docs/code-signing-policy.md": Path("docs/code-signing-policy.md").read_text(
+            encoding="utf-8"
+        ),
+    }
+
+    for path, text in docs.items():
+        assert "OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY=true" in text, path
+        assert "disable_network_observability = true" in text, path
+        assert "OPENSQUILLA_TELEMETRY_DISABLED=true" in text, path
+        assert "OPENSQUILLA_UPDATE_CHECK_DISABLED=true" in text, path
+
+    privacy = docs["PRIVACY.md"]
+    assert "automatic install telemetry" in privacy
+    assert "passive update checks" in privacy
+    assert "desktop startup auto-update checks" in privacy
+    assert "Manual user-initiated actions may still contact network services" in privacy
 
 
 def _dep_names(specs: list[str]) -> set[str]:

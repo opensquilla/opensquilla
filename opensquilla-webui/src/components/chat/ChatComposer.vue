@@ -319,7 +319,7 @@ defineExpose<ChatComposerExpose>({
   max-width: min(100%, 360px);
   background: var(--bg-elevated);
   border: 1px solid var(--border);
-  border-radius: 0.375rem;
+  border-radius: var(--radius-md);
   font-size: 0.8125rem;
 }
 
@@ -349,7 +349,7 @@ defineExpose<ChatComposerExpose>({
 .attachment-chip__thumb {
   width: 16px;
   height: 16px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   object-fit: cover;
 }
 
@@ -405,7 +405,7 @@ defineExpose<ChatComposerExpose>({
   flex-direction: column;
   min-height: 128px;
   border: 1px solid var(--border-strong);
-  border-radius: 22px;
+  border-radius: var(--radius-modal);
   background: var(--bg-surface);
   box-shadow: var(--shadow-xs);
   position: relative;
@@ -414,7 +414,7 @@ defineExpose<ChatComposerExpose>({
 .chat-composer--new-landing .chat-input-panel {
   min-height: 148px;
   border-color: var(--border);
-  border-radius: 24px;
+  border-radius: var(--radius-modal);
   box-shadow: var(--shadow-lg);
 }
 
@@ -453,7 +453,7 @@ defineExpose<ChatComposerExpose>({
   display: inline-flex;
   align-items: center;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   padding: 2px;
   gap: 2px;
   margin-right: var(--sp-1);
@@ -462,7 +462,7 @@ defineExpose<ChatComposerExpose>({
 .chat-busy-mode__btn {
   border: 0;
   background: none;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   padding: 0.125rem 0.5rem;
   font-size: var(--fs-xs);
   font-weight: 600;
@@ -523,7 +523,7 @@ defineExpose<ChatComposerExpose>({
   height: 34px;
   min-width: 34px;
   min-height: 34px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   padding: 0;
 }
 

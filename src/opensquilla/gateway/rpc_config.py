@@ -281,6 +281,7 @@ _SAFE_WRITE_PATCH_PATHS = frozenset(
         "skills.disabled",
         "skills.coding_mode",
         "naming.enabled",
+        "privacy.disable_network_observability",
         "prompt_cache.mode",
         "squilla_router.enabled",
         "squilla_router.rollout_phase",

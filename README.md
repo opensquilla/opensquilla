@@ -369,7 +369,9 @@ opensquilla uninstall --purge-all      # everything (asks you to type a confirma
 
 The running gateway is drained and stopped first, deletion stays inside the
 OpenSquilla home, and Docker/desktop installs get guided removal steps instead.
-See [`docs/cli.md`](docs/cli.md#uninstall) for the full reference.
+Desktop or OS app removal remains platform-specific; the CLI guidance does not
+remove a desktop app bundle. See [`docs/cli.md`](docs/cli.md#uninstall) for the
+full reference.
 
 ---
 
@@ -377,11 +379,12 @@ See [`docs/cli.md`](docs/cli.md#uninstall) for the full reference.
 
 OpenSquilla uses anonymous installation telemetry to estimate install counts,
 version adoption, and runtime compatibility. Data is sent on first gateway
-startup and once per OpenSquilla version. Uploads use a short timeout and never
-block startup.
+startup and once per OpenSquilla version. OpenSquilla may also make passive
+update checks, including desktop startup auto-update checks. Uploads use a
+short timeout and never block startup.
 
 See [`PRIVACY.md`](PRIVACY.md) for the full privacy policy covering local data,
-provider requests, telemetry, logs, and deletion.
+provider requests, network observability, logs, release downloads, and deletion.
 
 What is sent:
 
@@ -404,10 +407,29 @@ chat/session/memory/agent content, file names, or file contents. Source IP may
 be visible to HTTP servers at the transport layer, but is not part of the
 payload.
 
-To opt out:
+To disable non-user-initiated network observability before startup:
+
+```sh
+OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY=true
+```
+
+or set:
+
+```toml
+[privacy]
+disable_network_observability = true
+```
+
+That unified switch covers automatic install telemetry, passive update checks,
+and desktop startup auto-update checks. Manual user-initiated actions may still
+contact network services after user intent, including manual release, download,
+or update checks and configured providers, search, or channels.
+
+Legacy opt-out environment variables remain honored:
 
 ```sh
 OPENSQUILLA_TELEMETRY_DISABLED=true
+OPENSQUILLA_UPDATE_CHECK_DISABLED=true
 ```
 
 Advanced deployments can use their own endpoint:
@@ -521,7 +543,9 @@ opensquilla agent -m "your prompt"     # one-shot, automation-friendly
 > ```
 >
 > Leave `OPENSQUILLA_TUI_BACKEND` unset for the stable chat. See
-> [docs/features/tui-frontend.md](docs/features/tui-frontend.md) for details.
+> [docs/tui.md](docs/tui.md) for terminal chat usage and
+> [docs/features/tui-frontend.md](docs/features/tui-frontend.md) for backend
+> details.
 
 Open the Web UI at <http://127.0.0.1:18791/control/>. The **Health**
 view shows whether OpenSquilla is ready, what is not ready, and the

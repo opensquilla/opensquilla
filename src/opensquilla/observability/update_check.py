@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from opensquilla import __version__
+from opensquilla.observability.network_policy import network_observability_disabled
 from opensquilla.paths import default_opensquilla_home
 
 log = logging.getLogger(__name__)
@@ -107,7 +108,7 @@ def refresh_update_check(
     current = (version or __version__ or "unknown").strip() or "unknown"
     path = _state_path(config=config, explicit=state_path)
 
-    skip_reason = _skip_reason()
+    skip_reason = _skip_reason(config=config)
     if skip_reason:
         info = UpdateCheckInfo(
             current_version=current,
@@ -215,7 +216,7 @@ def get_cached_update_info(
     completed.
     """
     current = (version or __version__ or "unknown").strip() or "unknown"
-    if _skip_reason():
+    if _skip_reason(config=config):
         _store_cache(
             UpdateCheckInfo(
                 current_version=current,
@@ -259,7 +260,7 @@ def start_background_update_check(
     Returns the thread (so tests can join it) or ``None`` when the check is
     disabled. Never raises.
     """
-    if _skip_reason():
+    if _skip_reason(config=config):
         return None
 
     def _run() -> None:
@@ -313,15 +314,12 @@ def _state_path(*, config: Any | None, explicit: str | Path | None) -> Path:
     return root / UPDATE_CHECK_STATE_FILE
 
 
-def _disabled() -> bool:
-    for env_name in (UPDATE_CHECK_DISABLED_ENV, TELEMETRY_DISABLED_ENV):
-        if os.environ.get(env_name, "").strip().lower() in _TRUE_VALUES:
-            return True
-    return False
+def _disabled(*, config: Any | None = None) -> bool:
+    return network_observability_disabled(config=config)
 
 
-def _skip_reason() -> str | None:
-    if _disabled():
+def _skip_reason(*, config: Any | None = None) -> str | None:
+    if _disabled(config=config):
         return "disabled"
     for name in _AUTO_SKIP_ENV_VARS:
         value = os.environ.get(name, "")

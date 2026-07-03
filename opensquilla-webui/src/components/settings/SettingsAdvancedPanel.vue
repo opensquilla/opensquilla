@@ -156,7 +156,7 @@ function localStorageGet(key: string): string | null {
 <style scoped>
 .labs-hint {
   border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--border));
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   color: var(--warn);
   font-size: 10px;
   font-weight: 600;
@@ -167,7 +167,7 @@ function localStorageGet(key: string): string | null {
 
 .labs-exp {
   border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   color: var(--accent);
   font-size: 10px;
   font-weight: 700;

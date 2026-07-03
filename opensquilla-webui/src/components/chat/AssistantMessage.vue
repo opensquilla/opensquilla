@@ -374,7 +374,7 @@ function onMessageClick(event: MouseEvent) {
   max-width: calc(100% - 16px);
   box-sizing: border-box;
   padding: 0.5rem 1rem 0.5rem 2.5rem;
-  border-radius: 0.875rem;
+  border-radius: var(--radius-lg);
   transition: background var(--dur-base) var(--ease-standard), box-shadow var(--dur-base) var(--ease-standard);
 }
 
@@ -400,7 +400,7 @@ function onMessageClick(event: MouseEvent) {
   width: 1.5rem;
   height: 1.5rem;
   border: 2px solid var(--border-strong);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--bg-surface);
   color: var(--text-muted);
   box-shadow: var(--shadow-md);
@@ -517,7 +517,7 @@ function onMessageClick(event: MouseEvent) {
   border: none;
   cursor: pointer;
   color: var(--text-dim);
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   font-size: 0.6875rem;
 }
 
@@ -600,7 +600,7 @@ function onMessageClick(event: MouseEvent) {
   padding: 0;
   background: none;
   border: none;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   color: var(--text-dim);
   cursor: pointer;
   transition: color var(--transition), background var(--transition);
@@ -664,7 +664,7 @@ function onMessageClick(event: MouseEvent) {
   padding: 0 0.45rem;
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background:
     linear-gradient(135deg, color-mix(in srgb, var(--accent) 8%, var(--bg-surface)), var(--bg-surface) 48%, color-mix(in srgb, var(--ok) 8%, var(--bg-surface))),
     radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--warn) 34%, transparent), transparent 42%);

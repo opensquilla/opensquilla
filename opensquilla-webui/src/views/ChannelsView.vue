@@ -367,7 +367,7 @@ function statusHint(ch: Channel): string {
 }
 
 .dot {
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   display: inline-block;
   height: 8px;
   width: 8px;

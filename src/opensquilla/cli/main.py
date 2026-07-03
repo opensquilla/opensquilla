@@ -992,9 +992,13 @@ def version_cmd(
             typer.echo(__version__)
         return
 
+    import os
+
+    from opensquilla.gateway.config import GatewayConfig
     from opensquilla.observability.update_check import refresh_update_check
 
-    info = refresh_update_check(version=__version__, force=True)
+    config = GatewayConfig.load(os.environ.get("OPENSQUILLA_GATEWAY_CONFIG_PATH"))
+    info = refresh_update_check(config=config, version=__version__, force=True)
 
     if json_output:
         from opensquilla.cli.output import print_json
@@ -1005,6 +1009,7 @@ def version_cmd(
                 "latest": info.latest_version,
                 "updateAvailable": info.update_available,
                 "releaseUrl": info.release_url,
+                "disabled": info.disabled,
                 "error": info.error,
             }
         )

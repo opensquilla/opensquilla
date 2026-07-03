@@ -252,6 +252,7 @@
           @click="openConnectionSettings"
         >{{ connectionStateLabel }}</button>
         <span v-else class="conn-pill" :class="rpcStore.state">{{ connectionStateLabel }}</span>
+        <DesktopUpdateIndicator />
         <LanguageSwitcher />
         <div class="theme-menu-wrap">
           <button
@@ -379,6 +380,7 @@ import ErrorBoundary from './components/ErrorBoundary.vue'
 import ToastHost from './components/ToastHost.vue'
 import ConfirmModal from './components/ConfirmModal.vue'
 import UpdateBanner from './components/UpdateBanner.vue'
+import DesktopUpdateIndicator from './components/DesktopUpdateIndicator.vue'
 import SidebarConversations from './components/SidebarConversations.vue'
 import SidebarSetupBanner from './components/SidebarSetupBanner.vue'
 import CommandPalette from './components/CommandPalette.vue'

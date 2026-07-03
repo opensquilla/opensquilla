@@ -44,12 +44,26 @@ and that do not include proprietary or commercial-only components.
 ## Privacy Policy
 
 OpenSquilla's privacy policy is published at [`PRIVACY.md`](../PRIVACY.md). It
-describes local data, provider requests, installation telemetry, logs, release
-downloads, and deletion. Installation telemetry can be disabled before startup
-with:
+describes local data, provider requests, network observability, logs, release
+downloads, and deletion. Non-user-initiated network observability can be
+disabled before startup with:
+
+```sh
+OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY=true
+```
+
+or with:
+
+```toml
+[privacy]
+disable_network_observability = true
+```
+
+Legacy compatibility environment variables remain honored:
 
 ```sh
 OPENSQUILLA_TELEMETRY_DISABLED=true
+OPENSQUILLA_UPDATE_CHECK_DISABLED=true
 ```
 
 ## Commercial Builds
@@ -74,9 +88,9 @@ Before enabling Windows signing, maintainers must verify:
 - the build runs from the trusted release workflow
 - release signing requires maintainer approval
 - team members with release or signing access use multi-factor authentication
-- if installation telemetry or any other non-user-specified network transfer
+- if network observability or any other non-user-specified network transfer
   remains enabled by default, the installer displays the privacy policy and
-  provides an installation-time option to disable those functions
+  exposes the unified network observability disable switch before startup
 - signed artifacts, updater metadata, blockmaps, and checksums are generated
   from the same final bytes
 - release notes and download pages accurately describe the signing status

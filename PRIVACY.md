@@ -41,6 +41,34 @@ automation, or other integrations may contact external services when the user
 configures and invokes them. OpenSquilla does not send those requests unless the
 corresponding feature is enabled by configuration or user action.
 
+## Network Observability Controls
+
+OpenSquilla groups non-user-initiated network observability under one switch.
+Set this before startup to disable automatic install telemetry, passive update
+checks, and desktop startup auto-update checks:
+
+```sh
+OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY=true
+```
+
+The same control can be set in configuration:
+
+```toml
+[privacy]
+disable_network_observability = true
+```
+
+Legacy environment variables remain honored for compatibility:
+
+```sh
+OPENSQUILLA_TELEMETRY_DISABLED=true
+OPENSQUILLA_UPDATE_CHECK_DISABLED=true
+```
+
+Manual user-initiated actions may still contact network services after user
+intent, including manual release, download, or update checks and configured
+providers, search, channels, automation, or integrations.
+
 ## Installation Telemetry
 
 OpenSquilla uses anonymous installation telemetry to estimate install counts,
@@ -68,11 +96,9 @@ provider configuration, chat content, session content, memory content, agent
 content, file names, or file contents. Source IP addresses may be visible to
 HTTP servers at the transport layer, but are not part of the telemetry payload.
 
-To opt out before startup:
-
-```sh
-OPENSQUILLA_TELEMETRY_DISABLED=true
-```
+Use the unified network observability switch above to opt out before startup.
+The legacy telemetry opt-out `OPENSQUILLA_TELEMETRY_DISABLED=true` remains
+honored for compatibility.
 
 Advanced deployments can direct installation telemetry to their own endpoint:
 
@@ -95,6 +121,10 @@ assets may expose standard request metadata, such as IP address and user agent,
 to GitHub and network intermediaries. Release checksums are published in
 `SHA256SUMS` when release assets are generated.
 
+The unified network observability switch disables passive update checks and
+desktop startup auto-update checks. Manual release, download, or update checks
+may still contact GitHub after the user asks OpenSquilla to perform them.
+
 ## Deletion
 
 Use `opensquilla uninstall` to remove OpenSquilla. By default it removes the
@@ -108,7 +138,7 @@ opensquilla uninstall --purge-all
 
 The command previews and limits deletion to OpenSquilla-owned paths. Desktop
 and Docker installs may require platform-specific removal steps shown by the
-uninstall command.
+uninstall command; desktop data cleanup does not remove the OS app bundle.
 
 ## Security And Privacy Reports
 

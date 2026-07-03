@@ -106,7 +106,7 @@ onMounted(() => rootRef.value?.focus())
   width: min(340px, calc(100vw - 48px));
   padding: 0.75rem;
   border: 1px solid var(--border-strong);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--bg-surface);
   box-shadow: var(--shadow-xl);
   z-index: 30;
@@ -130,7 +130,7 @@ onMounted(() => rootRef.value?.focus())
   width: 26px;
   height: 26px;
   border: 1px solid transparent;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
@@ -153,7 +153,7 @@ onMounted(() => rootRef.value?.focus())
   min-height: 58px;
   padding: 0.625rem;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text);
   text-align: left;

@@ -283,7 +283,7 @@ onUnmounted(() => {
 .share-modal__spinner {
   width: 24px;
   height: 24px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   border: 2px solid color-mix(in srgb, var(--accent) 28%, transparent);
   border-top-color: var(--accent);
   animation: shareModalSpin 0.7s linear infinite;

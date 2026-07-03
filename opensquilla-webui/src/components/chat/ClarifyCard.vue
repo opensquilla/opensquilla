@@ -385,7 +385,7 @@ function onSubmit() {
 .clarify-outcome__icon {
   width: 30px;
   height: 30px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: color-mix(in srgb, currentColor 13%, transparent);
   display: inline-flex;
   align-items: center;

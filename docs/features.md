@@ -27,7 +27,8 @@ Read: [`features/squilla-router.md`](features/squilla-router.md)
 Terminal chat uses a streaming plane for token deltas and a structured UI plane
 for plugin snapshots such as the Router HUD.
 
-Read: [`features/tui-frontend.md`](features/tui-frontend.md)
+Read: [`tui.md`](tui.md) for user-facing terminal chat usage and
+[`features/tui-frontend.md`](features/tui-frontend.md) for backend details.
 
 ### Tool Compression
 
@@ -39,8 +40,8 @@ Read: [`features/tool-compression.md`](features/tool-compression.md)
 ### Meta-Skills
 
 Repeatable multi-step workflows can be represented as skills, inspected,
-proposed, replayed, and reused. By default, users launch them manually with
-`/meta` and `/meta <name>`.
+proposed, replayed, and reused. By default, users launch them manually on
+supported chat surfaces with `/meta` and `/meta <name>`.
 
 Read: [`features/meta-skills.md`](features/meta-skills.md) and
 [`features/meta-skill-user-guide.md`](features/meta-skill-user-guide.md)

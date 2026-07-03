@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import sys
 
 import pytest
 
@@ -73,6 +74,10 @@ def test_on_sigint_cancels_turn_without_exiting() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(
+    sys.platform.startswith("win"),
+    reason="Windows delivers SIGINT to pytest itself; fallback behavior is covered separately",
+)
 async def test_real_sigint_cancels_turn_and_does_not_exit() -> None:
     cancelled: list[bool] = []
     shutdown: list[bool] = []

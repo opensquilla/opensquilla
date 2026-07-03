@@ -61,21 +61,28 @@ opensquilla chat
 opensquilla chat --model gpt-5.4-mini
 opensquilla chat --session <session-key>
 opensquilla chat --standalone --workspace /path/to/project
-OPENSQUILLA_TUI_BACKEND=opentui opensquilla chat
 ```
 
 Terminal chat uses the stable Python-native terminal backend by default.
 OpenTUI is a preview backend selected explicitly with
 `OPENSQUILLA_TUI_BACKEND=opentui` when evaluating that backend. Normal terminal
-chat does not require Bun or OpenTUI node modules. Legacy backend values are
-rejected before launch. Read
-[`features/tui-frontend.md`](features/tui-frontend.md) for the streaming plane,
-plugin slots, Router HUD, and replay benchmark workflow.
+chat does not require Bun or OpenTUI node modules. The OpenTUI preview is for
+source checkouts with local Bun dependencies installed:
+
+```sh
+bun install --frozen-lockfile --cwd=src/opensquilla/cli/tui/opentui/package
+OPENSQUILLA_TUI_BACKEND=opentui uv run opensquilla chat
+```
+
+Legacy backend values are rejected before launch. Read [`tui.md`](tui.md) for
+terminal chat usage and [`features/tui-frontend.md`](features/tui-frontend.md)
+for backend architecture, plugin slots, Router HUD, and replay benchmark
+workflow.
 
 Web chat and the CLI gateway TUI support `/meta` for manual MetaSkill launch:
 `/meta` lists available workflows and `/meta <name>` runs one. Channel surfaces
-and standalone CLI chat can list MetaSkills with `/meta`, but they do not launch
-MetaSkill runs directly.
+can list MetaSkills with `/meta`, but they do not launch MetaSkill runs
+directly. Standalone CLI chat requires gateway mode for `/meta`.
 
 One-shot automation:
 

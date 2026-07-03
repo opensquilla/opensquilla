@@ -439,7 +439,7 @@ function onBackdrop(e: MouseEvent) {
   overflow: hidden;
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: var(--radius-modal);
   box-shadow: var(--shadow-lg);
 }
 
@@ -578,7 +578,7 @@ function onBackdrop(e: MouseEvent) {
 
 .cmdp-option__snippet :deep(.cmdp-mark) {
   background: color-mix(in srgb, var(--accent) 22%, transparent);
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
   color: var(--text);
   padding: 0 1px;
 }

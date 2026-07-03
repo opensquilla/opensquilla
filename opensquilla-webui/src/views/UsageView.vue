@@ -207,7 +207,7 @@ async function refresh() {
   display: inline-block;
   width: 12px;
   height: 12px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
 }
 .usage-chart__swatch--input {
   background: var(--accent);
@@ -369,14 +369,14 @@ async function refresh() {
 .usage-model-card__share-bar {
   height: 4px;
   background: var(--bg-elevated);
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
   overflow: hidden;
 }
 .usage-model-card__share-fill {
   display: block;
   height: 100%;
   background: var(--accent);
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
   transition: width var(--dur-enter) var(--ease-standard);
 }
 .usage-model-card__rows {
@@ -523,7 +523,7 @@ async function refresh() {
   width: 2px;
   height: 16px;
   background: var(--accent);
-  border-radius: 1px;
+  border-radius: 1px; /* radius-allow: hairline capsule = half the 2px connector width */
 }
 .usage-expand__eyebrow {
   font-weight: 700;
@@ -583,14 +583,14 @@ async function refresh() {
   flex: 1;
   height: 4px;
   background: var(--bg-elevated);
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
   overflow: hidden;
 }
 .usage-expand__share-fill {
   display: block;
   height: 100%;
   background: var(--accent);
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
 }
 .usage-expand__share-pct {
   font-family: var(--font-mono);

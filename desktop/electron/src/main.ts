@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, Menu, ipcMain, nativeTheme, safeStorage, sh
 import electronUpdater from 'electron-updater'
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { createWriteStream, existsSync, mkdirSync } from 'node:fs'
+import { createWriteStream, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { access, constants, readFile, readdir, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import net from 'node:net'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -65,6 +65,7 @@ interface DesktopConnection {
   searchApiKeyEnv: string
   encryptedSearchApiKey?: string
   encryption: SecretEncryption
+  disableNetworkObservability: boolean
   createdAt: string
   updatedAt: string
 }
@@ -79,6 +80,7 @@ interface OnboardingPayload {
   routerTiers?: unknown
   searchProvider?: unknown
   searchApiKey?: unknown
+  disableNetworkObservability?: unknown
 }
 
 interface DesktopSettingsPayload extends OnboardingPayload {}
@@ -94,6 +96,7 @@ interface DesktopSettingsSnapshot {
   searchProvider: string
   searchApiKeyEnv: string
   searchApiKeyConfigured: boolean
+  disableNetworkObservability: boolean
   searchProviders: SearchProviderCatalogEntry[]
   providers?: { providerId: string; label: string; model: string; baseUrl: string }[]
   gateway: GatewayState
@@ -508,6 +511,21 @@ function normalizeSearchProvider(raw: unknown): string {
   return SEARCH_PROVIDER_BY_ID.has(provider) ? provider : 'duckduckgo'
 }
 
+function normalizeBooleanSetting(raw: unknown, fallback: boolean): boolean {
+  if (typeof raw === 'boolean') return raw
+  if (typeof raw === 'number') return raw !== 0
+  if (typeof raw === 'string') {
+    const value = raw.trim().toLowerCase()
+    if (['1', 'true', 'yes', 'on'].includes(value)) return true
+    if (['0', 'false', 'no', 'off', ''].includes(value)) return false
+  }
+  return fallback
+}
+
+function truthyEnv(raw: string | undefined): boolean {
+  return normalizeBooleanSetting(raw, false)
+}
+
 function tomlString(value: string): string {
   return JSON.stringify(value)
 }
@@ -627,34 +645,39 @@ function isConnectionReady(record: DesktopConnection): boolean {
   }
 }
 
+function normalizeDesktopCredential(parsed: Partial<DesktopConnection>): DesktopConnection {
+  const provider = normalizeProvider(parsed.provider)
+  const defaults = providerDefaults(provider)
+  const routerMode = normalizeRouterMode(parsed.routerMode, provider)
+  const routerDefaultTier = normalizeTextTier(parsed.routerDefaultTier)
+  const defaultTiers = defaultRouterTiers(provider, routerMode)
+  const routerTiers = normalizeRouterTiers(parsed.routerTiers, defaultTiers)
+  const searchProvider = normalizeSearchProvider(parsed.searchProvider)
+  const searchDefaults = searchProviderDefaults(searchProvider)
+  const now = new Date().toISOString()
+  return {
+    provider,
+    model: parsed.model || routerDefaultModel(routerTiers, routerDefaultTier) || defaults.model,
+    baseUrl: parsed.baseUrl || defaults.baseUrl,
+    apiKeyEnv: parsed.apiKeyEnv || defaults.apiKeyEnv,
+    encryptedApiKey: parsed.encryptedApiKey || '',
+    routerMode,
+    routerDefaultTier,
+    routerTiers,
+    searchProvider,
+    searchApiKeyEnv: parsed.searchApiKeyEnv || searchDefaults.envKey,
+    encryptedSearchApiKey: parsed.encryptedSearchApiKey || '',
+    encryption: parsed.encryption === 'safeStorage' ? 'safeStorage' : 'plain',
+    disableNetworkObservability: normalizeBooleanSetting(parsed.disableNetworkObservability, false),
+    createdAt: parsed.createdAt || now,
+    updatedAt: parsed.updatedAt || now,
+  }
+}
+
 async function loadDesktopCredential(): Promise<DesktopConnection | null> {
   try {
     const raw = await readFile(credentialPath(), 'utf8')
-    const parsed = JSON.parse(raw) as Partial<DesktopConnection>
-    const provider = normalizeProvider(parsed.provider)
-    const defaults = providerDefaults(provider)
-    const routerMode = normalizeRouterMode(parsed.routerMode, provider)
-    const routerDefaultTier = normalizeTextTier(parsed.routerDefaultTier)
-    const defaultTiers = defaultRouterTiers(provider, routerMode)
-    const routerTiers = normalizeRouterTiers(parsed.routerTiers, defaultTiers)
-    const searchProvider = normalizeSearchProvider(parsed.searchProvider)
-    const searchDefaults = searchProviderDefaults(searchProvider)
-    return {
-      provider,
-      model: parsed.model || routerDefaultModel(routerTiers, routerDefaultTier) || defaults.model,
-      baseUrl: parsed.baseUrl || defaults.baseUrl,
-      apiKeyEnv: parsed.apiKeyEnv || defaults.apiKeyEnv,
-      encryptedApiKey: parsed.encryptedApiKey || '',
-      routerMode,
-      routerDefaultTier,
-      routerTiers,
-      searchProvider,
-      searchApiKeyEnv: parsed.searchApiKeyEnv || searchDefaults.envKey,
-      encryptedSearchApiKey: parsed.encryptedSearchApiKey || '',
-      encryption: parsed.encryption === 'safeStorage' ? 'safeStorage' : 'plain',
-      createdAt: parsed.createdAt || new Date().toISOString(),
-      updatedAt: parsed.updatedAt || new Date().toISOString(),
-    }
+    return normalizeDesktopCredential(JSON.parse(raw) as Partial<DesktopConnection>)
   } catch {
     return null
   }
@@ -690,6 +713,10 @@ async function saveDesktopCredential(payload: OnboardingPayload): Promise<Deskto
   const encryptedApiKey = apiKeySecret?.value || ''
   const encryptedSearchApiKey = searchApiKeySecret?.value || ''
   const encryption = apiKeySecret?.encryption || searchApiKeySecret?.encryption || 'plain'
+  const configDisableNetworkObservability = readDesktopConfigNetworkObservabilitySetting()
+  const disableNetworkObservability = Object.prototype.hasOwnProperty.call(payload, 'disableNetworkObservability')
+    ? normalizeBooleanSetting(payload.disableNetworkObservability, existing?.disableNetworkObservability ?? false)
+    : configDisableNetworkObservability ?? existing?.disableNetworkObservability ?? false
 
   if (defaults.requiresApiKey && !encryptedApiKey) throw new Error('API key is required.')
   if (!routerModel && routerMode !== 'disabled') throw new Error('Router tiers require a default model.')
@@ -712,6 +739,7 @@ async function saveDesktopCredential(payload: OnboardingPayload): Promise<Deskto
     searchApiKeyEnv: searchDefaults.envKey,
     encryptedSearchApiKey,
     encryption,
+    disableNetworkObservability,
     createdAt: existing?.createdAt || now,
     updatedAt: now,
   }
@@ -743,6 +771,9 @@ async function writeDesktopConfig(credential: DesktopConnection): Promise<void> 
     '',
     ...routerConfigTomlLines(credential),
     '',
+    '[privacy]',
+    `disable_network_observability = ${credential.disableNetworkObservability ? 'true' : 'false'}`,
+    '',
     '[control_ui]',
     'enabled = true',
     'base_path = "/control"',
@@ -770,6 +801,7 @@ function settingsSnapshot(connection: DesktopConnection | null): DesktopSettings
     searchProvider,
     searchApiKeyEnv: connection?.searchApiKeyEnv || searchDefaults.envKey,
     searchApiKeyConfigured: Boolean(connection?.encryptedSearchApiKey),
+    disableNetworkObservability: connection?.disableNetworkObservability ?? false,
     searchProviders: SEARCH_PROVIDER_CATALOG,
     providers: PROVIDER_CATALOG.map((entry) => ({
       providerId: entry.id,
@@ -909,6 +941,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.view': 'View',
     'menu.window': 'Window',
     'menu.checkForUpdates': 'Check for Updates…',
+    'menu.relaunchToUpdate': 'Relaunch to Update',
     'update.newVersionTitle': 'A new version is available',
     'update.newVersionDetail': 'OpenSquilla {version} is available. Download it now?',
     'update.download': 'Download',
@@ -920,6 +953,9 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'update.upToDateDetail': 'OpenSquilla {version} is the latest version.',
     'update.errorTitle': 'Update check failed',
     'update.moveToApplications': 'Move OpenSquilla to your Applications folder to enable automatic updates, then try again.',
+    'update.gatewayShutdownTimeout': 'OpenSquilla could not stop the local runtime. Try relaunching to update again.',
+    'update.mockInstallTitle': 'Mock update restart',
+    'update.mockInstallDetail': 'Mock mode: OpenSquilla would restart now to install {version}. No files were changed.',
     'window.onboarding': 'Set up OpenSquilla',
     'boot.profile': 'Preparing desktop profile',
     'boot.gateway-start': 'Starting local runtime',
@@ -988,6 +1024,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.view': '视图',
     'menu.window': '窗口',
     'menu.checkForUpdates': '检查更新…',
+    'menu.relaunchToUpdate': '重启以更新',
     'update.newVersionTitle': '有新版本可用',
     'update.newVersionDetail': 'OpenSquilla {version} 已发布，现在下载吗？',
     'update.download': '下载',
@@ -999,6 +1036,9 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'update.upToDateDetail': 'OpenSquilla {version} 已是最新版本。',
     'update.errorTitle': '检查更新失败',
     'update.moveToApplications': '请先将 OpenSquilla 移动到"应用程序"文件夹以启用自动更新，然后重试。',
+    'update.gatewayShutdownTimeout': 'OpenSquilla 无法停止本地运行时。请再次尝试重启以更新。',
+    'update.mockInstallTitle': '模拟重启更新',
+    'update.mockInstallDetail': '模拟模式：OpenSquilla 现在会重启并安装 {version}。没有修改任何文件。',
     'window.onboarding': '设置 OpenSquilla',
     'boot.profile': '正在准备桌面配置',
     'boot.gateway-start': '正在启动本地运行时',
@@ -1067,6 +1107,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.view': '表示',
     'menu.window': 'ウインドウ',
     'menu.checkForUpdates': 'アップデートを確認…',
+    'menu.relaunchToUpdate': '再起動してアップデート',
     'update.newVersionTitle': '新しいバージョンが利用可能です',
     'update.newVersionDetail': 'OpenSquilla {version} が利用可能です。今すぐダウンロードしますか？',
     'update.download': 'ダウンロード',
@@ -1078,6 +1119,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'update.upToDateDetail': 'OpenSquilla {version} が最新バージョンです。',
     'update.errorTitle': 'アップデートの確認に失敗しました',
     'update.moveToApplications': '自動アップデートを有効にするには、OpenSquilla を「アプリケーション」フォルダに移動してから再試行してください。',
+    'update.gatewayShutdownTimeout': 'ローカルランタイムを停止できませんでした。もう一度、再起動してアップデートをお試しください。',
     'window.onboarding': 'OpenSquilla をセットアップ',
     'boot.profile': 'デスクトッププロファイルを準備しています',
     'boot.gateway-start': 'ローカルランタイムを起動しています',
@@ -1146,6 +1188,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.view': 'Affichage',
     'menu.window': 'Fenêtre',
     'menu.checkForUpdates': 'Rechercher les mises à jour…',
+    'menu.relaunchToUpdate': 'Relancer pour mettre à jour',
     'update.newVersionTitle': 'Une nouvelle version est disponible',
     'update.newVersionDetail': 'OpenSquilla {version} est disponible. Télécharger maintenant ?',
     'update.download': 'Télécharger',
@@ -1157,6 +1200,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'update.upToDateDetail': 'OpenSquilla {version} est la dernière version.',
     'update.errorTitle': 'Échec de la recherche de mises à jour',
     'update.moveToApplications': 'Déplacez OpenSquilla dans votre dossier Applications pour activer les mises à jour automatiques, puis réessayez.',
+    'update.gatewayShutdownTimeout': 'OpenSquilla n\'a pas pu arrêter le runtime local. Réessayez de relancer la mise à jour.',
     'window.onboarding': 'Configurer OpenSquilla',
     'boot.profile': 'Préparation du profil de bureau',
     'boot.gateway-start': 'Démarrage du runtime local',
@@ -1225,6 +1269,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.view': 'Ansicht',
     'menu.window': 'Fenster',
     'menu.checkForUpdates': 'Nach Updates suchen…',
+    'menu.relaunchToUpdate': 'Zum Aktualisieren neu starten',
     'update.newVersionTitle': 'Eine neue Version ist verfügbar',
     'update.newVersionDetail': 'OpenSquilla {version} ist verfügbar. Jetzt herunterladen?',
     'update.download': 'Herunterladen',
@@ -1236,6 +1281,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'update.upToDateDetail': 'OpenSquilla {version} ist die neueste Version.',
     'update.errorTitle': 'Update-Prüfung fehlgeschlagen',
     'update.moveToApplications': 'Verschieben Sie OpenSquilla in Ihren Programme-Ordner, um automatische Updates zu aktivieren, und versuchen Sie es erneut.',
+    'update.gatewayShutdownTimeout': 'OpenSquilla konnte die lokale Laufzeitumgebung nicht stoppen. Versuchen Sie erneut, zum Aktualisieren neu zu starten.',
     'window.onboarding': 'OpenSquilla einrichten',
     'boot.profile': 'Desktop-Profil wird vorbereitet',
     'boot.gateway-start': 'Lokale Laufzeitumgebung wird gestartet',
@@ -1304,6 +1350,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.view': 'Ver',
     'menu.window': 'Ventana',
     'menu.checkForUpdates': 'Buscar actualizaciones…',
+    'menu.relaunchToUpdate': 'Reiniciar para actualizar',
     'update.newVersionTitle': 'Hay una nueva versión disponible',
     'update.newVersionDetail': 'OpenSquilla {version} está disponible. ¿Descargar ahora?',
     'update.download': 'Descargar',
@@ -1315,6 +1362,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'update.upToDateDetail': 'OpenSquilla {version} es la última versión.',
     'update.errorTitle': 'Error al buscar actualizaciones',
     'update.moveToApplications': 'Mueve OpenSquilla a tu carpeta de Aplicaciones para habilitar las actualizaciones automáticas e inténtalo de nuevo.',
+    'update.gatewayShutdownTimeout': 'OpenSquilla no pudo detener el runtime local. Intenta reiniciar para actualizar de nuevo.',
     'window.onboarding': 'Configurar OpenSquilla',
     'boot.profile': 'Preparando el perfil de escritorio',
     'boot.gateway-start': 'Iniciando el runtime local',
@@ -1596,16 +1644,25 @@ function desktopT(key: string): string {
 
 function createApplicationMenu(): void {
   const appSubmenu: Electron.MenuItemConstructorOptions[] = [{ role: 'about' }]
-  if (autoUpdateSupported()) {
-    appSubmenu.push(
-      { type: 'separator' },
-      {
-        label: desktopT('menu.checkForUpdates'),
-        click: () => {
-          void checkForUpdates(true)
+  if (desktopUpdateMenuEnabled()) {
+    appSubmenu.push({ type: 'separator' })
+    if (downloadedUpdateVersion !== null) {
+      appSubmenu.push(
+        {
+          label: desktopT('menu.relaunchToUpdate'),
+          click: () => {
+            void applyDownloadedUpdate()
+          },
         },
+        { type: 'separator' },
+      )
+    }
+    appSubmenu.push({
+      label: desktopT('menu.checkForUpdates'),
+      click: () => {
+        void checkForUpdates(true)
       },
-    )
+    })
   }
   appSubmenu.push({ type: 'separator' }, { role: 'quit' })
 
@@ -1653,7 +1710,21 @@ function createApplicationMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
+function currentOnboardingWindow(): BrowserWindow | null {
+  return onboardingWindow && !onboardingWindow.isDestroyed() ? onboardingWindow : null
+}
+
+function focusOnboardingWindow(): boolean {
+  const window = currentOnboardingWindow()
+  if (!window) return false
+  if (window.isMinimized()) window.restore()
+  window.show()
+  window.focus()
+  return true
+}
+
 function focusMainWindow(): boolean {
+  if (focusOnboardingWindow()) return true
   if (!mainWindow || mainWindow.isDestroyed()) return false
   if (mainWindow.isMinimized()) mainWindow.restore()
   mainWindow.show()
@@ -1705,9 +1776,9 @@ function onboardingHtml(): string {
       --muted: #646961;
       --dim: #8c9189;
       --line: rgba(32, 35, 31, 0.12);
-      --accent: #b84a12;
-      --accent-dark: #8f3305;
-      --accent-soft: rgba(184, 74, 18, 0.08);
+      --accent: #F26A1B;
+      --accent-dark: #D95A11;
+      --accent-soft: rgba(242, 106, 27, 0.08);
       --green: #25633a;
       color: var(--ink);
     }
@@ -1962,7 +2033,7 @@ function onboardingHtml(): string {
       padding: 11px 13px;
     }
     .provider:hover, .choice:hover, .tier-button:hover {
-      border-color: rgba(184,74,18,0.3);
+      border-color: rgba(242,106,27,0.3);
       transform: translateY(-1px);
     }
     .provider.active, .choice.active, .tier-button.active {
@@ -2001,9 +2072,9 @@ function onboardingHtml(): string {
     }
     .provider-tag {
       width: fit-content;
-      border: 1px solid rgba(184,74,18,0.14);
+      border: 1px solid rgba(242,106,27,0.14);
       border-radius: 999px;
-      background: rgba(184,74,18,0.06);
+      background: rgba(242,106,27,0.06);
       color: var(--accent-dark);
       font-size: 9px;
       font-weight: 750;
@@ -2032,7 +2103,7 @@ function onboardingHtml(): string {
       text-align: left;
     }
     .provider-more-toggle:hover {
-      border-color: rgba(184,74,18,0.24);
+      border-color: rgba(242,106,27,0.24);
       color: var(--ink);
     }
     .provider-more-list {
@@ -2820,6 +2891,7 @@ async function runOnboarding(): Promise<DesktopConnection> {
   return new Promise((resolveCredential, rejectCredential) => {
     resolveOnboarding = resolveCredential
     rejectOnboarding = rejectCredential
+    const parentWindow = currentMainWindow()
     onboardingWindow = new BrowserWindow({
       width: 1040,
       height: 820,
@@ -2828,6 +2900,8 @@ async function runOnboarding(): Promise<DesktopConnection> {
       title: desktopT('window.onboarding'),
       icon: appIconPath(),
       resizable: true,
+      parent: parentWindow ?? undefined,
+      modal: Boolean(parentWindow),
       show: false,
       // Match the onboarding page's base so the first frame is not white.
       backgroundColor: '#f5f2eb',
@@ -2840,7 +2914,11 @@ async function runOnboarding(): Promise<DesktopConnection> {
     })
     installEditingContextMenu(onboardingWindow)
 
-    onboardingWindow.once('ready-to-show', () => onboardingWindow?.show())
+    onboardingWindow.once('ready-to-show', () => {
+      if (!onboardingWindow || onboardingWindow.isDestroyed()) return
+      onboardingWindow.show()
+      onboardingWindow?.focus()
+    })
     onboardingWindow.on('closed', () => {
       onboardingWindow = null
       if (rejectOnboarding) {
@@ -3058,7 +3136,6 @@ async function startGateway(): Promise<GatewayState> {
   }
 
   const overrideUrl = process.env.OPENSQUILLA_DESKTOP_GATEWAY_URL
-  const explicitPort = process.env.OPENSQUILLA_DESKTOP_GATEWAY_PORT
   if (overrideUrl) {
     sendBootStatus('gateway-health')
     gatewayState.url = overrideUrl.replace(/\/$/, '')
@@ -3068,15 +3145,6 @@ async function startGateway(): Promise<GatewayState> {
     if (gatewayState.status !== 'ready') {
       throw new Error(`Configured gateway is not healthy: ${gatewayState.url}`)
     }
-    return gatewayState
-  }
-
-  if (!app.isPackaged && !explicitPort && await healthCheck('http://127.0.0.1:18791')) {
-    sendBootStatus('control')
-    gatewayState.url = 'http://127.0.0.1:18791'
-    gatewayState.port = 18791
-    gatewayState.owned = false
-    gatewayState.status = 'ready'
     return gatewayState
   }
 
@@ -3118,6 +3186,7 @@ async function startGateway(): Promise<GatewayState> {
     OPENSQUILLA_GATEWAY_CONFIG_PATH: desktopConfigPath(),
     OPENSQUILLA_NODE_BIN_DIR: nodeBinCandidates.join(pathDelimiter()),
     OPENSQUILLA_STATE_DIR: desktopStateDir(),
+    ...(connection.disableNetworkObservability ? { OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY: '1' } : {}),
     PYTHONUNBUFFERED: '1',
   }
 
@@ -3294,6 +3363,7 @@ const GATEWAY_SHUTDOWN_KILL_AFTER_MS = 75_000
 // Short SIGKILL backstop after a hard terminate (TerminateProcess / SIGTERM)
 // when the graceful path was skipped or already overran its deadline.
 const GATEWAY_HARD_KILL_BACKSTOP_MS = 5_000
+const UPDATE_GATEWAY_EXIT_TIMEOUT_MS = GATEWAY_SHUTDOWN_KILL_AFTER_MS + GATEWAY_HARD_KILL_BACKSTOP_MS
 
 // Ask the gateway to shut down gracefully over its owner-only HTTP endpoint,
 // which runs the full GatewayServer.close() drain before exiting. The desktop
@@ -3321,10 +3391,10 @@ function stopGateway(): void {
   gatewayProcess = null
 
   const hardTerminate = () => {
-    if (child.killed) return
+    if (hasGatewayProcessExited(child)) return
     child.kill('SIGTERM')
     setTimeout(() => {
-      if (!child.killed) child.kill('SIGKILL')
+      if (!hasGatewayProcessExited(child)) child.kill('SIGKILL')
     }, GATEWAY_HARD_KILL_BACKSTOP_MS).unref()
   }
 
@@ -3358,7 +3428,7 @@ function stopGateway(): void {
   // child before the main process exits — no drain, but no orphan either.
   child.kill('SIGTERM')
   setTimeout(() => {
-    if (!child.killed) child.kill('SIGKILL')
+    if (!hasGatewayProcessExited(child)) child.kill('SIGKILL')
   }, GATEWAY_SHUTDOWN_KILL_AFTER_MS).unref()
 }
 
@@ -3376,9 +3446,124 @@ let autoUpdaterReady = false
 let manualUpdateCheck = false
 let updateDownloadInProgress = false
 let updateApplying = false
+let downloadedUpdateVersion: string | null = null
+let updateGatewayShutdownProcess: ChildProcessWithoutNullStreams | null = null
+let mockDownloadedUpdate = false
+let mockUpdatePromptActive = false
+let mockUpdateDialogResponses: number[] | null = null
+
+const MOCK_UPDATE_VERSION_ENV = 'OPENSQUILLA_DESKTOP_MOCK_UPDATE_VERSION'
+const MOCK_UPDATE_DIALOG_RESPONSES_ENV = 'OPENSQUILLA_DESKTOP_MOCK_UPDATE_DIALOG_RESPONSES'
+
+type DesktopUpdateStatus =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'downloading'
+  | 'downloaded'
+  | 'not-available'
+  | 'error'
+  | 'applying'
+
+interface DesktopUpdateState {
+  status: DesktopUpdateStatus
+  currentVersion: string
+  latestVersion: string | null
+  progress: number | null
+  checkedAt: string | null
+  error: string | null
+  snoozedUntil: string | null
+  canNativeInstall: boolean
+  releaseUrl: string | null
+}
+
+interface DesktopUpdatePersistedState {
+  snoozedVersion?: string
+  snoozedUntil?: string
+}
+
+const UPDATE_SNOOZE_MS = 24 * 60 * 60 * 1000
+
+let desktopUpdateStatus: DesktopUpdateStatus = 'idle'
+let desktopUpdateLatestVersion: string | null = null
+let desktopUpdateProgress: number | null = null
+let desktopUpdateCheckedAt: string | null = null
+let desktopUpdateError: string | null = null
+let desktopUpdateSnoozedVersion: string | null = null
+let desktopUpdateSnoozedUntil: string | null = null
+let desktopUpdatePersistenceLoaded = false
+
+const NETWORK_OBSERVABILITY_DISABLE_ENV_KEYS = [
+  'OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY',
+  'OPENSQUILLA_TELEMETRY_DISABLED',
+  'OPENSQUILLA_UPDATE_CHECK_DISABLED',
+] as const
+
+function desktopPersistedNetworkObservabilityDisabled(): boolean {
+  try {
+    const path = credentialPath()
+    if (!existsSync(path)) return false
+    const raw = readFileSync(path, 'utf8')
+    return normalizeDesktopCredential(JSON.parse(raw) as Partial<DesktopConnection>).disableNetworkObservability
+  } catch {
+    return true
+  }
+}
+
+function parseDesktopNetworkObservabilityPrivacyConfig(raw: string): boolean | null {
+  let inPrivacySection = false
+  for (const rawLine of raw.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#')) continue
+    const section = line.match(/^\[([^\]]+)\]$/)
+    if (section) {
+      inPrivacySection = section[1]?.trim() === 'privacy'
+      continue
+    }
+    if (!inPrivacySection) continue
+    const setting = line.match(/^disable_network_observability\s*=\s*(.*)$/i)
+    if (!setting) continue
+    const value = String(setting[1] ?? '').split('#', 1)[0].trim().toLowerCase()
+    if (value === 'true') return true
+    if (value === 'false') return false
+    return true
+  }
+  return null
+}
+
+function readDesktopConfigNetworkObservabilitySetting(): boolean | null {
+  try {
+    const path = desktopConfigPath()
+    if (!existsSync(path)) return null
+    const raw = readFileSync(path, 'utf8')
+    return parseDesktopNetworkObservabilityPrivacyConfig(raw)
+  } catch {
+    return true
+  }
+}
+
+function desktopConfigNetworkObservabilityDisabled(): boolean {
+  return readDesktopConfigNetworkObservabilitySetting() ?? false
+}
+
+function desktopNetworkObservabilityDisabled(): boolean {
+  if (NETWORK_OBSERVABILITY_DISABLE_ENV_KEYS.some((key) => truthyEnv(process.env[key]))) return true
+  return desktopPersistedNetworkObservabilityDisabled() || desktopConfigNetworkObservabilityDisabled()
+}
+
+function mockUpdateVersion(): string | null {
+  if (app.isPackaged) return null
+  const version = (process.env[MOCK_UPDATE_VERSION_ENV] || '').trim()
+  return version || null
+}
+
+function desktopUpdateMenuEnabled(): boolean {
+  return autoUpdateSupported() || mockUpdateVersion() !== null
+}
 
 function autoUpdateSupported(): boolean {
   if (!app.isPackaged) return false
+  if (desktopNetworkObservabilityDisabled()) return false
   if (process.env.OPENSQUILLA_DESKTOP_DISABLE_AUTO_UPDATE === '1') return false
   if (process.platform === 'darwin') return true
   if (process.platform === 'win32' && process.env.OPENSQUILLA_DESKTOP_ENABLE_WIN_UPDATE === '1') {
@@ -3388,7 +3573,114 @@ function autoUpdateSupported(): boolean {
 }
 
 function nativeAutoUpdateEnabled(): boolean {
-  return autoUpdateSupported() && macUpdateLocationOk()
+  return mockUpdateVersion() !== null || (autoUpdateSupported() && macUpdateLocationOk())
+}
+
+function desktopUpdateStatePath(): string {
+  return join(desktopStateDir(), 'desktop-update.json')
+}
+
+function loadDesktopUpdatePersistence(): void {
+  if (desktopUpdatePersistenceLoaded) return
+  desktopUpdatePersistenceLoaded = true
+  try {
+    const path = desktopUpdateStatePath()
+    if (!existsSync(path)) return
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as DesktopUpdatePersistedState
+    const snoozedVersion = String(parsed.snoozedVersion || '').trim()
+    const snoozedUntil = String(parsed.snoozedUntil || '').trim()
+    if (!snoozedVersion || !snoozedUntil) return
+    if (Number.isNaN(Date.parse(snoozedUntil)) || Date.parse(snoozedUntil) <= Date.now()) return
+    desktopUpdateSnoozedVersion = snoozedVersion
+    desktopUpdateSnoozedUntil = snoozedUntil
+  } catch {
+    desktopUpdateSnoozedVersion = null
+    desktopUpdateSnoozedUntil = null
+  }
+}
+
+async function persistDesktopUpdateSnooze(): Promise<void> {
+  try {
+    mkdirSync(desktopStateDir(), { recursive: true })
+    await writeFile(
+      desktopUpdateStatePath(),
+      JSON.stringify(
+        {
+          snoozedVersion: desktopUpdateSnoozedVersion || undefined,
+          snoozedUntil: desktopUpdateSnoozedUntil || undefined,
+        },
+        null,
+        2,
+      ),
+      { mode: 0o600 },
+    )
+  } catch (err) {
+    console.warn('[updater] failed to persist update snooze', err)
+  }
+}
+
+function activeDesktopUpdateSnoozeFor(version: string | null): string | null {
+  loadDesktopUpdatePersistence()
+  if (!version || !desktopUpdateSnoozedVersion || !desktopUpdateSnoozedUntil) return null
+  if (desktopUpdateSnoozedVersion !== version) return null
+  if (Date.parse(desktopUpdateSnoozedUntil) <= Date.now()) {
+    desktopUpdateSnoozedVersion = null
+    desktopUpdateSnoozedUntil = null
+    void persistDesktopUpdateSnooze()
+    return null
+  }
+  return desktopUpdateSnoozedUntil
+}
+
+function clearDesktopUpdateSnoozeIfVersionChanged(version: string | null): void {
+  loadDesktopUpdatePersistence()
+  if (!version || !desktopUpdateSnoozedVersion || desktopUpdateSnoozedVersion === version) return
+  desktopUpdateSnoozedVersion = null
+  desktopUpdateSnoozedUntil = null
+  void persistDesktopUpdateSnooze()
+}
+
+function desktopUpdateSnapshot(): DesktopUpdateState {
+  const latestVersion = desktopUpdateLatestVersion || downloadedUpdateVersion
+  return {
+    status: desktopUpdateStatus,
+    currentVersion: app.getVersion(),
+    latestVersion,
+    progress: desktopUpdateProgress,
+    checkedAt: desktopUpdateCheckedAt,
+    error: desktopUpdateError,
+    snoozedUntil: activeDesktopUpdateSnoozeFor(latestVersion),
+    canNativeInstall: nativeAutoUpdateEnabled(),
+    releaseUrl: null,
+  }
+}
+
+function publishDesktopUpdateState(): DesktopUpdateState {
+  const state = desktopUpdateSnapshot()
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('desktop:update:state-changed', state)
+  }
+  return state
+}
+
+function setDesktopUpdateState(patch: Partial<DesktopUpdateState>): DesktopUpdateState {
+  if (patch.status !== undefined) desktopUpdateStatus = patch.status
+  if ('latestVersion' in patch) desktopUpdateLatestVersion = patch.latestVersion ?? null
+  if ('progress' in patch) desktopUpdateProgress = patch.progress ?? null
+  if ('checkedAt' in patch) desktopUpdateCheckedAt = patch.checkedAt ?? null
+  if ('error' in patch) desktopUpdateError = patch.error ?? null
+  clearDesktopUpdateSnoozeIfVersionChanged(desktopUpdateLatestVersion || downloadedUpdateVersion)
+  return publishDesktopUpdateState()
+}
+
+async function dismissDesktopUpdate(): Promise<DesktopUpdateState> {
+  const latestVersion = desktopUpdateLatestVersion || downloadedUpdateVersion
+  if (latestVersion) {
+    desktopUpdateSnoozedVersion = latestVersion
+    desktopUpdateSnoozedUntil = new Date(Date.now() + UPDATE_SNOOZE_MS).toISOString()
+    await persistDesktopUpdateSnooze()
+  }
+  return publishDesktopUpdateState()
 }
 
 // macOS Squirrel cannot swap an app that runs from a read-only/translocated
@@ -3406,25 +3698,137 @@ function desktopTv(key: string, version: string): string {
   return desktopT(key).replace('{version}', version)
 }
 
+function nextMockUpdateDialogResponse(): number | null {
+  if (mockUpdateVersion() === null) return null
+  if (mockUpdateDialogResponses === null) {
+    const raw = (process.env[MOCK_UPDATE_DIALOG_RESPONSES_ENV] || '').trim()
+    mockUpdateDialogResponses = raw
+      ? raw.split(',').map((part) => Number(part.trim()))
+      : []
+  }
+  const response = mockUpdateDialogResponses.shift()
+  if (!Number.isInteger(response)) return null
+  return Number(response)
+}
+
 function showUpdateDialog(
   options: Electron.MessageBoxOptions,
 ): Promise<Electron.MessageBoxReturnValue> {
+  const mockResponse = nextMockUpdateDialogResponse()
+  if (mockResponse !== null) {
+    console.log(`[mock-updater] ${String(options.title || options.message || 'dialog')} response=${mockResponse}`)
+    return Promise.resolve({ response: mockResponse, checkboxChecked: false })
+  }
   const win = currentMainWindow()
   return win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options)
 }
 
 function showUpdateError(err: unknown): void {
-  const shouldReport = manualUpdateCheck || updateDownloadInProgress
+  const shouldNotify = manualUpdateCheck || updateDownloadInProgress
   manualUpdateCheck = false
   updateDownloadInProgress = false
-  if (!shouldReport) return
-  void showUpdateDialog({
-    type: 'error',
-    buttons: ['OK'],
-    title: desktopT('update.errorTitle'),
-    message: desktopT('update.errorTitle'),
-    detail: String(err instanceof Error ? err.message : err ?? ''),
+  if (!shouldNotify) {
+    setDesktopUpdateState({
+      status: downloadedUpdateVersion ? 'downloaded' : 'idle',
+      latestVersion: downloadedUpdateVersion,
+      progress: downloadedUpdateVersion ? 100 : null,
+      checkedAt: new Date().toISOString(),
+      error: null,
+    })
+    return
+  }
+  setDesktopUpdateState({
+    status: 'error',
+    progress: null,
+    checkedAt: new Date().toISOString(),
+    error: String(err instanceof Error ? err.message : err ?? ''),
   })
+}
+
+async function runMockUpdateFlow(version: string): Promise<void> {
+  if (mockUpdatePromptActive) return
+  mockUpdatePromptActive = true
+  try {
+    if (downloadedUpdateVersion === version) {
+      setDesktopUpdateState({
+        status: 'downloaded',
+        latestVersion: version,
+        progress: 100,
+        checkedAt: new Date().toISOString(),
+        error: null,
+      })
+    } else {
+      setDesktopUpdateState({
+        status: 'available',
+        latestVersion: version,
+        progress: null,
+        checkedAt: new Date().toISOString(),
+        error: null,
+      })
+    }
+  } finally {
+    mockUpdatePromptActive = false
+    updateDownloadInProgress = false
+    manualUpdateCheck = false
+  }
+}
+
+async function downloadDesktopUpdate(): Promise<DesktopUpdateState> {
+  if (updateDownloadInProgress || updateApplying || desktopUpdateStatus === 'downloaded') {
+    return desktopUpdateSnapshot()
+  }
+
+  const mockVersion = mockUpdateVersion()
+  if (mockVersion !== null) {
+    const version = desktopUpdateLatestVersion || mockVersion
+    updateDownloadInProgress = true
+    setDesktopUpdateState({
+      status: 'downloading',
+      latestVersion: version,
+      progress: 0,
+      error: null,
+    })
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 100)
+    })
+    updateDownloadInProgress = false
+    downloadedUpdateVersion = version
+    mockDownloadedUpdate = true
+    createApplicationMenu()
+    return setDesktopUpdateState({
+      status: 'downloaded',
+      latestVersion: version,
+      progress: 100,
+      error: null,
+    })
+  }
+
+  if (!autoUpdateSupported()) return desktopUpdateSnapshot()
+  if (!macUpdateLocationOk()) {
+    return setDesktopUpdateState({
+      status: 'error',
+      progress: null,
+      error: desktopT('update.moveToApplications'),
+    })
+  }
+
+  initAutoUpdater()
+  if (!desktopUpdateLatestVersion) await checkForUpdates(true)
+  if (!desktopUpdateLatestVersion) return desktopUpdateSnapshot()
+
+  updateDownloadInProgress = true
+  setDesktopUpdateState({
+    status: 'downloading',
+    progress: 0,
+    error: null,
+  })
+  try {
+    await autoUpdater.downloadUpdate()
+  } catch (err) {
+    console.error('[updater] download failed', err)
+    showUpdateError(err)
+  }
+  return desktopUpdateSnapshot()
 }
 
 function initAutoUpdater(): void {
@@ -3445,37 +3849,35 @@ function initAutoUpdater(): void {
 
   autoUpdater.on('update-available', (info) => {
     const version = String(info?.version ?? '')
-    void showUpdateDialog({
-      type: 'info',
-      buttons: [desktopT('update.download'), desktopT('update.later')],
-      defaultId: 0,
-      cancelId: 1,
-      title: desktopT('update.newVersionTitle'),
-      message: desktopT('update.newVersionTitle'),
-      detail: desktopTv('update.newVersionDetail', version),
-    }).then(({ response }) => {
-      if (response !== 0) {
-        manualUpdateCheck = false
-        return
-      }
-      updateDownloadInProgress = true
-      autoUpdater.downloadUpdate().catch((err) => {
-        console.error('[updater] download failed', err)
-        showUpdateError(err)
-      })
+    manualUpdateCheck = false
+    updateDownloadInProgress = false
+    setDesktopUpdateState({
+      status: 'available',
+      latestVersion: version || null,
+      progress: null,
+      checkedAt: new Date().toISOString(),
+      error: null,
     })
   })
 
   autoUpdater.on('update-not-available', () => {
-    updateDownloadInProgress = false
-    if (!manualUpdateCheck) return
     manualUpdateCheck = false
-    void showUpdateDialog({
-      type: 'info',
-      buttons: ['OK'],
-      title: desktopT('update.upToDateTitle'),
-      message: desktopT('update.upToDateTitle'),
-      detail: desktopTv('update.upToDateDetail', app.getVersion()),
+    updateDownloadInProgress = false
+    setDesktopUpdateState({
+      status: 'not-available',
+      latestVersion: app.getVersion(),
+      progress: null,
+      checkedAt: new Date().toISOString(),
+      error: null,
+    })
+  })
+
+  autoUpdater.on('download-progress', (progress) => {
+    const percent = Number(progress?.percent)
+    setDesktopUpdateState({
+      status: 'downloading',
+      progress: Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : null,
+      error: null,
     })
   })
 
@@ -3483,16 +3885,15 @@ function initAutoUpdater(): void {
     manualUpdateCheck = false
     updateDownloadInProgress = false
     const version = String(info?.version ?? '')
-    void showUpdateDialog({
-      type: 'info',
-      buttons: [desktopT('update.restartNow'), desktopT('update.later')],
-      defaultId: 0,
-      cancelId: 1,
-      title: desktopT('update.readyTitle'),
-      message: desktopT('update.readyTitle'),
-      detail: desktopTv('update.readyDetail', version),
-    }).then(({ response }) => {
-      if (response === 0) void applyDownloadedUpdate()
+    downloadedUpdateVersion = version
+    mockDownloadedUpdate = false
+    createApplicationMenu()
+    setDesktopUpdateState({
+      status: 'downloaded',
+      latestVersion: version || null,
+      progress: 100,
+      checkedAt: new Date().toISOString(),
+      error: null,
     })
   })
 
@@ -3503,24 +3904,53 @@ function initAutoUpdater(): void {
 }
 
 async function checkForUpdates(manual: boolean): Promise<void> {
-  if (!autoUpdateSupported()) return
+  if (updateDownloadInProgress || updateApplying) return
 
-  // Guide the user to /Applications first, otherwise the in-place swap fails.
-  if (!macUpdateLocationOk()) {
+  const mockVersion = mockUpdateVersion()
+  if (mockVersion !== null) {
+    manualUpdateCheck = manual
+    setDesktopUpdateState({
+      status: 'checking',
+      latestVersion: desktopUpdateLatestVersion || mockVersion,
+      progress: null,
+      checkedAt: new Date().toISOString(),
+      error: null,
+    })
+    await runMockUpdateFlow(mockVersion)
+    return
+  }
+
+  if (!autoUpdateSupported()) {
     if (manual) {
-      void showUpdateDialog({
-        type: 'warning',
-        buttons: ['OK'],
-        title: desktopT('update.errorTitle'),
-        message: desktopT('update.errorTitle'),
-        detail: desktopT('update.moveToApplications'),
+      setDesktopUpdateState({
+        status: 'error',
+        progress: null,
+        checkedAt: new Date().toISOString(),
+        error: desktopT('update.errorTitle'),
       })
     }
     return
   }
 
+  // Guide the user to /Applications first, otherwise the in-place swap fails.
+  if (!macUpdateLocationOk()) {
+    setDesktopUpdateState({
+      status: 'error',
+      progress: null,
+      checkedAt: new Date().toISOString(),
+      error: desktopT('update.moveToApplications'),
+    })
+    return
+  }
+
   initAutoUpdater()
   manualUpdateCheck = manual
+  setDesktopUpdateState({
+    status: 'checking',
+    progress: null,
+    checkedAt: new Date().toISOString(),
+    error: null,
+  })
   try {
     await autoUpdater.checkForUpdates()
   } catch (err) {
@@ -3529,26 +3959,125 @@ async function checkForUpdates(manual: boolean): Promise<void> {
   }
 }
 
+function gatewayProcessForUpdateInstall(): ChildProcessWithoutNullStreams | null {
+  const child = gatewayProcess && gatewayState.owned ? gatewayProcess : updateGatewayShutdownProcess
+  if (!child) return null
+  if (!hasGatewayProcessExited(child)) return child
+  if (updateGatewayShutdownProcess === child) updateGatewayShutdownProcess = null
+  return null
+}
+
+async function waitForGatewayProcessExit(child: ChildProcessWithoutNullStreams): Promise<boolean> {
+  if (hasGatewayProcessExited(child)) return true
+  return new Promise<boolean>((resolve) => {
+    let settled = false
+    const finish = (exited: boolean) => {
+      if (settled) return
+      settled = true
+      resolve(exited)
+    }
+    child.once('exit', () => finish(true))
+    setTimeout(() => {
+      finish(hasGatewayProcessExited(child))
+    }, UPDATE_GATEWAY_EXIT_TIMEOUT_MS).unref()
+  })
+}
+
+function restoreDownloadedUpdateRetryState(pendingVersion: string | null): void {
+  downloadedUpdateVersion = pendingVersion
+  updateApplying = false
+  isQuitting = false
+  createApplicationMenu()
+  setDesktopUpdateState({
+    status: pendingVersion ? 'downloaded' : 'error',
+    latestVersion: pendingVersion,
+    progress: pendingVersion ? 100 : null,
+  })
+}
+
 // Stop the owned gateway child and WAIT for it to exit before handing control to
 // the installer. The gateway holds the listen port + a PID lock and (on Windows)
 // open file handles under resources/runtime that the installer must overwrite —
 // orphaning it breaks the next launch. Mirrors the uninstall quiesce path.
 async function applyDownloadedUpdate(): Promise<void> {
   if (updateApplying) return
-  updateApplying = true
-  isQuitting = true
-  if (gatewayProcess && gatewayState.owned) {
-    const child = gatewayProcess
-    stopGateway()
-    await new Promise<void>((resolve) => {
-      if (child.exitCode !== null || child.signalCode !== null) return resolve()
-      child.once('exit', () => resolve())
-      setTimeout(resolve, GATEWAY_SHUTDOWN_KILL_AFTER_MS).unref()
+  if (!mockDownloadedUpdate && !downloadedUpdateVersion) return
+
+  if (mockDownloadedUpdate) {
+    const version = downloadedUpdateVersion || mockUpdateVersion() || app.getVersion()
+    updateApplying = true
+    setDesktopUpdateState({
+      status: 'applying',
+      latestVersion: version,
+      progress: 100,
+      error: null,
     })
+    try {
+      await showUpdateDialog({
+        type: 'info',
+        buttons: ['OK'],
+        title: desktopT('update.mockInstallTitle'),
+        message: desktopT('update.mockInstallTitle'),
+        detail: desktopTv('update.mockInstallDetail', version),
+      })
+    } finally {
+      downloadedUpdateVersion = version
+      updateApplying = false
+      createApplicationMenu()
+      setDesktopUpdateState({
+        status: 'downloaded',
+        latestVersion: version,
+        progress: 100,
+        error: null,
+      })
+    }
+    return
+  }
+  const pendingVersion = downloadedUpdateVersion
+  updateApplying = true
+  downloadedUpdateVersion = null
+  createApplicationMenu()
+  setDesktopUpdateState({
+    status: 'applying',
+    latestVersion: pendingVersion,
+    progress: 100,
+    error: null,
+  })
+  isQuitting = true
+  const child = gatewayProcessForUpdateInstall()
+  if (child) {
+    if (gatewayProcess === child && gatewayState.owned) {
+      updateGatewayShutdownProcess = child
+      stopGateway()
+    }
+    const exited = await waitForGatewayProcessExit(child)
+    if (!exited) {
+      restoreDownloadedUpdateRetryState(pendingVersion)
+      void showUpdateDialog({
+        type: 'error',
+        buttons: ['OK'],
+        title: desktopT('update.errorTitle'),
+        message: desktopT('update.errorTitle'),
+        detail: desktopT('update.gatewayShutdownTimeout'),
+      })
+      return
+    }
+    if (updateGatewayShutdownProcess === child) updateGatewayShutdownProcess = null
   }
   // isSilent=false (show the platform installer UI where applicable),
   // isForceRunAfter=true (relaunch after install).
-  autoUpdater.quitAndInstall(false, true)
+  try {
+    autoUpdater.quitAndInstall(false, true)
+  } catch (err) {
+    restoreDownloadedUpdateRetryState(pendingVersion)
+    void showUpdateDialog({
+      type: 'error',
+      buttons: ['OK'],
+      title: desktopT('update.errorTitle'),
+      message: desktopT('update.errorTitle'),
+      detail: String(err instanceof Error ? err.message : err ?? ''),
+    })
+  }
 }
 
 // Lets the gateway-served Control UI know whether THIS desktop runtime can
@@ -3557,6 +4086,17 @@ async function applyDownloadedUpdate(): Promise<void> {
 // (e.g. unsigned Windows, or macOS running outside /Applications) still show
 // the passive notice.
 ipcMain.handle('desktop:update:supported', () => nativeAutoUpdateEnabled())
+ipcMain.handle('desktop:update:state', () => desktopUpdateSnapshot())
+ipcMain.handle('desktop:update:check', async () => {
+  await checkForUpdates(true)
+  return desktopUpdateSnapshot()
+})
+ipcMain.handle('desktop:update:download', async () => downloadDesktopUpdate())
+ipcMain.handle('desktop:update:relaunch', async () => {
+  await applyDownloadedUpdate()
+  return desktopUpdateSnapshot()
+})
+ipcMain.handle('desktop:update:dismiss', async () => dismissDesktopUpdate())
 ipcMain.handle('desktop:os-locale', () => desktopLocale)
 ipcMain.handle('gateway:status', () => ({ ...gatewayState }))
 ipcMain.handle('gateway:reveal-log', async () => {
@@ -3778,7 +4318,11 @@ if (!gotSingleInstanceLock) {
     createApplicationMenu()
     void openOrResumeDesktopApp()
     initAutoUpdater()
-    if (autoUpdateSupported()) {
+    if (mockUpdateVersion() !== null) {
+      setTimeout(() => {
+        void checkForUpdates(false)
+      }, 1_000).unref()
+    } else if (autoUpdateSupported()) {
       // Delay the silent startup check so it doesn't compete with gateway boot.
       setTimeout(() => {
         void checkForUpdates(false)

@@ -4,24 +4,37 @@ The real-terminal harness launches the OpenTUI chat surface in a child process,
 drives it through tmux when available, falls back to PTY when needed, and stores
 evidence under `.artifacts/tui-real-terminal/runs`.
 
-## Platform requirements (Windows needs WSL2)
+## Platform requirements
 
-The harness drives a real terminal through tmux or a Unix pseudo-terminal
-(Python's `pty` module). Both are Unix-only:
+The harness runs on Unix-like terminal environments. Linux and macOS can run it
+directly. Windows users need WSL2 because the harness depends on Unix terminal
+primitives. It prefers tmux when available and falls back to a Unix
+pseudo-terminal (Python's `pty` module) when tmux is missing.
 
-- `pty` ships in the Python standard library **only on Unix**; on native Windows
-  `import pty` fails, so there is no PTY driver.
-- `tmux` has no native Windows build.
+- Linux and macOS can run the deterministic suite with either tmux or the PTY
+  fallback.
+- Native Windows shells such as PowerShell and `cmd.exe` are not supported:
+  Python's `pty` module is Unix-only, and tmux has no native Windows build.
+- WSL2 is mentioned only as the Windows compatibility path; inside WSL2 this is
+  just the Linux path.
 
-**Native PowerShell is not supported for this harness, and Windows users must run
-it under WSL2.** Inside a WSL2 distro the Linux `pty`/`tmux` stack works exactly
-as on Linux:
+Install tmux when you want the tmux driver:
+
+```bash
+# Debian/Ubuntu Linux, including WSL2:
+sudo apt-get update && sudo apt-get install -y tmux
+
+# macOS:
+brew install tmux
+```
+
+Windows-only setup:
 
 ```bash
 # In an elevated PowerShell, once:
 wsl --install            # installs WSL2 + a default Ubuntu distro
 
-# Then inside the WSL2 shell, install tmux and run the harness:
+# Then inside the WSL2 shell:
 sudo apt-get update && sudo apt-get install -y tmux
 uv run pytest tests/integration/cli/tui_real_terminal -q
 ```

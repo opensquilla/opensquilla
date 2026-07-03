@@ -17,6 +17,10 @@ describe('sectionFromRouteParam — /settings/:section mapping', () => {
     expect(sectionFromRouteParam('behavior')).toBe('behavior')
   })
 
+  it('maps the Privacy section for gateway-backed privacy settings', () => {
+    expect(sectionFromRouteParam('privacy')).toBe('privacy')
+  })
+
   it('falls back to the default first section for unknown, missing, or sentinel params', () => {
     // `auto` is a routing sentinel (/setup → /settings/auto), not a real
     // section, so the param mapper treats it as unknown and defaults.
@@ -33,6 +37,7 @@ describe('isKnownSectionParam', () => {
   it('recognises real sections and rejects sentinels/unknowns', () => {
     expect(isKnownSectionParam('connection')).toBe(true)
     expect(isKnownSectionParam('behavior')).toBe(true)
+    expect(isKnownSectionParam('privacy')).toBe(true)
     expect(isKnownSectionParam('capabilities')).toBe(true)
     expect(isKnownSectionParam('auto')).toBe(false)
     expect(isKnownSectionParam('nope')).toBe(false)

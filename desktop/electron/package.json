@@ -20,6 +20,7 @@
     "verify:package": "npm run verify:icons && node scripts/verify-package.mjs",
     "verify:gateway-smoke": "node scripts/smoke-gateway.mjs",
     "test:secret-storage": "npm run build && node scripts/test-secret-storage-policy.mjs",
+    "test:mock-update-flow": "npm run build && node scripts/test-mock-update-flow.mjs",
     "start": "electron .",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder"

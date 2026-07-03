@@ -9,6 +9,28 @@ export interface GatewayStatus {
   error?: string
 }
 
+export type DesktopUpdateStatus =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'downloading'
+  | 'downloaded'
+  | 'not-available'
+  | 'error'
+  | 'applying'
+
+export interface DesktopUpdateState {
+  status: DesktopUpdateStatus
+  currentVersion: string
+  latestVersion: string | null
+  progress: number | null
+  checkedAt: string | null
+  error: string | null
+  snoozedUntil: string | null
+  canNativeInstall: boolean
+  releaseUrl: string | null
+}
+
 export interface DesktopSettings {
   provider: string
   model: string
@@ -17,6 +39,7 @@ export interface DesktopSettings {
   searchProvider: string
   searchApiKeyEnv: string
   searchApiKeyConfigured: boolean
+  disableNetworkObservability: boolean
   searchProviders?: SearchProviderOption[]
   providers?: ProviderOption[]
   gateway: GatewayStatus
@@ -47,6 +70,7 @@ export interface DesktopSettingsPayload {
   apiKey?: string
   searchProvider?: string
   searchApiKey?: string
+  disableNetworkObservability?: boolean
 }
 
 export interface PlatformCapabilities {
@@ -102,6 +126,15 @@ export interface PlatformOnboardingApi {
   cancel?: () => Promise<unknown>
 }
 
+export interface PlatformUpdatesApi {
+  getState(): Promise<DesktopUpdateState>
+  check(): Promise<DesktopUpdateState>
+  download(): Promise<DesktopUpdateState>
+  relaunch(): Promise<DesktopUpdateState>
+  dismiss(): Promise<DesktopUpdateState>
+  onState(callback: (state: DesktopUpdateState) => void): () => void
+}
+
 export interface Platform {
   id: PlatformId
   capabilities: PlatformCapabilities
@@ -109,6 +142,7 @@ export interface Platform {
   settings: PlatformSettingsApi
   onboarding: PlatformOnboardingApi
   files: PlatformFilesApi
+  updates: PlatformUpdatesApi
   /**
    * The host OS locale (BCP-47), used only to seed the initial UI language on
    * first run. Desktop reads it from Electron's app.getLocale(); web returns

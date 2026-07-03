@@ -82,7 +82,7 @@ and errors.
 
 Read [`features/tui-frontend.md`](features/tui-frontend.md) for backend status
 and [`tui-real-terminal-harness.md`](tui-real-terminal-harness.md) for
-terminal-level launch evidence.
+maintainer terminal-level launch evidence.
 
 ## Pair Replay With Sessions
 

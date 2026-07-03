@@ -11,17 +11,19 @@ root release README with task-oriented guides.
 4. [`configuration.md`](configuration.md) - provider, router, search, channel,
    memory, and permission configuration.
 5. [`cli.md`](cli.md) - command groups and common CLI workflows.
-6. [`web-ui.md`](web-ui.md) - local control console and chat UI.
-7. [`sessions.md`](sessions.md) - session continuity, export, resume, abort,
+6. [`tui.md`](tui.md) - terminal chat usage, slash commands, files, sessions,
+   and the OpenTUI preview.
+7. [`web-ui.md`](web-ui.md) - local control console and chat UI.
+8. [`sessions.md`](sessions.md) - session continuity, export, resume, abort,
    and cleanup.
-8. [`glossary.md`](glossary.md) - user-facing terminology.
+9. [`glossary.md`](glossary.md) - user-facing terminology.
 
 ## Feature Guides
 
 - [`features.md`](features.md) - capability catalog.
 - [`features/squilla-router.md`](features/squilla-router.md) - model routing.
-- [`features/tui-frontend.md`](features/tui-frontend.md) - terminal streaming,
-  plugin slots, Router HUD, and TUI backend evaluation.
+- [`features/tui-frontend.md`](features/tui-frontend.md) - terminal backend
+  architecture, plugin slots, Router HUD, and OpenTUI evaluation.
 - [`features/tool-compression.md`](features/tool-compression.md) - compact tool
   results and handles.
 - [`features/meta-skills.md`](features/meta-skills.md) - reusable workflow skills.
@@ -56,9 +58,9 @@ root release README with task-oriented guides.
 - [`usage-and-cost.md`](usage-and-cost.md) - token usage, estimated cost, and
   cost investigation workflow.
 - [`diagnostics-and-replay.md`](diagnostics-and-replay.md) - diagnostics,
-  raw capture guidance, and read-only turn replay.
-- [`tui-real-terminal-harness.md`](tui-real-terminal-harness.md) -
-  real-terminal TUI launch, replay, and evidence capture.
+  raw capture guidance, read-only turn replay, and developer replay benchmarks.
+- [`tui-real-terminal-harness.md`](tui-real-terminal-harness.md) - maintainer
+  real-terminal TUI integration harness and evidence capture.
 - [`operations.md`](operations.md) - sessions, cron, usage, diagnostics,
   migration, MCP server, and install inventory commands.
 - [`troubleshooting.md`](troubleshooting.md) - common install/runtime issues.

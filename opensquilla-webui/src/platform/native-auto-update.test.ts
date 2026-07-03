@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createWebPlatform } from './web'
 import { createDesktopPlatform } from './desktop'
 
@@ -44,5 +44,57 @@ describe('nativeAutoUpdateEnabled', () => {
       },
     })
     expect(await createDesktopPlatform().nativeAutoUpdateEnabled()).toBe(true)
+  })
+})
+
+describe('desktop update platform bridge', () => {
+  it('web exposes an inert update API with a non-native idle state', async () => {
+    const state = await createWebPlatform().updates.getState()
+
+    expect(state).toMatchObject({
+      status: 'idle',
+      currentVersion: '',
+      latestVersion: null,
+      canNativeInstall: false,
+    })
+  })
+
+  it('forwards desktop update state, actions, and subscriptions from the shell bridge', async () => {
+    const unsubscribe = vi.fn()
+    const checkForUpdates = vi.fn(async () => ({ status: 'checking' }))
+    const downloadUpdate = vi.fn(async () => ({ status: 'downloading' }))
+    const relaunchToUpdate = vi.fn(async () => ({ status: 'applying' }))
+    const dismissUpdate = vi.fn(async () => ({ status: 'available', snoozedUntil: '2026-07-04T00:00:00.000Z' }))
+    setDesktopApi({
+      isAutoUpdateEnabled: async () => true,
+      getUpdateState: async () => ({
+        status: 'available',
+        currentVersion: '1.0.0',
+        latestVersion: '2.0.0',
+        progress: null,
+        checkedAt: null,
+        error: null,
+        snoozedUntil: null,
+        canNativeInstall: true,
+        releaseUrl: null,
+      }),
+      checkForUpdates,
+      downloadUpdate,
+      relaunchToUpdate,
+      dismissUpdate,
+      onUpdateState: () => unsubscribe,
+    })
+
+    const updates = createDesktopPlatform().updates
+    expect(await updates.getState()).toMatchObject({ status: 'available', latestVersion: '2.0.0' })
+    await updates.check()
+    await updates.download()
+    await updates.relaunch()
+    await updates.dismiss()
+    expect(checkForUpdates).toHaveBeenCalledTimes(1)
+    expect(downloadUpdate).toHaveBeenCalledTimes(1)
+    expect(relaunchToUpdate).toHaveBeenCalledTimes(1)
+    expect(dismissUpdate).toHaveBeenCalledTimes(1)
+    expect(updates.onState(() => undefined)).toBe(unsubscribe)
   })
 })

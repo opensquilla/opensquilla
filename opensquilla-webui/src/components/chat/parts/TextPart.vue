@@ -72,7 +72,7 @@ watch(() => props.sources, decorate, { flush: 'post' })
 .msg-ai-text :deep(code) {
   background: var(--bg-hover);
   padding: 0.0625rem 0.25rem;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-size: 0.8125rem;
   color: var(--text-muted);
@@ -80,7 +80,7 @@ watch(() => props.sources, decorate, { flush: 'post' })
 .msg-ai-text :deep(pre) {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   padding: 0.625rem;
   overflow-x: auto;
   margin: 0.375rem 0;

@@ -159,7 +159,7 @@ function disconnect() {
 }
 
 .conn-status__pill {
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   flex-shrink: 0;
   font-size: 11px;
   font-weight: 700;

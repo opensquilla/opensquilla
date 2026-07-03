@@ -768,7 +768,7 @@ function escRegex(s: string): string {
 }
 
 .lg-level-btn__dot {
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   display: inline-block;
   height: 6px;
   width: 6px;
@@ -864,7 +864,7 @@ function escRegex(s: string): string {
 .lg-spinner {
   animation: lg-spin 1s linear infinite;
   border: 2px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   border-top-color: var(--accent);
   display: inline-block;
   height: 20px;
@@ -934,7 +934,7 @@ function escRegex(s: string): string {
 
 .lg-line__msg :deep(.lg-line__match) {
   background: color-mix(in srgb, var(--accent) 25%, transparent);
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
   color: var(--text);
   padding: 0 2px;
 }

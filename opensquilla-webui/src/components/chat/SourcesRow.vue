@@ -320,7 +320,7 @@ function sourceTrustLabel(source: SourcePart): string {
   gap: 0.375rem;
   padding: 0.25rem 0.5rem;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--bg-surface);
   font: inherit;
   font-size: 0.8125rem;
@@ -350,7 +350,7 @@ function sourceTrustLabel(source: SourcePart): string {
   font-size: 0.6875rem;
   line-height: 1.3;
   padding: 0.0625rem 0.375rem;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   color: var(--text-muted);
   background: var(--bg-hover);
 }
@@ -370,7 +370,7 @@ function sourceTrustLabel(source: SourcePart): string {
   justify-content: center;
   width: 1.125rem;
   height: 1.125rem;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   overflow: hidden;
@@ -468,7 +468,7 @@ function sourceTrustLabel(source: SourcePart): string {
 .sources-row__status {
   flex-shrink: 0;
   padding: 0.0625rem 0.375rem;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   font-family: var(--font-mono);
   font-size: 0.625rem;
   line-height: 1.3;

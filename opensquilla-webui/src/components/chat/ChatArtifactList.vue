@@ -551,14 +551,14 @@ onUnmounted(() => {
   width: 64%;
   height: var(--sp-1);
   overflow: hidden;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--bg-hover);
 }
 
 .msg-media-card__progress-bar {
   display: block;
   height: 100%;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--accent);
   transition: width var(--dur-base) var(--ease-standard);
 }

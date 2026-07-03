@@ -333,7 +333,7 @@ watch(
 .meta-runs-item {
   padding: 10px 12px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--bg-base, var(--bg)) 72%, transparent);
 }
 
@@ -382,7 +382,7 @@ watch(
   max-height: 240px;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: var(--bg);
   color: var(--text-muted);
   font-family: var(--font-mono);

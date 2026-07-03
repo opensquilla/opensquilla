@@ -559,7 +559,7 @@ function fmtTok(n?: number | null): string {
 .msg-ai-text :deep(code) {
   background: var(--bg-hover);
   padding: 0.0625rem 0.25rem;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-size: 0.8125rem;
   color: var(--text-muted);
@@ -567,7 +567,7 @@ function fmtTok(n?: number | null): string {
 .msg-ai-text :deep(pre) {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   padding: 0.625rem;
   overflow-x: auto;
   margin: 0.375rem 0;
@@ -580,7 +580,7 @@ function fmtTok(n?: number | null): string {
 .step-card {
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 0.25rem;
   overflow: hidden;
   margin: 0.625rem 0;
@@ -588,7 +588,7 @@ function fmtTok(n?: number | null): string {
 }
 
 .step-group {
-  border-radius: 7px;
+  border-radius: var(--radius-md);
 }
 
 .tool-overflow-note {
@@ -611,7 +611,7 @@ function fmtTok(n?: number | null): string {
 
 .tool-overflow-note:focus-visible {
   outline: none;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
@@ -623,7 +623,7 @@ function fmtTok(n?: number | null): string {
   padding: 0.625rem 0.875rem;
   cursor: pointer;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: transparent;
   font: inherit;
   text-align: left;
@@ -657,7 +657,7 @@ function fmtTok(n?: number | null): string {
 .tool-row__bullet {
   width: 0.4375rem;
   height: 0.4375rem;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--text-dim);
   flex-shrink: 0;
 }
@@ -729,7 +729,7 @@ function fmtTok(n?: number | null): string {
   font-size: 0.6875rem;
   line-height: 1.3;
   padding: 0.0625rem 0.375rem;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   color: var(--text-muted);
   background: var(--bg-hover);
   white-space: nowrap;
@@ -753,7 +753,7 @@ function fmtTok(n?: number | null): string {
   font-size: 0.6875rem;
   line-height: 1.3;
   padding: 0.0625rem 0.375rem;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   color: var(--text-muted);
   background: var(--bg-hover);
 }
@@ -807,7 +807,7 @@ function fmtTok(n?: number | null): string {
 }
 
 .run-trace__dot {
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   flex-shrink: 0;
   height: 0.5rem;
   width: 0.5rem;
@@ -870,7 +870,7 @@ function fmtTok(n?: number | null): string {
    the ring is static so a running row carries one rhythm, not two. */
 .tool-timeline--checklist .tool-row--running {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 44%, transparent);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
 }
 
 .tool-timeline--checklist .tool-row__bullet--ok {
@@ -900,7 +900,7 @@ function fmtTok(n?: number | null): string {
 
 .tool-timeline--checklist .tool-row--error {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 36%, transparent);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
 }
 
 @keyframes checklistCheckIn {
@@ -972,7 +972,7 @@ function fmtTok(n?: number | null): string {
   padding: 0.5rem 0.625rem;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
 }
 
 .tool-row-section--error {
@@ -1007,7 +1007,7 @@ function fmtTok(n?: number | null): string {
   margin-top: 0.25rem;
   padding: 0.125rem 0.375rem;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--accent);
   font: inherit;

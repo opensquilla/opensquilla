@@ -1007,7 +1007,7 @@ function gatewayContextUrl(): string {
   align-items: center;
   gap: 6px;
   padding: 3px 10px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -1487,7 +1487,7 @@ function gatewayContextUrl(): string {
 
 .health-count::before {
   background: var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   content: "";
   height: 8px;
   position: absolute;
@@ -1560,7 +1560,7 @@ function gatewayContextUrl(): string {
 
 .health-finding__dot {
   background: var(--text-dim);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   box-shadow: 0 0 0 4px color-mix(in srgb, currentColor 10%, transparent);
   display: block;
   height: 10px;
@@ -1569,7 +1569,7 @@ function gatewayContextUrl(): string {
 
 .health-finding__line {
   background: var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   flex: 1;
   min-height: 32px;
   width: 1px;
@@ -1597,7 +1597,7 @@ function gatewayContextUrl(): string {
 .health-surface,
 .health-chip {
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   color: var(--text-muted);
   display: inline-flex;
   letter-spacing: 0.08em;
@@ -1707,7 +1707,7 @@ function gatewayContextUrl(): string {
   align-items: center;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   color: var(--text-muted);
   display: inline-flex;
   font-family: var(--font-mono);

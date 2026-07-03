@@ -142,7 +142,7 @@ function attachmentMeta(attachment: DisplayAttachment): string {
   max-width: calc(100% - 16px);
   box-sizing: border-box;
   padding: 0.5rem 2.5rem 0.5rem 1rem;
-  border-radius: 0.875rem;
+  border-radius: var(--radius-lg);
   transition: background var(--dur-base) var(--ease-standard), box-shadow var(--dur-base) var(--ease-standard);
 }
 
@@ -168,7 +168,7 @@ function attachmentMeta(attachment: DisplayAttachment): string {
   width: 1.5rem;
   height: 1.5rem;
   border: 2px solid var(--border-strong);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--bg-surface);
   color: var(--text-muted);
   box-shadow: var(--shadow-md);
@@ -203,7 +203,7 @@ function attachmentMeta(attachment: DisplayAttachment): string {
   background: var(--bg-elevated);
   color: var(--text);
   padding: 0.5rem 0.875rem;
-  border-radius: 1rem;
+  border-radius: var(--radius-xl);
   font-size: 0.875rem;
   line-height: 1.5;
   max-width: 82%;
@@ -256,7 +256,7 @@ function attachmentMeta(attachment: DisplayAttachment): string {
   border: none;
   cursor: pointer;
   color: var(--text-dim);
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   font-size: 0.6875rem;
 }
 
@@ -299,7 +299,7 @@ function attachmentMeta(attachment: DisplayAttachment): string {
 .msg-thumb {
   max-width: 200px;
   max-height: 200px;
-  border-radius: 0.375rem;
+  border-radius: var(--radius-md);
   object-fit: cover;
 }
 
@@ -312,7 +312,7 @@ function attachmentMeta(attachment: DisplayAttachment): string {
   height: 2rem;
   background: color-mix(in srgb, var(--text) 7%, var(--bg-surface));
   border: 1px solid color-mix(in srgb, var(--text) 9%, var(--border));
-  border-radius: 0.375rem;
+  border-radius: var(--radius-md);
   color: var(--text-muted);
 }
 
@@ -324,7 +324,7 @@ function attachmentMeta(attachment: DisplayAttachment): string {
   max-width: min(100%, 24rem);
   padding: 0.5rem 0.625rem;
   border: 1px solid color-mix(in srgb, var(--text) 8%, var(--border));
-  border-radius: 0.625rem;
+  border-radius: var(--radius-lg);
   background: color-mix(in srgb, var(--bg-surface) 74%, var(--bg-elevated));
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text) 6%, transparent);
   text-align: left;

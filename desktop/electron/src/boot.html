@@ -14,21 +14,22 @@
       --muted: #686e66;
       --dim: #8b9088;
       --line: rgba(34, 31, 27, 0.12);
-      --accent: #c5480b;
+      --accent: #F26A1B;
       --danger: #a23a22;
     }
 
     /* The app theme defaults to "system", so match the OS here — a dark-OS user
        gets a dark splash that hands off to the dark app with no luminance flash.
-       These mirror the app's base.css dark tokens. */
+       These mirror the app's canonical "Instrument" dark tokens. */
     @media (prefers-color-scheme: dark) {
       :root {
-        --bg: #08080a;
-        --surface: #101013;
+        --bg: #0E0F11;
+        --surface: #161719;
         --ink: #e8e8ea;
         --muted: #9a9aa0;
         --dim: #6b6b72;
         --line: rgba(255, 255, 255, 0.12);
+        --accent: #F26A1B;
       }
     }
 

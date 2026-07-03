@@ -69,7 +69,7 @@ useDialogA11y(modalRef, isOpen, onCancel, { initialFocus: cancelBtn })
 .modal {
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-modal);
   max-width: 420px;
   padding: var(--sp-5);
   width: 90%;

@@ -120,7 +120,7 @@ const gridStyle = computed<Record<string, string>>(() => {
     radial-gradient(color-mix(in srgb, var(--router-text) 8%, transparent) 0.7px, transparent 1.2px) 0 0 / 8px 8px,
     var(--router-surface);
   border: 1px solid var(--router-hairline);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
 
@@ -133,7 +133,7 @@ const gridStyle = computed<Record<string, string>>(() => {
   padding: 0 6px;
   background: var(--router-cell-bg);
   border: 1px solid var(--router-hairline);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   color: var(--router-text);
   font-family: var(--font-mono);
   font-size: 10.5px;
@@ -289,7 +289,7 @@ const gridStyle = computed<Record<string, string>>(() => {
   content: 'observe';
   margin-left: 12px;
   padding: 1px 6px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--router-muted) 16%, transparent);
   color: var(--router-muted);
   font-family: var(--font-mono);

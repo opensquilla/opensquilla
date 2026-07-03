@@ -79,7 +79,7 @@ function gapText(i: number): string {
 .status-history__dot {
   width: 0.375rem;
   height: 0.375rem;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--text-dim);
   flex-shrink: 0;
 }

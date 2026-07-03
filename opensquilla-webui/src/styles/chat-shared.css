@@ -54,7 +54,7 @@
   min-width: 1.5rem;
   height: 1.5rem;
   padding: 0 var(--sp-2);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--bg-elevated);
   color: var(--text-muted);
   font-family: var(--font-mono);
@@ -268,14 +268,14 @@
   width: min(280px, 60%);
   height: 4px;
   overflow: hidden;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--bg-hover);
 }
 
 .deliv-preview__progress-bar {
   display: block;
   height: 100%;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--accent);
   transition: width var(--dur-base) var(--ease-standard);
 }
@@ -284,7 +284,7 @@
   display: block;
   width: min(280px, 60%);
   height: 4px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: linear-gradient(
     100deg,
     var(--bg-hover) 30%,

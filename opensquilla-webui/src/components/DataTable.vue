@@ -7,7 +7,20 @@
             v-for="col in columns"
             :key="col.key"
             :class="{ sortable: col.sortable, active: sortKey === col.key }"
+            :role="col.sortable ? 'button' : undefined"
+            :tabindex="col.sortable ? 0 : undefined"
+            :aria-sort="
+              col.sortable
+                ? sortKey === col.key
+                  ? sortDir === 'asc'
+                    ? 'ascending'
+                    : 'descending'
+                  : 'none'
+                : undefined
+            "
             @click="col.sortable ? toggleSort(col.key) : undefined"
+            @keydown.enter.prevent="col.sortable ? toggleSort(col.key) : undefined"
+            @keydown.space.prevent="col.sortable ? toggleSort(col.key) : undefined"
           >
             <span class="th-label">{{ col.label }}</span>
             <span v-if="col.sortable" class="sort-indicator" aria-hidden="true">
@@ -136,6 +149,12 @@ const sortedRows = computed(() => {
 .data-table thead th.sortable:hover {
   color: var(--text);
   background: var(--bg-hover);
+}
+
+.data-table thead th.sortable:focus-visible {
+  outline: none;
+  color: var(--text);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
 }
 
 .data-table thead th.active {

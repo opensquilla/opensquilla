@@ -122,7 +122,7 @@ const chips = computed(() => {
   min-height: 2.25rem;
   padding: 0.375rem 0.875rem;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--bg-elevated);
   font: inherit;
   font-size: 0.8125rem;

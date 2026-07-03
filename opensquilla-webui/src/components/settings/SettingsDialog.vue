@@ -554,7 +554,7 @@ onUnmounted(() => {
 .settings-modal {
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-modal);
   box-shadow: var(--shadow-xl);
   display: flex;
   flex-direction: column;
@@ -664,7 +664,7 @@ onUnmounted(() => {
 .settings-banner__item {
   background: transparent;
   border: 1px solid color-mix(in srgb, var(--warn) 30%, var(--border));
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   color: var(--text-muted);
   cursor: pointer;
   font-size: var(--fs-xs);

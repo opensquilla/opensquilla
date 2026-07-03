@@ -1776,9 +1776,9 @@ function onboardingHtml(): string {
       --muted: #646961;
       --dim: #8c9189;
       --line: rgba(32, 35, 31, 0.12);
-      --accent: #b84a12;
-      --accent-dark: #8f3305;
-      --accent-soft: rgba(184, 74, 18, 0.08);
+      --accent: #F26A1B;
+      --accent-dark: #D95A11;
+      --accent-soft: rgba(242, 106, 27, 0.08);
       --green: #25633a;
       color: var(--ink);
     }
@@ -2033,7 +2033,7 @@ function onboardingHtml(): string {
       padding: 11px 13px;
     }
     .provider:hover, .choice:hover, .tier-button:hover {
-      border-color: rgba(184,74,18,0.3);
+      border-color: rgba(242,106,27,0.3);
       transform: translateY(-1px);
     }
     .provider.active, .choice.active, .tier-button.active {
@@ -2072,9 +2072,9 @@ function onboardingHtml(): string {
     }
     .provider-tag {
       width: fit-content;
-      border: 1px solid rgba(184,74,18,0.14);
+      border: 1px solid rgba(242,106,27,0.14);
       border-radius: 999px;
-      background: rgba(184,74,18,0.06);
+      background: rgba(242,106,27,0.06);
       color: var(--accent-dark);
       font-size: 9px;
       font-weight: 750;
@@ -2103,7 +2103,7 @@ function onboardingHtml(): string {
       text-align: left;
     }
     .provider-more-toggle:hover {
-      border-color: rgba(184,74,18,0.24);
+      border-color: rgba(242,106,27,0.24);
       color: var(--ink);
     }
     .provider-more-list {

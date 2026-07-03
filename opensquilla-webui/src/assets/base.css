@@ -93,11 +93,22 @@
   --fw-eyebrow: 600;
   --fw-quiet: 500;
 
-  /* Radius */
+  /* Radius — a hierarchy-tied ladder (0 / 4 / 8 / 12 / 16 / 20 + pill). Each tier
+     maps to a role so a corner encodes rank; components should prefer the
+     semantic aliases below over the raw steps. (Direction: "Instrument".) */
+  --radius-none: 0;
+  --radius-xs: 2px;
   --radius-sm: 4px;
   --radius-md: 8px;
   --radius-lg: 12px;
   --radius-xl: 16px;
+  --radius-2xl: 20px;
+  --radius-full: 999px;
+  --radius-control: var(--radius-md);   /* buttons, inputs, menus, segmented */
+  --radius-card: var(--radius-lg);      /* cards, stats, standing panels */
+  --radius-panel: var(--radius-xl);     /* full-bleed panels, sheets, drawers */
+  --radius-modal: var(--radius-2xl);    /* modals, dialogs, the chat composer */
+  --radius-pill: var(--radius-full);    /* pills, toggles, avatars, filter chips */
 
   /* Spacing */
   --sp-1: 4px;
@@ -135,6 +146,18 @@
   --shadow-lg: 0 10px 15px -3px var(--shadow-color), 0 4px 6px -4px var(--shadow-color);
   --shadow-xl: 0 20px 25px -5px var(--shadow-color), 0 8px 10px -6px var(--shadow-color);
 
+  /* Structural-label idiom (borrowed from the "Terminal" study): uppercase,
+     tracked mono for pane titles, column headers and eyebrows — the instrument
+     texture. Prose and field labels stay --font-sans. */
+  --label-font: var(--font-mono);
+  --label-track: 0.12em;
+
+  /* One canonical focus ring + one disabled opacity, replacing the ad-hoc
+     per-component variants. --focus-ring reads the active-theme --accent. */
+  --focus-ring: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent);
+  --focus-ring-offset: 2px;
+  --state-disabled-opacity: 0.5;
+
   /* Atmospheric grain */
   --grain: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.55 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
 }
@@ -145,24 +168,39 @@
    lightness, like the leading agent consoles) with the orange strike + the
    6-channel spectral status language (default). */
 [data-theme="dark"], :root {
-  --bg: #121212;
-  --bg-surface: #1A1A1B;
-  --bg-elevated: #232325;
-  --bg-hover: #2C2C2F;
-  --text: #ECECEC;
-  --text-muted: #A6A6A8;
-  --text-dim: #878789;
-  --border: rgba(255,255,255,0.10);
-  --border-strong: rgba(255,255,255,0.16);
-  --border-focus: rgba(255,255,255,0.22);
-  --card: #1A1A1B;
-  --hairline: rgba(255,255,255,0.05);
+  /* Instrument — cool graphite: a 5-step luminance ladder (bg < surface <
+     surface-2 < elevated < hover) so surfaces separate by lightness AND by the
+     machined --elev shadow below. Deeper/cooler than the old #121212 so raised
+     surfaces read as lit. */
+  --bg: #0E0F11;
+  --bg-surface: #161719;
+  --bg-surface-2: #1C1E21;
+  --bg-elevated: #232529;
+  --bg-hover: #2C2E33;
+  --text: #EEF0F2;
+  --text-muted: #A6ABB3;
+  --text-dim: #868C95;
+  --border: #2E3138;
+  --border-strong: #42464D;
+  --border-focus: #4A4F57;
+  --card: #161719;
+  --hairline: #202327;
 
-  --accent: #EC6A1A;
-  --accent-hover: #D9580E;
-  --accent-deep: #B0440A;
+  /* One disciplined strike — refined off the old #EC6A1A for AA on the deeper
+     canvas. Reserved for the primary action, focus and running-state only. */
+  --accent: #F26A1B;
+  --accent-hover: #FF7A2E;
+  --accent-deep: #D95A11;
   --accent-secondary: #FF8A4C;
   --accent-foreground: #160B02;
+
+  /* Machined elevation (dark) — resting shadow + a 1px inset top highlight so
+     cards catch light. Tiers climb card -> popover -> modal. */
+  --elev-highlight: rgba(255,255,255,0.06);
+  --elev-1: 0 0 0 1px var(--border), inset 0 1px 0 0 var(--elev-highlight), 0 1px 2px rgba(0,0,0,0.30), 0 5px 12px -4px rgba(0,0,0,0.34);
+  --elev-1-hover: 0 0 0 1px var(--border-strong), inset 0 1px 0 0 var(--elev-highlight), 0 3px 6px rgba(0,0,0,0.34), 0 12px 22px -6px rgba(0,0,0,0.42);
+  --elev-2: 0 0 0 1px var(--border-strong), inset 0 1px 0 0 var(--elev-highlight), 0 6px 16px -4px rgba(0,0,0,0.50);
+  --elev-3: 0 0 0 1px var(--border-strong), inset 0 1px 0 0 rgba(255,255,255,0.10), 0 16px 32px -8px rgba(0,0,0,0.50), 0 40px 64px -16px rgba(0,0,0,0.55);
   /* The spectrum — six calibrated channels (keep the existing semantic names;
      --queued is the new sixth). Used only to encode run state, never decor. */
   --ok: #39D7A2;
@@ -192,7 +230,6 @@
 
   --surface-2: var(--bg-elevated);
   --surface-3: var(--bg-hover);
-  --radius: var(--radius-md);
   --color-green: var(--ok);
   --color-red: var(--danger);
   --color-blue: var(--info);
@@ -212,24 +249,37 @@
    (achromatic, the daylight analogue of the graphite dark). Spectrum darkened
    for contrast on the light surface. */
 [data-theme="light"] {
-  --bg: #F7F7F8;
+  /* Instrument light — a cool neutral off-white (faint graphite cast, not cream).
+     Cards are the brightest plane; separation comes from the --elev shadow +
+     the graduated border, not tint. */
+  --bg: #F4F5F7;
   --bg-surface: #FFFFFF;
-  --bg-elevated: #F0F0F2;
-  --bg-hover: #E7E7EA;
-  --text: #18181A;
-  --text-muted: #56565A;
-  --text-dim: #6C6C70;
-  --border: rgba(0,0,0,0.10);
-  --border-strong: rgba(0,0,0,0.16);
-  --border-focus: rgba(0,0,0,0.22);
+  --bg-surface-2: #EDEFF2;
+  --bg-elevated: #FFFFFF;
+  --bg-hover: #E2E6EB;
+  --text: #15181C;
+  --text-muted: #565D66;
+  --text-dim: #6C737C;
+  --border: #D5D9DE;
+  --border-strong: #B9BFC7;
+  --border-focus: #9AA1AA;
   --card: #FFFFFF;
-  --hairline: rgba(0,0,0,0.05);
+  --hairline: #E4E7EB;
 
-  --accent: #B0440A;
-  --accent-hover: #97380A;
-  --accent-deep: #7A2C00;
+  /* Strike darkened for AA on the light canvas. */
+  --accent: #DA5A12;
+  --accent-hover: #C24E0E;
+  --accent-deep: #A34309;
   --accent-secondary: #DD6224;
   --accent-foreground: #FFFFFF;
+
+  /* Machined elevation (light) — soft neutral shadows + a graduated border do
+     the lifting; drop the inner white highlight (it reads as glare on paper). */
+  --elev-highlight: rgba(255,255,255,0.9);
+  --elev-1: 0 0 0 1px var(--border), 0 1px 2px rgba(16,20,26,0.05), 0 4px 12px -4px rgba(16,20,26,0.10);
+  --elev-1-hover: 0 0 0 1px var(--border-strong), 0 2px 4px rgba(16,20,26,0.08), 0 10px 22px -6px rgba(16,20,26,0.14);
+  --elev-2: 0 0 0 1px var(--border-strong), 0 8px 24px -6px rgba(16,20,26,0.16);
+  --elev-3: 0 0 0 1px var(--border-strong), 0 16px 40px -10px rgba(16,20,26,0.22);
   --ok: #0E7A52;
   --warn: #8A6410;
   /* Light fills: a true amber that reads as "warn" at small sizes, where the
@@ -255,7 +305,6 @@
 
   --surface-2: var(--bg-elevated);
   --surface-3: var(--bg-hover);
-  --radius: var(--radius-md);
   --color-green: var(--ok);
   --color-red: var(--danger);
   --color-blue: var(--info);
@@ -324,7 +373,7 @@ input:not([type="radio"]):not([type="checkbox"]), textarea, select {
 }
 input:not([type="radio"]):not([type="checkbox"]):focus, textarea:focus, select:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
 }
 input[type="radio"], input[type="checkbox"] {
   accent-color: var(--accent);
@@ -336,7 +385,7 @@ input::placeholder, textarea::placeholder { color: var(--text-dim); }
 .btn--ghost:focus-visible,
 .btn--icon:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
 }
 .sidebar-fn-item:focus-visible,
 .sidebar-brand-link:focus-visible,
@@ -361,7 +410,7 @@ pre {
 
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; /* radius-allow: scrollbar thumb geometry */ }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
 
 /* App layout */
@@ -397,7 +446,7 @@ pre {
 .btn:not(:disabled):active { transform: translateY(0.5px); }
 /* Disabled buttons must read as inert: no hover feedback, no pointer cursor. */
 .btn:disabled, .btn[disabled] {
-  opacity: 0.65;
+  opacity: var(--state-disabled-opacity);
   cursor: not-allowed;
 }
 
@@ -1158,7 +1207,7 @@ pre {
   width: 14px;
   height: 14px;
   border: 1.5px solid color-mix(in srgb, var(--sidebar-text-soft) 74%, transparent);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--sidebar-bg) 72%, transparent);
   color: transparent;
   transition: background var(--dur-fast), border-color var(--dur-fast), color var(--dur-fast);
@@ -1556,7 +1605,7 @@ pre {
   position: relative;
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   box-shadow:
     0 1px 1px rgba(0, 0, 0, 0.025),
     0 8px 18px rgba(0, 0, 0, 0.032);
@@ -1599,6 +1648,15 @@ pre {
   input, textarea, select { font-size: 16px !important; }
   .btn { min-height: 44px; min-width: 44px; }
   .btn--icon { min-width: 44px; min-height: 44px; }
+
+  /* WCAG 2.5.5/2.5.8 touch targets — the primary Settings controls fell to
+     ~28-34px; raise inputs and the segmented picker to the 44px floor .btn
+     already gets, and give the switch an adequate hit area. */
+  .control-input,
+  .control-segmented__btn { min-height: 44px; }
+  .control-switch { width: 44px; height: 26px; }
+  .control-switch::before { width: 20px; height: 20px; }
+  .control-switch:checked::before { transform: translateX(18px); }
 
   .content {
     padding-top: calc(40px + var(--sp-3));

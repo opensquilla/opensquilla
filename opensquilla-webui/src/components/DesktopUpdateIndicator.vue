@@ -173,7 +173,7 @@ useDocumentEvent('click', (event) => {
   align-items: center;
   background: color-mix(in srgb, var(--accent) 10%, var(--bg-surface));
   border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border));
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   color: var(--accent);
   cursor: pointer;
   display: inline-flex;

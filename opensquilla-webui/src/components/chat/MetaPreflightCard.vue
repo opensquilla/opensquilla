@@ -310,7 +310,7 @@ function onAction(action: 'continue' | 'defaults' | 'dismiss') {
   margin: 10px auto;
   padding: 12px;
   border: 1px solid color-mix(in srgb, var(--border) 84%, var(--accent) 16%);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--bg-surface);
   box-shadow: var(--shadow-sm);
   color: var(--text);
@@ -337,7 +337,7 @@ function onAction(action: 'continue' | 'defaults' | 'dismiss') {
 
 .meta-preflight-badge {
   border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   padding: 2px 8px;
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 9%, var(--bg-surface));
@@ -353,7 +353,7 @@ function onAction(action: 'continue' | 'defaults' | 'dismiss') {
 .meta-preflight-body section {
   padding: 9px 10px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--bg-base, var(--bg)) 72%, transparent);
 }
 
@@ -407,7 +407,7 @@ function onAction(action: 'continue' | 'defaults' | 'dismiss') {
 
 .meta-preflight-required {
   border: 1px solid color-mix(in srgb, var(--danger) 34%, transparent);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   padding: 1px 6px;
   color: var(--danger);
   background: color-mix(in srgb, var(--danger) 8%, var(--bg-surface));
@@ -431,7 +431,7 @@ function onAction(action: 'continue' | 'defaults' | 'dismiss') {
   width: 100%;
   min-height: 34px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   padding: 7px 9px;
   background: var(--bg-surface);
   color: var(--text);
@@ -464,7 +464,7 @@ textarea.meta-preflight-field-control {
   margin: 0;
   padding: 8px 10px;
   border: 1px solid color-mix(in srgb, var(--danger) 32%, transparent);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   color: var(--danger);
   background: color-mix(in srgb, var(--danger) 8%, var(--bg-surface));
   font-size: var(--fs-xs, 0.75rem);
@@ -481,7 +481,7 @@ textarea.meta-preflight-field-control {
 
 .meta-preflight-actions button {
   padding: 5px 10px;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--bg-surface);
   color: var(--text);

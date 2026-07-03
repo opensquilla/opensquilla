@@ -7,7 +7,7 @@
   background: var(--bg-surface);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
   /* The one conversation column. Every turn-content box — user bubbles,
      assistant messages, the live work card, the composer — aligns to this
@@ -89,7 +89,7 @@
   min-height: 1.75rem;
   padding: 0 0.625rem;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--bg-elevated);
   color: var(--text);
   font-size: 0.8125rem;
@@ -110,7 +110,7 @@
   min-height: 1.75rem;
   padding: 0 0.625rem;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--bg-surface);
   color: var(--text-muted);
   font: inherit;
@@ -194,7 +194,7 @@
   padding: 0.25rem 0.5rem;
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: 0.375rem;
+  border-radius: var(--radius-md);
   font-size: 0.8125rem;
   font-family: var(--font-mono);
   cursor: pointer;
@@ -251,7 +251,7 @@
   display: inline-flex;
   align-items: center;
   padding: 0.125rem 0.5rem;
-  border-radius: 9999px;
+  border-radius: var(--radius-full);
   font-size: 0.8125rem;
   font-weight: 500;
   background: var(--bg-hover);
@@ -321,7 +321,7 @@
 
 .chat-thread::-webkit-scrollbar-thumb {
   background: var(--border-strong);
-  border-radius: 5px;
+  border-radius: 5px; /* radius-allow: scrollbar thumb geometry */
 }
 
 .chat-thread::-webkit-scrollbar-thumb:hover {
@@ -426,7 +426,7 @@
 .work-card__dot {
   width: 0.4375rem;
   height: 0.4375rem;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--accent);
   /* One calm, opacity-only ambient pulse shared across the running view — no
      scale throb, no per-frame box-shadow repaint. */
@@ -450,7 +450,7 @@
   font-size: 0.6875rem;
   line-height: 1.3;
   padding: 0.0625rem 0.375rem;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   color: var(--text-muted);
   background: var(--bg-hover);
 }
@@ -461,7 +461,7 @@
   font-size: 0.6875rem;
   line-height: 1.3;
   padding: 0.0625rem 0.5rem;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   white-space: nowrap;
@@ -475,7 +475,7 @@
 .stream-activity-dot {
   width: 0.375rem;
   height: 0.375rem;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--ok);
   animation: live-pulse var(--dur-pulse) var(--ease-standard) infinite;
   flex-shrink: 0;
@@ -562,7 +562,7 @@
   align-items: center;
   gap: 6px;
   padding: 6px 12px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   border: 1px solid var(--border);
   background: var(--bg-elevated);
   color: var(--text);
@@ -596,7 +596,7 @@
   margin-left: 1px;
   vertical-align: text-bottom;
   background: var(--accent);
-  border-radius: 1px;
+  border-radius: 1px; /* radius-allow: 1px stream caret geometry */
   animation: stream-caret-blink 1s steps(2, start) infinite;
 }
 @keyframes stream-caret-blink {
@@ -714,7 +714,7 @@
 .chat-compact-status__gauge {
   height: 8px;
   margin-top: var(--sp-2);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--bg-hover);
   overflow: hidden;
 }
@@ -725,7 +725,7 @@
   /* Indeterminate default: a partial fill so the breathing bar cannot be
      misread as "context 100% full"; real occupancy overrides via style. */
   width: 60%;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: linear-gradient(90deg, color-mix(in srgb, var(--info) 55%, transparent), var(--info));
   transition: width var(--transition), background var(--transition), opacity var(--transition);
 }
@@ -789,7 +789,7 @@
   margin-inline: auto;
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: 0.5rem;
+  border-radius: var(--radius-md);
   box-shadow: var(--shadow-md);
   z-index: 10;
   max-height: 200px;
@@ -845,7 +845,7 @@
   display: inline-flex;
   align-items: center;
   padding: 0.25rem 0.625rem;
-  border-radius: 0.375rem;
+  border-radius: var(--radius-md);
   font-size: 0.8125rem;
   font-weight: 500;
   cursor: pointer;
@@ -877,7 +877,7 @@
   z-index: 30;
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: 0.5rem;
+  border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
   max-height: 400px;
   overflow-y: auto;
@@ -945,7 +945,7 @@
 .chat-session-popover-item-run {
   font-size: 0.6875rem;
   padding: 0.0625rem 0.375rem;
-  border-radius: 0.25rem;
+  border-radius: var(--radius-sm);
   font-weight: 500;
   flex-shrink: 0;
 }
@@ -968,7 +968,7 @@
 .chat-session-popover-item-tag {
   font-size: 0.6875rem;
   padding: 0.0625rem 0.375rem;
-  border-radius: 0.25rem;
+  border-radius: var(--radius-sm);
   background: var(--accent);
   color: var(--accent-foreground);
   flex-shrink: 0;
@@ -997,7 +997,7 @@
   letter-spacing: 0.04em;
   color: var(--text-dim);
   background: var(--bg-elevated);
-  border-radius: 0.25rem;
+  border-radius: var(--radius-sm);
   user-select: none;
   pointer-events: none;
 }
@@ -1056,7 +1056,7 @@
 :deep(code) {
   background: var(--bg-hover);
   padding: 0.125rem 0.25rem;
-  border-radius: 0.25rem;
+  border-radius: var(--radius-sm);
   font-size: 0.8125rem;
   font-family: var(--font-mono);
 }
@@ -1068,7 +1068,7 @@
   padding: 0.0625rem 0.375rem;
   background: color-mix(in srgb, var(--warn) 16%, var(--bg-surface));
   color: var(--warn);
-  border-radius: 0.25rem;
+  border-radius: var(--radius-sm);
   font-size: 0.6875rem;
   font-weight: 500;
 }
@@ -1304,7 +1304,7 @@
   gap: var(--sp-1);
   padding: 5px 12px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--bg-elevated);
   color: var(--text);
   font-family: var(--font-sans);

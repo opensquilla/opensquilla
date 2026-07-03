@@ -472,7 +472,7 @@ async function onModeChange() {
 
 .ap-radio__indicator {
   border: 2px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   flex-shrink: 0;
   height: 18px;
   margin-top: 2px;
@@ -486,7 +486,7 @@ async function onModeChange() {
 
 .ap-radio.is-active .ap-radio__indicator::after {
   background: var(--accent);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   content: '';
   height: 8px;
   left: 50%;

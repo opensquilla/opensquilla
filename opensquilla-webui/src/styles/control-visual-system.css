@@ -76,7 +76,8 @@
   animation: control-fade-up var(--dur-enter) var(--ease-out) both;
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-card);
+  box-shadow: var(--elev-1);
   color: var(--text);
   display: flex;
   flex-direction: column;
@@ -125,7 +126,7 @@
 .control-stat--clickable:hover,
 .control-card--interactive:hover {
   border-color: var(--border-focus);
-  box-shadow: 0 8px 24px -16px var(--shadow-color);
+  box-shadow: var(--elev-1-hover);
   transform: translateY(-1px);
 }
 
@@ -156,9 +157,10 @@
 .control-stat__label {
   color: var(--text-dim);
   display: block;
-  font-size: 12px;
+  font-family: var(--label-font);
+  font-size: 11px;
   font-weight: var(--fw-quiet);
-  letter-spacing: 0.08em;
+  letter-spacing: var(--label-track);
   line-height: 1.25;
   margin-bottom: 6px;
   text-transform: uppercase;
@@ -168,6 +170,7 @@
   align-items: center;
   color: var(--text);
   display: flex;
+  font-family: var(--font-display);
   font-size: 1.75rem;
   font-variant-numeric: tabular-nums;
   font-weight: 700;
@@ -203,7 +206,8 @@
   appearance: none;
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-card);
+  box-shadow: var(--elev-1);
   color: var(--text);
   display: flex;
   flex-direction: column;
@@ -234,7 +238,8 @@
   animation: control-fade-up var(--dur-enter) var(--ease-out) both;
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--elev-1);
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
@@ -251,6 +256,7 @@
 .control-panel__eyebrow {
   color: var(--text-dim);
   display: block;
+  font-family: var(--label-font);
   font-size: 10px;
   font-weight: var(--fw-eyebrow);
   letter-spacing: var(--eyebrow-track);
@@ -365,7 +371,7 @@
 
 .control-readout__trace {
   background: color-mix(in srgb, var(--readout-ch) 16%, transparent);
-  border-radius: 3px;
+  border-radius: 3px; /* radius-allow: 4px-tall trace bar geometry */
   flex: 1;
   height: 4px;
   min-width: 24px;
@@ -374,7 +380,7 @@
 
 .control-readout__trace-fill {
   background: var(--readout-ch);
-  border-radius: 3px;
+  border-radius: 3px; /* radius-allow: 4px-tall trace bar geometry */
   display: block;
   height: 100%;
 }
@@ -462,6 +468,12 @@
 .control-segmented__btn.is-active {
   background: var(--accent);
   color: var(--accent-foreground);
+}
+/* Keyboard focus for the canonical segmented picker (the wrapper is
+   overflow:hidden, so an inset ring rather than an outer outline). */
+.control-segmented__btn:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
 }
 
 /* ---------------------------------------------------------------------------
@@ -616,6 +628,7 @@ summary.control-row--divider:focus-visible {
 .control-section__eyebrow {
   color: var(--text-dim);
   display: block;
+  font-family: var(--label-font);
   font-size: 10px;
   font-weight: var(--fw-eyebrow);
   letter-spacing: var(--eyebrow-track);

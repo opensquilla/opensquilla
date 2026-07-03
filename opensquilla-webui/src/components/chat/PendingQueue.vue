@@ -91,7 +91,7 @@ defineEmits<{
   margin-left: 0.5rem;
   padding: 0.0625rem 0.4375rem;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   font-size: 0.6875rem;
   font-weight: 600;
   color: var(--text-muted);
@@ -130,7 +130,7 @@ defineEmits<{
   padding: 0.25rem 0.5rem;
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: 0.375rem;
+  border-radius: var(--radius-md);
   font-size: 0.8125rem;
   cursor: default;
 }

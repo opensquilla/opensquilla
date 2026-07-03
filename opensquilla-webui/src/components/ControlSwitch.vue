@@ -95,7 +95,7 @@ function onEnter(event: KeyboardEvent) {
   align-items: center;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   color: var(--text);
   cursor: pointer;
   display: flex;

@@ -62,7 +62,7 @@ const timeFull = computed(() => fullTime(props.message.ts))
   font-size: 0.8125rem;
   color: var(--text-dim);
   padding: 0.25rem 0.625rem;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   max-width: 70%;
   text-align: center;
 }
@@ -116,7 +116,7 @@ const timeFull = computed(() => fullTime(props.message.ts))
   padding: 0.75rem 1rem;
   border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border));
   border-left: 3px solid var(--danger);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--danger) 8%, var(--bg-surface));
   animation: errorCardIn var(--dur-base) var(--ease-out) both;
 }
@@ -204,7 +204,7 @@ const timeFull = computed(() => fullTime(props.message.ts))
 .chat-subagent-disclosure-body {
   padding: 0.5rem;
   background: var(--bg-hover);
-  border-radius: 0.25rem;
+  border-radius: var(--radius-sm);
   font-size: 0.8125rem;
   white-space: pre-wrap;
   overflow-wrap: anywhere;

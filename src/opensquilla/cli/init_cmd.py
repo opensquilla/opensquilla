@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import questionary
 import tomli_w
@@ -22,18 +23,24 @@ def _default_model_for_provider(provider: str) -> str:
     return "openai/gpt-4o-mini"
 
 
-def _profile_for_autostart() -> str | None:
+def _autostart_context(home: Path) -> tuple[str | None, Path | None]:
+    if os.environ.get("OPENSQUILLA_STATE_DIR", "").strip():
+        return None, home
     if os.environ.get("OPENSQUILLA_PROFILE", "").strip():
-        return default_profile_name()
+        return default_profile_name(), None
     if os.environ.get("OPENSQUILLA_HOME", "").strip():
-        return default_profile_name()
-    return None
+        return default_profile_name(), None
+    return None, None
 
 
-def _maybe_register_autostart(home) -> None:
-    profile = _profile_for_autostart()
+def _maybe_register_autostart(home: Path) -> None:
+    profile, state_dir = _autostart_context(home)
     try:
-        result = autostart.register_logon_task(profile=profile, home=home)
+        result = autostart.register_logon_task(
+            profile=profile,
+            home=home,
+            state_dir=state_dir,
+        )
     except autostart.AutostartError as exc:
         console.print(f"[yellow]Autostart was not registered:[/yellow] {exc}")
         return

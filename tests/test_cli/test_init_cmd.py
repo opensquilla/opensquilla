@@ -66,13 +66,15 @@ def test_init_autostart_flag_uses_active_profile(monkeypatch, tmp_path: Path) ->
     autostart_mock.register_logon_task.assert_called_once_with(
         profile="coder",
         home=tmp_path / "profiles" / "coder",
+        state_dir=None,
     )
 
 
-def test_init_autostart_without_profile_uses_legacy_home(
+def test_init_autostart_state_dir_override_is_registered(
     monkeypatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path / "legacy-home"))
+    home = tmp_path / "state-home"
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
     monkeypatch.delenv("OPENSQUILLA_HOME", raising=False)
     monkeypatch.delenv("OPENSQUILLA_PROFILE", raising=False)
     _patch_init_answers(monkeypatch)
@@ -85,7 +87,8 @@ def test_init_autostart_without_profile_uses_legacy_home(
 
     autostart_mock.register_logon_task.assert_called_once_with(
         profile=None,
-        home=tmp_path / "legacy-home",
+        home=home,
+        state_dir=home,
     )
 
 

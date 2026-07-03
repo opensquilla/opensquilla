@@ -43,6 +43,20 @@ def test_launch_script_without_profile_uses_legacy_gateway_start(tmp_path: Path)
     assert "--profile" not in script
 
 
+def test_launch_script_with_state_dir_sets_state_override(tmp_path: Path) -> None:
+    home = tmp_path / "state-home"
+    script = _launch_script(
+        opensquilla="C:/Tools/opensquilla.exe",
+        profile=None,
+        home=home,
+        state_dir=home,
+    )
+
+    assert "OPENSQUILLA_STATE_DIR" in script
+    assert str(home) in script
+    assert "--profile" not in script
+
+
 def test_registration_script_uses_encoded_inner_launch_command(tmp_path: Path) -> None:
     home = tmp_path / "profiles with space" / "coder"
     script = _registration_script(

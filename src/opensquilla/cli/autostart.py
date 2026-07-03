@@ -61,10 +61,18 @@ def _resolve_executable(name: str) -> str:
     return resolved
 
 
-def _launch_script(*, opensquilla: str, profile: str | None, home: Path) -> str:
+def _launch_script(
+    *,
+    opensquilla: str,
+    profile: str | None,
+    home: Path,
+    state_dir: Path | None = None,
+) -> str:
     lines = ["$ErrorActionPreference = 'Stop'"]
     args = ["gateway", "start"]
-    if profile:
+    if state_dir is not None:
+        lines.append(f"$env:OPENSQUILLA_STATE_DIR = {_powershell_literal(str(state_dir))}")
+    elif profile:
         if not is_valid_profile_name(profile):
             raise AutostartError(f"Invalid OpenSquilla profile name: {profile}")
         lines.append(f"$env:OPENSQUILLA_HOME = {_powershell_literal(str(home.parent))}")
@@ -84,8 +92,14 @@ def _registration_script(
     profile: str | None,
     home: Path,
     task_name: str,
+    state_dir: Path | None = None,
 ) -> str:
-    launch_script = _launch_script(opensquilla=opensquilla, profile=profile, home=home)
+    launch_script = _launch_script(
+        opensquilla=opensquilla,
+        profile=profile,
+        home=home,
+        state_dir=state_dir,
+    )
     launch_args = (
         "-NoProfile -ExecutionPolicy Bypass -EncodedCommand "
         + _encoded_powershell(launch_script)
@@ -133,7 +147,9 @@ def _registration_script(
     )
 
 
-def register_logon_task(*, profile: str | None, home: Path) -> AutostartResult:
+def register_logon_task(
+    *, profile: str | None, home: Path, state_dir: Path | None = None
+) -> AutostartResult:
     system = platform.system()
     if system != "Windows":
         raise PlatformNotSupportedError(f"Autostart registration is Windows-only for now: {system}")
@@ -149,6 +165,7 @@ def register_logon_task(*, profile: str | None, home: Path) -> AutostartResult:
         opensquilla=opensquilla,
         profile=profile,
         home=home,
+        state_dir=state_dir,
         task_name=task_name,
     )
     command = [

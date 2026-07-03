@@ -1516,6 +1516,8 @@
     "download": "下载",
     "previewOf": "预览：{title}",
     "closePreview": "关闭预览",
+    "previousImage": "上一张图片",
+    "nextImage": "下一张图片",
     "loadingPreview": "正在加载预览",
     "previewDownload": "预览下载",
     "previewTimedOut": "预览超时。",

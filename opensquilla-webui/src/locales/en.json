@@ -1516,6 +1516,8 @@
     "download": "Download",
     "previewOf": "Preview: {title}",
     "closePreview": "Close preview",
+    "previousImage": "Previous image",
+    "nextImage": "Next image",
     "loadingPreview": "Loading preview",
     "previewDownload": "Preview download",
     "previewTimedOut": "Preview timed out.",

@@ -1516,6 +1516,8 @@
     "download": "ダウンロード",
     "previewOf": "プレビュー: {title}",
     "closePreview": "プレビューを閉じる",
+    "previousImage": "前の画像",
+    "nextImage": "次の画像",
     "loadingPreview": "プレビューを読み込み中",
     "previewDownload": "プレビューのダウンロード",
     "previewTimedOut": "プレビューがタイムアウトしました。",

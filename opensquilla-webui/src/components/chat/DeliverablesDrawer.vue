@@ -88,6 +88,17 @@
           </button>
         </header>
         <div class="deliv-preview__body">
+          <button
+            v-if="canNavigateImages"
+            type="button"
+            class="deliv-preview__nav deliv-preview__nav--prev"
+            :aria-label="t('chat.previousImage')"
+            :title="t('chat.previousImage')"
+            :disabled="!canGoPreviousImage"
+            @click="showPreviousImage"
+          >
+            <Icon name="chevronRight" :size="22" />
+          </button>
           <img
             v-if="isVisual(active) && fullState === 'loaded' && fullUrl"
             class="deliv-preview__image"
@@ -133,6 +144,17 @@
             </span>
             <p class="deliv-preview__meta">{{ artifactFileSubtitle(active) }}</p>
           </div>
+          <button
+            v-if="canNavigateImages"
+            type="button"
+            class="deliv-preview__nav deliv-preview__nav--next"
+            :aria-label="t('chat.nextImage')"
+            :title="t('chat.nextImage')"
+            :disabled="!canGoNextImage"
+            @click="showNextImage"
+          >
+            <Icon name="chevronRight" :size="22" />
+          </button>
         </div>
         <footer class="deliv-preview__actions">
           <button type="button" class="btn btn--primary" @click="emit('download', active)">
@@ -185,11 +207,23 @@ const active = ref<ArtifactPayload | null>(null)
 
 let invokerEl: HTMLElement | null = null
 
+const visualArtifacts = computed(() => props.artifacts.filter(isVisual))
+const activeImageIndex = computed(() => {
+  const current = active.value
+  if (!isVisual(current)) return -1
+  const currentKey = artifactKey(current)
+  return visualArtifacts.value.findIndex(artifact => artifactKey(artifact) === currentKey)
+})
+const canNavigateImages = computed(() => isVisual(active.value) && visualArtifacts.value.length > 1)
+const canGoPreviousImage = computed(() => activeImageIndex.value > 0)
+const canGoNextImage = computed(() =>
+  activeImageIndex.value >= 0 && activeImageIndex.value < visualArtifacts.value.length - 1)
+
 function artifactKey(artifact: ArtifactPayload): string {
   return String(artifact.id || artifact.download_url || artifact.name || '')
 }
 
-function isVisual(artifact: ArtifactPayload | null): boolean {
+function isVisual(artifact: ArtifactPayload | null): artifact is ArtifactPayload {
   return !!artifact && artifactCategory(artifact) === 'visual'
 }
 
@@ -305,6 +339,23 @@ function retryFull() {
   fullController?.retry()
 }
 
+function showImageAt(index: number) {
+  const artifact = visualArtifacts.value[index]
+  if (!artifact) return
+  active.value = artifact
+  loadFull(artifact)
+}
+
+function showPreviousImage() {
+  if (!canGoPreviousImage.value) return
+  showImageAt(activeImageIndex.value - 1)
+}
+
+function showNextImage() {
+  if (!canGoNextImage.value) return
+  showImageAt(activeImageIndex.value + 1)
+}
+
 /* ── Preview (lightbox / metadata) ─────────────────────────────────────── */
 
 function openPreview(artifact: ArtifactPayload) {
@@ -348,6 +399,20 @@ function onDocumentKeydown(event: KeyboardEvent) {
     else emit('close')
     return
   }
+  if (active.value && event.key === 'ArrowLeft') {
+    if (canGoPreviousImage.value) {
+      event.preventDefault()
+      showPreviousImage()
+    }
+    return
+  }
+  if (active.value && event.key === 'ArrowRight') {
+    if (canGoNextImage.value) {
+      event.preventDefault()
+      showNextImage()
+    }
+    return
+  }
   // Trap focus inside whichever dialog is on top.
   if (active.value) {
     const panel = drawerRef.value?.parentElement?.querySelector<HTMLElement>('.deliv-preview__panel') || null
@@ -375,8 +440,7 @@ watch(
   },
 )
 
-const visualKeys = computed(() =>
-  props.artifacts.filter(isVisual).map(artifactKey).join('|'))
+const visualKeys = computed(() => visualArtifacts.value.map(artifactKey).join('|'))
 
 // Drop tile controllers when the open drawer's artifact set or auth changes so
 // their blob URLs are revoked promptly.

@@ -187,6 +187,7 @@
           :messages="renderedMessages"
           :session-key="sessionKey"
           :auth-token="readAuthToken()"
+          :artifact-navigation-items="sessionArtifacts"
           :share-mode="shareMode"
           :selected-message-ids="selectedShareMessageIds"
           :strip-time-prefix="stripTimePrefix"
@@ -311,6 +312,7 @@
 
             <ChatArtifactList
               :artifacts="liveArtifacts"
+              :navigation-artifacts="sessionArtifacts"
               :session-key="sessionKey"
               :auth-token="readAuthToken()"
               @download="downloadArtifact"

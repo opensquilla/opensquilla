@@ -77,6 +77,7 @@
         <ChatArtifactList
           v-if="message.artifacts?.length"
           :artifacts="message.artifacts"
+          :navigation-artifacts="artifactNavigationItems"
           :session-key="sessionKey"
           :auth-token="authToken"
           @download="$emit('downloadArtifact', $event)"
@@ -240,6 +241,7 @@ const props = defineProps<{
   toolStatusText: (call: ChatToolCallRenderItem) => string
   toolSecondaryText: (call: ChatToolCallRenderItem) => string
   copyMessage: (message: ChatRenderedMessage) => Promise<boolean>
+  artifactNavigationItems?: ArtifactPayload[]
   sessionKey?: string
   authToken?: string
   /** True on the thread's last assistant message — the only place the whole-conversation fork action renders. */

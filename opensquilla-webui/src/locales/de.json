@@ -1516,6 +1516,8 @@
     "download": "Herunterladen",
     "previewOf": "Vorschau: {title}",
     "closePreview": "Vorschau schließen",
+    "previousImage": "Vorheriges Bild",
+    "nextImage": "Nächstes Bild",
     "loadingPreview": "Vorschau wird geladen",
     "previewDownload": "Vorschau herunterladen",
     "previewTimedOut": "Zeitüberschreitung bei der Vorschau.",

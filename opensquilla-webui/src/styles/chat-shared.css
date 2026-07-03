@@ -225,6 +225,7 @@
 }
 
 .deliv-preview__body {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -233,6 +234,60 @@
   overflow: hidden;
   padding: var(--sp-4);
   background: var(--bg);
+}
+
+.deliv-preview__nav {
+  position: absolute;
+  top: 50%;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--bg-surface) 76%, transparent);
+  color: var(--text);
+  box-shadow: var(--shadow-md);
+  cursor: pointer;
+  transform: translateY(-50%);
+  transition:
+    background var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    opacity var(--dur-fast) var(--ease-standard);
+}
+
+.deliv-preview__nav--prev {
+  left: var(--sp-4);
+}
+
+.deliv-preview__nav--prev svg {
+  transform: rotate(180deg);
+}
+
+.deliv-preview__nav--next {
+  right: var(--sp-4);
+}
+
+.deliv-preview__nav:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--bg-surface) 90%, transparent);
+  color: var(--accent);
+}
+
+.deliv-preview__nav:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+.deliv-preview__nav:disabled {
+  color: var(--text-dim);
+  cursor: default;
+  opacity: 0.35;
 }
 
 .deliv-preview__image {
@@ -354,6 +409,19 @@
     border: 0;
     border-radius: 0;
   }
+
+  .deliv-preview__nav {
+    width: 2.5rem;
+    height: 2.5rem;
+  }
+
+  .deliv-preview__nav--prev {
+    left: var(--sp-2);
+  }
+
+  .deliv-preview__nav--next {
+    right: var(--sp-2);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -367,7 +435,8 @@
     background: var(--bg-hover);
   }
 
-  .deliv-preview__progress-bar {
+  .deliv-preview__progress-bar,
+  .deliv-preview__nav {
     transition: none;
   }
 }

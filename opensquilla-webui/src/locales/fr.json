@@ -1516,6 +1516,8 @@
     "download": "Télécharger",
     "previewOf": "Aperçu : {title}",
     "closePreview": "Fermer l'aperçu",
+    "previousImage": "Image précédente",
+    "nextImage": "Image suivante",
     "loadingPreview": "Chargement de l'aperçu",
     "previewDownload": "Télécharger l'aperçu",
     "previewTimedOut": "L'aperçu a expiré.",

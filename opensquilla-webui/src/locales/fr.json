@@ -229,8 +229,12 @@
     "router": {
       "title": "Niveaux du routeur",
       "mode": "Mode",
+      "modeModelRouting": "Routage des modèles",
+      "modeSingleModel": "Modèle unique",
       "modeRecommended": "Suivre les niveaux du fournisseur actuel",
       "modeDisabled": "Modèle unique direct",
+      "routingDisabledHint": "Activez le routage des modèles pour modifier la configuration des niveaux.",
+      "routingEnsembleReadOnlyHint": "Le routage d'ensemble des modèles IA est actif. Les paramètres de routage standard des modèles sont temporairement inactifs.",
       "defaultTextModel": "Niveau texte par défaut",
       "panelLabel": "Panneau du routeur",
       "panelDesc": "Les modèles des niveaux passent par l'entrée de requête actuelle ; les niveaux agrégés OpenRouter utilisent OpenRouter pour joindre différents modèles amont.",

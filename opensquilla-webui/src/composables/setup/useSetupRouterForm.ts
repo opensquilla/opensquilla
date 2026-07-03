@@ -22,6 +22,8 @@ export interface SetupTierRow extends SetupTierValue {
   name: string
 }
 
+export type RouterConfigDisabledReason = 'single-model' | 'ensemble' | null
+
 const ROUTER_VISUAL_MODE_VALUES: readonly RouterVisualMode[] = ['real_candidates', 'legacy_grid']
 
 function routerVisualModeOptions(): Array<{ value: RouterVisualMode; label: string }> {
@@ -82,6 +84,13 @@ export function useSetupRouterForm() {
   const tierValues = ref<Record<string, SetupTierValue>>({})
   const mode = computed(() => routerMode.value)
   const defaultTier = computed(() => routerDefaultTier.value)
+  const routerModeChoice = computed(() => (routerMode.value === 'disabled' ? 'disabled' : 'recommended'))
+
+  function routerConfigDisabledReason(ensembleProfileActive: boolean): RouterConfigDisabledReason {
+    if (ensembleProfileActive) return 'ensemble'
+    if (routerMode.value === 'disabled') return 'single-model'
+    return null
+  }
 
   const routerSerialized = computed(() => JSON.stringify({ m: routerMode.value, d: routerDefaultTier.value, t: tierValues.value }))
   // Seed from the initial state so the pristine form is never dirty while config loads.
@@ -169,20 +178,26 @@ export function useSetupRouterForm() {
   }
 
   function createPanel(context: RouterPanelContext) {
-    return computed(() => ({
-      routerSummary: context.routerSummary.value,
-      ensembleProfileActive: context.ensembleProfileActive.value,
-      routerMode: routerMode.value,
-      routerDefaultTier: routerDefaultTier.value,
-      routerVisualMode: routerVisualMode.value,
-      routerVisualModeDirty: visualModeDirty.value,
-      routerVisualModeOptions: routerVisualModeOptions(),
-      hasSavedProvider: context.hasSavedProvider.value,
-      canUseOpenrouterMix: context.isOpenrouter.value,
-      textTiers: context.textTiers,
-      tierRows: tierRows(context.textTiers),
-      tierLabel: context.tierLabel,
-    }))
+    return computed(() => {
+      const disabledReason = routerConfigDisabledReason(context.ensembleProfileActive.value)
+      return {
+        routerSummary: context.routerSummary.value,
+        ensembleProfileActive: context.ensembleProfileActive.value,
+        routerMode: routerMode.value,
+        routerModeChoice: routerModeChoice.value,
+        routerConfigDisabled: disabledReason !== null,
+        routerConfigDisabledReason: disabledReason,
+        routerDefaultTier: routerDefaultTier.value,
+        routerVisualMode: routerVisualMode.value,
+        routerVisualModeDirty: visualModeDirty.value,
+        routerVisualModeOptions: routerVisualModeOptions(),
+        hasSavedProvider: context.hasSavedProvider.value,
+        canUseOpenrouterMix: context.isOpenrouter.value,
+        textTiers: context.textTiers,
+        tierRows: tierRows(context.textTiers),
+        tierLabel: context.tierLabel,
+      }
+    })
   }
 
   return {

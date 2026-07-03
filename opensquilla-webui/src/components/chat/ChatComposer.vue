@@ -70,14 +70,17 @@
             </div>
             <div ref="modelRoutingAnchorEl" class="chat-settings-anchor">
               <button
-                class="btn btn--icon btn--ghost"
-                :class="{ 'is-active': modelRoutingOpen || modelRoutingMode !== 'off' }"
+                class="btn btn--icon btn--ghost chat-model-routing-btn"
+                :class="[
+                  `chat-model-routing-btn--${modelRoutingMode}`,
+                  { 'is-active': modelRoutingOpen || modelRoutingMode !== 'off' },
+                ]"
                 :title="t('chat.composer.modelRouting')"
                 :aria-label="t('chat.composer.modelRouting')"
                 :aria-expanded="modelRoutingOpen ? 'true' : 'false'"
                 @click="toggleModelRouting"
               >
-                <Icon name="gauge" :size="17" />
+                <Icon name="router" :size="17" />
               </button>
               <ChatComposerModelRouting
                 v-if="modelRoutingOpen"
@@ -89,8 +92,8 @@
             </div>
             <div ref="runModeAnchorEl" class="chat-settings-anchor">
               <button
-                class="btn btn--icon btn--ghost"
-                :class="{ 'is-active': runModeOpen }"
+                class="btn btn--icon btn--ghost chat-run-mode-btn"
+                :class="[`chat-run-mode-btn--${runMode}`, { 'is-active': runModeOpen }]"
                 :title="t('chat.composer.runMode')"
                 :aria-label="t('chat.composer.runMode')"
                 :aria-expanded="runModeOpen ? 'true' : 'false'"
@@ -604,6 +607,116 @@ defineExpose<ChatComposerExpose>({
 .btn--ghost.is-active {
   background: color-mix(in srgb, var(--ok) 12%, var(--bg-surface));
   color: var(--ok);
+}
+
+.chat-model-routing-btn {
+  position: relative;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.chat-model-routing-btn.btn--ghost:not(:disabled):hover {
+  border-color: color-mix(in srgb, var(--accent) 18%, transparent);
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-surface));
+  color: var(--accent);
+}
+
+.chat-model-routing-btn--off.btn--ghost:not(:disabled):hover {
+  border-color: color-mix(in srgb, var(--text-dim) 14%, transparent);
+  background: color-mix(in srgb, var(--text-dim) 6%, var(--bg-surface));
+  color: var(--text-muted);
+}
+
+.chat-model-routing-btn.btn--ghost.is-active {
+  border-color: color-mix(in srgb, var(--accent) 24%, transparent);
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg-surface));
+  color: var(--accent);
+}
+
+.chat-model-routing-btn--off.btn--ghost.is-active {
+  border-color: color-mix(in srgb, var(--text-dim) 18%, transparent);
+  background: color-mix(in srgb, var(--text-dim) 8%, var(--bg-surface));
+  color: var(--text-muted);
+}
+
+.chat-model-routing-btn--squilla_router.btn--ghost.is-active::after {
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 6px;
+  height: 2px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--accent) 62%, transparent);
+}
+
+.chat-model-routing-btn--llm_ensemble.btn--ghost.is-active {
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  background: color-mix(in srgb, var(--accent) 11%, var(--bg-surface));
+}
+
+.chat-model-routing-btn--llm_ensemble.btn--ghost.is-active::before,
+.chat-model-routing-btn--llm_ensemble.btn--ghost.is-active::after {
+  content: "";
+  position: absolute;
+  bottom: 6px;
+  width: 6px;
+  height: 2px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--accent) 62%, transparent);
+}
+
+.chat-model-routing-btn--llm_ensemble.btn--ghost.is-active::before {
+  left: 10px;
+}
+
+.chat-model-routing-btn--llm_ensemble.btn--ghost.is-active::after {
+  right: 10px;
+}
+
+.chat-run-mode-btn {
+  --run-mode-tone: var(--text-muted);
+  --run-mode-tint: transparent;
+  --run-mode-border: transparent;
+  --run-mode-marker: var(--text-dim);
+  position: relative;
+  border-color: var(--run-mode-border);
+  background: var(--run-mode-tint);
+  color: var(--run-mode-tone);
+}
+
+.chat-run-mode-btn::after {
+  content: "";
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--run-mode-marker);
+  box-shadow: 0 0 0 2px var(--bg-surface);
+}
+
+.chat-run-mode-btn--trusted {
+  --run-mode-tone: var(--ok);
+  --run-mode-tint: color-mix(in srgb, var(--ok) 12%, var(--bg-surface));
+  --run-mode-border: color-mix(in srgb, var(--ok) 34%, transparent);
+  --run-mode-marker: var(--ok);
+}
+
+.chat-run-mode-btn--full {
+  --run-mode-tone: color-mix(in srgb, var(--warn) 72%, var(--text-muted));
+  --run-mode-tint: color-mix(in srgb, var(--warn) 5%, var(--bg-surface));
+  --run-mode-border: color-mix(in srgb, var(--warn) 18%, transparent);
+  --run-mode-marker: color-mix(in srgb, var(--warn-fill) 70%, var(--text-dim));
+}
+
+.chat-run-mode-btn.btn--ghost:not(:disabled):hover,
+.chat-run-mode-btn.btn--ghost.is-active {
+  border-color: var(--run-mode-border);
+  background: color-mix(in srgb, var(--run-mode-marker) 16%, var(--bg-surface));
+  color: var(--run-mode-tone);
 }
 
 .chat-send-btn.btn--primary {

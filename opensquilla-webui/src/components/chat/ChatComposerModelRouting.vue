@@ -21,14 +21,17 @@
         :key="option.value"
         type="button"
         class="composer-model-routing__option"
-        :class="{ 'is-active': selectedMode === option.value }"
+        :class="[`composer-model-routing__option--${option.value}`, { 'is-active': selectedMode === option.value }]"
         :disabled="busy"
         role="radio"
         :aria-checked="selectedMode === option.value ? 'true' : 'false'"
         @click="selectMode(option.value)"
       >
         <span class="composer-model-routing__option-main">
-          <span class="composer-model-routing__option-label">{{ option.label }}</span>
+          <span class="composer-model-routing__option-title">
+            <span class="composer-model-routing__option-mark" aria-hidden="true"></span>
+            <span class="composer-model-routing__option-label">{{ option.label }}</span>
+          </span>
           <Icon v-if="selectedMode === option.value" name="check" :size="14" />
         </span>
         <span class="composer-model-routing__option-desc">{{ option.description }}</span>
@@ -139,17 +142,19 @@ onMounted(() => rootRef.value?.focus())
   gap: 0.25rem;
   width: 100%;
   min-height: 58px;
-  padding: 0.625rem;
+  padding: 0.625rem 0.75rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: transparent;
   color: var(--text);
   text-align: left;
   cursor: pointer;
+  position: relative;
 }
 
 .composer-model-routing__option:hover {
-  background: var(--bg-hover);
+  border-color: color-mix(in srgb, var(--accent) 18%, var(--border));
+  background: color-mix(in srgb, var(--accent) 3%, var(--bg-surface));
 }
 
 .composer-model-routing__option:focus-visible {
@@ -158,8 +163,8 @@ onMounted(() => rootRef.value?.focus())
 }
 
 .composer-model-routing__option.is-active {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-  background: color-mix(in srgb, var(--accent) 10%, var(--bg-surface));
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+  background: color-mix(in srgb, var(--accent) 5%, var(--bg-surface));
 }
 
 .composer-model-routing__option:disabled {
@@ -176,6 +181,93 @@ onMounted(() => rootRef.value?.focus())
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
+}
+
+.composer-model-routing__option-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.composer-model-routing__option-mark {
+  --routing-option-mark: var(--text-dim);
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+  background: var(--routing-option-mark);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--routing-option-mark) 28%, transparent);
+}
+
+.composer-model-routing__option--squilla_router .composer-model-routing__option-mark {
+  --routing-option-mark: color-mix(in srgb, var(--accent) 72%, var(--text-muted));
+  width: 18px;
+  height: 8px;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.composer-model-routing__option--squilla_router .composer-model-routing__option-mark::before,
+.composer-model-routing__option--squilla_router .composer-model-routing__option-mark::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  background: var(--routing-option-mark);
+}
+
+.composer-model-routing__option--squilla_router .composer-model-routing__option-mark::before {
+  left: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--routing-option-mark) 22%, transparent);
+}
+
+.composer-model-routing__option--squilla_router .composer-model-routing__option-mark::after {
+  left: 8px;
+  width: 10px;
+  height: 2px;
+  border-radius: var(--radius-full);
+  opacity: 0.65;
+}
+
+.composer-model-routing__option--llm_ensemble .composer-model-routing__option-mark {
+  --routing-option-mark: color-mix(in srgb, var(--accent) 72%, var(--text-muted));
+  width: 20px;
+  height: 8px;
+  background: linear-gradient(
+    90deg,
+    transparent 2px,
+    color-mix(in srgb, var(--routing-option-mark) 45%, transparent) 2px,
+    color-mix(in srgb, var(--routing-option-mark) 45%, transparent) 18px,
+    transparent 18px
+  ) center / 100% 2px no-repeat;
+  box-shadow: none;
+}
+
+.composer-model-routing__option--llm_ensemble .composer-model-routing__option-mark::before,
+.composer-model-routing__option--llm_ensemble .composer-model-routing__option-mark::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--routing-option-mark);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.composer-model-routing__option--llm_ensemble .composer-model-routing__option-mark::before {
+  left: 0;
+}
+
+.composer-model-routing__option--llm_ensemble .composer-model-routing__option-mark::after {
+  right: 0;
 }
 
 .composer-model-routing__option-label {

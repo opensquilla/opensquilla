@@ -27,17 +27,18 @@ describe('ChatComposerSettings coding mode contract', () => {
   it('threads the shield run-mode control through ChatComposer and ChatView', () => {
     expect(composerSource).toContain('ChatComposerRunMode')
     expect(composerSource).toContain('<Icon name="shield"')
+    expect(composerSource).toContain('chat-run-mode-btn--${runMode}')
     expect(composerSource).toContain(':run-mode="runMode"')
     expect(composerSource).toContain('@set-run-mode="emit(\'setRunMode\', $event)"')
     expect(composerSource).toContain("setRunMode: [mode: 'standard' | 'trusted' | 'full']")
 
     expect(viewSource).toContain(':run-mode="runMode"')
+    expect(viewSource).toContain(':allowed-run-modes="allowedRunModes"')
     expect(viewSource).toContain('@set-run-mode="setComposerRunMode"')
-    expect(viewSource).toContain("const runMode = ref<SandboxRunMode>('trusted')")
-    expect(viewSource).toContain('const runModePolicyDefault = computed<SandboxRunMode>')
-    expect(viewSource).toContain('defaultRunMode')
-    expect(viewSource).toContain('runModeUserSelected')
+    expect(viewSource).toContain('useChatRunModePreference')
+    expect(viewSource).toContain('setRunMode: setPersistedRunMode')
     expect(viewSource).toContain('function setComposerRunMode(mode: SandboxRunMode)')
+    expect(viewSource).toContain('setPersistedRunMode(mode)')
   })
 
   it('offers exactly the three sandbox run modes from the shield popover', () => {
@@ -98,7 +99,9 @@ describe('ChatComposer model routing contract', () => {
 
   it('threads the independent model-routing control through ChatComposer and ChatView', () => {
     expect(composerSource).toContain('ChatComposerModelRouting')
-    expect(composerSource).toContain('<Icon name="gauge"')
+    expect(composerSource).toContain('<Icon name="router"')
+    expect(composerSource).toContain('chat-model-routing-btn--${modelRoutingMode}')
+    expect(composerSource).toContain("'is-active': modelRoutingOpen || modelRoutingMode !== 'off'")
     expect(composerSource).toContain(':model-routing-mode="modelRoutingMode"')
     expect(composerSource).toContain(':busy="modelRoutingSettingsBusy"')
     expect(composerSource).toContain('@set-model-routing-mode="emit(\'setModelRoutingMode\', $event)"')

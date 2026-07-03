@@ -394,8 +394,8 @@ def test_current_contributor_ledger_records_050rc1_attribution() -> None:
     assert "#447" in section
     assert "#450" in section
     assert "#454" in section
-    assert "Tqangxl" in section
-    assert "Shuo Zhang" in section
+    assert "[@tqangxl](https://github.com/tqangxl)" in section
+    assert "[@HuaXiawithMoon](https://github.com/HuaXiawithMoon)" in section
     assert "@nice-code-la" not in section
     assert "Codex" not in section
     assert "Claude Code" not in section

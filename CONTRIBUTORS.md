@@ -37,8 +37,8 @@ lists.
 | [@ab2ence](https://github.com/ab2ence) | Added drag-and-drop attachments, dynamic Model Ensemble routing, and ensemble timeout tuning. | [#388](https://github.com/opensquilla/opensquilla/pull/388), [`bc9ab2fe`](https://github.com/opensquilla/opensquilla/commit/bc9ab2fe), [#454](https://github.com/opensquilla/opensquilla/pull/454) |
 | [@Liu-RK](https://github.com/Liu-RK) | Aligned sandbox run-mode authorization and approval behavior, then fixed managed execution host routing. | [#412](https://github.com/opensquilla/opensquilla/pull/412), [#450](https://github.com/opensquilla/opensquilla/pull/450) |
 | [@TUOXI293](https://github.com/TUOXI293) | Added image preview navigation. | [#447](https://github.com/opensquilla/opensquilla/pull/447) |
-| Tqangxl | Improved gateway lifecycle conflict diagnostics and promoted SQLAlchemy to a core dependency. | [`1fede3ea`](https://github.com/opensquilla/opensquilla/commit/1fede3ea), [`eb6776f2`](https://github.com/opensquilla/opensquilla/commit/eb6776f2) |
-| Shuo Zhang | Fixed WeCom AI Bot websocket mode. | [`94e4b1c1`](https://github.com/opensquilla/opensquilla/commit/94e4b1c1) |
+| [@tqangxl](https://github.com/tqangxl) | Improved gateway lifecycle conflict diagnostics and promoted SQLAlchemy to a core dependency. | [`1fede3ea`](https://github.com/opensquilla/opensquilla/commit/1fede3ea), [`eb6776f2`](https://github.com/opensquilla/opensquilla/commit/eb6776f2) |
+| [@HuaXiawithMoon](https://github.com/HuaXiawithMoon) | Fixed WeCom AI Bot websocket mode. | [`94e4b1c1`](https://github.com/opensquilla/opensquilla/commit/94e4b1c1) |
 
 ## OpenSquilla 0.4.1
 

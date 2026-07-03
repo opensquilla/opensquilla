@@ -2717,6 +2717,9 @@ class TurnRunner:
             router_event = build_router_decision_event(turn)
             if router_event is not None:
                 yield router_event
+            active_provider_id = (
+                getattr(cloned_selector, "active_provider_id", "") or provider_name
+            )
             ab_outcome = await self._agent_bootstrap_stage.run(
                 AgentBootstrapStageInput(
                     provider=provider,
@@ -2739,9 +2742,7 @@ class TurnRunner:
                     request_timeout=request_timeout,
                     max_provider_retries=max_provider_retries,
                     length_capped_continuations=length_capped_continuations,
-                    active_provider_id=(
-                        getattr(cloned_selector, "active_provider_id", "") or provider_name
-                    ),
+                    active_provider_id=active_provider_id,
                 )
             )
             ab_out = ab_outcome.require_output()
@@ -2771,12 +2772,26 @@ class TurnRunner:
             # 6. Compaction (t3 + preflight) + history load + request-context
             # prepend. CompactionAndHistoryStage owns the four-call sequence
             # (t3_upgrade → preflight → load_history → prepend_request_context_prompt).
+            compaction_model = resolved_model
+            compaction_context_window_tokens = agent_config.context_window_tokens
+            if model:
+                compaction_model = model
+                if self._model_catalog is not None:
+                    compaction_context_window_tokens = (
+                        self._model_catalog.resolve_context_window(
+                            model,
+                            provider=active_provider_id,
+                        )
+                    )
             ch_outcome = await self._compaction_and_history_stage.run(
                 CompactionAndHistoryStageInput(
                     agent=agent,
                     context_window_tokens=agent_config.context_window_tokens,
                     provider=provider,
                     resolved_model=resolved_model,
+                    compaction_context_window_tokens=compaction_context_window_tokens,
+                    compaction_provider=provider,
+                    compaction_model=compaction_model,
                     turn=turn,
                     session_key=session_key,
                     agent_id=agent_id,

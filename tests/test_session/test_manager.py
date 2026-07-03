@@ -379,7 +379,9 @@ async def test_branch_before_message_copies_only_prefix(manager):
     await manager.create("agent:main:main")
     await manager.append_message("agent:main:main", "user", "A marker", token_count=5)
     await manager.append_message("agent:main:main", "assistant", "ack A", token_count=5)
-    before_entry = await manager.append_message("agent:main:main", "user", "B marker", token_count=5)
+    before_entry = await manager.append_message(
+        "agent:main:main", "user", "B marker", token_count=5
+    )
     await manager.append_message("agent:main:main", "assistant", "ack B", token_count=5)
     await manager.append_message("agent:main:main", "user", "C marker must not leak", token_count=5)
 
@@ -391,7 +393,10 @@ async def test_branch_before_message_copies_only_prefix(manager):
     )
 
     assert child.forked_from_parent is True
-    assert [entry.content for entry in await manager.get_transcript("agent:main:direct:edited")] == [
+    child_contents = [
+        entry.content for entry in await manager.get_transcript("agent:main:direct:edited")
+    ]
+    assert child_contents == [
         "A marker",
         "ack A",
     ]

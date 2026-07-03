@@ -74,6 +74,16 @@ DEPRECATED_AGENT_TOKEN_SAVING_LEAVES: frozenset[str] = frozenset(
 _LEGACY_LLM_ENSEMBLE_TIMEOUT_SECONDS = frozenset({120.0, 300.0})
 _DEFAULT_LLM_ENSEMBLE_TIMEOUT_SECONDS = 3600.0
 
+
+def _legacy_llm_ensemble_timeout_number(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 _LEGACY_MEMORY_FIELDS_WARN_LOCK = threading.Lock()
 _LEGACY_MEMORY_FIELDS_WARNED = False
 _LEGACY_MEMORY_FIELDS_SEEN: set[str] = set()
@@ -298,19 +308,23 @@ def migrate_config_payload(data: dict[str, Any]) -> ConfigMigrationResult:
 
     llm_ensemble = builder.payload.get("llm_ensemble")
     if isinstance(llm_ensemble, dict):
-        for leaf in ("proposer_timeout_seconds", "aggregator_timeout_seconds"):
-            value = llm_ensemble.get(leaf)
-            if isinstance(value, bool):
-                continue
-            try:
-                numeric_value = float(value)
-            except (TypeError, ValueError):
-                continue
-            if numeric_value in _LEGACY_LLM_ENSEMBLE_TIMEOUT_SECONDS:
+        proposer_timeout = _legacy_llm_ensemble_timeout_number(
+            llm_ensemble.get("proposer_timeout_seconds")
+        )
+        aggregator_timeout = _legacy_llm_ensemble_timeout_number(
+            llm_ensemble.get("aggregator_timeout_seconds")
+        )
+        if (
+            proposer_timeout is not None
+            and aggregator_timeout is not None
+            and proposer_timeout == aggregator_timeout
+            and proposer_timeout in _LEGACY_LLM_ENSEMBLE_TIMEOUT_SECONDS
+        ):
+            for leaf in ("proposer_timeout_seconds", "aggregator_timeout_seconds"):
                 llm_ensemble[leaf] = _DEFAULT_LLM_ENSEMBLE_TIMEOUT_SECONDS
                 builder.changes.append(
                     "llm_ensemble."
-                    f"{leaf}: {numeric_value:g} -> "
+                    f"{leaf}: {proposer_timeout:g} -> "
                     f"{_DEFAULT_LLM_ENSEMBLE_TIMEOUT_SECONDS:g}"
                 )
 

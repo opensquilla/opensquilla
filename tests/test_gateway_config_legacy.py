@@ -277,6 +277,22 @@ def test_llm_ensemble_timeout_migration_preserves_custom_values() -> None:
     assert result.payload["llm_ensemble"]["aggregator_timeout_seconds"] == 240.0
 
 
+def test_llm_ensemble_timeout_migration_preserves_mixed_legacy_and_custom_values() -> None:
+    result = migration_module.migrate_config_payload(
+        {
+            "llm_ensemble": {
+                "enabled": True,
+                "proposer_timeout_seconds": 120.0,
+                "aggregator_timeout_seconds": 900.0,
+            }
+        }
+    )
+
+    assert result.changed is False
+    assert result.payload["llm_ensemble"]["proposer_timeout_seconds"] == 120.0
+    assert result.payload["llm_ensemble"]["aggregator_timeout_seconds"] == 900.0
+
+
 # ---------------------------------------------------------------------------
 # AC#5: aggregate DeprecationWarning emitted once per process
 # ---------------------------------------------------------------------------

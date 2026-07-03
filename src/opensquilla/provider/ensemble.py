@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import random
 import time
@@ -32,6 +33,54 @@ from .types import (
 )
 
 TRACE_CONTENT_MAX_CHARS = 8_000
+_ENSEMBLE_HEARTBEAT_INTERVAL_SECONDS = 15.0
+
+
+def _ensemble_heartbeat_interval() -> float:
+    return max(0.001, float(_ENSEMBLE_HEARTBEAT_INTERVAL_SECONDS))
+
+
+async def _stream_with_heartbeats(
+    stream: AsyncIterator[StreamEvent],
+    *,
+    phase: str,
+    message: str,
+    timeout_seconds: float | None,
+) -> AsyncIterator[StreamEvent]:
+    stream_iter = stream.__aiter__()
+    pending: asyncio.Future[StreamEvent] = asyncio.ensure_future(stream_iter.__anext__())
+    deadline = (
+        time.monotonic() + timeout_seconds
+        if timeout_seconds is not None and timeout_seconds > 0
+        else None
+    )
+    try:
+        while True:
+            wait_seconds = _ensemble_heartbeat_interval()
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                wait_seconds = min(wait_seconds, remaining)
+            done, _ = await asyncio.wait({pending}, timeout=wait_seconds)
+            if not done:
+                yield ProviderHeartbeatEvent(phase=phase, message=message)
+                continue
+            try:
+                event = pending.result()
+            except StopAsyncIteration:
+                return
+            yield event
+            pending = asyncio.ensure_future(stream_iter.__anext__())
+    finally:
+        if not pending.done():
+            pending.cancel()
+            with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
+                await pending
+        aclose = getattr(stream_iter, "aclose", None)
+        if callable(aclose):
+            with contextlib.suppress(Exception):
+                await aclose()
 
 
 @dataclass(frozen=True)
@@ -380,7 +429,29 @@ class EnsembleProvider:
             phase="ensemble_proposers",
             message=f"Running {len(self.proposers)} proposer model(s)",
         )
-        candidates = await self._run_proposers(messages, tools=tools, config=config)
+        proposer_task = asyncio.create_task(
+            self._run_proposers(messages, tools=tools, config=config)
+        )
+        try:
+            while not proposer_task.done():
+                done, _ = await asyncio.wait(
+                    {proposer_task},
+                    timeout=_ensemble_heartbeat_interval(),
+                )
+                if not done:
+                    yield ProviderHeartbeatEvent(
+                        phase="ensemble_proposers_wait",
+                        message=(
+                            "Still waiting for "
+                            f"{len(self.proposers)} proposer model(s)"
+                        ),
+                    )
+            candidates = await proposer_task
+        finally:
+            if not proposer_task.done():
+                proposer_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await proposer_task
         successful = [candidate for candidate in candidates if candidate.ok]
         if len(successful) < self.min_successful_proposers:
             async for event in self._fallback_or_error(
@@ -706,33 +777,28 @@ class EnsembleProvider:
         yielded_done = False
         try:
             stream = provider.chat(messages, tools=tools, config=config)
-            if self.aggregator_timeout_seconds > 0:
-                async with asyncio.timeout(self.aggregator_timeout_seconds):
-                    async for event in stream:
-                        if isinstance(event, DoneEvent):
-                            yielded_done = True
-                            yield ensemble_done(event)
-                        elif isinstance(event, ErrorEvent):
-                            yield event
-                            return
-                        elif isinstance(event, TextDeltaEvent):
-                            final_text_parts.append(event.text)
-                            yield event
-                        else:
-                            yield event
-            else:
-                async for event in stream:
-                    if isinstance(event, DoneEvent):
-                        yielded_done = True
-                        yield ensemble_done(event)
-                    elif isinstance(event, ErrorEvent):
-                        yield event
-                        return
-                    elif isinstance(event, TextDeltaEvent):
-                        final_text_parts.append(event.text)
-                        yield event
-                    else:
-                        yield event
+            timeout_seconds = (
+                self.aggregator_timeout_seconds
+                if self.aggregator_timeout_seconds > 0
+                else None
+            )
+            async for event in _stream_with_heartbeats(
+                stream,
+                phase="ensemble_aggregator_wait",
+                message="Still waiting for ensemble aggregator response",
+                timeout_seconds=timeout_seconds,
+            ):
+                if isinstance(event, DoneEvent):
+                    yielded_done = True
+                    yield ensemble_done(event)
+                elif isinstance(event, ErrorEvent):
+                    yield event
+                    return
+                elif isinstance(event, TextDeltaEvent):
+                    final_text_parts.append(event.text)
+                    yield event
+                else:
+                    yield event
         except TimeoutError:
             yield ErrorEvent(
                 message=(

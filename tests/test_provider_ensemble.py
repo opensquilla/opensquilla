@@ -14,6 +14,7 @@ from opensquilla.provider import (
     DoneEvent,
     ErrorEvent,
     Message,
+    ProviderHeartbeatEvent,
     TextDeltaEvent,
     ToolDefinition,
     ToolInputSchema,
@@ -96,6 +97,80 @@ def _openrouter_member(model: str, *, thinking: str | None = "high") -> Ensemble
         ),
         label=model,
         thinking=thinking,
+    )
+
+
+@pytest.mark.asyncio
+async def test_ensemble_emits_heartbeat_while_waiting_for_slow_proposers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan(
+                [TextDeltaEvent(text="draft"), DoneEvent(model="p1")],
+                delay=0.05,
+            ),
+            "agg": _FakePlan([TextDeltaEvent(text="final"), DoneEvent(model="agg")]),
+        }
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+    monkeypatch.setattr(
+        "opensquilla.provider.ensemble._ENSEMBLE_HEARTBEAT_INTERVAL_SECONDS",
+        0.01,
+        raising=False,
+    )
+    provider = EnsembleProvider(
+        profile_name="default",
+        proposers=[_member("p1")],
+        aggregator=_member("agg"),
+        proposer_timeout_seconds=1,
+        aggregator_timeout_seconds=1,
+        shuffle_candidates=False,
+    )
+
+    events = await _collect(provider)
+
+    assert any(
+        isinstance(event, ProviderHeartbeatEvent)
+        and event.phase == "ensemble_proposers_wait"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_ensemble_emits_heartbeat_while_waiting_for_slow_aggregator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan([TextDeltaEvent(text="draft"), DoneEvent(model="p1")]),
+            "agg": _FakePlan(
+                [TextDeltaEvent(text="final"), DoneEvent(model="agg")],
+                delay=0.05,
+            ),
+        }
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+    monkeypatch.setattr(
+        "opensquilla.provider.ensemble._ENSEMBLE_HEARTBEAT_INTERVAL_SECONDS",
+        0.01,
+        raising=False,
+    )
+    provider = EnsembleProvider(
+        profile_name="default",
+        proposers=[_member("p1")],
+        aggregator=_member("agg"),
+        proposer_timeout_seconds=1,
+        aggregator_timeout_seconds=1,
+        shuffle_candidates=False,
+    )
+
+    events = await _collect(provider)
+
+    assert any(
+        isinstance(event, ProviderHeartbeatEvent)
+        and event.phase == "ensemble_aggregator_wait"
+        for event in events
     )
 
 

@@ -191,6 +191,9 @@ class CompactionAndHistoryStageInput:
     session_key: str
     agent_id: str
     history_has_persisted_user: bool
+    compaction_context_window_tokens: int | None = None
+    compaction_provider: Any | None = None
+    compaction_model: str | None = None
 
 @dataclass(frozen=True)
 class CompactionAndHistoryStageOutput:
@@ -273,22 +276,30 @@ class CompactionAndHistoryStage:
         from opensquilla.engine.hooks.types import CompactionState
         from opensquilla.engine.turn_runner.outcome import StageOutcome
 
+        compaction_context_window_tokens = (
+            inp.compaction_context_window_tokens or inp.context_window_tokens
+        )
+        compaction_provider = (
+            inp.compaction_provider if inp.compaction_provider is not None else inp.provider
+        )
+        compaction_model = inp.compaction_model or inp.resolved_model
+
         # 1. T3-upgrade compaction. Hook fires around the call so even a
         #    no-op path's observability is uniform.
         t3_state = CompactionState(
             session_key=inp.session_key,
             agent_id=inp.agent_id,
             total_tokens=0,
-            threshold_tokens=inp.context_window_tokens,
+            threshold_tokens=compaction_context_window_tokens,
             extra={"phase": "t3_upgrade"},
         )
         await self._fire_before_compact(t3_state)
         t3_status = await self._t3_upgrade.maybe_compact(
             session_key=inp.session_key,
             turn=inp.turn,
-            context_window_tokens=inp.context_window_tokens,
-            compaction_provider=inp.provider,
-            compaction_model=inp.resolved_model,
+            context_window_tokens=compaction_context_window_tokens,
+            compaction_provider=compaction_provider,
+            compaction_model=compaction_model,
         )
         await self._fire_after_compact(t3_state, {"status": t3_status})
 
@@ -300,15 +311,15 @@ class CompactionAndHistoryStage:
                 session_key=inp.session_key,
                 agent_id=inp.agent_id,
                 total_tokens=0,
-                threshold_tokens=inp.context_window_tokens,
+                threshold_tokens=compaction_context_window_tokens,
                 extra={"phase": "preflight"},
             )
             await self._fire_before_compact(preflight_state)
             await self._preflight.maybe_compact(
                 session_key=inp.session_key,
-                context_window_tokens=inp.context_window_tokens,
-                compaction_provider=inp.provider,
-                compaction_model=inp.resolved_model,
+                context_window_tokens=compaction_context_window_tokens,
+                compaction_provider=compaction_provider,
+                compaction_model=compaction_model,
             )
             await self._fire_after_compact(preflight_state, {"status": "ran"})
 

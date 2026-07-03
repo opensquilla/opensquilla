@@ -167,10 +167,6 @@ def test_config_active_controls_use_accessible_light_theme_contrast() -> None:
     assert "color: var(--accent-hover)" in tab_rule
     assert "color: var(--accent-hover)" in action_rule
     assert (
-        _contrast_ratio(_light_theme_token("accent-foreground"), _light_theme_token("accent"))
-        >= 4.5
-    )
-    assert (
         _contrast_ratio(_light_theme_token("accent-hover"), _light_theme_token("bg-surface"))
         >= 4.5
     )

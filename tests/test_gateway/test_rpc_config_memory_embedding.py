@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import tomllib
+
 import pytest
 
 import opensquilla.gateway.rpc_config  # noqa: F401  ensures registration
@@ -231,6 +233,8 @@ async def test_config_apply_preserves_redacted_memory_remote_secrets(tmp_path):
 
     assert apply_res.error is None, apply_res.error
     _assert_memory_remote_secrets_preserved(cfg, config_path)
+    persisted = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert "network_observability_disabled_effective" not in persisted.get("privacy", {})
 
 
 @pytest.mark.asyncio

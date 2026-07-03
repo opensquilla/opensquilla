@@ -21,10 +21,19 @@ from opensquilla.onboarding.config_store import (
 )
 
 
+def _clear_path_env(monkeypatch):
+    for key in (
+        "OPENSQUILLA_GATEWAY_CONFIG_PATH",
+        "OPENSQUILLA_STATE_DIR",
+        "OPENSQUILLA_HOME",
+        "OPENSQUILLA_PROFILE",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
 def test_default_config_path_under_home(monkeypatch, tmp_path):
+    _clear_path_env(monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", raising=False)
-    monkeypatch.delenv("OPENSQUILLA_STATE_DIR", raising=False)
     monkeypatch.chdir(tmp_path)  # no opensquilla.toml here
     p = default_config_path()
     assert p == tmp_path / ".opensquilla" / "config.toml"
@@ -48,8 +57,7 @@ def test_default_path_prefers_cwd_when_present(tmp_path, monkeypatch):
 
 
 def test_resolve_config_path_ignores_cwd_directory(tmp_path, monkeypatch):
-    monkeypatch.delenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", raising=False)
-    monkeypatch.delenv("OPENSQUILLA_STATE_DIR", raising=False)
+    _clear_path_env(monkeypatch)
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
@@ -63,8 +71,7 @@ def test_resolve_config_path_ignores_cwd_directory(tmp_path, monkeypatch):
 
 
 def test_default_path_falls_back_to_home(tmp_path, monkeypatch):
-    monkeypatch.delenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", raising=False)
-    monkeypatch.delenv("OPENSQUILLA_STATE_DIR", raising=False)
+    _clear_path_env(monkeypatch)
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))

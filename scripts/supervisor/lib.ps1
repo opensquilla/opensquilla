@@ -81,6 +81,7 @@ function Get-OpensquillaCommand {
         if ($resolvedRepo -and (Test-Path -LiteralPath (Join-Path $resolvedRepo 'pyproject.toml') -PathType Leaf)) {
             return @{ Mode = 'uv-run-repo'; Repo = $resolvedRepo }
         }
+        throw "OpenSquilla repo lacks pyproject.toml: $resolvedRepo"
     }
 
     $installed = Get-Command 'opensquilla' -ErrorAction SilentlyContinue

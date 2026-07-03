@@ -45,6 +45,11 @@ def test_supervisor_explicit_repo_takes_precedence_over_installed_binary() -> No
 
     repo_branch = "if ($Repo) {"
     installed_lookup = "$installed = Get-Command 'opensquilla'"
+    explicit_error = 'throw "OpenSquilla repo lacks pyproject.toml: $resolvedRepo"'
+    auto_detect = "Get-OpensquillaRoot -Override $null"
     assert repo_branch in lib
     assert installed_lookup in lib
-    assert lib.index(repo_branch) < lib.index(installed_lookup)
+    assert explicit_error in lib
+    assert auto_detect in lib
+    assert lib.index(repo_branch) < lib.index(explicit_error) < lib.index(installed_lookup)
+    assert lib.index(installed_lookup) < lib.index(auto_detect)

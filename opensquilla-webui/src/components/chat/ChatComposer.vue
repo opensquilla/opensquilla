@@ -48,7 +48,7 @@
             <button class="btn btn--icon btn--ghost chat-plus-btn" :title="t('chat.attachFilesTitle')" :aria-label="t('chat.attachFiles')" @click="fileInputEl?.click()">
               <Icon name="plus" :size="18" />
             </button>
-            <div class="chat-settings-anchor">
+            <div ref="settingsAnchorEl" class="chat-settings-anchor">
               <button
                 class="btn btn--icon btn--ghost"
                 :title="t('chat.composerSettings')"
@@ -68,7 +68,7 @@
                 @set-coding-mode-enabled="emit('setCodingModeEnabled', $event)"
               />
             </div>
-            <div class="chat-settings-anchor">
+            <div ref="modelRoutingAnchorEl" class="chat-settings-anchor">
               <button
                 class="btn btn--icon btn--ghost"
                 :class="{ 'is-active': modelRoutingOpen || modelRoutingMode !== 'off' }"
@@ -87,7 +87,7 @@
                 @set-model-routing-mode="emit('setModelRoutingMode', $event)"
               />
             </div>
-            <div class="chat-settings-anchor">
+            <div ref="runModeAnchorEl" class="chat-settings-anchor">
               <button
                 class="btn btn--icon btn--ghost"
                 :class="{ 'is-active': runModeOpen }"
@@ -167,7 +167,7 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import type { IconName } from '@/utils/icons'
@@ -233,6 +233,42 @@ const fileInputEl = ref<HTMLInputElement | null>(null)
 const settingsOpen = ref(false)
 const modelRoutingOpen = ref(false)
 const runModeOpen = ref(false)
+const settingsAnchorEl = ref<HTMLElement | null>(null)
+const modelRoutingAnchorEl = ref<HTMLElement | null>(null)
+const runModeAnchorEl = ref<HTMLElement | null>(null)
+
+const anyPopoverOpen = computed(() => settingsOpen.value || modelRoutingOpen.value || runModeOpen.value)
+
+function eventInsideRoot(event: PointerEvent, root: HTMLElement | null): boolean {
+  if (!root) return false
+  const path = typeof event.composedPath === 'function' ? event.composedPath() : []
+  if (path.includes(root)) return true
+  return event.target instanceof Node && root.contains(event.target)
+}
+
+function closeOpenPopoversFromOutside(event: PointerEvent) {
+  if (settingsOpen.value && !eventInsideRoot(event, settingsAnchorEl.value)) {
+    settingsOpen.value = false
+  }
+  if (modelRoutingOpen.value && !eventInsideRoot(event, modelRoutingAnchorEl.value)) {
+    modelRoutingOpen.value = false
+  }
+  if (runModeOpen.value && !eventInsideRoot(event, runModeAnchorEl.value)) {
+    runModeOpen.value = false
+  }
+}
+
+watch(anyPopoverOpen, (open) => {
+  if (open) {
+    document.addEventListener('pointerdown', closeOpenPopoversFromOutside, true)
+  } else {
+    document.removeEventListener('pointerdown', closeOpenPopoversFromOutside, true)
+  }
+}, { immediate: true })
+
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', closeOpenPopoversFromOutside, true)
+})
 
 function toggleSettings() {
   settingsOpen.value = !settingsOpen.value

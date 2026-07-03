@@ -61,8 +61,9 @@ In Web chat and the CLI gateway TUI:
 ```
 
 `/meta` lists available MetaSkills. `/meta <name>` starts the selected
-workflow. Channel and standalone CLI surfaces can list MetaSkills with `/meta`,
-but they do not run MetaSkills from chat text.
+workflow. Channel surfaces can list MetaSkills with `/meta`, but they do not run
+MetaSkills from chat text. Standalone CLI chat requires gateway mode for
+`/meta`.
 
 To restore automatic model-triggered behavior, set:
 

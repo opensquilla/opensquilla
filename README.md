@@ -543,7 +543,9 @@ opensquilla agent -m "your prompt"     # one-shot, automation-friendly
 > ```
 >
 > Leave `OPENSQUILLA_TUI_BACKEND` unset for the stable chat. See
-> [docs/features/tui-frontend.md](docs/features/tui-frontend.md) for details.
+> [docs/tui.md](docs/tui.md) for terminal chat usage and
+> [docs/features/tui-frontend.md](docs/features/tui-frontend.md) for backend
+> details.
 
 Open the Web UI at <http://127.0.0.1:18791/control/>. The **Health**
 view shows whether OpenSquilla is ready, what is not ready, and the

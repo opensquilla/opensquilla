@@ -12,6 +12,7 @@ from opensquilla.env import load_env, warn_if_proxy_ignored
 from opensquilla.paths import default_opensquilla_home, is_valid_profile_name
 
 _LOADED_ENV_CONTEXTS: set[tuple[Path, Path]] = set()
+_LOADED_LOCAL_ENV_CWDS: set[Path] = set()
 
 
 def _profile_from_top_level_argv(argv: list[str]) -> str | None:
@@ -52,14 +53,19 @@ def _preactivate_profile_from_argv(argv: list[str]) -> None:
 
 
 def _load_env_for_active_home() -> None:
+    cwd = Path.cwd()
+    if cwd not in _LOADED_LOCAL_ENV_CWDS:
+        load_env(cwd=cwd, include_home=False)
+        _LOADED_LOCAL_ENV_CWDS.add(cwd)
+
     try:
         home = default_opensquilla_home()
     except ValueError:
         home = Path.home() / ".opensquilla"
-    context = (Path.cwd(), home)
+    context = (cwd, home)
     if context in _LOADED_ENV_CONTEXTS:
         return
-    load_env(home=home)
+    load_env(cwd=cwd, home=home)
     _LOADED_ENV_CONTEXTS.add(context)
 
 

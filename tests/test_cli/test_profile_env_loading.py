@@ -206,3 +206,55 @@ raise SystemExit(0 if os.environ.get("PROFILE_SHARED_MARK") == "coder" else 2)
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_cli_profile_from_cwd_env_wins_over_legacy_home_on_cold_start(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    (cwd / ".env").write_text("OPENSQUILLA_PROFILE=coder\n", encoding="utf-8")
+    legacy_home = tmp_path / ".opensquilla"
+    profiles_root = legacy_home / "profiles"
+    legacy_home.mkdir()
+    (legacy_home / ".env").write_text("PROFILE_SHARED_MARK=legacy\n", encoding="utf-8")
+    _write_profile(profiles_root, "coder", ["PROFILE_SHARED_MARK=coder"])
+
+    env = os.environ.copy()
+    env.update({"HOME": str(tmp_path)})
+    env.pop("OPENSQUILLA_HOME", None)
+    env.pop("OPENSQUILLA_PROFILE", None)
+    env.pop("OPENSQUILLA_STATE_DIR", None)
+    env.pop("PROFILE_SHARED_MARK", None)
+    pythonpath = [
+        str(repo_root / "src"),
+        str(repo_root),
+        env.get("PYTHONPATH", ""),
+    ]
+    env["PYTHONPATH"] = os.pathsep.join(path for path in pythonpath if path)
+
+    script = """
+import os
+from opensquilla.paths import default_opensquilla_home
+
+from opensquilla.cli.main import app
+
+if os.environ.get("PROFILE_SHARED_MARK") != "coder":
+    print(os.environ.get("PROFILE_SHARED_MARK", ""))
+    raise SystemExit(2)
+if default_opensquilla_home().name != "coder":
+    print(default_opensquilla_home())
+    raise SystemExit(3)
+raise SystemExit(0)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=cwd,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr

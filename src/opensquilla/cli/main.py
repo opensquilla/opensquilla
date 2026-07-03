@@ -11,6 +11,8 @@ import typer
 from opensquilla.env import load_env, warn_if_proxy_ignored
 from opensquilla.paths import default_opensquilla_home, is_valid_profile_name
 
+_LOADED_ENV_CONTEXTS: set[tuple[Path, Path]] = set()
+
 
 def _profile_from_top_level_argv(argv: list[str]) -> str | None:
     """Return a top-level ``--profile`` value without consuming subcommand flags."""
@@ -54,7 +56,11 @@ def _load_env_for_active_home() -> None:
         home = default_opensquilla_home()
     except ValueError:
         home = Path.home() / ".opensquilla"
+    context = (Path.cwd(), home)
+    if context in _LOADED_ENV_CONTEXTS:
+        return
     load_env(home=home)
+    _LOADED_ENV_CONTEXTS.add(context)
 
 
 _preactivate_profile_from_argv(sys.argv)
@@ -108,7 +114,7 @@ def _main_callback(
     ),
 ) -> None:
     _activate_profile(profile)
-    load_env(home=default_opensquilla_home())
+    _load_env_for_active_home()
     warn_if_proxy_ignored()
 
 # ── Sub-apps ─────────────────────────────────────────────────────────────────

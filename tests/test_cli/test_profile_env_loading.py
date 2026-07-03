@@ -67,6 +67,35 @@ def test_cli_without_profile_keeps_legacy_home(monkeypatch, tmp_path: Path) -> N
     assert default_opensquilla_home() == legacy_home
 
 
+def test_cli_does_not_reload_same_home_env_after_key_removed(
+    monkeypatch, tmp_path: Path
+) -> None:
+    legacy_home = tmp_path / ".opensquilla"
+    legacy_home.mkdir()
+    (legacy_home / ".env").write_text("RELOAD_MARK=loaded\n", encoding="utf-8")
+
+    for key in (
+        "OPENSQUILLA_HOME",
+        "OPENSQUILLA_PROFILE",
+        "OPENSQUILLA_STATE_DIR",
+        "RELOAD_MARK",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    result = runner.invoke(app, ["providers", "list", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert os.environ["RELOAD_MARK"] == "loaded"
+
+    monkeypatch.delenv("RELOAD_MARK", raising=False)
+
+    result = runner.invoke(app, ["providers", "list", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert "RELOAD_MARK" not in os.environ
+
+
 def test_cli_rejects_invalid_profile(monkeypatch) -> None:
     monkeypatch.delenv("OPENSQUILLA_STATE_DIR", raising=False)
 

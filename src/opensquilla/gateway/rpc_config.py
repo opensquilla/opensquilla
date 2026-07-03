@@ -58,6 +58,16 @@ def _collect_paths(payload: Any, prefix: str = "") -> set[str]:
     return paths
 
 
+def _strip_public_derived_config_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    privacy = payload.get("privacy")
+    if isinstance(privacy, dict) and "network_observability_disabled_effective" in privacy:
+        payload = dict(payload)
+        privacy = dict(privacy)
+        privacy.pop("network_observability_disabled_effective", None)
+        payload["privacy"] = privacy
+    return payload
+
+
 def _align_auto_router_profile_for_provider_patch(
     source_config: Any,
     cfg_dict: dict[str, Any],
@@ -505,6 +515,7 @@ async def _handle_config_apply(params: dict | None, ctx: RpcContext) -> dict[str
         else {}
     )
     config_payload, redacted_paths = _restore_redacted_values(config_payload, old_payload)
+    config_payload = _strip_public_derived_config_fields(config_payload)
 
     # Validate and persist the full replacement config
     new_config = GatewayConfig(**config_payload)

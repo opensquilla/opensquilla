@@ -1655,8 +1655,8 @@
       "runMode": "実行モード",
       "runModeStandard": "標準サンドボックス",
       "runModeStandardDesc": "リスクのあるツール操作の前に確認します。",
-      "runModeTrusted": "信頼済みサンドボックス",
-      "runModeTrustedDesc": "信頼済みサンドボックス操作を自動承認します。",
+      "runModeTrusted": "管理実行",
+      "runModeTrustedDesc": "既定ではサンドボックスを使い、明示的にホストへ影響する操作はポリシーが許可した場合にホストで実行できます。",
       "runModeFull": "完全なホストアクセス",
       "runModeFullDesc": "サンドボックス分離なしで実行します。",
       "runModeFullUnavailable": "完全なホストアクセスには owner セッションが必要です。"

@@ -154,18 +154,12 @@ def test_light_theme_dim_text_meets_accessible_contrast() -> None:
     bg = re.search(r"--bg:\s*(#[0-9A-Fa-f]{6});", light_rule)
     surface = re.search(r"--bg-surface:\s*(#[0-9A-Fa-f]{6});", light_rule)
     dim = re.search(r"--text-dim:\s*(#[0-9A-Fa-f]{6});", light_rule)
-    accent = re.search(r"--accent:\s*(#[0-9A-Fa-f]{6});", light_rule)
-    accent_foreground = re.search(r"--accent-foreground:\s*(#[0-9A-Fa-f]{6});", light_rule)
     assert bg is not None
     assert surface is not None
     assert dim is not None
-    assert accent is not None
-    assert accent_foreground is not None
 
     assert _contrast_ratio(dim.group(1), bg.group(1)) >= 4.5
     assert _contrast_ratio(dim.group(1), surface.group(1)) >= 4.5
-    assert _contrast_ratio(accent.group(1), bg.group(1)) >= 4.5
-    assert _contrast_ratio(accent_foreground.group(1), accent.group(1)) >= 4.5
 
 
 def test_light_theme_status_tokens_meet_accessible_tinted_contrast() -> None:

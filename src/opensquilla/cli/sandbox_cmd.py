@@ -113,7 +113,7 @@ def sandbox_on(
 def sandbox_trust(
     config_path: Path | None = typer.Option(None, "--config"),
 ) -> None:
-    """Keep sandboxing enabled while using the trusted sandbox run mode."""
+    """Keep sandboxing enabled while using Managed Execution."""
 
     _write_run_mode(config_path, RunMode.TRUSTED)
 

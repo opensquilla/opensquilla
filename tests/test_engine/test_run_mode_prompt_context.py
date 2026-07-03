@@ -17,3 +17,26 @@ def test_full_host_access_tool_context_is_visible_to_model_prompt() -> None:
     assert "Run mode: Full Host Access" in execution_context
     assert "Execution target: host" in execution_context
     assert "Sandbox: disabled for tool execution" in execution_context
+
+
+def test_managed_execution_prompt_allows_explicit_host_actions() -> None:
+    ctx = ToolContext(
+        caller_kind=CallerKind.WEB,
+        run_mode="trusted",
+        workspace_dir="/workspace/.opensquilla/workspace",
+    )
+
+    extra = TurnRunner._extra_context_for_tool_context(ctx)
+
+    execution_context = extra["Execution Context"]
+    assert "Run mode: Managed Execution" in execution_context
+    assert "Default execution target: sandbox" in execution_context
+    assert (
+        "explicit host-affecting actions can run on the host when policy allows"
+        in execution_context
+    )
+    install_guidance = (
+        "Do not refuse a user-requested installation merely because the default path "
+        "starts sandboxed"
+    )
+    assert install_guidance in execution_context

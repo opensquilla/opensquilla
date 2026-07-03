@@ -157,7 +157,7 @@ def _format_channel_sandbox_reply(
     run_mode = str(payload.get("runMode") or "").strip()
     label = {
         "standard": "Standard-Sandbox",
-        "trusted": "Trusted-Sandbox",
+        "trusted": "Managed Execution",
         "full": "Full Host Access",
     }.get(run_mode, run_mode or "updated")
     return OutgoingMessage(

@@ -409,6 +409,51 @@ def test_payload_contains_required_workspace_and_runtime_acl_plan(
     assert plan["grantCurrentUserAccess"] is True
 
 
+def test_payload_skips_windows_reserved_device_expansion_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default as mod
+
+    reserved_device = tmp_path / "nul"
+    external = tmp_path / "external-cache"
+    external.mkdir()
+    request = _request(tmp_path)
+    request = SandboxRequest(
+        argv=request.argv,
+        cwd=request.cwd,
+        action_kind=request.action_kind,
+        policy=request.policy,
+        env={
+            **request.env,
+            "OPENSQUILLA_WINDOWS_SANDBOX_EXPANSION_ROOTS": (
+                f"{reserved_device};{external}"
+            ),
+        },
+        run_mode=request.run_mode,
+    )
+    original_exists = mod.Path.exists
+
+    def fake_exists(path: Path) -> bool:
+        if str(path) == str(reserved_device):
+            return True
+        return original_exists(path)
+
+    monkeypatch.setattr(mod, "_support_ready", lambda: True)
+    monkeypatch.setattr(mod, "_capability_store_path", lambda: tmp_path / "cap_sids.json")
+    monkeypatch.setattr(mod.Path, "exists", fake_exists)
+
+    payload = mod._payload_for_request(request)
+
+    expansion_grants = {
+        grant["path"]
+        for grant in payload["policy"]["windowsAclPlan"]["autoGrants"]
+        if grant["kind"] == "expansion"
+    }
+    assert str(external) in expansion_grants
+    assert str(reserved_device) not in expansion_grants
+
+
 def test_payload_includes_offline_identity_boundary_when_marker_has_network(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

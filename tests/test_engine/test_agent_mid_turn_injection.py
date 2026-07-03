@@ -124,6 +124,16 @@ def _is_tool_result_message(message: Message) -> bool:
     )
 
 
+def _message_text(message: Message) -> str:
+    if isinstance(message.content, str):
+        return message.content
+    if not isinstance(message.content, list):
+        return ""
+    return "\n".join(
+        block.text for block in message.content if isinstance(block, ContentBlockText)
+    )
+
+
 def _tool_result_index(messages: list[Message]) -> int:
     return next(index for index, message in enumerate(messages) if _is_tool_result_message(message))
 
@@ -181,14 +191,21 @@ async def test_multiple_pending_inputs_are_merged_into_one_user_message() -> Non
 
 
 @pytest.mark.asyncio
-async def test_no_pending_provider_keeps_tool_result_last_in_next_request() -> None:
+async def test_no_pending_provider_anchors_current_request_after_tool_result() -> None:
     provider = _ToolBoundaryProvider()
     agent = _agent(provider)
 
     _events = [event async for event in agent.run_turn("run echo")]
 
     assert len(provider.calls) == 2
-    assert _is_tool_result_message(provider.calls[1][-1])
+    second_request = provider.calls[1]
+    tool_result_index = _tool_result_index(second_request)
+    reminder_text = _message_text(second_request[tool_result_index + 1])
+    assert "Current user request" in reminder_text
+    assert "run echo" in reminder_text
+    assert not any(
+        "Current user request" in _message_text(message) for message in agent._history
+    )
 
 
 @pytest.mark.asyncio

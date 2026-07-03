@@ -444,7 +444,7 @@ class GatewayClient:
         """Send message and yield session events until done.
 
         ``elevated`` is a legacy surface kept for older clients. ``off``
-        clears the override, ``on``/``bypass`` map to Trusted-Sandbox, and
+        clears the override, ``on``/``bypass`` map to Managed Execution, and
         ``full`` maps to Full Host Access.
         """
         # Subscribe to message events for this session

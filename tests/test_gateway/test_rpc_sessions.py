@@ -2756,6 +2756,166 @@ class TestSessionsAbort:
         ]
 
     @pytest.mark.asyncio
+    async def test_abort_with_task_id_cancels_only_that_runtime_task(
+        self, dispatcher, session
+    ):
+        class Runtime:
+            def __init__(self) -> None:
+                self.cancel_calls: list[dict[str, Any]] = []
+                self.wait_calls: list[str] = []
+
+            async def list(self, session_key: str | None = None):
+                assert session_key == session.session_key
+                return [
+                    SimpleNamespace(task_id="task-old", status="running"),
+                    SimpleNamespace(task_id="task-new", status="queued"),
+                ]
+
+            async def cancel(
+                self,
+                task_id: str | None = None,
+                session_key: str | None = None,
+                source: str | None = None,
+                reason: str | None = None,
+            ) -> int:
+                self.cancel_calls.append(
+                    {
+                        "task_id": task_id,
+                        "session_key": session_key,
+                        "source": source,
+                        "reason": reason,
+                    }
+                )
+                return 1
+
+            async def wait(self, task_id: str):
+                self.wait_calls.append(task_id)
+                return SimpleNamespace(task_id=task_id, status="cancelled")
+
+        runtime = Runtime()
+        ctx = make_ctx(session_manager=FakeSessionManager([session]), task_runtime=runtime)
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.abort",
+            {"key": session.session_key, "task_id": "task-old", "source": "webui_stop"},
+            ctx,
+        )
+
+        assert res.ok is True
+        assert runtime.cancel_calls == [
+            {
+                "task_id": "task-old",
+                "session_key": None,
+                "source": "webui_stop",
+                "reason": "user_abort",
+            }
+        ]
+        assert runtime.wait_calls == ["task-old"]
+
+    @pytest.mark.asyncio
+    async def test_chat_abort_forwards_task_id_to_runtime(self, dispatcher, session):
+        class Runtime:
+            def __init__(self) -> None:
+                self.cancel_calls: list[dict[str, Any]] = []
+
+            async def list(self, session_key: str | None = None):
+                assert session_key == session.session_key
+                return [SimpleNamespace(task_id="task-old", status="running")]
+
+            async def cancel(
+                self,
+                task_id: str | None = None,
+                session_key: str | None = None,
+                source: str | None = None,
+                reason: str | None = None,
+            ) -> int:
+                self.cancel_calls.append(
+                    {
+                        "task_id": task_id,
+                        "session_key": session_key,
+                        "source": source,
+                        "reason": reason,
+                    }
+                )
+                return 1
+
+            async def wait(self, task_id: str):
+                return SimpleNamespace(task_id=task_id, status="cancelled")
+
+        runtime = Runtime()
+        ctx = make_ctx(session_manager=FakeSessionManager([session]), task_runtime=runtime)
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "chat.abort",
+            {
+                "sessionKey": session.session_key,
+                "taskId": "task-old",
+                "source": "webui_stop",
+            },
+            ctx,
+        )
+
+        assert res.ok is True
+        assert runtime.cancel_calls == [
+            {
+                "task_id": "task-old",
+                "session_key": None,
+                "source": "webui_stop",
+                "reason": "user_abort",
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_abort_waits_for_runtime_task_to_settle(self, dispatcher, session):
+        class Runtime:
+            def __init__(self) -> None:
+                self.status = "running"
+                self.cancel_calls: list[dict[str, Any]] = []
+                self.wait_calls: list[str] = []
+
+            async def list(self, session_key: str | None = None):
+                assert session_key == session.session_key
+                return [SimpleNamespace(task_id="task-live", status=self.status)]
+
+            async def cancel(
+                self,
+                session_key: str | None = None,
+                source: str | None = None,
+                reason: str | None = None,
+            ) -> int:
+                self.cancel_calls.append(
+                    {"session_key": session_key, "source": source, "reason": reason}
+                )
+                return 1
+
+            async def wait(self, task_id: str):
+                self.wait_calls.append(task_id)
+                self.status = "cancelled"
+                return SimpleNamespace(task_id=task_id, status=self.status)
+
+        runtime = Runtime()
+        ctx = make_ctx(session_manager=FakeSessionManager([session]), task_runtime=runtime)
+
+        res = await dispatcher.dispatch(
+            "r1",
+            "sessions.abort",
+            {"key": session.session_key, "source": "webui_stop"},
+            ctx,
+        )
+
+        assert res.ok is True
+        assert runtime.cancel_calls == [
+            {
+                "session_key": session.session_key,
+                "source": "webui_stop",
+                "reason": "user_abort",
+            }
+        ]
+        assert runtime.wait_calls == ["task-live"]
+
+    @pytest.mark.asyncio
     async def test_abort_no_manager(self, dispatcher, ctx_no_manager):
         res = await dispatcher.dispatch("r1", "sessions.abort", {"key": "any"}, ctx_no_manager)
         assert res.ok is True  # no-op

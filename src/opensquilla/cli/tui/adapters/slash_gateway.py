@@ -744,13 +744,13 @@ async def _handle_elevated_command(
         )
     elif arg == "on":
         console.print(
-            f"[yellow]permissions: on[/yellow] - legacy alias for Trusted-Sandbox; "
+            f"[yellow]permissions: on[/yellow] - legacy alias for Managed Execution; "
             f"approvals still apply. "
             f"{cache_suffix}"
         )
     elif arg == "bypass":
         console.print(
-            f"[red]permissions: bypass[/red] - legacy alias for Trusted-Sandbox "
+            f"[red]permissions: bypass[/red] - legacy alias for Managed Execution "
             f"with fewer prompts; host access is not granted.{cache_suffix}"
         )
     else:

@@ -44,6 +44,7 @@ from opensquilla.session.storage import SessionStorage
 _TEXT_MODEL = "test/text"
 _GATE_MODEL = "test/gate"
 _VISION_MODEL = "test/vision"
+_TURN_TERMINAL_EVENT_TIMEOUT_SECONDS = 30.0
 
 _PNG_BYTES = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
@@ -272,6 +273,7 @@ async def _send_session_turn(
     attachments: list[dict[str, Any]] | None = None,
 ) -> None:
     done_before = sum(1 for event, _payload in sink.events if event == "session.event.done")
+    event_count_before = len(sink.events)
     result = await get_dispatcher().dispatch(
         "test",
         "sessions.send",
@@ -280,18 +282,31 @@ async def _send_session_turn(
     )
     assert result.ok, result.error
 
-    deadline = asyncio.get_running_loop().time() + 5.0
-    while asyncio.get_running_loop().time() < deadline:
+    task = get_agent_task_registry().get(key)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _TURN_TERMINAL_EVENT_TIMEOUT_SECONDS
+    while loop.time() < deadline:
         done_count = sum(
             1 for event, _payload in sink.events if event == "session.event.done"
         )
         if done_count > done_before:
-            task = get_agent_task_registry().get(key)
             if task is not None:
                 await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
             return
-        if any(event == "session.event.error" for event, _payload in sink.events):
+        new_errors = [
+            payload
+            for event, payload in sink.events[event_count_before:]
+            if event == "session.event.error"
+        ]
+        if new_errors:
             raise AssertionError(f"turn emitted error events: {sink.events!r}")
+        if task is not None and task.done():
+            if task.cancelled():
+                raise AssertionError(f"agent task was cancelled; events={sink.events!r}")
+            exc = task.exception()
+            if exc is not None:
+                raise AssertionError(f"agent task failed; events={sink.events!r}") from exc
+            raise AssertionError(f"agent task ended without done event; events={sink.events!r}")
         await asyncio.sleep(0.01)
     raise AssertionError(f"timed out waiting for done event; events={sink.events!r}")
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import ntpath
 import os
 import sys
 import time
@@ -64,10 +65,21 @@ _WINDOWS_TOOL_PATH_EXECUTABLES = (
     "uv.exe",
 )
 _WINDOWS_APPS_ALIAS_DIR_MARKER = "\\microsoft\\windowsapps"
+_WINDOWS_DOS_DEVICE_NAMES = frozenset(
+    {
+        "aux",
+        "clock$",
+        "con",
+        "nul",
+        "prn",
+        *(f"com{i}" for i in range(1, 10)),
+        *(f"lpt{i}" for i in range(1, 10)),
+    }
+)
 
 
 class WindowsDefaultBackend(Backend):
-    """Windows backend used by Standard-Sandbox and Trusted-Sandbox."""
+    """Windows backend used by Standard-Sandbox and Managed Execution."""
 
     name = "windows_default"
 
@@ -595,13 +607,21 @@ def _acl_sensitive_marker(path: Path) -> str | None:
     return windows_sensitive_marker(path)
 
 
+def _is_windows_dos_device_path(path: Path) -> bool:
+    basename = ntpath.basename(str(path).strip().strip("'\"").rstrip("\\/"))
+    if not basename:
+        return False
+    stem = basename.split(":", 1)[0].split(".", 1)[0].lower()
+    return stem in _WINDOWS_DOS_DEVICE_NAMES
+
+
 def _expansion_grants_from_env(request: SandboxRequest) -> tuple[AclGrant, ...]:
     raw = request.env.get("OPENSQUILLA_WINDOWS_SANDBOX_EXPANSION_ROOTS", "")
     roots = [item.strip() for item in raw.split(";") if item.strip()]
     return tuple(
         AclGrant(Path(root), AclAccess.RWX, AclGrantKind.EXPANSION)
         for root in roots
-        if Path(root).exists()
+        if Path(root).exists() and not _is_windows_dos_device_path(Path(root))
     )
 
 

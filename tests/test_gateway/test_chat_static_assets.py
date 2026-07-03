@@ -76,7 +76,7 @@ def test_chat_toolbar_uses_run_mode_policy_instead_of_legacy_execution_mode() ->
     assert "_allowedRunModes.has('full')" in source
     assert "Full Host Access is unavailable" in source
     assert "Standard-Sandbox" in source
-    assert "Trusted-Sandbox" in source
+    assert "Managed Execution" in source
     assert "Full Host Access" in source
     assert "Bypass Off" not in source
 
@@ -109,6 +109,26 @@ def test_webui_bypass_shortcuts_do_not_enable_full_mode() -> None:
     assert "This maps to /elevated bypass" not in chat_source
     assert "maps to /elevated full" not in combined
     assert "Bypass All Permissions" not in combined
+
+
+def test_chat_run_mode_user_preference_survives_policy_reapply() -> None:
+    chat_source = _read_chat_js()
+    policy_start = chat_source.index("function _applyHelloRunModePolicy(hello)")
+    policy_end = chat_source.index("  function _runModeHelp", policy_start)
+    policy_body = chat_source[policy_start:policy_end]
+    setter_start = chat_source.index("function _setRunMode(mode")
+    setter_end = chat_source.index("  function _updateRunModeControl", setter_start)
+    setter_body = chat_source[setter_start:setter_end]
+
+    assert "const _RUN_MODE_PREF_KEY = 'opensquilla.chat.runMode';" in chat_source
+    assert "let _runModeUserSelected = false;" in chat_source
+    assert "function _readStoredRunModePreference()" in chat_source
+    assert "const storedRunMode = _readStoredRunModePreference();" in policy_body
+    assert "storedRunMode && _allowedRunModes.has(storedRunMode)" in policy_body
+    assert "_runModeUserSelected = true;" in policy_body
+    assert "!_runModeUserSelected && _runMode === previousPolicyDefault" in policy_body
+    assert "_clearStoredRunModePreference();" in policy_body
+    assert "_writeStoredRunModePreference(clamped);" in setter_body
 
 
 def test_app_uses_dynamic_viewport_height_after_100vh_fallback_for_mobile_composer() -> None:
@@ -463,7 +483,9 @@ def test_chat_stop_sends_abort_source() -> None:
     stop_body = source[stop_start:stop_end]
 
     assert "function _onStop(source = 'webui_stop_button')" in stop_body
-    assert "_rpc.call('chat.abort', { sessionKey: _sessionKey, source })" in stop_body
+    assert "const abortParams = { sessionKey: _sessionKey, source }" in stop_body
+    assert "abortParams.taskId = _activeStreamTaskId" in stop_body
+    assert "_rpc.call('chat.abort', abortParams)" in stop_body
     assert "function _chatOverlayVisible" in source
 
 

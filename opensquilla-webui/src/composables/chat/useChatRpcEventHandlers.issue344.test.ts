@@ -11,7 +11,7 @@
 // task-B's own events (and legacy untagged events) still flow.
 import { describe, expect, it, vi } from 'vitest'
 import { effectScope, ref, type Ref } from 'vue'
-import type { ChatMessage } from '@/types/chat'
+import type { ChatMessage, ChatRunStatus, ChatRunStatusSource } from '@/types/chat'
 import type { ToolUsePayload } from '@/types/rpc'
 import {
   useChatRpcEventHandlers,
@@ -130,6 +130,18 @@ describe('issue #344 — live stream is bound to a single task', () => {
     expect(messages.value.some((m) => m.role === 'error')).toBe(false)
   })
 
+  it("does not end the current stream on a stale task's terminal sessions.changed", () => {
+    const { api, stream, options } = makeHarness('task-B')
+    api.handlers.onSessionsChanged({
+      session_key: SESSION,
+      reason: 'task_terminal',
+      run_status: 'cancelled',
+      last_task: { task_id: 'task-A', status: 'cancelled' },
+    } as never)
+    expect(stream.endStreaming).not.toHaveBeenCalled()
+    expect(options.applySessionRunState).not.toHaveBeenCalled()
+  })
+
   it("ends the current stream on the active task's terminal error", () => {
     const { api, stream, messages } = makeHarness('task-B')
     api.handlers.onAny('task.failed', {
@@ -147,5 +159,70 @@ describe('issue #344 — live stream is bound to a single task', () => {
     expect(options.activeStreamTaskId.value).toBe('task-B')
     api.handlers.onToolUseStart(toolUse('task-A', 'create_pdf.py'))
     expect(stream.appendToolCall).not.toHaveBeenCalled()
+  })
+
+  it('binds a queued task while a fresh send is still pending so early cancellation can end it', () => {
+    const { api, options, stream } = makeHarness('__opensquilla_pending_stream_task__')
+
+    api.handlers.onTaskQueued({ task_id: 'task-B', session_key: SESSION })
+    expect(options.activeStreamTaskId.value).toBe('task-B')
+
+    api.handlers.onAny('task.cancelled', {
+      task_id: 'task-B',
+      session_key: SESSION,
+      terminal_message: 'The task was cancelled before it finished.',
+    })
+
+    expect(stream.endStreaming).toHaveBeenCalled()
+  })
+
+  it("accepts the stopped task's cancelled terminal event after Stop poisoned the active id", () => {
+    const { api, options, stream } = makeHarness('__opensquilla_stopped_stream_task__')
+    stream.isStreaming.value = false
+
+    api.handlers.onAny('task.cancelled', {
+      task_id: 'task-B',
+      session_key: SESSION,
+      terminal_message: 'The task was cancelled before it finished.',
+    })
+
+    expect(options.applySessionRunState).toHaveBeenCalledWith(expect.objectContaining({
+      run_status: 'cancelled',
+      last_task: expect.objectContaining({
+        task_id: 'task-B',
+        status: 'cancelled',
+      }),
+    }))
+  })
+
+  it("accepts the stopped task's terminal sessions.changed payload", () => {
+    const { api, options, stream } = makeHarness('__opensquilla_stopped_stream_task__')
+    stream.isStreaming.value = false
+    const cancelledPayload = {
+      session_key: SESSION,
+      reason: 'task_terminal',
+      run_status: 'cancelled',
+      last_task: { task_id: 'task-B', status: 'cancelled' },
+    } satisfies ChatRunStatusSource & { session_key: string; reason: string }
+    options.sessionRunStatus = vi.fn((source: ChatRunStatusSource | null | undefined): ChatRunStatus => {
+      const isCancelled = source?.run_status === 'cancelled'
+      return {
+        status: isCancelled ? 'cancelled' : 'idle',
+        label: isCancelled ? 'Cancelled' : 'Idle',
+        task: source?.last_task ?? null,
+      }
+    })
+
+    api.handlers.onSessionsChanged(cancelledPayload as never)
+
+    expect(options.applySessionRunState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        run_status: 'cancelled',
+        last_task: expect.objectContaining({
+          task_id: 'task-B',
+          status: 'cancelled',
+        }),
+      }),
+    )
   })
 })

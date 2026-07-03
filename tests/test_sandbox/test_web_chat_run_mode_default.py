@@ -40,6 +40,8 @@ def test_web_chat_run_mode_policy_fails_closed_for_missing_or_malformed_policy()
         "_runModeAllowed",
         "_firstAllowedRunMode",
         "_clampRunMode",
+        "_readStoredRunModePreference",
+        "_clearStoredRunModePreference",
         "_fullHostAccessDisabledMessage",
         "_applyHelloRunModePolicy",
     ]
@@ -47,11 +49,14 @@ def test_web_chat_run_mode_policy_fails_closed_for_missing_or_malformed_policy()
     script = f"""
 const assert = require('assert');
 const _RUN_MODE_FALLBACK = 'trusted';
+const _RUN_MODE_PREF_KEY = 'opensquilla.chat.runMode';
 let _runModePolicyDefault = _RUN_MODE_FALLBACK;
 let _allowedRunModes = new Set(['standard', 'trusted', 'full']);
 let _fullHostAccessDisabledReason = null;
 let _runMode = _runModePolicyDefault;
+let _runModeUserSelected = false;
 let _toolbarState = {{ runMode: _runModePolicyDefault }};
+const localStorage = {{ getItem() {{ return null; }}, removeItem() {{}}, setItem() {{}} }};
 function _updateRunModeControl() {{}}
 function _refreshToolbarTriggerGlow() {{}}
 {helpers}

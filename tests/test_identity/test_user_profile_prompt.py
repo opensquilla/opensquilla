@@ -126,6 +126,28 @@ def test_system_prompt_requires_tool_preambles_and_conversation_language() -> No
     assert "If the user writes in Chinese, keep replying in Chinese" in prompt
 
 
+def test_system_prompt_describes_managed_execution_run_mode() -> None:
+    prompt = assemble_system_prompt(
+        AgentProfile(agent_id="main", prompt_mode="full"),
+        tools=["exec_command"],
+        runtime_info={
+            "os": "Windows",
+            "shell": "powershell",
+            "workspace_dir": r"C:\Users\lrk\.opensquilla\workspace",
+            "run_mode": "trusted",
+            "run_mode_label": "Managed Execution",
+        },
+    )
+
+    assert "Run mode: Managed Execution" in prompt
+    assert "explicit host-affecting actions can run on the host when policy allows" in prompt
+    install_guidance = (
+        "Do not refuse a user-requested installation merely because the default path "
+        "starts sandboxed"
+    )
+    assert install_guidance in prompt
+
+
 def test_system_prompt_disambiguates_session_send_from_channel_message() -> None:
     prompt = assemble_system_prompt(
         AgentProfile(agent_id="main", prompt_mode="full"),

@@ -137,6 +137,8 @@ from .types import (
 
 logger = structlog.get_logger("opensquilla.engine.agent")
 
+_TURN_OBJECTIVE_REMINDER_MAX_CHARS = 2000
+
 _PROVIDER_OUTPUT_TRUNCATED_REPLY = build_terminal_reply(
     {
         "status": "failed",
@@ -510,6 +512,12 @@ def _message_has_tool_result(message: Message | None) -> bool:
     if message is None or not isinstance(message.content, list):
         return False
     return any(getattr(block, "type", None) == "tool_result" for block in message.content)
+
+
+def _tail_has_tool_result(messages: list[Message], *, lookback: int = 2) -> bool:
+    if not messages:
+        return False
+    return any(_message_has_tool_result(message) for message in messages[-lookback:])
 
 
 def _append_length_capped_continuation(
@@ -2025,6 +2033,9 @@ class Agent:
         runtime_context = self._runtime_context_block()
         runtime_context_message = self._runtime_context_message(runtime_context)
         request_context_message = self._request_context_message(self.config.request_context_prompt)
+        turn_objective_message = self._turn_objective_message(
+            semantic_message if semantic_message is not None else message
+        )
         runtime_context_hash = hashlib.sha256(runtime_context.encode("utf-8")).hexdigest()[:16]
 
         chat_cfg = ChatConfig(
@@ -2364,6 +2375,7 @@ class Agent:
                         request_context_insert_index=request_context_insert_index,
                         runtime_context_message=runtime_context_message,
                         runtime_context_insert_index=runtime_context_insert_index,
+                        turn_objective_message=turn_objective_message,
                     )
                     self._write_context_stage(
                         "stream:context",
@@ -2407,7 +2419,7 @@ class Agent:
                         forced_tool_choice is not None
                         and provider_tools_for_call
                         and request_messages
-                        and not _message_has_tool_result(request_messages[-1])
+                        and not _tail_has_tool_result(request_messages)
                     ):
                         call_chat_cfg = chat_cfg.model_copy(
                             update={"tool_choice": forced_tool_choice}
@@ -2783,8 +2795,7 @@ class Agent:
                             assistant_text_parts.append(response_text)
                             attempt_user_visible_emitted = True
                             yield TextDeltaEvent(text=response_text)
-                    last_request_msg = request_messages[-1] if request_messages else None
-                    post_tool_turn = _message_has_tool_result(last_request_msg)
+                    post_tool_turn = _tail_has_tool_result(request_messages)
                     stop_reason = (
                         getattr(provider_done_for_log, "stop_reason", None)
                         if provider_done_for_log is not None
@@ -3276,6 +3287,7 @@ class Agent:
                                 request_context_insert_index=next_request_context_insert_index,
                                 runtime_context_message=runtime_context_message,
                                 runtime_context_insert_index=next_runtime_context_insert_index,
+                                turn_objective_message=turn_objective_message,
                             )
                             if not self._provider_request_is_smaller(
                                 request_messages,
@@ -4133,7 +4145,13 @@ class Agent:
                 wait_budget = min(wait_budget, remaining_total)
 
             next_event: asyncio.Future[Any] = asyncio.ensure_future(stream_iter.__anext__())
-            done, _ = await asyncio.wait({next_event}, timeout=wait_budget)
+            try:
+                done, _ = await asyncio.wait({next_event}, timeout=wait_budget)
+            except (asyncio.CancelledError, GeneratorExit):
+                next_event.cancel()
+                with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
+                    await next_event
+                raise
             if not done:
                 next_event.cancel()
                 with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
@@ -4164,6 +4182,7 @@ class Agent:
         request_context_insert_index: int,
         runtime_context_message: Message,
         runtime_context_insert_index: int,
+        turn_objective_message: Message | None = None,
     ) -> list[Message]:
         request_messages, _ = self._provider_request_messages_with_sanitize(
             messages,
@@ -4171,6 +4190,7 @@ class Agent:
             request_context_insert_index=request_context_insert_index,
             runtime_context_message=runtime_context_message,
             runtime_context_insert_index=runtime_context_insert_index,
+            turn_objective_message=turn_objective_message,
         )
         return request_messages
 
@@ -4182,6 +4202,7 @@ class Agent:
         request_context_insert_index: int,
         runtime_context_message: Message,
         runtime_context_insert_index: int,
+        turn_objective_message: Message | None = None,
     ) -> tuple[list[Message], SessionSanitizeResult]:
         source_messages = self._with_request_context_messages(
             messages,
@@ -4189,6 +4210,7 @@ class Agent:
             request_context_insert_index,
             runtime_context_message,
             runtime_context_insert_index,
+            turn_objective_message=turn_objective_message,
         )
         source_messages = self._apply_provider_tool_result_overrides(source_messages)
         source_messages = self._strip_provider_context_marker_replay_for_provider(source_messages)
@@ -4266,12 +4288,29 @@ class Agent:
         return Message(role="user", content="\n".join(lines))
 
     @staticmethod
+    def _turn_objective_message(turn_objective: str | None) -> Message | None:
+        if not turn_objective or not turn_objective.strip():
+            return None
+        objective = turn_objective.strip()
+        if len(objective) > _TURN_OBJECTIVE_REMINDER_MAX_CHARS:
+            objective = objective[:_TURN_OBJECTIVE_REMINDER_MAX_CHARS].rstrip() + "..."
+        lines = [
+            "[Current user request reminder]",
+            "This is the active user request for this same turn, not a new request.",
+            "Continue using the tool results above to make progress on:",
+            objective,
+        ]
+        return Message(role="user", content="\n".join(lines))
+
+    @staticmethod
     def _with_request_context_messages(
         messages: list[Message],
         request_context_message: Message | None,
         request_context_insert_index: int,
         runtime_context_message: Message,
         runtime_context_insert_index: int,
+        *,
+        turn_objective_message: Message | None = None,
     ) -> list[Message]:
         result = list(messages)
         runtime_idx = max(0, min(runtime_context_insert_index, len(result)))
@@ -4288,6 +4327,10 @@ class Agent:
             )
         else:
             result.insert(runtime_idx, runtime_context_message)
+        if turn_objective_message is not None and _message_has_tool_result(
+            result[-1] if result else None
+        ):
+            result.append(turn_objective_message)
         return result
 
     @staticmethod

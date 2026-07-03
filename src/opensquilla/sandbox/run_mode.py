@@ -57,7 +57,7 @@ def display_name(mode: Any) -> str:
     if normalized == RunMode.STANDARD:
         return "Standard-Sandbox"
     if normalized == RunMode.TRUSTED:
-        return "Trusted-Sandbox"
+        return "Managed Execution"
     return "Full Host Access"
 
 

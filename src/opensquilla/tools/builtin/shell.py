@@ -74,7 +74,11 @@ from opensquilla.sandbox.managed_proxy_env import (
     PROXY_CONTROL_ENV,
     PROXY_ENV_KEYS,
 )
-from opensquilla.sandbox.operation_profile import OperationProfile, classify_command
+from opensquilla.sandbox.operation_profile import (
+    OperationProfile,
+    classify_command,
+    shell_command_approval_variants,
+)
 from opensquilla.sandbox.operation_runtime import SandboxToolDescriptor
 from opensquilla.sandbox.path_validation import MountDecision, decide_path_access
 from opensquilla.sandbox.policy import LevelHints
@@ -123,6 +127,17 @@ _EXEC_STDIN_WRITE_CHUNK_BYTES = 64 * 1024
 _EXEC_STDIN_GUARD_CHUNK_CHARS = 64 * 1024
 _EXEC_STDIN_GUARD_OVERLAP_CHARS = 1024
 _COMMAND_AUDIT_MAX_CHARS = 4096
+_POWERSHELL_SCRIPT_PROFILE_MAX_CHARS = 128 * 1024
+_WINDOWS_ENV_CANONICAL_KEYS = {
+    "COMSPEC": "ComSpec",
+    "PATH": "PATH",
+    "PATHEXT": "PATHEXT",
+    "SYSTEMROOT": "SystemRoot",
+    "TEMP": "TEMP",
+    "TMP": "TMP",
+    "USERPROFILE": "USERPROFILE",
+    "WINDIR": "WINDIR",
+}
 _SANDBOX_NETWORK_HINT = (
     "Hint: sandboxed shell/code has no direct network. Use sandbox_network approval "
     "or trusted managed-network mode, then retry the shell command through the "
@@ -151,7 +166,19 @@ _SANDBOX_NETWORK_FAILURE_MARKERS: tuple[str, ...] = (
     "curl: (6)",
 )
 _SHELL_NULL_REDIRECT_RE = re.compile(
-    r"(?:(?<=^)|(?<=[\s;|&]))\d*[<>]{1,2}\s*/dev/null(?=$|[\s;|&])"
+    r"(?:(?<=^)|(?<=[\s;|&]))\d*[<>]{1,2}\s*(?:/dev/null|nul:?)(?=$|[\s;|&])",
+    re.IGNORECASE,
+)
+_WINDOWS_DOS_DEVICE_NAMES = frozenset(
+    {
+        "aux",
+        "clock$",
+        "con",
+        "nul",
+        "prn",
+        *(f"com{i}" for i in range(1, 10)),
+        *(f"lpt{i}" for i in range(1, 10)),
+    }
 )
 _PROTECTED_METADATA_NAMES = frozenset({".git", ".codex", ".agents"})
 _WINDOWS_ABSOLUTE_PATH_IN_SCRIPT_RE = re.compile(
@@ -309,17 +336,112 @@ def _host_execution_allowed() -> bool:
     return runtime is not None and not bool(getattr(effective, "sandbox_enabled", False))
 
 
+def _auto_host_escalation_allowed(
+    profile: OperationProfile,
+    command: str,
+    *,
+    workdir: str | None = None,
+) -> bool:
+    host_effect = profile.host_effect
+    if full_host_access_active():
+        return False
+    runtime = get_runtime()
+    effective = getattr(runtime, "effective", None) if runtime is not None else None
+    if runtime is None or not bool(getattr(effective, "sandbox_enabled", False)):
+        return False
+    ctx = current_tool_context.get()
+    if ctx is None or not bool(ctx.is_owner):
+        return False
+    if not trusted_sandbox_active():
+        return False
+    settings = get_approval_queue().get_settings()
+    if not host_effect:
+        script_profile = _profile_referenced_powershell_file(command, workdir=workdir)
+        host_effect = script_profile.host_effect if script_profile is not None else None
+    if not host_effect:
+        return False
+    pattern_class = _approval_command_pattern_class(command, settings)
+    return pattern_class != "deny"
+
+
+def _profile_referenced_powershell_file(
+    command: str,
+    *,
+    workdir: str | None = None,
+) -> OperationProfile | None:
+    script_path = _referenced_powershell_file(command, workdir=workdir)
+    if script_path is None:
+        return None
+    with contextlib.suppress(OSError, UnicodeError):
+        if script_path.suffix.lower() not in {".ps1", ".psm1"}:
+            return None
+        with script_path.open("r", encoding="utf-8", errors="replace") as handle:
+            script = handle.read(_POWERSHELL_SCRIPT_PROFILE_MAX_CHARS)
+        if not script.strip():
+            return None
+        normalized_script = re.sub(r"[\r\n]+", ";", script)
+        return classify_command(("powershell", "-NoProfile", "-Command", normalized_script))
+    return None
+
+
+def _referenced_powershell_file(command: str, *, workdir: str | None = None) -> Path | None:
+    tokens = _windows_shell_tokens(command)
+    for index, token in enumerate(tokens):
+        if _shell_command_basename(token) not in {"powershell", "pwsh"}:
+            continue
+        cursor = index + 1
+        while cursor < len(tokens):
+            option = tokens[cursor].lower()
+            if option in {"-command", "-c", "-encodedcommand", "-ec"}:
+                break
+            if option in {"-file", "-f"}:
+                if cursor + 1 >= len(tokens):
+                    return None
+                return _resolve_shell_script_path(tokens[cursor + 1], workdir=workdir)
+            cursor += 1
+    return None
+
+
+def _resolve_shell_script_path(raw_path: str, *, workdir: str | None = None) -> Path:
+    cleaned = raw_path.strip().strip("'\"")
+    expanded = os.path.expandvars(os.path.expanduser(cleaned))
+    path = Path(expanded)
+    if not path.is_absolute():
+        base = Path(workdir).expanduser() if workdir else Path.cwd()
+        path = base / path
+    return path.resolve(strict=False)
+
+
+def _shell_command_basename(value: str) -> str:
+    name = value.strip().strip("'\"").rsplit("/", 1)[-1].rsplit("\\", 1)[-1].lower()
+    for suffix in (".exe", ".cmd", ".bat"):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
+
+
+def _approval_command_pattern_class(command: str, settings: Any) -> str | None:
+    first_allow: str | None = None
+    for variant in shell_command_approval_variants(command):
+        pattern_class = classify_approval_command(
+            variant,
+            settings.allow_patterns,
+            settings.deny_patterns,
+        )
+        if pattern_class == "deny":
+            return "deny"
+        if pattern_class == "allow" and first_allow is None:
+            first_allow = "allow"
+    return first_allow
+
+
 def _approval_policy_denial(
     tool_name: str,
     command: str,
     warning: str,
 ) -> dict[str, object] | None:
     settings = get_approval_queue().get_settings()
-    pattern_class = classify_approval_command(
-        command,
-        settings.allow_patterns,
-        settings.deny_patterns,
-    )
+    pattern_class = _approval_command_pattern_class(command, settings)
     if pattern_class != "deny":
         return None
     log.warning(
@@ -619,6 +741,46 @@ def _apply_windows_session_tmp_env(env: dict[str, str]) -> None:
     env["TEMP"] = value
     env["TMP"] = value
     env["TMPDIR"] = value
+
+
+def _append_windows_app_alias_path(
+    env: dict[str, str],
+    *,
+    runtime: object | None = None,
+) -> None:
+    if os.name != "nt" and not _windows_sandbox_backend_active(runtime):
+        return
+    candidates: list[Path] = []
+    local_appdata = env.get("LOCALAPPDATA") or os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        candidates.append(Path(local_appdata) / "Microsoft" / "WindowsApps")
+    else:
+        userprofile = env.get("USERPROFILE") or os.environ.get("USERPROFILE")
+        if userprofile:
+            candidates.append(
+                Path(userprofile) / "AppData" / "Local" / "Microsoft" / "WindowsApps"
+            )
+
+    existing_key = next((key for key in env if key.casefold() == "path"), "PATH")
+    existing_value = env.get(existing_key, "")
+    existing_entries = [part.strip() for part in existing_value.split(";") if part.strip()]
+    existing_keys = {
+        str(Path(part).expanduser().resolve(strict=False)).casefold()
+        for part in existing_entries
+    }
+    additions: list[str] = []
+    for candidate in candidates:
+        if not (candidate / "winget.exe").exists():
+            continue
+        resolved = candidate.expanduser().resolve(strict=False)
+        key = str(resolved).casefold()
+        if key in existing_keys:
+            continue
+        existing_keys.add(key)
+        additions.append(str(resolved))
+    if not additions:
+        return
+    env[existing_key] = ";".join([*existing_entries, *additions])
 
 
 def _sandbox_shell_policy_cwd(cwd: str | None) -> Path | None:
@@ -2058,6 +2220,7 @@ def _sandbox_workdir_access_envelope(
     *,
     write: bool = False,
     approval_id: str | None = None,
+    allow_trusted_auto_mount: bool = True,
 ) -> dict[str, object] | None:
     if not workdir or not _sandbox_path_access_enabled():
         return None
@@ -2071,7 +2234,11 @@ def _sandbox_workdir_access_envelope(
         return None
     if decision.status == "blocked":
         return _path_access_blocked_envelope(decision)
-    if trusted_sandbox_active() and grant_temporary_mount_for_current_tool(decision):
+    if (
+        allow_trusted_auto_mount
+        and trusted_sandbox_active()
+        and grant_temporary_mount_for_current_tool(decision)
+    ):
         return None
     return _path_access_required_envelope(decision, approval_id=approval_id)
 
@@ -2081,6 +2248,7 @@ def _sandbox_read_path_access_envelope(
     workdir: str | None,
     *,
     approval_id: str | None = None,
+    allow_trusted_auto_mount: bool = True,
 ) -> dict[str, object] | None:
     if not profile.requested_paths or not _sandbox_path_access_enabled():
         return None
@@ -2095,7 +2263,11 @@ def _sandbox_read_path_access_envelope(
             continue
         if decision.status == "blocked":
             return _path_access_blocked_envelope(decision)
-        if trusted_sandbox_active() and grant_temporary_mount_for_current_tool(decision):
+        if (
+            allow_trusted_auto_mount
+            and trusted_sandbox_active()
+            and grant_temporary_mount_for_current_tool(decision)
+        ):
             continue
         return _path_access_required_envelope(decision, approval_id=approval_id)
     return None
@@ -2108,6 +2280,7 @@ def _sandbox_write_path_access_envelope(
     *,
     stdin: str | None = None,
     approval_id: str | None = None,
+    allow_trusted_auto_mount: bool = True,
 ) -> dict[str, object] | None:
     write_paths = _shell_write_access_targets(command, profile, stdin=stdin)
     if not write_paths or not _sandbox_path_access_enabled():
@@ -2121,21 +2294,76 @@ def _sandbox_write_path_access_envelope(
             write=True,
         )
         if decision.status == "allowed":
-            _grant_precise_windows_file_mount_for_allowed_write_target(
-                raw_path,
-                decision,
-                shell_file_targets,
-            )
+            if allow_trusted_auto_mount:
+                _grant_precise_windows_file_mount_for_allowed_write_target(
+                    raw_path,
+                    decision,
+                    shell_file_targets,
+                )
             continue
         if decision.status == "blocked":
             return _path_access_blocked_envelope(decision)
-        if trusted_sandbox_active() and grant_temporary_mount_for_current_tool(
-            decision,
-            prefer_file=_shell_write_target_prefers_file(raw_path, shell_file_targets),
+        if (
+            allow_trusted_auto_mount
+            and trusted_sandbox_active()
+            and grant_temporary_mount_for_current_tool(
+                decision,
+                prefer_file=_shell_write_target_prefers_file(raw_path, shell_file_targets),
+            )
         ):
             continue
         return _path_access_required_envelope(decision, approval_id=approval_id)
     return None
+
+
+def _auto_host_shell_policy_envelope(
+    tool_name: str,
+    command: str,
+    workdir: str | None,
+    profile: OperationProfile,
+    *,
+    stdin: str | None = None,
+    approval_id: str | None = None,
+) -> dict[str, object] | None:
+    path_access = _sandbox_workdir_access_envelope(
+        workdir,
+        write=_shell_workdir_requires_write(command, profile, stdin=stdin),
+        approval_id=approval_id,
+        allow_trusted_auto_mount=False,
+    )
+    if path_access is not None:
+        return path_access
+    path_access = _sandbox_read_path_access_envelope(
+        profile,
+        workdir,
+        approval_id=approval_id,
+        allow_trusted_auto_mount=False,
+    )
+    if path_access is not None:
+        return path_access
+    protected_block = _protected_metadata_write_block(
+        tool_name,
+        command,
+        workdir,
+        profile,
+        stdin=stdin,
+    )
+    if protected_block is not None:
+        return protected_block
+    path_access = _sandbox_write_path_access_envelope(
+        profile,
+        workdir,
+        command,
+        stdin=stdin,
+        approval_id=approval_id,
+        allow_trusted_auto_mount=False,
+    )
+    if path_access is not None:
+        return path_access
+    lockdown_block = _workspace_lockdown_shell_block(tool_name, command, workdir, stdin=stdin)
+    if lockdown_block is not None:
+        return lockdown_block
+    return _workspace_write_deny_shell_block(tool_name, command, workdir, stdin=stdin)
 
 
 def _protected_metadata_write_block(
@@ -2217,6 +2445,8 @@ def _shell_write_access_targets(
         *_shell_write_targets_from_inputs(command, stdin),
         *getattr(profile, "requested_write_paths", ()),
     ):
+        if _is_special_shell_write_target(target):
+            continue
         if target not in targets:
             targets.append(target)
     return tuple(targets)
@@ -2250,12 +2480,41 @@ def _shell_target_is_relative(raw_target: str) -> bool:
     return not Path(cleaned).expanduser().is_absolute()
 
 
+def _windows_dos_device_targets_are_special() -> bool:
+    return os.name == "nt" or _windows_sandbox_backend_active()
+
+
+def _is_windows_dos_device_target(raw_target: object) -> bool:
+    cleaned = str(raw_target or "").strip().strip("'\"")
+    if not cleaned:
+        return False
+    basename = ntpath.basename(cleaned.rstrip("\\/"))
+    if not basename:
+        return False
+    stem = basename.split(":", 1)[0].split(".", 1)[0].lower()
+    return stem in _WINDOWS_DOS_DEVICE_NAMES
+
+
+def _is_special_shell_write_target(raw_target: object) -> bool:
+    if not _windows_dos_device_targets_are_special():
+        return False
+    return _is_windows_dos_device_target(raw_target)
+
+
 def _basic_shell_write_targets(command: str) -> list[str]:
     targets: list[str] = []
     redirection_pattern = r"(?:^|\s)(?:\d?>{1,2}|&>{1,2})\s*(['\"]?)([^'\"\s|&;]+)\1"
-    targets.extend(match.group(2) for match in re.finditer(redirection_pattern, command))
+    targets.extend(
+        target
+        for match in re.finditer(redirection_pattern, command)
+        if not _is_special_shell_write_target(target := match.group(2))
+    )
     tee_pattern = r"(?:^|\s)tee(?:\s+-[A-Za-z]+)*\s+(['\"]?)([^'\"\s|&;]+)\1"
-    targets.extend(match.group(2) for match in re.finditer(tee_pattern, command))
+    targets.extend(
+        target
+        for match in re.finditer(tee_pattern, command)
+        if not _is_special_shell_write_target(target := match.group(2))
+    )
     return targets
 
 
@@ -2265,6 +2524,7 @@ def _shell_write_targets(command: str) -> list[str]:
         for target in _windows_shell_write_targets(command):
             if target not in targets:
                 targets.append(target)
+    targets = [target for target in targets if not _is_special_shell_write_target(target)]
     return targets
 
 
@@ -2348,7 +2608,7 @@ def _runtime_readonly_shell_block(
                 f"{tool_name} blocked by sandbox runtime read-only policy: "
                 f"{operation} would modify the OpenSquilla runtime environment under {root}. "
                 "Create a project virtual environment in a writable workspace path, or install "
-                "runtime dependencies outside Trusted-Sandbox."
+                "runtime dependencies outside Managed Execution."
             ),
             "retryable": False,
         }
@@ -2602,7 +2862,7 @@ def _runtime_root_for_command(
 
 
 def _host_shell_env(env: dict[str, str]) -> dict[str, str]:
-    cleaned = dict(env)
+    cleaned = _dedupe_windows_env_keys(env)
     if cleaned.get(OPENSQUILLA_NETWORK_ENV_KEY) != "proxy_allowlist":
         return cleaned
     for key in (*PROXY_ENV_KEYS, *NO_PROXY_ENV_KEYS):
@@ -2610,6 +2870,24 @@ def _host_shell_env(env: dict[str, str]) -> dict[str, str]:
     for key, _value in PROXY_CONTROL_ENV:
         cleaned.pop(key, None)
     cleaned.pop(PROXY_ACTIVE_ENV_KEY, None)
+    return cleaned
+
+
+def _dedupe_windows_env_keys(env: dict[str, str]) -> dict[str, str]:
+    if os.name != "nt":
+        return dict(env)
+    cleaned: dict[str, str] = {}
+    normalized_to_key: dict[str, str] = {}
+    for key, value in env.items():
+        normalized = key.upper()
+        output_key = _WINDOWS_ENV_CANONICAL_KEYS.get(normalized)
+        if output_key is None:
+            output_key = normalized_to_key.get(normalized, key)
+        previous_key = normalized_to_key.get(normalized)
+        if previous_key is not None and previous_key != output_key:
+            cleaned.pop(previous_key, None)
+        normalized_to_key[normalized] = output_key
+        cleaned[output_key] = value
     return cleaned
 
 
@@ -3088,7 +3366,11 @@ async def _run_host_shell_command(
 
 @tool(
     name="exec_command",
-    description="Execute a shell command and return stdout/stderr with exit code.",
+    description=(
+        "Execute a shell command and return stdout/stderr with exit code. "
+        "On Windows, commands run in PowerShell; use PowerShell syntax such as "
+        "Set-Location -LiteralPath, or wrap cmd.exe syntax such as cd /d with cmd /c."
+    ),
     params={
         "command": {"type": "string", "description": "Shell command to execute."},
         "workdir": {"type": "string", "description": "Working directory (default: cwd)."},
@@ -3137,18 +3419,35 @@ async def exec_command(
     )
     if runtime_readonly_block is not None:
         return json.dumps(runtime_readonly_block, ensure_ascii=False)
+    original_profile = _profile_shell_command(command)
+    auto_host_execution = _auto_host_escalation_allowed(
+        original_profile,
+        command,
+        workdir=workdir,
+    )
     if windows_process_sandbox:
-        original_profile = _profile_shell_command(command)
-        path_access = _sandbox_write_path_access_envelope(
-            original_profile,
-            workdir,
-            command,
-            stdin=stdin,
-            approval_id=approval_id,
-        )
-        if path_access is not None:
-            return json.dumps(path_access, ensure_ascii=False)
-    host_execution = _host_execution_allowed()
+        if auto_host_execution:
+            auto_host_block = _auto_host_shell_policy_envelope(
+                "exec_command",
+                command,
+                _effective_workdir(workdir),
+                original_profile,
+                stdin=stdin,
+                approval_id=approval_id,
+            )
+            if auto_host_block is not None:
+                return json.dumps(auto_host_block, ensure_ascii=False)
+        else:
+            path_access = _sandbox_write_path_access_envelope(
+                original_profile,
+                workdir,
+                command,
+                stdin=stdin,
+                approval_id=approval_id,
+            )
+            if path_access is not None:
+                return json.dumps(path_access, ensure_ascii=False)
+    host_execution = _host_execution_allowed() or auto_host_execution
     if windows_process_sandbox and not host_execution:
         command = _windows_translate_posix_tmp_references(command)
         if workdir:
@@ -3174,45 +3473,48 @@ async def exec_command(
     )
     if approval_denial is not None:
         return json.dumps(approval_denial, ensure_ascii=False)
-    path_access = _sandbox_workdir_access_envelope(
-        cwd,
-        write=_shell_workdir_requires_write(command, profile, stdin=stdin),
-        approval_id=approval_id,
-    )
-    if path_access is not None:
-        return json.dumps(path_access, ensure_ascii=False)
-    path_access = _sandbox_read_path_access_envelope(profile, cwd, approval_id=approval_id)
-    if path_access is not None:
-        return json.dumps(path_access, ensure_ascii=False)
-    protected_block = _protected_metadata_write_block(
-        "exec_command", command, cwd, profile, stdin=stdin
-    )
-    if protected_block is not None:
-        return json.dumps(protected_block, ensure_ascii=False)
-    path_access = _sandbox_write_path_access_envelope(
-        profile,
-        cwd,
-        command,
-        stdin=stdin,
-        approval_id=approval_id,
-    )
-    if path_access is not None:
-        return json.dumps(path_access, ensure_ascii=False)
-    lockdown_block = _workspace_lockdown_shell_block(
-        "exec_command", command, cwd, stdin=stdin
-    )
-    if lockdown_block is not None:
-        return json.dumps(lockdown_block, ensure_ascii=False)
-    deny_block = _workspace_write_deny_shell_block(
-        "exec_command", command, cwd, stdin=stdin
-    )
-    if deny_block is not None:
-        return json.dumps(deny_block, ensure_ascii=False)
+    if not host_execution:
+        path_access = _sandbox_workdir_access_envelope(
+            cwd,
+            write=_shell_workdir_requires_write(command, profile, stdin=stdin),
+            approval_id=approval_id,
+        )
+        if path_access is not None:
+            return json.dumps(path_access, ensure_ascii=False)
+        path_access = _sandbox_read_path_access_envelope(profile, cwd, approval_id=approval_id)
+        if path_access is not None:
+            return json.dumps(path_access, ensure_ascii=False)
+        protected_block = _protected_metadata_write_block(
+            "exec_command", command, cwd, profile, stdin=stdin
+        )
+        if protected_block is not None:
+            return json.dumps(protected_block, ensure_ascii=False)
+        path_access = _sandbox_write_path_access_envelope(
+            profile,
+            cwd,
+            command,
+            stdin=stdin,
+            approval_id=approval_id,
+        )
+        if path_access is not None:
+            return json.dumps(path_access, ensure_ascii=False)
+        lockdown_block = _workspace_lockdown_shell_block(
+            "exec_command", command, cwd, stdin=stdin
+        )
+        if lockdown_block is not None:
+            return json.dumps(lockdown_block, ensure_ascii=False)
+        deny_block = _workspace_write_deny_shell_block(
+            "exec_command", command, cwd, stdin=stdin
+        )
+        if deny_block is not None:
+            return json.dumps(deny_block, ensure_ascii=False)
 
     merged_env = os.environ.copy()
     if env:
         merged_env.update(env)
     apply_utf8_child_env(merged_env)
+    _append_windows_app_alias_path(merged_env, runtime=runtime)
+    merged_env = _dedupe_windows_env_keys(merged_env)
     effective_timeout = _resolve_exec_timeout(timeout)
     stdin_bytes = stdin.encode("utf-8") if stdin is not None else None
 
@@ -3274,7 +3576,13 @@ async def exec_command(
         return f"exit_code={sandbox_result.returncode}\n{output}"
 
     if host_execution:
-        log.info("shell_exec_host", command=_audit_command(command), run_mode=_context_run_mode())
+        log.info(
+            "shell_exec_host",
+            command=_audit_command(command),
+            run_mode=_context_run_mode(),
+            auto_host_escalation=auto_host_execution,
+            host_effect=profile.host_effect,
+        )
         merged_env = _host_shell_env(merged_env)
 
     return await _run_host_shell_command(
@@ -3288,7 +3596,11 @@ async def exec_command(
 
 @tool(
     name="background_process",
-    description="Run a shell command in the background. Returns a session_id for polling.",
+    description=(
+        "Run a shell command in the background. Returns a session_id for polling. "
+        "On Windows, commands run in PowerShell; use PowerShell syntax such as "
+        "Set-Location -LiteralPath, or wrap cmd.exe syntax such as cd /d with cmd /c."
+    ),
     params={
         "command": {"type": "string", "description": "Shell command to run in background."},
         "workdir": {"type": "string", "description": "Working directory (default: cwd)."},
@@ -3323,17 +3635,33 @@ async def background_process(
     )
     if runtime_readonly_block is not None:
         return json.dumps(runtime_readonly_block, ensure_ascii=False)
+    original_profile = _profile_shell_command(command)
+    auto_host_execution = _auto_host_escalation_allowed(
+        original_profile,
+        command,
+        workdir=workdir,
+    )
     if windows_process_sandbox:
-        original_profile = _profile_shell_command(command)
-        path_access = _sandbox_write_path_access_envelope(
-            original_profile,
-            workdir,
-            command,
-            approval_id=approval_id,
-        )
-        if path_access is not None:
-            return json.dumps(path_access, ensure_ascii=False)
-    host_execution = _host_execution_allowed()
+        if auto_host_execution:
+            auto_host_block = _auto_host_shell_policy_envelope(
+                "background_process",
+                command,
+                _effective_workdir(workdir),
+                original_profile,
+                approval_id=approval_id,
+            )
+            if auto_host_block is not None:
+                return json.dumps(auto_host_block, ensure_ascii=False)
+        else:
+            path_access = _sandbox_write_path_access_envelope(
+                original_profile,
+                workdir,
+                command,
+                approval_id=approval_id,
+            )
+            if path_access is not None:
+                return json.dumps(path_access, ensure_ascii=False)
+    host_execution = _host_execution_allowed() or auto_host_execution
     if windows_process_sandbox and not host_execution:
         command = _windows_translate_posix_tmp_references(command)
         if workdir:
@@ -3354,40 +3682,43 @@ async def background_process(
     )
     if approval_denial is not None:
         return json.dumps(approval_denial, ensure_ascii=False)
-    path_access = _sandbox_workdir_access_envelope(
-        cwd,
-        write=_shell_workdir_requires_write(command, profile),
-        approval_id=approval_id,
-    )
-    if path_access is not None:
-        return json.dumps(path_access, ensure_ascii=False)
-    path_access = _sandbox_read_path_access_envelope(profile, cwd, approval_id=approval_id)
-    if path_access is not None:
-        return json.dumps(path_access, ensure_ascii=False)
-    protected_block = _protected_metadata_write_block(
-        "background_process", command, cwd, profile
-    )
-    if protected_block is not None:
-        return json.dumps(protected_block, ensure_ascii=False)
-    path_access = _sandbox_write_path_access_envelope(
-        profile,
-        cwd,
-        command,
-        approval_id=approval_id,
-    )
-    if path_access is not None:
-        return json.dumps(path_access, ensure_ascii=False)
-    lockdown_block = _workspace_lockdown_shell_block("background_process", command, cwd)
-    if lockdown_block is not None:
-        return json.dumps(lockdown_block, ensure_ascii=False)
-    deny_block = _workspace_write_deny_shell_block("background_process", command, cwd)
-    if deny_block is not None:
-        return json.dumps(deny_block, ensure_ascii=False)
+    if not host_execution:
+        path_access = _sandbox_workdir_access_envelope(
+            cwd,
+            write=_shell_workdir_requires_write(command, profile),
+            approval_id=approval_id,
+        )
+        if path_access is not None:
+            return json.dumps(path_access, ensure_ascii=False)
+        path_access = _sandbox_read_path_access_envelope(profile, cwd, approval_id=approval_id)
+        if path_access is not None:
+            return json.dumps(path_access, ensure_ascii=False)
+        protected_block = _protected_metadata_write_block(
+            "background_process", command, cwd, profile
+        )
+        if protected_block is not None:
+            return json.dumps(protected_block, ensure_ascii=False)
+        path_access = _sandbox_write_path_access_envelope(
+            profile,
+            cwd,
+            command,
+            approval_id=approval_id,
+        )
+        if path_access is not None:
+            return json.dumps(path_access, ensure_ascii=False)
+        lockdown_block = _workspace_lockdown_shell_block("background_process", command, cwd)
+        if lockdown_block is not None:
+            return json.dumps(lockdown_block, ensure_ascii=False)
+        deny_block = _workspace_write_deny_shell_block("background_process", command, cwd)
+        if deny_block is not None:
+            return json.dumps(deny_block, ensure_ascii=False)
     effective_timeout = _resolve_background_timeout(timeout)
 
     if runtime is not None and runtime.effective.sandbox_enabled and not host_execution:
         merged_env = dict(os.environ)
         apply_utf8_child_env(merged_env)
+        _append_windows_app_alias_path(merged_env, runtime=runtime)
+        merged_env = _dedupe_windows_env_keys(merged_env)
         if windows_process_sandbox:
             _apply_windows_session_tmp_env(merged_env)
         decision, policy, request = await gate_action(
@@ -3471,10 +3802,14 @@ async def background_process(
             "background_process_host",
             command=_audit_command(command),
             run_mode=_context_run_mode(),
+            auto_host_escalation=auto_host_execution,
+            host_effect=profile.host_effect,
         )
 
     session_id = str(uuid.uuid4())[:8]
     host_env = apply_utf8_child_env(_host_shell_env(os.environ.copy()))
+    _append_windows_app_alias_path(host_env, runtime=runtime)
+    host_env = _dedupe_windows_env_keys(host_env)
 
     if os.name == "posix":
         proc = await asyncio.create_subprocess_shell(

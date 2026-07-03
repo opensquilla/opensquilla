@@ -10,6 +10,7 @@ TEMPLATE = ROOT / "src" / "opensquilla" / "gateway" / "templates" / "index.html"
 APPROVAL_MONITOR_JS = STATIC / "js" / "approval_monitor.js"
 CHAT_JS = STATIC / "js" / "views" / "chat.js"
 CHAT_CSS = STATIC / "css" / "views" / "chat.css"
+WEBUI_DIST = STATIC / "dist"
 SANDBOX_JS = STATIC / "js" / "views" / "sandbox.js"
 SANDBOX_CSS = STATIC / "css" / "views" / "sandbox.css"
 APPROVALS_JS = STATIC / "js" / "views" / "approvals.js"
@@ -53,7 +54,7 @@ def test_chat_run_mode_control_remains_the_only_sandbox_frontend_control() -> No
     assert "sandbox.status" not in chat_js
     assert "_source.runMode" in chat_js
     assert "Standard-Sandbox" in chat_js
-    assert "Trusted-Sandbox" in chat_js
+    assert "Managed Execution" in chat_js
     assert "Full Host Access" in chat_js
     assert "_requestSandboxSetupForMode(mode)" in chat_js
 
@@ -64,6 +65,17 @@ def test_chat_run_mode_control_remains_the_only_sandbox_frontend_control() -> No
     assert "_sandboxSetupReadyForMode" in chat_js
     assert "_requestSandboxSetupForMode" in chat_js
     assert ".chat-sandbox-setup-banner" in chat_css
+
+
+def test_built_webui_run_mode_label_matches_managed_execution() -> None:
+    built_js = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(WEBUI_DIST.rglob("*.js"))
+    )
+
+    assert "Trusted-Sandbox" not in built_js
+    assert "可信沙箱" not in built_js
+    assert "Managed Execution" in built_js
+    assert "托管执行" in built_js
 
 
 def test_static_rpc_caches_hello_for_late_chat_mounts() -> None:

@@ -1655,8 +1655,8 @@
       "runMode": "Modo de ejecución",
       "runModeStandard": "Sandbox estándar",
       "runModeStandardDesc": "Pide confirmación antes de acciones de herramientas riesgosas.",
-      "runModeTrusted": "Sandbox de confianza",
-      "runModeTrustedDesc": "Aprueba automáticamente acciones de sandbox de confianza.",
+      "runModeTrusted": "Ejecución gestionada",
+      "runModeTrustedDesc": "Usa la sandbox por defecto; las acciones explícitas sobre el host pueden ejecutarse en el host si la política lo permite.",
       "runModeFull": "Acceso completo al host",
       "runModeFullDesc": "Ejecuta sin aislamiento de sandbox.",
       "runModeFullUnavailable": "El acceso completo al host requiere una sesión owner."

@@ -7,6 +7,9 @@ export interface StreamSeqDecision {
 
 export type NormalizeRunStatus = (status: string) => string
 
+export const PENDING_STREAM_TASK_ID = '__opensquilla_pending_stream_task__'
+export const STOPPED_STREAM_TASK_ID = '__opensquilla_stopped_stream_task__'
+
 export function payloadSessionKey(payload: SessionEventPayload | null | undefined): string {
   return payload?.key || payload?.session_key || payload?.sessionKey || ''
 }
@@ -17,8 +20,17 @@ export function isCurrentSessionPayload(payload: SessionEventPayload | null | un
 }
 
 export function payloadTaskId(payload: SessionEventPayload | null | undefined): string {
-  const id = payload?.task_id ?? payload?.taskId
-  return typeof id === 'string' ? id : ''
+  const record = (payload && typeof payload === 'object' ? payload : {}) as Record<string, unknown>
+  const direct = record.task_id ?? record.taskId
+  if (typeof direct === 'string') return direct
+  for (const key of ['active_task', 'activeTask', 'last_task', 'lastTask']) {
+    const nested = record[key]
+    if (!nested || typeof nested !== 'object') continue
+    const nestedRecord = nested as Record<string, unknown>
+    const nestedId = nestedRecord.task_id ?? nestedRecord.taskId
+    if (typeof nestedId === 'string') return nestedId
+  }
+  return ''
 }
 
 // Identity guard for the live stream: an event belongs to the current turn

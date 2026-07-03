@@ -188,6 +188,7 @@ class SessionUsage:
             input_tokens=int(getattr(mu_or_self, "input_tokens", 0) or 0),
             output_tokens=int(getattr(mu_or_self, "output_tokens", 0) or 0),
             billed_cost=float(getattr(mu_or_self, "billed_cost", 0.0) or 0.0),
+            provider=str(getattr(mu_or_self, "provider", "") or ""),
         )
         return {
             "costUsd": fields["costUsd"],
@@ -277,6 +278,7 @@ def model_usage_cost_fields(
     input_tokens: int,
     output_tokens: int,
     billed_cost: float,
+    provider: str = "",
 ) -> dict[str, float | str]:
     """Return canonical cost fields for a per-model usage row.
 
@@ -287,7 +289,7 @@ def model_usage_cost_fields(
     """
 
     billed = max(0.0, float(billed_cost or 0.0))
-    price = lookup_price(model_id)
+    price = lookup_price(model_id, provider)
     estimate = (
         max(0, int(input_tokens or 0)) * price.input_per_m
         + max(0, int(output_tokens or 0)) * price.output_per_m

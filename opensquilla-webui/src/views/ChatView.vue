@@ -558,6 +558,7 @@ import { useChatSend } from '@/composables/chat/useChatSend'
 import { useMetaRuns } from '@/composables/chat/useMetaRuns'
 import { useAgentOptions } from '@/composables/useAgentOptions'
 import { useChatSessionRoute } from '@/composables/chat/useChatSessionRoute'
+import { useChatRunModePreference, type RunModePolicy } from '@/composables/chat/useChatRunModePreference'
 import { useChatSessionRuntime } from '@/composables/chat/useChatSessionRuntime'
 import { useChatSessionSubscription } from '@/composables/chat/useChatSessionSubscription'
 import { useChatSlashCommands } from '@/composables/chat/useChatSlashCommands'
@@ -579,7 +580,6 @@ import type {
 } from '@/types/rpc'
 import type { ModelRoutingMode } from '@/types/modelRouting'
 import type { SandboxRunMode } from '@/types/sandbox'
-import { isSandboxRunMode } from '@/types/sandbox'
 import type { InterruptViewState } from '@/types/parts'
 import { artifactDownloadUrl } from '@/utils/chat/artifacts'
 import { copyTextWithFallback, copyImageToClipboard, downloadBlob, shareCopyImageSupported } from '@/utils/browser'
@@ -605,12 +605,6 @@ interface ChatComposerHandle {
 }
 
 type Message = ChatMessage
-
-interface RunModePolicy {
-  allowedRunModes?: unknown
-  defaultRunMode?: unknown
-  fullHostAccessDisabledReason?: unknown
-}
 
 interface RpcAuthPayload {
   runModePolicy?: RunModePolicy
@@ -690,40 +684,16 @@ const {
   normalizeElevatedMode,
 } = chatElevatedMode
 
-const runMode = ref<SandboxRunMode>('trusted')
-const runModeUserSelected = ref(false)
-
-function currentRunModePolicy(): RunModePolicy | null {
-  const auth = rpc.auth as RpcAuthPayload | null
-  const policy = auth?.runModePolicy
-  return policy && typeof policy === 'object' ? policy : null
-}
-
-const runModePolicyDefault = computed<SandboxRunMode>(() => {
-  const raw = currentRunModePolicy()?.defaultRunMode
-  return isSandboxRunMode(raw) ? raw : 'trusted'
+const {
+  runMode,
+  allowedRunModes,
+  setRunMode: setPersistedRunMode,
+} = useChatRunModePreference({
+  runModePolicy: () => {
+    const auth = rpc.auth as RpcAuthPayload | null
+    return auth?.runModePolicy
+  },
 })
-
-const allowedRunModes = computed<SandboxRunMode[]>(() => {
-  const raw = currentRunModePolicy()?.allowedRunModes
-  if (!Array.isArray(raw)) return ['standard', 'trusted', 'full']
-  const allowed = raw.filter(isSandboxRunMode)
-  return allowed.length > 0 ? allowed : ['standard', 'trusted', 'full']
-})
-
-function preferredRunMode(
-  modes: SandboxRunMode[],
-  preferred: SandboxRunMode,
-): SandboxRunMode {
-  if (modes.includes(preferred)) return preferred
-  if (modes.includes('trusted')) return 'trusted'
-  return modes[0] ?? 'trusted'
-}
-
-watch([allowedRunModes, runModePolicyDefault], ([modes, defaultMode]) => {
-  if (runModeUserSelected.value && modes.includes(runMode.value)) return
-  runMode.value = preferredRunMode(modes, defaultMode)
-}, { immediate: true })
 
 // Run status
 const runStatus = ref<ChatRunStatus>({ status: 'idle', label: t('chat.status.idle'), task: null })
@@ -735,6 +705,7 @@ const activeTaskGroups = ref<Set<string>>(new Set())
 // Task id whose output the live stream renders; binds late events to the
 // current turn so a prior task can't leak into it (issue 344).
 const activeStreamTaskId = ref<string>('')
+const activeStreamSessionKey = ref<string>('')
 
 // Pending session intent
 const pendingSessionIntent = ref<string | null>(null)
@@ -1294,6 +1265,7 @@ const chatSend = useChatSend({
   pendingForkBeforeMessageId,
   aborted,
   activeStreamTaskId,
+  activeStreamSessionKey,
   autoScroll,
   stream: chatStream,
   normalizeElevatedMode,
@@ -1567,8 +1539,7 @@ function readAuthToken(): string {
 }
 
 function setComposerRunMode(mode: SandboxRunMode) {
-  runModeUserSelected.value = true
-  runMode.value = mode
+  setPersistedRunMode(mode)
 }
 
 async function setComposerModelRoutingMode(mode: ModelRoutingMode) {

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from opensquilla.sandbox.operation_profile import classify_command, package_bundle_for_manager
+from opensquilla.sandbox.operation_profile import (
+    classify_command,
+    package_bundle_for_manager,
+    shell_command_approval_variants,
+)
 
 
 def test_classify_python_package_install() -> None:
@@ -123,6 +127,249 @@ def test_npm_run_install_is_not_package_install() -> None:
     profile = classify_command(("npm", "run", "install"))
     assert profile.name == "unknown_shell"
     assert profile.package_manager is None
+
+
+def test_classify_host_software_managers_require_host_access() -> None:
+    for command in (
+        ("winget", "install", "Tencent.QQ.NT"),
+        ("winget", "list"),
+        ("sh", "-lc", "winget install Tencent.QQ.NT"),
+        ("powershell", "-NoProfile", "-Command", "winget install Tencent.QQ.NT"),
+        ("sh", "-lc", 'cmd /c "winget install Tencent.QQ.NT"'),
+        ("choco", "upgrade", "git", "-y"),
+        ("scoop", "install", "7zip"),
+        ("brew", "install", "ripgrep"),
+        ("apt-get", "install", "-y", "tmux"),
+        ("sudo", "dnf", "install", "git"),
+        ("msiexec", "/i", "C:\\Users\\me\\Downloads\\app.msi", "/qn"),
+    ):
+        profile = classify_command(command)
+        assert profile.host_effect == "software_management"
+
+
+def test_shell_command_approval_variants_expose_wrapped_host_command() -> None:
+    variants = shell_command_approval_variants(
+        'powershell -NoProfile -Command "winget install Tencent.QQ.NT"'
+    )
+
+    assert "winget install Tencent.QQ.NT" in variants
+
+
+def test_classify_host_installer_artifacts_require_host_access() -> None:
+    for command in (
+        ("C:\\Users\\me\\Downloads\\QQNTSetup.exe", "/S"),
+        ("Start-Process", "C:\\Users\\me\\Downloads\\tool.appinstaller", "-Wait"),
+        ("open", "/Users/me/Downloads/App.pkg"),
+    ):
+        profile = classify_command(command)
+        assert profile.host_effect == "software_management"
+
+
+def test_classify_installer_downloads_require_host_access() -> None:
+    for command in (
+        (
+            "curl.exe",
+            "-L",
+            "-o",
+            "DingTalkSetup.exe",
+            "https://dtapp-pub.dingtalk.com/desktop/Win/Release/DingTalkSetup.exe",
+        ),
+        (
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            (
+                "Invoke-WebRequest "
+                "https://dtapp-pub.dingtalk.com/desktop/Win/Release/DingTalkSetup.exe "
+                "-OutFile DingTalkSetup.exe"
+            ),
+        ),
+        (
+            "sh",
+            "-lc",
+            (
+                "cmd /c \"curl.exe -L -o DingTalkSetup.exe "
+                "https://dtapp-pub.dingtalk.com/desktop/Win/Release/DingTalkSetup.exe\""
+            ),
+        ),
+        (
+            "sh",
+            "-lc",
+            (
+                "cmd /c \"cd /d C:\\Users\\lrk\\.opensquilla\\workspace && "
+                "C:\\Windows\\System32\\curl.exe -L -o DingTalkSetup.exe "
+                "https://dtapp-pub.dingtalk.com/desktop/Win/Release/DingTalkSetup.exe\""
+            ),
+        ),
+    ):
+        profile = classify_command(command)
+        assert profile.name == "url_fetch"
+        assert profile.needs_network is True
+        assert profile.host_effect == "software_management"
+
+
+def test_classify_host_environment_probes_require_host_access() -> None:
+    for command in (
+        ("where", "winget"),
+        ("Get-Command", "winget", "-ErrorAction", "SilentlyContinue"),
+        ("Test-Path", "C:\\Program Files\\Tencent\\QQ"),
+        ("Test-Path", "C:\\Users\\me\\AppData\\Local\\Microsoft\\WindowsApps\\winget.exe"),
+        ("reg", "query", "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall"),
+    ):
+        profile = classify_command(command)
+        assert profile.host_effect == "host_probe"
+
+
+def test_classify_windows_installed_app_queries_require_host_access() -> None:
+    for command in (
+        ("Get-WmiObject", "Win32_Product"),
+        ("Get-CimInstance", "Win32_Product"),
+        ("Get-Package", "-Name", "DingTalk"),
+        ("Get-AppxPackage", "-Name", "DingTalk"),
+        (
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "Get-ItemProperty HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*",
+        ),
+        (
+            "sh",
+            "-lc",
+            (
+                "Get-ItemProperty HKLM:\\Software\\Microsoft\\Windows\\"
+                "CurrentVersion\\Uninstall\\* "
+                "| Where-Object { $_.DisplayName -like '*DingTalk*' }"
+            ),
+        ),
+        (
+            "sh",
+            "-lc",
+            (
+                "Get-ItemProperty HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\"
+                "CurrentVersion\\Uninstall\\* "
+                "| Where-Object { $_.DisplayName -like '*DingTalk*' }"
+            ),
+        ),
+        ("Get-ChildItem", "HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall"),
+    ):
+        profile = classify_command(command)
+        assert profile.host_effect == "host_probe"
+
+
+def test_classify_windows_uninstall_actions_require_host_access() -> None:
+    cases = {
+        (
+            "Start-Process",
+            "C:\\Program Files\\DingTalk\\uninst.exe",
+            "-Wait",
+        ): "software_management",
+        (
+            "Start-Process",
+            "-FilePath",
+            "C:\\Program Files (x86)\\DingDing\\uninst.exe",
+            "-Wait",
+            "-NoNewWindow",
+        ): "software_management",
+        (
+            "Start-Process",
+            "C:\\Program Files\\DingTalk\\unins000.exe",
+            "-Wait",
+        ): "software_management",
+        ("C:\\Program Files\\DingTalk\\uninstall.exe", "/S"): "software_management",
+        ("sh", "-lc", '& "C:\\Program Files (x86)\\DingDing\\uninst.exe"'): "software_management",
+        ("cmd", "/c", "C:\\Program Files\\DingTalk\\uninst.exe /S"): "software_management",
+        ("Uninstall-Package", "-Name", "DingTalk", "-Force"): "software_management",
+        ("Remove-AppxPackage", "DingTalk"): "software_management",
+        ("control", "appwiz.cpl"): "software_management",
+        ("Start-Process", "appwiz.cpl"): "software_management",
+        (
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "(Get-WmiObject Win32_Product -Filter \"Name like '%DingTalk%'\").Uninstall()",
+        ): "software_management",
+    }
+    for command, expected in cases.items():
+        profile = classify_command(command)
+        assert profile.host_effect == expected
+
+
+def test_classify_host_process_management_requires_host_access() -> None:
+    cases = {
+        ("Get-Process", "DingTalk"): "host_probe",
+        ("Stop-Process", "-Name", "DingTalk", "-Force"): "process_management",
+        ("tasklist", "/FI", "IMAGENAME eq DingTalk.exe"): "host_probe",
+        ("taskkill", "/IM", "DingTalk.exe", "/F"): "process_management",
+    }
+    for command, expected in cases.items():
+        profile = classify_command(command)
+        assert profile.host_effect == expected
+
+
+def test_classify_installed_app_cleanup_requires_host_access() -> None:
+    cases = {
+        ("Remove-Item", "C:\\Program Files\\DingTalk", "-Recurse", "-Force"): "software_management",
+        ("Remove-Item", "HKCU:\\Software\\DingTalk", "-Recurse", "-Force"): "registry_write",
+        ("New-Item", "HKCU:\\Software\\DingTalk", "-Force"): "registry_write",
+    }
+    for command, expected in cases.items():
+        profile = classify_command(command)
+        assert profile.host_effect == expected
+
+
+def test_classify_host_services_registry_and_system_settings_require_host_access() -> None:
+    cases = {
+        ("sc.exe", "create", "DemoSvc", "binPath=", "demo.exe"): "service_management",
+        ("New-Service", "-Name", "DemoSvc", "-BinaryPathName", "demo.exe"): "service_management",
+        ("systemctl", "restart", "docker"): "service_management",
+        ("launchctl", "load", "~/Library/LaunchAgents/demo.plist"): "service_management",
+        ("reg", "add", "HKCU\\Software\\Demo", "/v", "Enabled", "/d", "1"): "registry_write",
+        ("Set-ItemProperty", "HKCU:\\Software\\Demo", "Enabled", "1"): "registry_write",
+        ("Set-ExecutionPolicy", "RemoteSigned", "-Scope", "CurrentUser"): "system_settings",
+        ("netsh", "advfirewall", "set", "allprofiles", "state", "off"): "system_settings",
+        ("New-NetFirewallRule", "-DisplayName", "Demo", "-Action", "Allow"): "system_settings",
+        ("setx", "PATH", "%PATH%;C:\\Tools"): "system_settings",
+        ("pnputil", "/add-driver", "driver.inf", "/install"): "driver_management",
+        (
+            "dism",
+            "/Online",
+            "/Enable-Feature",
+            "/FeatureName:VirtualMachinePlatform",
+        ): "driver_management",
+        ("bcdedit", "/set", "hypervisorlaunchtype", "auto"): "driver_management",
+        ("wsl", "--install"): "driver_management",
+    }
+    for command, expected in cases.items():
+        profile = classify_command(command)
+        assert profile.host_effect == expected
+
+
+def test_classify_global_developer_tool_installs_require_host_access() -> None:
+    for command in (
+        ("npm", "install", "-g", "typescript"),
+        ("pnpm", "add", "--global", "vite"),
+        ("pipx", "install", "black"),
+        ("python", "-m", "pip", "install", "--user", "black"),
+        ("gem", "install", "bundler"),
+        ("cargo", "install", "cargo-edit"),
+        ("go", "install", "example.com/cmd/tool@latest"),
+        ("dotnet", "tool", "install", "-g", "dotnet-ef"),
+    ):
+        profile = classify_command(command)
+        assert profile.host_effect == "global_tool_install"
+
+
+def test_classify_project_dependency_installs_do_not_require_host_access() -> None:
+    for command in (
+        ("npm", "install"),
+        ("pnpm", "add", "vite"),
+        ("python", "-m", "pip", "install", "requests"),
+        ("uv", "pip", "install", "requests"),
+        ("cargo", "build"),
+        ("go", "mod", "download"),
+    ):
+        profile = classify_command(command)
+        assert profile.host_effect is None
 
 
 def test_classify_rust_package_install() -> None:

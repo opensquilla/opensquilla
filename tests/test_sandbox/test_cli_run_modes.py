@@ -81,7 +81,7 @@ def test_sandbox_status_reports_run_mode(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["run_mode"] == "trusted"
-    assert payload["run_mode_label"] == "Trusted-Sandbox"
+    assert payload["run_mode_label"] == "Managed Execution"
     assert payload["execution_target"] == "sandbox"
 
     data = tomllib.loads(config_path.read_text(encoding="utf-8"))

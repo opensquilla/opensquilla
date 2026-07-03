@@ -12,6 +12,7 @@ import type { ChatRpcStreamApi } from '@/composables/chat/useChatRpcEventHandler
 import type { BusySendMode } from '@/composables/chat/useChatPendingQueue'
 import { recordSessionNavigationDiag } from '@/utils/chat/sessionNavigationDiag'
 import { isSendableAttachment, serializeDisplayAttachment, serializeSendableAttachment, type SendableAttachment } from '@/utils/chat/attachments'
+import { PENDING_STREAM_TASK_ID, STOPPED_STREAM_TASK_ID } from '@/utils/chat/streamEvents'
 
 type RpcClient = {
   call: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -66,6 +67,7 @@ export interface UseChatSendOptions {
   // Task id rendered by the live stream; a fresh turn binds it from the
   // chat.send response so a prior task's late events can't leak in (issue #344).
   activeStreamTaskId: Ref<string>
+  activeStreamSessionKey: Ref<string>
   autoScroll: Ref<boolean>
   stream: ChatRpcStreamApi
   normalizeElevatedMode: (mode: string) => string
@@ -83,6 +85,40 @@ export interface UseChatSendOptions {
 
 export function useChatSend(options: UseChatSendOptions) {
   const { pushToast } = useToasts()
+  let activeFreshSendToken: symbol | null = null
+
+  function beginFreshStream(requestSessionKey: string): symbol {
+    const token = Symbol('fresh-send')
+    activeFreshSendToken = token
+    options.activeStreamTaskId.value = PENDING_STREAM_TASK_ID
+    options.activeStreamSessionKey.value = requestSessionKey
+    options.stream.startStreaming()
+    options.stream.showThinkingIndicator()
+    return token
+  }
+
+  function freshSendStillOwnsStream(token: symbol | null, requestSessionKey: string): boolean {
+    return (
+      token !== null &&
+      activeFreshSendToken === token &&
+      options.sessionKey.value === requestSessionKey
+    )
+  }
+
+  function acceptedTaskId(response: ChatSendResponse | null | undefined): string {
+    return response?.task_id || response?.taskId || ''
+  }
+
+  function abortStaleAcceptedTask(response: ChatSendResponse | null | undefined, requestSessionKey: string) {
+    if (options.sessionKey.value !== requestSessionKey) return
+    const taskId = acceptedTaskId(response)
+    if (!taskId) return
+    options.rpc.call('chat.abort', {
+      sessionKey: requestSessionKey,
+      taskId,
+      source: 'webui_stale_send',
+    }).catch(() => {})
+  }
 
   async function onSend() {
     let text = options.inputText.value.trim()
@@ -182,13 +218,14 @@ export function useChatSend(options: UseChatSendOptions) {
     // A steer send rides an already-active stream; restarting it would wipe
     // the partial output of the run being steered.
     const wasStreaming = options.stream.isStreaming.value
-    if (!wasStreaming) {
-      options.stream.startStreaming()
-      options.stream.showThinkingIndicator()
-    }
+    const freshSendToken = wasStreaming ? null : beginFreshStream(requestSessionKey)
 
     try {
       const res = await options.rpc.call<ChatSendResponse>('chat.send', params)
+      if (!wasStreaming && !freshSendStillOwnsStream(freshSendToken, requestSessionKey)) {
+        abortStaleAcceptedTask(res, requestSessionKey)
+        return
+      }
       if (forkBeforeMessageId && options.pendingForkBeforeMessageId.value === forkBeforeMessageId) {
         options.pendingForkBeforeMessageId.value = null
       }
@@ -196,9 +233,10 @@ export function useChatSend(options: UseChatSendOptions) {
       // can't bleed into it (issue #344). Only a fresh turn takes over rendering
       // — a steer/queue send rides the in-flight stream and must not rebind —
       // and only while this session is still the one on screen.
-      const acceptedTaskId = res?.task_id || res?.taskId || ''
-      if (!wasStreaming && acceptedTaskId && options.sessionKey.value === requestSessionKey) {
-        options.activeStreamTaskId.value = acceptedTaskId
+      const taskId = acceptedTaskId(res)
+      if (!wasStreaming && options.sessionKey.value === requestSessionKey) {
+        options.activeStreamSessionKey.value = res?.sessionKey || requestSessionKey
+        if (taskId) options.activeStreamTaskId.value = taskId
       }
       const decision = decideSendResponseSession({
         requestSessionKey,
@@ -229,7 +267,15 @@ export function useChatSend(options: UseChatSendOptions) {
         })
         return
       }
-      if (!wasStreaming) options.stream.endStreaming()
+      if (!wasStreaming && !freshSendStillOwnsStream(freshSendToken, requestSessionKey)) {
+        return
+      }
+      if (!wasStreaming) {
+        if (activeFreshSendToken === freshSendToken) activeFreshSendToken = null
+        options.activeStreamTaskId.value = ''
+        options.activeStreamSessionKey.value = ''
+        options.stream.endStreaming()
+      }
       restoreSendableAttachments(attachmentsToSend)
       const message = errorMessage(err)
       options.messages.value.push({ role: 'error', text: 'Send failed: ' + message, ts: new Date().toISOString() })
@@ -248,10 +294,16 @@ export function useChatSend(options: UseChatSendOptions) {
   function onStop() {
     if (!options.stream.isStreaming.value) return
     options.aborted.value = true
+    const abortSessionKey = options.activeStreamSessionKey.value || options.sessionKey.value
+    const abortTaskId = options.activeStreamTaskId.value
+    activeFreshSendToken = null
+    options.activeStreamTaskId.value = STOPPED_STREAM_TASK_ID
     // Be honest if the abort can't reach the gateway (e.g. the socket dropped):
     // we still tear the local stream down for responsiveness, but the user must
     // know the server-side run may keep going rather than trust a false "stopped".
-    options.rpc.call('chat.abort', { sessionKey: options.sessionKey.value }).catch(() => {
+    const abortParams: Record<string, string> = { sessionKey: abortSessionKey, source: 'webui_stop' }
+    if (abortTaskId && !abortTaskId.startsWith('__opensquilla_')) abortParams.taskId = abortTaskId
+    options.rpc.call('chat.abort', abortParams).catch(() => {
       options.messages.value.push({
         role: 'system',
         text: 'Stop could not reach the server — the run may still be finishing.',
@@ -298,20 +350,22 @@ export function useChatSend(options: UseChatSendOptions) {
     params._source = chatSourceMetadata(options)
 
     const wasStreaming = options.stream.isStreaming.value
-    if (!wasStreaming) {
-      options.stream.startStreaming()
-      options.stream.showThinkingIndicator()
-    }
+    const freshSendToken = wasStreaming ? null : beginFreshStream(requestSessionKey)
 
     try {
       const res = await options.rpc.call<ChatSendResponse>('chat.send', params)
+      if (!wasStreaming && !freshSendStillOwnsStream(freshSendToken, requestSessionKey)) {
+        abortStaleAcceptedTask(res, requestSessionKey)
+        return
+      }
       // Bind the live stream to this turn's task so a prior task's late events
       // can't bleed into it (issue #344). Only a fresh turn takes over rendering
       // — a steer/queue send rides the in-flight stream and must not rebind —
       // and only while this session is still the one on screen.
-      const acceptedTaskId = res?.task_id || res?.taskId || ''
-      if (!wasStreaming && acceptedTaskId && options.sessionKey.value === requestSessionKey) {
-        options.activeStreamTaskId.value = acceptedTaskId
+      const taskId = acceptedTaskId(res)
+      if (!wasStreaming && options.sessionKey.value === requestSessionKey) {
+        options.activeStreamSessionKey.value = res?.sessionKey || requestSessionKey
+        if (taskId) options.activeStreamTaskId.value = taskId
       }
       const decision = decideSendResponseSession({
         requestSessionKey,
@@ -342,7 +396,15 @@ export function useChatSend(options: UseChatSendOptions) {
         })
         return
       }
-      if (!wasStreaming) options.stream.endStreaming()
+      if (!wasStreaming && !freshSendStillOwnsStream(freshSendToken, requestSessionKey)) {
+        return
+      }
+      if (!wasStreaming) {
+        if (activeFreshSendToken === freshSendToken) activeFreshSendToken = null
+        options.activeStreamTaskId.value = ''
+        options.activeStreamSessionKey.value = ''
+        options.stream.endStreaming()
+      }
       const message = errorMessage(err)
       options.messages.value.push({ role: 'error', text: 'Send failed: ' + message, ts: new Date().toISOString() })
     }

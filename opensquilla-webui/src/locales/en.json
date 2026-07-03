@@ -234,6 +234,7 @@
       "modeRecommended": "Follow current provider tiers",
       "modeDisabled": "Direct single model",
       "routingDisabledHint": "Enable model routing to edit tier configuration.",
+      "routingEnsembleReadOnlyHint": "AI model ensemble routing is active. Standard model routing settings are temporarily inactive.",
       "defaultTextModel": "Default text tier",
       "panelLabel": "Router panel",
       "panelDesc": "Tier models are sent through the current request entry; OpenRouter aggregated tiers use OpenRouter to reach different upstream models.",

@@ -11,6 +11,7 @@ function panel(overrides: Record<string, unknown> = {}) {
     routerMode,
     routerModeChoice: routerMode === 'disabled' ? 'disabled' : 'recommended',
     routerConfigDisabled: routerMode === 'disabled',
+    routerConfigDisabledReason: routerMode === 'disabled' ? 'single-model' : null,
     routerDefaultTier: 'c1',
     routerVisualMode: 'real_candidates',
     routerVisualModeDirty: false,
@@ -118,6 +119,29 @@ describe('SetupRouterPanel', () => {
     expect(el.querySelector<HTMLSelectElement>('select[aria-label="c0 thinking level"]')?.disabled).toBe(false)
     expect(el.querySelector<HTMLInputElement>('input[aria-label="c0 supports image"]')?.disabled).toBe(false)
     expect(el.querySelector('[role="table"]')?.getAttribute('aria-disabled')).toBeNull()
+
+    app.unmount()
+  })
+
+  it('keeps the mode selector available but locks standard config while ensemble routing is active', async () => {
+    const { app, el } = await mountRouterPanel({
+      routerMode: 'recommended',
+      routerModeChoice: 'recommended',
+      routerConfigDisabled: true,
+      routerConfigDisabledReason: 'ensemble',
+      ensembleProfileActive: true,
+    })
+
+    expect(el.textContent).toContain('LLM ensemble routing profile')
+    expect(el.textContent).toContain('AI model ensemble routing is active. Standard model routing settings are temporarily inactive.')
+    expect(el.textContent).not.toContain('Enable model routing to edit tier configuration.')
+    expect(el.querySelector<HTMLSelectElement>('select[name="setup_router_mode"]')?.disabled).toBe(false)
+    expect(el.querySelector<HTMLSelectElement>('select[name="setup_router_default_tier"]')?.disabled).toBe(true)
+    expect(el.querySelector<HTMLSelectElement>('select[name="setup_router_visual_mode"]')?.disabled).toBe(true)
+    expect(el.querySelector<HTMLInputElement>('input[aria-label="c0 model"]')?.disabled).toBe(true)
+    expect(el.querySelector<HTMLSelectElement>('select[aria-label="c0 thinking level"]')?.disabled).toBe(true)
+    expect(el.querySelector<HTMLInputElement>('input[aria-label="c0 supports image"]')?.disabled).toBe(true)
+    expect(el.querySelector('[role="table"]')?.getAttribute('aria-disabled')).toBe('true')
 
     app.unmount()
   })

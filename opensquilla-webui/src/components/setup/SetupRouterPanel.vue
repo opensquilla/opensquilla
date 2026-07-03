@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import ControlSwitch from '@/components/ControlSwitch.vue'
+import type { RouterConfigDisabledReason } from '@/composables/setup/useSetupRouterForm'
 
 const { t } = useI18n()
 
@@ -18,6 +19,7 @@ interface RouterPanelContract {
   routerMode: string
   routerModeChoice: string
   routerConfigDisabled: boolean
+  routerConfigDisabledReason: RouterConfigDisabledReason
   routerDefaultTier: string
   routerVisualMode: string
   routerVisualModeDirty: boolean
@@ -104,7 +106,11 @@ const emit = defineEmits<{
       :class="{ 'is-disabled': panel.routerConfigDisabled }"
     >
       <p v-if="panel.routerConfigDisabled" class="setup-tier-table-wrap__note">
-        {{ t('setup.router.routingDisabledHint') }}
+        {{
+          panel.routerConfigDisabledReason === 'ensemble'
+            ? t('setup.router.routingEnsembleReadOnlyHint')
+            : t('setup.router.routingDisabledHint')
+        }}
       </p>
       <div class="setup-tier-table" role="table" :aria-disabled="panel.routerConfigDisabled ? 'true' : undefined">
         <div class="setup-tier-table__row is-head" role="row">

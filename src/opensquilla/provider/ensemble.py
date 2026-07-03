@@ -10,8 +10,8 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
-from .protocol import LLMProvider, ProviderMetadata
 from .model_catalog import ModelCatalog
+from .protocol import LLMProvider, ProviderMetadata
 from .registry import get_provider_spec
 from .selector import ModelSelector, ProviderConfig, SelectorConfig
 from .types import (
@@ -1498,7 +1498,11 @@ def _role_match_score(
         return (
             0.50 * adjacent
             + 0.25 * candidate.quality_prior
-            + 0.15 * _tier_target_score(candidate.tier_prior, [max(0, routed_idx - 1), min(3, routed_idx + 1)])
+            + 0.15
+            * _tier_target_score(
+                candidate.tier_prior,
+                [max(0, routed_idx - 1), min(3, routed_idx + 1)],
+            )
             + 0.10 * contrast
         )
     if slot == "orthogonal_family":

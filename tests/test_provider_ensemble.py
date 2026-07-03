@@ -34,7 +34,7 @@ class _FakeRegistry:
     plans: dict[str, _FakePlan]
     calls: list[dict[str, Any]] = field(default_factory=list)
 
-    def provider_for(self, cfg: ProviderConfig) -> "_FakeProvider":
+    def provider_for(self, cfg: ProviderConfig) -> _FakeProvider:
         return _FakeProvider(cfg, self)
 
 
@@ -125,11 +125,17 @@ async def test_ensemble_runs_proposers_concurrently_and_tools_only_reach_aggrega
     registry = _FakeRegistry(
         {
             "p1": _FakePlan(
-                [TextDeltaEvent(text="draft one"), DoneEvent(input_tokens=1, output_tokens=2, model="p1")],
+                [
+                    TextDeltaEvent(text="draft one"),
+                    DoneEvent(input_tokens=1, output_tokens=2, model="p1"),
+                ],
                 delay=0.1,
             ),
             "p2": _FakePlan(
-                [TextDeltaEvent(text="draft two"), DoneEvent(input_tokens=3, output_tokens=4, model="p2")],
+                [
+                    TextDeltaEvent(text="draft two"),
+                    DoneEvent(input_tokens=3, output_tokens=4, model="p2"),
+                ],
                 delay=0.1,
             ),
             "agg": _FakePlan(
@@ -255,7 +261,10 @@ async def test_ensemble_uses_fallback_when_too_few_proposers_succeed(
     registry = _FakeRegistry(
         {
             "p1": _FakePlan(
-                [TextDeltaEvent(text="draft one"), DoneEvent(input_tokens=1, output_tokens=2, model="p1")]
+                [
+                    TextDeltaEvent(text="draft one"),
+                    DoneEvent(input_tokens=1, output_tokens=2, model="p1"),
+                ]
             ),
             "p2": _FakePlan([ErrorEvent(message="nope", code="boom")]),
         }

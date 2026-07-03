@@ -253,14 +253,16 @@ def _summarize_model_usage_breakdown(rows: list[dict[str, Any]]) -> list[dict[st
             }
             sources_by_key[key] = []
         target = aggregated[key]
-        for field in (
+        for usage_field in (
             "input_tokens",
             "output_tokens",
             "reasoning_tokens",
             "cached_tokens",
             "cache_write_tokens",
         ):
-            target[field] += _usage_int(row.get(field) or row.get(_camel_usage_key(field)))
+            target[usage_field] += _usage_int(
+                row.get(usage_field) or row.get(_camel_usage_key(usage_field))
+            )
         target["billed_cost"] += _usage_float(row.get("billed_cost") or row.get("billedCost"))
         target["cost_usd"] += _usage_float(row.get("cost_usd") or row.get("costUsd"))
         target["billed_cost_usd"] += _usage_float(

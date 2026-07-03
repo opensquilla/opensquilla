@@ -28,6 +28,12 @@
 
 ---
 
+## Actualités
+
+- 📢 **2026-07-03** — Notre rapport technique **[Agentic Routing: The Harness-Native Data Flywheel](docs/releases/agentic_routing_v0.pdf)** (préversion) est disponible, publié en même temps qu'OpenSquilla **0.5.0 Preview 1**. Il détaille comment le routeur natif du harness transforme le trafic quotidien des agents en un volant d'inertie de données qui s'améliore de lui-même.
+
+---
+
 ## Présentation
 
 OpenSquilla est un Agent IA à micro-noyau, économe en Token. Un routeur de modèles

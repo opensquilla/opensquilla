@@ -28,6 +28,12 @@
 
 ---
 
+## 最新动态
+
+- 📢 **2026-07-03** —— 我们的技术报告 **[Agentic Routing: The Harness-Native Data Flywheel](docs/releases/agentic_routing_v0.pdf)**（预览版）已发布，随 OpenSquilla **0.5.0 Preview 1** 一同放出。报告详细介绍了 harness 原生路由如何把日常 Agent 流量转化为自我改进的数据飞轮。
+
+---
+
 ## 概览
 
 OpenSquilla 是一个高效利用 Token 的微内核 AI Agent。本地模型路由会把每一轮都发给能处理它的最便宜模型；持久记忆、分层沙箱、内置网络搜索和设备端嵌入共同构成了这个

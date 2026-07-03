@@ -149,6 +149,60 @@ def test_start_gateway_does_not_attach_to_unrequested_default_dev_gateway() -> N
     assert "gatewayState.url = 'http://127.0.0.1:18791'" not in start
 
 
+def test_desktop_blocks_macos_app_translocation_without_forcing_applications() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    start = _section(
+        main_ts,
+        "async function startGateway",
+        "async function loadControlUi",
+    )
+
+    assert "const MAC_APP_TRANSLOCATION_SEGMENT = '/AppTranslocation/'" in main_ts
+    assert "function macDesktopInstallContext(): MacInstallContext" in main_ts
+    assert "function assertSupportedMacInstallLocation(): void" in main_ts
+    assert "process.platform !== 'darwin' || !app.isPackaged" in main_ts
+    assert "blocked: translocated" in main_ts
+    assert "translocated || !inApplications" not in main_ts
+    assert "drag OpenSquilla.app from the DMG into Applications" in main_ts
+    assert "then open OpenSquilla again" in main_ts
+    assert "assertSupportedMacInstallLocation()" in start
+    assert start.index("if (reusableGateway) return reusableGateway") < start.index(
+        "assertSupportedMacInstallLocation()"
+    )
+    assert start.index("assertSupportedMacInstallLocation()") < start.index("const overrideUrl")
+
+
+def test_desktop_gateway_exit_classifies_newer_config_validation_errors() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    start = _section(
+        main_ts,
+        "async function startGateway",
+        "async function loadControlUi",
+    )
+    wait = _section(
+        main_ts,
+        "async function waitForGateway",
+        "async function waitForControlUi",
+    )
+
+    assert "const GATEWAY_OUTPUT_TAIL_MAX_CHARS = 12_000" in main_ts
+    assert "const NEWER_CONFIG_DIAGNOSTIC_FIELDS = [" in main_ts
+    for field in ["'llm_ensemble'", "'privacy'", "'sandbox.auto_setup'", "'llm_profiles'"]:
+        assert field in main_ts
+    assert (
+        "function classifyGatewayExitMessage(message: string, outputTail: string): string"
+        in main_ts
+    )
+    assert "settings written by a newer OpenSquilla version" in main_ts
+    assert "let gatewayOutputTail = ''" in start
+    assert "let childExitMessage: string | null = null" in start
+    assert "appendGatewayOutputTail(gatewayOutputTail, chunk)" in start
+    assert "classifyGatewayExitMessage(message, gatewayOutputTail)" in start
+    assert "await waitForGateway(url, () => childExitMessage)" in start
+    assert "earlyExitMessage?: () => string | null" in wait
+    assert "if (earlyExit) throw new Error(earlyExit)" in wait
+
+
 def test_start_gateway_enriches_child_path_for_code_task_builds() -> None:
     main_ts = _read("desktop/electron/src/main.ts")
     start = _section(
@@ -596,11 +650,17 @@ def test_desktop_persists_network_observability_privacy_setting() -> None:
     assert "payload.disableNetworkObservability" in save
     assert "existing?.disableNetworkObservability" in save
     assert "disableNetworkObservability," in save
-    assert "'[privacy]'" in config_writer
+    assert "privacyConfigTomlLines(credential)" in config_writer
+    assert "function privacyConfigTomlLines" in main_ts
+    assert "function desktopConfigShouldWritePrivacySection" in main_ts
+    assert (
+        "credential.disableNetworkObservability || "
+        "readDesktopConfigNetworkObservabilitySetting() !== null"
+    ) in main_ts
     assert (
         "`disable_network_observability = "
         "${credential.disableNetworkObservability ? 'true' : 'false'}`"
-        in config_writer
+        in main_ts
     )
 
 
@@ -628,6 +688,29 @@ def test_desktop_credential_save_preserves_config_privacy_without_payload_settin
     assert "if (!existsSync(path)) return null" in read_config
     assert "return parseDesktopNetworkObservabilityPrivacyConfig(raw)" in read_config
     assert "return true" in read_config
+
+
+def test_desktop_config_writer_does_not_emit_new_privacy_section_by_default() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    config_writer = _section(
+        main_ts,
+        "async function writeDesktopConfig",
+        "function settingsSnapshot",
+    )
+    privacy_lines = _section(
+        main_ts,
+        "function privacyConfigTomlLines",
+        "function plainSecret",
+    )
+
+    assert "'[privacy]'" not in config_writer
+    assert "'[llm_ensemble]'" not in config_writer
+    assert "if (!desktopConfigShouldWritePrivacySection(credential)) return []" in privacy_lines
+    assert (
+        "credential.disableNetworkObservability || "
+        "readDesktopConfigNetworkObservabilitySetting() !== null"
+        in main_ts
+    )
 
 
 def test_desktop_network_observability_disable_gates_native_update_and_gateway_env() -> None:

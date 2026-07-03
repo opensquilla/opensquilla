@@ -115,8 +115,10 @@ gateway runtime in an Electron shell.
 - macOS Apple Silicon: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0-rc1-mac-arm64.dmg>
 - Windows x64: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0-rc1-win-x64.exe>
 
-Quit any running OpenSquilla desktop app before upgrading. Existing
-`~/.opensquilla/config.toml` and session data are reused.
+Quit any running OpenSquilla desktop app before upgrading. On macOS, drag the
+app from the DMG into Applications for installation or updates, eject the DMG,
+then open the Applications copy. Existing `~/.opensquilla/config.toml` and
+session data are reused.
 
 Code signing policy: [`docs/code-signing-policy.md`](docs/code-signing-policy.md).
 
@@ -695,6 +697,16 @@ totals for the full run.
 ---
 
 ## Troubleshooting
+
+<details>
+<summary>macOS desktop app keeps bouncing or reports AppTranslocation</summary>
+
+If macOS starts OpenSquilla from a temporary AppTranslocation path, quit
+OpenSquilla, drag the app into Applications if you are installing it, eject the
+DMG, then open OpenSquilla again. If an old OpenSquilla icon is still bouncing,
+force quit the old process first and reopen OpenSquilla.
+
+</details>
 
 <details>
 <summary>macOS: <code>Library not loaded: @rpath/libomp.dylib</code></summary>

@@ -122,6 +122,13 @@ interface BootError {
   at: string
 }
 
+interface MacInstallContext {
+  appBundlePath: string | null
+  translocated: boolean
+  inApplications: boolean
+  blocked: boolean
+}
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const packageRoot = resolve(__dirname, '..')
 const defaultRepoRoot = resolve(packageRoot, '..', '..')
@@ -179,6 +186,65 @@ function appIconPath(): string {
   return app.isPackaged
     ? join(process.resourcesPath, 'app.asar', 'assets', 'icon.png')
     : join(packageRoot, 'assets', 'icon.png')
+}
+
+const MAC_APP_TRANSLOCATION_SEGMENT = '/AppTranslocation/'
+const MAC_APP_RESOURCES_SUFFIX = '.app/Contents/Resources'
+
+function normalizedPosixPath(path: string): string {
+  return path.replace(/\\/g, '/').replace(/\/+$/, '')
+}
+
+function macAppBundlePath(resourcesPath = process.resourcesPath): string | null {
+  const normalized = normalizedPosixPath(resourcesPath)
+  const markerIndex = normalized.indexOf(MAC_APP_RESOURCES_SUFFIX)
+  if (markerIndex < 0) return null
+  return normalized.slice(0, markerIndex + '.app'.length)
+}
+
+function isMacApplicationsBundlePath(bundlePath: string | null): boolean {
+  if (!bundlePath) return false
+  const normalized = normalizedPosixPath(bundlePath)
+  return normalized === '/Applications/OpenSquilla.app' || normalized.startsWith('/Applications/')
+}
+
+function macDesktopInstallContext(): MacInstallContext {
+  if (process.platform !== 'darwin' || !app.isPackaged) {
+    return {
+      appBundlePath: null,
+      translocated: false,
+      inApplications: true,
+      blocked: false,
+    }
+  }
+
+  const resourcesPath = normalizedPosixPath(process.resourcesPath)
+  const appBundlePath = macAppBundlePath(resourcesPath)
+  const installPath = appBundlePath || resourcesPath
+  const translocated = installPath.includes(MAC_APP_TRANSLOCATION_SEGMENT)
+  const inApplications = isMacApplicationsBundlePath(appBundlePath)
+  return {
+    appBundlePath,
+    translocated,
+    inApplications,
+    blocked: translocated,
+  }
+}
+
+function macDesktopInstallBlockerMessage(context = macDesktopInstallContext()): string | null {
+  if (!context.blocked) return null
+  const currentLocation = context.appBundlePath ? ` Current location: ${context.appBundlePath}` : ''
+  return (
+    'OpenSquilla is running from a temporary macOS AppTranslocation location. ' +
+    'Quit OpenSquilla, drag OpenSquilla.app from the DMG into Applications if you are installing it, ' +
+    'eject the DMG, then open OpenSquilla again.' +
+    currentLocation
+  )
+}
+
+function assertSupportedMacInstallLocation(): void {
+  const message = macDesktopInstallBlockerMessage()
+  if (message) throw new Error(message)
 }
 
 function sendBootStatus(phaseId: BootPhaseId): void {
@@ -563,6 +629,19 @@ function routerConfigTomlLines(credential: DesktopConnection): string[] {
   ]
 }
 
+function desktopConfigShouldWritePrivacySection(credential: DesktopConnection): boolean {
+  return credential.disableNetworkObservability || readDesktopConfigNetworkObservabilitySetting() !== null
+}
+
+function privacyConfigTomlLines(credential: DesktopConnection): string[] {
+  if (!desktopConfigShouldWritePrivacySection(credential)) return []
+  return [
+    '',
+    '[privacy]',
+    `disable_network_observability = ${credential.disableNetworkObservability ? 'true' : 'false'}`,
+  ]
+}
+
 function plainSecret(secret: string): { value: string; encryption: SecretEncryption } {
   return {
     value: Buffer.from(secret, 'utf8').toString('base64'),
@@ -770,9 +849,7 @@ async function writeDesktopConfig(credential: DesktopConnection): Promise<void> 
     `base_url = ${tomlString(credential.baseUrl)}`,
     '',
     ...routerConfigTomlLines(credential),
-    '',
-    '[privacy]',
-    `disable_network_observability = ${credential.disableNetworkObservability ? 'true' : 'false'}`,
+    ...privacyConfigTomlLines(credential),
     '',
     '[control_ui]',
     'enabled = true',
@@ -3076,12 +3153,49 @@ async function healthCheck(url: string): Promise<boolean> {
   }
 }
 
-async function waitForGateway(url: string): Promise<void> {
+const GATEWAY_OUTPUT_TAIL_MAX_CHARS = 12_000
+const NEWER_CONFIG_DIAGNOSTIC_FIELDS = [
+  'llm_ensemble',
+  'privacy',
+  'sandbox.auto_setup',
+  'llm_profiles',
+] as const
+
+function appendGatewayOutputTail(tail: string, chunk: Buffer | string): string {
+  const next = tail + String(chunk)
+  return next.length > GATEWAY_OUTPUT_TAIL_MAX_CHARS ? next.slice(-GATEWAY_OUTPUT_TAIL_MAX_CHARS) : next
+}
+
+function gatewayExitLooksLikeNewerConfig(output: string): boolean {
+  const normalized = output.toLowerCase()
+  const hasValidationSignal = (
+    normalized.includes('validationerror') ||
+    normalized.includes('extra_forbidden') ||
+    normalized.includes('extra inputs are not permitted')
+  )
+  return hasValidationSignal && NEWER_CONFIG_DIAGNOSTIC_FIELDS.some((field) => normalized.includes(field))
+}
+
+function classifyGatewayExitMessage(message: string, outputTail: string): string {
+  if (!gatewayExitLooksLikeNewerConfig(outputTail)) return message
+  return (
+    message +
+    '\n\nOpenSquilla could not read this config because it contains settings written by a newer OpenSquilla version. ' +
+    'Reopen OpenSquilla 0.5.0 Preview 1, or reset the desktop config before running an older version. ' +
+    'Use Reveal log for details.'
+  )
+}
+
+async function waitForGateway(url: string, earlyExitMessage?: () => string | null): Promise<void> {
   const startedAt = Date.now()
   while (Date.now() - startedAt < 45_000) {
+    const earlyExit = earlyExitMessage?.()
+    if (earlyExit) throw new Error(earlyExit)
     if (await healthCheck(url)) return
     await new Promise((resolveWait) => setTimeout(resolveWait, 500))
   }
+  const earlyExit = earlyExitMessage?.()
+  if (earlyExit) throw new Error(earlyExit)
   throw new Error(`Gateway did not become healthy at ${url}`)
 }
 
@@ -3124,6 +3238,8 @@ async function reuseHealthyGatewayState(): Promise<GatewayState | null> {
 async function startGateway(): Promise<GatewayState> {
   const reusableGateway = await reuseHealthyGatewayState()
   if (reusableGateway) return reusableGateway
+
+  assertSupportedMacInstallLocation()
 
   if (gatewayProcess && gatewayState.owned) {
     if (hasGatewayProcessExited(gatewayProcess)) {
@@ -3202,10 +3318,18 @@ async function startGateway(): Promise<GatewayState> {
   )
   gatewayProcess = child
 
+  let gatewayOutputTail = ''
+  let childExitMessage: string | null = null
+  const rememberGatewayOutput = (chunk: Buffer | string) => {
+    gatewayOutputTail = appendGatewayOutputTail(gatewayOutputTail, chunk)
+  }
+  child.stdout.on('data', rememberGatewayOutput)
+  child.stderr.on('data', rememberGatewayOutput)
   child.stdout.pipe(logStream, { end: false })
   child.stderr.pipe(logStream, { end: false })
   child.once('exit', (code, signal) => {
     const message = `gateway exited code=${code ?? 'null'} signal=${signal ?? 'null'}`
+    const classifiedMessage = classifyGatewayExitMessage(message, gatewayOutputTail)
     const isCurrentGateway = gatewayProcess === child
     if (isCurrentGateway) gatewayProcess = null
     logStream.write(`\n[desktop] ${message}\n`)
@@ -3215,12 +3339,13 @@ async function startGateway(): Promise<GatewayState> {
       return
     }
     gatewayState.status = 'error'
-    gatewayState.error = message
+    gatewayState.error = classifiedMessage
+    childExitMessage = classifiedMessage
     sendBootError(gatewayState.error)
   })
 
   sendBootStatus('gateway-health')
-  await waitForGateway(url)
+  await waitForGateway(url, () => childExitMessage)
   await waitForControlUi(url)
   sendBootStatus('control')
   gatewayState.status = 'ready'

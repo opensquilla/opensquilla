@@ -4327,11 +4327,26 @@ class Agent:
             )
         else:
             result.insert(runtime_idx, runtime_context_message)
-        if turn_objective_message is not None and _message_has_tool_result(
-            result[-1] if result else None
+        if (
+            turn_objective_message is not None
+            and _message_has_tool_result(result[-1] if result else None)
+            and not Agent._has_provider_context_marker_replay(result)
         ):
             result.append(turn_objective_message)
         return result
+
+    @staticmethod
+    def _has_provider_context_marker_replay(messages: list[Message]) -> bool:
+        for message in messages:
+            if not isinstance(message.content, list):
+                continue
+            for block in message.content:
+                if (
+                    isinstance(block, ContentBlockToolUse)
+                    and Agent._has_provider_context_replay_marker(block.input)
+                ):
+                    return True
+        return False
 
     @staticmethod
     def _append_runtime_context_to_user_message(

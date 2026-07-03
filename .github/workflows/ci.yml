@@ -399,11 +399,29 @@ jobs:
             tests/test_public_release_hygiene.py \
             -q
 
+  readme-locale-check:
+    name: README locale parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.19.0'
+
+      - name: Check README locale parity
+        working-directory: opensquilla-webui
+        run: node scripts/check-readme-locales.mjs
+
   ci-result:
     name: CI result
     needs:
       - classify-changes
       - workflow-lint
+      - readme-locale-check
       - frontend-check
       - tui-check
       - ubuntu-quality
@@ -421,6 +439,7 @@ jobs:
 
           classify_result="${{ needs.classify-changes.result }}"
           workflow_lint_result="${{ needs.workflow-lint.result }}"
+          readme_locale_result="${{ needs.readme-locale-check.result }}"
           frontend_result="${{ needs.frontend-check.result }}"
           tui_result="${{ needs.tui-check.result }}"
           ubuntu_result="${{ needs.ubuntu-quality.result }}"
@@ -461,6 +480,7 @@ jobs:
 
           printf 'classify-changes: %s\n' "${classify_result}"
           printf 'workflow-lint: %s\n' "${workflow_lint_result}"
+          printf 'readme-locale-check: %s\n' "${readme_locale_result}"
           printf 'frontend-check: %s\n' "${frontend_result}"
           printf 'tui-check: %s\n' "${tui_result}"
           printf 'ubuntu-quality: %s\n' "${ubuntu_result}"
@@ -472,6 +492,7 @@ jobs:
 
           require_success "${classify_result}" "Classify changed files"
           require_success "${workflow_lint_result}" "Workflow lint"
+          require_success "${readme_locale_result}" "README locale parity"
 
           if [[ "${frontend_changed}" == "true" || "${full_required}" == "true" ]]; then
             require_success "${frontend_result}" "Frontend build and typecheck"

@@ -8,10 +8,12 @@ from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.integration import (
     configure_runtime,
     escalate_backend_denial,
+    get_runtime,
     reset_runtime,
 )
+from opensquilla.sandbox.run_context import RunContext
+from opensquilla.sandbox.run_mode import RunMode
 from opensquilla.sandbox.types import (
-    ALLOW,
     DenialReason,
     DenialResult,
     MountSpec,
@@ -22,6 +24,7 @@ from opensquilla.sandbox.types import (
     SandboxResult,
     SecurityLevel,
 )
+from opensquilla.tools.types import ToolContext, current_tool_context
 
 
 def _policy(workspace: Path) -> SandboxPolicy:
@@ -80,7 +83,7 @@ def _reset() -> None:
 
 
 @pytest.mark.asyncio
-async def test_escalate_routes_to_approval_gate_with_require_approval(tmp_path: Path) -> None:
+async def test_sandbox_backend_denial_does_not_route_to_host_once(tmp_path: Path) -> None:
     queue = _ApproveQueue(approve=True)
     configure_runtime(
         SandboxSettings(sandbox=True, backend="noop", security_grading=False),
@@ -93,13 +96,107 @@ async def test_escalate_routes_to_approval_gate_with_require_approval(tmp_path: 
 
     decision = await escalate_backend_denial(result, request, policy)
 
-    assert decision is ALLOW
-    assert queue.last_params is not None
-    assert "sandbox denied" in queue.last_params["reason"]
+    assert isinstance(decision, DenialResult)
+    assert decision.reason == DenialReason.SEATBELT_DENIED
+    assert decision.retryable is False
+    assert queue.last_params is None
 
 
 @pytest.mark.asyncio
-async def test_escalate_returns_allow_on_user_approval(tmp_path: Path) -> None:
+async def test_full_host_access_does_not_route_backend_failure_to_host_once(
+    tmp_path: Path,
+) -> None:
+    queue = _ApproveQueue(approve=True)
+    configure_runtime(
+        SandboxSettings(
+            sandbox=False,
+            backend="noop",
+            security_grading=False,
+            run_mode="full",
+        ),
+        approval_queue=queue,
+        workspace=tmp_path,
+    )
+    policy = _policy(tmp_path)
+    request = _request(tmp_path, policy)
+    result = _result_with_notes(("execve.denied: sandbox blocked execve of /bin/sh",))
+
+    decision = await escalate_backend_denial(result, request, policy)
+
+    assert isinstance(decision, DenialResult)
+    assert queue.last_params is None
+
+
+@pytest.mark.asyncio
+async def test_current_run_context_full_host_access_skips_backend_host_once(
+    tmp_path: Path,
+) -> None:
+    queue = _ApproveQueue(approve=True)
+    configure_runtime(
+        SandboxSettings(
+            sandbox=True,
+            backend="noop",
+            security_grading=True,
+            run_mode="standard",
+        ),
+        approval_queue=queue,
+        workspace=tmp_path,
+    )
+    token = current_tool_context.set(
+        ToolContext(
+            workspace_dir=str(tmp_path),
+            sandbox_run_context=RunContext(run_mode=RunMode.FULL),
+        )
+    )
+    try:
+        policy = _policy(tmp_path)
+        request = _request(tmp_path, policy)
+        result = _result_with_notes(("execve.denied: sandbox blocked execve of /bin/sh",))
+
+        decision = await escalate_backend_denial(result, request, policy)
+    finally:
+        current_tool_context.reset(token)
+
+    assert isinstance(decision, DenialResult)
+    assert queue.last_params is None
+
+
+@pytest.mark.asyncio
+async def test_current_tool_context_full_host_access_skips_backend_host_once(
+    tmp_path: Path,
+) -> None:
+    queue = _ApproveQueue(approve=True)
+    configure_runtime(
+        SandboxSettings(
+            sandbox=True,
+            backend="noop",
+            security_grading=True,
+            run_mode="standard",
+        ),
+        approval_queue=queue,
+        workspace=tmp_path,
+    )
+    token = current_tool_context.set(
+        ToolContext(
+            workspace_dir=str(tmp_path),
+            run_mode="full",
+        )
+    )
+    try:
+        policy = _policy(tmp_path)
+        request = _request(tmp_path, policy)
+        result = _result_with_notes(("execve.denied: sandbox blocked execve of /bin/sh",))
+
+        decision = await escalate_backend_denial(result, request, policy)
+    finally:
+        current_tool_context.reset(token)
+
+    assert isinstance(decision, DenialResult)
+    assert queue.last_params is None
+
+
+@pytest.mark.asyncio
+async def test_escalate_returns_denial_without_host_once_prompt(tmp_path: Path) -> None:
     configure_runtime(
         SandboxSettings(sandbox=True, backend="noop", security_grading=False),
         approval_queue=_ApproveQueue(approve=True),
@@ -110,7 +207,8 @@ async def test_escalate_returns_allow_on_user_approval(tmp_path: Path) -> None:
 
     decision = await escalate_backend_denial(result, _request(tmp_path, policy), policy)
 
-    assert decision is ALLOW
+    assert isinstance(decision, DenialResult)
+    assert decision.reason == DenialReason.SEATBELT_DENIED
 
 
 @pytest.mark.asyncio
@@ -128,6 +226,34 @@ async def test_escalate_returns_seatbelt_denied_on_rejection(tmp_path: Path) -> 
     assert isinstance(decision, DenialResult)
     assert decision.reason == DenialReason.SEATBELT_DENIED
     assert decision.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_backend_sandbox_denials_do_not_trip_autonomous_pause_threshold(
+    tmp_path: Path,
+) -> None:
+    configure_runtime(
+        SandboxSettings(
+            sandbox=True,
+            backend="noop",
+            security_grading=False,
+            denial_threshold=3,
+        ),
+        approval_queue=_ApproveQueue(approve=False),
+        workspace=tmp_path,
+    )
+    policy = _policy(tmp_path)
+    result = _result_with_notes(("tmp.denied: sandbox denied a tmp-directory operation",))
+
+    for _ in range(3):
+        decision = await escalate_backend_denial(result, _request(tmp_path, policy), policy)
+        assert isinstance(decision, DenialResult)
+        assert decision.reason == DenialReason.SEATBELT_DENIED
+
+    runtime = get_runtime()
+    assert runtime is not None
+    assert await runtime.ledger.count_session("default") == 3
+    assert await runtime.ledger.threshold_reached("default") is False
 
 
 @pytest.mark.asyncio

@@ -68,8 +68,7 @@ async def test_pricing_cache_refresh_adds_openrouter_app_attribution() -> None:
         "Authorization": "Bearer test-key",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://opensquilla.ai",
-        "X-OpenRouter-Title": "OpenSquilla",
-        "X-OpenRouter-Categories": "cli-agent,personal-agent",
+        "X-Title": "OpenSquilla",
     }
     price = cache.get_price_sync("openai/gpt-4o")
     assert price is not None
@@ -285,3 +284,29 @@ def test_direct_openai_zhipu_kimi_and_minimax_prices_do_not_fall_back_to_default
 
     assert price.input_per_m == pytest.approx(input_per_m)
     assert price.output_per_m == pytest.approx(output_per_m)
+
+
+def test_local_provider_is_free_even_for_unqualified_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENSQUILLA_OPENROUTER_LIVE_PRICING", "0")
+    # Bare ollama model id misses the "ollama/" table entry -> cloud default.
+    assert lookup_price("qwen3:4b").input_per_m == pytest.approx(3.0)
+    # Passing the local provider makes it free regardless of the model id.
+    free = lookup_price("qwen3:4b", provider="ollama")
+    assert free.input_per_m == 0.0
+    assert free.output_per_m == 0.0
+
+
+def test_local_provider_case_insensitive_and_covers_local_runtimes() -> None:
+    for prov in ("ollama", "OLLAMA", "lm_studio", "vllm", "ovms", "local"):
+        price = lookup_price("some-model", provider=prov)
+        assert (price.input_per_m, price.output_per_m) == (0.0, 0.0)
+
+
+def test_cloud_provider_arg_does_not_zero_priced_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENSQUILLA_OPENROUTER_LIVE_PRICING", "0")
+    price = lookup_price("claude-sonnet-4", provider="anthropic")
+    assert price.input_per_m == pytest.approx(3.0)

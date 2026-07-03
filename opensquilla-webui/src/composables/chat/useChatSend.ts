@@ -2,6 +2,8 @@ import type { Ref } from 'vue'
 import i18n from '@/i18n'
 import { useToasts } from '@/composables/useToasts'
 import type { Attachment, ChatMessage } from '@/types/chat'
+import type { SandboxRunMode } from '@/types/sandbox'
+import { normalizeSandboxRunMode } from '@/types/sandbox'
 import type {
   ChatSendParams,
   ChatSendResponse,
@@ -9,6 +11,7 @@ import type {
 import type { ChatRpcStreamApi } from '@/composables/chat/useChatRpcEventHandlers'
 import type { BusySendMode } from '@/composables/chat/useChatPendingQueue'
 import { recordSessionNavigationDiag } from '@/utils/chat/sessionNavigationDiag'
+import { isSendableAttachment, serializeDisplayAttachment, serializeSendableAttachment, type SendableAttachment } from '@/utils/chat/attachments'
 
 type RpcClient = {
   call: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -40,6 +43,14 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
+function chatSourceMetadata(options: UseChatSendOptions): ChatSendParams['_source'] {
+  const elevated = options.normalizeElevatedMode(options.elevatedMode.value)
+  return {
+    ...(elevated ? { elevated } : {}),
+    runMode: normalizeSandboxRunMode(options.runMode.value),
+  }
+}
+
 export interface UseChatSendOptions {
   rpc: RpcClient
   inputText: Ref<string>
@@ -47,6 +58,7 @@ export interface UseChatSendOptions {
   sessionKey: Ref<string>
   busySendMode: Ref<BusySendMode>
   elevatedMode: Ref<string>
+  runMode: Ref<SandboxRunMode>
   pendingAttachments: Ref<Attachment[]>
   pendingSessionIntent: Ref<string | null>
   aborted: Ref<boolean>
@@ -73,7 +85,8 @@ export function useChatSend(options: UseChatSendOptions) {
 
   async function onSend() {
     let text = options.inputText.value.trim()
-    let hasPayload = text || options.pendingAttachments.value.length > 0
+    let sendableAttachments = options.pendingAttachments.value.filter(isSendableAttachment)
+    let hasPayload = text || sendableAttachments.length > 0
     let isLiteralSlash = false
 
     if (options.hasPendingAttachmentWork()) {
@@ -84,7 +97,8 @@ export function useChatSend(options: UseChatSendOptions) {
     if (text.startsWith('//')) {
       isLiteralSlash = true
       text = text.slice(1)
-      hasPayload = text || options.pendingAttachments.value.length > 0
+      sendableAttachments = options.pendingAttachments.value.filter(isSendableAttachment)
+      hasPayload = text || sendableAttachments.length > 0
     }
 
     const compactInFlight = options.isCompactInFlightForCurrentSession()
@@ -124,6 +138,8 @@ export function useChatSend(options: UseChatSendOptions) {
   async function dispatchSend(text: string, sendOpts?: { queueMode?: 'steer' }) {
     const requestSessionKey = options.sessionKey.value
     if (!requestSessionKey) return
+    const attachmentsToSend = options.pendingAttachments.value.filter(isSendableAttachment)
+    const attachmentsToKeep = options.pendingAttachments.value.filter(a => !isSendableAttachment(a))
 
     options.aborted.value = false
     options.closeSlashMenu()
@@ -134,29 +150,31 @@ export function useChatSend(options: UseChatSendOptions) {
 
     const now = new Date().toISOString()
     const userText = text
-    options.messages.value.push({ role: 'user', text: userText, ts: now })
+    const displayAttachments = attachmentsToSend.map(serializeDisplayAttachment)
+    options.messages.value.push({
+      role: 'user',
+      text: userText,
+      ts: now,
+      ...(displayAttachments.length > 0 ? { attachments: displayAttachments } : {}),
+    })
     options.autoScroll.value = true
     options.scrollToBottom()
 
     const params: ChatSendParams = { message: text || 'Describe these attachments', sessionKey: requestSessionKey }
     if (sendOpts?.queueMode) params.queueMode = sendOpts.queueMode
-    const elevated = options.normalizeElevatedMode(options.elevatedMode.value)
-    if (elevated) params._source = { elevated }
+    params._source = chatSourceMetadata(options)
     if (options.pendingSessionIntent.value) {
       params.intent = options.pendingSessionIntent.value
       options.pendingSessionIntent.value = null
     }
-    if (options.pendingAttachments.value.length > 0) {
+    if (attachmentsToSend.length > 0) {
       params.displayText = userText
-      params.attachments = options.pendingAttachments.value.map((a) => {
-        if (a.kind === 'staged') return { type: a.mime, file_uuid: a.file_uuid, mime: a.mime, name: a.name }
-        return { type: a.mime || 'image/png', data: a.data, mime: a.mime, name: a.name }
-      })
+      params.attachments = attachmentsToSend.map(serializeSendableAttachment)
     }
 
     options.inputText.value = ''
     options.autoResizeTextarea()
-    options.pendingAttachments.value = []
+    options.pendingAttachments.value = attachmentsToKeep
 
     // A steer send rides an already-active stream; restarting it would wipe
     // the partial output of the run being steered.
@@ -206,8 +224,18 @@ export function useChatSend(options: UseChatSendOptions) {
         return
       }
       if (!wasStreaming) options.stream.endStreaming()
+      restoreSendableAttachments(attachmentsToSend)
       const message = errorMessage(err)
       options.messages.value.push({ role: 'error', text: 'Send failed: ' + message, ts: new Date().toISOString() })
+    }
+  }
+
+  function restoreSendableAttachments(attachments: SendableAttachment[]) {
+    if (attachments.length === 0) return
+    const currentLocalIds = new Set(options.pendingAttachments.value.map(attachment => attachment.local_id))
+    const missing = attachments.filter(attachment => !currentLocalIds.has(attachment.local_id))
+    if (missing.length > 0) {
+      options.pendingAttachments.value = [...missing, ...options.pendingAttachments.value]
     }
   }
 
@@ -261,8 +289,7 @@ export function useChatSend(options: UseChatSendOptions) {
 
     const params: ChatSendParams = { message: providerText, sessionKey: requestSessionKey }
     if (displayText && displayText !== providerText) params.displayText = displayText
-    const elevated = options.normalizeElevatedMode(options.elevatedMode.value)
-    if (elevated) params._source = { elevated }
+    params._source = chatSourceMetadata(options)
 
     const wasStreaming = options.stream.isStreaming.value
     if (!wasStreaming) {

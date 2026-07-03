@@ -172,8 +172,7 @@
                 </div>
 
                 <label v-show="form.deliveryMode === 'announce' || form.deliveryMode === 'webhook'" class="cron-toggle">
-                  <input v-model="form.deliveryBestEffort" type="checkbox">
-                  <span class="cron-toggle__track"><span class="cron-toggle__thumb" /></span>
+                  <ControlSwitch v-model:checked="form.deliveryBestEffort" :aria-label="t('cronSkills.panel.bestEffort')" />
                   <span class="cron-toggle__label">{{ t('cronSkills.panel.bestEffort') }}</span>
                 </label>
 
@@ -214,8 +213,7 @@
             </details>
 
             <label class="cron-toggle">
-              <input v-model="form.enabled" type="checkbox">
-              <span class="cron-toggle__track"><span class="cron-toggle__thumb" /></span>
+              <ControlSwitch v-model:checked="form.enabled" :aria-label="t('cronSkills.panel.enabled')" />
               <span class="cron-toggle__label">{{ t('cronSkills.panel.enabled') }}</span>
             </label>
 
@@ -234,6 +232,7 @@
 import { ref, toRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
+import ControlSwitch from '@/components/ControlSwitch.vue'
 import type { CronJob, CronJobFormModel } from '@/types/cron'
 import { humanCountdown, humanTime } from '@/utils/cron/time'
 import { useDialogA11y } from '@/composables/useDialogA11y'

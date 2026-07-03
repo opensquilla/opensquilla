@@ -673,18 +673,45 @@ class SessionStorage:
         clauses: list[str] = []
         params: list[Any] = []
         if agent_id is not None:
-            clauses.append("agent_id = ?")
+            clauses.append("sessions.agent_id = ?")
             params.append(normalize_agent_id(agent_id))
         if status is not None:
-            clauses.append("status = ?")
+            clauses.append("sessions.status = ?")
             params.append(status)
         if spawned_by is not None:
-            clauses.append("spawned_by = ?")
+            clauses.append("sessions.spawned_by = ?")
             params.append(canonicalize_session_key(spawned_by))
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        params += [limit, offset]
-        sql = f"SELECT * FROM sessions {where} ORDER BY updated_at DESC LIMIT ? OFFSET ?"
-        async with self.conn.execute(sql, params) as cur:
+        sql = f"""
+            SELECT sessions.*
+            FROM sessions
+            LEFT JOIN (
+                SELECT
+                    session_key,
+                    MAX(
+                        max(
+                            max(COALESCE(updated_at, 0), COALESCE(started_at, 0)),
+                            COALESCE(created_at, 0)
+                        )
+                    ) AS active_at
+                FROM agent_tasks
+                WHERE status IN (?, ?)
+                GROUP BY session_key
+            ) active_tasks ON active_tasks.session_key = sessions.session_key
+            {where}
+            ORDER BY
+                max(sessions.updated_at, COALESCE(active_tasks.active_at, 0)) DESC,
+                sessions.updated_at DESC
+            LIMIT ? OFFSET ?
+        """
+        query_params = [
+            AgentTaskStatus.QUEUED.value,
+            AgentTaskStatus.RUNNING.value,
+            *params,
+            limit,
+            offset,
+        ]
+        async with self.conn.execute(sql, query_params) as cur:
             rows = await cur.fetchall()
         return [SessionNode(**_deserialize_row(dict(r))) for r in rows]
 

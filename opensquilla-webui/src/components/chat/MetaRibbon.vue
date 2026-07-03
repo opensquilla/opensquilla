@@ -362,7 +362,7 @@ function onActionClick(action: string, stepId: string | null) {
   cursor: pointer;
   font: inherit;
   font-size: var(--fs-xs, 0.75rem);
-  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+  transition: background var(--dur-fast) var(--ease-standard), border-color var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
 }
 
 .meta-ribbon-actions button:hover,

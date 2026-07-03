@@ -175,6 +175,17 @@ function disconnect() {
 .conn-status__reason {
   color: var(--text-muted);
   font-size: var(--fs-sm);
+  /* The reason text differs per socket state (disconnected / failed-with-error /
+     connecting / connected) and used to change the block's height as it resolved
+     on open — reflowing the whole form below it (a visible "jitter"). Reserve a
+     stable two-line height (em-based for locale tolerance) and clamp longer error
+     strings so the layout never shifts as the state settles. */
+  line-height: 1.3;
+  min-height: 2.6em;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .conn-input--mono {

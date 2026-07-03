@@ -12,18 +12,26 @@ const ChatView = (() => {
   let _sessionKey = '';
   let _pendingSessionIntent = null;
 
-  // Browser-scoped elevated mode. "bypass" skips approval prompts while
-  // keeping sensitive-path checks; "full" also bypasses sensitive-path gates.
-  const _ELEVATED_MODE_KEY = 'opensquilla.elevatedMode';
-  const _ELEVATED_MODE_VERSION_KEY = 'opensquilla.elevatedMode.version';
-  const _ELEVATED_MODE_STORAGE_VERSION = '2';
-  let _elevatedMode = '';
-  let _globalElevatedMode = '';
-  // The /api/elevated-mode endpoint is owner-only. When the gateway is bound
-  // to a wildcard address (LAN deploy), no peer is treated as owner and the
-  // endpoint always returns 403. We latch this state on the first failed
-  // sync so the pill can disable itself instead of toasting on every click.
-  let _elevatedUnavailable = false;
+  const _RUN_MODE_FALLBACK = 'trusted';
+  const _RUN_MODE_LABELS = {
+    standard: 'Standard-Sandbox',
+    trusted: 'Trusted-Sandbox',
+    full: 'Full Host Access',
+  };
+  const _RUN_MODE_TITLES = {
+    standard: 'Sandboxed execution. Risky actions ask before running.',
+    trusted: 'Sandboxed execution with fewer routine prompts. Boundary changes still ask.',
+    full: 'Host execution without per-command prompts. Use only for trusted workspaces.',
+  };
+  let _runModePolicyDefault = _RUN_MODE_FALLBACK;
+  let _allowedRunModes = new Set(['standard', 'trusted', 'full']);
+  let _fullHostAccessDisabledReason = null;
+  let _runMode = _runModePolicyDefault;
+  let _sandboxSetupStatus = null;
+  let _sandboxSetupRequestSeq = 0;
+  let _sandboxSetupInFlight = false;
+  let _pendingSandboxSetupMode = '';
+  let _sandboxSetupPromptDismissed = false;
 
   // Streaming
   let _isStreaming = false;
@@ -643,7 +651,8 @@ const ChatView = (() => {
   let _ctxWarn = null;
   let _fileInput = null;
   let _toolbar = null;
-  let _elevatedPill = null;
+  let _runModeControl = null;
+  let _sandboxSetupBanner = null;
   let _composer = null;
   let _composerObserver = null;
   let _mediaRecorder = null;
@@ -1237,6 +1246,16 @@ const ChatView = (() => {
         <div class="chat-composer" id="chat-composer">
           <div class="chat-attachments hidden" id="chat-attach-preview"></div>
           <div class="chat-slash hidden" id="chat-slash"></div>
+          <div class="chat-sandbox-setup-banner hidden" id="chat-sandbox-setup-banner">
+            <div class="chat-sandbox-setup-copy">
+              <strong>Establish sandbox</strong>
+              <span data-sandbox-setup-detail>Standard-Sandbox and Trusted-Sandbox need a ready sandbox backend.</span>
+            </div>
+            <div class="chat-sandbox-setup-actions">
+              <button type="button" class="btn btn--sm btn--primary" data-sandbox-setup-action="ensure">Set up</button>
+              <button type="button" class="btn btn--sm btn--ghost" data-sandbox-setup-action="dismiss">Dismiss</button>
+            </div>
+          </div>
           <div class="chat-input-bar">
             <button class="btn btn--icon btn--ghost" id="chat-btn-attach" title="Attach files: PNG, JPEG, GIF, WEBP, PDF, TXT, MD, HTML, CSV, JSON" aria-label="Attach files">${icons.paperclip()}</button>
             <div class="chat-toolbar-wrap">
@@ -1244,14 +1263,29 @@ const ChatView = (() => {
                       title="Run modes — execution, router"
                       aria-label="Run modes"
                       aria-haspopup="dialog"
-                      aria-expanded="false">${_iconGear()}<span class="chat-toolbar-trigger-dots" aria-hidden="true"><i data-dot="bypass"></i><i data-dot="router"></i></span></button>
+                      aria-expanded="false">${_iconGear()}<span class="chat-toolbar-trigger-dots" aria-hidden="true"><i data-dot="run-mode"></i><i data-dot="router"></i></span></button>
               <div class="chat-toolbar-popover hidden" id="chat-toolbar-popover" role="dialog" aria-label="Composer settings">
                 <div class="chat-toolbar-popover-arrow" aria-hidden="true"></div>
                 <div class="chat-toolbar-popover-inner" id="chat-toolbar">
                   <div class="chat-toolbar-row">
-                    <span class="chat-toolbar-row-label">Execution mode</span>
-                    <button class="chat-pill chat-pill--danger" id="pill-elevated"
-                            title="Approval prompts are active. Click to enable approval bypass for this browser session.">Approval prompts</button>
+                    <span class="chat-toolbar-row-label">Run Mode</span>
+                    <div class="chat-run-mode-control" id="chat-run-mode-control">
+                      <button type="button" class="chat-run-mode-trigger" id="chat-run-mode-trigger"
+                              aria-haspopup="listbox" aria-expanded="false" aria-controls="chat-run-mode-menu"
+                              data-run-mode="trusted" data-run-mode-help="Sandboxed execution with fewer routine prompts. Boundary changes still ask.">
+                        <span class="chat-run-mode-current">Trusted-Sandbox</span>
+                        <span class="chat-run-mode-chevron" aria-hidden="true"></span>
+                      </button>
+                      <div class="chat-run-mode-menu hidden" id="chat-run-mode-menu" role="listbox" aria-label="Run Mode choices">
+                        <button type="button" class="chat-run-mode-option" role="option" data-run-mode="standard"
+                                data-run-mode-help="Sandboxed execution. Risky actions ask before running.">Standard-Sandbox</button>
+                        <button type="button" class="chat-run-mode-option" role="option" data-run-mode="trusted"
+                                data-run-mode-help="Sandboxed execution with fewer routine prompts. Boundary changes still ask.">Trusted-Sandbox</button>
+                        <button type="button" class="chat-run-mode-option" role="option" data-run-mode="full"
+                                data-run-mode-help="Host execution without per-command prompts. Use only for trusted workspaces.">Full Host Access</button>
+                      </div>
+                      <div class="chat-run-mode-tooltip hidden" id="chat-run-mode-tooltip" role="tooltip"></div>
+                    </div>
                   </div>
                   <div class="chat-toolbar-row">
                     <span class="chat-toolbar-row-label">Squilla Router</span>
@@ -1314,7 +1348,8 @@ const ChatView = (() => {
     _runStatusEl  = document.getElementById('chat-run-status');
     _fileInput    = _el.querySelector('#chat-file-input');
     _toolbar      = _el.querySelector('#chat-toolbar');
-    _elevatedPill = _el.querySelector('#pill-elevated');
+    _runModeControl = _el.querySelector('#chat-run-mode-control');
+    _sandboxSetupBanner = _el.querySelector('#chat-sandbox-setup-banner');
     _composer     = _el.querySelector('#chat-composer');
 
     _messages = [];
@@ -1324,10 +1359,13 @@ const ChatView = (() => {
     _lastHeaderDay = '';
     _applySessionRunState({ run_status: 'idle' });
 
-    _loadElevatedMode();
     _bindEvents();
     _bindToolbarPills();
     _bindToolbarTrigger();
+    _bindRunModePicker();
+    _bindSandboxSetupBanner();
+    _updateRunModeControl();
+    _applyHelloRunModePolicy(_rpc?.hello);
     _bindSessionChip();
     _bindComposerResize();
     _bindHoverActions();
@@ -1360,36 +1398,6 @@ const ChatView = (() => {
   }
 
   function _bindToolbarPills() {
-    if (_elevatedPill) {
-      _elevatedPill.addEventListener('click', async () => {
-        if (_elevatedUnavailable) {
-          UI.toast(
-            'Bypass requires a local owner session (loopback only).',
-            'warn',
-            4000,
-          );
-          return;
-        }
-        if (_elevatedMode) {
-          _setElevatedMode('', { toast: true, sync: true });
-          return;
-        }
-        const ok = await UI.confirm({
-          title: 'Enable approval bypass?',
-          message: '<p>This allows host execution without approval prompts in this browser session. This maps to /elevated bypass.</p><p>Sensitive-path checks remain active.</p>',
-          confirmLabel: 'Enable bypass',
-          danger: true,
-        });
-        if (ok) _setElevatedMode('bypass', { toast: true, sync: true });
-      });
-    }
-
-    const elevatedListener = (event) => {
-      _setElevatedMode(event?.detail?.mode || '', { toast: false, sync: false });
-    };
-    window.addEventListener('opensquilla:elevated-mode', elevatedListener);
-    _unsubs.push(() => window.removeEventListener('opensquilla:elevated-mode', elevatedListener));
-
     // Squilla Router toggle switch
     const routerToggle = _el.querySelector('#toggle-router');
     if (routerToggle) {
@@ -1508,9 +1516,6 @@ const ChatView = (() => {
       if (codetaskToggle) {
         codetaskToggle.checked = !!(cfg?.skills?.coding_mode);
       }
-      _globalElevatedMode = _normalizeElevatedMode(cfg?.permissions?.default_mode);
-      _toolbarState.bypass = _isApprovalBypassMode(_effectiveElevatedMode());
-      _updateElevatedPill();
       _refreshToolbarTriggerGlow();
 
       // Pre-populate the router visualisation from the operator's actual
@@ -2127,14 +2132,14 @@ const ChatView = (() => {
   /* ── Composer Toolbar Popover (gear button) ────────────────────────── */
 
   // Track non-default state on controls so the gear glows accent only when
-  // at least one is set away from defaults: bypass on OR router off.
+  // at least one is set away from defaults: run mode OR router off.
   let _toolbarState = {
-    bypass: false,        // true when elevated mode is on
+    runMode: _runModePolicyDefault,
     router: true,         // false when router toggle is off
   };
 
   function _toolbarTriggerActive() {
-    if (_toolbarState.bypass) return true;
+    if (_toolbarState.runMode !== _runModePolicyDefault) return true;
     if (_toolbarState.router === false) return true;
     return false;
   }
@@ -2145,10 +2150,17 @@ const ChatView = (() => {
     trigger.classList.toggle('is-glowing', _toolbarTriggerActive());
     // Per-toggle status dots — each lights independently so a glance at the
     // composer reveals which mode is non-default, not just that something is.
-    const bypass = !!_toolbarState.bypass;
+    const runMode = _normalizeRunMode(_toolbarState.runMode);
+    const nonDefaultRunMode = runMode !== _runModePolicyDefault;
     const routerOff = _toolbarState.router === false;
-    trigger.classList.toggle('has-dot-bypass', bypass);
+    trigger.classList.toggle('has-dot-run-mode', nonDefaultRunMode);
+    trigger.classList.toggle('has-dot-run-mode-full', runMode === 'full');
     trigger.classList.toggle('has-dot-router', routerOff);
+    trigger.title = [
+      `Run Mode: ${_RUN_MODE_LABELS[runMode] || _RUN_MODE_LABELS.standard}`,
+      `Squilla Router: ${routerOff ? 'Off' : 'On'}`,
+      'Visual effects',
+    ].join(' · ');
   }
 
   function _bindToolbarTrigger() {
@@ -2212,6 +2224,331 @@ const ChatView = (() => {
     _refreshToolbarTriggerGlow();
   }
 
+  function _runModePolicyValue(value) {
+    const normalized = String(value || '').trim().toLowerCase().replace(/_/g, '-');
+    if (normalized === 'standard' || normalized === 'standard-sandbox') return 'standard';
+    if (normalized === 'trusted' || normalized === 'trust' || normalized === 'trusted-sandbox') return 'trusted';
+    if (normalized === 'full' || normalized === 'full-host-access' || normalized === 'host') return 'full';
+    return '';
+  }
+
+  function _normalizeRunModePolicyValue(value, fallback) {
+    return _runModePolicyValue(value) || _runModePolicyValue(fallback) || _RUN_MODE_FALLBACK;
+  }
+
+  function _normalizeRunMode(mode) {
+    return _normalizeRunModePolicyValue(mode, _runModePolicyDefault);
+  }
+
+  function _runModeAllowed(mode) {
+    const normalized = _runModePolicyValue(mode);
+    return !!normalized && _allowedRunModes.has(normalized);
+  }
+
+  function _firstAllowedRunMode() {
+    if (_allowedRunModes.has(_RUN_MODE_FALLBACK)) return _RUN_MODE_FALLBACK;
+    if (_allowedRunModes.has('standard')) return 'standard';
+    if (_allowedRunModes.has('trusted')) return 'trusted';
+    if (_allowedRunModes.has('full')) return 'full';
+    return _RUN_MODE_FALLBACK;
+  }
+
+  function _clampRunMode(mode) {
+    const normalized = _normalizeRunModePolicyValue(mode, _runModePolicyDefault);
+    if (_runModeAllowed(normalized)) return normalized;
+    if (_runModeAllowed(_runModePolicyDefault)) return _runModePolicyDefault;
+    return _firstAllowedRunMode();
+  }
+
+  function _fullHostAccessDisabledMessage() {
+    let lang = '';
+    if (typeof document !== 'undefined' && document.documentElement) {
+      lang = document.documentElement.lang || '';
+    }
+    if (!lang && typeof navigator !== 'undefined') lang = navigator.language || '';
+    if (String(lang).toLowerCase().startsWith('zh')) {
+      return '当前账号不是 owner，不能选择 Full Host Access。你可以使用 Standard-Sandbox 或 Trusted-Sandbox。';
+    }
+    return 'This account is not the owner, so Full Host Access is unavailable. You can use Standard-Sandbox or Trusted-Sandbox.';
+  }
+
+  function _applyHelloRunModePolicy(hello) {
+    const policy = hello && hello.auth && hello.auth.runModePolicy;
+    const previousPolicyDefault = _runModePolicyDefault;
+    const nextAllowed = new Set();
+    if (policy && Array.isArray(policy.allowedRunModes)) {
+      policy.allowedRunModes.forEach((mode) => {
+        const normalized = _runModePolicyValue(mode);
+        if (normalized) nextAllowed.add(normalized);
+      });
+    }
+    _allowedRunModes = nextAllowed.size > 0
+      ? nextAllowed
+      : new Set(['standard', 'trusted']);
+
+    const policyDefaultFallback = _allowedRunModes.has('full') ? 'full' : _RUN_MODE_FALLBACK;
+    const policyDefault = _normalizeRunModePolicyValue(
+      policy && policy.defaultRunMode,
+      policyDefaultFallback,
+    );
+    _runModePolicyDefault = _allowedRunModes.has(policyDefault)
+      ? policyDefault
+      : _firstAllowedRunMode();
+
+    const disabledReason = policy && policy.fullHostAccessDisabledReason;
+    _fullHostAccessDisabledReason = _allowedRunModes.has('full')
+      ? null
+      : (disabledReason ? String(disabledReason) : 'owner_required');
+
+    if (_runMode === previousPolicyDefault) {
+      _runMode = _runModePolicyDefault;
+    }
+    _runMode = _clampRunMode(_runMode);
+    _toolbarState.runMode = _runMode;
+    _updateRunModeControl();
+    _refreshToolbarTriggerGlow();
+  }
+
+  function _runModeHelp(mode) {
+    const normalized = _normalizeRunMode(mode);
+    return _RUN_MODE_TITLES[normalized] || _RUN_MODE_TITLES.standard;
+  }
+
+  function _showRunModeTooltip(anchor) {
+    if (!_el || !anchor) return;
+    const tip = _el.querySelector('#chat-run-mode-tooltip');
+    if (!tip) return;
+    const mode = _normalizeRunMode(anchor.dataset.runMode || _runMode);
+    tip.textContent = anchor.dataset.runModeHelp || _runModeHelp(mode);
+    const rect = anchor.getBoundingClientRect();
+    tip.style.left = `${Math.max(12, Math.min(window.innerWidth - 292, rect.left))}px`;
+    tip.style.top = `${Math.max(12, rect.bottom + 8)}px`;
+    tip.classList.remove('hidden');
+  }
+
+  function _hideRunModeTooltip() {
+    const tip = _el && _el.querySelector('#chat-run-mode-tooltip');
+    if (!tip) return;
+    tip.classList.add('hidden');
+  }
+
+  function _bindRunModePicker() {
+    const control = _runModeControl;
+    const trigger = control && control.querySelector('#chat-run-mode-trigger');
+    const menu = control && control.querySelector('#chat-run-mode-menu');
+    if (!control || !trigger || !menu) return;
+
+    let open = false;
+    const close = () => {
+      open = false;
+      menu.classList.add('hidden');
+      trigger.classList.remove('is-open');
+      trigger.setAttribute('aria-expanded', 'false');
+      _hideRunModeTooltip();
+    };
+    const show = () => {
+      open = true;
+      menu.classList.remove('hidden');
+      trigger.classList.add('is-open');
+      trigger.setAttribute('aria-expanded', 'true');
+    };
+
+    trigger.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (open) close(); else show();
+    });
+    document.addEventListener('mousedown', (event) => {
+      if (!open || control.contains(event.target)) return;
+      close();
+    });
+    control.querySelectorAll('.chat-run-mode-option').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const mode = _normalizeRunMode(btn.dataset.runMode);
+        close();
+        if (btn.disabled || btn.getAttribute('aria-disabled') === 'true' || !_runModeAllowed(mode)) {
+          UI.toast(_fullHostAccessDisabledMessage(), mode === 'full' ? 'warn' : 'info', 2400);
+          return;
+        }
+        if (mode === _runMode) return;
+        if (!(await _requestSandboxSetupForMode(mode))) return;
+        _setRunMode(mode, { toast: true });
+      });
+    });
+    control.querySelectorAll('[data-run-mode]').forEach((node) => {
+      node.addEventListener('mouseenter', () => _showRunModeTooltip(node));
+      node.addEventListener('focus', () => _showRunModeTooltip(node));
+      node.addEventListener('mouseleave', _hideRunModeTooltip);
+      node.addEventListener('blur', _hideRunModeTooltip);
+    });
+  }
+
+  function _setRunMode(mode, options = {}) {
+    const normalized = _normalizeRunMode(mode);
+    const clamped = _clampRunMode(normalized);
+    if (normalized !== clamped && !_runModeAllowed(normalized)) {
+      UI.toast(_fullHostAccessDisabledMessage(), normalized === 'full' ? 'warn' : 'info', 2400);
+      return false;
+    }
+    _runMode = clamped;
+    _toolbarState.runMode = clamped;
+    _updateRunModeControl();
+    _refreshToolbarTriggerGlow();
+    _refreshSandboxSetupBanner(clamped);
+    if (options.toast) {
+      UI.toast(`Run Mode: ${_RUN_MODE_LABELS[clamped]}`, clamped === 'full' ? 'warn' : 'info', 1800);
+    }
+    return true;
+  }
+
+  function _updateRunModeControl() {
+    const control = _runModeControl || (_el && _el.querySelector('#chat-run-mode-control'));
+    if (!control) return;
+    _runModeControl = control;
+    const active = _clampRunMode(_runMode);
+    const trigger = control.querySelector('#chat-run-mode-trigger');
+    const current = control.querySelector('.chat-run-mode-current');
+    if (trigger) {
+      trigger.dataset.runMode = active;
+      trigger.dataset.runModeHelp = _runModeHelp(active);
+      trigger.classList.toggle('is-danger', active === 'full');
+    }
+    if (current) current.textContent = _RUN_MODE_LABELS[active] || _RUN_MODE_LABELS.standard;
+    control.querySelectorAll('.chat-run-mode-option').forEach((btn) => {
+      const mode = _normalizeRunMode(btn.dataset.runMode);
+      const allowed = _runModeAllowed(mode);
+      const selected = mode === active;
+      btn.classList.toggle('is-active', selected);
+      btn.classList.toggle('is-danger', mode === 'full' && selected);
+      btn.setAttribute('aria-selected', selected ? 'true' : 'false');
+      btn.disabled = !allowed;
+      btn.setAttribute('aria-disabled', allowed ? 'false' : 'true');
+      const help = !allowed && mode === 'full'
+        ? _fullHostAccessDisabledMessage()
+        : _runModeHelp(mode);
+      btn.dataset.runModeHelp = help;
+      btn.title = help;
+    });
+    const menu = control.querySelector('#chat-run-mode-menu');
+    if (menu) {
+      let hint = menu.querySelector('[data-run-mode-disabled-hint]');
+      if (!hint) {
+        hint = document.createElement('div');
+        hint.className = 'chat-run-mode-disabled-hint hidden';
+        hint.setAttribute('data-run-mode-disabled-hint', '');
+        menu.appendChild(hint);
+      }
+      const showHint = !!_fullHostAccessDisabledReason;
+      hint.textContent = showHint ? _fullHostAccessDisabledMessage() : '';
+      hint.classList.toggle('hidden', !showHint);
+    }
+  }
+
+  function _isSandboxSetupReadyPayload(payload) {
+    if (!payload || typeof payload !== 'object') return false;
+    const state = String(payload.state || payload.status || '').toLowerCase();
+    return payload.ready === true || state === 'ready' || state === 'ok' || state === 'available';
+  }
+
+  function _sandboxSetupReadyForMode(mode) {
+    return _normalizeRunMode(mode) === 'full' || _isSandboxSetupReadyPayload(_sandboxSetupStatus);
+  }
+
+  function _refreshSandboxSetupBanner(mode) {
+    const banner = _sandboxSetupBanner || (_el && _el.querySelector('#chat-sandbox-setup-banner'));
+    if (!banner) return;
+    _sandboxSetupBanner = banner;
+    mode = _normalizeRunMode(mode || _runMode);
+    const ready = _sandboxSetupReadyForMode(mode);
+    const pendingPrompt = !!_pendingSandboxSetupMode;
+    const setupKnown = _sandboxSetupStatus !== null;
+    const optionalPrompt = setupKnown && !_sandboxSetupPromptDismissed;
+    const shouldShow = mode !== 'full'
+      && !ready
+      && (pendingPrompt || optionalPrompt);
+    banner.classList.toggle('hidden', !shouldShow);
+    const detail = banner.querySelector('[data-sandbox-setup-detail]');
+    if (detail) {
+      detail.textContent = _sandboxSetupInFlight
+        ? 'Preparing the trusted sandbox backend...'
+        : `${_RUN_MODE_LABELS[mode]} needs a ready sandbox backend.`;
+    }
+  }
+
+  async function _loadSandboxSetupStatus(mode) {
+    if (!_rpc) return null;
+    const requestSeq = ++_sandboxSetupRequestSeq;
+    try {
+      if (_rpc.waitForConnection) await _rpc.waitForConnection();
+      const payload = await _rpc.call('sandbox.setup.status', {});
+      if (requestSeq !== _sandboxSetupRequestSeq) return _sandboxSetupStatus;
+      _sandboxSetupStatus = payload || null;
+      _refreshSandboxSetupBanner(mode);
+      return _sandboxSetupStatus;
+    } catch {
+      _sandboxSetupStatus = null;
+      _refreshSandboxSetupBanner(mode);
+      return null;
+    }
+  }
+
+  async function _ensureSandboxSetupOnly(mode) {
+    if (!_rpc || _sandboxSetupInFlight) return false;
+    _sandboxSetupInFlight = true;
+    _refreshSandboxSetupBanner(mode);
+    try {
+      if (_rpc.waitForConnection) await _rpc.waitForConnection();
+      const payload = await _rpc.call('sandbox.setup.ensure', {});
+      _sandboxSetupStatus = payload || null;
+      return _isSandboxSetupReadyPayload(_sandboxSetupStatus);
+    } catch (err) {
+      UI.toast('Sandbox setup failed: ' + err.message, 'err', 3500);
+      return false;
+    } finally {
+      _sandboxSetupInFlight = false;
+      _refreshSandboxSetupBanner(mode);
+    }
+  }
+
+  async function _requestSandboxSetupForMode(mode) {
+    mode = _normalizeRunMode(mode);
+    if (!_runModeAllowed(mode)) return false;
+    if (mode === 'full') return true;
+    if (_sandboxSetupReadyForMode(mode)) return true;
+    _sandboxSetupPromptDismissed = false;
+    _pendingSandboxSetupMode = mode;
+    const status = await _loadSandboxSetupStatus(mode);
+    if (_isSandboxSetupReadyPayload(status)) {
+      _pendingSandboxSetupMode = '';
+      _refreshSandboxSetupBanner(mode);
+      return true;
+    }
+    _refreshSandboxSetupBanner(mode);
+    return false;
+  }
+
+  function _bindSandboxSetupBanner() {
+    const banner = _sandboxSetupBanner;
+    if (!banner) return;
+    const ensure = banner.querySelector('[data-sandbox-setup-action="ensure"]');
+    const dismiss = banner.querySelector('[data-sandbox-setup-action="dismiss"]');
+    if (ensure) {
+      ensure.addEventListener('click', async () => {
+        const mode = _pendingSandboxSetupMode || _runMode;
+        if (await _ensureSandboxSetupOnly(mode)) {
+          _pendingSandboxSetupMode = '';
+          _setRunMode(mode, { toast: true });
+        }
+      });
+    }
+    if (dismiss) {
+      dismiss.addEventListener('click', () => {
+        _sandboxSetupPromptDismissed = true;
+        _pendingSandboxSetupMode = '';
+        _refreshSandboxSetupBanner(_runMode);
+      });
+    }
+  }
+
   /* ── Composer Resize Observer (mobile overlap fix) ───────────────────── */
 
   function _bindComposerResize() {
@@ -2248,134 +2585,6 @@ const ChatView = (() => {
       if (_composerObserver) { _composerObserver.disconnect(); _composerObserver = null; }
       window.removeEventListener('resize', update);
     });
-  }
-
-  function _normalizeElevatedMode(mode) {
-    return mode === 'on' || mode === 'bypass' || mode === 'full' ? mode : '';
-  }
-
-  function _effectiveElevatedMode() {
-    return _normalizeElevatedMode(_elevatedMode || _globalElevatedMode);
-  }
-
-  function _isApprovalBypassMode(mode) {
-    return mode === 'bypass' || mode === 'full';
-  }
-
-  function _loadElevatedMode() {
-    let mode = '';
-    let version = '';
-    try {
-      mode = localStorage.getItem(_ELEVATED_MODE_KEY) || '';
-      version = localStorage.getItem(_ELEVATED_MODE_VERSION_KEY) || '';
-    } catch {}
-    if (mode === 'full' && version !== _ELEVATED_MODE_STORAGE_VERSION) {
-      mode = 'bypass';
-      try {
-        localStorage.setItem(_ELEVATED_MODE_KEY, mode);
-        localStorage.setItem(_ELEVATED_MODE_VERSION_KEY, _ELEVATED_MODE_STORAGE_VERSION);
-      } catch {}
-    }
-    _setElevatedMode(mode, { persist: false, toast: false, sync: true });
-  }
-
-  function _setElevatedMode(mode, options = {}) {
-    const normalized = _normalizeElevatedMode(mode);
-    _elevatedMode = normalized;
-    if (options.persist !== false) {
-      try {
-        if (normalized) {
-          localStorage.setItem(_ELEVATED_MODE_KEY, normalized);
-          localStorage.setItem(_ELEVATED_MODE_VERSION_KEY, _ELEVATED_MODE_STORAGE_VERSION);
-        } else {
-          localStorage.removeItem(_ELEVATED_MODE_KEY);
-          localStorage.removeItem(_ELEVATED_MODE_VERSION_KEY);
-        }
-      } catch {}
-    }
-    _toolbarState.bypass = _isApprovalBypassMode(_effectiveElevatedMode());
-    _refreshToolbarTriggerGlow();
-    _updateElevatedPill();
-    if (options.toast) {
-      UI.toast(
-        normalized
-          ? `Session permission mode: ${normalized}`
-          : (_globalElevatedMode
-              ? `Session override cleared; global mode: ${_globalElevatedMode}`
-              : 'Session permission override cleared'),
-        normalized ? 'warn' : 'info',
-        2500
-      );
-    }
-    if (options.sync) _syncElevatedMode(normalized);
-  }
-
-  async function _syncElevatedMode(mode) {
-    if (!_sessionKey || _elevatedUnavailable) return;
-    try {
-      const resp = await fetch('/api/elevated-mode', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionKey: _sessionKey, mode: mode || 'off' }),
-      });
-      if (resp.status === 403) {
-        // Owner-only endpoint, but the current connection isn't a local-owner
-        // session (typically: gateway bound to 0.0.0.0). Latch the disabled
-        // state, clear any cached elevated mode, refresh the pill UI, and let
-        // the user know once instead of toasting on every click.
-        _elevatedUnavailable = true;
-        try {
-          localStorage.removeItem(_ELEVATED_MODE_KEY);
-          localStorage.removeItem(_ELEVATED_MODE_VERSION_KEY);
-        } catch {}
-        _elevatedMode = '';
-        _updateElevatedPill();
-        UI.toast(
-          'Bypass requires a local owner session (loopback only).',
-          'warn',
-          4000,
-        );
-        return;
-      }
-      if (!resp.ok) throw new Error('HTTP ' + resp.status);
-      const payload = await resp.json().catch(() => ({}));
-      if (payload?.resolvedPending && window.ApprovalMonitor) {
-        ApprovalMonitor.pollNow();
-      }
-    } catch (err) {
-      UI.toast('Failed to sync bypass mode: ' + err.message, 'err', 3500);
-    }
-  }
-
-  function _updateElevatedPill() {
-    if (!_elevatedPill) return;
-    if (_elevatedUnavailable) {
-      _elevatedPill.classList.remove('is-active');
-      _elevatedPill.classList.add('chat-pill--disabled');
-      _elevatedPill.textContent = 'Bypass N/A';
-      _elevatedPill.title =
-        'Bypass requires a local owner session. The gateway is bound to a non-loopback address, so this client cannot toggle elevated mode.';
-      _elevatedPill.setAttribute('aria-disabled', 'true');
-      return;
-    }
-    const effective = _effectiveElevatedMode();
-    const active = !!effective;
-    _elevatedPill.classList.remove('chat-pill--disabled');
-    _elevatedPill.removeAttribute('aria-disabled');
-    _elevatedPill.classList.toggle('is-active', active);
-    if (_elevatedMode) {
-      _elevatedPill.textContent = `Session ${_elevatedMode.toUpperCase()}`;
-      _elevatedPill.title =
-        'Session permission override is active. Approval prompts are bypassed for this browser chat session. Click to clear the override.';
-    } else if (_globalElevatedMode) {
-      _elevatedPill.textContent = `Global ${_globalElevatedMode.toUpperCase()}`;
-      _elevatedPill.title =
-        'Global permission default controls execution mode and is configured by opensquilla sandbox on|bypass|full|reset.';
-    } else {
-      _elevatedPill.textContent = 'Approval prompts';
-      _elevatedPill.title =
-        'Approval prompts are active. Click to enable approval bypass for this browser session.';
-    }
   }
 
   /* ── Event Bindings ─────────────────────────────────────────────────── */
@@ -5602,6 +5811,7 @@ const ChatView = (() => {
     _unsubs.push(_rpc.on('_state', (state) => {
       if (state === 'connected' && _sessionKey) {
         _applyRpcPolicy(_rpc?.policy || {});
+        _applyHelloRunModePolicy(_rpc?.hello);
         _hideThinkingIndicator();
         _subscribeSession();
         _loadCurrentSessionUsage();
@@ -5615,6 +5825,7 @@ const ChatView = (() => {
 
     _unsubs.push(_rpc.on('_hello', (hello) => {
       _applyRpcPolicy(hello?.policy || {});
+      _applyHelloRunModePolicy(hello);
     }));
 
     _unsubs.push(_rpc.on('_gap', () => {
@@ -6702,8 +6913,11 @@ const ChatView = (() => {
 
     // Build RPC params
     const params = { message: providerText, sessionKey: _sessionKey };
-    const elevatedMode = _normalizeElevatedMode(_elevatedMode);
-    if (elevatedMode) params._source = { elevated: elevatedMode };
+    const sendRunMode = _clampRunMode(_runMode);
+    _runMode = sendRunMode;
+    _toolbarState.runMode = sendRunMode;
+    params._source = {};
+    params._source.runMode = sendRunMode;
     if (sessionIntentForSend) {
       params.intent = sessionIntentForSend;
       if (textOverride === null) _pendingSessionIntent = null;
@@ -10141,7 +10355,8 @@ const ChatView = (() => {
     _runStatusEl = null;
     _fileInput = null;
     _toolbar = null;
-    _elevatedPill = null;
+    _runModeControl = null;
+    _sandboxSetupBanner = null;
     _composer = null;
     _streamBubble = null;
     _streamSessionKey = '';

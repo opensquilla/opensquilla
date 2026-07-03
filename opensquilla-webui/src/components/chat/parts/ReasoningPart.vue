@@ -41,7 +41,7 @@ const summary = computed(() => {
   outline: none;
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }
-.thinking-fold__chevron { flex-shrink: 0; transition: transform 0.12s ease; }
+.thinking-fold__chevron { flex-shrink: 0; transition: transform var(--dur-fast) var(--ease-standard); }
 .thinking-fold[open] > .thinking-fold__summary .thinking-fold__chevron { transform: rotate(90deg); }
 .thinking-fold__body {
   margin: 0.25rem 0 0.375rem; padding: 0.375rem 0.75rem;

@@ -195,6 +195,7 @@ async def finalize(
 
     # ---------------- Standard branch (success or denial payload) ----------------
     denial = is_denial_payload(result)
+    denial_reason = _denial_reason(result) if denial else None
     execution_status = execution_status_for_tool_result(call.tool_name, result)
     if execution_status is None:
         pending = _extract_pending_approval(result)
@@ -210,14 +211,13 @@ async def finalize(
                 "preservation_class": "ephemeral",
             }
     if execution_status is None and denial:
-        denial_reason = _denial_reason(result)
         execution_status = {
             "version": 1,
             "status": "error",
             "exit_code": None,
             "timed_out": False,
             "truncated": False,
-            "reason": denial_reason,
+            "reason": denial_reason or "denied",
             "source": "tool_runtime",
             "preservation_class": "diagnostic",
         }

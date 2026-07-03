@@ -2,20 +2,20 @@
   <div class="usage-stage control-stage control-stage--spacious">
     <header class="usage-stage__header control-stage__header">
       <div class="usage-stage__title-block control-stage__title-block">
-        <h2 class="usage-stage__title control-stage__title">{{ t('usageLogs.usage.title') }}</h2>
+        <h1 class="usage-stage__title control-stage__title">{{ t('usageLogs.usage.title') }}</h1>
         <p class="usage-stage__subtitle control-stage__subtitle">{{ t('usageLogs.usage.subtitle') }}</p>
         <small class="usage-range-notice" aria-live="polite">{{ rangeHiddenHint }}</small>
       </div>
       <div class="usage-stage__actions control-stage__actions mobile-action-strip">
-        <div class="usage-currency mobile-action-strip__item" role="group" :aria-label="t('usageLogs.usage.currency')">
+        <div class="control-segmented mobile-action-strip__item" role="group" :aria-label="t('usageLogs.usage.currency')">
           <button
-            class="usage-currency__btn"
+            class="control-segmented__btn"
             :class="{ 'is-active': currency === 'USD' }"
             :title="t('usageLogs.usage.usDollar')"
             @click="setCurrency('USD')"
           >$ USD</button>
           <button
-            class="usage-currency__btn"
+            class="control-segmented__btn"
             :class="{ 'is-active': currency === 'CNY' }"
             :title="t('usageLogs.usage.chineseYuan')"
             @click="setCurrency('CNY')"
@@ -173,29 +173,6 @@ async function refresh() {
   min-height: 1.2em;
 }
 
-/* Currency toggle */
-.usage-currency {
-  display: inline-flex;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  overflow: hidden;
-}
-.usage-currency__btn {
-  background: transparent;
-  border: 0;
-  padding: 6px 12px;
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: background var(--transition), color var(--transition);
-}
-.usage-currency__btn.is-active {
-  background: var(--accent);
-  color: var(--accent-foreground);
-}
-
 /* Chart */
 .usage-chart {
   background: var(--bg-surface);
@@ -212,47 +189,6 @@ async function refresh() {
   align-items: center;
   flex-wrap: wrap;
   gap: var(--sp-2);
-}
-.usage-segs {
-  display: inline-flex;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  overflow: hidden;
-}
-.usage-seg {
-  background: transparent;
-  border: 0;
-  padding: 6px 14px;
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: background var(--transition), color var(--transition);
-}
-.usage-seg.is-active {
-  background: var(--accent);
-  color: var(--accent-foreground);
-}
-.usage-range {
-  display: inline-flex;
-  gap: 4px;
-}
-.usage-range__btn {
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 4px 10px;
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: background var(--transition), color var(--transition), border-color var(--transition);
-}
-.usage-range__btn.is-active {
-  background: var(--bg-elevated);
-  border-color: var(--accent);
-  color: var(--accent);
 }
 .usage-chart__legend {
   display: flex;
@@ -277,7 +213,7 @@ async function refresh() {
   background: var(--accent);
 }
 .usage-chart__swatch--output {
-  background: color-mix(in srgb, var(--accent) 60%, var(--ok));
+  background: var(--chart-2);
 }
 .usage-chart__legend-spacer {
   flex: 1;
@@ -319,7 +255,7 @@ async function refresh() {
   font: inherit;
   color: inherit;
   transition: opacity var(--transition);
-  animation: usage-fade-in 300ms ease both;
+  animation: usage-fade-in var(--dur-enter) var(--ease-out) both;
   animation-delay: calc(var(--i) * 30ms);
 }
 .usage-bar-row:hover {
@@ -352,7 +288,7 @@ async function refresh() {
   background: var(--accent);
 }
 .usage-bar-row__fill--output {
-  background: color-mix(in srgb, var(--accent) 60%, var(--ok));
+  background: var(--chart-2);
 }
 .usage-bar-row__cap {
   position: absolute;
@@ -441,7 +377,7 @@ async function refresh() {
   height: 100%;
   background: var(--accent);
   border-radius: 2px;
-  transition: width 400ms ease;
+  transition: width var(--dur-enter) var(--ease-standard);
 }
 .usage-model-card__rows {
   display: grid;
@@ -555,7 +491,7 @@ async function refresh() {
 }
 .usage-model-caret {
   font-size: 10px;
-  transition: transform 200ms ease;
+  transition: transform var(--dur-base) var(--ease-standard);
 }
 .usage-model-toggle.open .usage-model-caret {
   transform: rotate(180deg);
@@ -627,7 +563,7 @@ async function refresh() {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   font-size: var(--fs-xs);
-  animation: usage-fade-in 200ms ease both;
+  animation: usage-fade-in var(--dur-base) var(--ease-out) both;
   animation-delay: calc(var(--i) * 30ms);
 }
 .usage-expand__model {

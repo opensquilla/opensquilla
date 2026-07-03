@@ -55,7 +55,7 @@ const { toasts, dismissToast } = useToasts()
   font-size: var(--fs-sm);
   box-shadow: var(--shadow-md);
   pointer-events: auto;
-  animation: toast-in 150ms ease;
+  animation: toast-in var(--dur-fast) var(--ease-out);
 }
 
 .toast--ok {

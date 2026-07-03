@@ -8,6 +8,29 @@ LOW_TIER_MODEL = "openrouter/low-tier-available"
 BASELINE_MODEL = "openrouter/baseline-available"
 
 
+def test_clone_isolates_config_from_original_mutation() -> None:
+    primary = ProviderConfig(
+        provider="anthropic", model="a", api_key="ka", provider_routing={"a": "x"}
+    )
+    fallback = ProviderConfig(provider="ollama", model="b")
+    selector = ModelSelector(SelectorConfig(primary=primary, fallbacks=[fallback]))
+
+    clone = selector.clone()
+
+    # The clone owns its own config objects, not the originals.
+    assert clone.current_config is not primary
+    assert clone.current_config.provider_routing is not primary.provider_routing
+
+    # Rebinding the original primary and editing the original routing dict
+    # in place must not leak into the already-cloned selector.
+    selector.sync_primary(ProviderConfig(provider="openai", model="c"))
+    primary.provider_routing["a"] = "MUTATED"
+
+    assert clone.current_config.provider == "anthropic"
+    assert clone.current_config.model == "a"
+    assert clone.current_config.provider_routing == {"a": "x"}
+
+
 def test_override_model_keeps_original_primary_as_first_fallback(monkeypatch) -> None:
     built: list[ProviderConfig] = []
 

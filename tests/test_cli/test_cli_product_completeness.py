@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -184,6 +185,68 @@ def test_config_set_explicit_config_path_persists_to_target(tmp_path: Path):
     check = runner.invoke(app, ["config", "get", "log_file_enabled", "--config", str(target)])
     assert check.exit_code == 0, check.stdout
     assert "True" in check.stdout
+
+
+def test_config_set_get_privacy_network_observability_round_trips(tmp_path: Path):
+    target = tmp_path / "privacy.toml"
+    target.write_text("", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "config",
+            "set",
+            "privacy.disable_network_observability",
+            "true",
+            "--config",
+            str(target),
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    persisted = tomllib.loads(target.read_text(encoding="utf-8"))
+    assert persisted["privacy"]["disable_network_observability"] is True
+    check = runner.invoke(
+        app,
+        [
+            "config",
+            "get",
+            "privacy.disable_network_observability",
+            "--config",
+            str(target),
+        ],
+    )
+    assert check.exit_code == 0, check.stdout
+    assert "True" in check.stdout
+
+
+def test_version_check_honors_config_privacy_network_observability(
+    tmp_path: Path,
+    monkeypatch,
+):
+    from opensquilla.observability import update_check
+
+    target = tmp_path / "privacy.toml"
+    target.write_text(
+        "[privacy]\ndisable_network_observability = true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    monkeypatch.setattr(update_check, "_CACHED_INFO", None)
+
+    def fail_fetch(*_args, **_kwargs):
+        raise AssertionError("version --check should not contact the network")
+
+    monkeypatch.setattr(update_check, "_fetch_latest_release", fail_fetch)
+
+    result = runner.invoke(app, ["version", "--check", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["latest"] is None
+    assert payload["updateAvailable"] is False
+    assert payload["disabled"] is True
+    assert payload["error"] is None
 
 
 def test_gateway_json_errors_go_to_stderr(monkeypatch):

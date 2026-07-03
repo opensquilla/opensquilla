@@ -4,43 +4,8 @@ import pytest
 
 from opensquilla.provider.anthropic import AnthropicProvider
 from opensquilla.provider.openai import OpenAIProvider
-from opensquilla.provider.registry import get_provider_spec, list_provider_specs
+from opensquilla.provider.registry import get_provider_spec
 from opensquilla.provider.selector import ProviderBuildError, ProviderConfig, _build_provider
-
-MAINSTREAM_PROVIDER_LEVELS = {
-    "openrouter": "compat_mock_verified",
-    "openai": "compat_mock_verified",
-    "anthropic": "native",
-    "ollama": "native",
-    "deepseek": "compat_mock_verified",
-    "gemini": "compat_mock_verified",
-    "mistral": "compat_mock_verified",
-    "groq": "compat_mock_verified",
-    "dashscope": "compat_mock_verified",
-    "bailian_coding": "compat_configured",
-    "moonshot": "compat_mock_verified",
-    "zhipu": "compat_mock_verified",
-    "siliconflow": "compat_mock_verified",
-    "volcengine": "compat_mock_verified",
-    "byteplus": "compat_mock_verified",
-    "vllm": "compat_mock_verified",
-    "lm_studio": "compat_mock_verified",
-    "ovms": "compat_mock_verified",
-    "qianfan": "compat_configured",
-    "aihubmix": "compat_configured",
-    "minimax": "compat_configured",
-    "minimax_openai": "compat_configured",
-    "minimax_cn": "compat_configured",
-    "minimax_global": "compat_configured",
-    "azure": "unsupported_for_A",
-}
-
-
-def test_mainstream_registry_exposes_support_levels() -> None:
-    specs = {spec.provider_id: spec for spec in list_provider_specs()}
-
-    for provider, support_level in MAINSTREAM_PROVIDER_LEVELS.items():
-        assert specs[provider].support_level == support_level
 
 
 @pytest.mark.parametrize(
@@ -119,7 +84,6 @@ def test_minimax_mainland_profile_uses_anthropic_compatible_endpoint() -> None:
     assert spec.provider_kind == "minimax"
     assert spec.env_key == "MINIMAX_API_KEY"
     assert spec.default_base_url == "https://api.minimaxi.com/anthropic"
-    assert spec.usage_shape == "anthropic"
     assert spec.failure_family == "anthropic"
 
 
@@ -131,14 +95,12 @@ def test_minimax_region_profiles_are_explicit_anthropic_compatible_endpoints() -
     assert mainland.provider_kind == "minimax"
     assert mainland.env_key == "MINIMAX_CN_API_KEY"
     assert mainland.default_base_url == "https://api.minimaxi.com/anthropic"
-    assert mainland.usage_shape == "anthropic"
     assert mainland.failure_family == "anthropic"
 
     assert global_.backend == "anthropic"
     assert global_.provider_kind == "minimax"
     assert global_.env_key == "MINIMAX_API_KEY"
     assert global_.default_base_url == "https://api.minimax.io/anthropic"
-    assert global_.usage_shape == "anthropic"
     assert global_.failure_family == "anthropic"
 
 

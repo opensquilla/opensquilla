@@ -1,5 +1,26 @@
 <template>
-  <div class="chat" :class="{ 'chat--new-landing': isNewChatLanding }">
+  <div
+    class="chat"
+    :class="{ 'chat--new-landing': isNewChatLanding, 'chat--drag-over': threadDragOver }"
+    @dragenter="onChatDragEnter"
+    @dragover="onChatDragOver"
+    @dragleave="onChatDragLeave"
+    @drop="onChatDrop"
+  >
+    <div v-if="threadDragOver" class="chat-drop-overlay" role="status" aria-live="polite" aria-atomic="true">
+      <div class="chat-drop-overlay__frame" aria-hidden="true"></div>
+      <div class="chat-drop-overlay__beacon">
+        <span class="chat-drop-overlay__glyph" aria-hidden="true">
+          <Icon name="fileText" :size="30" />
+          <Icon class="chat-drop-overlay__plus" name="plus" :size="12" />
+        </span>
+        <span class="chat-drop-overlay__copy">
+          <span class="chat-drop-overlay__title">{{ t('chat.dropOverlayTitle') }}</span>
+          <span class="chat-drop-overlay__hint">{{ t('chat.dropOverlayHint') }}</span>
+        </span>
+      </div>
+    </div>
+
     <!-- Header -->
     <div v-if="!isNewChatLanding" class="chat-header">
       <div class="chat-header-left">
@@ -51,6 +72,11 @@
           <Icon name="share" :size="14" />
           <span class="chat-share-btn__label">{{ t('chat.share') }}</span>
         </button>
+        <span
+          v-if="contextWarning"
+          class="chat-chip chat-ctx-warn"
+          :title="t('chat.contextPressureTitle', { used: contextWarning.usedK, window: contextWarning.windowK, pct: contextWarning.pct })"
+        >{{ t('chat.contextPressure', { pct: contextWarning.pct }) }}</span>
         <span class="chat-chip" :class="runStatusChipClass" :title="runStatusTitle">{{ runStatusLabel }}</span>
       </div>
     </div>
@@ -91,10 +117,6 @@
         :aria-label="t('chat.conversation')"
         :aria-busy="isStreaming"
         @scroll="onThreadScroll"
-        @dragover.prevent="threadDragOver = true"
-        @dragleave="threadDragOver = false"
-        @drop.prevent="onThreadDrop"
-        :class="{ 'drag-over': threadDragOver }"
       >
         <template v-if="isNewChatLanding">
           <div ref="agentSwitcherRef" class="chat-landing-agent">
@@ -417,8 +439,8 @@
       :is-new-landing="isNewChatLanding"
       :placeholder="composerPlaceholder"
       :send-button-title="sendButtonTitle"
-      :elevated-mode="elevatedMode"
-      :elevated-unavailable="elevatedUnavailable"
+      :run-mode="runMode"
+      :allowed-run-modes="allowedRunModes"
       :router-enabled="routerEnabled"
       :router-visual-effects-enabled="routerVisualEffectsEnabled"
       :router-settings-busy="routerSettingsBusy"
@@ -432,8 +454,9 @@
       @input="onTextareaInput"
       @keydown="onTextareaKeydown"
       @remove-attachment="removeAttachment"
+      @retry-attachment="retryAttachment"
       @set-busy-send-mode="busySendMode = $event"
-      @set-elevated-mode="setComposerElevatedMode"
+      @set-run-mode="setComposerRunMode"
       @set-router-enabled="setComposerRouterEnabled"
       @set-visual-effects-enabled="setComposerVisualEffectsEnabled"
       @set-coding-mode-enabled="setComposerCodingModeEnabled"
@@ -552,6 +575,8 @@ import type {
 import type {
   ArtifactPayload,
 } from '@/types/rpc'
+import type { SandboxRunMode } from '@/types/sandbox'
+import { isSandboxRunMode } from '@/types/sandbox'
 import type { InterruptViewState } from '@/types/parts'
 import { artifactDownloadUrl } from '@/utils/chat/artifacts'
 import { copyTextWithFallback, copyImageToClipboard, downloadBlob, shareCopyImageSupported } from '@/utils/browser'
@@ -563,6 +588,7 @@ import {
   toolSecondaryText,
   toolStatusText,
 } from '@/utils/chat/toolDisplay'
+import { isSendableAttachment } from '@/utils/chat/attachments'
 import { isShareableChatMessage } from '@/utils/chat/messageIdentity'
 import { agentIdFromSessionKey, normalizeAgentId } from '@/utils/chat/sessionKeys'
 
@@ -576,6 +602,16 @@ interface ChatComposerHandle {
 }
 
 type Message = ChatMessage
+
+interface RunModePolicy {
+  allowedRunModes?: unknown
+  defaultRunMode?: unknown
+  fullHostAccessDisabledReason?: unknown
+}
+
+interface RpcAuthPayload {
+  runModePolicy?: RunModePolicy
+}
 
 /* ── Constants ─────────────────────────────────────────────────────── */
 
@@ -627,6 +663,7 @@ const messages = ref<Message[]>([])
 const lastHeaderRole = ref('')
 const lastHeaderDay = ref('')
 const threadDragOver = ref(false)
+const threadDragDepth = ref(0)
 const shareMode = ref(false)
 const shareSaving = ref(false)
 const selectedShareMessageIds = ref<Set<string>>(new Set())
@@ -645,12 +682,45 @@ const chatElevatedMode = useChatElevatedMode({
 })
 const {
   elevatedMode,
-  elevatedUnavailable,
   loadElevatedMode,
-  setElevatedMode,
   setGlobalElevatedMode,
   normalizeElevatedMode,
 } = chatElevatedMode
+
+const runMode = ref<SandboxRunMode>('trusted')
+const runModeUserSelected = ref(false)
+
+function currentRunModePolicy(): RunModePolicy | null {
+  const auth = rpc.auth as RpcAuthPayload | null
+  const policy = auth?.runModePolicy
+  return policy && typeof policy === 'object' ? policy : null
+}
+
+const runModePolicyDefault = computed<SandboxRunMode>(() => {
+  const raw = currentRunModePolicy()?.defaultRunMode
+  return isSandboxRunMode(raw) ? raw : 'trusted'
+})
+
+const allowedRunModes = computed<SandboxRunMode[]>(() => {
+  const raw = currentRunModePolicy()?.allowedRunModes
+  if (!Array.isArray(raw)) return ['standard', 'trusted', 'full']
+  const allowed = raw.filter(isSandboxRunMode)
+  return allowed.length > 0 ? allowed : ['standard', 'trusted', 'full']
+})
+
+function preferredRunMode(
+  modes: SandboxRunMode[],
+  preferred: SandboxRunMode,
+): SandboxRunMode {
+  if (modes.includes(preferred)) return preferred
+  if (modes.includes('trusted')) return 'trusted'
+  return modes[0] ?? 'trusted'
+}
+
+watch([allowedRunModes, runModePolicyDefault], ([modes, defaultMode]) => {
+  if (runModeUserSelected.value && modes.includes(runMode.value)) return
+  runMode.value = preferredRunMode(modes, defaultMode)
+}, { immediate: true })
 
 // Run status
 const runStatus = ref<ChatRunStatus>({ status: 'idle', label: t('chat.status.idle'), task: null })
@@ -752,8 +822,9 @@ const chatAttachments = useChatAttachments()
 const {
   pendingAttachments,
   onFileInputChange,
-  addAttachment,
+  addAttachments,
   removeAttachment,
+  retryAttachment,
   hasPendingAttachmentWork,
 } = chatAttachments
 
@@ -819,6 +890,7 @@ const chatUsageWidget = useChatUsageWidget({
 const {
   usageAccum,
   usageModel,
+  contextWarning,
   resetSavingsPopupCooldown,
   saveWidgetState,
   restoreWidgetState,
@@ -1151,6 +1223,7 @@ const chatSend = useChatSend({
   sessionKey,
   busySendMode,
   elevatedMode,
+  runMode,
   pendingAttachments,
   pendingSessionIntent,
   aborted,
@@ -1368,7 +1441,12 @@ const runStatusTitle = computed(() => {
 })
 
 const isNewChatLanding = computed(() => {
-  return messages.value.length === 0 &&
+  // Only the draft route (/chat/new — bare /chat redirects here) shows the
+  // "new chat" landing. Without this gate, switching between existing
+  // conversations briefly cleared `messages` and flashed the landing, because
+  // the empty-thread moment of a session load looked identical to a new draft.
+  return isDraftRoute() &&
+    messages.value.length === 0 &&
     !isStreaming.value &&
     pendingQueue.value.length === 0 &&
     !compactStatus.value.visible
@@ -1380,7 +1458,7 @@ const composerPlaceholder = computed(() => {
 })
 
 const hasSendContent = computed(() => {
-  return inputText.value.trim().length > 0 || pendingAttachments.value.length > 0
+  return inputText.value.trim().length > 0 || pendingAttachments.value.some(isSendableAttachment)
 })
 
 const sendButtonTitle = computed(() => {
@@ -1422,8 +1500,9 @@ function readAuthToken(): string {
   }
 }
 
-function setComposerElevatedMode(mode: string) {
-  setElevatedMode(mode, { persist: true, sync: true })
+function setComposerRunMode(mode: SandboxRunMode) {
+  runModeUserSelected.value = true
+  runMode.value = mode
 }
 
 async function setComposerRouterEnabled(enabled: boolean) {
@@ -1794,11 +1873,42 @@ function showToolResultModal(content: string, title = t('chat.toolResult')) {
 
 /* ── Attachments ───────────────────────────────────────────────────── */
 
-function onThreadDrop(e: DragEvent) {
-  threadDragOver.value = false
-  if (e.dataTransfer?.files) {
-    Array.from(e.dataTransfer.files).forEach(addAttachment)
+function dragEventHasFiles(e: DragEvent): boolean {
+  const types = Array.from(e.dataTransfer?.types || [])
+  return types.includes('Files')
+}
+
+function onChatDragEnter(e: DragEvent) {
+  if (!dragEventHasFiles(e)) return
+  e.preventDefault()
+  threadDragDepth.value += 1
+  threadDragOver.value = true
+}
+
+function onChatDragOver(e: DragEvent) {
+  if (!dragEventHasFiles(e)) return
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+  threadDragOver.value = true
+}
+
+function onChatDragLeave(e: DragEvent) {
+  if (!dragEventHasFiles(e)) return
+  threadDragDepth.value = Math.max(0, threadDragDepth.value - 1)
+  if (threadDragDepth.value === 0) {
+    threadDragOver.value = false
   }
+}
+
+function onChatDrop(e: DragEvent) {
+  e.preventDefault()
+  threadDragDepth.value = 0
+  threadDragOver.value = false
+  if (!dragEventHasFiles(e)) return
+  const files = Array.from(e.dataTransfer?.files || [])
+  if (files.length === 0) return
+  void addAttachments(files)
+  composerRef.value?.focusTextarea()
 }
 
 /* ── Textarea ──────────────────────────────────────────────────────── */
@@ -1812,16 +1922,18 @@ function autoResizeTextarea() {
 function onDocumentPaste(e: ClipboardEvent) {
   const items = e.clipboardData?.items
   if (!items) return
+  const files: File[] = []
   let attachedImage = false
   for (let i = 0; i < items.length; i++) {
     if (items[i].type.startsWith('image/')) {
       const file = items[i].getAsFile()
       if (file) {
-        addAttachment(file)
+        files.push(file)
         attachedImage = true
       }
     }
   }
+  if (files.length > 0) void addAttachments(files)
   // Screenshot tools put both the image and its local file path on the
   // clipboard; once we have attached the image, suppress the default paste so
   // the path text is not also dumped into the composer (and then sent to the

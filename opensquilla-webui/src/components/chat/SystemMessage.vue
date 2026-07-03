@@ -89,7 +89,7 @@ const timeFull = computed(() => fullTime(props.message.ts))
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
   opacity: 0;
-  transition: opacity 0.15s;
+  transition: opacity var(--dur-fast);
 }
 
 .msg-system-wrap:hover .msg-system-time {
@@ -157,7 +157,7 @@ const timeFull = computed(() => fullTime(props.message.ts))
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
   opacity: 0;
-  transition: opacity 0.15s;
+  transition: opacity var(--dur-fast);
 }
 
 .msg-error-wrap:hover .msg-error-card__time {

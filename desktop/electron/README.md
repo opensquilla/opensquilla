@@ -29,6 +29,13 @@ checkout:
 OPENSQUILLA_DESKTOP_REPO_ROOT=/path/to/opensquilla npm run dev
 ```
 
+During development, the shell starts a gateway from the selected checkout by
+default. To force a specific local port:
+
+```bash
+OPENSQUILLA_DESKTOP_GATEWAY_PORT=18793 npm run dev
+```
+
 To attach to an already-running gateway instead of spawning one:
 
 ```bash
@@ -43,7 +50,7 @@ npm run dist:local
 ```
 
 This builds the Vue Control UI, bundles the gateway with PyInstaller, and emits
-macOS artifacts under `dist/desktop-electron/`.
+desktop artifacts for the current platform under `dist/desktop-electron/`.
 
 For a faster rebuild after the runtime already exists:
 
@@ -52,6 +59,20 @@ cd desktop/electron
 npm run build:web
 npm run dist
 ```
+
+## Windows Release Signing
+
+Windows release builds are currently unsigned. The release workflow builds the
+NSIS installer with electron-builder and uploads the unsigned `.exe`,
+`.blockmap`, and `latest.yml` artifacts together so updater metadata matches
+the exact installer bytes.
+
+Do not sign the `.exe` after `latest.yml` is emitted; that changes the
+installer bytes and invalidates the updater hash. If Windows code signing is
+enabled later, it must run inside the release build before updater metadata,
+blockmaps, and `SHA256SUMS` are finalized. See
+[`docs/code-signing-policy.md`](../../docs/code-signing-policy.md) for the
+current policy.
 
 ## Current Scope
 
@@ -67,6 +88,4 @@ npm run dist
 
 ## Release Work Still Needed
 
-- Add macOS code signing and notarization.
-- Add updater artifacts and an update feed.
-- Add a branded application icon and installer background.
+- Enable the runtime updater flow once the published feed is ready.

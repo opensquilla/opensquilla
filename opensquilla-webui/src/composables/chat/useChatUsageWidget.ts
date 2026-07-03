@@ -1,4 +1,4 @@
-import { ref, type Ref } from 'vue'
+import { computed, ref, type Ref } from 'vue'
 
 type RpcClient = {
   waitForConnection: () => Promise<void>
@@ -28,6 +28,26 @@ interface PersistedUsageWidget {
   model?: string
 }
 
+// Proactive context-window pressure, emitted by the gateway on usage.status
+// (rpc_usage.py `_context_status`). pressure is 0..1; warningRatio is the
+// gateway's threshold (0.85) above which the user should be warned before
+// compaction kicks in. Both camelCase and snake_case are sent for compat.
+export interface ContextStatus {
+  contextTokens?: number
+  context_tokens?: number
+  contextWindowTokens?: number
+  context_window_tokens?: number
+  pressure?: number
+  warningRatio?: number
+  warning_ratio?: number
+}
+
+export interface ContextWarning {
+  pct: number
+  usedK: number
+  windowK: number
+}
+
 interface UsageStatusSession {
   session?: string
   sessionKey?: string
@@ -43,6 +63,8 @@ interface UsageStatusSession {
   cost_usd?: number
   costUsd?: number
   model?: string
+  contextStatus?: ContextStatus | null
+  context_status?: ContextStatus | null
 }
 
 interface UsageStatusResponse {
@@ -66,6 +88,25 @@ export function useChatUsageWidget(options: UseChatUsageWidgetOptions) {
   const usageModel = ref('')
   const savingsPopupLastTs = ref(0)
   const lastSavingsPopupIdentity = ref('')
+  const contextStatus = ref<ContextStatus | null>(null)
+
+  // Surfaced as a topbar chip only once the session's context window crosses the
+  // gateway's warning ratio (0.85) — a proactive heads-up before compaction,
+  // independent of any compaction event. Null when below threshold or unknown.
+  const contextWarning = computed<ContextWarning | null>(() => {
+    const cs = contextStatus.value
+    if (!cs) return null
+    const pressure = Number(cs.pressure ?? 0)
+    const ratio = Number(cs.warningRatio ?? cs.warning_ratio ?? 0.85)
+    const windowTokens = Number(cs.contextWindowTokens ?? cs.context_window_tokens ?? 0)
+    if (!(ratio > 0) || !(windowTokens > 0) || pressure < ratio) return null
+    const used = Number(cs.contextTokens ?? cs.context_tokens ?? 0)
+    return {
+      pct: Math.round(Math.min(1, pressure) * 100),
+      usedK: Math.round(used / 1000),
+      windowK: Math.round(windowTokens / 1000),
+    }
+  })
 
   function resetSavingsPopupCooldown() {
     savingsPopupLastTs.value = 0
@@ -119,6 +160,10 @@ export function useChatUsageWidget(options: UseChatUsageWidgetOptions) {
         const costVal = Number(current.cost_usd || current.costUsd || 0)
         usageAccum.value.cost = costVal > 0 ? costVal : null
         usageModel.value = current.model || ''
+        // Refresh (or clear) the context-pressure chip for this session. Clearing
+        // when absent stops a previous session's warning from sticking after a
+        // switch to a session that is well under threshold.
+        contextStatus.value = current.contextStatus ?? current.context_status ?? null
         saveWidgetState()
       }
     } catch {
@@ -129,6 +174,7 @@ export function useChatUsageWidget(options: UseChatUsageWidgetOptions) {
   return {
     usageAccum,
     usageModel,
+    contextWarning,
     resetSavingsPopupCooldown,
     saveWidgetState,
     restoreWidgetState,

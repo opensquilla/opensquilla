@@ -1,6 +1,8 @@
 <template>
   <div class="settings-overlay" @click.self="requestClose()">
+    <Transition name="settings-pop" appear @after-leave="onLeaveComplete">
     <section
+      v-if="visible"
       ref="modalRef"
       class="settings-modal"
       role="dialog"
@@ -100,7 +102,7 @@
       </template>
 
       <div class="settings-body">
-        <nav class="settings-rail" role="tablist" :aria-label="t('settings.dialog.sections')" :aria-orientation="railOrientation">
+        <nav ref="railRef" class="settings-rail" role="tablist" :aria-label="t('settings.dialog.sections')" :aria-orientation="railOrientation">
           <button
             v-for="s in visibleSections"
             :id="'settings-rail-' + s.id"
@@ -157,6 +159,12 @@
               :panel="behaviorPanel"
               @update-auto-session-titles="setAutoSessionTitles"
               @save="saveBehavior"
+            />
+            <SettingsPrivacyPanel
+              v-else-if="section === 'privacy'"
+              :panel="privacyPanel"
+              @update-disable-network-observability="setDisableNetworkObservability"
+              @save="savePrivacy"
             />
             <SetupRouterPanel
               v-else-if="section === 'router'"
@@ -222,6 +230,7 @@
         <span class="settings-foot__text">{{ t('settings.dialog.applyLiveNote') }}</span>
       </footer>
     </section>
+    </Transition>
   </div>
 </template>
 
@@ -238,6 +247,7 @@ import SetupProviderPanel from '@/components/setup/SetupProviderPanel.vue'
 import SetupRouterPanel from '@/components/setup/SetupRouterPanel.vue'
 import SetupChannelsPanel from '@/components/setup/SetupChannelsPanel.vue'
 import SetupCapabilitiesPanel from '@/components/setup/SetupCapabilitiesPanel.vue'
+import SettingsPrivacyPanel from '@/components/settings/SettingsPrivacyPanel.vue'
 import SettingsAppearancePanel from '@/components/settings/SettingsAppearancePanel.vue'
 import SettingsKeyboardPanel from '@/components/settings/SettingsKeyboardPanel.vue'
 import SettingsAdvancedPanel from '@/components/settings/SettingsAdvancedPanel.vue'
@@ -264,6 +274,7 @@ const {
   loaded,
   providerPanel,
   behaviorPanel,
+  privacyPanel,
   routerPanel,
   channelsPanel,
   capabilitiesPanel,
@@ -283,6 +294,7 @@ const {
   discardChanges,
   selectProvider,
   setAutoSessionTitles,
+  setDisableNetworkObservability,
   setRouterMode,
   setRouterDefaultTier,
   setRouterVisualMode,
@@ -310,10 +322,26 @@ const {
   saveAudio,
   copyCommand,
   copyConfigPath,
+  savePrivacy,
 } = useSetupCatalog()
 
 const modalRef = ref<HTMLElement | null>(null)
+const railRef = ref<HTMLElement | null>(null)
 const closeBtn = ref<HTMLButtonElement | null>(null)
+
+// Keep the active section's rail tab in view — on mobile the rail scrolls
+// horizontally, so a deep-linked or later section would otherwise sit off-screen.
+function scrollActiveTabIntoView() {
+  void nextTick(() => {
+    const el = railRef.value?.querySelector<HTMLElement>('.settings-rail__item.is-active')
+    if (!el) return
+    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    el.scrollIntoView({ inline: 'nearest', block: 'nearest', behavior: reduce ? 'auto' : 'smooth' })
+  })
+}
+// Drives the modal's enter/leave <Transition>. Closing flips this to false so the
+// leave animation plays; the actual route navigation is deferred to onLeaveComplete.
+const visible = ref(true)
 const disclosureOpen = ref(false)
 const isMobile = ref(window.matchMedia('(max-width: 768px)').matches)
 // Set once the user picks a section so the deep-link auto landing (which waits
@@ -393,11 +421,7 @@ function usableInvoker(): HTMLElement | null {
 
 // Leave the overlay: restore focus first (the route change unmounts us), then
 // navigate to the captured return location, or home for a cold deep link.
-function closeOverlay() {
-  closing = true
-  const target = usableInvoker() ?? sidebarSettingsButton()
-  target?.focus()
-  invokerEl = null
+function navigateAway() {
   // Never route close through bare '/': its redirect re-runs the saved-route
   // logic and could bounce back into Settings. Push the platform default view
   // directly (same breakpoint as the '/' redirect in sharedRoutes) so close is a
@@ -405,6 +429,26 @@ function closeOverlay() {
   // deep link (onMounted rejects any '/settings…' back-entry).
   const fallback = window.matchMedia('(max-width: 768px)').matches ? '/chat' : '/sessions'
   void router.push(returnTo ?? fallback)
+}
+
+// The modal's leave transition finished — perform the deferred navigation that
+// actually unmounts the overlay. Vue fires this on the next frame even when the
+// transition is disabled (reduced motion), so close never stalls.
+function onLeaveComplete() {
+  if (closing) navigateAway()
+}
+
+function closeOverlay() {
+  if (closing) return
+  closing = true
+  // Restore focus to the invoker synchronously (don't wait out the leave
+  // animation) so keyboard users and the focus-return tests see focus land now.
+  const target = usableInvoker() ?? sidebarSettingsButton()
+  target?.focus()
+  invokerEl = null
+  // Flip visibility to play the modal's leave transition; onLeaveComplete then
+  // navigates away (which unmounts the route component).
+  visible.value = false
 }
 
 // Closes unless a section carries unsaved edits and the user keeps them.
@@ -458,6 +502,10 @@ function onViewportChange(event: MediaQueryListEvent) {
 // loads; the loaded watcher below completes that case.
 watch(routeParam, () => applyRouteSection())
 
+// Whenever the active section changes (rail click, deep link, Back), bring its
+// tab into view on the horizontally-scrolling mobile rail.
+watch(section, scrollActiveTabIntoView)
+
 // The auto deep link lands on its readiness-derived section once config is
 // known, unless the user already navigated during the load.
 watch(loaded, (isLoaded) => {
@@ -472,6 +520,7 @@ onMounted(() => {
   returnTo = typeof from === 'string' && !from.startsWith('/settings') ? from : null
   invokerEl = document.activeElement instanceof HTMLElement ? document.activeElement : null
   applyRouteSection()
+  scrollActiveTabIntoView()
   document.addEventListener('keydown', onDocumentKeydown)
   mq = window.matchMedia('(max-width: 768px)')
   mq.addEventListener('change', onViewportChange)
@@ -503,7 +552,6 @@ onUnmounted(() => {
 }
 
 .settings-modal {
-  animation: settingsIn 0.18s ease;
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -515,14 +563,32 @@ onUnmounted(() => {
   width: min(1200px, 100%);
 }
 
-@keyframes settingsIn {
-  from { transform: translateY(12px); opacity: 0.4; }
-  to { transform: translateY(0); opacity: 1; }
+/* Symmetric modal motion: slides up + fades in on open, slides down + fades out
+   on close. The close navigation is deferred until this leave finishes (see
+   closeOverlay / onLeaveComplete), so unlike the old entrance-only keyframe the
+   modal no longer pops out instantly. Tokens: entrance decelerates; the exit is
+   a tier faster and accelerates. */
+.settings-pop-enter-active {
+  transition: opacity var(--dur-base) var(--ease-out),
+              transform var(--dur-base) var(--ease-out);
+}
+.settings-pop-leave-active {
+  transition: opacity var(--dur-fast) var(--ease-in),
+              transform var(--dur-fast) var(--ease-in);
+}
+.settings-pop-enter-from {
+  opacity: 0;
+  transform: translateY(12px);
+}
+.settings-pop-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .settings-modal {
-    animation: none;
+  .settings-pop-enter-active,
+  .settings-pop-leave-active {
+    transition: none;
   }
 }
 
@@ -710,7 +776,7 @@ onUnmounted(() => {
 }
 
 .settings-rail__dot.is-ok { background: var(--ok); }
-.settings-rail__dot.is-warn { background: var(--warn); }
+.settings-rail__dot.is-warn { background: var(--warn-fill); }
 .settings-rail__dot.is-muted { background: var(--text-dim); opacity: 0.5; }
 
 .settings-rail__dirty {
@@ -821,11 +887,17 @@ onUnmounted(() => {
     overflow-y: hidden;
     padding: var(--sp-2);
     width: 100%;
+    /* Signal that the strip scrolls: fade the leading/trailing edges, and snap
+       tabs so they don't end mid-cut. (black = opaque in an alpha mask.) */
+    scroll-snap-type: x proximity;
+    -webkit-mask-image: linear-gradient(to right, transparent 0, black 16px, black calc(100% - 16px), transparent 100%);
+    mask-image: linear-gradient(to right, transparent 0, black 16px, black calc(100% - 16px), transparent 100%);
   }
 
   .settings-rail__item {
     flex-shrink: 0;
     min-height: 44px;
+    scroll-snap-align: start;
   }
 
   .settings-panel {

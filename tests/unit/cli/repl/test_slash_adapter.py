@@ -75,7 +75,9 @@ class _FakeGatewayClient:
         approved: bool,
         *,
         allow_always: bool = False,
+        choice: str | None = None,
     ) -> Any:
+        del choice
         raise AssertionError("resolve_approval is not used by these tests")
 
     async def abort_session(self, key: str) -> dict[str, Any]:

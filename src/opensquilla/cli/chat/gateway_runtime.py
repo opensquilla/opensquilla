@@ -84,6 +84,7 @@ class GatewayClientLike(Protocol):
         approved: bool,
         *,
         allow_always: bool = False,
+        choice: str | None = None,
     ) -> Any: ...
 
     async def abort_session(self, key: str) -> dict[str, Any]: ...

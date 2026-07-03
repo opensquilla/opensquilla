@@ -205,7 +205,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   box-shadow: var(--shadow-lg);
-  animation: shareModalIn 0.18s ease;
+  animation: shareModalIn var(--dur-base) var(--ease-out);
 }
 
 @keyframes shareModalIn {

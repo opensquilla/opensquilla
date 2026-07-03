@@ -2,19 +2,15 @@
   <div class="ch-stage control-stage">
     <header class="ch-stage__header control-stage__header">
       <div class="ch-stage__title-block control-stage__title-block">
-        <h2 class="ch-stage__title control-stage__title">{{ t('console.channels.title') }}</h2>
+        <h1 class="ch-stage__title control-stage__title">{{ t('console.channels.title') }}</h1>
         <p class="ch-stage__subtitle control-stage__subtitle">
           {{ t('console.channels.subtitle') }}
         </p>
       </div>
       <div class="ch-stage__actions control-stage__actions">
-        <button
-          class="ch-link"
-          type="button"
-          :title="t('console.channels.settingsHint')"
-          @click="openSettingsSurface"
-        >
-          {{ t('console.channels.openSettings') }} &rarr;
+        <button class="btn btn--ghost" :title="t('console.channels.settingsHint')" @click="openSettingsSurface">
+          <Icon name="settings" :size="16" aria-hidden="true" />
+          <span>{{ t('console.channels.openSettings') }}</span>
         </button>
         <button class="btn btn--ghost" :title="t('console.common.refresh')" @click="loadData">
           <Icon name="refresh" :size="16" />
@@ -62,13 +58,13 @@
         </h3>
       </div>
 
-      <div v-if="loading && channels.length === 0" class="ch-empty">
+      <div v-if="loading && channels.length === 0" class="control-empty">
         <LoadingSpinner />
       </div>
 
       <ErrorState v-else-if="error" :message="error" :on-retry="loadData" />
 
-      <div v-else-if="channels.length === 0" class="ch-empty">
+      <div v-else-if="channels.length === 0" class="control-empty ch-empty">
         <div class="ch-empty__art" aria-hidden="true">
           <svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
             <defs>
@@ -94,8 +90,8 @@
             </g>
           </svg>
         </div>
-        <div class="ch-empty__title">{{ t('console.channels.emptyTitle') }}</div>
-        <p class="ch-empty__msg">
+        <div class="control-empty__title">{{ t('console.channels.emptyTitle') }}</div>
+        <p class="control-empty__hint">
           {{ t('console.channels.emptyMsg') }}
         </p>
         <div class="ch-empty__actions">
@@ -148,7 +144,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, onActivated, onDeactivated, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
@@ -199,10 +195,13 @@ const { t } = useI18n()
 const rpc = useRpcStore()
 const router = useRouter()
 
-const { data: channelsData, loading, error, refresh } = useRequest<ChannelsStatusResponse>(
+// immediate: false — under <KeepAlive> the composable's onMounted fetch fires
+// only on first mount, so loading is driven from onActivated instead (execute()
+// on the first display for the spinner, refresh() silently afterwards).
+const { data: channelsData, loading, error, execute, refresh } = useRequest<ChannelsStatusResponse>(
   'channels.status',
   undefined,
-  { errorLabel: t('console.channels.loadFailed') },
+  { immediate: false, errorLabel: t('console.channels.loadFailed') },
 )
 
 const channels = computed<Channel[]>(() => {
@@ -216,8 +215,8 @@ const channels = computed<Channel[]>(() => {
 
 const loadData = refresh
 
-let pollInterval: ReturnType<typeof setInterval> | null = null
-let unsubStatus: (() => void) | null = null
+let pollTimer: ReturnType<typeof setInterval> | null = null
+let unsubs: Array<() => void> = []
 
 // ---------------------------------------------------------------------------
 // Computed
@@ -259,21 +258,34 @@ const inactiveHint = computed(() => {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-onMounted(() => {
-  unsubStatus = rpc.on('channel.status', () => { void refresh() })
-  pollInterval = setInterval(() => { void refresh() }, 30000)
+// This view is kept-alive (route meta.keepAlive), so the live `channel.status`
+// subscription and the fallback poll are bound on activation and released on
+// deactivation — they must not keep firing while the view is cached off-screen.
+// onActivated also runs on first display: execute() (with the spinner) covers the
+// initial empty load, refresh() (silent) covers every keep-alive revisit so the
+// background refresh never flashes the spinner over already-rendered data.
+// onUnmounted is a final safety net for KeepAlive cache eviction.
+let activatedOnce = false
+
+function teardownLive() {
+  unsubs.forEach(unsub => unsub())
+  unsubs = []
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+}
+
+onActivated(() => {
+  if (!activatedOnce) {
+    activatedOnce = true
+    void execute()
+  } else {
+    void refresh()
+  }
+  unsubs = [rpc.on('channel.status', () => { void refresh() })]
+  pollTimer = setInterval(() => { void refresh() }, 30000)
 })
 
-onUnmounted(() => {
-  if (unsubStatus) {
-    unsubStatus()
-    unsubStatus = null
-  }
-  if (pollInterval) {
-    clearInterval(pollInterval)
-    pollInterval = null
-  }
-})
+onDeactivated(teardownLive)
+onUnmounted(teardownLive)
 
 // Both platforms own a `/settings` route (web overlay / desktop settings view).
 function openSettingsSurface(): void {
@@ -352,26 +364,6 @@ function statusHint(ch: Channel): string {
 <style scoped>
 .stat--hero {
   min-height: 116px;
-}
-
-.ch-link {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  color: var(--accent);
-  cursor: pointer;
-  display: inline-flex;
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  justify-content: center;
-  letter-spacing: 0.04em;
-  min-height: 40px;
-  padding: 0 var(--sp-1);
-  white-space: nowrap;
-}
-
-.ch-link:hover {
-  color: var(--accent-hover);
 }
 
 .dot {
@@ -504,16 +496,10 @@ function statusHint(ch: Channel): string {
 }
 
 .ch-empty {
-  align-items: center;
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  color: var(--text);
-  display: flex;
-  flex-direction: column;
   gap: var(--sp-4);
-  padding: var(--sp-8) var(--sp-4);
-  text-align: center;
 }
 
 .ch-empty__art {
@@ -526,19 +512,6 @@ function statusHint(ch: Channel): string {
   display: block;
   height: 100%;
   width: 100%;
-}
-
-.ch-empty__title {
-  font-size: var(--fs-lg);
-  font-weight: 600;
-}
-
-.ch-empty__msg {
-  color: var(--text-muted);
-  font-size: var(--fs-sm);
-  line-height: 1.5;
-  margin: 0;
-  max-width: 520px;
 }
 
 .ch-empty__actions {

@@ -94,4 +94,29 @@ describe('arrangeSidebarSections — recency ordering', () => {
     ])
     expect(sectionFor(sections, 'chats').rows.map(r => r.title)).toEqual(['Newer', 'Middle', 'Older'])
   })
+
+  it('orders a running chat by backend lastActivityAt', () => {
+    const sections = arrangeSidebarSections([
+      session({
+        key: 'agent:main:webchat:finished',
+        title: 'Finished',
+        updatedAt: 900,
+        runStatus: 'idle',
+      }),
+      session({
+        key: 'agent:main:webchat:running',
+        title: 'Running',
+        updatedAt: 100,
+        lastActivityAt: 1000,
+        runStatus: 'running',
+        active_task: { status: 'running' },
+      }),
+    ])
+
+    const rows = sectionFor(sections, 'chats').rows
+    expect(rows.map(r => ({ title: r.title, runStatus: r.runStatus }))).toEqual([
+      { title: 'Running', runStatus: 'running' },
+      { title: 'Finished', runStatus: 'idle' },
+    ])
+  })
 })

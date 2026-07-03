@@ -6,7 +6,7 @@ backend:
 | Backend or target | Status | How to use | Requirements |
 | --- | --- | --- | --- |
 | `native` | Stable default | `opensquilla chat` | Python package only |
-| `opentui` | Preview opt-in | `OPENSQUILLA_TUI_BACKEND=opentui opensquilla chat` | Bun and local OpenTUI package dependencies |
+| `opentui` | Preview opt-in | `OPENSQUILLA_TUI_BACKEND=opentui uv run opensquilla chat` | Source checkout, Bun, and local OpenTUI package dependencies |
 | `live-opentui` | Manual harness target | Real-terminal harness only | tmux, OpenTUI deps, and live provider config |
 
 `live-opentui` is not an `OPENSQUILLA_TUI_BACKEND` value. It is a guarded test
@@ -20,8 +20,8 @@ The TUI contracts are renderer-independent and built around two separate planes:
   snapshots can be rendered by capable TUI backends and by future renderers.
 
 The stable default terminal chat is Python-native and does not require Bun,
-npm, or OpenTUI node modules. OpenTUI is a preview backend selected explicitly
-with `OPENSQUILLA_TUI_BACKEND=opentui`.
+npm, or OpenTUI node modules. OpenTUI is a source-checkout preview backend
+selected explicitly with `OPENSQUILLA_TUI_BACKEND=opentui`.
 
 ## Plugin Slots
 
@@ -69,19 +69,17 @@ routes use warning styling.
 The default backend is stable Python-native terminal chat.
 
 The internal backend selector reads `OPENSQUILLA_TUI_BACKEND`. Unset or empty
-values select stable terminal chat. Set the variable to `opentui` only when
-evaluating the preview backend. Legacy values fail before chat launch with a
-clear unsupported-backend error.
-
-```sh
-OPENSQUILLA_TUI_BACKEND=opentui opensquilla chat
-```
-
-The preview backend requires Bun and the local OpenTUI package dependencies:
+values select stable terminal chat. Set the variable to `opentui` only in a
+source checkout when evaluating the preview backend. Legacy values fail before
+chat launch with a clear unsupported-backend error.
 
 ```sh
 bun install --frozen-lockfile --cwd=src/opensquilla/cli/tui/opentui/package
+OPENSQUILLA_TUI_BACKEND=opentui uv run opensquilla chat
 ```
+
+The preview backend is loaded from the OpenTUI package next to the running
+source tree; it is not required for normal terminal chat.
 
 Do not add parallel terminal/frontend implementations without fresh product
 direction and replay plus real-terminal evidence.

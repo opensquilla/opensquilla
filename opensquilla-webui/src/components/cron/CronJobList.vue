@@ -5,9 +5,9 @@
         <template v-if="searchText">{{ t('cronSkills.list.matchingSchedules') }} <span class="cron-jobs__count">{{ t('cronSkills.list.countOf', { n: jobs.length, total: totalJobs }) }}</span></template>
         <template v-else>{{ t('cronSkills.list.allSchedules') }} <span class="cron-jobs__count">{{ jobs.length }}</span></template>
       </h3>
-      <div class="cron-view-toggle" role="tablist" :aria-label="t('cronSkills.list.viewMode')">
-        <button class="cron-view-toggle__btn" :class="{ 'is-active': viewMode === 'cards' }" role="tab" @click="emit('update:viewMode', 'cards')">{{ t('cronSkills.list.cards') }}</button>
-        <button class="cron-view-toggle__btn" :class="{ 'is-active': viewMode === 'table' }" role="tab" @click="emit('update:viewMode', 'table')">{{ t('cronSkills.list.table') }}</button>
+      <div class="control-segmented" role="tablist" :aria-label="t('cronSkills.list.viewMode')">
+        <button class="control-segmented__btn" :class="{ 'is-active': viewMode === 'cards' }" role="tab" @click="emit('update:viewMode', 'cards')">{{ t('cronSkills.list.cards') }}</button>
+        <button class="control-segmented__btn" :class="{ 'is-active': viewMode === 'table' }" role="tab" @click="emit('update:viewMode', 'table')">{{ t('cronSkills.list.table') }}</button>
       </div>
     </div>
 

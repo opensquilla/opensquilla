@@ -30,6 +30,25 @@ def test_session_usage_per_model_breakdown_isolates_cache_tokens() -> None:
     assert deepseek.cache_write_tokens == 40
 
 
+def test_usage_tracker_session_total_equals_sum_across_providers() -> None:
+    # R9c guard: add() is synchronous, so a session's totals are the exact
+    # arithmetic sum of every accumulation, including turns billed to
+    # different providers/models (no interleaving / lost-update race).
+    tracker = UsageTracker()
+    sk = "agent:main:s1"
+    tracker.add(sk, 1000, 100, model_id="anthropic/m1", provider="anthropic")
+    tracker.add(sk, 2000, 200, model_id="deepseek/m2", provider="deepseek")
+    tracker.add(sk, 500, 50, model_id="anthropic/m1", provider="anthropic")
+
+    usage = tracker.get(sk)
+    assert usage is not None
+    assert usage.input_tokens == 3500
+    assert usage.output_tokens == 350
+    assert usage._per_model is not None
+    assert usage._per_model["anthropic/m1"].input_tokens == 1500
+    assert usage._per_model["deepseek/m2"].input_tokens == 2000
+
+
 def test_session_usage_add_default_cache_zero() -> None:
     """Existing positional callers (no cache kwargs) still work; cache fields stay at 0."""
     usage = SessionUsage(model_id="claude-opus-4-7")
@@ -388,3 +407,29 @@ def test_model_usage_positional_construction_keeps_billed_cost_default() -> None
     assert mu.cache_read_tokens == 200
     assert mu.cache_write_tokens == 80
     assert mu.billed_cost == 0.0  # default at the tail
+
+
+def test_local_provider_estimates_as_free() -> None:
+    usage = SessionUsage()
+    usage.add(10_000, 500, "qwen3:4b", provider="ollama")
+    assert usage.cost == 0.0
+    assert usage._per_model is not None
+    assert usage._per_model["qwen3:4b"].cost == 0.0
+    breakdown = usage.model_breakdown[0]
+    assert breakdown["costUsd"] == 0.0
+    assert breakdown["billedCostUsd"] == 0.0
+
+
+def test_cloud_provider_cost_unchanged() -> None:
+    usage = SessionUsage()
+    usage.add(1_000_000, 0, "claude-sonnet-4", provider="anthropic")
+    assert usage.cost == pytest.approx(3.0)
+
+
+def test_usage_tracker_threads_provider_to_per_model() -> None:
+    tracker = UsageTracker()
+    tracker.add("s", 8000, 300, "gemma3:4b", provider="ollama")
+    sess = tracker._sessions["s"]
+    assert sess.cost == 0.0
+    assert sess._per_model is not None
+    assert sess._per_model["gemma3:4b"].provider == "ollama"

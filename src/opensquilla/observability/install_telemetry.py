@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from opensquilla import __version__
+from opensquilla.observability.network_policy import network_observability_disabled
 from opensquilla.paths import default_opensquilla_home
 
 log = logging.getLogger(__name__)
@@ -72,7 +73,7 @@ def collect_install_telemetry(
     endpoint = _endpoint()
 
     try:
-        skip_reason = _telemetry_skip_reason()
+        skip_reason = _telemetry_skip_reason(config=config)
         if skip_reason:
             return InstallTelemetryResult(
                 state_path=path,
@@ -149,13 +150,12 @@ def _state_path(*, config: Any | None, explicit: str | Path | None) -> Path:
     return root / TELEMETRY_STATE_FILE
 
 
-def _telemetry_disabled() -> bool:
-    value = os.environ.get(TELEMETRY_DISABLED_ENV, "").strip().lower()
-    return value in _TRUE_VALUES
+def _telemetry_disabled(*, config: Any | None = None) -> bool:
+    return network_observability_disabled(config=config)
 
 
-def _telemetry_skip_reason() -> str | None:
-    if _telemetry_disabled():
+def _telemetry_skip_reason(*, config: Any | None = None) -> str | None:
+    if _telemetry_disabled(config=config):
         return "disabled"
     ci_env = _ci_environment_name()
     if ci_env is not None:

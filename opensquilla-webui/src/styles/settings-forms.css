@@ -203,7 +203,13 @@
 
 /* Responsive */
 @media (max-width: 760px) {
+  /* Don't clip the tier table: shrinking the fixed columns cut MODEL / THINKING /
+     IMAGE off the right edge with no way to reach them. Keep desktop column sizes
+     and let the table scroll horizontally instead. */
+  .setup-tier-table {
+    overflow-x: auto;
+  }
   .setup-tier-table__row {
-    grid-template-columns: 60px 1fr 1fr 100px 50px;
+    min-width: 520px;
   }
 }

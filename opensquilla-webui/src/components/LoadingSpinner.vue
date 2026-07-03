@@ -28,7 +28,7 @@ const { t } = useI18n()
 
 @media (prefers-reduced-motion: reduce) {
   .loading-spinner {
-    animation-duration: 1.6s;
+    animation-duration: 1.6s; /* motion-allow: spinner cadence (gentler under reduced motion) */
   }
 }
 </style>

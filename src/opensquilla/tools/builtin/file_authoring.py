@@ -18,6 +18,7 @@ from opensquilla.artifacts import (
     ArtifactStore,
     artifact_payload,
 )
+from opensquilla.sandbox.operation_runtime import SandboxToolDescriptor
 from opensquilla.tools.registry import tool
 from opensquilla.tools.types import ToolError, current_tool_context
 
@@ -307,6 +308,7 @@ def _published_response(
         },
     },
     required=["rows"],
+    sandbox=SandboxToolDescriptor.artifact(kind="artifact.create_csv"),
 )
 async def create_csv(rows: list[list[Any]], name: str | None = None) -> str:
     output = io.StringIO(newline="")
@@ -335,6 +337,7 @@ async def create_csv(rows: list[list[Any]], name: str | None = None) -> str:
         },
     },
     required=["sheets"],
+    sandbox=SandboxToolDescriptor.artifact(kind="artifact.create_xlsx"),
 )
 async def create_xlsx(sheets: list[dict[str, Any]], name: str | None = None) -> str:
     if not isinstance(sheets, list) or not sheets:
@@ -384,6 +387,7 @@ async def create_xlsx(sheets: list[dict[str, Any]], name: str | None = None) -> 
     },
     required=["slides"],
     exposed_by_default=False,
+    sandbox=SandboxToolDescriptor.artifact(kind="artifact.create_pptx"),
 )
 async def create_pptx(slides: list[dict[str, Any]], name: str | None = None) -> str:
     if not isinstance(slides, list) or not slides:
@@ -450,6 +454,7 @@ async def create_pptx(slides: list[dict[str, Any]], name: str | None = None) -> 
         "body": {"type": "string", "description": "Optional fallback body text."},
     },
     required=["title"],
+    sandbox=SandboxToolDescriptor.artifact(kind="artifact.create_pdf_report"),
 )
 async def create_pdf_report(
     title: str,

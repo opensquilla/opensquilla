@@ -25,6 +25,7 @@ def tool_context(
     strict: bool = True,
     artifact_media_root: Path | None = None,
     artifact_session_id: str | None = None,
+    run_mode: str | None = None,
 ) -> Iterator[None]:
     token = current_tool_context.set(
         ToolContext(
@@ -35,6 +36,7 @@ def tool_context(
             workspace_strict=strict,
             artifact_media_root=str(artifact_media_root) if artifact_media_root else None,
             artifact_session_id=artifact_session_id,
+            run_mode=run_mode,
         )
     )
     try:
@@ -246,6 +248,27 @@ async def test_workspace_strict_blocks_outside_base_path(tmp_path: Path) -> None
         ):
             with pytest.raises(ToolError, match="outside active read roots"):
                 await call()
+
+
+@pytest.mark.asyncio
+async def test_full_host_access_allows_reading_outside_active_read_roots(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside_file = outside / "outside.txt"
+    outside_file.write_text("needle\n", encoding="utf-8")
+    outside_csv = outside / "outside.csv"
+    outside_csv.write_text("a,b\n1,2\n", encoding="utf-8")
+
+    with tool_context(workspace, run_mode="full"):
+        assert "1\tneedle" in await fs.read_file(str(outside_file))
+        assert "Workbook: outside.csv" in await fs.read_spreadsheet(str(outside_csv))
+        assert "outside.txt" in await fs.list_dir(str(outside))
+        assert str(outside_file) in await fs.glob_search("*.txt", path=str(outside))
+        assert "outside.txt:1: needle" in await fs.grep_search("needle", path=str(outside))
 
 
 @pytest.mark.asyncio

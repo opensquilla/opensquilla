@@ -143,7 +143,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 "style-src 'self' 'unsafe-inline'; "
                 "img-src 'self' data: blob:; "
                 "connect-src 'self' ws: wss:; "
-                "font-src 'self';"
+                "font-src 'self' data:;"
             )
             response.headers["x-frame-options"] = "DENY"
             response.headers["x-content-type-options"] = "nosniff"

@@ -23,7 +23,7 @@
   background: var(--bg-surface);
   border-left: 1px solid var(--border);
   box-shadow: var(--shadow-lg);
-  animation: delivIn 0.18s ease;
+  animation: delivIn var(--dur-base) var(--ease-out);
 }
 
 @keyframes delivIn {
@@ -103,9 +103,9 @@
   cursor: pointer;
   text-align: left;
   transition:
-    border-color 0.14s ease,
-    box-shadow 0.14s ease,
-    transform 0.14s ease;
+    border-color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard),
+    transform var(--dur-fast) var(--ease-standard);
 }
 
 .deliv-tile:hover {
@@ -277,7 +277,7 @@
   height: 100%;
   border-radius: 999px;
   background: var(--accent);
-  transition: width 0.18s ease;
+  transition: width var(--dur-base) var(--ease-standard);
 }
 
 .deliv-preview__progress-shimmer {

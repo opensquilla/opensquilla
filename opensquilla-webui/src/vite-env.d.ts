@@ -3,6 +3,7 @@
 import type {
   ArtifactNativeOpenResult,
   ArtifactOpenRequest,
+  DesktopUpdateState,
   DesktopSettings,
   DesktopSettingsPayload,
 } from './platform/types'
@@ -10,6 +11,13 @@ import type {
 declare global {
   interface OpenSquillaDesktopApi {
     getOsLocale: () => Promise<string | undefined>
+    isAutoUpdateEnabled: () => Promise<boolean>
+    getUpdateState?: () => Promise<DesktopUpdateState>
+    checkForUpdates?: () => Promise<DesktopUpdateState>
+    downloadUpdate?: () => Promise<DesktopUpdateState>
+    relaunchToUpdate?: () => Promise<DesktopUpdateState>
+    dismissUpdate?: () => Promise<DesktopUpdateState>
+    onUpdateState?: (callback: (payload: unknown) => void) => () => void
     getGatewayStatus: () => Promise<DesktopSettings['gateway']>
     revealGatewayLog: () => Promise<boolean>
     getDesktopSettings: () => Promise<DesktopSettings>

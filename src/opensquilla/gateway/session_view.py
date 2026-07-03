@@ -45,6 +45,7 @@ def build_session_view_item(
     session_kind = _session_kind(session, key, surface, origin_map)
     conversation_kind = _conversation_kind(session, key, session_kind)
     run_status = _run_status(task_rows)
+    last_activity_at = _last_activity_at(session, task_rows, now_ms)
 
     return {
         "sessionId": getattr(session, "session_id", None),
@@ -70,7 +71,8 @@ def build_session_view_item(
             conversation_kind,
         ),
         "groupLabel": _group_label(session_kind, surface),
-        "updatedAt": getattr(session, "updated_at", now_ms),
+        "updatedAt": last_activity_at,
+        "lastActivityAt": last_activity_at,
         "messageCount": entry_count,
         "runStatus": run_status,
         "interactive": _interactive(session_kind, surface),
@@ -275,6 +277,32 @@ def _run_status(task_rows: list[Any]) -> str:
     if latest in {"cancelled", "canceled", "killed"}:
         return "cancelled"
     return "idle"
+
+
+def _epoch_ms(value: Any) -> int:
+    if isinstance(value, bool) or value is None:
+        return 0
+    try:
+        epoch = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, epoch)
+
+
+def _task_activity_at(row: Any) -> int:
+    return max(
+        _epoch_ms(getattr(row, "updated_at", None)),
+        _epoch_ms(getattr(row, "started_at", None)),
+        _epoch_ms(getattr(row, "created_at", None)),
+    )
+
+
+def _last_activity_at(session: Any, task_rows: list[Any], now_ms: int) -> int:
+    latest = _epoch_ms(getattr(session, "updated_at", None)) or now_ms
+    for row in task_rows:
+        if _lower(getattr(row, "status", None)) in {"queued", "running"}:
+            latest = max(latest, _task_activity_at(row))
+    return latest
 
 
 def _interactive(session_kind: str, surface: str) -> bool:

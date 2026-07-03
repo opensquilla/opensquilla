@@ -42,6 +42,7 @@ from opensquilla.gateway.config import AgentEntryConfig, GatewayConfig
 from opensquilla.gateway.protocol import make_ok_res
 from opensquilla.gateway.routing import build_channel_route_envelope
 from opensquilla.safety.permission_matrix import Principal, is_tool_allowed
+from opensquilla.sandbox.run_mode import RunMode
 from opensquilla.tools.types import CallerKind
 
 
@@ -59,6 +60,14 @@ class _FakeEventBridge:
 
     async def emit(self, session_key: str, event_name: str, payload: dict) -> None:
         self.events.append((session_key, event_name, payload))
+
+
+class _RunContextSessionManager:
+    def __init__(self, origin: dict | None) -> None:
+        self.node = SimpleNamespace(origin=origin)
+
+    async def get_session(self, session_key: str):
+        return self.node
 
 
 def _message() -> IncomingMessage:
@@ -725,6 +734,48 @@ async def test_channel_admin_sender_gets_owner_tool_context_for_agent_turn(tmp_p
     )
     assert decision.allowed is True
     assert decision.reason == "operator_override"
+
+
+@pytest.mark.asyncio
+async def test_saved_channel_run_context_is_applied_to_route_envelope(tmp_path) -> None:
+    from opensquilla.gateway.channel_dispatch import _apply_saved_channel_run_context
+
+    msg = _message()
+    envelope = build_channel_route_envelope(
+        msg,
+        session_key="agent:main:feishu:u1",
+        session_prefix="feishu",
+        agent_id="main",
+    )
+    manager = _RunContextSessionManager(
+        {
+            "sandbox_run_context": {
+                "run_mode": "full",
+                "workspace": str(tmp_path),
+                "mounts": [],
+                "domains": [],
+                "bundles": [],
+                "public_network": [],
+                "temporary_grants": [],
+            }
+        }
+    )
+    config = SimpleNamespace(
+        sandbox=SimpleNamespace(run_mode="standard", sandbox=True, security_grading=True),
+        permissions=SimpleNamespace(default_mode="off"),
+    )
+
+    await _apply_saved_channel_run_context(
+        envelope,
+        session_manager=manager,
+        config=config,
+        workspace_dir=str(tmp_path),
+        principal_is_owner=True,
+    )
+
+    assert envelope.metadata["run_mode"] == RunMode.FULL.value
+    assert envelope.metadata["elevated"] == "full"
+    assert envelope.metadata["sandbox_run_context"]["run_mode"] == "full"
 
 
 @pytest.mark.asyncio

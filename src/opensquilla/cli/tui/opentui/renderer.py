@@ -8,6 +8,7 @@ enter/method-calls/afinalize.
 
 from __future__ import annotations
 
+import time
 from dataclasses import asdict
 from itertools import count
 from typing import Any, Literal
@@ -43,6 +44,9 @@ class OpenTuiStreamRenderer:
         self._tool_block_ids: dict[str, str] = {}
         self._last_tool_block_id: str | None = None
         self._open_tool_ids: set[str] = set()
+        # Per-tool start times so atool_finished can surface a " · 0.2s" duration
+        # like opencode/codex even when the caller does not pass `elapsed`.
+        self._tool_start_times: dict[str, float] = {}
 
     async def _emit(self, message_type: str, payload: Any) -> None:
         await self._emit_raw(message_type, asdict(payload))
@@ -174,6 +178,7 @@ class OpenTuiStreamRenderer:
         if tool_use_id:
             self._tool_block_ids[tool_use_id] = block_id
         self._last_tool_block_id = block_id
+        self._tool_start_times[block_id] = time.monotonic()
         await self._emit(
             "turn.status", TurnStatusState(phase="tool", label=name, active=True)
         )
@@ -203,12 +208,20 @@ class OpenTuiStreamRenderer:
             )
         detail = summarize_result(error) if (not success and error) else summarize_result(result)
         if detail:
-            for line in detail.split("\n"):
-                await self._emit("block.append", BlockAppend(id=block_id, delta=line))
-        await self._emit(
-            "block.update",
-            BlockUpdate(id=block_id, patch={"status": "ok" if success else "error"}),
-        )
+            # Collapse the result to a SINGLE preview line (the host renders one
+            # "└ …" corner); join the first few non-blank lines with " · " and let
+            # the host clip to width. Avoids a wall of dim text with no expander.
+            lines = [line.strip() for line in detail.split("\n") if line.strip()]
+            preview = " · ".join(lines[:3])[:240]
+            if preview:
+                await self._emit("block.append", BlockAppend(id=block_id, delta=preview))
+        patch: dict[str, Any] = {"status": "ok" if success else "error"}
+        start = self._tool_start_times.pop(block_id, None)
+        if elapsed is None and start is not None:
+            elapsed = time.monotonic() - start
+        if elapsed is not None:
+            patch["duration"] = f"{elapsed:.1f}s"
+        await self._emit("block.update", BlockUpdate(id=block_id, patch=patch))
         await self._emit("block.end", BlockEnd(id=block_id))
         self._open_tool_ids.discard(block_id)
 

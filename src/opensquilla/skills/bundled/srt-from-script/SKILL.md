@@ -1,6 +1,8 @@
 ---
 name: srt-from-script
 description: "Build an SRT subtitle file from a 3-shot short-drama script (ai-video-script OUTPUT FORMAT). Reads each SHOT_N block's DURATION_S + VOICEOVER, emits cumulative-timestamped SRT cues. Pure text-processing, no LLM, no network. Used by meta-short-drama between merge and the final subtitle-burn step."
+user-invocable: false
+disable-model-invocation: true
 provenance:
   origin: opensquilla-original
   license: Apache-2.0

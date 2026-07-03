@@ -28,6 +28,7 @@ export interface InterruptApprovalData {
   namespace: string                       // 'exec' | plugin ns
   toolName: string
   command: string                         // '' when arg-only
+  approvalKind: string                    // e.g. 'sandbox_network' / 'sandbox_path'
   args: Record<string, unknown> | null    // may be null until hydrated
   warning: string                         // '' until hydrated
   agent: string

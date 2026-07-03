@@ -6,19 +6,23 @@ import asyncio
 import json
 import os
 import re
+from collections.abc import Mapping
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import httpx
 import structlog
 from cachetools import TTLCache
 
-from opensquilla.env import trust_env as _trust_env
 from opensquilla.result_budget import (
     DEFAULT_TOOL_RUN_BUDGET_POLICY,
     ToolRunBudgetPolicy,
 )
-from opensquilla.sandbox.integration import sandboxed
+from opensquilla.sandbox.integration import managed_network_httpx_kwargs
+from opensquilla.sandbox.operation_runtime import (
+    NetworkOperationRequest,
+    SandboxToolDescriptor,
+)
 from opensquilla.tools.registry import tool
 from opensquilla.tools.ssrf import validate_http_url_for_fetch
 from opensquilla.tools.types import SSRFBlockedError, current_tool_context
@@ -66,6 +70,16 @@ _XML_ATTR_ESCAPES = {
 _RAW_TOOL_RESULT_KEY = "_raw_tool_result"
 
 
+def _web_fetch_request(args: Mapping[str, Any]) -> NetworkOperationRequest:
+    url = str(args.get("url", "") or "")
+    parsed = urlparse(url)
+    return NetworkOperationRequest(
+        url=url,
+        method="GET",
+        host=parsed.hostname or "",
+    )
+
+
 def _check_ssrf(url: str) -> None:
     """Raise ValueError if the URL resolves to a private/internal address."""
     validate_http_url_for_fetch(url)
@@ -98,7 +112,10 @@ def _markdown_to_text(markdown: str) -> str:
 async def _try_firecrawl(url: str, api_key: str) -> tuple[str, str, str] | None:
     """Try Firecrawl API. Returns (content, extractor, title) or None."""
     try:
-        async with httpx.AsyncClient(timeout=30.0, trust_env=_trust_env()) as client:
+        async with httpx.AsyncClient(
+            timeout=30.0,
+            **managed_network_httpx_kwargs(),
+        ) as client:
             resp = await client.post(
                 "https://api.firecrawl.dev/v2/scrape",
                 headers={
@@ -262,8 +279,8 @@ async def run_web_fetch_payload(
         async with httpx.AsyncClient(
             timeout=30.0,
             follow_redirects=False,
-            trust_env=_trust_env(),
             headers=headers,
+            **managed_network_httpx_kwargs(),
         ) as client:
             current_url = url
             for _redirect_count in range(_MAX_REDIRECTS + 1):
@@ -296,7 +313,23 @@ async def run_web_fetch_payload(
         except SSRFBlockedError:
             raise
         except httpx.TimeoutException:
-            raise
+            return {
+                "url": url,
+                "final_url": url,
+                "status": 0,
+                "content_type": "",
+                "title": "",
+                "extract_mode": extract_mode,
+                "extractor": "none",
+                "truncated": False,
+                "length": 0,
+                "text": "",
+                "error": "timed_out",
+                "hint": (
+                    "The source timed out while loading; skip it, retry later, "
+                    "or use another source."
+                ),
+            }
         except Exception as exc:
             last_error = str(exc)
             if attempt_idx == 0:
@@ -453,16 +486,17 @@ async def run_web_fetch_payload(
     },
     required=["url"],
     result_budget_class="external",
-)
-@sandboxed(
-    kind="web.fetch",
-    argv_factory=lambda a: (
-        "web_fetch",
-        str(a.get("url", "")),
-        str(a.get("extract_mode", "markdown")),
-        str(a.get("extractor", "auto")),
+    sandbox=SandboxToolDescriptor.network(
+        kind="web.fetch",
+        argv_factory=lambda a: (
+            "web_fetch",
+            str(a.get("url", "")),
+            str(a.get("extract_mode", "markdown")),
+            str(a.get("extractor", "auto")),
+        ),
+        request_factory=_web_fetch_request,
+        record_payload=False,
     ),
-    record_payload=False,
 )
 async def web_fetch(
     url: str,

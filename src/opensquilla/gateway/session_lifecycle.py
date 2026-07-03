@@ -25,7 +25,7 @@ TERMINAL_SESSION_STATUSES = frozenset(
 
 @dataclass(frozen=True)
 class TaskLifecycleEvent:
-    phase: Literal["running", "terminal"]
+    phase: Literal["queued", "running", "terminal"]
     session_key: str
     task_id: str
     task_status: AgentTaskStatus
@@ -62,7 +62,8 @@ async def apply_task_lifecycle_to_session(
 ) -> bool:
     """Synchronize a task lifecycle event into the session row.
 
-    Returns True only when the persisted session lifecycle changed.
+    Returns True when the persisted session lifecycle or recents-visible
+    activity changed.
     """
 
     get_session = getattr(session_manager, "get_session", None)
@@ -75,16 +76,26 @@ async def apply_task_lifecycle_to_session(
     if node is None:
         return False
 
-    if event.phase == "running":
+    if event.phase in {"queued", "running"}:
+        update = getattr(session_manager, "update", None)
+        if not callable(update):
+            return False
+        if event.phase == "queued":
+            try:
+                await update(event.session_key)
+            except Exception:
+                return False
+            return True
         if (
             getattr(node, "status", None) == SessionStatus.RUNNING
             and getattr(node, "ended_at", None) is None
             and getattr(node, "runtime_ms", None) is None
         ):
-            return False
-        update = getattr(session_manager, "update", None)
-        if not callable(update):
-            return False
+            try:
+                await update(event.session_key)
+            except Exception:
+                return False
+            return True
         try:
             await update(
                 event.session_key,

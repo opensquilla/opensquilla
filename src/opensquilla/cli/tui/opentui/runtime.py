@@ -26,7 +26,8 @@ from opensquilla.cli.tui.backend.contracts import (
 from opensquilla.cli.tui.backend.output_binding import TuiOutputBinding
 from opensquilla.cli.tui.backend.runtime import run_tui_runtime
 from opensquilla.cli.tui.backend.state import TuiRuntimeState
-from opensquilla.cli.tui.opentui.messages import ModelText, PromptEcho
+from opensquilla.cli.tui.opentui.messages import ModelText, NoticeWrite, PromptEcho
+from opensquilla.cli.tui.opentui.notice_capture import capture_stdout_as_notices
 from opensquilla.cli.tui.opentui.surface import open_opentui_surface
 from opensquilla.engine.commands import Surface
 
@@ -53,19 +54,42 @@ def get_tui_output(scope: MutableMapping[str, Any]) -> TuiOutputHandle | None:
 
 
 def opentui_notice(scope: MutableMapping[str, Any], payload: str) -> None:
-    """Write runtime notices through the active OpenTUI output handle."""
+    """Render a runtime notice (Cancelled/Goodbye/Queue full/...) as a styled host
+    notice.
+
+    Runtime notices are Rich markup. Printing them through the shared console lets
+    the active stdout capture forward them to the host as severity-colored notice
+    lines — the same path slash-command notices take — instead of dumping raw
+    ``[yellow]...[/yellow]`` markup into the scrollback. ``scope`` is retained for
+    call-site compatibility; delivery is handled by the installed capture.
+    """
+    del scope  # delivery is via the active stdout capture, not the bound scope
+    from opensquilla.cli.ui import console  # noqa: PLC0415 - keep import light
+
+    with contextlib.suppress(Exception):
+        console.print(payload)
+
+
+def forward_console_notice(scope: MutableMapping[str, Any], line: str) -> None:
+    """Ship one captured console line to the host as a styled notice.
+
+    Mirrors :func:`opentui_notice`'s loop-scheduling so it is safe to call from
+    the synchronous ``console.print`` path inside a running turn.
+    """
     output = get_tui_output(scope)
     if output is None:
+        return
+    send = getattr(output, "send_message", None)
+    if send is None:
         return
 
     async def _write() -> None:
         with contextlib.suppress(Exception):
-            await output.write_through(payload)
+            await send("notice.write", asdict(NoticeWrite(text=line)))
 
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        asyncio.run(_write())
         return
     loop.create_task(_write())
 
@@ -117,27 +141,34 @@ async def run_opentui_chat_runtime(
 
     runtime_state = TuiRuntimeState()
     scope["pending_input_provider"] = runtime_state
+
+    def _forward_notice(line: str) -> None:
+        forward_console_notice(scope, line)
+
     try:
-        await run_tui_runtime(
-            dispatch=dispatch,
-            surface_factory=_surface_factory,
-            config=TuiRuntimeConfig(
-                task_name=surface_task_name(surface),
-                queue_max_size=queue_max_size,
-                concurrent_input_during_turn=True,
-                classify_input=classify_chat_input,
-                state=runtime_state,
-            ),
-            hooks=TuiRuntimeHooks(
-                on_user_input_echo=echo_opentui_user_input,
-                on_queued_turn_start=echo_opentui_queued_turn_start,
-                clear_current_cancel=clear_current_cancel,
-                notice=_notice,
-                on_cancel_active_turn=context.abort_turn,
-                expose_surface=context.expose_surface,
-                clear_exposed_surface=context.clear_output,
-            ),
-        )
+        # Capture slash-command/runtime console output so it renders inside the
+        # host frame as styled notices instead of bleeding raw onto the terminal.
+        with capture_stdout_as_notices(_forward_notice):
+            await run_tui_runtime(
+                dispatch=dispatch,
+                surface_factory=_surface_factory,
+                config=TuiRuntimeConfig(
+                    task_name=surface_task_name(surface),
+                    queue_max_size=queue_max_size,
+                    concurrent_input_during_turn=True,
+                    classify_input=classify_chat_input,
+                    state=runtime_state,
+                ),
+                hooks=TuiRuntimeHooks(
+                    on_user_input_echo=echo_opentui_user_input,
+                    on_queued_turn_start=echo_opentui_queued_turn_start,
+                    clear_current_cancel=clear_current_cancel,
+                    notice=_notice,
+                    on_cancel_active_turn=context.abort_turn,
+                    expose_surface=context.expose_surface,
+                    clear_exposed_surface=context.clear_output,
+                ),
+            )
     finally:
         if scope.get("pending_input_provider") is runtime_state:
             scope.pop("pending_input_provider", None)

@@ -1,10 +1,17 @@
-/* Route-change cross-fade. Opacity only, no color literals, so both themes and
-   the color guard are unaffected. The global reduced-motion block in base.css
-   already zeroes transition durations; the local guard below states the intent
-   and stands on its own if that block ever moves. */
+/* Route-change fade. Opacity only, no color literals, so both themes and the
+   color guard are unaffected.
+
+   Used with `mode="out-in"` (see App.vue): the leaving view fades out and is
+   removed before the entering view fades in, so the two never overlap. Console
+   views are kept-alive (router meta.keepAlive), so the entering page is already
+   fully rendered — no remount, fetch, or pop-in — which is what makes the swap
+   feel instant and uniform across every page (out-in's old "dead gap" only ever
+   came from the entering view fetching, which no longer happens on revisit).
+
+   Quick + symmetric so the swap reads as a crisp fade, not a slow transition. */
 .route-fade-enter-active,
 .route-fade-leave-active {
-  transition: opacity 120ms ease;
+  transition: opacity var(--dur-fast) var(--ease-standard);
 }
 
 .route-fade-enter-from,

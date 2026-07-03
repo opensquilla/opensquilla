@@ -5,6 +5,27 @@ human-readable ledger together for contributor attribution. This file records
 release-surface community work that can be harder to see when a release is
 squash-merged or replayed onto `main`.
 
+## Attribution Repairs
+
+### PR #46 release-candidate sync
+
+The release-candidate sync in [#46](https://github.com/opensquilla/opensquilla/pull/46)
+collapsed community-authored work from `dev` into
+[2158f56](https://github.com/opensquilla/opensquilla/commit/2158f56c1a0684168a013b4b4846233977d0067b)
+without co-author trailers for the human commit authors below. This ledger entry
+repairs the project-facing attribution record without rewriting protected branch
+history. Later suspected cases were rechecked separately; their human authors
+are represented on `main` by equivalent authored commits and/or co-author
+trailers.
+
+| Contributor | Repaired attribution | Evidence |
+| --- | --- | --- |
+| [@openvictory](https://github.com/openvictory) | README update carried into the 0.2.0rc1 release candidate. | [#46](https://github.com/opensquilla/opensquilla/pull/46), [`ff4bbec9`](https://github.com/opensquilla/opensquilla/pull/46/commits/ff4bbec93523582d893c7123421f7dc292bb6e38) |
+| [@nice-code-la](https://github.com/nice-code-la) | DeepSeek reasoning replay fixes, Moonshot/Kimi routing defaults, and migration-importer replay work. | [#46](https://github.com/opensquilla/opensquilla/pull/46), [`4791ca5e`](https://github.com/opensquilla/opensquilla/pull/46/commits/4791ca5e04cf959a1dd57a0b076d2945677b89ed), [`80d2c17e`](https://github.com/opensquilla/opensquilla/pull/46/commits/80d2c17e9a62cf7d1d0a77b90fb7780e602eb425), [`15db2577`](https://github.com/opensquilla/opensquilla/pull/46/commits/15db25776f2233819f4ac229dd04ad807c584e23), [`04999013`](https://github.com/opensquilla/opensquilla/pull/46/commits/049990130d3607f076d9650db3d8bd92addf5a48), [`0aa075ac`](https://github.com/opensquilla/opensquilla/pull/46/commits/0aa075ac9aa758ac7d8c07793199e50ddaaae59a), [`3edc56a6`](https://github.com/opensquilla/opensquilla/pull/46/commits/3edc56a66a1392cf029ca926ff101ebbf784b3df) |
+| cwan0785 (commit author name; GitHub account: [@Anonymous-4427](https://github.com/Anonymous-4427)) | Host-execution grant handling, quoted chat attachment parsing, and provider/tool edge hardening. | [#46](https://github.com/opensquilla/opensquilla/pull/46), [`af600aa5`](https://github.com/opensquilla/opensquilla/pull/46/commits/af600aa5eacbd8e3264b7f4258402acbdaaa8c36), [`eacbb2fb`](https://github.com/opensquilla/opensquilla/pull/46/commits/eacbb2fbe08e67231b5c793090726693a327b769), [`e301ec76`](https://github.com/opensquilla/opensquilla/pull/46/commits/e301ec764c560f57bfd0e39f3387e42369d73a01) |
+| [@ab2ence](https://github.com/ab2ence) | macOS Seatbelt backend execution, denial escalation, and release-candidate type-check cleanup. | [#46](https://github.com/opensquilla/opensquilla/pull/46), [`fb1e6225`](https://github.com/opensquilla/opensquilla/pull/46/commits/fb1e6225e4db9cb0801ea347a89c2066e3e0601b), [`f73ac3eb`](https://github.com/opensquilla/opensquilla/pull/46/commits/f73ac3eb0044c64c79cfd18f9ec03d1bba9128ff), [`cf3b046f`](https://github.com/opensquilla/opensquilla/pull/46/commits/cf3b046f42a42efc951320b0af80e9d066dcf7d2) |
+| [@kimjune01](https://github.com/kimjune01) | Provider stream timeout cleanup fix that prevents double-closing provider streams. | [#46](https://github.com/opensquilla/opensquilla/pull/46), [`06e3126d`](https://github.com/opensquilla/opensquilla/pull/46/commits/06e3126d8ebda4ad4cf349ca7be0d0804e0c008d) |
+
 ## OpenSquilla 0.4.1
 
 The 0.4.1 release records new human contributor work after the 0.4.0

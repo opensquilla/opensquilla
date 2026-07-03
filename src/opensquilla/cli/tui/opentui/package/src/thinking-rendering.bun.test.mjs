@@ -92,7 +92,7 @@ test("intermediate narration keeps the timeline rail on every rendered line", as
 
     expect(narrationLines.length).toBe(3);
     for (const line of narrationLines) {
-      expect(line.trimStart()).toMatch(/^[│✱]/);
+      expect(line.trimStart()).toMatch(/^[│✻]/);
     }
     expect(narrationLines[1].trimStart().startsWith("│")).toBe(true);
     expect(narrationLines[2].trimStart().startsWith("│")).toBe(true);

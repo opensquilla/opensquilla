@@ -1,4 +1,5 @@
 <template>
+  <Transition name="inspect">
   <div v-if="open && item" class="inspect-overlay" @click.self="emit('close')">
     <aside
       ref="drawerRef"
@@ -118,6 +119,7 @@
       </footer>
     </aside>
   </div>
+  </Transition>
 </template>
 
 <script setup lang="ts">
@@ -388,7 +390,6 @@ onUnmounted(() => {
 }
 
 .inspect-drawer {
-  animation: inspectIn 0.18s ease;
   background: var(--bg-surface);
   border-left: 1px solid var(--border);
   box-shadow: var(--shadow-lg);
@@ -398,14 +399,22 @@ onUnmounted(() => {
   width: min(560px, 100%);
 }
 
-@keyframes inspectIn {
-  from { transform: translateX(24px); opacity: 0.4; }
-  to { transform: translateX(0); opacity: 1; }
-}
+/* Symmetric open/close: scrim fades, panel slides from the right both ways. */
+.inspect-enter-active { transition: opacity var(--dur-base) var(--ease-out); }
+.inspect-leave-active { transition: opacity var(--dur-fast) var(--ease-in); }
+.inspect-enter-from,
+.inspect-leave-to { opacity: 0; }
+.inspect-enter-active .inspect-drawer { transition: transform var(--dur-base) var(--ease-out); }
+.inspect-leave-active .inspect-drawer { transition: transform var(--dur-fast) var(--ease-in); }
+.inspect-enter-from .inspect-drawer { transform: translateX(24px); }
+.inspect-leave-to .inspect-drawer { transform: translateX(24px); }
 
 @media (prefers-reduced-motion: reduce) {
-  .inspect-drawer {
-    animation: none;
+  .inspect-enter-active,
+  .inspect-leave-active,
+  .inspect-enter-active .inspect-drawer,
+  .inspect-leave-active .inspect-drawer {
+    transition: none;
   }
 }
 

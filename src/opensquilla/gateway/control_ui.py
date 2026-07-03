@@ -115,6 +115,25 @@ def _resolve_locale(config: GatewayConfig, request: Request) -> str:
     return "en"
 
 
+def _update_payload(config: GatewayConfig) -> dict | None:
+    """Cached update-availability info for the bootstrap context.
+
+    Read-only and non-blocking: the actual GitHub check runs in a background
+    thread (see start_background_update_check). Returns a small dict only when a
+    newer release is known, so the front end can treat "presence" as "show the
+    notice"; returns None otherwise.
+    """
+    try:
+        from opensquilla.observability.update_check import get_cached_update_info
+
+        info = get_cached_update_info(config=config, version=__version__)
+    except Exception:  # pragma: no cover - defensive, never break page render
+        return None
+    if info is None or not info.update_available:
+        return None
+    return info.to_public_dict()
+
+
 def _build_bootstrap_context(config: GatewayConfig, request: Request) -> dict:
     """Build the template context for bootstrap config injection."""
     return {
@@ -124,6 +143,7 @@ def _build_bootstrap_context(config: GatewayConfig, request: Request) -> dict:
         "base_path": config.control_ui.base_path,
         "config_path": config.config_path or "",
         "locale": _resolve_locale(config, request),
+        "update": _update_payload(config),
         "features": {
             "diagnostics": config.diagnostics_enabled,
         },

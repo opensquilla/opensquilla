@@ -1,4 +1,5 @@
 <template>
+  <Transition name="cmdp">
   <div
     v-if="open"
     class="cmdp-backdrop"
@@ -70,6 +71,7 @@
       </div>
     </section>
   </div>
+  </Transition>
 </template>
 
 <script setup lang="ts">
@@ -440,6 +442,21 @@ function onBackdrop(e: MouseEvent) {
   border-radius: 14px;
   box-shadow: var(--shadow-lg);
 }
+
+/* Open/close motion: scrim fades, dialog slides up + fades (exit a tier faster).
+   Matches the modal idiom (SettingsDialog settings-pop). */
+.cmdp-enter-active { transition: opacity var(--dur-base) var(--ease-out); }
+.cmdp-leave-active { transition: opacity var(--dur-fast) var(--ease-in); }
+.cmdp-enter-from,
+.cmdp-leave-to { opacity: 0; }
+.cmdp-enter-active .cmdp-dialog {
+  transition: transform var(--dur-base) var(--ease-out), opacity var(--dur-base) var(--ease-out);
+}
+.cmdp-leave-active .cmdp-dialog {
+  transition: transform var(--dur-fast) var(--ease-in), opacity var(--dur-fast) var(--ease-in);
+}
+.cmdp-enter-from .cmdp-dialog { opacity: 0; transform: translateY(8px); }
+.cmdp-leave-to .cmdp-dialog { opacity: 0; transform: translateY(6px); }
 
 .cmdp-search {
   display: flex;

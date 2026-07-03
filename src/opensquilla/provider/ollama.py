@@ -1,4 +1,4 @@
-"""OllamaProvider — streams via Ollama local API using httpx."""
+"""OllamaProvider — streams via Ollama local/cloud API using httpx."""
 
 from __future__ import annotations
 
@@ -7,9 +7,12 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
+import structlog
 
 from opensquilla.env import trust_env as _trust_env
+from opensquilla.secrets import clean_header_secret
 
+from .stream_assembly import ToolStreamAccumulator
 from .types import (
     ChatConfig,
     DoneEvent,
@@ -19,12 +22,16 @@ from .types import (
     StreamEvent,
     TextDeltaEvent,
     ToolDefinition,
-    ToolUseDeltaEvent,
-    ToolUseEndEvent,
-    ToolUseStartEvent,
 )
 
+log = structlog.get_logger(__name__)
+
 _OLLAMA_DEFAULT_BASE = "http://localhost:11434"
+# Ollama's server default num_ctx is 2048, which silently truncates the front of
+# an agent prompt (system prompt + tool schemas) and makes tool use look broken.
+# Default to a context window large enough for real agent turns; callers can
+# override via the ``num_ctx`` constructor argument.
+_OLLAMA_DEFAULT_NUM_CTX = 8192
 
 
 def _build_ollama_tool(tool: ToolDefinition) -> dict[str, Any]:
@@ -38,26 +45,82 @@ def _build_ollama_tool(tool: ToolDefinition) -> dict[str, Any]:
     }
 
 
-def _build_ollama_message(msg: Message) -> dict[str, Any]:
+def _tool_result_content(block: Any) -> str:
+    content = block.content
+    return content if isinstance(content, str) else json.dumps(content)
+
+
+def _build_ollama_messages(
+    msg: Message,
+    tool_names: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Convert one internal message into one or more Ollama chat messages.
+
+    A single message may expand into several Ollama messages: assistant turns
+    carry their ``tool_calls`` so the model keeps a record of what it invoked,
+    and each ``tool_result`` block becomes its own ``tool`` role message (Ollama
+    has no notion of bundled parallel results) tagged with ``tool_name`` so the
+    model can correlate the result with the call.
+    """
     if isinstance(msg.content, str):
-        return {"role": msg.role, "content": msg.content}
-    # Flatten to text for Ollama (tool_result -> tool role)
-    parts: list[str] = []
+        return [{"role": msg.role, "content": msg.content}]
+
+    text_parts: list[str] = []
+    tool_calls: list[dict[str, Any]] = []
+    images: list[str] = []
+    tool_messages: list[dict[str, Any]] = []
+
     for block in msg.content:
         if block.type == "text":
-            parts.append(block.text)
+            text_parts.append(block.text)
+        elif block.type == "tool_use":
+            tool_calls.append({"function": {"name": block.name, "arguments": block.input}})
+        elif block.type == "image":
+            # Ollama expects raw base64 strings in `images`; it does not fetch URLs.
+            if block.source_type == "base64":
+                images.append(block.data)
         elif block.type == "tool_result":
-            return {
+            tool_message: dict[str, Any] = {
                 "role": "tool",
-                "content": (
-                    block.content if isinstance(block.content, str) else json.dumps(block.content)
-                ),
+                "content": _tool_result_content(block),
             }
-    return {"role": msg.role, "content": " ".join(parts)}
+            name = tool_names.get(block.tool_use_id)
+            if name:
+                tool_message["tool_name"] = name
+            tool_messages.append(tool_message)
+
+    out: list[dict[str, Any]] = []
+    if text_parts or tool_calls or images:
+        main: dict[str, Any] = {"role": msg.role, "content": " ".join(text_parts)}
+        if tool_calls:
+            main["tool_calls"] = tool_calls
+        if images:
+            main["images"] = images
+        out.append(main)
+    out.extend(tool_messages)
+    return out
+
+
+def _convert_messages(messages: list[Message], system: str | None) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    if system:
+        out.append({"role": "system", "content": system})
+
+    # Map tool_use ids to their tool name so tool results can be correlated.
+    tool_names: dict[str, str] = {}
+    for msg in messages:
+        if isinstance(msg.content, list):
+            for block in msg.content:
+                if block.type == "tool_use":
+                    tool_names[block.id] = block.name
+
+    for msg in messages:
+        out.extend(_build_ollama_messages(msg, tool_names))
+    return out
 
 
 class OllamaProvider:
-    """Streams from a local Ollama instance using the /api/chat endpoint."""
+    """Streams from an Ollama instance (local or cloud) using /api/chat."""
 
     provider_name = "ollama"
 
@@ -66,10 +129,14 @@ class OllamaProvider:
         model: str = "llama3",
         base_url: str = _OLLAMA_DEFAULT_BASE,
         proxy: str | None = None,
+        api_key: str | None = None,
+        num_ctx: int | None = None,
     ) -> None:
         self._model = model
         self._base_url = base_url.rstrip("/")
         self._proxy = proxy or None
+        self._api_key = clean_header_secret(api_key, label="Ollama API key") if api_key else ""
+        self._num_ctx = num_ctx or _OLLAMA_DEFAULT_NUM_CTX
 
     @property
     def model(self) -> str:
@@ -79,6 +146,11 @@ class OllamaProvider:
         the underlying model without prying at private state.
         """
         return self._model
+
+    def _headers(self) -> dict[str, str]:
+        if self._api_key:
+            return {"Authorization": f"Bearer {self._api_key}"}
+        return {}
 
     def chat(
         self,
@@ -95,19 +167,21 @@ class OllamaProvider:
         tools: list[ToolDefinition] | None,
         cfg: ChatConfig,
     ) -> AsyncIterator[StreamEvent]:
-        ollama_messages: list[dict[str, Any]] = []
-        if cfg.system:
-            ollama_messages.append({"role": "system", "content": cfg.system})
-        ollama_messages.extend(_build_ollama_message(m) for m in messages)
+        ollama_messages = _convert_messages(messages, cfg.system)
+
+        options: dict[str, Any] = {
+            "num_predict": cfg.max_tokens,
+            "num_ctx": self._num_ctx,
+        }
+        if cfg.temperature is not None:
+            options["temperature"] = cfg.temperature
 
         payload: dict[str, Any] = {
             "model": self._model,
             "messages": ollama_messages,
             "stream": True,
-            "options": {"num_predict": cfg.max_tokens},
+            "options": options,
         }
-        if cfg.temperature is not None:
-            payload["options"]["temperature"] = cfg.temperature
         if tools:
             payload["tools"] = [_build_ollama_tool(t) for t in tools]
 
@@ -126,11 +200,15 @@ class OllamaProvider:
                     "POST",
                     f"{self._base_url}/api/chat",
                     json=payload,
+                    headers=self._headers(),
                 ) as response:
                     if response.status_code != 200:
                         body = await response.aread()
                         yield ErrorEvent(
-                            message=f"HTTP {response.status_code}: {body.decode()}",
+                            message=(
+                                f"HTTP {response.status_code}: "
+                                f"{body.decode('utf-8', errors='replace')}"
+                            ),
                             code=str(response.status_code),
                         )
                         return
@@ -167,15 +245,23 @@ class OllamaProvider:
                             output_tokens = chunk.get("eval_count", 0)
 
                     # Emit tool events after streaming completes
-                    for call in pending_tool_calls:
-                        yield ToolUseStartEvent(tool_use_id=call["id"], tool_name=call["name"])
-                        args_json = json.dumps(call["arguments"])
-                        yield ToolUseDeltaEvent(tool_use_id=call["id"], json_fragment=args_json)
-                        yield ToolUseEndEvent(
+                    tools_acc = ToolStreamAccumulator()
+                    for key, call in enumerate(pending_tool_calls):
+                        for tool_event in tools_acc.start(
+                            key,
                             tool_use_id=call["id"],
                             tool_name=call["name"],
-                            arguments=call["arguments"],
-                        )
+                        ):
+                            yield tool_event
+                        for tool_event in tools_acc.append(key, json.dumps(call["arguments"])):
+                            yield tool_event
+                        # Ollama already delivers parsed arguments — they are
+                        # authoritative, not reassembled from fragments.
+                        for tool_event in tools_acc.finish_with_arguments(
+                            key,
+                            call["arguments"],
+                        ):
+                            yield tool_event
 
                     yield DoneEvent(
                         stop_reason="stop",
@@ -187,6 +273,16 @@ class OllamaProvider:
             yield ErrorEvent(message=f"Request timed out: {exc}", code="timeout")
         except httpx.RequestError as exc:
             yield ErrorEvent(message=f"Request error: {exc}", code="request_error")
+        except Exception as exc:  # noqa: BLE001 - chat() contract: ErrorEvent instead of raising
+            log.exception(
+                "provider.stream_internal_error",
+                provider=self.provider_name,
+                model=self._model,
+            )
+            yield ErrorEvent(
+                message=f"Provider response handling failed: {exc}",
+                code="provider_internal",
+            )
 
     async def list_models(self) -> list[ModelInfo]:
         try:
@@ -195,7 +291,10 @@ class OllamaProvider:
                 trust_env=_trust_env(),
                 proxy=self._proxy,
             ) as client:
-                resp = await client.get(f"{self._base_url}/api/tags")
+                resp = await client.get(
+                    f"{self._base_url}/api/tags",
+                    headers=self._headers(),
+                )
                 resp.raise_for_status()
                 data = resp.json()
                 return [

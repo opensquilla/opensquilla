@@ -110,7 +110,7 @@ const bodyLabel = computed(() => {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--bg-surface);
-  transition: border-color 0.14s ease, box-shadow 0.14s ease;
+  transition: border-color var(--dur-fast) var(--ease-standard), box-shadow var(--dur-fast) var(--ease-standard);
 }
 
 .msg-artifact-chip:hover {
@@ -226,7 +226,7 @@ const bodyLabel = computed(() => {
   font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
-  transition: border-color 0.14s ease, color 0.14s ease;
+  transition: border-color var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
 }
 
 .msg-artifact-action:hover {
@@ -245,7 +245,7 @@ const bodyLabel = computed(() => {
   background: var(--bg-surface);
   color: var(--text-muted);
   cursor: pointer;
-  transition: border-color 0.14s ease, color 0.14s ease;
+  transition: border-color var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
 }
 
 .msg-artifact-download:hover {

@@ -560,7 +560,7 @@ onUnmounted(() => {
   height: 100%;
   border-radius: 999px;
   background: var(--accent);
-  transition: width 0.18s ease;
+  transition: width var(--dur-base) var(--ease-standard);
 }
 
 .msg-media-card__error-text {
@@ -587,7 +587,7 @@ onUnmounted(() => {
   font-size: var(--fs-xs);
   font-weight: 500;
   cursor: pointer;
-  transition: border-color 0.14s ease, color 0.14s ease;
+  transition: border-color var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
 }
 
 .msg-media-card__retry:hover {
@@ -615,7 +615,7 @@ onUnmounted(() => {
   color: var(--text);
   /* Faint at rest so touch devices (no hover) still see the tap affordance. */
   opacity: 0.3;
-  transition: opacity 0.14s ease;
+  transition: opacity var(--dur-fast) var(--ease-standard);
 }
 
 .msg-media-card__img:hover .msg-media-card__zoom,
@@ -671,7 +671,7 @@ onUnmounted(() => {
   background: var(--bg-surface);
   color: var(--text-muted);
   cursor: pointer;
-  transition: border-color 0.14s ease, color 0.14s ease;
+  transition: border-color var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
 }
 
 .msg-media-card__download:hover {

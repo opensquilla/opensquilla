@@ -2,7 +2,7 @@ import type { ArtifactPayload } from './rpc'
 import type { IconName } from '@/utils/icons'
 
 export interface Attachment {
-  kind: 'inline' | 'staged' | 'inline_pending' | 'uploading'
+  kind: 'inline' | 'staged' | 'inline_pending' | 'uploading' | 'failed'
   local_id: number
   name: string
   mime: string
@@ -10,6 +10,21 @@ export interface Attachment {
   data?: string
   dataUrl?: string
   file_uuid?: string
+  error?: string
+  file?: File
+}
+
+export interface DisplayAttachment {
+  kind: 'inline' | 'staged' | 'file'
+  displayId: string
+  renderKey: string
+  name: string
+  mime: string
+  size?: number
+  data?: string
+  dataUrl?: string
+  download_url?: string
+  sha256_ref?: string
 }
 
 export interface ChatPendingItem {
@@ -177,7 +192,7 @@ export interface ChatMessage {
   artifacts?: ArtifactPayload[]
   tool_calls?: RawToolCallPayload[]
   timeline?: ChatTimelineSegment[]
-  attachments?: Attachment[]
+  attachments?: DisplayAttachment[]
   provenanceKind?: string
   provenanceSourceSessionKey?: string
   provenanceSourceTool?: string
@@ -224,7 +239,7 @@ export interface ChatRenderedMessage {
   isStreaming?: boolean
   messageId?: string
   hasAttachments?: boolean
-  attachments?: Attachment[]
+  attachments?: DisplayAttachment[]
   toolCalls?: ChatToolCall[]
   timelineItems?: ChatStreamTimelineItem[]
   artifacts?: ArtifactPayload[]

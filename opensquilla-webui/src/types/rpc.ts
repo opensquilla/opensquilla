@@ -1,5 +1,3 @@
-import type { Attachment } from './chat'
-
 export interface AgentOption {
   id: string
   name: string
@@ -56,6 +54,8 @@ export interface RawSessionItem {
   groupLabel?: string
   updatedAt?: number | string
   updated_at?: number | string
+  lastActivityAt?: number | string
+  last_activity_at?: number | string
   messageCount?: number
   message_count?: number
   entry_count?: number
@@ -239,7 +239,7 @@ export interface ChatSendAttachmentPayload {
 export interface ChatSendParams {
   message: string
   sessionKey: string
-  _source?: { elevated?: string }
+  _source?: { elevated?: string; runMode?: 'standard' | 'trusted' | 'full' }
   intent?: string
   displayText?: string
   attachments?: ChatSendAttachmentPayload[]
@@ -252,6 +252,23 @@ export interface ChatSendResponse {
   taskId?: string
 }
 
+export interface ChatHistoryAttachmentPayload {
+  type?: unknown
+  mime?: unknown
+  mime_type?: unknown
+  media_type?: unknown
+  name?: unknown
+  filename?: unknown
+  size?: unknown
+  data?: unknown
+  dataUrl?: unknown
+  data_url?: unknown
+  sha256_ref?: unknown
+  download_url?: unknown
+  kind?: unknown
+  [key: string]: unknown
+}
+
 export interface ChatHistoryMessage {
   role?: string
   text?: string
@@ -259,7 +276,7 @@ export interface ChatHistoryMessage {
   ts?: string | number | null
   id?: string
   message_id?: string
-  attachments?: Attachment[]
+  attachments?: ChatHistoryAttachmentPayload[]
   artifacts?: ArtifactPayload[]
   router_decision?: RouterDecisionPayload | null
   routerDecision?: RouterDecisionPayload | null

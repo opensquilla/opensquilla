@@ -43,10 +43,14 @@ class ModelUsage:
     # model_breakdown serializer prefers this over the pricing-table estimate,
     # avoiding cache-discount drift in the per-model split.
     billed_cost: float = 0.0
+    # Configured provider id (e.g. "ollama"). Appended at the end to keep
+    # existing positional ModelUsage(model_id, in, out) callers aligned. Local
+    # providers are free, so the estimate must not apply the cloud default.
+    provider: str = ""
 
     @property
     def cost(self) -> float:
-        price = lookup_price(self.model_id)
+        price = lookup_price(self.model_id, self.provider)
         return (
             self.input_tokens * price.input_per_m + self.output_tokens * price.output_per_m
         ) / 1_000_000
@@ -64,13 +68,14 @@ class SessionUsage:
     # (e.g. SessionUsage(1, 2, "model")) keep aligning with `model_id`.
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    provider: str = ""
 
     @property
     def cost(self) -> float:
         """Calculate cost in USD based on pricing table."""
         if self._per_model:
             return sum(m.cost for m in self._per_model.values())
-        price = lookup_price(self.model_id)
+        price = lookup_price(self.model_id, self.provider)
         input_cost = self.input_tokens * price.input_per_m
         output_cost = self.output_tokens * price.output_per_m
         return (input_cost + output_cost) / 1_000_000
@@ -136,6 +141,7 @@ class SessionUsage:
         cache_read_tokens: int = 0,
         cache_write_tokens: int = 0,
         billed_cost: float = 0.0,
+        provider: str = "",
     ) -> None:
         """Accumulate token counts, tracking per-model breakdown.
 
@@ -143,11 +149,16 @@ class SessionUsage:
         accumulation (typically one provider call). Forwarded into the per-model
         ``ModelUsage`` so the breakdown serializer can return the actual billed
         figure instead of the cache-blind pricing-table estimate.
+
+        ``provider`` is the configured provider id; it lets local providers
+        (Ollama, …) estimate as free instead of the cloud default price.
         """
         self.input_tokens += input_tokens
         self.output_tokens += output_tokens
         self.cache_read_tokens += cache_read_tokens
         self.cache_write_tokens += cache_write_tokens
+        if provider:
+            self.provider = provider
         mid = model_id or self.model_id
         if mid:
             if self._per_model is None:
@@ -161,6 +172,8 @@ class SessionUsage:
             mu.cache_read_tokens += cache_read_tokens
             mu.cache_write_tokens += cache_write_tokens
             mu.billed_cost += billed_cost
+            if provider:
+                mu.provider = provider
 
     @staticmethod
     def _breakdown_cost_fields(mu_or_self: ModelUsage | SessionUsage) -> dict:
@@ -229,6 +242,7 @@ def _clone_session_usage(usage: SessionUsage) -> SessionUsage:
         model_id=usage.model_id,
         cache_read_tokens=usage.cache_read_tokens,
         cache_write_tokens=usage.cache_write_tokens,
+        provider=usage.provider,
     )
     if usage._per_model:
         clone._per_model = {
@@ -239,6 +253,7 @@ def _clone_session_usage(usage: SessionUsage) -> SessionUsage:
                 cache_read_tokens=mu.cache_read_tokens,
                 cache_write_tokens=mu.cache_write_tokens,
                 billed_cost=mu.billed_cost,
+                provider=mu.provider,
             )
             for mid, mu in usage._per_model.items()
         }
@@ -251,10 +266,11 @@ def _model_delta_cost(
     input_tokens: int,
     output_tokens: int,
     billed_cost: float,
+    provider: str = "",
 ) -> float:
     if billed_cost > 0.0:
         return billed_cost
-    price = lookup_price(model_id)
+    price = lookup_price(model_id, provider)
     return (input_tokens * price.input_per_m + output_tokens * price.output_per_m) / 1_000_000
 
 
@@ -304,12 +320,18 @@ class UsageTracker:
         cache_read_tokens: int = 0,
         cache_write_tokens: int = 0,
         billed_cost: float = 0.0,
+        provider: str = "",
     ) -> None:
         """Record token usage for a session.
 
         ``billed_cost`` flows through to :py:attr:`ModelUsage.billed_cost` so
         the per-model breakdown can report real provider-billed figures
-        instead of the cache-blind pricing-table estimate.
+        instead of the cache-blind pricing-table estimate. ``provider`` lets
+        local runtimes (Ollama, …) estimate as free.
+
+        Invariant: keep this method synchronous (no await/yield). On the
+        single event loop a sync ``add`` is atomic, so concurrent turns in
+        one session accumulate without interleaving or a lock.
         """
         usage = self._sessions.get(session_key)
         if usage is None:
@@ -322,6 +344,7 @@ class UsageTracker:
             cache_read_tokens=cache_read_tokens,
             cache_write_tokens=cache_write_tokens,
             billed_cost=billed_cost,
+            provider=provider,
         )
         if model_id:
             usage.model_id = model_id
@@ -337,6 +360,7 @@ class UsageTracker:
                 model_id=model_id,
                 cache_read_tokens=cache_read_tokens,
                 cache_write_tokens=cache_write_tokens,
+                provider=provider,
                 billed_cost=billed_cost,
             )
             if model_id:
@@ -402,6 +426,7 @@ class UsageTracker:
                         input_tokens=max(0, delta_input),
                         output_tokens=max(0, delta_output),
                         billed_cost=max(0.0, delta_billed),
+                        provider=mu.provider,
                     )
         else:
             cost_usd = _model_delta_cost(
@@ -409,6 +434,7 @@ class UsageTracker:
                 input_tokens=max(0, input_tokens),
                 output_tokens=max(0, output_tokens),
                 billed_cost=max(0.0, billed_cost),
+                provider=usage.provider,
             )
 
         return SessionTotalsSnapshot(

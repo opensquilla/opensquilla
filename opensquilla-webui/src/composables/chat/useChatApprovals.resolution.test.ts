@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { formatCountdown, resolutionFromPayload } from './useChatApprovals'
+import {
+  approvalChoiceForDecision,
+  formatCountdown,
+  resolutionFromPayload,
+} from './useChatApprovals'
 
 describe('resolutionFromPayload', () => {
   it('maps an explicit expiry to a distinct expired state', () => {
@@ -41,5 +45,13 @@ describe('formatCountdown', () => {
 
   it('clamps negatives to 0s', () => {
     expect(formatCountdown(-10)).toBe('0s')
+  })
+})
+
+describe('approvalChoiceForDecision', () => {
+  it('maps the three visible approval buttons to backend choices', () => {
+    expect(approvalChoiceForDecision('allow-once')).toBe('allow_once')
+    expect(approvalChoiceForDecision('allow-always')).toBe('allow_same_type')
+    expect(approvalChoiceForDecision('deny')).toBe('deny')
   })
 })

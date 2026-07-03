@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import signal
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -25,6 +26,9 @@ class NativeTerminalOutputHandle:
         self.approval_surface = approval_surface
 
     async def write_through(self, payload: str) -> None:
+        # Rich markup stays enabled so backend notices (e.g. "[yellow]…[/yellow]")
+        # render styled. Callers passing untrusted model/tool text must escape it
+        # first; NativeStreamRenderer does this for all assistant output.
         console.print(payload, end="")
 
     def stream_output(self) -> AbstractAsyncContextManager[Callable[[str], None]]:
@@ -42,6 +46,7 @@ class NativeTerminalSurface:
         self._eof_emitted = False
         self._cancel_callback: Callable[[], None] | None = None
         self._shutdown_callback: Callable[[], None] | None = None
+        self._sigint_installed = False
         self._output_handle = NativeTerminalOutputHandle(
             approval_surface=approval_surface,
         )
@@ -50,16 +55,57 @@ class NativeTerminalSurface:
     def output_handle(self) -> NativeTerminalOutputHandle:
         return self._output_handle
 
+    def _on_sigint(self) -> None:
+        # Ctrl+C cancels the in-flight turn (the cancel callback is a no-op when no
+        # turn is running). It NEVER ends the session — Ctrl+D (EOFError) owns exit.
+        # Installing this loop handler also means console.input() no longer raises
+        # KeyboardInterrupt at the prompt, so a stray Ctrl+C can't quit the session.
+        cancel = self._cancel_callback
+        if cancel is not None:
+            cancel()
+
+    def install_interrupt_handler(self) -> None:
+        if self._sigint_installed:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            loop.add_signal_handler(signal.SIGINT, self._on_sigint)
+        except (RuntimeError, NotImplementedError, ValueError):
+            # No running loop, or signal handlers unsupported here (e.g. Windows,
+            # or a non-main thread): fall back to next_line's KeyboardInterrupt
+            # handling below, which cancels-and-reprompts rather than exiting.
+            return
+        self._sigint_installed = True
+
+    def remove_interrupt_handler(self) -> None:
+        if not self._sigint_installed:
+            return
+        self._sigint_installed = False
+        try:
+            loop = asyncio.get_running_loop()
+            loop.remove_signal_handler(signal.SIGINT)
+        except (RuntimeError, NotImplementedError, ValueError):
+            return
+
     async def next_line(self) -> str | None:
         if self._eof_emitted:
             return None
-        try:
-            return await asyncio.to_thread(console.input, f"[bold {ACCENT_SOFT}]>[/] ")
-        except (EOFError, KeyboardInterrupt):
-            self._eof_emitted = True
-            if self._shutdown_callback is not None:
-                self._shutdown_callback()
-            return None
+        while True:
+            try:
+                return await asyncio.to_thread(console.input, f"[bold {ACCENT_SOFT}]>[/] ")
+            except EOFError:
+                # Ctrl+D ends the session.
+                self._eof_emitted = True
+                if self._shutdown_callback is not None:
+                    self._shutdown_callback()
+                return None
+            except KeyboardInterrupt:
+                # Reached only where the SIGINT handler is unavailable (e.g.
+                # Windows): cancel any in-flight turn and re-prompt instead of
+                # exiting, so Ctrl+C is never an accidental quit.
+                if self._cancel_callback is not None:
+                    self._cancel_callback()
+                continue
 
     def set_cancel_callback(self, cb: Callable[[], None] | None) -> None:
         self._cancel_callback = cb
@@ -83,7 +129,13 @@ async def open_native_terminal_surface(
     *,
     surface: Surface,
 ) -> AsyncIterator[TuiSurface]:
-    yield NativeTerminalSurface(approval_surface=surface)
+    instance = NativeTerminalSurface(approval_surface=surface)
+    # Own SIGINT for the session so Ctrl+C cancels turns instead of quitting.
+    instance.install_interrupt_handler()
+    try:
+        yield instance
+    finally:
+        instance.remove_interrupt_handler()
 
 
 @asynccontextmanager

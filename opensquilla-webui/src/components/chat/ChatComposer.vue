@@ -6,17 +6,24 @@
           v-for="(att, i) in attachments"
           :key="att.local_id"
           class="attachment-chip"
-          :class="{ 'attachment-chip--busy': att.kind === 'inline_pending' || att.kind === 'uploading' }"
+          :class="{ 'attachment-chip--busy': isAttachmentBusy(att), 'attachment-chip--failed': att.kind === 'failed' }"
           :data-mime="att.mime || ''"
+          :title="attachmentTitle(att)"
         >
           <span class="attachment-chip__icon" aria-hidden="true">
-            <span v-if="att.kind === 'inline_pending' || att.kind === 'uploading'" class="spinner attachment-chip__spinner" />
-            <img v-else-if="att.dataUrl" class="attachment-chip__thumb" :src="att.dataUrl" alt="" />
+            <span v-if="isAttachmentBusy(att)" class="spinner attachment-chip__spinner" />
+            <Icon v-else-if="att.kind === 'failed'" name="info" :size="15" />
+            <img v-else-if="isImageDisplayAttachment(att) && att.dataUrl" class="attachment-chip__thumb" :src="att.dataUrl" alt="" />
             <Icon v-else :name="attachmentIcon(att)" :size="15" />
           </span>
           <span class="attachment-chip__name">{{ att.name }}</span>
           <span class="attachment-chip__meta">{{ attachmentMeta(att) }}</span>
-          <button class="attachment-remove" :title="t('chat.remove')" @click="emit('removeAttachment', i)">&times;</button>
+          <button v-if="att.kind === 'failed' && att.file" class="attachment-action" title="Retry upload" aria-label="Retry upload" @click="emit('retryAttachment', i)">
+            <Icon name="refresh" :size="12" />
+          </button>
+          <button class="attachment-action attachment-remove" :title="t('chat.remove')" :aria-label="t('chat.remove')" @click="emit('removeAttachment', i)">
+            <Icon name="x" :size="12" />
+          </button>
         </div>
       </div>
       <div class="chat-input-panel">
@@ -47,24 +54,40 @@
                 :title="t('chat.composerSettings')"
                 :aria-label="t('chat.composerSettings')"
                 :aria-expanded="settingsOpen ? 'true' : 'false'"
-                @click="settingsOpen = !settingsOpen"
+                @click="toggleSettings"
               >
                 <Icon name="settings" :size="17" />
               </button>
               <ChatComposerSettings
                 v-if="settingsOpen"
-                :elevated-mode="elevatedMode"
-                :elevated-unavailable="elevatedUnavailable"
                 :router-enabled="routerEnabled"
                 :router-settings-busy="routerSettingsBusy"
                 :visual-effects-enabled="routerVisualEffectsEnabled"
                 :coding-mode-enabled="codingModeEnabled"
                 :coding-mode-settings-busy="codingModeSettingsBusy"
                 @close="settingsOpen = false"
-                @set-elevated-mode="emit('setElevatedMode', $event)"
                 @set-router-enabled="emit('setRouterEnabled', $event)"
                 @set-visual-effects-enabled="emit('setVisualEffectsEnabled', $event)"
                 @set-coding-mode-enabled="emit('setCodingModeEnabled', $event)"
+              />
+            </div>
+            <div class="chat-settings-anchor">
+              <button
+                class="btn btn--icon btn--ghost"
+                :class="{ 'is-active': runModeOpen }"
+                :title="t('chat.composer.runMode')"
+                :aria-label="t('chat.composer.runMode')"
+                :aria-expanded="runModeOpen ? 'true' : 'false'"
+                @click="toggleRunMode"
+              >
+                <Icon name="shield" :size="17" />
+              </button>
+              <ChatComposerRunMode
+                v-if="runModeOpen"
+                :run-mode="runMode"
+                :allowed-run-modes="allowedRunModes"
+                @close="runModeOpen = false"
+                @set-run-mode="emit('setRunMode', $event)"
               />
             </div>
             <button
@@ -133,7 +156,10 @@ import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import type { IconName } from '@/utils/icons'
 import ChatComposerSettings from '@/components/chat/ChatComposerSettings.vue'
+import ChatComposerRunMode from '@/components/chat/ChatComposerRunMode.vue'
 import type { Attachment } from '@/types/chat'
+import type { SandboxRunMode } from '@/types/sandbox'
+import { isAttachmentBusy, isImageDisplayAttachment } from '@/utils/chat/attachments'
 
 interface ChatComposerExpose {
   composerElement: () => HTMLElement | null
@@ -150,8 +176,8 @@ defineProps<{
   isNewLanding: boolean
   placeholder: string
   sendButtonTitle: string
-  elevatedMode: string
-  elevatedUnavailable: boolean
+  runMode: SandboxRunMode
+  allowedRunModes: SandboxRunMode[]
   routerEnabled: boolean
   routerVisualEffectsEnabled: boolean
   routerSettingsBusy: boolean
@@ -168,9 +194,10 @@ const emit = defineEmits<{
   input: [event: Event]
   keydown: [event: KeyboardEvent]
   removeAttachment: [index: number]
+  retryAttachment: [index: number]
   send: []
   setBusySendMode: [mode: 'queue' | 'steer']
-  setElevatedMode: [mode: string]
+  setRunMode: [mode: 'standard' | 'trusted' | 'full']
   setRouterEnabled: [enabled: boolean]
   setVisualEffectsEnabled: [enabled: boolean]
   setCodingModeEnabled: [enabled: boolean]
@@ -186,12 +213,24 @@ const composerEl = ref<HTMLElement | null>(null)
 const textareaEl = ref<HTMLTextAreaElement | null>(null)
 const fileInputEl = ref<HTMLInputElement | null>(null)
 const settingsOpen = ref(false)
+const runModeOpen = ref(false)
+
+function toggleSettings() {
+  settingsOpen.value = !settingsOpen.value
+  if (settingsOpen.value) runModeOpen.value = false
+}
+
+function toggleRunMode() {
+  runModeOpen.value = !runModeOpen.value
+  if (runModeOpen.value) settingsOpen.value = false
+}
 
 function attachmentIcon(att: Attachment): IconName {
-  return (att.mime || '').startsWith('image/') ? 'image' : 'fileText'
+  return isImageDisplayAttachment(att) ? 'image' : 'fileText'
 }
 
 function attachmentMeta(att: Attachment): string {
+  if (att.kind === 'failed') return att.error ? `FAILED · ${att.error}` : 'FAILED'
   const mime = att.mime || ''
   const subtype = mime.includes('/') ? mime.split('/')[1] : mime
   const label = subtype ? subtype.toUpperCase() : 'FILE'
@@ -199,6 +238,13 @@ function attachmentMeta(att: Attachment): string {
     ? `${Math.max(1, Math.round(att.size / 1024))} KB`
     : ''
   return [label, size].filter(Boolean).join(' · ')
+}
+
+function attachmentTitle(att: Attachment): string {
+  if (att.kind === 'failed') {
+    return att.error ? `${att.name}: ${att.error}` : `${att.name}: failed`
+  }
+  return att.name
 }
 
 function composerElement(): HTMLElement | null {
@@ -270,6 +316,7 @@ defineExpose<ChatComposerExpose>({
   align-items: center;
   gap: 0.375rem;
   padding: 0.25rem 0.5rem;
+  max-width: min(100%, 360px);
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: 0.375rem;
@@ -278,6 +325,16 @@ defineExpose<ChatComposerExpose>({
 
 .attachment-chip--busy {
   opacity: 0.7;
+}
+
+.attachment-chip--failed {
+  border-color: color-mix(in srgb, var(--danger) 38%, var(--border));
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-elevated));
+}
+
+.attachment-chip--failed .attachment-chip__icon,
+.attachment-chip--failed .attachment-chip__meta {
+  color: var(--danger);
 }
 
 .attachment-chip__icon {
@@ -308,6 +365,7 @@ defineExpose<ChatComposerExpose>({
 .attachment-chip__name {
   font-weight: 500;
   max-width: 150px;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -316,12 +374,18 @@ defineExpose<ChatComposerExpose>({
 .attachment-chip__meta {
   color: var(--text-dim);
   font-size: 0.6875rem;
+  min-width: 0;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.attachment-remove {
+.attachment-action {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex: 0 0 16px;
   padding: 0;
   width: 16px;
   height: 16px;
@@ -332,8 +396,8 @@ defineExpose<ChatComposerExpose>({
   font-size: 0.875rem;
 }
 
-.attachment-remove:hover {
-  color: var(--danger);
+.attachment-action:hover {
+  color: var(--text);
 }
 
 .chat-input-panel {

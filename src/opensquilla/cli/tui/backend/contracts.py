@@ -80,6 +80,8 @@ class TuiRenderer(Protocol):
 
     async def aerror(self, message: str) -> None: ...
 
+    def pulse(self) -> None: ...
+
     async def afinalize(self, usage: Any | None = None, *, cancelled: bool = False) -> None: ...
 
     async def aclose(self) -> None: ...
@@ -91,6 +93,9 @@ class TuiInputKind(Enum):
     NORMAL = "normal"
     DESTRUCTIVE = "destructive"
     EXIT = "exit"
+    # Host-only UI command (e.g. /theme): runs immediately, never echoed as a
+    # prompt and never queued behind an in-flight turn.
+    LOCAL = "local"
 
 
 def _default_classify_input(_user_input: str) -> TuiInputKind:

@@ -627,7 +627,7 @@ function fmtTok(n?: number | null): string {
   background: transparent;
   font: inherit;
   text-align: left;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
   min-height: 2.5rem;
   color: inherit;
 }
@@ -777,7 +777,7 @@ function fmtTok(n?: number | null): string {
 }
 
 .step-chevron {
-  transition: transform 0.12s ease;
+  transition: transform var(--dur-fast) var(--ease-standard);
 }
 
 .tool-row.is-open .step-chevron,
@@ -815,7 +815,7 @@ function fmtTok(n?: number | null): string {
 
 .run-trace__dot--ok { background: var(--ok); }
 .run-trace__dot--err { background: var(--danger); }
-.run-trace__dot--warn { background: var(--warn); }
+.run-trace__dot--warn { background: var(--warn-fill); }
 .run-trace__dot--running {
   background: var(--accent);
   animation: live-pulse var(--dur-pulse) var(--ease-standard) infinite;
@@ -874,11 +874,11 @@ function fmtTok(n?: number | null): string {
 }
 
 .tool-timeline--checklist .tool-row__bullet--ok {
-  animation: checklistCheckIn 0.2s var(--ease-press, ease-out) both;
+  animation: checklistCheckIn var(--dur-base) var(--ease-press, ease-out) both;
 }
 
 .tool-timeline--checklist .tool-row__state-icon--ok {
-  animation: checklistCheckIn 0.2s var(--ease-press, ease-out) both;
+  animation: checklistCheckIn var(--dur-base) var(--ease-press, ease-out) both;
 }
 
 /* Completed, non-open rows soften and tuck in — kept for traceability, not
@@ -890,7 +890,7 @@ function fmtTok(n?: number | null): string {
 .tool-timeline--checklist
   .tool-row:not(.tool-row--running):not(.tool-row--error):not(.is-open) {
   opacity: 0.62;
-  transition: opacity 0.2s ease;
+  transition: opacity var(--dur-base) var(--ease-standard);
 }
 
 .tool-timeline--checklist

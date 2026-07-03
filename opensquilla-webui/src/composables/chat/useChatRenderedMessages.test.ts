@@ -213,3 +213,86 @@ describe('useChatRenderedMessages clarify history recovery', () => {
     expect(clarify?.busy).toBe(true)
   })
 })
+
+describe('useChatRenderedMessages ensemble metadata', () => {
+  it('normalizes ensemble model breakdown, cost, and savings into assistant meta', () => {
+    const api = renderedMessagesFor([
+      {
+        role: 'assistant',
+        text: 'fused answer',
+        ts: 0,
+        messageId: 'm-ensemble',
+        usage: {
+          model: 'z-ai/glm-5.2',
+          cost_usd: 0.123456,
+          total_savings_usd: 0.045,
+          total_savings_pct: 26,
+          model_usage_breakdown: [
+            {
+              role: 'proposer',
+              label: 'Proposer 1',
+              provider: 'openrouter',
+              model: 'deepseek/deepseek-v4-pro',
+              input_tokens: 10,
+              output_tokens: 2,
+              billed_cost: 0.01,
+            },
+            {
+              role: 'aggregator',
+              label: 'aggregator',
+              provider: 'openrouter',
+              model: 'z-ai/glm-5.2',
+              input_tokens: 20,
+              output_tokens: 8,
+              billed_cost: 0.02,
+            },
+          ],
+          ensemble_trace: {
+            profile: 'default',
+            llm_request_count: 2,
+            fallback_used: false,
+          },
+        },
+      },
+    ])
+
+    const [message] = api.renderedMessages.value
+    expect(message.meta?.ensemble).toMatchObject({
+      profile: 'default',
+      modelCount: 2,
+      requestCount: 2,
+      costUsd: 0.123456,
+      savedUsd: 0.045,
+      savedPct: 26,
+      fallbackUsed: false,
+    })
+    expect(message.meta?.ensemble?.models.map(model => model.model)).toEqual([
+      'deepseek/deepseek-v4-pro',
+      'z-ai/glm-5.2',
+    ])
+  })
+
+  it('does not undercount requests when a turn has multiple ensemble breakdown rows', () => {
+    const api = renderedMessagesFor([
+      {
+        role: 'assistant',
+        text: 'fused answer',
+        ts: 0,
+        usage: {
+          model_usage_breakdown: [
+            { role: 'proposer', provider: 'openrouter', model: 'p1' },
+            { role: 'aggregator', provider: 'openrouter', model: 'a1' },
+            { role: 'proposer', provider: 'openrouter', model: 'p2' },
+            { role: 'aggregator', provider: 'openrouter', model: 'a2' },
+          ],
+          ensemble_trace: {
+            profile: 'default',
+            llm_request_count: 2,
+          },
+        },
+      },
+    ])
+
+    expect(api.renderedMessages.value[0].meta?.ensemble?.requestCount).toBe(4)
+  })
+})

@@ -300,7 +300,6 @@ const imageProviders = computed(() => (catalog.value.imageGenerationProviders ||
 const memoryProviders = computed(() => catalog.value.memoryEmbeddingProviders || [])
 const routerProfiles = computed(() => catalog.value.routerProfiles?.profiles || [])
 const currentRouterProfile = computed(() => routerProfiles.value.find(p => p.providerId === currentProvider.value))
-
 const providerSpec = computed(() => runtimeProviders.value.find(p => p.providerId === providerForm.selectedProvider.value) || null)
 const providerFields = computed(() => providerSpec.value?.fields || [])
 const providerCoreFields = computed(() => providerFields.value.filter(f => !isProviderAdvancedField(f)))

@@ -12,7 +12,7 @@ EXPECTED_ROUTER_MODELS = {
     "c0": "deepseek/deepseek-v4-flash",
     "c1": "deepseek/deepseek-v4-pro",
     "c2": "z-ai/glm-5.2",
-    "c3": "anthropic/claude-opus-4.8",
+    "c3": "z-ai/glm-5.2",
 }
 
 

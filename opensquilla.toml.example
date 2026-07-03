@@ -243,8 +243,8 @@ thinking_level = "high"
 
 [squilla_router.tiers.c3]
 provider = "openrouter"
-model = "anthropic/claude-opus-4.8"
-description = "Highest-quality text reasoning route for difficult planning, deep review, complex debugging, and high-stakes synthesis"
+model = "z-ai/glm-5.2"
+description = "Highest-tier GLM 5.2 route for difficult planning, deep review, complex debugging, and high-stakes synthesis"
 supports_image = false
 thinking_level = "high"
 

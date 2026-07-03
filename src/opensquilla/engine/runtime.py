@@ -4632,6 +4632,41 @@ class TurnRunner:
                 ),
             )
 
+        ensemble_cfg = getattr(self._config, "llm_ensemble", None)
+        if provider is not None and getattr(ensemble_cfg, "enabled", False):
+            current_provider_config = (
+                getattr(cloned_selector, "current_config", None)
+                if cloned_selector is not None
+                else None
+            )
+            if current_provider_config is None:
+                log.warning(
+                    "llm_ensemble.wrap_skipped",
+                    reason="missing_provider_selector_current_config",
+                )
+            elif not getattr(current_provider_config, "provider", None) or not getattr(
+                current_provider_config,
+                "model",
+                None,
+            ):
+                log.warning(
+                    "llm_ensemble.wrap_skipped",
+                    reason="incomplete_provider_selector_current_config",
+                )
+            else:
+                from opensquilla.provider.ensemble import build_ensemble_provider_from_config
+
+                turn.metadata["ensemble_enabled"] = True
+                turn.metadata["routed_model_before_ensemble"] = (
+                    turn.model or getattr(current_provider_config, "model", "")
+                )
+                provider = build_ensemble_provider_from_config(
+                    config=self._config,
+                    inherited_provider_config=current_provider_config,
+                    fallback_provider=provider,
+                    turn_metadata=turn.metadata,
+                )
+
         return turn, provider
 
     async def _router_previous_assistant_context(

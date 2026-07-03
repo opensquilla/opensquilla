@@ -295,6 +295,58 @@ class LlmProviderConfig(BaseSettings):
         return self
 
 
+DEFAULT_LLM_ENSEMBLE_MODEL_OPTIONS = [
+    "deepseek/deepseek-v4-pro",
+    "z-ai/glm-5.2",
+    "qwen/qwen3.7-plus",
+    "deepseek/deepseek-v4-flash",
+    "qwen/qwen3.7-max",
+    "moonshotai/kimi-k2.6",
+    "moonshotai/kimi-k2.7-code",
+    "minimax/minimax-m3",
+]
+
+
+def _default_llm_ensemble_model_options() -> list[str]:
+    """Models operators may select for the router_dynamic ensemble candidate pool."""
+    return list(DEFAULT_LLM_ENSEMBLE_MODEL_OPTIONS)
+
+
+class LlmEnsembleConfig(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="OPENSQUILLA_LLM_ENSEMBLE_",
+        env_nested_delimiter="__",
+        extra="ignore",
+    )
+
+    enabled: bool = True
+    mode: Literal["b5_fusion"] = "b5_fusion"
+    proposer_tools: bool = False
+    min_successful_proposers: int = Field(default=1, ge=1)
+    all_failed_policy: Literal["fallback_single", "error"] = "fallback_single"
+    model_options: list[str] = Field(default_factory=_default_llm_ensemble_model_options)
+    candidate_max_chars: int = Field(default=24_000, ge=0)
+    proposer_timeout_seconds: float = Field(default=120.0, gt=0.0)
+    aggregator_timeout_seconds: float = Field(default=120.0, gt=0.0)
+    shuffle_candidates: bool = True
+    record_candidates: bool = False
+
+    @model_validator(mode="after")
+    def _validate_model_options(self) -> LlmEnsembleConfig:
+        model_options: list[str] = []
+        seen_options: set[str] = set()
+        for model in self.model_options:
+            normalized = str(model or "").strip()
+            if not normalized or normalized in seen_options:
+                continue
+            seen_options.add(normalized)
+            model_options.append(normalized)
+        if not model_options:
+            raise ValueError("llm_ensemble.model_options must define at least one model")
+        self.model_options = model_options
+        return self
+
+
 # Module-level dedupe state for the legacy ``enabled`` deprecation warning.
 # A plain ``bool`` flag guarded by a ``Lock`` makes the check-and-set atomic
 # across concurrent constructors; ``threading.Event`` is *not* atomic for
@@ -625,10 +677,10 @@ def _default_tiers() -> dict:
         },
         "c3": {
             "provider": "openrouter",
-            "model": "anthropic/claude-opus-4.8",
+            "model": "z-ai/glm-5.2",
             "description": (
-                "Highest-quality text reasoning model for difficult planning, "
-                "deep review, complex debugging, and high-stakes synthesis"
+                "Highest-tier GLM 5.2 route for difficult planning, deep review, "
+                "complex debugging, and high-stakes synthesis"
             ),
             "supports_image": False,
             "thinking_level": "high",
@@ -1731,6 +1783,7 @@ class GatewayConfig(BaseSettings):
     # Credential profiles for non-primary providers, keyed by registry
     # provider id; consumed by cross-provider router tiers.
     llm_profiles: dict[str, LlmProviderProfile] = Field(default_factory=dict)
+    llm_ensemble: LlmEnsembleConfig = Field(default_factory=LlmEnsembleConfig)
     prompt_cache: PromptCacheConfig = Field(default_factory=PromptCacheConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     prompt: PromptConfig = Field(default_factory=PromptConfig)

@@ -133,7 +133,7 @@ def test_system_prompt_describes_managed_execution_run_mode() -> None:
         runtime_info={
             "os": "Windows",
             "shell": "powershell",
-            "workspace_dir": r"C:\Users\lrk\.opensquilla\workspace",
+            "workspace_dir": r"C:\OpenSquilla\workspace",
             "run_mode": "trusted",
             "run_mode_label": "Managed Execution",
         },

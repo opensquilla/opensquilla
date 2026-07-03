@@ -326,8 +326,8 @@ class LlmEnsembleConfig(BaseSettings):
     all_failed_policy: Literal["fallback_single", "error"] = "fallback_single"
     model_options: list[str] = Field(default_factory=_default_llm_ensemble_model_options)
     candidate_max_chars: int = Field(default=24_000, ge=0)
-    proposer_timeout_seconds: float = Field(default=120.0, gt=0.0)
-    aggregator_timeout_seconds: float = Field(default=120.0, gt=0.0)
+    proposer_timeout_seconds: float = Field(default=3600.0, gt=0.0)
+    aggregator_timeout_seconds: float = Field(default=3600.0, gt=0.0)
     shuffle_candidates: bool = True
     record_candidates: bool = False
 

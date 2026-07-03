@@ -26,8 +26,8 @@ def test_llm_ensemble_defaults_to_enabled() -> None:
         "minimax/minimax-m3",
     ]
     assert ensemble.candidate_max_chars == 24_000
-    assert ensemble.proposer_timeout_seconds == 120.0
-    assert ensemble.aggregator_timeout_seconds == 120.0
+    assert ensemble.proposer_timeout_seconds == 3600.0
+    assert ensemble.aggregator_timeout_seconds == 3600.0
     assert ensemble.shuffle_candidates is True
     assert ensemble.record_candidates is False
 

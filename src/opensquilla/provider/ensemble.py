@@ -311,8 +311,8 @@ class EnsembleProvider:
         fallback_provider: LLMProvider | None = None,
         min_successful_proposers: int = 1,
         all_failed_policy: Literal["fallback_single", "error"] = "fallback_single",
-        proposer_timeout_seconds: float = 120.0,
-        aggregator_timeout_seconds: float = 120.0,
+        proposer_timeout_seconds: float = 3600.0,
+        aggregator_timeout_seconds: float = 3600.0,
         candidate_max_chars: int = 24_000,
         shuffle_candidates: bool = True,
         record_candidates: bool = False,
@@ -325,8 +325,8 @@ class EnsembleProvider:
         self.fallback_provider = fallback_provider
         self.min_successful_proposers = max(1, int(min_successful_proposers or 1))
         self.all_failed_policy = all_failed_policy
-        self.proposer_timeout_seconds = float(proposer_timeout_seconds or 120.0)
-        self.aggregator_timeout_seconds = float(aggregator_timeout_seconds or 120.0)
+        self.proposer_timeout_seconds = float(proposer_timeout_seconds or 3600.0)
+        self.aggregator_timeout_seconds = float(aggregator_timeout_seconds or 3600.0)
         self.candidate_max_chars = int(candidate_max_chars or 0)
         self.shuffle_candidates = bool(shuffle_candidates)
         self.record_candidates = bool(record_candidates)
@@ -1853,9 +1853,9 @@ def build_ensemble_provider_from_config(
         fallback_provider=fallback_provider,
         min_successful_proposers=min_successful_proposers,
         all_failed_policy=getattr(ensemble_cfg, "all_failed_policy", "fallback_single"),
-        proposer_timeout_seconds=float(getattr(ensemble_cfg, "proposer_timeout_seconds", 120.0)),
+        proposer_timeout_seconds=float(getattr(ensemble_cfg, "proposer_timeout_seconds", 3600.0)),
         aggregator_timeout_seconds=float(
-            getattr(ensemble_cfg, "aggregator_timeout_seconds", 120.0)
+            getattr(ensemble_cfg, "aggregator_timeout_seconds", 3600.0)
         ),
         candidate_max_chars=int(getattr(ensemble_cfg, "candidate_max_chars", 24_000) or 0),
         shuffle_candidates=bool(getattr(ensemble_cfg, "shuffle_candidates", True)),

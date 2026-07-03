@@ -71,6 +71,8 @@ DEPRECATED_AGENT_TOKEN_SAVING_LEAVES: frozenset[str] = frozenset(
     k.removeprefix("agent_token_saving.")
     for k in DEPRECATED_AGENT_TOKEN_SAVING_FIELDS
 )
+_LEGACY_LLM_ENSEMBLE_TIMEOUT_SECONDS = frozenset({120.0, 300.0})
+_DEFAULT_LLM_ENSEMBLE_TIMEOUT_SECONDS = 3600.0
 
 _LEGACY_MEMORY_FIELDS_WARN_LOCK = threading.Lock()
 _LEGACY_MEMORY_FIELDS_WARNED = False
@@ -292,6 +294,24 @@ def migrate_config_payload(data: dict[str, Any]) -> ConfigMigrationResult:
                 builder.warnings.append(
                     "agent_token_saving.tool_result_compression_* was removed; "
                     "tokenjuice projection is now the built-in tool-result path"
+                )
+
+    llm_ensemble = builder.payload.get("llm_ensemble")
+    if isinstance(llm_ensemble, dict):
+        for leaf in ("proposer_timeout_seconds", "aggregator_timeout_seconds"):
+            value = llm_ensemble.get(leaf)
+            if isinstance(value, bool):
+                continue
+            try:
+                numeric_value = float(value)
+            except (TypeError, ValueError):
+                continue
+            if numeric_value in _LEGACY_LLM_ENSEMBLE_TIMEOUT_SECONDS:
+                llm_ensemble[leaf] = _DEFAULT_LLM_ENSEMBLE_TIMEOUT_SECONDS
+                builder.changes.append(
+                    "llm_ensemble."
+                    f"{leaf}: {numeric_value:g} -> "
+                    f"{_DEFAULT_LLM_ENSEMBLE_TIMEOUT_SECONDS:g}"
                 )
 
     # search_max_results gained an upper bound (<= MAX_SEARCH_RESULTS); coerce any

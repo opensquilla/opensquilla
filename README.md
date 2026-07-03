@@ -37,7 +37,7 @@ OpenRouter, OpenAI, Anthropic, Ollama, DeepSeek, Gemini, Qwen/DashScope,
 and 20+ other LLM providers with no change to your code or config
 schema.
 
-OpenSquilla 0.4.1 is the current release.
+OpenSquilla 0.5.0 Preview 1 is the current preview release.
 
 For task-oriented product documentation, start with the
 [OpenSquilla Product Guide](README.product.md) or the
@@ -50,36 +50,32 @@ For task-oriented product documentation, start with the
 OpenSquilla runs on Windows, macOS, and Linux. Pick the path that
 matches your use case.
 
-Desktop installers, Windows portable, and Quick terminal install give you a
-prebuilt **release** — no Git required. The other two — Install from source and
+Desktop installers and Quick terminal install give you a prebuilt **release** —
+no Git required. The other two — Install from source and
 Develop from source — build **from a Git checkout** (`git clone` + Git LFS).
 
-Release install commands use published GitHub release assets. The
-Windows portable zip also has a `/releases/latest/download/` alias for
-the current release. Python wheel installs use versioned wheel filenames
-because installers validate the version embedded in the wheel filename.
+Release install commands use published GitHub release assets. Python wheel installs use versioned wheel filenames because installers validate the version
+embedded in the wheel filename.
 
-For 0.4.1 desktop use, prefer the packaged desktop installers from the GitHub
-Release: `OpenSquilla-0.4.1-mac-arm64.dmg` on macOS and
-`OpenSquilla-0.4.1-win-x64.exe` on Windows. The Windows portable zip remains
-available as a legacy compatibility package for scripts and portable-folder
-workflows.
+For 0.5.0 Preview 1 desktop use, prefer the packaged desktop installers from
+the GitHub Release: `OpenSquilla-0.5.0rc1-mac-arm64.dmg` on macOS and
+`OpenSquilla-0.5.0rc1-win-x64.exe` on Windows. New 0.5 preview releases no longer publish Windows portable zips; existing 0.4.x portable assets remain on their
+original release pages for legacy scripts and portable-folder workflows.
 
 | Path | Audience | When to use |
 | --- | --- | --- |
 | [Desktop installers](#desktop-installers) **(recommended desktop)** | macOS and Windows users | Packaged desktop app |
-| [Windows portable](#windows-portable-no-python) | Windows users | Legacy compatibility; no Python toolchain; one-zip launch |
 | [Quick terminal install](#quick-terminal-install) **(recommended)** | End users on any OS | Release wheel from a terminal |
 | [Install from source](#install-from-source) | Users tracking `main` | Run from a checkout, not edit it |
 | [Develop from source](#develop-from-source) | Contributors | Edit, test, or debug the source |
 
 ### Prerequisites
 
-| Requirement | Windows portable | Quick terminal install | Install from source | Develop from source |
-| --- | :---: | :---: | :---: | :---: |
-| Python 3.12+ | bundled | via `uv` | via `uv` or system | via `uv` |
-| Git + Git LFS | — | — | required | required |
-| `uv` | — | installed if missing | recommended | required |
+| Requirement | Quick terminal install | Install from source | Develop from source |
+| --- | :---: | :---: | :---: |
+| Python 3.12+ | via `uv` | via `uv` or system | via `uv` |
+| Git + Git LFS | — | required | required |
+| `uv` | installed if missing | recommended | required |
 
 The default `recommended` profile installs **SquillaRouter** —
 OpenSquilla's on-device model router — and its model assets;
@@ -88,12 +84,11 @@ separate `--router disabled` onboarding flag keeps the dependencies
 installed but turns the router off at runtime.
 
 On Windows, SquillaRouter's bundled ONNX runtime also needs the Visual
-C++ runtime. The Windows portable launcher and the from-source
-PowerShell installer install it automatically via `winget`; the
-**Quick terminal install** (`uv tool install`) path does not — if
+C++ runtime. The from-source PowerShell installer installs it automatically via
+`winget`; the **Quick terminal install** (`uv tool install`) path does not — if
 startup logs a `DLL load failed` error, install it manually (see
-[Troubleshooting](#troubleshooting)). OpenSquilla keeps running with
-direct single-model routing until it is installed.
+[Troubleshooting](#troubleshooting)). OpenSquilla keeps running with direct
+single-model routing until it is installed.
 
 On macOS terminal installs, SquillaRouter's LightGBM runtime may also
 need the system OpenMP library. The desktop app bundles the
@@ -109,60 +104,22 @@ Install links: [Git](https://git-scm.com/downloads) ·
 
 ### Desktop installers
 
-The 0.4.1 desktop installers package the Vue control console and gateway
-runtime in an Electron shell.
+The 0.5.0 Preview 1 desktop installers package the Vue control console and
+gateway runtime in an Electron shell.
 
-- macOS Apple Silicon: <https://github.com/opensquilla/opensquilla/releases/download/v0.4.1/OpenSquilla-0.4.1-mac-arm64.dmg>
-- Windows x64: <https://github.com/opensquilla/opensquilla/releases/download/v0.4.1/OpenSquilla-0.4.1-win-x64.exe>
+- macOS Apple Silicon: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0rc1-mac-arm64.dmg>
+- Windows x64: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0rc1-win-x64.exe>
 
 Quit any running OpenSquilla desktop app before upgrading. Existing
 `~/.opensquilla/config.toml` and session data are reused.
 
 Code signing policy: [`docs/code-signing-policy.md`](docs/code-signing-policy.md).
 
-### Windows portable (no Python)
-
-The legacy compatibility path on Windows — the zip ships a bundled CPython
-runtime, so no separate Python install is required.
-
-1. Download the current portable zip:
-   <https://github.com/opensquilla/opensquilla/releases/latest/download/OpenSquilla-windows-x64-portable.zip>
-2. Extract it to a writable folder such as Downloads or Documents,
-   then right-click `Start OpenSquilla.cmd` and choose **Run as
-   administrator**.
-3. Complete the first-run setup, then open <http://127.0.0.1:18791/control/>.
-
 > [!NOTE]
-> Windows builds are currently unsigned; administrator launch is the supported
-> path. If SmartScreen appears, choose **More info** → **Run anyway**.
-> If Smart App Control or enterprise policy blocks the unsigned app,
-> use [Quick terminal install](#quick-terminal-install) instead.
-
-<details>
-<summary>Advanced portable usage</summary>
-
-Provide an OpenRouter key before first start:
-
-```powershell
-$env:OPENROUTER_API_KEY="sk-..."
-Set-ExecutionPolicy -Scope Process Bypass
-.\start.ps1
-```
-
-If `OPENROUTER_API_KEY` is set and no local config exists, the launcher
-writes an env-reference config and starts the gateway without
-prompting. If unset, the onboarding wizard lets you pick any supported
-provider.
-
-The portable zip does not install a global `opensquilla` command. For a
-terminal where `opensquilla …` works, run `OpenSquilla Shell.cmd`, or
-call the bundled launcher directly:
-
-```powershell
-.\opensquilla.cmd onboard --provider openrouter --api-key-env OPENROUTER_API_KEY
-```
-
-</details>
+> Windows builds are currently unsigned. If SmartScreen appears, choose
+> **More info** → **Run anyway**. If Smart App Control or enterprise policy
+> blocks the unsigned app, use [Quick terminal install](#quick-terminal-install)
+> instead.
 
 ### Quick terminal install
 
@@ -191,7 +148,7 @@ $env:Path = "$env:USERPROFILE\.local\bin;" + $env:Path
 **2. Install OpenSquilla** — the same command on every platform.
 
 ```sh
-uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.4.1/opensquilla-0.4.1-py3-none-any.whl"
+uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/opensquilla-0.5.0rc1-py3-none-any.whl"
 ```
 
 This installs the OpenSquilla wheel from the release URL, then lets
@@ -215,7 +172,7 @@ opensquilla gateway run
 > a new terminal, or re-run the PATH line from step 1.
 
 For a fully pinned install, use the versioned wheel URL:
-`https://github.com/opensquilla/opensquilla/releases/download/v0.4.1/opensquilla-0.4.1-py3-none-any.whl`.
+`https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/opensquilla-0.5.0rc1-py3-none-any.whl`.
 
 ### Install from source
 
@@ -623,27 +580,29 @@ settings live in `opensquilla.toml.example`.
 
 ---
 
-## What's New in 0.4.1
+## What's New in 0.5.0 Preview 1
 
-OpenSquilla 0.4.1 is a maintenance release for the desktop and Control UI line:
+OpenSquilla 0.5.0 Preview 1 is a preview release for the new routing and
+desktop/runtime line:
 
-- **Desktop reliability** - packaged gateway checks now cover Coding mode,
-  `code-task`, and SquillaRouter startup, and desktop window/artifact handling
-  is more stable.
-- **Six-language client support** - the Control UI and desktop client support
-  English, Simplified Chinese, Japanese, French, German, and Spanish across
-  first-paint and settings surfaces.
-- **Coding mode and router packaging** - desktop builds fail fast if router
-  assets are missing or still Git LFS pointers, preventing degraded release
-  packages.
-- **Telemetry and Windows polish** - install telemetry skips CI and test
-  environments, and Windows desktop assets use the OpenSquilla logo.
-- **Mainline governance** - ordinary pull requests and release integration are
-  aligned around `main`, with maintainer branches reserved for release, hotfix,
-  staging, integration, and sandbox work.
+- **Model Ensemble and smarter routing** - dynamic Model Ensemble routing,
+  OpenAI-compatible provider handling, Codex-style provider support,
+  progressive reveal, and direct single-model defaults are easier to configure
+  and inspect.
+- **Managed execution alignment** - sandbox, run-mode, approval, and host
+  execution paths share clearer authorization boundaries and diagnostics.
+- **Desktop and Control UI polish** - settings, router controls, drag-and-drop
+  attachments, history materialization, and image preview navigation are
+  steadier across refreshes and desktop sessions.
+- **OpenTUI and terminal reliability** - the preview terminal frontend, gateway
+  lifecycle handling, subprocess encoding, and Windows process cleanup all get
+  tighter failure behavior.
+- **Portable package retirement** - 0.5 preview releases publish Electron
+  desktop installers and the Python wheel only; the old Windows portable zips
+  remain on 0.4.x release pages for historical compatibility.
 
 Full notes: [`CHANGELOG.md`](CHANGELOG.md) ·
-[`docs/releases/0.4.1.md`](docs/releases/0.4.1.md).
+[`docs/releases/0.5.0rc1.md`](docs/releases/0.5.0rc1.md).
 
 ## What's New in 0.2.1
 
@@ -762,11 +721,11 @@ single-model routing, but the bundled `SquillaRouter` runtime stays
 inactive until the Visual C++ Redistributable for Visual Studio
 2015–2022 (x64) is installed.
 
-The Windows portable launcher and the from-source PowerShell installer
-attempt to install the redistributable via `winget`. If you used Quick
-terminal install, or `winget` is unavailable, install it manually and
-restart PowerShell: <https://aka.ms/vs/17/release/vc_redist.x64.exe>.
-Then restore the recommended router:
+The from-source PowerShell installer attempts to install the redistributable via
+`winget`. If you used Quick terminal install, or `winget` is unavailable,
+install it manually and restart PowerShell:
+<https://aka.ms/vs/17/release/vc_redist.x64.exe>. Then restore the recommended
+router:
 
 ```powershell
 opensquilla onboard --provider openrouter --api-key-env OPENROUTER_API_KEY --router recommended

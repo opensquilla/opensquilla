@@ -39,6 +39,7 @@ root release README with task-oriented guides.
 
 ## Surfaces and Operations
 
+- [`releases/0.5.0rc1.md`](releases/0.5.0rc1.md) - OpenSquilla 0.5.0 Preview 1 release notes.
 - [`releases/0.4.1.md`](releases/0.4.1.md) - OpenSquilla 0.4.1 release notes.
 - [`releases/0.4.0.md`](releases/0.4.0.md) - OpenSquilla 0.4.0 release notes.
 - [`releases/0.3.0.md`](releases/0.3.0.md) - OpenSquilla 0.3.0 release notes.

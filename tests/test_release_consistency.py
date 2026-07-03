@@ -5,10 +5,10 @@ import re
 import tomllib
 from pathlib import Path
 
-CURRENT_VERSION = "0.4.1"
+CURRENT_VERSION = "0.5.0rc1"
 CURRENT_TAG = f"v{CURRENT_VERSION}"
-PREVIEW_VERSION = "0.2.0rc1"
-PREVIEW_TAG = f"v{PREVIEW_VERSION}"
+HISTORICAL_PREVIEW_VERSION = "0.2.0rc1"
+HISTORICAL_PREVIEW_TAG = f"v{HISTORICAL_PREVIEW_VERSION}"
 
 
 def test_pyproject_version_matches_current_release() -> None:
@@ -254,10 +254,13 @@ def test_releases_md_exists_and_references_current_and_preview_tags() -> None:
     assert releases.is_file(), "RELEASES.md must exist at the repository root"
     text = releases.read_text(encoding="utf-8")
     assert CURRENT_TAG in text, f"RELEASES.md must reference the tag '{CURRENT_TAG}'"
-    assert PREVIEW_TAG in text, f"RELEASES.md must reference the tag '{PREVIEW_TAG}'"
+    assert (
+        HISTORICAL_PREVIEW_TAG in text
+    ), f"RELEASES.md must retain the historical tag '{HISTORICAL_PREVIEW_TAG}'"
     assert f"OpenSquilla-{CURRENT_VERSION}-mac-arm64.dmg" in text
     assert f"OpenSquilla-{CURRENT_VERSION}-win-x64.exe" in text
-    assert "legacy Windows portable" in text
+    assert "do not publish Windows portable zips" in text
+    assert "legacy Windows portable downloads" in text
 
 
 def test_changelog_has_current_release_section_and_unreleased() -> None:
@@ -275,11 +278,8 @@ def test_readme_release_install_uses_latest_assets_and_pinned_alternative() -> N
 
     assert f"OpenSquilla-{CURRENT_VERSION}-mac-arm64.dmg" in readme
     assert f"OpenSquilla-{CURRENT_VERSION}-win-x64.exe" in readme
-    assert "legacy compatibility package" in readme
-    assert (
-        "releases/latest/download/OpenSquilla-windows-x64-portable.zip"
-        in readme
-    )
+    assert "no longer publish Windows portable zips" in readme
+    assert "releases/latest/download/OpenSquilla-windows-x64-portable.zip" not in readme
     assert (
         f"releases/download/{CURRENT_TAG}/opensquilla-{CURRENT_VERSION}-py3-none-any.whl"
         in readme
@@ -333,9 +333,8 @@ def test_release_workflow_marks_preview_tags_as_prereleases() -> None:
     assert "IS_PRERELEASE" in workflow
     assert "--prerelease" in workflow
     assert "OpenSquilla {match.group(1)} Preview {match.group(2)}" in workflow
-    assert "is_prerelease = bool(re.search" in workflow
-    assert "if not is_prerelease:" in workflow
-    assert "expected.add(\"OpenSquilla-windows-x64-portable.zip\")" in workflow
+    assert "0.5+ release assets must not include Windows portable zips" in workflow
+    assert "OpenSquilla-windows-x64-portable.zip" not in workflow
     assert "opensquilla-latest-py3-none-any.whl" not in workflow
 
 
@@ -346,7 +345,7 @@ def test_historical_040_release_notes_remain_available() -> None:
     assert "OpenSquilla-0.4.0-mac-arm64.dmg" in notes
 
 
-def test_current_release_notes_prioritize_desktop_and_legacy_portable() -> None:
+def test_current_release_notes_prioritize_model_ensemble_and_sandbox() -> None:
     notes = Path(f"docs/releases/{CURRENT_VERSION}.md").read_text(encoding="utf-8")
 
     assert "## Downloads" in notes
@@ -354,11 +353,18 @@ def test_current_release_notes_prioritize_desktop_and_legacy_portable() -> None:
     assert f"OpenSquilla-{CURRENT_VERSION}-mac-arm64.zip" in notes
     assert f"OpenSquilla-{CURRENT_VERSION}-win-x64.exe" in notes
     assert f"opensquilla-{CURRENT_VERSION}-py3-none-any.whl" in notes
-    assert "Legacy Windows portable" in notes
-    assert "legacy compatibility" in notes
-    assert "## Upgrading from 0.4.0" in notes
+    assert notes.index("### Model Ensemble") < notes.index(
+        "### Managed execution and sandbox alignment"
+    )
+    assert notes.index("### Managed execution and sandbox alignment") < notes.index(
+        "### Desktop and Control UI polish"
+    )
+    assert "No Windows portable assets are published for 0.5.0 preview releases" in notes
+    assert "0.5.0rc1 portable zip" in notes
+    assert "## Upgrading from 0.4.1" in notes
     assert "## Acknowledgements" in notes
     assert "@ab2ence" in notes
+    assert "first-time OpenSquilla release contributor" in notes
 
 
 def test_docs_index_links_current_release_notes() -> None:
@@ -368,13 +374,20 @@ def test_docs_index_links_current_release_notes() -> None:
     assert "releases/0.4.0.md" in index
 
 
-def test_current_contributor_ledger_records_041_attribution_without_repeating_040() -> None:
+def test_current_contributor_ledger_records_050rc1_attribution() -> None:
     ledger = Path("CONTRIBUTORS.md").read_text(encoding="utf-8")
-    section = ledger.split("## OpenSquilla 0.4.1", 1)[1].split("## OpenSquilla 0.4.0", 1)[0]
+    section = ledger.split("## OpenSquilla 0.5.0rc1", 1)[1].split("## OpenSquilla 0.4.1", 1)[0]
 
     assert "@ab2ence" in section
-    assert "#348" in section
-    assert "#355" in section
+    assert "@Liu-RK" in section
+    assert "@TUOXI293" in section
+    assert "#388" in section
+    assert "#412" in section
+    assert "#447" in section
+    assert "#450" in section
+    assert "#454" in section
+    assert "Tqangxl" in section
+    assert "Shuo Zhang" in section
     assert "@nice-code-la" not in section
     assert "Codex" not in section
     assert "Claude Code" not in section

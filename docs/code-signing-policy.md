@@ -6,10 +6,10 @@ artifacts and the rules for any future signing workflow.
 ## Current Status
 
 Windows release builds are currently unsigned. The Windows desktop installer,
-portable zip, updater metadata, and checksums are built and published without a
-Windows code-signing certificate. Download pages and release notes must not
-claim Windows code signing until a signing workflow has been approved, enabled,
-and verified for the specific release artifact.
+updater metadata, and checksums are built and published without a Windows
+code-signing certificate. Download pages and release notes must not claim Windows code signing
+until a signing workflow has been approved, enabled, and verified for the
+specific release artifact.
 
 macOS release packaging is handled separately through the Apple signing and
 notarization path configured by maintainers for macOS artifacts. This document's

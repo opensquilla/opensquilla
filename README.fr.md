@@ -43,7 +43,7 @@ enfichable dialogue avec OpenRouter, OpenAI, Anthropic, Ollama, DeepSeek, Gemini
 Qwen/DashScope et plus de 20 autres fournisseurs de LLM, sans aucun changement dans
 votre code ni dans votre schéma de configuration.
 
-OpenSquilla 0.4.1 est la version actuelle.
+OpenSquilla 0.5.0 Preview 1 est la préversion actuelle.
 
 Pour une documentation produit orientée tâches, commencez par le
 [Guide produit OpenSquilla](README.product.md) ou par l'[index de la
@@ -62,16 +62,14 @@ autres — Installation depuis les sources et Développement depuis les sources 
 construisent **à partir d'un dépôt Git** (`git clone` + Git LFS).
 
 Les commandes d'installation de la version publiée utilisent les ressources de release
-GitHub publiées. Le zip portable Windows dispose aussi d'un alias
-`/releases/latest/download/` pointant vers la version actuelle. Les installations de
-wheel Python utilisent des noms de fichier de wheel versionnés, car les installateurs
-valident la version intégrée au nom de fichier du wheel.
+GitHub publiées. Les installations de wheel Python utilisent des noms de fichier de
+wheel versionnés, car les installateurs valident la version intégrée au nom de
+fichier du wheel.
 
-Pour un usage bureau en 0.4.1, préférez les installateurs de bureau empaquetés issus de la
-Release GitHub : `OpenSquilla-0.4.1-mac-arm64.dmg` sous macOS et
-`OpenSquilla-0.4.1-win-x64.exe` sous Windows. Le zip portable Windows reste disponible
-en tant que paquet de compatibilité héritée pour les scripts et les workflows en
-dossier portable.
+Pour un usage bureau en 0.5.0 Preview 1, préférez les installateurs de bureau empaquetés issus de la
+Release GitHub : `OpenSquilla-0.5.0rc1-mac-arm64.dmg` sous macOS et
+`OpenSquilla-0.5.0rc1-win-x64.exe` sous Windows. Les préversions 0.5 ne
+publient plus de nouveau zip portable Windows.
 
 | Voie | Public | Quand l'utiliser |
 | --- | --- | --- |
@@ -120,11 +118,11 @@ Liens d'installation : [Git](https://git-scm.com/downloads) ·
 
 ### Installateurs de bureau
 
-Les installateurs de bureau 0.4.1 empaquettent la console de contrôle Vue et
+Les installateurs de bureau 0.5.0 Preview 1 empaquettent la console de contrôle Vue et
 l'environnement d'exécution de la passerelle dans une enveloppe Electron.
 
-- macOS Apple Silicon : <https://github.com/opensquilla/opensquilla/releases/download/v0.4.1/OpenSquilla-0.4.1-mac-arm64.dmg>
-- Windows x64 : <https://github.com/opensquilla/opensquilla/releases/download/v0.4.1/OpenSquilla-0.4.1-win-x64.exe>
+- macOS Apple Silicon : <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0rc1-mac-arm64.dmg>
+- Windows x64 : <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0rc1-win-x64.exe>
 
 Quittez toute application de bureau OpenSquilla en cours d'exécution avant la mise à
 niveau. Les fichiers `~/.opensquilla/config.toml` et les données de session existants
@@ -138,7 +136,7 @@ La voie de compatibilité héritée sous Windows — le zip embarque un environn
 d'exécution CPython, si bien qu'aucune installation Python distincte n'est requise.
 
 1. Téléchargez le zip portable actuel :
-   <https://github.com/opensquilla/opensquilla/releases/latest/download/OpenSquilla-windows-x64-portable.zip>
+   <https://github.com/opensquilla/opensquilla/releases/download/v0.4.1/OpenSquilla-0.4.1-windows-x64-py312-recommended-portable.zip>
 2. Extrayez-le dans un dossier accessible en écriture tel que Téléchargements ou
    Documents, puis faites un clic droit sur `Start OpenSquilla.cmd` et choisissez
    **Exécuter en tant qu'administrateur**.
@@ -207,7 +205,7 @@ $env:Path = "$env:USERPROFILE\.local\bin;" + $env:Path
 **2. Installer OpenSquilla** — la même commande sur toutes les plateformes.
 
 ```sh
-uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.4.1/opensquilla-0.4.1-py3-none-any.whl"
+uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/opensquilla-0.5.0rc1-py3-none-any.whl"
 ```
 
 Cela installe le wheel OpenSquilla depuis l'URL de release, puis laisse `uv`
@@ -232,7 +230,7 @@ opensquilla gateway run
 > nouveau terminal, ou réexécutez la ligne PATH de l'étape 1.
 
 Pour une installation entièrement épinglée, utilisez l'URL de wheel versionnée :
-`https://github.com/opensquilla/opensquilla/releases/download/v0.4.1/opensquilla-0.4.1-py3-none-any.whl`.
+`https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/opensquilla-0.5.0rc1-py3-none-any.whl`.
 
 <a id="install-from-source"></a>
 

@@ -85,4 +85,25 @@ describe('useSetupRouterForm — openrouter-mix round-trip', () => {
       },
     })
   })
+
+  it('maps openrouter-mix to the two-option model-routing UI choice without changing the payload', () => {
+    const f = useSetupRouterForm()
+    f.initFromConfig({ enabled: true, tier_profile: null }, {}, 'openrouter')
+
+    const panel = makePanel(f, true)
+    expect(panel.value.routerMode).toBe('openrouter-mix')
+    expect(panel.value.routerModeChoice).toBe('recommended')
+    expect(panel.value.routerConfigDisabled).toBe(false)
+    expect(f.payload().mode).toBe('openrouter-mix')
+  })
+
+  it('maps disabled router config to the single-model UI choice', () => {
+    const f = useSetupRouterForm()
+    f.initFromConfig({ enabled: false }, {}, 'openrouter')
+
+    const panel = makePanel(f, true)
+    expect(panel.value.routerMode).toBe('disabled')
+    expect(panel.value.routerModeChoice).toBe('disabled')
+    expect(panel.value.routerConfigDisabled).toBe(true)
+  })
 })

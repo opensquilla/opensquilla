@@ -237,14 +237,25 @@ def _is_alive(pid: int) -> bool:
     if os.name == "nt":
         try:
             import ctypes
+            from ctypes import wintypes
 
             ctypes_mod = cast(Any, ctypes)
-            synchronize = 0x00100000
-            handle = ctypes_mod.windll.kernel32.OpenProcess(synchronize, False, pid)
-            if handle == 0:
+            kernel32 = ctypes_mod.windll.kernel32
+            process_query_limited_information = 0x1000
+            still_active = 259
+            handle = kernel32.OpenProcess(process_query_limited_information, False, int(pid))
+            if not handle:
                 return False
-            ctypes_mod.windll.kernel32.CloseHandle(handle)
-            return True
+            try:
+                exit_code = wintypes.DWORD()
+                if not kernel32.GetExitCodeProcess(handle, ctypes_mod.byref(exit_code)):
+                    return True
+                return int(exit_code.value) == still_active
+            finally:
+                try:
+                    kernel32.CloseHandle(handle)
+                except Exception:  # noqa: BLE001
+                    pass
         except Exception:  # noqa: BLE001
             return False
     else:

@@ -393,6 +393,8 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
             ("provenance_kind", "provenance_kind"),
             ("runKind", "runKind"),
             ("run_kind", "run_kind"),
+            ("forkBeforeMessageId", "forkBeforeMessageId"),
+            ("fork_before_message_id", "fork_before_message_id"),
         ):
             if source_key in params:
                 extra[target_key] = params[source_key]
@@ -417,7 +419,8 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
             ),
         )
         result = await _handle_sessions_send(send_params, ctx)
-        return {"ok": True, "sessionKey": session_key, **result}
+        result_session_key = result.get("sessionKey") or result.get("key") or session_key
+        return {"ok": True, "sessionKey": result_session_key, **result}
     except Exception:
         marker = getattr(ctx, "turn_runner", None)
         clear = getattr(marker, "clear_compacted_this_turn", None)

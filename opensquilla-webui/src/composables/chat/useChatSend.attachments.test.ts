@@ -47,6 +47,7 @@ function makeOptions(overrides: Partial<UseChatSendOptions> = {}) {
     runMode: ref('trusted'),
     pendingAttachments: ref<Attachment[]>([]),
     pendingSessionIntent: ref(null),
+    pendingForkBeforeMessageId: ref(null),
     aborted: ref(false),
     activeStreamTaskId: ref(''),
     autoScroll: ref(false),
@@ -159,5 +160,29 @@ describe('useChatSend attachment payloads', () => {
       role: 'error',
       text: 'Send failed: network down',
     })
+  })
+
+  it('sends pending fork target and clears it after chat.send is accepted', async () => {
+    const pendingForkBeforeMessageId = ref<string | null>('msg-B')
+    const { api, rpc } = makeOptions({ pendingForkBeforeMessageId })
+
+    await api.onSend()
+
+    expect(rpc.call).toHaveBeenCalledWith('chat.send', expect.objectContaining({
+      forkBeforeMessageId: 'msg-B',
+    }))
+    expect(pendingForkBeforeMessageId.value).toBeNull()
+  })
+
+  it('keeps pending fork target if chat.send fails so retry can fork', async () => {
+    const pendingForkBeforeMessageId = ref<string | null>('msg-B')
+    const rpc = {
+      call: vi.fn().mockRejectedValue(new Error('network down')),
+    }
+    const { api } = makeOptions({ rpc, pendingForkBeforeMessageId })
+
+    await api.onSend()
+
+    expect(pendingForkBeforeMessageId.value).toBe('msg-B')
   })
 })

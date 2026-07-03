@@ -2,6 +2,9 @@ from pathlib import Path
 
 CHAT_JS = Path("src/opensquilla/gateway/static/js/views/chat.js")
 CHAT_CSS = Path("src/opensquilla/gateway/static/css/views/chat.css")
+CHAT_VIEW_VUE = Path("opensquilla-webui/src/views/ChatView.vue")
+CHAT_SEND_TS = Path("opensquilla-webui/src/composables/chat/useChatSend.ts")
+CHAT_MESSAGE_ACTIONS_TS = Path("opensquilla-webui/src/composables/chat/useChatMessageActions.ts")
 CHAT_ROUTER_FX_VUE = Path("opensquilla-webui/src/components/chat/RouterFxStrip.vue")
 APP_JS = Path("src/opensquilla/gateway/static/js/app.js")
 RPC_JS = Path("src/opensquilla/gateway/static/js/rpc.js")
@@ -918,6 +921,37 @@ def test_chat_regenerate_targets_clicked_assistant_bubble() -> None:
     assert "const assistantOrdinal = assistantBubbles.indexOf(bubble);" in regen_body
     assert "assistantSeen === assistantOrdinal" in regen_body
     assert "_messages.splice(userIdx + 1);" in regen_body
+
+
+def test_legacy_chat_middle_edit_sends_fork_before_message_id() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    switch_start = source.index("function _switchToSession(key)")
+    switch_end = source.index("  function _bindSessionChip()", switch_start)
+    switch_body = source[switch_start:switch_end]
+    regen_start = source.index("function _regenerateAssistantBubble(bubble)")
+    regen_end = source.index("  // Pop the user message back into the textarea", regen_start)
+    regen_body = source[regen_start:regen_end]
+    edit_start = source.index("function _editUserBubble(bubble)")
+    edit_end = source.index("  function _bindHoverActions()", edit_start)
+    edit_body = source[edit_start:edit_end]
+    history_start = source.index("async function _loadHistory(opts = {}) {")
+    history_end = source.index("  /* ── Send Message", history_start)
+    history_body = source[history_start:history_end]
+    send_start = source.index("async function _onSend()")
+    send_end = source.index("  /* ── Streaming", send_start)
+    send_body = source[send_start:send_end]
+
+    assert "let _pendingForkBeforeMessageId = null;" in source
+    assert "messageId: stableIdentity," in history_body
+    assert "_pendingForkBeforeMessageId = _messages[userIdx].messageId || null;" in regen_body
+    assert "_pendingForkBeforeMessageId = _messages[cutIdx].messageId || null;" in edit_body
+    assert "_pendingForkBeforeMessageId = null;" in switch_body
+    assert (
+        "const forkBeforeMessageIdForSend = textOverride !== null "
+        "? null : _pendingForkBeforeMessageId;"
+    ) in send_body
+    assert "params.forkBeforeMessageId = forkBeforeMessageIdForSend;" in send_body
+    assert "_pendingForkBeforeMessageId = null;" in send_body
 
 
 def test_chat_maps_task_terminal_events_during_migration() -> None:
@@ -3187,6 +3221,38 @@ def test_chat_history_reconciles_by_message_identity_without_clear_replace() -> 
     assert "      _thread.innerHTML = '';" not in body[: body.index("if (messages.length === 0)")]
     assert "if (_isStreaming && _isCurrentSessionStreamBubble(el)) return;" in body
     assert "if (!consumedHistoryElements.has(el)) el.remove();" in body
+
+
+def test_chat_view_wires_middle_edit_branch_fork_id() -> None:
+    view = CHAT_VIEW_VUE.read_text(encoding="utf-8")
+    send = CHAT_SEND_TS.read_text(encoding="utf-8")
+    actions = CHAT_MESSAGE_ACTIONS_TS.read_text(encoding="utf-8")
+
+    assert "const pendingForkBeforeMessageId = ref<string | null>(null)" in view
+
+    actions_start = view.index("const chatMessageActions = useChatMessageActions({")
+    actions_end = view.index("})\nconst {", actions_start)
+    assert "pendingForkBeforeMessageId," in view[actions_start:actions_end]
+
+    send_start = view.index("const chatSend = useChatSend({")
+    send_end = view.index("})\nconst { onSend", send_start)
+    assert "pendingForkBeforeMessageId," in view[send_start:send_end]
+
+    session_watch_start = view.index("watch(sessionKey, () => {")
+    session_watch_end = view.index("})", session_watch_start)
+    assert "pendingForkBeforeMessageId.value = null" in view[session_watch_start:session_watch_end]
+
+    assert "pendingForkBeforeMessageId: Ref<string | null>" in send
+    assert "params.forkBeforeMessageId = forkBeforeMessageId" in send
+    assert "options.pendingForkBeforeMessageId.value = null" in send
+    assert (
+        "options.pendingForkBeforeMessageId.value = "
+        "options.messages.value[userMsgIndex]?.messageId || null"
+    ) in actions
+    assert (
+        "options.pendingForkBeforeMessageId.value = "
+        "options.messages.value[msgIndex]?.messageId || null"
+    ) in actions
 
 
 def test_chat_history_reorders_reused_nodes_to_match_transcript_order() -> None:

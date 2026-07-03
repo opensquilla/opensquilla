@@ -735,6 +735,7 @@ const activeStreamTaskId = ref<string>('')
 
 // Pending session intent
 const pendingSessionIntent = ref<string | null>(null)
+const pendingForkBeforeMessageId = ref<string | null>(null)
 let applySessionRunState: (source: ChatRunStatusSource | null | undefined) => void = () => {}
 let resetComposerInputHistory: () => void = () => {}
 
@@ -1111,6 +1112,7 @@ const chatMessageActions = useChatMessageActions({
   autoResizeTextarea,
   sendCurrentInput: () => sendCurrentInput(),
   focusComposer: () => composerRef.value?.focusTextarea(),
+  pendingForkBeforeMessageId,
 })
 const {
   copyMessage,
@@ -1226,6 +1228,7 @@ const chatSend = useChatSend({
   runMode,
   pendingAttachments,
   pendingSessionIntent,
+  pendingForkBeforeMessageId,
   aborted,
   activeStreamTaskId,
   autoScroll,
@@ -2125,6 +2128,7 @@ watch(pendingSessionIntent, (intent, previous) => {
 })
 
 watch(sessionKey, () => {
+  pendingForkBeforeMessageId.value = null
   if (shareMode.value) endShareMode()
   deliverablesOpen.value = false
 })

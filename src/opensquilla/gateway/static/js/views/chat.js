@@ -11,6 +11,7 @@ const ChatView = (() => {
   const _WEBCHAT_SESSION_KEY = 'agent:main:webchat:default';
   let _sessionKey = '';
   let _pendingSessionIntent = null;
+  let _pendingForkBeforeMessageId = null;
 
   const _RUN_MODE_FALLBACK = 'trusted';
   const _RUN_MODE_LABELS = {
@@ -852,6 +853,7 @@ const ChatView = (() => {
     }
 
     const userText = _messages[userIdx].text || '';
+    _pendingForkBeforeMessageId = _messages[userIdx].messageId || null;
     _messages.splice(userIdx + 1);
 
     let target = bubble.previousElementSibling;
@@ -896,7 +898,10 @@ const ChatView = (() => {
         if (count === idxAmongUser) { cutIdx = i; break; }
       }
     }
-    if (cutIdx >= 0) _messages.splice(cutIdx);
+    if (cutIdx >= 0) {
+      _pendingForkBeforeMessageId = _messages[cutIdx].messageId || null;
+      _messages.splice(cutIdx);
+    }
     // Strip from DOM: this user bubble onward.
     let nxt = bubble.nextElementSibling;
     bubble.remove();
@@ -1868,6 +1873,7 @@ const ChatView = (() => {
     _persistSession(key);
     _messages = [];
     _pendingSessionIntent = null;
+    _pendingForkBeforeMessageId = null;
     _clearPendingDrainAfterTerminalTimer();
     _setCompactInFlight(false);
     _hideCompactionSeparator();
@@ -6295,6 +6301,7 @@ const ChatView = (() => {
           role: msg.role,
           text: displayText,
           ts: msg.timestamp || msg.ts || null,
+          messageId: stableIdentity,
           artifacts: msg.artifacts || [],
           ...msgOptions,
         });
@@ -6822,6 +6829,7 @@ const ChatView = (() => {
     let text = (textOverride !== null ? textOverride : _textarea.value).trim();
     let attachmentsForSend = textOverride !== null ? [] : _pendingAttachments;
     const sessionIntentForSend = textOverride !== null ? null : _pendingSessionIntent;
+    const forkBeforeMessageIdForSend = textOverride !== null ? null : _pendingForkBeforeMessageId;
     let hasPayload = text || attachmentsForSend.length > 0;
     let isLiteralSlash = false;
 
@@ -6922,6 +6930,9 @@ const ChatView = (() => {
       params.intent = sessionIntentForSend;
       if (textOverride === null) _pendingSessionIntent = null;
     }
+    if (forkBeforeMessageIdForSend) {
+      params.forkBeforeMessageId = forkBeforeMessageIdForSend;
+    }
     if (userText !== providerText || attachmentsForSend.length > 0) {
       params.displayText = userText;
     }
@@ -6963,6 +6974,9 @@ const ChatView = (() => {
 
     // Send
     _rpc.call('chat.send', params).then((res) => {
+      if (forkBeforeMessageIdForSend && _pendingForkBeforeMessageId === forkBeforeMessageIdForSend) {
+        _pendingForkBeforeMessageId = null;
+      }
       _chatDiag('send.rpc.resolved', {
         responseSessionKey: res && res.sessionKey ? res.sessionKey : '',
       });

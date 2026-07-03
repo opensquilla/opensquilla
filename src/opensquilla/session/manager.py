@@ -628,11 +628,14 @@ class SessionManager:
         fork_transcript: bool = False,
         max_fork_tokens: int | None = None,
         status: SessionStatus | str = SessionStatus.RUNNING,
+        fork_before_message_id: str | None = None,
     ) -> SessionNode:
         """
         Create a child session branched from parent.
         If fork_transcript=True and parent token budget permits, copy parent transcript
         as initial context in the child (forkedFromParent flag set).
+        If fork_before_message_id is set, copy only the canonical transcript prefix
+        before that message and skip parent compaction summaries/context states.
         ``status`` sets the child's initial lifecycle status; pass a resting
         status such as ``SessionStatus.DONE`` when the child should not appear
         as an active run until its first turn starts.
@@ -662,20 +665,41 @@ class SessionManager:
         )
 
         if fork_transcript:
-            parent_entries = await self._storage.get_transcript(parent.session_id)
-            parent_summaries = await self._storage.get_all_summaries(parent.session_id)
-            parent_context_states = await self._storage.get_context_states(parent_session_key)
+            is_prefix_fork = bool(fork_before_message_id)
+            if fork_before_message_id:
+                canonical_entries = await self._storage.get_canonical_transcript(parent.session_id)
+                fork_index = next(
+                    (
+                        index
+                        for index, entry in enumerate(canonical_entries)
+                        if entry.message_id == fork_before_message_id
+                    ),
+                    None,
+                )
+                if fork_index is None:
+                    raise KeyError(
+                        f"Transcript message not found in {parent_session_key}: "
+                        f"{fork_before_message_id}"
+                    )
+                parent_entries = canonical_entries[:fork_index]
+                parent_summaries = []
+                parent_context_states = []
+            else:
+                parent_entries = await self._storage.get_transcript(parent.session_id)
+                parent_summaries = await self._storage.get_all_summaries(parent.session_id)
+                parent_context_states = await self._storage.get_context_states(parent_session_key)
             summary_tokens = sum(
                 estimate_tokens(summary.summary_text) for summary in parent_summaries
             )
             parent_tokens = sum(e.token_count or 0 for e in parent_entries) + summary_tokens
             if max_fork_tokens is None or parent_tokens <= max_fork_tokens:
                 # Copy entries into child session
-                await self._storage.copy_compacted_transcript_entries(
-                    source_session_id=parent.session_id,
-                    target_session_id=child.session_id,
-                    target_session_key=new_session_key,
-                )
+                if not is_prefix_fork:
+                    await self._storage.copy_compacted_transcript_entries(
+                        source_session_id=parent.session_id,
+                        target_session_id=child.session_id,
+                        target_session_key=new_session_key,
+                    )
                 for entry in parent_entries:
                     forked = TranscriptEntry(
                         session_id=child.session_id,
@@ -683,9 +707,16 @@ class SessionManager:
                         role=entry.role,
                         content=entry.content,
                         tool_calls=entry.tool_calls,
+                        tool_call_id=entry.tool_call_id,
+                        reasoning_content=entry.reasoning_content,
                         turn_usage=entry.turn_usage,
                         created_at=entry.created_at,
                         token_count=entry.token_count,
+                        provenance_kind=entry.provenance_kind,
+                        provenance_origin_session_id=entry.provenance_origin_session_id,
+                        provenance_source_session_key=entry.provenance_source_session_key,
+                        provenance_source_channel=entry.provenance_source_channel,
+                        provenance_source_tool=entry.provenance_source_tool,
                     )
                     await self._storage.append_transcript_entry(forked)
                 for summary in parent_summaries:

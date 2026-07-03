@@ -241,6 +241,7 @@ export interface ChatSendParams {
   sessionKey: string
   _source?: { elevated?: string; runMode?: 'standard' | 'trusted' | 'full' }
   intent?: string
+  forkBeforeMessageId?: string
   displayText?: string
   attachments?: ChatSendAttachmentPayload[]
   [key: string]: unknown

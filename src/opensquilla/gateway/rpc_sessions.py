@@ -450,6 +450,22 @@ def _require_key(params: dict | None) -> str:
     return canonicalize_session_key(key)
 
 
+def _optional_string_param(params: dict | None, *names: str) -> str | None:
+    if not isinstance(params, dict):
+        return None
+    for name in names:
+        if name not in params:
+            continue
+        value = params.get(name)
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError(f"params.{name} must be a string")
+        value = value.strip()
+        return value or None
+    return None
+
+
 def _effective_agent_id_for_session(session: Any | None, session_key: str) -> str:
     """Prefer the explicit agent encoded in modern session keys.
 
@@ -1153,6 +1169,11 @@ async def _handle_sessions_fork(params: dict | None, ctx: RpcContext) -> dict:
     title = params.get("title")
     if title is not None and not isinstance(title, str):
         raise ValueError("params.title must be a string")
+    before_message_id = _optional_string_param(
+        params,
+        "beforeMessageId",
+        "before_message_id",
+    )
 
     if ctx.session_manager is None:
         raise KeyError("No session manager available")
@@ -1171,6 +1192,7 @@ async def _handle_sessions_fork(params: dict | None, ctx: RpcContext) -> dict:
         child_key,
         fork_transcript=True,
         status=SessionStatus.DONE,
+        fork_before_message_id=before_message_id,
     )
 
     display_name = title or getattr(parent, "display_name", None)
@@ -1257,6 +1279,13 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
         session_intent = SessionIntent(params.get("intent", SessionIntent.CONTINUE.value))
     except ValueError as exc:
         raise ValueError(f"Invalid session intent: {params.get('intent')}") from exc
+    fork_before_message_id = _optional_string_param(
+        params,
+        "forkBeforeMessageId",
+        "fork_before_message_id",
+    )
+    if fork_before_message_id is not None and session_intent is not SessionIntent.CONTINUE:
+        raise ValueError("forkBeforeMessageId cannot be combined with non-continue intent")
 
     if ctx.session_manager is None:
         raise KeyError("No session manager available")
@@ -1277,6 +1306,28 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
         )
     elif session_intent is not SessionIntent.CONTINUE:
         raise RuntimeError("Session intent handling requires SessionManager.apply_intent")
+
+    if fork_before_message_id is not None:
+        parent_key = key
+        parent_display_name = getattr(session, "display_name", None)
+        agent_id = _effective_agent_id_for_session(session, parent_key)
+        child_key = _create_session_key(agent_id, "webchat")
+        session = await ctx.session_manager.branch(
+            parent_key,
+            child_key,
+            fork_transcript=True,
+            status=SessionStatus.DONE,
+            fork_before_message_id=fork_before_message_id,
+        )
+        key = child_key
+        if parent_display_name:
+            session = await ctx.session_manager.update(key, display_name=parent_display_name)
+        await _emit_to_subscribers(
+            ctx,
+            key,
+            "sessions.changed",
+            build_sessions_changed_payload(key, "forked", run_status="idle"),
+        )
 
     canonical_session_id = getattr(session, "session_id", None)
     session_id = (

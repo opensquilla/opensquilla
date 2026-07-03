@@ -61,6 +61,7 @@ export interface UseChatSendOptions {
   runMode: Ref<SandboxRunMode>
   pendingAttachments: Ref<Attachment[]>
   pendingSessionIntent: Ref<string | null>
+  pendingForkBeforeMessageId: Ref<string | null>
   aborted: Ref<boolean>
   // Task id rendered by the live stream; a fresh turn binds it from the
   // chat.send response so a prior task's late events can't leak in (issue #344).
@@ -167,6 +168,8 @@ export function useChatSend(options: UseChatSendOptions) {
       params.intent = options.pendingSessionIntent.value
       options.pendingSessionIntent.value = null
     }
+    const forkBeforeMessageId = options.pendingForkBeforeMessageId.value
+    if (forkBeforeMessageId) params.forkBeforeMessageId = forkBeforeMessageId
     if (attachmentsToSend.length > 0) {
       params.displayText = userText
       params.attachments = attachmentsToSend.map(serializeSendableAttachment)
@@ -186,6 +189,9 @@ export function useChatSend(options: UseChatSendOptions) {
 
     try {
       const res = await options.rpc.call<ChatSendResponse>('chat.send', params)
+      if (forkBeforeMessageId && options.pendingForkBeforeMessageId.value === forkBeforeMessageId) {
+        options.pendingForkBeforeMessageId.value = null
+      }
       // Bind the live stream to this turn's task so a prior task's late events
       // can't bleed into it (issue #344). Only a fresh turn takes over rendering
       // — a steer/queue send rides the in-flight stream and must not rebind —

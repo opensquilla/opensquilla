@@ -3764,6 +3764,281 @@ def test_replayed_savings_done_restores_reply_without_replaying_popup_in_real_br
     assert payload["pageErrors"] == [], payload
 
 
+def test_webui_edit_middle_message_forks_without_history_leak(tmp_path: Path) -> None:
+    if os.environ.get("OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E") != "1":
+        pytest.skip("set OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E=1 to run chat browser e2e")
+
+    port = _free_port()
+    server_script = tmp_path / "webui_branch_edit_server.py"
+    browser_script = tmp_path / "webui_branch_edit_browser.js"
+    server_script.write_text(
+        textwrap.dedent(
+            f"""
+            import uvicorn
+
+            from opensquilla.gateway.app import create_gateway_app
+            from opensquilla.gateway.config import AuthConfig, GatewayConfig
+
+            config = GatewayConfig(
+                host="127.0.0.1",
+                port={port},
+                auth=AuthConfig(mode="none"),
+                control_ui={{"frontend": "legacy"}},
+            )
+            app = create_gateway_app(config)
+
+            if __name__ == "__main__":
+                uvicorn.run(app, host="127.0.0.1", port={port}, log_level="warning")
+            """
+        ),
+        encoding="utf-8",
+    )
+    browser_script.write_text(
+        textwrap.dedent(
+            r"""
+            const { chromium } = require("playwright");
+
+            async function waitRpc(page) {
+              await page.waitForFunction(
+                () =>
+                  typeof App !== "undefined" &&
+                  App.getRpc &&
+                  App.getRpc()?.state === "connected",
+                { timeout: 15000 }
+              );
+            }
+
+            (async () => {
+              const browser = await chromium.launch({ headless: true });
+              const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+              const errors = [];
+              page.on("pageerror", err => errors.push(String(err)));
+
+              await page.goto(process.env.TARGET_URL, {
+                waitUntil: "domcontentloaded",
+                timeout: 30000,
+              });
+              await waitRpc(page);
+
+              await page.evaluate(() => {
+                const parentKey = "agent:main:webchat:branch-edit-parent";
+                const childKey = "agent:main:webchat:branch-edit-child";
+                const parentMessages = [
+                  {
+                    role: "user",
+                    text: "A marker",
+                    timestamp: "2026-07-03T00:00:01.000Z",
+                    message_id: "msg-A",
+                  },
+                  {
+                    role: "assistant",
+                    text: "ack A",
+                    timestamp: "2026-07-03T00:00:02.000Z",
+                    message_id: "msg-ack-A",
+                  },
+                  {
+                    role: "user",
+                    text: "B marker",
+                    timestamp: "2026-07-03T00:00:03.000Z",
+                    message_id: "msg-B",
+                  },
+                  {
+                    role: "assistant",
+                    text: "ack B",
+                    timestamp: "2026-07-03T00:00:04.000Z",
+                    message_id: "msg-ack-B",
+                  },
+                  {
+                    role: "user",
+                    text: "C marker must stay only on parent",
+                    timestamp: "2026-07-03T00:00:05.000Z",
+                    message_id: "msg-C",
+                  },
+                ];
+                const childMessages = [
+                  {
+                    role: "user",
+                    text: "A marker",
+                    timestamp: "2026-07-03T00:00:01.000Z",
+                    message_id: "child-msg-A",
+                  },
+                  {
+                    role: "assistant",
+                    text: "ack A",
+                    timestamp: "2026-07-03T00:00:02.000Z",
+                    message_id: "child-msg-ack-A",
+                  },
+                  {
+                    role: "user",
+                    text: "B edited",
+                    timestamp: "2026-07-03T00:00:06.000Z",
+                    message_id: "child-msg-B-edited",
+                  },
+                ];
+
+                const rpc = App.getRpc();
+                const originalCall = rpc.call.bind(rpc);
+                window.__branchEdit = {
+                  parentKey,
+                  childKey,
+                  parentMessages,
+                  childMessages,
+                  chatCalls: [],
+                  historyCalls: [],
+                };
+                rpc.call = (method, params = {}) => {
+                  if (method === "tools.search_provider") {
+                    return Promise.resolve({ provider: "none" });
+                  }
+                  if (method === "config.get") {
+                    return Promise.resolve({
+                      permissions: { default_mode: "ask" },
+                      squilla_router: { enabled: false, rollout_phase: "off", tiers: {} },
+                    });
+                  }
+                  if (method === "sessions.messages.subscribe") {
+                    return Promise.resolve({
+                      subscribed: true,
+                      key: params.key,
+                      current_stream_seq: 0,
+                      replay_complete: true,
+                      replayed_count: 0,
+                      run_status: "idle",
+                    });
+                  }
+                  if (method === "chat.history") {
+                    const key = params.sessionKey || parentKey;
+                    window.__branchEdit.historyCalls.push(key);
+                    return Promise.resolve({
+                      messages: key === childKey ? childMessages : parentMessages,
+                      history_scope: "complete",
+                      has_more: false,
+                    });
+                  }
+                  if (method === "chat.send") {
+                    window.__branchEdit.chatCalls.push(params);
+                    return Promise.resolve({
+                      sessionKey: childKey,
+                      key: childKey,
+                      task_id: "branch-edit-task",
+                    });
+                  }
+                  return originalCall(method, params);
+                };
+              });
+
+              await page.evaluate(() =>
+                Router.navigate(
+                  "/chat?session=" +
+                  encodeURIComponent(window.__branchEdit.parentKey)
+                )
+              );
+              await page.waitForSelector("#chat-textarea", { timeout: 15000 });
+              await page.waitForFunction(
+                () => document.querySelectorAll("#chat-thread .msg.user").length >= 3,
+                null, { timeout: 15000 }
+              );
+
+              await page.locator("#chat-thread .msg.user").nth(1).hover();
+              await page.locator("#chat-thread .msg.user")
+                .nth(1)
+                .locator('[data-action="edit"]')
+                .click();
+              await page.waitForFunction(
+                () => document.querySelector("#chat-textarea")?.value.includes("B marker"),
+                null, { timeout: 5000 }
+              );
+              await page.fill("#chat-textarea", "B edited");
+              await page.click("#chat-btn-send");
+              await page.waitForFunction(
+                () => window.__branchEdit.chatCalls.length === 1,
+                null, { timeout: 5000 }
+              );
+              await page.waitForFunction(
+                () =>
+                  window.__branchEdit.chatCalls[0].forkBeforeMessageId === "msg-B",
+                null, { timeout: 5000 }
+              );
+
+              await page.evaluate(() => {
+                ChatView.destroy();
+                ChatView.render(document.getElementById("content"));
+              });
+              await page.waitForFunction(
+                () =>
+                  window.__branchEdit.historyCalls
+                    .some(key => key === window.__branchEdit.childKey),
+                null, { timeout: 15000 }
+              );
+              await page.waitForSelector("#chat-thread .msg.user", { timeout: 15000 });
+
+              const payload = await page.evaluate(() => {
+                const bodyText = document.querySelector("#chat-thread")?.innerText || "";
+                return {
+                  chatSendPayload: window.__branchEdit.chatCalls[0],
+                  historyCalls: window.__branchEdit.historyCalls,
+                  parentHistoryHasC: window.__branchEdit.parentMessages
+                    .some(msg => String(msg.text || "").includes("C marker")),
+                  childHistoryHasC: window.__branchEdit.childMessages
+                    .some(msg => String(msg.text || "").includes("C marker")),
+                  childUiHasC: bodyText.includes("C marker"),
+                  childUiHasEditedB: bodyText.includes("B edited"),
+                  sessionChip: document.querySelector("#chat-session-chip-key")?.innerText || "",
+                };
+              });
+              payload.pageErrors = errors;
+
+              await browser.close();
+              console.log(JSON.stringify(payload));
+            })().catch(err => {
+              console.error(err && err.stack ? err.stack : String(err));
+              process.exit(1);
+            });
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["OPENSQUILLA_STATE_DIR"] = str(tmp_path / "state")
+    env["OPENSQUILLA_LOG_DIR"] = str(tmp_path / "logs")
+    server = subprocess.Popen(
+        [sys.executable, str(server_script)],
+        cwd=Path.cwd(),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    try:
+        _wait_for_health(port, server)
+        _install_playwright(tmp_path)
+        result = subprocess.run(
+            [_node(), str(browser_script)],
+            cwd=tmp_path,
+            env=dict(env, TARGET_URL=f"http://127.0.0.1:{port}/control/"),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+        assert result.returncode == 0, result.stderr or result.stdout
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+    finally:
+        _stop_process(server)
+
+    assert payload["pageErrors"] == [], payload["pageErrors"]
+    assert payload["chatSendPayload"]["message"] == "B edited"
+    assert payload["chatSendPayload"]["forkBeforeMessageId"] == "msg-B"
+    assert payload["parentHistoryHasC"] is True
+    assert payload["childHistoryHasC"] is False
+    assert payload["childUiHasC"] is False
+    assert payload["childUiHasEditedB"] is True
+    assert payload["sessionChip"] == "agent:main:webchat:branch-edit-child"
+
+
 def test_webui_hotfix_flows_in_real_browser(tmp_path: Path) -> None:
     if os.environ.get("OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E") != "1":
         pytest.skip("set OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E=1 to run chat browser e2e")

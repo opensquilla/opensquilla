@@ -58,8 +58,8 @@ Release install commands use published GitHub release assets. Python wheel insta
 embedded in the wheel filename.
 
 For 0.5.0 Preview 1 desktop use, prefer the packaged desktop installers from
-the GitHub Release: `OpenSquilla-0.5.0rc1-mac-arm64.dmg` on macOS and
-`OpenSquilla-0.5.0rc1-win-x64.exe` on Windows.
+the GitHub Release: `OpenSquilla-0.5.0-rc1-mac-arm64.dmg` on macOS and
+`OpenSquilla-0.5.0-rc1-win-x64.exe` on Windows.
 
 | Path | Audience | When to use |
 | --- | --- | --- |
@@ -106,8 +106,8 @@ Install links: [Git](https://git-scm.com/downloads) ·
 The 0.5.0 Preview 1 desktop installers package the Vue control console and
 gateway runtime in an Electron shell.
 
-- macOS Apple Silicon: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0rc1-mac-arm64.dmg>
-- Windows x64: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0rc1-win-x64.exe>
+- macOS Apple Silicon: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0-rc1-mac-arm64.dmg>
+- Windows x64: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0-rc1-win-x64.exe>
 
 Quit any running OpenSquilla desktop app before upgrading. Existing
 `~/.opensquilla/config.toml` and session data are reused.

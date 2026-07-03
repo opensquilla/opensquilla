@@ -57,8 +57,8 @@ release, download, or update checks may still contact GitHub after user intent.
 
 Preview README install commands must use tag-pinned URLs such as:
 
-- `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0rc1-mac-arm64.dmg`
-- `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0rc1-win-x64.exe`
+- `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0-rc1-mac-arm64.dmg`
+- `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0-rc1-win-x64.exe`
 - `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/opensquilla-0.5.0rc1-py3-none-any.whl`
 
 ## Release SOP
@@ -98,8 +98,8 @@ Preview README install commands must use tag-pinned URLs such as:
    post-publish tag URL checks:
 
    ```sh
-   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0rc1-mac-arm64.dmg
-   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0rc1-win-x64.exe
+   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0-rc1-mac-arm64.dmg
+   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0-rc1-win-x64.exe
    curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/opensquilla-0.5.0rc1-py3-none-any.whl
    curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/SHA256SUMS
    ```

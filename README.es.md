@@ -48,7 +48,7 @@ Los instaladores de escritorio y la instalación rápida desde terminal te ofrec
 
 Los comandos de instalación de versiones usan los recursos de release publicados en GitHub. Las instalaciones del wheel de Python usan nombres de archivo de wheel con versión, porque los instaladores validan la versión incrustada en el nombre del archivo del wheel.
 
-Para el uso de escritorio de 0.5.0 Preview 1, opta por los instaladores de escritorio empaquetados de la Release de GitHub: `OpenSquilla-0.5.0rc1-mac-arm64.dmg` en macOS y `OpenSquilla-0.5.0rc1-win-x64.exe` en Windows.
+Para el uso de escritorio de 0.5.0 Preview 1, opta por los instaladores de escritorio empaquetados de la Release de GitHub: `OpenSquilla-0.5.0-rc1-mac-arm64.dmg` en macOS y `OpenSquilla-0.5.0-rc1-win-x64.exe` en Windows.
 
 | Ruta | Público | Cuándo usarla |
 | --- | --- | --- |
@@ -81,8 +81,8 @@ Enlaces de instalación: [Git](https://git-scm.com/downloads) ·
 
 Los instaladores de escritorio de 0.5.0 Preview 1 empaquetan la consola de control de Vue y el runtime del gateway en una carcasa de Electron.
 
-- macOS Apple Silicon: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0rc1-mac-arm64.dmg>
-- Windows x64: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0rc1-win-x64.exe>
+- macOS Apple Silicon: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0-rc1-mac-arm64.dmg>
+- Windows x64: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0-rc1-win-x64.exe>
 
 Cierra cualquier aplicación de escritorio de OpenSquilla en ejecución antes de actualizar. Se reutilizan el `~/.opensquilla/config.toml` y los datos de sesión existentes.
 

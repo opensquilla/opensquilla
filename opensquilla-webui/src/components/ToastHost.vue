@@ -94,7 +94,7 @@ const { toasts, dismissToast } = useToasts()
 
 .toast__dismiss:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
 }
 
 @keyframes toast-in {

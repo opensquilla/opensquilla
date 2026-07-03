@@ -75,7 +75,7 @@
 
 .chat-share-banner:focus-visible {
   outline: none;
-  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent);
+  box-shadow: var(--focus-ring-inset);
 }
 
 .chat-share-banner__hint {
@@ -149,7 +149,7 @@
 .chat-share-btn:focus-visible {
   outline: none;
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent);
+  box-shadow: var(--focus-ring);
 }
 
 .chat-deliverables-btn {
@@ -528,7 +528,7 @@
 
 .thinking-fold__summary:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
 }
 
 .thinking-fold__chevron {

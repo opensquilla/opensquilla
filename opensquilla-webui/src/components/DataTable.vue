@@ -154,7 +154,7 @@ const sortedRows = computed(() => {
 .data-table thead th.sortable:focus-visible {
   outline: none;
   color: var(--text);
-  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: var(--focus-ring-inset);
 }
 
 .data-table thead th.active {

@@ -139,7 +139,7 @@ const chips = computed(() => {
 
 .empty-state__chip:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
 }
 
 @media (max-width: 768px) {

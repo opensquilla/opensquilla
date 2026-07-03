@@ -1172,7 +1172,7 @@ function gatewayContextUrl(): string {
 }
 .ov-field__input:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: var(--focus-ring);
 }
 .ov-form__actions {
   display: flex;

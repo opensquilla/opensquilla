@@ -126,7 +126,7 @@ watch(() => props.sources, decorate, { flush: 'post' })
 
 .msg-ai-text :deep(.citation-pill:focus-visible) {
   outline: none;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -1873,7 +1873,7 @@ function onboardingHtml(): string {
       border-color: var(--accent);
       background: var(--accent);
       color: #fff;
-      box-shadow: 0 9px 18px rgba(194, 65, 5, 0.2);
+      box-shadow: 0 9px 18px rgba(242, 106, 27, 0.2);
     }
     .step.done .step-index {
       border-color: rgba(35,106,58,0.32);
@@ -2235,7 +2235,7 @@ function onboardingHtml(): string {
     }
     input:focus, select:focus {
       border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(184, 68, 4, 0.12);
+      box-shadow: 0 0 0 3px rgba(242, 106, 27, 0.12);
     }
     details {
       border: 1px solid #e2e0da;
@@ -2290,9 +2290,9 @@ function onboardingHtml(): string {
     }
     .muted-line { color: var(--dim); font-size: 12px; }
     .note {
-      border: 1px solid rgba(194,65,5,0.13);
+      border: 1px solid rgba(242,106,27,0.13);
       border-radius: 8px;
-      background: rgba(194,65,5,0.055);
+      background: rgba(242,106,27,0.055);
       color: var(--muted);
       font-size: 12px;
       font-weight: 500;
@@ -2323,7 +2323,7 @@ function onboardingHtml(): string {
       background: linear-gradient(135deg, var(--accent), var(--accent-dark));
       border-radius: 8px;
       color: #fff;
-      box-shadow: 0 13px 28px rgba(194, 65, 5, 0.22);
+      box-shadow: 0 13px 28px rgba(242, 106, 27, 0.22);
       min-width: 150px;
     }
     .primary:hover {

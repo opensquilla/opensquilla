@@ -598,7 +598,7 @@ onUnmounted(() => {
 .msg-media-card__retry:focus-visible {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
 }
 
 .msg-media-card__zoom {
@@ -625,7 +625,7 @@ onUnmounted(() => {
 
 .msg-media-card__img:focus-visible {
   outline: none;
-  box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+  box-shadow: var(--focus-ring-inset);
 }
 
 .msg-media-card__cap {
@@ -682,7 +682,7 @@ onUnmounted(() => {
 .msg-media-card__download:focus-visible {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
 }
 
 @keyframes mediaSkeleton {

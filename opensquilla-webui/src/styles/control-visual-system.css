@@ -473,7 +473,7 @@
    overflow:hidden, so an inset ring rather than an outer outline). */
 .control-segmented__btn:focus-visible {
   outline: none;
-  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: var(--focus-ring-inset);
 }
 
 /* ---------------------------------------------------------------------------
@@ -569,7 +569,7 @@ details[open] > summary.control-row--divider::before {
 
 summary.control-row--divider:focus-visible {
   border-radius: var(--radius-sm);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: var(--focus-ring);
   outline: none;
 }
 

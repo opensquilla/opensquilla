@@ -76,12 +76,19 @@ function Get-OpensquillaRoot {
 function Get-OpensquillaCommand {
     param([string]$Repo)
 
+    if ($Repo) {
+        $resolvedRepo = Get-OpensquillaRoot -Override $Repo
+        if ($resolvedRepo -and (Test-Path -LiteralPath (Join-Path $resolvedRepo 'pyproject.toml') -PathType Leaf)) {
+            return @{ Mode = 'uv-run-repo'; Repo = $resolvedRepo }
+        }
+    }
+
     $installed = Get-Command 'opensquilla' -ErrorAction SilentlyContinue
     if ($installed) {
         return @{ Mode = 'installed'; Exe = $installed.Path }
     }
 
-    $resolvedRepo = Get-OpensquillaRoot -Override $Repo
+    $resolvedRepo = Get-OpensquillaRoot -Override $null
     if ($resolvedRepo -and (Test-Path -LiteralPath (Join-Path $resolvedRepo 'pyproject.toml') -PathType Leaf)) {
         return @{ Mode = 'uv-run-repo'; Repo = $resolvedRepo }
     }

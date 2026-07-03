@@ -38,3 +38,13 @@ def test_supervisor_profile_name_match_is_case_sensitive() -> None:
 
     assert "-cmatch $Script:PROFILE_NAME_PATTERN" in lib
     assert "-match $Script:PROFILE_NAME_PATTERN" not in lib
+
+
+def test_supervisor_explicit_repo_takes_precedence_over_installed_binary() -> None:
+    lib = (SUPERVISOR / "lib.ps1").read_text(encoding="utf-8")
+
+    repo_branch = "if ($Repo) {"
+    installed_lookup = "$installed = Get-Command 'opensquilla'"
+    assert repo_branch in lib
+    assert installed_lookup in lib
+    assert lib.index(repo_branch) < lib.index(installed_lookup)

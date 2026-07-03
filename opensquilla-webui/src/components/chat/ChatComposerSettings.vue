@@ -16,14 +16,6 @@
 
     <div class="composer-settings__section composer-settings__section--rows">
       <ControlSwitch
-        label="Squilla Router"
-        :caption="routerEnabled ? t('chat.composer.enabled') : t('chat.composer.disabled')"
-        aria-label="Squilla Router"
-        :checked="routerEnabled"
-        :busy="routerSettingsBusy"
-        @change="$emit('setRouterEnabled', $event)"
-      />
-      <ControlSwitch
         label="Visual effects"
         :caption="visualEffectsEnabled ? t('chat.composer.routerAnimationOn') : t('chat.composer.routerAnimationOff')"
         aria-label="Visual effects"
@@ -38,14 +30,6 @@
         :busy="codingModeSettingsBusy"
         @change="$emit('setCodingModeEnabled', $event)"
       />
-      <ControlSwitch
-        label="LLM Ensemble"
-        :caption="llmEnsembleEnabled ? 'Enabled' : 'Disabled'"
-        aria-label="LLM Ensemble"
-        :checked="llmEnsembleEnabled"
-        :busy="llmEnsembleSettingsBusy"
-        @change="$emit('setLlmEnsembleEnabled', $event)"
-      />
     </div>
   </section>
 </template>
@@ -59,21 +43,15 @@ import ControlSwitch from '@/components/ControlSwitch.vue'
 const { t } = useI18n()
 
 defineProps<{
-  routerEnabled: boolean
-  routerSettingsBusy: boolean
   visualEffectsEnabled: boolean
   codingModeEnabled: boolean
   codingModeSettingsBusy: boolean
-  llmEnsembleEnabled: boolean
-  llmEnsembleSettingsBusy: boolean
 }>()
 
 defineEmits<{
   close: []
-  setRouterEnabled: [enabled: boolean]
   setVisualEffectsEnabled: [enabled: boolean]
   setCodingModeEnabled: [enabled: boolean]
-  setLlmEnsembleEnabled: [enabled: boolean]
 }>()
 
 // Anchored popover (mounted only while open): move focus into the panel on open

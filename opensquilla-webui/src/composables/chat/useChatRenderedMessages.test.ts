@@ -3,15 +3,19 @@ import { ref } from 'vue'
 
 import { useChatRenderedMessages } from './useChatRenderedMessages'
 import type { ChatMessage, ChatRouterTierConfig } from '@/types/chat'
+import type { ModelRoutingMode } from '@/types/modelRouting'
 import type { ChatPart, InterruptViewState } from '@/types/parts'
 
-function renderedMessagesForRouterVisualMode(visualMode: 'real_candidates' | 'legacy_grid') {
+function renderedMessagesForRouterVisualMode(
+  visualMode: 'real_candidates' | 'legacy_grid',
+  modelRoutingMode: ModelRoutingMode = 'squilla_router',
+) {
   const configs: Record<string, ChatRouterTierConfig> = {
     fast: { model: 'openai/gpt-5.4-mini', supportsImage: false, imageOnly: false },
     balanced: { model: 'anthropic/claude-sonnet-4.6', supportsImage: false, imageOnly: false },
     strong: { model: 'openai/gpt-5.5', supportsImage: false, imageOnly: false },
   }
-  return useChatRenderedMessages({
+  const options = {
     messages: ref<ChatMessage[]>([]),
     sessionKey: ref('router-visual-test'),
     routerSlots: ref(['fast', 'balanced', 'strong']),
@@ -19,16 +23,19 @@ function renderedMessagesForRouterVisualMode(visualMode: 'real_candidates' | 'le
     routerTierConfigs: ref(configs),
     routerVisualEffectsEnabled: ref(true),
     routerVisualMode: ref(visualMode),
-    renderMarkdown: text => text,
-    stripGeneratedArtifactMarkers: text => text,
-    stripTimePrefix: text => text,
+    renderMarkdown: (text: string) => text,
+    stripGeneratedArtifactMarkers: (text: string) => text,
+    stripTimePrefix: (text: string) => text,
     isSubagentCompletionMessage: () => false,
-  })
+    modelRoutingMode: ref(modelRoutingMode),
+  }
+  return useChatRenderedMessages(options)
 }
 
 function renderedMessagesFor(
   messages: ChatMessage[],
   interruptState = ref<ReadonlyMap<string, InterruptViewState>>(new Map()),
+  routerVisualEffectsEnabled = false,
 ) {
   return useChatRenderedMessages({
     messages: ref<ChatMessage[]>(messages),
@@ -37,7 +44,7 @@ function renderedMessagesFor(
     routerSlots: ref([]),
     routerModels: ref({}),
     routerTierConfigs: ref({}),
-    routerVisualEffectsEnabled: ref(false),
+    routerVisualEffectsEnabled: ref(routerVisualEffectsEnabled),
     routerVisualMode: ref('real_candidates'),
     renderMarkdown: text => text,
     stripGeneratedArtifactMarkers: text => text,
@@ -95,6 +102,106 @@ describe('useChatRenderedMessages router visual mode', () => {
     expect(winnerIdx).toBeGreaterThanOrEqual(0)
     expect(cells[winnerIdx].kind).toBe('real')
     expect(cells[winnerIdx].tiers).toContain('balanced')
+  })
+
+  it('uses the ensemble strip instead of normal router cells while LLM ensemble mode is active', () => {
+    const withMessages = useChatRenderedMessages({
+      messages: ref<ChatMessage[]>([
+        { role: 'user', text: 'hard question', ts: 0 },
+        {
+          role: 'router',
+          text: '',
+          ts: 1,
+          provenanceKind: 'router_decision',
+          routerDecision: {
+            tier: 'balanced',
+            model: 'anthropic/claude-sonnet-4.6',
+            source: 'squilla_router',
+          },
+        },
+      ]),
+      sessionKey: ref('router-ensemble-active-test'),
+      routerSlots: ref(['fast', 'balanced', 'strong']),
+      routerModels: ref({}),
+      routerTierConfigs: ref({
+        fast: { model: 'openai/gpt-5.4-mini', supportsImage: false, imageOnly: false },
+        balanced: { model: 'anthropic/claude-sonnet-4.6', supportsImage: false, imageOnly: false },
+        strong: { model: 'openai/gpt-5.5', supportsImage: false, imageOnly: false },
+      }),
+      routerVisualEffectsEnabled: ref(true),
+      routerVisualMode: ref('real_candidates'),
+      renderMarkdown: text => text,
+      stripGeneratedArtifactMarkers: text => text,
+      stripTimePrefix: text => text,
+      isSubagentCompletionMessage: () => false,
+      modelRoutingMode: ref('llm_ensemble'),
+    })
+
+    const strip = withMessages.renderedMessages.value.find(message => message.isRouterStrip)
+    expect(strip?.routerPanel).toBe('llm-ensemble')
+    expect(strip?.gridCells || []).toHaveLength(0)
+  })
+
+  it('removes the pending ensemble strip once the assistant answer carries the completed trace', () => {
+    const api = useChatRenderedMessages({
+      messages: ref<ChatMessage[]>([
+        { role: 'user', text: 'hello', ts: 0 },
+        {
+          role: 'router',
+          text: '',
+          ts: 1,
+          provenanceKind: 'router_decision',
+          routerDecision: {
+            tier: 'balanced',
+            model: 'anthropic/claude-sonnet-4.6',
+            source: 'llm_ensemble',
+          },
+        },
+        {
+          role: 'assistant',
+          text: 'Hi there.',
+          ts: 2,
+          messageId: 'assistant-ensemble',
+          usage: {
+            model: 'z-ai/glm-5.2',
+            model_usage_breakdown: [
+              { role: 'anchor', provider: 'openrouter', model: 'qwen/qwen3.7-plus' },
+              { role: 'critic', provider: 'openrouter', model: 'z-ai/glm-5.2' },
+            ],
+            ensemble_trace: {
+              profile: 'default',
+              mode: 'router_dynamic',
+              llm_request_count: 2,
+              total_candidates: 3,
+              fallback_used: false,
+            },
+          },
+        },
+      ]),
+      sessionKey: ref('router-ensemble-completed-test'),
+      routerSlots: ref(['fast', 'balanced', 'strong']),
+      routerModels: ref({}),
+      routerTierConfigs: ref({
+        fast: { model: 'openai/gpt-5.4-mini', supportsImage: false, imageOnly: false },
+        balanced: { model: 'anthropic/claude-sonnet-4.6', supportsImage: false, imageOnly: false },
+        strong: { model: 'openai/gpt-5.5', supportsImage: false, imageOnly: false },
+      }),
+      routerVisualEffectsEnabled: ref(true),
+      routerVisualMode: ref('real_candidates'),
+      renderMarkdown: text => text,
+      stripGeneratedArtifactMarkers: text => text,
+      stripTimePrefix: text => text,
+      isSubagentCompletionMessage: () => false,
+      modelRoutingMode: ref('llm_ensemble'),
+    })
+
+    const rendered = api.renderedMessages.value
+    const assistantIndex = rendered.findIndex(message => message.displayRole === 'assistant')
+    const stripIndex = rendered.findIndex(message => message.isRouterStrip)
+
+    expect(assistantIndex).toBeGreaterThan(-1)
+    expect(stripIndex).toBe(-1)
+    expect(rendered[assistantIndex]?.meta?.ensemble?.modelCount).toBe(2)
   })
 })
 
@@ -215,6 +322,46 @@ describe('useChatRenderedMessages clarify history recovery', () => {
 })
 
 describe('useChatRenderedMessages ensemble metadata', () => {
+  it('keeps completed ensemble trace on the assistant meta without rendering a router strip', () => {
+    const api = renderedMessagesFor([
+      {
+        role: 'user',
+        text: 'Compare multiple recent AI policy updates.',
+        ts: 0,
+      },
+      {
+        role: 'assistant',
+        text: 'fused answer',
+        ts: 1,
+        messageId: 'm-ensemble-strip',
+        usage: {
+          model_usage_breakdown: [
+            { role: 'anchor', provider: 'openrouter', model: 'qwen/qwen3.7-plus' },
+            { role: 'research', provider: 'openrouter', model: 'moonshotai/kimi-k2.6' },
+            { role: 'critic', provider: 'openrouter', model: 'z-ai/glm-5.2' },
+          ],
+          ensemble_trace: {
+            profile: 'default',
+            llm_request_count: 3,
+            total_candidates: 8,
+            fallback_used: false,
+          },
+        },
+      },
+    ], undefined, true)
+
+    const strip = api.renderedMessages.value.find(message => message.isRouterStrip)
+    const assistant = api.renderedMessages.value.find(message => message.displayRole === 'assistant')
+
+    expect(strip).toBeUndefined()
+    expect(assistant?.meta?.ensemble?.modelCount).toBe(3)
+    expect(assistant?.meta?.ensemble?.models.map(model => model.modelShort)).toEqual([
+      'qwen3.7-plus',
+      'kimi-k2.6',
+      'glm-5.2',
+    ])
+  })
+
   it('normalizes ensemble model breakdown, cost, and savings into assistant meta', () => {
     const api = renderedMessagesFor([
       {

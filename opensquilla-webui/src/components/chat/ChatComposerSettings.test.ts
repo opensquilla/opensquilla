@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import source from './ChatComposerSettings.vue?raw'
 import runModeSource from './ChatComposerRunMode.vue?raw'
+import modelRoutingSource from './ChatComposerModelRouting.vue?raw'
 import composerSource from './ChatComposer.vue?raw'
 import viewSource from '../../views/ChatView.vue?raw'
 
@@ -85,41 +86,37 @@ describe('ChatComposerSettings coding mode contract', () => {
   })
 })
 
-describe('ChatComposerSettings LLM Ensemble contract', () => {
-  it('places LLM Ensemble immediately after Coding mode', () => {
-    const codingModeIndex = source.indexOf('label="Coding mode"')
-    const ensembleIndex = source.indexOf('label="LLM Ensemble"')
-
-    expect(codingModeIndex).toBeGreaterThanOrEqual(0)
-    expect(ensembleIndex).toBeGreaterThan(codingModeIndex)
+describe('ChatComposer model routing contract', () => {
+  it('keeps model-routing choices out of the generic composer settings panel', () => {
+    expect(source).not.toContain('label="Squilla Router"')
+    expect(source).not.toContain('label="LLM Ensemble"')
+    expect(source).not.toContain('routerEnabled: boolean')
+    expect(source).not.toContain('llmEnsembleEnabled: boolean')
+    expect(source).not.toContain('setRouterEnabled')
+    expect(source).not.toContain('setLlmEnsembleEnabled')
   })
 
-  it('binds LLM Ensemble checked and busy state to typed props', () => {
-    const block = controlSwitchBlock('LLM Ensemble')
+  it('threads the independent model-routing control through ChatComposer and ChatView', () => {
+    expect(composerSource).toContain('ChatComposerModelRouting')
+    expect(composerSource).toContain('<Icon name="gauge"')
+    expect(composerSource).toContain(':model-routing-mode="modelRoutingMode"')
+    expect(composerSource).toContain(':busy="modelRoutingSettingsBusy"')
+    expect(composerSource).toContain('@set-model-routing-mode="emit(\'setModelRoutingMode\', $event)"')
+    expect(composerSource).toContain('modelRoutingMode: ModelRoutingMode')
+    expect(composerSource).toContain('setModelRoutingMode: [mode: ModelRoutingMode]')
 
-    expect(block).toContain(':checked="llmEnsembleEnabled"')
-    expect(block).toContain(':busy="llmEnsembleSettingsBusy"')
-    expect(source).toContain('llmEnsembleEnabled: boolean')
-    expect(source).toContain('llmEnsembleSettingsBusy: boolean')
+    expect(viewSource).toContain(':model-routing-mode="modelRoutingMode"')
+    expect(viewSource).toContain(':model-routing-settings-busy="modelRoutingSettingsBusy"')
+    expect(viewSource).toContain('@set-model-routing-mode="setComposerModelRoutingMode"')
+    expect(viewSource).toContain('async function setComposerModelRoutingMode(mode: ModelRoutingMode)')
+    expect(viewSource).toContain('await setModelRoutingMode(mode)')
   })
 
-  it('emits LLM Ensemble changes through the typed settings event', () => {
-    const block = controlSwitchBlock('LLM Ensemble')
-
-    expect(block).toContain('@change="$emit(\'setLlmEnsembleEnabled\', $event)"')
-    expect(source).toContain('setLlmEnsembleEnabled: [enabled: boolean]')
-  })
-
-  it('threads LLM Ensemble props and events through ChatComposer and ChatView', () => {
-    expect(composerSource).toContain(':llm-ensemble-enabled="llmEnsembleEnabled"')
-    expect(composerSource).toContain(':llm-ensemble-settings-busy="llmEnsembleSettingsBusy"')
-    expect(composerSource).toContain('@set-llm-ensemble-enabled="emit(\'setLlmEnsembleEnabled\', $event)"')
-    expect(composerSource).toContain('setLlmEnsembleEnabled: [enabled: boolean]')
-
-    expect(viewSource).toContain(':llm-ensemble-enabled="llmEnsembleEnabled"')
-    expect(viewSource).toContain(':llm-ensemble-settings-busy="llmEnsembleSettingsBusy"')
-    expect(viewSource).toContain('@set-llm-ensemble-enabled="setComposerLlmEnsembleEnabled"')
-    expect(viewSource).toContain('async function setComposerLlmEnsembleEnabled(enabled: boolean)')
-    expect(viewSource).toContain('await setLlmEnsembleEnabled(enabled)')
+  it('offers exactly the three mutually-exclusive model-routing modes', () => {
+    expect(modelRoutingSource).toContain("value: 'off'")
+    expect(modelRoutingSource).toContain("value: 'squilla_router'")
+    expect(modelRoutingSource).toContain("value: 'llm_ensemble'")
+    expect(modelRoutingSource).not.toContain('setRouterEnabled')
+    expect(modelRoutingSource).not.toContain('setLlmEnsembleEnabled')
   })
 })

@@ -14,6 +14,7 @@ interface TierRow {
 
 interface RouterPanelContract {
   routerSummary: string
+  ensembleProfileActive: boolean
   routerMode: string
   routerDefaultTier: string
   routerVisualMode: string
@@ -44,6 +45,10 @@ const emit = defineEmits<{
     <div class="control-section__head">
       <h3 class="control-section__title">{{ t('setup.router.title') }}</h3>
       <p class="control-section__desc">{{ panel.routerSummary }}</p>
+    </div>
+    <div v-if="panel.ensembleProfileActive" class="setup-router-profile-note">
+      <span class="setup-router-profile-note__title">{{ t('setup.router.ensembleProfileTitle') }}</span>
+      <span class="setup-router-profile-note__desc">{{ t('setup.router.ensembleProfileDesc') }}</span>
     </div>
     <label class="control-row">
       <div class="control-row__label-block"><span class="control-row__label">{{ t('setup.router.mode') }}</span></div>
@@ -114,5 +119,27 @@ const emit = defineEmits<{
 
 .setup-warning__action:hover {
   text-decoration: underline;
+}
+
+.setup-router-profile-note {
+  display: grid;
+  gap: 0.25rem;
+  margin-bottom: var(--sp-3);
+  padding: 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.setup-router-profile-note__title {
+  color: var(--text);
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+
+.setup-router-profile-note__desc {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1.35;
 }
 </style>

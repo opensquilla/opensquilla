@@ -152,6 +152,9 @@ interface ConfigData {
     visual_mode?: string
     tiers?: Record<string, TierConfig>
   }
+  llm_ensemble?: {
+    enabled?: boolean
+  }
   naming?: {
     enabled?: boolean
   }
@@ -359,10 +362,12 @@ const imageEnvCommand = computed(() => envRecoveryCommand('image_generation'))
 
 const routerSummary = computed(() => {
   if (!hasSavedProvider.value) return t('setup.router.chooseProviderFirst')
+  if (ensembleProfileActive.value) return t('setup.router.summaryEnsemble')
   if (routerForm.mode.value === 'disabled') return t('setup.router.summaryDisabled')
   if (routerForm.mode.value === 'openrouter-mix') return t('setup.router.modeOpenrouterMix')
   return t('setup.router.modeRecommended')
 })
+const ensembleProfileActive = computed(() => config.value.llm_ensemble?.enabled === true)
 
 const behaviorStatusText = computed(() => {
   return behaviorForm.autoSessionTitles.value
@@ -467,6 +472,7 @@ const privacyPanel = computed(() => ({
 const isOpenrouterProvider = computed(() => currentProvider.value.toLowerCase() === 'openrouter')
 const routerPanel = routerForm.createPanel({
   routerSummary,
+  ensembleProfileActive,
   hasSavedProvider,
   isOpenrouter: isOpenrouterProvider,
   textTiers: TEXT_TIERS,

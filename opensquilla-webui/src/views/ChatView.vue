@@ -187,6 +187,7 @@
           :messages="renderedMessages"
           :session-key="sessionKey"
           :auth-token="readAuthToken()"
+          :artifact-navigation-items="sessionArtifacts"
           :share-mode="shareMode"
           :selected-message-ids="selectedShareMessageIds"
           :strip-time-prefix="stripTimePrefix"
@@ -216,13 +217,13 @@
           @clarify-dismiss="dismissClarify"
         >
           <template #router-strip="{ message: msg }">
-            <RouterFxStrip :message="msg" />
+            <RouterFxStrip v-if="shouldRenderRouterStrip(msg)" :message="msg" />
           </template>
         </ChatMessageList>
 
-        <!-- Invisible router-strip twin: holds the strip's slot in the layout
-             from turn start until the routing decision arrives, so the real
-             strip cannot shift the content below it. -->
+        <!-- Pre-reveal router phase: shown only before the live work-card owns
+             the turn. Once the work-card is visible, execution status becomes
+             the single primary progress surface. -->
         <RouterFxStrip
           v-if="routerStripReserve"
           class="router-fx-reserve"
@@ -260,9 +261,9 @@
             >
               <header v-if="streamActivityVisible" class="work-card__head stream-activity">
                 <span class="work-card__dot" aria-hidden="true" />
-                <span class="work-card__phase" :class="{ 'activity-shimmer': !streamActivityStale }">{{ streamPhaseLabel }}</span>
+                <span class="work-card__phase" :class="{ 'activity-shimmer': !streamActivityStale }">{{ liveWorkCardPhaseLabel }}</span>
                 <span v-if="streamPhaseElapsed" class="work-card__elapsed">{{ streamPhaseElapsed }}</span>
-                <span class="work-card__step">{{ streamStepLabel }}</span>
+                <span class="work-card__step">{{ liveWorkCardStepLabel }}</span>
               </header>
 
               <!-- Live model reasoning: collapsed by default, expandable mid-turn -->
@@ -311,6 +312,7 @@
 
             <ChatArtifactList
               :artifacts="liveArtifacts"
+              :navigation-artifacts="sessionArtifacts"
               :session-key="sessionKey"
               :auth-token="readAuthToken()"
               @download="downloadArtifact"
@@ -441,13 +443,11 @@
       :send-button-title="sendButtonTitle"
       :run-mode="runMode"
       :allowed-run-modes="allowedRunModes"
-      :router-enabled="routerEnabled"
+      :model-routing-mode="modelRoutingMode"
+      :model-routing-settings-busy="modelRoutingSettingsBusy"
       :router-visual-effects-enabled="routerVisualEffectsEnabled"
-      :router-settings-busy="routerSettingsBusy"
       :coding-mode-enabled="codingModeEnabled"
       :coding-mode-settings-busy="codingModeSettingsBusy"
-      :llm-ensemble-enabled="llmEnsembleEnabled"
-      :llm-ensemble-settings-busy="llmEnsembleSettingsBusy"
       :voice-busy="voiceBusy"
       :voice-recording="voiceRecording"
       @composition-change="composing = $event"
@@ -459,10 +459,9 @@
       @retry-attachment="retryAttachment"
       @set-busy-send-mode="busySendMode = $event"
       @set-run-mode="setComposerRunMode"
-      @set-router-enabled="setComposerRouterEnabled"
+      @set-model-routing-mode="setComposerModelRoutingMode"
       @set-visual-effects-enabled="setComposerVisualEffectsEnabled"
       @set-coding-mode-enabled="setComposerCodingModeEnabled"
-      @set-llm-ensemble-enabled="setComposerLlmEnsembleEnabled"
       @voice-input="onVoiceInput"
       @export-markdown="exportMarkdown"
       @send="onSend"
@@ -578,6 +577,7 @@ import type {
 import type {
   ArtifactPayload,
 } from '@/types/rpc'
+import type { ModelRoutingMode } from '@/types/modelRouting'
 import type { SandboxRunMode } from '@/types/sandbox'
 import { isSandboxRunMode } from '@/types/sandbox'
 import type { InterruptViewState } from '@/types/parts'
@@ -910,18 +910,16 @@ const {
   routerSlots,
   routerModels,
   routerEnabled,
+  modelRoutingMode,
+  modelRoutingSettingsBusy,
   routerVisualEffectsEnabled,
   routerVisualMode,
-  routerSettingsBusy,
   codingModeEnabled,
   codingModeSettingsBusy,
-  llmEnsembleEnabled,
-  llmEnsembleSettingsBusy,
   routerTierConfigs,
   loadFeatureToggles,
-  setRouterEnabled,
+  setModelRoutingMode,
   setCodingModeEnabled,
-  setLlmEnsembleEnabled,
   setRouterVisualEffectsEnabled,
   bindFeatureRefresh,
 } = chatFeatureToggles
@@ -1037,6 +1035,7 @@ const chatRenderedMessages = useChatRenderedMessages({
   routerTierConfigs,
   routerVisualEffectsEnabled,
   routerVisualMode,
+  modelRoutingMode,
   renderMarkdown,
   stripGeneratedArtifactMarkers,
   stripTimePrefix,
@@ -1045,10 +1044,47 @@ const chatRenderedMessages = useChatRenderedMessages({
 const { renderedMessages, routerDecisionCells } = chatRenderedMessages
 
 /**
- * Reserves the AI model router strip's space as soon as a turn starts
- * streaming, so the real strip landing ~1s later (when the router decision
- * push arrives) replaces an equally sized invisible twin instead of pushing
- * the live activity area down (cumulative layout shift).
+ * While the live work-card is visible, pending LLM ensemble routing is no
+ * longer the primary status. The work-card represents the execution phase, so
+ * any unfinished ensemble routing panel would read as stale/parallel progress.
+ */
+const suppressLivePendingEnsembleRouterFx = computed(() =>
+  isStreaming.value &&
+  streamBubble.value &&
+  answerRevealOpen.value &&
+  modelRoutingMode.value === 'llm_ensemble',
+)
+
+const liveEnsembleRouterPhaseActive = computed(() =>
+  suppressLivePendingEnsembleRouterFx.value &&
+  !pendingDecision.value &&
+  !streamHasVisibleOutput.value,
+)
+
+const liveWorkCardPhaseLabel = computed(() =>
+  liveEnsembleRouterPhaseActive.value
+    ? t('chat.routerFx.ensembleSelecting')
+    : streamPhaseLabel.value,
+)
+
+const liveWorkCardStepLabel = computed(() =>
+  liveEnsembleRouterPhaseActive.value
+    ? t('chat.routerFx.ensembleMode')
+    : streamStepLabel.value,
+)
+
+function shouldRenderRouterStrip(message: ChatRenderedMessage): boolean {
+  return !(
+    suppressLivePendingEnsembleRouterFx.value &&
+    message.routerPanel === 'llm-ensemble' &&
+    message.routerSettled !== true
+  )
+}
+
+/**
+ * Pre-reveal AI model router phase. It covers the short window before the live
+ * work-card is revealed; after reveal, the work-card is the only live progress
+ * panel for LLM ensemble turns.
  */
 const routerStripReserve = computed<ChatRenderedMessage | null>(() => {
   if (!isStreaming.value || !routerEnabled.value || !routerVisualEffectsEnabled.value) return null
@@ -1058,6 +1094,27 @@ const routerStripReserve = computed<ChatRenderedMessage | null>(() => {
     if (msg.isRouterStrip) return null
     if (msg.displayRole === 'user') break
   }
+  if (modelRoutingMode.value === 'llm_ensemble') {
+    if (suppressLivePendingEnsembleRouterFx.value) return null
+    return {
+      id: 'router-strip-reserve',
+      role: 'router',
+      displayRole: 'router',
+      roleLabel: 'Router',
+      text: '',
+      timeStr: '',
+      showHeader: false,
+      isRouterStrip: true,
+      routerState: 'pending',
+      routerSource: 'llm_ensemble',
+      routerStatic: false,
+      routerPanel: 'llm-ensemble',
+      routerMode: 'llm_ensemble',
+      gridCells: [],
+      winnerIdx: -1,
+    }
+  }
+
   const cells = routerDecisionCells({ tier: '', model: '' })
   if (cells.length <= 1) return null
   return {
@@ -1514,8 +1571,8 @@ function setComposerRunMode(mode: SandboxRunMode) {
   runMode.value = mode
 }
 
-async function setComposerRouterEnabled(enabled: boolean) {
-  await setRouterEnabled(enabled)
+async function setComposerModelRoutingMode(mode: ModelRoutingMode) {
+  await setModelRoutingMode(mode)
   scheduleHistorySync()
 }
 
@@ -1526,10 +1583,6 @@ function setComposerVisualEffectsEnabled(enabled: boolean) {
 
 async function setComposerCodingModeEnabled(enabled: boolean) {
   await setCodingModeEnabled(enabled)
-}
-
-async function setComposerLlmEnsembleEnabled(enabled: boolean) {
-  await setLlmEnsembleEnabled(enabled)
 }
 
 // A landing suggestion chip replaces the draft composer text; the user still

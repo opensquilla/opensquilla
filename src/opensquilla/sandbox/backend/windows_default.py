@@ -44,6 +44,7 @@ from opensquilla.sandbox.operation_runtime import (
 )
 from opensquilla.sandbox.run_mode import normalize_run_mode
 from opensquilla.sandbox.types import SandboxBackendError, SandboxRequest, SandboxResult
+from opensquilla.subprocess_encoding import decode_subprocess_output
 
 _HELPER_MODULE = "opensquilla.sandbox.backend.windows_default_runner"
 _FILESYSTEM_WORKER_MODULE = "opensquilla.sandbox.filesystem_worker"
@@ -855,8 +856,8 @@ def _decode_capped(raw: bytes | None) -> tuple[str, bool]:
     if not raw:
         return "", False
     if len(raw) <= _OUTPUT_BYTE_CAP:
-        return raw.decode("utf-8", errors="replace"), False
-    return raw[:_OUTPUT_BYTE_CAP].decode("utf-8", errors="replace"), True
+        return decode_subprocess_output(raw), False
+    return decode_subprocess_output(raw[:_OUTPUT_BYTE_CAP]), True
 
 
 __all__ = ["WindowsDefaultBackend"]

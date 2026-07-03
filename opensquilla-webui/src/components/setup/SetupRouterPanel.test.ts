@@ -13,6 +13,7 @@ function panel(overrides = {}) {
     routerVisualModeDirty: false,
     routerVisualModeOptions: [{ value: 'real_candidates', label: 'Real routing candidates' }],
     hasSavedProvider: true,
+    ensembleProfileActive: false,
     canUseOpenrouterMix: true,
     textTiers: ['c0', 'c1'],
     tierRows: [
@@ -66,6 +67,15 @@ describe('SetupRouterPanel', () => {
     expect(requestEntry?.textContent).toBe('openrouter')
     expect(el.querySelector('input[aria-label="c0 request entry"]')).toBeNull()
     expect(el.querySelector('input[aria-label="c0 model"]')).toBeTruthy()
+
+    app.unmount()
+  })
+
+  it('shows the LLM ensemble routing profile note when that mode is active', async () => {
+    const { app, el } = await mountRouterPanel({ ensembleProfileActive: true })
+
+    expect(el.textContent).toContain('LLM ensemble routing profile')
+    expect(el.textContent).toContain('The tier table supplies candidate models for the ensemble router.')
 
     app.unmount()
   })

@@ -242,8 +242,10 @@ export interface ChatEnsembleMetaModel {
 export interface ChatEnsembleMeta {
   profile: string
   modelCount: number
+  totalCandidates: number
   requestCount: number
   fallbackUsed: boolean
+  fallbackReason: string
   costUsd: number
   savedUsd: number
   savedPct: number
@@ -330,6 +332,8 @@ export interface ChatRenderedMessage {
   routerStatic?: boolean
   routerSettled?: boolean
   routerPanel?: string
+  routerMode?: import('./modelRouting').ModelRoutingMode
+  ensemble?: ChatEnsembleMeta
   gridCells?: ChatRouterCell[]
   winnerIdx?: number
   parts?: import('./parts').ChatPart[]

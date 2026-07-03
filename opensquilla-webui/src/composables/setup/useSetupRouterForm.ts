@@ -68,6 +68,7 @@ interface RouterConfig {
 
 interface RouterPanelContext {
   routerSummary: ComputedRef<string>
+  ensembleProfileActive: ComputedRef<boolean>
   hasSavedProvider: ComputedRef<boolean>
   isOpenrouter: ComputedRef<boolean>
   textTiers: readonly string[]
@@ -170,6 +171,7 @@ export function useSetupRouterForm() {
   function createPanel(context: RouterPanelContext) {
     return computed(() => ({
       routerSummary: context.routerSummary.value,
+      ensembleProfileActive: context.ensembleProfileActive.value,
       routerMode: routerMode.value,
       routerDefaultTier: routerDefaultTier.value,
       routerVisualMode: routerVisualMode.value,

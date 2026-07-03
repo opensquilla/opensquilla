@@ -7,9 +7,10 @@ import { useSetupRouterForm } from './useSetupRouterForm'
 // and only valid for the openrouter provider — a default config for another
 // provider must NOT be mistaken for it.
 
-function makePanel(form: ReturnType<typeof useSetupRouterForm>, isOpenrouter: boolean) {
+function makePanel(form: ReturnType<typeof useSetupRouterForm>, isOpenrouter: boolean, ensembleProfileActive = false) {
   return form.createPanel({
     routerSummary: computed(() => ''),
+    ensembleProfileActive: computed(() => ensembleProfileActive),
     hasSavedProvider: computed(() => true),
     isOpenrouter: computed(() => isOpenrouter),
     textTiers: ['c0'],
@@ -48,6 +49,13 @@ describe('useSetupRouterForm — openrouter-mix round-trip', () => {
     f.initFromConfig({ enabled: true, tier_profile: 'openai' }, {}, 'openai')
     expect(makePanel(f, false).value.canUseOpenrouterMix).toBe(false)
     expect(makePanel(f, true).value.canUseOpenrouterMix).toBe(true)
+  })
+
+  it('passes the LLM ensemble profile state to the router panel', () => {
+    const f = useSetupRouterForm()
+    f.initFromConfig({ enabled: true, tier_profile: 'openai' }, {}, 'openai')
+
+    expect(makePanel(f, false, true).value.ensembleProfileActive).toBe(true)
   })
 
   it('keeps tier provider values in the save payload even when the panel renders them read-only', () => {

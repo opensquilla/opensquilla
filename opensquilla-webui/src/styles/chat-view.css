@@ -362,13 +362,9 @@
 
 /* Messages */
 
-/* Router-strip twin rendered while a turn awaits its routing decision. It
-   occupies the strip's layout slot from the first paint of the turn (so the
-   resolved strip mounts in place without shifting the answer below it) and is
-   shown in a dimmed "deciding" state: the candidate grid scans via the strip's
-   own animation (the twin is no longer static) instead of leaving an empty gap.
-   The real strip replaces this twin in place once the winner is known. Dimmed
-   to read as not-yet-final; the strip carries its own reduced-motion handling. */
+/* Pre-reveal router phase. It is visible only before the live work-card owns
+   the turn; once execution status is visible, router progress must not remain
+   as a second primary progress panel. */
 .router-fx-reserve {
   opacity: 0.55;
 }

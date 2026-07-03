@@ -1,5 +1,7 @@
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import type { ChatRouterTierConfig } from '@/types/chat'
+import type { ModelRoutingMode } from '@/types/modelRouting'
+import { normalizeModelRoutingMode } from '@/types/modelRouting'
 import { normalizeRouterTier, sortRouterTiers } from '@/utils/chat/routerTiers'
 import { encodeRouterShape, decodeRouterShape } from '@/utils/chat/routerShapeCache'
 import {
@@ -54,9 +56,15 @@ export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
   const codingModeSettingsBusy = ref(false)
   const llmEnsembleEnabled = ref(false)
   const llmEnsembleSettingsBusy = ref(false)
+  const modelRoutingSettingsBusy = ref(false)
   const routerSlots = ref<string[]>([])
   const routerModels = ref<Record<string, string>>({})
   const routerTierConfigs = ref<Record<string, ChatRouterTierConfig>>({})
+
+  const modelRoutingMode = computed<ModelRoutingMode>(() => {
+    if (llmEnsembleEnabled.value) return 'llm_ensemble'
+    return routerEnabled.value ? 'squilla_router' : 'off'
+  })
 
   // Seed the last-known router shape synchronously so the router-strip reserve
   // twin can hold its slot on the first turn, before config.get resolves.
@@ -64,10 +72,11 @@ export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
 
   async function applyFeatureConfig(cfg: ChatFeatureConfig | undefined, applyOptions: { refreshUsage?: boolean } = {}) {
     const router = cfg?.squilla_router || {}
+    const ensembleEnabled = cfg?.llm_ensemble?.enabled === true
 
-    routerEnabled.value = Boolean(router.enabled && router.rollout_phase !== 'observe')
+    routerEnabled.value = ensembleEnabled || Boolean(router.enabled && router.rollout_phase !== 'observe')
     codingModeEnabled.value = cfg?.skills?.coding_mode === true
-    llmEnsembleEnabled.value = cfg?.llm_ensemble?.enabled === true
+    llmEnsembleEnabled.value = ensembleEnabled
     routerVisualMode.value = normalizeRouterVisualMode(router.visual_mode)
     loadRouterVisualEffectsPreference()
 
@@ -170,26 +179,7 @@ export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
   }
 
   async function setRouterEnabled(enabled: boolean) {
-    if (routerSettingsBusy.value) return
-    const nextEnabled = Boolean(enabled)
-    const previous = routerEnabled.value
-    routerEnabled.value = nextEnabled
-    routerSettingsBusy.value = true
-    try {
-      await options.rpc.waitForConnection()
-      await options.rpc.call('config.patch.safe', {
-        patches: {
-          'squilla_router.enabled': nextEnabled,
-          'squilla_router.rollout_phase': nextEnabled ? 'full' : 'observe',
-        },
-      })
-      await loadFeatureToggles()
-    } catch (err) {
-      routerEnabled.value = previous
-      console.warn('Failed to update Squilla Router:', err instanceof Error ? err.message : String(err))
-    } finally {
-      routerSettingsBusy.value = false
-    }
+    await setModelRoutingMode(enabled ? 'squilla_router' : 'off')
   }
 
   async function setCodingModeEnabled(enabled: boolean) {
@@ -215,23 +205,39 @@ export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
   }
 
   async function setLlmEnsembleEnabled(enabled: boolean) {
-    if (llmEnsembleSettingsBusy.value) return
-    const nextEnabled = Boolean(enabled)
-    const previous = llmEnsembleEnabled.value
+    await setModelRoutingMode(enabled ? 'llm_ensemble' : 'off')
+  }
+
+  async function setModelRoutingMode(mode: ModelRoutingMode) {
+    if (modelRoutingSettingsBusy.value) return
+    const nextMode = normalizeModelRoutingMode(mode)
+    const previousRouter = routerEnabled.value
+    const previousEnsemble = llmEnsembleEnabled.value
+    const nextRouter = nextMode !== 'off'
+    const nextEnsemble = nextMode === 'llm_ensemble'
+
+    routerEnabled.value = nextRouter
+    llmEnsembleEnabled.value = nextEnsemble
+    modelRoutingSettingsBusy.value = true
+    routerSettingsBusy.value = true
     llmEnsembleSettingsBusy.value = true
     try {
       await options.rpc.waitForConnection()
       await options.rpc.call('config.patch.safe', {
         patches: {
-          'llm_ensemble.enabled': nextEnabled,
+          'llm_ensemble.enabled': nextEnsemble,
+          'squilla_router.enabled': nextRouter,
+          'squilla_router.rollout_phase': nextRouter ? 'full' : 'observe',
         },
       })
-      const cfg = await options.rpc.call<ChatFeatureConfig>('config.get')
-      await applyFeatureConfig(cfg)
+      await loadFeatureToggles()
     } catch (err) {
-      llmEnsembleEnabled.value = previous
-      console.warn('Failed to update LLM Ensemble:', err instanceof Error ? err.message : String(err))
+      routerEnabled.value = previousRouter
+      llmEnsembleEnabled.value = previousEnsemble
+      console.warn('Failed to update model routing:', err instanceof Error ? err.message : String(err))
     } finally {
+      modelRoutingSettingsBusy.value = false
+      routerSettingsBusy.value = false
       llmEnsembleSettingsBusy.value = false
     }
   }
@@ -263,6 +269,8 @@ export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
     routerVisualEffectsEnabled,
     routerVisualMode,
     routerSettingsBusy,
+    modelRoutingMode,
+    modelRoutingSettingsBusy,
     codingModeEnabled,
     codingModeSettingsBusy,
     llmEnsembleEnabled,
@@ -272,6 +280,7 @@ export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
     routerTierConfigs,
     loadFeatureToggles,
     setRouterEnabled,
+    setModelRoutingMode,
     setCodingModeEnabled,
     setLlmEnsembleEnabled,
     setRouterVisualEffectsEnabled,

@@ -60,18 +60,31 @@
               </button>
               <ChatComposerSettings
                 v-if="settingsOpen"
-                :router-enabled="routerEnabled"
-                :router-settings-busy="routerSettingsBusy"
                 :visual-effects-enabled="routerVisualEffectsEnabled"
                 :coding-mode-enabled="codingModeEnabled"
                 :coding-mode-settings-busy="codingModeSettingsBusy"
-                :llm-ensemble-enabled="llmEnsembleEnabled"
-                :llm-ensemble-settings-busy="llmEnsembleSettingsBusy"
                 @close="settingsOpen = false"
-                @set-router-enabled="emit('setRouterEnabled', $event)"
                 @set-visual-effects-enabled="emit('setVisualEffectsEnabled', $event)"
                 @set-coding-mode-enabled="emit('setCodingModeEnabled', $event)"
-                @set-llm-ensemble-enabled="emit('setLlmEnsembleEnabled', $event)"
+              />
+            </div>
+            <div class="chat-settings-anchor">
+              <button
+                class="btn btn--icon btn--ghost"
+                :class="{ 'is-active': modelRoutingOpen || modelRoutingMode !== 'off' }"
+                :title="t('chat.composer.modelRouting')"
+                :aria-label="t('chat.composer.modelRouting')"
+                :aria-expanded="modelRoutingOpen ? 'true' : 'false'"
+                @click="toggleModelRouting"
+              >
+                <Icon name="gauge" :size="17" />
+              </button>
+              <ChatComposerModelRouting
+                v-if="modelRoutingOpen"
+                :model-routing-mode="modelRoutingMode"
+                :busy="modelRoutingSettingsBusy"
+                @close="modelRoutingOpen = false"
+                @set-model-routing-mode="emit('setModelRoutingMode', $event)"
               />
             </div>
             <div class="chat-settings-anchor">
@@ -158,9 +171,11 @@ import { nextTick, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import type { IconName } from '@/utils/icons'
+import ChatComposerModelRouting from '@/components/chat/ChatComposerModelRouting.vue'
 import ChatComposerSettings from '@/components/chat/ChatComposerSettings.vue'
 import ChatComposerRunMode from '@/components/chat/ChatComposerRunMode.vue'
 import type { Attachment } from '@/types/chat'
+import type { ModelRoutingMode } from '@/types/modelRouting'
 import type { SandboxRunMode } from '@/types/sandbox'
 import { isAttachmentBusy, isImageDisplayAttachment } from '@/utils/chat/attachments'
 
@@ -181,13 +196,11 @@ defineProps<{
   sendButtonTitle: string
   runMode: SandboxRunMode
   allowedRunModes: SandboxRunMode[]
-  routerEnabled: boolean
+  modelRoutingMode: ModelRoutingMode
+  modelRoutingSettingsBusy: boolean
   routerVisualEffectsEnabled: boolean
-  routerSettingsBusy: boolean
   codingModeEnabled: boolean
   codingModeSettingsBusy: boolean
-  llmEnsembleEnabled: boolean
-  llmEnsembleSettingsBusy: boolean
   voiceBusy: boolean
   voiceRecording: boolean
 }>()
@@ -203,10 +216,9 @@ const emit = defineEmits<{
   send: []
   setBusySendMode: [mode: 'queue' | 'steer']
   setRunMode: [mode: 'standard' | 'trusted' | 'full']
-  setRouterEnabled: [enabled: boolean]
+  setModelRoutingMode: [mode: ModelRoutingMode]
   setVisualEffectsEnabled: [enabled: boolean]
   setCodingModeEnabled: [enabled: boolean]
-  setLlmEnsembleEnabled: [enabled: boolean]
   voiceInput: []
   exportMarkdown: []
   stop: []
@@ -219,16 +231,31 @@ const composerEl = ref<HTMLElement | null>(null)
 const textareaEl = ref<HTMLTextAreaElement | null>(null)
 const fileInputEl = ref<HTMLInputElement | null>(null)
 const settingsOpen = ref(false)
+const modelRoutingOpen = ref(false)
 const runModeOpen = ref(false)
 
 function toggleSettings() {
   settingsOpen.value = !settingsOpen.value
-  if (settingsOpen.value) runModeOpen.value = false
+  if (settingsOpen.value) {
+    modelRoutingOpen.value = false
+    runModeOpen.value = false
+  }
+}
+
+function toggleModelRouting() {
+  modelRoutingOpen.value = !modelRoutingOpen.value
+  if (modelRoutingOpen.value) {
+    settingsOpen.value = false
+    runModeOpen.value = false
+  }
 }
 
 function toggleRunMode() {
   runModeOpen.value = !runModeOpen.value
-  if (runModeOpen.value) settingsOpen.value = false
+  if (runModeOpen.value) {
+    settingsOpen.value = false
+    modelRoutingOpen.value = false
+  }
 }
 
 function attachmentIcon(att: Attachment): IconName {

@@ -34,6 +34,7 @@ import {
   sortRouterTiers,
 } from '@/utils/chat/routerTiers'
 import type { RouterVisualMode } from '@/utils/chat/routerVisualMode'
+import type { ModelRoutingMode } from '@/types/modelRouting'
 import type { InterruptViewState } from '@/types/parts'
 import { toParts, toolState, type ToPartsInterrupt } from '@/utils/chat/toParts'
 import { toSources } from '@/utils/chat/toSources'
@@ -62,6 +63,7 @@ export interface UseChatRenderedMessagesOptions {
   routerTierConfigs: Ref<Record<string, ChatRouterTierConfig>>
   routerVisualEffectsEnabled: Ref<boolean>
   routerVisualMode: Ref<RouterVisualMode>
+  modelRoutingMode?: Ref<ModelRoutingMode>
   renderMarkdown: (text: string) => string
   stripGeneratedArtifactMarkers: (text: string) => string
   stripTimePrefix: (text: string) => string
@@ -189,11 +191,20 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
         continue
       }
 
-      const usageRouterDecision = routerDecisionFromUsage(msg)
-      if (usageRouterDecision) {
-        const stripItem = renderedRouterStrip(msg, usageRouterDecision, turnIdx, i, `${msg.messageId || i}-router`, turnRequestKind)
-        if (stripItem) turnRouterIdx = upsertRouterStrip(result, stripItem, turnRouterIdx)
+      const usageEnsemble = ensembleMetaFromMessage(msg)
+      if (usageEnsemble) {
+        if (turnRouterIdx >= 0) {
+          result.splice(turnRouterIdx, 1)
+          turnRouterIdx = -1
+        }
         prevRole = ''
+      } else {
+        const usageRouterDecision = routerDecisionFromUsage(msg)
+        if (usageRouterDecision) {
+          const stripItem = renderedRouterStrip(msg, usageRouterDecision, turnIdx, i, `${msg.messageId || i}-router`, turnRequestKind)
+          if (stripItem) turnRouterIdx = upsertRouterStrip(result, stripItem, turnRouterIdx)
+          prevRole = ''
+        }
       }
 
       const isSubagent = options.isSubagentCompletionMessage(msg.role, msg.text, msg)
@@ -264,6 +275,9 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
     requestKind: ChatRouterRequestKind = 'text',
   ): ChatRenderedMessage | null {
     if (!options.routerVisualEffectsEnabled.value) return null
+    if (isEnsembleRouterDecision(decision)) {
+      return renderedEnsembleRouterStrip(msg, undefined, turnIdx, index, messageId)
+    }
     const cells = routerDecisionCellsForRequest(decision, requestKind)
     if (cells.length <= 1) return null
     return {
@@ -283,9 +297,43 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
       routerStatic: msg.restoredFromHistory === true,
       routerSettled: msg.routerSettled === true,
       routerPanel: routerPanelDataset(options.routerVisualMode.value),
+      routerMode: 'squilla_router',
       gridCells: cells,
       winnerIdx: routerWinnerCellIndex(cells, decision.tier),
       messageId: messageId || `${index}-router`,
+    }
+  }
+
+  function renderedEnsembleRouterStrip(
+    msg: ChatMessage,
+    ensemble: ChatEnsembleMeta | undefined,
+    turnIdx: number,
+    index: number,
+    messageId = msg.messageId,
+  ): ChatRenderedMessage | null {
+    if (!options.routerVisualEffectsEnabled.value) return null
+    return {
+      id: `router-turn-${turnIdx}`,
+      role: 'router',
+      displayRole: 'router',
+      roleLabel: 'Router',
+      text: '',
+      timeStr: relativeTime(msg.ts),
+      ts: msg.ts ?? null,
+      showHeader: false,
+      sourceIndex: index,
+      isRouterStrip: true,
+      routerState: ensemble ? 'settled' : 'pending',
+      routerSource: 'llm_ensemble',
+      routerObserve: false,
+      routerStatic: msg.restoredFromHistory === true,
+      routerSettled: Boolean(ensemble) || msg.routerSettled === true,
+      routerPanel: 'llm-ensemble',
+      routerMode: 'llm_ensemble',
+      ensemble,
+      gridCells: [],
+      winnerIdx: -1,
+      messageId: messageId || `${index}-ensemble-router`,
     }
   }
 
@@ -337,14 +385,27 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
 
     return {
       profile: String(trace?.profile || breakdown[0]?.profile || 'llm_ensemble'),
-      modelCount: uniqueModels.size || models.length || numeric(trace?.total_candidates),
+      modelCount: uniqueModels.size || models.length || numeric(trace?.selected_candidate_count) || numeric(trace?.total_candidates),
+      totalCandidates: numeric(trace?.total_candidates),
       requestCount: Math.max(0, numeric(trace?.llm_request_count), models.length),
       fallbackUsed: trace?.fallback_used === true || trace?.fallbackUsed === true,
+      fallbackReason: String(trace?.fallback_reason || trace?.fallbackReason || ''),
       costUsd: explicitCost > 0 ? explicitCost : rowCost,
       savedUsd,
       savedPct,
       models,
     }
+  }
+
+  function ensembleMetaFromMessage(msg: ChatMessage): ChatEnsembleMeta | undefined {
+    const usage = msg.usage || msg.turn_usage
+    return usage ? ensembleMeta(usage) : undefined
+  }
+
+  function isEnsembleRouterDecision(decision: NormalizedRouterDecision): boolean {
+    const source = String(decision.source || decision.routing_source || '').toLowerCase()
+    if (source.includes('ensemble')) return true
+    return options.modelRoutingMode?.value === 'llm_ensemble'
   }
 
   function normalizeEnsembleUsageRows(value: unknown): ChatEnsembleUsageRow[] {

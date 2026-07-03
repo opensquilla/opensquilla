@@ -20,6 +20,8 @@ import type { ChatRpcSubscriptionHandlers } from '@/composables/chat/useChatRpcS
 import type { FrameInput } from '@/types/turnlog'
 import type { FoldLiveTurnMode } from '@/composables/chat/useChatTurnLog'
 import {
+  PENDING_STREAM_TASK_ID,
+  STOPPED_STREAM_TASK_ID,
   acceptStreamSeq as decideStreamSeq,
   activeTaskGroupRunState as buildActiveTaskGroupRunState,
   isCurrentSessionPayload as payloadIsCurrentSession,
@@ -124,7 +126,6 @@ type ChatDoneUsagePayload = SessionEventPayload & ChatDoneUsageFields & {
 // never by timestamp proximity, which mis-bound reasoning to a
 // neighbouring turn whenever a turn ran longer than the gap after it.
 const REASONING_LOG_LIMIT = 20
-const PENDING_STREAM_TASK_ID = '__opensquilla_pending_stream_task__'
 
 interface TurnReasoningRecord {
   sessionKey: string
@@ -314,6 +315,22 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
     return payloadSessionChangeIsTerminal(payload, options.normalizeRunStatus)
   }
 
+  function isStoppedCancelledTerminalEvent(terminalStatus: string, payload: SessionEventPayload): boolean {
+    return (
+      activeStreamTaskId.value === STOPPED_STREAM_TASK_ID &&
+      isCurrentSessionPayload(payload) &&
+      terminalStatus === 'cancelled'
+    )
+  }
+
+  function isStoppedTerminalSessionChange(payload: SessionEventPayload): boolean {
+    if (activeStreamTaskId.value !== STOPPED_STREAM_TASK_ID) return false
+    if (!isCurrentSessionPayload(payload)) return false
+    if (!sessionChangeIsTerminal(payload)) return false
+    const state = options.sessionRunStatus(payload)
+    return state.status === 'cancelled' || state.status === 'interrupted'
+  }
+
   function syncTerminalSessionChange(payload: SessionEventPayload = {}) {
     if (!isCurrentSessionPayload(payload)) return false
     activeTaskGroups.value.clear()
@@ -434,6 +451,10 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
   function handleRpcSessionsChanged(payload: SessionEventPayload) {
     if (isStaleEpoch(payload)) return
     if (!isCurrentSessionPayload(payload)) return
+    if (isStoppedTerminalSessionChange(payload)) {
+      syncTerminalSessionChange(payload)
+      return
+    }
     if (!isCurrentTaskPayload(payload)) return
     if (sessionChangeIsTerminal(payload)) {
       syncTerminalSessionChange(payload)
@@ -499,6 +520,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
 
   function handleRpcAny(rawEvent: string, rawPayload: unknown) {
     const payloadObj = (rawPayload && typeof rawPayload === 'object' ? rawPayload : {}) as SessionEventPayload
+    const terminalStatus = eventTaskTerminalStatus(rawEvent)
     const rawStatus = payloadObj.run_status || payloadObj.runStatus || payloadObj.status || ''
     const normalizedStatus = options.normalizeRunStatus(String(rawStatus))
     if (
@@ -515,8 +537,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
     // A stale task's terminal/done/error must not end the current turn's stream
     // or push its "Turn failed" into the live transcript (issue #344). Approvals
     // above stay ungated; everything below mutates the current turn.
-    if (!isCurrentTaskPayload(payloadObj)) return
-    const terminalStatus = eventTaskTerminalStatus(rawEvent)
+    if (!isStoppedCancelledTerminalEvent(terminalStatus, payloadObj) && !isCurrentTaskPayload(payloadObj)) return
     if (terminalStatus) {
       if (!isCurrentSessionPayload(payloadObj)) return
       const terminalRunStatus = terminalStatus === 'succeeded' ? 'idle' : terminalStatus === 'abandoned' ? 'interrupted' : terminalStatus

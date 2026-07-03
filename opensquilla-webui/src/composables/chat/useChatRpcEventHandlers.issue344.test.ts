@@ -11,7 +11,7 @@
 // task-B's own events (and legacy untagged events) still flow.
 import { describe, expect, it, vi } from 'vitest'
 import { effectScope, ref, type Ref } from 'vue'
-import type { ChatMessage } from '@/types/chat'
+import type { ChatMessage, ChatRunStatus, ChatRunStatusSource } from '@/types/chat'
 import type { ToolUsePayload } from '@/types/rpc'
 import {
   useChatRpcEventHandlers,
@@ -174,5 +174,55 @@ describe('issue #344 — live stream is bound to a single task', () => {
     })
 
     expect(stream.endStreaming).toHaveBeenCalled()
+  })
+
+  it("accepts the stopped task's cancelled terminal event after Stop poisoned the active id", () => {
+    const { api, options, stream } = makeHarness('__opensquilla_stopped_stream_task__')
+    stream.isStreaming.value = false
+
+    api.handlers.onAny('task.cancelled', {
+      task_id: 'task-B',
+      session_key: SESSION,
+      terminal_message: 'The task was cancelled before it finished.',
+    })
+
+    expect(options.applySessionRunState).toHaveBeenCalledWith(expect.objectContaining({
+      run_status: 'cancelled',
+      last_task: expect.objectContaining({
+        task_id: 'task-B',
+        status: 'cancelled',
+      }),
+    }))
+  })
+
+  it("accepts the stopped task's terminal sessions.changed payload", () => {
+    const { api, options, stream } = makeHarness('__opensquilla_stopped_stream_task__')
+    stream.isStreaming.value = false
+    const cancelledPayload = {
+      session_key: SESSION,
+      reason: 'task_terminal',
+      run_status: 'cancelled',
+      last_task: { task_id: 'task-B', status: 'cancelled' },
+    } satisfies ChatRunStatusSource & { session_key: string; reason: string }
+    options.sessionRunStatus = vi.fn((source: ChatRunStatusSource | null | undefined): ChatRunStatus => {
+      const isCancelled = source?.run_status === 'cancelled'
+      return {
+        status: isCancelled ? 'cancelled' : 'idle',
+        label: isCancelled ? 'Cancelled' : 'Idle',
+        task: source?.last_task ?? null,
+      }
+    })
+
+    api.handlers.onSessionsChanged(cancelledPayload as never)
+
+    expect(options.applySessionRunState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        run_status: 'cancelled',
+        last_task: expect.objectContaining({
+          task_id: 'task-B',
+          status: 'cancelled',
+        }),
+      }),
+    )
   })
 })

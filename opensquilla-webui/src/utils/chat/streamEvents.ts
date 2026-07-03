@@ -7,6 +7,9 @@ export interface StreamSeqDecision {
 
 export type NormalizeRunStatus = (status: string) => string
 
+export const PENDING_STREAM_TASK_ID = '__opensquilla_pending_stream_task__'
+export const STOPPED_STREAM_TASK_ID = '__opensquilla_stopped_stream_task__'
+
 export function payloadSessionKey(payload: SessionEventPayload | null | undefined): string {
   return payload?.key || payload?.session_key || payload?.sessionKey || ''
 }

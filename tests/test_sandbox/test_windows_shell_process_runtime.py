@@ -614,6 +614,54 @@ async def test_auto_host_escalation_background_process_runs_on_host_once(
 
 
 @pytest.mark.asyncio
+async def test_auto_host_background_batch_requests_write_path_access_before_host(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from opensquilla.gateway.approval_queue import reset_approval_queue
+    from opensquilla.tools.builtin import shell
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside-background.txt"
+    command = f"msiexec /i app.msi; Set-Content -Path {outside} -Value hi"
+
+    _configure_approval_queue(monkeypatch, tmp_path, "prompt")
+    runtime = _windows_runtime()
+
+    async def fail_create_subprocess_shell(*args, **kwargs):
+        raise AssertionError("background auto-host batch should not spawn before path approval")
+
+    monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(shell.asyncio, "create_subprocess_shell", fail_create_subprocess_shell)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(workspace),
+            session_key="s1",
+            run_mode="trusted",
+        )
+    )
+    try:
+        result = await shell.background_process(command, workdir=str(workspace))
+    finally:
+        current_tool_context.reset(token)
+        reset_approval_queue()
+
+    payload = json.loads(result)
+    assert payload["status"] == "approval_required"
+    assert payload["access"] == "rw"
+    assert payload["path"] == str(outside.resolve(strict=False))
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("mode", "is_owner"),
     [
@@ -690,6 +738,87 @@ async def test_host_effect_command_stays_sandboxed_without_owner(
             workspace_dir=str(tmp_path),
             session_key="s1",
             run_mode="trusted",
+        )
+    )
+    try:
+        result = await shell.exec_command("winget list", workdir=str(tmp_path))
+    finally:
+        current_tool_context.reset(token)
+        reset_approval_queue()
+
+    assert "sandbox-ok" in result
+    assert backend_calls
+    assert host_calls == []
+
+
+@pytest.mark.asyncio
+async def test_standard_auto_approve_owner_host_effect_command_stays_sandboxed(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from opensquilla.gateway.approval_queue import reset_approval_queue
+    from opensquilla.sandbox.config import SandboxSettings
+    from opensquilla.sandbox.policy import build_policy
+    from opensquilla.sandbox.types import SecurityLevel
+    from opensquilla.tools.builtin import shell
+
+    _configure_approval_queue(monkeypatch, tmp_path, "auto-approve")
+    runtime = _windows_runtime()
+    policy = build_policy(
+        SecurityLevel.STANDARD,
+        "shell.exec",
+        tmp_path,
+        SandboxSettings(
+            sandbox=True,
+            security_grading=True,
+            backend="windows_default",
+            network_default="none",
+        ),
+        trusted=False,
+    )
+    request = SimpleNamespace(
+        cwd=tmp_path,
+        action_kind="shell.exec",
+        policy=policy,
+        reason="",
+        session_id="s1",
+        run_mode="standard",
+    )
+    backend_calls: list[object] = []
+    host_calls: list[str] = []
+
+    async def fake_gate_action(**kwargs):
+        return object(), policy, request
+
+    async def fake_preflight(*args, **kwargs):
+        return None
+
+    async def fake_backend(request, *, runtime=None):
+        backend_calls.append(request)
+        return SimpleNamespace(returncode=0, stdout="sandbox-ok\n", stderr="", backend_notes=())
+
+    async def fake_host(command, **kwargs):
+        host_calls.append(command)
+        return "exit_code=0\nhost-ok\n"
+
+    monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(shell, "gate_action", fake_gate_action)
+    monkeypatch.setattr(shell, "preflight_subprocess_managed_network", fake_preflight)
+    monkeypatch.setattr(shell, "_run_backend_with_managed_network", fake_backend)
+    monkeypatch.setattr(shell, "_run_host_shell_command", fake_host)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(tmp_path),
+            session_key="s1",
+            run_mode="standard",
         )
     )
     try:
@@ -996,6 +1125,109 @@ async def test_windows_exec_command_uses_shared_path_envelopes(monkeypatch, tmp_
 
     assert "shared path envelope blocked this command" in result
     assert backend_called is False
+
+
+@pytest.mark.asyncio
+async def test_auto_host_exec_batch_requests_write_path_access_before_host(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from opensquilla.gateway.approval_queue import reset_approval_queue
+    from opensquilla.tools.builtin import shell
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    command = f"where winget; Set-Content -Path {outside} -Value hi"
+
+    _configure_approval_queue(monkeypatch, tmp_path, "prompt")
+    runtime = _windows_runtime()
+    host_calls: list[str] = []
+
+    async def fake_host(command, **kwargs):
+        host_calls.append(command)
+        return "exit_code=0\nhost-ok\n"
+
+    monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(shell, "_run_host_shell_command", fake_host)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(workspace),
+            session_key="s1",
+            run_mode="trusted",
+        )
+    )
+    try:
+        result = await shell.exec_command(command, workdir=str(workspace))
+    finally:
+        current_tool_context.reset(token)
+        reset_approval_queue()
+
+    payload = json.loads(result)
+    assert payload["status"] == "approval_required"
+    assert payload["access"] == "rw"
+    assert payload["path"] == str(outside.resolve(strict=False))
+    assert host_calls == []
+
+
+@pytest.mark.asyncio
+async def test_auto_host_exec_batch_blocks_protected_metadata_write_before_host(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from opensquilla.gateway.approval_queue import reset_approval_queue
+    from opensquilla.tools.builtin import shell
+
+    workspace = tmp_path / "workspace"
+    protected = workspace / ".git"
+    protected.mkdir(parents=True)
+    target = protected / "config"
+    command = f"where winget; Set-Content -Path {target} -Value hi"
+
+    _configure_approval_queue(monkeypatch, tmp_path, "prompt")
+    runtime = _windows_runtime()
+    host_calls: list[str] = []
+
+    async def fake_host(command, **kwargs):
+        host_calls.append(command)
+        return "exit_code=0\nhost-ok\n"
+
+    monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(shell, "_run_host_shell_command", fake_host)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),
+    )
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(workspace),
+            session_key="s1",
+            run_mode="trusted",
+        )
+    )
+    try:
+        result = await shell.exec_command(command, workdir=str(workspace))
+    finally:
+        current_tool_context.reset(token)
+        reset_approval_queue()
+
+    payload = json.loads(result)
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "protected_metadata"
+    assert payload["resolved_path"] == str(target.resolve(strict=False))
+    assert host_calls == []
 
 
 @pytest.mark.asyncio

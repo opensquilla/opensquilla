@@ -352,9 +352,9 @@ def _auto_host_escalation_allowed(
     ctx = current_tool_context.get()
     if ctx is None or not bool(ctx.is_owner):
         return False
-    settings = get_approval_queue().get_settings()
-    if settings.mode != "auto-approve" and not trusted_sandbox_active():
+    if not trusted_sandbox_active():
         return False
+    settings = get_approval_queue().get_settings()
     if not host_effect:
         script_profile = _profile_referenced_powershell_file(command, workdir=workdir)
         host_effect = script_profile.host_effect if script_profile is not None else None
@@ -2220,6 +2220,7 @@ def _sandbox_workdir_access_envelope(
     *,
     write: bool = False,
     approval_id: str | None = None,
+    allow_trusted_auto_mount: bool = True,
 ) -> dict[str, object] | None:
     if not workdir or not _sandbox_path_access_enabled():
         return None
@@ -2233,7 +2234,11 @@ def _sandbox_workdir_access_envelope(
         return None
     if decision.status == "blocked":
         return _path_access_blocked_envelope(decision)
-    if trusted_sandbox_active() and grant_temporary_mount_for_current_tool(decision):
+    if (
+        allow_trusted_auto_mount
+        and trusted_sandbox_active()
+        and grant_temporary_mount_for_current_tool(decision)
+    ):
         return None
     return _path_access_required_envelope(decision, approval_id=approval_id)
 
@@ -2243,6 +2248,7 @@ def _sandbox_read_path_access_envelope(
     workdir: str | None,
     *,
     approval_id: str | None = None,
+    allow_trusted_auto_mount: bool = True,
 ) -> dict[str, object] | None:
     if not profile.requested_paths or not _sandbox_path_access_enabled():
         return None
@@ -2257,7 +2263,11 @@ def _sandbox_read_path_access_envelope(
             continue
         if decision.status == "blocked":
             return _path_access_blocked_envelope(decision)
-        if trusted_sandbox_active() and grant_temporary_mount_for_current_tool(decision):
+        if (
+            allow_trusted_auto_mount
+            and trusted_sandbox_active()
+            and grant_temporary_mount_for_current_tool(decision)
+        ):
             continue
         return _path_access_required_envelope(decision, approval_id=approval_id)
     return None
@@ -2270,6 +2280,7 @@ def _sandbox_write_path_access_envelope(
     *,
     stdin: str | None = None,
     approval_id: str | None = None,
+    allow_trusted_auto_mount: bool = True,
 ) -> dict[str, object] | None:
     write_paths = _shell_write_access_targets(command, profile, stdin=stdin)
     if not write_paths or not _sandbox_path_access_enabled():
@@ -2283,21 +2294,76 @@ def _sandbox_write_path_access_envelope(
             write=True,
         )
         if decision.status == "allowed":
-            _grant_precise_windows_file_mount_for_allowed_write_target(
-                raw_path,
-                decision,
-                shell_file_targets,
-            )
+            if allow_trusted_auto_mount:
+                _grant_precise_windows_file_mount_for_allowed_write_target(
+                    raw_path,
+                    decision,
+                    shell_file_targets,
+                )
             continue
         if decision.status == "blocked":
             return _path_access_blocked_envelope(decision)
-        if trusted_sandbox_active() and grant_temporary_mount_for_current_tool(
-            decision,
-            prefer_file=_shell_write_target_prefers_file(raw_path, shell_file_targets),
+        if (
+            allow_trusted_auto_mount
+            and trusted_sandbox_active()
+            and grant_temporary_mount_for_current_tool(
+                decision,
+                prefer_file=_shell_write_target_prefers_file(raw_path, shell_file_targets),
+            )
         ):
             continue
         return _path_access_required_envelope(decision, approval_id=approval_id)
     return None
+
+
+def _auto_host_shell_policy_envelope(
+    tool_name: str,
+    command: str,
+    workdir: str | None,
+    profile: OperationProfile,
+    *,
+    stdin: str | None = None,
+    approval_id: str | None = None,
+) -> dict[str, object] | None:
+    path_access = _sandbox_workdir_access_envelope(
+        workdir,
+        write=_shell_workdir_requires_write(command, profile, stdin=stdin),
+        approval_id=approval_id,
+        allow_trusted_auto_mount=False,
+    )
+    if path_access is not None:
+        return path_access
+    path_access = _sandbox_read_path_access_envelope(
+        profile,
+        workdir,
+        approval_id=approval_id,
+        allow_trusted_auto_mount=False,
+    )
+    if path_access is not None:
+        return path_access
+    protected_block = _protected_metadata_write_block(
+        tool_name,
+        command,
+        workdir,
+        profile,
+        stdin=stdin,
+    )
+    if protected_block is not None:
+        return protected_block
+    path_access = _sandbox_write_path_access_envelope(
+        profile,
+        workdir,
+        command,
+        stdin=stdin,
+        approval_id=approval_id,
+        allow_trusted_auto_mount=False,
+    )
+    if path_access is not None:
+        return path_access
+    lockdown_block = _workspace_lockdown_shell_block(tool_name, command, workdir, stdin=stdin)
+    if lockdown_block is not None:
+        return lockdown_block
+    return _workspace_write_deny_shell_block(tool_name, command, workdir, stdin=stdin)
 
 
 def _protected_metadata_write_block(
@@ -3360,7 +3426,18 @@ async def exec_command(
         workdir=workdir,
     )
     if windows_process_sandbox:
-        if not auto_host_execution:
+        if auto_host_execution:
+            auto_host_block = _auto_host_shell_policy_envelope(
+                "exec_command",
+                command,
+                _effective_workdir(workdir),
+                original_profile,
+                stdin=stdin,
+                approval_id=approval_id,
+            )
+            if auto_host_block is not None:
+                return json.dumps(auto_host_block, ensure_ascii=False)
+        else:
             path_access = _sandbox_write_path_access_envelope(
                 original_profile,
                 workdir,
@@ -3565,7 +3642,17 @@ async def background_process(
         workdir=workdir,
     )
     if windows_process_sandbox:
-        if not auto_host_execution:
+        if auto_host_execution:
+            auto_host_block = _auto_host_shell_policy_envelope(
+                "background_process",
+                command,
+                _effective_workdir(workdir),
+                original_profile,
+                approval_id=approval_id,
+            )
+            if auto_host_block is not None:
+                return json.dumps(auto_host_block, ensure_ascii=False)
+        else:
             path_access = _sandbox_write_path_access_envelope(
                 original_profile,
                 workdir,

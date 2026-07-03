@@ -12,6 +12,7 @@ import type { ChatRpcStreamApi } from '@/composables/chat/useChatRpcEventHandler
 import type { BusySendMode } from '@/composables/chat/useChatPendingQueue'
 import { recordSessionNavigationDiag } from '@/utils/chat/sessionNavigationDiag'
 import { isSendableAttachment, serializeDisplayAttachment, serializeSendableAttachment, type SendableAttachment } from '@/utils/chat/attachments'
+import { PENDING_STREAM_TASK_ID, STOPPED_STREAM_TASK_ID } from '@/utils/chat/streamEvents'
 
 type RpcClient = {
   call: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -42,9 +43,6 @@ export function decideSendResponseSession(input: {
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
-
-const PENDING_STREAM_TASK_ID = '__opensquilla_pending_stream_task__'
-const STOPPED_STREAM_TASK_ID = '__opensquilla_stopped_stream_task__'
 
 function chatSourceMetadata(options: UseChatSendOptions): ChatSendParams['_source'] {
   const elevated = options.normalizeElevatedMode(options.elevatedMode.value)

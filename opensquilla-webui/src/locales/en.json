@@ -123,7 +123,13 @@
       "capabilities": "Capabilities",
       "appearance": "Appearance",
       "keyboard": "Keyboard",
-      "advanced": "Advanced"
+      "advanced": "Advanced",
+      "groups": {
+        "gateway": "Gateway",
+        "ai": "AI configuration",
+        "delivery": "Delivery",
+        "preferences": "Preferences"
+      }
     }
   },
   "errorBoundary": {
@@ -164,7 +170,8 @@
       "live": "Live",
       "providerFirst": "Provider first",
       "review": "Review",
-      "envNotVisible": "{capability} is selected, but ${envKey} is not visible to the gateway."
+      "envNotVisible": "{capability} is selected, but ${envKey} is not visible to the gateway.",
+      "appliesOnSave": "Applies on save"
     },
     "summary": {
       "notConfigured": "not configured",
@@ -208,7 +215,8 @@
       "envMissing": "{envKey} is not visible to this gateway process. Set it before starting or restarting the gateway, or paste an API key instead.",
       "envKeyFallback": "the selected API key environment variable",
       "copyKeyCommand": "Copy set provider key command",
-      "save": "Save Provider"
+      "save": "Save Provider",
+      "configureRouter": "Configure the router →"
     },
     "behavior": {
       "title": "Session behavior",

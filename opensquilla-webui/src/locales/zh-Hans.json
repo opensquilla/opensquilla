@@ -123,7 +123,13 @@
       "capabilities": "能力",
       "appearance": "外观",
       "keyboard": "键盘",
-      "advanced": "高级"
+      "advanced": "高级",
+      "groups": {
+        "gateway": "网关",
+        "ai": "AI 配置",
+        "delivery": "分发",
+        "preferences": "偏好设置"
+      }
     }
   },
   "errorBoundary": {
@@ -164,7 +170,8 @@
       "live": "已生效",
       "providerFirst": "请先配置服务商",
       "review": "待查看",
-      "envNotVisible": "已选择{capability}，但网关无法读取 ${envKey}。"
+      "envNotVisible": "已选择{capability}，但网关无法读取 ${envKey}。",
+      "appliesOnSave": "保存后生效"
     },
     "summary": {
       "notConfigured": "未配置",
@@ -208,7 +215,8 @@
       "envMissing": "此网关进程无法读取 {envKey}。请在启动或重启网关前设置它，或改为粘贴 API 密钥。",
       "envKeyFallback": "所选的 API 密钥环境变量",
       "copyKeyCommand": "复制设置服务商密钥的命令",
-      "save": "保存服务商"
+      "save": "保存服务商",
+      "configureRouter": "配置路由 →"
     },
     "behavior": {
       "title": "会话行为",

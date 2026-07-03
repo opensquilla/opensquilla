@@ -123,7 +123,13 @@
       "capabilities": "機能",
       "appearance": "外観",
       "keyboard": "キーボード",
-      "advanced": "詳細設定"
+      "advanced": "詳細設定",
+      "groups": {
+        "gateway": "ゲートウェイ",
+        "ai": "AI 設定",
+        "delivery": "配信",
+        "preferences": "環境設定"
+      }
     }
   },
   "errorBoundary": {
@@ -164,7 +170,8 @@
       "live": "稼働中",
       "providerFirst": "まずプロバイダーを設定",
       "review": "確認",
-      "envNotVisible": "{capability} が選択されていますが、${envKey} はゲートウェイから参照できません。"
+      "envNotVisible": "{capability} が選択されていますが、${envKey} はゲートウェイから参照できません。",
+      "appliesOnSave": "保存時に適用"
     },
     "summary": {
       "notConfigured": "未設定",
@@ -208,7 +215,8 @@
       "envMissing": "{envKey} はこのゲートウェイプロセスから参照できません。ゲートウェイの起動または再起動前に設定するか、代わりに API キーを貼り付けてください。",
       "envKeyFallback": "選択した API キーの環境変数",
       "copyKeyCommand": "プロバイダーキー設定コマンドをコピー",
-      "save": "プロバイダーを保存"
+      "save": "プロバイダーを保存",
+      "configureRouter": "ルーターを設定 →"
     },
     "behavior": {
       "title": "セッションの動作",

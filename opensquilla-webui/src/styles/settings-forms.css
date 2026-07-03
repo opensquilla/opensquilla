@@ -67,8 +67,15 @@
   border-bottom: 1px solid var(--border);
   display: grid;
   gap: var(--sp-2);
-  grid-template-columns: 80px 1fr 1fr 120px 60px;
+  grid-template-columns: 140px 1fr 1fr 120px 60px;
   padding: var(--sp-2) var(--sp-3);
+}
+
+/* First column shows the human tier label ("Balanced default (c1)") rather than
+   the bare c-code. The label keeps the canonical id in parentheses. */
+.setup-tier-table__tier {
+  font-size: 12px;
+  line-height: 1.25;
 }
 
 .setup-tier-table__row.is-head {
@@ -284,7 +291,7 @@
     overflow-x: auto;
   }
   .setup-tier-table__row {
-    min-width: 520px;
+    min-width: 580px;
   }
 
   .setup-ensemble-table__row {

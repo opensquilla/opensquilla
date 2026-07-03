@@ -123,7 +123,13 @@
       "capabilities": "Capacités",
       "appearance": "Apparence",
       "keyboard": "Clavier",
-      "advanced": "Avancé"
+      "advanced": "Avancé",
+      "groups": {
+        "gateway": "Passerelle",
+        "ai": "Configuration IA",
+        "delivery": "Diffusion",
+        "preferences": "Préférences"
+      }
     }
   },
   "errorBoundary": {
@@ -164,7 +170,8 @@
       "live": "En direct",
       "providerFirst": "Fournisseur d'abord",
       "review": "Révision",
-      "envNotVisible": "{capability} est sélectionné, mais ${envKey} n'est pas visible par la passerelle."
+      "envNotVisible": "{capability} est sélectionné, mais ${envKey} n'est pas visible par la passerelle.",
+      "appliesOnSave": "Appliqué à l'enregistrement"
     },
     "summary": {
       "notConfigured": "non configuré",
@@ -208,7 +215,8 @@
       "envMissing": "{envKey} n'est pas visible par ce processus de passerelle. Définissez-la avant de démarrer ou de redémarrer la passerelle, ou collez plutôt une clé API.",
       "envKeyFallback": "la variable d'environnement de clé API sélectionnée",
       "copyKeyCommand": "Copier la commande de définition de la clé du fournisseur",
-      "save": "Enregistrer le fournisseur"
+      "save": "Enregistrer le fournisseur",
+      "configureRouter": "Configurer le routeur →"
     },
     "behavior": {
       "title": "Comportement des sessions",

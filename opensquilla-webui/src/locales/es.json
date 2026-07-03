@@ -123,7 +123,13 @@
       "capabilities": "Capacidades",
       "appearance": "Apariencia",
       "keyboard": "Teclado",
-      "advanced": "Avanzado"
+      "advanced": "Avanzado",
+      "groups": {
+        "gateway": "Puerta de enlace",
+        "ai": "Configuración de IA",
+        "delivery": "Entrega",
+        "preferences": "Preferencias"
+      }
     }
   },
   "errorBoundary": {
@@ -164,7 +170,8 @@
       "live": "En vivo",
       "providerFirst": "Primero el proveedor",
       "review": "Revisar",
-      "envNotVisible": "{capability} está seleccionado, pero ${envKey} no es visible para la puerta de enlace."
+      "envNotVisible": "{capability} está seleccionado, pero ${envKey} no es visible para la puerta de enlace.",
+      "appliesOnSave": "Se aplica al guardar"
     },
     "summary": {
       "notConfigured": "no configurado",
@@ -208,7 +215,8 @@
       "envMissing": "{envKey} no es visible para este proceso de la puerta de enlace. Establécela antes de iniciar o reiniciar la puerta de enlace, o pega una clave de API en su lugar.",
       "envKeyFallback": "la variable de entorno de la clave de API seleccionada",
       "copyKeyCommand": "Copiar comando para establecer la clave del proveedor",
-      "save": "Guardar proveedor"
+      "save": "Guardar proveedor",
+      "configureRouter": "Configurar el router →"
     },
     "behavior": {
       "title": "Comportamiento de la sesión",

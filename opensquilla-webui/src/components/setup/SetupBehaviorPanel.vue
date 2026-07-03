@@ -16,7 +16,6 @@ defineProps<{
 
 const emit = defineEmits<{
   updateAutoSessionTitles: [enabled: boolean]
-  save: []
 }>()
 </script>
 
@@ -40,8 +39,5 @@ const emit = defineEmits<{
         />
       </div>
     </label>
-    <div class="control-section__actions">
-      <button class="btn btn--primary" :disabled="!panel.autoSessionTitlesDirty" @click="emit('save')">{{ t('setup.behavior.save') }}</button>
-    </div>
   </section>
 </template>

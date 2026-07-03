@@ -610,14 +610,17 @@ function selectInitialSection(target: string | null) {
 
 function firstActionSection(): SettingsSectionId {
   const details = status.value.sectionDetails || {}
+  // Kept in sync with the SETTINGS_SECTIONS rail order so `/settings/auto` lands
+  // on the first not-ready section in the same top-to-bottom order the rail reads
+  // (Provider → Router → Capabilities → Channels).
   const sectionOrder: Array<[string, SettingsSectionId]> = [
     ['llm', 'provider'],
     ['router', 'router'],
-    ['channels', 'channels'],
     ['search', 'capabilities'],
     ['image_generation', 'capabilities'],
     ['memory_embedding', 'capabilities'],
     ['audio', 'capabilities'],
+    ['channels', 'channels'],
   ]
   const entry = sectionOrder.find(([name]) => {
     const detail = details[name] || {}
@@ -638,8 +641,12 @@ function sectionStatus(sectionId: string): { label: string; tone: string } {
     if (providerEnvMissing.value) return { label: t('setup.readiness.needsAction'), tone: 'is-warn' }
     return detailStepStatus((status.value.sectionDetails || {}).llm || (status.value.sectionDetails || {}).provider)
   }
-  if (sectionId === 'behavior') return { label: t('setup.status.live'), tone: 'is-ok' }
-  if (sectionId === 'privacy') return { label: t('setup.status.live'), tone: 'is-ok' }
+  // Behavior/Privacy are always-valid preference toggles, not readiness
+  // milestones — a neutral dot (rather than a green "Live" that overstates
+  // earned readiness) is honest; the dirty pip already signals unsaved edits.
+  if (sectionId === 'behavior' || sectionId === 'privacy') {
+    return { label: t('setup.status.appliesOnSave'), tone: 'is-muted' }
+  }
   if (sectionId === 'router' && !hasSavedProvider.value) {
     return { label: t('setup.status.providerFirst'), tone: 'is-muted' }
   }

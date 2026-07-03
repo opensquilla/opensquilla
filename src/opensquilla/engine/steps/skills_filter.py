@@ -148,9 +148,7 @@ async def filter_skills(ctx: TurnContext) -> TurnContext:
     # mode) or the subsystem is fully disabled. They remain in the loader so the
     # /meta command can still enumerate and run them.
     if not (meta_skill_enabled and meta_auto_trigger):
-        gated = [
-            s for s in gated if getattr(s, "kind", "skill") != "meta"
-        ]
+        gated = [s for s in gated if getattr(s, "kind", "skill") != "meta"]
         for key in (
             "meta_match",
             "meta_match_trigger",
@@ -255,10 +253,21 @@ async def filter_skills(ctx: TurnContext) -> TurnContext:
     if injection_mode == "user_message":
         skills_prompt = injector.inject_compact("", final)
     elif injection_mode == "user_context":
-        skills_prompt = injector.inject_skills("", final, max_chars=max_chars)
+        skills_prompt = injector.inject_skills(
+            "", final, max_chars=max_chars, pinned_count=len(pinned)
+        )
     else:
-        skills_prompt = injector.inject_skills("", final, max_chars=max_chars)
+        skills_prompt = injector.inject_skills(
+            "", final, max_chars=max_chars, pinned_count=len(pinned)
+        )
     ctx.metadata["skill_count"] = len(final)
+    # The selected count (``skill_count``) is pre-injection; under a tight budget
+    # inject_skills can degrade to a name-only prefix that renders FEWER entries.
+    # Record the count actually written into <available_skills> so recall debugging
+    # reflects what the model really saw, not what the filter selected. Count the
+    # closing </name> tag — the opening <name> substring also appears in the meta
+    # guidance prose (meta_invoke(name="<name>")), which would over-count.
+    ctx.metadata["skills_rendered_count"] = skills_prompt.count("</name>")
     ctx.metadata["skills_prompt_chars"] = len(skills_prompt)
     ctx.metadata["skills_injection_mode"] = injection_mode
 

@@ -74,7 +74,11 @@ async def test_agent_forwards_provider_ensemble_progress_as_engine_event() -> No
         provider=_EnsembleLikeProvider(),
         config=AgentConfig(max_iterations=2),
         tool_definitions=[
-            ToolDefinition(name="echo", description="Echo.", input_schema=ToolInputSchema(properties={}, required=[]))
+            ToolDefinition(
+                name="echo",
+                description="Echo.",
+                input_schema=ToolInputSchema(properties={}, required=[]),
+            )
         ],
         tool_handler=_tool_handler,
     )

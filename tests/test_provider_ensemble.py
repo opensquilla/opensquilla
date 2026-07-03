@@ -470,7 +470,11 @@ async def test_ensemble_emits_proposer_progress_events(
 
     # The finish delta carries the proposer's usage/cost so the UI can render
     # per-member tokens live (not just at the terminal breakdown).
-    p1_finish = next(p for p in progress if p.event_type == "proposer_finish" and p.proposer_model == "p1")
+    p1_finish = next(
+        p
+        for p in progress
+        if p.event_type == "proposer_finish" and p.proposer_model == "p1"
+    )
     assert p1_finish.input_tokens == 1
     assert p1_finish.output_tokens == 2
 

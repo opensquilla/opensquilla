@@ -2724,7 +2724,7 @@ class Agent:
                         "got_done_event": _got_done_event,
                     }
                     if provider_done_for_log is not None:
-                        response_payload["usage"] = {
+                        usage_payload: dict[str, Any] = {
                             "stop_reason": provider_done_for_log.stop_reason,
                             "input_tokens": provider_done_for_log.input_tokens,
                             "output_tokens": provider_done_for_log.output_tokens,
@@ -2735,15 +2735,14 @@ class Agent:
                             "cost_source": getattr(provider_done_for_log, "cost_source", "none"),
                             "model": provider_done_for_log.model,
                         }
+                        response_payload["usage"] = usage_payload
                         model_usage_breakdown = getattr(
                             provider_done_for_log,
                             "model_usage_breakdown",
                             None,
                         )
                         if model_usage_breakdown:
-                            response_payload["usage"][
-                                "model_usage_breakdown"
-                            ] = model_usage_breakdown
+                            usage_payload["model_usage_breakdown"] = model_usage_breakdown
                         ensemble_trace = getattr(provider_done_for_log, "ensemble_trace", None)
                         if ensemble_trace:
                             response_payload["ensemble_trace"] = ensemble_trace

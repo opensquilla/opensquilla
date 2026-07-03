@@ -48,37 +48,34 @@ OpenSquilla 0.5.0 Preview 1 是当前预览发布版本。
 
 OpenSquilla 可运行于 Windows、macOS 和 Linux。请选择与你的使用场景匹配的安装方式。
 
-桌面安装包、Windows 便携版和终端快速安装会直接给你一个预构建的**发布版**，无需 Git。另外两种——从源码安装和从源码开发——则需要克隆 Git 仓库后再构建(`git clone` + Git LFS)。
+桌面安装包和终端快速安装会直接给你一个预构建的**发布版**，无需 Git。另外两种——从源码安装和从源码开发——则需要克隆 Git 仓库后再构建(`git clone` + Git LFS)。
 
 发布版安装命令使用 GitHub 上已发布的 release 资源。Python wheel 安装使用带版本号的 wheel
 文件名，因为安装器会校验嵌入在 wheel 文件名中的版本号。
 
 对于 0.5.0 Preview 1 的桌面使用，建议从 GitHub Release 下载打包桌面安装包:macOS 上为
 `OpenSquilla-0.5.0rc1-mac-arm64.dmg`，Windows 上为 `OpenSquilla-0.5.0rc1-win-x64.exe`。
-0.5 预览版不再发布新的 Windows 便携版 zip。
 
 | 安装方式 | 适合人群 | 何时使用 |
 | --- | --- | --- |
 | [桌面安装包](#desktop-installers)**（推荐桌面用户）** | macOS 和 Windows 用户 | 打包桌面应用 |
-| [Windows 便携版](#windows-portable-no-python) | Windows 用户 | 旧版兼容；无需 Python 工具链；单 zip 启动 |
 | [终端快速安装](#quick-terminal-install)**（推荐）** | 任意系统的最终用户 | 在终端中安装发布版 wheel |
 | [从源码安装](#install-from-source) | 跟踪 `main` 分支的用户 | 从检出运行，而非修改它 |
 | [从源码开发](#develop-from-source) | 贡献者 | 编辑、测试或调试源码 |
 
 ### 前置条件
 
-| 要求 | Windows 便携版 | 终端快速安装 | 从源码安装 | 从源码开发 |
-| --- | :---: | :---: | :---: | :---: |
-| Python 3.12+ | 已内置 | 通过 `uv` | 通过 `uv` 或系统 | 通过 `uv` |
-| Git + Git LFS | — | — | 必需 | 必需 |
-| `uv` | — | 缺失则自动安装 | 推荐 | 必需 |
+| 要求 | 终端快速安装 | 从源码安装 | 从源码开发 |
+| --- | :---: | :---: | :---: |
+| Python 3.12+ | 通过 `uv` | 通过 `uv` 或系统 | 通过 `uv` |
+| Git + Git LFS | — | 必需 | 必需 |
+| `uv` | 缺失则自动安装 | 推荐 | 必需 |
 
 默认的 `recommended` 安装档会安装 **SquillaRouter**——OpenSquilla 的设备端模型路由
 ——及其模型资源；`OPENSQUILLA_INSTALL_PROFILE=core` 则会省略这些依赖。而 `--router disabled` 这个独立的 onboarding 标志则会保留已装好的依赖，只在运行时关闭路由。
 
-在 Windows 上，SquillaRouter 内置的 ONNX 运行时还需要 Visual C++ 运行库。Windows
-便携版启动器，以及源码安装用的 PowerShell 安装器，都会通过 `winget` 自动装好它；而
-**终端快速安装**(`uv tool install`)这条路径不会——如果启动时记录了 `DLL load failed`
+在 Windows 上，SquillaRouter 内置的 ONNX 运行时还需要 Visual C++ 运行库。源码安装用的
+PowerShell 安装器会通过 `winget` 自动装好它；而**终端快速安装**(`uv tool install`)这条路径不会——如果启动时记录了 `DLL load failed`
 错误，请手动安装(见[故障排查](#troubleshooting))。在装好之前，OpenSquilla 会以直连单一模型的路由方式继续运行。
 
 在 macOS 终端安装时，SquillaRouter 的 LightGBM 运行时可能还需要系统的 OpenMP 库。
@@ -102,46 +99,6 @@ OpenSquilla 可运行于 Windows、macOS 和 Linux。请选择与你的使用场
 
 升级前请退出任何正在运行的 OpenSquilla 桌面应用。已有的
 `~/.opensquilla/config.toml` 和会话数据会被复用。
-
-<a id="windows-portable-no-python"></a>
-
-### Windows 便携版（无需 Python）
-
-Windows 上的旧版兼容路径——zip 附带了内置的 CPython 运行时，因此无需单独安装 Python。
-
-1. 下载当前的便携版 zip:
-   <https://github.com/opensquilla/opensquilla/releases/download/v0.4.1/OpenSquilla-0.4.1-windows-x64-py312-recommended-portable.zip>
-2. 将其解压到一个可写文件夹（如“下载”或“文档”），然后右键
-   `Start OpenSquilla.cmd` 并选择**以管理员身份运行**。
-3. 完成首次配置，然后打开 <http://127.0.0.1:18791/control/>。
-
-> [!NOTE]
-> Windows 构建当前未签名；以管理员身份启动是受支持的路径。如果出现 SmartScreen，请选择
-> **更多信息** → **仍要运行**。如果 Smart App Control 或企业策略拦截了未签名应用，
-> 请改用[终端快速安装](#quick-terminal-install)。
-
-<details>
-<summary>便携版进阶用法</summary>
-
-在首次启动前提供一个 OpenRouter key:
-
-```powershell
-$env:OPENROUTER_API_KEY="sk-..."
-Set-ExecutionPolicy -Scope Process Bypass
-.\start.ps1
-```
-
-如果设置了 `OPENROUTER_API_KEY` 且不存在本地配置，启动器会写入一个引用环境变量的配置
-并启动网关，而不会提示。如果未设置，onboarding 向导会让你选择任意受支持的提供商。
-
-便携版 zip 不会安装全局的 `opensquilla` 命令。要获得一个 `opensquilla …` 可用的终端，
-请运行 `OpenSquilla Shell.cmd`，或直接调用内置启动器:
-
-```powershell
-.\opensquilla.cmd onboard --provider openrouter --api-key-env OPENROUTER_API_KEY
-```
-
-</details>
 
 <a id="quick-terminal-install"></a>
 
@@ -645,8 +602,7 @@ opensquilla gateway restart
 OpenSquilla 会以直连单一模型的路由方式继续运行，但内置的 `SquillaRouter` 运行时会保持
 不活动，直到安装适用于 Visual Studio 2015–2022(x64)的 Visual C++ Redistributable。
 
-Windows 便携版启动器和从源码安装的 PowerShell 安装器会尝试通过 `winget` 安装该
-redistributable。如果你使用的是终端快速安装，或 `winget` 不可用，请手动安装它并重启
+从源码安装的 PowerShell 安装器会尝试通过 `winget` 安装该 redistributable。如果你使用的是终端快速安装，或 `winget` 不可用，请手动安装它并重启
 PowerShell:<https://aka.ms/vs/17/release/vc_redist.x64.exe>。然后恢复推荐的路由:
 
 ```powershell

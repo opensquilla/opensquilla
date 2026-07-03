@@ -44,31 +44,30 @@ Para documentación de producto orientada a tareas, comienza por la [Guía de pr
 
 OpenSquilla funciona en Windows, macOS y Linux. Elige la ruta que se ajuste a tu caso de uso.
 
-Los instaladores de escritorio, la versión portable de Windows y la instalación rápida desde terminal te ofrecen una **versión** precompilada, sin necesidad de Git. Las otras dos —instalar desde el código fuente y desarrollar desde el código fuente— se compilan **a partir de un checkout de Git** (`git clone` + Git LFS).
+Los instaladores de escritorio y la instalación rápida desde terminal te ofrecen una **versión** precompilada, sin necesidad de Git. Las otras dos —instalar desde el código fuente y desarrollar desde el código fuente— se compilan **a partir de un checkout de Git** (`git clone` + Git LFS).
 
 Los comandos de instalación de versiones usan los recursos de release publicados en GitHub. Las instalaciones del wheel de Python usan nombres de archivo de wheel con versión, porque los instaladores validan la versión incrustada en el nombre del archivo del wheel.
 
-Para el uso de escritorio de 0.5.0 Preview 1, opta por los instaladores de escritorio empaquetados de la Release de GitHub: `OpenSquilla-0.5.0rc1-mac-arm64.dmg` en macOS y `OpenSquilla-0.5.0rc1-win-x64.exe` en Windows. Las versiones preliminares 0.5 ya no publican un nuevo zip portable de Windows.
+Para el uso de escritorio de 0.5.0 Preview 1, opta por los instaladores de escritorio empaquetados de la Release de GitHub: `OpenSquilla-0.5.0rc1-mac-arm64.dmg` en macOS y `OpenSquilla-0.5.0rc1-win-x64.exe` en Windows.
 
 | Ruta | Público | Cuándo usarla |
 | --- | --- | --- |
 | [Instaladores de escritorio](#desktop-installers) **(recomendado para escritorio)** | Usuarios de macOS y Windows | Aplicación de escritorio empaquetada |
-| [Versión portable de Windows](#windows-portable-no-python) | Usuarios de Windows | Compatibilidad heredada; sin cadena de herramientas de Python; arranque desde un solo zip |
 | [Instalación rápida desde terminal](#quick-terminal-install) **(recomendado)** | Usuarios finales en cualquier SO | Wheel de release desde una terminal |
 | [Instalar desde el código fuente](#install-from-source) | Usuarios que siguen `main` | Ejecutar desde un checkout, no editarlo |
 | [Desarrollar desde el código fuente](#develop-from-source) | Colaboradores | Editar, probar o depurar el código fuente |
 
 ### Requisitos previos
 
-| Requisito | Versión portable de Windows | Instalación rápida desde terminal | Instalar desde el código fuente | Desarrollar desde el código fuente |
-| --- | :---: | :---: | :---: | :---: |
-| Python 3.12+ | incluido | mediante `uv` | mediante `uv` o el sistema | mediante `uv` |
-| Git + Git LFS | — | — | requerido | requerido |
-| `uv` | — | se instala si falta | recomendado | requerido |
+| Requisito | Instalación rápida desde terminal | Instalar desde el código fuente | Desarrollar desde el código fuente |
+| --- | :---: | :---: | :---: |
+| Python 3.12+ | mediante `uv` | mediante `uv` o el sistema | mediante `uv` |
+| Git + Git LFS | — | requerido | requerido |
+| `uv` | se instala si falta | recomendado | requerido |
 
 El perfil predeterminado `recommended` instala **SquillaRouter** —el enrutador de modelos en el dispositivo de OpenSquilla— y sus recursos de modelo; `OPENSQUILLA_INSTALL_PROFILE=core` omite esas dependencias. El indicador de onboarding independiente `--router disabled` mantiene las dependencias instaladas, pero apaga el enrutador en tiempo de ejecución.
 
-En Windows, el runtime ONNX que incluye SquillaRouter también necesita el runtime de Visual C++. El lanzador portable de Windows y el instalador de PowerShell desde el código fuente lo instalan automáticamente mediante `winget`; la ruta de **instalación rápida desde terminal** (`uv tool install`) no lo hace: si el arranque registra un error `DLL load failed`, instálalo manualmente (consulta [Solución de problemas](#troubleshooting)). OpenSquilla sigue funcionando con enrutamiento directo a un único modelo hasta que se instale.
+En Windows, el runtime ONNX que incluye SquillaRouter también necesita el runtime de Visual C++. El instalador de PowerShell desde el código fuente lo instala automáticamente mediante `winget`; la ruta de **instalación rápida desde terminal** (`uv tool install`) no lo hace: si el arranque registra un error `DLL load failed`, instálalo manualmente (consulta [Solución de problemas](#troubleshooting)). OpenSquilla sigue funcionando con enrutamiento directo a un único modelo hasta que se instale.
 
 En las instalaciones desde terminal de macOS, el runtime LightGBM de SquillaRouter también puede necesitar la biblioteca OpenMP del sistema. La aplicación de escritorio incluye el runtime que necesita, pero la **instalación rápida desde terminal** no instala bibliotecas de Homebrew ni del sistema. Si el arranque registra `Library not loaded: @rpath/libomp.dylib`, ejecuta `brew install libomp` y luego reinicia el gateway. OpenSquilla sigue funcionando con enrutamiento directo a un único modelo hasta que se instale.
 
@@ -86,41 +85,6 @@ Los instaladores de escritorio de 0.5.0 Preview 1 empaquetan la consola de contr
 - Windows x64: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0rc1-win-x64.exe>
 
 Cierra cualquier aplicación de escritorio de OpenSquilla en ejecución antes de actualizar. Se reutilizan el `~/.opensquilla/config.toml` y los datos de sesión existentes.
-
-<a id="windows-portable-no-python"></a>
-
-### Versión portable de Windows (sin Python)
-
-La ruta de compatibilidad heredada en Windows: el zip incluye un runtime de CPython empaquetado, por lo que no se requiere una instalación de Python aparte.
-
-1. Descarga el zip portable actual:
-   <https://github.com/opensquilla/opensquilla/releases/download/v0.4.1/OpenSquilla-0.4.1-windows-x64-py312-recommended-portable.zip>
-2. Descomprímelo en una carpeta con permisos de escritura, como Descargas o Documentos, luego haz clic derecho en `Start OpenSquilla.cmd` y elige **Ejecutar como administrador**.
-3. Completa la configuración inicial y luego abre <http://127.0.0.1:18791/control/>.
-
-> [!NOTE]
-> Las builds Windows no están firmadas actualmente; el arranque como administrador es la ruta admitida. Si aparece SmartScreen, elige **Más información** → **Ejecutar de todas formas**. Si Smart App Control o una política empresarial bloquea la aplicación sin firmar, usa en su lugar la [instalación rápida desde terminal](#quick-terminal-install).
-
-<details>
-<summary>Uso avanzado de la versión portable</summary>
-
-Proporciona una clave de OpenRouter antes del primer arranque:
-
-```powershell
-$env:OPENROUTER_API_KEY="sk-..."
-Set-ExecutionPolicy -Scope Process Bypass
-.\start.ps1
-```
-
-Si `OPENROUTER_API_KEY` está definida y no existe ninguna configuración local, el lanzador escribe una configuración que referencia la variable de entorno e inicia el gateway sin preguntar. Si no está definida, el asistente de onboarding te permite elegir cualquier proveedor compatible.
-
-El zip portable no instala un comando global `opensquilla`. Para obtener una terminal donde funcione `opensquilla …`, ejecuta `OpenSquilla Shell.cmd` o llama directamente al lanzador incluido:
-
-```powershell
-.\opensquilla.cmd onboard --provider openrouter --api-key-env OPENROUTER_API_KEY
-```
-
-</details>
 
 <a id="quick-terminal-install"></a>
 
@@ -550,7 +514,7 @@ opensquilla gateway restart
 
 Si el arranque registra `DLL load failed while importing onnxruntime_pybind11_state`, OpenSquilla sigue funcionando con enrutamiento directo a un único modelo, pero el runtime `SquillaRouter` incluido permanece inactivo hasta que se instale el Visual C++ Redistributable para Visual Studio 2015–2022 (x64).
 
-El lanzador portable de Windows y el instalador de PowerShell desde el código fuente intentan instalar el redistributable mediante `winget`. Si usaste la instalación rápida desde terminal, o `winget` no está disponible, instálalo manualmente y reinicia PowerShell: <https://aka.ms/vs/17/release/vc_redist.x64.exe>. Luego restaura el enrutador recomendado:
+El instalador de PowerShell desde el código fuente intenta instalar el redistributable mediante `winget`. Si usaste la instalación rápida desde terminal, o `winget` no está disponible, instálalo manualmente y reinicia PowerShell: <https://aka.ms/vs/17/release/vc_redist.x64.exe>. Luego restaura el enrutador recomendado:
 
 ```powershell
 opensquilla onboard --provider openrouter --api-key-env OPENROUTER_API_KEY --router recommended

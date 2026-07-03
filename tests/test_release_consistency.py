@@ -278,7 +278,8 @@ def test_readme_release_install_uses_latest_assets_and_pinned_alternative() -> N
 
     assert f"OpenSquilla-{CURRENT_VERSION}-mac-arm64.dmg" in readme
     assert f"OpenSquilla-{CURRENT_VERSION}-win-x64.exe" in readme
-    assert "no longer publish Windows portable zips" in readme
+    assert "Simplified release assets" in readme
+    assert "desktop installers and the Python wheel only" in readme
     assert "releases/latest/download/OpenSquilla-windows-x64-portable.zip" not in readme
     assert (
         f"releases/download/{CURRENT_TAG}/opensquilla-{CURRENT_VERSION}-py3-none-any.whl"

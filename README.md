@@ -59,8 +59,7 @@ embedded in the wheel filename.
 
 For 0.5.0 Preview 1 desktop use, prefer the packaged desktop installers from
 the GitHub Release: `OpenSquilla-0.5.0rc1-mac-arm64.dmg` on macOS and
-`OpenSquilla-0.5.0rc1-win-x64.exe` on Windows. New 0.5 preview releases no longer publish Windows portable zips; existing 0.4.x portable assets remain on their
-original release pages for legacy scripts and portable-folder workflows.
+`OpenSquilla-0.5.0rc1-win-x64.exe` on Windows.
 
 | Path | Audience | When to use |
 | --- | --- | --- |
@@ -597,9 +596,7 @@ desktop/runtime line:
 - **OpenTUI and terminal reliability** - the preview terminal frontend, gateway
   lifecycle handling, subprocess encoding, and Windows process cleanup all get
   tighter failure behavior.
-- **Portable package retirement** - 0.5 preview releases publish Electron
-  desktop installers and the Python wheel only; the old Windows portable zips
-  remain on 0.4.x release pages for historical compatibility.
+- **Simplified release assets** - 0.5 preview releases publish Electron desktop installers and the Python wheel only.
 
 Full notes: [`CHANGELOG.md`](CHANGELOG.md) ·
 [`docs/releases/0.5.0rc1.md`](docs/releases/0.5.0rc1.md).

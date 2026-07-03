@@ -355,7 +355,7 @@ function onSubmit() {
 }
 
 .clarify-card__status {
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: var(--fs-sm);
   margin: 0;
 }

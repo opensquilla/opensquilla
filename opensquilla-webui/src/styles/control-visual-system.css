@@ -670,6 +670,7 @@ summary.control-row--divider:focus-visible {
 
 .control-nav-group__label {
   color: var(--text-dim);
+  font-family: var(--label-font);
   font-size: 10px;
   font-weight: var(--fw-eyebrow);
   letter-spacing: var(--eyebrow-track);

@@ -199,7 +199,7 @@ onUnmounted(() => {
 .share-modal {
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-modal);
   width: min(640px, 100%);
   max-height: calc(100dvh - var(--sp-8));
   display: flex;

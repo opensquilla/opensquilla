@@ -2,16 +2,79 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 import typer
 
 from opensquilla.env import load_env, warn_if_proxy_ignored
+from opensquilla.paths import default_opensquilla_home, is_valid_profile_name
+
+_LOADED_ENV_CONTEXTS: set[tuple[Path, Path]] = set()
+_LOADED_LOCAL_ENV_CWDS: set[Path] = set()
+
+
+def _profile_from_top_level_argv(argv: list[str]) -> str | None:
+    """Return a top-level ``--profile`` value without consuming subcommand flags."""
+    index = 1
+    while index < len(argv):
+        arg = argv[index]
+        if arg == "--":
+            return None
+        if arg.startswith("--profile="):
+            return arg.partition("=")[2].strip() or None
+        if arg == "--profile":
+            if index + 1 < len(argv):
+                return argv[index + 1].strip() or None
+            return None
+        if not arg.startswith("-"):
+            return None
+        index += 1
+    return None
+
+
+def _activate_profile(profile: str | None) -> None:
+    if profile is not None:
+        name = profile.strip()
+        if name:
+            if not is_valid_profile_name(name):
+                raise typer.BadParameter(
+                    "use lowercase letters, digits, hyphens, or underscores; "
+                    "start with a letter or digit; max length 64"
+                )
+            os.environ["OPENSQUILLA_PROFILE"] = name
+
+
+def _preactivate_profile_from_argv(argv: list[str]) -> None:
+    profile = _profile_from_top_level_argv(argv)
+    if profile and is_valid_profile_name(profile):
+        os.environ["OPENSQUILLA_PROFILE"] = profile
+
+
+def _load_env_for_active_home() -> None:
+    cwd = Path.cwd()
+    if cwd not in _LOADED_LOCAL_ENV_CWDS:
+        load_env(cwd=cwd, include_home=False)
+        _LOADED_LOCAL_ENV_CWDS.add(cwd)
+
+    try:
+        home = default_opensquilla_home()
+    except ValueError:
+        home = Path.home() / ".opensquilla"
+    context = (cwd, home)
+    if context in _LOADED_ENV_CONTEXTS:
+        return
+    load_env(cwd=cwd, home=home)
+    _LOADED_ENV_CONTEXTS.add(context)
+
+
+_preactivate_profile_from_argv(sys.argv)
 
 # Populate os.environ from .env files before any submodule import reads keys.
 # Precedence: os.environ > $CWD/.env.test during tests > $CWD/.env
-# > $CWD/.env.test fallback outside tests > ~/.opensquilla/.env.
-load_env()
+# > $CWD/.env.test fallback outside tests > selected OpenSquilla home/.env.
+_load_env_for_active_home()
 warn_if_proxy_ignored()
 
 from opensquilla.cli.agent_cmd import run_agent_command  # noqa: E402
@@ -45,6 +108,20 @@ app = typer.Typer(
     no_args_is_help=True,
     pretty_exceptions_enable=False,
 )
+
+
+@app.callback()
+def _main_callback(
+    profile: str | None = typer.Option(
+        None,
+        "--profile",
+        envvar="OPENSQUILLA_PROFILE",
+        help="Use a named OpenSquilla profile home.",
+    ),
+) -> None:
+    _activate_profile(profile)
+    _load_env_for_active_home()
+    warn_if_proxy_ignored()
 
 # ── Sub-apps ─────────────────────────────────────────────────────────────────
 

@@ -78,3 +78,21 @@ def test_load_env_existing_environment_still_wins_in_test_env(monkeypatch, tmp_p
 
     assert env_mod.load_env(tmp_path) == 0
     assert env_mod.os.environ["OPENSQUILLA_ENV_TEST_KEY"] == "from-shell"
+
+
+def test_load_env_uses_explicit_home(monkeypatch, tmp_path) -> None:
+    default_home = tmp_path / "default-home"
+    explicit_home = tmp_path / "explicit-home"
+    _isolate_global_env(monkeypatch, default_home)
+    explicit_home.mkdir()
+    monkeypatch.delenv("OPENSQUILLA_ENV_TEST_KEY", raising=False)
+
+    (default_home / ".env").write_text(
+        "OPENSQUILLA_ENV_TEST_KEY=from-default\n", encoding="utf-8"
+    )
+    (explicit_home / ".env").write_text(
+        "OPENSQUILLA_ENV_TEST_KEY=from-explicit\n", encoding="utf-8"
+    )
+
+    assert env_mod.load_env(tmp_path, home=explicit_home) == 1
+    assert env_mod.os.environ["OPENSQUILLA_ENV_TEST_KEY"] == "from-explicit"

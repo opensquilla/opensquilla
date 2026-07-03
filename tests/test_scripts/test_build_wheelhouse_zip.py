@@ -862,8 +862,9 @@ def test_release_workflow_publishes_wheel_and_electron_assets_without_portable()
     assert "0.5+ release assets must not include Windows portable zips" in workflow
     assert "if not is_prerelease:" not in workflow
     assert "OpenSquilla-windows-x64-portable.zip" not in workflow
-    assert "OpenSquilla-{version}-mac-arm64.dmg" in workflow
-    assert "OpenSquilla-{version}-win-x64.exe" in workflow
+    assert "desktop_asset_version" in workflow
+    assert "OpenSquilla-{desktop_version}-mac-arm64.dmg" in workflow
+    assert "OpenSquilla-{desktop_version}-win-x64.exe" in workflow
     assert "opensquilla-latest-py3-none-any.whl" not in workflow
     assert "gh release upload \"${TAG}\" dist/* --clobber" in workflow
     assert "dist/*.zip dist/*.zip.sha256 dist/SHA256SUMS" not in workflow

@@ -367,7 +367,11 @@ jobs:
           python - <<'PY'
           import hashlib
           import os
+          import re
           from pathlib import Path
+
+          def desktop_asset_version(version: str) -> str:
+              return re.sub(r"(?<=\d)(a|b|rc)(\d+)$", r"-\1\2", version)
 
           dist = Path("dist")
           tag = os.environ["RELEASE_TAG"]
@@ -377,14 +381,15 @@ jobs:
               wheels = sorted(dist.glob("opensquilla-*-py3-none-any.whl"))
               assert len(wheels) == 1, f"expected one wheel when RELEASE_TAG is empty, got {len(wheels)}"
               version = wheels[0].name.removeprefix("opensquilla-").removesuffix("-py3-none-any.whl")
+          desktop_version = desktop_asset_version(version)
           asset_names = [
-              f"OpenSquilla-{version}-mac-arm64.dmg",
-              f"OpenSquilla-{version}-mac-arm64.zip",
-              f"OpenSquilla-{version}-mac-arm64.dmg.blockmap",
-              f"OpenSquilla-{version}-mac-arm64.zip.blockmap",
+              f"OpenSquilla-{desktop_version}-mac-arm64.dmg",
+              f"OpenSquilla-{desktop_version}-mac-arm64.zip",
+              f"OpenSquilla-{desktop_version}-mac-arm64.dmg.blockmap",
+              f"OpenSquilla-{desktop_version}-mac-arm64.zip.blockmap",
               "latest-mac.yml",
-              f"OpenSquilla-{version}-win-x64.exe",
-              f"OpenSquilla-{version}-win-x64.exe.blockmap",
+              f"OpenSquilla-{desktop_version}-win-x64.exe",
+              f"OpenSquilla-{desktop_version}-win-x64.exe.blockmap",
               "latest.yml",
               f"opensquilla-{version}-py3-none-any.whl",
           ]
@@ -402,7 +407,11 @@ jobs:
           python - <<'PY'
           import hashlib
           import os
+          import re
           from pathlib import Path
+
+          def desktop_asset_version(version: str) -> str:
+              return re.sub(r"(?<=\d)(a|b|rc)(\d+)$", r"-\1\2", version)
 
           dist = Path("dist")
           tag = os.environ["RELEASE_TAG"]
@@ -412,15 +421,16 @@ jobs:
               wheels = sorted(dist.glob("opensquilla-*-py3-none-any.whl"))
               assert len(wheels) == 1, f"expected one wheel when RELEASE_TAG is empty, got {len(wheels)}"
               version = wheels[0].name.removeprefix("opensquilla-").removesuffix("-py3-none-any.whl")
+          desktop_version = desktop_asset_version(version)
           sha256s = dist / "SHA256SUMS"
           asset_names = [
-              f"OpenSquilla-{version}-mac-arm64.dmg",
-              f"OpenSquilla-{version}-mac-arm64.zip",
-              f"OpenSquilla-{version}-mac-arm64.dmg.blockmap",
-              f"OpenSquilla-{version}-mac-arm64.zip.blockmap",
+              f"OpenSquilla-{desktop_version}-mac-arm64.dmg",
+              f"OpenSquilla-{desktop_version}-mac-arm64.zip",
+              f"OpenSquilla-{desktop_version}-mac-arm64.dmg.blockmap",
+              f"OpenSquilla-{desktop_version}-mac-arm64.zip.blockmap",
               "latest-mac.yml",
-              f"OpenSquilla-{version}-win-x64.exe",
-              f"OpenSquilla-{version}-win-x64.exe.blockmap",
+              f"OpenSquilla-{desktop_version}-win-x64.exe",
+              f"OpenSquilla-{desktop_version}-win-x64.exe.blockmap",
               "latest.yml",
               f"opensquilla-{version}-py3-none-any.whl",
           ]
@@ -524,19 +534,24 @@ jobs:
           python - <<'PY'
           import json
           import os
+          import re
           import subprocess
           import sys
 
+          def desktop_asset_version(version: str) -> str:
+              return re.sub(r"(?<=\d)(a|b|rc)(\d+)$", r"-\1\2", version)
+
           tag = os.environ["TAG"]
           version = tag.removeprefix("v")
+          desktop_version = desktop_asset_version(version)
           expected = {
-              f"OpenSquilla-{version}-mac-arm64.dmg",
-              f"OpenSquilla-{version}-mac-arm64.zip",
-              f"OpenSquilla-{version}-mac-arm64.dmg.blockmap",
-              f"OpenSquilla-{version}-mac-arm64.zip.blockmap",
+              f"OpenSquilla-{desktop_version}-mac-arm64.dmg",
+              f"OpenSquilla-{desktop_version}-mac-arm64.zip",
+              f"OpenSquilla-{desktop_version}-mac-arm64.dmg.blockmap",
+              f"OpenSquilla-{desktop_version}-mac-arm64.zip.blockmap",
               "latest-mac.yml",
-              f"OpenSquilla-{version}-win-x64.exe",
-              f"OpenSquilla-{version}-win-x64.exe.blockmap",
+              f"OpenSquilla-{desktop_version}-win-x64.exe",
+              f"OpenSquilla-{desktop_version}-win-x64.exe.blockmap",
               "latest.yml",
               f"opensquilla-{version}-py3-none-any.whl",
               "SHA256SUMS",

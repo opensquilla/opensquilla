@@ -69,8 +69,8 @@ Version prüfen.
 
 Für den Desktop-Einsatz von 0.5.0 Preview 1 bevorzugst du die gepackten
 Desktop-Installationsprogramme aus dem GitHub-Release:
-`OpenSquilla-0.5.0rc1-mac-arm64.dmg` unter macOS und
-`OpenSquilla-0.5.0rc1-win-x64.exe` unter Windows.
+`OpenSquilla-0.5.0-rc1-mac-arm64.dmg` unter macOS und
+`OpenSquilla-0.5.0-rc1-win-x64.exe` unter Windows.
 
 | Weg | Zielgruppe | Wann verwenden |
 | --- | --- | --- |
@@ -122,8 +122,8 @@ Installationslinks: [Git](https://git-scm.com/downloads) ·
 Die 0.5.0-Preview-1-Desktop-Installationsprogramme bündeln die Vue-Steuerkonsole
 und die Gateway-Runtime in einer Electron-Hülle.
 
-- macOS Apple Silicon: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0rc1-mac-arm64.dmg>
-- Windows x64: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0rc1-win-x64.exe>
+- macOS Apple Silicon: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0-rc1-mac-arm64.dmg>
+- Windows x64: <https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0-rc1-win-x64.exe>
 
 Beende vor dem Upgrade jede laufende OpenSquilla-Desktop-App.
 Vorhandene `~/.opensquilla/config.toml` und Sitzungsdaten werden

@@ -54,7 +54,7 @@ OpenSquilla 可运行于 Windows、macOS 和 Linux。请选择与你的使用场
 文件名，因为安装器会校验嵌入在 wheel 文件名中的版本号。
 
 对于 0.5.0 Preview 1 的桌面使用，建议从 GitHub Release 下载打包桌面安装包:macOS 上为
-`OpenSquilla-0.5.0rc1-mac-arm64.dmg`，Windows 上为 `OpenSquilla-0.5.0rc1-win-x64.exe`。
+`OpenSquilla-0.5.0-rc1-mac-arm64.dmg`，Windows 上为 `OpenSquilla-0.5.0-rc1-win-x64.exe`。
 
 | 安装方式 | 适合人群 | 何时使用 |
 | --- | --- | --- |
@@ -94,8 +94,8 @@ PowerShell 安装器会通过 `winget` 自动装好它；而**终端快速安装
 
 0.5.0 Preview 1 桌面安装包将 Vue 控制台和网关运行时打包在一个 Electron 外壳中。
 
-- macOS Apple Silicon:<https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0rc1-mac-arm64.dmg>
-- Windows x64:<https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0rc1-win-x64.exe>
+- macOS Apple Silicon:<https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0-rc1-mac-arm64.dmg>
+- Windows x64:<https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc1/OpenSquilla-0.5.0-rc1-win-x64.exe>
 
 升级前请退出任何正在运行的 OpenSquilla 桌面应用。已有的
 `~/.opensquilla/config.toml` 和会话数据会被复用。

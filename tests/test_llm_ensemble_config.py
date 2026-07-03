@@ -7,11 +7,11 @@ from opensquilla.provider.ensemble import build_ensemble_provider_from_config
 from opensquilla.provider.selector import ProviderConfig
 
 
-def test_llm_ensemble_defaults_to_disabled() -> None:
+def test_llm_ensemble_defaults_to_enabled() -> None:
     cfg = GatewayConfig()
 
     ensemble = cfg.llm_ensemble
-    assert ensemble.enabled is False
+    assert ensemble.enabled is True
     assert ensemble.mode == "b5_fusion"
     assert ensemble.proposer_tools is False
     assert ensemble.min_successful_proposers == 1
@@ -52,7 +52,7 @@ def test_build_ensemble_provider_inherits_current_openrouter_credentials() -> No
     inherited = ProviderConfig(
         provider="openrouter",
         model="routed/model",
-        api_key="runtime-secret",
+        api_key="fake",
         base_url="https://openrouter.example/api/v1",
         proxy="http://proxy.local:7890",
         provider_routing={"z-ai/glm-5.2": "z-ai"},
@@ -65,7 +65,7 @@ def test_build_ensemble_provider_inherits_current_openrouter_credentials() -> No
     )
 
     members = [*provider.proposers, provider.aggregator]
-    assert all(member.provider_config.api_key == "runtime-secret" for member in members)
+    assert all(member.provider_config.api_key == "fake" for member in members)
     assert all(
         member.provider_config.base_url == "https://openrouter.example/api/v1"
         for member in members
@@ -84,7 +84,7 @@ def test_router_dynamic_ensemble_uses_small_c0_slot_template() -> None:
     inherited = ProviderConfig(
         provider="openrouter",
         model="deepseek/deepseek-v4-flash",
-        api_key="runtime-secret",
+        api_key="fake",
         base_url="https://openrouter.example/api/v1",
     )
 
@@ -123,7 +123,7 @@ def test_router_dynamic_ensemble_uses_slot_specific_c2_selection() -> None:
     inherited = ProviderConfig(
         provider="openrouter",
         model="z-ai/glm-5.2",
-        api_key="runtime-secret",
+        api_key="fake",
         base_url="https://openrouter.example/api/v1",
     )
 

@@ -477,7 +477,7 @@ def _parse_bool(value: str | None) -> bool | None:
 
 
 def _usage_from_done(done: Any | None, model: str | None) -> dict[str, Any]:
-    return {
+    usage = {
         "input_tokens": done.input_tokens if done else 0,
         "output_tokens": done.output_tokens if done else 0,
         "total_tokens": (done.input_tokens + done.output_tokens) if done else 0,
@@ -488,6 +488,16 @@ def _usage_from_done(done: Any | None, model: str | None) -> dict[str, Any]:
         "model": (done.model or model or "") if done else (model or ""),
         "request_count": done.iterations if done else 0,
     }
+    if done is not None:
+        model_usage_breakdown = getattr(done, "model_usage_breakdown", None)
+        if isinstance(model_usage_breakdown, list) and model_usage_breakdown:
+            usage["model_usage_breakdown"] = [
+                dict(row) for row in model_usage_breakdown if isinstance(row, dict)
+            ]
+        ensemble_trace = getattr(done, "ensemble_trace", None)
+        if isinstance(ensemble_trace, dict) and ensemble_trace:
+            usage["ensemble_trace"] = dict(ensemble_trace)
+    return usage
 
 
 def _to_benchmark_transcript(

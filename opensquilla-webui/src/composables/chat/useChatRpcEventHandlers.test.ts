@@ -35,6 +35,7 @@ function createHarness(options: {
     currentEpoch: ref(0),
     lastStreamSeq: ref(0),
     activeTaskGroups: ref(new Set<string>()),
+    activeStreamTaskId: ref(''),
     aborted: ref(false),
     messages,
     pendingQueue: ref([]),

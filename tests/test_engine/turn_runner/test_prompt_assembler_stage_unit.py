@@ -363,18 +363,18 @@ async def test_case04_squilla_router_fires_overrides_model() -> None:
     selector = _StubSelector("sel4", current_model="claude-opus-4.5")
     routed_provider = _StubProvider("opus_routed")
     selector.resolve_returns = routed_provider
+    provider_after_pipeline = _StubProvider("post_pipeline")
     executor = _RecordingPipelineExecutor(
         turn=_make_turn(metadata={"routed_tier": "premium"}, model="claude-sonnet-4.5"),
-        provider=_StubProvider("post_pipeline"),
+        provider=provider_after_pipeline,
     )
     stage = _make_stage(executor=executor)
-    inp = _make_input(
-        cloned_selector=selector, tool_defs=[1], model="claude-haiku-4.5",
-    )
+    inp = _make_input(cloned_selector=selector, tool_defs=[1])
     out = await stage.run(inp)
-    assert "claude-haiku-4.5" in selector.overridden_models
-    # explicit model wins
-    assert out.output.resolved_model == "claude-haiku-4.5"
+    assert selector.overridden_models == []
+    inner = getattr(out.output.provider, "_provider", None)
+    assert inner is provider_after_pipeline
+    assert out.output.resolved_model == "claude-sonnet-4.5"
     assert out.output.squilla_router_tier == "premium"
 
 
@@ -487,7 +487,7 @@ async def test_case09_model_override_at_call_site() -> None:
     overridden_provider = _StubProvider("after_override")
     selector.resolve_returns = overridden_provider
     executor = _RecordingPipelineExecutor(
-        turn=_make_turn(model="claude-sonnet-4.5"), provider=_StubProvider("pp"),
+        turn=_make_turn(model=""), provider=_StubProvider("pp"),
     )
     stage = _make_stage(executor=executor)
     inp = _make_input(cloned_selector=selector, model="claude-haiku-4.5")

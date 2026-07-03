@@ -325,7 +325,7 @@ async def test_p2_prompt_hint_is_recorded_but_not_injected(
 
     routed = await apply_squilla_router(ctx)
 
-    assert routed.model == "anthropic/claude-opus-4.8"
+    assert routed.model == "z-ai/glm-5.2"
     assert routed.metadata["routed_tier"] == "c3"
     assert routed.metadata["thinking_level"] == "high"
     assert routed.metadata["prompt_policy"] == "P2"
@@ -630,7 +630,7 @@ async def test_anti_downgrade_keeps_previous_high_tier_without_margin_gate(
     extra = routed2.metadata["routing_extra"]
 
     assert routed2.metadata["routed_tier"] == "c3"
-    assert routed2.model == "anthropic/claude-opus-4.8"
+    assert routed2.model == "z-ai/glm-5.2"
     assert extra["anti_downgrade_applied"] is True
     assert extra["previous_tier"] == "c3"
     assert extra["kv_cache_window_seconds"] == 600
@@ -699,7 +699,7 @@ async def test_complaint_upgrade_starts_from_previous_experienced_tier(
     extra = routed2.metadata["routing_extra"]
 
     assert routed2.metadata["routed_tier"] == "c3"
-    assert routed2.model == "anthropic/claude-opus-4.8"
+    assert routed2.model == "z-ai/glm-5.2"
     assert extra["previous_tier"] == "c2"
     assert extra["complaint_detected"] is True
     assert extra["complaint_upgrade_applied"] is True
@@ -1205,7 +1205,7 @@ async def test_runtime_router_complex_request_applies_deep_thinking_without_p2_p
 
     assert routed.metadata["routing_source"] == "v4_phase3"
     assert routed.metadata["routed_tier"] == "c3"
-    assert routed.model == "anthropic/claude-opus-4.8"
+    assert routed.model == "z-ai/glm-5.2"
     assert routed.metadata["thinking_mode"] == "T3"
     assert routed.metadata["thinking_requested"] is True
     assert routed.metadata["thinking_level"] == "high"

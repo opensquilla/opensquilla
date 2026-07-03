@@ -191,6 +191,31 @@ async def test_web_search_tool_rejects_sensitive_query_without_calling_core(
 
 
 @pytest.mark.asyncio
+async def test_web_search_benchmark_blocklist_blocks_query_without_calling_core(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_run_canonical_web_search(
+        options: SearchOptions,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        raise AssertionError("run_canonical_web_search should not be called")
+
+    monkeypatch.setenv("OPENSQUILLA_SEARCH_BENCHMARK_BLOCKLIST", "1")
+    monkeypatch.setattr(
+        web_module,
+        "run_canonical_web_search",
+        fake_run_canonical_web_search,
+    )
+
+    payload = await web_module.run_web_search_payload("draco benchmark")
+
+    assert payload["ok"] is True
+    assert payload["blocked_query"] is True
+    assert payload["benchmark_blocklist_enabled"] is True
+    assert payload["results"] == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
@@ -341,6 +366,45 @@ async def test_web_discover_uses_ranked_runtime_provider(
             },
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_web_discover_benchmark_blocklist_filters_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import opensquilla.search.registry as registry
+
+    class FakeProvider:
+        async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+            return [
+                SearchResult(
+                    title="DRACO dataset",
+                    url="https://huggingface.co/datasets/perplexity-ai/draco",
+                    snippet="benchmark data",
+                ),
+                SearchResult(
+                    title="Safe result",
+                    url="https://example.com/safe",
+                    snippet=query,
+                ),
+            ]
+
+    def fake_get_provider(name: str, **kwargs: object) -> FakeProvider:
+        return FakeProvider()
+
+    monkeypatch.setenv("OPENSQUILLA_SEARCH_BENCHMARK_BLOCKLIST", "1")
+    monkeypatch.setattr(registry, "get_provider", fake_get_provider)
+
+    try:
+        web_module.configure_search("duckduckgo", max_results=4)
+        payload = await web_module.run_web_discover_payload("python release", max_results=2)
+    finally:
+        web_module.reset_search_runtime()
+
+    assert payload["ok"] is True
+    assert payload["benchmark_blocklist_enabled"] is True
+    assert payload["blocked_count"] == 1
+    assert [item["url"] for item in payload["results"]] == ["https://example.com/safe"]
 
 
 @pytest.mark.asyncio

@@ -319,7 +319,7 @@ class LlmEnsembleConfig(BaseSettings):
         extra="ignore",
     )
 
-    enabled: bool = False
+    enabled: bool = True
     mode: Literal["b5_fusion"] = "b5_fusion"
     proposer_tools: bool = False
     min_successful_proposers: int = Field(default=1, ge=1)
@@ -677,10 +677,10 @@ def _default_tiers() -> dict:
         },
         "c3": {
             "provider": "openrouter",
-            "model": "anthropic/claude-opus-4.8",
+            "model": "z-ai/glm-5.2",
             "description": (
-                "Highest-quality text reasoning model for difficult planning, "
-                "deep review, complex debugging, and high-stakes synthesis"
+                "Highest-tier GLM 5.2 route for difficult planning, deep review, "
+                "complex debugging, and high-stakes synthesis"
             ),
             "supports_image": False,
             "thinking_level": "high",

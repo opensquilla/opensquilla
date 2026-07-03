@@ -1228,7 +1228,7 @@ class _DynamicModelRef:
     proxy: str = ""
     temperature: float | None = None
     max_tokens: int = 0
-    thinking: str | None = "high"
+    thinking: str | None = "xhigh"
     k: int = 1
 
 
@@ -1242,7 +1242,7 @@ class _DynamicCandidate:
     family: str
     vendor: str
     architecture: str
-    thinking: str | None = "high"
+    thinking: str | None = "xhigh"
     supports_vision: bool = False
     source: str = "catalog"
     pool_index: int = 0
@@ -1295,7 +1295,7 @@ def _tier_cost_latency_prior(tier: str) -> float:
 def _coerce_thinking_level(value: Any) -> str | None:
     raw = str(value or "").strip().lower()
     if not raw:
-        return "high"
+        return "xhigh"
     if raw in {"none", "false", "0"}:
         return "off"
     return raw
@@ -1318,7 +1318,7 @@ def _dynamic_candidate(
     provider: str,
     model: str,
     tier_hint: str | None = None,
-    thinking: str | None = "high",
+    thinking: str | None = "xhigh",
     source: str,
     pool_index: int,
 ) -> _DynamicCandidate:

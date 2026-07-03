@@ -10,7 +10,7 @@ tier_registry:
   S: [deepseek/deepseek-v4-flash]    # Fast direct-answer tier for trivial turns and short acknowledgements.
   M: [deepseek/deepseek-v4-pro]      # Default general tier for normal Q&A, editing, and bounded coding tasks.
   L: [z-ai/glm-5.2]                  # Reasoning tier for debugging, multi-step analysis, and structured planning.
-  XL: [anthropic/claude-opus-4.8]    # Frontier tier for architecture, high-risk work, and hard recovery turns.
+  XL: [z-ai/glm-5.2]                 # Highest GLM tier for architecture, high-risk work, and hard recovery turns.
 
 tier_explanations:
   S:
@@ -30,8 +30,8 @@ tier_explanations:
     expected_controls: "High thinking; P1/P2 prompt policy depending on flags and difficulty."
   XL:
     route_class: R3
-    model: anthropic/claude-opus-4.8
-    intent: "Highest tier for architecture design, cross-system tradeoffs, high-risk production decisions, and complex recovery turns."
+    model: z-ai/glm-5.2
+    intent: "Highest GLM tier for architecture design, cross-system tradeoffs, high-risk production decisions, and complex recovery turns."
     expected_controls: "High thinking; P1/P2 prompt policy depending on flags and difficulty."
 
 thresholds:

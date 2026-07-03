@@ -4644,6 +4644,15 @@ class TurnRunner:
                     "llm_ensemble.wrap_skipped",
                     reason="missing_provider_selector_current_config",
                 )
+            elif not getattr(current_provider_config, "provider", None) or not getattr(
+                current_provider_config,
+                "model",
+                None,
+            ):
+                log.warning(
+                    "llm_ensemble.wrap_skipped",
+                    reason="incomplete_provider_selector_current_config",
+                )
             else:
                 from opensquilla.provider.ensemble import build_ensemble_provider_from_config
 

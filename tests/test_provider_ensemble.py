@@ -351,7 +351,7 @@ def test_runtime_wrap_is_after_selector_resolution() -> None:
     from opensquilla.engine.runtime import TurnRunner
 
     source = inspect.getsource(TurnRunner._run_pipeline)
-    resolve_index = source.index("provider = cloned_selector.resolve()")
+    resolve_index = source.index("provider = apply_model_override(")
     wrap_index = source.index("build_ensemble_provider_from_config")
 
     assert wrap_index > resolve_index

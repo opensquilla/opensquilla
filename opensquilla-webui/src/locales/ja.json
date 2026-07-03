@@ -229,8 +229,11 @@
     "router": {
       "title": "ルーターのティア",
       "mode": "モード",
+      "modeModelRouting": "モデルルーティング",
+      "modeSingleModel": "単一モデル",
       "modeRecommended": "現在のプロバイダー階層に従う",
       "modeDisabled": "単一モデルに直接接続",
+      "routingDisabledHint": "モデルルーティングを有効にすると階層設定を編集できます。",
       "defaultTextModel": "既定のテキストティア",
       "panelLabel": "ルーターパネル",
       "panelDesc": "ティア表のモデルは現在のリクエスト入口から送信されます。OpenRouter 集約ティアは OpenRouter 経由で別々の上流モデルにアクセスします。",

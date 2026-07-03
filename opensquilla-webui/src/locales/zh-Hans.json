@@ -229,8 +229,11 @@
     "router": {
       "title": "路由分层",
       "mode": "模式",
+      "modeModelRouting": "模型路由",
+      "modeSingleModel": "单模型",
       "modeRecommended": "跟随当前服务商分层",
       "modeDisabled": "直连单模型",
+      "routingDisabledHint": "启用模型路由后可编辑分层配置。",
       "defaultTextModel": "默认文本分层",
       "panelLabel": "路由面板",
       "panelDesc": "分层表中的模型会通过当前请求入口发送；OpenRouter 聚合分层会通过 OpenRouter 访问不同上游模型。",

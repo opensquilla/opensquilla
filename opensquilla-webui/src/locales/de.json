@@ -229,8 +229,11 @@
     "router": {
       "title": "Router-Stufen",
       "mode": "Modus",
+      "modeModelRouting": "Modell-Routing",
+      "modeSingleModel": "Einzelmodell",
       "modeRecommended": "Aktuelle Anbieter-Stufen verwenden",
       "modeDisabled": "Direktes Einzelmodell",
+      "routingDisabledHint": "Aktivieren Sie Modell-Routing, um die Stufenkonfiguration zu bearbeiten.",
       "defaultTextModel": "Standard-Textstufe",
       "panelLabel": "Router-Panel",
       "panelDesc": "Die Modelle in der Stufentabelle werden über den aktuellen Anfrageeingang gesendet; aggregierte OpenRouter-Stufen erreichen unterschiedliche Upstream-Modelle über OpenRouter.",

@@ -16,6 +16,8 @@ interface RouterPanelContract {
   routerSummary: string
   ensembleProfileActive: boolean
   routerMode: string
+  routerModeChoice: string
+  routerConfigDisabled: boolean
   routerDefaultTier: string
   routerVisualMode: string
   routerVisualModeDirty: boolean
@@ -53,17 +55,28 @@ const emit = defineEmits<{
     <label class="control-row">
       <div class="control-row__label-block"><span class="control-row__label">{{ t('setup.router.mode') }}</span></div>
       <div class="control-row__control">
-        <select class="control-input" :value="panel.routerMode" name="setup_router_mode" :disabled="!panel.hasSavedProvider" @change="emit('updateRouterMode', ($event.target as HTMLSelectElement).value)">
-          <option value="recommended">{{ t('setup.router.modeRecommended') }}</option>
-          <option v-if="panel.canUseOpenrouterMix || panel.routerMode === 'openrouter-mix'" value="openrouter-mix">{{ t('setup.router.modeOpenrouterMix') }}</option>
-          <option value="disabled">{{ t('setup.router.modeDisabled') }}</option>
+        <select
+          class="control-input"
+          :value="panel.routerModeChoice"
+          name="setup_router_mode"
+          :disabled="!panel.hasSavedProvider"
+          @change="emit('updateRouterMode', ($event.target as HTMLSelectElement).value)"
+        >
+          <option value="recommended">{{ t('setup.router.modeModelRouting') }}</option>
+          <option value="disabled">{{ t('setup.router.modeSingleModel') }}</option>
         </select>
       </div>
     </label>
     <label class="control-row">
       <div class="control-row__label-block"><span class="control-row__label">{{ t('setup.router.defaultTextModel') }}</span></div>
       <div class="control-row__control">
-        <select class="control-input" :value="panel.routerDefaultTier" name="setup_router_default_tier" :disabled="!panel.hasSavedProvider" @change="emit('updateRouterDefaultTier', ($event.target as HTMLSelectElement).value)">
+        <select
+          class="control-input"
+          :value="panel.routerDefaultTier"
+          name="setup_router_default_tier"
+          :disabled="!panel.hasSavedProvider || panel.routerConfigDisabled"
+          @change="emit('updateRouterDefaultTier', ($event.target as HTMLSelectElement).value)"
+        >
           <option v-for="t in panel.textTiers" :key="t" :value="t">{{ panel.tierLabel(t) }}</option>
         </select>
       </div>
@@ -74,23 +87,38 @@ const emit = defineEmits<{
         <span class="control-row__desc">{{ t('setup.router.panelDesc') }}</span>
       </div>
       <div class="control-row__control">
-        <select class="control-input" :value="panel.routerVisualMode" name="setup_router_visual_mode" @change="emit('updateRouterVisualMode', ($event.target as HTMLSelectElement).value)">
+        <select
+          class="control-input"
+          :value="panel.routerVisualMode"
+          name="setup_router_visual_mode"
+          :disabled="panel.routerConfigDisabled"
+          @change="emit('updateRouterVisualMode', ($event.target as HTMLSelectElement).value)"
+        >
           <option v-for="option in panel.routerVisualModeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
         </select>
       </div>
     </label>
-    <div v-if="panel.hasSavedProvider" class="setup-tier-table" role="table">
-      <div class="setup-tier-table__row is-head" role="row">
-        <span>{{ t('setup.router.colTier') }}</span><span>{{ t('setup.router.colProvider') }}</span><span>{{ t('setup.router.colModel') }}</span><span>{{ t('setup.router.colThinking') }}</span><span>{{ t('setup.router.colImage') }}</span>
-      </div>
-      <div v-for="tier in panel.tierRows" :key="tier.name" class="setup-tier-table__row" role="row">
-        <span class="setup-tier-table__tier">{{ panel.tierLabel(tier.name) }}</span>
-        <span class="setup-tier-table__readonly" :aria-label="t('setup.router.tierProviderAria', { tier: tier.name })" :title="t('setup.router.tierProviderAria', { tier: tier.name })">{{ tier.provider || '-' }}</span>
-        <input :value="tier.model" :aria-label="t('setup.router.tierModelAria', { tier: tier.name })" :placeholder="t('setup.router.tierModelAria', { tier: tier.name })" @input="emit('updateTierField', tier.name, 'model', ($event.target as HTMLInputElement).value)">
-        <select :value="tier.thinkingLevel" :aria-label="t('setup.router.tierThinkingAria', { tier: tier.name })" @change="emit('updateTierField', tier.name, 'thinkingLevel', ($event.target as HTMLSelectElement).value)">
-          <option v-for="v in ['', 'off', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh']" :key="v" :value="v">{{ v || '-' }}</option>
-        </select>
-        <ControlSwitch :checked="tier.supportsImage" :aria-label="t('setup.router.tierImageAria', { tier: tier.name })" @change="(v) => emit('updateTierField', tier.name, 'supportsImage', v)" />
+    <div
+      v-if="panel.hasSavedProvider"
+      class="setup-tier-table-wrap"
+      :class="{ 'is-disabled': panel.routerConfigDisabled }"
+    >
+      <p v-if="panel.routerConfigDisabled" class="setup-tier-table-wrap__note">
+        {{ t('setup.router.routingDisabledHint') }}
+      </p>
+      <div class="setup-tier-table" role="table" :aria-disabled="panel.routerConfigDisabled ? 'true' : undefined">
+        <div class="setup-tier-table__row is-head" role="row">
+          <span>{{ t('setup.router.colTier') }}</span><span>{{ t('setup.router.colProvider') }}</span><span>{{ t('setup.router.colModel') }}</span><span>{{ t('setup.router.colThinking') }}</span><span>{{ t('setup.router.colImage') }}</span>
+        </div>
+        <div v-for="tier in panel.tierRows" :key="tier.name" class="setup-tier-table__row" role="row">
+          <span class="setup-tier-table__tier">{{ panel.tierLabel(tier.name) }}</span>
+          <span class="setup-tier-table__readonly" :aria-label="t('setup.router.tierProviderAria', { tier: tier.name })" :title="t('setup.router.tierProviderAria', { tier: tier.name })">{{ tier.provider || '-' }}</span>
+          <input :value="tier.model" :aria-label="t('setup.router.tierModelAria', { tier: tier.name })" :placeholder="t('setup.router.tierModelAria', { tier: tier.name })" :disabled="panel.routerConfigDisabled" @input="emit('updateTierField', tier.name, 'model', ($event.target as HTMLInputElement).value)">
+          <select :value="tier.thinkingLevel" :aria-label="t('setup.router.tierThinkingAria', { tier: tier.name })" :disabled="panel.routerConfigDisabled" @change="emit('updateTierField', tier.name, 'thinkingLevel', ($event.target as HTMLSelectElement).value)">
+            <option v-for="v in ['', 'off', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh']" :key="v" :value="v">{{ v || '-' }}</option>
+          </select>
+          <ControlSwitch :checked="tier.supportsImage" :disabled="panel.routerConfigDisabled" :aria-label="t('setup.router.tierImageAria', { tier: tier.name })" @change="(v) => emit('updateTierField', tier.name, 'supportsImage', v)" />
+        </div>
       </div>
     </div>
     <div v-else class="setup-warning">
@@ -141,5 +169,20 @@ const emit = defineEmits<{
   color: var(--text-muted);
   font-size: 0.75rem;
   line-height: 1.35;
+}
+
+.setup-tier-table-wrap {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.setup-tier-table-wrap.is-disabled {
+  opacity: 0.72;
+}
+
+.setup-tier-table-wrap__note {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  margin: 0;
 }
 </style>

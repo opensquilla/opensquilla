@@ -229,8 +229,11 @@
     "router": {
       "title": "Niveles del enrutador",
       "mode": "Modo",
+      "modeModelRouting": "Enrutamiento de modelos",
+      "modeSingleModel": "Modelo único",
       "modeRecommended": "Seguir niveles del proveedor actual",
       "modeDisabled": "Modelo único directo",
+      "routingDisabledHint": "Activa el enrutamiento de modelos para editar la configuración de niveles.",
       "defaultTextModel": "Nivel de texto predeterminado",
       "panelLabel": "Panel del enrutador",
       "panelDesc": "Los modelos de la tabla de niveles se envían por la entrada de solicitud actual; los niveles agregados de OpenRouter usan OpenRouter para llegar a distintos modelos ascendentes.",

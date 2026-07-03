@@ -82,6 +82,8 @@ export function useSetupRouterForm() {
   const tierValues = ref<Record<string, SetupTierValue>>({})
   const mode = computed(() => routerMode.value)
   const defaultTier = computed(() => routerDefaultTier.value)
+  const routerModeChoice = computed(() => (routerMode.value === 'disabled' ? 'disabled' : 'recommended'))
+  const routerConfigDisabled = computed(() => routerMode.value === 'disabled')
 
   const routerSerialized = computed(() => JSON.stringify({ m: routerMode.value, d: routerDefaultTier.value, t: tierValues.value }))
   // Seed from the initial state so the pristine form is never dirty while config loads.
@@ -173,6 +175,8 @@ export function useSetupRouterForm() {
       routerSummary: context.routerSummary.value,
       ensembleProfileActive: context.ensembleProfileActive.value,
       routerMode: routerMode.value,
+      routerModeChoice: routerModeChoice.value,
+      routerConfigDisabled: routerConfigDisabled.value,
       routerDefaultTier: routerDefaultTier.value,
       routerVisualMode: routerVisualMode.value,
       routerVisualModeDirty: visualModeDirty.value,

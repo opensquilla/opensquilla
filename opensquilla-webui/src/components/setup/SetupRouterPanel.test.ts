@@ -55,11 +55,13 @@ describe('SetupRouterPanel', () => {
       routerModeChoice: 'recommended',
       canUseOpenrouterMix: true,
     })
-    const options = Array.from(el.querySelectorAll('select[name="setup_router_mode"] option'))
-      .map((option) => option.textContent || '')
+    const select = el.querySelector<HTMLSelectElement>('select[name="setup_router_mode"]')
+    const options = Array.from(select?.querySelectorAll('option') ?? [])
 
-    expect(options).toEqual(['Model routing', 'Single model'])
-    expect(options).not.toContain('OpenRouter aggregated model tiers')
+    expect(select?.value).toBe('recommended')
+    expect(options.map((option) => option.textContent || '')).toEqual(['Model routing', 'Single model'])
+    expect(options.map((option) => option.value)).toEqual(['recommended', 'disabled'])
+    expect(options.map((option) => option.textContent || '')).not.toContain('OpenRouter aggregated model tiers')
     app.unmount()
   })
 

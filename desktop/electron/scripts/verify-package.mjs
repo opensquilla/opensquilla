@@ -334,6 +334,25 @@ async function readAsarText(asarPath, innerPath) {
   return asar.extractFile(asarPath, innerPath).toString('utf8')
 }
 
+async function verifyAsarPackageVersion(asarPath, label) {
+  let packageJson
+  try {
+    packageJson = JSON.parse(await readAsarText(asarPath, 'package.json'))
+  } catch (error) {
+    fail(`${label} app.asar package.json could not be inspected: ${error instanceof Error ? error.message : String(error)}`)
+    return
+  }
+
+  const version = typeof packageJson.version === 'string' ? packageJson.version : ''
+  const semverPattern = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
+  if (!semverPattern.test(version) || /\d(?:a|b|rc)\d+$/.test(version)) {
+    fail(
+      `${label} app.asar package.json version is not npm semver: ${JSON.stringify(version)}; ` +
+        'prereleases must use 0.5.0-rc1 style, not 0.5.0rc1'
+    )
+  }
+}
+
 async function verifyGeneratedBundle({ label, resourcesDir, platform }) {
   await verifyRuntime(join(resourcesDir, 'runtime', 'gateway'), label, {
     platform,
@@ -347,6 +366,7 @@ async function verifyGeneratedBundle({ label, resourcesDir, platform }) {
   }
 
   try {
+    await verifyAsarPackageVersion(asarPath, label)
     verifyMainProcess(await readAsarText(asarPath, 'dist/main.js'), label)
   } catch (error) {
     fail(`${label} app.asar could not be inspected: ${error instanceof Error ? error.message : String(error)}`)

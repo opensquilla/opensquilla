@@ -29,9 +29,14 @@ def test_lockfile_version_matches_current_release() -> None:
 
 def test_desktop_electron_release_config_matches_current_release() -> None:
     package = json.loads(Path("desktop/electron/package.json").read_text(encoding="utf-8"))
+    lock = json.loads(Path("desktop/electron/package-lock.json").read_text(encoding="utf-8"))
     build = package["build"]
 
-    assert package["version"] == CURRENT_VERSION
+    assert package["version"] == CURRENT_DESKTOP_VERSION
+    assert lock["version"] == CURRENT_DESKTOP_VERSION
+    assert lock["packages"][""]["version"] == CURRENT_DESKTOP_VERSION
+    assert re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", package["version"])
+    assert not re.search(r"(?<=\d)(?:a|b|rc)\d+$", package["version"])
     assert package["repository"] == {
         "type": "git",
         "url": "https://github.com/opensquilla/opensquilla.git",

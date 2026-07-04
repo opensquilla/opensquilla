@@ -529,6 +529,53 @@ def _is_within_any_root(candidate: Path, roots: tuple[Path, ...]) -> bool:
     return False
 
 
+def _cross_session_attachment_block(
+    tool_name: str,
+    candidate: Path,
+    original_path: str,
+) -> dict[str, object] | None:
+    """Block reads of another session's materialized attachments (#268).
+
+    Materialized attachments live at ``<workspace>/.opensquilla/attachments/
+    <session_segment>/`` inside the shared per-agent workspace, so the broad
+    workspace read root would otherwise let one session read a sibling session's
+    uploaded files. Under strict mode with a known session, deny that subtree for
+    every segment except the current session's; authored files elsewhere in the
+    workspace stay shared.
+    """
+    ctx = current_tool_context.get()
+    if ctx is None or not ctx.workspace_strict or not ctx.artifact_session_id:
+        return None
+    workspace = _strict_read_workspace_root()
+    if workspace is None:
+        return None
+    from opensquilla.attachment_workspace import _safe_path_segment
+
+    base = (workspace / ".opensquilla" / "attachments").resolve(strict=False)
+    try:
+        rel = candidate.relative_to(base)
+    except ValueError:
+        return None  # not under the attachments subtree
+    if not rel.parts:
+        return None  # the attachments base directory itself
+    candidate_segment = rel.parts[0]
+    current_segment = _safe_path_segment(ctx.artifact_session_id, fallback="session")
+    if candidate_segment == current_segment:
+        return None  # the current session's own attachments
+    return {
+        "status": "blocked",
+        "reason": "cross_session_attachment",
+        "tool": tool_name,
+        "path": original_path,
+        "resolved_path": str(candidate),
+        "message": (
+            f"{tool_name} blocked: {candidate} belongs to another session's "
+            "materialized attachments and is not readable from this session."
+        ),
+        "retryable": False,
+    }
+
+
 def _workspace_strict_read_block(
     tool_name: str,
     resolved: Path,
@@ -556,7 +603,7 @@ def _workspace_strict_read_block(
             ),
             "retryable": False,
         }
-    return None
+    return _cross_session_attachment_block(tool_name, candidate, original_path)
 
 
 def _gate_workspace_strict_read(tool_name: str, resolved: Path, original_path: str) -> None:
@@ -588,6 +635,8 @@ def _workspace_strict_candidate_marker(
     if not _is_within_any_root(resolved, roots):
         root_labels = ", ".join(str(root) for root in roots)
         return f"[blocked] {candidate}: outside active read roots ({root_labels})"
+    if _cross_session_attachment_block(tool_name, resolved, original_path or str(candidate)):
+        return f"[blocked] {candidate}: another session's materialized attachments"
     return None
 
 

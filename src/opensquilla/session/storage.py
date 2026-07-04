@@ -739,6 +739,14 @@ class SessionStorage:
         await self.conn.execute("DELETE FROM sessions WHERE session_key = ?", (session_key,))
         await self.conn.commit()
 
+        # Cascade the on-disk session material (transcript media + workspace
+        # attachment copies). DB-only deletion otherwise leaks both stores until
+        # the transcript disk budget hard-fails. Best-effort via the registered
+        # process-global hook; never fails the delete.
+        from opensquilla.session.material_cleanup import run_session_material_cleanup
+
+        await run_session_material_cleanup(session.session_id, session_key)
+
         # G4 cleanup: cascade meta-skill audit rows for this session. The
         # sessions table is created lazily at runtime (not via yoyo), so
         # there is no SQL FK to rely on — explicit purge is required.

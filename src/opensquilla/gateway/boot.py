@@ -932,6 +932,43 @@ async def dispatch_task_runtime_turn(
         raise
 
 
+def build_session_material_cleanup(config: Any) -> Any:
+    """Build the session-material cleanup that runs on ``delete_session``.
+
+    Removes both on-disk material stores for a deleted session: the canonical
+    transcript-material store (``<media_root>/transcripts/<sid>/``) and the
+    tool-visible workspace materialization
+    (``<workspace>/.opensquilla/attachments/<segment>/``). Lives in the gateway
+    layer because it resolves the agent workspace via ``agents.scope``; the
+    low-level ``session`` package only owns the hook registry + guarded remover.
+    """
+    from opensquilla.agents.scope import resolve_agent_workspace_dir
+    from opensquilla.attachment_refs import transcript_material_dir
+    from opensquilla.attachment_workspace import _safe_path_segment
+    from opensquilla.paths import media_root_from_config
+    from opensquilla.session.keys import parse_agent_id
+    from opensquilla.session.material_cleanup import rmtree_scoped
+
+    async def _cleanup(session_id: str, session_key: str) -> None:
+        # 1. Canonical transcript-material store (keyed by session_id, outside
+        #    the workspace).
+        media_root = media_root_from_config(config)
+        rmtree_scoped(
+            transcript_material_dir(media_root, session_id),
+            expected_name=session_id,
+        )
+        # 2. Tool-visible workspace materialization (per-session segment under the
+        #    per-agent workspace). Resolve the agent from the session key so the
+        #    workspace matches where the material was written.
+        agent_id = parse_agent_id(session_key)
+        workspace = Path(resolve_agent_workspace_dir(agent_id, config))
+        segment = _safe_path_segment(session_id, fallback="session")
+        attachments_dir = workspace / ".opensquilla" / "attachments" / segment
+        rmtree_scoped(attachments_dir, expected_name=segment)
+
+    return _cleanup
+
+
 def build_task_runtime_run_kwargs(
     run: Any,
     *,
@@ -964,6 +1001,13 @@ def build_task_runtime_run_kwargs(
         # Only forward when set so web/CLI legacy paths keep
         # ``TurnRunner.run`` falling back to ``message`` as semantic input.
         kwargs["semantic_message"] = run.semantic_message
+    bound_user_message_id = getattr(run, "persisted_user_message_id", None)
+    if bound_user_message_id:
+        # Bind history to the exact persisted user message this turn answers so
+        # queued/follow-up sends cannot duplicate the current prompt or leak
+        # unanswered future prompts into context. Forwarded only when present so
+        # legacy callers/mocks without the field keep the positional trim.
+        kwargs["bound_user_message_id"] = bound_user_message_id
     return kwargs
 
 
@@ -1703,6 +1747,15 @@ async def build_services(
             log.info("build_services.config_loaded", path=config.config_path)
     deferred_warmups: list[Callable[[], Any]] = []
     _warn_workspace_state_mismatch(config)
+
+    # Register session-material filesystem cleanup so deleting a session also
+    # removes its transcript media + workspace attachment copies (they are
+    # DB-only deletions otherwise and leak on disk). The concrete cleanup lives
+    # here (gateway layer) because it resolves the agent workspace via
+    # ``agents.scope`` — the low-level ``session`` package must not depend on it.
+    from opensquilla.session.material_cleanup import set_session_material_cleanup
+
+    set_session_material_cleanup(build_session_material_cleanup(config))
 
     validate_squilla_router_runtime(config)
     from opensquilla.memory.embedding_resolver import resolve_memory_embedding

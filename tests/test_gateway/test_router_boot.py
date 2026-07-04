@@ -255,6 +255,46 @@ def test_build_task_runtime_run_kwargs_forwards_fresh_user_session() -> None:
     assert kwargs["fresh_user_session"] is True
 
 
+def test_build_task_runtime_run_kwargs_forwards_bound_user_message_id() -> None:
+    # The persisted user message id must reach TurnRunner.run so history binds to
+    # the exact prompt this turn answers (queued sends must not duplicate or leak).
+    run = SimpleNamespace(
+        agent_id="main",
+        attachments=[],
+        input_provenance=None,
+        run_kind="session_turn",
+        no_memory_capture=False,
+        fresh_user_session=False,
+        ingress_pipeline_steps=(),
+        semantic_message=None,
+        persisted_user_message_id="msg-123",
+    )
+
+    kwargs = build_task_runtime_run_kwargs(run, tool_context=object(), model="model")
+
+    assert kwargs["bound_user_message_id"] == "msg-123"
+
+
+def test_build_task_runtime_run_kwargs_omits_bound_id_when_absent() -> None:
+    # Legacy callers/mocks without the field keep the positional-trim fallback:
+    # the kwarg must be omitted, not forwarded as None.
+    run = SimpleNamespace(
+        agent_id="main",
+        attachments=[],
+        input_provenance=None,
+        run_kind="session_turn",
+        no_memory_capture=False,
+        fresh_user_session=False,
+        ingress_pipeline_steps=(),
+        semantic_message=None,
+        persisted_user_message_id=None,
+    )
+
+    kwargs = build_task_runtime_run_kwargs(run, tool_context=object(), model="model")
+
+    assert "bound_user_message_id" not in kwargs
+
+
 def test_gateway_stream_timeout_config_defaults_remain_serializable() -> None:
     config = GatewayConfig()
 

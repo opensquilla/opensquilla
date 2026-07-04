@@ -45,6 +45,19 @@ _VERIFY_RESERVE_SECONDS = 300  # keep this much of the shared budget for verify
 _MIN_USEFUL_AGENT_SECONDS = 120  # do not start a retry with less budget than this
 _SCAFFOLD_TIMEOUT_SECONDS = 300
 _SCAFFOLD_STATUS_SECONDS = 10
+# Appended to any scaffold-stage failure so a stuck/opaque bootstrap (issue
+# #470) names its likely cause and the fix. The built-in scaffold shells out to
+# a third-party generator that may still emit its own interactive prompt; stdin
+# is closed for non-interactive automation, so an unanswerable prompt is bounded
+# by the timeout rather than answered.
+_SCAFFOLD_STALL_HINT = (
+    "Hint: the built-in scaffold runs a third-party generator that may emit its "
+    "own interactive prompt (e.g. plugin selection). stdin is closed for "
+    "non-interactive automation, so such a prompt cannot be answered and the "
+    "step is bounded by a timeout instead. Check the stdout tail above for a "
+    "pending prompt; the durable fix is to pin/replace the scaffolder with a "
+    "fully non-interactive template."
+)
 _RETRYABLE_STATES = frozenset({TaskState.FAILED, TaskState.INVALID_ACCEPTANCE_TEST})
 _ATTEMPT_SNAPSHOT_FILES = (
     "prompt.txt",
@@ -620,6 +633,7 @@ def _scaffold_build_app(run_id: str, repo: Path, artifact_dir: Path) -> tuple[bo
         env=env,
     )
     if not ok:
+        detail = f"{detail}\n\n{_SCAFFOLD_STALL_HINT}"
         _write_status(
             run_id,
             "scaffold_failed",
@@ -629,7 +643,10 @@ def _scaffold_build_app(run_id: str, repo: Path, artifact_dir: Path) -> tuple[bo
         )
         return False, detail
     if not (generated / "package.json").is_file():
-        detail = "scaffold command completed but did not create app/package.json"
+        detail = (
+            "scaffold command completed but did not create app/package.json\n\n"
+            f"{_SCAFFOLD_STALL_HINT}"
+        )
         _write_status(
             run_id,
             "scaffold_failed",
@@ -748,6 +765,7 @@ def _run_logged_step(
                         _kill_process_group(proc)
                     detail = (
                         f"{phase} timed out after {timeout}s while running: {command}\n"
+                        f"stdout tail:\n{_tail_file(stdout_path)}\n"
                         f"stderr tail:\n{_tail_file(stderr_path)}"
                     )
                     return False, detail
@@ -769,6 +787,7 @@ def _run_logged_step(
             if proc.returncode != 0:
                 detail = (
                     f"{phase} failed with exit {proc.returncode}: {command}\n"
+                    f"stdout tail:\n{_tail_file(stdout_path)}\n"
                     f"stderr tail:\n{_tail_file(stderr_path)}"
                 )
                 return False, detail

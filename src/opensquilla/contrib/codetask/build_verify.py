@@ -24,10 +24,13 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
+from opensquilla.contrib.codetask.adapter import _kill_process_group
 from opensquilla.contrib.codetask.types import BuildCheck, BuildResult, TaskState
 
 _TAIL_LINES = 25
@@ -105,7 +108,7 @@ def _node_bin_dirs() -> list[Path]:
 
 
 def _build_env() -> dict[str, str]:
-    env = {**os.environ, **_PACKAGE_ENV}
+    env = {**os.environ, **_PACKAGE_ENV, **_NONINTERACTIVE_ENV}
     node_dirs = [str(path) for path in _node_bin_dirs()]
     if node_dirs:
         current_path = env.get("PATH") or env.get("Path") or ""
@@ -119,6 +122,103 @@ def _build_env() -> dict[str, str]:
 # Build unsigned, deterministically: never auto-discover a keychain identity
 # (which can prompt/hang or sign host-dependently in an automated run).
 _PACKAGE_ENV = {"CSC_IDENTITY_AUTO_DISCOVERY": "false"}
+
+# Force every verification subprocess into non-interactive mode. npm honours
+# ``CI``/``npm_config_yes``; ``DEBIAN_FRONTEND`` silences any apt-driven
+# post-install prompt a build script might shell out to; disabling fund/audit
+# banners keeps the captured tail focused on real failures. Combined with a
+# closed stdin (see ``_run_build_check``), a prompting child gets EOF instead of
+# stealing the caller's TTY and hanging.
+_NONINTERACTIVE_ENV = {
+    "CI": "1",
+    "npm_config_yes": "true",
+    "npm_config_fund": "false",
+    "npm_config_audit": "false",
+    "DEBIAN_FRONTEND": "noninteractive",
+}
+
+
+@dataclass
+class _CheckRun:
+    """Result of one bounded verification subprocess."""
+
+    ran: bool
+    exit_code: int | None
+    timed_out: bool
+    output_tail: str
+    error: str | None = None  # e.g. "command not found: npm" (process never ran)
+
+
+def _read_text(path: str) -> str:
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _run_build_check(
+    argv: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    timeout: int,
+) -> _CheckRun:
+    """Run one verification command, bounded and non-interactive.
+
+    stdin is closed (``DEVNULL``) so a prompting build tool gets EOF rather than
+    the caller's terminal; the child runs in its own process group/session so a
+    deadline overrun kills the WHOLE tree (``npm``/``npx`` spawn grandchildren
+    that a plain ``proc.kill()`` would orphan — and on Windows would defeat the
+    timeout entirely). Output is streamed to temp files (never PIPE) so a chatty
+    build cannot deadlock on a full pipe buffer while we poll the deadline.
+    """
+    out_fd, out_path = tempfile.mkstemp(prefix="codetask-build-", suffix=".out")
+    err_fd, err_path = tempfile.mkstemp(prefix="codetask-build-", suffix=".err")
+    os.close(out_fd)
+    os.close(err_fd)
+    popen_kwargs: dict[str, Any] = {
+        "cwd": str(cwd),
+        "stdin": subprocess.DEVNULL,
+        "env": env,
+    }
+    if os.name == "posix":
+        popen_kwargs["start_new_session"] = True
+    else:
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    try:
+        with open(out_path, "w", encoding="utf-8") as out_f, open(
+            err_path, "w", encoding="utf-8"
+        ) as err_f:
+            try:
+                proc = subprocess.Popen(argv, stdout=out_f, stderr=err_f, **popen_kwargs)
+            except FileNotFoundError as exc:
+                return _CheckRun(False, None, False, "", error=f"command not found: {exc}")
+            except OSError as exc:
+                return _CheckRun(False, None, False, "", error=f"could not start: {exc}")
+            deadline = time.monotonic() + max(1, timeout)
+            while proc.poll() is None:
+                if time.monotonic() >= deadline:
+                    _kill_process_group(proc)
+                    try:
+                        proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        _kill_process_group(proc)
+                    tail = _tail(_read_text(out_path) + _read_text(err_path))
+                    return _CheckRun(
+                        True,
+                        None,
+                        True,
+                        f"TIMEOUT after {timeout}s (process tree killed)\n{tail}".rstrip(),
+                    )
+                time.sleep(0.2)
+        tail = _tail(_read_text(out_path) + _read_text(err_path))
+        return _CheckRun(True, proc.returncode, False, tail)
+    finally:
+        for path in (out_path, err_path):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
 
 def _package_step() -> tuple[str, list[str]]:
@@ -301,29 +401,19 @@ def verify_build(
     for name, argv in checklist:
         chk = BuildCheck(name=name, command=" ".join(argv))
         start = time.monotonic()
-        try:
-            proc = subprocess.run(
-                argv,
-                cwd=str(repo),
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=check_timeout,
-                env=env,
-            )
-            chk.ran = True
-            chk.exit_code = proc.returncode
-            chk.ok = proc.returncode == 0
-            chk.raw_tail = _tail((proc.stdout or "") + (proc.stderr or ""))
-        except subprocess.TimeoutExpired:
-            chk.ran = True
+        run = _run_build_check(argv, cwd=repo, env=env, timeout=check_timeout)
+        chk.ran = run.ran
+        chk.exit_code = run.exit_code
+        if run.error is not None:
             chk.ok = False
-            chk.raw_tail = f"TIMEOUT after {check_timeout}s"
-        except FileNotFoundError as exc:
-            chk.ran = False
+            chk.raw_tail = run.error
+        elif run.timed_out:
             chk.ok = False
-            chk.raw_tail = f"command not found: {exc}"
+            chk.timed_out = True
+            chk.raw_tail = run.output_tail
+        else:
+            chk.ok = run.exit_code == 0
+            chk.raw_tail = run.output_tail
         chk.duration_seconds = round(time.monotonic() - start, 1)
         checks.append(chk)
         if not chk.ok:
@@ -367,9 +457,13 @@ def verify_build(
         if failed is not None and failed.name == "npm_ci"
         else TaskState.FAILED
     )
-    detail = (
-        f"build check failed: {failed.name}\n{failed.raw_tail}".rstrip()
-        if failed is not None
-        else "build verification did not complete"
-    )
+    if failed is not None and failed.timed_out:
+        detail = (
+            f"build check timed out: {failed.name} exceeded {check_timeout}s and was "
+            f"killed (a hung or interactive-prompting build)\n{failed.raw_tail}"
+        ).rstrip()
+    elif failed is not None:
+        detail = f"build check failed: {failed.name}\n{failed.raw_tail}".rstrip()
+    else:
+        detail = "build verification did not complete"
     return BuildVerificationOutcome(state=state, build=build, detail=detail)

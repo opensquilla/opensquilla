@@ -95,7 +95,11 @@ def test_scaffold_build_app_records_failure_status(tmp_path, monkeypatch):
     ok, detail = runner._scaffold_build_app("run-scaffold-fail", repo, artifact_dir)
 
     assert ok is False
-    assert detail == "scaffold timeout"
+    # The underlying failure is preserved and an actionable hint is appended so a
+    # stuck/opaque scaffold (issue #470) names its likely cause.
+    assert detail.startswith("scaffold timeout")
+    assert "interactive prompt" in detail
     status = json.loads((artifact_dir / "status.json").read_text())
     assert status["phase"] == "scaffold_failed"
-    assert status["error"] == "scaffold timeout"
+    assert status["error"].startswith("scaffold timeout")
+    assert "interactive prompt" in status["error"]

@@ -78,6 +78,10 @@ class BuildCheck:
     exit_code: int | None = None
     duration_seconds: float | None = None
     raw_tail: str = ""  # last lines of output, for the report
+    # True when the command was killed for exceeding its deadline (as opposed to
+    # exiting non-zero). Distinguishes "the build hung / never finished" from
+    # "the build ran and failed" so the report and retry loop can react.
+    timed_out: bool = False
 
 
 @dataclass

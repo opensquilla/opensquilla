@@ -1,0 +1,47 @@
+[
+  {
+    "text": "I'll check the weather.",
+    "type": "TextDeltaEvent"
+  },
+  {
+    "synthetic_from_text": false,
+    "tool_name": "get_weather",
+    "tool_use_id": "toolu_test_000",
+    "type": "ToolUseStartEvent"
+  },
+  {
+    "json_fragment": "{\"city\"",
+    "tool_use_id": "toolu_test_000",
+    "type": "ToolUseDeltaEvent"
+  },
+  {
+    "json_fragment": ": \"Paris\"}",
+    "tool_use_id": "toolu_test_000",
+    "type": "ToolUseDeltaEvent"
+  },
+  {
+    "arguments": {
+      "city": "Paris"
+    },
+    "synthetic_from_text": false,
+    "tool_name": "get_weather",
+    "tool_use_id": "toolu_test_000",
+    "type": "ToolUseEndEvent"
+  },
+  {
+    "billed_cost": 0.0,
+    "cache_write_tokens": 0,
+    "cached_tokens": 0,
+    "cost_source": "none",
+    "ensemble_trace": null,
+    "input_tokens": 25,
+    "model": "",
+    "model_usage_breakdown": [],
+    "output_tokens": 12,
+    "reasoning_content": null,
+    "reasoning_tokens": 0,
+    "stop_reason": "tool_use",
+    "thinking_signature": null,
+    "type": "DoneEvent"
+  }
+]

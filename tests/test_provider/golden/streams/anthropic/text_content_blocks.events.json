@@ -1,0 +1,26 @@
+[
+  {
+    "text": "Hello",
+    "type": "TextDeltaEvent"
+  },
+  {
+    "text": " world.",
+    "type": "TextDeltaEvent"
+  },
+  {
+    "billed_cost": 0.0,
+    "cache_write_tokens": 0,
+    "cached_tokens": 0,
+    "cost_source": "none",
+    "ensemble_trace": null,
+    "input_tokens": 10,
+    "model": "",
+    "model_usage_breakdown": [],
+    "output_tokens": 4,
+    "reasoning_content": null,
+    "reasoning_tokens": 0,
+    "stop_reason": "end_turn",
+    "thinking_signature": null,
+    "type": "DoneEvent"
+  }
+]

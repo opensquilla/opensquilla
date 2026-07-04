@@ -1,0 +1,30 @@
+[
+  {
+    "text": "Let me think",
+    "type": "ReasoningDeltaEvent"
+  },
+  {
+    "text": " about this.",
+    "type": "ReasoningDeltaEvent"
+  },
+  {
+    "text": "The answer is 4.",
+    "type": "TextDeltaEvent"
+  },
+  {
+    "billed_cost": 0.0,
+    "cache_write_tokens": 0,
+    "cached_tokens": 0,
+    "cost_source": "none",
+    "ensemble_trace": null,
+    "input_tokens": 15,
+    "model": "",
+    "model_usage_breakdown": [],
+    "output_tokens": 9,
+    "reasoning_content": "Let me think about this.",
+    "reasoning_tokens": 0,
+    "stop_reason": "end_turn",
+    "thinking_signature": "sig-test-0001",
+    "type": "DoneEvent"
+  }
+]

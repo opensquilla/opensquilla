@@ -280,8 +280,10 @@ def _sync_image_generation(config: Any) -> None:
     configure_audio(getattr(config, "audio", None))
 
 
-# Read-only paths that cannot be modified via config.set/patch/apply
-_READONLY_PATHS = frozenset({"auth.token", "auth.password"})
+# Read-only paths that cannot be modified via config.set/patch/apply.
+# config_version is the migration stamp owned by migrate_config_payload;
+# client writes to it could re-run or skip one-time migrations.
+_READONLY_PATHS = frozenset({"auth.token", "auth.password", "config_version"})
 _SAFE_WRITE_PATCH_PATHS = frozenset(
     {
         "skills.filter_enabled",

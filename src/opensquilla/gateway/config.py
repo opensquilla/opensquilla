@@ -19,10 +19,12 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic.fields import FieldInfo
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from opensquilla import __version__
 from opensquilla.gateway.config_migration import (
+    LATEST_CONFIG_VERSION,
     backup_and_write_migrated_config,
     migrate_config_payload,
 )
@@ -1791,6 +1793,32 @@ class LlmProviderProfile(BaseSettings):
     proxy: str = ""
 
 
+class _EnvWithoutConfigVersion(PydanticBaseSettingsSource):
+    """Env-backed settings source that never yields ``config_version``.
+
+    ``config_version`` is the migration stamp owned by the config payload:
+    ``migrate_config_payload`` injects it at every disk-load boundary, and
+    injected payload keys already outrank environment values. This wrapper
+    closes the remaining gap — bare ``GatewayConfig()`` constructions with no
+    payload at all (e.g. the no-file default branch of ``GatewayConfig.load``
+    and ``config_store.load_config``) — so
+    ``OPENSQUILLA_GATEWAY_CONFIG_VERSION`` can never gate or skip migrations.
+    Only this one key is filtered; every other env override is untouched.
+    """
+
+    def __init__(self, inner: PydanticBaseSettingsSource) -> None:
+        super().__init__(inner.settings_cls)
+        self._inner = inner
+
+    def get_field_value(self, field: FieldInfo, field_name: str) -> tuple[Any, str, bool]:
+        return self._inner.get_field_value(field, field_name)
+
+    def __call__(self) -> dict[str, Any]:
+        values = dict(self._inner())
+        values.pop("config_version", None)
+        return values
+
+
 class GatewayConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="OPENSQUILLA_GATEWAY_",
@@ -1970,6 +1998,32 @@ class GatewayConfig(BaseSettings):
     # State/config paths
     state_dir: str | None = Field(default_factory=lambda: str(default_opensquilla_home() / "state"))
     config_path: str | None = None
+
+    # Config schema migration stamp. Owned by migrate_config_payload
+    # (gateway/config_migration.py), which injects LATEST_CONFIG_VERSION into
+    # every payload it returns so version-gated one-time migrations run
+    # exactly once per config file. Must stay optional with a default: a bare
+    # GatewayConfig() is constructed throughout the codebase.
+    config_version: int = LATEST_CONFIG_VERSION
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # Default source order, with env-backed sources filtered so
+        # OPENSQUILLA_GATEWAY_CONFIG_VERSION can never populate the migration
+        # stamp — see _EnvWithoutConfigVersion for the full rationale.
+        return (
+            init_settings,
+            _EnvWithoutConfigVersion(env_settings),
+            _EnvWithoutConfigVersion(dotenv_settings),
+            file_secret_settings,
+        )
 
     def model_post_init(self, __context: Any) -> None:
         self._apply_concurrency_env_overrides()

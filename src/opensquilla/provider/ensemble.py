@@ -250,13 +250,28 @@ def _member_model_capabilities(member: EnsembleMemberConfig) -> ModelCapabilitie
         return ModelCapabilities()
 
 
+def _member_max_tokens(member: EnsembleMemberConfig) -> int:
+    if member.max_tokens and member.max_tokens > 0:
+        return member.max_tokens
+    cfg = member.provider_config
+    try:
+        return ModelCatalog().resolve_max_tokens(
+            cfg.model,
+            user_override=0,
+            provider=cfg.provider,
+        )
+    except Exception:
+        return ChatConfig().max_tokens
+
+
 def _member_chat_config(base: ChatConfig | None, member: EnsembleMemberConfig) -> ChatConfig:
     cfg = base.model_copy(deep=True) if base is not None else ChatConfig()
-    updates: dict[str, Any] = {"model_capabilities": _member_model_capabilities(member)}
+    updates: dict[str, Any] = {
+        "max_tokens": _member_max_tokens(member),
+        "model_capabilities": _member_model_capabilities(member),
+    }
     if member.temperature is not None:
         updates["temperature"] = member.temperature
-    if member.max_tokens and member.max_tokens > 0:
-        updates["max_tokens"] = member.max_tokens
     thinking, thinking_level = _normalize_thinking(member.thinking)
     if thinking is not None:
         updates["thinking"] = thinking
@@ -367,6 +382,7 @@ class EnsembleProvider:
         shuffle_candidates: bool = True,
         record_candidates: bool = False,
         proposer_tools: bool = False,
+        quorum_grace_seconds: float = 0.0,
         selection_plan: Mapping[str, Any] | None = None,
     ) -> None:
         self.profile_name = profile_name
@@ -381,6 +397,7 @@ class EnsembleProvider:
         self.shuffle_candidates = bool(shuffle_candidates)
         self.record_candidates = bool(record_candidates)
         self.proposer_tools = bool(proposer_tools)
+        self.quorum_grace_seconds = max(0.0, float(quorum_grace_seconds or 0.0))
         self.selection_plan = dict(selection_plan or {})
 
     def provider_metadata(self) -> ProviderMetadata:
@@ -528,27 +545,99 @@ class EnsembleProvider:
         progress: Callable[[EnsembleProgressEvent], None] | None = None,
     ) -> list[_CandidateResult]:
         tasks: list[asyncio.Task[_CandidateResult]] = []
+        task_meta: dict[
+            asyncio.Task[_CandidateResult],
+            tuple[int, int, EnsembleMemberConfig],
+        ] = {}
         index = 0
         for member in self.proposers:
             k = max(1, int(member.k or 1))
             for sample_index in range(k):
-                tasks.append(
-                    asyncio.create_task(
-                        self._collect_candidate(
-                            index=index,
-                            sample_index=sample_index,
-                            member=member,
-                            messages=messages,
-                            tools=tools if self.proposer_tools else None,
-                            config=config,
-                            progress=progress,
-                        )
+                task = asyncio.create_task(
+                    self._collect_candidate(
+                        index=index,
+                        sample_index=sample_index,
+                        member=member,
+                        messages=messages,
+                        tools=tools if self.proposer_tools else None,
+                        config=config,
+                        progress=progress,
                     )
                 )
+                tasks.append(task)
+                task_meta[task] = (index, sample_index, member)
                 index += 1
         if not tasks:
             return []
-        return [result for result in await asyncio.gather(*tasks)]
+        if (
+            self.quorum_grace_seconds <= 0
+            or self.min_successful_proposers >= len(tasks)
+        ):
+            return sorted(
+                await asyncio.gather(*tasks),
+                key=lambda result: (result.index, result.sample_index),
+            )
+
+        results: list[_CandidateResult] = []
+        pending: set[asyncio.Task[_CandidateResult]] = set(tasks)
+        try:
+            while pending:
+                done, pending = await asyncio.wait(
+                    pending,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in done:
+                    results.append(await task)
+                if sum(1 for result in results if result.ok) >= self.min_successful_proposers:
+                    break
+
+            if pending:
+                done, pending = await asyncio.wait(
+                    pending,
+                    timeout=self.quorum_grace_seconds,
+                )
+                for task in done:
+                    results.append(await task)
+
+            if pending:
+                for task in pending:
+                    setattr(task, "_opensquilla_ensemble_cancel_code", "quorum_cancelled")
+                    setattr(
+                        task,
+                        "_opensquilla_ensemble_cancel_message",
+                        (
+                            "proposer cancelled after "
+                            f"{self.quorum_grace_seconds:g}s ensemble quorum grace"
+                        ),
+                    )
+                    task.cancel()
+                remaining = list(pending)
+                cancelled_results = await asyncio.gather(*remaining, return_exceptions=True)
+                for task, item in zip(remaining, cancelled_results, strict=True):
+                    if isinstance(item, _CandidateResult):
+                        results.append(item)
+                    else:
+                        index, sample_index, member = task_meta[task]
+                        cfg = member.provider_config
+                        results.append(
+                            _CandidateResult(
+                                index=index,
+                                sample_index=sample_index,
+                                label=member.label or f"proposer_{index + 1}",
+                                provider=cfg.provider,
+                                model=cfg.model,
+                                error=str(item),
+                                error_code=type(item).__name__,
+                            )
+                        )
+            return sorted(results, key=lambda result: (result.index, result.sample_index))
+        except BaseException:
+            for task in pending:
+                if not task.done():
+                    task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            raise
 
     async def _collect_candidate(
         self,
@@ -596,6 +685,20 @@ class EnsembleProvider:
                     if self.proposer_timeout_seconds > 0
                     else None
                 ),
+            )
+        except asyncio.CancelledError:
+            current_task = asyncio.current_task()
+            code = str(getattr(current_task, "_opensquilla_ensemble_cancel_code", "") or "")
+            if not code:
+                raise
+            result.error_code = code
+            result.error = str(
+                getattr(
+                    current_task,
+                    "_opensquilla_ensemble_cancel_message",
+                    "proposer cancelled after ensemble quorum was reached",
+                )
+                or "proposer cancelled after ensemble quorum was reached"
             )
         except TimeoutError:
             result.error = f"proposer timed out after {self.proposer_timeout_seconds:g}s"
@@ -736,6 +839,9 @@ class EnsembleProvider:
             "shuffle_candidates": self.shuffle_candidates,
             "record_candidates": self.record_candidates,
             "proposer_tools": self.proposer_tools,
+            "proposer_timeout_seconds": self.proposer_timeout_seconds,
+            "aggregator_timeout_seconds": self.aggregator_timeout_seconds,
+            "quorum_grace_seconds": self.quorum_grace_seconds,
             "content_max_chars": TRACE_CONTENT_MAX_CHARS,
             "final_request_role": final_request_role,
             "llm_request_count": len(candidates) + (1 if final_request_role else 0),
@@ -1102,6 +1208,23 @@ _DYNAMIC_AGGREGATOR_SLOT = {
     "c2": "aggregator_strong",
     "c3": "aggregator_strong",
 }
+
+_STATIC_OPENROUTER_B5_PROFILE_NAME = "static_openrouter_b5"
+_STATIC_OPENROUTER_B5_PROPOSER_MODELS = (
+    "deepseek/deepseek-v4-pro",
+    "z-ai/glm-5.2",
+    "moonshotai/kimi-k2.7-code",
+    "qwen/qwen3.7-max",
+)
+_STATIC_OPENROUTER_B5_AGGREGATOR_MODEL = "z-ai/glm-5.2"
+_LEGACY_ENSEMBLE_MIN_SUCCESSFUL_PROPOSERS = 1
+_LEGACY_ENSEMBLE_TIMEOUT_SECONDS = 3600.0
+_LEGACY_ENSEMBLE_SHUFFLE_CANDIDATES = True
+_STATIC_OPENROUTER_B5_DEFAULT_MIN_SUCCESSFUL_PROPOSERS = 3
+_STATIC_OPENROUTER_B5_DEFAULT_PROPOSER_TIMEOUT_SECONDS = 300.0
+_STATIC_OPENROUTER_B5_DEFAULT_AGGREGATOR_TIMEOUT_SECONDS = 480.0
+_STATIC_OPENROUTER_B5_DEFAULT_SHUFFLE_CANDIDATES = False
+_STATIC_OPENROUTER_B5_QUORUM_GRACE_SECONDS = 30.0
 
 _DYNAMIC_SLOT_WEIGHTS = {
     "cheap_contrast": {
@@ -1888,6 +2011,49 @@ def _build_router_dynamic_members(
     return f"router_dynamic/{routed_tier}", proposers, aggregator, plan
 
 
+def _openrouter_ref(model: str) -> _DynamicModelRef:
+    return _DynamicModelRef(provider="openrouter", model=model, thinking=None)
+
+
+def _static_default_if_legacy(
+    *,
+    is_static: bool,
+    value: float,
+    legacy: float,
+    static_default: float,
+) -> float:
+    if is_static and value == legacy:
+        return static_default
+    return value
+
+
+def _build_static_openrouter_b5_members(
+    *,
+    inherited_provider_config: ProviderConfig,
+) -> tuple[str, list[EnsembleMemberConfig], EnsembleMemberConfig, dict[str, Any]]:
+    proposers = [
+        _member_from_ref(
+            _openrouter_ref(model),
+            inherited=inherited_provider_config,
+            label=f"proposer_{index + 1}",
+        )
+        for index, model in enumerate(_STATIC_OPENROUTER_B5_PROPOSER_MODELS)
+    ]
+    aggregator = _member_from_ref(
+        _openrouter_ref(_STATIC_OPENROUTER_B5_AGGREGATOR_MODEL),
+        inherited=inherited_provider_config,
+        label="aggregator",
+    )
+    plan = {
+        "strategy": _STATIC_OPENROUTER_B5_PROFILE_NAME,
+        "profile": _STATIC_OPENROUTER_B5_PROFILE_NAME,
+        "proposer_models": list(_STATIC_OPENROUTER_B5_PROPOSER_MODELS),
+        "aggregator_model": _STATIC_OPENROUTER_B5_AGGREGATOR_MODEL,
+        "proposer_count": len(proposers),
+    }
+    return _STATIC_OPENROUTER_B5_PROFILE_NAME, proposers, aggregator, plan
+
+
 def _secret_from_env(env_name: str) -> str:
     return os.environ.get(env_name, "").strip() if env_name else ""
 
@@ -1952,15 +2118,67 @@ def build_ensemble_provider_from_config(
     ensemble_cfg = getattr(config, "llm_ensemble", None)
     if ensemble_cfg is None:
         raise ValueError("config.llm_ensemble is required")
-    profile_name, proposers, aggregator, selection_plan = _build_router_dynamic_members(
-        config=config,
-        inherited_provider_config=inherited_provider_config,
-        turn_metadata=turn_metadata,
-    )
+    selection_mode = str(getattr(ensemble_cfg, "selection_mode", "router_dynamic") or "")
+    if selection_mode == _STATIC_OPENROUTER_B5_PROFILE_NAME:
+        profile_name, proposers, aggregator, selection_plan = _build_static_openrouter_b5_members(
+            inherited_provider_config=inherited_provider_config,
+        )
+    elif selection_mode == "router_dynamic":
+        profile_name, proposers, aggregator, selection_plan = _build_router_dynamic_members(
+            config=config,
+            inherited_provider_config=inherited_provider_config,
+            turn_metadata=turn_metadata,
+        )
+    else:
+        raise ValueError(f"unknown llm_ensemble.selection_mode {selection_mode!r}")
+    is_static_openrouter_b5 = selection_mode == _STATIC_OPENROUTER_B5_PROFILE_NAME
     configured_min_success = int(getattr(ensemble_cfg, "min_successful_proposers", 1) or 1)
-    min_successful_proposers = min(configured_min_success, max(1, len(proposers)))
+    requested_min_success = configured_min_success
+    if (
+        is_static_openrouter_b5
+        and configured_min_success == _LEGACY_ENSEMBLE_MIN_SUCCESSFUL_PROPOSERS
+    ):
+        requested_min_success = _STATIC_OPENROUTER_B5_DEFAULT_MIN_SUCCESSFUL_PROPOSERS
+    min_successful_proposers = min(requested_min_success, max(1, len(proposers)))
+    configured_proposer_timeout_seconds = float(
+        getattr(ensemble_cfg, "proposer_timeout_seconds", _LEGACY_ENSEMBLE_TIMEOUT_SECONDS)
+    )
+    proposer_timeout_seconds = _static_default_if_legacy(
+        is_static=is_static_openrouter_b5,
+        value=configured_proposer_timeout_seconds,
+        legacy=_LEGACY_ENSEMBLE_TIMEOUT_SECONDS,
+        static_default=_STATIC_OPENROUTER_B5_DEFAULT_PROPOSER_TIMEOUT_SECONDS,
+    )
+    configured_aggregator_timeout_seconds = float(
+        getattr(ensemble_cfg, "aggregator_timeout_seconds", _LEGACY_ENSEMBLE_TIMEOUT_SECONDS)
+    )
+    aggregator_timeout_seconds = _static_default_if_legacy(
+        is_static=is_static_openrouter_b5,
+        value=configured_aggregator_timeout_seconds,
+        legacy=_LEGACY_ENSEMBLE_TIMEOUT_SECONDS,
+        static_default=_STATIC_OPENROUTER_B5_DEFAULT_AGGREGATOR_TIMEOUT_SECONDS,
+    )
+    configured_shuffle_candidates = bool(
+        getattr(ensemble_cfg, "shuffle_candidates", _LEGACY_ENSEMBLE_SHUFFLE_CANDIDATES)
+    )
+    shuffle_candidates = configured_shuffle_candidates
+    if (
+        is_static_openrouter_b5
+        and configured_shuffle_candidates == _LEGACY_ENSEMBLE_SHUFFLE_CANDIDATES
+    ):
+        shuffle_candidates = _STATIC_OPENROUTER_B5_DEFAULT_SHUFFLE_CANDIDATES
+    quorum_grace_seconds = (
+        _STATIC_OPENROUTER_B5_QUORUM_GRACE_SECONDS if is_static_openrouter_b5 else 0.0
+    )
     selection_plan["configured_min_successful_proposers"] = configured_min_success
     selection_plan["effective_min_successful_proposers"] = min_successful_proposers
+    selection_plan["configured_proposer_timeout_seconds"] = configured_proposer_timeout_seconds
+    selection_plan["effective_proposer_timeout_seconds"] = proposer_timeout_seconds
+    selection_plan["configured_aggregator_timeout_seconds"] = configured_aggregator_timeout_seconds
+    selection_plan["effective_aggregator_timeout_seconds"] = aggregator_timeout_seconds
+    selection_plan["configured_shuffle_candidates"] = configured_shuffle_candidates
+    selection_plan["effective_shuffle_candidates"] = shuffle_candidates
+    selection_plan["quorum_grace_seconds"] = quorum_grace_seconds
     return EnsembleProvider(
         profile_name=profile_name,
         proposers=proposers,
@@ -1968,13 +2186,12 @@ def build_ensemble_provider_from_config(
         fallback_provider=fallback_provider,
         min_successful_proposers=min_successful_proposers,
         all_failed_policy=getattr(ensemble_cfg, "all_failed_policy", "fallback_single"),
-        proposer_timeout_seconds=float(getattr(ensemble_cfg, "proposer_timeout_seconds", 3600.0)),
-        aggregator_timeout_seconds=float(
-            getattr(ensemble_cfg, "aggregator_timeout_seconds", 3600.0)
-        ),
+        proposer_timeout_seconds=proposer_timeout_seconds,
+        aggregator_timeout_seconds=aggregator_timeout_seconds,
         candidate_max_chars=int(getattr(ensemble_cfg, "candidate_max_chars", 24_000) or 0),
-        shuffle_candidates=bool(getattr(ensemble_cfg, "shuffle_candidates", True)),
+        shuffle_candidates=shuffle_candidates,
         record_candidates=bool(getattr(ensemble_cfg, "record_candidates", False)),
         proposer_tools=bool(getattr(ensemble_cfg, "proposer_tools", False)),
+        quorum_grace_seconds=quorum_grace_seconds,
         selection_plan=selection_plan,
     )

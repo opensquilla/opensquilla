@@ -23,7 +23,12 @@ from opensquilla.gateway.boot import (
     emit_skill_filter_banner,
     validate_squilla_router_runtime,
 )
-from opensquilla.gateway.config import AgentEntryConfig, GatewayConfig
+from opensquilla.gateway.config import (
+    AgentEntryConfig,
+    GatewayConfig,
+    effective_agent_stream_idle_timeout_seconds,
+    effective_webui_stream_idle_grace_seconds,
+)
 from opensquilla.gateway.diagnostics import DiagnosticsState
 from opensquilla.gateway.routing import build_cli_route_envelope, build_cron_route_envelope
 from opensquilla.onboarding.mutations import upsert_channel
@@ -250,12 +255,56 @@ def test_build_task_runtime_run_kwargs_forwards_fresh_user_session() -> None:
     assert kwargs["fresh_user_session"] is True
 
 
-def test_gateway_stream_timeouts_allow_long_silent_agent_work() -> None:
+def test_gateway_stream_timeout_config_defaults_remain_serializable() -> None:
     config = GatewayConfig()
 
     assert config.agent_stream_idle_timeout_seconds == 600.0
     assert config.webui_stream_idle_grace_seconds == 630.0
     assert config.webui_stream_idle_grace_seconds > config.agent_stream_idle_timeout_seconds
+    assert effective_agent_stream_idle_timeout_seconds(config) == 1200.0
+    assert effective_webui_stream_idle_grace_seconds(config) == 1260.0
+
+
+def test_gateway_stream_timeouts_keep_legacy_effective_values_when_static_disabled() -> None:
+    config = GatewayConfig(
+        llm_ensemble={
+            "enabled": True,
+            "selection_mode": "router_dynamic",
+        }
+    )
+
+    assert config.agent_stream_idle_timeout_seconds == 600.0
+    assert config.webui_stream_idle_grace_seconds == 630.0
+    assert effective_agent_stream_idle_timeout_seconds(config) == 600.0
+    assert effective_webui_stream_idle_grace_seconds(config) == 630.0
+
+
+def test_static_openrouter_b5_effective_stream_timeouts_extend_webui_budget() -> None:
+    config = GatewayConfig(
+        llm_ensemble={
+            "enabled": True,
+            "selection_mode": "static_openrouter_b5",
+        }
+    )
+
+    assert config.agent_stream_idle_timeout_seconds == 600.0
+    assert config.webui_stream_idle_grace_seconds == 630.0
+    assert effective_agent_stream_idle_timeout_seconds(config) == 1200.0
+    assert effective_webui_stream_idle_grace_seconds(config) == 1260.0
+
+
+def test_static_openrouter_b5_webui_grace_stays_above_custom_stream_idle() -> None:
+    config = GatewayConfig(
+        agent_stream_idle_timeout_seconds=2000.0,
+        webui_stream_idle_grace_seconds=630.0,
+        llm_ensemble={
+            "enabled": True,
+            "selection_mode": "static_openrouter_b5",
+        },
+    )
+
+    assert effective_agent_stream_idle_timeout_seconds(config) == 2000.0
+    assert effective_webui_stream_idle_grace_seconds(config) == 2060.0
 
 
 def test_compaction_time_budget_defaults_allow_long_chain_work() -> None:

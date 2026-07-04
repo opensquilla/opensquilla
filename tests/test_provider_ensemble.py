@@ -317,7 +317,7 @@ async def test_ensemble_runs_proposers_concurrently_and_tools_only_reach_aggrega
     assert first_candidate["execution"]["model"] == "p1"
     assert first_candidate["execution"]["thinking_override"] == "high"
     assert first_candidate["execution"]["tools_enabled"] is False
-    assert first_candidate["execution"]["effective_max_tokens"] == 99
+    assert first_candidate["execution"]["effective_max_tokens"] == 16384
     assert first_candidate["content"]["text"] == "draft one"
     assert first_candidate["content"]["truncated"] is False
     final_request = done.ensemble_trace["final_request"]
@@ -325,11 +325,85 @@ async def test_ensemble_runs_proposers_concurrently_and_tools_only_reach_aggrega
     assert final_request["execution"]["model"] == "agg"
     assert final_request["execution"]["tools_enabled"] is True
     assert final_request["execution"]["tool_names"] == ["lookup"]
-    assert final_request["execution"]["effective_max_tokens"] == 99
+    assert final_request["execution"]["effective_max_tokens"] == 16384
     assert "draft one" in final_request["input"]["messages"][-1]["content"]["text"]
     assert final_request["output"]["text"] == "final"
     assert final_request["usage"]["model"] == "agg"
     json.dumps(done.ensemble_trace)
+
+
+@pytest.mark.asyncio
+async def test_ensemble_resolves_max_tokens_per_openrouter_member(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    models = [
+        "deepseek/deepseek-v4-pro",
+        "z-ai/glm-5.2",
+        "moonshotai/kimi-k2.7-code",
+        "qwen/qwen3.7-max",
+    ]
+    registry = _FakeRegistry(
+        {
+            **{
+                model: _FakePlan(
+                    [
+                        TextDeltaEvent(text=f"draft from {model}"),
+                        DoneEvent(input_tokens=1, output_tokens=1, model=model),
+                    ]
+                )
+                for model in models
+            },
+            "agg": _FakePlan(
+                [
+                    TextDeltaEvent(text="final"),
+                    DoneEvent(input_tokens=1, output_tokens=1, model="agg"),
+                ]
+            ),
+        }
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+    provider = EnsembleProvider(
+        profile_name="static_openrouter_b5",
+        proposers=[_openrouter_member(model, thinking=None) for model in models],
+        aggregator=EnsembleMemberConfig(
+            provider_config=ProviderConfig(
+                provider="openrouter",
+                model="agg",
+                base_url="https://openrouter.ai/api/v1",
+            ),
+            label="aggregator",
+            max_tokens=123,
+            thinking=None,
+        ),
+        proposer_timeout_seconds=1,
+        aggregator_timeout_seconds=1,
+        shuffle_candidates=False,
+    )
+
+    events = [
+        event
+        async for event in provider.chat(
+            [Message(role="user", content="answer this")],
+            config=ChatConfig(max_tokens=384000, thinking=False),
+        )
+    ]
+
+    by_model = {call["model"]: call["config"].max_tokens for call in registry.calls}
+    assert by_model == {
+        "deepseek/deepseek-v4-pro": 384000,
+        "z-ai/glm-5.2": 32768,
+        "moonshotai/kimi-k2.7-code": 16384,
+        "qwen/qwen3.7-max": 65536,
+        "agg": 123,
+    }
+    done = next(event for event in events if isinstance(event, DoneEvent))
+    assert done.ensemble_trace is not None
+    traced = {
+        candidate["execution"]["model"]: candidate["execution"]["effective_max_tokens"]
+        for candidate in done.ensemble_trace["candidates"]
+    }
+    assert traced["moonshotai/kimi-k2.7-code"] == 16384
+    assert done.ensemble_trace["final_request"]["execution"]["effective_max_tokens"] == 123
 
 
 @pytest.mark.asyncio
@@ -534,6 +608,105 @@ async def test_ensemble_streams_proposer_progress_live_not_buffered(
         if isinstance(e, EnsembleProgressEvent) and e.event_type == "proposer_finish"
     }
     assert finishes == {"p1", "p2"}
+
+
+@pytest.mark.asyncio
+async def test_static_openrouter_b5_quorum_cancels_slow_proposer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    slow_gate = asyncio.Event()
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan([TextDeltaEvent(text="d1"), DoneEvent(model="p1")]),
+            "p2": _FakePlan([TextDeltaEvent(text="d2"), DoneEvent(model="p2")]),
+            "p3": _FakePlan([TextDeltaEvent(text="d3"), DoneEvent(model="p3")]),
+            "p4": _FakePlan(
+                [TextDeltaEvent(text="d4"), DoneEvent(model="p4")],
+                gate=slow_gate,
+            ),
+            "agg": _FakePlan(
+                [
+                    TextDeltaEvent(text="final"),
+                    DoneEvent(input_tokens=1, output_tokens=1, model="agg"),
+                ]
+            ),
+        }
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+    provider = EnsembleProvider(
+        profile_name="static_openrouter_b5",
+        proposers=[_member("p1"), _member("p2"), _member("p3"), _member("p4")],
+        aggregator=_member("agg"),
+        min_successful_proposers=3,
+        proposer_timeout_seconds=10,
+        aggregator_timeout_seconds=1,
+        quorum_grace_seconds=0.02,
+        shuffle_candidates=False,
+    )
+
+    started = time.monotonic()
+    events = await _collect(provider)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.5
+    assert [call["model"] for call in registry.calls] == ["p1", "p2", "p3", "p4", "agg"]
+    done = next(event for event in events if isinstance(event, DoneEvent))
+    assert done.ensemble_trace is not None
+    assert done.ensemble_trace["successful_proposers"] == 3
+    assert done.ensemble_trace["selected_candidate_count"] == 3
+    assert done.ensemble_trace["selected_candidate_indexes"] == [0, 1, 2]
+    assert done.ensemble_trace["llm_request_count"] == 5
+    assert done.ensemble_trace["quorum_grace_seconds"] == 0.02
+    p4 = done.ensemble_trace["candidates"][3]
+    assert p4["model"] == "p4"
+    assert p4["ok"] is False
+    assert p4["error_code"] == "quorum_cancelled"
+    assert "quorum grace" in p4["error"]
+    assert "d1" in str(registry.calls[-1]["messages"][-1].content)
+    assert "d2" in str(registry.calls[-1]["messages"][-1].content)
+    assert "d3" in str(registry.calls[-1]["messages"][-1].content)
+    assert "d4" not in str(registry.calls[-1]["messages"][-1].content)
+
+
+@pytest.mark.asyncio
+async def test_default_ensemble_waits_for_all_proposers_without_quorum(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    slow_gate = asyncio.Event()
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan([TextDeltaEvent(text="d1"), DoneEvent(model="p1")]),
+            "p2": _FakePlan(
+                [TextDeltaEvent(text="d2"), DoneEvent(model="p2")],
+                gate=slow_gate,
+            ),
+            "agg": _FakePlan([TextDeltaEvent(text="final"), DoneEvent(model="agg")]),
+        }
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+    provider = EnsembleProvider(
+        profile_name="router_dynamic/c1",
+        proposers=[_member("p1"), _member("p2")],
+        aggregator=_member("agg"),
+        min_successful_proposers=1,
+        proposer_timeout_seconds=2,
+        aggregator_timeout_seconds=1,
+        quorum_grace_seconds=0.0,
+        shuffle_candidates=False,
+    )
+
+    consume_task = asyncio.create_task(_collect(provider))
+    await asyncio.sleep(0.05)
+    assert "agg" not in [call["model"] for call in registry.calls]
+
+    slow_gate.set()
+    events = await asyncio.wait_for(consume_task, timeout=1.0)
+
+    assert [call["model"] for call in registry.calls] == ["p1", "p2", "agg"]
+    done = next(event for event in events if isinstance(event, DoneEvent))
+    assert done.ensemble_trace is not None
+    assert done.ensemble_trace["successful_proposers"] == 2
+    assert done.ensemble_trace["quorum_grace_seconds"] == 0.0
 
 
 def test_runtime_wrap_is_after_selector_resolution() -> None:

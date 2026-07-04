@@ -319,10 +319,12 @@ class LlmEnsembleConfig(BaseSettings):
         extra="ignore",
     )
 
-    # Off by default so a fresh install lands on the single-model AI router
-    # (squilla_router). Ensemble is opt-in via the composer's routing control.
-    enabled: bool = False
+    # Static OpenRouter B5 is the default routing surface. The legacy scalar
+    # timeout/min-success field defaults remain below so `router_dynamic` keeps
+    # its historical behaviour when an operator explicitly selects it.
+    enabled: bool = True
     mode: Literal["b5_fusion"] = "b5_fusion"
+    selection_mode: Literal["router_dynamic", "static_openrouter_b5"] = "static_openrouter_b5"
     proposer_tools: bool = False
     min_successful_proposers: int = Field(default=1, ge=1)
     all_failed_policy: Literal["fallback_single", "error"] = "fallback_single"
@@ -347,6 +349,54 @@ class LlmEnsembleConfig(BaseSettings):
             raise ValueError("llm_ensemble.model_options must define at least one model")
         self.model_options = model_options
         return self
+
+
+STATIC_OPENROUTER_B5_SELECTION_MODE = "static_openrouter_b5"
+STATIC_OPENROUTER_B5_MIN_AGENT_STREAM_IDLE_TIMEOUT_SECONDS = 1200.0
+STATIC_OPENROUTER_B5_MIN_WEBUI_STREAM_IDLE_GRACE_SECONDS = 1260.0
+
+
+def _non_negative_float(value: Any, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(0.0, parsed)
+
+
+def static_openrouter_b5_ensemble_enabled(config: Any) -> bool:
+    ensemble_cfg = getattr(config, "llm_ensemble", None)
+    if ensemble_cfg is None:
+        return False
+    return bool(getattr(ensemble_cfg, "enabled", False)) and (
+        str(getattr(ensemble_cfg, "selection_mode", "") or "")
+        == STATIC_OPENROUTER_B5_SELECTION_MODE
+    )
+
+
+def effective_agent_stream_idle_timeout_seconds(config: Any) -> float:
+    value = _non_negative_float(
+        getattr(config, "agent_stream_idle_timeout_seconds", 600.0),
+        600.0,
+    )
+    if static_openrouter_b5_ensemble_enabled(config):
+        value = max(value, STATIC_OPENROUTER_B5_MIN_AGENT_STREAM_IDLE_TIMEOUT_SECONDS)
+    return value
+
+
+def effective_webui_stream_idle_grace_seconds(config: Any) -> float:
+    value = _non_negative_float(
+        getattr(config, "webui_stream_idle_grace_seconds", 630.0),
+        630.0,
+    )
+    if static_openrouter_b5_ensemble_enabled(config):
+        server_idle = effective_agent_stream_idle_timeout_seconds(config)
+        value = max(
+            value,
+            STATIC_OPENROUTER_B5_MIN_WEBUI_STREAM_IDLE_GRACE_SECONDS,
+            server_idle + 60.0,
+        )
+    return value
 
 
 # Module-level dedupe state for the legacy ``enabled`` deprecation warning.

@@ -164,6 +164,16 @@ class UploadStore:
     async def put(self, name: str, mime: str, payload: bytes) -> str:
         """Insert a new attachment; return its opaque file_uuid."""
 
+        file_uuid, _expires_at = await self.put_with_expiry(name, mime, payload)
+        return file_uuid
+
+    async def put_with_expiry(self, name: str, mime: str, payload: bytes) -> tuple[str, float]:
+        """Insert a new attachment; return ``(file_uuid, expires_at_epoch)``.
+
+        Exposing ``expires_at`` lets the upload route tell the client the staged
+        lifetime up front so a slow compose can re-upload before the send fails.
+        """
+
         normalized_mime = normalize_attachment_mime(mime)
         if normalized_mime not in _ALLOWED_MIMES:
             raise UploadUnsupportedMimeError(f"mime {mime!r} is not allowed")
@@ -204,7 +214,7 @@ class UploadStore:
                     "expires_at": expires_at,
                 },
             )
-        return file_uuid
+        return file_uuid, expires_at
 
     async def get(self, file_uuid: str) -> tuple[bytes, dict[str, Any]]:
         """Return ``(bytes, metadata)`` for an active uuid; raise otherwise."""
@@ -345,7 +355,9 @@ def register_upload_routes(
             )
 
         try:
-            file_uuid = await store.put(filename, normalized_mime, payload)
+            file_uuid, expires_at = await store.put_with_expiry(
+                filename, normalized_mime, payload
+            )
         except UploadOversizeError as exc:
             return JSONResponse({"error": str(exc), "code": "TOO_LARGE"}, status_code=413)
         except UploadUnsupportedMimeError as exc:
@@ -359,6 +371,10 @@ def register_upload_routes(
                 "filename": filename,
                 "mime": normalized_mime,
                 "size": len(payload),
+                # Staged lifetime so a client can re-upload before a slow compose
+                # sends against an expired uuid (issue #468).
+                "expires_at": expires_at,
+                "ttl_seconds": store.ttl_seconds,
             }
         )
 

@@ -377,8 +377,6 @@ def create_gateway_app(
         resolve_params = {
             "id": approval_id,
             "approved": approved,
-            "allowAlways": bool(body.get("allowAlways", False)),
-            "rememberIntent": bool(body.get("rememberIntent", False)),
         }
         choice = body.get("choice") or body.get("decision")
         if isinstance(choice, str) and choice.strip():
@@ -554,11 +552,23 @@ def create_gateway_app(
     # Bridge upload endpoint: self-hosted multipart sink that
     # returns an opaque file_uuid the chat.send validator can resolve.
     from opensquilla.gateway.uploads import (  # noqa: PLC0415 — local import keeps app.py boot light
+        UploadStore,
         get_upload_store,
         register_upload_routes,
+        set_upload_store,
     )
 
-    register_upload_routes(app, config=config, store=get_upload_store())
+    # Back the store with a persistent marker directory so a staged upload lost
+    # across a gateway restart resolves to the specific "lost in restart, please
+    # re-upload" error instead of a generic "unknown uuid" (issue #468). Only
+    # replace the default in-memory-only singleton; respect a test-injected store.
+    _upload_store = get_upload_store()
+    if getattr(_upload_store, "marker_dir", None) is None:
+        from opensquilla.paths import media_root_from_config  # noqa: PLC0415
+
+        _upload_store = UploadStore(marker_dir=media_root_from_config(config) / "uploads")
+        set_upload_store(_upload_store)
+    register_upload_routes(app, config=config, store=_upload_store)
     from opensquilla.gateway.artifacts import register_artifact_routes  # noqa: PLC0415
     from opensquilla.gateway.attachments import register_attachment_routes  # noqa: PLC0415
     from opensquilla.gateway.audio_transcription import (  # noqa: PLC0415

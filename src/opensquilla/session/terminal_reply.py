@@ -9,6 +9,20 @@ from opensquilla.session.models import AgentTaskStatus
 
 CONTEXT_PAYLOAD_TOO_LARGE_CODE = "provider_request_too_large"
 
+# Non-context budget-exhaustion codes. Context-window exhaustion has its own,
+# more specific message via ``is_context_payload_too_large`` and is intentionally
+# excluded here.
+_BUDGET_CLASSES = frozenset(
+    {
+        "tool_run_budget_exhausted",
+        "llm_budget_exhausted",
+        "turn_llm_call_budget_exceeded",
+        "turn_input_token_budget_exceeded",
+        "turn_output_token_budget_exceeded",
+        "turn_billed_cost_budget_exceeded",
+    }
+)
+
 
 def build_terminal_reply(
     record_or_payload: Any,
@@ -63,6 +77,28 @@ def build_terminal_reply(
         return "The task was cancelled before it finished."
     if status == AgentTaskStatus.ABANDONED.value or reason == "shutdown_timeout":
         return "The task stopped before it could finish."
+    # Per-code phrasing for the non-provider terminal codes the agent loop emits,
+    # so each surfaces a specific, actionable cause instead of the generic
+    # "failed" sentence below.
+    if error_class == "sandbox_threshold_exceeded" or reason == "sandbox_threshold_exceeded":
+        return (
+            "Automatic execution paused after repeated sandbox denials. Approve the "
+            "requested access (or widen the sandbox policy) and resume to continue."
+        )
+    if error_class in _BUDGET_CLASSES or reason in _BUDGET_CLASSES:
+        return (
+            "The task stopped because it reached a configured budget limit "
+            "(tokens, tool calls, or cost) before it could finish."
+        )
+    if error_class == "max_iterations" or reason == "max_iterations":
+        return (
+            "The task stopped after reaching its maximum number of steps before it could finish."
+        )
+    if error_class == "tool_policy_denied" or reason == "tool_policy_denied":
+        return (
+            "The task was blocked because a tool it needed is not permitted by the "
+            "current policy."
+        )
     if status == AgentTaskStatus.FAILED.value or reason in {"error", "tool_error"}:
         return "The task failed before it could finish."
     if status == AgentTaskStatus.SUCCEEDED.value or reason in {"completed", "done"}:

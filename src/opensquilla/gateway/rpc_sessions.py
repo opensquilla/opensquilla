@@ -693,12 +693,25 @@ def _normalize_terminal_event_payload(event_name: str, payload: dict[str, Any]) 
         fallback_error_message=raw_text,
     )
     terminal_message = build_terminal_reply(terminal_payload)
+    # Serialize the typed turn outcome onto the wire so every surface (Web UI,
+    # CLI, channels) can render a specific cause + retryability + recovery
+    # affordance instead of parsing the human string. The taxonomy already
+    # classifies these codes (engine/outcome.py); this is the missing link that
+    # carries it to clients.
+    from opensquilla.engine.outcome import outcome_from_error
+
+    outcome = outcome_from_error(
+        code=str(code) if code else None,
+        message=safe_error_message,
+        error_class=str(code) if code else None,
+    )
     return {
         **payload,
         "message": terminal_message,
         "terminal_message": terminal_message,
         "terminal_reason": terminal_payload["terminal_reason"],
         "error_message": safe_error_message,
+        "turn_outcome": outcome.to_dict(),
     }
 
 
@@ -1390,14 +1403,30 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
     )
     generate_title = await _should_auto_title(ctx, storage, session, key, session_id)
     disk_budget = getattr(attachments_cfg, "transcript_disk_budget_bytes", None)
-    ingested_attachments = await _attachment_ingest.ingest_attachments(
-        message_text,
-        combined_attachments,
-        failure_mode="raise",
-        material_root=media_root,
-        session_id=session_id,
-        disk_budget_bytes=disk_budget if isinstance(disk_budget, int) else None,
-    )
+    try:
+        ingested_attachments = await _attachment_ingest.ingest_attachments(
+            message_text,
+            combined_attachments,
+            failure_mode="raise",
+            material_root=media_root,
+            session_id=session_id,
+            disk_budget_bytes=disk_budget if isinstance(disk_budget, int) else None,
+        )
+    except _attachment_ingest.AttachmentResolutionError as exc:
+        # A staged upload expired / was lost before this send. Surface a typed,
+        # retryable error carrying the attachment index + uuid so the client can
+        # re-upload and resend instead of hitting a generic INVALID_REQUEST dead
+        # end. The uuid is intentionally NOT evicted (it is already gone).
+        raise RpcHandlerError(
+            exc.code,
+            str(exc),
+            details={
+                "attachmentIndex": exc.attachment_index,
+                "fileUuid": exc.file_uuid,
+                "recovery": "reupload" if exc.recoverable else None,
+            },
+            retryable=exc.recoverable,
+        ) from exc
     message_text = ingested_attachments.text
     raw_attachments = ingested_attachments.attachments
     inferred_normalized_input = None

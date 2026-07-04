@@ -37,7 +37,11 @@ from opensquilla.artifacts import enrich_artifact_event_dict
 from opensquilla.asyncio_utils import create_background_task
 from opensquilla.engine.usage import UsageTracker as _UsageTracker
 from opensquilla.gateway.app import create_gateway_app
-from opensquilla.gateway.config import GatewayConfig, is_public_bind
+from opensquilla.gateway.config import (
+    GatewayConfig,
+    effective_agent_stream_idle_timeout_seconds,
+    is_public_bind,
+)
 from opensquilla.gateway.llm_runtime import resolve_llm_runtime_config
 from opensquilla.gateway.rpc import get_dispatcher
 from opensquilla.gateway.session_events import build_sessions_changed_payload
@@ -880,8 +884,9 @@ async def dispatch_task_runtime_turn(
         ),
     )
     raw_stream = turn_runner.run(run.message, run.session_key, **run_kwargs)
-    stream_idle_timeout = _optional_positive_timeout(
-        config, "agent_stream_idle_timeout_seconds", 600.0
+    raw_stream_idle_timeout = effective_agent_stream_idle_timeout_seconds(config)
+    stream_idle_timeout: float | None = (
+        raw_stream_idle_timeout if raw_stream_idle_timeout > 0 else None
     )
     heartbeat_interval = _optional_positive_timeout(
         config, "agent_stream_heartbeat_interval_seconds", 15.0

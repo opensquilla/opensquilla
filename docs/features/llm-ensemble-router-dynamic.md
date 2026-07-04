@@ -1,9 +1,11 @@
 # LLM Ensemble: `router_dynamic` Selection Strategy
 
-`router_dynamic` is the model-selection strategy used by `llm_ensemble` to pick
-which models act as proposers and which model acts as the aggregator for a
-given turn. It replaces static, hand-configured proposer/aggregator lists with
-a scoring system driven by SquillaRouter's tier decision for that turn.
+`router_dynamic` is the dynamic model-selection strategy used by
+`llm_ensemble` to pick which models act as proposers and which model acts as
+the aggregator for a given turn. It uses a scoring system driven by
+SquillaRouter's tier decision for that turn. Fresh configs default to the
+packaged `static_openrouter_b5` profile; set
+`llm_ensemble.selection_mode = "router_dynamic"` to use this strategy.
 
 This document describes how `router_dynamic` works. It does not cover the
 ensemble runtime mechanics (streaming, timeouts, fallback) — only how the set
@@ -179,8 +181,15 @@ recorded in `selection_plan` for debugging.
 
 ## Configuration Surface
 
-`router_dynamic` itself is not configurable by name — it is the only
-selection strategy `llm_ensemble` implements. What operators can tune:
+Operators enable this strategy with:
+
+```toml
+[llm_ensemble]
+enabled = true
+selection_mode = "router_dynamic"
+```
+
+What operators can tune:
 
 - `llm_ensemble.model_options` — extends the candidate pool beyond the router
   anchor and configured router tiers.

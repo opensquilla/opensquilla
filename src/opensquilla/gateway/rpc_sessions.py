@@ -16,6 +16,7 @@ from opensquilla.engine.cache_break_monitor import notify_compaction
 from opensquilla.engine.start_turn import start_turn_via_runtime
 from opensquilla.gateway import attachment_ingest as _attachment_ingest
 from opensquilla.gateway.agent_tasks import get_agent_task_registry
+from opensquilla.gateway.config import effective_agent_stream_idle_timeout_seconds
 from opensquilla.gateway.input_normalization import (
     infer_normalized_input_from_attachments,
     materialize_generated_text_attachments,
@@ -1755,8 +1756,9 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                 semantic_message=semantic_message_text,
                 fresh_user_session=fresh_user_session,
             )
-            stream_idle_timeout = _optional_positive_timeout(
-                ctx.config, "agent_stream_idle_timeout_seconds", 600.0
+            raw_stream_idle_timeout = effective_agent_stream_idle_timeout_seconds(ctx.config)
+            stream_idle_timeout: float | None = (
+                raw_stream_idle_timeout if raw_stream_idle_timeout > 0 else None
             )
             heartbeat_interval = _optional_positive_timeout(
                 ctx.config, "agent_stream_heartbeat_interval_seconds", 15.0

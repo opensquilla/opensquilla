@@ -14,7 +14,11 @@ from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 
 from opensquilla import __version__
 from opensquilla.gateway.auth import Principal
-from opensquilla.gateway.config import GatewayConfig
+from opensquilla.gateway.config import (
+    GatewayConfig,
+    effective_agent_stream_idle_timeout_seconds,
+    effective_webui_stream_idle_grace_seconds,
+)
 from opensquilla.gateway.protocol import (
     PREAUTH_TIMEOUT_MS,
     PROTOCOL_VERSION,
@@ -642,12 +646,10 @@ async def handle_ws_connection(
                 * 1000
             ),
             agent_stream_idle_timeout_ms=int(
-                max(0.0, float(getattr(config, "agent_stream_idle_timeout_seconds", 600.0)))
-                * 1000
+                effective_agent_stream_idle_timeout_seconds(config) * 1000
             ),
             webui_stream_idle_grace_ms=int(
-                max(0.0, float(getattr(config, "webui_stream_idle_grace_seconds", 630.0)))
-                * 1000
+                effective_webui_stream_idle_grace_seconds(config) * 1000
             ),
             client_ws_keepalive_timeout_ms=int(
                 max(0.0, float(getattr(config, "client_ws_keepalive_timeout_s", 120.0)))

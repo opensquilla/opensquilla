@@ -60,6 +60,7 @@ from opensquilla.engine.types import (
 )
 from opensquilla.execution_status import normalize_execution_status
 from opensquilla.gateway.attachment_ingest import AttachmentIngestResult, ingest_attachments
+from opensquilla.gateway.config import effective_agent_stream_idle_timeout_seconds
 from opensquilla.gateway.session_events import build_sessions_changed_payload
 from opensquilla.paths import media_root_from_config
 from opensquilla.permissions import configured_default_elevated
@@ -223,7 +224,6 @@ _INTERNAL_COMPACTION_MARKER_PREFIXES = (
 )
 _DIRECTIVE_TAG_BUFFER_LIMIT = 256
 _DEFAULT_STREAM_HEARTBEAT_INTERVAL_SECONDS = 15.0
-_DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS = 600.0
 
 
 def _strip_inline_directive_tags(content: str) -> str:
@@ -1189,13 +1189,13 @@ def _optional_positive_config_float(config: Any, attr: str, default: float) -> f
 def _wrap_channel_turn_stream(stream: Any, config: Any) -> Any:
     from opensquilla.engine.stream_wrappers import wrap_stream
 
+    raw_stream_idle_timeout = effective_agent_stream_idle_timeout_seconds(config)
+    stream_idle_timeout: float | None = (
+        raw_stream_idle_timeout if raw_stream_idle_timeout > 0 else None
+    )
     return wrap_stream(
         stream,
-        idle_timeout=_optional_positive_config_float(
-            config,
-            "agent_stream_idle_timeout_seconds",
-            _DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS,
-        ),
+        idle_timeout=stream_idle_timeout,
         heartbeat_interval=_optional_positive_config_float(
             config,
             "agent_stream_heartbeat_interval_seconds",

@@ -7,14 +7,13 @@ from opensquilla.provider.ensemble import build_ensemble_provider_from_config
 from opensquilla.provider.selector import ProviderConfig
 
 
-def test_llm_ensemble_defaults_to_disabled() -> None:
-    # Off by default so a fresh install lands on the single-model AI router;
-    # ensemble is opt-in via the composer's routing control.
+def test_llm_ensemble_defaults_enable_static_openrouter_b5() -> None:
     cfg = GatewayConfig()
 
     ensemble = cfg.llm_ensemble
-    assert ensemble.enabled is False
+    assert ensemble.enabled is True
     assert ensemble.mode == "b5_fusion"
+    assert ensemble.selection_mode == "static_openrouter_b5"
     assert ensemble.proposer_tools is False
     assert ensemble.min_successful_proposers == 1
     assert ensemble.model_options == [
@@ -33,10 +32,40 @@ def test_llm_ensemble_defaults_to_disabled() -> None:
     assert ensemble.shuffle_candidates is True
     assert ensemble.record_candidates is False
 
+    provider = build_ensemble_provider_from_config(
+        config=cfg,
+        inherited_provider_config=ProviderConfig(
+            provider="openrouter",
+            model="routed/model",
+            api_key="fake",
+            base_url="https://openrouter.example/api/v1",
+        ),
+        fallback_provider=None,
+        turn_metadata={"routed_tier": "c0"},
+    )
+    assert provider.profile_name == "static_openrouter_b5"
+    assert [member.provider_config.model for member in provider.proposers] == [
+        "deepseek/deepseek-v4-pro",
+        "z-ai/glm-5.2",
+        "moonshotai/kimi-k2.7-code",
+        "qwen/qwen3.7-max",
+    ]
+    assert provider.aggregator.provider_config.model == "z-ai/glm-5.2"
+    assert provider.min_successful_proposers == 3
+    assert provider.proposer_timeout_seconds == 300.0
+    assert provider.aggregator_timeout_seconds == 480.0
+    assert provider.shuffle_candidates is False
+    assert provider.quorum_grace_seconds == 30.0
+
 
 def test_llm_ensemble_validates_model_options_not_empty() -> None:
     with pytest.raises(ValueError, match="model_options"):
         GatewayConfig(llm_ensemble={"model_options": []})
+
+
+def test_llm_ensemble_validates_selection_mode() -> None:
+    with pytest.raises(ValueError, match="selection_mode"):
+        GatewayConfig(llm_ensemble={"selection_mode": "static_unknown"})
 
 
 def test_llm_ensemble_model_options_are_operator_configurable() -> None:
@@ -80,6 +109,7 @@ def test_router_dynamic_ensemble_uses_small_c0_slot_template() -> None:
     cfg = GatewayConfig(
         llm_ensemble={
             "enabled": True,
+            "selection_mode": "router_dynamic",
             "min_successful_proposers": 4,
         }
     )
@@ -107,12 +137,16 @@ def test_router_dynamic_ensemble_uses_small_c0_slot_template() -> None:
     assert provider.selection_plan["slot_template"] == ["anchor", "cheap_contrast"]
     assert provider.selection_plan["aggregator_slot"] == "aggregator_fast"
     assert provider.selection_plan["duplicate_policy"] == "selected_penalty"
+    assert provider.proposer_timeout_seconds == 3600.0
+    assert provider.aggregator_timeout_seconds == 3600.0
+    assert provider.quorum_grace_seconds == 0.0
 
 
 def test_router_dynamic_ensemble_uses_slot_specific_c2_selection() -> None:
     cfg = GatewayConfig(
         llm_ensemble={
             "enabled": True,
+            "selection_mode": "router_dynamic",
             "model_options": [
                 "deepseek/deepseek-v4-pro",
                 "z-ai/glm-5.2",
@@ -148,3 +182,130 @@ def test_router_dynamic_ensemble_uses_slot_specific_c2_selection() -> None:
     assert provider.selection_plan["slots"][2]["slot"] == "orthogonal_family"
     assert provider.selection_plan["aggregator"]["slot"] == "aggregator_strong"
     assert provider.selection_plan["candidate_pool_size"] >= 5
+
+
+def test_static_openrouter_b5_ensemble_locks_members_across_routed_tiers() -> None:
+    cfg = GatewayConfig(
+        llm_ensemble={
+            "enabled": True,
+            "selection_mode": "static_openrouter_b5",
+            "min_successful_proposers": 9,
+            "shuffle_candidates": False,
+        }
+    )
+    inherited = ProviderConfig(
+        provider="openrouter",
+        model="routed/model",
+        api_key="fake",
+        base_url="https://openrouter.example/api/v1",
+        proxy="http://proxy.local:7890",
+        provider_routing={"z-ai/glm-5.2": "z-ai"},
+    )
+    expected_proposers = [
+        "deepseek/deepseek-v4-pro",
+        "z-ai/glm-5.2",
+        "moonshotai/kimi-k2.7-code",
+        "qwen/qwen3.7-max",
+    ]
+
+    for tier in ("c0", "c1", "c2", "c3"):
+        provider = build_ensemble_provider_from_config(
+            config=cfg,
+            inherited_provider_config=inherited,
+            fallback_provider=None,
+            turn_metadata={"routed_tier": tier, "routing_confidence": 0.99},
+        )
+
+        assert provider.profile_name == "static_openrouter_b5"
+        assert [member.provider_config.model for member in provider.proposers] == expected_proposers
+        assert provider.aggregator.provider_config.model == "z-ai/glm-5.2"
+        assert provider.selection_plan == {
+            "strategy": "static_openrouter_b5",
+            "profile": "static_openrouter_b5",
+            "proposer_models": expected_proposers,
+            "aggregator_model": "z-ai/glm-5.2",
+            "proposer_count": 4,
+            "configured_min_successful_proposers": 9,
+            "effective_min_successful_proposers": 4,
+            "configured_proposer_timeout_seconds": 3600.0,
+            "effective_proposer_timeout_seconds": 300.0,
+            "configured_aggregator_timeout_seconds": 3600.0,
+            "effective_aggregator_timeout_seconds": 480.0,
+            "configured_shuffle_candidates": False,
+            "effective_shuffle_candidates": False,
+            "quorum_grace_seconds": 30.0,
+        }
+        assert provider.min_successful_proposers == 4
+        assert provider.proposer_timeout_seconds == 300.0
+        assert provider.aggregator_timeout_seconds == 480.0
+        assert provider.shuffle_candidates is False
+        assert provider.quorum_grace_seconds == 30.0
+        members = [*provider.proposers, provider.aggregator]
+        assert all(member.provider_config.provider == "openrouter" for member in members)
+        assert all(member.provider_config.api_key == "fake" for member in members)
+        assert all(
+            member.provider_config.base_url == "https://openrouter.example/api/v1"
+            for member in members
+        )
+        assert all(member.provider_config.proxy == "http://proxy.local:7890" for member in members)
+        assert all(
+            member.provider_config.provider_routing == {"z-ai/glm-5.2": "z-ai"}
+            for member in members
+        )
+
+
+def test_static_openrouter_b5_ensemble_uses_profile_effective_defaults() -> None:
+    cfg = GatewayConfig(
+        llm_ensemble={
+            "enabled": True,
+            "selection_mode": "static_openrouter_b5",
+        }
+    )
+    provider = build_ensemble_provider_from_config(
+        config=cfg,
+        inherited_provider_config=ProviderConfig(
+            provider="openrouter",
+            model="routed/model",
+            api_key="fake",
+            base_url="https://openrouter.example/api/v1",
+        ),
+        fallback_provider=None,
+    )
+
+    assert cfg.llm_ensemble.min_successful_proposers == 1
+    assert cfg.llm_ensemble.proposer_timeout_seconds == 3600.0
+    assert cfg.llm_ensemble.aggregator_timeout_seconds == 3600.0
+    assert cfg.llm_ensemble.shuffle_candidates is True
+    assert provider.min_successful_proposers == 3
+    assert provider.proposer_timeout_seconds == 300.0
+    assert provider.aggregator_timeout_seconds == 480.0
+    assert provider.shuffle_candidates is False
+    assert provider.quorum_grace_seconds == 30.0
+
+
+def test_static_openrouter_b5_ensemble_preserves_custom_effective_values() -> None:
+    cfg = GatewayConfig(
+        llm_ensemble={
+            "enabled": True,
+            "selection_mode": "static_openrouter_b5",
+            "min_successful_proposers": 2,
+            "proposer_timeout_seconds": 180.0,
+            "aggregator_timeout_seconds": 900.0,
+            "shuffle_candidates": False,
+        }
+    )
+    provider = build_ensemble_provider_from_config(
+        config=cfg,
+        inherited_provider_config=ProviderConfig(
+            provider="openrouter",
+            model="routed/model",
+            api_key="fake",
+            base_url="https://openrouter.example/api/v1",
+        ),
+        fallback_provider=None,
+    )
+
+    assert provider.min_successful_proposers == 2
+    assert provider.proposer_timeout_seconds == 180.0
+    assert provider.aggregator_timeout_seconds == 900.0
+    assert provider.shuffle_candidates is False

@@ -875,7 +875,6 @@
       "details": "詳細",
       "unknownTool": "不明",
       "approveOnce": "1 回だけ承認",
-      "alwaysAllow": "これを常に許可",
       "allowSameType": "同じ種類を許可",
       "deny": "拒否",
       "loadFailed": "承認の読み込みに失敗しました: {msg}",
@@ -1619,13 +1618,11 @@
       "denyReasonPlaceholder": "拒否の理由（任意）— エージェントに送信されます",
       "denyReasonLabel": "拒否の理由（任意、エージェントに送信）",
       "allowOnce": "1 回だけ許可",
-      "allowAlways": "これを常に許可",
       "allowSameType": "同じ種類を許可",
       "deny": "拒否",
       "expiresIn": "{time} で期限切れ",
       "outcomeExpired": "期限切れ — 未実行",
       "outcomeDenied": "拒否済み",
-      "outcomeApprovedAlways": "承認済み · 常に許可",
       "outcomeApproved": "承認済み · 実行を再開"
     },
     "clarify": {

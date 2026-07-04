@@ -54,7 +54,6 @@ export interface InterruptClarifyData {
 
 export type InterruptResolution =
   | 'approved'
-  | 'approved_always'
   | 'denied'    // approval outcomes (explicit human deny)
   | 'expired'   // approval lapsed without a response
   | 'replied'   // clarify submitted

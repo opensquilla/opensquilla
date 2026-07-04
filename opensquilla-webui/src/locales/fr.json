@@ -875,7 +875,6 @@
       "details": "Détails",
       "unknownTool": "Inconnu",
       "approveOnce": "Approuver une fois",
-      "alwaysAllow": "Toujours autoriser ceci",
       "allowSameType": "Autoriser le même type",
       "deny": "Refuser",
       "loadFailed": "Échec du chargement des approbations : {msg}",
@@ -1619,13 +1618,11 @@
       "denyReasonPlaceholder": "Motif du refus (facultatif) — envoyé à l'agent",
       "denyReasonLabel": "Motif du refus, facultatif, envoyé à l'agent",
       "allowOnce": "Autoriser une fois",
-      "allowAlways": "Toujours autoriser ceci",
       "allowSameType": "Autoriser le même type",
       "deny": "Refuser",
       "expiresIn": "Expire dans {time}",
       "outcomeExpired": "Expiré — non exécuté",
       "outcomeDenied": "Refusé",
-      "outcomeApprovedAlways": "Approuvé · toujours autorisé",
       "outcomeApproved": "Approuvé · exécution reprise"
     },
     "clarify": {

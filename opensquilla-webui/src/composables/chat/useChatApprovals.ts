@@ -54,7 +54,7 @@ export interface ChatApprovalItem {
   deadline: number          // epoch seconds the request expires; 0 when unknown
 }
 
-export type ChatApprovalResolution = 'approved' | 'approved_always' | 'denied' | 'expired'
+export type ChatApprovalResolution = 'approved' | 'denied' | 'expired'
 
 export interface ChatApprovalEntry {
   approval: ChatApprovalItem
@@ -70,12 +70,31 @@ export function approvalChoiceForDecision(decision: ChatApprovalDecision): strin
   return 'deny'
 }
 
-function isSandboxApprovalKind(kind: string): boolean {
-  return kind.trim().startsWith('sandbox_')
+export interface ApprovalResolveBody {
+  id: string
+  namespace: string
+  approved: boolean
+  choice: string
 }
 
-function isSandboxApprovalItem(approval: Pick<ChatApprovalItem, 'approvalKind'>): boolean {
-  return isSandboxApprovalKind(approval.approvalKind || '')
+/**
+ * Build the `*.approval.resolve` POST body. A plain approve carries only
+ * {id, namespace, approved, choice} — the removed persistent "allow always"
+ * path no longer contributes allowAlways/rememberIntent (the gateway now
+ * rejects a truthy value), so a sandbox "allow same type" is expressed through
+ * `choice` alone.
+ */
+export function buildApprovalResolveBody(
+  id: string,
+  namespace: string,
+  decision: ChatApprovalDecision,
+): ApprovalResolveBody {
+  return {
+    id,
+    namespace: namespace || 'exec',
+    approved: decision !== 'deny',
+    choice: approvalChoiceForDecision(decision),
+  }
 }
 
 export interface ChatClarifyField {
@@ -436,16 +455,7 @@ export function useChatApprovals(options: UseChatApprovalsOptions) {
     if (approvalBusyIds.value.has(id) || entry.resolution) return
     approvalBusyIds.value = new Set([...approvalBusyIds.value, id])
     entry.error = ''
-    const approved = decision !== 'deny'
-    const allowAlways = decision === 'allow-always' && !isSandboxApprovalItem(entry.approval)
-    const body = {
-      id,
-      namespace: entry.approval.namespace || 'exec',
-      approved,
-      allowAlways,
-      rememberIntent: allowAlways,
-      choice: approvalChoiceForDecision(decision),
-    }
+    const body = buildApprovalResolveBody(id, entry.approval.namespace, decision)
     try {
       const res = await fetch('/api/approvals/resolve', {
         method: 'POST',
@@ -453,7 +463,7 @@ export function useChatApprovals(options: UseChatApprovalsOptions) {
         body: JSON.stringify(body),
       })
       if (!res.ok) throw new Error('HTTP ' + res.status)
-      entry.resolution = decision === 'deny' ? 'denied' : allowAlways ? 'approved_always' : 'approved'
+      entry.resolution = decision === 'deny' ? 'denied' : 'approved'
       if (decision === 'deny' && note.trim()) options.onDenyFeedback?.(note.trim())
     } catch (err) {
       entry.error = 'Could not resolve — ' + (err instanceof Error ? err.message : String(err))
@@ -476,19 +486,7 @@ export function useChatApprovals(options: UseChatApprovalsOptions) {
     if (approvalBusyIds.value.has(id) || current?.resolution) return
     approvalBusyIds.value = new Set([...approvalBusyIds.value, id])
     setInterruptState(id, { busy: true, error: '' })
-    const approved = decision !== 'deny'
-    const approval = interruptApprovals.get(id)
-    const allowAlways = decision === 'allow-always' && !(
-      approval ? isSandboxApprovalKind(approval.approvalKind || '') : false
-    )
-    const body = {
-      id,
-      namespace: namespaceForInterrupt(id),
-      approved,
-      allowAlways,
-      rememberIntent: allowAlways,
-      choice: approvalChoiceForDecision(decision),
-    }
+    const body = buildApprovalResolveBody(id, namespaceForInterrupt(id), decision)
     try {
       const res = await fetch('/api/approvals/resolve', {
         method: 'POST',
@@ -496,8 +494,7 @@ export function useChatApprovals(options: UseChatApprovalsOptions) {
         body: JSON.stringify(body),
       })
       if (!res.ok) throw new Error('HTTP ' + res.status)
-      const resolution: InterruptResolution =
-        decision === 'deny' ? 'denied' : allowAlways ? 'approved_always' : 'approved'
+      const resolution: InterruptResolution = decision === 'deny' ? 'denied' : 'approved'
       setInterruptState(id, { resolution, busy: false })
       if (decision === 'deny' && note.trim()) options.onDenyFeedback?.(note.trim())
     } catch (err) {

@@ -536,6 +536,7 @@ import { useChatApprovals } from '@/composables/chat/useChatApprovals'
 import { useChatAttachments } from '@/composables/chat/useChatAttachments'
 import { useChatCompaction } from '@/composables/chat/useChatCompaction'
 import { useChatComposerShortcuts } from '@/composables/chat/useChatComposerShortcuts'
+import { useChatDraftPersistence } from '@/composables/chat/useChatDraftPersistence'
 import { useChatElevatedMode } from '@/composables/chat/useChatElevatedMode'
 import { useChatFeatureToggles } from '@/composables/chat/useChatFeatureToggles'
 import { useChatHistory } from '@/composables/chat/useChatHistory'
@@ -677,6 +678,9 @@ const copySupported = shareCopyImageSupported()
 const chatElevatedMode = useChatElevatedMode({
   sessionKey,
 })
+// Persist the composer draft per session so a refresh / session switch / crash
+// before the backend accepts a send cannot silently lose typed text (issue 248).
+useChatDraftPersistence({ sessionKey, inputText })
 const {
   elevatedMode,
   loadElevatedMode,

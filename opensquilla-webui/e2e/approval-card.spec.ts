@@ -51,7 +51,7 @@ async function openMockedChat(page: Page) {
 }
 
 test.describe('In-thread approval card (mocked snapshot)', () => {
-  test('exec approval renders the command in a mono block with all three actions', async ({ page }) => {
+  test('exec approval renders the command in a mono block with the allow-once and deny actions', async ({ page }) => {
     await mockApprovalsRoute(page, () => [execApproval])
     await openMockedChat(page)
 
@@ -60,7 +60,9 @@ test.describe('In-thread approval card (mocked snapshot)', () => {
     await expect(card.locator('.approval-card__pre--cmd')).toContainText('rm -rf build/cache')
     await expect(card.getByText('Approval required')).toBeVisible()
     await expect(card.getByRole('button', { name: 'Allow once' })).toBeVisible()
-    await expect(card.getByRole('button', { name: 'Always allow this' })).toBeVisible()
+    // The persistent "always allow" shortcut is gone; a plain exec approval offers
+    // only Allow once / Deny.
+    await expect(card.getByRole('button', { name: 'Always allow this' })).toHaveCount(0)
     await expect(card.getByRole('button', { name: 'Deny' })).toBeVisible()
     await expect(card.locator('.approval-card__note')).toBeVisible()
   })
@@ -73,7 +75,7 @@ test.describe('In-thread approval card (mocked snapshot)', () => {
     await expect(card).toBeVisible({ timeout: 10000 })
     await expect(card.locator('.approval-card__tool')).toHaveText('browser_navigate')
     await expect(card.locator('.approval-card__pre')).toContainText('https://example.com/admin')
-    // No command — the "always allow" rule shortcut is exec-command-only.
+    // No command and not a sandbox request — the same-type shortcut never renders.
     await expect(card.getByRole('button', { name: 'Always allow this' })).toHaveCount(0)
   })
 
@@ -84,7 +86,9 @@ test.describe('In-thread approval card (mocked snapshot)', () => {
       const body = route.request().postDataJSON() as Record<string, unknown>
       expect(body.id).toBe('ap-e2e-1')
       expect(body.approved).toBe(true)
-      expect(body.allowAlways).toBe(false)
+      // The removed persistent-approval params must never ride the resolve call.
+      expect(body.allowAlways).toBeUndefined()
+      expect(body.rememberIntent).toBeUndefined()
       resolved = true
       await route.fulfill({ json: { ok: true } })
     })
@@ -98,26 +102,6 @@ test.describe('In-thread approval card (mocked snapshot)', () => {
     await expect(outcome).toBeVisible()
     await expect(outcome).toContainText('Approved · run resumed')
     await expect(page.getByTestId('approval-card')).toHaveCount(0)
-  })
-
-  test('Always allow resolves with the allow-rule flags set', async ({ page }) => {
-    let resolved = false
-    await mockApprovalsRoute(page, () => (resolved ? [] : [execApproval]))
-    await page.route('**/api/approvals/resolve', async route => {
-      const body = route.request().postDataJSON() as Record<string, unknown>
-      expect(body.approved).toBe(true)
-      expect(body.allowAlways).toBe(true)
-      expect(body.rememberIntent).toBe(true)
-      resolved = true
-      await route.fulfill({ json: { ok: true } })
-    })
-    await openMockedChat(page)
-
-    const card = page.getByTestId('approval-card')
-    await expect(card).toBeVisible({ timeout: 10000 })
-    await card.getByRole('button', { name: 'Always allow this' }).click()
-
-    await expect(page.getByTestId('approval-outcome')).toContainText('Approved · always allowed')
   })
 
   test('Deny sends approved=false and queues the optional note for the agent', async ({ page }) => {

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   approvalChoiceForDecision,
+  buildApprovalResolveBody,
   formatCountdown,
   resolutionFromPayload,
 } from './useChatApprovals'
@@ -53,5 +54,37 @@ describe('approvalChoiceForDecision', () => {
     expect(approvalChoiceForDecision('allow-once')).toBe('allow_once')
     expect(approvalChoiceForDecision('allow-always')).toBe('allow_same_type')
     expect(approvalChoiceForDecision('deny')).toBe('deny')
+  })
+})
+
+describe('buildApprovalResolveBody', () => {
+  it('sends only id, namespace, approved, and choice for a plain approve', () => {
+    const body = buildApprovalResolveBody('ap-1', 'exec', 'allow-once')
+    expect(body).toEqual({ id: 'ap-1', namespace: 'exec', approved: true, choice: 'allow_once' })
+  })
+
+  it('never carries the removed allowAlways / rememberIntent params', () => {
+    for (const decision of ['allow-once', 'allow-always', 'deny'] as const) {
+      const body = buildApprovalResolveBody('ap', 'exec', decision)
+      expect(body).not.toHaveProperty('allowAlways')
+      expect(body).not.toHaveProperty('rememberIntent')
+    }
+  })
+
+  it('marks a deny as not approved and keeps the deny choice', () => {
+    const body = buildApprovalResolveBody('ap-2', 'exec', 'deny')
+    expect(body.approved).toBe(false)
+    expect(body.choice).toBe('deny')
+  })
+
+  it('expresses a sandbox allow-same-type through the choice alone', () => {
+    const body = buildApprovalResolveBody('ap-3', 'exec', 'allow-always')
+    expect(body.approved).toBe(true)
+    expect(body.choice).toBe('allow_same_type')
+    expect(body).not.toHaveProperty('allowAlways')
+  })
+
+  it('defaults a blank namespace to exec', () => {
+    expect(buildApprovalResolveBody('ap-4', '', 'allow-once').namespace).toBe('exec')
   })
 })

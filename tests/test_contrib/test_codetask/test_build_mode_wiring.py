@@ -30,6 +30,8 @@ def test_app_build_template_renders_with_build_checklist():
     assert "npm ci" in out
     assert "electron-builder" in out
     assert "package-lock.json" in out
+    assert "npm create @quick-start/electron@latest app -- --template react-ts --skip" in out
+    assert "npm create @quick-start/electron@latest app -- --template react-ts --yes" not in out
     # build mode must NOT ask the agent for the red->green verification.json
     assert "verification.json" not in out
 

@@ -20,8 +20,8 @@ STACK (fixed)
   package.json and src/ exist, DO NOT run `npm create` or scaffold again; build
   the requested app inside the existing scaffold.
 - If the scaffold is missing, scaffold with electron-vite, non-interactively:
-    npm create @quick-start/electron@latest app -- --template react-ts --yes
-  (the `--yes` flag accepts defaults so no interactive prompt is needed;
+    npm create @quick-start/electron@latest app -- --template react-ts --skip
+  (the `--skip` flag accepts defaults so no interactive prompt is needed;
   POSIX-only piping like `yes "" | ...` will NOT work under cmd.exe /
   PowerShell — see the Host OS hint above). Then move the generated project
   into the repo root (replace any placeholder README). That template already

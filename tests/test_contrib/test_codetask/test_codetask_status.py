@@ -44,9 +44,11 @@ def test_scaffold_build_app_copies_template_and_writes_status(tmp_path, monkeypa
     monkeypatch.setattr(build_verify, "_resolve_cli", lambda name: name)
     monkeypatch.setattr(build_verify, "_build_env", lambda: {})
     phases = []
+    commands = []
 
     def fake_run_step(run_id, phase, cmd, *, cwd, stdout_path, stderr_path, timeout, env):
         phases.append(phase)
+        commands.append(cmd)
         if phase == "scaffold_running":
             app = cwd / "app"
             (app / "src").mkdir(parents=True)
@@ -68,6 +70,7 @@ def test_scaffold_build_app_copies_template_and_writes_status(tmp_path, monkeypa
 
     assert ok is True, detail
     assert phases == ["scaffold_running", "scaffold_lockfile"]
+    assert commands[0][-5:] == ["app", "--", "--template", "react-ts", "--skip"]
     assert (repo / "package.json").is_file()
     assert (repo / "src" / "main.ts").is_file()
     assert (repo / "package-lock.json").is_file()

@@ -599,6 +599,8 @@ def _scaffold_build_app(run_id: str, repo: Path, artifact_dir: Path) -> tuple[bo
             "npm_config_audit": "false",
         }
     )
+    # @quick-start/create-electron uses --skip, not npm's --yes, to disable
+    # its own updater/mirror prompts.
     cmd = [
         _resolve_cli("npm"),
         "create",
@@ -607,7 +609,7 @@ def _scaffold_build_app(run_id: str, repo: Path, artifact_dir: Path) -> tuple[bo
         "--",
         "--template",
         "react-ts",
-        "--yes",
+        "--skip",
     ]
     ok, detail = _run_logged_step(
         run_id,
